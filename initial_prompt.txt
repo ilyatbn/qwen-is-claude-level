@@ -1,0 +1,68 @@
+you are going to build an online 2d game using phaser, socket.io and rust as the backend.
+the game is a 2d real-time deathmatch free for all (with additional modes later) of upto 6 players on a randomly generated map. The map should be similar to how the old Worms games looked where there is a randomly generated map and its completely destructible by weapons
+you will build a project folder with several markdown files for each system component. map and its features(randomly generated, destructible, has weather elements), player and their core features (movement, health, shields, inventory)
+Each component would be built separately and unit tested! (map generation and tile destruction, then player and movement, then items and inventory, the serverside and multiplayer functionality)
+DO NOT WRITE CODE. you are designing a plan for a model with a small context size so break down the "todo" list into small portions so that the smaller model can run it properly.
+Your root is the folder you are in. do not use any assets or code from other folders.
+
+Example: 
+https://www.team17.com/hs-fs/hubfs/worms-armageddon-8-1.jpg?length=2000&name=worms-armageddon-8-1.jpg
+https://www.team17.com/hs-fs/hubfs/worms-armageddon-2-1.jpg?length=2000&name=worms-armageddon-2-1.jpg
+https://a-to-jconnections.com/uploads/3/4/8/6/34864225/worms-armageddon-anniversary-edition-review-1_orig.jpg
+https://a-to-jconnections.com/uploads/3/4/8/6/34864225/worms-armageddon-anniversary-edition-review-2_orig.jpg
+
+Gameplay:
+- Deathmatch. There are up to 6 players per round. A round is 4 minutes. All players are playing at the same time.
+- Each opponent kill grants a point. Each death reduces a point. When the round ends, players choose to either restart on a new map or quit.
+
+Map:
+- Generated at the start of each round. this is the most important part. It should be random, but not impossible to move on. should use sort of seed so that we could test and replay a certain map.
+- Destructible by weapons and weather.
+- Has random effects.
+- Has a Day/Night with very fast cycle [1 minute between day and night]  (during the night the visibility gets poor without a flashlight which you need to find)
+- Map should have 3 scales small, medium and large. this would affect how quickly players encounter eachother. we can optimize later. 
+
+Player Phase I:
+- Each player starts at a random location on the map. they always start on the ground.
+- player can move on the map using A and D for left and right. (part of WASD movement)
+- Player can press the spacebar to jump. movement affects the position of the jump. staning jumps upwards and while in the air player can use A or D to move left and right. jumping while already clicking A or D jumps in that direction, but can be changed mid air using A or D.
+- Player can use a jetpack to fly temporarily by holding the spacebar. (jectpack can last 5 seconds, then refils for 2 seconds for every 1 second of time used). During flight, players can move in any direction using WASD
+- Player uses the mouse to aim. they have a crosshair in a circle around them depending on where the mouse is.
+
+Items:
+- Items are mostly weapons, health related and shield. Health items restore health or boost it temporarily past 100%. Shield reduces the amount of damage taken. Weapons are the main source of dealing damage to other players or the map itself. Each weapons should have a set of properties like ammo, range, damage, impact radius. For now, do something very basic. Health item restores 50% health. Shield Generator grants reduced damage for 20 seconds. Weapons would have several types with different properties. more on that later.
+- Items are stored in an inventory the player has access to (right click to open)
+- Some items are placed at the start of the round at random locations on the ground.
+- Some randomly appear as the round progresses.
+- some items are dropped from the sky (supply crates)
+- some are hidden inside the map "ground" itself, and are uncovered when that part of the ground is destroyed.
+
+Player Phase 2
+- Players have Health. (base of 100 + affected by items or damage taken)
+- Players have dynamic movement speed (base+ affected by items, health).
+- Players have optional shield (they have to find a shield generator)
+- Players have a dynamic field of view (affected by fog, night, health)
+- Players movement and stats should be traced in real time since other players should be able to see them.
+
+
+Map Effects:
+- toxic rain. creates random "radioactive" spots on the map that last a couple seconds. players within range lose health.
+- meteor shower. randomly falls from the sky, hit the ground and causes explosive fragments to fly in a radius. players caught it it lose health. 
+- lava bursts fromn the ground. the ground suddenly opens and fire spews from it in random directions for a few seconds. fire burns on the ground for 3 seconds then disappears.
+- Heavy fog. Affects visibility during the day, players field of view decreases. lasts for 15 seconds then dissipates.
+
+
+Backend:
+- The point is for this game to be multiplayer so we need a game sever that hosts everything and does the heavy lifting. Phaser supports socket.io so I guess we can build backend in rust.
+- it should know the map being played based on the seed so everyone gets the same one and it knows where to place items.
+- it should be able to hold and update the player positions, health, shield, inventory items.
+- it should handle the rounds (score, time, day/night cycles, random map effects)
+- it should generate all the relevant items on the map for all players.
+- should sync data in real-time between all players
+- server and any additional databases should run on docker in case we need to scale up.
+- server should have enough debug logs (toggled) for the ai agent to understand issues and fix them when the user tells them the problem
+
+Sprites:
+- Sprites should be implemented as a feature that allows the player to chage them. player skins, weapon skins.
+- map sprites and random objects can be placed on it to make it more lively are pre-loaded, but should be simple to change or use multiples of (for example, different textures for the "map" so it looks different each round.)
+- fetch free assets from places like kenney.nl and structure them properly.
