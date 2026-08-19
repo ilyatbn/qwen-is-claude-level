@@ -11,6 +11,7 @@ use game_core::items::{place_hidden, place_initial, GroundItem, ItemIdCounter};
 use game_core::map::{Map, Scale};
 use game_core::protocol::ItemId;
 use game_core::rng::GameRng;
+use game_core::round::Round;
 use game_core::tiles::TileKind;
 
 /// FNV-1a (64-bit), inlined.
@@ -399,6 +400,115 @@ fn print_placement_hashes() {
             seed,
             scale,
             placement_hash(&ground, &hidden)
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Round start (T4.1)
+// ---------------------------------------------------------------------------
+
+/// Golden hash over a whole round-start sequence.
+///
+/// **D38's rule applied rather than re-learned.** `Round::start_round` runs the
+/// docs/04 §6 order — shuffle spawns, build the effect schedule, place A, place
+/// B — from ONE round RNG. None of the existing anchors covers it:
+/// `generation_matches_golden_hashes` stops at `Map::generate`, and
+/// `item_placement_matches_golden_hashes` drives placement from a fresh RNG
+/// rather than through a round. Both stayed green when this landed, which is
+/// precisely the silent gap D38 describes.
+fn round_start_hash(round: &Round) -> u64 {
+    let mut h = Fnv1a::new();
+    h.bytes(&round.seed.to_le_bytes());
+    h.bytes(round.scale.as_str().as_bytes());
+    // Spawns AFTER the shuffle — the step nothing else anchors.
+    for spawn in &round.map.spawns {
+        h.f32(spawn.x);
+        h.f32(spawn.y);
+    }
+    // Effect schedule (empty until T4.8, but hashed now so it is covered the
+    // moment it is populated).
+    for (tick, kind) in &round.schedule.entries {
+        h.bytes(&tick.to_le_bytes());
+        h.bytes(kind.as_str().as_bytes());
+    }
+    for item in &round.ground {
+        h.u32(item.id);
+        h.bytes(item.item.as_str().as_bytes());
+        h.f32(item.x);
+        h.f32(item.y);
+    }
+    // Hidden items live on tiles, so hash the tile items too.
+    for tile in &round.map.tiles {
+        match tile.item {
+            None => h.byte(0),
+            Some(item) => {
+                h.byte(1);
+                h.bytes(item.as_str().as_bytes());
+            }
+        }
+    }
+    // Player spawn positions, which depend on the shuffle.
+    for rp in &round.players {
+        h.f32(rp.player.pos.x);
+        h.f32(rp.player.pos.y);
+    }
+    h.finish()
+}
+
+fn start_round_for(seed: u64, scale: Scale) -> Round {
+    let mut round = Round::new(seed, scale);
+    for id in 0..6 {
+        round.join(format!("p{id}"));
+    }
+    round.start_round(seed, scale);
+    round
+}
+
+const GOLDEN_ROUND_STARTS: [(u64, Scale, u64); 3] = [
+    (1, Scale::Small, 0x9c2c_8006_2231_5784),
+    (42, Scale::Medium, 0x80c5_74f3_14c9_3e3a),
+    (12345, Scale::Large, 0xc61f_f3d3_dc1d_bbb8),
+];
+
+#[test]
+fn round_start_matches_golden_hashes() {
+    for (seed, scale, expected) in GOLDEN_ROUND_STARTS {
+        let round = start_round_for(seed, scale);
+        let actual = round_start_hash(&round);
+        assert_eq!(
+            actual, expected,
+            "\nround start changed for seed {seed} / {}.\n\
+             expected 0x{expected:016x}, got 0x{actual:016x}\n\
+             If deliberate, update GOLDEN_ROUND_STARTS in the same commit.",
+            scale.as_str(),
+        );
+    }
+}
+
+#[test]
+fn round_start_is_reproducible() {
+    for (seed, scale, _) in GOLDEN_ROUND_STARTS {
+        let a = round_start_hash(&start_round_for(seed, scale));
+        let b = round_start_hash(&start_round_for(seed, scale));
+        assert_eq!(a, b, "seed {seed} / {} started differently twice", scale.as_str());
+    }
+    assert_ne!(
+        round_start_hash(&start_round_for(1, Scale::Small)),
+        round_start_hash(&start_round_for(2, Scale::Small)),
+        "different seeds produced identical round starts",
+    );
+}
+
+/// Helper, not a check:
+///   cargo test -p game-core --test determinism print_round_start -- --ignored --nocapture
+#[test]
+#[ignore = "helper: prints golden constants for GOLDEN_ROUND_STARTS"]
+fn print_round_start_hashes() {
+    for (seed, scale, _) in GOLDEN_ROUND_STARTS {
+        println!(
+            "    ({}, Scale::{:?}, 0x{:016x}),",
+            seed, scale, round_start_hash(&start_round_for(seed, scale))
         );
     }
 }

@@ -10,7 +10,7 @@ starting this file.
 
 ---
 
-## T4.1 — Round state machine [ ]
+## T4.1 — Round state machine [x]
 
 **Goal**: lobby → countdown → round (240 s) → end; restart with new seed.
 **Read**: `docs/05-server.md` §2, `docs/02-map-effects.md` §1 (cycle start).
