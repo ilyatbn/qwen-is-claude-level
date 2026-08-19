@@ -401,3 +401,18 @@ Notes: farthest-point sampling with an incrementally maintained nearest-distance
        someone "tidying" it with a sort.
        Real maps: 20/20 medium seeds yield >= 6 spawns.
 Left for later: nothing
+
+## T1.13 — Pass 8: buried slots, decorations, MapMeta, Map — DONE
+Files: crates/game-core/src/map/meta.rs, map/mod.rs
+Verified: `cargo test -p game-core --release --lib meta` — 12 passed
+Notes: generate(seed, scale) is THE entry point for the server and the WASM bridge.
+       Buried slots sample an ANCHOR (a tunnel/crevice path point or a sealed-pocket
+       centroid) then step 30-80 px off it. Uniform random placement buries items
+       where nobody will ever dig; anchoring means one well-placed rocket can expose
+       one. 200 attempts per slot, accept fewer rather than loop.
+       spawn_points_are_standable_on_the_final_mask asserts against the SHIPPED
+       mask, not the pipeline's intermediate state — a spawn inside rock is the
+       worst generation bug there is.
+       Map carries dirty/dirty_list for T1.14; they are #[allow(dead_code)] until
+       carve lands — REMOVE THE ALLOW in T1.14.
+Left for later: the allow(dead_code) noted above.
