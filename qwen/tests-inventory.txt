@@ -53,6 +53,13 @@ items::tests::first_free_slot_skips_filled_slots
 items::tests::full_inventory_reports_no_free_slot
 items::tests::inventory_starts_empty_with_six_slots
 items::tests::selected_item_is_bounds_safe
+items::timed_tests::a_240_second_round_spawns_seven_source_d_items
+items::timed_tests::source_d_interval_matches_doc
+items::timed_tests::timed_items_land_on_grass_tile_centres
+items::timed_tests::timed_items_may_land_anywhere_on_the_surface
+items::timed_tests::timed_items_use_the_ground_weight_table
+items::timed_tests::timed_spawn_draws_tile_then_item
+items::timed_tests::timed_spawns_are_deterministic
 large_map_generation_is_fast_enough
 map::tests::a_single_pocket_marks_at_most_13_tiles
 map::tests::all_columns_have_ground

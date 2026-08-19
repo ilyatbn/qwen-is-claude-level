@@ -557,6 +557,55 @@ pub fn player_reaches_crate(crate_: &Crate, px: f32, py: f32) -> bool {
     crate_.landed && (crate_.x - px).hypot(crate_.y - py) <= PICKUP_RADIUS
 }
 
+// ---------------------------------------------------------------------------
+// Source D: timed random appearances (T3.5, docs/04 §3 row D)
+// ---------------------------------------------------------------------------
+
+/// Source-D interval, seconds (docs/04 §3 row D: "every 30 s").
+pub const SOURCE_D_INTERVAL_S: f32 = 30.0;
+
+/// The source-D spawn times for a round of `round_duration_s` (T3.5 step 1).
+///
+/// "At t=30,60,...,240 s (skip if >= 240)". For the documented 240 s round
+/// that is t = 30..210, i.e. **7 items** — T3.5 step 2 asserts exactly that.
+pub fn source_d_times(round_duration_s: f32) -> Vec<f32> {
+    let mut times = Vec::new();
+    let mut t = SOURCE_D_INTERVAL_S;
+    while t < round_duration_s {
+        times.push(t);
+        t += SOURCE_D_INTERVAL_S;
+    }
+    times
+}
+
+/// Spawn one source-D item at a random surface tile (docs/04 §3 row D).
+///
+/// Draw order: surface tile, then item. Drawn at the tick it happens, not
+/// precomputed at round start (docs/04 §6: "C and D are scheduled by the round
+/// timer, RNG draws happen at their ticks").
+pub fn spawn_timed_item(
+    map: &Map,
+    rng: &mut GameRng,
+    ids: &mut ItemIdCounter,
+) -> Option<GroundItem> {
+    let candidates = surface_candidates(map);
+    if candidates.is_empty() {
+        return None;
+    }
+    let index = rng.gen_range(0, candidates.len() as u32) as usize;
+    let (x, y) = candidates[index];
+    let item = pick_item(rng, SpawnWeights::Ground);
+    let centre = Map::tile_center(x, y);
+    Some(GroundItem {
+        id: ids.next(),
+        item,
+        x: centre.x,
+        y: centre.y,
+        is_crate: false,
+        hidden: false,
+    })
+}
+
 /// T3.1 catalog tests.
 ///
 /// Named `catalog_tests` so T3.1's Test command, `cargo test -p game-core
@@ -1410,5 +1459,154 @@ mod supply_crate_tests {
             assert!(c.x >= 0.0 && c.x < w, "seed {seed}: crate x={} is off-map", c.x);
             assert_eq!(c.y, CRATE_SPAWN_Y, "crates start above the map");
         }
+    }
+}
+
+/// T3.5 source-D timed-spawn tests.
+///
+/// Named `timed_tests` so T3.5's Test command,
+/// `cargo test -p game-core items::timed`, selects them (D27).
+#[cfg(test)]
+mod timed_tests {
+    use super::*;
+    use crate::map::Scale;
+
+    #[test]
+    fn a_240_second_round_spawns_seven_source_d_items() {
+        // T3.5 step 2: "over a full 240 s scripted round, exactly 7 source-D
+        // items spawned at the expected ticks (t=30..210)".
+        let times = source_d_times(240.0);
+        assert_eq!(
+            times,
+            vec![30.0, 60.0, 90.0, 120.0, 150.0, 180.0, 210.0],
+            "docs/04 §3 row D over a 240 s round",
+        );
+        assert_eq!(times.len(), 7);
+        // "skip if >= 240" — 240 itself must not spawn.
+        assert!(times.iter().all(|&t| t < 240.0));
+    }
+
+    #[test]
+    fn timed_items_land_on_grass_tile_centres() {
+        // T3.5 Acceptance: "items appear at ground level (not in the sky, not
+        // buried)".
+        for seed in 0..30u64 {
+            let map = Map::generate(seed, Scale::Small);
+            let mut rng = GameRng::new(seed);
+            let mut ids = ItemIdCounter::default();
+            for _ in 0..7 {
+                let item = spawn_timed_item(&map, &mut rng, &mut ids).expect("a surface exists");
+                let (tx, ty) = ((item.x / TILE_SIZE) as u32, (item.y / TILE_SIZE) as u32);
+                assert_eq!(
+                    map.tile(tx, ty).kind, TileKind::Grass,
+                    "seed {seed}: timed item at ({tx},{ty}) is not on GRASS",
+                );
+                assert_eq!(ty, map.surface_row(tx), "not on the surface row");
+                let centre = Map::tile_center(tx, ty);
+                assert!((item.x - centre.x).abs() < 1e-3);
+                assert!((item.y - centre.y).abs() < 1e-3);
+                assert!(!item.is_crate && !item.hidden);
+            }
+        }
+    }
+
+    #[test]
+    fn timed_spawns_are_deterministic() {
+        let draw = |seed: u64| {
+            let map = Map::generate(seed, Scale::Small);
+            let mut rng = GameRng::new(seed);
+            let mut ids = ItemIdCounter::default();
+            (0..7)
+                .filter_map(|_| spawn_timed_item(&map, &mut rng, &mut ids))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(draw(42), draw(42));
+        assert_ne!(draw(1), draw(2));
+    }
+
+    #[test]
+    fn timed_spawn_draws_tile_then_item() {
+        // Draw order and count (docs/04 §6, D19). Reconstructing the ITEMS too,
+        // not just the count — the count alone cannot tell which weight table
+        // was used (the gap found in T3.2 and again in T3.4).
+        let map = Map::generate(5, Scale::Small);
+        let mut probe = GameRng::new(5);
+        let mut ids = ItemIdCounter::default();
+        let spawned: Vec<GroundItem> = (0..7)
+            .filter_map(|_| spawn_timed_item(&map, &mut probe, &mut ids))
+            .collect();
+        let after = probe.next_u64();
+
+        let mut manual = GameRng::new(5);
+        let candidates = surface_candidates(&map);
+        let mut expected = Vec::new();
+        for _ in 0..spawned.len() {
+            let tile_index = manual.gen_range(0, candidates.len() as u32) as usize;
+            let item_index = manual.weighted_index(&SpawnWeights::Ground.table()).unwrap();
+            expected.push((candidates[tile_index], ItemId::ALL[item_index]));
+        }
+        assert_eq!(manual.next_u64(), after, "spawn_timed_item used a different draw count");
+
+        let actual: Vec<((u32, u32), ItemId)> = spawned
+            .iter()
+            .map(|i| (((i.x / TILE_SIZE) as u32, (i.y / TILE_SIZE) as u32), i.item))
+            .collect();
+        assert_eq!(actual, expected, "source D drew tile-then-item differently");
+    }
+
+    #[test]
+    fn timed_items_use_the_ground_weight_table() {
+        // docs/04 §3 row D: "same weights as A".
+        let mut flashlights = 0usize;
+        let mut total = 0usize;
+        for seed in 0..400u64 {
+            let map = Map::generate(seed, Scale::Small);
+            let mut rng = GameRng::new(seed);
+            let mut ids = ItemIdCounter::default();
+            for _ in 0..7 {
+                if let Some(item) = spawn_timed_item(&map, &mut rng, &mut ids) {
+                    total += 1;
+                    if item.item == ItemId::Flashlight {
+                        flashlights += 1;
+                    }
+                }
+            }
+        }
+        let rate = flashlights as f32 / total as f32;
+        assert!(
+            (0.055..0.100).contains(&rate),
+            "timed flashlight rate {rate:.4} suggests the wrong weight table \
+             (Ground = 0.077, Hidden = 0.143)",
+        );
+    }
+
+    #[test]
+    fn source_d_interval_matches_doc() {
+        // docs/04 §3 row D: "every 30 s".
+        assert_eq!(SOURCE_D_INTERVAL_S, 30.0);
+        // A shorter round yields proportionally fewer.
+        assert_eq!(source_d_times(100.0), vec![30.0, 60.0, 90.0]);
+        assert_eq!(source_d_times(30.0), Vec::<f32>::new(), "t=30 needs t < duration");
+        assert_eq!(source_d_times(0.0), Vec::<f32>::new());
+    }
+
+    #[test]
+    fn timed_items_may_land_anywhere_on_the_surface() {
+        // Source D has no spacing rule (unlike source A), so over many draws
+        // it should not cluster into a handful of columns.
+        let map = Map::generate(1, Scale::Small);
+        let mut rng = GameRng::new(1);
+        let mut ids = ItemIdCounter::default();
+        let mut columns = std::collections::BTreeSet::new();
+        for _ in 0..200 {
+            if let Some(item) = spawn_timed_item(&map, &mut rng, &mut ids) {
+                columns.insert((item.x / TILE_SIZE) as u32);
+            }
+        }
+        assert!(
+            columns.len() > 40,
+            "200 timed spawns only used {} distinct columns",
+            columns.len(),
+        );
     }
 }

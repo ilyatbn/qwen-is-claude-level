@@ -88,7 +88,7 @@ Read `docs/04-items.md` in full before starting this file.
 
 ---
 
-## T3.5 — Source D: timed random appearances [ ]
+## T3.5 — Source D: timed random appearances [x]
 
 **Goal**: 1 item every 30 s at a random surface tile.
 **Read**: `docs/04-items.md` §3 (row D).
