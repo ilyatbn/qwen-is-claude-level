@@ -7,7 +7,10 @@
 //! T1.6 asks for 100 seeds x 3 scales, generated twice, asserting tiles, decor
 //! and spawns are byte-identical.
 
+use game_core::items::{place_hidden, place_initial, GroundItem, ItemIdCounter};
 use game_core::map::{Map, Scale};
+use game_core::protocol::ItemId;
+use game_core::rng::GameRng;
 use game_core::tiles::TileKind;
 
 /// FNV-1a (64-bit), inlined.
@@ -306,6 +309,92 @@ fn print_golden_hashes() {
             seed,
             scale,
             golden_hash(&Map::generate(seed, scale))
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Round-start item placement (T3.3)
+// ---------------------------------------------------------------------------
+
+/// Golden hash over the round's placed items.
+///
+/// `generation_matches_golden_hashes` covers `Map::generate` only. Item
+/// placement is a SEPARATE round-start step (docs/04 §6 steps 4–5), so adding
+/// `Tile.item` to `golden_hash` did not anchor it — placement was
+/// determinism-critical and unpinned. This closes that gap.
+///
+/// The other placement tests compare the code against itself (same seed twice,
+/// or a hand-reconstructed draw sequence); only a literal can fail when the
+/// algorithm changes.
+fn placement_hash(items: &[GroundItem], hidden: &[(u32, u32, ItemId)]) -> u64 {
+    let mut h = Fnv1a::new();
+    for item in items {
+        h.u32(item.id);
+        h.bytes(item.item.as_str().as_bytes());
+        h.f32(item.x);
+        h.f32(item.y);
+        h.byte(u8::from(item.is_crate));
+        h.byte(u8::from(item.hidden));
+    }
+    for (x, y, item) in hidden {
+        h.u32(*x);
+        h.u32(*y);
+        h.bytes(item.as_str().as_bytes());
+    }
+    h.finish()
+}
+
+/// Place sources A and B for a seed, in the docs/04 §6 order.
+///
+/// NOTE: steps 2 (shuffle spawns) and 3 (effect schedule) of that order are
+/// not implemented yet — they land in T4.1 and T4.8. When they do, they will
+/// consume draws BEFORE placement and these constants must be re-pinned in the
+/// same commit. That is expected, not a regression.
+fn place_round_items(seed: u64, scale: Scale) -> (Vec<GroundItem>, Vec<(u32, u32, ItemId)>) {
+    let mut map = Map::generate(seed, scale);
+    let mut rng = GameRng::new(seed);
+    let mut ids = ItemIdCounter::default();
+    let ground = place_initial(&map, &mut rng, &mut ids);
+    let hidden = place_hidden(&mut map, &mut rng);
+    (ground, hidden)
+}
+
+const GOLDEN_PLACEMENTS: [(u64, Scale, u64); 3] = [
+    (1, Scale::Small, 0xacad_76a7_2f46_8258),
+    (42, Scale::Medium, 0x0330_e347_3d94_df22),
+    (12345, Scale::Large, 0xaa46_412c_3331_d915),
+];
+
+#[test]
+fn item_placement_matches_golden_hashes() {
+    for (seed, scale, expected) in GOLDEN_PLACEMENTS {
+        let (ground, hidden) = place_round_items(seed, scale);
+        assert_eq!(ground.len(), 10, "source A should place 10 items");
+        assert_eq!(hidden.len(), 4, "source B should hide 4 items");
+        let actual = placement_hash(&ground, &hidden);
+        assert_eq!(
+            actual, expected,
+            "\nitem placement changed for seed {seed} / {}.\n\
+             expected 0x{expected:016x}, got 0x{actual:016x}\n\
+             If deliberate, update GOLDEN_PLACEMENTS in the same commit.",
+            scale.as_str(),
+        );
+    }
+}
+
+/// Helper, not a check. Prints the current constants for re-pinning:
+///   cargo test -p game-core --test determinism print_placement -- --ignored --nocapture
+#[test]
+#[ignore = "helper: prints golden constants for GOLDEN_PLACEMENTS"]
+fn print_placement_hashes() {
+    for (seed, scale, _) in GOLDEN_PLACEMENTS {
+        let (ground, hidden) = place_round_items(seed, scale);
+        println!(
+            "    ({}, Scale::{:?}, 0x{:016x}),",
+            seed,
+            scale,
+            placement_hash(&ground, &hidden)
         );
     }
 }

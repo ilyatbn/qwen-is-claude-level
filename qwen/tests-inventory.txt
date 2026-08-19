@@ -8,6 +8,7 @@ generate_deterministic_100_seeds
 generated_map_has_expected_dimensions
 generation_is_order_independent_across_interleaving
 generation_matches_golden_hashes
+item_placement_matches_golden_hashes
 items::catalog_tests::catalog_ammo_matches_doc
 items::catalog_tests::catalog_is_indexed_by_item_id
 items::catalog_tests::explosive_weapons_are_exactly_rocket_and_grenade
@@ -17,6 +18,14 @@ items::catalog_tests::pick_item_consumes_one_draw
 items::catalog_tests::pick_item_follows_the_weights
 items::catalog_tests::pick_item_is_deterministic
 items::catalog_tests::spawn_weights_match_doc
+items::hidden_tests::any_blast_can_uncover_a_hidden_item
+items::hidden_tests::destroying_the_exact_tile_uncovers_the_item
+items::hidden_tests::hidden_items_go_in_distinct_pockets_of_at_least_two_tiles
+items::hidden_tests::hidden_items_in_rock_tiles
+items::hidden_tests::hidden_items_use_the_source_b_weight_table
+items::hidden_tests::hidden_placement_is_deterministic
+items::hidden_tests::placement_draws_tile_then_item_per_pocket
+items::hidden_tests::weather_destruction_leaves_the_item_buried
 items::initial_tests::ground_items_get_distinct_ids
 items::initial_tests::no_two_items_share_a_tile
 items::initial_tests::placed_items_are_visible_and_not_crates
@@ -153,6 +162,7 @@ player::spawn_tests::spawn_out_of_range_returns_none
 player::spawn_tests::spawn_places_feet_on_the_tile_top
 player::spawn_tests::spawned_player_clears_its_own_spawn_column
 print_golden_hashes
+print_placement_hashes
 protocol::tests::crate_flag_serializes_as_crate
 protocol::tests::effect_data_rejects_payloads_that_match_no_variant
 protocol::tests::effect_data_shapes_match_doc

@@ -356,6 +356,82 @@ pub fn place_initial(map: &Map, rng: &mut GameRng, ids: &mut ItemIdCounter) -> V
     placed
 }
 
+/// Source-B placement count (docs/04 §3 row B: "4 hidden in rock").
+pub const SOURCE_B_COUNT: usize = 4;
+/// Minimum pocket size eligible to hide an item (docs/04 §3 row B: ">= 2 tiles").
+pub const SOURCE_B_MIN_POCKET: usize = 2;
+
+/// Connected ROCK components, 4-connected, each a list of tile coords.
+///
+/// Scanned in row-major order and each component's tiles collected in a
+/// deterministic order, so the pocket list the RNG sees never depends on
+/// hashing or address order (docs/00 §2).
+pub fn rock_pockets(map: &Map) -> Vec<Vec<(u32, u32)>> {
+    let (w, h) = (map.width as usize, map.height as usize);
+    let mut seen = vec![false; w * h];
+    let mut pockets = Vec::new();
+
+    for start in 0..w * h {
+        let (sx, sy) = ((start % w) as u32, (start / w) as u32);
+        if seen[start] || map.tile(sx, sy).kind != TileKind::Rock {
+            continue;
+        }
+        // Breadth-first from a fixed start in a fixed neighbour order.
+        let mut queue = std::collections::VecDeque::from([start]);
+        seen[start] = true;
+        let mut tiles = Vec::new();
+        while let Some(index) = queue.pop_front() {
+            let (x, y) = ((index % w) as u32, (index / w) as u32);
+            tiles.push((x, y));
+            for (dx, dy) in [(0i32, -1i32), (-1, 0), (1, 0), (0, 1)] {
+                let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                    continue;
+                }
+                let next = ny as usize * w + nx as usize;
+                if !seen[next] && map.tile(nx as u32, ny as u32).kind == TileKind::Rock {
+                    seen[next] = true;
+                    queue.push_back(next);
+                }
+            }
+        }
+        pockets.push(tiles);
+    }
+    pockets
+}
+
+/// Hide source-B items inside rock pockets (docs/04 §3 row B, T3.3 step 1).
+///
+/// "pick 4 rock pockets (RNG) that are >= 2 tiles; place one item in a random
+/// ROCK tile of the pocket (item hidden until that tile destroyed)."
+///
+/// The item is stored **on the tile**, so any blast that destroys it uncovers
+/// the item — weapon fire or a meteor alike (T3.3 Acceptance).
+///
+/// Draw order per pocket: which tile, then which item.
+pub fn place_hidden(map: &mut Map, rng: &mut GameRng) -> Vec<(u32, u32, ItemId)> {
+    let mut eligible: Vec<Vec<(u32, u32)>> = rock_pockets(map)
+        .into_iter()
+        .filter(|p| p.len() >= SOURCE_B_MIN_POCKET)
+        .collect();
+
+    // Shuffle once, then take the first N — "pick 4 pockets" without replacement.
+    rng.shuffle(&mut eligible);
+
+    let mut placed = Vec::new();
+    for pocket in eligible.iter().take(SOURCE_B_COUNT) {
+        let tile_index = rng.gen_range(0, pocket.len() as u32) as usize;
+        let (x, y) = pocket[tile_index];
+        let item = pick_item(rng, SpawnWeights::Hidden);
+
+        let mut tile = map.tile(x, y);
+        tile.item = Some(item);
+        map.set_tile(x, y, tile);
+        placed.push((x, y, item));
+    }
+    placed
+}
+
 /// T3.1 catalog tests.
 ///
 /// Named `catalog_tests` so T3.1's Test command, `cargo test -p game-core
@@ -758,5 +834,200 @@ mod initial_tests {
             "flashlight rate {rate:.4} suggests the wrong weight table \
              (Ground = 0.077, Hidden = 0.143)",
         );
+    }
+}
+
+/// T3.3 source-B hidden-item tests.
+///
+/// Named `hidden_tests` so T3.3's Test command,
+/// `cargo test -p game-core items::hidden`, selects them (D27).
+#[cfg(test)]
+mod hidden_tests {
+    use super::*;
+    use crate::map::Scale;
+
+    fn hide(seed: u64, scale: Scale) -> (Map, Vec<(u32, u32, ItemId)>) {
+        let mut map = Map::generate(seed, scale);
+        let mut rng = GameRng::new(seed);
+        let placed = place_hidden(&mut map, &mut rng);
+        (map, placed)
+    }
+
+    #[test]
+    fn hidden_items_in_rock_tiles() {
+        // docs/08 §1 (items row) + T3.3 step 4: "all 4 items sit in ROCK tiles".
+        for scale in Scale::ALL {
+            for seed in 0..20u64 {
+                let (map, placed) = hide(seed, scale);
+                assert_eq!(
+                    placed.len(), 4,
+                    "{} seed {seed} hid {} items, expected 4",
+                    scale.as_str(), placed.len(),
+                );
+                for (x, y, item) in &placed {
+                    let tile = map.tile(*x, *y);
+                    assert_eq!(
+                        tile.kind, TileKind::Rock,
+                        "{} seed {seed}: hidden item at ({x},{y}) is in {:?}, not ROCK",
+                        scale.as_str(), tile.kind,
+                    );
+                    assert_eq!(
+                        tile.item, Some(*item),
+                        "{} seed {seed}: tile ({x},{y}) does not carry its item",
+                        scale.as_str(),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hidden_items_go_in_distinct_pockets_of_at_least_two_tiles() {
+        // docs/04 §3 row B: "pick 4 rock pockets (RNG) that are >= 2 tiles".
+        for seed in 0..20u64 {
+            let (map, placed) = hide(seed, Scale::Small);
+            let pockets = rock_pockets(&map);
+            let mut used: Vec<usize> = Vec::new();
+            for (x, y, _) in &placed {
+                let index = pockets
+                    .iter()
+                    .position(|p| p.contains(&(*x, *y)))
+                    .expect("hidden item is not in any rock pocket");
+                assert!(
+                    pockets[index].len() >= SOURCE_B_MIN_POCKET,
+                    "seed {seed}: pocket has {} tiles, need >= 2",
+                    pockets[index].len(),
+                );
+                assert!(
+                    !used.contains(&index),
+                    "seed {seed}: two items hidden in the same pocket",
+                );
+                used.push(index);
+            }
+        }
+    }
+
+    #[test]
+    fn destroying_the_exact_tile_uncovers_the_item() {
+        // T3.3 step 4: "destroying that exact tile spawns the item;
+        // destroying a neighbour does not".
+        let (mut map, placed) = hide(1, Scale::Small);
+        let (x, y, item) = placed[0];
+
+        // A neighbouring ROCK tile in the same pocket must NOT yield the item.
+        let pockets = rock_pockets(&map);
+        let pocket = pockets.iter().find(|p| p.contains(&(x, y))).unwrap().clone();
+        if let Some(&(nx, ny)) = pocket.iter().find(|&&t| t != (x, y)) {
+            let event = map.destroy_tile(nx, ny).expect("neighbour is solid");
+            assert_eq!(event.item, None, "a neighbour tile yielded the hidden item");
+        }
+
+        let event = map.destroy_tile(x, y).expect("the hidden tile is solid");
+        assert_eq!(event.item, Some(item), "destroying the tile did not uncover it");
+        assert_eq!(map.tile(x, y).item, None, "the item stayed on the destroyed tile");
+    }
+
+    #[test]
+    fn any_blast_can_uncover_a_hidden_item() {
+        // T3.3 Acceptance: "an item can be uncovered by ANY blast (weapon or
+        // meteor)" — the item lives on the tile, so nothing needs to know
+        // where items are hidden.
+        let (mut map, placed) = hide(2, Scale::Small);
+        let (x, y, item) = placed[0];
+        let centre = Map::tile_center(x, y);
+
+        let destroyed = map.apply_blast(centre.x, centre.y, 48.0, 500.0);
+        let uncovered: Vec<ItemId> = destroyed.iter().filter_map(|e| e.item).collect();
+        assert!(
+            uncovered.contains(&item),
+            "a blast over the hidden tile did not uncover the item",
+        );
+    }
+
+    #[test]
+    fn weather_destruction_leaves_the_item_buried() {
+        // T3.3 step 3 / docs/02 §5: lava passes skip_items = true, and
+        // "weather destruction skips item uncovery".
+        //
+        // The item must stay BURIED, not be destroyed with the tile — a later
+        // weapon blast should still be able to reveal it.
+        let (mut map, placed) = hide(3, Scale::Small);
+        let (x, y, item) = placed[0];
+        let centre = Map::tile_center(x, y);
+
+        let destroyed = map.apply_blast_with(centre.x, centre.y, 48.0, 500.0, true);
+        assert!(!destroyed.is_empty(), "the weather blast destroyed nothing");
+        assert!(
+            destroyed.iter().all(|e| e.item.is_none()),
+            "weather destruction uncovered an item",
+        );
+        assert_eq!(
+            map.tile(x, y).item,
+            Some(item),
+            "the item was lost rather than left buried",
+        );
+    }
+
+    #[test]
+    fn hidden_placement_is_deterministic() {
+        for scale in Scale::ALL {
+            for seed in [1u64, 42, 999] {
+                let (_, a) = hide(seed, scale);
+                let (_, b) = hide(seed, scale);
+                assert_eq!(a, b, "{} seed {seed}", scale.as_str());
+            }
+        }
+        let (_, a) = hide(1, Scale::Small);
+        let (_, b) = hide(2, Scale::Small);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn hidden_items_use_the_source_b_weight_table() {
+        // docs/04 §3 row B: "same as A but flashlight 20%". Ground gives a
+        // 7.7% flashlight rate, Hidden 14.3% — statistically separable.
+        let mut flashlights = 0usize;
+        let mut total = 0usize;
+        for seed in 0..500u64 {
+            let (_, placed) = hide(seed, Scale::Small);
+            for (_, _, item) in placed {
+                total += 1;
+                if item == ItemId::Flashlight {
+                    flashlights += 1;
+                }
+            }
+        }
+        let rate = flashlights as f32 / total as f32;
+        assert!(
+            (0.110..0.180).contains(&rate),
+            "flashlight rate {rate:.4} suggests the wrong weight table \
+             (Hidden = 0.143, Ground = 0.077)",
+        );
+    }
+
+    #[test]
+    fn placement_draws_tile_then_item_per_pocket() {
+        // Draw order and count, per docs/04 §6 and D19.
+        let mut map = Map::generate(5, Scale::Small);
+        let mut probe = GameRng::new(5);
+        let placed = place_hidden(&mut map, &mut probe);
+        let after = probe.next_u64();
+
+        let reference = Map::generate(5, Scale::Small);
+        let mut manual = GameRng::new(5);
+        let mut eligible: Vec<Vec<(u32, u32)>> = rock_pockets(&reference)
+            .into_iter()
+            .filter(|p| p.len() >= SOURCE_B_MIN_POCKET)
+            .collect();
+        manual.shuffle(&mut eligible);
+        let mut expected = Vec::new();
+        for pocket in eligible.iter().take(SOURCE_B_COUNT) {
+            let index = manual.gen_range(0, pocket.len() as u32) as usize;
+            let (x, y) = pocket[index];
+            let item_index = manual.weighted_index(&SpawnWeights::Hidden.table()).unwrap();
+            expected.push((x, y, ItemId::ALL[item_index]));
+        }
+        assert_eq!(manual.next_u64(), after, "place_hidden used a different draw count");
+        assert_eq!(placed, expected, "place_hidden drew tile-then-item differently");
     }
 }

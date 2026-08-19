@@ -45,7 +45,7 @@ Read `docs/04-items.md` in full before starting this file.
 
 ---
 
-## T3.3 — Source B: hidden items in rock [ ]
+## T3.3 — Source B: hidden items in rock [x]
 
 **Goal**: 4 items hidden in rock pockets, uncovered on tile destruction.
 **Read**: `docs/04-items.md` §3 (row B), `docs/01-map.md` §5 (hidden items).

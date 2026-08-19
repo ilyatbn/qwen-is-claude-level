@@ -641,7 +641,13 @@ impl Map {
                 if tile.hp <= 0.0 {
                     // Deferred: conversion runs once after the whole batch.
                     if let Some(mut event) = self.destroy_tile_deferred(x, y) {
-                        if skip_items {
+                        // docs/02 §5: weather destruction "skips item uncovery"
+                        // — the item stays buried rather than being destroyed,
+                        // so a later weapon blast can still reveal it.
+                        if skip_items && event.item.is_some() {
+                            let mut tile = self.tile(x, y);
+                            tile.item = event.item;
+                            self.set_tile(x, y, tile);
                             event.item = None;
                         }
                         destroyed.push(event);
