@@ -58,6 +58,7 @@ impl Report {
 /// nothing in game-core does today.
 struct Actor {
     player: Player,
+    #[allow(dead_code)] // T4.1 will drive these; the harness only needs them to exist
     ammo: [u8; SLOT_COUNT],
     cooldowns: Cooldowns,
 }
