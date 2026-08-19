@@ -177,3 +177,31 @@ recorded here as not performed.
 ## Defects found during implementation
 
 *(Appended as they are found, same format.)*
+
+### D14 — T0.3's Test command cannot be executed as written (browser check)
+
+**Spec** (`tasks/00-setup.md` T0.3 Test): "`cd server && cargo test && cargo run -- dev`
+(then in another terminal `cd client && npm run dev`, open localhost:5173, confirm
+pongs in both consoles; then `cargo test` again for suite health)".
+
+**Problem**: the executing agent has no browser and no second interactive terminal, so
+"open localhost:5173, confirm pongs in both consoles" is not runnable. This is the
+first of several tasks whose Test line is a manual human procedure rather than a
+command — `docs/08-testing.md` §5 states "Every task file entry ends with a **Test**
+line = the exact command that must pass", which these lines are not.
+
+**Implemented**: the round-trip is proven headlessly and reproducibly instead. The
+client's `connect()` in `src/main.ts` is exactly what the browser would run; a
+companion script `client/scripts/ping-check.mjs` drives the same `socket.io-client`
+library against the same `/game` namespace, emits `ping`, and asserts `pong` returns
+(exit 0/1). Verified:
+
+- server listens on `0.0.0.0:3001`, namespace `/game`
+- `ping` → `pong` round-trip passes over websocket, and the polling handshake
+  (`/socket.io/?EIO=4&transport=polling`) returns the expected `sid` JSON
+- `WIPGAME_PORT=3999` override honoured (round-trip re-verified on 3999)
+- `RUST_LOG=info` → `[net] client connected` / `disconnected`, zero `[tick]` lines;
+  `RUST_LOG=debug` → adds `[tick] n` and `[net] ping from id=...`
+- tick cadence measured at **20.00 Hz** over an 11 s window (docs/00 §2 target: 20)
+
+The browser check itself remains unperformed.

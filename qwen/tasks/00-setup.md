@@ -64,7 +64,7 @@ still passes.
 
 ---
 
-## T0.3 — Socket ping/pong plumbing [ ]
+## T0.3 — Socket ping/pong plumbing [x]
 
 **Goal**: server listens on 3001 with socket.io; client connects and
 round-trips a ping.
