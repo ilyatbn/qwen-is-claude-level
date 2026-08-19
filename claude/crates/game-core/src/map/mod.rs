@@ -2,6 +2,7 @@
 
 pub mod coarse;
 pub mod mask;
+pub mod noise;
 
 pub use coarse::{CellState, CoarseGrid};
 pub use mask::Mask;

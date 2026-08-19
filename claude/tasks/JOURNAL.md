@@ -154,3 +154,17 @@ Notes: build() counts each cell with Mask::count_run, so even the full recount i
        wrapping to 255 would read as "this empty cell is solid", which is far
        harder to trace. verify() returns (cx,cy,stored,actual), not a bool.
 Left for later: nothing
+
+## T1.03 — Value noise, fBm and domain warp — DONE
+Files: crates/game-core/src/map/{noise.rs,mod.rs}
+Verified: `cargo test -p game-core noise` — 11 passed
+Notes: TRAP — the obvious `hash2 = x*A ^ y*B ^ seed*C` ALIASES: hash2(-3,7) ==
+       hash2(3,-7) exactly, which would have put a diagonal symmetry in every map.
+       Replaced with packing x,y into disjoint 32-bit halves then a murmur-style
+       finalizer: injective per seed by construction, and 2 multiplies instead of 5.
+       fbm_octaves() is public so the amplitude-sum normalisation is testable
+       directly (mean stays at 0.5 for 1/3/8 octaves) — that is what keeps
+       SOLID_THRESHOLD meaningful if NOISE_OCTAVES is ever tuned.
+       COST: warped_fbm = 3 fbm = 15 value_noise = 60 hash2 per pixel. At large
+       scale that is ~500M hash calls, so keep hash2 cheap.
+Left for later: nothing
