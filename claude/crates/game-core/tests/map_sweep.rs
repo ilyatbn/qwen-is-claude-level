@@ -97,7 +97,17 @@ fn thousand_seed_playability_sweep() {
         for i in 0..PER_SCALE {
             let seed = i.wrapping_mul(2_654_435_761).wrapping_add(17);
             let map = generate(seed, scale);
-            let component: Vec<usize> = (0..map.meta.surface_points.len()).collect();
+            // The REAL validated component, shipped in MapMeta since §A10. Passing
+            // every index here — which is what this did before — makes
+            // `in_main.contains(&i)` always true, so the "cave reachability" figure
+            // degenerates into the surface fraction under another name and cannot
+            // tell "all caves reachable" from "every cave sealed".
+            let component: Vec<usize> = map
+                .meta
+                .largest_component
+                .iter()
+                .map(|&i| i as usize)
+                .collect();
 
             stats.attempts[(map.meta.attempts as usize).min(15)] += 1;
             overall.attempts[(map.meta.attempts as usize).min(15)] += 1;
@@ -108,17 +118,11 @@ fn thousand_seed_playability_sweep() {
                 overall.safe_preset += 1;
             }
 
-            // Recover the component from the shipped metadata: spawn points are
-            // chosen from it, and every surface point is either in it or not —
-            // approximate with the traversable fraction for the aggregate, and
-            // check the hard invariants directly.
             let (ug_total, ug_reach) = underground_stats(&map, &component);
             stats.underground_total += ug_total;
-            stats.underground_reachable +=
-                (ug_reach as f32 * map.meta.traversable_fraction) as usize;
+            stats.underground_reachable += ug_reach;
             overall.underground_total += ug_total;
-            overall.underground_reachable +=
-                (ug_reach as f32 * map.meta.traversable_fraction) as usize;
+            overall.underground_reachable += ug_reach;
 
             let mut fail =
                 |why: String| stats.failures.push(format!("seed {seed} {scale:?}: {why}"));
@@ -137,6 +141,16 @@ fn thousand_seed_playability_sweep() {
             }
             if map.meta.used_safe_preset {
                 fail("used the safe preset".to_string());
+            }
+            // Guards the metric itself: if largest_component were ever "every index"
+            // again, this fires rather than quietly inflating the cave figure.
+            let expected = (map.meta.traversable_fraction * map.meta.surface_points.len() as f32)
+                .round() as usize;
+            if component.len().abs_diff(expected) > 1 {
+                fail(format!(
+                    "largest_component has {} points but the fraction implies {expected}",
+                    component.len()
+                ));
             }
             if !borders_hold(&map.mask) {
                 fail("borders broken".to_string());

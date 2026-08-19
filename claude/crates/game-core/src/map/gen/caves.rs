@@ -120,13 +120,27 @@ fn find_start(mask: &Mask, rng: &mut ChaCha8Rng) -> Option<Point> {
     None
 }
 
-/// Solid at `p`, with solid rock `clearance` px away in all four directions.
+/// Solid at `p`, with **unbroken** solid rock for `clearance` px in all four
+/// directions.
+///
+/// Sampling only the endpoints — `p ± clearance` — passes a slot lying flat against
+/// a tunnel wall whenever the pixel 24 px out happens to be solid again. Measured
+/// before this was fixed: 2 of 400 slots across 40 medium maps had air immediately
+/// adjacent, i.e. were not buried at all. The whole ray is walked (`docs/70` §A12).
 pub(crate) fn is_buried(mask: &Mask, p: Point, clearance: i32) -> bool {
-    mask.get(p.x, p.y)
-        && mask.get(p.x - clearance, p.y)
-        && mask.get(p.x + clearance, p.y)
-        && mask.get(p.x, p.y - clearance)
-        && mask.get(p.x, p.y + clearance)
+    if !mask.get(p.x, p.y) {
+        return false;
+    }
+    for d in 1..=clearance {
+        if !mask.get(p.x - d, p.y)
+            || !mask.get(p.x + d, p.y)
+            || !mask.get(p.x, p.y - d)
+            || !mask.get(p.x, p.y + d)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// A random walk **steered** toward `target`: at each step the heading turns toward

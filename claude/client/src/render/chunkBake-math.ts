@@ -142,157 +142,168 @@ export function edgeBits(
 }
 
 /**
- * A coarse, dilated silhouette of the terrain, used to stencil the cave backdrop.
+ * Which air pixels are **inside** the landmass, and so get the cave backdrop.
  *
- * The backdrop has to appear **inside the landmass** — behind generator caves,
- * behind craters, behind tunnels — and nowhere else. Two simpler rules both fail:
- * a full-map rectangle hides the sky entirely, and stencilling against the pristine
- * mask leaves the generator's own caves showing sky, because they were already air
- * when the snapshot was taken.
+ * The backdrop has to appear behind generator caves, behind craters and behind
+ * tunnels — and nowhere else. Two simpler rules both fail: a full-map rectangle
+ * hides the sky entirely, and stencilling against the pristine mask leaves the
+ * generator's own caves showing sky, because they were already air when the
+ * snapshot was taken.
  *
- * Dilating the silhouette by `DILATE_PX` closes both: any air within that distance
- * of rock is treated as interior. It is computed once per round at
- * `COARSE_CELL` resolution and sampled per pixel during the bake, so the cost is
- * negligible.
+ * The rule that works is geodesic: **sky is wherever a disc of radius `reach` can
+ * roll in from the border.** Everything else is interior.
+ *
+ * ```
+ *   1. distance transform from solid            -> where does a disc of radius R fit?
+ *   2. flood the border through those positions -> where can the sky actually reach?
+ *   3. distance transform from that flood       -> interior is air further than R away
+ * ```
+ *
+ * A cave mouth narrower than `2 * reach` admits no disc, so the cave is interior all
+ * the way to its lip. A wide bay admits one, so it reads as open sky. A sealed
+ * cavern is never reached at all, so it is interior for free — no special case.
+ *
+ * **This replaced a morphological closing on a coarse grid, which was wrong twice
+ * over.** Its structuring element was a *square*, so it filled concave corners with
+ * ~100 px axis-aligned rectangles that stuck visibly out into the sky; and it
+ * decided a per-pixel boundary at 4 px granularity, which drew a stepped fringe
+ * along the silhouette at gameplay zoom. Both are gone because the boundary here is
+ * a disc offset computed at mask resolution.
+ *
+ * Cost is three linear passes over the mask, once per snapshot. A chamfer transform
+ * (3 orthogonal, 4 diagonal) approximates Euclidean distance within about 6 %,
+ * which is far below anything visible.
  */
 export class BackdropMask implements MaskSource {
   readonly width: number
   readonly height: number
-  readonly cell: number
-  readonly cw: number
-  readonly ch: number
-  private readonly cells: Uint8Array<ArrayBuffer>
+  private readonly inside: Uint8Array<ArrayBuffer>
 
-  /** Caves up to twice this wide are treated as interior. */
-  static readonly CLOSE_PX = 56
+  /** A cave mouth narrower than twice this is interior, not sky. */
+  static readonly REACH_PX = 28
 
-  constructor(src: MaskSource, cell = 4, closePx = BackdropMask.CLOSE_PX) {
-    this.width = src.width
-    this.height = src.height
-    this.cell = cell
-    this.cw = Math.ceil(src.width / cell)
-    this.ch = Math.ceil(src.height / cell)
+  /** Chamfer weights. Orthogonal step 3, diagonal step 4. */
+  private static readonly ORTH = 3
+  private static readonly DIAG = 4
+  private static readonly FAR = 255
 
+  constructor(src: MaskSource, reach = BackdropMask.REACH_PX) {
+    const w = (this.width = src.width)
+    const h = (this.height = src.height)
+    const n = w * h
     const view = src.maskView()
-    let grid: Uint8Array<ArrayBuffer> = new Uint8Array(this.cw * this.ch)
-    for (let y = 0; y < src.height; y++) {
-      const row = Math.floor(y / cell) * this.cw
-      for (let x = 0; x < src.width; x++) {
-        if (solidIn(view, src.width, src.height, x, y)) {
-          grid[row + Math.floor(x / cell)] = 1
-        }
+
+    const solid = new Uint8Array(n)
+    for (let y = 0; y < h; y++) {
+      const row = y * w
+      for (let x = 0; x < w; x++) {
+        if (solidIn(view, w, h, x, y)) solid[row + x] = 1
       }
     }
 
-    // A morphological CLOSING — dilate then erode — not a plain dilation.
-    // Dilation alone fills the caves but also grows the outer silhouette, painting
-    // a 56 px blocky halo of "rock" into the open sky. Eroding by the same radius
-    // afterwards pulls that boundary back while leaving the filled interior.
-    const r = Math.max(1, Math.round(closePx / cell))
-    grid = this.dilate(grid, r)
-    grid = this.erode(grid, r)
+    const rC = reach * BackdropMask.ORTH
 
-    // Closing fills narrow caves but not a large enclosed cavern, which then shows
-    // sky through the middle of a hillside. The complete rule is "interior is
-    // whatever the outside cannot reach": flood the air inward from the map border
-    // and treat everything it fails to reach as inside the landmass.
-    grid = this.fillEnclosed(grid)
+    // 1. How far is each air pixel from rock? A disc of radius `reach` centred here
+    //    fits iff that distance exceeds `reach`.
+    const distSolid = BackdropMask.chamfer(solid, w, h)
 
-    // One last erosion pulls the backdrop just inside the rock silhouette. The
-    // grid is coarse, so without this the backdrop overhangs the terrain by up to
-    // a cell and draws a stepped dark fringe against the sky — clearly visible at
-    // gameplay zoom, where one cell is 8 screen px. The rock is drawn per pixel on
-    // top, so a backdrop that sits slightly inside it is completely hidden.
-    this.cells = this.erode(grid, 1)
-  }
-
-  /** Air not reachable from the map border becomes interior. */
-  private fillEnclosed(grid: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
-    const outside = new Uint8Array(this.cw * this.ch)
+    // 2. Flood the border through the positions a disc fits in. Out-of-bounds counts
+    //    as open, so the flood starts anywhere on the edge that is not walled off.
+    const open = new Uint8Array(n)
     const stack: number[] = []
-    const push = (cx: number, cy: number) => {
-      if (cx < 0 || cy < 0 || cx >= this.cw || cy >= this.ch) return
-      const i = cy * this.cw + cx
-      if (outside[i] || grid[i]) return
-      outside[i] = 1
+    const seed = (x: number, y: number) => {
+      if (x < 0 || y < 0 || x >= w || y >= h) return
+      const i = y * w + x
+      if (open[i] || distSolid[i]! <= rC) return
+      open[i] = 1
       stack.push(i)
     }
-    for (let cx = 0; cx < this.cw; cx++) {
-      push(cx, 0)
-      push(cx, this.ch - 1)
+    for (let x = 0; x < w; x++) {
+      seed(x, 0)
+      seed(x, h - 1)
     }
-    for (let cy = 0; cy < this.ch; cy++) {
-      push(0, cy)
-      push(this.cw - 1, cy)
+    for (let y = 0; y < h; y++) {
+      seed(0, y)
+      seed(w - 1, y)
     }
     while (stack.length) {
       const i = stack.pop()!
-      const cx = i % this.cw
-      const cy = (i - cx) / this.cw
-      push(cx + 1, cy)
-      push(cx - 1, cy)
-      push(cx, cy + 1)
-      push(cx, cy - 1)
+      const x = i % w
+      const y = (i - x) / w
+      seed(x + 1, y)
+      seed(x - 1, y)
+      seed(x, y + 1)
+      seed(x, y - 1)
     }
 
-    const out = new Uint8Array(this.cw * this.ch)
-    for (let i = 0; i < out.length; i++) out[i] = outside[i] ? 0 : 1
-    return out
+    // 3. Interior is air the sky-disc never got within `reach` of. Measuring from the
+    //    flood rather than clipping to a fixed offset is what keeps the boundary
+    //    hugging the rock instead of standing off it by a constant.
+    const distOpen = BackdropMask.chamfer(open, w, h)
+
+    // Width is the whole distinction, and the disc already measures it. A "nothing
+    // above the highest rock in this column is interior" clip was tried here to
+    // remove the shading in concave corners; it painted **bright sky down every
+    // crevice**, because a crack open at the top has no rock above it either. A
+    // 12 px crack reading as open air is far worse than a little extra shade in the
+    // corner of a wide notch, where it passes for ambient occlusion.
+    const inside = new Uint8Array(n)
+    for (let i = 0; i < n; i++) {
+      if (solid[i] || distOpen[i]! > rC) inside[i] = 1
+    }
+    this.inside = inside
   }
 
-  private dilate(src: Uint8Array<ArrayBuffer>, r: number): Uint8Array<ArrayBuffer> {
-    return this.morph(src, r, true)
-  }
+  /** Two-pass chamfer distance transform from the set bits of `src`, clamped. */
+  private static chamfer(
+    src: Uint8Array<ArrayBuffer>,
+    w: number,
+    h: number,
+  ): Uint8Array<ArrayBuffer> {
+    const { ORTH, DIAG, FAR } = BackdropMask
+    const d = new Uint8Array(w * h)
+    for (let i = 0; i < d.length; i++) d[i] = src[i] === 1 ? 0 : FAR
 
-  private erode(src: Uint8Array<ArrayBuffer>, r: number): Uint8Array<ArrayBuffer> {
-    return this.morph(src, r, false)
-  }
+    const relax = (i: number, from: number, cost: number) => {
+      const v = d[from]! + cost
+      if (v < d[i]!) d[i] = v
+    }
 
-  /** Separable max (dilate) or min (erode) filter over the coarse grid. */
-  private morph(src: Uint8Array<ArrayBuffer>, r: number, max: boolean): Uint8Array<ArrayBuffer> {
-    const want = max ? 1 : 0
-    const tmp = new Uint8Array(this.cw * this.ch)
-    for (let cy = 0; cy < this.ch; cy++) {
-      const base = cy * this.cw
-      for (let cx = 0; cx < this.cw; cx++) {
-        let hit = max ? 0 : 1
-        for (let d = -r; d <= r; d++) {
-          const nx = cx + d
-          // Outside the grid counts as solid for erosion, so the map border does
-          // not erode inward and expose a rim of sky along the walls.
-          const v = nx < 0 || nx >= this.cw ? (max ? 0 : 1) : src[base + nx]!
-          if (v === want) {
-            hit = want
-            break
-          }
+    for (let y = 0; y < h; y++) {
+      const row = y * w
+      for (let x = 0; x < w; x++) {
+        const i = row + x
+        if (d[i] === 0) continue
+        if (x > 0) relax(i, i - 1, ORTH)
+        if (y > 0) {
+          relax(i, i - w, ORTH)
+          if (x > 0) relax(i, i - w - 1, DIAG)
+          if (x + 1 < w) relax(i, i - w + 1, DIAG)
         }
-        tmp[base + cx] = hit
       }
     }
-    const out = new Uint8Array(this.cw * this.ch)
-    for (let cx = 0; cx < this.cw; cx++) {
-      for (let cy = 0; cy < this.ch; cy++) {
-        let hit = max ? 0 : 1
-        for (let d = -r; d <= r; d++) {
-          const ny = cy + d
-          const v = ny < 0 || ny >= this.ch ? (max ? 0 : 1) : tmp[ny * this.cw + cx]!
-          if (v === want) {
-            hit = want
-            break
-          }
+    for (let y = h - 1; y >= 0; y--) {
+      const row = y * w
+      for (let x = w - 1; x >= 0; x--) {
+        const i = row + x
+        if (d[i] === 0) continue
+        if (x + 1 < w) relax(i, i + 1, ORTH)
+        if (y + 1 < h) {
+          relax(i, i + w, ORTH)
+          if (x + 1 < w) relax(i, i + w + 1, DIAG)
+          if (x > 0) relax(i, i + w - 1, DIAG)
         }
-        out[cy * this.cw + cx] = hit
       }
     }
-    return out
+    return d
   }
 
   insideAt(x: number, y: number): boolean {
     if (x < 0 || y < 0 || x >= this.width || y >= this.height) return false
-    return this.cells[Math.floor(y / this.cell) * this.cw + Math.floor(x / this.cell)] === 1
+    return this.inside[y * this.width + x] === 1
   }
 
-  /** Packed like a mask, so it can be used anywhere a `MaskSource` is expected. */
+/** Packed like a mask, so it can be used anywhere a `MaskSource` is expected. */
   maskView(): Uint8Array {
     const bytes = new Uint8Array(Math.ceil((this.width * this.height) / 8))
     for (let y = 0; y < this.height; y++) {

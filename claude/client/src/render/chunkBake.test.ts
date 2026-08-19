@@ -39,6 +39,11 @@ class FakeMask implements MaskSource {
     this.bytes[bit >> 3]! &= ~(1 << (bit & 7))
   }
 
+  solidAt(x: number, y: number): boolean {
+    const bit = y * this.width + x
+    return ((this.bytes[bit >> 3]! >> (bit & 7)) & 1) !== 0
+  }
+
   maskView(): Uint8Array {
     return this.bytes
   }
@@ -203,42 +208,125 @@ describe('BackdropMask', () => {
   }
 
   it('treats open sky above the terrain as outside', () => {
-    const b = new BackdropMask(hill(), 4, 56)
+    const b = new BackdropMask(hill())
     expect(b.insideAt(256, 20)).toBe(false)
     expect(b.insideAt(256, 60)).toBe(false)
   })
 
   it('treats the inside of the landmass as interior', () => {
-    const b = new BackdropMask(hill(), 4, 56)
+    const b = new BackdropMask(hill())
     expect(b.insideAt(256, 200)).toBe(true)
   })
 
   it('fills a narrow tunnel, so a cave shows rock rather than sky', () => {
     const m = new FakeMask(512, 256)
     m.fillRect(0, 100, 511, 255)
-    // A 20 px tunnel, far narrower than the 56 px closing radius.
+    // A 20 px tunnel: no 28 px disc fits, so the sky never reaches in.
     for (let y = 150; y < 170; y++) for (let x = 100; x < 400; x++) m.clear(x, y)
 
-    const b = new BackdropMask(m, 4, 56)
+    const b = new BackdropMask(m)
     expect(b.insideAt(250, 160)).toBe(true)
   })
 
   it('fills a large enclosed cavern that closing alone would miss', () => {
     const m = new FakeMask(512, 256)
     m.fillRect(0, 100, 511, 255)
-    // 200 px across — much wider than the closing radius, but sealed.
+    // 200 px across — far wider than the disc, but sealed, so unreachable.
     for (let y = 140; y < 220; y++) for (let x = 150; x < 350; x++) m.clear(x, y)
 
-    const b = new BackdropMask(m, 4, 56)
+    const b = new BackdropMask(m)
     expect(b.insideAt(250, 180)).toBe(true)
   })
 
   it('does not paint the backdrop out into open sky', () => {
     const m = new FakeMask(512, 256)
     m.fillRect(0, 200, 511, 255)
-    const b = new BackdropMask(m, 4, 56)
+    const b = new BackdropMask(m)
     // Well above the surface must stay sky.
     expect(b.insideAt(256, 100)).toBe(false)
     expect(b.insideAt(256, 150)).toBe(false)
+  })
+
+  /** How far above a column's first solid pixel the backdrop starts, at worst. */
+  function worstOverhang(b: BackdropMask, m: FakeMask, w: number, h: number): number {
+    let worst = 0
+    for (let x = 0; x < w; x++) {
+      let firstSolid = h
+      let firstInside = h
+      for (let y = 0; y < h; y++) {
+        if (firstInside === h && b.insideAt(x, y)) firstInside = y
+        if (m.solidAt(x, y)) {
+          firstSolid = y
+          break
+        }
+      }
+      if (firstInside < firstSolid) worst = Math.max(worst, firstSolid - firstInside)
+    }
+    return worst
+  }
+
+  it('hugs the rock exactly along an unobstructed silhouette', () => {
+    // On a surface with no concave pockets there is no excuse for any overhang at
+    // all: every pixel of sky is disc-reachable right down to the rock.
+    const m = new FakeMask(512, 256)
+    for (let x = 0; x < 512; x++) {
+      const top = Math.round(140 + 25 * Math.sin(x / 60))
+      m.fillRect(x, top, x, 255)
+    }
+    expect(worstOverhang(new BackdropMask(m), m, 512, 256)).toBeLessThanOrEqual(4)
+  })
+
+  it('bounds the shading in a concave notch by the disc radius', () => {
+    // The defect this replaced: a *square* structuring element filled concave
+    // corners with ~100 px axis-aligned rectangles standing out into the sky. A
+    // disc cannot reach the last `REACH_PX` into a corner, so a little shading
+    // there is inherent — but it is bounded, and it follows the rock.
+    const m = new FakeMask(512, 256)
+    for (let x = 0; x < 512; x++) {
+      const top = 120 + (x >= 200 && x < 300 ? 60 : 0)
+      m.fillRect(x, top, x, 255)
+    }
+    expect(worstOverhang(new BackdropMask(m), m, 512, 256)).toBeLessThanOrEqual(
+      BackdropMask.REACH_PX,
+    )
+  })
+
+  it('fills a crevice rather than showing sky down it', () => {
+    // A crack open at the top has no rock above it, so any "is there rock above?"
+    // clip turns it into a bright blue slit through the hillside. Width is the
+    // distinction, and only the disc measures width.
+    const m = new FakeMask(512, 256)
+    m.fillRect(0, 100, 511, 255)
+    for (let y = 100; y < 200; y++) for (let x = 250; x < 268; x++) m.clear(x, y)
+    const b = new BackdropMask(m)
+    expect(b.insideAt(259, 180)).toBe(true)
+    expect(b.insideAt(259, 130)).toBe(true)
+  })
+
+  it('leaves no long axis-aligned run along the backdrop/sky boundary', () => {
+    // The signature of square-kernel morphology: the boundary snaps to long
+    // horizontal and vertical segments instead of following the rock.
+    const m = new FakeMask(512, 256)
+    for (let x = 0; x < 512; x++) {
+      const top = Math.round(140 + 25 * Math.sin(x / 37) + 12 * Math.sin(x / 11))
+      m.fillRect(x, top, x, 255)
+    }
+    const b = new BackdropMask(m)
+
+    const boundary: number[] = []
+    for (let x = 0; x < 512; x++) {
+      let y = 0
+      while (y < 256 && !b.insideAt(x, y)) y++
+      boundary.push(y)
+    }
+    let run = 1
+    let longest = 1
+    for (let x = 1; x < boundary.length; x++) {
+      run = boundary[x] === boundary[x - 1] ? run + 1 : 1
+      longest = Math.max(longest, run)
+    }
+    // A flat run this long on a curved surface means the boundary is quantised
+    // rather than following the terrain.
+    expect(longest).toBeLessThan(40)
   })
 })

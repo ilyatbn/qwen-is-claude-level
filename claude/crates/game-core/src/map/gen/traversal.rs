@@ -12,8 +12,9 @@
 //! See `docs/10-map-generation.md` §Pass 7b, 7c.
 
 use crate::constants::{
-    GRAVITY, JETPACK_MAX_FUEL, JETPACK_MAX_SPEED, JUMP_VELOCITY, MIN_TRAVERSABLE_FRACTION,
-    SPAWN_COUNT_MIN, SPAWN_MIN_SEPARATION, STEP_UP, SURFACE_SAMPLE_STEP, WALK_SPEED,
+    GRAVITY, JETPACK_CLIMB_BUDGET, JETPACK_MAX_FUEL, JETPACK_MAX_SPEED, JUMP_VELOCITY,
+    MIN_TRAVERSABLE_FRACTION, SPAWN_COUNT_MIN, SPAWN_MIN_SEPARATION, STEP_UP, SURFACE_SAMPLE_STEP,
+    WALK_SPEED,
 };
 use crate::map::Mask;
 use crate::math::Point;
@@ -49,11 +50,12 @@ pub struct TraversalReport {
 /// traversable fraction at 0.59 while a body flood proved 100% of chambers were in
 /// fact reachable — the map was fine and the model was wrong.
 ///
-/// A player with a jetpack can move anywhere within a connected region of positions
-/// their box fits in, so two surface points in the same region are connected. Fuel
-/// is not modelled here; the `JETPACK_RANGE` slack in `can_jetpack` already stands
-/// in for it, and the failure this validation exists to catch is a sealed pocket,
-/// not a long flight.
+/// **A shared region is necessary but not sufficient** (`docs/70` §A10). The box
+/// fits everywhere in open air, so the whole sky is one region; unioning it wholesale
+/// certified a 1900 px ledgeless shaft at fraction 1.000. A region edge is therefore
+/// only issued between points within `JETPACK_CLIMB_BUDGET` of each other, and longer
+/// routes must chain through intermediate surface points — which is exactly the
+/// "land on a ledge and refuel" the budget describes.
 pub struct NavRegions {
     w: i32,
     labels: Vec<u32>,
@@ -158,7 +160,60 @@ impl NavRegions {
     }
 }
 
-/// Build the graph, find components, and check the invariants.
+/// A uniform grid over the map, so only neighbouring cells need edge testing.
+///
+/// A dense all-pairs graph over a few thousand points is millions of edge tests and
+/// would dominate generation time. Deliberately a `Vec` rather than a `HashMap`:
+/// `HashMap` iteration order is randomly seeded per process, and anything the
+/// generator's output depends on must be ordered (`docs/70` §A11).
+struct Buckets {
+    cell: i32,
+    gw: i32,
+    gh: i32,
+    lists: Vec<Vec<u32>>,
+}
+
+impl Buckets {
+    fn build(mask: &Mask, surface: &[Point], cell: i32) -> Self {
+        let cell = cell.max(1);
+        let gw = (mask.w as i32).div_euclid(cell) + 2;
+        let gh = (mask.h as i32).div_euclid(cell) + 2;
+        let mut lists = vec![Vec::new(); (gw * gh) as usize];
+        for (i, p) in surface.iter().enumerate() {
+            let gx = p.x.div_euclid(cell).clamp(0, gw - 1);
+            let gy = p.y.div_euclid(cell).clamp(0, gh - 1);
+            lists[(gy * gw + gx) as usize].push(i as u32);
+        }
+        Buckets {
+            cell,
+            gw,
+            gh,
+            lists,
+        }
+    }
+
+    /// Every index in the 3×3 block of cells around `p`, in a fixed order.
+    fn neighbours(&self, p: Point, out: &mut Vec<u32>) {
+        out.clear();
+        let (bx, by) = (
+            p.x.div_euclid(self.cell).clamp(0, self.gw - 1),
+            p.y.div_euclid(self.cell).clamp(0, self.gh - 1),
+        );
+        for gy in (by - 1).max(0)..=(by + 1).min(self.gh - 1) {
+            for gx in (bx - 1).max(0)..=(bx + 1).min(self.gw - 1) {
+                out.extend_from_slice(&self.lists[(gy * self.gw + gx) as usize]);
+            }
+        }
+    }
+}
+
+/// Build the **directed** graph, find the largest strongly connected set, and check
+/// the invariants.
+///
+/// Directed is the whole point (`docs/70` §A10). Falling is free and climbing is
+/// not, so "a can reach b" does not imply "b can reach a" — and a validation that
+/// assumes it does will certify a pit you die in. The metric is the largest set of
+/// points that can all reach each other **both ways**.
 pub fn analyse(mask: &Mask, surface: &[Point]) -> TraversalReport {
     let n = surface.len();
     if n == 0 {
@@ -170,75 +225,47 @@ pub fn analyse(mask: &Mask, surface: &[Point]) -> TraversalReport {
         };
     }
 
-    let mut uf = UnionFind::new(n);
-
-    // Union by navigable region first: this is the edge the ballistic predicates
-    // cannot express, and it is what makes winding cave passages count.
     let nav = NavRegions::build(mask);
-    let mut first_of_region: std::collections::HashMap<u32, usize> =
-        std::collections::HashMap::new();
-    for (i, p) in surface.iter().enumerate() {
-        let l = nav.label_at(*p);
-        if l == 0 {
-            continue;
-        }
-        match first_of_region.get(&l) {
-            Some(&j) => uf.union(i, j),
-            None => {
-                first_of_region.insert(l, i);
-            }
-        }
-    }
+    let labels: Vec<u32> = surface.iter().map(|p| nav.label_at(*p)).collect();
 
-    // Spatial buckets sized to the jetpack range, so only neighbouring buckets need
-    // testing. A dense all-pairs graph over a few thousand points is millions of
-    // edge tests and would dominate generation time.
-    let cell = JETPACK_RANGE.max(1.0) as i32;
-    let mut buckets: std::collections::HashMap<(i32, i32), Vec<usize>> =
-        std::collections::HashMap::new();
-    for (i, p) in surface.iter().enumerate() {
-        buckets
-            .entry((p.x.div_euclid(cell), p.y.div_euclid(cell)))
-            .or_default()
-            .push(i);
-    }
+    // Region edges are capped at the climb budget, so bucketing by it covers both
+    // them and the (shorter) ballistic edges.
+    let budget_sq = (JETPACK_CLIMB_BUDGET * JETPACK_CLIMB_BUDGET) as i64;
+    let buckets = Buckets::build(mask, surface, JETPACK_CLIMB_BUDGET.max(1.0) as i32);
 
+    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
+    let mut near: Vec<u32> = Vec::new();
     for (i, a) in surface.iter().enumerate() {
-        let (bx, by) = (a.x.div_euclid(cell), a.y.div_euclid(cell));
-        for gy in (by - 1)..=(by + 1) {
-            for gx in (bx - 1)..=(bx + 1) {
-                let Some(list) = buckets.get(&(gx, gy)) else {
-                    continue;
-                };
-                for &j in list {
-                    // Each unordered pair once.
-                    if j <= i || uf.connected(i, j) {
-                        continue;
-                    }
-                    let b = surface[j];
-                    if can_walk(mask, *a, b)
-                        || can_drop(mask, *a, b)
-                        || can_drop(mask, b, *a)
-                        || can_jump(mask, *a, b)
-                        || can_jump(mask, b, *a)
-                        || can_jetpack(mask, *a, b)
-                    {
-                        uf.union(i, j);
-                    }
-                }
+        buckets.neighbours(*a, &mut near);
+        for &ju in near.iter() {
+            let j = ju as usize;
+            // Each unordered pair once; both directions are decided together.
+            if j <= i {
+                continue;
+            }
+            let b = surface[j];
+
+            // Same navigable region and inside one tank of fuel: mutual. Beyond the
+            // budget, a shared region proves nothing — see NavRegions' doc comment.
+            let region_edge =
+                labels[i] != 0 && labels[i] == labels[j] && a.distance_sq(b) <= budget_sq;
+
+            let walk = can_walk(mask, *a, b);
+            let jet = can_jetpack(mask, *a, b);
+
+            let fwd = walk || jet || region_edge || can_drop(mask, *a, b) || can_jump(mask, *a, b);
+            let rev = walk || jet || region_edge || can_drop(mask, b, *a) || can_jump(mask, b, *a);
+
+            if fwd {
+                adj[i].push(ju);
+            }
+            if rev {
+                adj[j].push(i as u32);
             }
         }
     }
 
-    // Largest component.
-    let mut counts: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
-    for i in 0..n {
-        counts.entry(uf.find(i)).or_default().push(i);
-    }
-    let mut largest: Vec<usize> = counts
-        .into_values()
-        .max_by_key(|v| v.len())
-        .unwrap_or_default();
+    let mut largest = largest_scc(&adj);
     largest.sort_unstable();
 
     let traversable_fraction = largest.len() as f32 / n as f32;
@@ -251,6 +278,89 @@ pub fn analyse(mask: &Mask, surface: &[Point]) -> TraversalReport {
         traversable_fraction,
         passed,
     }
+}
+
+/// Tarjan's strongly connected components, **iterative** — the graphs run to tens of
+/// thousands of nodes and recursion would blow the stack.
+///
+/// Returns the largest component. Ties are broken on the lowest member index, never
+/// left to `max_by_key`'s last-wins over an unordered container: the previous code
+/// took the largest component out of a `HashMap`, which is randomly seeded per
+/// process, so tied components resolved differently between runs of the same binary
+/// on the same input — and that feeds spawn selection (`docs/70` §A11).
+fn largest_scc(adj: &[Vec<u32>]) -> Vec<usize> {
+    let n = adj.len();
+    const UNVISITED: u32 = u32::MAX;
+
+    let mut index = vec![UNVISITED; n];
+    let mut low = vec![0u32; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<u32> = Vec::with_capacity(n);
+    let mut next_index: u32 = 0;
+
+    // (node, position in that node's adjacency list)
+    let mut call: Vec<(u32, usize)> = Vec::with_capacity(64);
+    let mut best: Vec<usize> = Vec::new();
+
+    for root in 0..n {
+        if index[root] != UNVISITED {
+            continue;
+        }
+        call.push((root as u32, 0));
+        index[root] = next_index;
+        low[root] = next_index;
+        next_index += 1;
+        stack.push(root as u32);
+        on_stack[root] = true;
+
+        while let Some(&mut (v, ref mut edge)) = call.last_mut() {
+            let vu = v as usize;
+            if *edge < adj[vu].len() {
+                let w = adj[vu][*edge] as usize;
+                *edge += 1;
+                if index[w] == UNVISITED {
+                    index[w] = next_index;
+                    low[w] = next_index;
+                    next_index += 1;
+                    stack.push(w as u32);
+                    on_stack[w] = true;
+                    call.push((w as u32, 0));
+                } else if on_stack[w] {
+                    low[vu] = low[vu].min(index[w]);
+                }
+            } else {
+                call.pop();
+                if let Some(&(parent, _)) = call.last() {
+                    low[parent as usize] = low[parent as usize].min(low[vu]);
+                }
+                if low[vu] == index[vu] {
+                    // Pop one component off the stack.
+                    let mut comp: Vec<usize> = Vec::new();
+                    while let Some(w) = stack.pop() {
+                        on_stack[w as usize] = false;
+                        comp.push(w as usize);
+                        if w == v {
+                            break;
+                        }
+                    }
+                    comp.sort_unstable();
+                    let better = match comp.len().cmp(&best.len()) {
+                        std::cmp::Ordering::Greater => true,
+                        std::cmp::Ordering::Equal => {
+                            comp.first().copied().unwrap_or(usize::MAX)
+                                < best.first().copied().unwrap_or(usize::MAX)
+                        }
+                        std::cmp::Ordering::Less => false,
+                    };
+                    if better {
+                        best = comp;
+                    }
+                }
+            }
+        }
+    }
+
+    best
 }
 
 /// Greedy count of points at least `sep` apart, so "enough spawns exist" is checked
@@ -389,44 +499,6 @@ fn body_clear(mask: &Mask, x: i32, y: i32) -> bool {
         }
     }
     true
-}
-
-struct UnionFind {
-    parent: Vec<usize>,
-    rank: Vec<u8>,
-}
-
-impl UnionFind {
-    fn new(n: usize) -> Self {
-        UnionFind {
-            parent: (0..n).collect(),
-            rank: vec![0; n],
-        }
-    }
-    fn find(&mut self, mut x: usize) -> usize {
-        while self.parent[x] != x {
-            self.parent[x] = self.parent[self.parent[x]];
-            x = self.parent[x];
-        }
-        x
-    }
-    fn connected(&mut self, a: usize, b: usize) -> bool {
-        self.find(a) == self.find(b)
-    }
-    fn union(&mut self, a: usize, b: usize) {
-        let (ra, rb) = (self.find(a), self.find(b));
-        if ra == rb {
-            return;
-        }
-        match self.rank[ra].cmp(&self.rank[rb]) {
-            std::cmp::Ordering::Less => self.parent[ra] = rb,
-            std::cmp::Ordering::Greater => self.parent[rb] = ra,
-            std::cmp::Ordering::Equal => {
-                self.parent[rb] = ra;
-                self.rank[ra] += 1;
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -607,6 +679,245 @@ mod tests {
         assert_eq!(report.total_points, 0);
         assert!(!report.passed);
         assert_eq!(report.traversable_fraction, 0.0);
+    }
+
+    // ------------------------------------------------------------------
+    // The §A10 adversarial masks.
+    //
+    // Every one of these was certified traversable by the undirected model, and
+    // three of them are places a player falls into and dies in. They are permanent
+    // because the failure they guard against is invisible in aggregate statistics:
+    // a map with one inescapable pit still scores 0.99.
+    // ------------------------------------------------------------------
+
+    /// Tall enough to hold a shaft longer than the climb budget.
+    const TALL_H: u32 = 2304;
+
+    /// Solid rock from `y` to the bottom, full width.
+    fn bedrock_from(m: &mut Mask, y: i32, h: u32) {
+        for py in y..h as i32 {
+            m.set_run(py, 0, m_w(m) - 1);
+        }
+    }
+
+    fn m_w(m: &Mask) -> i32 {
+        m.w as i32
+    }
+
+    /// Clear a rectangle.
+    fn shaft(m: &mut Mask, x0: i32, x1: i32, y0: i32, y1: i32) {
+        for py in y0..=y1 {
+            m.clear_run(py, x0, x1);
+        }
+    }
+
+    /// Analyse a hand-built mask and report whether the deepest surface point —
+    /// the one at the bottom of whatever hole the test dug — made it into the
+    /// largest strongly connected set.
+    fn deepest_is_connected(m: &Mask) -> (bool, f32) {
+        let surface = extract_surface(m);
+        let report = analyse(m, &surface);
+        let in_main: std::collections::HashSet<usize> =
+            report.largest_component.iter().copied().collect();
+        let deepest = surface
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, p)| p.y)
+            .map(|(i, _)| i);
+        match deepest {
+            Some(i) => (in_main.contains(&i), report.traversable_fraction),
+            None => (false, report.traversable_fraction),
+        }
+    }
+
+    #[test]
+    fn a_ledgeless_shaft_longer_than_the_climb_budget_is_rejected() {
+        // The headline case. 1900 px of smooth vertical wall, open to the sky at the
+        // top, nothing to land on. A jetpack gives ~1300 px on a full tank and there
+        // is nowhere to refuel, so the floor is a grave. The undirected model scored
+        // this map at fraction 1.000.
+        let mut m = Mask::new_empty(W, TALL_H);
+        bedrock_from(&mut m, 200, TALL_H);
+        shaft(&mut m, 1000, 1060, 200, 2100);
+
+        let (connected, fraction) = deepest_is_connected(&m);
+        assert!(
+            !connected,
+            "the floor of a 1900 px ledgeless shaft must not be in the traversable \
+             set (fraction {fraction:.3})"
+        );
+    }
+
+    #[test]
+    fn a_shaft_inside_the_climb_budget_is_accepted() {
+        // The boundary in the other direction, so the test above cannot be satisfied
+        // by simply rejecting every shaft. 500 px is one comfortable tank.
+        let mut m = Mask::new_empty(W, TALL_H);
+        bedrock_from(&mut m, 1400, TALL_H);
+        shaft(&mut m, 1000, 1060, 1400, 1900);
+
+        let (connected, fraction) = deepest_is_connected(&m);
+        assert!(
+            connected,
+            "a 500 px shaft is inside the {JETPACK_CLIMB_BUDGET} px climb budget and \
+             must stay traversable (fraction {fraction:.3})"
+        );
+    }
+
+    #[test]
+    fn a_pit_deeper_than_the_climb_budget_is_rejected() {
+        // Same failure with a wide mouth rather than a narrow one, so it cannot be
+        // passing merely because the body does not fit.
+        let mut m = Mask::new_empty(W, TALL_H);
+        bedrock_from(&mut m, 200, TALL_H);
+        shaft(&mut m, 800, 1300, 200, 1600);
+
+        let (connected, _) = deepest_is_connected(&m);
+        assert!(
+            !connected,
+            "a 1400 px pit is inescapable however wide it is"
+        );
+    }
+
+    #[test]
+    fn two_plateaus_beyond_the_budget_are_not_one_component() {
+        // Open sky between them, so the body fits the whole way and the nav region
+        // is shared — which is exactly why a shared region cannot be sufficient.
+        let mut m = Mask::new_empty(W, H);
+        platform(&mut m, 0, 200, 400);
+        platform(&mut m, 1800, W as i32 - 1, 400);
+
+        let surface = extract_surface(&m);
+        let report = analyse(&m, &surface);
+        let in_main: std::collections::HashSet<usize> =
+            report.largest_component.iter().copied().collect();
+
+        let left = surface.iter().position(|p| p.x < 200);
+        let right = surface.iter().position(|p| p.x > 1800);
+        let (Some(l), Some(r)) = (left, right) else {
+            panic!("both plateaus should produce surface points");
+        };
+        assert!(
+            !(in_main.contains(&l) && in_main.contains(&r)),
+            "plateaus 1600 px apart with no way across must not share a component"
+        );
+    }
+
+    #[test]
+    fn a_slit_too_narrow_for_the_body_seals_a_cave_and_a_sealed_pocket_does_too() {
+        // These two produce the same verdict, and the test proves they reach it for
+        // different reasons: the slit is a real opening that the *body* cannot use,
+        // the pocket has no opening at all. Asserting only the verdict would let one
+        // of them pass for the wrong reason.
+        let build = |slit: bool| {
+            let mut m = Mask::new_empty(W, H);
+            bedrock_from(&mut m, 200, H);
+            // A chamber well inside the rock.
+            shaft(&mut m, 900, 1200, 450, 600);
+            if slit {
+                // One pixel wide: visible, and useless to a 16 px body.
+                shaft(&mut m, 1050, 1050, 200, 450);
+            }
+            m
+        };
+
+        let nav_slit = NavRegions::build(&build(true));
+        let nav_sealed = NavRegions::build(&build(false));
+
+        let outside = Point::new(400, 199);
+        let inside = Point::new(1050, 599);
+
+        assert_ne!(
+            nav_slit.label_at(outside),
+            0,
+            "open ground must be navigable"
+        );
+        assert_ne!(
+            nav_slit.label_at(outside),
+            nav_slit.label_at(inside),
+            "a 1 px slit must not join the chamber to the outside"
+        );
+        assert_eq!(
+            nav_slit.label_at(Point::new(1050, 400)),
+            0,
+            "the body does not fit in the slit itself — this is why the slit case is \
+             rejected, and it is a different reason from the sealed case"
+        );
+        assert_ne!(
+            nav_sealed.label_at(outside),
+            nav_sealed.label_at(inside),
+            "a sealed pocket is its own region"
+        );
+
+        for slit in [true, false] {
+            let m = build(slit);
+            let (connected, _) = deepest_is_connected(&m);
+            assert!(!connected, "chamber must be unreachable (slit = {slit})");
+        }
+    }
+
+    #[test]
+    fn a_shaft_wide_enough_for_the_body_opens_the_cave() {
+        // The positive control for the slit test: same geometry, a mouth the body
+        // fits through, and now the chamber counts.
+        let mut m = Mask::new_empty(W, H);
+        bedrock_from(&mut m, 200, H);
+        shaft(&mut m, 900, 1200, 450, 600);
+        shaft(&mut m, 1032, 1068, 200, 450); // 36 px
+
+        let (connected, fraction) = deepest_is_connected(&m);
+        assert!(
+            connected,
+            "a 36 px shaft admits a {} px body, so the chamber is reachable \
+             (fraction {fraction:.3})",
+            crate::constants::PLAYER_W
+        );
+    }
+
+    #[test]
+    fn drop_only_routes_do_not_count_as_traversable() {
+        // The property in one sentence: a one-way trip is not traversal. A high ledge
+        // with a long fall to a floor it cannot get back up to must leave the two in
+        // different strongly connected sets, even though the fall itself is legal.
+        let mut m = Mask::new_empty(W, TALL_H);
+        bedrock_from(&mut m, 2000, TALL_H);
+        platform(&mut m, 0, 400, 300);
+
+        let surface = extract_surface(&m);
+        let report = analyse(&m, &surface);
+        let in_main: std::collections::HashSet<usize> =
+            report.largest_component.iter().copied().collect();
+
+        let ledge = surface.iter().position(|p| p.y < 400);
+        let floor = surface.iter().position(|p| p.y > 1900);
+        let (Some(l), Some(f)) = (ledge, floor) else {
+            panic!("expected a ledge and a floor");
+        };
+        assert!(
+            !(in_main.contains(&l) && in_main.contains(&f)),
+            "a 1700 px drop is one-way and must not make the two mutually reachable"
+        );
+    }
+
+    #[test]
+    fn the_largest_component_is_stable_across_runs() {
+        // §A11: the previous implementation took the largest component out of a
+        // HashMap, whose iteration order is seeded per process, so tied components
+        // resolved differently between runs of the same binary. That feeds spawn
+        // selection. Two identical, separated islands make the tie certain.
+        let mut m = Mask::new_empty(W, H);
+        platform(&mut m, 100, 400, 400);
+        platform(&mut m, 1600, 1900, 400);
+
+        let surface = extract_surface(&m);
+        let first = analyse(&m, &surface).largest_component;
+        for _ in 0..32 {
+            assert_eq!(
+                analyse(&m, &surface).largest_component,
+                first,
+                "tied components must resolve the same way every time"
+            );
+        }
     }
 
     #[test]

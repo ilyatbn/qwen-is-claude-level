@@ -5,23 +5,15 @@
 //!
 //! See `docs/10-map-generation.md` §1.4, §Pass 8.
 
-use crate::constants::{MapScale, WIND_MAX};
+use crate::constants::{
+    MapScale, BURIED_ATTEMPTS, BURIED_CLEARANCE, BURIED_OFFSET_MAX, BURIED_OFFSET_MIN,
+    BURIED_SEPARATION, WIND_MAX,
+};
 use crate::map::gen::components::SealedPocket;
 use crate::map::gen::{generate_terrain, spawns::choose_spawns};
 use crate::map::{CoarseGrid, Mask};
 use crate::math::Point;
 use crate::rng::{range_f32, range_i32, substream, ChaCha8Rng};
-
-/// Solid rock required in all four directions for a slot to be genuinely buried
-/// rather than just under the skin.
-const BURIED_CLEARANCE: i32 = 24;
-/// Minimum separation between buried slots.
-const BURIED_SEPARATION: i32 = 128;
-/// How far from a tunnel or pocket a candidate slot is offset.
-const BURIED_OFFSET_MIN: i32 = 30;
-const BURIED_OFFSET_MAX: i32 = 80;
-/// Placement attempts per slot before giving up on that one.
-const BURIED_ATTEMPTS: u32 = 200;
 
 /// Roughly one decoration per this many surface points.
 const DECOR_PER_SURFACE: usize = 10;
@@ -63,6 +55,13 @@ pub struct MapMeta {
     pub decorations: Vec<Decoration>,
     pub wind: f32,
     pub traversable_fraction: f32,
+    /// Indices into `surface_points` forming the validated strongly connected set.
+    ///
+    /// Shipped because nothing downstream can otherwise tell "every cave is
+    /// reachable" from "every cave is sealed" — a caller with no component to test
+    /// against has to pass every index, and gets back the surface fraction under
+    /// another name. See `docs/70` §A10.
+    pub largest_component: Vec<u32>,
 }
 
 /// Mask, coarse index and metadata together, plus the dirty-chunk set that carve
@@ -144,6 +143,12 @@ pub fn generate(requested_seed: u64, scale: MapScale) -> Map {
             decorations,
             wind,
             traversable_fraction: outcome.report.traversable_fraction,
+            largest_component: outcome
+                .report
+                .largest_component
+                .iter()
+                .map(|&i| i as u32)
+                .collect(),
         },
         mask: outcome.mask,
         coarse,
@@ -293,17 +298,18 @@ mod tests {
 
         for s in slots {
             assert!(map.mask.get(s.pos.x, s.pos.y), "slot {s:?} is not in rock");
-            for (dx, dy) in [
-                (-BURIED_CLEARANCE, 0),
-                (BURIED_CLEARANCE, 0),
-                (0, -BURIED_CLEARANCE),
-                (0, BURIED_CLEARANCE),
-            ] {
-                assert!(
-                    map.mask.get(s.pos.x + dx, s.pos.y + dy),
-                    "slot {:?} has air {BURIED_CLEARANCE} px away at ({dx},{dy})",
-                    s.pos
-                );
+            // Walk the whole ray, not just the endpoint. Asserting the same five
+            // pixels `is_buried` samples cannot catch a slot lying against a tunnel
+            // wall with solid rock again 24 px beyond it — which is exactly the bug
+            // this test was written to prevent (`docs/70` §A12).
+            for d in 1..=BURIED_CLEARANCE {
+                for (dx, dy) in [(-d, 0), (d, 0), (0, -d), (0, d)] {
+                    assert!(
+                        map.mask.get(s.pos.x + dx, s.pos.y + dy),
+                        "slot {:?} has air {d} px away at ({dx},{dy}) — not buried",
+                        s.pos
+                    );
+                }
             }
             assert!(!s.revealed, "slots must start unrevealed");
         }

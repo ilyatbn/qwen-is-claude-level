@@ -159,7 +159,8 @@ pub const MIN_PLAYERS_TO_START: usize = 1;
 
 /// Regenerations with `seed+n` before falling back to the safe preset.
 pub const MAX_GEN_ATTEMPTS: u8 = 12;
-/// Of all surface points, the fraction that must be in one connected component.
+/// Of all surface points, the fraction that must be in one **strongly connected**
+/// component — points that can reach each other *both* ways. See `docs/70` §A10.
 pub const MIN_TRAVERSABLE_FRACTION: f32 = 0.75;
 /// Solid components smaller than this are deleted.
 pub const MIN_BLOB_PX: u32 = 400;
@@ -396,6 +397,28 @@ pub const CREVICE_STEP: i32 = 6;
 pub const VOID_RADIUS_MIN: i32 = 70;
 pub const VOID_RADIUS_MAX: i32 = 155;
 pub const VOID_MIN_SEPARATION: i32 = 260;
+
+// --- A10: traversability is mutual ---
+
+/// The furthest a player can climb in one unbroken effort:
+/// `JETPACK_MAX_SPEED * JETPACK_MAX_FUEL * 0.6`. Falling is free; climbing is not,
+/// which is why traversal edges are directed.
+pub const JETPACK_CLIMB_BUDGET: f32 = JETPACK_MAX_SPEED * JETPACK_MAX_FUEL * 0.6;
+/// A climb longer than this is only possible if it passes a standable surface point
+/// on the way — that is where you land and refuel.
+pub const LEDGE_REFUEL_RISE: f32 = JETPACK_CLIMB_BUDGET;
+
+// --- A12: buried slots (moved out of map/gen/meta.rs) ---
+
+/// Solid rock required in every direction for a slot to be genuinely buried rather
+/// than just under the skin. Sampled along the whole ray, not at the endpoint.
+pub const BURIED_CLEARANCE: i32 = 24;
+pub const BURIED_SEPARATION: i32 = 128;
+/// How far off a tunnel or pocket a candidate slot is placed.
+pub const BURIED_OFFSET_MIN: i32 = 30;
+pub const BURIED_OFFSET_MAX: i32 = 80;
+/// Placement attempts per slot before giving up on that one.
+pub const BURIED_ATTEMPTS: u32 = 200;
 
 // --- A3: visible ordnance ---
 

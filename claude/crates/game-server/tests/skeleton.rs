@@ -87,8 +87,12 @@ async fn socket_io_echo_round_trips() {
             .expect("emit echo");
 
         let received = rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("echo_back within 5 s");
+            // 30 s, not 5: this timeout exists to stop a hung test, not to assert a
+            // latency budget. Under `check.sh` the whole workspace's tests run
+            // concurrently and 5 s produced a false failure on a loaded machine — a
+            // gate that fails at random teaches people to re-run instead of look.
+            .recv_timeout(Duration::from_secs(30))
+            .expect("echo_back within 30 s");
 
         let _ = client.disconnect();
         received
