@@ -315,3 +315,30 @@ Notes: TWO REAL FINDINGS, both from tests failing first.
   A partial pipeline undercounts badly — islands, bridges and chambers all add
   floors — so the plausibility test runs the full pipeline.
 Left for later: nothing
+
+## A9 fold-in — tunnel bores, body-clearance flood, 4 review fixes — DONE
+Files: constants.rs, map/gen/{network,caves,carvings,bridges}.rs
+Verified: `cargo test -p game-core --lib` — 231 passed; clippy clean
+Notes: A9 said TUNNEL_RADIUS_MIN 15 / ENTRANCE_RADIUS 13->15. MEASURED: 15 gives
+       97% body-reachable chambers (18/20 seeds), not 100%. A9's arithmetic used
+       the CENTRELINE bore; the binding case is the box EDGE. In a circular bore of
+       radius r a PLAYER_W-wide box has vertical clearance 2*sqrt(r^2 - 8^2), not
+       2r:  r=15 -> 25.4 px,  r=16 -> 27.7,  r=17 -> 30.0.
+       Set TUNNEL_RADIUS_MIN = ENTRANCE_RADIUS = 17 (first radius clearing
+       PLAYER_H + 2). r=16 also measures 100% but only because swept tunnels are
+       capsules; single circles at bends bind, so 16 passes by luck. 17 is
+       structural. New test a_circular_bore_admits_the_box_across_its_full_width.
+       BEFORE/AFTER body-reachable chambers (20 seeds, small):
+         r=15: 58/60 (97%), 18/20 seeds all-reachable
+         r=17: 60/60 (100%), 20/20 seeds
+       air_reachable_from_sky -> body_reachable_from_sky: floods 16x28 box
+       positions, not pixels. A chamber counts as reached if a body fits anywhere
+       within CHAMBER_RADIUS_MAX of its centre (the centre pixel itself is often
+       too close to the floor for the box).
+       Also: caves volume test tightened to the documented band; crevice heading
+       asserted over an 8-step baseline (per-step rounding at 6 px injects ~0.17
+       rad, larger than CREVICE_WANDER itself); dead `_rng` in bridges.rs deleted;
+       walk_to now launches off-bearing (MAX_LAUNCH_SKEW 0.9) and scales its
+       correction by remaining distance, so corridors wander in the middle.
+Left for later: T1.10's traversable fraction is still the open question — measured
+       0.369 BEFORE these radii changes. Re-measure in T1.11/T1.16 and report.

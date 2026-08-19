@@ -192,8 +192,8 @@ pub const CA_SURVIVE: u32 = 4;
 
 pub const BLOB_RADIUS_MIN: i32 = 40;
 pub const BLOB_RADIUS_MAX: i32 = 130;
-pub const TUNNEL_RADIUS_MIN: i32 = 10;
-pub const TUNNEL_RADIUS_MAX: i32 = 22;
+pub const TUNNEL_RADIUS_MIN: i32 = 17;
+pub const TUNNEL_RADIUS_MAX: i32 = 26;
 /// Random-walk step length.
 pub const TUNNEL_STEP: i32 = 8;
 pub const TUNNEL_LENGTH_MIN: i32 = 240;
@@ -377,12 +377,12 @@ pub const CHAMBER_RADIUS_MAX: i32 = 62;
 pub const CHAMBER_MIN_SEPARATION: i32 = 220;
 pub const CAVE_ENTRANCES_MIN: u32 = 2;
 pub const CAVE_ENTRANCES_MAX: u32 = 4;
-pub const ENTRANCE_RADIUS: i32 = 13;
+pub const ENTRANCE_RADIUS: i32 = 17;
 /// Extra loop edges as a fraction of chamber count.
 pub const CAVE_EXTRA_EDGE_FRACTION: f32 = 0.5;
 
-pub const CREVICE_WIDTH_MIN: i32 = 7;
-pub const CREVICE_WIDTH_MAX: i32 = 17;
+pub const CREVICE_WIDTH_MIN: i32 = 12;
+pub const CREVICE_WIDTH_MAX: i32 = 36;
 pub const CREVICE_DEPTH_MIN: i32 = 90;
 pub const CREVICE_DEPTH_MAX: i32 = 430;
 /// Max heading change per step, radians, around straight down.
@@ -653,13 +653,77 @@ mod tests {
         assert!(visible_h < p.height as f32);
     }
 
+    /// Margin over the binding body dimension, for pixels the CA nibbles off the
+    /// walls of a freshly carved passage.
+    const BORE_MARGIN: f32 = 2.0;
+
     #[test]
-    fn player_fits_through_the_narrowest_tunnel() {
-        // A tunnel at its minimum radius must admit the player's AABB, or caves
-        // become decoration.
-        assert!((TUNNEL_RADIUS_MIN * 2) as f32 >= PLAYER_W);
-        assert!((CHAMBER_RADIUS_MIN * 2) as f32 >= PLAYER_H);
-        assert!((ENTRANCE_RADIUS * 2) as f32 >= PLAYER_W);
+    fn horizontal_bores_are_sized_against_player_height() {
+        // A HORIZONTAL tunnel's clear bore is its diameter, and the player is
+        // PLAYER_H (28) tall — NOT PLAYER_W. Asserting against PLAYER_W is what let
+        // a 20 px bore ship: 20 >= 16 passes while the player does not fit.
+        // See docs/70-amendments-v2.md §A9.
+        assert!(
+            (TUNNEL_RADIUS_MIN * 2) as f32 >= PLAYER_H + BORE_MARGIN,
+            "TUNNEL_RADIUS_MIN bore {} must clear PLAYER_H {PLAYER_H} + {BORE_MARGIN}",
+            TUNNEL_RADIUS_MIN * 2
+        );
+        assert!(
+            (ENTRANCE_RADIUS * 2) as f32 >= PLAYER_H + BORE_MARGIN,
+            "ENTRANCE_RADIUS bore {} must clear PLAYER_H {PLAYER_H} + {BORE_MARGIN} \
+             (entrance shafts wander, so they are horizontal in places)",
+            ENTRANCE_RADIUS * 2
+        );
+        assert!(
+            (CHAMBER_RADIUS_MIN * 2) as f32 >= PLAYER_H + BORE_MARGIN,
+            "CHAMBER_RADIUS_MIN bore {} must clear PLAYER_H {PLAYER_H} + {BORE_MARGIN}",
+            CHAMBER_RADIUS_MIN * 2
+        );
+    }
+
+    #[test]
+    fn a_circular_bore_admits_the_box_across_its_full_width() {
+        // Sharper than the diameter rule. The bore is a CIRCLE, so at the box's
+        // left and right edges — PLAYER_W/2 off the centre line — the vertical
+        // clearance is only 2*sqrt(r^2 - (PLAYER_W/2)^2), not 2r. At r=15 that is
+        // 25.4 px and a 28-tall body does not fit, even though the diameter is 30.
+        //
+        // Swept tunnels are capsules and do give the full 2r along their length, so
+        // r=16 happens to measure 100% chamber reachability — but single circles at
+        // bends and junctions bind, and a guarantee that holds by luck is not one.
+        let half_w = PLAYER_W / 2.0;
+        for (name, r) in [
+            ("TUNNEL_RADIUS_MIN", TUNNEL_RADIUS_MIN),
+            ("ENTRANCE_RADIUS", ENTRANCE_RADIUS),
+            ("CHAMBER_RADIUS_MIN", CHAMBER_RADIUS_MIN),
+        ] {
+            let edge_clearance = 2.0 * ((r * r) as f32 - half_w * half_w).sqrt();
+            assert!(
+                edge_clearance >= PLAYER_H + BORE_MARGIN,
+                "{name} = {r}: clearance at the box edge is {edge_clearance:.1} px, \
+                 which must reach PLAYER_H {PLAYER_H} + {BORE_MARGIN}"
+            );
+        }
+    }
+
+    #[test]
+    fn vertical_bores_are_sized_against_player_width() {
+        // A crevice is VERTICAL, so its binding dimension is PLAYER_W (16). The
+        // width tapers to 60% at the bottom, and that tapered width is what must
+        // still admit the player for a crevice to be a way down.
+        const TAPER: f32 = 0.6;
+        assert!(
+            CREVICE_WIDTH_MAX as f32 * TAPER >= PLAYER_W + BORE_MARGIN,
+            "the widest crevice tapers to {} which must clear PLAYER_W {PLAYER_W} + {BORE_MARGIN}",
+            CREVICE_WIDTH_MAX as f32 * TAPER
+        );
+        // The narrow end is deliberately impassable: a crack that lets light and
+        // grenades through is wanted, so this asserts the MIX exists rather than
+        // that every crevice is an entrance.
+        assert!(
+            (CREVICE_WIDTH_MIN as f32) < PLAYER_W,
+            "the narrowest crevice should stay a crack, not a doorway"
+        );
     }
 
     #[test]

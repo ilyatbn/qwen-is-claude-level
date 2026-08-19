@@ -16,7 +16,6 @@ use crate::map::gen::silhouette::{force_borders, GenParams};
 use crate::map::shape::stamp_circle;
 use crate::map::Mask;
 use crate::math::Point;
-use crate::rng::substream;
 
 /// Step between stamps along a span. Small enough that consecutive discs of
 /// `BRIDGE_THICKNESS / 2` overlap solidly.
@@ -26,16 +25,15 @@ const SPAN_STEP: i32 = 3;
 ///
 /// `islands` are the centres returned by `add_blobs`. Returns the spans actually
 /// built, as `(from, to)` **surface** points.
+/// `seed` is accepted for signature symmetry with the other passes and for future
+/// randomised span selection; bridge placement is currently fully determined by the
+/// island layout, which is itself seeded.
 pub fn add_bridges(
     mask: &mut Mask,
-    seed: u64,
+    _seed: u64,
     params: &GenParams,
     islands: &[Point],
 ) -> Vec<(Point, Point)> {
-    // The sub-stream is drawn even when unused, so that adding or removing bridges
-    // never shifts another pass's stream.
-    let _rng = substream(seed, "bridges");
-
     let mut spans = Vec::new();
     if params.bridge_count == 0 || islands.len() < 2 {
         force_borders(mask);

@@ -283,18 +283,41 @@ mod tests {
         m
     }
 
-    /// 4-connected flood fill over air, starting from the sky region, returning the
-    /// set of reached pixels as a bitmap.
-    fn air_reachable_from_sky(mask: &Mask) -> Vec<bool> {
+    /// Flood the positions a **player body** can occupy, from the sky inward.
+    ///
+    /// Indexed by the body's centre-bottom pixel, exactly like a surface point. A
+    /// position is enterable when the whole `PLAYER_W × PLAYER_H` box at it is air.
+    ///
+    /// This is deliberately not a 1-px flood. A 1-px flood certifies that *water*
+    /// could reach a chamber, which is not a claim anyone can play: at the old
+    /// tunnel radii it reported 100% chamber reachability while a real body reached
+    /// 76%. See docs/70-amendments-v2.md §A9.
+    fn body_reachable_from_sky(mask: &Mask) -> Vec<bool> {
         let (w, h) = (mask.w as i32, mask.h as i32);
+        let half = (crate::constants::PLAYER_W as i32) / 2;
+        let body_h = crate::constants::PLAYER_H as i32;
+
+        let fits = |x: i32, y: i32| -> bool {
+            if x - half < 0 || x + half > w || y - body_h + 1 < 0 || y >= h {
+                return false;
+            }
+            for by in (y - body_h + 1)..=y {
+                if mask.count_run(by, x - half, x + half - 1) != 0 {
+                    return false;
+                }
+            }
+            true
+        };
+
         let mut seen = vec![false; (w * h) as usize];
         let mut stack = Vec::new();
 
-        // The whole top row of the sky band is the source.
+        // Sources: every body position along the bottom of the sky band.
         for x in 0..w {
-            if !mask.get(x, 0) {
-                seen[x as usize] = true;
-                stack.push(Point::new(x, 0));
+            let y = crate::constants::SKY_MARGIN as i32 - 1;
+            if fits(x, y) {
+                seen[(y * w + x) as usize] = true;
+                stack.push(Point::new(x, y));
             }
         }
 
@@ -305,7 +328,7 @@ mod tests {
                     continue;
                 }
                 let idx = (ny * w + nx) as usize;
-                if seen[idx] || mask.get(nx, ny) {
+                if seen[idx] || !fits(nx, ny) {
                     continue;
                 }
                 seen[idx] = true;
@@ -313,6 +336,26 @@ mod tests {
             }
         }
         seen
+    }
+
+    /// A chamber counts as reached if a body can stand anywhere inside it. The
+    /// centre pixel itself may be too close to the floor for the box to fit, which
+    /// says nothing about whether the room is usable.
+    fn body_can_reach_near(reachable: &[bool], mask: &Mask, c: Point) -> bool {
+        let w = mask.w as i32;
+        let r = CHAMBER_RADIUS_MAX;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let (x, y) = (c.x + dx, c.y + dy);
+                if x < 0 || y < 0 || x >= w || y >= mask.h as i32 {
+                    continue;
+                }
+                if reachable[(y * w + x) as usize] {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     #[test]
@@ -450,16 +493,16 @@ mod tests {
             let net = carve_network(&mut m, seed, &p);
             assert!(!net.chambers.is_empty(), "seed {seed}: no chambers placed");
 
-            let reachable = air_reachable_from_sky(&m);
-            let w = m.w as i32;
+            let reachable = body_reachable_from_sky(&m);
             for (i, c) in net.chambers.iter().enumerate() {
                 assert!(
                     !m.get(c.x, c.y),
                     "seed {seed}: chamber {i} centre {c:?} is still solid"
                 );
                 assert!(
-                    reachable[(c.y * w + c.x) as usize],
-                    "seed {seed}: chamber {i} at {c:?} is sealed off from the sky"
+                    body_can_reach_near(&reachable, &m, *c),
+                    "seed {seed}: chamber {i} at {c:?} cannot be reached by a \
+                     16x28 body from the sky"
                 );
             }
         }
@@ -471,12 +514,11 @@ mod tests {
         for seed in 0..4 {
             let mut m = solid_map(&p);
             let net = carve_network(&mut m, seed * 31 + 7, &p);
-            let reachable = air_reachable_from_sky(&m);
-            let w = m.w as i32;
+            let reachable = body_reachable_from_sky(&m);
             for (i, c) in net.chambers.iter().enumerate() {
                 assert!(
-                    reachable[(c.y * w + c.x) as usize],
-                    "seed {seed}: chamber {i} at {c:?} sealed off"
+                    body_can_reach_near(&reachable, &m, *c),
+                    "seed {seed}: chamber {i} at {c:?} not body-reachable"
                 );
             }
         }
@@ -489,26 +531,14 @@ mod tests {
         let net = carve_network(&mut m, 4242, &p);
         assert!(!net.entrances.is_empty());
 
-        let reachable = air_reachable_from_sky(&m);
-        let w = m.w as i32;
-        // Just below the sky margin there must be air connected to the sky, near
-        // at least one entrance chamber's column.
-        let mut found = false;
-        for &i in &net.entrances {
-            let c = net.chambers[i];
-            for dx in -80..=80 {
-                let x = c.x + dx;
-                let y = SKY_MARGIN as i32;
-                if x >= 0 && x < w && !m.get(x, y) && reachable[(y * w + x) as usize] {
-                    found = true;
-                    break;
-                }
-            }
-            if found {
-                break;
-            }
-        }
-        assert!(found, "no entrance shaft opens into the sky band");
+        let reachable = body_reachable_from_sky(&m);
+        // At least one entrance chamber must be body-reachable from the sky, which
+        // is the only sense in which a shaft is an entrance.
+        let found = net
+            .entrances
+            .iter()
+            .any(|&i| body_can_reach_near(&reachable, &m, net.chambers[i]));
+        assert!(found, "no entrance shaft admits a player body");
     }
 
     #[test]

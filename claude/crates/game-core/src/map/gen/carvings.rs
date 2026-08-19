@@ -247,15 +247,27 @@ mod tests {
                     "step of {d} px, expected {CREVICE_STEP}"
                 );
             }
-            for w in path.windows(3) {
-                let h1 = ((w[1].y - w[0].y) as f32).atan2((w[1].x - w[0].x) as f32);
-                let h2 = ((w[2].y - w[1].y) as f32).atan2((w[2].x - w[1].x) as f32);
-                let turn = crate::math::wrap_to_pi(h2 - h1).abs();
-                // Integer rounding at 6 px steps adds noticeable apparent turn.
-                assert!(
-                    turn <= CREVICE_WANDER + 0.35,
-                    "turn of {turn} rad exceeds {CREVICE_WANDER}"
-                );
+            // Per-step headings are measured between points rounded to whole
+            // pixels at a 6 px step, which injects up to ~+/-0.17 rad of apparent
+            // turn on its own — more than the 0.16 rad constant being tested. So
+            // assert over a LONGER baseline instead, where the rounding averages
+            // out: across k steps the heading may drift by at most k * CREVICE_WANDER,
+            // and measuring end-to-end over 8 steps makes the rounding negligible.
+            const BASELINE: usize = 8;
+            if path.len() > BASELINE * 2 {
+                for w in path.windows(BASELINE * 2 + 1) {
+                    let h1 =
+                        ((w[BASELINE].y - w[0].y) as f32).atan2((w[BASELINE].x - w[0].x) as f32);
+                    let h2 = ((w[BASELINE * 2].y - w[BASELINE].y) as f32)
+                        .atan2((w[BASELINE * 2].x - w[BASELINE].x) as f32);
+                    let turn = crate::math::wrap_to_pi(h2 - h1).abs();
+                    let bound = CREVICE_WANDER * BASELINE as f32;
+                    assert!(
+                        turn <= bound,
+                        "heading drifted {turn:.3} rad over {BASELINE} steps, \
+                         bound {bound:.3} ({CREVICE_WANDER} per step)"
+                    );
+                }
             }
         }
     }
