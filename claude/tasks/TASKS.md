@@ -89,7 +89,7 @@ server involved.
 - [x] [T3.02](M3/T3.02-wasm-ts-wrapper.md) — Typed TS wrapper and the build hook
 - [x] [T3.03](M3/T3.03-chunk-bake.md) — Mask → stencil → textured chunk
 - [x] [T3.04](M3/T3.04-edge-band.md) — The grass/edge band
-- [ ] [T3.05](M3/T3.05-chunk-manager.md) — Chunk placement and the rebake budget
+- [x] [T3.05](M3/T3.05-chunk-manager.md) — Chunk placement and the rebake budget
 - [ ] [T3.06](M3/T3.06-camera.md) — Camera, sky gradient, parallax
 - [ ] [T3.07](M3/T3.07-sandbox-scene.md) — Sandbox scene: seed, regenerate, click-to-carve
 - [ ] [T3.08](M3/T3.08-player-sprite.md) — Player sprite, animation states, placeholders

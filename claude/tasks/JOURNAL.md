@@ -725,3 +725,22 @@ Notes: SPLIT PER §A8 — chunkBake-math.ts is DOM-free and Phaser-free (stencil
 Left for later: visual confirmation of the band happens in T3.07's sandbox, as the
        task file says; the pixel output itself is deliberately not unit tested
        (docs/60-testing.md §7).
+
+## T3.05 — Chunk placement and the rebake budget — DONE
+Files: client/src/render/{terrain.ts,terrain.test.ts}
+Verified: `npm --prefix client test -- --run terrain` — 10 passed; typecheck clean
+Notes: TextureHost/ImageHost interfaces mean the tests never import Phaser, and a
+       TerrainDeps injection point (createCanvas + bake) means the whole scheduling
+       and lifecycle is exercised in node with no canvas — §A8 applied to a class
+       that is mostly bookkeeping.
+       Texture keys are `terrain_${generation}_${cx}_${cy}` with a module-level
+       generation counter. There is a test asserting ZERO key overlap between two
+       consecutive buildAll calls: Phaser's texture manager is global, and a reused
+       key leaves the OLD pixels in place so the new map shows fragments of the old.
+       destroy() removes every texture and destroys every image; the test asserts
+       removed.length == created.length and liveCount == 0. Without it the sandbox
+       leaks ~100 MB of canvas per twenty regenerates.
+       Pending is a Set (duplicate markDirty collapses), out-of-range ids are
+       ignored, and update() sorts by squared distance from the camera so the
+       nearest CHUNK_REBAKE_BUDGET bake first.
+Left for later: real bake timings measured in T3.07 with the sandbox.
