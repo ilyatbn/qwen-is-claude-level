@@ -68,6 +68,14 @@ player::input_tests::latest_frame_wins_within_one_tick
 player::input_tests::missing_frame_repeats_the_last_one
 player::input_tests::releasing_and_repressing_jump_yields_a_second_edge
 player::input_tests::use_slot_is_edge_triggered
+player::jump_tests::directional_jump_travels_further_than_a_standing_one
+player::jump_tests::jump_arc
+player::jump_tests::jump_does_nothing_in_the_air
+player::jump_tests::jump_does_nothing_without_an_edge
+player::jump_tests::jump_returns_to_the_ground
+player::jump_tests::jump_with_direction_held_applies_the_bias
+player::jump_tests::jump_without_direction_keeps_horizontal_velocity
+player::jump_tests::mid_air_direction_change_takes_effect_within_one_tick
 player::movement_tests::air_control_accelerates_toward_the_cap
 player::movement_tests::air_control_reverses_direction
 player::movement_tests::ground_probe_is_two_pixels

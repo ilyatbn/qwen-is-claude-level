@@ -574,3 +574,40 @@ without changing the command, the file layout, or the task file.
 
 *(Found by running the command and reading its output rather than assuming a passing
 suite implied the right tests ran — the same discipline the Phase 1 handoff records.)*
+
+### D28 — T2.4's jump apex is only satisfiable with an integrator the design never names
+
+**Spec** (`tasks/02-player.md` T2.4 step 4 / Acceptance): "`jump_arc` (from rest: apex
+≈ 330²/(2*900) ≈ 60.5 px above start, within 2 px)"; "standing jump height ≈ 60 px
+(assert 58–63)". T2.4 step 3 specifies only the velocity update: "Gravity:
+`vel.y += 900*dt` always". Nothing states how position is integrated.
+
+**Problem**: `v²/2g = 60.5 px` is the **continuous** apex. The simulation is a fixed
+20 Hz tick (docs/00 §2), and at `dt = 0.05` the apex depends entirely on the
+integration scheme — which the design leaves unspecified while asserting a value that
+pins it. Measured:
+
+| Integrator | Position update | Apex | T2.4's 58–63 |
+|---|---|---|---|
+| Semi-implicit (symplectic) Euler | `v += a·dt; x += v·dt` | **52.5 px** | FAIL |
+| Explicit Euler | `x += v·dt; v += a·dt` | **69.0 px** | FAIL |
+| **Velocity Verlet** | `x += v·dt + ½·a·dt²; v += a·dt` | **60.375 px** | **PASS** |
+
+Semi-implicit Euler is the most common choice in game physics and the most natural
+reading of "vel.y += 900*dt" followed by a position update — and it misses the
+documented range by 5.5 px. Explicit Euler overshoots by 6 px.
+
+**Implemented**: velocity Verlet, in `Player::integrate`. It is the only one of the
+three that satisfies the documented assertion, and it is also the correct choice on
+its own merits: for constant acceleration over a step it is exact, which is precisely
+why it reproduces the continuous `v²/2g` the doc quotes. Gravity is constant here, so
+Verlet costs one extra multiply-add per axis per tick and introduces no error.
+
+The reasoning is recorded at `Player::integrate` so a future change to "simplify" the
+integrator fails `jump_arc` with an explanation rather than a bare number. Verified:
+switching to semi-implicit Euler fails with "jump apex 52.5 px is outside the
+documented 58–63 range".
+
+**Note for T2.6**: this is a further reason rapier cannot own player movement (D2).
+Its solver uses its own integration, so routing movement through it would reintroduce
+exactly this discrepancy — and would not be tunable back into the documented range.

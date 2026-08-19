@@ -415,45 +415,83 @@ impl Player {
         .any(|&x| map.is_solid_at_pixel(x, probe_y))
     }
 
-    /// Horizontal movement for one tick (docs/03 §4, T2.3 step 3).
-    ///
-    /// On ground A/D set velocity directly — "snappy Worms feel, no accel on
-    /// ground". In air they accelerate toward ±AIR_MAX at AIR_ACCEL.
-    pub fn step_horizontal(&mut self, left: bool, right: bool, on_ground: bool, dt: f32) {
-        let direction = match (left, right) {
+    /// Which way A/D is steering: -1, 0 or +1. Both keys held is no input.
+    pub fn input_direction(left: bool, right: bool) -> f32 {
+        match (left, right) {
             (true, false) => -1.0,
             (false, true) => 1.0,
-            // Both or neither held: no input.
             _ => 0.0,
-        };
-
-        if on_ground {
-            self.vel.x = direction * MOVE_SPEED;
-            return;
-        }
-
-        if direction == 0.0 {
-            // docs/03 §4 / T2.4 step 2: no air drag in v1 — keep vel.x.
-            return;
-        }
-
-        let target = direction * AIR_MAX;
-        let delta = direction * AIR_ACCEL * dt;
-        self.vel.x += delta;
-        // Do not accelerate past the cap, and never reduce speed already above
-        // it (a jetpack boost can legitimately exceed AIR_MAX).
-        if direction > 0.0 {
-            self.vel.x = self.vel.x.min(target.max(self.vel.x - delta));
-        } else {
-            self.vel.x = self.vel.x.max(target.min(self.vel.x - delta));
         }
     }
 
-    /// Integrate position from velocity (T2.3 step 4).
+    /// Horizontal step for one tick (docs/03 §4, T2.3 step 3).
+    ///
+    /// On ground, A/D **set** velocity directly — "snappy Worms feel, no accel
+    /// on ground" — and the returned acceleration is zero. In air they return
+    /// ±AIR_ACCEL, which [`Player::integrate`] applies.
+    pub fn step_horizontal(&mut self, left: bool, right: bool, on_ground: bool) -> f32 {
+        let direction = Player::input_direction(left, right);
+
+        if on_ground {
+            self.vel.x = direction * MOVE_SPEED;
+            return 0.0;
+        }
+        if direction == 0.0 {
+            // docs/03 §4 / T2.4 step 2: no air drag in v1 — keep vel.x.
+            return 0.0;
+        }
+        direction * AIR_ACCEL
+    }
+
+    /// Cap air-control speed at ±AIR_MAX (docs/03 §4), applied after
+    /// integration since that is where velocity is updated.
+    ///
+    /// Only limits speed the player is actively accelerating toward; a velocity
+    /// already above the cap from another source (a jetpack boost, a blast) is
+    /// left alone rather than being silently braked.
+    pub fn clamp_air_speed(&mut self, direction: f32, previous_vx: f32) {
+        if direction > 0.0 && self.vel.x > AIR_MAX {
+            self.vel.x = AIR_MAX.max(previous_vx.min(self.vel.x));
+        } else if direction < 0.0 && self.vel.x < -AIR_MAX {
+            self.vel.x = (-AIR_MAX).min(previous_vx.max(self.vel.x));
+        }
+    }
+
+    /// Apply a jump on the rising edge of space, if grounded (docs/03 §4).
+    ///
+    /// "Jump (rising edge of space, on ground): apply JUMP_VY impulse; if A or
+    /// D held, also set horizontal vel to ±(MOVE_SPEED * JUMP_DIR_BIAS)."
+    ///
+    /// Returns whether the jump fired, so the caller knows the tick is
+    /// airborne and must not also run jetpack thrust (docs/03 §5: "Jetpack
+    /// cannot start on the ground").
+    pub fn step_jump(&mut self, jump_pressed: bool, left: bool, right: bool, on_ground: bool) -> bool {
+        if !(jump_pressed && on_ground) {
+            return false;
+        }
+        self.vel.y = JUMP_VY;
+        let direction = Player::input_direction(left, right);
+        if direction != 0.0 {
+            self.vel.x = direction * MOVE_SPEED * JUMP_DIR_BIAS;
+        }
+        true
+    }
+
+    /// Integrate one tick under constant acceleration (T2.3 step 4).
+    ///
+    /// Velocity Verlet: `x += v*dt + ½·a·dt²`, then `v += a·dt`.
+    ///
+    /// The integrator is NOT arbitrary here — see DEVIATIONS.md D28. T2.4
+    /// asserts a jump apex of 58–63 px from `JUMP_VY = -330` and
+    /// `GRAVITY = 900`. At the documented 20 Hz tick, semi-implicit Euler
+    /// yields 52.5 px and explicit Euler 69.0 px; both fail. Verlet yields
+    /// 60.375 px, matching the continuous `v²/2g = 60.5` the doc's "≈ 60.5 px"
+    /// is quoting. Only this integrator satisfies the documented assertion.
     ///
     /// The pure path: rapier resolves collisions afterwards (D2).
-    pub fn integrate(&mut self, dt: f32) {
-        self.pos = self.pos + self.vel * dt;
+    pub fn integrate(&mut self, accel: Vec2, dt: f32) {
+        self.pos = self.pos + self.vel * dt + accel * (0.5 * dt * dt);
+        self.vel = self.vel + accel * dt;
     }
 }
 
@@ -631,8 +669,8 @@ mod movement_tests {
         for _ in 0..10 {
             let on_ground = player.on_ground(&map);
             assert!(on_ground, "player left the ground while walking");
-            player.step_horizontal(false, true, on_ground, DT);
-            player.integrate(DT);
+            let ax = player.step_horizontal(false, true, on_ground);
+            player.integrate(Vec2::new(ax, 0.0), DT);
         }
 
         let dx = player.pos.x - start_x;
@@ -652,8 +690,8 @@ mod movement_tests {
         let start_x = player.pos.x;
         for _ in 0..10 {
             let g = player.on_ground(&map);
-            player.step_horizontal(true, false, g, DT);
-            player.integrate(DT);
+            let ax = player.step_horizontal(true, false, g);
+            player.integrate(Vec2::new(ax, 0.0), DT);
         }
         assert!((player.pos.x - start_x + 70.0).abs() < 1e-4);
         assert_eq!(player.vel.x, -MOVE_SPEED);
@@ -666,11 +704,11 @@ mod movement_tests {
         let map = flat_map(floor_row);
         let mut player = standing(&map, 20, floor_row);
         player.vel.x = MOVE_SPEED;
-        player.step_horizontal(false, false, true, DT);
+        player.step_horizontal(false, false, true);
         assert_eq!(player.vel.x, 0.0);
         // Both keys held is also "no input", not a tie broken arbitrarily.
         player.vel.x = MOVE_SPEED;
-        player.step_horizontal(true, true, true, DT);
+        player.step_horizontal(true, true, true);
         assert_eq!(player.vel.x, 0.0);
     }
 
@@ -691,8 +729,8 @@ mod movement_tests {
         let mut left_ground = false;
         for _ in 0..40 {
             let g = player.on_ground(&map);
-            player.step_horizontal(false, true, g, DT);
-            player.integrate(DT);
+            let ax = player.step_horizontal(false, true, g);
+            player.integrate(Vec2::new(ax, 0.0), DT);
             if !player.on_ground(&map) {
                 left_ground = true;
                 break;
@@ -725,7 +763,8 @@ mod movement_tests {
         player.pos.y -= 200.0; // airborne
         assert!(!player.on_ground(&map));
 
-        player.step_horizontal(false, true, false, DT);
+        let ax = player.step_horizontal(false, true, false);
+        player.integrate(Vec2::new(ax, 0.0), DT);
         assert!(
             (player.vel.x - AIR_ACCEL * DT).abs() < 1e-4,
             "one tick of air control should add {} px/s, got {}",
@@ -735,7 +774,10 @@ mod movement_tests {
 
         // Accelerating for many ticks must stop at the cap, not overshoot.
         for _ in 0..100 {
-            player.step_horizontal(false, true, false, DT);
+            let prev = player.vel.x;
+            let ax = player.step_horizontal(false, true, false);
+            player.integrate(Vec2::new(ax, 0.0), DT);
+            player.clamp_air_speed(1.0, prev);
         }
         assert!(
             (player.vel.x - AIR_MAX).abs() < 1e-4,
@@ -752,7 +794,8 @@ mod movement_tests {
         let mut player = standing(&map, 20, 40);
         player.pos.y -= 200.0;
         player.vel.x = AIR_MAX;
-        player.step_horizontal(true, false, false, DT);
+        let ax = player.step_horizontal(true, false, false);
+        player.integrate(Vec2::new(ax, 0.0), DT);
         assert!(
             player.vel.x < AIR_MAX,
             "holding left at full right speed must decelerate immediately",
@@ -767,8 +810,190 @@ mod movement_tests {
         player.pos.y -= 200.0;
         player.vel.x = 123.0;
         for _ in 0..20 {
-            player.step_horizontal(false, false, false, DT);
+            let ax = player.step_horizontal(false, false, false);
+            player.integrate(Vec2::new(ax, 0.0), DT);
         }
         assert_eq!(player.vel.x, 123.0, "air velocity decayed without input");
+    }
+}
+
+/// T2.4 jump tests.
+#[cfg(test)]
+mod jump_tests {
+    use super::*;
+    use crate::map::Scale;
+    use crate::tiles::{Tile, TileKind};
+
+    fn flat_map(floor_row: u32) -> Map {
+        let (width, height) = Scale::Small.dimensions();
+        let mut map = Map {
+            seed: 0,
+            scale: Scale::Small,
+            width,
+            height,
+            tiles: vec![Tile::AIR; (width * height) as usize],
+            decor: Vec::new(),
+            spawns: Vec::new(),
+            version: 0,
+        };
+        for y in floor_row..height {
+            for x in 0..width {
+                map.set_tile(x, y, Tile::new(TileKind::Stone));
+            }
+        }
+        map
+    }
+
+    fn standing(map: &Map, col: u32, floor_row: u32) -> Player {
+        let _ = map;
+        Player::new(
+            0,
+            "p".into(),
+            Vec2::new(
+                (col as f32 + 0.5) * TILE_SIZE,
+                floor_row as f32 * TILE_SIZE - BODY_HALF_HEIGHT,
+            ),
+        )
+    }
+
+    /// Simulate a jump and return (apex height above start, ticks to land).
+    fn simulate_jump(left: bool, right: bool) -> (f32, u32, Player) {
+        let floor_row = 40;
+        let map = flat_map(floor_row);
+        let mut player = standing(&map, 20, floor_row);
+        let start_y = player.pos.y;
+
+        let on_ground = player.on_ground(&map);
+        player.step_jump(true, left, right, on_ground);
+
+        let mut apex = 0.0f32;
+        let mut ticks = 0u32;
+        for tick in 1..200u32 {
+            let grounded = player.on_ground(&map);
+            let ax = player.step_horizontal(left, right, grounded);
+            player.integrate(Vec2::new(ax, GRAVITY), DT);
+            apex = apex.max(start_y - player.pos.y);
+            // Landed: back at or below the starting height, moving downward.
+            if player.pos.y >= start_y && player.vel.y > 0.0 {
+                player.pos.y = start_y;
+                player.vel.y = 0.0;
+                ticks = tick;
+                break;
+            }
+        }
+        (apex, ticks, player)
+    }
+
+    #[test]
+    fn jump_arc() {
+        // docs/08 §1 (physics row) + T2.4 Acceptance: "standing jump height
+        // ≈ 60 px (assert 58–63)".
+        //
+        // The doc's "apex ≈ 330²/(2*900) ≈ 60.5 px" is the CONTINUOUS result.
+        // At the documented 20 Hz tick only velocity Verlet reproduces it —
+        // semi-implicit Euler gives 52.5 px and explicit Euler 69.0 px, both
+        // outside the asserted range. See DEVIATIONS.md D28.
+        let (apex, ticks, _) = simulate_jump(false, false);
+        assert!(
+            (58.0..=63.0).contains(&apex),
+            "jump apex {apex} px is outside the documented 58–63 range",
+        );
+        assert!(
+            (apex - 60.5).abs() <= 2.0,
+            "apex {apex} is not within 2 px of the doc's 60.5",
+        );
+        assert!(ticks > 0, "player never landed");
+    }
+
+    #[test]
+    fn jump_returns_to_the_ground() {
+        // A jump that never lands would still satisfy an apex assertion.
+        let (_, ticks, player) = simulate_jump(false, false);
+        // 2 * v / g = 2*330/900 = 0.733 s = ~15 ticks.
+        assert!(
+            (12..=18).contains(&ticks),
+            "landed after {ticks} ticks, expected ~15 (2*330/900 = 0.73 s)",
+        );
+        assert_eq!(player.vel.y, 0.0);
+    }
+
+    #[test]
+    fn jump_with_direction_held_applies_the_bias() {
+        // T2.4 step 1: "if A/D held vel.x = ±70 (140 * 0.5 bias)".
+        let floor_row = 40;
+        let map = flat_map(floor_row);
+        let mut player = standing(&map, 20, floor_row);
+        let on_ground = player.on_ground(&map);
+
+        assert!(player.step_jump(true, false, true, on_ground));
+        assert_eq!(player.vel.y, JUMP_VY);
+        assert!(
+            (player.vel.x - 70.0).abs() < 1e-4,
+            "jump bias gave vel.x {}, expected 70",
+            player.vel.x,
+        );
+
+        let mut player = standing(&map, 20, floor_row);
+        player.step_jump(true, true, false, true);
+        assert!((player.vel.x + 70.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn jump_without_direction_keeps_horizontal_velocity() {
+        // The bias applies only "if A or D held" (docs/03 §4).
+        let map = flat_map(40);
+        let mut player = standing(&map, 20, 40);
+        player.vel.x = 123.0;
+        player.step_jump(true, false, false, true);
+        assert_eq!(player.vel.x, 123.0);
+        assert_eq!(player.vel.y, JUMP_VY);
+    }
+
+    #[test]
+    fn jump_does_nothing_in_the_air() {
+        // docs/03 §4: jump requires the rising edge AND being on ground.
+        let map = flat_map(40);
+        let mut player = standing(&map, 20, 40);
+        player.pos.y -= 200.0;
+        player.vel.y = 50.0;
+        assert!(!player.step_jump(true, false, false, false));
+        assert_eq!(player.vel.y, 50.0, "an airborne jump changed velocity");
+    }
+
+    #[test]
+    fn jump_does_nothing_without_an_edge() {
+        let map = flat_map(40);
+        let mut player = standing(&map, 20, 40);
+        assert!(!player.step_jump(false, false, false, true));
+        assert_eq!(player.vel.y, 0.0);
+    }
+
+    #[test]
+    fn directional_jump_travels_further_than_a_standing_one() {
+        // The observable consequence of JUMP_DIR_BIAS.
+        let (_, _, standing_player) = simulate_jump(false, false);
+        let (_, _, moving_player) = simulate_jump(false, true);
+        assert!(
+            moving_player.pos.x > standing_player.pos.x,
+            "a directional jump should cover ground",
+        );
+    }
+
+    #[test]
+    fn mid_air_direction_change_takes_effect_within_one_tick() {
+        // T2.4 step 4: "mid-air A flips direction within 1 tick".
+        let map = flat_map(40);
+        let mut player = standing(&map, 20, 40);
+        player.step_jump(true, false, true, true);
+        // Airborne now; hold the opposite direction for one tick.
+        player.pos.y -= 50.0;
+        let before = player.vel.x;
+        let ax = player.step_horizontal(true, false, false);
+        player.integrate(Vec2::new(ax, GRAVITY), DT);
+        assert!(
+            player.vel.x < before,
+            "holding A mid-air did not decelerate: {before} -> {}",
+            player.vel.x,
+        );
     }
 }

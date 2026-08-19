@@ -71,7 +71,7 @@ Read `docs/03-player.md` in full before starting this file.
 
 ---
 
-## T2.4 — Jump (bias + air control) [ ]
+## T2.4 — Jump (bias + air control) [x]
 
 **Goal**: space on ground = jump with direction bias; A/D steers in air.
 **Read**: `docs/03-player.md` §4 (jump + air rules).
