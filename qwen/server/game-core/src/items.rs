@@ -606,6 +606,53 @@ pub fn spawn_timed_item(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Pickup (T3.6, docs/04 §5)
+// ---------------------------------------------------------------------------
+
+/// The outcome of one pickup attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pickup {
+    /// Taken into the given slot; the ground item should be removed.
+    Taken { slot: usize, item: ItemId },
+    /// Out of reach — the item stays.
+    OutOfRange,
+    /// In reach but no free slot; "the item stays (no swap in v1)".
+    InventoryFull,
+    /// In reach but already holding a flashlight (docs/04 §1: max 1).
+    AlreadyHeld,
+}
+
+/// Try to pick up one ground item (docs/04 §5, T3.6 step 2).
+///
+/// "walking over a ground item (16 px radius) auto-picks it up IF a slot is
+/// free; else the item stays (no swap in v1)."
+///
+/// Distance is measured from the player's CENTRE to the item, matching the
+/// projectile hit convention in docs/04 §2. Note the body penetrates the floor
+/// by up to ~1.1 px while walking (HANDOFF-phase2), which is inside this 16 px
+/// radius and so cannot flip a pickup on its own.
+pub fn try_pickup(inventory: &mut Inventory, item: &GroundItem, px: f32, py: f32) -> Pickup {
+    if item.hidden {
+        return Pickup::OutOfRange;
+    }
+    if (item.x - px).hypot(item.y - py) > PICKUP_RADIUS {
+        return Pickup::OutOfRange;
+    }
+    // docs/04 §1: the flashlight "occupies 1 inventory slot"; T3.6 step 3 makes
+    // a second one a no-op rather than a wasted slot.
+    if item.item == ItemId::Flashlight && inventory.contains(ItemId::Flashlight) {
+        return Pickup::AlreadyHeld;
+    }
+    match inventory.first_free_slot() {
+        Some(slot) => {
+            inventory.slots[slot] = Some(item.item);
+            Pickup::Taken { slot, item: item.item }
+        }
+        None => Pickup::InventoryFull,
+    }
+}
+
 /// T3.1 catalog tests.
 ///
 /// Named `catalog_tests` so T3.1's Test command, `cargo test -p game-core
@@ -1607,6 +1654,156 @@ mod timed_tests {
             columns.len() > 40,
             "200 timed spawns only used {} distinct columns",
             columns.len(),
+        );
+    }
+}
+
+/// T3.6 pickup and inventory tests.
+#[cfg(test)]
+mod inventory_tests {
+    use super::*;
+
+    fn ground(item: ItemId, x: f32, y: f32) -> GroundItem {
+        GroundItem { id: 0, item, x, y, is_crate: false, hidden: false }
+    }
+
+    #[test]
+    fn pickup_requires_free_slot() {
+        // docs/08 §1 (items row) + T3.6 step 2.
+        let mut inv = Inventory::new();
+        let item = ground(ItemId::Pistol, 100.0, 100.0);
+        assert_eq!(
+            try_pickup(&mut inv, &item, 100.0, 100.0),
+            Pickup::Taken { slot: 0, item: ItemId::Pistol },
+        );
+        assert_eq!(inv.slots[0], Some(ItemId::Pistol));
+    }
+
+    #[test]
+    fn pickup_full_inventory_leaves_item() {
+        // docs/08 §1 + T3.6 Acceptance: "6 items picked -> 7th stays on the
+        // ground". No swap in v1.
+        let mut inv = Inventory::new();
+        for slot in 0..6 {
+            let item = ground(ItemId::Pistol, 100.0, 100.0);
+            assert_eq!(
+                try_pickup(&mut inv, &item, 100.0, 100.0),
+                Pickup::Taken { slot, item: ItemId::Pistol },
+                "slot {slot} should have been filled",
+            );
+        }
+        assert!(!inv.has_free_slot());
+
+        let seventh = ground(ItemId::Rocket, 100.0, 100.0);
+        assert_eq!(
+            try_pickup(&mut inv, &seventh, 100.0, 100.0),
+            Pickup::InventoryFull,
+        );
+        // And nothing was displaced.
+        assert!(inv.slots.iter().all(|s| *s == Some(ItemId::Pistol)));
+    }
+
+    #[test]
+    fn pickup_radius_is_sixteen_pixels() {
+        // docs/04 §5: "walking over a ground item (16 px radius)".
+        let item = ground(ItemId::Medkit, 100.0, 100.0);
+        for (dx, dy, reachable) in [
+            (0.0, 0.0, true),
+            (15.9, 0.0, true),
+            (16.0, 0.0, true),
+            (16.1, 0.0, false),
+            (0.0, 16.0, true),
+            (0.0, 20.0, false),
+            // Diagonal: 12,12 is 16.97 px away — outside, though both axes are
+            // within 16. A box check instead of a circle would accept it.
+            (12.0, 12.0, false),
+            (11.0, 11.0, true),
+        ] {
+            let mut inv = Inventory::new();
+            let result = try_pickup(&mut inv, &item, 100.0 + dx, 100.0 + dy);
+            let taken = matches!(result, Pickup::Taken { .. });
+            assert_eq!(
+                taken, reachable,
+                "offset ({dx},{dy}) = {:.2} px: expected reachable={reachable}",
+                (dx * dx + dy * dy).sqrt(),
+            );
+        }
+    }
+
+    #[test]
+    fn pickup_fills_the_first_free_slot() {
+        // docs/04 §5: "fill first free slot".
+        let mut inv = Inventory::new();
+        inv.slots[0] = Some(ItemId::Pistol);
+        inv.slots[1] = Some(ItemId::Rocket);
+        let item = ground(ItemId::Medkit, 0.0, 0.0);
+        assert_eq!(
+            try_pickup(&mut inv, &item, 0.0, 0.0),
+            Pickup::Taken { slot: 2, item: ItemId::Medkit },
+        );
+
+        // A hole in the middle is filled before the tail.
+        let mut inv = Inventory::new();
+        inv.slots = [Some(ItemId::Pistol); 6];
+        inv.slots[3] = None;
+        let item = ground(ItemId::Grenade, 0.0, 0.0);
+        assert_eq!(
+            try_pickup(&mut inv, &item, 0.0, 0.0),
+            Pickup::Taken { slot: 3, item: ItemId::Grenade },
+        );
+    }
+
+    #[test]
+    fn a_second_flashlight_is_a_no_op() {
+        // T3.6 step 3: "picking one while already holding one -> no-op (max 1,
+        // it's unique per player)". Without this it would waste a slot.
+        let mut inv = Inventory::new();
+        let flashlight = ground(ItemId::Flashlight, 0.0, 0.0);
+        assert_eq!(
+            try_pickup(&mut inv, &flashlight, 0.0, 0.0),
+            Pickup::Taken { slot: 0, item: ItemId::Flashlight },
+        );
+        assert_eq!(
+            try_pickup(&mut inv, &flashlight, 0.0, 0.0),
+            Pickup::AlreadyHeld,
+            "a second flashlight should not be taken",
+        );
+        assert_eq!(inv.slots[1], None, "the second flashlight consumed a slot");
+        // Other duplicates ARE allowed — only the flashlight is unique.
+        let pistol = ground(ItemId::Pistol, 0.0, 0.0);
+        assert!(matches!(try_pickup(&mut inv, &pistol, 0.0, 0.0), Pickup::Taken { .. }));
+        assert!(matches!(try_pickup(&mut inv, &pistol, 0.0, 0.0), Pickup::Taken { .. }));
+    }
+
+    #[test]
+    fn hidden_items_cannot_be_picked_up() {
+        // A source-B item is "hidden until that tile destroyed" (docs/04 §3
+        // row B) — walking over the rock must not collect it.
+        let mut inv = Inventory::new();
+        let mut buried = ground(ItemId::Rocket, 0.0, 0.0);
+        buried.hidden = true;
+        assert_eq!(try_pickup(&mut inv, &buried, 0.0, 0.0), Pickup::OutOfRange);
+        assert!(inv.slots.iter().all(|s| s.is_none()));
+    }
+
+    #[test]
+    fn out_of_range_pickup_leaves_the_inventory_untouched() {
+        let mut inv = Inventory::new();
+        let item = ground(ItemId::Pistol, 500.0, 500.0);
+        assert_eq!(try_pickup(&mut inv, &item, 0.0, 0.0), Pickup::OutOfRange);
+        assert!(inv.slots.iter().all(|s| s.is_none()));
+    }
+
+    #[test]
+    fn a_full_inventory_still_rejects_a_duplicate_flashlight_as_already_held() {
+        // Ordering check: the uniqueness rule is evaluated before the
+        // free-slot rule, so the reason reported is the accurate one.
+        let mut inv = Inventory::new();
+        inv.slots = [Some(ItemId::Flashlight); 6];
+        let flashlight = ground(ItemId::Flashlight, 0.0, 0.0);
+        assert_eq!(
+            try_pickup(&mut inv, &flashlight, 0.0, 0.0),
+            Pickup::AlreadyHeld,
         );
     }
 }

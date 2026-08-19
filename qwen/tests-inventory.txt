@@ -35,6 +35,14 @@ items::initial_tests::placement_a_respects_six_tile_spacing
 items::initial_tests::placement_a_sits_on_grass_tile_centres
 items::initial_tests::placement_draws_position_then_item
 items::initial_tests::source_a_uses_the_ground_weight_table
+items::inventory_tests::a_full_inventory_still_rejects_a_duplicate_flashlight_as_already_held
+items::inventory_tests::a_second_flashlight_is_a_no_op
+items::inventory_tests::hidden_items_cannot_be_picked_up
+items::inventory_tests::out_of_range_pickup_leaves_the_inventory_untouched
+items::inventory_tests::pickup_fills_the_first_free_slot
+items::inventory_tests::pickup_full_inventory_leaves_item
+items::inventory_tests::pickup_radius_is_sixteen_pixels
+items::inventory_tests::pickup_requires_free_slot
 items::supply_crate_tests::a_crate_holds_exactly_two_items
 items::supply_crate_tests::a_falling_crate_cannot_be_opened
 items::supply_crate_tests::a_landed_crate_does_not_move

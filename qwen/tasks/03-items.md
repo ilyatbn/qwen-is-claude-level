@@ -103,7 +103,7 @@ Read `docs/04-items.md` in full before starting this file.
 
 ---
 
-## T3.6 — Pickup + 6-slot inventory [ ]
+## T3.6 — Pickup + 6-slot inventory [x]
 
 **Goal**: auto-pickup with free-slot rule; inventory state in Player.
 **Read**: `docs/04-items.md` §5.
