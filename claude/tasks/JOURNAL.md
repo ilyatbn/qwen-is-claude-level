@@ -526,3 +526,22 @@ Notes: pos is the CENTRE of the AABB. The test asserts exact numbers (92,86)-(10
        COYOTE_TICKS = 6 exported here; airborne_ticks is a tick count so coyote time
        is exact rather than float-accumulated.
 Left for later: nothing
+
+## T2.02 — Collision queries — DONE
+## T2.03 — ground_probe and slope helpers — DONE
+Files: crates/game-core/src/physics/{collide.rs,mod.rs}
+Verified: `cargo test -p game-core --release --lib collide` — 22 passed
+          (`--lib ground_probe` also green; both tasks live in collide.rs as the
+          task files specify)
+Notes: aabb_overlaps_solid walks coarse cells, Empty/Full decide with ZERO bit
+       reads, Mixed cells test only the part inside the box via count_run.
+       The load-bearing test is the 10,000-box agreement against brute force on a
+       REAL generated map — that is what proves the fast path never lies.
+       There is also a test that deliberately corrupts mask bits behind a cell the
+       grid calls Empty and asserts the query does NOT see them: the fast path is
+       only fast because it trusts the grid.
+       collide::tests exports test_map()/floor_at() as pub(crate) — T2.04/T2.05 and
+       the scenario tests reuse them rather than each hand-rolling a Map.
+       step_up_clearance returns the SMALLEST working lift (test builds a case where
+       2 and 5 both clear and asserts 2) or players visibly hop up slopes.
+Left for later: nothing
