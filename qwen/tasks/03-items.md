@@ -69,7 +69,7 @@ Read `docs/04-items.md` in full before starting this file.
 
 ---
 
-## T3.4 — Source C: supply crates [ ]
+## T3.4 — Source C: supply crates [x]
 
 **Goal**: crate every 45 s falls from sky, lands, splits into 2 items.
 **Read**: `docs/04-items.md` §3 (row C).

@@ -995,3 +995,45 @@ One visible consequence: because row B raises the total to 140 rather than
 redistributing, doubling the flashlight's weight from 10 to 20 makes it **1.86×** more
 likely in rock pockets, not 2×. Measured over 60,000 draws per table. Asserted as a
 band rather than an exact ratio, with the reason recorded in the test.
+
+### D38 — An anchor's coverage boundary can silently differ from its apparent scope
+
+**Not a spec defect — a testing-method finding, recorded because Phase 4 will walk into
+it again.**
+
+At the end of Phase 2, `Tile.item` was added to `golden_hash` with the stated intent
+that "T3.3's hidden-item placement is anchored the moment it writes one", and the
+handoff predicted `generation_matches_golden_hashes` would fail at T3.3 and need a
+deliberate re-pin.
+
+It did not fail. `Map::generate` never writes `Tile.item` — `place_hidden` is a
+**separate round-start step** (docs/04 §6 step 5), run after generation. So the field
+was hashed, but always as `None`. The anchor was extended in form and not in substance,
+and hidden-item placement went in completely unpinned.
+
+**This is a distinct variant of the recurring class.** The others were tests that
+*could not fail*:
+
+- self-referential assertions (jetpack assist, air control),
+- assertions on an output invariant under the bug (rebuild scope, the D22 blast test),
+- a deleted test.
+
+This one *could* fail — it just could never fail **for the thing everyone assumed it
+covered**. The gap is between an anchor's real coverage boundary and its apparent one,
+and a passing suite looks identical either way. The prediction that it would break was
+itself the tell: when an anchor is expected to fail and doesn't, that is evidence about
+coverage, not luck.
+
+**Closed** by `item_placement_matches_golden_hashes`, a literal anchor over sources A
+and B. Verified to discriminate: a wasted `next_u32()` in `place_hidden` fails it and
+the second, independent draw-order test, while both *map* anchors correctly stay green
+because map generation genuinely did not change.
+
+**The trap is still open for Phase 4.** Round start gains more steps outside
+`Map::generate` — spawn shuffling (T4.1) and the effect schedule (T4.8), both
+determinism-critical per docs/04 §6. Each needs its own anchor; neither will be covered
+by the map hash, and neither will announce that.
+
+**Rule**: when adding a field to an existing anchor to cover a new subsystem, assert
+that the anchor *changes* when that subsystem runs. If it does not, the subsystem is
+outside the anchor's boundary and needs its own.

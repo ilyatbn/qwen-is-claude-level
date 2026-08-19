@@ -7,7 +7,7 @@
 use crate::map::Map;
 use crate::protocol::ItemId;
 use crate::rng::GameRng;
-use crate::tiles::TileKind;
+use crate::tiles::{TileKind, TILE_SIZE};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -430,6 +430,131 @@ pub fn place_hidden(map: &mut Map, rng: &mut GameRng) -> Vec<(u32, u32, ItemId)>
         placed.push((x, y, item));
     }
     placed
+}
+
+// ---------------------------------------------------------------------------
+// Source C: supply crates (T3.4, docs/04 §3 row C)
+// ---------------------------------------------------------------------------
+
+/// Crate drop times, seconds into the round (docs/04 §3 row C:
+/// "every 45 s (t=45, 90, 135, 180, 225)").
+pub const CRATE_DROP_TIMES_S: [f32; 5] = [45.0, 90.0, 135.0, 180.0, 225.0];
+/// Crate fall speed, px/s (T3.4 step 2).
+pub const CRATE_FALL_SPEED: f32 = 200.0;
+/// How long a landed crate sits before expiring, seconds (docs/04 §3 row C).
+pub const CRATE_LIFETIME_S: f32 = 60.0;
+/// Items a crate yields when opened (docs/04 §3 row C: "1 crate = 2 items").
+pub const CRATE_CONTENTS: usize = 2;
+/// Spawn height, px above the map top (T3.4 step 2: "y = -20").
+pub const CRATE_SPAWN_Y: f32 = -20.0;
+
+/// A falling or landed supply crate (T3.4 step 1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Crate {
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
+    /// Px/s. Zero once landed.
+    pub vy: f32,
+    pub landed: bool,
+    pub content: [ItemId; CRATE_CONTENTS],
+    /// Tick at which an unopened crate disappears. Set on landing.
+    pub expires_tick: Option<u64>,
+}
+
+/// Spawn a crate above the map at a random column (docs/04 §3 row C).
+///
+/// Draw order: column, then the two contents in order.
+pub fn spawn_crate(map: &Map, rng: &mut GameRng, ids: &mut ItemIdCounter) -> Crate {
+    let column = rng.gen_range(0, map.width);
+    let first = pick_item(rng, SpawnWeights::Ground);
+    let second = pick_item(rng, SpawnWeights::Ground);
+    Crate {
+        id: ids.next(),
+        x: (column as f32 + 0.5) * TILE_SIZE,
+        y: CRATE_SPAWN_Y,
+        vy: CRATE_FALL_SPEED,
+        landed: false,
+        content: [first, second],
+        expires_tick: None,
+    }
+}
+
+/// Advance a crate one tick (T3.4 step 2).
+///
+/// "fall at 200 px/s until the tile under it is solid → landed, sits 60 s".
+///
+/// The fall is stepped and then **clamped to the surface** rather than left
+/// wherever the tick boundary happened to land, so a crate never comes to rest
+/// inside terrain (T3.4 Acceptance) regardless of tick size — at 200 px/s a
+/// tick covers 10 px, which is most of a 16 px tile.
+pub fn step_crate(crate_: &mut Crate, map: &Map, tick: u64, dt: f32) {
+    if crate_.landed {
+        return;
+    }
+
+    let next_y = crate_.y + crate_.vy * dt;
+
+    // The column this crate is falling down.
+    let Some(column) = map.tile_at_pixel(crate_.x, 0.0).map(|(x, _)| x) else {
+        // Off-map horizontally: nothing to land on.
+        crate_.y = next_y;
+        return;
+    };
+
+    // Only tiles the crate actually PASSES THROUGH this tick can stop it.
+    // Searching the whole column below would teleport the crate to the surface
+    // on its first step, ignoring the documented 200 px/s fall entirely.
+    let from_row = if crate_.y < 0.0 { 0 } else { (crate_.y / TILE_SIZE) as u32 };
+    let to_row = if next_y < 0.0 {
+        0
+    } else {
+        ((next_y / TILE_SIZE) as u32).min(map.height.saturating_sub(1))
+    };
+
+    let landing_row = if next_y < 0.0 {
+        // Still above the map: nothing to hit.
+        None
+    } else {
+        (from_row..=to_row).find(|&row| map.is_solid(column, row))
+    };
+
+    match landing_row {
+        Some(row) => {
+            // Rest on top of that tile. Clamping rather than leaving the crate
+            // wherever the tick boundary fell keeps it out of terrain
+            // (T3.4 Acceptance) — a tick covers 10 px of a 16 px tile.
+            crate_.y = row as f32 * TILE_SIZE;
+            crate_.vy = 0.0;
+            crate_.landed = true;
+            crate_.expires_tick = Some(tick + (CRATE_LIFETIME_S / dt) as u64);
+        }
+        None => {
+            crate_.y = next_y;
+        }
+    }
+}
+
+/// Open a landed crate, turning it into its two ground items (T3.4 step 3).
+pub fn open_crate(crate_: &Crate, ids: &mut ItemIdCounter) -> Vec<GroundItem> {
+    crate_
+        .content
+        .iter()
+        .map(|item| GroundItem {
+            id: ids.next(),
+            item: *item,
+            x: crate_.x,
+            y: crate_.y,
+            is_crate: false,
+            hidden: false,
+        })
+        .collect()
+}
+
+/// Whether a player at `(px, py)` is close enough to open a landed crate
+/// (docs/04 §3 row C, using the §5 pickup radius).
+pub fn player_reaches_crate(crate_: &Crate, px: f32, py: f32) -> bool {
+    crate_.landed && (crate_.x - px).hypot(crate_.y - py) <= PICKUP_RADIUS
 }
 
 /// T3.1 catalog tests.
@@ -1029,5 +1154,261 @@ mod hidden_tests {
         }
         assert_eq!(manual.next_u64(), after, "place_hidden used a different draw count");
         assert_eq!(placed, expected, "place_hidden drew tile-then-item differently");
+    }
+}
+
+/// T3.4 supply-crate tests.
+///
+/// Named `supply_crate_tests` so T3.4's Test command,
+/// `cargo test -p game-core crate`, selects them (D27). A module literally
+/// named `crate` is impossible — it is a Rust keyword.
+#[cfg(test)]
+mod supply_crate_tests {
+    use super::*;
+    use crate::map::Scale;
+    use crate::player::DT;
+
+    fn drop_crate(seed: u64) -> (Map, Crate, ItemIdCounter) {
+        let map = Map::generate(seed, Scale::Small);
+        let mut rng = GameRng::new(seed);
+        let mut ids = ItemIdCounter::default();
+        let c = spawn_crate(&map, &mut rng, &mut ids);
+        (map, c, ids)
+    }
+
+    fn fall_until_landed(c: &mut Crate, map: &Map) -> u64 {
+        for tick in 0..1000u64 {
+            step_crate(c, map, tick, DT);
+            if c.landed {
+                return tick;
+            }
+        }
+        panic!("crate never landed");
+    }
+
+    #[test]
+    fn crate_lands_on_surface() {
+        // docs/08 §1 (items row) + T3.4 step 4: "crate lands on the correct
+        // surface row (deterministic x -> known surface)".
+        for seed in 0..30u64 {
+            let (map, mut c, _) = drop_crate(seed);
+            let column = (c.x / TILE_SIZE) as u32;
+            let expected_surface = map.surface_row(column);
+            fall_until_landed(&mut c, &map);
+
+            assert!(c.landed);
+            assert_eq!(c.vy, 0.0, "a landed crate is still moving");
+            assert_eq!(
+                c.y,
+                expected_surface as f32 * TILE_SIZE,
+                "seed {seed}: crate rested at y={} but column {column}'s surface \
+                 row is {expected_surface}",
+                c.y,
+            );
+        }
+    }
+
+    #[test]
+    fn crate_never_lands_inside_terrain() {
+        // T3.4 Acceptance: "crate never lands inside terrain (y is always >=
+        // surface)". At 200 px/s a tick covers 10 px of a 16 px tile, so an
+        // unclamped fall would routinely stop below the surface.
+        for seed in 0..50u64 {
+            let (map, mut c, _) = drop_crate(seed);
+            fall_until_landed(&mut c, &map);
+            let column = (c.x / TILE_SIZE) as u32;
+            let surface_y = map.surface_row(column) as f32 * TILE_SIZE;
+            assert!(
+                c.y <= surface_y + 1e-3,
+                "seed {seed}: crate at y={} is below the surface {surface_y}",
+                c.y,
+            );
+            // And it is actually resting ON something, not floating.
+            assert!(
+                map.is_solid_at_pixel(c.x, c.y + 1.0),
+                "seed {seed}: crate is not resting on a solid tile",
+            );
+        }
+    }
+
+    #[test]
+    fn crate_falls_at_the_documented_speed() {
+        // T3.4 step 2: "fall at 200 px/s".
+        let map = Map::generate(1, Scale::Small);
+        let mut c = Crate {
+            id: 0,
+            x: 320.0,
+            y: -20.0,
+            vy: CRATE_FALL_SPEED,
+            landed: false,
+            content: [ItemId::Pistol, ItemId::Medkit],
+            expires_tick: None,
+        };
+        let before = c.y;
+        step_crate(&mut c, &map, 0, DT);
+        assert!(
+            (c.y - before - 10.0).abs() < 1e-3,
+            "one tick moved the crate {} px, expected 10 (200 px/s * 0.05 s)",
+            c.y - before,
+        );
+    }
+
+    #[test]
+    fn landing_sets_a_sixty_second_expiry() {
+        // docs/04 §3 row C: "sits for 60 s".
+        let (map, mut c, _) = drop_crate(3);
+        let landed_tick = fall_until_landed(&mut c, &map);
+        // 60 s at 20 Hz = 1200 ticks.
+        assert_eq!(
+            c.expires_tick,
+            Some(landed_tick + 1200),
+            "expiry should be 60 s (1200 ticks) after landing",
+        );
+    }
+
+    #[test]
+    fn opening_a_crate_yields_its_two_items() {
+        // T3.4 step 3 + step 4: "pickup splits content".
+        let (map, mut c, mut ids) = drop_crate(5);
+        fall_until_landed(&mut c, &map);
+
+        let items = open_crate(&c, &mut ids);
+        assert_eq!(items.len(), 2, "a crate holds 2 items (docs/04 §3 row C)");
+        assert_eq!(items[0].item, c.content[0]);
+        assert_eq!(items[1].item, c.content[1]);
+        for item in &items {
+            assert_eq!(item.x, c.x, "items should drop at the crate position");
+            assert_eq!(item.y, c.y);
+            assert!(!item.is_crate, "opened contents are loose items");
+            assert!(!item.hidden);
+        }
+        assert_ne!(items[0].id, items[1].id, "contents need distinct ids");
+    }
+
+    #[test]
+    fn a_player_within_sixteen_pixels_reaches_a_landed_crate() {
+        // docs/04 §3 row C: "until picked up by any player".
+        let (map, mut c, _) = drop_crate(7);
+        fall_until_landed(&mut c, &map);
+
+        assert!(player_reaches_crate(&c, c.x, c.y), "a player on the crate");
+        assert!(player_reaches_crate(&c, c.x + 15.0, c.y), "15 px away");
+        assert!(!player_reaches_crate(&c, c.x + 17.0, c.y), "17 px is too far");
+        assert!(!player_reaches_crate(&c, c.x, c.y + 40.0), "40 px below");
+    }
+
+    #[test]
+    fn a_falling_crate_cannot_be_opened() {
+        // Only a LANDED crate is pickable — otherwise a player standing under
+        // the drop point collects it in mid-air.
+        let (_, c, _) = drop_crate(9);
+        assert!(!c.landed);
+        assert!(
+            !player_reaches_crate(&c, c.x, c.y),
+            "a falling crate should not be reachable",
+        );
+    }
+
+    #[test]
+    fn a_landed_crate_does_not_move() {
+        let (map, mut c, _) = drop_crate(11);
+        fall_until_landed(&mut c, &map);
+        let resting = (c.x, c.y);
+        for tick in 0..100u64 {
+            step_crate(&mut c, &map, tick, DT);
+        }
+        assert_eq!((c.x, c.y), resting, "a landed crate drifted");
+    }
+
+    #[test]
+    fn crate_drop_schedule_matches_doc() {
+        // docs/04 §3 row C: "every 45 s (t=45, 90, 135, 180, 225)".
+        // Literals, not a computed sequence.
+        assert_eq!(CRATE_DROP_TIMES_S, [45.0, 90.0, 135.0, 180.0, 225.0]);
+        // All within the 240 s round (docs/05 §2).
+        assert!(CRATE_DROP_TIMES_S.iter().all(|&t| t < 240.0));
+    }
+
+    #[test]
+    fn crate_spawn_is_deterministic() {
+        let draw = |seed: u64| {
+            let map = Map::generate(seed, Scale::Small);
+            let mut rng = GameRng::new(seed);
+            let mut ids = ItemIdCounter::default();
+            (0..5).map(|_| spawn_crate(&map, &mut rng, &mut ids)).collect::<Vec<_>>()
+        };
+        assert_eq!(draw(42), draw(42));
+        assert_ne!(draw(1), draw(2));
+    }
+
+    #[test]
+    fn crate_spawn_draws_column_then_two_contents() {
+        // Draw order and count (docs/04 §6, D19).
+        let map = Map::generate(5, Scale::Small);
+        let mut probe = GameRng::new(5);
+        let mut ids = ItemIdCounter::default();
+        let c = spawn_crate(&map, &mut probe, &mut ids);
+        let after = probe.next_u64();
+
+        let mut manual = GameRng::new(5);
+        let column = manual.gen_range(0, map.width);
+        let a = manual.weighted_index(&SpawnWeights::Ground.table()).unwrap();
+        let b = manual.weighted_index(&SpawnWeights::Ground.table()).unwrap();
+        assert_eq!(manual.next_u64(), after, "spawn_crate used a different draw count");
+        assert_eq!(c.x, (column as f32 + 0.5) * TILE_SIZE);
+        assert_eq!(c.content, [ItemId::ALL[a], ItemId::ALL[b]], "contents drew differently");
+    }
+
+    #[test]
+    fn crate_contents_use_the_ground_weight_table() {
+        // docs/04 §3 row C: "Crate content: 2 weighted items (same weights as
+        // A)". Row B (flashlight doubled) is for hidden items only.
+        //
+        // The draw-order test cannot catch this: weighted_index consumes one
+        // draw from either table, so the RNG state matches. Found by injection,
+        // same shape as the source-A gap in T3.2.
+        let mut flashlights = 0usize;
+        let mut total = 0usize;
+        for seed in 0..400u64 {
+            let map = Map::generate(seed, Scale::Small);
+            let mut rng = GameRng::new(seed);
+            let mut ids = ItemIdCounter::default();
+            for _ in 0..3 {
+                let c = spawn_crate(&map, &mut rng, &mut ids);
+                for item in c.content {
+                    total += 1;
+                    if item == ItemId::Flashlight {
+                        flashlights += 1;
+                    }
+                }
+            }
+        }
+        let rate = flashlights as f32 / total as f32;
+        // Ground: 10/130 = 0.077.  Hidden: 20/140 = 0.143.
+        assert!(
+            (0.055..0.100).contains(&rate),
+            "crate flashlight rate {rate:.4} suggests the wrong weight table \
+             (Ground = 0.077, Hidden = 0.143)",
+        );
+    }
+
+    #[test]
+    fn a_crate_holds_exactly_two_items() {
+        // docs/04 §3 row C: "1 crate = 2 items". The array type enforces this
+        // at compile time; asserted here so the requirement is visible in the
+        // test output rather than only in a type signature.
+        assert_eq!(CRATE_CONTENTS, 2);
+        let (_, c, _) = drop_crate(1);
+        assert_eq!(c.content.len(), 2);
+    }
+
+    #[test]
+    fn crates_spawn_within_the_map() {
+        for seed in 0..50u64 {
+            let (map, c, _) = drop_crate(seed);
+            let (w, _) = map.pixel_size();
+            assert!(c.x >= 0.0 && c.x < w, "seed {seed}: crate x={} is off-map", c.x);
+            assert_eq!(c.y, CRATE_SPAWN_Y, "crates start above the map");
+        }
     }
 }
