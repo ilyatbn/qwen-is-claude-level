@@ -484,6 +484,11 @@ src/logic/terrainGrid.test.ts > solidTiles > reflects destruction
 src/logic/terrainGrid.test.ts > solidTiles > yields every solid tile and no AIR
 src/logic/terrainGrid.test.ts > variantAt (docs/07 §2, T5.2) > always returns 0, 1 or 2
 src/logic/terrainGrid.test.ts > variantAt (docs/07 §2, T5.2) > is (seed + x + y) % 3
+src/logic/tileVariant.test.ts > tileVariantIndex > gives different layouts for different seeds
+src/logic/tileVariant.test.ts > tileVariantIndex > is deterministic for a given seed
+src/logic/tileVariant.test.ts > tileVariantIndex > matches docs/07 §2 exactly for seeds small enough to be exact
+src/logic/tileVariant.test.ts > tileVariantIndex > stays in range
+src/logic/tileVariant.test.ts > tileVariantIndex > still varies for a u64 seed too large for exact integer arithmetic
 src/protocol.test.ts > InputFrame > carries a null use_slot except on the tick it is pressed (docs/06 §3)
 src/protocol.test.ts > InputFrame > has exactly the field names docs/06 §3 lists
 src/protocol.test.ts > MapData > encodes tile kinds as docs/06 §6 specifies

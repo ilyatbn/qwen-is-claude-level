@@ -1619,3 +1619,31 @@ Verified over HTTP rather than asserted: with one real PNG present,
 fallback initially answered missing assets with `index.html` and a 200, which would have
 made the fallback depend on an image decoder rejecting HTML; `appType: 'mpa'` makes a
 missing asset a plain 404.
+
+---
+
+### D51 — `(seed + x + y) % 3` silently collapses to one variant for most seeds
+
+`docs/07-sprites.md` §2 and T5.2 step 1 give the variant formula as
+`(seed + tile_x + tile_y) % 3`. `seed` is a `u64` (docs/06 §6) and reaches the client as
+a **JSON number**, i.e. an IEEE-754 double. Above 2^53 the spacing between representable
+doubles exceeds 1, so `seed + x + y` rounds straight back to `seed` — every tile on the
+map evaluates to the same variant and the "looks different per round" feature is silently
+off. Not an edge case: a random `u64` exceeds 2^53 about 99.9% of the time, so the
+literal formula works only for the dev seeds it was presumably tested with.
+
+**Implemented as `((seed % 3) + x + y) % 3`** — algebraically identical for exact
+integers, and it keeps the arithmetic in the range where doubles are exact. A test asserts
+the rewrite matches the literal formula for small seeds, and that a `u64`-scale seed still
+produces all three variants where the literal one produces exactly one. The test states
+the hazard directly: `expect(huge + 1).toBe(huge)`.
+
+The determinism the Acceptance asks for ("same seed → identical texture layout across two
+page loads") holds either way — JSON parses to the same double every time. What was
+broken is variety, which is the entire point of the feature, and nothing would have
+reported it: the map still renders, just uniformly.
+
+**T5.2 step 2** asks that `tile_destroyed` redraws use the same formula. There is no
+redraw path — destruction only removes sprites, and the client is never told a tile
+changed kind (the server's DIRT→GRASS surface conversion is not on the wire). Every
+sprite that exists was created through the one function that applies the formula.

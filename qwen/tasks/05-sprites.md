@@ -37,7 +37,7 @@ loads real textures (with placeholder fallback).
 
 ---
 
-## T5.2 — Map texture variants by seed [ ]
+## T5.2 — Map texture variants by seed [x]
 
 **Goal**: each round looks different via (seed+x+y) % 3 variant picking.
 **Read**: `docs/07-sprites.md` §2, `docs/01-map.md` §7.
