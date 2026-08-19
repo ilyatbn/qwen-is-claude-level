@@ -13,6 +13,7 @@
 pub mod blobs;
 pub mod bridges;
 pub mod caves;
+pub mod network;
 pub mod silhouette;
 
 pub use silhouette::{borders_hold, force_borders, solid_fraction, GenParams};

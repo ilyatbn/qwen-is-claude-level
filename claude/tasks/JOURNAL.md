@@ -227,3 +227,22 @@ Notes: caves.rs also exports walk_to() (the STEERED walk) plus is_buried() and
        Test helper caves::tests::air_reaches is the air flood fill; T1.06b's
        reachability test uses the same idea.
 Left for later: nothing
+
+## T1.06b — Pass 4: cave network, chambers/loops/entrances (v2) — DONE
+Files: crates/game-core/src/map/gen/network.rs, gen/mod.rs
+Verified: `cargo test -p game-core network` — 14 passed
+          Reachability holds at Small over 20 seeds AND Large over 4 seeds.
+          Falsification check: with entrance carving disabled the test fails
+          ("chamber 0 at (1560,577) is sealed off from the sky"), so the assertion
+          has teeth rather than passing vacuously.
+Notes: walk_to stops within one radius of its target, which can leave the last few
+       px of rock at the top of an entrance shaft. An entrance that does not open
+       is not an entrance, so after the walk the shaft is finished with an explicit
+       capsule up to SKY_MARGIN-1. That is what makes reachability structural
+       rather than lucky.
+       Prim's uses i64 squared distances, ties by lowest index — no float compares,
+       so the tree is deterministic. extra_edges sorts by (dist, i, j), a total
+       order, for the same reason.
+       Entrances prefer the SHALLOWEST chambers (sorted by y): a shaft from a deep
+       chamber is a long climb that often crosses another chamber anyway.
+Left for later: nothing
