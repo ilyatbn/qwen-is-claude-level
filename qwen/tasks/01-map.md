@@ -10,7 +10,7 @@ Individual tasks list the exact sections they need.
 
 ---
 
-## T1.1 — Seeded RNG wrapper [ ]
+## T1.1 — Seeded RNG wrapper [x]
 
 **Goal**: `GameRng` in game-core; all randomness flows through it.
 **Read**: `docs/00-architecture.md` §4, `docs/08-testing.md` §1 (rng row).

@@ -238,3 +238,52 @@ warns (console + toast) on mismatch." But §2's `joined` payload is
 `protocol.rs` and `protocol.ts`, following §7 (the normative statement) over §2's
 table. The client-side mismatch **warning** is not yet implemented — no `joined`
 handler exists until the lobby is built; assigned to T4.10.
+
+---
+
+## Phase 1 defects
+
+### D17 — T1.1 names a `rand` API that does not exist, in a version that renamed it
+
+**Spec** (`tasks/01-map.md` T1.1 step 2): "Expose: `next_u64`,
+`gen_range<R: UniformRange>`, `shuffle<T>`, `random_unit() -> f32` (0..1)".
+
+**Problem**: there is no `UniformRange` trait in `rand` — the real traits are
+`SampleUniform` and `SampleRange`. Separately, `rand` 0.9 renamed the method
+`gen_range` → `random_range`, so the doc's name no longer exists on `Rng` either.
+
+**Implemented**: the doc's *method name* `gen_range` is kept on `GameRng` (task files
+refer to it by name), with concrete `u32` bounds rather than a generic range trait,
+plus `gen_range_inclusive` and `gen_range_f32` for the inclusive and float cases the
+map/effects specs need. The generic-over-`UniformRange` signature is not reproduced.
+
+### D18 — `rand_chacha` 0.10 and `rand` 0.9 cannot coexist
+
+**Spec**: `tasks/00-setup.md` T0.1 lists both `rand` and `rand_chacha` as `game-core`
+dependencies without versions.
+
+**Problem**: the current releases are incompatible. `rand` 0.9.5 depends on
+`rand_core` 0.9, while `rand_chacha` 0.10 depends on `rand_core` 0.10. Both end up in
+the tree, so `ChaCha8Rng` implements *a* `RngCore` trait but not the one `rand` 0.9
+exports, and `next_u32`/`next_u64` fail to resolve with a misleading
+"trait bounds were not satisfied" error.
+
+**Implemented**: `rand_chacha` pinned to `0.9`, which shares `rand_core` 0.9 with
+`rand` 0.9. Recorded because a future dependency bump will hit this again.
+
+### D19 — `shuffle` and `random_unit` are implemented here, not delegated to `rand`
+
+**Spec**: T1.1 says to expose `shuffle<T>` and `random_unit()` from a wrapper around
+`rand_chacha::ChaCha8Rng`, implying `rand`'s own helpers.
+
+**Problem**: `SliceRandom::shuffle` and `Rng::random::<f32>()` are not
+contractually stable across `rand` releases. Their sampling strategy — and the number
+of words they consume — may change in any version. docs/01 §3 warns that generation
+order is load-bearing ("follow it exactly or determinism tests break"); the number of
+draws is equally load-bearing, because one extra draw shifts every value downstream.
+Delegating would make every map for a given seed hostage to a patch bump.
+
+**Implemented**: `GameRng` spells out Fisher–Yates (exactly `n-1` draws for length
+`n`) and derives `random_unit` from the top 24 bits of one `u32`. Map output now
+depends only on ChaCha8 — a stable, specified stream — plus code in `rng.rs`. A test
+(`shuffle_consumes_one_draw_per_element_after_the_first`) pins the draw count.
