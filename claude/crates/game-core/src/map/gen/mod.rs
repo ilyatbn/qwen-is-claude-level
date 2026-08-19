@@ -12,6 +12,7 @@
 
 pub mod blobs;
 pub mod bridges;
+pub mod carvings;
 pub mod caves;
 pub mod network;
 pub mod silhouette;

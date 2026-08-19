@@ -246,3 +246,19 @@ Notes: walk_to stops within one radius of its target, which can leave the last f
        Entrances prefer the SHALLOWEST chambers (sorted by y): a shaft from a deep
        chamber is a long climb that often crosses another chamber anyway.
 Left for later: nothing
+
+## T1.06c — Pass 4b/4c: crevices and voids (v2) — DONE
+Files: crates/game-core/src/map/gen/carvings.rs, gen/mod.rs
+Verified: `cargo test -p game-core carvings` — 16 passed
+          Full crate: `cargo test -p game-core` — 182 passed, 2 ignored
+Notes: a crevice starts at surface_y(x) = the first solid pixel in a column, and a
+       column with no rock is skipped (200 attempts) rather than retried forever —
+       late in the pipeline plenty of columns are open sky.
+       Width tapers to 60% at the bottom; radius is clamped to >= 1 so a narrow
+       crevice never degenerates into nothing.
+       The depth assertion tolerates one CREVICE_STEP under the minimum: the loop
+       breaks BEFORE stamping when the next point would be in bedrock, so a crevice
+       that runs into the floor is legitimately short.
+       There is a sub-stream isolation test here (exhausting "crevices" does not
+       move "voids") — that guarantee is what keeps golden hashes stable.
+Left for later: nothing. M1 part A (T1.01-T1.06c) complete.
