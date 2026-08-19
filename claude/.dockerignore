@@ -1,0 +1,10 @@
+target/
+**/node_modules/
+client/dist/
+client/.vite/
+client/src/core/pkg/
+.git/
+debug/
+replays/
+e2e/shots/
+*.log

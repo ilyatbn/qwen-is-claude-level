@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1
+# Build context is the project root.
+
+# ---- wasm ----------------------------------------------------------------
+# First and separate, so a pure-frontend change does not rebuild Rust.
+FROM rust:1.97-slim AS wasm
+WORKDIR /app
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+RUN wasm-pack build crates/game-wasm --target web --out-dir /wasm-pkg --release
+
+# ---- build ---------------------------------------------------------------
+FROM node:22-slim AS build
+WORKDIR /app
+COPY client/package.json client/package-lock.json ./client/
+RUN npm --prefix client ci
+COPY client client
+COPY --from=wasm /wasm-pkg ./client/src/core/pkg
+RUN npm --prefix client run build
+
+# ---- runtime -------------------------------------------------------------
+FROM nginx:alpine AS runtime
+COPY --from=build /app/client/dist /usr/share/nginx/html
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80

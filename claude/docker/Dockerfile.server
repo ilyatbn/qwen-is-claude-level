@@ -1,0 +1,53 @@
+# syntax=docker/dockerfile:1
+# Build context is the project root (docker-compose passes `context: ..`).
+
+# ---- builder -------------------------------------------------------------
+FROM rust:1.97-slim AS builder
+WORKDIR /app
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+
+# Dependency layer: manifests plus stub sources, so `cargo build` compiles every
+# dependency and caches it. An ordinary code change then rebuilds in seconds.
+COPY Cargo.toml Cargo.lock ./
+COPY crates/game-core/Cargo.toml   crates/game-core/Cargo.toml
+COPY crates/game-server/Cargo.toml crates/game-server/Cargo.toml
+COPY crates/game-wasm/Cargo.toml   crates/game-wasm/Cargo.toml
+RUN mkdir -p crates/game-core/src crates/game-server/src crates/game-wasm/src \
+ && echo "" > crates/game-core/src/lib.rs \
+ && echo "" > crates/game-wasm/src/lib.rs \
+ && echo "fn main() {}" > crates/game-server/src/main.rs \
+ && cargo build --release -p game-server \
+ && rm -rf crates/*/src
+
+# Real sources. COPY preserves the build context's mtimes, which can be older
+# than the stubs written above, so cargo would happily reuse the stub artifacts.
+# Touching every source file after the copy is what forces the real rebuild.
+COPY crates crates
+RUN find crates -name '*.rs' -exec touch {} + && cargo build --release -p game-server
+
+# ---- runtime -------------------------------------------------------------
+# bookworm-slim rather than distroless: a shell inside the container is worth
+# more during development than the handful of megabytes it costs.
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --create-home --uid 10001 game
+
+COPY --from=builder /app/target/release/game-server /usr/local/bin/game-server
+
+RUN mkdir -p /replays && chown game:game /replays
+USER game
+WORKDIR /home/game
+
+ENV BIND_ADDR=0.0.0.0:3000
+EXPOSE 3000
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:3000/healthz || exit 1
+
+ENTRYPOINT ["game-server"]

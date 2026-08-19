@@ -9,8 +9,8 @@ license = "MIT"
 
 [workspace.dependencies]
 game-core = { path = "crates/game-core" }
-rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
-rand_chacha = "0.3"
+rand = { version = "0.8", default-features = false }
+rand_chacha = { version = "0.3", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full"] }

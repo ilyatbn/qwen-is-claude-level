@@ -98,3 +98,19 @@ Notes: TRAP FOR LATER SESSIONS — the bundled Playwright chromium cannot start 
        E2E task (T8.07). Something else already occupies :5173, so vite lands
        on :5174 — do not hard-code the port in tests.
 Left for later: nothing
+
+## T0.07 — Docker images and compose — DONE
+Files: docker/{Dockerfile.server,Dockerfile.client,docker-compose.yml,nginx.conf},
+       .env.example, .dockerignore, Cargo.toml (rand features)
+Verified all 6 checks: images build; healthz 200 direct and via nginx; :8080 loads;
+          `whoami` = game; `docker compose down` exit 0.
+          CHECK 4 — browser console at :8080: "transport websocket" (not polling).
+Notes: TWO TRAPS, both cost a rebuild each.
+       1. `rand`'s default features pull `getrandom`, which refuses to compile for
+          wasm32-unknown-unknown. Fixed by default-features=false on rand and
+          rand_chacha. game-core never wants OS randomness anyway, so this also
+          makes the purity rule unbypassable — thread_rng() is no longer in scope.
+       2. Docker COPY preserves context mtimes, so after the stub-source dependency
+          cache layer cargo reused the stub artifacts. `touch`ing the manifests is
+          not enough; the Dockerfile touches every .rs after the copy.
+Left for later: nothing
