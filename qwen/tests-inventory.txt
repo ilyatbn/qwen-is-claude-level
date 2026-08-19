@@ -68,6 +68,14 @@ player::input_tests::latest_frame_wins_within_one_tick
 player::input_tests::missing_frame_repeats_the_last_one
 player::input_tests::releasing_and_repressing_jump_yields_a_second_edge
 player::input_tests::use_slot_is_edge_triggered
+player::jetpack_tests::empty_tank_produces_no_thrust
+player::jetpack_tests::fuel_is_capped_at_five
+player::jetpack_tests::fuel_math_is_exact_over_a_ten_second_sequence
+player::jetpack_tests::fuel_never_goes_negative
+player::jetpack_tests::jetpack_does_not_start_on_the_ground
+player::jetpack_tests::jetpack_recharge_rate
+player::jetpack_tests::jetpack_rises_and_fuel_drains
+player::jetpack_tests::w_and_s_assist_in_flight
 player::jump_tests::directional_jump_travels_further_than_a_standing_one
 player::jump_tests::jump_arc
 player::jump_tests::jump_does_nothing_in_the_air

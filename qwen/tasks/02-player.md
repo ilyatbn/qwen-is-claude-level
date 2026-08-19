@@ -90,7 +90,7 @@ Read `docs/03-player.md` in full before starting this file.
 
 ---
 
-## T2.5 — Jetpack [ ]
+## T2.5 — Jetpack [x]
 
 **Goal**: hold space in air = thrust; fuel 5 s; recharge 0.5/s.
 **Read**: `docs/03-player.md` §5.

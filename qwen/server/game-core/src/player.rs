@@ -477,6 +477,50 @@ impl Player {
         true
     }
 
+    /// Jetpack step for one tick (docs/03 §5, T2.5).
+    ///
+    /// Active iff **in the air**, space held, and fuel remains — "Jetpack
+    /// cannot start on the ground (space on ground = jump only)". Returns the
+    /// vertical acceleration the jetpack contributes, which the caller adds to
+    /// gravity before integrating.
+    ///
+    /// W/S add ±JETPACK_VERTICAL_ASSIST while thrusting: "WASD all work in
+    /// flight: W adds +300 px/s² up, S +300 down (net down can exceed
+    /// gravity)".
+    ///
+    /// Fuel: burns JETPACK_BURN_RATE per second while thrusting, recharges
+    /// JETPACK_RECHARGE_RATE per second while not, capped at JETPACK_FUEL_MAX.
+    pub fn step_jetpack(
+        &mut self,
+        jump_held: bool,
+        up: bool,
+        down: bool,
+        on_ground: bool,
+        dt: f32,
+    ) -> f32 {
+        let thrusting = jump_held && !on_ground && self.jetpack.fuel > 0.0;
+
+        if !thrusting {
+            // docs/03 §5: recharge while NOT thrusting, capped.
+            self.jetpack.fuel =
+                (self.jetpack.fuel + JETPACK_RECHARGE_RATE * dt).min(JETPACK_FUEL_MAX);
+            return 0.0;
+        }
+
+        // Burn, floored at zero — a partial tick of fuel still thrusts.
+        self.jetpack.fuel = (self.jetpack.fuel - JETPACK_BURN_RATE * dt).max(0.0);
+
+        // Negative is upward (y grows downward).
+        let mut accel = -JETPACK_THRUST;
+        if up {
+            accel -= JETPACK_VERTICAL_ASSIST;
+        }
+        if down {
+            accel += JETPACK_VERTICAL_ASSIST;
+        }
+        accel
+    }
+
     /// Integrate one tick under constant acceleration (T2.3 step 4).
     ///
     /// Velocity Verlet: `x += v*dt + ½·a·dt²`, then `v += a·dt`.
@@ -995,5 +1039,202 @@ mod jump_tests {
             "holding A mid-air did not decelerate: {before} -> {}",
             player.vel.x,
         );
+    }
+}
+
+/// T2.5 jetpack tests.
+#[cfg(test)]
+mod jetpack_tests {
+    use super::*;
+    use crate::map::Scale;
+    use crate::tiles::{Tile, TileKind};
+
+    fn flat_map(floor_row: u32) -> Map {
+        let (width, height) = Scale::Small.dimensions();
+        let mut map = Map {
+            seed: 0,
+            scale: Scale::Small,
+            width,
+            height,
+            tiles: vec![Tile::AIR; (width * height) as usize],
+            decor: Vec::new(),
+            spawns: Vec::new(),
+            version: 0,
+        };
+        for y in floor_row..height {
+            for x in 0..width {
+                map.set_tile(x, y, Tile::new(TileKind::Stone));
+            }
+        }
+        map
+    }
+
+    fn airborne() -> Player {
+        Player::new(0, "p".into(), Vec2::new(320.0, 200.0))
+    }
+
+    #[test]
+    fn jetpack_rises_and_fuel_drains() {
+        // docs/08 §1 (physics row) + T2.5 step 5: "1 s thrust -> fuel 4.0, net
+        // upward velocity".
+        let mut player = airborne();
+        let start_y = player.pos.y;
+
+        for _ in 0..20 {
+            let jet = player.step_jetpack(true, false, false, false, DT);
+            player.integrate(Vec2::new(0.0, GRAVITY + jet), DT);
+        }
+
+        assert!(
+            (player.jetpack.fuel - 4.0).abs() < 0.01,
+            "after 1 s of thrust fuel is {}, expected 4.0",
+            player.jetpack.fuel,
+        );
+        assert!(
+            player.vel.y < 0.0,
+            "1 s of thrust should leave net upward velocity, got {}",
+            player.vel.y,
+        );
+        assert!(player.pos.y < start_y, "player did not rise");
+
+        // T2.5 step 2: net acceleration is 1100 up vs 900 gravity = 200 up.
+        // After 1 s that is 200 px/s upward.
+        assert!(
+            (player.vel.y + 200.0).abs() < 1e-3,
+            "net vertical velocity after 1 s is {}, expected -200",
+            player.vel.y,
+        );
+    }
+
+    #[test]
+    fn jetpack_recharge_rate() {
+        // docs/08 §1 + T2.5 step 5: "2 s idle -> +1.0 fuel, capped at 5.0".
+        let mut player = airborne();
+        player.jetpack.fuel = 2.0;
+
+        for _ in 0..40 {
+            let jet = player.step_jetpack(false, false, false, false, DT);
+            assert_eq!(jet, 0.0, "no thrust means no acceleration");
+            player.integrate(Vec2::new(0.0, GRAVITY + jet), DT);
+        }
+
+        assert!(
+            (player.jetpack.fuel - 3.0).abs() < 0.01,
+            "2 s idle from 2.0 gave {}, expected 3.0",
+            player.jetpack.fuel,
+        );
+    }
+
+    #[test]
+    fn fuel_is_capped_at_five() {
+        let mut player = airborne();
+        player.jetpack.fuel = 4.9;
+        for _ in 0..200 {
+            player.step_jetpack(false, false, false, false, DT);
+        }
+        assert_eq!(player.jetpack.fuel, JETPACK_FUEL_MAX);
+    }
+
+    #[test]
+    fn jetpack_does_not_start_on_the_ground() {
+        // docs/03 §5: "Jetpack cannot start on the ground (space on ground =
+        // jump only)".
+        let map = flat_map(40);
+        let mut player = Player::new(
+            0,
+            "p".into(),
+            Vec2::new(320.0, 40.0 * TILE_SIZE - BODY_HALF_HEIGHT),
+        );
+        assert!(player.on_ground(&map));
+
+        let accel = player.step_jetpack(true, false, false, true, DT);
+        assert_eq!(accel, 0.0, "jetpack thrusted while grounded");
+        // And it recharges rather than burning.
+        assert!(player.jetpack.fuel >= JETPACK_FUEL_MAX - 1e-6);
+    }
+
+    #[test]
+    fn empty_tank_produces_no_thrust() {
+        let mut player = airborne();
+        player.jetpack.fuel = 0.0;
+        let accel = player.step_jetpack(true, false, false, false, DT);
+        assert_eq!(accel, 0.0, "thrust on an empty tank");
+    }
+
+    #[test]
+    fn fuel_never_goes_negative() {
+        let mut player = airborne();
+        player.jetpack.fuel = 0.02;
+        for _ in 0..10 {
+            player.step_jetpack(true, false, false, false, DT);
+        }
+        assert!(player.jetpack.fuel >= 0.0, "fuel went negative");
+    }
+
+    #[test]
+    fn w_and_s_assist_in_flight() {
+        // docs/03 §5: "W adds +300 px/s² up, S +300 down (net down can exceed
+        // gravity)".
+        let mut base = airborne();
+        let plain = base.step_jetpack(true, false, false, false, DT);
+
+        // Literals from docs/03 §5, NOT the constants under test. Comparing
+        // against JETPACK_VERTICAL_ASSIST would make this self-referential:
+        // changing the constant would move both sides and the test would pass.
+        // (Found exactly that way — the injection 300 -> 500 failed 0 tests.)
+        assert!(
+            (plain + 1100.0).abs() < 1e-3,
+            "plain thrust is {plain}, docs/03 §5 says 1100 px/s² up",
+        );
+
+        let mut up_player = airborne();
+        let with_up = up_player.step_jetpack(true, true, false, false, DT);
+        assert!(
+            (with_up + 1400.0).abs() < 1e-3,
+            "W thrust is {with_up}, expected -(1100 + 300)",
+        );
+
+        let mut down_player = airborne();
+        let with_down = down_player.step_jetpack(true, false, true, false, DT);
+        assert!(
+            (with_down + 800.0).abs() < 1e-3,
+            "S thrust is {with_down}, expected -(1100 - 300)",
+        );
+
+        // "net down can exceed gravity": thrust 1100 up, S 300 down, gravity
+        // 900 down => 1100 - 300 - 900 = -100, still net up. With W and S both
+        // held they cancel.
+        let mut both = airborne();
+        let with_both = both.step_jetpack(true, true, true, false, DT);
+        assert!((with_both - plain).abs() < 1e-3, "W and S should cancel");
+    }
+
+    #[test]
+    fn fuel_math_is_exact_over_a_ten_second_sequence() {
+        // T2.5 Acceptance: "fuel math exact to 0.01 over a 10 s scripted
+        // sequence". Scripted: 2 s thrust, 3 s idle, 1 s thrust, 4 s idle.
+        let mut player = airborne();
+        let script = [(2.0, true), (3.0, false), (1.0, true), (4.0, false)];
+
+        let mut expected = JETPACK_FUEL_MAX;
+        for (seconds, thrusting) in script {
+            let ticks = (seconds / DT).round() as u32;
+            for _ in 0..ticks {
+                player.step_jetpack(thrusting, false, false, false, DT);
+            }
+            expected = if thrusting {
+                (expected - JETPACK_BURN_RATE * seconds).max(0.0)
+            } else {
+                (expected + JETPACK_RECHARGE_RATE * seconds).min(JETPACK_FUEL_MAX)
+            };
+        }
+
+        // 5.0 -2.0 = 3.0; +1.5 = 4.5; -1.0 = 3.5; +2.0 = 5.0 (capped).
+        assert!(
+            (player.jetpack.fuel - expected).abs() < 0.01,
+            "scripted fuel is {}, expected {expected}",
+            player.jetpack.fuel,
+        );
+        assert!((expected - 5.0).abs() < 1e-6, "script arithmetic drifted");
     }
 }
