@@ -33,7 +33,11 @@ p='$file'; s=open(p).read()
 old='''$old'''; new='''$new'''
 if old not in s: print('  %-40s ANCHOR MISS' % '$label'); sys.exit(1)
 open(p,'w').write(s.replace(old,new,1))" || { cp /tmp/sweep.bak "$file"; continue; }
-  out=$(cargo test -p game-core 2>&1)
+  # WORKSPACE, not -p game-core. An earlier version tested only game-core,
+  # so every injection into server/ came back UNGUARDED — the tests existed,
+  # the sweep just never ran them. Third harness defect of this shape; a
+  # sweep is only worth running if its negative results can be trusted.
+  out=$(cargo test --workspace 2>&1)
   if echo "$out" | grep -q "could not compile"; then
     printf "  %-40s COMPILE (type system guards it)\n" "$label"
   else
