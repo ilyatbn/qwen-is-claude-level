@@ -1,0 +1,12 @@
+# docs/05 §6, verbatim apart from `build.context`, which the doc's snippet
+# omits and Compose requires to find the Dockerfile.
+services:
+  game:
+    build: .
+    ports: ["3001:3001"]
+    environment:
+      - WIPGAME_PORT=3001
+      - RUST_LOG=info        # set to wipgame=debug for agent debugging
+      # WIPGAME_SEED pins every round's map (docs/05 §7) — dev only.
+    # redis:                # placeholder for v2 persistence
+    #   image: redis:7

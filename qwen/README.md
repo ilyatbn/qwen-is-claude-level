@@ -52,12 +52,47 @@ Rules for the executing agent:
 - **Assets**: placeholder shapes first; Kenney packs fetched in T5.1.
 - **Docker**: `docker-compose.yml` runs the server (T5.5). No DB in v1.
 
-## How to run (after tasks are done)
+## How to run
 
 ```bash
 # server (dev)
-cd server && cargo run -- dev
+cd server && cargo run
 # client (dev)
 cd client && npm install && npm run dev
 # open http://localhost:5173
 ```
+
+The server takes no arguments; it is configured by environment (docs/05 §7):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WIPGAME_PORT` | `3001` | listen port |
+| `WIPGAME_SEED` | unset | pins every round's map — dev only |
+| `RUST_LOG` | unset (`info` in Docker) | `wipgame=debug` for verbose logs |
+
+The log level also flips at runtime, with no restart, via the `set_log_level`
+message (docs/05 §5).
+
+### Docker
+
+```bash
+docker compose up --build          # server on :3001
+cd client && npm run dev           # client still runs from Vite, on :5173
+```
+
+The image contains **the server binary only** (docs/05 §6 lists no client
+service). In dev the client is served by Vite; for production it is a static
+`npm run build` bundle — `client/dist/` — served by any static host, with the
+server reachable at `:3001`.
+
+### Assets
+
+`assets/` ships empty and the game runs that way: every texture key has a
+canvas placeholder, so a missing file changes how the game looks and nothing
+else (docs/07 §2). See `assets/README.md` for how to drop real art in, and
+`DEVIATIONS.md` D11 for why the packs are not vendored.
+
+## Findings
+
+`DEVIATIONS.md` records every place the implementation had to depart from the
+docs, and why. It is the output of the exercise, not an appendix to it.

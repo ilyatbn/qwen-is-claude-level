@@ -13,6 +13,7 @@ import {
   PROTOCOL_VERSION,
   S2C,
   type Joined,
+  type Kill,
   type LobbyState,
   type PlayerJoined,
   type PlayerLeft,
@@ -138,6 +139,11 @@ export function connect(url: string = SERVER_URL): Socket {
 
   socket.on(S2C.TILE_DESTROYED, (payload: TileDestroyedMsg) => {
     gameScene()?.applyTileDestroyed(payload.tiles, payload.version);
+  });
+
+  // T5.4 step 2: the kill feed's only source (docs/06 §2).
+  socket.on(S2C.KILL, (payload: Kill) => {
+    gameScene()?.applyKill(payload);
   });
 
   socket.on(S2C.SNAPSHOT, (snap: Snapshot) => {

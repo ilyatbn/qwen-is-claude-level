@@ -75,7 +75,7 @@ loads real textures (with placeholder fallback).
 
 ---
 
-## T5.4 — HUD polish + kill feed [ ]
+## T5.4 — HUD polish + kill feed [x]
 
 **Goal**: readable HUD, kill feed, round timer, day/night indicator.
 **Read**: `docs/07-sprites.md` §5, `docs/06-protocol.md` §2 (kill,
@@ -95,7 +95,7 @@ loads real textures (with placeholder fallback).
 
 ---
 
-## T5.5 — Docker + debug log toggle [ ]
+## T5.5 — Docker + debug log toggle [x]
 
 **Goal**: `docker compose up` runs the server; log level toggable at
 runtime.

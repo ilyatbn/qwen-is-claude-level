@@ -1702,3 +1702,63 @@ connected.
    no map and no snapshots, until the player happened to click the name field and type a
    new name. Every headless check passed because each one emits `join_room` itself. The
    client now joins on connect with the persisted name.
+
+---
+
+### D13 (update) — T5.5 written, partly verified: Docker is not installed here
+
+`docker` is not on this machine (`command not found`), so the Dockerfile,
+`docker-compose.yml` and `.dockerignore` are written per docs/05 §6 but the image has
+**never been built or run**. Recorded rather than implied, because "the file exists" and
+"the container runs" are different claims and only the first is true.
+
+What *was* verified:
+
+| T5.5 step | Status |
+|---|---|
+| 1. Dockerfile multi-stage, EXPOSE 3001, non-root | written; every path it copies exists, and the binary name matches `server/server/Cargo.toml` |
+| 2. `docker-compose.yml` per docs/05 §6 | written; parses as YAML, one `game` service, ports/env/redis placeholder as the doc gives them |
+| 3. `.dockerignore` | written |
+| 4. runtime `set_log_level` | **verified live** — see below |
+| 5. README "How to run" | written |
+| Test command (`docker compose up --build -d` + curl) | **not run** |
+
+Step 4 needs no container, so it was checked against the running server rather than
+deferred: `scripts/log-check.mjs` counts `DEBUG` lines in the server's log file either
+side of a `set_log_level { level: "debug" }`, and reads **0 before, 1 after** — the ping
+handler's own debug line — with no restart. Checking the log file rather than the
+handler's return value is the point: a handler that succeeds and changes nothing would
+pass the weaker check.
+
+Two things a real `docker compose up` would be the first to exercise: the dependency-cache
+layer (dummy sources, then `touch` to force the real rebuild) and the toolchain floor —
+the socket handlers use async closures, stable since Rust 1.85, and the image pins only
+`rust:1-slim-bookworm` with no `rust-toolchain.toml`, so it tracks whatever 1.x is current
+when it is built.
+
+---
+
+### D53 — Three of Phase 5's five Test commands select none of the phase's tests
+
+The T2.1 finding, again and wider. A task's **Test** command is what the executing agent
+is told to run to prove the task done; for most of Phase 5 it proves something else.
+
+| Task | Test command | Tests it selects that were written for it |
+|---|---|---|
+| T5.1 | `npm test && npm run build` | 12 of 12 |
+| T5.2 | `npm run build` | **0 of 5** |
+| T5.3 | `cargo test -p server && npm run build` | 3 of 15 (the client's 12 never run) |
+| T5.4 | `npm run build` | **0 of 15** |
+| T5.5 | `docker compose up …` + curl | 0 (and unrunnable here, D13) |
+
+`npm run build` type-checks and bundles. It cannot fail for a wrong `% 3` variant
+formula, a kill feed that keeps the wrong number of lines, or a round clock that counts
+up instead of down — every one of which a test written for those tasks does catch. Three
+of the five tasks would be marked `[x]` on a command that runs no assertion about the
+behaviour the task adds.
+
+Not deviated from — the commands are run **as written** at each gate, and the full suite
+is run as well, which is what actually guards the work. Recorded because the pattern is
+now four instances across the project (T2.1, T5.2, T5.3, T5.4) and it is a property of the
+task list rather than an accident: tasks whose Acceptance is visual were given a build
+command instead of a test command, and nothing reconciles the two.

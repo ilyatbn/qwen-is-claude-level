@@ -8,7 +8,7 @@ import { aimAngle } from '../logic/aim';
 import { computeFov } from '../logic/fov';
 import { InputSender, type RawInput } from '../logic/inputFrame';
 import { SnapshotInterpolator } from '../logic/interpolation';
-import type { Snapshot } from '../protocol';
+import type { Kill, Snapshot } from '../protocol';
 import { buildDevMap, parseDevOptions } from '../devmap';
 import { TerrainGrid } from '../logic/terrainGrid';
 import type { MapData } from '../protocol';
@@ -174,6 +174,23 @@ export class GameScene extends Phaser.Scene {
     return this.usingDevMap;
   }
 
+  /**
+   * A `kill` event (docs/06 §2) — the kill feed and the score popup (T5.4
+   * steps 2 and 4).
+   *
+   * The popup floats from the victim's last known position, which is where
+   * the player was looking.
+   */
+  applyKill(kill: Kill): void {
+    const at = this.interpolator.renderState(kill.victim, performance.now());
+    this.hud?.pushKill(
+      kill,
+      this.time.now / 1000,
+      this.localPlayerId,
+      at === null ? undefined : at,
+    );
+  }
+
   /** Feed an arriving snapshot to the interpolator (T2.9 step 1). */
   applySnapshot(snapshot: Snapshot, receivedAt: number): void {
     this.interpolator.push(snapshot, receivedAt);
@@ -189,6 +206,8 @@ export class GameScene extends Phaser.Scene {
       this.inventoryUi?.update(view.slots);
       this.inventoryUi?.layout(this.cameras.main.width, this.cameras.main.height);
     }
+    // T5.4 step 1: both values come straight off the snapshot (docs/06 §4).
+    this.hud?.drawClock(snapshot.round_time_s, snapshot.day_phase);
     for (const snap of snapshot.players) {
       const existing = this.sprites.get(snap.id);
       if (existing === undefined) {
@@ -274,6 +293,9 @@ export class GameScene extends Phaser.Scene {
     const world = pointer.positionToCamera(this.cameras.main) as Phaser.Math.Vector2;
     this.aim = aimAngle(this.aimOrigin.x, this.aimOrigin.y, world.x, world.y);
     this.hud?.drawCrosshair(this.aimOrigin.x, this.aimOrigin.y, this.aim);
+    // Fading is time-based, so the feed redraws every frame rather than only
+    // when a kill arrives.
+    this.hud?.drawKillFeed(this.time.now / 1000);
   }
 
   /** Current aim angle, for the input frame sent in T2.9. */

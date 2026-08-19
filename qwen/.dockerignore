@@ -1,0 +1,9 @@
+# T5.5 step 3. The image holds the server binary and nothing else.
+target/
+server/target/
+client/node_modules/
+client/dist/
+# Raw pack downloads are never part of the image; the client is served
+# separately (README "How to run"). assets/processed is client-side too.
+assets/
+.git/
