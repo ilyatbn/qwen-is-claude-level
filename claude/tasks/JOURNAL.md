@@ -591,3 +591,23 @@ Notes: Input carries HELD STATE ONLY; edges are derived by comparing with the
           apex is 62.5 px. The test asserts against analytic - shortfall; asserting
           "within 2 px of 66" would be asserting the game does not use discrete time.
 Left for later: nothing
+
+## T2.09 — Jetpack engagement rules and fuel — DONE
+## T2.10 — Jetpack thrust and clamps — DONE
+Files: crates/game-core/src/player/{jetpack.rs,mod.rs}
+Verified: `cargo test -p game-core --release --lib jetpack` — 27 passed
+          (one named test per row of the docs/20 §5 disambiguation table)
+Notes: TWO REAL BUGS caught by the table tests.
+       1. JETPACK_MIN_FUEL_TO_ENGAGE (0.3) was gating CONTINUOUS BURN, so the tank
+          stopped draining at 0.3 and "5 s of thrust drains to exactly 0" was
+          impossible. It gates STARTING only: can_start needs >= 0.3, can_continue
+          needs > 0. The state picks which by whether it is already active.
+       2. The thrust clamp braked a rocket jump: holding UP at -800 px/s clamped to
+          -260. The clamp bounds the THRUST, not the body — an axis is clamped only
+          if it was thrust this tick AND was already within the limit beforehand.
+          Documented in the fn and asserted both ways (upward thrust does not brake;
+          downward thrust does reduce it).
+       HOLD_DELAY_TICKS = 10 (0.18 s), REFILL_DELAY_TICKS = 30 (0.5 s).
+       A full burn + full refill returns fuel to EXACTLY the starting value — that
+       test guards against float drift over 900 ticks.
+Left for later: nothing

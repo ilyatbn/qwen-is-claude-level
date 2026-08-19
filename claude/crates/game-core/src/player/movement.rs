@@ -8,8 +8,8 @@
 //! See `docs/20-player-movement.md` §3, §4.
 
 use crate::constants::{
-    AIR_ACCEL_FACTOR, AIR_DRAG, GROUND_FRICTION, JUMP_BUFFER, JUMP_H_BOOST,
-    JUMP_VELOCITY, SIM_HZ, WALK_ACCEL, WALK_SPEED,
+    AIR_ACCEL_FACTOR, AIR_DRAG, GROUND_FRICTION, JUMP_BUFFER, JUMP_H_BOOST, JUMP_VELOCITY, SIM_HZ,
+    WALK_ACCEL, WALK_SPEED,
 };
 use crate::math::approach;
 use crate::physics::body::{Body, COYOTE_TICKS};
