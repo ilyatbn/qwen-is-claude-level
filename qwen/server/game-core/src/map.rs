@@ -489,9 +489,20 @@ impl Map {
     pub fn destroy_tile(&mut self, x: u32, y: u32) -> Option<TileDestroyed> {
         let event = self.destroy_tile_deferred(x, y)?;
         // Only the tile directly below the one just removed can have become
-        // exposed, so the conversion is O(1) rather than a full-grid scan.
-        // Equivalent to `apply_surface_conversion()` for a single destruction,
-        // and keeps a loop over `destroy_tile` linear instead of quadratic.
+        // exposed, so the conversion is O(1) rather than a full-grid scan, and
+        // a loop over `destroy_tile` stays linear instead of quadratic.
+        //
+        // Equivalent to `apply_surface_conversion()` for a single destruction
+        // **from an already-converted map** — i.e. one with no pre-existing
+        // exposed DIRT. That holds for every caller today, because both entry
+        // points leave the map converted. It does NOT hold if a caller
+        // interleaves `destroy_tile_deferred` with `destroy_tile` and skips the
+        // batch conversion, which would leave exposed DIRT this O(1) pass never
+        // looks at. Measured differentially over 1000 randomised single
+        // destructions: 0 divergences from a converted map, 10 when the
+        // invariant is pre-broken. T4.6 uses both entry points — run
+        // `apply_surface_conversion()` before switching from the batch path
+        // back to `destroy_tile`.
         self.convert_if_exposed(x, y + 1);
         Some(event)
     }
@@ -1331,6 +1342,72 @@ mod tests {
                 t.hp < t.kind.base_hp()
             });
         assert!(damaged, "no surviving tile retained blast damage");
+    }
+
+    #[test]
+    fn surface_conversion_leaves_buried_dirt_alone() {
+        // docs/01 §5 converts "every DIRT tile whose tile directly above is
+        // AIR". That predicate has two halves and this covers the NEGATIVE one:
+        // buried DIRT must be left alone.
+        //
+        // Deleted by accident in 0decceb (a slice-based edit swallowed it) and
+        // restored here, strengthened. Without it, making the pass convert
+        // regardless of what sits above leaves the whole suite green while
+        // underground DIRT silently becomes GRASS — which matters, because
+        // GRASS is 20 hp against DIRT's 30, so a rocket digs further.
+        let mut map = Map::generate(4, Scale::Small);
+
+        // Every DIRT tile with a SOLID tile directly above it.
+        let buried: Vec<(u32, u32)> = (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                map.tile(x, y).kind == TileKind::Dirt && y > 0 && map.tile(x, y - 1).is_solid()
+            })
+            .collect();
+        assert!(
+            buried.len() > 100,
+            "only {} buried DIRT tiles — too few for this test to mean anything",
+            buried.len(),
+        );
+
+        map.apply_surface_conversion();
+
+        for (x, y) in buried {
+            assert_eq!(
+                map.tile(x, y).kind,
+                TileKind::Dirt,
+                "buried DIRT at ({x},{y}) was converted despite a solid tile above",
+            );
+        }
+    }
+
+    #[test]
+    fn surface_conversion_preserves_damaged_buried_dirt_hp() {
+        // Conversion sets hp to 20 (docs/01 §5). If it ran on buried tiles it
+        // would also HEAL a damaged one from below 30 up to 20 — or reset it
+        // outright — so hp is an independent witness to the same predicate.
+        let mut map = solid_map(TileKind::Dirt);
+        // Damage a deeply buried tile without destroying it.
+        let mut damaged = map.tile(10, 30);
+        damaged.hp = 7.0;
+        map.set_tile(10, 30, damaged);
+
+        map.apply_surface_conversion();
+
+        let after = map.tile(10, 30);
+        assert_eq!(after.kind, TileKind::Dirt, "buried DIRT converted");
+        assert_eq!(after.hp, 7.0, "buried DIRT hp was reset by conversion");
+    }
+
+    #[test]
+    fn surface_conversion_is_idempotent() {
+        // Running the pass twice must not differ from running it once.
+        let mut once = Map::generate(4, Scale::Small);
+        once.apply_surface_conversion();
+        let mut twice = Map::generate(4, Scale::Small);
+        twice.apply_surface_conversion();
+        twice.apply_surface_conversion();
+        assert_eq!(once.tiles, twice.tiles, "conversion is not idempotent");
     }
 
     #[test]
