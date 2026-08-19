@@ -86,6 +86,12 @@ fn log_event(room: u32, tick: u64, event: &Event) {
             debug!("[round] P{player} respawned [tick={tick} room={room}]");
         }
         Event::CrateDropped { x } => debug!("[item] crate at x={x} [tick={tick} room={room}]"),
+        Event::EffectStarted { kind } => {
+            info!("[effect] {} started [tick={tick} room={room}]", kind.as_str());
+        }
+        Event::EffectEnded { kind } => {
+            info!("[effect] {} ended [tick={tick} room={room}]", kind.as_str());
+        }
         _ => {}
     }
 }
@@ -190,6 +196,17 @@ async fn broadcast(io: &socketioxide::SocketIo, output: &TickOutput) {
             Event::Respawned { player, x, y } => (
                 s2c::RESPAWNED,
                 serde_json::json!({ "player": player, "x": x, "y": y }),
+            ),
+            // docs/06 §2. The per-kind payload rides in the snapshot's
+            // `effect` field (docs/06 §4), so the event carries the kind and
+            // the client reads the data from the next snapshot.
+            Event::EffectStarted { kind } => (
+                s2c::EFFECT_STARTED,
+                serde_json::json!({ "kind": kind.as_str(), "data": {} }),
+            ),
+            Event::EffectEnded { kind } => (
+                s2c::EFFECT_ENDED,
+                serde_json::json!({ "kind": kind.as_str() }),
             ),
         };
         if let Some(ns) = io.of(namespace) {

@@ -13,13 +13,15 @@
 //! | `apply_damage` had no killer | [`DamageSource`] |
 //! | no crate/timed scheduler | [`Round::run_spawn_schedule`] |
 
-use crate::effects::EffectSchedule;
+use crate::effects::*;
 use crate::items::*;
 use crate::map::{Map, Scale};
 use crate::physics::PhysicsWorld;
 use crate::player::{player_config::*, Player, PlayerInputState, DT};
 use crate::protocol::{
-    FogState, GroundItemSnap, InputFrame, ItemId, PlayerSnap, ProjectileSnap, Snapshot,
+    ActiveEffectSnap, EffectData, GroundItemSnap, HeavyFogData, InputFrame, ItemId,
+    LavaBurstData, MeteorShowerData, PlayerSnap, Point, ProjectileSnap, Snapshot,
+    ToxicRainData,
 };
 use crate::rng::GameRng;
 use crate::tiles::{TileDestroyed, TILE_SIZE};
@@ -69,6 +71,8 @@ pub enum Event {
     Explosion { x: f32, y: f32, radius: f32 },
     Kill { victim: u8, killer: Option<u8>, weapon: &'static str },
     Respawned { player: u8, x: f32, y: f32 },
+    EffectStarted { kind: EffectKind },
+    EffectEnded { kind: EffectKind },
 }
 
 /// Per-player round state. `Player` holds simulation state; this holds the
@@ -122,6 +126,10 @@ pub struct Round {
     /// Source-C / source-D spawns already fired, so each fires once.
     crates_dropped: usize,
     timed_spawned: usize,
+    /// The one effect that may be running (docs/02 §7: "max 1 concurrent").
+    pub active_effect: Option<ActiveEffect>,
+    /// How many scheduled entries have started, so each fires once.
+    effects_started: usize,
 }
 
 impl Round {
@@ -146,6 +154,8 @@ impl Round {
             state_time_s: 0.0,
             crates_dropped: 0,
             timed_spawned: 0,
+            active_effect: None,
+            effects_started: 0,
         }
     }
 
@@ -210,6 +220,8 @@ impl Round {
         self.projectiles.clear();
         self.crates_dropped = 0;
         self.timed_spawned = 0;
+        self.active_effect = None;
+        self.effects_started = 0;
         self.tick = 0;
         self.state_time_s = 0.0;
         self.state = RoundState::Running;
@@ -322,11 +334,135 @@ impl Round {
         }
 
         self.enforce_bounds(&mut events);
+        events.extend(self.step_effects());
         events.extend(self.step_projectiles());
         events.extend(self.step_crates());
         events.extend(self.run_spawn_schedule());
         events.extend(self.collect_pickups());
         enforce_projectile_cap(&mut self.projectiles);
+        events
+    }
+
+    /// Start, run and end weather effects (T4.4-T4.8, docs/02).
+    ///
+    /// This is the integration the effect mechanics were missing. The schedule
+    /// is consulted, one effect runs at a time, and effect damage goes through
+    /// the same `apply_damage` pipeline as weapons — so shields halve it — with
+    /// kills credited to `DamageSource::Weather`, which scores nobody
+    /// (docs/02 §7, docs/03 §6).
+    fn step_effects(&mut self) -> Vec<Event> {
+        let mut events = Vec::new();
+        let now = self.state_time_s;
+
+        // Start, if one is due and none is running (docs/02 §7).
+        if self.active_effect.is_none() {
+            if let Some((at, kind)) = self.schedule.due(now, self.effects_started) {
+                let effect = ActiveEffect::start(kind, at, &self.map, &mut self.rng);
+                // Lava opens its 3x3 immediately (docs/02 §5), with skip_items
+                // so weather never uncovers a hidden item.
+                if let ActiveEffectData::LavaBurst { site, .. } = &effect.data {
+                    let (sx, sy) = *site;
+                    let destroyed = lava_clear_area(&mut self.map, sx, sy);
+                    if !destroyed.is_empty() {
+                        self.world.rebuild_segments(&self.map, &destroyed);
+                        events.push(Event::TileDestroyed {
+                            tiles: destroyed,
+                            version: self.map.version,
+                        });
+                    }
+                }
+                events.push(Event::EffectStarted { kind });
+                self.active_effect = Some(effect);
+                self.effects_started += 1;
+            }
+        }
+
+        let Some(mut effect) = self.active_effect.take() else {
+            return events;
+        };
+        let elapsed = effect.elapsed_s(now);
+
+        match &mut effect.data {
+            ActiveEffectData::ToxicRain { spots } => {
+                let spots = spots.clone();
+                for index in 0..self.players.len() {
+                    if !self.players[index].player.alive {
+                        continue;
+                    }
+                    let p = self.players[index].player.pos;
+                    let damage = toxic_damage_at(&spots, elapsed, p.x, p.y, DT);
+                    if damage > 0.0 && self.players[index].player.apply_damage(damage) {
+                        self.kill(index, DamageSource::Weather, "toxic_rain", &mut events);
+                    }
+                }
+            }
+            ActiveEffectData::MeteorShower { targets } => {
+                let mut landed: Vec<MeteorTarget> = Vec::new();
+                for target in targets.iter_mut() {
+                    if !target.fired && elapsed >= target.impact_s {
+                        target.fired = true;
+                        landed.push(*target);
+                    }
+                }
+                for target in landed {
+                    let destroyed = meteor_blast(&mut self.map, &target);
+                    events.push(Event::Explosion {
+                        x: target.x, y: target.y, radius: METEOR_RADIUS,
+                    });
+                    if !destroyed.is_empty() {
+                        self.world.rebuild_segments(&self.map, &destroyed);
+                        events.push(Event::TileDestroyed {
+                            tiles: destroyed, version: self.map.version,
+                        });
+                    }
+                    for index in 0..self.players.len() {
+                        if !self.players[index].player.alive {
+                            continue;
+                        }
+                        let p = self.players[index].player.pos;
+                        let distance = (p.x - target.x).hypot(p.y - target.y);
+                        let damage =
+                            Player::blast_damage_at(distance, METEOR_RADIUS, METEOR_DAMAGE);
+                        if damage > 0.0 && self.players[index].player.apply_damage(damage) {
+                            self.kill(index, DamageSource::Weather, "meteor", &mut events);
+                        }
+                    }
+                }
+            }
+            ActiveEffectData::LavaBurst { site, particles, burning } => {
+                let phase = lava_phase_at(elapsed);
+                if phase == Some(LavaPhase::Spew) {
+                    let centre = Map::tile_center(site.0, site.1);
+                    let fresh = spew_particles(centre.x, centre.y, &mut self.rng);
+                    particles.extend(fresh);
+                }
+                particles.retain_mut(|p| step_particle(p, DT));
+
+                if let Some(phase) = phase {
+                    let particles = particles.clone();
+                    let burning = burning.clone();
+                    for index in 0..self.players.len() {
+                        if !self.players[index].player.alive {
+                            continue;
+                        }
+                        let p = self.players[index].player.pos;
+                        let damage = lava_damage_at(phase, &particles, &burning, p.x, p.y, DT);
+                        if damage > 0.0 && self.players[index].player.apply_damage(damage) {
+                            self.kill(index, DamageSource::Weather, "lava", &mut events);
+                        }
+                    }
+                }
+            }
+            // Fog does no damage (docs/02 §2); it reaches players via
+            // compute_fov in the snapshot.
+            ActiveEffectData::HeavyFog => {}
+        }
+
+        if effect.is_finished(now) {
+            events.push(Event::EffectEnded { kind: effect.kind });
+        } else {
+            self.active_effect = Some(effect);
+        }
         events
     }
 
@@ -627,6 +763,12 @@ impl Round {
         };
 
         let day_phase = crate::effects::day_phase(self.state_time_s);
+        // Real fog, not a hard-coded "inactive" (T4.7).
+        let fog = self
+            .active_effect
+            .as_ref()
+            .map(|e| e.fog(self.state_time_s))
+            .unwrap_or_default();
         let players: [PlayerSnap; 6] = std::array::from_fn(|index| {
             let Some(rp) = self.players.get(index) else {
                 return blank(index as u8);
@@ -647,8 +789,10 @@ impl Round {
                 max_health: p.max_health,
                 shield_remaining: p.shield.remaining_s,
                 jetpack_fuel: p.jetpack.fuel,
+                // Fog reaches compute_fov, so T4.7's 420 -> 189 holds in a
+                // LIVE round rather than only in a unit test.
                 fov: Player::compute_fov(
-                    day_phase, false, p.health,
+                    day_phase, fog.active, p.health,
                     p.inventory.contains(ItemId::Flashlight),
                 ),
                 alive: p.alive,
@@ -666,8 +810,16 @@ impl Round {
             tick: self.tick,
             round_time_s: self.state_time_s,
             day_phase,
-            fog: FogState { active: false, remaining_s: 0.0 },
-            effect: None,
+            fog: crate::protocol::FogState {
+                active: fog.active,
+                remaining_s: fog.remaining_s,
+            },
+            effect: self.active_effect.as_ref().map(|e| ActiveEffectSnap {
+                kind: e.kind.as_str().to_string(),
+                remaining_s: (effect_duration_s(e.kind) - e.elapsed_s(self.state_time_s))
+                    .max(0.0),
+                data: effect_data_for(e),
+            }),
             map_version: self.map.version,
             players,
             items: self
@@ -1155,6 +1307,258 @@ mod round_tests {
         assert_eq!(round.players[0].player.score, 1, "3 kills - 2 deaths = +1");
     }
 
+    // --- effects actually fire in a round (T4.4-T4.8 integration) ---
+    //
+    // These exist because the effect MECHANICS were unit-tested in isolation
+    // and passed, while `Round::step` never consulted the schedule. Every
+    // documented Test command was green and no weather ever occurred. A ticked
+    // box must mean the task's steps run, not that its Test command passes.
+
+    /// Run a round to `until_s`, collecting events.
+    fn run_round(seed: u64, until_s: f32) -> (Round, Vec<Event>) {
+        let mut round = lobby_with(6);
+        round.start_round(seed, Scale::Medium);
+        let mut events = Vec::new();
+        let ticks = (until_s / DT) as u64;
+        for _ in 0..ticks {
+            events.extend(round.step(&[]));
+        }
+        (round, events)
+    }
+
+    #[test]
+    fn scheduled_effects_actually_start_during_a_round() {
+        let (round, events) = run_round(4242, 240.0);
+        let started: Vec<EffectKind> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::EffectStarted { kind } => Some(*kind),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !round.schedule.entries.is_empty(),
+            "seed 4242 scheduled no effects, so this test proves nothing",
+        );
+        assert_eq!(
+            started.len(),
+            round.schedule.entries.len(),
+            "the schedule holds {} entries but only {} effects started",
+            round.schedule.entries.len(),
+            started.len(),
+        );
+        // And they start in the scheduled order.
+        let scheduled: Vec<EffectKind> =
+            round.schedule.entries.iter().map(|(_, k)| *k).collect();
+        assert_eq!(started, scheduled, "effects started out of order");
+    }
+
+    #[test]
+    fn every_started_effect_also_ends() {
+        let (_, events) = run_round(4242, 240.0);
+        let starts = events.iter().filter(|e| matches!(e, Event::EffectStarted { .. })).count();
+        let ends = events.iter().filter(|e| matches!(e, Event::EffectEnded { .. })).count();
+        // Non-vacuity guard: with zero starts this is trivially true, which is
+        // exactly how the un-integrated scheduler passed for five tasks.
+        assert!(starts > 0, "no effects started, so this test proves nothing");
+        assert_eq!(starts, ends, "{starts} effects started but {ends} ended");
+    }
+
+    #[test]
+    fn only_one_effect_runs_at_a_time() {
+        // docs/02 §7: "max 1 concurrent in v1".
+        let mut round = lobby_with(6);
+        round.start_round(4242, Scale::Medium);
+        let mut concurrent = 0i32;
+        let mut total_starts = 0usize;
+        for _ in 0..4800u64 {
+            for event in round.step(&[]) {
+                match event {
+                    Event::EffectStarted { .. } => {
+                        concurrent += 1;
+                        total_starts += 1;
+                    }
+                    Event::EffectEnded { .. } => concurrent -= 1,
+                    _ => {}
+                }
+                assert!(
+                    (0..=1).contains(&concurrent),
+                    "{concurrent} effects were active at once",
+                );
+            }
+        }
+        assert!(total_starts > 0, "no effects started, so this test proves nothing");
+    }
+
+    #[test]
+    fn no_effect_starts_in_the_first_10s_or_last_15s_of_a_live_round() {
+        // docs/02 §7, §8 — asserted against the ROUND clock, not the schedule.
+        let mut window_starts = 0usize;
+        for seed in [1u64, 4242, 999] {
+            let mut round = lobby_with(6);
+            round.start_round(seed, Scale::Medium);
+            for _ in 0..4800u64 {
+                let now = round.round_time_s();
+                for event in round.step(&[]) {
+                    if matches!(event, Event::EffectStarted { .. }) {
+                        window_starts += 1;
+                        assert!(now >= 10.0, "seed {seed}: effect started at {now} s");
+                        assert!(now <= 225.0, "seed {seed}: effect started at {now} s");
+                    }
+                }
+            }
+        }
+        assert!(window_starts > 0, "no effects started, so this test proves nothing");
+    }
+
+    #[test]
+    fn toxic_rain_damages_a_player_standing_in_it() {
+        // docs/02 §3 at 10 hp/s, delivered through Round::step.
+        let mut round = lobby_with(1);
+        round.start_round(7, Scale::Small);
+        // Force the effect rather than waiting for the schedule.
+        let effect = ActiveEffect::start(EffectKind::ToxicRain, 0.0, &round.map, &mut GameRng::new(7));
+        let spot = match &effect.data {
+            ActiveEffectData::ToxicRain { spots } => spots[0],
+            _ => unreachable!(),
+        };
+        round.active_effect = Some(effect);
+        round.players[0].player.pos = Vec2::new(spot.x, spot.y);
+        round.players[0].player.alive = true;
+        let before = round.players[0].player.health;
+
+        // 2 s inside spot 0's window.
+        for _ in 0..40 {
+            round.players[0].player.pos = Vec2::new(spot.x, spot.y);
+            round.step(&[]);
+        }
+        let lost = before - round.players[0].player.health;
+        assert!(
+            (18.0..=22.0).contains(&lost),
+            "2 s in toxic rain cost {lost} hp, expected ~20 (10 hp/s)",
+        );
+    }
+
+    #[test]
+    fn a_shield_halves_effect_damage() {
+        // docs/02 §2: "All damage is unshielded base; shields reduce it like
+        // any other damage source." Effect damage must use apply_damage.
+        let mut round = lobby_with(2);
+        round.start_round(7, Scale::Small);
+        let effect = ActiveEffect::start(EffectKind::ToxicRain, 0.0, &round.map, &mut GameRng::new(7));
+        let spot = match &effect.data {
+            ActiveEffectData::ToxicRain { spots } => spots[0],
+            _ => unreachable!(),
+        };
+        round.active_effect = Some(effect);
+        round.players[1].player.apply_shield();
+        for index in 0..2 {
+            round.players[index].player.pos = Vec2::new(spot.x, spot.y);
+        }
+        let before = [round.players[0].player.health, round.players[1].player.health];
+        for _ in 0..40 {
+            for index in 0..2 {
+                round.players[index].player.pos = Vec2::new(spot.x, spot.y);
+            }
+            round.step(&[]);
+        }
+        let unshielded = before[0] - round.players[0].player.health;
+        let shielded = before[1] - round.players[1].player.health;
+        assert!(
+            (shielded - unshielded / 2.0).abs() < 1.0,
+            "shielded took {shielded}, unshielded {unshielded}; expected half",
+        );
+    }
+
+    #[test]
+    fn a_meteor_shower_digs_craters_in_a_live_round() {
+        let mut round = lobby_with(1);
+        round.start_round(11, Scale::Small);
+        round.active_effect = Some(ActiveEffect::start(
+            EffectKind::MeteorShower, 0.0, &round.map, &mut GameRng::new(11),
+        ));
+        let before = round.map.version;
+        let mut destroyed = 0usize;
+        for _ in 0..100 {
+            for event in round.step(&[]) {
+                if let Event::TileDestroyed { tiles, .. } = event {
+                    destroyed += tiles.len();
+                }
+            }
+        }
+        assert!(destroyed > 0, "the meteor shower destroyed no tiles");
+        assert!(round.map.version > before, "map.version did not move");
+    }
+
+    #[test]
+    fn a_weather_kill_credits_nobody_in_a_live_round() {
+        // docs/02 §7 / docs/03 §6, end to end rather than by calling kill().
+        let mut round = lobby_with(2);
+        round.start_round(7, Scale::Small);
+        let effect = ActiveEffect::start(EffectKind::ToxicRain, 0.0, &round.map, &mut GameRng::new(7));
+        let spot = match &effect.data {
+            ActiveEffectData::ToxicRain { spots } => spots[0],
+            _ => unreachable!(),
+        };
+        round.active_effect = Some(effect);
+        round.players[0].player.health = 5.0;
+
+        let mut kill: Option<Option<u8>> = None;
+        for _ in 0..40 {
+            round.players[0].player.pos = Vec2::new(spot.x, spot.y);
+            for event in round.step(&[]) {
+                if let Event::Kill { killer, .. } = event {
+                    kill = Some(killer);
+                }
+            }
+            if kill.is_some() {
+                break;
+            }
+        }
+        assert_eq!(kill, Some(None), "a weather kill must credit nobody");
+        assert_eq!(round.players[1].player.score, 0, "a bystander gained a point");
+        assert_eq!(round.players[0].player.score, -1, "the victim did not lose one");
+    }
+
+    #[test]
+    fn fog_shrinks_fov_in_the_snapshot() {
+        // T4.7's Acceptance, in a LIVE round: 420 -> 189 at full day.
+        let mut round = lobby_with(1);
+        round.start_round(3, Scale::Small);
+        let clear = round.snapshot().players[0].fov;
+        assert!((clear - 420.0).abs() < 1e-3, "clear FOV was {clear}, expected 420");
+
+        round.active_effect = Some(ActiveEffect::start(
+            EffectKind::HeavyFog, round.round_time_s(), &round.map, &mut GameRng::new(3),
+        ));
+        let snap = round.snapshot();
+        assert!(snap.fog.active, "the snapshot does not report fog");
+        assert!(
+            (snap.fog.remaining_s - 15.0).abs() < 0.1,
+            "fog remaining was {}, expected 15", snap.fog.remaining_s,
+        );
+        assert!(
+            (snap.players[0].fov - 189.0).abs() < 1e-3,
+            "foggy FOV was {}, expected 189 (420 * 0.45)", snap.players[0].fov,
+        );
+    }
+
+    #[test]
+    fn the_snapshot_reports_the_running_effect() {
+        // docs/06 §4: `effect: { kind, remaining_s, data } | null`.
+        let mut round = lobby_with(1);
+        round.start_round(7, Scale::Small);
+        assert!(round.snapshot().effect.is_none(), "an idle round reported an effect");
+
+        round.active_effect = Some(ActiveEffect::start(
+            EffectKind::ToxicRain, round.round_time_s(), &round.map, &mut GameRng::new(7),
+        ));
+        let snap = round.snapshot();
+        let effect = snap.effect.expect("the snapshot should carry the running effect");
+        assert_eq!(effect.kind, "toxic_rain");
+        assert!((effect.remaining_s - 8.0).abs() < 0.1, "remaining {}", effect.remaining_s);
+    }
+
     #[test]
     fn a_full_round_runs_without_panic_and_leaves_sane_state() {
         // The interaction test round.rs exists to make possible.
@@ -1181,5 +1585,31 @@ mod round_tests {
         }
         assert!(round.projectiles.len() <= MAX_PROJECTILES);
         assert_eq!(round.map.version as usize, round.map.version as usize);
+    }
+}
+
+/// Wire payload for a running effect (docs/06 §5).
+fn effect_data_for(effect: &ActiveEffect) -> EffectData {
+    match &effect.data {
+        ActiveEffectData::ToxicRain { spots } => EffectData::ToxicRain(ToxicRainData {
+            spots: spots
+                .iter()
+                .map(|s| crate::protocol::ToxicSpot { x: s.x, y: s.y, remaining_s: s.end_s })
+                .collect(),
+        }),
+        ActiveEffectData::MeteorShower { targets } => EffectData::MeteorShower(MeteorShowerData {
+            targets: targets
+                .iter()
+                .map(|t| crate::protocol::MeteorTarget { x: t.x, y: t.y, fired: t.fired })
+                .collect(),
+        }),
+        ActiveEffectData::LavaBurst { site, .. } => {
+            let centre = Map::tile_center(site.0, site.1);
+            EffectData::LavaBurst(LavaBurstData {
+                site: Point { x: centre.x, y: centre.y },
+                phase: "spew".to_string(),
+            })
+        }
+        ActiveEffectData::HeavyFog => EffectData::HeavyFog(HeavyFogData {}),
     }
 }

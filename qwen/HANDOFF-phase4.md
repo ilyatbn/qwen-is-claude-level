@@ -60,6 +60,39 @@ one re-pin, at T4.8, rather than two.
 
 ---
 
+## The integration miss — and why it nearly shipped
+
+T4.4–T4.8 were ticked with their mechanics implemented and unit-tested but **never wired
+into `Round::step`**. The schedule was built and never consulted; `Snapshot.effect` and
+`fog` were hard-coded inactive. A full 240 s round had no weather at all.
+
+Every documented Test command passed, because each tests its mechanic standalone —
+`cargo test -p game-core schedule` exercises `build_schedule`, not the round. The E2E
+harness reported 19/19 because nothing asserted an effect ever fires.
+
+**The rule this yields**, alongside the injection rule and the sweep rule:
+
+> **A ticked box must mean the task's numbered steps are implemented, not that its Test
+> command passes.** qwen's Test commands have now selected the wrong thing five times
+> (D14, D27 ×2, T1.5's filter, and this). Read the steps, not the command.
+
+T4.8 step 2 says verbatim: *"Round.step: if next scheduled effect's tick reached AND no
+effect active → start it."* That is a numbered step, and it was not done.
+
+Fixed by `Round::step_effects`: starts scheduled effects one at a time, runs each per
+tick, applies damage through `apply_damage` (so shields halve it) crediting
+`DamageSource::Weather` (so nobody scores), ends at the documented duration, and
+populates `Snapshot.effect` and `Snapshot.fog` for real. Fog now reaches `compute_fov`,
+so T4.7's 420 → 189 holds in a live round.
+
+**Verified by injection**: restoring the bug (`Round::step` never calling
+`step_effects`) now fails **7 tests**. Three of those needed non-vacuity guards — "every
+started effect also ends" is trivially true when none start, which is precisely how the
+un-integrated code passed.
+
+**Verified live**: a real client on a seeded round receives `effect_started: lava_burst`
+and sees the effect and its countdown in successive snapshots.
+
 ## Deviations this phase
 
 | ID | Summary |
@@ -76,7 +109,6 @@ D26/D36/D39 (geometry) all applied as recorded.
 
 | # | Item | Owner |
 |---|---|---|
-| 29 | **Effects are built but not run by the round.** `EffectSchedule` is created and every effect's mechanics are implemented and tested, but `Round::step` does not yet start scheduled effects or apply their damage. `Snapshot.effect`/`fog` are hard-coded `None`/inactive. | **T5.x or a T4 follow-up** |
 | 30 | **`lobby_state` and `round_ended` are not broadcast.** The scenes exist and render them; nothing sends them. | T5.x |
 | 31 | **`joined` omits `map`** (docs/06 §2). The client cannot render terrain from the server yet — `devmap.ts` still supplies it. Needs `MapData` with base64 tiles. | T5.x |
 | 32 | Client never consumes `snapshot`/`tile_destroyed`; `GameScene.applySnapshot` exists but nothing calls it from the socket. | T5.x |

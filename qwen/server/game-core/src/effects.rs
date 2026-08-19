@@ -400,6 +400,89 @@ pub const EFFECT_TAIL_S: f32 = 15.0;
 /// Weights: toxic 30, meteor 25, lava 25, fog 20 (docs/02 §8).
 pub const EFFECT_WEIGHTS: [u32; 4] = [30, 25, 25, 20];
 
+/// A running effect and the state it needs per tick (docs/02 §7).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveEffect {
+    pub kind: EffectKind,
+    /// Round time at which it started, seconds.
+    pub started_s: f32,
+    pub data: ActiveEffectData,
+}
+
+/// Per-kind live state (docs/02 §7 `EffectData`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ActiveEffectData {
+    ToxicRain { spots: Vec<ToxicSpot> },
+    MeteorShower { targets: Vec<MeteorTarget> },
+    LavaBurst {
+        site: (u32, u32),
+        particles: Vec<FireParticle>,
+        /// Tiles the 3x3 dig set alight (docs/02 §5 phase 2).
+        burning: Vec<(u32, u32)>,
+    },
+    HeavyFog,
+}
+
+impl ActiveEffect {
+    /// Instantiate an effect, drawing what it needs from the round RNG.
+    ///
+    /// The draws happen at the tick the effect starts, not at round start —
+    /// docs/02 §8 precomputes only the *timeline*, and docs/04 §6 leaves
+    /// per-effect randomness to "their ticks".
+    pub fn start(kind: EffectKind, now_s: f32, map: &Map, rng: &mut GameRng) -> Self {
+        let data = match kind {
+            EffectKind::ToxicRain => ActiveEffectData::ToxicRain {
+                spots: build_toxic_spots(map, rng),
+            },
+            EffectKind::MeteorShower => ActiveEffectData::MeteorShower {
+                targets: build_meteor_targets(map, rng),
+            },
+            EffectKind::LavaBurst => {
+                // docs/02 §5: "pick 1 burst site (RNG) on solid ground".
+                let columns: Vec<u32> =
+                    (0..map.width).filter(|&x| map.surface_row(x) < map.height).collect();
+                let site = if columns.is_empty() {
+                    (0, 0)
+                } else {
+                    let pick = rng.gen_range(0, columns.len() as u32) as usize;
+                    let column = columns[pick];
+                    (column, map.surface_row(column))
+                };
+                let mut burning: Vec<(u32, u32)> = Vec::new();
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let x = site.0 as i32 + dx;
+                        let y = site.1 as i32 + dy;
+                        if x >= 0 && y >= 0 && x < map.width as i32 && y < map.height as i32 {
+                            burning.push((x as u32, y as u32));
+                        }
+                    }
+                }
+                ActiveEffectData::LavaBurst { site, particles: Vec::new(), burning }
+            }
+            EffectKind::HeavyFog => ActiveEffectData::HeavyFog,
+        };
+        ActiveEffect { kind, started_s: now_s, data }
+    }
+
+    pub fn elapsed_s(&self, now_s: f32) -> f32 {
+        now_s - self.started_s
+    }
+
+    /// docs/02 §2 durations.
+    pub fn is_finished(&self, now_s: f32) -> bool {
+        self.elapsed_s(now_s) >= effect_duration_s(self.kind)
+    }
+
+    /// Fog state this effect contributes (docs/06 §4 `fog`).
+    pub fn fog(&self, now_s: f32) -> FogState {
+        match self.kind {
+            EffectKind::HeavyFog => FogState::at(self.elapsed_s(now_s)),
+            _ => FogState::default(),
+        }
+    }
+}
+
 /// Every effect kind, in the weight-table order.
 pub const EFFECT_KINDS: [EffectKind; 4] = [
     EffectKind::ToxicRain,

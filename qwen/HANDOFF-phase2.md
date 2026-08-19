@@ -234,6 +234,20 @@ returns a Future and was never awaited — and it was invisible to 364 tests bec
 all stop one layer short of the socket. Run `client/scripts/ping-check.mjs` and
 `client/scripts/round-check.mjs` against a real server at every gate.
 
+## Standing rule 4: a ticked box means the steps are implemented
+
+Phase 4 ticked five tasks whose mechanics were implemented and unit-tested but never
+integrated — the effect scheduler was built and never consulted, and a full round had no
+weather. Every documented Test command passed, because each tests its mechanic
+standalone.
+
+> **Before ticking, re-read the task's numbered steps and confirm each one is
+> implemented in the shipping path — not that its Test command is green.**
+
+qwen's Test commands have selected the wrong thing five times now (D14, D27 for T2.2 and
+T2.1, T1.5's `spawn_spacing` filter, and T4.8). A green command is evidence about the
+command, not about the task.
+
 ## Notes for Phase 3
 
 - **`Player::integrate` takes acceleration and uses Verlet** (D28). Do not "simplify"

@@ -338,6 +338,9 @@ fn main() {
 
         let (mut kills, mut respawns, mut crates, mut items, mut destroyed) = (0usize, 0usize, 0usize, 0usize, 0usize);
         let mut snapshots = 0usize;
+        let (mut effects_started, mut effects_ended) = (0usize, 0usize);
+        let mut effect_damage_seen = false;
+        let mut health_before: Vec<f32> = round.players.iter().map(|p| p.player.health).collect();
         for tick in 0..4800u64 {
             let frame = InputFrame {
                 right: tick % 40 < 20,
@@ -356,9 +359,21 @@ fn main() {
                     Event::CrateDropped { .. } => crates += 1,
                     Event::ItemSpawned { .. } => items += 1,
                     Event::TileDestroyed { tiles, .. } => destroyed += tiles.len(),
+                    Event::EffectStarted { .. } => effects_started += 1,
+                    Event::EffectEnded { .. } => effects_ended += 1,
                     _ => {}
                 }
             }
+            // Weather damage: health dropping while an effect runs and no
+            // projectile is live is attributable to the effect.
+            if round.active_effect.is_some() && round.projectiles.is_empty() {
+                for (index, rp) in round.players.iter().enumerate() {
+                    if rp.player.alive && rp.player.health < health_before[index] - 1e-4 {
+                        effect_damage_seen = true;
+                    }
+                }
+            }
+            health_before = round.players.iter().map(|p| p.player.health).collect();
             if round.should_broadcast_snapshot() {
                 snapshots += 1;
             }
@@ -393,6 +408,20 @@ fn main() {
         r.check(sane, "all player state finite and in range after a full round");
         r.check(off_map == 0, "no player ended outside the map (was 1/6 before T4.1)");
         r.check(stale_ammo == 0, "no slot holds more ammo than its weapon can carry");
+
+        // --- effects actually fired (the gap that let 5 tasks ship unwired) ---
+        println!("  scheduled {} effects; {effects_started} started, {effects_ended} ended",
+            round.schedule.entries.len());
+        r.check(
+            !round.schedule.entries.is_empty(),
+            "the seed scheduled at least one effect (else the checks below are vacuous)",
+        );
+        r.check(
+            effects_started == round.schedule.entries.len(),
+            "every scheduled effect actually started",
+        );
+        r.check(effects_started == effects_ended, "every started effect also ended");
+        r.check(effect_damage_seen, "weather damaged a player at least once");
 
         let json = serde_json::to_string(&round.snapshot()).expect("snapshot serializes");
         let back: game_core::protocol::Snapshot =
