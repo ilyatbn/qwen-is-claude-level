@@ -4,8 +4,10 @@
 //! catalog (T3.1), placement (T3.2–T3.5), pickup (T3.6) and weapons (T3.8)
 //! arrive in Phase 3.
 
+use crate::map::Map;
 use crate::protocol::ItemId;
 use crate::rng::GameRng;
+use crate::tiles::TileKind;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -263,6 +265,97 @@ mod tests {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Ground items and placement (T3.2, docs/04 §3)
+// ---------------------------------------------------------------------------
+
+/// Source-A placement count (docs/04 §3 row A: "10 items").
+pub const SOURCE_A_COUNT: usize = 10;
+/// Minimum Chebyshev tile spacing between source-A items (docs/04 §3 row A).
+pub const SOURCE_A_SPACING: u32 = 6;
+/// Auto-pickup radius, px (docs/04 §5: "walking over a ground item (16 px)").
+pub const PICKUP_RADIUS: f32 = 16.0;
+
+/// An item lying on the ground, pickable (T3.2 step 1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GroundItem {
+    pub id: u32,
+    pub item: ItemId,
+    /// Px, tile centre.
+    pub x: f32,
+    pub y: f32,
+    /// True while this is an unopened supply crate (docs/04 §3 row C).
+    pub is_crate: bool,
+    /// True while still concealed inside a ROCK tile (docs/04 §3 row B).
+    pub hidden: bool,
+}
+
+/// Allocates the `id` field of [`GroundItem`], monotonically within a round.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ItemIdCounter(u32);
+
+impl ItemIdCounter {
+    pub fn next(&mut self) -> u32 {
+        let id = self.0;
+        self.0 += 1;
+        id
+    }
+}
+
+/// Surface tiles eligible to hold a ground item.
+///
+/// docs/04 §3 row A says "random surface tiles"; docs/01 §3 makes the surface
+/// tile of every column GRASS. Scanned in column order so the candidate list
+/// is deterministic before the RNG ever sees it.
+fn surface_candidates(map: &Map) -> Vec<(u32, u32)> {
+    (0..map.width)
+        .filter_map(|x| {
+            let y = map.surface_row(x);
+            (y < map.height && map.tile(x, y).kind == TileKind::Grass).then_some((x, y))
+        })
+        .collect()
+}
+
+/// Place the round's source-A items (docs/04 §3 row A, T3.2 step 2).
+///
+/// "pick 10 random surface tiles (RNG, >= 6 tile spacing), place item at tile
+/// centre. Weighted pick: [row A weights]."
+///
+/// Draw order per item is **position, then item kind** — recorded because the
+/// order fixes the whole downstream sequence (docs/04 §6, D19).
+pub fn place_initial(map: &Map, rng: &mut GameRng, ids: &mut ItemIdCounter) -> Vec<GroundItem> {
+    let mut candidates = surface_candidates(map);
+    rng.shuffle(&mut candidates);
+
+    let mut placed: Vec<GroundItem> = Vec::with_capacity(SOURCE_A_COUNT);
+    let mut accepted: Vec<(u32, u32)> = Vec::with_capacity(SOURCE_A_COUNT);
+
+    for &(cx, cy) in &candidates {
+        if placed.len() == SOURCE_A_COUNT {
+            break;
+        }
+        let far_enough = accepted
+            .iter()
+            .all(|&(ax, ay)| cx.abs_diff(ax).max(cy.abs_diff(ay)) >= SOURCE_A_SPACING);
+        if !far_enough {
+            continue;
+        }
+        accepted.push((cx, cy));
+        let item = pick_item(rng, SpawnWeights::Ground);
+        let centre = Map::tile_center(cx, cy);
+        placed.push(GroundItem {
+            id: ids.next(),
+            item,
+            x: centre.x,
+            y: centre.y,
+            is_crate: false,
+            hidden: false,
+        });
+    }
+
+    placed
+}
+
 /// T3.1 catalog tests.
 ///
 /// Named `catalog_tests` so T3.1's Test command, `cargo test -p game-core
@@ -474,5 +567,196 @@ mod catalog_tests {
         let mut manual = GameRng::new(11);
         let _ = manual.weighted_index(&SpawnWeights::Ground.table());
         assert_eq!(manual.next_u64(), after);
+    }
+}
+
+/// T3.2 source-A placement tests.
+///
+/// Named `initial_tests` so T3.2's Test command,
+/// `cargo test -p game-core items::initial`, selects them (D27).
+#[cfg(test)]
+mod initial_tests {
+    use super::*;
+    use crate::map::Scale;
+    use crate::tiles::TILE_SIZE;
+
+    fn place(seed: u64, scale: Scale) -> (Map, Vec<GroundItem>) {
+        let map = Map::generate(seed, scale);
+        let mut rng = GameRng::new(seed);
+        let mut ids = ItemIdCounter::default();
+        let items = place_initial(&map, &mut rng, &mut ids);
+        (map, items)
+    }
+
+    #[test]
+    fn placement_a_deterministic() {
+        // docs/08 §1 (items row) + T3.2 step 4: "same seed -> same 10
+        // positions; spacing >= 6 for all pairs; all on GRASS tiles".
+        for scale in Scale::ALL {
+            for seed in [1u64, 42, 777, 12345] {
+                let (_, first) = place(seed, scale);
+                let (_, second) = place(seed, scale);
+                assert_eq!(first, second, "{} seed {seed} placed differently", scale.as_str());
+            }
+        }
+        // Different seeds must differ, or "deterministic" is trivially true.
+        let (_, a) = place(1, Scale::Small);
+        let (_, b) = place(2, Scale::Small);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn placement_a_places_ten_items() {
+        // docs/04 §3 row A: "10 items".
+        for scale in Scale::ALL {
+            for seed in 0..20u64 {
+                let (_, items) = place(seed, scale);
+                assert_eq!(
+                    items.len(), 10,
+                    "{} seed {seed} placed {} items", scale.as_str(), items.len(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn placement_a_respects_six_tile_spacing() {
+        // docs/04 §3 row A: ">= 6 tile spacing".
+        for scale in Scale::ALL {
+            for seed in 0..20u64 {
+                let (_, items) = place(seed, scale);
+                for (i, a) in items.iter().enumerate() {
+                    for b in items.iter().skip(i + 1) {
+                        let (ax, ay) = ((a.x / TILE_SIZE) as u32, (a.y / TILE_SIZE) as u32);
+                        let (bx, by) = ((b.x / TILE_SIZE) as u32, (b.y / TILE_SIZE) as u32);
+                        let chebyshev = ax.abs_diff(bx).max(ay.abs_diff(by));
+                        assert!(
+                            chebyshev >= 6,
+                            "{} seed {seed}: items {} tiles apart, need 6",
+                            scale.as_str(), chebyshev,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn placement_a_sits_on_grass_tile_centres() {
+        // "place item at tile center", and the surface tile is GRASS.
+        for seed in 0..20u64 {
+            let (map, items) = place(seed, Scale::Small);
+            for item in &items {
+                let (tx, ty) = ((item.x / TILE_SIZE) as u32, (item.y / TILE_SIZE) as u32);
+                assert_eq!(
+                    map.tile(tx, ty).kind, TileKind::Grass,
+                    "seed {seed}: item at ({tx},{ty}) is not on GRASS",
+                );
+                let centre = Map::tile_center(tx, ty);
+                assert!((item.x - centre.x).abs() < 1e-3, "item x is not a tile centre");
+                assert!((item.y - centre.y).abs() < 1e-3, "item y is not a tile centre");
+                assert_eq!(ty, map.surface_row(tx), "item is not on the surface row");
+            }
+        }
+    }
+
+    #[test]
+    fn no_two_items_share_a_tile() {
+        // T3.2 Acceptance. Implied by the 6-tile spacing, but asserted
+        // separately: a spacing bug that let two items coincide would be
+        // invisible in a pairwise-distance check that used >= 0.
+        for seed in 0..20u64 {
+            let (_, items) = place(seed, Scale::Small);
+            for (i, a) in items.iter().enumerate() {
+                for b in items.iter().skip(i + 1) {
+                    assert!(
+                        (a.x - b.x).abs() > 1e-3 || (a.y - b.y).abs() > 1e-3,
+                        "seed {seed}: two items share a position",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ground_items_get_distinct_ids() {
+        let (_, items) = place(1, Scale::Small);
+        let mut ids: Vec<u32> = items.iter().map(|i| i.id).collect();
+        let count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "ground item ids are not distinct");
+    }
+
+    #[test]
+    fn placed_items_are_visible_and_not_crates() {
+        // Source A places loose items, not crates (row C) and not hidden
+        // items (row B).
+        let (_, items) = place(3, Scale::Small);
+        assert!(items.iter().all(|i| !i.is_crate), "source A placed a crate");
+        assert!(items.iter().all(|i| !i.hidden), "source A placed a hidden item");
+    }
+
+    #[test]
+    fn placement_draws_position_then_item() {
+        // The draw ORDER is part of the determinism contract (docs/04 §6).
+        // Reconstruct it by hand and confirm the RNG ends in the same state.
+        let map = Map::generate(5, Scale::Small);
+
+        let mut probe = GameRng::new(5);
+        let mut ids = ItemIdCounter::default();
+        let items = place_initial(&map, &mut probe, &mut ids);
+        let after = probe.next_u64();
+
+        let mut manual = GameRng::new(5);
+        let mut candidates = surface_candidates(&map);
+        manual.shuffle(&mut candidates);
+        // Reconstruct the ITEMS too, not just the draw count. Checking only
+        // the count cannot tell which weight table was used, because
+        // weighted_index consumes one draw either way — source A silently
+        // drawing from the source-B (Hidden) table failed zero tests until
+        // this reconstruction was added.
+        let mut expected_items = Vec::new();
+        for _ in 0..items.len() {
+            let index = manual.weighted_index(&SpawnWeights::Ground.table()).unwrap();
+            expected_items.push(ItemId::ALL[index]);
+        }
+        assert_eq!(
+            manual.next_u64(), after,
+            "place_initial consumed a different number of draws than \
+             shuffle-then-one-pick-per-item",
+        );
+
+        let actual_items: Vec<ItemId> = items.iter().map(|i| i.item).collect();
+        assert_eq!(
+            actual_items, expected_items,
+            "source A must draw from the row-A (Ground) weight table",
+        );
+    }
+
+    #[test]
+    fn source_a_uses_the_ground_weight_table() {
+        // docs/04 §3: row A is the Ground table; row B (flashlight doubled) is
+        // for hidden items only. Statistically distinguishable over many maps.
+        let mut flashlights = 0usize;
+        let mut total = 0usize;
+        for seed in 0..400u64 {
+            let map = Map::generate(seed, Scale::Small);
+            let mut rng = GameRng::new(seed);
+            let mut ids = ItemIdCounter::default();
+            for item in place_initial(&map, &mut rng, &mut ids) {
+                total += 1;
+                if item.item == ItemId::Flashlight {
+                    flashlights += 1;
+                }
+            }
+        }
+        let rate = flashlights as f32 / total as f32;
+        // Ground: 10/130 = 0.0769.  Hidden: 20/140 = 0.1429.
+        assert!(
+            (0.055..0.100).contains(&rate),
+            "flashlight rate {rate:.4} suggests the wrong weight table \
+             (Ground = 0.077, Hidden = 0.143)",
+        );
     }
 }

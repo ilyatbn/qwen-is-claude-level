@@ -28,7 +28,7 @@ Read `docs/04-items.md` in full before starting this file.
 
 ---
 
-## T3.2 — Source A: initial ground placement [ ]
+## T3.2 — Source A: initial ground placement [x]
 
 **Goal**: 10 items on surface tiles at round start, seeded.
 **Read**: `docs/04-items.md` §3 (row A), §6.

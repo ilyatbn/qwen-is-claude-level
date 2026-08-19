@@ -17,6 +17,15 @@ items::catalog_tests::pick_item_consumes_one_draw
 items::catalog_tests::pick_item_follows_the_weights
 items::catalog_tests::pick_item_is_deterministic
 items::catalog_tests::spawn_weights_match_doc
+items::initial_tests::ground_items_get_distinct_ids
+items::initial_tests::no_two_items_share_a_tile
+items::initial_tests::placed_items_are_visible_and_not_crates
+items::initial_tests::placement_a_deterministic
+items::initial_tests::placement_a_places_ten_items
+items::initial_tests::placement_a_respects_six_tile_spacing
+items::initial_tests::placement_a_sits_on_grass_tile_centres
+items::initial_tests::placement_draws_position_then_item
+items::initial_tests::source_a_uses_the_ground_weight_table
 items::tests::first_free_slot_skips_filled_slots
 items::tests::full_inventory_reports_no_free_slot
 items::tests::inventory_starts_empty_with_six_slots
