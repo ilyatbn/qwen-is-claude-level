@@ -367,7 +367,11 @@ pub const CAMERA_LOOKAHEAD_LERP: f32 = 0.06;
 
 // --- A2: map generation v2 ---
 
-pub const BRIDGE_THICKNESS: i32 = 7;
+pub const BRIDGE_THICKNESS: i32 = 14;
+/// A bridge may rise or fall by at most this fraction of its horizontal span.
+/// Without it, islands at wildly different heights get joined by a near-vertical
+/// thread that is neither walkable nor recognisable as a bridge.
+pub const BRIDGE_MAX_SLOPE: f32 = 0.45;
 pub const BRIDGE_MIN_SPAN: i32 = 90;
 pub const BRIDGE_MAX_SPAN: i32 = 460;
 pub const BRIDGE_SAG: i32 = 18;

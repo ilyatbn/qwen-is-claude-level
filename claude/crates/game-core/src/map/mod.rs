@@ -2,6 +2,8 @@
 
 pub mod carve;
 pub mod coarse;
+#[cfg(feature = "dump-png")]
+pub mod dump;
 pub mod gen;
 pub mod mask;
 pub mod meta;

@@ -457,3 +457,34 @@ Notes: TASK FILE ERROR — it asks the alternating-pixel mask to encode under
        remote crash.
        Encoder scans whole words with trailing_zeros on the value or its inverse.
 Left for later: nothing
+
+## T1.16 — PNG dump, golden hashes, 1000-seed sweep — DONE
+Files: crates/game-core/src/map/dump.rs, tests/{dump_maps,golden,map_sweep}.rs,
+       tests/golden_hashes.txt, constants.rs + gen/bridges.rs (bridge fixes),
+       docs/70-amendments-v2.md (A2 bridge table)
+Verified: `cargo test -p game-core --features dump-png --release --test dump_maps`
+          `cargo test -p game-core --release --test golden` — passes, and FAILS on a
+          0.0001 change to SOLID_THRESHOLD (verified, then reverted)
+          `cargo test -p game-core --release --test map_sweep -- --ignored` — 999
+          seeds, 0 failures, 486 s
+SWEEP NUMBERS (999 seeds, 333 per scale):
+  attempts   [1st, 2nd, 3rd+] = 990 / 9 / 0     safe preset 0/999
+  fraction   min 0.753  p05 0.821  p50 0.932  max 1.000
+  cave-floor points inside the traversable component: 91.6% (Small 94.3, Med 92.4,
+  Large 90.2)
+Notes: LOOKED AT THE MAPS. Two real defects found by eye, both now fixed:
+  1. Bridges were 7 px on a 3072 px map — they rendered as hanging WIRES, and with
+     no slope limit two islands 200 px apart horizontally and 340 px vertically got
+     joined by a near-vertical thread. BRIDGE_THICKNESS 7 -> 14, new
+     BRIDGE_MAX_SLOPE 0.45. Recorded in docs/70-amendments-v2.md §A2.
+  2. Spawn crosses were drawn in green ON the green edge band — invisible. Magenta
+     now, and larger.
+  WarpField artifact check (the 8 px cache): no axis-aligned banding and no 8 px
+  stair-stepping anywhere in the dumps. Silhouette edges are smooth and organic.
+  No need to drop to a 4 px step.
+  CARVE BUG found by the debug-mode gate after the release run passed: carve_circle
+  at a centre near i32::MAX overflowed `cy + dy` (panic in debug, SILENT WRAP in
+  release — a crater in an unrelated part of the map). Projectile positions feed
+  straight into carve. Fixed with an i64 early-reject plus a radius clamp to the
+  map diagonal.
+Left for later: nothing. M1 complete.

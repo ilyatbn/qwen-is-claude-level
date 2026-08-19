@@ -10,7 +10,7 @@
 //! See `docs/70-amendments-v2.md` §A2 Pass 3b.
 
 use crate::constants::{
-    BRIDGE_MAX_SPAN, BRIDGE_MIN_SPAN, BRIDGE_SAG, BRIDGE_THICKNESS, SKY_MARGIN,
+    BRIDGE_MAX_SLOPE, BRIDGE_MAX_SPAN, BRIDGE_MIN_SPAN, BRIDGE_SAG, BRIDGE_THICKNESS, SKY_MARGIN,
 };
 use crate::map::gen::silhouette::{force_borders, GenParams};
 use crate::map::shape::stamp_circle;
@@ -55,7 +55,11 @@ pub fn add_bridges(
             continue;
         }
 
-        // Nearest unbridged partner whose horizontal distance is in range.
+        // Nearest unbridged partner whose horizontal distance is in range AND
+        // whose height is close enough that the span is walkable. Without the
+        // slope limit, two islands 200 px apart horizontally and 340 px apart
+        // vertically get joined by a near-vertical thread — visible in the map
+        // dumps as a wire hanging off an island, and useless to walk on.
         let mut best: Option<(usize, i32)> = None;
         for (j, other) in sorted.iter().enumerate() {
             if j == i || bridged[j] {
@@ -63,6 +67,10 @@ pub fn add_bridges(
             }
             let dx = (other.x - sorted[i].x).abs();
             if !(BRIDGE_MIN_SPAN..=BRIDGE_MAX_SPAN).contains(&dx) {
+                continue;
+            }
+            let dy = (other.y - sorted[i].y).abs();
+            if (dy as f32) > dx as f32 * BRIDGE_MAX_SLOPE {
                 continue;
             }
             if best.is_none_or(|(_, bd)| dx < bd) {
@@ -77,6 +85,13 @@ pub fn add_bridges(
         else {
             continue;
         };
+
+        // Re-check the slope against the actual anchor points: island tops can
+        // differ more than their centres do.
+        let (dx, dy) = ((b.x - a.x).abs(), (b.y - a.y).abs());
+        if dx == 0 || (dy as f32) > dx as f32 * BRIDGE_MAX_SLOPE {
+            continue;
+        }
 
         stamp_span(mask, a, b);
         bridged[i] = true;

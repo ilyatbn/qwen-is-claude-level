@@ -50,6 +50,24 @@ impl Map {
             return result;
         }
 
+        // Reject circles that cannot touch the map before doing any i32 arithmetic
+        // on the centre. `cy + dy` overflows for a centre near i32::MAX — a panic in
+        // debug, and silently *wrapping to the other side of the map* in release,
+        // which would carve a crater somewhere unrelated. Projectile positions feed
+        // straight into this.
+        // A radius beyond the map diagonal cannot mean anything more than "all of
+        // it", and squaring an unclamped one overflows i32 just as readily as the
+        // centre arithmetic does.
+        let r = r.min(w + h);
+        let (cx64, cy64, r64) = (cx as i64, cy as i64, r as i64);
+        if cx64 + r64 < min_x as i64
+            || cx64 - r64 > max_x as i64
+            || cy64 + r64 < 0
+            || cy64 - r64 >= carveable_bottom as i64
+        {
+            return result;
+        }
+
         let rr = r * r;
         let mut changed = 0u32;
 
@@ -206,8 +224,22 @@ mod tests {
     fn negative_radius_and_coordinates_do_not_panic() {
         let mut m = solid_map();
         assert_eq!(m.carve_circle(100, 100, -5).pixels_removed, 0);
-        assert_eq!(m.carve_circle(i32::MIN, i32::MIN, 10).pixels_removed, 0);
-        assert_eq!(m.carve_circle(i32::MAX, i32::MAX, 10).pixels_removed, 0);
+        // Extreme centres must be rejected before any i32 arithmetic on them:
+        // `cy + dy` overflows, which panics in debug and wraps in release.
+        for (x, y) in [
+            (i32::MIN, i32::MIN),
+            (i32::MAX, i32::MAX),
+            (i32::MIN, 100),
+            (100, i32::MAX),
+            (i32::MAX, i32::MIN),
+        ] {
+            assert_eq!(m.carve_circle(x, y, 10).pixels_removed, 0, "({x},{y})");
+            assert_eq!(
+                m.carve_circle(x, y, i32::MAX).pixels_removed,
+                0,
+                "({x},{y}) huge r"
+            );
+        }
     }
 
     #[test]

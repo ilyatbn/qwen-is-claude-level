@@ -81,10 +81,18 @@ Floating islands you cannot reach on foot are scenery. Bridges make them a route
 
 | Name | Value |
 |---|---|
-| `BRIDGE_THICKNESS` | 7 |
+| `BRIDGE_THICKNESS` | 14 |
 | `BRIDGE_MIN_SPAN` | 90 |
 | `BRIDGE_MAX_SPAN` | 460 |
 | `BRIDGE_SAG` | 18 |
+| `BRIDGE_MAX_SLOPE` | 0.45 |
+
+`BRIDGE_THICKNESS` was 7 and `BRIDGE_MAX_SLOPE` did not exist. The first map dumps
+showed why both were wrong: a 7 px span across a 3072 px map reads as a hanging
+wire rather than a bridge, and with no slope limit two islands 200 px apart
+horizontally and 340 px apart vertically were joined by a near-vertical thread.
+A bridge is a route you walk, so it is now thick enough to see and flat enough to
+use.
 
 For up to `BRIDGE_COUNT` pairs: take island centres sorted by x, and for each
 island find the nearest other island whose horizontal distance is within
