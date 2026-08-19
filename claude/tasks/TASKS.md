@@ -1,7 +1,10 @@
 # Master task list
 
-90 tasks across 9 milestones. Work them **in order**, one per session. See
-`README.md` for the loop and `../CLAUDE.md` for the rules.
+101 tasks across 9 milestones. Work them **in order**. See `README.md` for the
+loop and `../CLAUDE.md` for the rules.
+
+Tasks marked **(v2)** come from `docs/70-amendments-v2.md`, which overrides the
+earlier docs where they disagree. Read it before starting M1.
 
 Tick a box only when the task's **Done when** command passes.
 
@@ -36,7 +39,10 @@ be eyeballed as PNGs.
 - [ ] [T1.03](M1/T1.03-noise.md) — Value noise, fBm, domain warp
 - [ ] [T1.04](M1/T1.04-silhouette.md) — Pass 1–2: preset and silhouette
 - [ ] [T1.05](M1/T1.05-blobs.md) — Pass 3: floating islands
+- [ ] [T1.05b](M1/T1.05b-bridges.md) — Pass 3b: bridges between islands **(v2)**
 - [ ] [T1.06](M1/T1.06-caves.md) — Pass 4: random-walk tunnels
+- [ ] [T1.06b](M1/T1.06b-cave-network.md) — Pass 4: chambers, loops, entrances **(v2)**
+- [ ] [T1.06c](M1/T1.06c-crevices-voids.md) — Pass 4b/4c: crevices and voids **(v2)**
 - [ ] [T1.07](M1/T1.07-smoothing.md) — Pass 5: cellular-automata smoothing
 - [ ] [T1.08](M1/T1.08-cleanup.md) — Pass 6: connected components and cleanup
 - [ ] [T1.09](M1/T1.09-surface.md) — Pass 7a: walkable surface extraction
@@ -90,6 +96,7 @@ server involved.
 - [ ] [T3.09](M3/T3.09-input-crosshair.md) — Keyboard/mouse input, aim ring, crosshair
 - [ ] [T3.10](M3/T3.10-lightmap.md) — Lightmap, day/night, fog
 - [ ] [T3.11](M3/T3.11-debug-overlays.md) — F4 overlays and perf counters
+- [ ] [T3.12](M3/T3.12-sky.md) — Five-phase sky, sun, moon, stars **(v2)**
 
 **Checkpoint:** `npm --prefix client run dev` → run around a generated map, blow
 holes in it, watch the day/night slider change visibility.
@@ -112,6 +119,7 @@ holes in it, watch the day/night slider change visibility.
 - [ ] [T4.12](M4/T4.12-player-stats.md) — Health, overheal, shield, speed multiplier
 - [ ] [T4.13](M4/T4.13-damage-death.md) — Damage, death, respawn, scoring
 - [ ] [T4.14](M4/T4.14-inventory-ui.md) — Client inventory panel and HUD
+- [ ] [T4.15](M4/T4.15-visible-ordnance.md) — Tracers, trails, impact FX **(v2)**
 
 **Checkpoint:** In the sandbox, pick up a bazooka, fire it, watch the crater form,
 take self-damage, and see the inventory panel open on right-click.
@@ -149,6 +157,8 @@ Wire the finished core into the server. Nothing built so far gets rewritten.
 - [ ] [T6.11](M6/T6.11-checksum.md) — Mask checksum and resync
 - [ ] [T6.12](M6/T6.12-round-state.md) — Round phases, scoring, restart vote
 - [ ] [T6.13](M6/T6.13-integration-tests.md) — Multi-client integration tests
+- [ ] [T6.14](M6/T6.14-bot-controller.md) — Bot controller in `game-core` **(v2)**
+- [ ] [T6.15](M6/T6.15-bot-seating.md) — Seating bots in the room **(v2)**
 
 **Checkpoint:** `docker compose -f docker/docker-compose.yml up` — two browsers,
 one round, terrain destruction visible in both, scores tracking.
@@ -175,6 +185,9 @@ changes the character.
 - [ ] [T8.03](M8/T8.03-debug-hud.md) — F3 debug HUD
 - [ ] [T8.04](M8/T8.04-metrics.md) — `/metrics`, `DEBUG_DUMP`, log audit
 - [ ] [T8.05](M8/T8.05-perf-and-docs.md) — Performance pass and run documentation
+- [ ] [T8.06](M8/T8.06-minimap.md) — Explored-terrain minimap **(v2)**
+- [ ] [T8.07](M8/T8.07-e2e-playwright.md) — Playwright end-to-end suite **(v2)**
+- [ ] [T8.08](M8/T8.08-game-feel.md) — Screen shake, kill feed, polish pass **(v2)**
 
 **Checkpoint:** Record a round, replay it headlessly, and confirm the final world
 hash matches. A bug can now be reproduced from a seed and a tick.
