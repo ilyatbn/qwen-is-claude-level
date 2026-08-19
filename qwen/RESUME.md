@@ -28,7 +28,14 @@ design and is not used).
 | 4 — Rounds | T4.1–T4.10 | not started |
 | 5 — Sprites | T5.1–T5.5 | not started |
 
-32/32 checkboxes ticked through Phase 3. 40 deviations recorded.
+32/32 checkboxes ticked through Phase 3. 42 deviations recorded.
+
+**End-to-end pass (post-Phase-3) found two defects 375 unit tests missed** — see
+`dev_summary.md`. Both are Phase 4 work and are NOT fixed:
+- **D41** — a player standing on a tile cannot pick up the item on it (22 px
+  separation vs a 16 px radius). 0 of 500 items reachable across 50 maps.
+- **D42** — no weapon reaches ROCK's 80 hp, so source-B hidden items may be
+  permanently unreachable.
 
 ## How to verify the current state
 

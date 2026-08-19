@@ -97,3 +97,11 @@ own task/test contract fails · **[impl]** an implementation decision the spec l
 **D35 — Slope-dependent ground speed [impl].** Measured 7.525 px/tick downhill against 7.0 flat. Not a violation — velocity never exceeds 140; the excess is Verlet's `½at²` on airborne ticks. But T2.3's "exactly 140 px/s" is a **flat-ground property** that passes only because the test map is flat.
 
 **D13 — Docker [impl].** Not installed when the toolchain was surveyed; T5.5 verification pending. *(Phase 5.)*
+
+---
+
+### Found by end-to-end testing, after all 375 unit tests passed
+
+**D41 — Ground items are unreachable [contra].** Tile-centre placement, feet-on-tile-top spawning, a 16 px pickup radius and a 24×28 body are jointly unsatisfiable: separation is always **22 px** against a 16 px radius. Measured: **0 of 500 items reachable across 50 maps**. Crates escape only by landing on the tile top instead of its centre.
+
+**D42 — ROCK is indestructible [arith].** The rocket's 60 damage exactly equals STONE's hp (so underground craters are 5 tiles), and **nothing in the game reaches ROCK's 80 hp** — so the 4 source-B items hidden in rock each round may be permanently unreachable.

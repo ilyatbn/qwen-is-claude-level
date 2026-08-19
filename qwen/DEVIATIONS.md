@@ -1123,3 +1123,47 @@ attempts at that test then passed for the wrong reason — thrown upward the gre
 the map, and parked on a Small map it fell out of the bottom at tick 29 — so injecting
 the fuse 1.5 → 3.0 s failed zero tests twice. It now runs on a Large empty map and
 asserts `fuse_s <= 0` at termination, proving the fuse is what ended it.)*
+
+### D41 — A player standing on a tile cannot pick up the item on that tile
+
+**Spec**: docs/04 §3 places ground items at the **tile centre**; docs/01 §3.5 and T2.1
+rest the player's **feet on the tile top**; docs/04 §5 sets the pickup radius to
+**16 px**; D6 fixes the body at 24×28.
+
+**Problem**: those four numbers are jointly unsatisfiable. Item centre sits at
+`(ty+0.5)*16`, player centre at `ty*16 - 14`, so the separation is always
+`BODY_HALF_HEIGHT + TILE_SIZE/2` = `14 + 8` = **22 px**, against a 16 px radius —
+short by 6 px, at every tile, on every map. Measured end to end: **0 of 500 source-A
+items reachable across 50 maps**. Supply crates escape only by accident, landing on the
+tile *top* (14 px separation) rather than its centre.
+
+Any *two* of {tile-centre placement, 16 px radius, 28 px body} are consistent. All
+three are not.
+
+**Why no unit test caught it**: every pickup test positioned the player *at* the item
+or within 16 px directly, rather than deriving the player's position from where a
+player actually stands. The subsystems are each individually correct; the defect lives
+in the seam between them.
+
+**Status**: **not fixed** — recorded for Phase 4. The minimal fix is to place ground
+items at the tile top like crates, or widen the pickup radius to ≥22 px. Both change a
+documented number, so it is a decision, not a patch.
+
+### D42 — Rocket damage exactly equals STONE's hp, and no weapon can break ROCK
+
+**Spec**: docs/01 §2 gives tile hp GRASS 20 / DIRT 30 / STONE 60 / ROCK 80. docs/04 §1
+gives the rocket 60 damage at 48 px and the grenade 45 at 40 px, with falloff
+`dmg = max_damage * (1 - dist/radius)` (docs/01 §5).
+
+**Problem**: the rocket's maximum damage is **exactly** STONE's hp, so stone is
+destroyed only by a tile whose centre is at distance 0 — a measured crater of **5 tiles**
+underground. More seriously, **no weapon in the game can destroy ROCK (80 hp)**: the
+strongest is the rocket at 60. The meteor (docs/02 §4) also uses 60.
+
+**Consequence**: source-B hidden items are placed inside ROCK tiles (docs/04 §3 row B)
+and are uncovered only by destroying that tile. If nothing reaches 80 damage, **4 items
+per round are permanently unreachable** and a documented item source is dead content.
+
+**Status**: **not fixed** — recorded for Phase 4, and it needs verifying against the
+weather effects once T4.5/T4.6 exist. This is a design-level consequence of qwen's own
+numbers, not an implementation choice.
