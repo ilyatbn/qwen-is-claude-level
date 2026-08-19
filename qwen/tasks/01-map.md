@@ -25,7 +25,7 @@ Individual tasks list the exact sections they need.
 
 ---
 
-## T1.2 — Tile grid + scale configs [ ]
+## T1.2 — Tile grid + scale configs [x]
 
 **Goal**: `Tile`, `Scale`, grid storage, indexing; scale table from doc.
 **Read**: `docs/01-map.md` §1, §2, §4 (struct only).
