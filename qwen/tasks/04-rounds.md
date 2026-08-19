@@ -90,7 +90,7 @@ score no one.
 
 ---
 
-## T4.5 — Meteor shower [ ]
+## T4.5 — Meteor shower [x]
 
 **Goal**: 3 meteors, 0.8 s apart, blast 48 px / 60 dmg, destroys tiles.
 **Read**: `docs/02-map-effects.md` §4.

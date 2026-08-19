@@ -151,6 +151,66 @@ pub fn toxic_damage_at(spots: &[ToxicSpot], elapsed_s: f32, px: f32, py: f32, dt
     }
 }
 
+// ---------------------------------------------------------------------------
+// Meteor shower (T4.5, docs/02 §4)
+// ---------------------------------------------------------------------------
+
+/// Effect duration, seconds (docs/02 §2 table).
+pub const METEOR_DURATION_S: f32 = 4.0;
+/// Meteors per shower (docs/02 §4: "pick 3 meteor targets").
+pub const METEOR_COUNT: usize = 3;
+/// Stagger between impacts, seconds (docs/02 §4: "i*0.8 s after start").
+pub const METEOR_STAGGER_S: f32 = 0.8;
+/// Blast radius and damage (docs/02 §4: "apply_blast(radius=48, max_damage=60)").
+pub const METEOR_RADIUS: f32 = 48.0;
+pub const METEOR_DAMAGE: f32 = 60.0;
+
+/// One meteor (docs/02 §4).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeteorTarget {
+    pub x: f32,
+    pub y: f32,
+    /// Seconds after effect start at which it lands.
+    pub impact_s: f32,
+    /// Set once it has detonated, so it fires exactly once.
+    pub fired: bool,
+}
+
+/// Choose the 3 targets for a meteor shower (docs/02 §4, T4.5 step 1).
+///
+/// "pick 3 meteor targets (RNG) — random ground surface points (tile center of
+/// a random GRASS/DIRT tile)".
+pub fn build_meteor_targets(map: &Map, rng: &mut GameRng) -> Vec<MeteorTarget> {
+    let columns: Vec<u32> = (0..map.width)
+        .filter(|&x| map.surface_row(x) < map.height)
+        .collect();
+    if columns.is_empty() {
+        return Vec::new();
+    }
+    (0..METEOR_COUNT)
+        .map(|index| {
+            let pick = rng.gen_range(0, columns.len() as u32) as usize;
+            let column = columns[pick];
+            let centre = Map::tile_center(column, map.surface_row(column));
+            MeteorTarget {
+                x: centre.x,
+                y: centre.y,
+                impact_s: index as f32 * METEOR_STAGGER_S,
+                fired: false,
+            }
+        })
+        .collect()
+}
+
+/// The `apply_blast` call one meteor makes (docs/02 §4).
+///
+/// Meteors do NOT pass `skip_items`: docs/01 §5 lets any blast uncover a hidden
+/// item, and T4.5 step 2 says so explicitly ("default skip_items=false —
+/// meteors CAN uncover hidden items").
+pub fn meteor_blast(map: &mut Map, target: &MeteorTarget) -> Vec<crate::tiles::TileDestroyed> {
+    map.apply_blast(target.x, target.y, METEOR_RADIUS, METEOR_DAMAGE)
+}
+
 /// The precomputed effect timeline for a round (docs/02 §8).
 ///
 /// Built at round start from the round RNG so a seed replays the same
@@ -399,5 +459,121 @@ mod toxic_tests {
         let (_, a) = spots_for(1);
         let (_, b) = spots_for(2);
         assert_ne!(a, b);
+    }
+}
+
+/// T4.5 meteor-shower tests.
+#[cfg(test)]
+mod meteor_tests {
+    use super::*;
+    use crate::map::Scale;
+    use crate::player::Player;
+
+    #[test]
+    fn meteor_destroys_tiles_and_damages() {
+        // docs/08 §1 (effects row) + T4.5 step 3.
+        //
+        // DEVIATIONS.md D1: the task claims a player 20 px away takes "~45
+        // (60*(1-20/48))". That expression is 35. The formula wins.
+        let mut map = Map::generate(5, Scale::Small);
+        let mut rng = GameRng::new(5);
+        let targets = build_meteor_targets(&map, &mut rng);
+        assert_eq!(targets.len(), 3);
+
+        let before = map.version;
+        let destroyed = meteor_blast(&mut map, &targets[0]);
+        assert!(!destroyed.is_empty(), "the meteor dug no crater");
+        assert!(map.version > before, "map.version did not move");
+
+        // 20 px: 60 * (1 - 20/48) = 35, NOT the doc's "~45".
+        let at_20 = Player::blast_damage_at(20.0, METEOR_RADIUS, METEOR_DAMAGE);
+        assert!(
+            (at_20 - 35.0).abs() < 1e-3,
+            "a player 20 px from a meteor takes {at_20}; docs/01 §5's formula gives 35 \
+             (T4.5's '~45' is wrong — DEVIATIONS.md D1)",
+        );
+        // 60 px is outside the 48 px radius.
+        assert_eq!(Player::blast_damage_at(60.0, METEOR_RADIUS, METEOR_DAMAGE), 0.0);
+        // Dead centre takes the full 60.
+        assert_eq!(Player::blast_damage_at(0.0, METEOR_RADIUS, METEOR_DAMAGE), 60.0);
+    }
+
+    #[test]
+    fn meteors_stagger_by_point_eight_seconds() {
+        // docs/02 §4: "Each meteor: i*0.8 s after start".
+        let map = Map::generate(1, Scale::Small);
+        let mut rng = GameRng::new(1);
+        let targets = build_meteor_targets(&map, &mut rng);
+        for (index, t) in targets.iter().enumerate() {
+            assert!(
+                (t.impact_s - index as f32 * 0.8).abs() < 1e-4,
+                "meteor {index} lands at {}, expected {}",
+                t.impact_s, index as f32 * 0.8,
+            );
+            assert!(!t.fired, "targets start unfired");
+        }
+        // All three land inside the 4 s effect.
+        assert!(targets.iter().all(|t| t.impact_s < METEOR_DURATION_S));
+    }
+
+    #[test]
+    fn meteors_target_the_surface() {
+        // docs/02 §4: "random ground surface points".
+        for seed in 0..20u64 {
+            let map = Map::generate(seed, Scale::Small);
+            let mut rng = GameRng::new(seed);
+            for target in build_meteor_targets(&map, &mut rng) {
+                assert!(
+                    map.is_solid_at_pixel(target.x, target.y),
+                    "seed {seed}: meteor target is not on solid ground",
+                );
+                let column = (target.x / crate::tiles::TILE_SIZE) as u32;
+                let row = (target.y / crate::tiles::TILE_SIZE) as u32;
+                assert_eq!(row, map.surface_row(column), "target is not the surface tile");
+            }
+        }
+    }
+
+    #[test]
+    fn a_meteor_can_uncover_a_hidden_item() {
+        // T4.5 step 2: meteors use the default skip_items=false, so docs/01 §5
+        // applies and a hidden item is revealed.
+        let mut map = Map::generate(3, Scale::Small);
+        let mut rng = GameRng::new(3);
+        let hidden = crate::items::place_hidden(&mut map, &mut rng);
+        let (hx, hy, item) = hidden[0];
+        let centre = Map::tile_center(hx, hy);
+
+        // ROCK is 80 hp and a meteor does 60, so it takes two — tile hp
+        // persists between blasts (D42).
+        let target = MeteorTarget { x: centre.x, y: centre.y, impact_s: 0.0, fired: false };
+        let first = meteor_blast(&mut map, &target);
+        let second = meteor_blast(&mut map, &target);
+        let uncovered: Vec<_> = first.iter().chain(second.iter()).filter_map(|e| e.item).collect();
+        assert!(
+            uncovered.contains(&item),
+            "two meteors on a hidden ROCK tile did not uncover the item",
+        );
+    }
+
+    #[test]
+    fn meteor_targets_are_deterministic() {
+        let draw = |seed: u64| {
+            let map = Map::generate(seed, Scale::Small);
+            let mut rng = GameRng::new(seed);
+            build_meteor_targets(&map, &mut rng)
+        };
+        assert_eq!(draw(7), draw(7));
+        assert_ne!(draw(1), draw(2));
+    }
+
+    #[test]
+    fn meteor_constants_match_doc() {
+        // docs/02 §2 and §4, as literals.
+        assert_eq!(METEOR_COUNT, 3);
+        assert_eq!(METEOR_RADIUS, 48.0);
+        assert_eq!(METEOR_DAMAGE, 60.0);
+        assert_eq!(METEOR_STAGGER_S, 0.8);
+        assert_eq!(METEOR_DURATION_S, 4.0);
     }
 }

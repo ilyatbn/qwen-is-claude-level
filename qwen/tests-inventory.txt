@@ -9,6 +9,12 @@ effects::day_night_tests::day_phase_is_continuous
 effects::day_night_tests::day_phase_stays_in_range
 effects::day_night_tests::the_cycle_repeats_every_120_seconds
 effects::day_night_tests::the_transitions_are_five_seconds_each
+effects::meteor_tests::a_meteor_can_uncover_a_hidden_item
+effects::meteor_tests::meteor_constants_match_doc
+effects::meteor_tests::meteor_destroys_tiles_and_damages
+effects::meteor_tests::meteor_targets_are_deterministic
+effects::meteor_tests::meteors_stagger_by_point_eight_seconds
+effects::meteor_tests::meteors_target_the_surface
 effects::toxic_tests::overlapping_spots_do_not_stack
 effects::toxic_tests::spot_four_ends_at_eight_seconds
 effects::toxic_tests::spot_placement_is_deterministic
