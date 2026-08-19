@@ -437,3 +437,23 @@ Notes: the coarse grid is maintained by splitting each span at COARSE_CELL
        chunks at the corners); the test asserts actual-changed is a SUBSET of
        reported and that the over-report is small.
 Left for later: nothing
+
+## T1.15 — RLE encode and decode — DONE
+Files: crates/game-core/src/map/rle.rs, map/{mod.rs,mask.rs}
+Verified: `cargo test -p game-core --release --lib rle` — 15 passed
+          medium map encodes to 32959 bytes (doc estimated 20-60 KB)
+Notes: TASK FILE ERROR — it asks the alternating-pixel mask to encode under
+       w*h/4 bytes. That is impossible for ANY encoder: alternating single pixels
+       means w*h runs and a LEB128 varint is >= 1 byte per run, so the floor is
+       w*h. Ours produces 130818 for 131072 px (slightly under the floor because
+       row parity alternates, merging runs at row boundaries). The bound asserted
+       is "never worse than one byte per pixel", which is what actually catches a
+       naive per-pixel encoding.
+       Decoder handles untrusted input: validates dimensions BEFORE allocating,
+       rejects >10-byte varints, rejects overruns rather than clamping, rejects
+       trailing bytes. Mask::new_empty_raw exists so decode never trips the
+       CHUNK_SIZE assert on a hostile width. Two fuzz tests (15k cases: uniform
+       random bytes and random varint streams) assert no panic — a panic here is a
+       remote crash.
+       Encoder scans whole words with trailing_zeros on the value or its inverse.
+Left for later: nothing

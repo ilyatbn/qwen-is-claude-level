@@ -51,6 +51,20 @@ impl Mask {
         }
     }
 
+    /// Like `new_empty` but only requires `w % 64 == 0`, so the RLE decoder can
+    /// build a mask from dimensions that arrived over the wire without an assert
+    /// firing on a hostile value. `rle::decode` validates before calling this.
+    pub(crate) fn new_empty_raw(w: u32, h: u32) -> Option<Self> {
+        if w == 0 || h == 0 || !w.is_multiple_of(WORD_BITS) {
+            return None;
+        }
+        Some(Mask {
+            w,
+            h,
+            words: vec![0u64; Self::word_count(w, h)],
+        })
+    }
+
     fn check_dims(w: u32, h: u32) {
         assert!(
             w.is_multiple_of(CHUNK_SIZE) && h.is_multiple_of(CHUNK_SIZE),

@@ -51,7 +51,7 @@ be eyeballed as PNGs.
 - [x] [T1.12](M1/T1.12-spawns.md) — Pass 8: spawn point selection
 - [x] [T1.13](M1/T1.13-metadata.md) — Pass 8: buried slots, decorations, `MapMeta`
 - [x] [T1.14](M1/T1.14-carve.md) — `carve_circle`, dirty chunks, coarse maintenance
-- [ ] [T1.15](M1/T1.15-rle.md) — RLE encode and decode
+- [x] [T1.15](M1/T1.15-rle.md) — RLE encode and decode
 - [ ] [T1.16](M1/T1.16-map-tests.md) — PNG dump, golden hashes, 1000-seed sweep
 
 **Checkpoint:** `cargo test -p game-core --features dump-png` — open

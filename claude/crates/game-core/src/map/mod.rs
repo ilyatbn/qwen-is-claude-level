@@ -6,6 +6,7 @@ pub mod gen;
 pub mod mask;
 pub mod meta;
 pub mod noise;
+pub mod rle;
 pub mod shape;
 
 pub use carve::{CarveResult, ChunkId};
