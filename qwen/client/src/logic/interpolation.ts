@@ -11,9 +11,6 @@ import type { PlayerSnap, Snapshot } from '../protocol';
 /** Interpolation delay, ms (docs/00 §2). */
 export const INTERPOLATION_DELAY_MS = 100;
 
-/** Snapshot cadence, ms (docs/00 §2: 10 Hz). */
-export const SNAPSHOT_INTERVAL_MS = 100;
-
 /** A snapshot tagged with the client clock time it arrived. */
 export interface TimedSnapshot {
   snapshot: Snapshot;

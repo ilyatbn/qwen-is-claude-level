@@ -546,11 +546,26 @@ candidate rule in `find_spawns`, which is T1.5's code — outside T2.1's Files l
 (docs/00 §8: "Do not refactor files outside the task's Files list") — and would
 invalidate the golden map anchors. So it is recorded, not silently repaired.
 
-**Consequence for T2.6**: rapier resolves the overlap by ejecting the body, so players
-will visibly pop out of terrain on spawn rather than remaining stuck. That is a visual
-defect, not a correctness one. The real fix belongs in `find_spawns`: require the body's
-full width to clear, i.e. check columns `x-1 ..= x+1` for the two-tile headroom instead
-of just `x`. Deferred, and noted in the handoff.
+**Scheduled: fix before T4.1.** Not open-ended, and two parts of the original
+rationale were weaker than they read:
+
+- *"Invalidates the golden anchors"* is not a cost. That is the anchor system working
+  as designed, and there is an established protocol for a deliberate re-pin (the same
+  one already scheduled for T3.3's hidden items).
+- *"A visual defect, not a correctness one"* rested on rapier ejecting the body — but
+  at the time nothing in production drove `move_player` at all (see D32). Ejection
+  direction out of a **175 px** overlap is undefined: a body embedded 11 tiles inside a
+  spire can be pushed anywhere, including through it.
+
+Phase 3 is unaffected: items are placed on surface tiles independently of spawns, and
+pickup (16 px) and hit (12 px) geometry is relative to actual player position. Phase 4
+is not — T4.1 wires physics into the round loop, and T4.3 makes "the spawn farthest
+from living players" a scoring input, at which point spawn position stops being
+cosmetic and starts deciding respawn fairness.
+
+**The fix**: in `find_spawns`, require the body's full width to clear — check columns
+`x-1 ..= x+1` for the two-tile headroom rather than just `x` — then re-pin the golden
+anchors in the same commit.
 
 ### D27 — T2.2's Test command selects none of the tests T2.2 creates
 
@@ -572,8 +587,21 @@ non-selecting filter means a task can be marked complete on evidence unrelated t
 paths `player::input_tests::*`. The documented command now selects all 8 of them
 without changing the command, the file layout, or the task file.
 
+**T2.1 had the same defect and was missed when this entry was first written.**
+`cargo test -p game-core player::spawn` reported `0 passed; 144 filtered out` and
+**exited 0** — there is no module named `spawn`, so a task gated on that command was
+green while running none of its own tests. It kept the generic `mod tests` while
+T2.2–T2.10 were given `input_tests` / `movement_tests` / `jump_tests` /
+`jetpack_tests` / `fov_tests` precisely to fix this; the lesson was applied forward
+and not backward. Renamed to `mod spawn_tests`.
+
+Every Phase 0–2 Test command has now been run and its selection count recorded:
+rng 10, `map::` 42, tiles 10, spawns 5, blast 9, `player::spawn` 9, input 10,
+movement 9, jump 11, jetpack 8, physics 22, rebuild 8, fov 5. None select zero.
+
 *(Found by running the command and reading its output rather than assuming a passing
-suite implied the right tests ran — the same discipline the Phase 1 handoff records.)*
+suite implied the right tests ran — the same discipline the Phase 1 handoff records.
+The T2.1 instance shows that discipline has to be applied as a sweep, not per task.)*
 
 ### D28 — T2.4's jump apex is only satisfiable with an integrator the design never names
 
@@ -681,6 +709,15 @@ confines it to collision resolution: it never integrates player motion, so it ca
 drift the documented movement numbers. Enabling `enhanced-determinism` would constrain
 only the collision-resolution path while costing performance on every query.
 
+**D32 narrows this further, and was written after this entry.** Rapier's output
+re-enters simulation state at exactly one place — `Player::apply_collision` — through a
+per-axis comparison of achieved translation against desired. So the determinism surface
+is not "rapier computes positions" but "a float comparison decides whether an axis was
+blocked". A platform difference must flip that comparison's outcome, not merely perturb
+a float, before it can change the simulation. That is a materially smaller and more
+robust surface than it appeared when this decision was taken, and it makes the
+"not worth it yet" call safer, not more precarious.
+
 **What would force a revisit** — any one of these makes the decision wrong:
 1. a second server platform (a musl container image alongside a glibc dev box, or an
    ARM host) running rounds whose results are compared;
@@ -735,3 +772,45 @@ vectors. Both copies must be changed for the suite to go green — which is exac
 
 Regenerate deliberately, when the formula changes on purpose:
 `cargo run -p game-core --example fov_vectors`.
+
+### D32 — The collision→velocity rule is load-bearing and undocumented
+
+**Spec**: `docs/03-player.md` describes movement, jump, jetpack and gravity, and
+docs/00 §5 says players are rigid bodies whose collisions rapier resolves. **Neither
+says what happens to a player's velocity when terrain stops its motion.**
+
+**Problem**: without an explicit rule, a player resting on the ground gains
+`GRAVITY * dt` every tick, forever. Position never changes — collision keeps stopping
+it — so nothing looks wrong from the outside while `vel.y` grows without bound. The
+first time the ground underneath is destroyed, the player is launched through the map
+at whatever `clamp_fall_speed` permits. Measured with the rule removed: **`vel.y` = 900
+(pinned at the terminal-velocity cap) after 200 ticks of standing still.**
+
+This is not an implementation detail. It is the physics of landing, and any
+reimplementation that follows docs/03 faithfully will still get it wrong.
+
+**Implemented**: `Player::apply_collision` zeroes the velocity component along any axis
+where terrain stopped the move — comparing the achieved translation against the desired
+one per axis, with an epsilon so that *sliding* along a wall (which still travels, just
+less far) is treated as blocked while an unobstructed move is not.
+
+**Where it sits matters.** This is the **single point** at which rapier's output
+re-enters pure simulation state: one comparison per axis, on a value rapier already
+computed. Nothing else rapier produces is stored — not its `grounded` flag (advisory;
+the tile probe is authoritative per T2.6 step 3), not any dynamics, because none run.
+
+That materially strengthens D30's argument rather than weakening it. The
+cross-platform determinism surface for collision is not "rapier computes player
+positions"; it is "rapier's translation is compared against the desired one, per axis".
+A platform difference would have to change that comparison's *outcome* — flip a
+blocked axis to unblocked — not merely perturb a float, before it could alter
+simulation state.
+
+**Also fixed by this entry**: the whole per-tick sequence previously existed **only in
+a test helper**. `Player::integrate` and `PhysicsWorld::move_player` were never joined
+in production code, so the shipped binary could not land a player, and
+`player_falls_and_lands` / `player_falls_into_hole` /
+`no_tunneling_at_terminal_velocity` were validating a test-only implementation.
+`Player::step_tick` is now the production sequence — probe → jump → jetpack →
+horizontal → integrate → clamp → resolve — and the tests call it, so they exercise
+shipped code and T4.1 inherits the semantics instead of re-deriving them.

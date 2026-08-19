@@ -6,6 +6,7 @@
 use crate::items::Inventory;
 use crate::protocol::InputFrame;
 use crate::map::Map;
+use crate::physics::PhysicsWorld;
 use crate::tiles::TILE_SIZE;
 use crate::Vec2;
 use serde::{Deserialize, Serialize};
@@ -249,8 +250,13 @@ impl PlayerInputState {
     }
 }
 
+/// T2.1's spawn and player-state tests.
+///
+/// Named `spawn_tests` so T2.1's documented Test command,
+/// `cargo test -p game-core player::spawn`, selects them. Under the generic
+/// `tests` it matched nothing and exited 0 — see DEVIATIONS.md D27.
 #[cfg(test)]
-mod tests {
+mod spawn_tests {
     use super::*;
     use crate::map::Scale;
 
@@ -619,6 +625,117 @@ impl Player {
     }
 }
 
+/// What one simulated tick did, for callers that need to react to it
+/// (round.rs emits events from these; the client renders them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TickOutcome {
+    /// Ground state at the START of the tick, from the 2 px tile probe.
+    pub on_ground: bool,
+    pub jumped: bool,
+    pub jetpack_active: bool,
+    /// Terrain stopped the horizontal move.
+    pub blocked_x: bool,
+    /// Terrain stopped the vertical move — i.e. the player landed or hit a
+    /// ceiling.
+    pub blocked_y: bool,
+}
+
+impl Player {
+    /// Simulate one tick: probe → jump → jetpack → horizontal → integrate →
+    /// clamp → resolve against terrain.
+    ///
+    /// **This is the production per-tick sequence.** `round.rs` (T4.1) calls it
+    /// once per player per tick; the physics tests call it too, so they
+    /// exercise shipped code rather than a parallel implementation.
+    ///
+    /// Order matters and follows docs/03: ground state is sampled once at the
+    /// top with the tile probe (§4) and reused, so a jump and the horizontal
+    /// rule cannot disagree about whether the player was standing. The jetpack
+    /// needs no "did we just jump" special case — `step_jetpack` already
+    /// requires `!on_ground`, and the probe says grounded on a jump tick (§5:
+    /// "Jetpack cannot start on the ground").
+    ///
+    /// The final step is the ONLY place rapier's output re-enters pure state,
+    /// and it does so through one scalar rule — see [`Player::apply_collision`]
+    /// and DEVIATIONS.md D32.
+    pub fn step_tick(
+        &mut self,
+        world: &PhysicsWorld,
+        map: &Map,
+        frame: &InputFrame,
+        edges: InputEdges,
+        dt: f32,
+    ) -> TickOutcome {
+        let on_ground = self.on_ground(map);
+        self.set_aim(frame.aim);
+
+        let jumped = self.step_jump(edges.jump_pressed, frame.left, frame.right, on_ground);
+        let jet_accel = self.step_jetpack(frame.jump, frame.up, frame.down, on_ground, dt);
+        let accel_x = self.step_horizontal(frame.left, frame.right, on_ground);
+
+        let previous_vx = self.vel.x;
+        let before = self.pos;
+        self.integrate(Vec2::new(accel_x, GRAVITY + jet_accel), dt);
+
+        if !on_ground {
+            self.clamp_air_speed(Player::input_direction(frame.left, frame.right), previous_vx);
+        }
+        self.clamp_fall_speed();
+
+        let desired = self.pos - before;
+        let (blocked_x, blocked_y) = self.apply_collision(world, before, desired, dt);
+
+        TickOutcome {
+            on_ground,
+            jumped,
+            jetpack_active: jet_accel != 0.0,
+            blocked_x,
+            blocked_y,
+        }
+    }
+
+    /// Resolve a desired translation against terrain and fold the result back
+    /// into position and velocity.
+    ///
+    /// Returns `(blocked_x, blocked_y)`.
+    ///
+    /// **The velocity rule is load-bearing and undocumented in docs/03** — see
+    /// DEVIATIONS.md D32. When terrain stops motion along an axis, the velocity
+    /// along that axis is spent and must be zeroed. Without it a player resting
+    /// on the ground accumulates downward velocity every tick forever: the
+    /// position never changes (collision keeps stopping it) while `vel.y` grows
+    /// without bound, so the first tile destroyed underneath launches them
+    /// through the map, and `clamp_fall_speed` merely caps how fast.
+    ///
+    /// This is also the single point at which rapier's output re-enters pure
+    /// simulation state: one comparison per axis, on a value rapier already
+    /// computed. Nothing else rapier produces is stored.
+    pub fn apply_collision(
+        &mut self,
+        world: &PhysicsWorld,
+        before: Vec2,
+        desired: Vec2,
+        dt: f32,
+    ) -> (bool, bool) {
+        let result = world.move_player(before, desired, dt);
+        self.pos = before + result.translation;
+
+        // "Stopped short" rather than "moved zero": a slide along a wall still
+        // travels, but not as far as asked.
+        const EPSILON: f32 = 1e-4;
+        let blocked_x = result.translation.x.abs() + EPSILON < desired.x.abs();
+        let blocked_y = result.translation.y.abs() + EPSILON < desired.y.abs();
+
+        if blocked_x {
+            self.vel.x = 0.0;
+        }
+        if blocked_y {
+            self.vel.y = 0.0;
+        }
+        (blocked_x, blocked_y)
+    }
+}
+
 /// T2.2's input tests.
 ///
 /// In their own module so the task's documented Test command,
@@ -802,7 +919,7 @@ mod movement_tests {
             (dx - 70.0).abs() < 1e-4,
             "Δx over 10 ticks was {dx}, expected exactly 70",
         );
-        assert_eq!(player.vel.x, MOVE_SPEED);
+        assert_eq!(player.vel.x, 140.0, "docs/03 §4: MOVE_SPEED is 140 px/s");
         assert_eq!(player.pos.y, start_y, "walking must not change height");
     }
 
@@ -818,7 +935,7 @@ mod movement_tests {
             player.integrate(Vec2::new(ax, 0.0), DT);
         }
         assert!((player.pos.x - start_x + 70.0).abs() < 1e-4);
-        assert_eq!(player.vel.x, -MOVE_SPEED);
+        assert_eq!(player.vel.x, -140.0);
     }
 
     #[test]
@@ -889,10 +1006,12 @@ mod movement_tests {
 
         let ax = player.step_horizontal(false, true, false);
         player.integrate(Vec2::new(ax, 0.0), DT);
+        // Literal from docs/03 §4: AIR_ACCEL 600 px/s^2 * 0.05 s = 30 px/s.
+        // Asserting against AIR_ACCEL itself would move both sides together
+        // and constrain nothing (found by injection: 600 -> 700 failed 0 tests).
         assert!(
-            (player.vel.x - AIR_ACCEL * DT).abs() < 1e-4,
-            "one tick of air control should add {} px/s, got {}",
-            AIR_ACCEL * DT,
+            (player.vel.x - 30.0).abs() < 1e-4,
+            "one tick of air control gave {} px/s, expected 30 (600 * 0.05)",
             player.vel.x,
         );
 
@@ -903,9 +1022,10 @@ mod movement_tests {
             player.integrate(Vec2::new(ax, 0.0), DT);
             player.clamp_air_speed(1.0, prev);
         }
+        // Literal from docs/03 §4: AIR_MAX = 140 px/s.
         assert!(
-            (player.vel.x - AIR_MAX).abs() < 1e-4,
-            "air control overshot the cap: {} vs {AIR_MAX}",
+            (player.vel.x - 140.0).abs() < 1e-4,
+            "air control settled at {} px/s, expected the documented cap 140",
             player.vel.x,
         );
     }
@@ -1050,7 +1170,7 @@ mod jump_tests {
         let on_ground = player.on_ground(&map);
 
         assert!(player.step_jump(true, false, true, on_ground));
-        assert_eq!(player.vel.y, JUMP_VY);
+        assert_eq!(player.vel.y, -330.0, "docs/03 §4: JUMP_VY is -330 px/s");
         assert!(
             (player.vel.x - 70.0).abs() < 1e-4,
             "jump bias gave vel.x {}, expected 70",
@@ -1070,7 +1190,7 @@ mod jump_tests {
         player.vel.x = 123.0;
         player.step_jump(true, false, false, true);
         assert_eq!(player.vel.x, 123.0);
-        assert_eq!(player.vel.y, JUMP_VY);
+        assert_eq!(player.vel.y, -330.0);
     }
 
     #[test]
@@ -1212,7 +1332,7 @@ mod jetpack_tests {
         for _ in 0..200 {
             player.step_jetpack(false, false, false, false, DT);
         }
-        assert_eq!(player.jetpack.fuel, JETPACK_FUEL_MAX);
+        assert_eq!(player.jetpack.fuel, 5.0, "docs/03 §5: fuel caps at 5.0 s");
     }
 
     #[test]
@@ -1230,7 +1350,7 @@ mod jetpack_tests {
         let accel = player.step_jetpack(true, false, false, true, DT);
         assert_eq!(accel, 0.0, "jetpack thrusted while grounded");
         // And it recharges rather than burning.
-        assert!(player.jetpack.fuel >= JETPACK_FUEL_MAX - 1e-6);
+        assert!(player.jetpack.fuel >= 5.0 - 1e-6);
     }
 
     #[test]
@@ -1374,7 +1494,7 @@ mod fov_tests {
         let without = Player::compute_fov(1.0, false, 100.0, false);
         let with = Player::compute_fov(1.0, false, 100.0, true);
         assert!((without - 189.0).abs() < 1e-3);
-        assert!((with - FOV_BASE).abs() < 1e-3);
+        assert!((with - 420.0).abs() < 1e-3, "docs/03 §7: base FOV is 420 px");
         assert!(with > without, "flashlight must widen the view at night");
 
         // T2.10 Acceptance: "at full night without flashlight, a player 400 px

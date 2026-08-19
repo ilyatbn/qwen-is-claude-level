@@ -15,7 +15,7 @@ Commits `5661995`(T2.1) … `fd08e38`(T2.10), one per task.
 
 | File | Added this phase |
 |---|---|
-| `player.rs` | `player_config` (every tunable from docs/03 §4/§5/§7), `Player`, `ShieldState`, `JetpackState`, `PlayerInputState` + edge detection, ground probe, `step_horizontal`/`step_jump`/`step_jetpack`, `integrate` (Verlet), `clamp_fall_speed`, `set_aim`, `compute_fov`. |
+| `player.rs` | `player_config` (every tunable from docs/03 §4/§5/§7), `Player`, `ShieldState`, `JetpackState`, `PlayerInputState` + edge detection, ground probe, `step_horizontal`/`step_jump`/`step_jetpack`, `integrate` (Verlet), `clamp_fall_speed`, `set_aim`, `compute_fov`, **`step_tick` (the production per-tick sequence) and `apply_collision`**. |
 | `physics.rs` | `Segment` + `row_segments`/`all_segments` (docs/01 §6 colliders), `PhysicsWorld` wrapping rapier's `KinematicCharacterController`, `rebuild_segments`. |
 | `items.rs` | `Inventory` (6 slots) — `Player` embeds it; pickup/use is T3.6/T3.7. |
 | `examples/fov_vectors.rs` | Generates the shared FOV fixture (D31). |
@@ -37,6 +37,8 @@ Commits `5661995`(T2.1) … `fd08e38`(T2.10), one per task.
 ## Public entry points
 
 - `Player::{new, spawn, spawn_position, feet_y, on_ground, input_direction}`
+- **`Player::step_tick(&PhysicsWorld, &Map, &InputFrame, InputEdges, dt) -> TickOutcome`** — the production per-tick sequence. `round.rs` (T4.1) calls this; do not re-derive it.
+- `Player::apply_collision` — the single point rapier's output re-enters pure state (D32).
 - `Player::{step_horizontal, step_jump, step_jetpack, integrate, clamp_air_speed, clamp_fall_speed}`
 - `Player::{set_aim, compute_fov}` · `player::DT` (0.05) · `player::player_config::*`
 - `PlayerInputState::{receive, tick}` → `(InputFrame, InputEdges)`
@@ -80,13 +82,39 @@ invariant is violated.** Every row below was injected and reverted this phase.
 | Plain `lerp` for facing (±π wrap) | 1 FAIL |
 | Accept out-of-order snapshots | 1 FAIL |
 | Input interval 50 → 16 ms | 3 FAIL |
-| **FOV: TS-only** change | 6 TS FAIL |
-| **FOV: Rust-only** change, fixture regenerated | 4 TS FAIL — regenerating does not launder it |
+| **FOV: TS-only** change (`FOV_NIGHT_MIN` 0.45→0.50) | 6 TS FAIL |
+| **FOV: Rust-only** (`FOV_NIGHT_MIN` 0.45→0.40), fixture regenerated | 5 TS FAIL |
+| **FOV: Rust-only** (`FOV_LOW_HEALTH_FACTOR` 0.7→0.8), fixture regenerated | 4 TS FAIL |
+| Collision→velocity rule removed (D32) | 3 FAIL — "resting player accumulated vel.y = 900 over 200 ticks" |
+| `AIR_ACCEL` 600→700 · `AIR_MAX` 140→155 | 1 FAIL each *(0 before the fix — see below)* |
 
-### Two tests the injection pass caught as worthless
+Regenerating the fixture does not launder a one-sided FOV change: the client
+implementation still disagrees with the new vectors. Failure counts differ by which
+constant is injected — both rows above are measured, not estimates.
+
+### A full constant sweep
+
+Every tunable in docs/03 §4/§5/§7 was injected individually. **All 20 are guarded**,
+none fails zero tests: `MOVE_SPEED` 3, `AIR_ACCEL` 1, `AIR_MAX` 1, `GRAVITY` 2,
+`JUMP_VY` 3, `JUMP_DIR_BIAS` 1, `JETPACK_THRUST` 2, `JETPACK_VERTICAL_ASSIST` 1,
+`JETPACK_FUEL_MAX` 4, `JETPACK_BURN_RATE` 2, `JETPACK_RECHARGE_RATE` 1,
+`BASE_HEALTH` 1, `FOV_BASE` 3, `FOV_NIGHT_MIN` 2, `FOV_FOG` 1,
+`FOV_LOW_HEALTH_FACTOR` 1, `FOV_LOW_HEALTH` 2, `TERMINAL_VELOCITY` 1,
+`BODY_HALF_WIDTH` 1, `BODY_HALF_HEIGHT` 1.
+
+`AIR_ACCEL` and `AIR_MAX` failed **zero** before this sweep — the third instance of
+the self-referential shape, after the jetpack assist and the rebuild-scope test. Doing
+this as a *sweep* rather than per-test is what found them; spot-checking does not.
+
+### Three tests the injection pass caught as worthless
 
 Both looked authoritative, both were green, neither constrained anything:
 
+0. **Air control was self-referential on both constants.**
+   `air_control_accelerates_toward_the_cap` asserted `vel.x - AIR_ACCEL * DT` and
+   `vel.x - AIR_MAX`; `air_control_reverses_direction` set `vel.x = AIR_MAX` and
+   asserted only `vel.x < AIR_MAX`, constraining the *sign* of the change and nothing
+   else. Now asserts the literals 30.0 (600 × 0.05), 140.0, and 110.0.
 1. **`w_and_s_assist_in_flight` was self-referential.** It asserted against
    `JETPACK_VERTICAL_ASSIST` itself, so changing the constant moved both sides —
    `300 → 500` failed **zero** tests. Rewritten against docs/03 §5's literals.
@@ -128,9 +156,9 @@ is what tells the difference, and running it unprompted found both.
 | 13 | `apply_blast` does no player damage. | T3.8 / T4.5 |
 | 15 | `decor` / `spawns` generated but unrendered. | T5.x |
 | 16 | Protocol pinning partial (22/43 Rust, 12/30 TS). | ongoing |
-| **17** | **`PhysicsWorld` is built but never driven by a round.** Nothing calls `move_player` outside tests; `round.rs` must own the per-tick sequence: probe → step → integrate → resolve → rebuild. | **T4.1** |
+| **17** | **`PhysicsWorld` is built but never driven by a round.** `Player::step_tick` now *is* the sequence (D32) and is production code; T4.1 must call it per player per tick, and call `rebuild_segments` after destruction. Do not reimplement the sequence. | **T4.1** |
 | **18** | **Player damage, shield, overcharge, respawn, scoring are unimplemented.** docs/08 lists them under `player` but their tasks are Phase 3/4, so they were correctly not pulled forward. | T3.7 / T3.8 / T4.3 |
-| **19** | **D26's spawn overlap will be visible.** Rapier ejects the body, so players pop out of terrain on spawn. Real fix: widen `find_spawns` to check columns `x-1..=x+1`. | T4.1 or a T1.5 revision |
+| **19** | **D26's spawn overlap is a Phase 4 PREREQUISITE, not an open item.** 70–80% of spawns embed the body up to 175 px into neighbouring terrain; ejection direction from that depth is undefined. Phase 3 is unaffected (item placement and pickup geometry are independent of spawns), but T4.1 wires physics and T4.3 makes "farthest spawn from living players" a scoring input. Fix: widen `find_spawns` to require columns `x-1..=x+1` clear, and re-pin the golden anchors in the same commit. | **before T4.1** |
 | **20** | **`GameScene.localPlayerId` is hardcoded 0.** Set it from `joined` (docs/06 §2). | T4.10 |
 
 ---

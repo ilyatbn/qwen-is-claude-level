@@ -428,7 +428,8 @@ mod rapier_tests {
     use super::*;
     use crate::map::Scale;
     use crate::player::player_config::*;
-    use crate::player::{Player, DT};
+    use crate::player::{InputEdges, Player, DT};
+    use crate::protocol::InputFrame;
     use crate::tiles::{Tile, TileKind};
     use crate::Vec2;
 
@@ -452,23 +453,14 @@ mod rapier_tests {
         map
     }
 
-    /// Run one full tick: pure movement, then rapier collision resolution.
+    /// Run one production tick. Calls `Player::step_tick`, the same path
+    /// `round.rs` uses — these tests must not have their own physics.
     fn tick(player: &mut Player, world: &PhysicsWorld, map: &Map, jump_held: bool) {
-        let on_ground = player.on_ground(map);
-        let ax = player.step_horizontal(false, false, on_ground);
-        let jet = player.step_jetpack(jump_held, false, false, on_ground, DT);
-
-        let before = player.pos;
-        player.integrate(Vec2::new(ax, GRAVITY + jet), DT);
-        player.clamp_fall_speed();
-
-        let desired = player.pos - before;
-        let result = world.move_player(before, desired, DT);
-        player.pos = before + result.translation;
-        // A blocked axis means the velocity along it is spent.
-        if result.translation.y.abs() < desired.y.abs() - 1e-4 {
-            player.vel.y = 0.0;
-        }
+        let frame = InputFrame {
+            jump: jump_held,
+            ..InputFrame::default()
+        };
+        player.step_tick(world, map, &frame, InputEdges::default(), DT);
     }
 
     #[test]
@@ -573,6 +565,65 @@ mod rapier_tests {
     }
 
     #[test]
+    fn resting_player_does_not_accumulate_fall_velocity() {
+        // The collision->velocity rule (D32), guarded.
+        //
+        // Without zeroing vel.y when terrain blocks the move, a player resting
+        // on the ground gains GRAVITY*dt every tick forever. Position never
+        // changes — collision keeps stopping it — so nothing looks wrong until
+        // the ground is destroyed, at which point they are launched through
+        // the map at whatever clamp_fall_speed permits.
+        let floor_row = 40;
+        let map = flat_map(floor_row);
+        let world = PhysicsWorld::new(&map);
+        let floor_top = floor_row as f32 * TILE_SIZE;
+        let mut player = Player::new(
+            0,
+            "p".into(),
+            Vec2::new(320.0, floor_top - BODY_HALF_HEIGHT),
+        );
+
+        for _ in 0..200 {
+            tick(&mut player, &world, &map, false);
+        }
+
+        assert!(
+            player.vel.y.abs() < 1.0,
+            "resting player accumulated vel.y = {} over 200 ticks",
+            player.vel.y,
+        );
+        assert!(
+            player.vel.y < TERMINAL_VELOCITY * 0.5,
+            "vel.y {} is heading for the terminal-velocity cap while standing still",
+            player.vel.y,
+        );
+    }
+
+    #[test]
+    fn landing_reports_blocked_y_and_zeroes_velocity() {
+        let floor_row = 40;
+        let map = flat_map(floor_row);
+        let world = PhysicsWorld::new(&map);
+        let floor_top = floor_row as f32 * TILE_SIZE;
+        let mut player = Player::new(
+            0,
+            "p".into(),
+            Vec2::new(320.0, floor_top - BODY_HALF_HEIGHT - 100.0),
+        );
+
+        let mut saw_block = false;
+        for _ in 0..40 {
+            let frame = InputFrame::default();
+            let outcome = player.step_tick(&world, &map, &frame, InputEdges::default(), DT);
+            if outcome.blocked_y {
+                saw_block = true;
+                assert_eq!(player.vel.y, 0.0, "blocked_y did not zero vel.y");
+            }
+        }
+        assert!(saw_block, "a 100 px fall never reported blocked_y");
+    }
+
+    #[test]
     fn player_falls_into_hole() {
         // T2.6 step 5: "destroy the 3 tiles under a player -> player falls".
         let floor_row = 40;
@@ -632,13 +683,11 @@ mod rapier_tests {
         );
 
         for _ in 0..60 {
-            let on_ground = player.on_ground(&map);
-            let ax = player.step_horizontal(false, true, on_ground);
-            let before = player.pos;
-            player.integrate(Vec2::new(ax, GRAVITY), DT);
-            let desired = player.pos - before;
-            let result = world.move_player(before, desired, DT);
-            player.pos = before + result.translation;
+            let frame = InputFrame {
+                right: true,
+                ..InputFrame::default()
+            };
+            player.step_tick(&world, &map, &frame, InputEdges::default(), DT);
         }
 
         let wall_left = 25.0 * TILE_SIZE;
@@ -664,7 +713,8 @@ mod rebuild_tests {
     use super::*;
     use crate::map::Scale;
     use crate::player::player_config::*;
-    use crate::player::{Player, DT};
+    use crate::player::{InputEdges, Player, DT};
+    use crate::protocol::InputFrame;
     use crate::tiles::{Tile, TileKind};
     use crate::Vec2;
 
@@ -807,18 +857,15 @@ mod rebuild_tests {
             Vec2::new((col as f32 + 0.5) * TILE_SIZE, floor_top - BODY_HALF_HEIGHT),
         );
 
+        // Production path — no test-local physics.
         let step = |player: &mut Player, world: &PhysicsWorld, map: &Map| {
-            let on_ground = player.on_ground(map);
-            let ax = player.step_horizontal(false, false, on_ground);
-            let before = player.pos;
-            player.integrate(Vec2::new(ax, GRAVITY), DT);
-            player.clamp_fall_speed();
-            let desired = player.pos - before;
-            let result = world.move_player(before, desired, DT);
-            player.pos = before + result.translation;
-            if result.translation.y.abs() < desired.y.abs() - 1e-4 {
-                player.vel.y = 0.0;
-            }
+            player.step_tick(
+                world,
+                map,
+                &InputFrame::default(),
+                InputEdges::default(),
+                DT,
+            );
         };
 
         for _ in 0..5 {
