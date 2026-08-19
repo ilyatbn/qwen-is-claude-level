@@ -36,7 +36,7 @@ still passes.
 
 ---
 
-## T0.2 — Protocol types (Rust + TS) [ ]
+## T0.2 — Protocol types (Rust + TS) [x]
 
 **Goal**: shared message types exist in both languages, in sync.
 **Read**: `docs/06-protocol.md` (all), `docs/00-architecture.md` §7.
