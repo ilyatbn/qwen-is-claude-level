@@ -9,6 +9,13 @@ effects::day_night_tests::day_phase_is_continuous
 effects::day_night_tests::day_phase_stays_in_range
 effects::day_night_tests::the_cycle_repeats_every_120_seconds
 effects::day_night_tests::the_transitions_are_five_seconds_each
+effects::toxic_tests::overlapping_spots_do_not_stack
+effects::toxic_tests::spot_four_ends_at_eight_seconds
+effects::toxic_tests::spot_placement_is_deterministic
+effects::toxic_tests::spots_land_on_solid_ground
+effects::toxic_tests::spots_stagger_and_no_damage_before_the_first_or_after_the_last
+effects::toxic_tests::standing_in_a_spot_for_its_whole_life_costs_about_40_hp
+effects::toxic_tests::toxic_rain_damages_in_spot_only
 every_scale_produces_all_tile_kinds
 generate_deterministic_100_seeds
 generated_map_has_expected_dimensions

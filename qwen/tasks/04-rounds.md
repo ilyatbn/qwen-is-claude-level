@@ -72,7 +72,7 @@ score no one.
 
 ---
 
-## T4.4 — Toxic rain [ ]
+## T4.4 — Toxic rain [x]
 
 **Goal**: 5 staggered spots, 10 hp/s inside, 8 s window.
 **Read**: `docs/02-map-effects.md` §3.
