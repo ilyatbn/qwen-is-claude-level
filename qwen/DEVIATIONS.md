@@ -447,17 +447,42 @@ height sits exactly on a `.5` boundary, changing that column's surface row by on
 — and from there, every downstream RNG-consuming step diverges. So the map is
 deterministic *on a given platform* but not necessarily *across* platforms.
 
-The two documents conflict: §3 mandates the transcendental, §2 promises bit-identical
-output. There is no compliant way to satisfy both, since any lookup-table or
-polynomial substitute would no longer be "cosine interpolation".
+**A compliant fix exists, and is cheap.** The [`libm`](https://crates.io/crates/libm)
+crate is a pure-Rust port of MUSL's libm: it computes `cosf` in Rust, dispatching to no
+platform libm at all, so it is bit-identical everywhere. Substituting `libm::cosf` for
+`f32::cos` is **still exactly cosine interpolation** — the same function and the same
+curve, nothing approximated or tabulated — so it does not conflict with docs/01 §3.
 
-**Implemented**: the doc's algorithm, as specified. The golden hashes in
-`tests/determinism.rs` are computed on `x86_64-unknown-linux-gnu` and would need
-regenerating if they ever fail *only* on another platform — which is precisely the
-signal this entry predicts. In practice v1 runs one authoritative server, so
-cross-platform bit-equality is not required for correctness; it matters only for
-replaying a seed on a different machine.
+Verified rather than assumed:
+
+- `libm v0.2.16` is **already compiled into `game-core`'s dependency tree**, via
+  rapier2d → num-traits. Adopting it costs a direct dependency declaration on a crate
+  already being built, and one changed identifier.
+- The two implementations genuinely differ on this host: over 200,000 samples across
+  `[0, π]`, `libm::cosf` and glibc's `f32::cos` disagree bitwise on **2,625 samples
+  (1.3%)**, max delta **1 ULP**. So this is a real difference, not a theoretical one.
+
+**Implemented**: the platform `f32::cos`, i.e. the status quo — but on the honest
+ground, which is *not worth it yet*, **not** *impossible*. v1 runs one authoritative
+server (docs/05 §1): all simulation happens in one process on one machine, and clients
+receive `MapData` rather than regenerating maps, so cross-platform bit-equality buys
+nothing for correctness today. It matters only for replaying a seed on a different
+machine — a developer convenience.
+
+**Note the cost is not static.** The golden hashes in `tests/determinism.rs` are
+computed with the current `cos`; switching later invalidates them and any seed
+recorded from a bug report. Since 1.3% of samples differ, the switch *will* change
+generated maps. Migrating is one line plus a golden regeneration today, and strictly
+more later.
 
 **Pairs with the rapier `enhanced-determinism` decision due in T2.6.** Both are the
-same question — how much cross-platform bit-equality the project actually wants —
-and should be answered together rather than piecemeal.
+same question — how much cross-platform bit-equality the project wants — and should be
+answered together. Whoever answers should know that **this half is attainable cheaply**;
+the rapier half is the expensive one.
+
+*(Correction: an earlier version of this entry claimed "there is no compliant way to
+satisfy both, since any lookup-table or polynomial substitute would no longer be
+'cosine interpolation'". That was wrong — `libm::cosf` is neither a lookup table nor a
+polynomial substitute, it is the same function computed portably. The error mattered
+because this entry explicitly defers a decision to T2.6, and would have told that
+reader cross-platform determinism was unattainable when it is not.)*

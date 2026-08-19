@@ -61,11 +61,25 @@ impl Fnv1a {
 /// draw.
 fn golden_hash(map: &Map) -> u64 {
     let mut h = Fnv1a::new();
+    h.bytes(&map.seed.to_le_bytes());
+    h.bytes(map.scale.as_str().as_bytes());
     h.u32(map.width);
     h.u32(map.height);
+    h.bytes(&map.version.to_le_bytes());
     for tile in &map.tiles {
         h.byte(tile.kind.to_byte());
         h.f32(tile.hp);
+        // Always None from `generate` today, but T3.3's `place_hidden` writes
+        // this from RNG draws, and docs/04 §6 makes hidden-item placement step
+        // 5 of the determinism-critical order. Hashing it now extends the
+        // anchor to cover that step for free, the moment it exists.
+        match tile.item {
+            None => h.byte(0),
+            Some(item) => {
+                h.byte(1);
+                h.bytes(item.as_str().as_bytes());
+            }
+        }
     }
     for decor in &map.decor {
         h.u32(decor.x);
@@ -224,9 +238,9 @@ fn large_map_generation_is_fast_enough() {
 /// Covers all three scales because pocket count and dimensions differ per
 /// scale, so a scale-dependent bug could hide behind a single-scale anchor.
 const GOLDEN_MAPS: [(u64, Scale, u64); 3] = [
-    (1, Scale::Small, 0x95e2_483e_27cb_1154),
-    (42, Scale::Medium, 0x4dbc_481b_538a_f63d),
-    (12345, Scale::Large, 0x5b3b_a3d1_4094_1e45),
+    (1, Scale::Small, 0x039d_4c59_5fd7_27b6),
+    (42, Scale::Medium, 0x9390_d21e_8a8f_d460),
+    (12345, Scale::Large, 0x1c23_0dca_543b_d713),
 ];
 
 #[test]
@@ -276,6 +290,22 @@ fn seed1_small_ascii_dump_is_unchanged() {
             "seed 1 / Small terrain changed (line count {} vs {})",
             actual.lines().count(),
             GOLDEN_SEED1_SMALL.lines().count(),
+        );
+    }
+}
+
+/// Helper, not a check. Prints the current constants so a deliberate
+/// generation change can be re-pinned:
+///   cargo test -p game-core --test determinism print_golden -- --ignored --nocapture
+#[test]
+#[ignore = "helper: prints golden constants for GOLDEN_MAPS"]
+fn print_golden_hashes() {
+    for (seed, scale, _) in GOLDEN_MAPS {
+        println!(
+            "    ({}, Scale::{:?}, 0x{:016x}),",
+            seed,
+            scale,
+            golden_hash(&Map::generate(seed, scale))
         );
     }
 }

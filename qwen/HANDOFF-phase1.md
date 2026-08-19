@@ -92,7 +92,8 @@ Tests beyond the doc, each closing a specific gap:
 - **shuffle `below()` call count is pinned** — one extra call shifts everything downstream
 - **no-op destruction must not bump `version`** — or clients resync on every miss
 - **blast bounds safety** at map edges and with zero/negative radius
-- **batch conversion does not heal damaged DIRT mid-blast** (D22)
+- **batch conversion does not heal damaged DIRT mid-blast** (D22) — pins the exact
+  destroyed-tile count for a fixed blast, which is what discriminates the two designs
 - **spawn fallback ignores spacing before returning fewer than 6** (the ≥6 guarantee)
 
 ### Golden anchor — maintenance
@@ -102,8 +103,13 @@ generation output. If they fail, generation changed: find which draw moved. If t
 change was deliberate, regenerate **in the same commit**:
 
 ```bash
-cargo run -p game-core --example dump_seed1 > game-core/tests/golden/seed1_small.txt
-# then update GOLDEN_MAPS from the assertion's "got 0x..." values
+# Writes the golden file itself, resolved from CARGO_MANIFEST_DIR — works from
+# any directory. (An earlier version redirected stdout to a relative path, which
+# silently created a nested directory when run from inside game-core/.)
+cargo run -p game-core --example dump_seed1
+
+# Then re-pin the hashes:
+cargo test -p game-core --test determinism print_golden -- --ignored --nocapture
 ```
 
 Never update them to turn a red build green without knowing why it moved.
@@ -112,12 +118,31 @@ FNV-1a is inlined deliberately — `DefaultHasher`'s algorithm is unstable acros
 releases, which would make the anchor hostage to the toolchain (the coupling D19
 exists to remove).
 
-**Verified by injection** (both reverted afterwards, suite green):
+**Verified by injection** (each reverted afterwards, suite green):
 
-| Injection | Before the anchor | After |
+| Injection | Before the guard | After |
 |---|---|---|
 | `let _wasted = rng.next_u32();` in `generate()` | all 75 pass | `generation_matches_golden_hashes` + `seed1_small_ascii_dump_is_unchanged` **FAIL** |
 | swap `value_noise(8)` / `value_noise(3)` order | 68/69 pass (one incidental) | both anchors **FAIL**, unit suite clean |
+| `apply_blast`: `destroy_tile_deferred` → `destroy_tile` (D22 hazard) | all 80 pass | `batch_conversion_does_not_reset_damaged_dirt_midway` **FAILS** |
+
+### A recurring failure of mine: "test exists, therefore gap closed"
+
+Three phases running, this handoff claimed coverage the tests did not provide — Phase
+0's TS drift guard, Phase 1's determinism suite, and then the D22 test. Each time the
+test was real, the code was right, and the claim about what was *guarded* was wrong.
+
+The shared cause is that I verified tests **pass** and never checked they can **fail**.
+A passing test is evidence the code works today; only a failing-on-injection test is
+evidence of a guard. The D22 case is the sharpest: the test asserted "some surviving
+tile retained blast damage", which is true under both the correct and the broken
+design, so it could not discriminate — and reverting one identifier left all 80 tests
+green.
+
+The standing rule for the rest of this build: **a test described as guarding an
+invariant must have been seen to fail when that invariant is violated.** If it has not
+been injected against, describe it as coverage, not a guard. Injection results belong
+in the table above.
 
 **Client — 49 Vitest.** `terrainGrid` (grid, `applyDestroyed` incl. idempotence and
 out-of-bounds, base64 decode, `variantAt`), `camera` (clamp incl. oversized viewport),
@@ -138,7 +163,7 @@ No Phaser import reaches Vitest (D10).
 | **D19** | `shuffle`/`random_unit` implemented here, not delegated to `rand`, so map output is not hostage to a patch bump. |
 | **D21** | T1.6's wall-clock perf assertion kept (unlike D12) — 200× margin makes flake implausible. |
 | **D22** | Surface conversion is per-batch, not per-destruction — converting mid-blast would reset a damaged DIRT tile's hp to 20 and make output order-dependent. `destroy_tile` converts; `destroy_tile_deferred` is the explicit batch path. |
-| **D23** | `cosine_interpolate` uses platform `libm`; 1-ULP drift can survive `.round()` at a tile boundary, so maps are deterministic per-platform, not across. Pairs with the rapier `enhanced-determinism` decision in T2.6. |
+| **D23** | `cosine_interpolate` uses platform `libm`; 1-ULP drift can survive `.round()` at a tile boundary, so maps are deterministic per-platform, not across. **A cheap compliant fix exists** — the `libm` crate (already in the tree via rapier2d) computes `cosf` portably and is still exactly cosine interpolation. Shipping platform `cos` is "not worth it yet", not "impossible". Pairs with the rapier `enhanced-determinism` decision in T2.6, where this half is the cheap one. |
 
 ---
 
@@ -177,4 +202,9 @@ Phase 0's list items 1–11 still stand except where noted. New/updated:
   wholesale, which makes the phase diff unreadable.
 - **`destroy_tile` converts; use `destroy_tile_deferred` + one
   `apply_surface_conversion()` when destroying in bulk** (D22). T4.6's `clear_area`
-  is the next batch caller.
+  is the next batch caller. `destroy_tile`'s conversion is O(1) (only the tile directly
+  below a removed tile can become exposed), so looping over it is linear, not quadratic
+  — but a loop still converts per step, which is the D22 hazard. Use the batch path.
+- **`golden_hash` already covers `Tile.item`**, so T3.3's hidden-item placement is
+  anchored the moment it writes one. Expect `generation_matches_golden_hashes` to fail
+  on the T3.3 commit; re-pin it there deliberately.

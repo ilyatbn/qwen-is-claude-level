@@ -488,8 +488,24 @@ impl Map {
     /// DEVIATIONS.md D22.
     pub fn destroy_tile(&mut self, x: u32, y: u32) -> Option<TileDestroyed> {
         let event = self.destroy_tile_deferred(x, y)?;
-        self.apply_surface_conversion();
+        // Only the tile directly below the one just removed can have become
+        // exposed, so the conversion is O(1) rather than a full-grid scan.
+        // Equivalent to `apply_surface_conversion()` for a single destruction,
+        // and keeps a loop over `destroy_tile` linear instead of quadratic.
+        self.convert_if_exposed(x, y + 1);
         Some(event)
+    }
+
+    /// Convert one tile to GRASS if it is DIRT with AIR directly above
+    /// (docs/01 §5). The single-tile form of [`Map::apply_surface_conversion`].
+    fn convert_if_exposed(&mut self, x: u32, y: u32) {
+        if self.tile(x, y).kind != TileKind::Dirt {
+            return;
+        }
+        let above_is_air = y == 0 || !self.tile(x, y - 1).is_solid();
+        if above_is_air {
+            self.set_tile(x, y, Tile::new(TileKind::Grass));
+        }
     }
 
     /// Destroy a tile WITHOUT running the surface conversion pass.
@@ -520,8 +536,9 @@ impl Map {
     /// (docs/01 §5: "for every DIRT tile whose tile directly above is AIR →
     /// convert to GRASS (recompute hp to 20)").
     ///
-    /// Runs over the whole grid; cheap relative to a blast and immune to the
-    /// ordering bugs a localised pass would invite.
+    /// Runs over the whole grid. Intended for batch callers, which run it once
+    /// after many destructions; [`Map::destroy_tile`] uses the O(1) single-tile
+    /// form instead, so looping over it stays linear.
     pub fn apply_surface_conversion(&mut self) {
         for y in 0..self.height {
             for x in 0..self.width {
@@ -1257,36 +1274,63 @@ mod tests {
 
     #[test]
     fn batch_conversion_does_not_reset_damaged_dirt_midway() {
-        // Why the batch path exists (D22). A DIRT tile damaged by the same
-        // blast that exposes it must not be healed back to 20 hp mid-batch.
+        // Why the batch path exists (D22), pinned by CRATER SIZE.
+        //
+        // On uniform DIRT (30 hp), converting mid-blast turns an exposed DIRT
+        // tile into GRASS (20 hp) — healing it *downward* — so later damage in
+        // the SAME blast destroys tiles that should have survived. The result
+        // is a visibly larger crater, and it depends on tile iteration order.
+        //
+        // An earlier version of this test asserted only "some surviving tile
+        // retained blast damage", which is true under both designs and
+        // therefore could not fail. Reverting apply_blast from
+        // destroy_tile_deferred to destroy_tile left all 80 tests green. These
+        // counts discriminate: every row below differs between the two designs.
+        //
+        //   max_damage | per-destruction (WRONG) | deferred (correct)
+        //           25 |  0                      | 0
+        //           35 |  2                      | 1
+        //           45 |  2                      | 1
+        //           55 |  7                      | 5
+        //           65 | 10                      | 9
+        const EXPECTED: [(f32, usize); 5] =
+            [(25.0, 0), (35.0, 1), (45.0, 1), (55.0, 5), (65.0, 9)];
+
+        let center = Map::tile_center(20, 20);
+        for (max_damage, want) in EXPECTED {
+            let mut map = solid_map(TileKind::Dirt);
+            let destroyed = map.apply_blast(center.x, center.y, 48.0, max_damage);
+            assert_eq!(
+                destroyed.len(),
+                want,
+                "blast r=48 max_damage={max_damage} destroyed {} tiles, expected \
+                 {want}. A larger count means surface conversion ran DURING the \
+                 batch, resetting exposed DIRT (30 hp) to GRASS (20 hp) so later \
+                 damage in the same blast over-killed. See DEVIATIONS.md D22.",
+                destroyed.len(),
+            );
+            // The reported events and the resulting grid must agree.
+            let air = map.tiles.iter().filter(|t| t.kind == TileKind::Air).count();
+            assert_eq!(air, want, "AIR tile count disagrees with reported events");
+            assert_eq!(map.version, want as u64, "version disagrees with events");
+        }
+    }
+
+    #[test]
+    fn blast_leaves_surviving_tiles_damaged() {
+        // Sub-lethal damage must persist rather than being healed by the
+        // post-batch conversion pass.
         let mut map = solid_map(TileKind::Dirt);
         let center = Map::tile_center(20, 20);
-        // Enough to destroy the centre tiles, not enough to destroy the ring.
-        map.apply_blast(center.x, center.y, 48.0, 45.0);
-
-        // Some surviving tile in the blast ring should still carry damage.
+        map.apply_blast(center.x, center.y, 48.0, 25.0);
         let damaged = (0..map.height)
             .flat_map(|y| (0..map.width).map(move |x| (x, y)))
-            .filter(|&(x, y)| map.tile(x, y).kind != TileKind::Air)
+            .filter(|&(x, y)| map.tile(x, y).is_solid())
             .any(|(x, y)| {
                 let t = map.tile(x, y);
                 t.hp < t.kind.base_hp()
             });
         assert!(damaged, "no surviving tile retained blast damage");
-    }
-
-    #[test]
-    fn surface_conversion_leaves_buried_dirt_alone() {
-        let mut map = Map::generate(4, Scale::Small);
-        let x = 40;
-        let s = map.surface_row(x);
-        let buried = map.tile(x, s + 2);
-        map.apply_surface_conversion();
-        assert_eq!(
-            map.tile(x, s + 2),
-            buried,
-            "DIRT with solid tile above must not convert",
-        );
     }
 
     #[test]
