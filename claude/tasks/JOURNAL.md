@@ -125,3 +125,11 @@ Notes: Both scripts are executable and cd to the project root, so they work from
        paths, skins.json frame existence, duplicate ids) — it just no-ops until
        assets/manifest.json exists.
 Left for later: nothing. M0 complete.
+
+## M0 CHECKPOINT — PASSED
+`cargo run -p game-server` + `npm --prefix client run dev` + headless Chromium:
+  healthz {"players":0,"rooms":0,"status":"ok"}
+  console: [net] echo_back {"n":42,...} rtt 1 transport websocket
+`./scripts/check.sh` green: 77 rust tests, 8 vitest, fmt + clippy -D warnings clean.
+Docker path verified separately in T0.07 (same echo, transport websocket via nginx).
+Foundation is done; M1 (map generation) is next and is the milestone that matters.
