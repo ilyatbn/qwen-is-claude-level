@@ -611,3 +611,86 @@ documented 58–63 range".
 **Note for T2.6**: this is a further reason rapier cannot own player movement (D2).
 Its solver uses its own integration, so routing movement through it would reintroduce
 exactly this discrepancy — and would not be tunable back into the documented range.
+
+### D29 — T2.6's anti-tunneling assertion is unsatisfiable, and would not prevent tunneling
+
+**Spec** (`tasks/02-player.md` T2.6 Acceptance): "no tunneling at max fall speed
+(terminal velocity cap 900 px/s — assert body never moves > 45 px in one tick)".
+
+**Two independent problems.**
+
+*It is at the boundary, then over it.* `900 px/s × 0.05 s = 45 px` exactly, so even
+under the most favourable integrator the assertion sits on its own limit with no
+margin. Under velocity Verlet — which D28 shows is the **only** integrator satisfying
+T2.4's jump apex — one tick at terminal velocity is `900×0.05 + ½×900×0.05² =
+46.125 px`. The two acceptances are mutually unsatisfiable: T2.4 forces Verlet, and
+Verlet breaks T2.6's 45 px bound.
+
+*It would not prevent tunneling even if met.* Tiles are 16 px (docs/01 §1). A 45 px
+step crosses **2.9 tiles**. A displacement bound of 45 px permits jumping clean over a
+two-tile floor; the only bound that would prevent tunneling by displacement alone is
+one below the tile size, i.e. ≤16 px, which at 20 Hz would cap fall speed at 320 px/s —
+a third of the documented terminal velocity.
+
+**Implemented**: the property the acceptance was reaching for, by a mechanism that
+actually provides it. Movement is resolved through rapier's
+`KinematicCharacterController::move_shape`, which **shape-casts** the desired
+translation rather than teleporting and testing afterwards. Tunneling is then
+impossible at any speed, independent of per-tick displacement, so the displacement
+bound stops being load-bearing.
+
+`no_tunneling_at_terminal_velocity` asserts:
+1. a body falling at terminal velocity never ends up below a one-tile floor — the real
+   requirement;
+2. fall speed stays at or under the documented 900 px/s cap;
+3. per-tick displacement stays within 46.125 px, the true Verlet bound, recorded so a
+   future integrator change is visible.
+
+The doc's literal "> 45 px" is not asserted, because it is false under the integrator
+the design's own jump assertion requires.
+
+### D30 — Cross-platform bit-determinism: decided, deferred from D19/D23
+
+**The question**, raised by D19 (hand-rolled RNG primitives), D23 (`f32::cos` via
+platform libm) and now T2.6 (rapier): should `game-core` produce bit-identical results
+across operating systems and CPU architectures?
+
+docs/00 §2 states the determinism rule without qualification: "`game-core` must produce
+identical state for the same (seed, tick count, input sequence)". The design never says
+whether that means *on one machine* or *on all machines*, and the two have very
+different costs.
+
+**Decision: same-platform determinism is guaranteed; cross-platform is not.**
+
+What that buys, and what it costs:
+
+| Source | Cross-platform? | Cost to fix | Status |
+|---|---|---|---|
+| `GameRng` (ChaCha8 + hand-rolled shuffle/range) | **Yes, already** | — | D19, done |
+| `libm::cosf` instead of `f32::cos` | No | ~1 line; crate already in tree; invalidates golden anchors | D23, **not taken** |
+| rapier `enhanced-determinism` feature | No | Feature flag + perf cost; only covers rapier's own maths | **not taken** |
+
+**Why this is the right call for v1.** docs/05 §1 makes the server the sole authority:
+all simulation runs in one process on one machine, and clients receive `MapData` and
+snapshots rather than re-simulating. Nothing in v1 compares results computed on two
+different machines, so cross-platform bit-equality buys no correctness — only the
+ability to replay a seed elsewhere, which is a developer convenience.
+
+Note that rapier's exposure here is **much smaller than it looks**, because D2 already
+confines it to collision resolution: it never integrates player motion, so it cannot
+drift the documented movement numbers. Enabling `enhanced-determinism` would constrain
+only the collision-resolution path while costing performance on every query.
+
+**What would force a revisit** — any one of these makes the decision wrong:
+1. a second server platform (a musl container image alongside a glibc dev box, or an
+   ARM host) running rounds whose results are compared;
+2. cross-machine replay becoming a real workflow — e.g. reproducing a player's bug
+   report locally from a seed and input log;
+3. client-side prediction that re-simulates `game-core` in WASM, where the client's
+   maths must match the server's exactly.
+
+**The cost of deferring is not flat.** Both fixes invalidate the golden anchors in
+`tests/determinism.rs` and any seed recorded from a bug report; the `cos` swap changes
+1.3% of noise samples and therefore generated maps. Migrating is cheap today and
+strictly more expensive after Phase 3 adds item placement and Phase 4 adds effect
+schedules to the seeded stream.

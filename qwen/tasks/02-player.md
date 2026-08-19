@@ -109,7 +109,7 @@ Read `docs/03-player.md` in full before starting this file.
 
 ---
 
-## T2.6 — Rapier integration [ ]
+## T2.6 — Rapier integration [x]
 
 **Goal**: player bodies in a real rapier world vs terrain colliders.
 **Read**: `docs/00-architecture.md` §5, `docs/01-map.md` §6.

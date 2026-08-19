@@ -69,6 +69,10 @@ pub mod player_config {
     pub const BODY_HEIGHT: f32 = BODY_HALF_HEIGHT * 2.0;
     /// Player hit circle radius, px (docs/04 §2).
     pub const HIT_RADIUS: f32 = 12.0;
+
+    /// Terminal fall speed, px/s (T2.6 Acceptance: "terminal velocity cap
+    /// 900 px/s"). Equal to GRAVITY numerically, which is coincidence.
+    pub const TERMINAL_VELOCITY: f32 = 900.0;
 }
 
 use player_config::*;
@@ -454,6 +458,16 @@ impl Player {
             self.vel.x = AIR_MAX.max(previous_vx.min(self.vel.x));
         } else if direction < 0.0 && self.vel.x < -AIR_MAX {
             self.vel.x = (-AIR_MAX).min(previous_vx.max(self.vel.x));
+        }
+    }
+
+    /// Terminal fall speed, px/s (T2.6 Acceptance).
+    ///
+    /// Clamped after the velocity update so a long fall cannot accelerate
+    /// without bound.
+    pub fn clamp_fall_speed(&mut self) {
+        if self.vel.y > TERMINAL_VELOCITY {
+            self.vel.y = TERMINAL_VELOCITY;
         }
     }
 

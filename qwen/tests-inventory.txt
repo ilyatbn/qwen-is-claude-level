@@ -55,6 +55,12 @@ map::tests::terrain_ascii_dump_seed1_small
 map::tests::tile_center_is_tile_midpoint
 map::tests::value_noise_is_bounded_and_sized
 map::tests::version_increments
+physics::rapier_tests::horizontal_movement_is_blocked_by_a_wall
+physics::rapier_tests::no_tunneling_at_terminal_velocity
+physics::rapier_tests::player_does_not_sink_through_a_floor_it_rests_on
+physics::rapier_tests::player_falls_and_lands
+physics::rapier_tests::player_falls_into_hole
+physics::rapier_tests::world_has_one_collider_per_segment
 physics::tests::a_gap_of_one_tile_splits_a_segment
 physics::tests::a_run_reaching_the_right_edge_is_closed
 physics::tests::all_segments_covers_every_solid_tile_exactly_once
