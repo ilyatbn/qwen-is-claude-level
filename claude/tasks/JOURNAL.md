@@ -611,3 +611,35 @@ Notes: TWO REAL BUGS caught by the table tests.
        A full burn + full refill returns fuel to EXACTLY the starting value — that
        test guards against float drift over 900 ticks.
 Left for later: nothing
+
+## T2.11 — apply_input, determinism and the tunnelling sweep — DONE
+Files: crates/game-core/src/player/mod.rs, crates/game-core/tests/movement_scenarios.rs,
+       crates/game-core/src/map/meta.rs (Map::from_parts)
+Verified: `cargo test -p game-core --test movement_scenarios` — 19 passed
+          `./scripts/check.sh` green: 394 lib + 19 scenarios + 14 server + client
+Notes: apply_input order is the contract: edges -> horizontal -> try_jump ->
+       jetpack::update -> thrust -> integrate LAST. try_jump before the jetpack is
+       the whole Space disambiguation; integrate last means every force lands in
+       velocity before the body moves once, so nothing depends on force ordering.
+       Added MovementState { body, jump, jet } so a caller can snapshot and restore
+       all three in one value — the determinism and reconciliation tests need that,
+       and T6.09 will too. (The coordinator flagged this as a design signal to
+       report if it were awkward; it was not, one struct covers it.)
+       Determinism: 1000 scripted inputs, 100 runs, byte-identical. Reconciliation
+       identity: replaying 500..1000 from a tick-500 snapshot lands exactly where
+       the straight 0..1000 run does.
+       Added Map::from_parts, because dirty/dirty_list are pub(crate) and an
+       INTEGRATION test cannot construct a Map otherwise. Better than loosening the
+       fields.
+       TEST TRAP: the horizontal tunnelling test must RE-ASSERT the extreme velocity
+       each tick — friction bleeds 10x WALK_SPEED away long before the body reaches
+       the wall, and the test would pass while proving nothing.
+       JETPACK TEST TRAP: after the tank empties, a still-held Space locks out and
+       starts REFILLING, so sampling fuel at a fixed 6 s reads 0.158 and looks like
+       a leak. Watch for the tick it empties instead.
+       CAVE TRAVERSAL (coordinator asked): a_body_can_walk_along_a_generated_cave_floor
+       drops a 16x28 body onto 40 real cave-floor points of a generated medium map:
+       >=30 of 40 are clear to spawn in, and at least half of those let the body
+       walk 12+ px without ending up inside rock. Also every spawn point settles
+       grounded without falling to bedrock. The M1 caves are body-traversable.
+Left for later: nothing. M2 complete.

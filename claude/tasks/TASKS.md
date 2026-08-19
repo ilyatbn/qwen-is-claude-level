@@ -73,7 +73,7 @@ Headless movement in `game-core`. No rendering, no server.
 - [x] [T2.08](M2/T2.08-jump.md) — Jump, coyote time, jump buffer
 - [x] [T2.09](M2/T2.09-jetpack-fuel.md) — Jetpack engagement rules and fuel
 - [x] [T2.10](M2/T2.10-jetpack-thrust.md) — Jetpack thrust and clamps
-- [ ] [T2.11](M2/T2.11-apply-input.md) — `apply_input`, determinism, no-tunnelling
+- [x] [T2.11](M2/T2.11-apply-input.md) — `apply_input`, determinism, no-tunnelling
 
 **Checkpoint:** `cargo test -p game-core physics` — every scenario test passes,
 including the 10× terminal velocity tunnelling test.

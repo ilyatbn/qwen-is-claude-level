@@ -77,6 +77,22 @@ pub struct Map {
 }
 
 impl Map {
+    /// Assemble a map from parts, sizing the dirty set from the mask.
+    ///
+    /// Public because the dirty set is `pub(crate)` — integration tests and the
+    /// future replay/WASM paths need to build a `Map` around a hand-made or decoded
+    /// mask without reaching into private fields.
+    pub fn from_parts(mask: Mask, coarse: CoarseGrid, meta: MapMeta) -> Self {
+        let chunks = (mask.chunks_x() * mask.chunks_y()) as usize;
+        Map {
+            mask,
+            coarse,
+            meta,
+            dirty: vec![false; chunks],
+            dirty_list: Vec::new(),
+        }
+    }
+
     pub fn chunks_x(&self) -> u32 {
         self.mask.chunks_x()
     }
