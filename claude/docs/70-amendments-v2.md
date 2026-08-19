@@ -109,7 +109,7 @@ by tunnels, with loops, and with several mouths open to the sky.
 | `CHAMBER_MIN_SEPARATION` | 220 |
 | `CAVE_ENTRANCES_MIN` | 2 |
 | `CAVE_ENTRANCES_MAX` | 4 |
-| `ENTRANCE_RADIUS` | 13 |
+| `ENTRANCE_RADIUS` | 15 | corrected in §A9 |
 | `CAVE_EXTRA_EDGE_FRACTION` | 0.5 | extra loop edges as a fraction of chamber count |
 
 1. **Chambers.** Pick `CAVE_CHAMBERS` centres inside solid rock (at least 40 px of
@@ -144,8 +144,8 @@ cave without meaning to.
 
 | Name | Value |
 |---|---|
-| `CREVICE_WIDTH_MIN` | 7 |
-| `CREVICE_WIDTH_MAX` | 17 |
+| `CREVICE_WIDTH_MIN` | 12 | corrected in §A9 |
+| `CREVICE_WIDTH_MAX` | 36 | corrected in §A9 |
 | `CREVICE_DEPTH_MIN` | 90 |
 | `CREVICE_DEPTH_MAX` | 430 |
 | `CREVICE_WANDER` | 0.16 | max heading change per step, radians, around straight down |
@@ -336,3 +336,51 @@ Concretely, replacing the single-file deliverables in the v2 task files:
 
 `vitest` keeps `environment: 'node'`. Any test file that needs the Phaser namespace
 for a type only may `import type` it, which is erased at compile time and safe.
+
+## A9 — Tunnel bores were sized against the wrong body dimension
+
+**This corrects an arithmetic error in `02-constants.md` and in §A2 above.**
+
+A *horizontal* tunnel's clear bore is its diameter, and the player is
+`PLAYER_H` = 28 px tall. So a horizontal tunnel admits the player only at
+radius ≥ 14. The original values do not:
+
+| Constant | Was | Bore | Verdict |
+|---|---|---|---|
+| `TUNNEL_RADIUS_MIN` | 10 | 20 px | too tight |
+| `ENTRANCE_RADIUS` | 13 | 26 px | too tight |
+
+Measured consequence at the old values: a 1-px flood fill reaches 100 % of cave
+chambers from the sky, but a **16 × 28 body** flood reaches only 76 %, and every
+chamber is body-reachable on just 6 of 20 seeds. 16 % of all carved air on a map
+cannot hold the player box. The cave system was a quarter decoration.
+
+The M0 constants test missed it because it asserted
+`TUNNEL_RADIUS_MIN * 2 >= PLAYER_W` — 20 ≥ 16 passes. For a horizontal bore the
+binding dimension is `PLAYER_H`, not `PLAYER_W`.
+
+### Corrected values
+
+| Name | Value | Notes |
+|---|---|---|
+| `TUNNEL_RADIUS_MIN` | 15 | bore 30 px: 28 + 2 px of margin for CA erosion |
+| `TUNNEL_RADIUS_MAX` | 26 | raised from 22 so the min→max variation still reads as pinch-and-widen |
+| `ENTRANCE_RADIUS` | 15 | entrance shafts wander, so size them for the horizontal case too |
+| `CREVICE_WIDTH_MIN` | 12 | see below |
+| `CREVICE_WIDTH_MAX` | 36 | |
+
+Crevices are the deliberate exception. They are vertical, so their binding
+dimension is `PLAYER_W` (16) and the taper to 60 % at the bottom must still clear
+it. Widening the range rather than raising the floor gives a **mix**: narrow ones
+are cracks that let light and grenades through, wide ones are a way in. Both are
+wanted; a map where every crack is an entrance is as flat as one where none are.
+
+### The rule this comes from
+
+> Any passage the player is meant to traverse is sized against **`PLAYER_H` for a
+> horizontal bore and `PLAYER_W` for a vertical one**, plus 2 px of margin for CA
+> erosion — and the test that guards it asserts against that dimension by name.
+
+Consequently `air_reachable_from_sky` and any later reachability check must flood
+**body clearance**, not single pixels. A test that certifies 1-px connectivity is
+certifying something no player can use.
