@@ -79,7 +79,7 @@ Individual tasks list the exact sections they need.
 
 ---
 
-## T1.5 — Spawn point finder [ ]
+## T1.5 — Spawn point finder [x]
 
 **Goal**: ≥6 well-spaced ground spawns, guaranteed.
 **Read**: `docs/01-map.md` §3 (step 5).
@@ -177,7 +177,7 @@ runs.
 
 ---
 
-## T1.10 — Camera, bounds, dev map injection [ ]
+## T1.10 — Camera, bounds, dev map injection [x]
 
 **Goal**: camera follows a fixed point within map bounds; dev seed
 injection works for manual playtest.
