@@ -94,7 +94,7 @@ Individual tasks list the exact sections they need.
 
 ---
 
-## T1.6 — `Map::generate` integration + determinism suite [ ]
+## T1.6 — `Map::generate` integration + determinism suite [x]
 
 **Goal**: one entry point doing §3 in exact order; byte-identical across
 runs.

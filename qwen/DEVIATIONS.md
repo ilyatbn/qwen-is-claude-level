@@ -361,3 +361,28 @@ which exercises every draw kind.
 
 *(This supersedes the narrower D18, which recorded the same version conflict without
 the framing above. D18 is kept for numbering stability.)*
+
+### D21 — T1.6's performance assertion is wall-clock, and is kept anyway
+
+**Spec** (`tasks/01-map.md` T1.6 Acceptance): "generation of Large map < 50 ms (assert
+in test with an upper bound of 200 ms to be safe)".
+
+**Problem**: wall-clock assertions in a test suite are load-sensitive and can fail for
+reasons unrelated to the code — a busy CI box, a container under contention, a
+debug-profile build. This is the same class of defect as D12 (T4.9's 10 Hz timing
+assertion).
+
+**Implemented**: **kept as written**, unlike D12, because the design already specifies
+its own 4× headroom and the measured margin is far larger than that. Measured Large
+map generation:
+
+| Profile | Time | vs 50 ms target | vs 200 ms bound |
+|---|---|---|---|
+| debug | **1.0 ms** | 50× under | 200× under |
+| release | **188 µs** | 266× under | 1064× under |
+
+A 200× margin in the slowest profile makes a spurious failure implausible, so the
+assertion carries real regression value (it would catch an accidentally quadratic
+generation step) at negligible flake risk. Recorded because the *category* is one this
+project otherwise rejects, and the decision to keep this instance is a judgement call
+rather than an oversight.
