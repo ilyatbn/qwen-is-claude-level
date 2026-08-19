@@ -146,7 +146,7 @@ Read `docs/04-items.md` in full before starting this file.
 
 ---
 
-## T3.8 — Weapon fire + projectiles + damage [ ]
+## T3.8 — Weapon fire + projectiles + damage [x]
 
 **Goal**: fire validation, projectile stepping, player + tile damage.
 **Read**: `docs/04-items.md` §2, §4, `docs/03-player.md` §6, §8.

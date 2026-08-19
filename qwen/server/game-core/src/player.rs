@@ -590,6 +590,49 @@ impl Player {
         }
     }
 
+    /// Apply damage through the single documented pipeline (docs/03 §6).
+    ///
+    /// 1. if shield active: `dmg *= 0.5`
+    /// 2. `health -= dmg`. If health < 0 → death (health shown as 0)
+    ///
+    /// Returns whether this blow killed the player. Scoring and the respawn
+    /// timer are the caller's business (T4.3) — this owns health only, so the
+    /// same function serves weapons, weather and self-damage.
+    ///
+    /// Damage is clamped at zero: a negative "damage" would heal past
+    /// max_health, bypassing the clamp in [`Player::heal`].
+    pub fn apply_damage(&mut self, damage: f32) -> bool {
+        if !self.alive || damage <= 0.0 {
+            return false;
+        }
+        let effective = if self.shield.active {
+            damage * SHIELD_DAMAGE_MULTIPLIER
+        } else {
+            damage
+        };
+        self.health -= effective;
+        if self.health <= 0.0 {
+            self.health = 0.0;
+            self.alive = false;
+            return true;
+        }
+        false
+    }
+
+    /// Blast falloff damage to a player (docs/01 §5 formula, docs/04 §2).
+    ///
+    /// "same formula as tiles": `dmg = max_damage * (1 - dist/radius)`, and
+    /// nothing outside the radius is touched.
+    ///
+    /// DEVIATIONS.md D1: T4.5 claims a player 20 px from a 48 px / 60 dmg
+    /// blast takes "~45". The formula gives 60*(1-20/48) = **35**.
+    pub fn blast_damage_at(distance: f32, radius: f32, max_damage: f32) -> f32 {
+        if radius <= 0.0 || distance > radius {
+            return 0.0;
+        }
+        (max_damage * (1.0 - distance / radius)).max(0.0)
+    }
+
     /// Store the aim angle from an input frame (docs/03 §8, T2.8 step 1).
     ///
     /// "`aim` is a free angle from the client mouse (server stores it, no

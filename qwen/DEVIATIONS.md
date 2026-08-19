@@ -1037,3 +1037,57 @@ by the map hash, and neither will announce that.
 **Rule**: when adding a field to an existing anchor to cover a new subsystem, assert
 that the anchor *changes* when that subsystem runs. If it does not, the subsystem is
 outside the anchor's boundary and needs its own.
+
+### D39 — Projectiles use tile lookup, not the player's shape-cast collision
+
+**Spec** (`docs/04-items.md` §2): "Stepped per tick: move, check tile collision (**tile
+under new pos solid** → impact), check player hit (circle vs player body 12 px radius →
+damage)."
+
+**The choice**: the player's collision path resolves two swept shape-casts per tick
+(D34) and treats the body as a 24×28 AABB. Projectiles could reuse it. They do not.
+
+**Implemented**: a point-sample tile lookup at the projectile's new position, exactly as
+docs/04 §2 specifies, plus a circle test against each player. Reasons, in order:
+
+1. **The doc says so.** "Tile under new pos solid" is a point lookup; a shape cast is a
+   different test that would stop projectiles at different places.
+2. **Projectiles are points, not bodies.** They have no width in the catalog — only
+   `impact_radius`, which is the *blast* on detonation, not a collision hull.
+3. **Cost.** Up to 24 live projectiles (docs/04 §2) × 20 Hz, against one player body per
+   tick. A shape cast each would be ~24× the collision work for no documented gain.
+
+**What it costs**: projectiles can tunnel. A rocket travels 500 px/s = 25 px/tick,
+which is 1.6 tiles, so it can pass through a **single-tile wall** — the exact failure
+D29 fixed for players. A grenade at 400 px/s covers 20 px, also over a tile.
+
+That is a genuine gameplay consequence, and it is accepted here because it is what the
+document describes. Fixing it faithfully would mean either sub-stepping the projectile
+along its path (cheap, still a tile lookup, and arguably still "tile under new pos") or
+shape-casting (contradicts the doc). **Flagged for T4.x** if thin walls turn out to
+matter in play; noted in the handoff rather than silently repaired.
+
+Gravity for thrown weapons uses the same velocity Verlet as the player (D28), so
+acceleration is integrated identically everywhere in the crate.
+
+### D40 — The grenade's range and fuse conflict; the fuse governs
+
+**Spec**: `docs/04-items.md` §1 lists the grenade's Range as "**400 (throw)**", and the
+`ItemDef` comment defines `range` as "px, projectile lifetime distance". But §4 says the
+grenade "explodes after **1.5 s** or on second touch" and never mentions range.
+
+**Problem**: applying both terminates the grenade on whichever comes first, and range
+wins. Measured: a grenade thrown at its documented 400 px/s expires on range at **tick
+26**, before the 1.5 s fuse at tick 30 — so the documented fuse would never fire in open
+air, and "explodes after 1.5 s" would be dead text.
+
+**Implemented**: for thrown weapons the **fuse governs** and range is not applied as a
+lifetime. The "(throw)" annotation is read as a throw *distance* — how far the arc
+carries — rather than a hard cutoff, which is the only reading under which §1 and §4 are
+both satisfiable. Non-thrown weapons still expire on range exactly as documented.
+
+*(Found because the fuse test measured 26 ticks instead of 30. Both of my first two
+attempts at that test then passed for the wrong reason — thrown upward the grenade left
+the map, and parked on a Small map it fell out of the bottom at tick 29 — so injecting
+the fuse 1.5 → 3.0 s failed zero tests twice. It now runs on a Large empty map and
+asserts `fuse_s <= 0` at termination, proving the fuse is what ended it.)*

@@ -708,6 +708,282 @@ pub fn use_slot(player: &mut Player, slot: usize) -> UseOutcome {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Projectiles and firing (T3.8, docs/04 §2, §4)
+// ---------------------------------------------------------------------------
+
+/// Max live projectiles per round (docs/04 §2: "drop oldest if exceeded").
+pub const MAX_PROJECTILES: usize = 24;
+/// Player hit circle radius, px (docs/04 §2).
+pub const PLAYER_HIT_RADIUS: f32 = 12.0;
+/// Shotgun pellet count and spread, degrees (docs/04 §4: fixed, no RNG).
+pub const SHOTGUN_PELLETS: usize = 5;
+pub const SHOTGUN_SPREAD_DEG: [f32; SHOTGUN_PELLETS] = [-8.0, -4.0, 0.0, 4.0, 8.0];
+/// Grenade bounce restitution and fuse (docs/04 §4).
+pub const GRENADE_RESTITUTION: f32 = 0.4;
+pub const GRENADE_FUSE_S: f32 = 1.5;
+
+/// A live projectile (docs/04 §2).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Projectile {
+    pub id: u32,
+    pub owner: u8,
+    pub kind: ItemId,
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
+    /// Remaining lifetime in px of travel (docs/04 §1 `range`), or seconds for
+    /// the grenade's fuse.
+    pub remaining_range: f32,
+    pub fuse_s: f32,
+    pub damage: f32,
+    pub radius: f32,
+    pub explosive: bool,
+    /// Grenades bounce exactly once (docs/04 §4).
+    pub bounces_left: u8,
+}
+
+/// What a stepped projectile did this tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ProjectileStep {
+    /// Still flying.
+    Flying,
+    /// Hit terrain or expired at this position.
+    Impact { x: f32, y: f32 },
+    /// Hit a player directly.
+    HitPlayer { player: u8, x: f32, y: f32 },
+}
+
+/// Does this weapon arc under gravity? (docs/04 §4: only the grenade.)
+fn is_thrown(kind: ItemId) -> bool {
+    kind == ItemId::Grenade
+}
+
+/// Create the projectiles one trigger pull produces (docs/04 §4).
+///
+/// The shotgun yields 5 pellets at `aim + [-8,-4,0,4,8]` degrees — "fixed, no
+/// RNG — deterministic", so firing consumes no randomness at all.
+pub fn fire_weapon(
+    weapon: ItemId,
+    owner: u8,
+    origin_x: f32,
+    origin_y: f32,
+    aim: f32,
+    ids: &mut ItemIdCounter,
+) -> Vec<Projectile> {
+    let entry = def(weapon);
+    let (Some(speed), Some(damage), Some(range)) =
+        (entry.projectile_speed, entry.damage, entry.range)
+    else {
+        return Vec::new();
+    };
+    let radius = entry.impact_radius.unwrap_or(0.0);
+    let explosive = entry.explosive.unwrap_or(false);
+
+    let angles: Vec<f32> = if weapon == ItemId::Shotgun {
+        SHOTGUN_SPREAD_DEG
+            .iter()
+            .map(|deg| aim + deg.to_radians())
+            .collect()
+    } else {
+        vec![aim]
+    };
+
+    angles
+        .into_iter()
+        .map(|angle| Projectile {
+            id: ids.next(),
+            owner,
+            kind: weapon,
+            x: origin_x,
+            y: origin_y,
+            // Screen y grows downward; protocol angles are CCW positive
+            // (docs/06 intro), so the y component is negated.
+            vx: angle.cos() * speed,
+            vy: -angle.sin() * speed,
+            remaining_range: range,
+            fuse_s: if is_thrown(weapon) { GRENADE_FUSE_S } else { f32::INFINITY },
+            damage,
+            radius,
+            explosive,
+            bounces_left: if is_thrown(weapon) { 1 } else { 0 },
+        })
+        .collect()
+}
+
+/// Enforce the live-projectile cap (docs/04 §2: "Max 24 live projectiles per
+/// round (drop oldest if exceeded)").
+pub fn enforce_projectile_cap(projectiles: &mut Vec<Projectile>) {
+    while projectiles.len() > MAX_PROJECTILES {
+        projectiles.remove(0);
+    }
+}
+
+/// Per-player, per-weapon cooldown bookkeeping (docs/04 §4).
+///
+/// "Cooldown per player per weapon (resets on respawn)."
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Cooldowns {
+    /// Tick at which each weapon may next fire, indexed by `ItemId as usize`.
+    ready_at: [u64; 8],
+}
+
+impl Cooldowns {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn ready(&self, weapon: ItemId, tick: u64) -> bool {
+        tick >= self.ready_at[weapon as usize]
+    }
+
+    /// Record a shot; the weapon becomes ready again after its cooldown.
+    pub fn fired(&mut self, weapon: ItemId, tick: u64, dt: f32) {
+        let cooldown = def(weapon).cooldown_s.unwrap_or(0.0);
+        let ticks = (cooldown / dt).round() as u64;
+        self.ready_at[weapon as usize] = tick + ticks;
+    }
+
+    /// docs/04 §4: cooldowns reset on respawn.
+    pub fn reset(&mut self) {
+        self.ready_at = [0; 8];
+    }
+}
+
+/// Why a fire attempt produced nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FireResult {
+    Fired(Vec<Projectile>),
+    NoWeapon,
+    OnCooldown,
+    OutOfAmmo,
+}
+
+/// Attempt to fire the selected slot (docs/04 §4, T3.8 step 1).
+///
+/// "selected slot is a weapon, ammo > 0, cooldown elapsed -> spawn
+/// projectile(s) from player center along `facing`; decrement ammo; ammo 0 ->
+/// remove weapon from slot."
+pub fn try_fire(
+    player: &mut Player,
+    ammo: &mut [u8; SLOT_COUNT],
+    cooldowns: &mut Cooldowns,
+    ids: &mut ItemIdCounter,
+    tick: u64,
+    dt: f32,
+) -> FireResult {
+    let slot = player.inventory.selected as usize;
+    let Some(Some(weapon)) = player.inventory.slots.get(slot).copied() else {
+        return FireResult::NoWeapon;
+    };
+    if def(weapon).kind != ItemKind::Weapon {
+        return FireResult::NoWeapon;
+    }
+    if !cooldowns.ready(weapon, tick) {
+        return FireResult::OnCooldown;
+    }
+    if ammo[slot] == 0 {
+        return FireResult::OutOfAmmo;
+    }
+
+    let shots = fire_weapon(weapon, player.id, player.pos.x, player.pos.y, player.facing, ids);
+    ammo[slot] -= 1;
+    cooldowns.fired(weapon, tick, dt);
+
+    // docs/04 §4: "ammo 0 -> weapon removed from inventory".
+    if ammo[slot] == 0 {
+        player.inventory.slots[slot] = None;
+    }
+    FireResult::Fired(shots)
+}
+
+/// Starting ammo for a freshly picked-up weapon (docs/04 §1).
+pub fn starting_ammo(item: ItemId) -> u8 {
+    def(item).ammo.unwrap_or(0)
+}
+
+/// Advance one projectile a tick (docs/04 §2).
+///
+/// Collision is a **tile lookup**, not a shape cast: docs/04 §2 says "check
+/// tile collision (tile under new pos solid -> impact)". Projectiles therefore
+/// do NOT reuse the player's two-shape-cast path (D34) — see DEVIATIONS.md D39
+/// for why, and what that costs.
+///
+/// Gravity applies to thrown weapons only, integrated with the same velocity
+/// Verlet the player uses (D28), so acceleration is handled identically
+/// everywhere in the crate.
+pub fn step_projectile(
+    projectile: &mut Projectile,
+    map: &Map,
+    players: &[(u8, f32, f32)],
+    dt: f32,
+) -> ProjectileStep {
+    let accel_y = if is_thrown(projectile.kind) {
+        player_config::GRAVITY
+    } else {
+        0.0
+    };
+
+    let start = (projectile.x, projectile.y);
+    projectile.x += projectile.vx * dt;
+    projectile.y += projectile.vy * dt + 0.5 * accel_y * dt * dt;
+    projectile.vy += accel_y * dt;
+
+    let travelled = (projectile.x - start.0).hypot(projectile.y - start.1);
+    projectile.remaining_range -= travelled;
+    projectile.fuse_s -= dt;
+
+    // A grenade explodes on its fuse regardless of what it has hit.
+    if projectile.fuse_s <= 0.0 {
+        return ProjectileStep::Impact { x: projectile.x, y: projectile.y };
+    }
+
+    // Player hit: circle vs the 12 px player body (docs/04 §2). Self-damage is
+    // allowed, so the owner is not skipped.
+    for &(id, px, py) in players {
+        if (projectile.x - px).hypot(projectile.y - py) <= PLAYER_HIT_RADIUS {
+            return ProjectileStep::HitPlayer { player: id, x: projectile.x, y: projectile.y };
+        }
+    }
+
+    // Terrain.
+    if map.is_solid_at_pixel(projectile.x, projectile.y) {
+        if projectile.bounces_left > 0 {
+            projectile.bounces_left -= 1;
+            // Step back out of the tile and reflect. The dominant axis of the
+            // step decides which way to bounce — a full contact-normal solve
+            // is more than docs/04 §4's "bounces once (restitution 0.4)".
+            projectile.x = start.0;
+            projectile.y = start.1;
+            let horizontal = (projectile.vx * dt).abs() > (projectile.vy * dt).abs();
+            if horizontal {
+                projectile.vx = -projectile.vx * GRENADE_RESTITUTION;
+                projectile.vy *= GRENADE_RESTITUTION;
+            } else {
+                projectile.vy = -projectile.vy * GRENADE_RESTITUTION;
+                projectile.vx *= GRENADE_RESTITUTION;
+            }
+            return ProjectileStep::Flying;
+        }
+        return ProjectileStep::Impact { x: projectile.x, y: projectile.y };
+    }
+
+    // Out of range, or off the map entirely.
+    //
+    // A thrown weapon is governed by its FUSE, not by range: docs/04 §4 says
+    // the grenade "explodes after 1.5 s or on second touch" and says nothing
+    // about range, while docs/04 §1 lists its range as "400 (throw)" — a throw
+    // distance, not a lifetime. Applying both cuts the fuse short (measured: 26
+    // ticks instead of 30). See DEVIATIONS.md D40.
+    let out_of_range = !is_thrown(projectile.kind) && projectile.remaining_range <= 0.0;
+    if out_of_range || map.tile_at_pixel(projectile.x, projectile.y).is_none() {
+        return ProjectileStep::Impact { x: projectile.x, y: projectile.y };
+    }
+
+    ProjectileStep::Flying
+}
+
 /// T3.1 catalog tests.
 ///
 /// Named `catalog_tests` so T3.1's Test command, `cargo test -p game-core
@@ -2040,5 +2316,496 @@ mod use_item_tests {
         assert_eq!(OVERCHARGE_DURATION_S, 10.0);
         assert_eq!(SHIELD_DURATION_S, 20.0);
         assert_eq!(SHIELD_DAMAGE_MULTIPLIER, 0.5);
+    }
+}
+
+/// T3.8 projectile and firing tests.
+#[cfg(test)]
+mod projectile_tests {
+    use super::*;
+    use crate::map::Scale;
+    use crate::player::DT;
+    use crate::tiles::Tile;
+    use crate::Vec2;
+
+    fn open_map() -> Map {
+        let (w, h) = Scale::Small.dimensions();
+        Map {
+            seed: 0, scale: Scale::Small, width: w, height: h,
+            tiles: vec![Tile::AIR; (w * h) as usize],
+            decor: Vec::new(), spawns: Vec::new(), version: 0,
+        }
+    }
+
+    fn floor_map(row: u32) -> Map {
+        let mut m = open_map();
+        for y in row..m.height {
+            for x in 0..m.width {
+                m.set_tile(x, y, Tile::new(TileKind::Stone));
+            }
+        }
+        m
+    }
+
+    fn armed(weapon: ItemId) -> (Player, [u8; SLOT_COUNT], Cooldowns, ItemIdCounter) {
+        let mut p = Player::new(0, "p".into(), Vec2::new(320.0, 320.0));
+        p.inventory.slots[0] = Some(weapon);
+        p.inventory.selected = 0;
+        let mut ammo = [0u8; SLOT_COUNT];
+        ammo[0] = starting_ammo(weapon);
+        (p, ammo, Cooldowns::new(), ItemIdCounter::default())
+    }
+
+    #[test]
+    fn shotgun_5_pellets_fixed_spread() {
+        // docs/08 §1 (items row) + docs/04 §4: "5 pellets, angles
+        // aim + [-8,-4,0,4,8] degrees (fixed, no RNG - deterministic)".
+        let mut ids = ItemIdCounter::default();
+        let aim = 0.5f32;
+        let shots = fire_weapon(ItemId::Shotgun, 0, 100.0, 100.0, aim, &mut ids);
+        assert_eq!(shots.len(), 5);
+
+        for (pellet, offset_deg) in shots.iter().zip([-8.0f32, -4.0, 0.0, 4.0, 8.0]) {
+            let expected = aim + offset_deg.to_radians();
+            // Recover the angle from the velocity (y is negated on the wire).
+            let actual = (-pellet.vy).atan2(pellet.vx);
+            assert!(
+                (actual - expected).abs() < 1e-4,
+                "pellet at {offset_deg} deg: angle {actual}, expected {expected}",
+            );
+            assert_eq!(pellet.damage, 7.0, "docs/04 §1: 7 damage per pellet");
+            assert_eq!(pellet.remaining_range, 260.0);
+        }
+
+        // Firing consumes NO randomness — the spread is fixed.
+        let mut probe = GameRng::new(1);
+        let before = probe.next_u64();
+        let mut probe2 = GameRng::new(1);
+        let mut ids2 = ItemIdCounter::default();
+        let _ = fire_weapon(ItemId::Shotgun, 0, 0.0, 0.0, 0.0, &mut ids2);
+        assert_eq!(probe2.next_u64(), before, "firing consumed RNG draws");
+    }
+
+    #[test]
+    fn weapon_cooldown_respected() {
+        // docs/08 §1 + T3.8 step 7: "2 fires 0.2 s apart with pistol -> only
+        // 1 shot" (pistol cooldown is 0.25 s).
+        let (mut p, mut ammo, mut cd, mut ids) = armed(ItemId::Pistol);
+        assert!(matches!(try_fire(&mut p, &mut ammo, &mut cd, &mut ids, 0, DT), FireResult::Fired(_)));
+        // 0.2 s = 4 ticks.
+        assert_eq!(
+            try_fire(&mut p, &mut ammo, &mut cd, &mut ids, 4, DT),
+            FireResult::OnCooldown,
+        );
+        // 0.25 s = 5 ticks: ready again.
+        assert!(matches!(
+            try_fire(&mut p, &mut ammo, &mut cd, &mut ids, 5, DT),
+            FireResult::Fired(_),
+        ));
+    }
+
+    #[test]
+    fn cooldowns_are_per_weapon() {
+        // docs/04 §4: "Cooldown per player per weapon".
+        let mut cd = Cooldowns::new();
+        cd.fired(ItemId::Rocket, 0, DT); // 1.0 s = 20 ticks
+        assert!(!cd.ready(ItemId::Rocket, 10));
+        assert!(cd.ready(ItemId::Pistol, 0), "a rocket shot blocked the pistol");
+        cd.reset();
+        assert!(cd.ready(ItemId::Rocket, 0), "reset should clear cooldowns");
+    }
+
+    #[test]
+    fn ammo_depletes_and_weapon_removed() {
+        // docs/08 §1 + docs/04 §4: "Ammo decrements on fire; 0 ammo -> weapon
+        // removed from inventory".
+        let (mut p, mut ammo, mut cd, mut ids) = armed(ItemId::Grenade);
+        assert_eq!(ammo[0], 4, "docs/04 §1: grenade holds 4");
+
+        // Cooldown is 1.2 s = 24 ticks.
+        for shot in 0..4u64 {
+            assert!(matches!(
+                try_fire(&mut p, &mut ammo, &mut cd, &mut ids, shot * 24, DT),
+                FireResult::Fired(_),
+            ), "shot {shot} should have fired");
+        }
+        assert_eq!(ammo[0], 0);
+        assert_eq!(p.inventory.slots[0], None, "an empty weapon should be removed");
+        assert_eq!(
+            try_fire(&mut p, &mut ammo, &mut cd, &mut ids, 200, DT),
+            FireResult::NoWeapon,
+        );
+    }
+
+    #[test]
+    fn firing_a_non_weapon_does_nothing() {
+        let (mut p, mut ammo, mut cd, mut ids) = armed(ItemId::Medkit);
+        assert_eq!(
+            try_fire(&mut p, &mut ammo, &mut cd, &mut ids, 0, DT),
+            FireResult::NoWeapon,
+        );
+        assert_eq!(p.inventory.slots[0], Some(ItemId::Medkit), "the medkit was consumed");
+    }
+
+    #[test]
+    fn projectiles_fly_at_the_documented_speed() {
+        let map = open_map();
+        let mut ids = ItemIdCounter::default();
+        // Aim right (0 rad): the pistol should cover 700 * 0.05 = 35 px a tick.
+        let mut shots = fire_weapon(ItemId::Pistol, 0, 100.0, 100.0, 0.0, &mut ids);
+        let p = &mut shots[0];
+        let before = p.x;
+        assert_eq!(step_projectile(p, &map, &[], DT), ProjectileStep::Flying);
+        assert!((p.x - before - 35.0).abs() < 1e-3, "moved {} px", p.x - before);
+        assert!((p.y - 100.0).abs() < 1e-3, "a pistol shot should not drop");
+    }
+
+    #[test]
+    fn a_projectile_expires_at_its_documented_range() {
+        let map = open_map();
+        let mut ids = ItemIdCounter::default();
+        let mut shots = fire_weapon(ItemId::Pistol, 0, 100.0, 320.0, 0.0, &mut ids);
+        let p = &mut shots[0];
+        // 600 px range at 35 px/tick = 18 ticks (17.14 rounded up).
+        let mut ticks = 0;
+        loop {
+            ticks += 1;
+            if !matches!(step_projectile(p, &map, &[], DT), ProjectileStep::Flying) {
+                break;
+            }
+            assert!(ticks < 100, "the projectile never expired");
+        }
+        assert_eq!(ticks, 18, "600 px / 35 px per tick should expire on tick 18");
+    }
+
+    #[test]
+    fn a_projectile_hits_a_player() {
+        // docs/04 §2: "player hit (circle vs player body 12 px radius)".
+        let map = open_map();
+        let mut ids = ItemIdCounter::default();
+        let mut shots = fire_weapon(ItemId::Pistol, 0, 100.0, 320.0, 0.0, &mut ids);
+        let p = &mut shots[0];
+        // A player 35 px right: exactly one tick of travel.
+        let result = step_projectile(p, &map, &[(3, 135.0, 320.0)], DT);
+        assert_eq!(result, ProjectileStep::HitPlayer { player: 3, x: 135.0, y: 320.0 });
+    }
+
+    #[test]
+    fn the_player_hit_radius_is_twelve_pixels() {
+        // docs/04 §2: "player hit (circle vs player body 12 px radius)".
+        //
+        // The other hit test puts the player exactly on the projectile path,
+        // so it passes for ANY radius — injecting 12 -> 20 failed zero tests.
+        // This one straddles the boundary.
+        let map = open_map();
+        let mut ids = ItemIdCounter::default();
+        for (offset, should_hit) in [(11.0f32, true), (12.0, true), (13.0, false), (20.0, false)] {
+            let mut shots = fire_weapon(ItemId::Pistol, 0, 100.0, 320.0, 0.0, &mut ids);
+            let p = &mut shots[0];
+            // One tick puts it at x=135; place the player `offset` px above.
+            let result = step_projectile(p, &map, &[(3, 135.0, 320.0 - offset)], DT);
+            let hit = matches!(result, ProjectileStep::HitPlayer { .. });
+            assert_eq!(
+                hit, should_hit,
+                "a player {offset} px from the projectile: expected hit={should_hit}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_projectile_can_hit_its_owner() {
+        // docs/04 §2: "Projectile hitting its owner: allowed (self-damage)".
+        let map = open_map();
+        let mut ids = ItemIdCounter::default();
+        let mut shots = fire_weapon(ItemId::Pistol, 7, 100.0, 320.0, 0.0, &mut ids);
+        let p = &mut shots[0];
+        let result = step_projectile(p, &map, &[(7, 135.0, 320.0)], DT);
+        assert!(
+            matches!(result, ProjectileStep::HitPlayer { player: 7, .. }),
+            "self-damage should be allowed",
+        );
+    }
+
+    #[test]
+    fn a_projectile_impacts_terrain() {
+        let map = floor_map(40);
+        let mut ids = ItemIdCounter::default();
+        // Fire straight down from above the floor.
+        let mut shots = fire_weapon(
+            ItemId::Rocket, 0, 320.0, 600.0, -std::f32::consts::FRAC_PI_2, &mut ids,
+        );
+        let p = &mut shots[0];
+        let mut hit = None;
+        for _ in 0..20 {
+            if let ProjectileStep::Impact { x, y } = step_projectile(p, &map, &[], DT) {
+                hit = Some((x, y));
+                break;
+            }
+        }
+        let (_, y) = hit.expect("the rocket never hit the floor");
+        assert!(y >= 40.0 * 16.0 - 1.0, "impact at y={y} is above the floor");
+    }
+
+    #[test]
+    fn grenade_bounces_once_then_explodes() {
+        // docs/08 §1 + docs/04 §4: "bounces once (restitution 0.4) on terrain,
+        // explodes after 1.5 s or on second touch".
+        let map = floor_map(40);
+        let mut ids = ItemIdCounter::default();
+        // Throw right and slightly down so it reaches the floor quickly.
+        let mut shots = fire_weapon(ItemId::Grenade, 0, 320.0, 600.0, -0.3, &mut ids);
+        let g = &mut shots[0];
+        assert_eq!(g.bounces_left, 1);
+
+        let mut bounced = false;
+        let mut exploded = false;
+        for _ in 0..100 {
+            let before = g.bounces_left;
+            match step_projectile(g, &map, &[], DT) {
+                ProjectileStep::Flying => {
+                    if before == 1 && g.bounces_left == 0 {
+                        bounced = true;
+                    }
+                }
+                ProjectileStep::Impact { .. } => {
+                    exploded = true;
+                    break;
+                }
+                ProjectileStep::HitPlayer { .. } => unreachable!("no players"),
+            }
+        }
+        assert!(bounced, "the grenade never bounced");
+        assert!(exploded, "the grenade never exploded");
+        assert_eq!(g.bounces_left, 0, "it bounced more than once");
+    }
+
+    #[test]
+    fn a_grenade_explodes_on_its_fuse_in_open_air() {
+        // "explodes after 1.5 s" even with nothing to hit.
+        //
+        // The grenade is parked with ZERO velocity near the top of a LARGE
+        // empty map (2048 px tall), so it cannot reach terrain, cannot leave
+        // the map within the fuse — free fall for 1.5 s covers ~1012 px — and
+        // is not range-limited (D40). The fuse is then the only thing that can
+        // end it.
+        //
+        // Two earlier versions of this test passed for the wrong reason:
+        // thrown upward it left the map, and parked on a Small map it fell out
+        // the bottom at tick 29. Injecting the fuse 1.5 -> 3.0 s failed zero
+        // tests in both.
+        let (w, h) = Scale::Large.dimensions();
+        let map = Map {
+            seed: 0, scale: Scale::Large, width: w, height: h,
+            tiles: vec![Tile::AIR; (w * h) as usize],
+            decor: Vec::new(), spawns: Vec::new(), version: 0,
+        };
+        let mut ids = ItemIdCounter::default();
+        let mut shots = fire_weapon(ItemId::Grenade, 0, 320.0, 8.0, 0.0, &mut ids);
+        let g = &mut shots[0];
+        g.vx = 0.0;
+        g.vy = 0.0;
+        let mut ticks = 0;
+        loop {
+            ticks += 1;
+            if !matches!(step_projectile(g, &map, &[], DT), ProjectileStep::Flying) {
+                break;
+            }
+            assert!(ticks < 200, "the grenade never exploded");
+        }
+        // 1.5 s = 30 ticks. The fuse is decremented after the move and tested
+        // against <= 0, and subtracting 0.05 thirty times leaves a float
+        // residue at the boundary, so the trigger lands on tick 30 or 31.
+        // Asserting an exact count here would be brittle for no gain; the
+        // point is that the FUSE governs, not the 400 px range, which would
+        // have fired at tick 26 (measured — see DEVIATIONS.md D40).
+        assert!(
+            g.fuse_s <= 0.0,
+            "something other than the fuse ended the grenade (fuse_s = {})",
+            g.fuse_s,
+        );
+        assert!(
+            (30..=31).contains(&ticks),
+            "the fuse should trigger at ~1.5 s (30 ticks), got {ticks}",
+        );
+    }
+
+    #[test]
+    fn a_grenade_loses_speed_on_the_bounce() {
+        // restitution 0.4 (docs/04 §4).
+        let map = floor_map(40);
+        let mut ids = ItemIdCounter::default();
+        let mut shots = fire_weapon(ItemId::Grenade, 0, 320.0, 620.0, -0.2, &mut ids);
+        let g = &mut shots[0];
+        let mut speed_before = 0.0f32;
+        for _ in 0..100 {
+            let before = g.bounces_left;
+            let speed = g.vx.hypot(g.vy);
+            let step = step_projectile(g, &map, &[], DT);
+            if before == 1 && g.bounces_left == 0 {
+                speed_before = speed;
+                break;
+            }
+            if !matches!(step, ProjectileStep::Flying) {
+                break;
+            }
+        }
+        assert!(speed_before > 0.0, "the grenade never bounced");
+        let after = g.vx.hypot(g.vy);
+        assert!(
+            after < speed_before * 0.6,
+            "bounce kept {after} of {speed_before}; restitution 0.4 should lose most of it",
+        );
+    }
+
+    #[test]
+    fn only_the_grenade_arcs() {
+        // docs/04 §4: gravity applies to the grenade; the rest fly straight.
+        let map = open_map();
+        let mut ids = ItemIdCounter::default();
+        for weapon in [ItemId::Pistol, ItemId::Shotgun, ItemId::Rocket] {
+            let mut shots = fire_weapon(weapon, 0, 100.0, 320.0, 0.0, &mut ids);
+            // The shotgun's spread means shots[0] is the -8 deg pellet, which
+            // legitimately travels downward. Take the CENTRE pellet, which is
+            // the one that should stay level.
+            let centre = shots.len() / 2;
+            let p = &mut shots[centre];
+            for _ in 0..5 {
+                step_projectile(p, &map, &[], DT);
+            }
+            assert!(
+                (p.y - 320.0).abs() < 1e-3,
+                "{weapon:?} dropped to y={}; only the grenade should arc", p.y,
+            );
+        }
+        let mut shots = fire_weapon(ItemId::Grenade, 0, 100.0, 320.0, 0.0, &mut ids);
+        let g = &mut shots[0];
+        for _ in 0..5 {
+            step_projectile(g, &map, &[], DT);
+        }
+        assert!(g.y > 320.0, "the grenade did not arc downward");
+    }
+
+    #[test]
+    fn the_projectile_cap_drops_the_oldest() {
+        // docs/04 §2: "Max 24 live projectiles per round (drop oldest if
+        // exceeded)".
+        let mut ids = ItemIdCounter::default();
+        let mut live: Vec<Projectile> = Vec::new();
+        for _ in 0..30 {
+            live.extend(fire_weapon(ItemId::Pistol, 0, 0.0, 0.0, 0.0, &mut ids));
+            enforce_projectile_cap(&mut live);
+        }
+        assert_eq!(live.len(), MAX_PROJECTILES);
+        assert_eq!(MAX_PROJECTILES, 24);
+        // The survivors are the newest 24, so the oldest id present is 6.
+        assert_eq!(live[0].id, 6, "the cap dropped the wrong end");
+        assert_eq!(live[23].id, 29);
+    }
+
+    #[test]
+    fn explosive_flags_come_from_the_catalog() {
+        let mut ids = ItemIdCounter::default();
+        for (weapon, explosive, radius) in [
+            (ItemId::Pistol, false, 0.0),
+            (ItemId::Shotgun, false, 0.0),
+            (ItemId::Rocket, true, 48.0),
+            (ItemId::Grenade, true, 40.0),
+        ] {
+            let shots = fire_weapon(weapon, 0, 0.0, 0.0, 0.0, &mut ids);
+            assert_eq!(shots[0].explosive, explosive, "{weapon:?} explosive");
+            assert_eq!(shots[0].radius, radius, "{weapon:?} radius");
+        }
+    }
+}
+
+/// T3.8 damage-pipeline tests.
+#[cfg(test)]
+mod damage_tests {
+    use super::*;
+    use crate::player::Player;
+    use crate::Vec2;
+
+    fn player() -> Player {
+        Player::new(0, "p".into(), Vec2::ZERO)
+    }
+
+    #[test]
+    fn damage_pipeline_shield_halves() {
+        // docs/08 §1 (player row) + docs/03 §6: "if shield active: dmg *= 0.5".
+        let mut p = player();
+        p.apply_damage(40.0);
+        assert_eq!(p.health, 60.0, "unshielded damage is applied in full");
+
+        let mut p = player();
+        p.apply_shield();
+        p.apply_damage(40.0);
+        assert_eq!(p.health, 80.0, "shielded damage should be halved to 20");
+    }
+
+    #[test]
+    fn lethal_damage_kills_and_floors_health_at_zero() {
+        // docs/03 §6: "If health < 0 -> death (health shown as 0)".
+        let mut p = player();
+        assert!(p.apply_damage(150.0), "150 damage should kill a 100 hp player");
+        assert_eq!(p.health, 0.0, "health should be shown as 0, not negative");
+        assert!(!p.alive);
+
+        // Exactly lethal also kills.
+        let mut p = player();
+        assert!(p.apply_damage(100.0));
+        assert!(!p.alive);
+    }
+
+    #[test]
+    fn a_shield_can_save_a_player_from_lethal_damage() {
+        let mut p = player();
+        p.apply_shield();
+        assert!(!p.apply_damage(150.0), "75 after halving is survivable");
+        assert_eq!(p.health, 25.0);
+    }
+
+    #[test]
+    fn a_dead_player_takes_no_further_damage() {
+        let mut p = player();
+        p.apply_damage(150.0);
+        assert!(!p.apply_damage(50.0), "a dead player was killed again");
+        assert_eq!(p.health, 0.0);
+    }
+
+    #[test]
+    fn negative_damage_cannot_heal() {
+        // A negative "damage" would bypass the max_health clamp in heal().
+        let mut p = player();
+        p.health = 50.0;
+        assert!(!p.apply_damage(-100.0));
+        assert_eq!(p.health, 50.0, "negative damage healed the player");
+        assert!(!p.apply_damage(0.0));
+        assert_eq!(p.health, 50.0);
+    }
+
+    #[test]
+    fn blast_falloff_matches_the_documented_formula() {
+        // docs/01 §5 / docs/04 §2: dmg = max_damage * (1 - dist/radius).
+        //
+        // DEVIATIONS.md D1: T4.5 claims a player 20 px from a 48 px / 60 dmg
+        // blast takes "~45". 60*(1-20/48) = 35. The formula wins.
+        assert!((Player::blast_damage_at(20.0, 48.0, 60.0) - 35.0).abs() < 1e-3);
+        assert_eq!(Player::blast_damage_at(0.0, 48.0, 60.0), 60.0, "centre takes full");
+        assert_eq!(Player::blast_damage_at(48.0, 48.0, 60.0), 0.0, "edge takes none");
+        assert_eq!(Player::blast_damage_at(60.0, 48.0, 60.0), 0.0, "outside takes none");
+        assert!((Player::blast_damage_at(24.0, 48.0, 60.0) - 30.0).abs() < 1e-3, "half");
+        // A degenerate radius must not divide by zero.
+        assert_eq!(Player::blast_damage_at(0.0, 0.0, 60.0), 0.0);
+    }
+
+    #[test]
+    fn blast_damage_goes_through_the_shield() {
+        // docs/02 §2: "All damage is unshielded base; shields reduce it like
+        // any other damage source."
+        let mut p = player();
+        p.apply_shield();
+        let raw = Player::blast_damage_at(20.0, 48.0, 60.0);
+        p.apply_damage(raw);
+        assert_eq!(p.health, 100.0 - 35.0 / 2.0, "blast damage ignored the shield");
     }
 }
