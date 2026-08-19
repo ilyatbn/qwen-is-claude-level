@@ -2,10 +2,12 @@
 
 Single source of truth for picking this up cold. Updated at each phase gate.
 
-**Last updated:** end of Phase 4 (T4.10, review in progress) · commit `bb5c46d`
+**Last updated:** Phase 4 signed off
 
-> **This file is part of the phase gate.** It has been stale at two consecutive
-> gates. Update it *before* reporting a phase complete, not after.
+> **Updating this file is the LAST action of a phase gate**, after the reviewer signs
+> off — not a mid-round note. It went stale three gates running: twice by being
+> forgotten, once by being updated mid-round to record findings that were then closed
+> in the same round.
 
 ---
 
@@ -28,18 +30,18 @@ design and is not used).
 | 1 — Map | T1.1–T1.10 | **done, signed off** |
 | 2 — Player | T2.1–T2.10 | **done, signed off** |
 | 3 — Items | T3.1–T3.9 | **done, signed off** |
-| 4 — Rounds | T4.1–T4.10 | code complete, **review found map delivery missing** |
-| 5 — Sprites | T5.1–T5.5 | not started |
+| 4 — Rounds | T4.1–T4.10 | **done, signed off** |
+| 5 — Sprites | T5.1–T5.5 | **next** |
 
-42/42 checkboxes ticked through Phase 4. 43 deviations recorded.
+42/42 checkboxes ticked through Phase 4. 45 deviations recorded.
 
-**Open at the Phase 4 gate:**
-- **The server never sends the map.** `MapData` is never constructed; `joined` and
-  `round_started` omit it; `base64` (added in T0.1 for exactly this) has never been
-  called. The client still renders `devmap.ts`'s local sine wave, so every client
-  draws terrain unrelated to the map the server simulates. Phase 4 work, not Phase 5.
-- `game-core` declares `tracing` with a comment claiming it is used; it has **zero**
-  tracing calls. Use it per T4.9 step 2 or drop it.
+**Carried into Phase 5 (neither blocks its content):**
+- `tick.rs` hand-builds **13 S→C event payloads** with `serde_json::json!` instead of
+  their typed structs (`TileDestroyedMsg`, `Kill`, `Respawned`, `RoundEnded`, …). Field
+  names are currently all correct, so this is latent drift risk, not a live bug — but
+  for 11 of 19 documented events the protocol pins constrain nothing about what ships.
+  **Fix before any protocol change, not after.**
+- Map delivery (D46) and `game-core` `tracing` are both **closed**.
 
 **End-to-end pass (post-Phase-3)** — see `dev_summary.md`:
 - **D41** — a player standing on a tile could not pick up the item on it (22 px
@@ -74,9 +76,9 @@ cd qwen/server && cargo run -q -p game-core --example e2e_stress     # 23/23
 
 ## Read these before writing code
 
-1. `HANDOFF-phase3.md` — most recent; has the deferred items for Phase 4.
-2. `HANDOFF-phase2.md` — the standing rules live here.
-3. `DEVIATIONS.md` — 40 entries; D1–D40 with gaps.
+1. `HANDOFF-phase4.md` — most recent; deferred items for Phase 5.
+2. `HANDOFF-phase2.md` — standing rules 1–3 live here; rule 4 in phase 4's.
+3. `DEVIATIONS.md` — 45 entries; D1–D46 with gaps.
 4. `HANDOFF-phase0.md`, `HANDOFF-phase1.md` for earlier context.
 
 ## Phase gate checklist
@@ -85,7 +87,7 @@ cd qwen/server && cargo run -q -p game-core --example e2e_stress     # 23/23
 2. Full suite + client + inventory green, 0 build warnings.
 3. Full E2E pass **including the live server**, failures treated as blocking.
 4. Constants sweep + Test-command-selection sweep.
-5. **Update this file.** It is the cold-restart artefact and has been stale twice.
+5. **Update this file — last, after sign-off.** Cold-restart artefact; stale 3× so far.
 
 ## Standing rules earned the hard way
 
