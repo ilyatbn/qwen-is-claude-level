@@ -68,9 +68,9 @@ Headless movement in `game-core`. No rendering, no server.
 - [x] [T2.03](M2/T2.03-ground-probe.md) — `ground_probe` and `approach`
 - [x] [T2.04](M2/T2.04-resolve-x.md) — Sub-stepped X movement and step-up
 - [x] [T2.05](M2/T2.05-resolve-y.md) — Y movement, grounding, ground snap
-- [ ] [T2.06](M2/T2.06-input.md) — `Input`, edge derivation
-- [ ] [T2.07](M2/T2.07-walk.md) — Walking, friction, air control
-- [ ] [T2.08](M2/T2.08-jump.md) — Jump, coyote time, jump buffer
+- [x] [T2.06](M2/T2.06-input.md) — `Input`, edge derivation
+- [x] [T2.07](M2/T2.07-walk.md) — Walking, friction, air control
+- [x] [T2.08](M2/T2.08-jump.md) — Jump, coyote time, jump buffer
 - [ ] [T2.09](M2/T2.09-jetpack-fuel.md) — Jetpack engagement rules and fuel
 - [ ] [T2.10](M2/T2.10-jetpack-thrust.md) — Jetpack thrust and clamps
 - [ ] [T2.11](M2/T2.11-apply-input.md) — `apply_input`, determinism, no-tunnelling

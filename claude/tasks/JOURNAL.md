@@ -569,3 +569,25 @@ Notes: THE BUG THAT MATTERED — my first substeps() divided the delta by the CA
        reaches the wall. (2) a 0.577 slope on a 512-tall map runs out of terrain at
        x ~ 540 — bound the walk.
 Left for later: nothing
+
+## T2.06 — Input and edge derivation — DONE
+## T2.07 — Walking, friction, air control — DONE
+## T2.08 — Jump, coyote time, jump buffer — DONE
+Files: crates/game-core/src/player/{input.rs,movement.rs,mod.rs}, lib.rs
+Verified: `--lib input` 14 passed; `--lib apply_horizontal try_jump movement` 18 passed
+Notes: Input carries HELD STATE ONLY; edges are derived by comparing with the
+       previous tick, identically on server and client. A dropped packet is then
+       harmless — the next one re-establishes truth, where a lost edge is gone.
+       move_dir returns 0 when both directions are held (not a preference).
+       Input::new and with_button MASK OFF the reserved bit 7 (T6.06 owns it).
+       try_jump pushes airborne_ticks past COYOTE_TICKS on launch, or a held jump
+       re-launches every tick and the player rockets upward. Tested with 60 ticks of
+       held jump expecting exactly 1 launch.
+       TWO TEST-ARITHMETIC TRAPS, both mine, both worth remembering:
+       1. Air-vs-ground acceleration ratio measured in TICKS quantises to 4 vs 7 =
+          1.75 for a true 1.818. Measure the single-tick velocity delta instead.
+       2. Apex height: the analytic v^2/2g = 66.04 px is the CONTINUOUS value.
+          Semi-implicit Euler at 60 Hz undershoots by v*dt/2 = 3.58 px, so the real
+          apex is 62.5 px. The test asserts against analytic - shortfall; asserting
+          "within 2 px of 66" would be asserting the game does not use discrete time.
+Left for later: nothing
