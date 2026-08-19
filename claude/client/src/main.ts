@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
 import { BootScene } from './scenes/BootScene'
+import { PreviewScene } from './scenes/PreviewScene'
 import { C, Core } from './core'
 
 // No constants are declared here. VIEWPORT_W/H used to be literals in this file —
@@ -23,7 +24,7 @@ async function main(): Promise<Phaser.Game> {
       pixelArt: true,
       antialias: false,
     },
-    scene: [BootScene],
+    scene: new URLSearchParams(location.search).get('preview') === '1' ? [PreviewScene] : [BootScene],
   })
 
   // Right-click is the inventory toggle (docs/30-items-inventory.md §3), so the

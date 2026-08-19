@@ -744,3 +744,36 @@ Notes: TextureHost/ImageHost interfaces mean the tests never import Phaser, and 
        ignored, and update() sorts by squared distance from the camera so the
        nearest CHUNK_REBAKE_BUDGET bake first.
 Left for later: real bake timings measured in T3.07 with the sandbox.
+
+## T3.06 — Camera, backdrop and parallax — DONE
+Files: client/src/render/{cameraRig-math.ts,cameraRig.ts,backdrop.ts,cameraRig.test.ts,
+       procTextures.ts}, client/src/scenes/PreviewScene.ts, main.ts
+Verified: `npm --prefix client test -- --run cameraRig` — 18 passed; check.sh green
+          SCREENSHOTS LOOKED AT: shots/m3-overview.png, shots/m3-gameplay.png
+MEASURED (medium map, 72 chunks, headless chromium/swiftshader):
+       generate 645 ms | buildAll 96-199 ms for 72 chunks | single rebake 1.6-2.9 ms
+       Budgets: <400 ms full bake and <4 ms single rebake — both met.
+ZOOM VERIFIED BY MEASUREMENT, not by trusting the setting: the PLAYER_W x PLAYER_H
+       (16x28) marker measures 32x56 SCREEN px at gameplay zoom = exactly 2x, and
+       __game.debug() reports visible {w:640,h:360}.
+Notes: SKY IS A FLAT PLACEHOLDER on purpose — §A4/T3.12 owns the real five-phase sky
+       and writing a gradient here would mean writing it twice.
+       THREE VISUAL DEFECTS FOUND BY LOOKING AT SCREENSHOTS, none of which any unit
+       test would have caught:
+       1. My procedural tile was not seamless (sampled an unwrapped lattice), so the
+          fill drew a visible 256 px grid across the whole map. Fixed with a
+          wrapping lattice.
+       2. The sky placeholder was VIEWPORT-sized with scrollFactor 0, so at zoom < 1
+          it covered only part of the screen and the rest was the clear colour —
+          the overview shot was mostly black.
+       3. THE BIG ONE: the cave backdrop. A full-map rectangle at depth -10 hides
+          the sky everywhere. Stencilling it against the pristine mask leaves the
+          GENERATOR's own caves showing sky. The rule that works is
+          BackdropMask: coarse grid -> morphological CLOSING (dilate+erode, not a
+          plain dilation, which paints a 56 px halo into the sky) -> flood fill from
+          the border so large sealed caverns count as interior -> one extra erosion
+          so the backdrop sits just inside the rock and does not draw a stepped
+          fringe against the sky at 2x zoom.
+       The backdrop is baked per chunk, not a scene layer.
+Left for later: parallax layer (-20) is not built — nothing to put in it until T7;
+       Backdrop currently provides sky placeholder only.

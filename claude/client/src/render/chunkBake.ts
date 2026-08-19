@@ -15,9 +15,18 @@
 
 import type { Core } from '../core'
 import { C } from '../core'
-import { edgeBits, stencilBits, tileOffset } from './chunkBake-math'
+import { BackdropMask, backdropBits, edgeBits, stencilBits, tileOffset } from './chunkBake-math'
 
-export { chunkOrigin, edgeBits, solidIn, stencilBits, tileOffset } from './chunkBake-math'
+export {
+  chunkOrigin,
+  edgeBits,
+  solidIn,
+  stencilBits,
+  tileOffset,
+  MaskSnapshot,
+  BackdropMask,
+  backdropBits,
+} from './chunkBake-math'
 
 /** Reusable scratch buffers. Allocated once, never per bake. */
 export class BakeScratch {
@@ -97,10 +106,18 @@ function drawTiled(
  * Bake one chunk: tiled fill, punched to the mask's shape, with the edge texture
  * composited over the upward-facing band.
  */
+export interface BakeLayers {
+  fill: CanvasImageSource
+  edge: CanvasImageSource | null
+  /** Dark rock seen through craters and inside caves. */
+  back?: CanvasImageSource | null
+  /** The dilated silhouette that decides where "inside the landmass" is. */
+  backSource?: BackdropMask | null
+}
+
 export function bakeChunk(
   texture: Phaser.Textures.CanvasTexture,
-  fillImage: CanvasImageSource,
-  edgeImage: CanvasImageSource | null,
+  layers: BakeLayers,
   chunkX: number,
   chunkY: number,
   core: Core,
@@ -108,21 +125,37 @@ export function bakeChunk(
 ): void {
   const size = C().CHUNK_SIZE
   const ctx = texture.context
-
-  buildStencil(core, chunkX, chunkY, scratch)
+  const { fill: fillImage, edge: edgeImage } = layers
 
   ctx.save()
   ctx.globalCompositeOperation = 'source-over'
   ctx.clearRect(0, 0, size, size)
 
-  // 1. the rock body
-  drawTiled(ctx, fillImage, chunkX, chunkY, size)
+  // 0. the cave backdrop, where terrain USED to be
+  if (layers.back && layers.backSource) {
+    backdropBits(layers.backSource, chunkX, chunkY, size, scratch.edgePixels)
+    scratch.edgeCtx.putImageData(scratch.edgeImageData, 0, 0)
+    const ectx = scratch.edgeCtx
+    ectx.save()
+    ectx.globalCompositeOperation = 'source-in'
+    drawTiled(ectx, layers.back, chunkX, chunkY, size)
+    ectx.restore()
+    ctx.drawImage(scratch.edgeCanvas, 0, 0)
+  }
 
-  // 2. punch it to the mask's shape
-  ctx.globalCompositeOperation = 'destination-in'
-  ctx.drawImage(scratch.stencilCanvas, 0, 0)
+  buildStencil(core, chunkX, chunkY, scratch)
 
-  // 3. the grass rim, clipped to the terrain that already exists
+  // 1. the rock body, punched to the live mask, composited over the backdrop
+  const body = scratch.edgeCtx
+  body.save()
+  body.globalCompositeOperation = 'copy'
+  body.drawImage(scratch.stencilCanvas, 0, 0)
+  body.globalCompositeOperation = 'source-in'
+  drawTiled(body, fillImage, chunkX, chunkY, size)
+  body.restore()
+  ctx.drawImage(scratch.edgeCanvas, 0, 0)
+
+  // 2. the grass rim, clipped to the terrain that already exists
   if (edgeImage) {
     buildEdgeStencil(core, chunkX, chunkY, scratch)
     // Draw the edge texture into the edge scratch, masked by the band stencil,

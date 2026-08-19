@@ -394,8 +394,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn constants_json_carries_the_viewport_and_camera_values() {
-        let v: serde_json::Value =
-            serde_json::from_str(&constants_json()).expect("valid json");
+        let v: serde_json::Value = serde_json::from_str(&constants_json()).expect("valid json");
         assert_eq!(v["VIEWPORT_W"], 1280);
         assert_eq!(v["VIEWPORT_H"], 720);
         assert_eq!(v["CHUNK_SIZE"], 256);

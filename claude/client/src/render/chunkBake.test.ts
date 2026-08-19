@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  BackdropMask,
   CLEAR,
   OPAQUE,
   chunkOrigin,
@@ -31,6 +32,11 @@ class FakeMask implements MaskSource {
 
   fillRect(x0: number, y0: number, x1: number, y1: number): void {
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) this.set(x, y)
+  }
+
+  clear(x: number, y: number): void {
+    const bit = y * this.width + x
+    this.bytes[bit >> 3]! &= ~(1 << (bit & 7))
   }
 
   maskView(): Uint8Array {
@@ -185,5 +191,54 @@ describe('edgeBits', () => {
     const out = new Uint32Array(SIZE * SIZE)
     edgeBits(m, 0, 1, SIZE, EDGE_BAND_PX, out)
     expect(out.every((p) => p === CLEAR)).toBe(true)
+  })
+})
+
+describe('BackdropMask', () => {
+  /** A hill with a narrow tunnel and a large enclosed cavern inside it. */
+  function hill(): FakeMask {
+    const m = new FakeMask(512, 256)
+    m.fillRect(0, 100, 511, 255) // the landmass
+    return m
+  }
+
+  it('treats open sky above the terrain as outside', () => {
+    const b = new BackdropMask(hill(), 4, 56)
+    expect(b.insideAt(256, 20)).toBe(false)
+    expect(b.insideAt(256, 60)).toBe(false)
+  })
+
+  it('treats the inside of the landmass as interior', () => {
+    const b = new BackdropMask(hill(), 4, 56)
+    expect(b.insideAt(256, 200)).toBe(true)
+  })
+
+  it('fills a narrow tunnel, so a cave shows rock rather than sky', () => {
+    const m = new FakeMask(512, 256)
+    m.fillRect(0, 100, 511, 255)
+    // A 20 px tunnel, far narrower than the 56 px closing radius.
+    for (let y = 150; y < 170; y++) for (let x = 100; x < 400; x++) m.clear(x, y)
+
+    const b = new BackdropMask(m, 4, 56)
+    expect(b.insideAt(250, 160)).toBe(true)
+  })
+
+  it('fills a large enclosed cavern that closing alone would miss', () => {
+    const m = new FakeMask(512, 256)
+    m.fillRect(0, 100, 511, 255)
+    // 200 px across — much wider than the closing radius, but sealed.
+    for (let y = 140; y < 220; y++) for (let x = 150; x < 350; x++) m.clear(x, y)
+
+    const b = new BackdropMask(m, 4, 56)
+    expect(b.insideAt(250, 180)).toBe(true)
+  })
+
+  it('does not paint the backdrop out into open sky', () => {
+    const m = new FakeMask(512, 256)
+    m.fillRect(0, 200, 511, 255)
+    const b = new BackdropMask(m, 4, 56)
+    // Well above the surface must stay sky.
+    expect(b.insideAt(256, 100)).toBe(false)
+    expect(b.insideAt(256, 150)).toBe(false)
   })
 })

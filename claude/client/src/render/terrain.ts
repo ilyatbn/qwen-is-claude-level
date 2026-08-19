@@ -15,7 +15,7 @@
 
 import type { Core } from '../core'
 import { C } from '../core'
-import { BakeScratch, bakeChunk } from './chunkBake'
+import { BackdropMask, BakeScratch, bakeChunk } from './chunkBake'
 
 /** The slice of Phaser this needs, so tests can stub it without importing Phaser. */
 export interface TextureHost {
@@ -57,7 +57,10 @@ export class TerrainRenderer {
   private readonly core: Core
   private readonly fill: CanvasImageSource | null
   private readonly edge: CanvasImageSource | null
+  private readonly back: CanvasImageSource | null
   private scratch: BakeScratch | undefined
+  /** The dilated silhouette: where the cave backdrop shows. */
+  private snapshot: BackdropMask | undefined
 
   private readonly generation: number
   private readonly keys: string[] = []
@@ -83,12 +86,14 @@ export class TerrainRenderer {
     fill: CanvasImageSource | null,
     edge: CanvasImageSource | null,
     deps?: Partial<TerrainDeps>,
+    back: CanvasImageSource | null = null,
   ) {
     this.textures = textures
     this.images = images
     this.core = core
     this.fill = fill
     this.edge = edge
+    this.back = back
     this.generation = ++generationCounter
 
     // The real implementations touch the DOM; a test supplies stubs.
@@ -106,7 +111,19 @@ export class TerrainRenderer {
         ((texture, cx, cy) => {
           this.scratch ??= new BakeScratch()
           if (!this.fill) return
-          bakeChunk(texture, this.fill, this.edge, cx, cy, this.core, this.scratch)
+          bakeChunk(
+            texture,
+            {
+              fill: this.fill,
+              edge: this.edge,
+              back: this.back,
+              backSource: this.snapshot ?? null,
+            },
+            cx,
+            cy,
+            this.core,
+            this.scratch,
+          )
         }),
     }
   }
@@ -127,6 +144,9 @@ export class TerrainRenderer {
   buildAll(): void {
     const size = C().CHUNK_SIZE
     const t0 = now()
+
+    // The backdrop silhouette, computed once from the pristine mask.
+    this.snapshot = new BackdropMask(this.core)
 
     for (let cy = 0; cy < this.chunksY; cy++) {
       for (let cx = 0; cx < this.chunksX; cx++) {
