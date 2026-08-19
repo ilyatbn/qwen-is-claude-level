@@ -354,10 +354,22 @@ pub fn find_spawns(map: &Map, rng: &mut GameRng) -> Vec<Vec2> {
             if map.tile(x, y).kind != TileKind::Grass {
                 continue;
             }
-            // "GRASS tiles with the 2 tiles above AIR". y < 2 would put the
-            // check off the top of the map, where reads reported AIR anyway.
-            if y >= 1 && !map.tile(x, y - 1).is_solid() && (y < 2 || !map.tile(x, y - 2).is_solid())
-            {
+            // "GRASS tiles with the 2 tiles above AIR" (docs/01 §3 step 5),
+            // checked across the FULL BODY WIDTH rather than one column.
+            //
+            // DEVIATIONS.md D26: the body is 24 px wide (D6) and always spans
+            // into both neighbouring columns, so a single-column check left
+            // 70-80% of spawns embedding the player up to 175 px inside
+            // adjacent terrain. Requiring x-1..=x+1 to be clear is the same
+            // rule applied to the space the body actually occupies.
+            if y < 1 {
+                continue;
+            }
+            let clear = (-1i32..=1).all(|dx| {
+                let col = (x as i32 + dx).clamp(0, map.width as i32 - 1) as u32;
+                !map.tile(col, y - 1).is_solid() && (y < 2 || !map.tile(col, y - 2).is_solid())
+            });
+            if clear {
                 candidates.push((x, y));
             }
         }
@@ -1176,6 +1188,37 @@ mod tests {
                     assert!(y >= 2, "spawn ({x},{y}) is too close to the map top");
                     assert!(!map.tile(x, y - 1).is_solid(), "no headroom at ({x},{y})");
                     assert!(!map.tile(x, y - 2).is_solid(), "no headroom at ({x},{y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spawns_clear_the_full_body_width() {
+        // D26. The body is 24 px wide (D6) and always spans into both
+        // neighbouring columns, so the documented two-tile headroom must hold
+        // across x-1..=x+1, not just x. Measured before the fix: 70-80% of
+        // spawns embedded the body up to 175 px into adjacent terrain.
+        for scale in Scale::ALL {
+            for seed in 0..40u64 {
+                let map = Map::generate(seed, scale);
+                for spawn in &map.spawns {
+                    let (x, y) = (spawn.x as u32, spawn.y as u32);
+                    assert!(y >= 2, "spawn ({x},{y}) is too close to the map top");
+                    for dx in -1i32..=1 {
+                        let col = (x as i32 + dx).clamp(0, map.width as i32 - 1) as u32;
+                        assert!(
+                            !map.tile(col, y - 1).is_solid(),
+                            "{} seed {seed}: spawn ({x},{y}) has solid terrain at \
+                             ({col},{}) — the body would be inside it",
+                            scale.as_str(), y - 1,
+                        );
+                        assert!(
+                            !map.tile(col, y - 2).is_solid(),
+                            "{} seed {seed}: spawn ({x},{y}) has solid terrain at ({col},{})",
+                            scale.as_str(), y - 2,
+                        );
+                    }
                 }
             }
         }

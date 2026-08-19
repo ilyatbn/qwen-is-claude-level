@@ -207,6 +207,27 @@ before and after is not evidence — it is the symptom.
    the input dimensions it now covers that its predecessor did not, and assert each one
    end to end. This is what D33/D34 came from.
 
+## Standing rule 3: run a full end-to-end pass at every phase gate
+
+Added after the post-Phase-3 E2E pass found a **hard failure that 375 unit tests and
+83 injections missed** — a player standing on a tile could not pick up the item on it
+(D41). Every unit test passed because each placed the player *at* the item or within
+16 px of it; none derived the player's position from the geometry of standing. The
+defect lived in a seam between three subsystems that were each individually correct.
+
+> **At the end of every phase, run `examples/e2e_scenario.rs` and
+> `examples/e2e_stress.rs` before reporting, and fix what they find.** Extend both as
+> each phase adds capability. Treat their failures as **blocking**, not as notes for
+> later.
+
+Sweeps and injections verify that each part matches its spec. They cannot find a defect
+that only exists when the parts are combined, because no part is wrong. That is what
+the E2E pass is for, and it is cheap: the whole harness took under an hour to write and
+found the defect on its first adversarial run.
+
+Both harnesses report and continue rather than panicking on the first failure, so one
+run surfaces everything. Keep that property.
+
 ## Notes for Phase 3
 
 - **`Player::integrate` takes acceleration and uses Verlet** (D28). Do not "simplify"

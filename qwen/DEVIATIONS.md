@@ -567,6 +567,33 @@ cosmetic and starts deciding respawn fairness.
 `x-1 ..= x+1` for the two-tile headroom rather than just `x` — then re-pin the golden
 anchors in the same commit.
 
+---
+
+**RESOLVED at the start of Phase 4** (decided together with D35, D36 and D39, as all
+four are collision geometry on one code path).
+
+**Implemented**: `find_spawns` applies the documented two-tile headroom check across the
+body's **full width** — columns `x-1 ..= x+1` — instead of the spawn column alone. That
+is the same rule from docs/01 §3 step 5, applied to the space the body actually occupies
+rather than to a one-tile slice of it.
+
+Measured before and after, 100 seeds × 3 scales:
+
+| scale | neighbour overlap before | after |
+|---|---|---|
+| Small | 421/600 (70.2%) | **0** |
+| Medium | 462/600 (77.0%) | **0** |
+| Large | 481/600 (80.2%) | **0** |
+
+The ≥6 spawn guarantee survives the narrower candidate set — measured minimum 6 / 7 / 11
+by scale — though Small now leans on the spacing fallback more (observed minimum
+Chebyshev 6 rather than 10), which is the ladder doing its job.
+
+**Golden anchors re-pinned in the same commit.** `generation_matches_golden_hashes`
+changed because `map.spawns` is part of it; `seed1_small_ascii_dump_is_unchanged` and
+`item_placement_matches_golden_hashes` both stayed **green**, which is the discriminating
+evidence that tiles and item placement are untouched and the delta is confined to spawns.
+
 ### D27 — T2.2's Test command selects none of the tests T2.2 creates
 
 **Spec** (`tasks/02-player.md` T2.2 Test): `cd server && cargo test -p game-core input`.
@@ -971,6 +998,32 @@ all three should be decided together rather than piecemeal.
 
 ## Phase 3 defects
 
+---
+
+**DECIDED at the start of Phase 4: accept jump-to-climb. No autostep.**
+
+The choice was between enabling a one-tile autostep and accepting that vertical terrain
+requires a jump. Measured the terrain first rather than arguing from taste — the
+distribution of *upward* adjacent-column steps over 60 seeds per scale:
+
+| scale | upward steps | exactly 1 tile | ≥ 2 tiles |
+|---|---|---|---|
+| Small | 2095 | 1080 (**51.6%**) | 1015 (48.4%) |
+| Medium | 3969 | 1490 (**37.5%**) | 2479 (62.5%) |
+| Large | 6188 | 1718 (**27.8%**) | 4470 (72.2%) |
+
+A one-tile autostep would smooth **at most half** the upward steps on Small and barely a
+quarter on Large; the player still has to jump for the clear majority. So it buys a
+partial fix to a problem it cannot solve, in exchange for a vertical motion path that
+moves the body outside the documented rules — the same objection that had autostep
+disabled in the first place, and one that now also cuts across D28's Verlet integration
+and D33's step ordering.
+
+The design already supplies two traversal tools for vertical terrain: the jump
+(docs/03 §4, with its direction bias) and the jetpack (docs/03 §5). Requiring them is a
+coherent Worms-style movement model, and the brief asks for exactly that. **Recorded as
+intended behaviour**, not as an outstanding defect.
+
 ### D37 — Spawn weights are stated as percentages but sum to 130
 
 **Spec** (`docs/04-items.md` §3 row A): "Weighted pick: **weapons 50%** (pistol 30 /
@@ -1098,6 +1151,29 @@ behaviour will not ship. Three reasons:
 
 Grouped with D26, D35 and D36 as a **Phase 4 prerequisite**: all four are
 collision-geometry decisions on one code path and should be taken together.
+
+---
+
+**RESOLVED at the start of Phase 4.**
+
+**Implemented**: `first_solid_along` sub-samples the travelled segment at half-tile
+intervals — the coarsest spacing that cannot skip a 16 px tile — and `step_projectile`
+impacts at the first solid sample. This keeps docs/04 §2's **tile lookup** (it is still
+"is this tile solid", never a shape cast) while making it express what the sentence
+plainly intends. The impact point is at most half a tile past the true surface, which is
+immaterial for a blast centre and far cheaper than a shape cast per projectile.
+
+Measured before and after:
+
+| test | before | after |
+|---|---|---|
+| pistol vs a 1-tile wall, 64 sub-tile offsets | 24/64 hit | **64/64** |
+| rocket vs a 1-tile wall | 44/64 | **64/64** |
+| pistol across real generated terrain (320 shots) | 6.9% tunnelled | **0.0%** |
+| rocket across real generated terrain | 0.3% | **0.0%** |
+
+The finding above is unchanged: qwen's spec did specify a point lookup, and at 20 Hz
+every weapon outruns a tile per tick. That is the experiment's output and stands.
 
 Gravity for thrown weapons uses the same velocity Verlet as the player (D28), so
 acceleration is integrated identically everywhere in the crate.

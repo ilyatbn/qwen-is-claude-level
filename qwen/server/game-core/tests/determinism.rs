@@ -241,9 +241,13 @@ fn large_map_generation_is_fast_enough() {
 /// Covers all three scales because pocket count and dimensions differ per
 /// scale, so a scale-dependent bug could hide behind a single-scale anchor.
 const GOLDEN_MAPS: [(u64, Scale, u64); 3] = [
-    (1, Scale::Small, 0x039d_4c59_5fd7_27b6),
-    (42, Scale::Medium, 0x9390_d21e_8a8f_d460),
-    (12345, Scale::Large, 0x1c23_0dca_543b_d713),
+    // Re-pinned when D26 widened the spawn candidate rule to the body's full
+    // width. Tiles are UNCHANGED — seed1_small_ascii_dump_is_unchanged and
+    // item_placement_matches_golden_hashes both stayed green — so the delta is
+    // confined to map.spawns, which is what D26 changed.
+    (1, Scale::Small, 0xcbda_70b6_1f52_e3da),
+    (42, Scale::Medium, 0x6e73_33e4_5c5c_9886),
+    (12345, Scale::Large, 0x364c_2ae2_78f5_d694),
 ];
 
 #[test]
