@@ -53,3 +53,13 @@ Notes: mirrors docs/02-constants.md AND the v2 amendments (marked section at the
        Tests need #[allow(clippy::assertions_on_constants)] — asserting on consts is
        the point of the file.
 Left for later: nothing
+
+## T0.03 — Seeded RNG and sub-streams — DONE
+Files: crates/game-core/src/rng.rs, lib.rs
+Verified: `cargo test -p game-core rng` — 18 passed
+Notes: added range_i32 and a hand-written Fisher-Yates `shuffle` beyond the task's
+       list — later passes need both, and rand's own shuffle is not guaranteed
+       stable across versions, which would break golden hashes.
+       next_round_seed uses the splitmix64 finaliser so consecutive rounds do not
+       produce visibly related maps.
+Left for later: nothing
