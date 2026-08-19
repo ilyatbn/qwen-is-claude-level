@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["game-core", "server"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# --- pure simulation deps (usable by game-core) ---
+rand = "0.9"
+rand_chacha = "0.10"
+rapier2d = "0.35"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+# base64 is required by docs/06 §6 (MapData.tiles) but missing from T0.1's
+# dependency list — see DEVIATIONS.md D7. Pure computation, no IO.
+base64 = "0.23"
+
+# --- IO / async deps (server crate ONLY, never game-core; docs/00 §7) ---
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+socketioxide = "0.18"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync"] }
+axum = "0.8"

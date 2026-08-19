@@ -10,7 +10,7 @@ still passes.
 
 ---
 
-## T0.1 — Rust workspace skeleton [ ]
+## T0.1 — Rust workspace skeleton [x]
 
 **Goal**: workspace with `game-core` (pure) and `server` (thin) that compiles.
 **Read**: `docs/00-architecture.md` §1, §7.

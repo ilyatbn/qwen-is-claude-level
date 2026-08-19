@@ -1,0 +1,18 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Thin socket.io IO layer over game-core (docs/05 §1). Contains no game logic."
+
+[dependencies]
+game-core = { path = "../game-core" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+socketioxide = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
