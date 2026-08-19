@@ -22,7 +22,7 @@ skeleton. Nothing is a game yet; everything has a home.
 - [x] [T0.05](M0/T0.05-server-skeleton.md) — axum + socketioxide + tracing, `/healthz`, echo
 - [x] [T0.06](M0/T0.06-client-skeleton.md) — Vite + TS + Phaser 3.90 + socket.io connect
 - [x] [T0.07](M0/T0.07-docker.md) — Dockerfiles, compose, nginx, `.env.example`
-- [ ] [T0.08](M0/T0.08-check-script.md) — `scripts/check.sh`, the gate
+- [x] [T0.08](M0/T0.08-check-script.md) — `scripts/check.sh`, the gate
 
 **Checkpoint:** `cargo run -p game-server` and `npm --prefix client run dev` — the
 browser console logs an echo round-trip. `./scripts/check.sh` is green.

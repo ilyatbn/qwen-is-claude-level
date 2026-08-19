@@ -114,3 +114,14 @@ Notes: TWO TRAPS, both cost a rebuild each.
           cache layer cargo reused the stub artifacts. `touch`ing the manifests is
           not enough; the Dockerfile touches every .rs after the copy.
 Left for later: nothing
+
+## T0.08 — scripts/check.sh, the gate — DONE
+Files: scripts/check.sh (chmod +x), scripts/verify-assets.mjs (chmod +x)
+Verified: `./scripts/check.sh` green (77 rust tests + 8 vitest);
+          deliberate fmt error → fails at the fmt banner, exit 1, then reverted;
+          `--fast` skips clippy and assets; verify-assets exits 0 with "skipped".
+Notes: Both scripts are executable and cd to the project root, so they work from
+       anywhere. verify-assets.mjs already implements the full M7 checks (manifest
+       paths, skins.json frame existence, duplicate ids) — it just no-ops until
+       assets/manifest.json exists.
+Left for later: nothing. M0 complete.
