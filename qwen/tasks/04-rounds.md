@@ -150,7 +150,7 @@ score no one.
 
 ---
 
-## T4.8 — Seeded effect scheduler [ ]
+## T4.8 — Seeded effect scheduler [x]
 
 **Goal**: deterministic effect timeline per seed.
 **Read**: `docs/02-map-effects.md` §7, §8.

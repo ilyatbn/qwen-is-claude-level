@@ -466,9 +466,13 @@ fn start_round_for(seed: u64, scale: Scale) -> Round {
 }
 
 const GOLDEN_ROUND_STARTS: [(u64, Scale, u64); 3] = [
-    (1, Scale::Small, 0x9c2c_8006_2231_5784),
-    (42, Scale::Medium, 0x80c5_74f3_14c9_3e3a),
-    (12345, Scale::Large, 0xc61f_f3d3_dc1d_bbb8),
+    // Re-pinned at T4.8: EffectSchedule::build now consumes RNG draws where
+    // the T4.1 stub consumed none, shifting every later draw in start_round.
+    // The map and placement anchors correctly stayed GREEN — neither goes
+    // through Round — which is the evidence the change is confined here.
+    (1, Scale::Small, 0x02dd306c59a07381),
+    (42, Scale::Medium, 0x6a93468afa838fbd),
+    (12345, Scale::Large, 0x790ecb819a1f295f),
 ];
 
 #[test]

@@ -385,22 +385,75 @@ impl FogState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Scheduler (T4.8, docs/02 §8)
+// ---------------------------------------------------------------------------
+
+/// First effect window, seconds (docs/02 §8: "first effect at t in [10, 20] s").
+pub const FIRST_EFFECT_MIN_S: f32 = 10.0;
+pub const FIRST_EFFECT_MAX_S: f32 = 20.0;
+/// Gap between effects, seconds (docs/02 §8: "subsequent gaps: t in [18, 32] s").
+pub const EFFECT_GAP_MIN_S: f32 = 18.0;
+pub const EFFECT_GAP_MAX_S: f32 = 32.0;
+/// No effect may start within this many seconds of the end (docs/02 §8).
+pub const EFFECT_TAIL_S: f32 = 15.0;
+/// Weights: toxic 30, meteor 25, lava 25, fog 20 (docs/02 §8).
+pub const EFFECT_WEIGHTS: [u32; 4] = [30, 25, 25, 20];
+
+/// Every effect kind, in the weight-table order.
+pub const EFFECT_KINDS: [EffectKind; 4] = [
+    EffectKind::ToxicRain,
+    EffectKind::MeteorShower,
+    EffectKind::LavaBurst,
+    EffectKind::HeavyFog,
+];
+
+/// How long an effect of each kind runs (docs/02 §2 table).
+pub fn effect_duration_s(kind: EffectKind) -> f32 {
+    match kind {
+        EffectKind::ToxicRain => TOXIC_DURATION_S,
+        EffectKind::MeteorShower => METEOR_DURATION_S,
+        EffectKind::LavaBurst => LAVA_DURATION_S,
+        EffectKind::HeavyFog => FOG_DURATION_S,
+    }
+}
+
 /// The precomputed effect timeline for a round (docs/02 §8).
 ///
-/// Built at round start from the round RNG so a seed replays the same
-/// timeline. T4.8 fills in the scheduling rules; T4.1 only needs the draw to
-/// happen at the right point in the determinism order.
+/// Built at round start from the round RNG, so a seed replays the same
+/// timeline and tests can assert an exact effect list.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EffectSchedule {
-    pub entries: Vec<(u64, EffectKind)>,
+    /// `(start time in seconds, kind)`, ascending.
+    pub entries: Vec<(f32, EffectKind)>,
 }
 
 impl EffectSchedule {
-    /// docs/02 §8. **Stub until T4.8** — it consumes no randomness yet, so the
-    /// draw order is unchanged when T4.8 replaces it. That is deliberate: the
-    /// placement anchors are re-pinned once, here, rather than twice.
-    pub fn build(_rng: &mut GameRng, _round_duration_s: f32) -> Self {
-        EffectSchedule::default()
+    /// docs/02 §8, T4.8 step 1.
+    ///
+    /// "first effect at t in [10, 20] s (RNG); subsequent gaps: t in [18, 32] s
+    /// (RNG); kind: weighted pick; stop scheduling when t > round_duration - 15 s".
+    ///
+    /// Draw order per entry is **time, then kind** — the order fixes the whole
+    /// downstream sequence (docs/04 §6, D19).
+    pub fn build(rng: &mut GameRng, round_duration_s: f32) -> Self {
+        let mut entries = Vec::new();
+        let latest = round_duration_s - EFFECT_TAIL_S;
+
+        let mut t = rng.gen_range_f32(FIRST_EFFECT_MIN_S, FIRST_EFFECT_MAX_S);
+        while t <= latest {
+            let index = rng
+                .weighted_index(&EFFECT_WEIGHTS)
+                .expect("effect weights are non-empty");
+            entries.push((t, EFFECT_KINDS[index]));
+            t += rng.gen_range_f32(EFFECT_GAP_MIN_S, EFFECT_GAP_MAX_S);
+        }
+        EffectSchedule { entries }
+    }
+
+    /// The next entry due at or before `now` that has not started yet.
+    pub fn due(&self, now: f32, started: usize) -> Option<(f32, EffectKind)> {
+        self.entries.get(started).copied().filter(|(t, _)| now >= *t)
     }
 }
 
@@ -946,5 +999,164 @@ mod fog_tests {
         // docs/03 §7: the flashlight sets night_factor to 1.0, nothing else.
         let foggy_night = Player::compute_fov(1.0, true, 100.0, true);
         assert_eq!(foggy_night, 189.0, "a flashlight should not clear fog");
+    }
+}
+
+/// T4.8 scheduler tests.
+#[cfg(test)]
+mod schedule_tests {
+    use super::*;
+
+    fn build(seed: u64) -> EffectSchedule {
+        EffectSchedule::build(&mut GameRng::new(seed), 240.0)
+    }
+
+    #[test]
+    fn schedule_deterministic_per_seed() {
+        // docs/08 §1 (effects row) + T4.8 step 4: "3 seeds -> identical
+        // timelines".
+        for seed in [1u64, 42, 12345] {
+            assert_eq!(build(seed), build(seed), "seed {seed} scheduled differently");
+        }
+        assert_ne!(build(1), build(2), "different seeds gave the same timeline");
+    }
+
+    #[test]
+    fn no_effect_in_first_10s() {
+        // docs/08 §1 + docs/02 §7: "Effects never start in the first 10 s of a
+        // round (grace period)."
+        for seed in 0..200u64 {
+            for (t, kind) in &build(seed).entries {
+                assert!(
+                    *t >= FIRST_EFFECT_MIN_S,
+                    "seed {seed}: {kind:?} scheduled at {t} s, inside the 10 s grace",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_effect_in_last_15s() {
+        // docs/08 §1 + docs/02 §8: "stop scheduling when t > round_duration - 15 s".
+        for seed in 0..200u64 {
+            for (t, kind) in &build(seed).entries {
+                assert!(
+                    *t <= 240.0 - EFFECT_TAIL_S,
+                    "seed {seed}: {kind:?} scheduled at {t} s, inside the final 15 s",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn one_effect_at_a_time() {
+        // docs/08 §1 + docs/02 §7: "Only ONE effect active at a time. A new
+        // effect cannot start while one is active."
+        //
+        // The gap floor is 18 s and the longest effect is heavy fog at 15 s,
+        // so the schedule can never overlap — asserted over the whole timeline
+        // rather than assumed from the constants.
+        for seed in 0..200u64 {
+            let schedule = build(seed);
+            for pair in schedule.entries.windows(2) {
+                let (start, kind) = pair[0];
+                let (next_start, _) = pair[1];
+                let ends = start + effect_duration_s(kind);
+                assert!(
+                    next_start >= ends,
+                    "seed {seed}: {kind:?} runs {start}..{ends} but the next starts at {next_start}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gaps_are_within_the_documented_range() {
+        // docs/02 §8: "subsequent gaps: t in [18, 32] s".
+        for seed in 0..200u64 {
+            let schedule = build(seed);
+            for pair in schedule.entries.windows(2) {
+                let gap = pair[1].0 - pair[0].0;
+                assert!(
+                    (EFFECT_GAP_MIN_S..=EFFECT_GAP_MAX_S).contains(&gap),
+                    "seed {seed}: gap of {gap} s is outside 18..32",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_first_effect_lands_in_its_documented_window() {
+        // docs/02 §8: "first effect at t in [10, 20] s".
+        for seed in 0..200u64 {
+            if let Some((t, _)) = build(seed).entries.first() {
+                assert!(
+                    (FIRST_EFFECT_MIN_S..=FIRST_EFFECT_MAX_S).contains(t),
+                    "seed {seed}: first effect at {t} s, outside 10..20",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn kinds_follow_the_documented_weights() {
+        // docs/02 §8: "toxic rain 30%, meteor 25%, lava 25%, fog 20%".
+        let mut counts = [0u32; 4];
+        let mut total = 0u32;
+        for seed in 0..4000u64 {
+            for (_, kind) in build(seed).entries {
+                let index = EFFECT_KINDS.iter().position(|k| *k == kind).unwrap();
+                counts[index] += 1;
+                total += 1;
+            }
+        }
+        assert!(total > 1000, "not enough samples: {total}");
+        let weight_total: u32 = EFFECT_WEIGHTS.iter().sum();
+        assert_eq!(weight_total, 100, "docs/02 §8's weights should be percentages");
+        for (index, &weight) in EFFECT_WEIGHTS.iter().enumerate() {
+            let expected = total as f32 * weight as f32 / weight_total as f32;
+            let actual = counts[index] as f32;
+            assert!(
+                (actual - expected).abs() < expected * 0.12,
+                "{:?}: {actual} of {total}, expected ~{expected}",
+                EFFECT_KINDS[index],
+            );
+        }
+    }
+
+    #[test]
+    fn a_seed_produces_a_stable_printable_timeline() {
+        // T4.8 Acceptance: "seed 12345 always produces the same effect list
+        // (print it in the test output for the first seed)".
+        let schedule = build(12345);
+        println!("seed 12345 effect timeline:");
+        for (t, kind) in &schedule.entries {
+            println!("  t={t:>7.3} s  {}", kind.as_str());
+        }
+        assert!(!schedule.entries.is_empty(), "seed 12345 scheduled nothing");
+        assert_eq!(schedule, build(12345));
+    }
+
+    #[test]
+    fn due_returns_each_entry_once_in_order() {
+        let schedule = build(7);
+        assert!(schedule.entries.len() >= 2);
+        let (first_t, first_kind) = schedule.entries[0];
+
+        assert_eq!(schedule.due(first_t - 0.1, 0), None, "fired before its time");
+        assert_eq!(schedule.due(first_t, 0), Some((first_t, first_kind)));
+        // Once started, `due` moves on to the next entry.
+        let (second_t, _) = schedule.entries[1];
+        assert_eq!(schedule.due(first_t, 1), None, "the second entry fired early");
+        assert!(schedule.due(second_t, 1).is_some());
+        // Past the end.
+        assert_eq!(schedule.due(1000.0, schedule.entries.len()), None);
+    }
+
+    #[test]
+    fn a_short_round_schedules_nothing() {
+        // round_duration - 15 < 10 leaves no window at all.
+        let schedule = EffectSchedule::build(&mut GameRng::new(1), 20.0);
+        assert!(schedule.entries.is_empty(), "a 20 s round scheduled effects");
     }
 }

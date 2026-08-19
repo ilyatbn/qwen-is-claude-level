@@ -27,6 +27,16 @@ effects::meteor_tests::meteor_destroys_tiles_and_damages
 effects::meteor_tests::meteor_targets_are_deterministic
 effects::meteor_tests::meteors_stagger_by_point_eight_seconds
 effects::meteor_tests::meteors_target_the_surface
+effects::schedule_tests::a_seed_produces_a_stable_printable_timeline
+effects::schedule_tests::a_short_round_schedules_nothing
+effects::schedule_tests::due_returns_each_entry_once_in_order
+effects::schedule_tests::gaps_are_within_the_documented_range
+effects::schedule_tests::kinds_follow_the_documented_weights
+effects::schedule_tests::no_effect_in_first_10s
+effects::schedule_tests::no_effect_in_last_15s
+effects::schedule_tests::one_effect_at_a_time
+effects::schedule_tests::schedule_deterministic_per_seed
+effects::schedule_tests::the_first_effect_lands_in_its_documented_window
 effects::toxic_tests::overlapping_spots_do_not_stack
 effects::toxic_tests::spot_four_ends_at_eight_seconds
 effects::toxic_tests::spot_placement_is_deterministic
