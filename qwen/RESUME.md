@@ -2,7 +2,7 @@
 
 Single source of truth for picking this up cold. Updated at each phase gate.
 
-**Last updated:** Phase 4 signed off
+**Last updated:** Phase 5 signed off — **build complete**
 
 > **Updating this file is the LAST action of a phase gate**, after the reviewer signs
 > off — not a mid-round note. It went stale three gates running: twice by being
@@ -31,17 +31,18 @@ design and is not used).
 | 2 — Player | T2.1–T2.10 | **done, signed off** |
 | 3 — Items | T3.1–T3.9 | **done, signed off** |
 | 4 — Rounds | T4.1–T4.10 | **done, signed off** |
-| 5 — Sprites | T5.1–T5.5 | **next** |
+| 5 — Sprites | T5.1–T5.5 | **done, signed off** (T5.5 Docker unverified) |
 
-42/42 checkboxes ticked through Phase 4. 45 deviations recorded.
+**47/47 checkboxes ticked. All five phases signed off. 56 deviations recorded.**
 
-**Carried into Phase 5 (neither blocks its content):**
-- `tick.rs` hand-builds **13 S→C event payloads** with `serde_json::json!` instead of
-  their typed structs (`TileDestroyedMsg`, `Kill`, `Respawned`, `RoundEnded`, …). Field
-  names are currently all correct, so this is latent drift risk, not a live bug — but
-  for 11 of 19 documented events the protocol pins constrain nothing about what ships.
-  **Fix before any protocol change, not after.**
-- Map delivery (D46) and `game-core` `tracing` are both **closed**.
+**Known-open at completion:**
+- **T5.5 Docker is unverified** — files written, image never built (D13). The only
+  task whose Test command has never been executed. Closing it needs Docker installed.
+- **D51** — the tile texture variant `(seed + x + y) % 3` collapses to one variant for
+  ~99.9% of real seeds (u64 → JS double, rounds away above 2^53). Cosmetic, but the
+  feature is dead in production while working under `?seed=777`.
+- **D52** — `weapon_skin` is unimplementable as specified: a per-player value on a
+  room-wide payload, with no C2S message able to carry it.
 
 **End-to-end pass (post-Phase-3)** — see `dev_summary.md`:
 - **D41** — a player standing on a tile could not pick up the item on it (22 px
@@ -76,9 +77,10 @@ cd qwen/server && cargo run -q -p game-core --example e2e_stress     # 23/23
 
 ## Read these before writing code
 
-1. `HANDOFF-phase4.md` — most recent; deferred items for Phase 5.
+1. `HANDOFF-phase5.md` — most recent.
+1b. `dev_summary.md` — all deviations, ~2 lines each, grouped by failure class.
 2. `HANDOFF-phase2.md` — standing rules 1–3 live here; rule 4 in phase 4's.
-3. `DEVIATIONS.md` — 45 entries; D1–D46 with gaps.
+3. `DEVIATIONS.md` — 56 entries; D1–D52 with gaps.
 4. `HANDOFF-phase0.md`, `HANDOFF-phase1.md` for earlier context.
 
 ## Phase gate checklist

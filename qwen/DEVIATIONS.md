@@ -206,19 +206,26 @@ in containers — exactly the environments it will run in.
 iff `tick % 2 == 0`, which is what "10 Hz" means given the fixed 20 Hz tick. The
 wall-clock timing check is kept as a non-gating manual observation.
 
-### D13 — T5.5 Docker availability
+### D13 — T5.5 Docker: files written, image never built
 
-**Status**: docker was absent from the host when the toolchain was surveyed
-(2026-08-19). The user is installing it before Phase 5, so T5.5 is expected to be
-verified normally. Re-checked at Phase 5 start; if still absent, the Dockerfile and
-compose file are written per `docs/05-server.md` §6 and the build/run verification is
-recorded here as not performed.
+**Status at the end of the build**: Docker was **never available on the build host** —
+`docker --version` returns `command not found` at Phase 0 and again at Phase 5.
 
----
+**What was done**: `Dockerfile`, `docker-compose.yml` and `.dockerignore` are written
+per `docs/05-server.md` §6 (multi-stage build, `debian:bookworm-slim` runtime, EXPOSE
+3001, non-root user, `WIPGAME_PORT`/`RUST_LOG` env).
 
-## Defects found during implementation
+**What was NOT done — none of this was executed**:
+- the image has never been built (`docker compose up --build` never ran)
+- the binary has never run in a container
+- T5.5's Test command — the socket.io handshake `curl` — has never been executed
+- nothing verifies the Dockerfile even compiles
 
-*(Appended as they are found, same format.)*
+**What WAS verified**: T5.5 step 4 (runtime `set_log_level`) needs no container and was
+checked live — 0 DEBUG lines before, 1 after, no restart.
+
+`README.md` carries the same warning next to the command, because a reader following
+"How to run" would otherwise assume the path is tested.
 
 ### D14 — T0.3's Test command cannot be executed as written (browser check)
 
