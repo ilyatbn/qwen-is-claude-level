@@ -13,6 +13,10 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 # See DEVIATIONS.md D7 — required by docs/06 §6, absent from T0.1's list.
 base64 = { workspace = true }
+# T4.9: docs/05 §5 wants [dmg]/[tiles]/[effect] lines from game-core.
+# tracing is pure computation with no IO, so it does not violate T0.1s
+# no-async/IO rule (same argument as base64).
+tracing = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

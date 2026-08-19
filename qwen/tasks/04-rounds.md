@@ -172,7 +172,7 @@ score no one.
 
 ---
 
-## T4.9 — Snapshot + event broadcast tuning [ ]
+## T4.9 — Snapshot + event broadcast tuning [x]
 
 **Goal**: server sends snapshots at 10 Hz + events immediately; payload
 logged.

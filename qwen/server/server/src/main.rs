@@ -4,6 +4,7 @@
 //! u64 dev override — if set, ALL rounds use this seed), `RUST_LOG`.
 
 mod net;
+mod rooms;
 mod tick;
 
 use std::net::{Ipv4Addr, SocketAddr};
@@ -96,7 +97,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("[net] listening on {addr} (namespace {})", game_core::protocol::NAMESPACE);
 
     // docs/05 §3: the 20 Hz fixed tick runs alongside the socket listener.
-    let ticker = tokio::spawn(tick::run());
+    let rooms = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let ticker = tokio::spawn(tick::run(rooms));
 
     // docs/05 §7: graceful shutdown on SIGINT — log active rooms, exit.
     axum::serve(listener, app)

@@ -18,7 +18,9 @@ use crate::items::*;
 use crate::map::{Map, Scale};
 use crate::physics::PhysicsWorld;
 use crate::player::{player_config::*, InputEdges, Player, PlayerInputState, DT};
-use crate::protocol::{InputFrame, ItemId};
+use crate::protocol::{
+    FogState, GroundItemSnap, InputFrame, ItemId, PlayerSnap, ProjectileSnap, Snapshot,
+};
 use crate::rng::GameRng;
 use crate::tiles::{TileDestroyed, TILE_SIZE};
 use crate::Vec2;
@@ -608,6 +610,93 @@ impl Round {
             }
         }
         best
+    }
+
+    /// Build the wire snapshot for this tick (docs/06 §4).
+    ///
+    /// `players` is always 6 entries — missing players are present with
+    /// `alive=false, x=y=0` (docs/06 §4), which the fixed `[PlayerSnap; 6]`
+    /// type makes unrepresentable-if-wrong.
+    pub fn snapshot(&self) -> Snapshot {
+        let blank = |id: u8| PlayerSnap {
+            id, name: String::new(), skin: 0, x: 0.0, y: 0.0, facing: 0.0,
+            health: 0.0, max_health: BASE_HEALTH, shield_remaining: 0.0,
+            jetpack_fuel: 0.0, fov: 0.0, alive: false, respawn_in_s: 0.0,
+            score: 0, slots: [None, None, None, None, None, None],
+            selected: 0, ammo: [0; SLOT_COUNT],
+        };
+
+        let day_phase = crate::effects::day_phase(self.state_time_s);
+        let players: [PlayerSnap; 6] = std::array::from_fn(|index| {
+            let Some(rp) = self.players.get(index) else {
+                return blank(index as u8);
+            };
+            let p = &rp.player;
+            let respawn_in_s = p
+                .respawn_at_tick
+                .map(|at| at.saturating_sub(self.tick) as f32 * DT)
+                .unwrap_or(0.0);
+            PlayerSnap {
+                id: p.id,
+                name: p.name.clone(),
+                skin: p.skin,
+                x: p.pos.x,
+                y: p.pos.y,
+                facing: p.facing,
+                health: p.health,
+                max_health: p.max_health,
+                shield_remaining: p.shield.remaining_s,
+                jetpack_fuel: p.jetpack.fuel,
+                fov: Player::compute_fov(
+                    day_phase, false, p.health,
+                    p.inventory.contains(ItemId::Flashlight),
+                ),
+                alive: p.alive,
+                respawn_in_s,
+                score: p.score,
+                slots: std::array::from_fn(|s| {
+                    p.inventory.slots[s].map(|i| i.as_str().to_string())
+                }),
+                selected: p.inventory.selected,
+                ammo: rp.ammo,
+            }
+        });
+
+        Snapshot {
+            tick: self.tick,
+            round_time_s: self.state_time_s,
+            day_phase,
+            fog: FogState { active: false, remaining_s: 0.0 },
+            effect: None,
+            map_version: self.map.version,
+            players,
+            items: self
+                .ground
+                .iter()
+                .map(|g| GroundItemSnap {
+                    item: g.item.as_str().to_string(), x: g.x, y: g.y, is_crate: false,
+                })
+                .chain(self.crates.iter().map(|c| GroundItemSnap {
+                    item: "crate".to_string(), x: c.x, y: c.y, is_crate: true,
+                }))
+                .collect(),
+            projectiles: self
+                .projectiles
+                .iter()
+                .map(|p| ProjectileSnap {
+                    id: p.id, kind: p.kind.as_str().to_string(), x: p.x, y: p.y,
+                })
+                .collect(),
+        }
+    }
+
+    /// docs/00 §2: "Snapshots: 10 Hz (every 2nd tick)".
+    ///
+    /// DEVIATIONS.md D12: T4.9's Acceptance asks for a wall-clock rate check,
+    /// which is flaky under load. This is the deterministic invariant that
+    /// "10 Hz" means given a fixed 20 Hz tick.
+    pub fn should_broadcast_snapshot(&self) -> bool {
+        self.tick % 2 == 0
     }
 
     /// Scores for `round_ended` (docs/06 §2).
