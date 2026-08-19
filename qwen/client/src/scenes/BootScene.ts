@@ -72,6 +72,10 @@ export class BootScene extends Phaser.Scene {
     }
     console.log('client ready');
     this.scene.start('GameScene');
+    // The lobby runs as an overlay on top of the world rather than replacing
+    // it, so the map that arrives with `joined` is already rendered when the
+    // round starts. main.ts stops it on `round_started`.
+    this.scene.launch('LobbyScene');
   }
 
   /** Load one manifest entry, honouring docs/07 §3's frame-rect form. */

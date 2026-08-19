@@ -126,6 +126,8 @@ pub struct Player {
     pub name: String,
     /// Index into the skin list (docs/07 §4).
     pub skin: u8,
+    /// docs/07 §4: cosmetic only, never read by the simulation.
+    pub weapon_skin: u8,
     /// Px, centre of body.
     pub pos: Vec2,
     /// Px/s.
@@ -154,6 +156,7 @@ impl Player {
             id,
             name,
             skin: 0,
+            weapon_skin: 0,
             pos,
             vel: Vec2::ZERO,
             facing: 0.0,

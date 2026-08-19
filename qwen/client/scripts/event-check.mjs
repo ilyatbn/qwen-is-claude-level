@@ -69,18 +69,20 @@ spy(b, 'evt-b');
 setTimeout(() => {
   for (const [name, n] of [...seen].sort()) console.log(`  ${name} x${n}`);
   // Events this scenario genuinely exercises. Absence here is a defect.
-  const required = ['joined', 'round_started', 'snapshot', 'effect_started', 'tile_destroyed',
-    'item_spawned'];
+  const required = ['joined', 'lobby_state', 'player_joined', 'round_started', 'snapshot',
+    'effect_started', 'tile_destroyed', 'item_spawned'];
   for (const name of required)
     if (!seen.has(name)) failures.push(`${name} never arrived — the check proved nothing about it`);
   // The rest split two ways, and the distinction matters: an event this
   // scenario did not trigger (idle clients never shoot) is an observation
   // limit, while an event with no emit site at all is a defect. Which is
   // which is decided statically by scripts/wire-coverage.sh, not here.
-  const notSent = ['player_joined', 'player_left', 'lobby_state'];
+  const notSent = [];
   const unexercised = Object.keys(SHAPES).filter(
     (n) => !seen.has(n) && !required.includes(n) && !notSent.includes(n));
-  console.log(`  not emitted by the server at all (see scripts/wire-coverage.sh): ${notSent.join(', ')}`);
+  if (notSent.length > 0) {
+    console.log(`  not emitted by the server at all (see scripts/wire-coverage.sh): ${notSent.join(', ')}`);
+  }
   console.log(`  not triggered by this scenario: ${unexercised.join(', ')}`);
   if (effectData) {
     const empty = Object.keys(effectData.data ?? {}).length === 0;

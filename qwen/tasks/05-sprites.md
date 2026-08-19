@@ -53,7 +53,7 @@ loads real textures (with placeholder fallback).
 
 ---
 
-## T5.3 — Skin system [ ]
+## T5.3 — Skin system [x]
 
 **Goal**: player picks 1 of 6 skins in lobby; persisted; server stores.
 **Read**: `docs/07-sprites.md` §4, `docs/06-protocol.md` §1 (select_skin),

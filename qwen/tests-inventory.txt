@@ -288,12 +288,15 @@ protocol::tests::effect_data_shapes_match_doc
 protocol::tests::input_frame_field_names_match_doc
 protocol::tests::item_id_wire_names_match_doc
 protocol::tests::kill_killer_is_nullable
+protocol::tests::lobby_player_field_names_match_doc
+protocol::tests::lobby_state_field_names_match_doc
 protocol::tests::lobby_state_ready_is_six_wide
 protocol::tests::map_data_field_names_match_doc
 protocol::tests::namespace_is_game
 protocol::tests::player_snap_field_names_match_doc
 protocol::tests::projectile_snap_field_names_match_doc
 protocol::tests::protocol_version_is_1
+protocol::tests::select_skin_accepts_a_payload_without_a_weapon_skin
 protocol::tests::snapshot_always_carries_six_players
 protocol::tests::snapshot_round_trips
 protocol::tests::tile_destroyed_msg_field_names_match_doc
@@ -309,11 +312,14 @@ rng::tests::shuffle_handles_degenerate_slices
 rng::tests::shuffle_is_a_permutation
 rng::tests::weighted_index_follows_weights
 rooms::rooms_tests::a_snapshot_always_carries_six_players
+rooms::rooms_tests::a_socket_that_joins_twice_gets_one_player
 rooms::rooms_tests::an_emptied_room_reports_itself_empty
 rooms::rooms_tests::disconnect_removes_the_player
 rooms::rooms_tests::input_from_an_unknown_socket_is_ignored
 rooms::rooms_tests::join_assigns_ids_0_to_5
+rooms::rooms_tests::lobby_state_carries_a_ready_flag_per_seat
 rooms::rooms_tests::names_are_trimmed_and_capped_at_12_chars
+rooms::rooms_tests::out_of_range_skins_are_ignored_not_clamped
 rooms::rooms_tests::ready_logic_starts_the_countdown
 rooms::rooms_tests::restart_generates_a_new_seed
 rooms::rooms_tests::snapshots_broadcast_every_second_tick
@@ -468,6 +474,18 @@ src/logic/inventoryModel.test.ts > slotViews > marks empty slots and gives them 
 src/logic/inventoryModel.test.ts > slotViews > marks exactly one slot selected
 src/logic/inventoryModel.test.ts > slotViews > shows ammo for weapons only
 src/logic/inventoryModel.test.ts > slotViews > uses the wire id as a fallback name for an unknown item
+src/logic/preferences.test.ts > storeIndex > persists a valid choice
+src/logic/preferences.test.ts > storeIndex > refuses a value this build cannot render
+src/logic/preferences.test.ts > storedIndex > defaults to 0 for ''
+src/logic/preferences.test.ts > storedIndex > defaults to 0 for '-1'
+src/logic/preferences.test.ts > storedIndex > defaults to 0 for '3.5.1'
+src/logic/preferences.test.ts > storedIndex > defaults to 0 for '6'
+src/logic/preferences.test.ts > storedIndex > defaults to 0 for 'NaN'
+src/logic/preferences.test.ts > storedIndex > defaults to 0 for 'x'
+src/logic/preferences.test.ts > storedIndex > defaults to 0 when nothing is stored
+src/logic/preferences.test.ts > storedIndex > falls back rather than clamping an index from a build with more skins
+src/logic/preferences.test.ts > storedIndex > handles the 2-value weapon skin range (docs/07 §4: "v1: 0/1")
+src/logic/preferences.test.ts > storedIndex > restores a stored choice
 src/logic/terrainGrid.test.ts > TerrainGrid construction > reads row-major with y=0 on top (docs/01 §1)
 src/logic/terrainGrid.test.ts > TerrainGrid construction > rejects a tile array that does not match the dimensions
 src/logic/terrainGrid.test.ts > TerrainGrid construction > reports pixel bounds for the camera clamp
@@ -501,6 +519,9 @@ src/protocol.test.ts > TileDestroyedMsg > has exactly the field names docs/06 §
 src/protocol.test.ts > event names > lists every client->server event in docs/06 §1
 src/protocol.test.ts > event names > lists every server->client event in docs/06 §2
 src/protocol.test.ts > fixed cardinalities > types a 6-wide lobby ready flag (docs/06 §2)
+src/protocol.test.ts > lobby_state (docs/06 §2) > carries a null countdown outside the countdown state
+src/protocol.test.ts > lobby_state (docs/06 §2) > has one ready flag per seat (docs/06 §2: `ready: [bool; 6]`)
+src/protocol.test.ts > lobby_state (docs/06 §2) > round-trips with the field names docs/06 §2 lists
 src/protocol.test.ts > snapshot fixture round-trip > always carries 6 players, present or not (docs/06 §4)
 src/protocol.test.ts > snapshot fixture round-trip > gives every player 6 inventory slots and 6 ammo counts (docs/04 §5)
 src/protocol.test.ts > snapshot fixture round-trip > has exactly the PlayerSnap field names docs/06 §4 lists

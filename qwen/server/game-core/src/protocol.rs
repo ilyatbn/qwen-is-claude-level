@@ -306,6 +306,11 @@ pub struct JoinRoom {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SelectSkin {
     pub skin: u8,
+    /// docs/06 §1 defines no way to send a weapon skin, though docs/07 §4
+    /// requires one to be stored and broadcast. Optional so the documented
+    /// payload stays valid on the wire. See DEVIATIONS.md D52.
+    #[serde(default)]
+    pub weapon_skin: Option<u8>,
 }
 
 /// `use_slot` (docs/06 §1). The UI path; also present inside [`InputFrame`].
@@ -335,6 +340,10 @@ pub struct LobbyPlayer {
     pub name: String,
     pub skin: u8,
     pub ready: bool,
+    /// docs/07 §4 + T5.3 step 2. Per player, not per room — see DEVIATIONS.md
+    /// D52 for why "weapon_skin u8 added to lobby_state" cannot mean a single
+    /// field on the lobby_state object.
+    pub weapon_skin: u8,
 }
 
 /// `joined` (docs/06 §2).
@@ -650,6 +659,61 @@ mod tests {
     }
 
     /// Spot-check 3 of 3 — docs/06 §6 `MapData`.
+    #[test]
+    fn lobby_player_field_names_match_doc() {
+        // docs/06 §2: `LobbyPlayer = { id, name, skin, ready }`, plus
+        // weapon_skin from docs/07 §4 (D52).
+        let value = serde_json::to_value(LobbyPlayer {
+            id: 2,
+            name: "p".into(),
+            skin: 4,
+            ready: true,
+            weapon_skin: 1,
+        })
+        .unwrap();
+        let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, ["id", "name", "ready", "skin", "weapon_skin"]);
+    }
+
+    #[test]
+    fn lobby_state_field_names_match_doc() {
+        // docs/06 §2: `{ players: [LobbyPlayer; <=6], ready: [bool; 6],
+        // countdown_in_s: Option<f32> }`.
+        let value = serde_json::to_value(LobbyState {
+            players: vec![],
+            ready: [false; 6],
+            countdown_in_s: Some(1.5),
+        })
+        .unwrap();
+        let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, ["countdown_in_s", "players", "ready"]);
+        assert_eq!(value["ready"].as_array().unwrap().len(), 6);
+        // Option<f32> is `null`, not an absent key — the client types it
+        // `number | null`.
+        let idle = serde_json::to_value(LobbyState {
+            players: vec![],
+            ready: [false; 6],
+            countdown_in_s: None,
+        })
+        .unwrap();
+        assert!(idle["countdown_in_s"].is_null());
+    }
+
+    #[test]
+    fn select_skin_accepts_a_payload_without_a_weapon_skin() {
+        // docs/06 §1 documents `select_skin { skin: u8 }`; the weapon skin
+        // docs/07 §4 requires has no documented channel (D52), so the field is
+        // optional and the documented payload stays valid.
+        let plain: SelectSkin = serde_json::from_value(json!({ "skin": 3 })).unwrap();
+        assert_eq!(plain.skin, 3);
+        assert_eq!(plain.weapon_skin, None);
+        let both: SelectSkin =
+            serde_json::from_value(json!({ "skin": 3, "weapon_skin": 1 })).unwrap();
+        assert_eq!(both.weapon_skin, Some(1));
+    }
+
     #[test]
     fn map_data_field_names_match_doc() {
         let map = MapData {

@@ -22,6 +22,7 @@ import {
   TILE_ROCK,
   TILE_STONE,
   type InputFrame,
+  type LobbyState,
   type MapData,
   type PlayerSnap,
   type Six,
@@ -330,5 +331,45 @@ describe('event names', () => {
         'error',
       ].sort(),
     );
+  });
+});
+
+/**
+ * T5.3 changed `LobbyPlayer`, so it gets the same annotated-fixture guard the
+ * snapshot has. `LOBBY_STATE_FIXTURE: LobbyState` is what makes a rename in
+ * protocol.ts a tsc failure — a cast would check the fixture against itself.
+ */
+const LOBBY_STATE_FIXTURE: LobbyState = {
+  players: [{ id: 0, name: 'p0', skin: 3, ready: true, weapon_skin: 1 }],
+  ready: [true, false, false, false, false, false],
+  countdown_in_s: 2.5,
+};
+
+describe('lobby_state (docs/06 §2)', () => {
+  it('round-trips with the field names docs/06 §2 lists', () => {
+    const parsed: unknown = JSON.parse(JSON.stringify(LOBBY_STATE_FIXTURE));
+    expect(Object.keys(parsed as object).sort()).toEqual([
+      'countdown_in_s',
+      'players',
+      'ready',
+    ]);
+    const player = LOBBY_STATE_FIXTURE.players[0];
+    expect(player).toBeDefined();
+    expect(Object.keys(player ?? {}).sort()).toEqual([
+      'id',
+      'name',
+      'ready',
+      'skin',
+      'weapon_skin',
+    ]);
+  });
+
+  it('has one ready flag per seat (docs/06 §2: `ready: [bool; 6]`)', () => {
+    expect(LOBBY_STATE_FIXTURE.ready).toHaveLength(6);
+  });
+
+  it('carries a null countdown outside the countdown state', () => {
+    const idle: LobbyState = { ...LOBBY_STATE_FIXTURE, countdown_in_s: null };
+    expect(idle.countdown_in_s).toBeNull();
   });
 });

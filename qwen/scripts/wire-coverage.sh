@@ -18,9 +18,8 @@ SRC=server/server/src
 
 # name:owning-task — a gap that is disclosed, not a gap that is hidden.
 declare -A ALLOW=(
-  [PLAYER_JOINED]="T5.3 — lobby roster (docs/06 §2); no task before Phase 5 wires it"
-  [PLAYER_LEFT]="T5.3 — lobby roster (docs/06 §2); no task before Phase 5 wires it"
-  [LOBBY_STATE]="T5.3 step 2 — 'sent in joined/lobby_state'"
+  # Empty: every s2c event has an emit site. T5.3 wired the last three
+  # (player_joined, player_left, lobby_state) — see DEVIATIONS.md D48.
 )
 
 consts=$(sed -n '/^pub mod s2c {/,/^}/p' "$PROTOCOL" | sed -n 's/^ *pub const \([A-Z_]*\).*/\1/p')

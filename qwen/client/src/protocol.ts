@@ -237,6 +237,12 @@ export interface JoinRoom {
 /** `select_skin` (docs/06 §1). Lobby only. */
 export interface SelectSkin {
   skin: number;
+  /**
+   * docs/06 §1 defines no way to send a weapon skin, though docs/07 §4
+   * requires one to be stored and broadcast. Optional, so the documented
+   * payload stays valid. See DEVIATIONS.md D52.
+   */
+  weapon_skin?: number;
 }
 
 /** `use_slot` (docs/06 §1). The UI path; also present inside InputFrame. */
@@ -262,6 +268,12 @@ export interface LobbyPlayer {
   name: string;
   skin: number;
   ready: boolean;
+  /**
+   * docs/07 §4 + T5.3 step 2. Per player, not per room — see DEVIATIONS.md
+   * D52 for why "weapon_skin u8 added to lobby_state" cannot be a single
+   * field on the lobby_state object.
+   */
+  weapon_skin: number;
 }
 
 /** `joined` (docs/06 §2). */

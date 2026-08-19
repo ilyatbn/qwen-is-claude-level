@@ -190,8 +190,13 @@ export class GameScene extends Phaser.Scene {
       this.inventoryUi?.layout(this.cameras.main.width, this.cameras.main.height);
     }
     for (const snap of snapshot.players) {
-      if (!this.sprites.has(snap.id)) {
-        this.sprites.set(snap.id, new PlayerSprite(this, snap.id, snap.name));
+      const existing = this.sprites.get(snap.id);
+      if (existing === undefined) {
+        this.sprites.set(snap.id, new PlayerSprite(this, snap.id, snap.name, snap.skin));
+      } else {
+        // docs/06 §4 carries `skin` on every snapshot, so a lobby skin change
+        // reaches the renderer without a dedicated event (T5.3 step 3).
+        existing.setSkin(snap.skin);
       }
     }
   }

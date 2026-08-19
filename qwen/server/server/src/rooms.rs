@@ -4,11 +4,16 @@
 //! identity and the input queue, and holds NO game logic (docs/05 §1).
 
 use game_core::map::Scale;
-use game_core::protocol::{InputFrame, LobbyPlayer};
+use game_core::protocol::{InputFrame, LobbyPlayer, LobbyState};
 use game_core::round::{Event, Round, RoundState};
 use std::collections::HashMap;
 
 pub type RoomId = u32;
+
+/// docs/07 §4: "6 skins (player_1..6)".
+pub const SKIN_COUNT: usize = 6;
+/// docs/07 §4 + T5.3 step 2: "v1: 0/1".
+pub const WEAPON_SKIN_COUNT: usize = 2;
 
 /// Why a join was refused (docs/06 §2 `error.code`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,8 +65,19 @@ impl Room {
     }
 
     /// Join a socket to this room (docs/05 §2).
+    ///
+    /// Idempotent per socket. A client that sends `join_room` twice — which
+    /// the real client can do, since it joins on every `connect` — used to get
+    /// a SECOND player: the first stayed in the roster with `connected = true`
+    /// forever, holding one of the six seats, and no disconnect could ever
+    /// free it because the socket -> player map only remembers the last one.
+    /// Found by a two-client lobby check, where the same player appeared
+    /// twice in the roster.
     pub fn join(&mut self, socket: &str, name: &str) -> Result<u8, JoinError> {
         let name = Room::sanitize_name(name)?;
+        if let Some(&id) = self.sockets.get(socket) {
+            return Ok(id);
+        }
         let id = self.round.join(name).ok_or(JoinError::RoomFull)?;
         self.sockets.insert(socket.to_string(), id);
         Ok(id)
@@ -119,8 +135,53 @@ impl Room {
                 name: p.player.name.clone(),
                 skin: p.player.skin,
                 ready: p.ready,
+                weapon_skin: p.player.weapon_skin,
             })
             .collect()
+    }
+
+    /// The `lobby_state` payload (docs/06 §2).
+    ///
+    /// `ready` is a fixed `[bool; 6]` indexed by player id, which duplicates
+    /// `LobbyPlayer.ready` — the doc's own shape, kept as written (D3's family:
+    /// a fixed-cardinality field next to the list it mirrors).
+    pub fn lobby_state(&self) -> LobbyState {
+        let mut ready = [false; 6];
+        for player in self.round.players.iter().filter(|p| p.connected) {
+            if let Some(slot) = ready.get_mut(player.player.id as usize) {
+                *slot = player.ready;
+            }
+        }
+        LobbyState {
+            players: self.lobby_players(),
+            ready,
+            countdown_in_s: self.countdown_in_s(),
+        }
+    }
+
+    /// Seconds left of the 3 s countdown, or `None` outside it (docs/05 §2).
+    fn countdown_in_s(&self) -> Option<f32> {
+        if self.round.state == RoundState::Countdown {
+            Some((game_core::round::COUNTDOWN_S - self.round.state_time_s).max(0.0))
+        } else {
+            None
+        }
+    }
+
+    /// Set a player's cosmetic skins (docs/07 §4). Out-of-range values are
+    /// ignored rather than clamped: a client that sends skin 200 has a bug,
+    /// and silently showing it skin 2 would hide that.
+    pub fn set_skin(&mut self, socket: &str, skin: Option<u8>, weapon_skin: Option<u8>) {
+        let Some(id) = self.player_of(socket) else { return };
+        let Some(rp) = self.round.players.iter_mut().find(|p| p.player.id == id) else {
+            return;
+        };
+        if let Some(skin) = skin.filter(|s| (*s as usize) < SKIN_COUNT) {
+            rp.player.skin = skin;
+        }
+        if let Some(weapon_skin) = weapon_skin.filter(|s| (*s as usize) < WEAPON_SKIN_COUNT) {
+            rp.player.weapon_skin = weapon_skin;
+        }
     }
 
     /// Advance the room one tick, draining the input queue.
@@ -145,6 +206,12 @@ impl Room {
         self.round.start_round(seed, scale)
     }
 
+    /// Whether this socket already has a player here (docs/05 §2).
+    #[allow(dead_code)]
+    pub fn has_socket(&self, socket: &str) -> bool {
+        self.sockets.contains_key(socket)
+    }
+
     /// Current round state (docs/05 §2). Used by the integration test and
     /// by lobby broadcasting.
     #[allow(dead_code)]
@@ -155,6 +222,52 @@ impl Room {
 
 #[cfg(test)]
 mod rooms_tests {
+
+    #[test]
+    fn a_socket_that_joins_twice_gets_one_player() {
+        // The real client sends join_room on every `connect`. A second body
+        // for the same socket is unreachable state: it stays connected
+        // forever and occupies one of the six seats (docs/05 §2).
+        let mut room = Room::new(1, 7, Scale::Small);
+        let first = room.join("sock", "bob").unwrap();
+        let second = room.join("sock", "bob").unwrap();
+        assert_eq!(first, second);
+        assert_eq!(room.player_count(), 1);
+        assert_eq!(room.lobby_players().len(), 1);
+        // And leaving still frees the seat.
+        assert_eq!(room.leave("sock"), Some(first));
+        assert_eq!(room.player_count(), 0);
+    }
+
+    #[test]
+    fn lobby_state_carries_a_ready_flag_per_seat() {
+        // docs/06 §2: `ready: [bool; 6]`, indexed by player id.
+        let mut room = Room::new(1, 7, Scale::Small);
+        let a = room.join("s0", "a").unwrap();
+        room.join("s1", "b").unwrap();
+        room.set_ready("s0", true);
+        let state = room.lobby_state();
+        assert_eq!(state.players.len(), 2);
+        assert_eq!(state.ready.len(), 6);
+        assert!(state.ready[a as usize]);
+        assert!(!state.ready[1]);
+        // No countdown outside RoundState::Countdown.
+        assert_eq!(state.countdown_in_s, None);
+    }
+
+    #[test]
+    fn out_of_range_skins_are_ignored_not_clamped() {
+        // docs/07 §4: 6 player skins, 2 weapon skins. Showing skin 2 for a
+        // requested skin 200 would hide the caller's bug.
+        let mut room = Room::new(1, 7, Scale::Small);
+        room.join("s0", "a").unwrap();
+        room.set_skin("s0", Some(3), Some(1));
+        assert_eq!(room.lobby_players()[0].skin, 3);
+        assert_eq!(room.lobby_players()[0].weapon_skin, 1);
+        room.set_skin("s0", Some(200), Some(9));
+        assert_eq!(room.lobby_players()[0].skin, 3, "skin 200 must not be applied");
+        assert_eq!(room.lobby_players()[0].weapon_skin, 1, "weapon skin 9 must not be applied");
+    }
     use super::*;
     use game_core::round::MAX_PLAYERS;
 

@@ -1647,3 +1647,58 @@ reported it: the map still renders, just uniformly.
 redraw path — destruction only removes sprites, and the client is never told a tile
 changed kind (the server's DIRT→GRASS surface conversion is not on the wire). Every
 sprite that exists was created through the one function that applies the formula.
+
+---
+
+### D52 — `weapon_skin` has nowhere to live and no way to be sent
+
+T5.3 step 2 says "weapon_skin u8 field added to `lobby_state` (v1: 0/1, cosmetic only,
+**stored + broadcast**)", and docs/07 §4 agrees: "weapon skin id sent in lobby state as
+`weapon_skin: u8`". Two problems, both structural:
+
+**1. `lobby_state` is a room payload; a weapon skin is a player's.**
+docs/06 §2 defines `lobby_state { players: [LobbyPlayer; ≤6], ready: [bool; 6],
+countdown_in_s }`. A single `weapon_skin: u8` on that object can only describe one player
+out of six, and nothing says which. **Implemented on `LobbyPlayer`**, next to the `skin`
+it mirrors — which is still "added to lobby_state" in the sense that it ships inside that
+payload, and is the only reading where six players can each have one.
+
+**2. No client→server message carries it.** docs/06 §1 defines `select_skin { skin: u8 }`
+and nothing else; there is no `select_weapon_skin`. So a field that must be "stored +
+broadcast" has no way to be *set* — the server could only ever broadcast the default.
+**Implemented** as `weapon_skin: Option<u8>` on `SelectSkin`, `#[serde(default)]`, so the
+documented payload `{ "skin": 3 }` stays valid on the wire and the undocumented field is
+additive. A test pins both forms.
+
+Out-of-range values are **ignored, not clamped**: a client asking for skin 200 has a bug,
+and quietly showing it skin 2 would hide it.
+
+---
+
+### D48 (closed) — the three lobby events are now emitted
+
+`player_joined`, `player_left` and `lobby_state` are wired in T5.3, where `lobby_state`
+belonged; the other two are the same lifecycle moment, so they are sent from the same
+places. `scripts/wire-coverage.sh` now reports **0 disclosed gaps** — every event named in
+`protocol.rs`'s `s2c` module has an emit site.
+
+Verified with two real clients (`scripts/lobby-check.mjs`): B sees A's roster entry change
+to `skin 3 / weapon_skin 1` after A sends `select_skin` — the T5.3 Acceptance, which is
+only meetable because the change is broadcast rather than merely stored — A is told when B
+joins and when B leaves, and B is *not* told about a join that happened before it
+connected.
+
+**Two defects fell out of running it**, neither visible from the code:
+
+1. **A socket that sent `join_room` twice got two players.** The roster showed "bob"
+   twice, at ids 1 and 2. `Room::join` mapped socket → player id, so the second join
+   overwrote the mapping and orphaned the first player: `connected = true` forever,
+   holding one of the six seats, unreachable by any disconnect. This became reachable in
+   this same task, because the client now joins on every `connect` (see below). `join` is
+   now idempotent per socket, with a test.
+
+2. **The client never sent `join_room` at all.** docs/05 §2's flow starts with it, and
+   nothing in `main.ts` emitted it — the client connected and then sat idle, with no room,
+   no map and no snapshots, until the player happened to click the name field and type a
+   new name. Every headless check passed because each one emits `join_room` itself. The
+   client now joins on connect with the persisted name.
