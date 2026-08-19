@@ -387,3 +387,17 @@ Notes: pipeline order is the v2 one: silhouette -> islands -> bridges -> cave
        slightly would start costing retries. Report if the 1000-seed sweep shows
        any seed below ~0.78.
 Left for later: nothing
+
+## T1.12 — Pass 8: spawn point selection — DONE
+Files: crates/game-core/src/map/gen/spawns.rs, gen/mod.rs
+Verified: `cargo test -p game-core --release --lib spawns` — 8 passed
+Notes: farthest-point sampling with an incrementally maintained nearest-distance
+       array (O(n*k), k=6). The test that actually proves it is farthest-point and
+       not random rejection is spread_quality_*: 6 points on a floor of length L
+       have a best-possible min pairwise distance of L/5, and we must reach 60%.
+       Relaxation: separation *= 0.75, up to 3 times, keeping the best attempt.
+       Six slightly tight spawns beat four well-spread ones.
+       Returned in SELECTION order, not sorted — there is a test that would catch
+       someone "tidying" it with a sort.
+       Real maps: 20/20 medium seeds yield >= 6 spawns.
+Left for later: nothing

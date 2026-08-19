@@ -18,6 +18,7 @@ pub mod components;
 pub mod network;
 pub mod silhouette;
 pub mod smooth;
+pub mod spawns;
 pub mod surface;
 pub mod traversal;
 
