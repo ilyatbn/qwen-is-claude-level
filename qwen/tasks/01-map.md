@@ -132,7 +132,7 @@ runs.
 
 ---
 
-## T1.8 — Blast falloff `apply_blast` [ ]
+## T1.8 — Blast falloff `apply_blast` [x]
 
 **Goal**: radius blast with linear falloff, exact doc formula.
 **Read**: `docs/01-map.md` §5 (bullet 1).

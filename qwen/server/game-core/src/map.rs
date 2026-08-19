@@ -491,6 +491,101 @@ impl Map {
         }
     }
 
+    /// Apply a radial blast, damaging and possibly destroying tiles
+    /// (docs/01 §5).
+    ///
+    /// For each tile whose **center** is within `radius` px of the blast
+    /// center: `dmg = max_damage * (1 - dist/radius)`, clamped at 0, subtracted
+    /// from `tile.hp`. A tile at `hp <= 0` becomes AIR and is reported.
+    /// Surface conversion runs once after the whole batch.
+    ///
+    /// `skip_items` suppresses hidden-item uncovery — weather destruction
+    /// (lava, T4.6) passes `true` per docs/02 §5. Added here with a default of
+    /// `false` as T3.3 step 3 requires.
+    pub fn apply_blast(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        max_damage: f32,
+    ) -> Vec<TileDestroyed> {
+        self.apply_blast_inner(cx, cy, radius, max_damage, false)
+    }
+
+    /// [`Map::apply_blast`] with explicit control over hidden-item uncovery.
+    pub fn apply_blast_with(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        max_damage: f32,
+        skip_items: bool,
+    ) -> Vec<TileDestroyed> {
+        self.apply_blast_inner(cx, cy, radius, max_damage, skip_items)
+    }
+
+    fn apply_blast_inner(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        max_damage: f32,
+        skip_items: bool,
+    ) -> Vec<TileDestroyed> {
+        if radius <= 0.0 {
+            return Vec::new();
+        }
+
+        // Only tiles whose center can fall inside the radius need testing.
+        // Widen by one tile so a center just inside the boundary is not missed.
+        let min_x = ((cx - radius) / TILE_SIZE).floor().max(0.0) as u32;
+        let min_y = ((cy - radius) / TILE_SIZE).floor().max(0.0) as u32;
+        let max_x = (((cx + radius) / TILE_SIZE).ceil() as i64)
+            .clamp(0, self.width as i64) as u32;
+        let max_y = (((cy + radius) / TILE_SIZE).ceil() as i64)
+            .clamp(0, self.height as i64) as u32;
+
+        let mut destroyed = Vec::new();
+        for y in min_y..max_y {
+            for x in min_x..max_x {
+                if !self.is_solid(x, y) {
+                    continue;
+                }
+                let center = Map::tile_center(x, y);
+                let dist = ((center.x - cx).powi(2) + (center.y - cy).powi(2)).sqrt();
+                if dist > radius {
+                    continue;
+                }
+
+                let damage = (max_damage * (1.0 - dist / radius)).max(0.0);
+                if damage <= 0.0 {
+                    continue;
+                }
+
+                let mut tile = self.tile(x, y);
+                tile.hp -= damage;
+                if tile.hp <= 0.0 {
+                    // Route through destroy_tile so version bumping and event
+                    // shape stay in one place.
+                    if let Some(mut event) = self.destroy_tile(x, y) {
+                        if skip_items {
+                            event.item = None;
+                        }
+                        destroyed.push(event);
+                    }
+                } else {
+                    // Damaged but surviving — hp persists on the tile.
+                    self.set_tile(x, y, tile);
+                }
+            }
+        }
+
+        if !destroyed.is_empty() {
+            self.apply_surface_conversion();
+        }
+        destroyed
+    }
+
     /// An ASCII dump of the grid, for the debug-inspection test in T1.4.
     ///
     /// `.` AIR, `#` GRASS, `:` DIRT, `%` STONE, `@` ROCK.
@@ -1075,6 +1170,166 @@ mod tests {
         }
         map.apply_surface_conversion();
         assert_eq!(map.tile(x, s + 4).kind, TileKind::Stone);
+    }
+
+    /// A fully-solid STONE map, so blast geometry is not confounded by terrain.
+    fn solid_map(kind: TileKind) -> Map {
+        let (width, height) = Scale::Small.dimensions();
+        Map {
+            seed: 0,
+            scale: Scale::Small,
+            width,
+            height,
+            tiles: vec![Tile::new(kind); (width * height) as usize],
+            decor: Vec::new(),
+            spawns: Vec::new(),
+            version: 0,
+        }
+    }
+
+    #[test]
+    fn blast_falloff_center_max_edge_zero() {
+        // docs/08 §1 (tiles row); docs/01 §5 formula.
+        let mut map = solid_map(TileKind::Stone);
+        // Blast centered exactly on the center of tile (10, 10).
+        let center = Map::tile_center(10, 10);
+        let radius = 48.0;
+        let max_damage = 30.0; // below STONE's 60 hp, so nothing is destroyed
+
+        map.apply_blast(center.x, center.y, radius, max_damage);
+
+        // dist 0 -> full damage.
+        assert!(
+            (map.tile(10, 10).hp - (60.0 - 30.0)).abs() < 1e-3,
+            "center tile took {} damage, expected {max_damage}",
+            60.0 - map.tile(10, 10).hp,
+        );
+
+        // A tile whose center sits at distance ~= radius takes ~0.
+        // Tile (13, 10) is 3 tiles = 48 px away, exactly at the radius.
+        assert!(
+            (map.tile(13, 10).hp - 60.0).abs() < 1e-3,
+            "edge tile should be undamaged, hp is {}",
+            map.tile(13, 10).hp,
+        );
+
+        // A tile at half the radius takes half the damage.
+        // Tile (11, 10) is 16 px away: 30 * (1 - 16/48) = 20.
+        let expected = 60.0 - max_damage * (1.0 - 16.0 / 48.0);
+        assert!(
+            (map.tile(11, 10).hp - expected).abs() < 1e-3,
+            "tile at 16px has hp {}, expected {expected}",
+            map.tile(11, 10).hp,
+        );
+    }
+
+    #[test]
+    fn blast_destroys_only_in_radius() {
+        // docs/08 §1 (tiles row).
+        let mut map = solid_map(TileKind::Grass); // 20 hp, easy to destroy
+        let center = Map::tile_center(20, 20);
+        let radius = 48.0;
+
+        let destroyed = map.apply_blast(center.x, center.y, radius, 100.0);
+        assert!(!destroyed.is_empty(), "blast destroyed nothing");
+
+        for event in &destroyed {
+            let tile_center = Map::tile_center(event.x, event.y);
+            let dist = ((tile_center.x - center.x).powi(2)
+                + (tile_center.y - center.y).powi(2))
+            .sqrt();
+            assert!(
+                dist <= radius,
+                "destroyed tile ({},{}) is {dist} px away, outside radius {radius}",
+                event.x,
+                event.y,
+            );
+        }
+
+        // Nothing outside the radius became AIR.
+        for y in 0..map.height {
+            for x in 0..map.width {
+                let tc = Map::tile_center(x, y);
+                let dist =
+                    ((tc.x - center.x).powi(2) + (tc.y - center.y).powi(2)).sqrt();
+                if dist > radius {
+                    assert!(
+                        map.is_solid(x, y),
+                        "tile ({x},{y}) outside the radius was destroyed",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn blast_below_tile_hp_damages_without_destroying() {
+        // T1.8 Acceptance: "a blast with max_damage < tile hp damages but does
+        // not destroy (hp persists on the tile)".
+        let mut map = solid_map(TileKind::Stone); // 60 hp
+        let center = Map::tile_center(30, 30);
+
+        let destroyed = map.apply_blast(center.x, center.y, 48.0, 25.0);
+        assert!(destroyed.is_empty(), "nothing should have been destroyed");
+        assert_eq!(map.version, 0, "version must not move with no destruction");
+
+        let hp = map.tile(30, 30).hp;
+        assert!(hp < 60.0, "center tile took no damage");
+        assert!(hp > 0.0, "center tile was destroyed by a sub-lethal blast");
+
+        // Damage accumulates across repeated blasts until the tile dies.
+        for _ in 0..3 {
+            map.apply_blast(center.x, center.y, 48.0, 25.0);
+        }
+        assert_eq!(map.tile(30, 30), Tile::AIR, "repeated blasts should destroy");
+        assert!(map.version > 0);
+    }
+
+    #[test]
+    fn blast_runs_surface_conversion_once() {
+        // A blast that opens the surface should leave exposed DIRT as GRASS.
+        let mut map = Map::generate(11, Scale::Small);
+        let x = 48;
+        let s = map.surface_row(x);
+        let center = Map::tile_center(x, s);
+
+        let destroyed = map.apply_blast(center.x, center.y, 40.0, 500.0);
+        assert!(!destroyed.is_empty());
+
+        for col in 0..map.width {
+            let top = map.surface_row(col);
+            if top < map.height {
+                let kind = map.tile(col, top).kind;
+                assert_ne!(
+                    kind,
+                    TileKind::Dirt,
+                    "col {col}: exposed DIRT at row {top} was not converted",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn blast_is_bounds_safe_at_map_edges() {
+        // A blast centered off-map, or clipping an edge, must not panic.
+        let mut map = solid_map(TileKind::Grass);
+        map.apply_blast(0.0, 0.0, 64.0, 100.0);
+        map.apply_blast(-500.0, -500.0, 64.0, 100.0);
+        let (w, h) = map.pixel_size();
+        map.apply_blast(w, h, 64.0, 100.0);
+        map.apply_blast(w + 1000.0, h + 1000.0, 64.0, 100.0);
+        // A degenerate radius is a no-op, not a divide-by-zero.
+        assert!(map.apply_blast(100.0, 100.0, 0.0, 100.0).is_empty());
+        assert!(map.apply_blast(100.0, 100.0, -5.0, 100.0).is_empty());
+    }
+
+    #[test]
+    fn blast_version_bumps_once_per_destroyed_tile() {
+        // docs/01 §4: "+1 on every destruction".
+        let mut map = solid_map(TileKind::Grass);
+        let center = Map::tile_center(25, 25);
+        let destroyed = map.apply_blast(center.x, center.y, 48.0, 100.0);
+        assert_eq!(map.version, destroyed.len() as u64);
     }
 
     #[test]
