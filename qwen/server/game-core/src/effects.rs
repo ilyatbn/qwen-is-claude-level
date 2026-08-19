@@ -1027,8 +1027,9 @@ mod schedule_tests {
         // round (grace period)."
         for seed in 0..200u64 {
             for (t, kind) in &build(seed).entries {
+                // Literal 10.0 from docs/02 §8, not the constant under test.
                 assert!(
-                    *t >= FIRST_EFFECT_MIN_S,
+                    *t >= 10.0,
                     "seed {seed}: {kind:?} scheduled at {t} s, inside the 10 s grace",
                 );
             }
@@ -1038,11 +1039,16 @@ mod schedule_tests {
     #[test]
     fn no_effect_in_last_15s() {
         // docs/08 §1 + docs/02 §8: "stop scheduling when t > round_duration - 15 s".
+        // The literal 225.0, NOT 240.0 - EFFECT_TAIL_S: asserting against the
+        // constant under test moves both sides together and constrains
+        // nothing. Found by injection — EFFECT_TAIL_S 15 -> 5 failed zero
+        // tests before this line used a literal.
         for seed in 0..200u64 {
             for (t, kind) in &build(seed).entries {
                 assert!(
-                    *t <= 240.0 - EFFECT_TAIL_S,
-                    "seed {seed}: {kind:?} scheduled at {t} s, inside the final 15 s",
+                    *t <= 225.0,
+                    "seed {seed}: {kind:?} scheduled at {t} s, inside the final 15 s \
+                     of a 240 s round",
                 );
             }
         }
@@ -1077,8 +1083,9 @@ mod schedule_tests {
             let schedule = build(seed);
             for pair in schedule.entries.windows(2) {
                 let gap = pair[1].0 - pair[0].0;
+                // Literals from docs/02 §8.
                 assert!(
-                    (EFFECT_GAP_MIN_S..=EFFECT_GAP_MAX_S).contains(&gap),
+                    (18.0..=32.0).contains(&gap),
                     "seed {seed}: gap of {gap} s is outside 18..32",
                 );
             }
@@ -1090,8 +1097,9 @@ mod schedule_tests {
         // docs/02 §8: "first effect at t in [10, 20] s".
         for seed in 0..200u64 {
             if let Some((t, _)) = build(seed).entries.first() {
+                // Literals from docs/02 §8.
                 assert!(
-                    (FIRST_EFFECT_MIN_S..=FIRST_EFFECT_MAX_S).contains(t),
+                    (10.0..=20.0).contains(t),
                     "seed {seed}: first effect at {t} s, outside 10..20",
                 );
             }
