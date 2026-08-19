@@ -63,3 +63,12 @@ Notes: added range_i32 and a hand-written Fisher-Yates `shuffle` beyond the task
        next_round_seed uses the splitmix64 finaliser so consecutive rounds do not
        produce visibly related maps.
 Left for later: nothing
+
+## T0.04 — Vec2, Aabb and maths helpers — DONE
+Files: crates/game-core/src/math.rs, lib.rs
+Verified: `cargo test -p game-core math` — 22 passed
+Notes: wrap_to_pi needs a 1e-5 epsilon at the −π boundary. `-3.0*PI` in f32 lands
+       ~5e-7 above −2π, so the naive fold returns −π+5e-7 and the documented
+       "−3π → π" fails. Documented in the fn. Also added Point (integer, for mask
+       space), lerp_angle (shortest arc) and Vec2::distance* beyond the task list.
+Left for later: nothing
