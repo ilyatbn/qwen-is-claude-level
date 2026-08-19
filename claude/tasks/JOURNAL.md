@@ -664,3 +664,24 @@ Notes: the mask crosses as a POINTER (mask_ptr/mask_byte_len), never a copy. The
        failed for the wrong reason. Use the sky band (y < SKY_MARGIN), which
        force_borders guarantees is air.
 Left for later: nothing
+
+## T3.02 — Typed TS wrapper and the build hook — DONE
+Files: client/src/core/{index.ts,index.test.ts}, client/src/main.ts, package.json,
+       crates/game-wasm/src/lib.rs (constants_json)
+Verified: `npm --prefix client test -- --run core` — 13 passed; typecheck clean
+Notes: DUPLICATE CONSTANTS KILLED (M0 review item). main.ts no longer declares
+       VIEWPORT_W/H; constants_json() ships every client-facing tunable across the
+       boundary and C() hands them out. C() THROWS if read before Core.init()
+       rather than returning zeros.
+       maskView() re-acquires when `view.byteLength === 0 || view.buffer !==
+       memory.buffer`. The test holds a view, generates a LARGE map (forcing heap
+       growth), then reads through solidAt and asserts real terrain comes back —
+       a stale view reads all zeros and the map renders blank with no error.
+       Core.init(source?) takes optional wasm bytes: node has no fetch for file://,
+       so vitest passes the .wasm buffer directly while the browser uses the
+       bundled URL.
+       predev/prebuild run wasm-pack from client/ (so the crate path is
+       ../crates/game-wasm) and fail with an install instruction.
+       NOTE: the pkg is gitignored, so `npm test` after a fresh clone needs
+       `wasm-pack build` first — that is what predev/prebuild are for.
+Left for later: nothing

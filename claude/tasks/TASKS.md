@@ -86,7 +86,7 @@ Make M1 and M2 visible. Ends with a playable single-player browser sandbox and n
 server involved.
 
 - [x] [T3.01](M3/T3.01-wasm-bindings.md) — `game-wasm`: generate, carve, step, mask pointer
-- [ ] [T3.02](M3/T3.02-wasm-ts-wrapper.md) — Typed TS wrapper and the build hook
+- [x] [T3.02](M3/T3.02-wasm-ts-wrapper.md) — Typed TS wrapper and the build hook
 - [ ] [T3.03](M3/T3.03-chunk-bake.md) — Mask → stencil → textured chunk
 - [ ] [T3.04](M3/T3.04-edge-band.md) — The grass/edge band
 - [ ] [T3.05](M3/T3.05-chunk-manager.md) — Chunk placement and the rebake budget

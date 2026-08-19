@@ -223,6 +223,44 @@ impl GameCore {
     }
 }
 
+/// Every tunable the client needs, as JSON.
+///
+/// The client must never re-declare one of these. A literal in TypeScript that
+/// shadows a Rust constant is exactly the drift the shared-core architecture exists
+/// to prevent (`docs/01-architecture.md`), and `client/src/main.ts` had two of them
+/// — VIEWPORT_W and VIEWPORT_H — from M0.
+#[wasm_bindgen]
+pub fn constants_json() -> String {
+    use game_core::constants as c;
+    serde_json::json!({
+        "VIEWPORT_W": c::VIEWPORT_W,
+        "VIEWPORT_H": c::VIEWPORT_H,
+        "CHUNK_SIZE": c::CHUNK_SIZE,
+        "COARSE_CELL": c::COARSE_CELL,
+        "BEDROCK_H": c::BEDROCK_H,
+        "WALL_W": c::WALL_W,
+        "SKY_MARGIN": c::SKY_MARGIN,
+        "PLAYER_W": c::PLAYER_W,
+        "PLAYER_H": c::PLAYER_H,
+        "EDGE_BAND_PX": c::EDGE_BAND_PX,
+        "CHUNK_REBAKE_BUDGET": c::CHUNK_REBAKE_BUDGET,
+        "PARALLAX_FACTOR": c::PARALLAX_FACTOR,
+        "CAMERA_LERP": c::CAMERA_LERP,
+        "CAMERA_ZOOM": c::CAMERA_ZOOM,
+        "CAMERA_DEADZONE_W": c::CAMERA_DEADZONE_W,
+        "CAMERA_DEADZONE_H": c::CAMERA_DEADZONE_H,
+        "CAMERA_LOOKAHEAD": c::CAMERA_LOOKAHEAD,
+        "CAMERA_LOOKAHEAD_LERP": c::CAMERA_LOOKAHEAD_LERP,
+        "SIM_DT": c::SIM_DT,
+        "SIM_HZ": c::SIM_HZ,
+        "AIM_RADIUS": c::AIM_RADIUS,
+        "JETPACK_MAX_FUEL": c::JETPACK_MAX_FUEL,
+        "MINIMAP_W": c::MINIMAP_W,
+        "MINIMAP_H": c::MINIMAP_H,
+    })
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +390,18 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert!(!v["spawn_points"].as_array().expect("array").is_empty());
         assert!(!v["surface_points"].as_array().expect("array").is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn constants_json_carries_the_viewport_and_camera_values() {
+        let v: serde_json::Value =
+            serde_json::from_str(&constants_json()).expect("valid json");
+        assert_eq!(v["VIEWPORT_W"], 1280);
+        assert_eq!(v["VIEWPORT_H"], 720);
+        assert_eq!(v["CHUNK_SIZE"], 256);
+        assert_eq!(v["CAMERA_ZOOM"], 2.0);
+        assert_eq!(v["PLAYER_W"], 16.0);
+        assert_eq!(v["PLAYER_H"], 28.0);
     }
 
     #[wasm_bindgen_test]
