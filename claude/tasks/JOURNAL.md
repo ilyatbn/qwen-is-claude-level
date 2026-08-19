@@ -777,3 +777,26 @@ Notes: SKY IS A FLAT PLACEHOLDER on purpose — §A4/T3.12 owns the real five-ph
        The backdrop is baked per chunk, not a scene layer.
 Left for later: parallax layer (-20) is not built — nothing to put in it until T7;
        Backdrop currently provides sky placeholder only.
+
+## A10–A12 review fixes + backdrop — DONE
+Files: crates/game-core/src/{constants.rs,map/gen/{traversal.rs,caves.rs},map/meta.rs},
+       crates/game-core/tests/{golden.rs,golden_hashes.txt,map_sweep.rs},
+       client/src/render/chunkBake-math.ts
+Verified: 402 lib + golden + 23 client chunkBake tests; check.sh green.
+       999-seed sweep under the STRONGER gate: attempts [996,3,0], safe_preset 0/999,
+       fraction min 0.760 p50 0.929, cave_reachable 88.0% (honest now). No regression.
+Notes: FALSIFY EVERY GATE TEST. My first falsification of the new adversarial masks
+       "passed", which looked like the tests were vacuous — actually I had restored
+       the wrong old behaviour. The pre-A10 bug was an UNBOUNDED region-union pass
+       BEFORE the bucketed pair loop; bucketing at 780 px already caps pairs, so
+       removing only the distance check changes nothing. With the real old pass
+       restored, 4 of 8 new tests fail. Method: reproduce the ORIGINAL code path,
+       not your idea of it.
+       BackdropMask: geodesic disc rule (DT from solid -> flood border where a disc
+       fits -> DT from that flood; interior = air further than reach away). The old
+       coarse closing used a SQUARE kernel = ~100 px axis-aligned rectangles in
+       concave corners. A "nothing above the column's first solid pixel" clip is
+       WRONG and I reverted it: it paints bright sky down every crevice, since a
+       crack open at the top has no rock above it either. Width is the distinction
+       and only the disc measures width.
+Left for later: T3.07-T3.12 (M3 part B).
