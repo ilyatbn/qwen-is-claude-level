@@ -84,3 +84,17 @@ Notes: DEVIATION — added lib.rs + app.rs + state.rs beyond the task's file lis
        the process env (a race under the threaded runner). Empty FIXED_SEED= means
        unset, not a parse error — compose writes it that way.
 Left for later: /metrics is T8.04. rooms/players counters are wired but always 0.
+
+## T0.06 — Client skeleton — DONE
+Files: client/{package.json,tsconfig.json,vite.config.ts,index.html},
+       client/src/{main.ts,scenes/BootScene.ts,net/socket.ts,net/socket.test.ts}
+Verified: `npm run typecheck` clean; `npm test -- --run` 8 passed;
+          headless Chromium: "[net] echo_back {"n":42,...} rtt 12 transport websocket"
+Notes: TRAP FOR LATER SESSIONS — the bundled Playwright chromium cannot start on
+       this box: libnspr4/libnss3/libasound2 are missing and there is no
+       passwordless sudo. Fix without root: `apt-get download libnspr4 libnss3
+       libasound2t64`, `dpkg-deb -x` each into /tmp/pwlibs/root, then run with
+       LD_LIBRARY_PATH=/tmp/pwlibs/root/usr/lib/x86_64-linux-gnu. Needed for every
+       E2E task (T8.07). Something else already occupies :5173, so vite lands
+       on :5174 — do not hard-code the port in tests.
+Left for later: nothing
