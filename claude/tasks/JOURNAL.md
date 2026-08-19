@@ -685,3 +685,19 @@ Notes: DUPLICATE CONSTANTS KILLED (M0 review item). main.ts no longer declares
        NOTE: the pkg is gitignored, so `npm test` after a fresh clone needs
        `wasm-pack build` first — that is what predev/prebuild are for.
 Left for later: nothing
+
+## Tooling — headless screenshot loop — DONE
+Files: scripts/shot.mjs, .gitignore (shots/)
+Usage: `node scripts/shot.mjs '?sandbox=1&seed=4242' sandbox 3000`
+       -> writes claude/shots/sandbox.png, which I can then READ directly.
+Notes: starts vite itself and READS THE PORT FROM VITE'S OUTPUT — 5173 is taken by
+       the sibling qwen project so it lands on 5174+, and hard-coding it gives a
+       silent blank page.
+       Sets LD_LIBRARY_PATH=$HOME/.cache/pwlibs/root/usr/lib/x86_64-linux-gnu for
+       chromium itself, so callers never have to remember it.
+       playwright-core resolves from client/node_modules via createRequire — it is
+       not resolvable from scripts/.
+       Waits for a canvas with non-zero dimensions rather than merely for the
+       element (Phaser inserts it well before the first frame), then waits waitMs.
+       Dumps window.__game.debug() if the page exposes it, plus console errors.
+       Exits non-zero on a pageerror, so it works as a CI gate later.
