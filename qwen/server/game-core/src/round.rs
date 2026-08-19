@@ -17,7 +17,7 @@ use crate::effects::EffectSchedule;
 use crate::items::*;
 use crate::map::{Map, Scale};
 use crate::physics::PhysicsWorld;
-use crate::player::{player_config::*, InputEdges, Player, PlayerInputState, DT};
+use crate::player::{player_config::*, Player, PlayerInputState, DT};
 use crate::protocol::{
     FogState, GroundItemSnap, InputFrame, ItemId, PlayerSnap, ProjectileSnap, Snapshot,
 };

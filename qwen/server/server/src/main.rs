@@ -88,7 +88,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (layer, io) = SocketIo::new_layer();
-    net::register(&io, log_level);
+    let rooms: net::Rooms = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    net::register(&io, log_level, rooms.clone(), config.seed);
 
     let app = axum::Router::new().layer(layer);
 
@@ -97,8 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("[net] listening on {addr} (namespace {})", game_core::protocol::NAMESPACE);
 
     // docs/05 §3: the 20 Hz fixed tick runs alongside the socket listener.
-    let rooms = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let ticker = tokio::spawn(tick::run(rooms));
+    let ticker = tokio::spawn(tick::run(rooms.clone(), io.clone()));
 
     // docs/05 §7: graceful shutdown on SIGINT — log active rooms, exit.
     axum::serve(listener, app)

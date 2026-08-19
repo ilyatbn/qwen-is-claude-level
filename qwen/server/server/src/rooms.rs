@@ -5,7 +5,7 @@
 
 use game_core::map::Scale;
 use game_core::protocol::InputFrame;
-use game_core::round::{Event, Round, RoundState, MAX_PLAYERS};
+use game_core::round::{Event, Round, RoundState};
 use std::collections::HashMap;
 
 pub type RoomId = u32;
@@ -130,6 +130,9 @@ impl Room {
         self.round.start_round(seed, scale)
     }
 
+    /// Current round state (docs/05 §2). Used by the integration test and
+    /// by lobby broadcasting.
+    #[allow(dead_code)]
     pub fn state(&self) -> RoundState {
         self.round.state
     }
@@ -138,6 +141,7 @@ impl Room {
 #[cfg(test)]
 mod rooms_tests {
     use super::*;
+    use game_core::round::MAX_PLAYERS;
 
     fn room() -> Room {
         Room::new(1, 42, Scale::Small)

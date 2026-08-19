@@ -228,6 +228,12 @@ found the defect on its first adversarial run.
 Both harnesses report and continue rather than panicking on the first failure, so one
 run surfaces everything. Keep that property.
 
+**The E2E pass must include the LIVE server**, not only the in-process harnesses. D44
+was a bug where every broadcast silently did nothing — `BroadcastOperators::emit`
+returns a Future and was never awaited — and it was invisible to 364 tests because they
+all stop one layer short of the socket. Run `client/scripts/ping-check.mjs` and
+`client/scripts/round-check.mjs` against a real server at every gate.
+
 ## Notes for Phase 3
 
 - **`Player::integrate` takes acceleration and uses Verlet** (D28). Do not "simplify"

@@ -1344,3 +1344,48 @@ a real socket, which is a T5.5 concern once the server is running in Docker.
 
 *(The doc's own instruction — "keep it coarse, the fine logic is already covered in
 game-core" — is the reason this is acceptable rather than a gap to close now.)*
+
+### D44 — Every broadcast silently did nothing: `emit` returns a Future
+
+**Not a spec defect — an implementation bug that only a live client could reveal.**
+Recorded because of how it hid, not because of what it was.
+
+**Symptom**: the server logged `[net] snap=1715 B clients=1` on every tick while a real
+connected client received **zero** snapshots. Join worked, `joined` arrived, ping/pong
+worked; nothing else did.
+
+**Cause**: socketioxide's two `emit` methods have different shapes.
+
+| API | Returns | Sends when |
+|---|---|---|
+| `SocketRef::emit` (one socket) | `Result<(), SendError>` | called |
+| `BroadcastOperators::emit` (namespace/room) | **`impl Future<Output = Result<..>>`** | **awaited** |
+
+The broadcast path was written as `let _ = ns.emit(event, &payload);`, which constructs
+a future and drops it unpolled. Rust warns about unused `Result`s, but `let _ =`
+suppresses that, and an unawaited future is not an error — so it compiled clean, ran
+clean, logged success, and sent nothing. Ping/pong kept working throughout because it
+uses the synchronous single-socket API.
+
+**Fixed** by making `broadcast` async and awaiting each send. That required scoping the
+`std::sync::MutexGuard` over the room list so it is dropped **before** the awaits — a
+guard held across an await makes the whole task non-`Send`, which `tokio::spawn` rejects.
+So the tick loop now steps every room under the lock, collects the payloads, releases the
+lock, and only then sends.
+
+**Why the test suite could not catch this.** T4.10's integration test drives `Room` and
+`tick::step_room` directly (D43), so it verifies the *payloads* are produced — which they
+were, correctly, all along. Nothing between `step_room` and the client was exercised. The
+one thing that would have caught it is what did: a real `socket.io-client` connecting to
+a running server and counting what arrives.
+
+`client/scripts/round-check.mjs` now does that at every gate — join, ready, and assert
+snapshots actually arrive — alongside `ping-check.mjs`. Before the fix it reported
+`snapshots=0`; after, `snapshots=121` with `round_started` received and 6 players in the
+payload.
+
+**The general lesson**, and the reason this sits in DEVIATIONS rather than a commit
+message: *a test that stops one layer short of the boundary cannot see a bug that lives
+at the boundary.* This is the same shape as D41, where every unit test placed the player
+at the item rather than deriving where a player stands. Both were found by running the
+real thing.

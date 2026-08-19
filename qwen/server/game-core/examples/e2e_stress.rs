@@ -258,7 +258,7 @@ fn main() {
     let fired = try_fire(&mut p2, &mut a2, &mut cd2, &mut i2, 0, DT);
     println!("  rocket in a slot with stale ammo 30: {:?}, ammo now {}", 
         if matches!(fired, FireResult::Fired(_)) { "Fired" } else { "blocked" }, a2[0]);
-    r.note("ammo[] is caller-owned and NOT reset by try_fire or by pickup — a weapon landing in a reused slot inherits whatever count was there (T4.1 must reset it via starting_ammo)");
+    r.note("try_fire/try_pickup do not own ammo[] — a caller that fails to reset it inherits stale counts. Round::RoundPlayer now owns and resets it (T4.1); this section checks the RAW API still behaves as documented for any other caller.");
 
     // =======================================================================
     println!("\n=== E. Ordering hazards nothing enforces ===");
@@ -283,7 +283,7 @@ fn main() {
     println!("  ground destroyed, colliders NOT rebuilt: player y {before:.0} -> {:.0}", walker.pos.y);
     let floating = (walker.pos.y - before).abs() < 1.0;
     r.note(&format!(
-        "skipping rebuild_segments leaves the player {} — nothing detects the stale collider set",
+        "skipping rebuild_segments leaves the player {} — the raw API cannot detect a stale collider set. Round::step now always rebuilds (T4.1); this checks the hazard still exists for any other caller.",
         if floating { "STANDING ON AIR" } else { "falling (harmless here)" },
     ));
 
@@ -321,7 +321,85 @@ fn main() {
     let died = shooter.apply_damage(dmg);
     println!("  a player standing on their own rocket blast took {dmg} and died={died}");
     r.check(died, "self-damage can kill (docs/04 §2)");
-    r.note("apply_damage takes no killer argument, so 'no kill credit for self' (docs/04 §2) and 'weather kills score no one' (docs/03 §6) cannot be expressed yet — T4.3 owns it");
+    r.note("apply_damage still takes no killer — by design. Round::kill carries DamageSource and applies both rules (T4.3); apply_damage owns health only, so weapons, weather and self-damage share one path.");
+
+    // =======================================================================
+    println!("\n=== H. Phase 4: a full round through Round::step ===");
+    // =======================================================================
+    // The five seams above are raw-API hazards. This section drives the whole
+    // round through round.rs, which is what owns them now.
+    {
+        use game_core::round::{Event, Round, RoundState};
+        let mut round = Round::new(4242, Scale::Medium);
+        for id in 0..6 {
+            round.join(format!("p{id}"));
+        }
+        round.start_round(4242, Scale::Medium);
+
+        let (mut kills, mut respawns, mut crates, mut items, mut destroyed) = (0usize, 0usize, 0usize, 0usize, 0usize);
+        let mut snapshots = 0usize;
+        for tick in 0..4800u64 {
+            let frame = InputFrame {
+                right: tick % 40 < 20,
+                left: tick % 40 >= 20,
+                jump: tick % 61 == 0,
+                fire: tick % 11 == 0,
+                aim: (tick as f32 * 0.07).sin(),
+                ..InputFrame::default()
+            };
+            let inputs: Vec<(u8, InputFrame)> =
+                (0..6u8).map(|id| (id, InputFrame { tick, ..frame })).collect();
+            for event in round.step(&inputs) {
+                match event {
+                    Event::Kill { .. } => kills += 1,
+                    Event::Respawned { .. } => respawns += 1,
+                    Event::CrateDropped { .. } => crates += 1,
+                    Event::ItemSpawned { .. } => items += 1,
+                    Event::TileDestroyed { tiles, .. } => destroyed += tiles.len(),
+                    _ => {}
+                }
+            }
+            if round.should_broadcast_snapshot() {
+                snapshots += 1;
+            }
+        }
+
+        println!("  4800 ticks: {kills} kills, {respawns} respawns, {crates} crate drops,");
+        println!("  {items} items spawned, {destroyed} tiles destroyed, {snapshots} snapshots");
+        r.check(round.state == RoundState::Ended, "the round reached Ended at 240 s");
+        r.check(crates == 5, "all 5 documented crate drops fired");
+        r.check(snapshots == 2400, "snapshots ran at 10 Hz across the whole round");
+        r.check(
+            round.map.version as usize == destroyed,
+            "map.version tracked every destroyed tile",
+        );
+
+        let (w, h) = round.map.pixel_size();
+        let mut sane = true;
+        let mut off_map = 0;
+        let mut stale_ammo = 0;
+        for rp in &round.players {
+            let p = &rp.player;
+            if !p.pos.x.is_finite() || !p.pos.y.is_finite() { sane = false; }
+            if p.health < 0.0 || !p.health.is_finite() { sane = false; }
+            if p.pos.x < -50.0 || p.pos.x > w + 50.0 || p.pos.y > h + 200.0 { off_map += 1; }
+            for (slot, held) in p.inventory.slots.iter().enumerate() {
+                if let Some(item) = held {
+                    let max = starting_ammo(*item);
+                    if max > 0 && rp.ammo[slot] > max { stale_ammo += 1; }
+                }
+            }
+        }
+        r.check(sane, "all player state finite and in range after a full round");
+        r.check(off_map == 0, "no player ended outside the map (was 1/6 before T4.1)");
+        r.check(stale_ammo == 0, "no slot holds more ammo than its weapon can carry");
+
+        let json = serde_json::to_string(&round.snapshot()).expect("snapshot serializes");
+        let back: game_core::protocol::Snapshot =
+            serde_json::from_str(&json).expect("snapshot round-trips");
+        r.check(back.players.len() == 6, "the snapshot always carries 6 players");
+        r.check(back.map_version == round.map.version, "the snapshot carries the live map version");
+    }
 
     println!("\n\n########## SUMMARY ##########");
     println!("checks passed: {}", r.pass);

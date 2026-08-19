@@ -1,7 +1,7 @@
 //! `tick` — the fixed 20 Hz loop (docs/00 §2, docs/05 §3).
 
 use crate::rooms::Room;
-use game_core::round::{Event, Round};
+use game_core::round::Event;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -17,6 +17,9 @@ const SNAPSHOT_LOG_INTERVAL: u64 = 100;
 
 /// What one tick produced, for the caller to broadcast.
 pub struct TickOutput {
+    /// Carried for future per-room socket.io rooms; v1 runs one room per
+    /// instance, so the namespace broadcast is the room broadcast.
+    #[allow(dead_code)]
     pub room_id: u32,
     /// `Some` on every second tick (docs/00 §2: snapshots at 10 Hz).
     pub snapshot: Option<String>,
@@ -88,7 +91,10 @@ fn log_event(room: u32, tick: u64, event: &Event) {
 }
 
 /// Run the fixed-tick loop forever (docs/05 §3).
-pub async fn run(rooms: Arc<Mutex<Vec<Room>>>) {
+///
+/// Broadcasts each room's snapshot and events to its namespace (docs/05 §4:
+/// snapshots at 10 Hz, events immediately).
+pub async fn run(rooms: Arc<Mutex<Vec<Room>>>, io: socketioxide::SocketIo) {
     let mut interval = tokio::time::interval(TICK_DURATION);
     // If the loop falls behind, skip missed ticks rather than bursting to
     // catch up — a burst would run the simulation faster than real time.
@@ -96,16 +102,101 @@ pub async fn run(rooms: Arc<Mutex<Vec<Room>>>) {
 
     loop {
         interval.tick().await;
-        let mut guard = match rooms.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+        // Step every room and collect the payloads in a scope that ENDS before
+        // the awaits: a std::sync::MutexGuard is not Send, so holding one
+        // across an await makes the whole task non-Send.
+        let outputs: Vec<TickOutput> = {
+            let mut guard = match rooms.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let outputs = guard.iter_mut().map(step_room).collect();
+            // docs/05 §2: "if room empty -> room closed".
+            guard.retain(|room| !room.is_empty());
+            outputs
         };
-        for room in guard.iter_mut() {
-            let _output = step_room(room);
-            // T4.10 wires _output to the socket layer.
+        for output in &outputs {
+            broadcast(&io, output).await;
         }
-        // docs/05 §2: "if room empty -> room closed".
-        guard.retain(|room| !room.is_empty());
+    }
+}
+
+/// Send one room's payloads to its clients (docs/05 §4).
+///
+/// v1 runs one room per instance (docs/05 §2), so the namespace broadcast is
+/// the room broadcast. Room-keyed rooms will need socket.io rooms when that
+/// changes.
+/// NOTE: `BroadcastOperators::emit` returns a **Future** and must be awaited.
+/// A single socket's `SocketRef::emit` is synchronous and returns `Result`,
+/// which is why ping/pong worked while every broadcast silently did nothing —
+/// `let _ = ns.emit(..)` built a future and dropped it unpolled. See
+/// DEVIATIONS.md D44.
+async fn broadcast(io: &socketioxide::SocketIo, output: &TickOutput) {
+    use game_core::protocol::s2c;
+    let namespace = game_core::protocol::NAMESPACE;
+    if let Some(json) = &output.snapshot {
+        // Already serialized once in step_room; send the string as raw JSON
+        // rather than re-serializing the whole snapshot per client.
+        match (serde_json::from_str::<serde_json::Value>(json), io.of(namespace)) {
+            (Ok(value), Some(ns)) => {
+                if let Err(err) = ns.emit(s2c::SNAPSHOT, &value).await {
+                    warn!("[net] snapshot emit failed: {err}");
+                }
+            }
+            (Err(err), _) => warn!("[net] snapshot is not valid JSON: {err}"),
+            (_, None) => warn!("[net] namespace {namespace} not found for broadcast"),
+        }
+    }
+    for event in &output.events {
+        let (name, payload) = match event {
+            Event::RoundStarted { seed, scale } => (
+                s2c::ROUND_STARTED,
+                serde_json::json!({ "seed": seed, "scale": scale.as_str() }),
+            ),
+            Event::RoundEnded => (s2c::ROUND_ENDED, serde_json::json!({})),
+            Event::TileDestroyed { tiles, version } => (
+                s2c::TILE_DESTROYED,
+                serde_json::json!({
+                    "tiles": tiles.iter().map(|t| serde_json::json!({"x": t.x, "y": t.y}))
+                        .collect::<Vec<_>>(),
+                    "version": version,
+                    "item_uncovered": serde_json::Value::Null,
+                }),
+            ),
+            Event::ItemSpawned { item, x, y, is_crate } => (
+                s2c::ITEM_SPAWNED,
+                serde_json::json!({ "item": item.as_str(), "x": x, "y": y, "crate": is_crate }),
+            ),
+            Event::ItemPicked { player, item } => (
+                s2c::ITEM_PICKED,
+                serde_json::json!({ "player": player, "item": item.as_str() }),
+            ),
+            Event::CrateDropped { x } => (s2c::CRATE_DROPPED, serde_json::json!({ "x": x })),
+            Event::ProjectileFired { id, owner, kind, x, y, angle } => (
+                s2c::PROJECTILE_FIRED,
+                serde_json::json!({
+                    "id": id, "owner": owner, "kind": kind.as_str(),
+                    "x": x, "y": y, "angle": angle,
+                }),
+            ),
+            Event::Explosion { x, y, radius } => (
+                s2c::EXPLOSION,
+                serde_json::json!({ "x": x, "y": y, "radius": radius }),
+            ),
+            Event::Kill { victim, killer, weapon } => (
+                s2c::KILL,
+                serde_json::json!({ "victim": victim, "killer": killer, "weapon": weapon }),
+            ),
+            Event::Respawned { player, x, y } => (
+                s2c::RESPAWNED,
+                serde_json::json!({ "player": player, "x": x, "y": y }),
+            ),
+        };
+        if let Some(ns) = io.of(namespace) {
+            if let Err(err) = ns.emit(name, &payload).await {
+                warn!("[net] {name} emit failed: {err}");
+            }
+        }
     }
 }
 
