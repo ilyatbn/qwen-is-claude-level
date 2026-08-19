@@ -486,3 +486,68 @@ satisfy both, since any lookup-table or polynomial substitute would no longer be
 polynomial substitute, it is the same function computed portably. The error mattered
 because this entry explicitly defers a decision to T2.6, and would have told that
 reader cross-platform determinism was unattainable when it is not.)*
+
+---
+
+## Phase 2 defects
+
+### D25 — T2.1's spawn y formula buries the player one full tile
+
+**Spec** (`tasks/02-player.md` T2.1 step 2): "place feet on tile top:
+`y = (tile_y+1)*16 - body_half_height`".
+
+**Problem**: the formula and its stated intent disagree. A tile at row `tile_y` spans
+pixels `tile_y*16 ..= (tile_y+1)*16`, so `(tile_y+1)*16` is the tile's **bottom** edge,
+not its top. `spawns` holds the GRASS tile itself (docs/01 §3 step 5: "candidates:
+GRASS tiles with the 2 tiles above AIR"), and that tile is solid — so putting the feet
+on its bottom edge sinks the body one full tile into solid ground, leaving only 12 px
+of a 28 px body above the surface.
+
+**Measured** (`game-core/examples/measure_spawn_formula.rs`, 100 seeds × 6 spawns,
+Small):
+
+| Formula | Body inside its own spawn tile |
+|---|---|
+| T2.1 literal, `y = (tile_y+1)*16 - half_h` | **600 / 600** |
+| corrected, `y = tile_y*16 - half_h` | **0 / 600** |
+
+**Implemented**: `y = tile_y*16 - BODY_HALF_HEIGHT`, which puts the feet on the tile's
+top edge — matching docs/01 §3 step 5's "player placed so its feet rest on the tile
+top" and T2.1's own Acceptance ("feet on tile top"). The prose is right; only the
+formula is wrong. Guarded by `spawn_formula_does_not_bury_the_player`, verified to fail
+if the literal formula is restored (3 tests fail).
+
+### D26 — The spawn candidate rule checks one column; the body is 1.5 tiles wide
+
+**Spec**: docs/01 §3 step 5 selects spawns as "GRASS tiles with the 2 tiles above AIR"
+— a test on a **single column**. docs/07 §5 makes the player a **24×28** rect (D6),
+i.e. 1.5 tiles wide.
+
+**Problem**: a 24 px body centred on a 16 px tile always spans into both neighbouring
+columns (from `centre-12` to `centre+12`, where the tile is only 16 px wide). Nothing in
+the candidate rule examines those columns, so a spawn on a ledge or spire places the
+body inside the adjacent terrain. The two-tile headroom check guarantees clearance
+only in the column it inspects.
+
+**Measured** (`game-core/examples/measure_spawn_fit.rs`, 100 seeds × 6 spawns):
+
+| Scale | spawns | own-column overlap | **neighbour overlap** | max depth |
+|---|---|---|---|---|
+| Small | 600 | 0 | **421 (70.2%)** | 95.5 px |
+| Medium | 600 | 0 | **462 (77.0%)** | 111.5 px |
+| Large | 600 | 0 | **481 (80.2%)** | 175.5 px |
+
+The own-column figure being exactly 0 confirms the doc's rule does what it says — it
+is simply the wrong test for a body wider than one tile. Depths reach 11 tiles, i.e.
+the spawn sits beside a tall spire the body is embedded in.
+
+**Implemented**: the documented behaviour, unchanged. Fixing it means widening the
+candidate rule in `find_spawns`, which is T1.5's code — outside T2.1's Files list
+(docs/00 §8: "Do not refactor files outside the task's Files list") — and would
+invalidate the golden map anchors. So it is recorded, not silently repaired.
+
+**Consequence for T2.6**: rapier resolves the overlap by ejecting the body, so players
+will visibly pop out of terrain on spawn rather than remaining stuck. That is a visual
+defect, not a correctness one. The real fix belongs in `find_spawns`: require the body's
+full width to clear, i.e. check columns `x-1 ..= x+1` for the two-tile headroom instead
+of just `x`. Deferred, and noted in the handoff.
