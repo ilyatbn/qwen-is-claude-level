@@ -18,6 +18,15 @@ export const PROTOCOL_VERSION = 1;
 /** socket.io namespace (docs/06 intro). */
 export const NAMESPACE = '/game';
 
+/**
+ * A fixed-length 6-tuple, mirroring the `[T; 6]` arrays in protocol.rs.
+ *
+ * docs/06 §4 writes `players: [PlayerSnap; 6]`, `slots: (string|null)[6]`,
+ * `ammo: number[6]`, and §2 writes `ready: [bool; 6]`. A tuple type enforces
+ * that cardinality; a plain array would not.
+ */
+export type Six<T> = [T, T, T, T, T, T];
+
 // ---------------------------------------------------------------------------
 // §3 — InputFrame (client -> server, 20 Hz)
 // ---------------------------------------------------------------------------
@@ -99,8 +108,8 @@ export interface Snapshot {
   fog: FogState;
   effect: ActiveEffectSnap | null;
   map_version: number;
-  /** Missing players: alive=false, x=y=0. */
-  players: PlayerSnap[];
+  /** docs/06 §4: always 6 — missing players carry alive=false, x=y=0. */
+  players: Six<PlayerSnap>;
   items: GroundItemSnap[];
   projectiles: ProjectileSnap[];
 }
@@ -134,11 +143,11 @@ export interface PlayerSnap {
   alive: boolean;
   respawn_in_s: number;
   score: number;
-  /** 6 slots (docs/04 §5). */
-  slots: (string | null)[];
+  /** docs/06 §4: `slots: (string|null)[6]` — 6 slots (docs/04 §5). */
+  slots: Six<string | null>;
   selected: number;
-  /** 6 entries, parallel to `slots`. */
-  ammo: number[];
+  /** docs/06 §4: `ammo: number[6]` — parallel to `slots`. */
+  ammo: Six<number>;
 }
 
 /** docs/06 §4 (`items`). */
@@ -175,12 +184,37 @@ export interface MeteorTarget {
   fired: boolean;
 }
 
+/** docs/06 §5 (`ToxicRain`). */
+export interface ToxicRainData {
+  spots: ToxicSpot[];
+}
+
+/** docs/06 §5 (`MeteorShower`). */
+export interface MeteorShowerData {
+  targets: MeteorTarget[];
+}
+
+/** docs/06 §5 (`LavaBurst`). */
+export interface LavaBurstData {
+  site: Point;
+  /**
+   * "spew" | "fire". Widened to `string` so the client cannot reject a value
+   * the Rust side (`LavaBurstData.phase: String`) can legally send. Narrowing
+   * both sides to a shared union is deferred to T4.6, which makes the two
+   * phases real. See HANDOFF-phase0.md "tracked".
+   */
+  phase: string;
+}
+
+/** docs/06 §5 (`HeavyFog`) — carries no data. */
+export type HeavyFogData = Record<string, never>;
+
 /** docs/06 §5 — discriminated by the owning message's `kind` field. */
 export type EffectData =
-  | { spots: ToxicSpot[] }
-  | { targets: MeteorTarget[] }
-  | { site: Point; phase: 'spew' | 'fire' }
-  | Record<string, never>;
+  | ToxicRainData
+  | MeteorShowerData
+  | LavaBurstData
+  | HeavyFogData;
 
 /** Effect kind names as they appear on the wire (docs/02 §7). */
 export const EFFECT_KINDS = [
@@ -257,8 +291,8 @@ export interface PlayerLeft {
 /** `lobby_state` (docs/06 §2). */
 export interface LobbyState {
   players: LobbyPlayer[];
-  /** 6 entries. */
-  ready: boolean[];
+  /** docs/06 §2: `ready: [bool; 6]`. */
+  ready: Six<boolean>;
   countdown_in_s: number | null;
 }
 

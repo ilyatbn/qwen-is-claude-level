@@ -105,8 +105,9 @@ pub struct Snapshot {
     pub fog: FogState,
     pub effect: Option<ActiveEffectSnap>,
     pub map_version: u64,
-    /// Missing players: `alive=false`, `x=y=0`.
-    pub players: Vec<PlayerSnap>,
+    /// docs/06 §4: `[PlayerSnap; 6]`. Always 6 entries — missing players are
+    /// present with `alive=false`, `x=y=0`.
+    pub players: [PlayerSnap; 6],
     pub items: Vec<GroundItemSnap>,
     pub projectiles: Vec<ProjectileSnap>,
 }
@@ -143,11 +144,11 @@ pub struct PlayerSnap {
     pub alive: bool,
     pub respawn_in_s: f32,
     pub score: i32,
-    /// 6 slots (docs/04 §5).
-    pub slots: Vec<Option<String>>,
+    /// docs/06 §4: `slots: (string|null)[6]` — 6 slots (docs/04 §5).
+    pub slots: [Option<String>; 6],
     pub selected: u8,
-    /// 6 entries, parallel to `slots`.
-    pub ammo: Vec<u8>,
+    /// docs/06 §4: `ammo: number[6]` — parallel to `slots`.
+    pub ammo: [u8; 6],
 }
 
 /// docs/06 §4 (`items`).
@@ -175,14 +176,55 @@ pub struct ProjectileSnap {
 
 /// docs/06 §5. Tagged by the owning message's `kind` field, so the payload
 /// itself is an untagged union of the four shapes.
+///
+/// Each variant wraps a named struct carrying `deny_unknown_fields` rather than
+/// being an inline struct variant. That is not cosmetic: `deny_unknown_fields`
+/// is a *container* attribute and cannot be applied to a variant, and without
+/// it a zero-field variant like `HeavyFog` matches ANY JSON object — serde
+/// ignores unknown fields by default. A malformed `ToxicRain` payload, or
+/// literal garbage like `{"anything":123}`, would then deserialize silently as
+/// `HeavyFog` instead of erroring. `determinism.rs` and `full_round.rs` compare
+/// deserialized state, so a silent fallback could let them pass on corrupt data.
+///
+/// The wire format is unchanged: untagged newtype variants serialize as the
+/// inner struct, exactly the four shapes docs/06 §5 lists.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EffectData {
-    ToxicRain { spots: Vec<ToxicSpot> },
-    MeteorShower { targets: Vec<MeteorTarget> },
-    LavaBurst { site: Point, phase: String },
-    HeavyFog {},
+    ToxicRain(ToxicRainData),
+    MeteorShower(MeteorShowerData),
+    LavaBurst(LavaBurstData),
+    HeavyFog(HeavyFogData),
 }
+
+/// docs/06 §5 (`ToxicRain`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToxicRainData {
+    pub spots: Vec<ToxicSpot>,
+}
+
+/// docs/06 §5 (`MeteorShower`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeteorShowerData {
+    pub targets: Vec<MeteorTarget>,
+}
+
+/// docs/06 §5 (`LavaBurst`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LavaBurstData {
+    pub site: Point,
+    /// "spew" | "fire". Kept as a `String` to mirror docs/06 §5's `kind:
+    /// string` convention; T4.6 makes the two phases real.
+    pub phase: String,
+}
+
+/// docs/06 §5 (`HeavyFog`) — carries no data.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeavyFogData {}
 
 /// docs/06 §5 (`ToxicRain.spots`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -276,8 +318,8 @@ pub struct PlayerLeft {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LobbyState {
     pub players: Vec<LobbyPlayer>,
-    /// 6 entries.
-    pub ready: Vec<bool>,
+    /// docs/06 §2: `ready: [bool; 6]`.
+    pub ready: [bool; 6],
     pub countdown_in_s: Option<f32>,
 }
 
@@ -527,9 +569,9 @@ mod tests {
             alive: true,
             respawn_in_s: 0.0,
             score: 0,
-            slots: vec![None; 6],
+            slots: [None, None, None, None, None, None],
             selected: 0,
-            ammo: vec![0; 6],
+            ammo: [0; 6],
         };
         let v = serde_json::to_value(snap).unwrap();
         let got = field_names(&v);
@@ -620,16 +662,16 @@ mod tests {
             effect: Some(ActiveEffectSnap {
                 kind: "toxic_rain".into(),
                 remaining_s: 3.5,
-                data: EffectData::ToxicRain {
+                data: EffectData::ToxicRain(ToxicRainData {
                     spots: vec![ToxicSpot {
                         x: 100.0,
                         y: 200.0,
                         remaining_s: 2.0,
                     }],
-                },
+                }),
             }),
             map_version: 3,
-            players: vec![],
+            players: std::array::from_fn(|i| missing_player(i as u8)),
             items: vec![],
             projectiles: vec![],
         };
@@ -656,13 +698,13 @@ mod tests {
     #[test]
     fn effect_data_shapes_match_doc() {
         // docs/06 §5 — four shapes.
-        let toxic = serde_json::to_value(EffectData::ToxicRain {
+        let toxic = serde_json::to_value(EffectData::ToxicRain(ToxicRainData {
             spots: vec![ToxicSpot {
                 x: 1.0,
                 y: 2.0,
                 remaining_s: 3.0,
             }],
-        })
+        }))
         .unwrap();
         assert_eq!(field_names(&toxic), sorted(&["spots"]));
         assert_eq!(
@@ -670,13 +712,13 @@ mod tests {
             sorted(&["x", "y", "remaining_s"])
         );
 
-        let meteor = serde_json::to_value(EffectData::MeteorShower {
+        let meteor = serde_json::to_value(EffectData::MeteorShower(MeteorShowerData {
             targets: vec![MeteorTarget {
                 x: 1.0,
                 y: 2.0,
                 fired: false,
             }],
-        })
+        }))
         .unwrap();
         assert_eq!(field_names(&meteor), sorted(&["targets"]));
         assert_eq!(
@@ -684,14 +726,14 @@ mod tests {
             sorted(&["x", "y", "fired"])
         );
 
-        let lava = serde_json::to_value(EffectData::LavaBurst {
+        let lava = serde_json::to_value(EffectData::LavaBurst(LavaBurstData {
             site: Point { x: 1.0, y: 2.0 },
             phase: "spew".into(),
-        })
+        }))
         .unwrap();
         assert_eq!(field_names(&lava), sorted(&["site", "phase"]));
 
-        let fog = serde_json::to_value(EffectData::HeavyFog {}).unwrap();
+        let fog = serde_json::to_value(EffectData::HeavyFog(HeavyFogData {})).unwrap();
         assert!(field_names(&fog).is_empty());
     }
 
@@ -720,5 +762,103 @@ mod tests {
     #[test]
     fn namespace_is_game() {
         assert_eq!(NAMESPACE, "/game");
+    }
+
+    /// docs/06 §4: "missing players: alive=false, x=y=0".
+    fn missing_player(id: u8) -> PlayerSnap {
+        PlayerSnap {
+            id,
+            name: String::new(),
+            skin: 0,
+            x: 0.0,
+            y: 0.0,
+            facing: 0.0,
+            health: 0.0,
+            max_health: 100.0,
+            shield_remaining: 0.0,
+            jetpack_fuel: 0.0,
+            fov: 0.0,
+            alive: false,
+            respawn_in_s: 0.0,
+            score: 0,
+            slots: [None, None, None, None, None, None],
+            selected: 0,
+            ammo: [0; 6],
+        }
+    }
+
+    #[test]
+    fn snapshot_always_carries_six_players() {
+        // docs/06 §4 declares `players: [PlayerSnap; 6]`. A fixed array makes
+        // the cardinality unrepresentable-if-wrong rather than merely intended.
+        let snap = Snapshot {
+            tick: 0,
+            round_time_s: 0.0,
+            day_phase: 0.0,
+            fog: FogState::default(),
+            effect: None,
+            map_version: 0,
+            players: std::array::from_fn(|i| missing_player(i as u8)),
+            items: vec![],
+            projectiles: vec![],
+        };
+        let v = serde_json::to_value(&snap).unwrap();
+        assert_eq!(v["players"].as_array().unwrap().len(), 6);
+        // Deserializing 5 players must fail, not silently truncate.
+        let mut short = v.clone();
+        short["players"].as_array_mut().unwrap().truncate(5);
+        assert!(serde_json::from_value::<Snapshot>(short).is_err());
+    }
+
+    #[test]
+    fn lobby_state_ready_is_six_wide() {
+        // docs/06 §2 declares `ready: [bool; 6]`.
+        let state = LobbyState {
+            players: vec![],
+            ready: [false; 6],
+            countdown_in_s: None,
+        };
+        let v = serde_json::to_value(&state).unwrap();
+        assert_eq!(v["ready"].as_array().unwrap().len(), 6);
+        assert!(serde_json::from_value::<LobbyState>(json!({
+            "players": [], "ready": [false, false], "countdown_in_s": null
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn effect_data_rejects_payloads_that_match_no_variant() {
+        // Regression: `HeavyFog {}` is a zero-field struct variant, and serde
+        // ignores unknown fields by default, so WITHOUT deny_unknown_fields an
+        // untagged enum matches any object at all as HeavyFog. Corrupt effect
+        // payloads would then deserialize silently instead of erroring.
+        assert!(serde_json::from_value::<EffectData>(json!({"anything": 123})).is_err());
+        // A ToxicRain payload with a typo'd field must NOT fall through to HeavyFog.
+        assert!(serde_json::from_value::<EffectData>(json!({"spot": []})).is_err());
+        // A LavaBurst missing `phase` must not fall through either.
+        assert!(
+            serde_json::from_value::<EffectData>(json!({"site": {"x": 1.0, "y": 2.0}})).is_err()
+        );
+
+        // The four documented shapes still deserialize to the right variant.
+        assert!(matches!(
+            serde_json::from_value::<EffectData>(json!({"spots": []})).unwrap(),
+            EffectData::ToxicRain { .. }
+        ));
+        assert!(matches!(
+            serde_json::from_value::<EffectData>(json!({"targets": []})).unwrap(),
+            EffectData::MeteorShower { .. }
+        ));
+        assert!(matches!(
+            serde_json::from_value::<EffectData>(
+                json!({"site": {"x": 1.0, "y": 2.0}, "phase": "spew"})
+            )
+            .unwrap(),
+            EffectData::LavaBurst { .. }
+        ));
+        assert!(matches!(
+            serde_json::from_value::<EffectData>(json!({})).unwrap(),
+            EffectData::HeavyFog(_)
+        ));
     }
 }

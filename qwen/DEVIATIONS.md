@@ -205,3 +205,36 @@ library against the same `/game` namespace, emits `ping`, and asserts `pong` ret
 - tick cadence measured at **20.00 Hz** over an 11 s window (docs/00 §2 target: 20)
 
 The browser check itself remains unperformed.
+
+### D15 — Effect-kind wire casing is invented; the spec never states it
+
+**Spec**: `docs/06-protocol.md` §5 keys `EffectData` by `ToxicRain` / `MeteorShower` /
+`LavaBurst` / `HeavyFog`, and `docs/02-map-effects.md` §7 uses the same PascalCase for
+the Rust `EffectKind` enum. But the values that actually travel on the wire are
+`kind: string` fields on `effect_started`, `effect_ended` and `Snapshot.effect`
+(docs/06 §2, §4), and **no doc states their casing**.
+
+**Problem**: PascalCase enum names and the wire strings are different things, and only
+the former are specified. Client and server must agree on the latter or every effect
+silently fails to render.
+
+**Implemented**: snake_case — `"toxic_rain"`, `"meteor_shower"`, `"lava_burst"`,
+`"heavy_fog"` — consistent with every other string constant on the wire (event names
+in docs/06 §1–§2 are all snake_case). Declared once in `client/src/protocol.ts`
+(`EFFECT_KINDS`). This is a wire-format decision made without spec authority; Phase 4
+is built on it, and `game-core`'s `EffectKind` serde names must match when T4.4–T4.8
+create them.
+
+### D16 — `protocol_version` is required by docs/06 §7 but absent from §2's `joined`
+
+**Spec**: `docs/06-protocol.md` §7 says "Protocol version constant
+`PROTOCOL_VERSION = 1` in both protocol files. **Server sends it in `joined`**; client
+warns (console + toast) on mismatch." But §2's `joined` payload is
+`{ id, room, seed, scale, map, players }` — no version field.
+
+**Problem**: the document contradicts itself. §7 mandates a field §2 omits.
+
+**Implemented**: a `protocol_version: u8` field added to `Joined` in both
+`protocol.rs` and `protocol.ts`, following §7 (the normative statement) over §2's
+table. The client-side mismatch **warning** is not yet implemented — no `joined`
+handler exists until the lobby is built; assigned to T4.10.

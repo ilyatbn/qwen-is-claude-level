@@ -2,6 +2,13 @@
  * docs/08-testing.md §3 (`protocol.ts` row):
  * "PROTOCOL_VERSION === 1; a round-trip JSON parse of a fixture snapshot
  *  matches expected field names (guards against TS/Rust drift)."
+ *
+ * The guard only works because SNAPSHOT_FIXTURE is annotated `: Snapshot`.
+ * Without the annotation the fixture is a structurally-inferred object literal
+ * and every assertion below checks the fixture against itself, leaving
+ * protocol.ts unchecked — renaming a field in the interface would still
+ * compile and still pass. The annotation is what makes a TS/Rust drift a
+ * `tsc --noEmit` failure. Do not replace it with a cast.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -16,11 +23,58 @@ import {
   TILE_STONE,
   type MapData,
   type PlayerSnap,
+  type Six,
   type Snapshot,
 } from './protocol';
 
-/** A snapshot fixture written from docs/06 §4 by hand, not from the code. */
-const SNAPSHOT_FIXTURE = {
+/** docs/06 §4: "missing players: alive=false, x=y=0". */
+function missingPlayer(id: number): PlayerSnap {
+  return {
+    id,
+    name: '',
+    skin: 0,
+    x: 0,
+    y: 0,
+    facing: 0,
+    health: 0,
+    max_health: 100,
+    shield_remaining: 0,
+    jetpack_fuel: 0,
+    fov: 0,
+    alive: false,
+    respawn_in_s: 0,
+    score: 0,
+    slots: [null, null, null, null, null, null],
+    selected: 0,
+    ammo: [0, 0, 0, 0, 0, 0],
+  };
+}
+
+const PLAYER_ZERO: PlayerSnap = {
+  id: 0,
+  name: 'p0',
+  skin: 1,
+  x: 100.0,
+  y: 200.0,
+  facing: 0.0,
+  health: 100.0,
+  max_health: 100.0,
+  shield_remaining: 0.0,
+  jetpack_fuel: 5.0,
+  fov: 420.0,
+  alive: true,
+  respawn_in_s: 0.0,
+  score: 0,
+  slots: ['pistol', null, null, null, null, null],
+  selected: 0,
+  ammo: [30, 0, 0, 0, 0, 0],
+};
+
+/**
+ * A snapshot fixture written from docs/06 §4 by hand, not from the code.
+ * The `: Snapshot` annotation is load-bearing — see the file header.
+ */
+const SNAPSHOT_FIXTURE: Snapshot = {
   tick: 240,
   round_time_s: 12.0,
   day_phase: 0.0,
@@ -32,29 +86,21 @@ const SNAPSHOT_FIXTURE = {
   },
   map_version: 3,
   players: [
-    {
-      id: 0,
-      name: 'p0',
-      skin: 1,
-      x: 100.0,
-      y: 200.0,
-      facing: 0.0,
-      health: 100.0,
-      max_health: 100.0,
-      shield_remaining: 0.0,
-      jetpack_fuel: 5.0,
-      fov: 420.0,
-      alive: true,
-      respawn_in_s: 0.0,
-      score: 0,
-      slots: ['pistol', null, null, null, null, null],
-      selected: 0,
-      ammo: [30, 0, 0, 0, 0, 0],
-    },
+    PLAYER_ZERO,
+    missingPlayer(1),
+    missingPlayer(2),
+    missingPlayer(3),
+    missingPlayer(4),
+    missingPlayer(5),
   ],
   items: [{ item: 'medkit', x: 50.0, y: 60.0, crate: false }],
   projectiles: [{ id: 7, kind: 'rocket', x: 10.0, y: 20.0 }],
 };
+
+/** Serialise and re-parse, preserving the static type of the input. */
+function roundTrip<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
 
 describe('PROTOCOL_VERSION', () => {
   it('is 1 (docs/06 §7)', () => {
@@ -68,12 +114,11 @@ describe('PROTOCOL_VERSION', () => {
 
 describe('snapshot fixture round-trip', () => {
   it('survives a JSON round trip unchanged', () => {
-    const parsed: unknown = JSON.parse(JSON.stringify(SNAPSHOT_FIXTURE));
-    expect(parsed).toEqual(SNAPSHOT_FIXTURE);
+    expect(roundTrip(SNAPSHOT_FIXTURE)).toEqual(SNAPSHOT_FIXTURE);
   });
 
   it('has exactly the field names docs/06 §4 lists', () => {
-    const snap = JSON.parse(JSON.stringify(SNAPSHOT_FIXTURE)) as Snapshot;
+    const snap = roundTrip(SNAPSHOT_FIXTURE);
     expect(Object.keys(snap).sort()).toEqual(
       [
         'tick',
@@ -90,10 +135,8 @@ describe('snapshot fixture round-trip', () => {
   });
 
   it('has exactly the PlayerSnap field names docs/06 §4 lists', () => {
-    const snap = JSON.parse(JSON.stringify(SNAPSHOT_FIXTURE)) as Snapshot;
-    const player = snap.players[0];
-    expect(player).toBeDefined();
-    expect(Object.keys(player as PlayerSnap).sort()).toEqual(
+    const snap = roundTrip(SNAPSHOT_FIXTURE);
+    expect(Object.keys(snap.players[0]).sort()).toEqual(
       [
         'id',
         'name',
@@ -116,8 +159,19 @@ describe('snapshot fixture round-trip', () => {
     );
   });
 
+  it('always carries 6 players, present or not (docs/06 §4)', () => {
+    const snap = roundTrip(SNAPSHOT_FIXTURE);
+    expect(snap.players).toHaveLength(6);
+    // Missing players are present with alive=false, x=y=0.
+    for (const player of snap.players.slice(1)) {
+      expect(player.alive).toBe(false);
+      expect(player.x).toBe(0);
+      expect(player.y).toBe(0);
+    }
+  });
+
   it('gives every player 6 inventory slots and 6 ammo counts (docs/04 §5)', () => {
-    const snap = JSON.parse(JSON.stringify(SNAPSHOT_FIXTURE)) as Snapshot;
+    const snap = roundTrip(SNAPSHOT_FIXTURE);
     for (const player of snap.players) {
       expect(player.slots).toHaveLength(6);
       expect(player.ammo).toHaveLength(6);
@@ -125,7 +179,7 @@ describe('snapshot fixture round-trip', () => {
   });
 
   it('models a ground item with a `crate` flag (docs/06 §4)', () => {
-    const snap = JSON.parse(JSON.stringify(SNAPSHOT_FIXTURE)) as Snapshot;
+    const snap = roundTrip(SNAPSHOT_FIXTURE);
     expect(Object.keys(snap.items[0] ?? {}).sort()).toEqual(
       ['item', 'x', 'y', 'crate'].sort(),
     );
@@ -143,8 +197,7 @@ describe('MapData', () => {
       decor: [{ x: 1, y: 2, kind: 'bush' }],
       spawns: [{ x: 5, y: 6 }],
     };
-    const parsed: unknown = JSON.parse(JSON.stringify(map));
-    expect(Object.keys(parsed as object).sort()).toEqual(
+    expect(Object.keys(roundTrip(map)).sort()).toEqual(
       ['seed', 'scale', 'width', 'height', 'tiles', 'decor', 'spawns'].sort(),
     );
   });
@@ -153,6 +206,13 @@ describe('MapData', () => {
     expect([TILE_AIR, TILE_GRASS, TILE_DIRT, TILE_STONE, TILE_ROCK]).toEqual([
       0, 1, 2, 3, 4,
     ]);
+  });
+});
+
+describe('fixed cardinalities', () => {
+  it('types a 6-wide lobby ready flag (docs/06 §2)', () => {
+    const ready: Six<boolean> = [false, false, false, false, false, false];
+    expect(ready).toHaveLength(6);
   });
 });
 
