@@ -413,3 +413,95 @@ wanted; a map where every crack is an entrance is as flat as one where none are.
 Consequently `air_reachable_from_sky` and any later reachability check must flood
 **body clearance**, not single pixels. A test that certifies 1-px connectivity is
 certifying something no player can use.
+
+## A10 — Traversability must be mutual
+
+**This corrects `10-map-generation.md` §7b.**
+
+The traversal graph as specified is undirected, and the `NavRegions` model built on
+it treats the open sky as one region, so every sky-exposed surface point is unioned
+with every other regardless of distance. Measured consequences on adversarial masks:
+
+| mask | old verdict | correct |
+|---|---|---|
+| 1900 px smooth shaft, open to sky, no ledges | traversable, fraction 1.000 | **no** |
+| undercut pit, 600 px deep | connected | **no** |
+| two plateaus 1600 px apart, open sky | connected | **no** |
+
+A player who falls down that shaft needs 1901 px of unbroken climb. A full jetpack
+gives roughly `JETPACK_MAX_SPEED * JETPACK_MAX_FUEL` ≈ 1300 px, and there is nowhere
+to land and refuel. The map is certified playable and is a hole you die in.
+
+The error is treating "can get from A to B" as symmetric. Falling is free; climbing
+is not.
+
+### The rule
+
+> Edges in the traversal graph are **directed**, and validation measures the largest
+> **strongly connected** set — the points that can reach each other *both ways*.
+
+| Move | Direction |
+|---|---|
+| Walk | both ways |
+| Drop | **downward only** |
+| Jump | both ways when the rise is within the jump envelope; downward only otherwise |
+| Jetpack | both ways when the rise is ≤ `JETPACK_CLIMB_BUDGET`; downward only otherwise |
+| Nav-region union through open air | subject to the same rise test — it is not a free pass |
+
+| Name | Value | Notes |
+|---|---|---|
+| `JETPACK_CLIMB_BUDGET` | 780 | `JETPACK_MAX_SPEED * JETPACK_MAX_FUEL * 0.6`, the conservative range already used for jetpack edges |
+| `LEDGE_REFUEL_RISE` | 780 | a climb longer than this is only permitted if it passes within `STEP_UP` of a standable surface point, which is where you land and refuel |
+
+`MIN_TRAVERSABLE_FRACTION` (0.75) is unchanged but now measures
+`largest_scc / total_surface_points`. This is a strictly stronger gate, so expect the
+attempt distribution to worsen; if the safe-preset rate rises above ~1 %, report the
+numbers rather than lowering the threshold.
+
+### Metadata
+
+`MapMeta` gains `largest_component: Vec<u32>` — the indices into `surface_points`
+that form the validated SCC. Without it, nothing downstream can tell "every cave is
+reachable" from "every cave is sealed", because a caller with no component to test
+against will pass every index and get an answer that is only the surface fraction
+under another name. That is precisely what the 999-seed sweep was reporting: a real
+88.2 % measured as 91.6 %.
+
+## A11 — Determinism: no `HashMap` iteration, ever, in the generator
+
+`traversal.rs` selected the largest component with `HashMap::into_values().max_by_key()`.
+`std::collections::HashMap` is randomly seeded **per process**, and `max_by_key`
+returns the last of several equal maxima — so on a size tie the chosen component
+varied run to run. Reproduced: same binary, same input, 12 processes, 8 chose one
+component and 4 chose the other.
+
+`largest_component` feeds spawn selection, so one seed could produce different spawn
+points in different processes — breaking the replay and golden guarantees in
+`01-architecture.md`. **The golden table hashes only the mask, so it can never catch
+this class of bug.**
+
+The rule, which is now absolute:
+
+> No iteration over a `HashMap` or `HashSet` anywhere a generated result depends on
+> the order. Key-lookup use is fine. Where a tie is possible, break it explicitly on
+> a stable integer — never leave it to `max_by_key`'s last-wins.
+
+Golden tests must cover `MapMeta` (spawn points, buried slots, component size), not
+only the mask.
+
+## A12 — Corrections to earlier docs found in review
+
+- `11-map-destruction.md` §8 says the dirty-chunk set "exactly equals the set of
+  chunks whose bits actually changed". The implementation marks the carve circle's
+  bounding box, which is a **superset** by at most four chunks. Over-reporting costs
+  one free rebake and under-reporting corrupts the render, so the implementation is
+  right and the doc is wrong. The requirement is: **the dirty set is a superset of
+  the changed set, and never omits a changed chunk.**
+- `BURIED_CLEARANCE` (24), `BURIED_SEPARATION` (128), `BURIED_OFFSET_MIN`,
+  `BURIED_OFFSET_MAX` and `BURIED_ATTEMPTS` belong in `constants.rs` like every other
+  tunable, not as file-local consts in `map/gen/meta.rs`.
+- `is_buried` samples the centre and four points at exactly ±clearance, never the ray
+  between, so a slot can sit against a tunnel wall while the pixel 24 px out is solid
+  (measured: 2 of 400 slots). Its test asserts the *same five pixels*, so it cannot
+  catch it. Both must sample the full ray. The same weakness governs chamber
+  placement at `CHAMBER_CLEARANCE`.
