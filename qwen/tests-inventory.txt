@@ -372,6 +372,18 @@ tiles::tests::tile_size_is_16px
 two_clients_join_ready_and_start_a_round
 
 ## typescript
+src/assets/manifest.test.ts > allTextureKeys > has a placeholder for every key, so no key can render blank
+src/assets/manifest.test.ts > allTextureKeys > keeps the bare tile-kind keys the renderer used before variants
+src/assets/manifest.test.ts > loadEntries > accepts a frame rect as well as a plain path (docs/07 §3)
+src/assets/manifest.test.ts > loadEntries > ignores variants past the third, which the % 3 formula can never select
+src/assets/manifest.test.ts > loadEntries > loads nothing when every section is in placeholder mode (docs/07 §2)
+src/assets/manifest.test.ts > manifestProblem > rejects a manifest written for another loader version
+src/assets/manifest.test.ts > manifestProblem > rejects a tile kind with too few variants
+src/assets/manifest.test.ts > the shipped manifest > is version 1 with every section docs/07 §2 lists
+src/assets/manifest.test.ts > the shipped manifest > lists exactly 3 variants per tile kind, as the % 3 formula requires
+src/assets/manifest.test.ts > the shipped manifest > maps the manifest's `shield` section key to the protocol's `shield_gen`
+src/assets/manifest.test.ts > the shipped manifest > never names a texture key that has no placeholder
+src/assets/manifest.test.ts > the shipped manifest > produces one load entry per texture key
 src/devmap.test.ts > buildDevMap > decodes to a full grid with ground in every column
 src/devmap.test.ts > buildDevMap > has open sky at the top and solid ground at the bottom
 src/devmap.test.ts > buildDevMap > is deterministic for a given seed

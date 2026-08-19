@@ -8,7 +8,7 @@ Read `docs/07-sprites.md` in full before starting this file.
 
 ---
 
-## T5.1 — Fetch Kenney packs + manifest loader [ ]
+## T5.1 — Fetch Kenney packs + manifest loader [x]
 
 **Goal**: assets downloaded, processed, manifest.json live, BootScene
 loads real textures (with placeholder fallback).

@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "tiles": {
+    "GRASS": ["processed/tiles/grass_1.png", "processed/tiles/grass_2.png", "processed/tiles/grass_3.png"],
+    "DIRT": ["processed/tiles/dirt_1.png", "processed/tiles/dirt_2.png", "processed/tiles/dirt_3.png"],
+    "STONE": ["processed/tiles/stone_1.png", "processed/tiles/stone_2.png", "processed/tiles/stone_3.png"],
+    "ROCK": ["processed/tiles/rock_1.png", "processed/tiles/rock_2.png", "processed/tiles/rock_3.png"]
+  },
+  "players": [
+    "processed/players/player_1.png",
+    "processed/players/player_2.png",
+    "processed/players/player_3.png",
+    "processed/players/player_4.png",
+    "processed/players/player_5.png",
+    "processed/players/player_6.png"
+  ],
+  "weapons": {
+    "pistol": "processed/weapons/pistol.png",
+    "shotgun": "processed/weapons/shotgun.png",
+    "rocket": "processed/weapons/rocket.png",
+    "grenade": "processed/weapons/grenade.png"
+  },
+  "items": {
+    "medkit": "processed/items/medkit.png",
+    "overcharge": "processed/items/overcharge.png",
+    "shield": "processed/items/shield.png",
+    "flashlight": "processed/items/flashlight.png"
+  },
+  "decor": {
+    "bush": "processed/decor/bush.png",
+    "rock": "processed/decor/rock.png",
+    "flower": "processed/decor/flower.png"
+  },
+  "ui": {
+    "panel": "processed/ui/panel.png",
+    "button": "processed/ui/button.png",
+    "hud_bar": "processed/ui/hud_bar.png"
+  }
+}

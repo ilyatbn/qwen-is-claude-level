@@ -1550,3 +1550,72 @@ early, and it costs one grep.
 
 **Being fixed in T5.3**, which is where `lobby_state` belongs; `player_joined` /
 `player_left` are wired at the same site since they are the same lifecycle moment.
+
+---
+
+### D49 — The manifest calls it `shield`, the protocol calls it `shield_gen`
+
+`docs/07-sprites.md` §2 lists the items section as
+`{ "medkit": ..., "overcharge": ..., "shield": ..., "flashlight": ... }`, and §1's folder
+listing agrees (`items/ … shield.png`). But `docs/04-items.md` and `docs/06-protocol.md`
+§3 name the item `shield_gen`, which is what `ItemId::ShieldGen` serializes as and what
+arrives in `item_spawned`, `item_picked` and `PlayerSnap.slots`.
+
+A renderer that looks up `items[item]` with the id off the wire finds nothing for the
+shield generator, and draws nothing — silently, since a missing texture key in Phaser
+renders as a green box, not an error.
+
+**Implemented with an explicit mapping**: `ITEM_KEYS` maps the manifest's section key to
+the protocol id, and texture keys are always the **protocol** id (`item_shield_gen`), so
+the wire is the source of truth and the manifest's spelling stays as docs/07 §2 writes
+it. A test pins the mapping.
+
+---
+
+### D50 — Placeholder table doesn't cover every key the manifest declares
+
+`docs/07-sprites.md` §5 gives placeholder shapes for tiles, players, weapons,
+projectiles, items, crosshair, fog, toxic spots and lava — but §2's manifest also
+declares a `decor` section (bush/rock/flower) and a `ui` section (panel/button/hud_bar),
+and §5 says nothing about either.
+
+That matters because §2's promise — "if a manifest entry is missing, BootScene falls back
+to the placeholder shape (so the game never breaks on a missing asset)" — is only true if
+a placeholder exists for **every** key. Two sections had none.
+
+**Implemented**: decor placeholders are 16×16 rects in kind-appropriate colours; UI
+placeholders are flat 32×8 rects. Chosen, not specified — recorded because they are
+invention, however small.
+
+The invariant is now a test rather than a hope: `allTextureKeys()` is derived from the
+same constants the key functions use, and `manifest.test.ts` fails if any key — declared
+or manifest-named — has no placeholder spec.
+
+---
+
+### D11 (update) — the Kenney URLs are dead, confirmed by request
+
+Re-attempted verbatim at T5.1, as specified:
+
+| URL | Status |
+|---|---|
+| `https://kenney.nl/media/pages/packs/tiny-dungeon.zip` | **404** |
+| `https://kenney.nl/media/pages/packs/pixel-adventure-1.zip` | **404** |
+| `https://kenney.nl/media/pages/packs/input-pack.zip` | **404** |
+
+The host answers, so these are wrong paths rather than an unreachable site. (Kenney's real
+download URLs carry a content hash; and "Pixel Adventure 1" is not a Kenney pack at all —
+it is Pixel Frog's, on itch.io.) T5.1 step 2's `unzip` and its LICENSE.txt copy therefore
+have nothing to operate on, and `assets/kenney/` ships empty.
+
+**docs/07 §2's escape hatch is what carries it, exactly as designed.** The manifest lists
+every real path per docs/07 §2; every one 404s; BootScene registers placeholders *before*
+requesting any file, so each failure leaves a placeholder standing and the game boots
+unchanged. Dropping real art in at the paths the manifest already names lights it up with
+no code change — the property docs/07 exists to provide.
+
+Verified over HTTP rather than asserted: with one real PNG present,
+`/processed/tiles/grass_1.png` → **200 image/png**; with it removed → **404**. Vite's SPA
+fallback initially answered missing assets with `index.html` and a 200, which would have
+made the fallback depend on an image decoder rejecting HTML; `appType: 'mpa'` makes a
+missing asset a plain 404.
