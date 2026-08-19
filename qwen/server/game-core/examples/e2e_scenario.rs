@@ -271,6 +271,13 @@ fn main() {
     // -----------------------------------------------------------------------
     r.section("4. Walk onto an item and pick it up");
     // -----------------------------------------------------------------------
+    let ground_before_section = ground.len();
+    if ground_before_section < 10 {
+        r.note(&format!(
+            "{} item(s) were already collected during the 60 settling ticks — with the body-relative pickup radius (D41) a settling player can land within reach",
+            10 - ground_before_section,
+        ));
+    }
     let target = ground[0];
     println!("  teleporting player 2 onto the {:?} at ({:.0},{:.0})", target.item, target.x, target.y);
     actors[2].player.pos = Vec2::new(target.x, target.y);
@@ -281,7 +288,11 @@ fn main() {
         actors[2].player.inventory.slots != before_slots,
         "standing on an item fills an inventory slot",
     );
-    r.check(ground.len() == 9, "the picked-up item was removed from the ground");
+    println!("  ground items: {ground_before_section} -> {}", ground.len());
+    r.check(
+        ground.len() == ground_before_section - 1,
+        "exactly the picked-up item was removed from the ground",
+    );
 
     // Pickup at the documented 16 px radius, from a body resting on the floor.
     let item = ground[0];
