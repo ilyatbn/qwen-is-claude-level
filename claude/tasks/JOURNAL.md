@@ -198,3 +198,18 @@ Notes: stamp_circle lives in map/shape.rs, NOT in blobs.rs — bridges, tunnels,
        by measuring the surface profile over the middle 60 px of each island.
        NOTE: i32::div_ceil is unstable on 1.97 — use (n+1)/2.
 Left for later: nothing
+
+## T1.05b — Pass 3b: bridges between islands (v2) — DONE
+Files: crates/game-core/src/map/gen/bridges.rs, gen/mod.rs
+Verified: `cargo test -p game-core bridges` — 11 passed
+Notes: the load-bearing test is a_bridge_actually_connects_the_two_islands — a
+       4-connected solid flood fill from one island must reach the other. Without
+       that, a "bridge" that visually spans but leaves a 1 px gap would pass every
+       other assertion.
+       Islands are sorted by (x,y) before pairing so the result does not depend on
+       add_blobs' emission order. Endpoints anchor on the island TOP surface, so a
+       bridge lands where you can walk onto it.
+       Quadratic sag: 4*t*(1-t)*BRIDGE_SAG, zero at both ends.
+       TEST TRAP: do not scan a whole column for "the lowest solid pixel" — bedrock
+       is always solid, so the scan must be bounded to the bridge neighbourhood.
+Left for later: nothing
