@@ -77,7 +77,7 @@ cd qwen/server && cargo run -q -p game-core --example e2e_stress     # 23/23
 
 ## Read these before writing code
 
-1. `HANDOFF-phase4.md` — most recent handoff (a phase 5 handoff is pending).
+1. `HANDOFF-phase5.md` — most recent; has all four standing rules consolidated.
 1b. `dev_summary.md` — all deviations, ~2 lines each, grouped by failure class.
 2. `HANDOFF-phase2.md` — standing rules 1–3 live here; rule 4 in phase 4's.
 3. `DEVIATIONS.md` — 56 entries; D1–D52 with gaps.
