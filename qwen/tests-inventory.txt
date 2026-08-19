@@ -341,6 +341,7 @@ round::round_tests::respawn_after_3s_keeps_inventory
 round::round_tests::respawn_uses_the_spawn_farthest_from_living_players
 round::round_tests::restart_new_seed
 round::round_tests::round_240s
+round::round_tests::round_ended_carries_the_score_table
 round::round_tests::round_state_machine_full_cycle
 round::round_tests::scheduled_effects_actually_start_during_a_round
 round::round_tests::score_kill_plus_death_minus

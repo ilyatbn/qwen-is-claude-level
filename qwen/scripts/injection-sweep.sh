@@ -18,6 +18,12 @@
 #   n        - n tests fail => guarded
 #   0        - compiles, all tests pass => UNGUARDED, fix before the gate
 #
+# KNOWN LIMITATION: a COMPILE result is only trustworthy when the tree compiled
+# cleanly BEFORE the sweep. If an unrelated break exists (e.g. a stale pattern in
+# test code that `cargo build` does not compile), every injection reports COMPILE.
+# Verify the tree with `cargo test --workspace` first, and spot-check any
+# surprising COMPILE by hand — one was observed to be false.
+#
 # The COMPILE case matters: an earlier version keyed on /^error/, which
 # `cargo test` also prints for ordinary test FAILURES ("error: test failed"),
 # so every guarded injection was misreported as a compile error. Keying on

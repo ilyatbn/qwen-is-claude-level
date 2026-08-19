@@ -89,7 +89,9 @@ fn log_event(room: u32, tick: u64, event: &Event) {
         Event::RoundStarted { seed, scale } => {
             info!("[round] started seed={seed} scale={} [tick={tick} room={room}]", scale.as_str());
         }
-        Event::RoundEnded => info!("[round] ended [tick={tick} room={room}]"),
+        Event::RoundEnded { scores } => {
+            info!("[round] ended players={} [tick={tick} room={room}]", scores.len());
+        }
         Event::Respawned { player, .. } => {
             debug!("[round] P{player} respawned [tick={tick} room={room}]");
         }
@@ -181,7 +183,12 @@ async fn broadcast(io: &socketioxide::SocketIo, output: &TickOutput) {
                 })
                 .unwrap_or_else(|_| serde_json::json!({})),
             ),
-            Event::RoundEnded => (s2c::ROUND_ENDED, serde_json::json!({})),
+            // docs/06 §2: round_ended carries the score table. RoundEndScene
+            // renders it, and an empty payload gave it nothing to show.
+            Event::RoundEnded { scores } => (
+                s2c::ROUND_ENDED,
+                serde_json::json!({ "scores": scores }),
+            ),
             Event::TileDestroyed { tiles, version } => (
                 s2c::TILE_DESTROYED,
                 serde_json::json!({

@@ -19,7 +19,7 @@ use crate::map::{Map, Scale};
 use crate::physics::PhysicsWorld;
 use crate::player::{player_config::*, Player, PlayerInputState, DT};
 use crate::protocol::{
-    ActiveEffectSnap, EffectData, GroundItemSnap, HeavyFogData, InputFrame, ItemId,
+    ActiveEffectSnap, EffectData, GroundItemSnap, HeavyFogData, InputFrame, ItemId, ScoreEntry,
     LavaBurstData, MeteorShowerData, PlayerSnap, Point, ProjectileSnap, Snapshot,
     ToxicRainData,
 };
@@ -62,7 +62,9 @@ pub enum DamageSource {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     RoundStarted { seed: u64, scale: Scale },
-    RoundEnded,
+    /// docs/06 §2: `round_ended { scores: [...] }`. T4.1 step 4 requires the
+    /// scores, so the event carries them rather than making the caller ask.
+    RoundEnded { scores: Vec<ScoreEntry> },
     TileDestroyed { tiles: Vec<TileDestroyed>, version: u64 },
     ItemSpawned { item: ItemId, x: f32, y: f32, is_crate: bool },
     ItemPicked { player: u8, item: ItemId },
@@ -277,7 +279,7 @@ impl Round {
                 if self.state_time_s >= ROUND_DURATION_S {
                     self.state = RoundState::Ended;
                     self.state_time_s = 0.0;
-                    events.push(Event::RoundEnded);
+                    events.push(Event::RoundEnded { scores: self.score_entries() });
                 }
             }
             RoundState::Ended => {
@@ -869,6 +871,20 @@ impl Round {
         self.tick % 2 == 0
     }
 
+    /// Wire scores for `round_ended` (docs/06 §2).
+    pub fn score_entries(&self) -> Vec<ScoreEntry> {
+        self.players
+            .iter()
+            .map(|p| ScoreEntry {
+                id: p.player.id,
+                name: p.player.name.clone(),
+                score: p.player.score,
+                kills: p.player.kills,
+                deaths: p.player.deaths,
+            })
+            .collect()
+    }
+
     /// Scores for `round_ended` (docs/06 §2).
     pub fn scores(&self) -> Vec<(u8, String, i32, u32, u32)> {
         self.players
@@ -958,7 +974,7 @@ mod round_tests {
             }
         }
         assert_eq!(round.state, RoundState::Ended, "the round did not end at 240 s");
-        assert!(events.iter().any(|e| matches!(e, Event::RoundEnded)));
+        assert!(events.iter().any(|e| matches!(e, Event::RoundEnded { .. })));
         assert!(
             (round.tick as f32 * DT - 240.0).abs() < 0.2,
             "the round ran for {} s, expected ~240",
@@ -1575,6 +1591,34 @@ mod round_tests {
         let effect = snap.effect.expect("the snapshot should carry the running effect");
         assert_eq!(effect.kind, "toxic_rain");
         assert!((effect.remaining_s - 8.0).abs() < 0.1, "remaining {}", effect.remaining_s);
+    }
+
+    #[test]
+    fn round_ended_carries_the_score_table() {
+        // T4.1 step 4 + docs/06 §2: "round_ended { scores: [{ id, name,
+        // score, kills, deaths }] }". Found by a retroactive sweep of an
+        // already-ticked task — the event existed and carried nothing.
+        let mut round = lobby_with(3);
+        round.start_round(1, Scale::Small);
+        let mut events = Vec::new();
+        round.kill(1, DamageSource::Player(0), "rocket", &mut events);
+
+        for _ in 0..4810u64 {
+            for event in round.step(&[]) {
+                if let Event::RoundEnded { scores } = event {
+                    assert_eq!(scores.len(), 3, "every player should appear in the table");
+                    let killer = scores.iter().find(|s| s.id == 0).expect("P0");
+                    let victim = scores.iter().find(|s| s.id == 1).expect("P1");
+                    assert_eq!(killer.kills, 1, "the killer's kill is missing");
+                    assert_eq!(killer.score, 1);
+                    assert_eq!(victim.deaths, 1, "the victim's death is missing");
+                    assert_eq!(victim.score, -1);
+                    assert!(!killer.name.is_empty(), "names must reach the scoreboard");
+                    return;
+                }
+            }
+        }
+        panic!("the round never emitted RoundEnded");
     }
 
     #[test]
