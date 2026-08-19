@@ -177,7 +177,7 @@ Read `docs/04-items.md` in full before starting this file.
 
 ---
 
-## T3.9 — Inventory UI + ammo HUD [ ]
+## T3.9 — Inventory UI + ammo HUD [x]
 
 **Goal**: right-click inventory panel; keys 1–6; HUD shows health/shield/
 jetpack/ammo.

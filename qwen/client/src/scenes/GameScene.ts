@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 import { Terrain } from '../entities/Terrain';
 import { Hud } from '../hud/Hud';
+import { InventoryUi } from '../hud/InventoryUi';
+import { hudView, localPlayer } from '../logic/inventoryModel';
 import { PlayerSprite } from '../entities/PlayerSprite';
 import { aimAngle } from '../logic/aim';
 import { computeFov } from '../logic/fov';
@@ -23,6 +25,7 @@ const DEBUG_PAN_SPEED = 600;
 export class GameScene extends Phaser.Scene {
   private terrain?: Terrain;
   private hud?: Hud;
+  private inventoryUi?: InventoryUi;
   private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
   private debugCamera = false;
   /** Stand-in for the local player until snapshots arrive (T2.9). */
@@ -55,7 +58,29 @@ export class GameScene extends Phaser.Scene {
     this.buildTerrain(map);
 
     this.hud = new Hud(this);
+    this.inventoryUi = new InventoryUi(this);
     this.darkness = this.add.graphics().setDepth(400);
+
+    // T3.9 step 2: keys 1-6 map to slots. T3.9 step 1: right-click or Tab
+    // toggles the panel; the game keeps running (docs/04 §5, real-time).
+    this.input.keyboard?.on('keydown', (event: KeyboardEvent) => {
+      const digit = Number.parseInt(event.key, 10);
+      if (digit >= 1 && digit <= 6) {
+        this.queueSlot(digit - 1);
+      }
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        this.inventoryUi?.toggle();
+      }
+    });
+    this.input.mouse?.disableContextMenu();
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      if (pointer.rightButtonDown()) {
+        this.inventoryUi?.toggle();
+      }
+    });
+    // Clicking a slot in the panel is the same as pressing its number key.
+    this.events.on('use-slot', (slot: number) => this.queueSlot(slot));
     this.keys = this.input.keyboard?.addKeys('W,A,S,D,SPACE') as
       | Record<string, Phaser.Input.Keyboard.Key>
       | undefined;
@@ -113,10 +138,15 @@ export class GameScene extends Phaser.Scene {
     this.interpolator.push(snapshot, receivedAt);
     // The server computes fov per player (docs/03 §7); the mask is for the
     // LOCAL player only (T2.10 step 4).
-    const local = snapshot.players.find((p) => p.id === this.localPlayerId);
+    const local = localPlayer(snapshot.players, this.localPlayerId);
     if (local) {
       this.fovRadius = local.fov;
       this.aimOrigin = { x: local.x, y: local.y };
+      // T3.9 step 4: every HUD value comes from the latest snapshot.
+      const view = hudView(local);
+      this.hud?.drawBars(view);
+      this.inventoryUi?.update(view.slots);
+      this.inventoryUi?.layout(this.cameras.main.width, this.cameras.main.height);
     }
     for (const snap of snapshot.players) {
       if (!this.sprites.has(snap.id)) {

@@ -330,6 +330,21 @@ src/logic/interpolation.test.ts > lerp > returns the endpoints at t=0 and t=1
 src/logic/interpolation.test.ts > lerpAngle > matches lerp away from the wrap boundary
 src/logic/interpolation.test.ts > lerpAngle > returns the endpoints at t=0 and t=1
 src/logic/interpolation.test.ts > lerpAngle > takes the short way across the ±π boundary
+src/logic/inventoryModel.test.ts > hudView > never produces NaN or an out-of-range fraction
+src/logic/inventoryModel.test.ts > hudView > reports health as a fraction for the bar (T3.9 step 3)
+src/logic/inventoryModel.test.ts > hudView > reports shield state from the remaining time
+src/logic/inventoryModel.test.ts > hudView > reports the jetpack fuel against the documented 5 s capacity
+src/logic/inventoryModel.test.ts > hudView > scales the health bar to max_health, not to 100
+src/logic/inventoryModel.test.ts > hudView > shows no weapon when a consumable or empty slot is selected
+src/logic/inventoryModel.test.ts > hudView > shows the selected weapon name and ammo
+src/logic/inventoryModel.test.ts > hudView > survives a selected index past the end
+src/logic/inventoryModel.test.ts > localPlayer > finds a player by id in the fixed six-entry list
+src/logic/inventoryModel.test.ts > slotViews > always produces six slots (docs/04 §5)
+src/logic/inventoryModel.test.ts > slotViews > maps each slot to its item and display name
+src/logic/inventoryModel.test.ts > slotViews > marks empty slots and gives them no ammo
+src/logic/inventoryModel.test.ts > slotViews > marks exactly one slot selected
+src/logic/inventoryModel.test.ts > slotViews > shows ammo for weapons only
+src/logic/inventoryModel.test.ts > slotViews > uses the wire id as a fallback name for an unknown item
 src/logic/terrainGrid.test.ts > TerrainGrid construction > reads row-major with y=0 on top (docs/01 §1)
 src/logic/terrainGrid.test.ts > TerrainGrid construction > rejects a tile array that does not match the dimensions
 src/logic/terrainGrid.test.ts > TerrainGrid construction > reports pixel bounds for the camera clamp
