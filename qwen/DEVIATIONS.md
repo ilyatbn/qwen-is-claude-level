@@ -551,3 +551,26 @@ will visibly pop out of terrain on spawn rather than remaining stuck. That is a 
 defect, not a correctness one. The real fix belongs in `find_spawns`: require the body's
 full width to clear, i.e. check columns `x-1 ..= x+1` for the two-tile headroom instead
 of just `x`. Deferred, and noted in the handoff.
+
+### D27 — T2.2's Test command selects none of the tests T2.2 creates
+
+**Spec** (`tasks/02-player.md` T2.2 Test): `cd server && cargo test -p game-core input`.
+
+**Problem**: `cargo test <filter>` matches on the full test path. T2.2's work lands in
+`player.rs` (the task's own Files list says "player.rs (or `input.rs` if cleaner)"), so
+its tests are `player::tests::*` — none of which contain the substring `input`. The
+documented command ran exactly one test, `protocol::tests::input_frame_field_names_
+match_doc`, which belongs to T0.2 and would pass whether or not T2.2 was implemented
+at all.
+
+This is the same class as D14 and the `spawn_spacing` filter noted in T1.5: the task
+files specify Test commands that were never executed against the code they gate.
+`docs/08-testing.md` §5 makes the Test command the definition of done, so a
+non-selecting filter means a task can be marked complete on evidence unrelated to it.
+
+**Implemented**: T2.2's tests live in `mod input_tests` inside `player.rs`, giving
+paths `player::input_tests::*`. The documented command now selects all 8 of them
+without changing the command, the file layout, or the task file.
+
+*(Found by running the command and reading its output rather than assuming a passing
+suite implied the right tests ran — the same discipline the Phase 1 handoff records.)*

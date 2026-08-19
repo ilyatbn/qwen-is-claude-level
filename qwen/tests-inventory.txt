@@ -55,6 +55,13 @@ map::tests::terrain_ascii_dump_seed1_small
 map::tests::tile_center_is_tile_midpoint
 map::tests::value_noise_is_bounded_and_sized
 map::tests::version_increments
+player::input_tests::a_jump_arriving_and_ending_between_ticks_is_still_one_edge
+player::input_tests::first_tick_without_a_frame_is_all_false
+player::input_tests::holding_jump_yields_exactly_one_edge
+player::input_tests::latest_frame_wins_within_one_tick
+player::input_tests::missing_frame_repeats_the_last_one
+player::input_tests::releasing_and_repressing_jump_yields_a_second_edge
+player::input_tests::use_slot_is_edge_triggered
 player::tests::body_dimensions_reconcile_all_three_docs
 player::tests::player_defaults_match_doc
 player::tests::six_players_get_six_distinct_spawns

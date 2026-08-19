@@ -4,6 +4,7 @@
 //! Server-authoritative: the server simulates every player from input frames.
 
 use crate::items::Inventory;
+use crate::protocol::InputFrame;
 use crate::map::Map;
 use crate::tiles::TILE_SIZE;
 use crate::Vec2;
@@ -178,6 +179,72 @@ impl Player {
     }
 }
 
+/// Per-player input state with edge detection (T2.2, docs/03 §3).
+///
+/// docs/03 §3: "Server applies the latest input frame per tick (missing frames
+/// → repeat last). `jump` and `use_slot` are edge-triggered server-side."
+///
+/// Lives here rather than in an `input.rs` because T0.1's module list is fixed;
+/// T2.2 permits either ("or `input.rs` if cleaner — note it in the file header").
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlayerInputState {
+    /// The most recent frame received. `None` until the first arrives.
+    pub last: Option<InputFrame>,
+    prev_jump: bool,
+    prev_use_slot: Option<u8>,
+}
+
+/// What one tick's input resolved to after edge detection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InputEdges {
+    /// True only on the tick `jump` transitions false → true.
+    pub jump_pressed: bool,
+    /// `Some(slot)` only on the tick a slot is newly pressed.
+    pub use_slot_pressed: Option<u8>,
+}
+
+impl PlayerInputState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a newly-arrived frame. Latest-wins (docs/06 §3).
+    ///
+    /// This does NOT compute edges — several frames may arrive between ticks
+    /// and only the last is simulated (docs/05 §3: "the tick loop takes the
+    /// LATEST frame per player, drops older"). Edges are resolved once per
+    /// tick by [`PlayerInputState::tick`].
+    pub fn receive(&mut self, frame: InputFrame) {
+        self.last = Some(frame);
+    }
+
+    /// Resolve this tick's input, returning the frame to simulate and its edges.
+    ///
+    /// A missing frame repeats the last one (docs/03 §3). Before any frame has
+    /// arrived, everything reads false.
+    pub fn tick(&mut self) -> (InputFrame, InputEdges) {
+        let frame = self.last.unwrap_or_default();
+
+        let jump_pressed = frame.jump && !self.prev_jump;
+        // A slot press is an edge too: the client sends `use_slot` as null
+        // except on the tick it is pressed (docs/06 §3), but a client that
+        // holds it must not fire every tick.
+        let use_slot_pressed = match (frame.use_slot, self.prev_use_slot) {
+            (Some(slot), Some(prev)) if slot == prev => None,
+            (Some(slot), _) => Some(slot),
+            (None, _) => None,
+        };
+
+        self.prev_jump = frame.jump;
+        self.prev_use_slot = frame.use_slot;
+
+        (frame, InputEdges {
+            jump_pressed,
+            use_slot_pressed,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,4 +389,122 @@ mod tests {
         let beyond = map.spawns.len() as u8;
         assert!(Player::spawn(&map, beyond, "x".into()).is_none());
     }
+}
+
+/// T2.2's input tests.
+///
+/// In their own module so the task's documented Test command,
+/// `cargo test -p game-core input`, actually selects them — as
+/// `player::input_tests::...`. Under `player::tests::...` that command matched
+/// only an unrelated protocol test and ran none of these. See DEVIATIONS.md D27.
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+
+fn held(jump: bool) -> InputFrame {
+    InputFrame {
+        jump,
+        ..InputFrame::default()
+    }
+}
+
+#[test]
+fn holding_jump_yields_exactly_one_edge() {
+    // T2.2 Acceptance: "holding space for 10 ticks yields exactly 1 jump
+    // edge". This is THE test for edge triggering — without it, holding
+    // space would re-jump every tick.
+    let mut input = PlayerInputState::new();
+    let mut edges = 0;
+    for _ in 0..10 {
+        input.receive(held(true));
+        if input.tick().1.jump_pressed {
+            edges += 1;
+        }
+    }
+    assert_eq!(edges, 1, "held jump produced {edges} edges, expected 1");
+}
+
+#[test]
+fn releasing_and_repressing_jump_yields_a_second_edge() {
+    let mut input = PlayerInputState::new();
+    let mut edges = 0;
+    // 3 held, 2 released, 3 held again -> exactly 2 edges.
+    for jump in [true, true, true, false, false, true, true, true] {
+        input.receive(held(jump));
+        if input.tick().1.jump_pressed {
+            edges += 1;
+        }
+    }
+    assert_eq!(edges, 2);
+}
+
+#[test]
+fn missing_frame_repeats_the_last_one() {
+    // docs/03 §3: "missing frames -> repeat last".
+    let mut input = PlayerInputState::new();
+    input.receive(InputFrame {
+        right: true,
+        aim: 1.25,
+        ..InputFrame::default()
+    });
+    let (first, _) = input.tick();
+    // No new frame arrives; tick again.
+    let (second, edges) = input.tick();
+    assert_eq!(first.right, second.right);
+    assert_eq!(first.aim, second.aim);
+    assert!(!edges.jump_pressed);
+}
+
+#[test]
+fn first_tick_without_a_frame_is_all_false() {
+    // docs/03 §3: "First tick with no frame -> all false."
+    let mut input = PlayerInputState::new();
+    let (frame, edges) = input.tick();
+    assert_eq!(frame, InputFrame::default());
+    assert!(!frame.left && !frame.right && !frame.jump && !frame.fire);
+    assert!(!edges.jump_pressed);
+    assert_eq!(edges.use_slot_pressed, None);
+}
+
+#[test]
+fn latest_frame_wins_within_one_tick() {
+    // T2.2 step 4 / docs/05 §3: several frames may arrive between ticks;
+    // only the last is simulated.
+    let mut input = PlayerInputState::new();
+    input.receive(InputFrame { tick: 1, left: true, ..InputFrame::default() });
+    input.receive(InputFrame { tick: 2, right: true, ..InputFrame::default() });
+    let (frame, _) = input.tick();
+    assert_eq!(frame.tick, 2);
+    assert!(frame.right && !frame.left);
+}
+
+#[test]
+fn a_jump_arriving_and_ending_between_ticks_is_still_one_edge() {
+    // Latest-wins means a press+release inside one tick window collapses.
+    // The edge must come from the frame actually simulated, not from any
+    // frame that happened to arrive.
+    let mut input = PlayerInputState::new();
+    input.receive(held(true));
+    input.receive(held(false));
+    assert!(!input.tick().1.jump_pressed, "released frame must not jump");
+    input.receive(held(true));
+    assert!(input.tick().1.jump_pressed);
+}
+
+#[test]
+fn use_slot_is_edge_triggered() {
+    // T2.2 step 2. A client holding the same slot must fire once.
+    let mut input = PlayerInputState::new();
+    let mut presses = Vec::new();
+    for slot in [Some(2), Some(2), Some(2), None, Some(2), Some(3)] {
+        input.receive(InputFrame {
+            use_slot: slot,
+            ..InputFrame::default()
+        });
+        if let Some(s) = input.tick().1.use_slot_pressed {
+            presses.push(s);
+        }
+    }
+    assert_eq!(presses, vec![2, 2, 3], "expected press, re-press, then slot 3");
+}
 }

@@ -29,7 +29,7 @@ Read `docs/03-player.md` in full before starting this file.
 
 ---
 
-## T2.2 — Input frame model [ ]
+## T2.2 — Input frame model [x]
 
 **Goal**: `InputFrame` applied per tick with latest-wins + edge triggers.
 **Read**: `docs/03-player.md` §3, `docs/00-architecture.md` §2.
