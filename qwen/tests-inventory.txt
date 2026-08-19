@@ -9,6 +9,11 @@ effects::day_night_tests::day_phase_is_continuous
 effects::day_night_tests::day_phase_stays_in_range
 effects::day_night_tests::the_cycle_repeats_every_120_seconds
 effects::day_night_tests::the_transitions_are_five_seconds_each
+effects::fog_tests::a_flashlight_does_not_cancel_fog
+effects::fog_tests::fog_does_no_damage
+effects::fog_tests::fog_lasts_fifteen_seconds
+effects::fog_tests::fog_reduces_fov
+effects::fog_tests::fog_stacks_multiplicatively_with_night
 effects::lava_tests::lava_constants_match_doc
 effects::lava_tests::lava_leaves_hidden_items_buried
 effects::lava_tests::lava_spew_then_ground_fire

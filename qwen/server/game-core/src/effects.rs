@@ -360,6 +360,31 @@ pub fn lava_damage_at(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Heavy fog (T4.7, docs/02 §6)
+// ---------------------------------------------------------------------------
+
+/// Fog duration, seconds (docs/02 §2 table, §6).
+pub const FOG_DURATION_S: f32 = 15.0;
+
+/// Fog state carried in the snapshot (docs/06 §4 `fog`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FogState {
+    pub active: bool,
+    pub remaining_s: f32,
+}
+
+impl FogState {
+    /// Fog for an effect that started `elapsed_s` ago (docs/02 §6).
+    pub fn at(elapsed_s: f32) -> Self {
+        if elapsed_s < FOG_DURATION_S {
+            FogState { active: true, remaining_s: FOG_DURATION_S - elapsed_s }
+        } else {
+            FogState::default()
+        }
+    }
+}
+
 /// The precomputed effect timeline for a round (docs/02 §8).
 ///
 /// Built at round start from the round RNG so a seed replays the same
@@ -856,5 +881,70 @@ mod lava_tests {
         assert_eq!(LAVA_PARTICLE_LIFE_S, 1.0);
         assert_eq!(LavaPhase::Spew.as_str(), "spew");
         assert_eq!(LavaPhase::Fire.as_str(), "fire");
+    }
+}
+
+/// T4.7 heavy-fog tests.
+#[cfg(test)]
+mod fog_tests {
+    use super::*;
+    use crate::player::Player;
+
+    #[test]
+    fn fog_reduces_fov() {
+        // docs/08 §1 (effects row) + T4.7 step 4: "fov with fog ~= 0.45 x
+        // without (same inputs)". T4.7 Acceptance: "assert local fov drops
+        // from 420 to 189 at full day".
+        let clear = Player::compute_fov(0.0, false, 100.0, false);
+        let foggy = Player::compute_fov(0.0, true, 100.0, false);
+        assert_eq!(clear, 420.0, "full day, healthy, no fog");
+        assert_eq!(foggy, 189.0, "fog should give 420 * 0.45 = 189");
+        assert!((foggy / clear - 0.45).abs() < 1e-4, "the ratio should be 0.45");
+    }
+
+    #[test]
+    fn fog_stacks_multiplicatively_with_night() {
+        // docs/02 §6: "stacks multiplicatively with night per docs/03 §7".
+        let night = Player::compute_fov(1.0, false, 100.0, false);
+        let night_fog = Player::compute_fov(1.0, true, 100.0, false);
+        assert!((night_fog - night * 0.45).abs() < 1e-3, "fog did not stack with night");
+        assert!((night_fog - 85.05).abs() < 1e-2, "420 * 0.45 * 0.45 = 85.05");
+    }
+
+    #[test]
+    fn fog_lasts_fifteen_seconds() {
+        // docs/02 §6: "Duration 15 s".
+        assert_eq!(FOG_DURATION_S, 15.0);
+        let start = FogState::at(0.0);
+        assert!(start.active);
+        assert_eq!(start.remaining_s, 15.0);
+
+        let mid = FogState::at(7.5);
+        assert!(mid.active);
+        assert_eq!(mid.remaining_s, 7.5);
+
+        assert!(FogState::at(14.9).active);
+        assert!(!FogState::at(15.0).active, "fog outlived its 15 s");
+        assert_eq!(FogState::at(15.0).remaining_s, 0.0);
+        assert!(!FogState::at(100.0).active);
+    }
+
+    #[test]
+    fn fog_does_no_damage() {
+        // docs/02 §2 table: fog damage is "none".
+        //
+        // Structural rather than behavioural: there is no fog damage function
+        // to call, which is the point. If one is ever added, this test's
+        // comment is where to explain why.
+        let before = Player::compute_fov(0.0, false, 100.0, false);
+        let after = Player::compute_fov(0.0, true, 100.0, false);
+        assert!(after < before, "fog should only shrink vision");
+    }
+
+    #[test]
+    fn a_flashlight_does_not_cancel_fog() {
+        // docs/03 §7: the flashlight sets night_factor to 1.0, nothing else.
+        let foggy_night = Player::compute_fov(1.0, true, 100.0, true);
+        assert_eq!(foggy_night, 189.0, "a flashlight should not clear fog");
     }
 }

@@ -132,7 +132,7 @@ score no one.
 
 ---
 
-## T4.7 — Heavy fog [ ]
+## T4.7 — Heavy fog [x]
 
 **Goal**: 15 s fog, FOV ×0.45, no damage.
 **Read**: `docs/02-map-effects.md` §6.
