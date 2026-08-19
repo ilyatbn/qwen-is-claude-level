@@ -643,3 +643,24 @@ Notes: apply_input order is the contract: edges -> horizontal -> try_jump ->
        walk 12+ px without ending up inside rock. Also every spawn point settles
        grounded without falling to bedrock. The M1 caves are body-traversable.
 Left for later: nothing. M2 complete.
+
+## T3.01 — game-wasm bindings — DONE
+Files: crates/game-wasm/{src/lib.rs,Cargo.toml}, game-core/src/map/meta.rs (serde on MapMeta)
+Verified: `wasm-pack test --node crates/game-wasm` — 12 passed
+          `wasm-pack build --target web` — 191 KB wasm into client/src/core/pkg (gitignored)
+Notes: the mask crosses as a POINTER (mask_ptr/mask_byte_len), never a copy. The
+       module docs spell out the detachment trap: any allocation can memory.grow,
+       which swaps the ArrayBuffer and silently detaches every JS view — T3.02 must
+       re-acquire when view.buffer !== memory.buffer.
+       Seed is two u32 halves; a u64 across wasm-bindgen drags in BigInt. There is a
+       test asserting the HIGH half actually changes the map, or the reassembly could
+       be silently dropping it.
+       player_state returns a flat f32 array (read every frame; a struct would cost a
+       serialisation step per call).
+       console_error_panic_hook in the constructor — without it a Rust panic in the
+       browser is a bare "unreachable executed".
+       TEST TRAP: placing a test player at an arbitrary mid-map point put it INSIDE
+       ROCK, where move_x is correctly blocked, so "apply_input moves a player"
+       failed for the wrong reason. Use the sky band (y < SKY_MARGIN), which
+       force_borders guarantees is air.
+Left for later: nothing

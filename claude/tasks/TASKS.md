@@ -85,7 +85,7 @@ including the 10× terminal velocity tunnelling test.
 Make M1 and M2 visible. Ends with a playable single-player browser sandbox and no
 server involved.
 
-- [ ] [T3.01](M3/T3.01-wasm-bindings.md) — `game-wasm`: generate, carve, step, mask pointer
+- [x] [T3.01](M3/T3.01-wasm-bindings.md) — `game-wasm`: generate, carve, step, mask pointer
 - [ ] [T3.02](M3/T3.02-wasm-ts-wrapper.md) — Typed TS wrapper and the build hook
 - [ ] [T3.03](M3/T3.03-chunk-bake.md) — Mask → stencil → textured chunk
 - [ ] [T3.04](M3/T3.04-edge-band.md) — The grass/edge band

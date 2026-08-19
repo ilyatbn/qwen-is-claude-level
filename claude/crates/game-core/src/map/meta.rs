@@ -49,6 +49,7 @@ pub struct Decoration {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MapMeta {
     pub seed: u64,
     pub requested_seed: u64,
