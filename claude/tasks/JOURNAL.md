@@ -43,3 +43,13 @@ Notes: socketioxide 0.18 needs axum 0.8 (not 0.7 as the task file says) — they
        http 1.x. Deviated to axum 0.8 + socketioxide 0.18. game-core's `serde` and
        `dump-png` are optional features; `default = ["serde"]`.
 Left for later: nothing
+
+## T0.02 — constants.rs — DONE
+Files: crates/game-core/src/constants.rs, lib.rs
+Verified: `cargo test -p game-core constants` — 15 passed
+Notes: mirrors docs/02-constants.md AND the v2 amendments (marked section at the
+       bottom). Ranges became _MIN/_MAX pairs. ScaleParams gained cave_chambers,
+       crevice_count, void_count, bridge_count; blob_count raised to 6/10/15 per v2.
+       Tests need #[allow(clippy::assertions_on_constants)] — asserting on consts is
+       the point of the file.
+Left for later: nothing

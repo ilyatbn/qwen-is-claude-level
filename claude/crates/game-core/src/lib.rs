@@ -6,3 +6,5 @@
 //! seeded [`rand_chacha::ChaCha8Rng`] passed in explicitly.
 //!
 //! See `docs/01-architecture.md`.
+
+pub mod constants;
