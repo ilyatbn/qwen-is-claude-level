@@ -168,3 +168,19 @@ Notes: TRAP — the obvious `hash2 = x*A ^ y*B ^ seed*C` ALIASES: hash2(-3,7) ==
        COST: warped_fbm = 3 fbm = 15 value_noise = 60 hash2 per pixel. At large
        scale that is ~500M hash calls, so keep hash2 cheap.
 Left for later: nothing
+
+## T1.04 — Passes 1-2: preset and silhouette — DONE
+Files: crates/game-core/src/map/gen/{silhouette.rs,mod.rs}, map/{mod.rs,noise.rs}
+Verified: `cargo test -p game-core silhouette` — 10 passed, 2 ignored (slow ones)
+          release: large 8.4Mpx silhouette 485 ms; 50 medium seeds solid 0.475..0.551
+Notes: PERF — per-pixel warped_fbm was 1127 ms at large scale (medium ~630 ms vs the
+       doc's 300 ms budget). The warp is a very low-frequency field: its noise
+       lattice cell is ~333 px, so evaluating it per pixel is 40x oversampled.
+       Added noise::WarpField, which precomputes the displacement every 8 px and
+       bilinearly interpolates — 485 ms, and solid fraction is unchanged (0.508).
+       A test asserts the cache agrees with exact warped_fbm within 0.01.
+       GenParams carries the v2 counts (bridges/chambers/crevices/voids) so the
+       later passes read one struct. safe_for() zeroes voids+crevices per §A2.
+       TWO IGNORED TESTS, run them with:
+         cargo test -p game-core --release silhouette -- --ignored --nocapture
+Left for later: nothing

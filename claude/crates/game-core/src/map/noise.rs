@@ -122,6 +122,95 @@ pub fn warped_fbm(x: f32, y: f32, seed: u64) -> f32 {
     fbm(x + wx * d, y + wy * d, seed)
 }
 
+/// Spacing, in **pixels**, of the cached warp lattice used by [`WarpField`].
+///
+/// The warp is sampled at half the base frequency, so its noise lattice cell is
+/// `1 / (NOISE_BASE_SCALE * 0.5)` ≈ 333 px across. Sampling it every 8 px is 40×
+/// oversampled — bilinear interpolation between those samples is visually and
+/// numerically indistinguishable from evaluating it per pixel, and it removes two
+/// of the three fBm evaluations from the per-pixel cost.
+pub const WARP_CACHE_STEP: u32 = 8;
+
+/// The domain-warp displacement field, precomputed on a coarse lattice.
+///
+/// [`warped_fbm`] evaluates the warp per pixel, which is correct but wasteful: two
+/// of its three fBm calls are for a field that barely changes over hundreds of
+/// pixels. `WarpField` computes those two on a `WARP_CACHE_STEP` grid once and
+/// interpolates, which is what makes a large map generate in a few hundred
+/// milliseconds rather than over a second.
+///
+/// It is a pure function of the seed, so determinism is unaffected.
+pub struct WarpField {
+    gw: u32,
+    gh: u32,
+    /// Interleaved (dx, dy) displacement in *scaled noise space*, not pixels.
+    d: Vec<f32>,
+}
+
+impl WarpField {
+    pub fn build(w: u32, h: u32, seed: u64) -> Self {
+        let seed_a = seed ^ 0xa24b_1f57_9c3d_e801;
+        let seed_b = seed ^ 0x51e1_7d3b_66af_2c95;
+        // +2 so the last pixel always has a right/bottom neighbour to interpolate to.
+        let gw = w.div_ceil(WARP_CACHE_STEP) + 2;
+        let gh = h.div_ceil(WARP_CACHE_STEP) + 2;
+        let mut d = vec![0.0f32; (gw * gh * 2) as usize];
+
+        let amount = crate::constants::WARP_STRENGTH * NOISE_BASE_SCALE;
+        for gy in 0..gh {
+            let sy = (gy * WARP_CACHE_STEP) as f32 * NOISE_BASE_SCALE * 0.5;
+            for gx in 0..gw {
+                let sx = (gx * WARP_CACHE_STEP) as f32 * NOISE_BASE_SCALE * 0.5;
+                // Two independent seeds: using one field for both displacements
+                // would collapse the warp onto the diagonal.
+                let i = ((gy * gw + gx) * 2) as usize;
+                d[i] = (fbm(sx, sy, seed_a) * 2.0 - 1.0) * amount;
+                d[i + 1] = (fbm(sx, sy, seed_b) * 2.0 - 1.0) * amount;
+            }
+        }
+        WarpField { gw, gh, d }
+    }
+
+    /// Bilinear-interpolated displacement at a pixel position.
+    #[inline]
+    pub fn at(&self, px: f32, py: f32) -> (f32, f32) {
+        let gx = px / WARP_CACHE_STEP as f32;
+        let gy = py / WARP_CACHE_STEP as f32;
+        let x0 = (gx.floor().max(0.0) as u32).min(self.gw - 2);
+        let y0 = (gy.floor().max(0.0) as u32).min(self.gh - 2);
+        let fx = (gx - x0 as f32).clamp(0.0, 1.0);
+        let fy = (gy - y0 as f32).clamp(0.0, 1.0);
+
+        let i00 = ((y0 * self.gw + x0) * 2) as usize;
+        let i10 = i00 + 2;
+        let i01 = (((y0 + 1) * self.gw + x0) * 2) as usize;
+        let i11 = i01 + 2;
+
+        let mix = |a: f32, b: f32, c: f32, e: f32| {
+            let top = a + (b - a) * fx;
+            let bot = c + (e - c) * fx;
+            top + (bot - top) * fy
+        };
+        (
+            mix(self.d[i00], self.d[i10], self.d[i01], self.d[i11]),
+            mix(
+                self.d[i00 + 1],
+                self.d[i10 + 1],
+                self.d[i01 + 1],
+                self.d[i11 + 1],
+            ),
+        )
+    }
+
+    /// The field value at a pixel, warped. Equivalent to [`warped_fbm`] up to the
+    /// interpolation of the displacement.
+    #[inline]
+    pub fn sample(&self, px: f32, py: f32, seed: u64) -> f32 {
+        let (dx, dy) = self.at(px, py);
+        fbm(px * NOISE_BASE_SCALE + dx, py * NOISE_BASE_SCALE + dy, seed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +351,65 @@ mod tests {
             }
         }
         assert_eq!(same, 0, "x and y displacement fields are not independent");
+    }
+
+    #[test]
+    fn warp_field_matches_per_pixel_evaluation() {
+        // The cache is only legitimate if it agrees with the exact version. The
+        // warp lattice is ~333 px across and the cache step is 8 px, so the
+        // interpolated displacement should track it very closely.
+        let (w, h) = (512u32, 512u32);
+        let seed = 24680u64;
+        let f = WarpField::build(w, h, seed);
+
+        let mut worst = 0.0f32;
+        let mut worst_at = (0.0, 0.0);
+        for py in (0..h).step_by(7) {
+            for px in (0..w).step_by(7) {
+                let cached = f.sample(px as f32, py as f32, seed);
+                let exact = warped_fbm(
+                    px as f32 * NOISE_BASE_SCALE,
+                    py as f32 * NOISE_BASE_SCALE,
+                    seed,
+                );
+                let e = (cached - exact).abs();
+                if e > worst {
+                    worst = e;
+                    worst_at = (px as f32, py as f32);
+                }
+            }
+        }
+        assert!(
+            worst < 0.01,
+            "warp cache diverges by {worst} at {worst_at:?} — raise the resolution"
+        );
+    }
+
+    #[test]
+    fn warp_field_is_deterministic() {
+        let a = WarpField::build(256, 256, 5);
+        let b = WarpField::build(256, 256, 5);
+        for py in (0..256).step_by(13) {
+            for px in (0..256).step_by(13) {
+                assert_eq!(a.at(px as f32, py as f32), b.at(px as f32, py as f32));
+            }
+        }
+    }
+
+    #[test]
+    fn warp_field_edges_do_not_panic() {
+        let f = WarpField::build(256, 256, 1);
+        // Corners, past-the-end and negative positions must all clamp.
+        for (x, y) in [
+            (0.0, 0.0),
+            (255.0, 255.0),
+            (256.0, 256.0),
+            (-5.0, -5.0),
+            (1e6, 1e6),
+        ] {
+            let (dx, dy) = f.at(x, y);
+            assert!(dx.is_finite() && dy.is_finite(), "({x},{y}) -> ({dx},{dy})");
+        }
     }
 
     #[test]
