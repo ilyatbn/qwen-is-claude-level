@@ -296,3 +296,43 @@ exploration and it makes a large map legible.
 
 Toggled with `M`. Client-only; it reveals from the client's own mask, so it costs
 the server nothing.
+
+## A7 — Constants the original spec stated in prose only
+
+`docs/02-constants.md` §Weapons gives these as sentences rather than table rows,
+which makes "every number lives in a table" unverifiable. They are now rows. The
+values are unchanged — this is bookkeeping, not tuning.
+
+| Name | Value | Source |
+|---|---|---|
+| `SMG_SHOTS` | 1 | `31-weapons-combat.md` §1 — the smg fires one ray per trigger pull; `Delivery::Hitscan { shots }` needs a number |
+| `SMG_GRAVITY_SCALE` | 0.0 | `31-weapons-combat.md` §1 table row "Gravity scale — 0" |
+| `SMG_WIND_SCALE` | 0.0 | `31-weapons-combat.md` §1 table row "Wind scale — 0" |
+| `GRENADE_REST_SPEED` | 30.0 | `31-weapons-combat.md` §3 — "below ~30 px/s ... stop it" |
+| `PROJECTILE_OWNER_GRACE_TICKS` | 3 | `31-weapons-combat.md` §3 — "excluding the owner during the first 3 ticks" |
+
+## A8 — Client test layout: pure logic never imports Phaser
+
+Phaser cannot be imported under vitest on this project: `environment: 'node'` fails
+with `window is not defined`, and `jsdom` fails inside `CanvasFeatures` because
+jsdom's `getContext('2d')` returns null. Making it work would mean the native
+`canvas` package and a C toolchain, which is not worth it.
+
+So the rule is structural, and it applies to **every** client module with testable
+logic in it:
+
+> A module that imports `phaser` exports no pure function that a test needs.
+> Pure logic lives in a sibling Phaser-free module, and the Phaser class imports
+> *it* — never the reverse.
+
+Concretely, replacing the single-file deliverables in the v2 task files:
+
+| Task | Phaser-free (tested) | Phaser (untested, eyeballed) |
+|---|---|---|
+| T3.12 | `client/src/render/sky-math.ts` — `cycleU`, `skyPhase`, `skyColors`, `bodyPositions`, `starField` | `client/src/render/sky.ts` — `SkyLayer` |
+| T4.15 | `client/src/render/ordnance-state.ts` — tracer/trail/impact bookkeeping, `lights()` | `client/src/render/ordnance.ts` — `OrdnanceLayer` |
+| T8.06 | `client/src/ui/minimap-math.ts` — reveal grid, world↔minimap mapping | `client/src/ui/minimap.ts` — `Minimap` |
+| T8.08 | `client/src/render/feel-math.ts` — trauma decay; `client/src/ui/killfeed-state.ts` — the queue | `client/src/render/feel.ts`, `client/src/ui/killfeed.ts` |
+
+`vitest` keeps `environment: 'node'`. Any test file that needs the Phaser namespace
+for a type only may `import type` it, which is erased at compile time and safe.

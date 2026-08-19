@@ -255,7 +255,10 @@ pub const SMG_RANGE: f32 = 700.0;
 pub const SMG_COOLDOWN: f32 = 0.10;
 pub const SMG_AMMO: u8 = 60;
 pub const SMG_SPREAD: f32 = 0.03;
+/// Rays per trigger pull. `docs/70-amendments-v2.md` §A7.
 pub const SMG_SHOTS: u8 = 1;
+pub const SMG_GRAVITY_SCALE: f32 = 0.0;
+pub const SMG_WIND_SCALE: f32 = 0.0;
 
 /// Projectiles spawn this far along the aim direction, so you do not shoot yourself.
 pub const MUZZLE_OFFSET: f32 = 18.0;
