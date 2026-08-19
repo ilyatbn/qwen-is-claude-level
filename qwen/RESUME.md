@@ -2,7 +2,7 @@
 
 Single source of truth for picking this up cold. Updated at each phase gate.
 
-**Last updated:** end of Phase 2 (T2.10 signed off) · commit `4b6d7d9`
+**Last updated:** end of Phase 3 (T3.9 signed off) · commit `d10e4de`
 
 ---
 
@@ -24,18 +24,18 @@ design and is not used).
 | 0 — Scaffold | T0.1–T0.3 | **done, signed off** |
 | 1 — Map | T1.1–T1.10 | **done, signed off** |
 | 2 — Player | T2.1–T2.10 | **done, signed off** |
-| 3 — Items | T3.1–T3.9 | not started |
+| 3 — Items | T3.1–T3.9 | **done, signed off** |
 | 4 — Rounds | T4.1–T4.10 | not started |
 | 5 — Sprites | T5.1–T5.5 | not started |
 
-23/23 checkboxes ticked through Phase 2. 35 deviations recorded.
+32/32 checkboxes ticked through Phase 3. 40 deviations recorded.
 
 ## How to verify the current state
 
 ```bash
-cd qwen/server && cargo build && cargo test      # expect 158 + 8, 0 warnings
-cd qwen/client && npm test && npm run build      # expect 103 passed
-cd qwen && bash scripts/test-inventory.sh        # expect OK (270 tests)
+cd qwen/server && cargo build && cargo test      # expect 246 + 9, 0 warnings
+cd qwen/client && npm test && npm run build      # expect 118 passed
+cd qwen && bash scripts/test-inventory.sh        # expect OK (375 tests)
 ```
 
 ## Process (agreed with the user)
@@ -49,9 +49,10 @@ cd qwen && bash scripts/test-inventory.sh        # expect OK (270 tests)
 
 ## Read these before writing code
 
-1. `HANDOFF-phase2.md` — most recent; has the standing rules and deferred items.
-2. `DEVIATIONS.md` — 35 entries; D1–D36 with gaps.
-3. `HANDOFF-phase0.md`, `HANDOFF-phase1.md` for earlier context.
+1. `HANDOFF-phase3.md` — most recent; has the deferred items for Phase 4.
+2. `HANDOFF-phase2.md` — the standing rules live here.
+3. `DEVIATIONS.md` — 40 entries; D1–D40 with gaps.
+4. `HANDOFF-phase0.md`, `HANDOFF-phase1.md` for earlier context.
 
 ## Standing rules earned the hard way
 
@@ -66,6 +67,8 @@ cd qwen && bash scripts/test-inventory.sh        # expect OK (270 tests)
 
 ## Blocking prerequisites for Phase 4 (decide together — one shared code path)
 
+All four are collision-geometry decisions on the same code path. Do not fix piecemeal.
+
 - **D26** — spawn candidates check one column but the body is 1.5 tiles wide, so
   70–80% of spawns overlap terrain by up to 175 px. Fix: require columns `x-1..=x+1`
   clear. Must land before T4.1 (T4.3 makes spawn choice a scoring input).
@@ -74,6 +77,16 @@ cd qwen && bash scripts/test-inventory.sh        # expect OK (270 tests)
 - **D36** — the player cannot walk up a single 16 px step (`autostep: None`). Given
   D3's measured column deltas of 7/10/14 tiles, most terrain is jump-only. **An open
   decision**: enable one-tile autostep, or accept jump-to-climb as the movement model.
+- **D39** — **every projectile can pass through a single-tile wall.** docs/04 §2
+  specifies a point lookup ("tile under new pos solid → impact"), but at 20 Hz every
+  weapon moves further than one 16 px tile per tick: pistol 35.0 px (2.19 tiles),
+  shotgun 30.0, rocket 25.0, grenade 20.0. Measured over 64 sub-tile offsets, the
+  **pistol passes through a solid 1-tile wall 62% of the time and through a player
+  standing in its path 23% of the time**; the rocket misses a 1-tile wall 31% of the
+  time. **Decision: fix at T4.1** using the existing swept-cast machinery (the same
+  resolution as D29 for players, for the same reason), keeping the deviation as the
+  record of what the spec asked for. Left unfixed it also makes T4.10's "P1's rocket
+  kills P2" integration test flaky at ~5%, which would be misdiagnosed as networking.
 
 ## Other deferred items
 

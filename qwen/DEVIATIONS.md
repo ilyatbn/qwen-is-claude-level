@@ -1057,15 +1057,47 @@ docs/04 §2 specifies, plus a circle test against each player. Reasons, in order
 3. **Cost.** Up to 24 live projectiles (docs/04 §2) × 20 Hz, against one player body per
    tick. A shape cast each would be ~24× the collision work for no documented gain.
 
-**What it costs**: projectiles can tunnel. A rocket travels 500 px/s = 25 px/tick,
-which is 1.6 tiles, so it can pass through a **single-tile wall** — the exact failure
-D29 fixed for players. A grenade at 400 px/s covers 20 px, also over a tile.
+**What it costs — measured, not estimated.** Projectiles tunnel. Swept across 64
+sub-tile starting offsets (`examples/probe_tunnel_proj.rs`) so the result is not an
+alignment artefact, firing at a **single-tile wall** 80 px away:
 
-That is a genuine gameplay consequence, and it is accepted here because it is what the
-document describes. Fixing it faithfully would mean either sub-stepping the projectile
-along its path (cheap, still a tile lookup, and arguably still "tile under new pos") or
-shape-casting (contradicts the doc). **Flagged for T4.x** if thin walls turn out to
-matter in play; noted in the handoff rather than silently repaired.
+| weapon | px/tick | hits the wall | passes through |
+|---|---|---|---|
+| pistol | 35.0 | **24 / 64** | **62.5%** |
+| shotgun | 30.0 | 24 / 64 | 62.5% |
+| rocket | 25.0 | 44 / 64 | 31.3% |
+| grenade | 20.0 | 0 / 64 | — gravity carries it under the sample line; discount |
+
+The pistol — the starting weapon — passes through a solid single-tile wall in **five of
+every eight shots**, and a 12 px player standing on the line is missed at a comparable
+rate depending on range. This is the same failure D29 fixed for players, and it is
+against the game's central mechanic (destructible terrain), not an edge case at extreme
+speed.
+
+*(The wall figures above reproduce an independent measurement exactly. The
+player-on-the-line figure is sensitive to the target's distance, since it depends on
+where the per-tick samples happen to land, so it is described qualitatively rather than
+as a single number.)*
+
+**DECISION: fix at T4.1.** This entry stays as the record that **qwen's spec specified a
+point lookup** — that is the experiment's finding and must not be erased — but the
+behaviour will not ship. Three reasons:
+
+1. **Precedent inside this build.** D29 was the identical situation for players: a
+   documented rule ("never moves > 45 px in one tick") expressing an intent the
+   mechanism could not deliver, resolved by providing the property the acceptance was
+   reaching for. docs/04 §2's "tile under new pos solid → impact" is plainly *trying*
+   to say "the projectile hits terrain"; a point sample fails to express that exactly
+   as a 45 px bound failed to express "no tunneling".
+2. **The cost is near zero.** `PhysicsWorld` and swept casts already exist and are
+   already trusted on the player path. Sub-stepping the tile lookup along the segment
+   is even cheaper and is arguably still "tile under new pos".
+3. **It will bite T4.10.** That integration test asserts P1's rocket kills P2. At
+   25 px/tick the rocket carries a ~5% miss rate depending on spawn alignment — a flaky
+   headline test that would be misdiagnosed as a networking fault.
+
+Grouped with D26, D35 and D36 as a **Phase 4 prerequisite**: all four are
+collision-geometry decisions on one code path and should be taken together.
 
 Gravity for thrown weapons uses the same velocity Verlet as the player (D28), so
 acceleration is integrated identically everywhere in the crate.

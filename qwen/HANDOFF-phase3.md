@@ -116,20 +116,22 @@ be trusted**, and a false COMPILE destroys exactly that. The harness is now
 |---|---|
 | **D37** | Spawn weights are stated as percentages but sum to 130 / 140, and the itemised weapon weights total 80 against a "weapons 50%" claim in the same sentence. Implemented as relative weights. Flashlight is 1.86× more likely in rock, not 2×. |
 | **D38** | An anchor's coverage boundary can differ silently from its apparent scope — adding `Tile.item` to `golden_hash` anchored nothing, because `Map::generate` never writes it. A distinct variant: the test *could* fail, just never for the thing it was assumed to cover. |
-| **D39** | Projectiles use a tile lookup, not the player's shape-cast path, exactly as docs/04 §2 specifies. **Cost stated**: a rocket covers 25 px/tick against 16 px tiles, so projectiles can tunnel through a single-tile wall. |
+| **D39** | Projectiles use a tile lookup, not the player's shape-cast path, exactly as docs/04 §2 specifies. **Measured cost**: the pistol passes through a 1-tile wall 62.5% of the time. **Promoted to a Phase 4 prerequisite with a decision to fix at T4.1** — the entry stays as the record of what the spec said. |
 | **D40** | The grenade's range (400 px) and fuse (1.5 s) conflict; range wins at tick 26 and the documented fuse never fires. The fuse governs; "(throw)" is read as throw distance. |
 
 ---
 
 ## Deferred — carried forward
 
-Phase 4 prerequisites (unchanged, all three on one code path — decide together at T4.1):
+**Phase 4 prerequisites — all four are collision-geometry decisions on one code path,
+and should be taken together at T4.1 rather than piecemeal:**
 
 | # | Item | Owner |
 |---|---|---|
 | **D26** | Spawn overlap: 70–80% of spawns embed the body up to 175 px into neighbouring terrain. Widen `find_spawns` to require `x-1..=x+1` clear, re-pin anchors in the same commit. | **before T4.1** |
 | **D35** | Slope-dependent ground speed — recorded, no action. Do not "fix" a 7.45 px tick. | — |
 | **D36** | Jump-to-climb vs one-tile autostep is an undecided movement model. | **T4.1 decision** |
+| **D39** | **Projectile tunnelling — FIX at T4.1.** Measured over 64 sub-tile offsets: the pistol passes through a solid 1-tile wall **62.5%** of the time (24/64 hits), the rocket 31.3% (44/64). The starting weapon against the game's central mechanic. Same shape as D29 for players, and the fix is near-free since swept casts already exist. It will otherwise make **T4.10 flaky** — that test asserts P1's rocket kills P2, carrying a ~5% miss rate that would be misdiagnosed as a networking fault. Keep D39 as the record that the spec specified a point lookup; that is the experiment's finding. | **T4.1** |
 
 New from Phase 3:
 
@@ -139,7 +141,6 @@ New from Phase 3:
 | **24** | **Ammo lives outside `Inventory`.** `try_fire` takes `&mut [u8; 6]` because docs/06 §4 carries `ammo` as a parallel snapshot array. Whoever owns round state must keep the two in step, and reset ammo on pickup via `starting_ammo`. | **T4.1** |
 | **25** | **Scoring and respawn are not implemented.** `apply_damage` returns whether the blow was lethal and does nothing else — no score, no kill event, no respawn timer. | **T4.3** |
 | **26** | **`skip_items` is implemented and tested but has no caller.** T4.6's lava is the first. | **T4.6** |
-| **27** | **Projectile tunnelling (D39)** — revisit if thin walls matter in play. Sub-stepping the tile lookup would fix it without contradicting docs/04 §2. | T4.x |
 | **28** | **The placement anchor must be re-pinned** once T4.1/T4.8 add draws before placement. | **T4.1 / T4.8** |
 
 ---
