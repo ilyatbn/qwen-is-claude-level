@@ -144,3 +144,13 @@ Notes: added blake3 to game-core for hash(); it builds for wasm32 fine.
        want a read-only run count). The fuzz test cross-checks set_run/clear_run
        against a naive per-pixel reference over 400 random runs — keep it.
 Left for later: nothing
+
+## T1.02 — CoarseGrid: 8x8 occupancy counts — DONE
+Files: crates/game-core/src/map/{coarse.rs,mod.rs}
+Verified: `cargo test -p game-core coarse` — 13 passed
+Notes: build() counts each cell with Mask::count_run, so even the full recount is
+       word-at-a-time rather than per pixel. subtract() saturates in release but
+       debug_assert!s — an underflow means grid and mask have diverged, and
+       wrapping to 255 would read as "this empty cell is solid", which is far
+       harder to trace. verify() returns (cx,cy,stored,actual), not a bool.
+Left for later: nothing
