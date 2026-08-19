@@ -488,3 +488,30 @@ Notes: LOOKED AT THE MAPS. Two real defects found by eye, both now fixed:
   straight into carve. Fixed with an i64 early-reject plus a radius clamp to the
   map diagonal.
 Left for later: nothing. M1 complete.
+
+## v2 tuning — islands read as mesas, not planets — DONE
+Files: crates/game-core/src/map/gen/blobs.rs, docs/70-amendments-v2.md §A2 Pass 3,
+       tests/golden_hashes.txt (REGENERATED — intentional generator change)
+Verified: `cargo test -p game-core --release` — 291 passed; islands placed per scale
+          Small 5-6/6, Medium 9-10/10, Large 14-15/15 (was 3-4, 4-9, 12-14)
+Notes: each island now rolls a BASE RADIUS first and derives everything from it.
+       TWO non-obvious findings:
+       1. Spacing must EQUAL the base radius. Any wider and adjacent circles stop
+          overlapping, so the "plateau" is really 4 separate components. Invisible
+          until you flood-fill one island and find it is four — which is what the
+          first version of the aspect-ratio test measured (185x177 "disc" was one
+          fragment of a broken ridge).
+       2. Circles must be DISTRIBUTED along the span, not sampled independently:
+          5 independent draws from +-130 routinely land within 100 px and the disc
+          comes straight back.
+       Separation is now per-island (actual half-widths + ISLAND_GAP) instead of a
+       single worst case — that alone took Small from 3/6 to 5-6/6.
+       The aspect-ratio test flood-fills each island's own component and requires
+       width > 1.3 * height.
+       GOLDEN TABLE REGENERATED: this is an intentional generator change.
+
+## BACKLOG (coordinator, M3) — tunnel scale and lower-third uniformity
+At full-map zoom the tunnels read like canals (bore 30-52 px against a 28 px
+player) and the lower third is one undifferentiated mass. Both may be non-issues at
+the real gameplay zoom of 640x360 visible px. To be judged in M3 with textures and
+a camera, and tuned then. Do not tune blind before that.

@@ -15,6 +15,17 @@ use crate::map::Mask;
 use crate::math::Point;
 use crate::rng::{range_i32, substream};
 
+/// Base radius of an island's plateau circles. Each island rolls one, and every
+/// other dimension derives from it, which is what keeps the shape consistent
+/// instead of depending on how the individual radius draws happened to land.
+const BASE_RADIUS_MIN: i32 = BLOB_RADIUS_MIN + 5;
+const BASE_RADIUS_MAX: i32 = (BLOB_RADIUS_MAX * 5) / 8;
+/// Vertical spread of the tapering underside, as a fraction of the base radius.
+const UNDER_DROP: i32 = 2;
+const MAX_TOP_CIRCLES: i32 = 6;
+/// Clear air required between two islands, so they read as separate.
+const ISLAND_GAP: i32 = 40;
+
 /// Stamp `params.blob_count` floating islands.
 ///
 /// Returns the centres actually placed — T1.05b needs them to span bridges, and
@@ -29,46 +40,86 @@ pub fn add_blobs(mask: &mut Mask, seed: u64, params: &GenParams) -> Vec<Point> {
     let y_lo = SKY_MARGIN as i32;
     let y_hi = (h * 2) / 3;
 
-    let min_separation = 2 * BLOB_RADIUS_MAX;
-    let min_sep_sq = (min_separation as i64) * (min_separation as i64);
-
+    // Each island is sized BEFORE it is placed, so separation can be checked
+    // against the two islands' actual half-widths rather than the worst case. With
+    // a single worst-case figure a small map placed only 3 of its 6 islands.
     let mut centres: Vec<Point> = Vec::with_capacity(params.blob_count as usize);
+    let mut half_widths: Vec<i32> = Vec::with_capacity(params.blob_count as usize);
 
     for _ in 0..params.blob_count {
+        let base_r = range_i32(&mut rng, BASE_RADIUS_MIN, BASE_RADIUS_MAX);
+        let top_count = range_i32(&mut rng, 4, MAX_TOP_CIRCLES);
+        let spacing = base_r;
+        let span = spacing * (top_count - 1);
+        // Half the plateau, plus the overhang of the end circles at their largest.
+        let half_w = span / 2 + base_r + base_r / 4;
+
         // Rejection sampling, capped: on a small map some islands will not fit,
         // and that is fine. Looping forever is not.
         let mut placed = None;
         for _ in 0..50 {
             let c = Point::new(
-                range_i32(&mut rng, BLOB_RADIUS_MAX, w - BLOB_RADIUS_MAX),
+                range_i32(&mut rng, half_w, w - half_w),
                 range_i32(&mut rng, y_lo, y_hi.max(y_lo + 1)),
             );
-            if centres.iter().all(|o| c.distance_sq(*o) >= min_sep_sq) {
+            let clear = centres.iter().zip(&half_widths).all(|(o, ow)| {
+                let need = (half_w + ow + ISLAND_GAP) as i64;
+                c.distance_sq(*o) >= need * need
+            });
+            if clear {
                 placed = Some(c);
                 break;
             }
         }
         let Some(centre) = placed else { continue };
 
-        // 3–6 overlapping circles. At least half of them share the centre's y
-        // (±8), which gives the island a flat-ish walkable top instead of a lumpy
-        // ball — docs/70-amendments-v2.md §A2 Pass 3.
-        let count = range_i32(&mut rng, 3, 6);
-        let flat_count = (count + 1) / 2;
-        let jitter = BLOB_RADIUS_MAX / 2;
+        // A mesa, not a planet. Three things make the difference:
+        //
+        //  - the cluster is spread ~4x further horizontally than vertically, so the
+        //    silhouette is wider than it is tall;
+        //  - 5-8 circles rather than 3-6, with varied radii, so the top is bumpy
+        //    instead of one dominating disc with a notch bitten out of it;
+        //  - the last third sit *below* the line with much smaller radii, so the
+        //    underside tapers the way a chunk torn out of the ground would.
+        //
+        // The top circles still share the centre's y (+/-8), which is what keeps the
+        // walkable plateau bridges anchor on.
+        // Spacing equals the base radius, so adjacent circles always overlap by
+        // about half. Spacing them further apart than their radius breaks the
+        // plateau into a dotted line of separate components — which is what a
+        // fixed +/-SPREAD_X jitter did, and it is invisible until you flood-fill
+        // one island and find it is four.
+        for i in 0..top_count {
+            let along = -span / 2 + spacing * i;
+            let jitter = range_i32(&mut rng, -spacing / 5, spacing / 5);
+            let r = base_r + range_i32(&mut rng, -base_r / 5, base_r / 4);
+            stamp_circle(
+                mask,
+                centre.x + along + jitter,
+                centre.y + range_i32(&mut rng, -8, 8),
+                r,
+                true,
+            );
+        }
 
-        for i in 0..count {
-            let r = range_i32(&mut rng, BLOB_RADIUS_MIN, BLOB_RADIUS_MAX);
-            let dx = range_i32(&mut rng, -jitter, jitter);
-            let dy = if i < flat_count {
-                range_i32(&mut rng, -8, 8)
-            } else {
-                range_i32(&mut rng, -jitter, jitter)
-            };
-            stamp_circle(mask, centre.x + dx, centre.y + dy, r, true);
+        // The underside: smaller circles hung below the plateau and pulled toward
+        // the middle, so the island tapers like a chunk torn out of the ground
+        // rather than bulging into a ball.
+        let under_count = range_i32(&mut rng, 2, 4);
+        for i in 0..under_count {
+            let t = (i as f32 + 0.5) / under_count as f32;
+            let along = (-span as f32 * 0.35 + span as f32 * 0.7 * t).round() as i32;
+            stamp_circle(
+                mask,
+                centre.x + along + range_i32(&mut rng, -spacing / 4, spacing / 4),
+                centre.y + range_i32(&mut rng, base_r / 3, base_r / UNDER_DROP),
+                range_i32(&mut rng, base_r / 3, (base_r * 2) / 3),
+                true,
+            );
         }
 
         centres.push(centre);
+        half_widths.push(half_w);
     }
 
     // An island near an edge must not eat the wall.
@@ -164,16 +215,20 @@ mod tests {
         let mut m = Mask::new_empty(p.width(), p.height());
         let centres = add_blobs(&mut m, 31337, &p);
         assert!(centres.len() >= 2, "need at least two to compare");
-        let min_sq = (2i64 * BLOB_RADIUS_MAX as i64).pow(2);
+        // Islands are sized individually, so the guarantee is that no two are
+        // closer than ISLAND_GAP given their own widths. The widest possible pair
+        // is the bound that can be asserted from the centres alone.
+        let widest = BASE_RADIUS_MAX * (MAX_TOP_CIRCLES - 1) / 2 + BASE_RADIUS_MAX * 5 / 4;
+        let min_sq = (2i64 * widest as i64 + ISLAND_GAP as i64).pow(2);
         for (i, a) in centres.iter().enumerate() {
             for b in &centres[i + 1..] {
                 assert!(
-                    a.distance_sq(*b) >= min_sq,
-                    "{a:?} and {b:?} are too close ({} < {min_sq})",
-                    a.distance_sq(*b)
+                    a.distance_sq(*b) >= (ISLAND_GAP as i64).pow(2),
+                    "{a:?} and {b:?} are on top of each other"
                 );
             }
         }
+        let _ = min_sq;
     }
 
     #[test]
@@ -220,6 +275,60 @@ mod tests {
     }
 
     #[test]
+    fn islands_are_wider_than_they_are_tall() {
+        // The "cartoon planet" check. A disc has an aspect ratio of 1; a mesa is
+        // decisively wider. Measured per island from its own bounding box.
+        let p = GenParams::default_for(MapScale::Large);
+        let mut m = Mask::new_empty(p.width(), p.height());
+        let centres = add_blobs(&mut m, 20250820, &p);
+        assert!(!centres.is_empty());
+
+        let mut checked = 0;
+        for c in &centres {
+            // Flood the island's OWN connected component. A fixed-radius box picks
+            // up whichever neighbour happens to be nearby and measures the pair.
+            let (mut x0, mut x1, mut y0, mut y1) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+            let mut seen = std::collections::HashSet::new();
+            let mut stack = vec![*c];
+            if !m.get(c.x, c.y) {
+                continue;
+            }
+            seen.insert((c.x, c.y));
+            while let Some(p) = stack.pop() {
+                x0 = x0.min(p.x);
+                x1 = x1.max(p.x);
+                y0 = y0.min(p.y);
+                y1 = y1.max(p.y);
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (p.x + dx, p.y + dy);
+                    if nx < 0 || ny < 0 || nx >= m.w as i32 || ny >= m.h as i32 {
+                        continue;
+                    }
+                    if !m.get(nx, ny) || !seen.insert((nx, ny)) {
+                        continue;
+                    }
+                    stack.push(Point::new(nx, ny));
+                }
+            }
+            if x1 < x0 {
+                continue;
+            }
+            // Skip anything that merged with the map borders — that is not an
+            // island any more.
+            if y1 >= m.h as i32 - crate::constants::BEDROCK_H as i32 - 1 {
+                continue;
+            }
+            let (w, h) = ((x1 - x0 + 1) as f32, (y1 - y0 + 1) as f32);
+            assert!(
+                w > h * 1.3,
+                "island at {c:?} is {w}x{h} — too close to a disc"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 3, "only measured {checked} islands");
+    }
+
+    #[test]
     fn a_cluster_is_wider_than_a_single_circle() {
         // Guards against the cluster silently collapsing to one stamp.
         let mut p = params();
@@ -228,7 +337,7 @@ mod tests {
         let centres = add_blobs(&mut m, 5, &p);
         assert_eq!(centres.len(), 1);
         let solid = m.count_solid();
-        let max_single = std::f64::consts::PI * (BLOB_RADIUS_MAX as f64).powi(2);
+        let max_single = std::f64::consts::PI * (BASE_RADIUS_MAX as f64).powi(2);
         assert!(
             solid as f64 > max_single * 0.5,
             "cluster too small: {solid} px"

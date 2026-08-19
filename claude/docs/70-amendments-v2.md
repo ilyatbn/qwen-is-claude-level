@@ -68,11 +68,32 @@ Every new pass draws from its own sub-stream (`10-map-generation.md` §2). New t
 
 ### Pass 3 — Islands (amends `10-map-generation.md` Pass 3)
 
-Unchanged, except:
+An island must read as a **mesa** — a chunk torn out of the ground — not as a
+planet. The first map dumps showed the original rule producing near-perfect discs
+with a notch bitten out, and the flat-top requirement made it worse by pulling the
+whole cluster onto one centre line.
 
-- Each cluster stamps 3–6 circles where **at least half share the same centre `y`
-  (±8 px)**, so the island reads as a plateau with a flat-ish walkable top rather
-  than a lumpy ball.
+Each island rolls a **base radius** first and derives everything from it:
+
+| Name | Value |
+|---|---|
+| `BASE_RADIUS_MIN` | `BLOB_RADIUS_MIN + 5` = 45 |
+| `BASE_RADIUS_MAX` | `BLOB_RADIUS_MAX * 5 / 8` = 81 |
+| top circles | 4–6, spaced **one base radius** apart along a line |
+| underside circles | 2–4, at `base_r/3 .. base_r/2` below, radius `base_r/3 .. 2·base_r/3` |
+| `ISLAND_GAP` | 40 px of clear air between two islands |
+
+- **Spacing equals the base radius.** Any wider and adjacent circles stop
+  overlapping, and the plateau silently becomes a dotted line of separate
+  components — invisible until you flood-fill one island and find it is four.
+- **Circles are distributed along the span, not sampled independently.** Five
+  independent draws from ±130 routinely land within 100 px of each other, which is
+  how the disc came back.
+- The top circles still share the centre's `y` (±8), keeping the walkable plateau
+  that bridges anchor on. Radii vary ±20 % so the top is bumpy.
+- Separation is checked against the two islands' **actual** half-widths. A single
+  worst-case figure placed only 3 of a small map's 6 islands; per-island widths
+  place 5–6 of 6, 9–10 of 10 and 14–15 of 15.
 - The chosen centres are returned (`Vec<Point>`) — pass 3b needs them.
 
 ### Pass 3b — Bridges
