@@ -416,3 +416,24 @@ Notes: generate(seed, scale) is THE entry point for the server and the WASM brid
        Map carries dirty/dirty_list for T1.14; they are #[allow(dead_code)] until
        carve lands — REMOVE THE ALLOW in T1.14.
 Left for later: the allow(dead_code) noted above.
+
+## T1.14 — carve_circle, dirty chunks, coarse maintenance — DONE
+Files: crates/game-core/src/map/carve.rs, map/{mod.rs,meta.rs}
+Verified: `cargo test -p game-core --release --lib carve` — 17 passed
+Notes: the coarse grid is maintained by splitting each span at COARSE_CELL
+       boundaries and subtracting the exact per-segment count clear_run reports —
+       no recounting anywhere. `the_coarse_grid_stays_exact_after_500_random_carves`
+       is the load-bearing test: a drifting grid produces invisible walls and
+       phantom holes in collision, which is near-impossible to debug from a bug
+       report.
+       carve_matches_the_shared_rasteriser proves carve_circle and stamp_circle
+       agree pixel for pixel — if they ever diverge, client prediction puts craters
+       in different places than the server.
+       Bedrock/walls are excluded by CLAMPING THE SPAN, so a rocket at the base of
+       a wall digs a correct half-crater. TEST TRAP: a circle centred outside the
+       map can still legitimately carve — (-10,100) r=20 reaches x=8..10, which is
+       inside the wall band. "Outside" must mean genuinely out of reach.
+       Dirty chunks use the bounding box (documented over-report of up to a few
+       chunks at the corners); the test asserts actual-changed is a SUBSET of
+       reported and that the over-report is small.
+Left for later: nothing

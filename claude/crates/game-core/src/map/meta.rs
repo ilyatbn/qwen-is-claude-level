@@ -71,10 +71,8 @@ pub struct Map {
     pub mask: Mask,
     pub coarse: CoarseGrid,
     pub meta: MapMeta,
-    // Populated by carve (T1.14), which owns the drain side of this.
-    #[allow(dead_code)]
+    // Maintained by carve (`map::carve`), drained by the client renderer.
     pub(crate) dirty: Vec<bool>,
-    #[allow(dead_code)]
     pub(crate) dirty_list: Vec<u32>,
 }
 
