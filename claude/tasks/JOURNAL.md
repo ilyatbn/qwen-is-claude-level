@@ -72,3 +72,15 @@ Notes: wrap_to_pi needs a 1e-5 epsilon at the −π boundary. `-3.0*PI` in f32 l
        "−3π → π" fails. Documented in the fn. Also added Point (integer, for mask
        space), lerp_angle (shortest arc) and Vec2::distance* beyond the task list.
 Left for later: nothing
+
+## T0.05 — Server skeleton — DONE
+Files: crates/game-server/src/{main,config,logging,app,state}.rs, lib.rs,
+       tests/skeleton.rs, Cargo.toml
+Verified: `cargo test -p game-server` — 18 passed (incl. socket.io echo round-trip);
+          live `curl /healthz` → {"players":0,"rooms":0,"status":"ok","uptime_s":2}
+Notes: DEVIATION — added lib.rs + app.rs + state.rs beyond the task's file list.
+       Integration tests need a lib target to build the same router the binary
+       serves. Config::from_source takes an injected getter so tests never mutate
+       the process env (a race under the threaded runner). Empty FIXED_SEED= means
+       unset, not a parse error — compose writes it that way.
+Left for later: /metrics is T8.04. rooms/players counters are wired but always 0.

@@ -19,7 +19,7 @@ skeleton. Nothing is a game yet; everything has a home.
 - [x] [T0.02](M0/T0.02-constants.md) — `constants.rs` mirroring `docs/02-constants.md`
 - [x] [T0.03](M0/T0.03-rng.md) — Seeded RNG and sub-stream derivation
 - [x] [T0.04](M0/T0.04-math.md) — `Vec2`, `Aabb`, and small maths helpers
-- [ ] [T0.05](M0/T0.05-server-skeleton.md) — axum + socketioxide + tracing, `/healthz`, echo
+- [x] [T0.05](M0/T0.05-server-skeleton.md) — axum + socketioxide + tracing, `/healthz`, echo
 - [ ] [T0.06](M0/T0.06-client-skeleton.md) — Vite + TS + Phaser 3.90 + socket.io connect
 - [ ] [T0.07](M0/T0.07-docker.md) — Dockerfiles, compose, nginx, `.env.example`
 - [ ] [T0.08](M0/T0.08-check-script.md) — `scripts/check.sh`, the gate
