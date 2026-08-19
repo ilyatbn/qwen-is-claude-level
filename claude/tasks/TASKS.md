@@ -47,7 +47,7 @@ be eyeballed as PNGs.
 - [x] [T1.08](M1/T1.08-cleanup.md) — Pass 6: connected components and cleanup
 - [x] [T1.09](M1/T1.09-surface.md) — Pass 7a: walkable surface extraction
 - [x] [T1.10](M1/T1.10-traversal.md) — Pass 7b–c: traversal graph and validation
-- [ ] [T1.11](M1/T1.11-generate.md) — The retry loop, safe preset, and `generate()`
+- [x] [T1.11](M1/T1.11-generate.md) — The retry loop, safe preset, and `generate()`
 - [ ] [T1.12](M1/T1.12-spawns.md) — Pass 8: spawn point selection
 - [ ] [T1.13](M1/T1.13-metadata.md) — Pass 8: buried slots, decorations, `MapMeta`
 - [ ] [T1.14](M1/T1.14-carve.md) — `carve_circle`, dirty chunks, coarse maintenance

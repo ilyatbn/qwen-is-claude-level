@@ -369,3 +369,21 @@ Notes: THE BIG ONE. Traversable fraction on a real medium map went
        reason alone.
 Left for later: analyse costs 354 ms in DEBUG on a medium map (NavRegions dominates).
        Fine in release; re-measure in T1.11's timing test.
+
+## T1.11 — Retry loop, safe preset and generate_terrain() — DONE
+Files: crates/game-core/src/map/gen/mod.rs
+Verified: `cargo test -p game-core --lib gen::tests` — 6 passed, 2 ignored
+          `cargo test -p game-core --release --lib gen::tests -- --ignored --nocapture`:
+            medium generate_terrain: 460 ms, 1 attempt, fraction 0.969
+            attempts histogram: [0, 50, 0, 0, ...]  (all 50 seeds pass first try)
+            worst traversable fraction: 0.772
+            safe preset used: 0/50
+Notes: pipeline order is the v2 one: silhouette -> islands -> bridges -> cave
+       network -> free tunnels -> crevices -> voids -> smooth -> cleanup ->
+       surface -> analyse. tunnel_paths concatenates network + free tunnels +
+       crevice paths, which is what T1.13 samples for buried slots.
+       WATCH: worst fraction 0.772 vs MIN_TRAVERSABLE_FRACTION 0.75 is only 0.02 of
+       headroom. It is passing honestly, but a tuning change that fragments the map
+       slightly would start costing retries. Report if the 1000-seed sweep shows
+       any seed below ~0.78.
+Left for later: nothing
