@@ -5,6 +5,7 @@
 //! arrive in Phase 3.
 
 use crate::map::Map;
+use crate::player::{player_config, Player};
 use crate::protocol::ItemId;
 use crate::rng::GameRng;
 use crate::tiles::{TileKind, TILE_SIZE};
@@ -650,6 +651,60 @@ pub fn try_pickup(inventory: &mut Inventory, item: &GroundItem, px: f32, py: f32
             Pickup::Taken { slot, item: item.item }
         }
         None => Pickup::InventoryFull,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Item use (T3.7, docs/04 §5)
+// ---------------------------------------------------------------------------
+
+/// What using a slot did (T3.7 step 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseOutcome {
+    /// A weapon slot was selected. The item stays.
+    Equipped(ItemId),
+    /// A consumable was used and removed from the slot.
+    Consumed(ItemId),
+    /// The flashlight is passive — "selecting does nothing (always on while
+    /// held)" (T3.7 step 1).
+    Passive,
+    /// Empty slot, or a slot index past the end. A no-op, "no crash, no log
+    /// spam" (T3.7 Acceptance).
+    Nothing,
+}
+
+/// Use or equip an inventory slot (docs/04 §5, T3.7 step 1).
+///
+/// - weapon slot → `selected = slot` (equip)
+/// - Medkit → +50 hp clamped to max_health, item removed
+/// - Overcharge → max_health 150, health 150, 10 s timer, item removed
+/// - ShieldGen → shield 20 s (refresh if active), item removed
+/// - Flashlight → passive, nothing happens
+pub fn use_slot(player: &mut Player, slot: usize) -> UseOutcome {
+    let Some(Some(item)) = player.inventory.slots.get(slot).copied() else {
+        return UseOutcome::Nothing;
+    };
+
+    match def(item).kind {
+        ItemKind::Weapon => {
+            player.inventory.selected = slot as u8;
+            UseOutcome::Equipped(item)
+        }
+        ItemKind::Utility => {
+            // Flashlight: always on while held; selecting is a no-op.
+            UseOutcome::Passive
+        }
+        ItemKind::Health | ItemKind::Shield => {
+            match item {
+                ItemId::Medkit => player.heal(player_config::MEDKIT_HEAL),
+                ItemId::Overcharge => player.apply_overcharge(),
+                ItemId::ShieldGen => player.apply_shield(),
+                // No other Health/Shield items exist in v1.
+                _ => return UseOutcome::Nothing,
+            }
+            player.inventory.slots[slot] = None;
+            UseOutcome::Consumed(item)
+        }
     }
 }
 
@@ -1805,5 +1860,185 @@ mod inventory_tests {
             try_pickup(&mut inv, &flashlight, 0.0, 0.0),
             Pickup::AlreadyHeld,
         );
+    }
+}
+
+/// T3.7 item-use tests.
+#[cfg(test)]
+mod use_item_tests {
+    use super::*;
+    use crate::player::player_config::*;
+    use crate::player::DT;
+    use crate::Vec2;
+
+    fn player_with(slots: &[ItemId]) -> Player {
+        let mut p = Player::new(0, "p".into(), Vec2::ZERO);
+        for (i, item) in slots.iter().enumerate() {
+            p.inventory.slots[i] = Some(*item);
+        }
+        p
+    }
+
+    #[test]
+    fn heal_clamps_to_max() {
+        // docs/08 §1 (player row) + docs/04 §1: "+50 hp, clamp to max_health".
+        let mut p = player_with(&[ItemId::Medkit]);
+        p.health = 30.0;
+        assert_eq!(use_slot(&mut p, 0), UseOutcome::Consumed(ItemId::Medkit));
+        assert_eq!(p.health, 80.0, "30 + 50 = 80");
+        assert_eq!(p.inventory.slots[0], None, "the medkit was not consumed");
+
+        // Healing past max clamps rather than overflowing.
+        let mut p = player_with(&[ItemId::Medkit]);
+        p.health = 80.0;
+        use_slot(&mut p, 0);
+        assert_eq!(p.health, 100.0, "80 + 50 clamps to max_health 100");
+
+        // While overcharged the ceiling is 150, so the same medkit heals fully.
+        let mut p = player_with(&[ItemId::Medkit]);
+        p.apply_overcharge();
+        p.health = 80.0;
+        use_slot(&mut p, 0);
+        assert_eq!(p.health, 130.0, "clamp follows the CURRENT max_health");
+    }
+
+    #[test]
+    fn overcharge_max150_then_clamp() {
+        // docs/08 §1 (player row) + docs/03 §6: "sets max_health = 150 for 10 s
+        // and heals to 150. After expiry, max_health back to 100 (health
+        // clamps to 100 on expiry, no damage)".
+        let mut p = player_with(&[ItemId::Overcharge]);
+        p.health = 40.0;
+        assert_eq!(use_slot(&mut p, 0), UseOutcome::Consumed(ItemId::Overcharge));
+        assert_eq!(p.max_health, 150.0);
+        assert_eq!(p.health, 150.0, "overcharge heals to full 150");
+        assert!(p.overcharge.active);
+
+        // Just before expiry nothing has changed.
+        for _ in 0..199 {
+            p.step_timers(DT);
+        }
+        assert!(p.overcharge.active, "expired early: 199 ticks is 9.95 s");
+        assert_eq!(p.health, 150.0);
+
+        // 10 s = 200 ticks.
+        p.step_timers(DT);
+        assert!(!p.overcharge.active, "overcharge did not expire at 10 s");
+        assert_eq!(p.max_health, 100.0);
+        assert_eq!(p.health, 100.0, "health clamps to 100 on expiry");
+    }
+
+    #[test]
+    fn overcharge_expiry_is_not_damage() {
+        // docs/03 §6: "no damage". A player already below 100 must not be
+        // pulled down to some lower value, nor killed by the clamp.
+        let mut p = player_with(&[ItemId::Overcharge]);
+        p.apply_overcharge();
+        p.health = 60.0;
+        for _ in 0..200 {
+            p.step_timers(DT);
+        }
+        assert_eq!(p.health, 60.0, "the clamp reduced health below 100");
+        assert!(p.alive);
+    }
+
+    #[test]
+    fn shield_lasts_twenty_seconds_and_refreshes() {
+        // docs/03 §6: "shield active for 20 s ... Re-picking while active
+        // refreshes to 20 s".
+        let mut p = player_with(&[ItemId::ShieldGen, ItemId::ShieldGen]);
+        assert_eq!(use_slot(&mut p, 0), UseOutcome::Consumed(ItemId::ShieldGen));
+        assert!(p.shield.active);
+        assert_eq!(p.shield.remaining_s, 20.0);
+
+        // Halfway through, a second generator refreshes to the full 20 s.
+        for _ in 0..200 {
+            p.step_timers(DT);
+        }
+        assert!((p.shield.remaining_s - 10.0).abs() < 1e-3, "10 s should remain");
+        use_slot(&mut p, 1);
+        assert!(
+            (p.shield.remaining_s - 20.0).abs() < 1e-3,
+            "re-picking should refresh to 20 s, got {}",
+            p.shield.remaining_s,
+        );
+
+        // And it does expire. The exact tick is subject to floating-point
+        // accumulation: subtracting 0.05 four hundred times leaves a residue
+        // just above zero rather than landing on it, so 400 ticks is the
+        // boundary and not a safe assertion. Assert still-active just before,
+        // and expired just after.
+        for _ in 0..399 {
+            p.step_timers(DT);
+        }
+        assert!(p.shield.active, "shield expired before 20 s");
+        for _ in 0..3 {
+            p.step_timers(DT);
+        }
+        assert!(!p.shield.active, "shield did not expire by 20.1 s");
+        assert_eq!(p.shield.remaining_s, 0.0, "an expired shield keeps a remainder");
+    }
+
+    #[test]
+    fn equipping_a_weapon_selects_its_slot_and_keeps_it() {
+        // docs/04 §5: "Selecting a weapon slot equips it".
+        let mut p = player_with(&[ItemId::Medkit, ItemId::Rocket]);
+        assert_eq!(use_slot(&mut p, 1), UseOutcome::Equipped(ItemId::Rocket));
+        assert_eq!(p.inventory.selected, 1);
+        assert_eq!(
+            p.inventory.slots[1],
+            Some(ItemId::Rocket),
+            "equipping must not consume the weapon",
+        );
+        assert_eq!(p.inventory.selected_item(), Some(ItemId::Rocket));
+    }
+
+    #[test]
+    fn the_flashlight_is_passive() {
+        // T3.7 step 1: "Flashlight -> passive, selecting does nothing (always
+        // on while held)".
+        let mut p = player_with(&[ItemId::Flashlight]);
+        assert_eq!(use_slot(&mut p, 0), UseOutcome::Passive);
+        assert_eq!(
+            p.inventory.slots[0],
+            Some(ItemId::Flashlight),
+            "the flashlight was consumed",
+        );
+        assert_eq!(p.inventory.selected, 0, "selection should not move");
+    }
+
+    #[test]
+    fn using_an_empty_or_invalid_slot_is_a_no_op() {
+        // T3.7 Acceptance: "using a slot with no item is a no-op (no crash,
+        // no log spam)".
+        let mut p = player_with(&[ItemId::Pistol]);
+        assert_eq!(use_slot(&mut p, 3), UseOutcome::Nothing, "empty slot");
+        assert_eq!(use_slot(&mut p, 99), UseOutcome::Nothing, "out of range");
+        assert_eq!(use_slot(&mut p, usize::MAX), UseOutcome::Nothing);
+        assert_eq!(p.inventory.selected, 0, "a no-op moved the selection");
+        assert_eq!(p.health, 100.0);
+    }
+
+    #[test]
+    fn timers_do_nothing_when_inactive() {
+        let mut p = player_with(&[]);
+        for _ in 0..1000 {
+            p.step_timers(DT);
+        }
+        assert!(!p.shield.active);
+        assert!(!p.overcharge.active);
+        assert_eq!(p.max_health, 100.0);
+        assert_eq!(p.health, 100.0);
+        assert!(p.shield.remaining_s <= 0.0, "an inactive shield counted down");
+    }
+
+    #[test]
+    fn consumable_constants_match_doc() {
+        // Literals from docs/03 §6 and docs/04 §1.
+        assert_eq!(MEDKIT_HEAL, 50.0);
+        assert_eq!(OVERCHARGE_MAX_HEALTH, 150.0);
+        assert_eq!(OVERCHARGE_DURATION_S, 10.0);
+        assert_eq!(SHIELD_DURATION_S, 20.0);
+        assert_eq!(SHIELD_DAMAGE_MULTIPLIER, 0.5);
     }
 }

@@ -124,7 +124,7 @@ Read `docs/04-items.md` in full before starting this file.
 
 ---
 
-## T3.7 — Item use (consumables + equip) [ ]
+## T3.7 — Item use (consumables + equip) [x]
 
 **Goal**: using slots applies effects; weapons equip.
 **Read**: `docs/04-items.md` §5, `docs/03-player.md` §6.

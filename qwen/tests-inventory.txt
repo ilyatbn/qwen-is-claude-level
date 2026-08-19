@@ -68,6 +68,15 @@ items::timed_tests::timed_items_may_land_anywhere_on_the_surface
 items::timed_tests::timed_items_use_the_ground_weight_table
 items::timed_tests::timed_spawn_draws_tile_then_item
 items::timed_tests::timed_spawns_are_deterministic
+items::use_item_tests::consumable_constants_match_doc
+items::use_item_tests::equipping_a_weapon_selects_its_slot_and_keeps_it
+items::use_item_tests::heal_clamps_to_max
+items::use_item_tests::overcharge_expiry_is_not_damage
+items::use_item_tests::overcharge_max150_then_clamp
+items::use_item_tests::shield_lasts_twenty_seconds_and_refreshes
+items::use_item_tests::the_flashlight_is_passive
+items::use_item_tests::timers_do_nothing_when_inactive
+items::use_item_tests::using_an_empty_or_invalid_slot_is_a_no_op
 large_map_generation_is_fast_enough
 map::tests::a_single_pocket_marks_at_most_13_tiles
 map::tests::all_columns_have_ground

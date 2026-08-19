@@ -74,6 +74,15 @@ pub mod player_config {
     /// Terminal fall speed, px/s (T2.6 Acceptance: "terminal velocity cap
     /// 900 px/s"). Equal to GRAVITY numerically, which is coincidence.
     pub const TERMINAL_VELOCITY: f32 = 900.0;
+
+    /// Medkit heal amount, hp (docs/04 §1).
+    pub const MEDKIT_HEAL: f32 = 50.0;
+    /// Overcharge maximum health and duration (docs/03 §6, docs/04 §1).
+    pub const OVERCHARGE_MAX_HEALTH: f32 = 150.0;
+    pub const OVERCHARGE_DURATION_S: f32 = 10.0;
+    /// Shield generator duration, seconds, and damage multiplier (docs/03 §6).
+    pub const SHIELD_DURATION_S: f32 = 20.0;
+    pub const SHIELD_DAMAGE_MULTIPLIER: f32 = 0.5;
 }
 
 use player_config::*;
@@ -89,6 +98,16 @@ pub struct ShieldState {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct JetpackState {
     pub fuel: f32,
+}
+
+/// Overcharge state (docs/03 §6, T3.7 step 1).
+///
+/// While active, `max_health` is 150; on expiry it returns to 100 and health
+/// is clamped down — "no damage", so this is not a damage event.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct OverchargeState {
+    pub active: bool,
+    pub remaining_s: f32,
 }
 
 impl Default for JetpackState {
@@ -118,6 +137,7 @@ pub struct Player {
     /// Base 100, 150 while overcharged (docs/03 §6).
     pub max_health: f32,
     pub shield: ShieldState,
+    pub overcharge: OverchargeState,
     pub jetpack: JetpackState,
     pub inventory: Inventory,
     pub alive: bool,
@@ -140,6 +160,7 @@ impl Player {
             health: BASE_HEALTH,
             max_health: BASE_HEALTH,
             shield: ShieldState::default(),
+            overcharge: OverchargeState::default(),
             jetpack: JetpackState::default(),
             inventory: Inventory::new(),
             alive: true,
@@ -519,6 +540,54 @@ impl Player {
             FOV_LOW_HEALTH_FACTOR
         };
         FOV_BASE * night_factor * fog_factor * health_factor
+    }
+
+    /// Heal, clamped to the current `max_health` (docs/03 §6, docs/04 §1).
+    pub fn heal(&mut self, amount: f32) {
+        self.health = (self.health + amount).min(self.max_health);
+    }
+
+    /// Apply the Overcharge item (docs/03 §6, T3.7 step 1).
+    ///
+    /// "sets max_health = 150 for 10 s and heals to 150."
+    pub fn apply_overcharge(&mut self) {
+        self.max_health = OVERCHARGE_MAX_HEALTH;
+        self.health = OVERCHARGE_MAX_HEALTH;
+        self.overcharge = OverchargeState {
+            active: true,
+            remaining_s: OVERCHARGE_DURATION_S,
+        };
+    }
+
+    /// Apply the Shield Generator (docs/03 §6, T3.7 step 1).
+    ///
+    /// "shield active for 20 s ... Re-picking while active refreshes to 20 s."
+    pub fn apply_shield(&mut self) {
+        self.shield = ShieldState {
+            active: true,
+            remaining_s: SHIELD_DURATION_S,
+        };
+    }
+
+    /// Advance shield and overcharge timers by one tick (T3.7 step 2).
+    ///
+    /// On overcharge expiry: "max_health back to 100 (health clamps to 100 on
+    /// expiry, no damage)".
+    pub fn step_timers(&mut self, dt: f32) {
+        if self.shield.active {
+            self.shield.remaining_s -= dt;
+            if self.shield.remaining_s <= 0.0 {
+                self.shield = ShieldState::default();
+            }
+        }
+        if self.overcharge.active {
+            self.overcharge.remaining_s -= dt;
+            if self.overcharge.remaining_s <= 0.0 {
+                self.overcharge = OverchargeState::default();
+                self.max_health = BASE_HEALTH;
+                self.health = self.health.min(BASE_HEALTH);
+            }
+        }
     }
 
     /// Store the aim angle from an input frame (docs/03 §8, T2.8 step 1).
