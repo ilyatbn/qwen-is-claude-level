@@ -333,6 +333,64 @@ fn place_decor(width: u32, surface: &[u32], rng: &mut GameRng) -> Vec<Decor> {
     decor
 }
 
+/// Minimum spawns a map must provide (docs/01 §3 step 5).
+pub const MIN_SPAWNS: usize = 6;
+
+/// Chebyshev spacings tried in order when placing spawns (docs/01 §3 step 5).
+const SPAWN_SPACINGS: [u32; 3] = [15, 10, 6];
+
+/// Find well-spaced ground spawns (docs/01 §3 step 5).
+///
+/// Candidates are GRASS tiles with the 2 tiles above AIR; they are shuffled
+/// with the round RNG, then greedily accepted if Chebyshev distance to every
+/// already-accepted spawn is >= the spacing. Spacing falls back 15 -> 10 -> 6
+/// until at least 6 are accepted.
+///
+/// Returns TILE coordinates (docs/01 §4, DEVIATIONS.md D9).
+pub fn find_spawns(map: &Map, rng: &mut GameRng) -> Vec<Vec2> {
+    let mut candidates: Vec<(u32, u32)> = Vec::new();
+    for x in 0..map.width {
+        for y in 0..map.height {
+            if map.tile(x, y).kind != TileKind::Grass {
+                continue;
+            }
+            // "GRASS tiles with the 2 tiles above AIR". y < 2 would put the
+            // check off the top of the map, where reads reported AIR anyway.
+            if y >= 1 && !map.tile(x, y - 1).is_solid() && (y < 2 || !map.tile(x, y - 2).is_solid())
+            {
+                candidates.push((x, y));
+            }
+        }
+    }
+
+    // Shuffle once, then reuse the same order for every spacing attempt: the
+    // fallbacks are a relaxation of the same greedy pass, not fresh draws.
+    rng.shuffle(&mut candidates);
+
+    let mut accepted: Vec<(u32, u32)> = Vec::new();
+    for spacing in SPAWN_SPACINGS {
+        accepted.clear();
+        for &(cx, cy) in &candidates {
+            let far_enough = accepted.iter().all(|&(ax, ay)| {
+                let dx = cx.abs_diff(ax);
+                let dy = cy.abs_diff(ay);
+                dx.max(dy) >= spacing
+            });
+            if far_enough {
+                accepted.push((cx, cy));
+            }
+        }
+        if accepted.len() >= MIN_SPAWNS {
+            break;
+        }
+    }
+
+    accepted
+        .into_iter()
+        .map(|(x, y)| Vec2::new(x as f32, y as f32))
+        .collect()
+}
+
 /// Maximum tiles one rock pocket can mark: the start tile plus at most 12
 /// walk steps (docs/01 §3 step 3).
 pub const MAX_POCKET_TILES: usize = 13;
@@ -372,9 +430,7 @@ impl Map {
         // 4. Decor.
         let decor = place_decor(width, &surface, &mut rng);
 
-        // 5. Spawns are appended by T1.5, after decor, so the RNG order in
-        // docs/01 §3 stays intact.
-        Map {
+        let mut map = Map {
             seed,
             scale,
             width,
@@ -383,7 +439,11 @@ impl Map {
             decor,
             spawns: Vec::new(),
             version: 0,
-        }
+        };
+
+        // 5. Spawns, last — so the draw order in docs/01 §3 stays intact.
+        map.spawns = find_spawns(&map, &mut rng);
+        map
     }
 
     /// An ASCII dump of the grid, for the debug-inspection test in T1.4.
@@ -796,6 +856,94 @@ mod tests {
             !lines[lines.len() - 1].contains('.'),
             "bottom row has holes before any destruction",
         );
+    }
+
+    #[test]
+    fn spawns_at_least_6() {
+        // docs/08 §1 (map row) + T1.5 Acceptance: "no seed in the 100-seed
+        // suite produces < 6 spawns".
+        for scale in Scale::ALL {
+            for seed in 0..100u64 {
+                let map = Map::generate(seed, scale);
+                assert!(
+                    map.spawns.len() >= MIN_SPAWNS,
+                    "{} seed {seed}: only {} spawns",
+                    scale.as_str(),
+                    map.spawns.len(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spawn_spacing() {
+        // docs/08 §1 (map row). Spacing is 15, relaxed to 10 then 6 if fewer
+        // than 6 spawns are accepted (docs/01 §3 step 5), so the guaranteed
+        // floor across all seeds is the last fallback.
+        for scale in Scale::ALL {
+            for seed in 0..100u64 {
+                let map = Map::generate(seed, scale);
+                for (i, a) in map.spawns.iter().enumerate() {
+                    for b in map.spawns.iter().skip(i + 1) {
+                        let dx = (a.x - b.x).abs();
+                        let dy = (a.y - b.y).abs();
+                        let chebyshev = dx.max(dy);
+                        assert!(
+                            chebyshev >= SPAWN_SPACINGS[2] as f32,
+                            "{} seed {seed}: spawns {a:?} and {b:?} are \
+                             {chebyshev} apart, below the {} fallback",
+                            scale.as_str(),
+                            SPAWN_SPACINGS[2],
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spawns_are_on_grass_with_headroom() {
+        // docs/01 §3 step 5: "candidates: GRASS tiles with the 2 tiles above AIR".
+        for scale in Scale::ALL {
+            for seed in 0..25u64 {
+                let map = Map::generate(seed, scale);
+                for spawn in &map.spawns {
+                    let (x, y) = (spawn.x as u32, spawn.y as u32);
+                    assert_eq!(
+                        map.tile(x, y).kind,
+                        TileKind::Grass,
+                        "{} seed {seed}: spawn ({x},{y}) is not GRASS",
+                        scale.as_str(),
+                    );
+                    assert!(!map.tile(x, y - 1).is_solid(), "no headroom at ({x},{y})");
+                    assert!(!map.tile(x, y - 2).is_solid(), "no headroom at ({x},{y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spawns_are_tile_coordinates_not_pixels() {
+        // DEVIATIONS.md D9: docs/01 §4 says tile coords, §3.5 gives a pixel
+        // formula. T2.1 only type-checks against tile coords.
+        let map = Map::generate(1, Scale::Small);
+        for spawn in &map.spawns {
+            assert!(
+                spawn.x < map.width as f32 && spawn.y < map.height as f32,
+                "spawn {spawn:?} is outside the tile grid — looks like pixels",
+            );
+        }
+    }
+
+    #[test]
+    fn spawns_are_deterministic() {
+        for scale in Scale::ALL {
+            for seed in [0u64, 7, 12345] {
+                let a = Map::generate(seed, scale);
+                let b = Map::generate(seed, scale);
+                assert_eq!(a.spawns, b.spawns, "{} seed {seed}", scale.as_str());
+            }
+        }
     }
 
     #[test]
