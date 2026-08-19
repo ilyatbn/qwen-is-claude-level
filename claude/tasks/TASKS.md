@@ -15,7 +15,7 @@ Tick a box only when the task's **Done when** command passes.
 Stand up the workspace, the shared constants, the server skeleton and the client
 skeleton. Nothing is a game yet; everything has a home.
 
-- [ ] [T0.01](M0/T0.01-workspace.md) — Cargo workspace and three crate skeletons
+- [x] [T0.01](M0/T0.01-workspace.md) — Cargo workspace and three crate skeletons
 - [ ] [T0.02](M0/T0.02-constants.md) — `constants.rs` mirroring `docs/02-constants.md`
 - [ ] [T0.03](M0/T0.03-rng.md) — Seeded RNG and sub-stream derivation
 - [ ] [T0.04](M0/T0.04-math.md) — `Vec2`, `Aabb`, and small maths helpers

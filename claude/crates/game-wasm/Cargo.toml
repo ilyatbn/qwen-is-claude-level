@@ -1,0 +1,13 @@
+[package]
+name = "game-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "wasm-bindgen shim over game-core. No logic of its own."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+game-core.workspace = true
+wasm-bindgen.workspace = true

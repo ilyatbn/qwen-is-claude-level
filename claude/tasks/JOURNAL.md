@@ -35,3 +35,11 @@ Next session: start from can_jump.
 -->
 
 ## (no entries yet — the project has not been started)
+
+## T0.01 — Cargo workspace and three crate skeletons — DONE
+Files: Cargo.toml, rust-toolchain.toml, crates/{game-core,game-server,game-wasm}/
+Verified: `cargo build --workspace` OK; `cargo tree -p game-core | grep -c tokio` = 0
+Notes: socketioxide 0.18 needs axum 0.8 (not 0.7 as the task file says) — they share
+       http 1.x. Deviated to axum 0.8 + socketioxide 0.18. game-core's `serde` and
+       `dump-png` are optional features; `default = ["serde"]`.
+Left for later: nothing
