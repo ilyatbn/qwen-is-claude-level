@@ -178,6 +178,30 @@ src/logic/camera.test.ts > clampCamera (T1.10 step 1) > clamps at the left and t
 src/logic/camera.test.ts > clampCamera (T1.10 step 1) > clamps at the right and bottom edges
 src/logic/camera.test.ts > clampCamera (T1.10 step 1) > leaves an in-bounds position alone
 src/logic/camera.test.ts > clampCamera (T1.10 step 1) > never shows anything outside the map
+src/logic/inputFrame.test.ts > InputSender > carries use_slot only on the frame it is pressed (docs/06 §3)
+src/logic/inputFrame.test.ts > InputSender > does not emit again before the interval elapses
+src/logic/inputFrame.test.ts > InputSender > emits roughly 20 frames per second
+src/logic/inputFrame.test.ts > InputSender > emits the first frame immediately
+src/logic/inputFrame.test.ts > InputSender > increments tick per frame
+src/logic/inputFrame.test.ts > InputSender > keeps sending unchanged frames (docs/06 §3)
+src/logic/inputFrame.test.ts > InputSender > passes key state and aim through unchanged
+src/logic/inputFrame.test.ts > InputSender > sends at 20 Hz (docs/00 §2)
+src/logic/interpolation.test.ts > SnapshotInterpolator > drops out-of-order and duplicate snapshots
+src/logic/interpolation.test.ts > SnapshotInterpolator > gives the same point for two identical snapshots
+src/logic/interpolation.test.ts > SnapshotInterpolator > interpolates between the last two snapshots with the 100 ms delay
+src/logic/interpolation.test.ts > SnapshotInterpolator > is monotonic across the interval
+src/logic/interpolation.test.ts > SnapshotInterpolator > returns the single known position before two snapshots exist
+src/logic/interpolation.test.ts > SnapshotInterpolator > returns undefined for a player absent from the snapshot
+src/logic/interpolation.test.ts > SnapshotInterpolator > uses the documented 100 ms delay
+src/logic/interpolation.test.ts > interpolationFactor > clamps outside the interval rather than extrapolating
+src/logic/interpolation.test.ts > interpolationFactor > handles two snapshots at the same instant
+src/logic/interpolation.test.ts > interpolationFactor > is 0 at prev and 1 at next
+src/logic/interpolation.test.ts > interpolationFactor > is 0.5 halfway
+src/logic/interpolation.test.ts > lerp > is linear in between
+src/logic/interpolation.test.ts > lerp > returns the endpoints at t=0 and t=1
+src/logic/interpolation.test.ts > lerpAngle > matches lerp away from the wrap boundary
+src/logic/interpolation.test.ts > lerpAngle > returns the endpoints at t=0 and t=1
+src/logic/interpolation.test.ts > lerpAngle > takes the short way across the ±π boundary
 src/logic/terrainGrid.test.ts > TerrainGrid construction > reads row-major with y=0 on top (docs/01 §1)
 src/logic/terrainGrid.test.ts > TerrainGrid construction > rejects a tile array that does not match the dimensions
 src/logic/terrainGrid.test.ts > TerrainGrid construction > reports pixel bounds for the camera clamp

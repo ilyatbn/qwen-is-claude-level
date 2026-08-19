@@ -170,7 +170,7 @@ Read `docs/03-player.md` in full before starting this file.
 
 ---
 
-## T2.9 — Client player render + interpolation [ ]
+## T2.9 — Client player render + interpolation [x]
 
 **Goal**: remote players rendered from snapshots with 100 ms lerp; local
 input at 20 Hz.
