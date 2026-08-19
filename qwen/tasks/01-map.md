@@ -150,7 +150,7 @@ runs.
 
 ---
 
-## T1.9 — Client terrain rendering [ ]
+## T1.9 — Client terrain rendering [x]
 
 **Goal**: client draws the map from `MapData` and applies
 `tile_destroyed` events.

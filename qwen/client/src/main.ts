@@ -1,11 +1,10 @@
 /**
  * Phaser bootstrap + scene list (docs/00 §1).
- *
- * T0.3 also opens the socket.io connection and round-trips a ping.
  */
 import Phaser from 'phaser';
 import { io, type Socket } from 'socket.io-client';
 import { BootScene } from './scenes/BootScene';
+import { GameScene } from './scenes/GameScene';
 import { C2S, NAMESPACE, PROTOCOL_VERSION, S2C } from './protocol';
 
 /** docs/00 §6: the client connects to the Rust server on :3001. */
@@ -20,7 +19,8 @@ const config: Phaser.Types.Core.GameConfig = {
   width: window.innerWidth,
   height: window.innerHeight,
   backgroundColor: '#101014',
-  scene: [BootScene],
+  scene: [BootScene, GameScene],
+  pixelArt: true,
   scale: {
     mode: Phaser.Scale.RESIZE,
     autoCenter: Phaser.Scale.CENTER_BOTH,
