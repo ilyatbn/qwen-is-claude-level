@@ -132,7 +132,7 @@ Read `docs/03-player.md` in full before starting this file.
 
 ---
 
-## T2.7 — Terrain collider rebuild on destruction [ ]
+## T2.7 — Terrain collider rebuild on destruction [x]
 
 **Goal**: destroyed tiles → colliders rebuilt so players fall through.
 **Read**: `docs/01-map.md` §6, §5.

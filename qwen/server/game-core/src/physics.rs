@@ -14,6 +14,7 @@
 //!   mandates as "deterministic, doc §4".
 
 use crate::map::Map;
+use crate::tiles::TileDestroyed;
 use crate::tiles::TILE_SIZE;
 
 /// One horizontal run of solid tiles in a row (docs/01 §6).
@@ -118,6 +119,13 @@ pub struct PhysicsWorld {
     /// Colliders removed since the last `refresh`, which the broad phase must
     /// be told about explicitly.
     pending_removals: Vec<ColliderHandle>,
+    /// Rows recomputed by the most recent [`PhysicsWorld::rebuild_segments`].
+    ///
+    /// Exists so tests can observe the WORK DONE, not just the result. T2.7
+    /// step 2 requires that only affected rows are touched, and comparing
+    /// resulting segments cannot show that — rebuilding every row produces
+    /// identical segments. Found by injection.
+    last_rebuild_rows: usize,
 }
 
 /// What one resolved move did.
@@ -154,6 +162,7 @@ impl PhysicsWorld {
             },
             segment_handles: Vec::new(),
             pending_removals: Vec::new(),
+            last_rebuild_rows: 0,
         };
         world.insert_segments(&all_segments(map));
         world.refresh();
@@ -196,6 +205,11 @@ impl PhysicsWorld {
         self.pending_removals.clear();
     }
 
+    /// How many rows the most recent rebuild recomputed (T2.7 step 2).
+    pub fn last_rebuild_rows(&self) -> usize {
+        self.last_rebuild_rows
+    }
+
     /// Number of terrain colliders currently in the world.
     pub fn collider_count(&self) -> usize {
         self.segment_handles.len()
@@ -204,6 +218,57 @@ impl PhysicsWorld {
     /// The segments currently backing colliders (T2.7 asserts on these).
     pub fn segments(&self) -> impl Iterator<Item = Segment> + '_ {
         self.segment_handles.iter().map(|(s, _)| *s)
+    }
+
+    /// Rebuild colliders for the rows touched by a batch of destructions
+    /// (T2.7, docs/01 §6).
+    ///
+    /// "physics rebuilds only segments that contained any destroyed tile
+    /// (recompute contiguous run, remove old collider, insert new ones)."
+    ///
+    /// Rows are the unit of work: a destroyed tile can split one run into two
+    /// or shorten it, and both are recomputed from the map rather than patched.
+    /// Rows with no destroyed tile are not touched at all — asserted by
+    /// `rebuild_touches_only_affected_rows`.
+    pub fn rebuild_segments(&mut self, map: &Map, destroyed: &[TileDestroyed]) {
+        if destroyed.is_empty() {
+            self.last_rebuild_rows = 0;
+            return;
+        }
+
+        // Distinct affected rows, sorted — a BTreeSet rather than a HashSet so
+        // iteration order is deterministic (docs/00 §2).
+        let rows: std::collections::BTreeSet<u32> =
+            destroyed.iter().map(|t| t.y).collect();
+
+        // Drop every collider on an affected row.
+        let mut kept = Vec::with_capacity(self.segment_handles.len());
+        for (segment, handle) in std::mem::take(&mut self.segment_handles) {
+            if rows.contains(&segment.row) {
+                if let Some(collider) = self.colliders.get(handle) {
+                    if let Some(body) = collider.parent() {
+                        self.bodies.remove(
+                            body,
+                            &mut IslandManager::default(),
+                            &mut self.colliders,
+                            &mut ImpulseJointSet::new(),
+                            &mut MultibodyJointSet::new(),
+                            true,
+                        );
+                    }
+                }
+                self.pending_removals.push(handle);
+            } else {
+                kept.push((segment, handle));
+            }
+        }
+        self.segment_handles = kept;
+
+        // Recompute those rows from the map and insert the new runs.
+        let fresh: Vec<Segment> = rows.iter().flat_map(|&row| row_segments(map, row)).collect();
+        self.insert_segments(&fresh);
+        self.last_rebuild_rows = rows.len();
+        self.refresh();
     }
 
     /// Move a player body by `desired`, resolved against terrain (T2.6 step 2).
@@ -590,5 +655,265 @@ mod rapier_tests {
         let world = PhysicsWorld::new(&map);
         assert_eq!(world.collider_count(), all_segments(&map).len());
         assert!(world.collider_count() > 0);
+    }
+}
+
+/// T2.7 collider-rebuild tests.
+#[cfg(test)]
+mod rebuild_tests {
+    use super::*;
+    use crate::map::Scale;
+    use crate::player::player_config::*;
+    use crate::player::{Player, DT};
+    use crate::tiles::{Tile, TileKind};
+    use crate::Vec2;
+
+    fn flat_map(floor_row: u32) -> Map {
+        let (width, height) = Scale::Small.dimensions();
+        let mut map = Map {
+            seed: 0,
+            scale: Scale::Small,
+            width,
+            height,
+            tiles: vec![Tile::AIR; (width * height) as usize],
+            decor: Vec::new(),
+            spawns: Vec::new(),
+            version: 0,
+        };
+        for y in floor_row..height {
+            for x in 0..width {
+                map.set_tile(x, y, Tile::new(TileKind::Stone));
+            }
+        }
+        map
+    }
+
+    #[test]
+    fn rebuild_splits_a_run_where_a_tile_was_destroyed() {
+        let floor_row = 40;
+        let mut map = flat_map(floor_row);
+        let mut world = PhysicsWorld::new(&map);
+
+        let before: Vec<Segment> = world.segments().filter(|s| s.row == floor_row).collect();
+        assert_eq!(before.len(), 1, "a flat floor row is one run");
+
+        let destroyed: Vec<_> = [30u32, 31].iter().filter_map(|&x| map.destroy_tile_deferred(x, floor_row)).collect();
+        map.apply_surface_conversion();
+        world.rebuild_segments(&map, &destroyed);
+
+        let after: Vec<Segment> = world.segments().filter(|s| s.row == floor_row).collect();
+        assert_eq!(after.len(), 2, "destroying a middle tile should split the run");
+        assert_eq!(after[0].end_x, 29);
+        assert_eq!(after[1].start_x, 32);
+    }
+
+    #[test]
+    fn rebuild_touches_only_affected_rows() {
+        // T2.7 step 2: "Only affected rows are touched (assert in a test:
+        // collider count changes only for affected rows)".
+        let floor_row = 40;
+        let mut map = flat_map(floor_row);
+        let mut world = PhysicsWorld::new(&map);
+
+        let untouched_before: Vec<Segment> =
+            world.segments().filter(|s| s.row != floor_row).collect();
+
+        let destroyed: Vec<_> = (30..33u32)
+            .filter_map(|x| map.destroy_tile_deferred(x, floor_row))
+            .collect();
+        map.apply_surface_conversion();
+        world.rebuild_segments(&map, &destroyed);
+
+        let untouched_after: Vec<Segment> =
+            world.segments().filter(|s| s.row != floor_row).collect();
+        assert_eq!(
+            untouched_before, untouched_after,
+            "rows without a destroyed tile must be left alone",
+        );
+
+        // Comparing segments is not enough: rebuilding EVERY row yields the
+        // same segments, so the assertion above passes either way (found by
+        // injection). Assert the work actually done.
+        assert_eq!(
+            world.last_rebuild_rows(),
+            1,
+            "destroying tiles in one row rebuilt {} rows",
+            world.last_rebuild_rows(),
+        );
+        assert!(
+            world.last_rebuild_rows() < map.height as usize,
+            "rebuild touched the whole map",
+        );
+    }
+
+    #[test]
+    fn rebuild_scope_matches_the_distinct_destroyed_rows() {
+        let floor_row = 40;
+        let mut map = flat_map(floor_row);
+        let mut world = PhysicsWorld::new(&map);
+
+        // Destroy tiles across three distinct rows.
+        let mut destroyed = Vec::new();
+        for row in [floor_row, floor_row + 2, floor_row + 5] {
+            if let Some(e) = map.destroy_tile_deferred(30, row) {
+                destroyed.push(e);
+            }
+            // A second tile in the same row must not count twice.
+            if let Some(e) = map.destroy_tile_deferred(31, row) {
+                destroyed.push(e);
+            }
+        }
+        map.apply_surface_conversion();
+        world.rebuild_segments(&map, &destroyed);
+
+        assert_eq!(destroyed.len(), 6, "expected 6 destroyed tiles");
+        assert_eq!(
+            world.last_rebuild_rows(),
+            3,
+            "6 tiles across 3 rows should rebuild exactly 3 rows",
+        );
+    }
+
+    #[test]
+    fn rebuild_keeps_colliders_matching_the_map() {
+        // The invariant that matters: after any rebuild, the world's segments
+        // are exactly what the map says they should be.
+        let mut map = Map::generate(5, Scale::Small);
+        let mut world = PhysicsWorld::new(&map);
+
+        let centre = Map::tile_center(40, map.surface_row(40));
+        let destroyed = map.apply_blast(centre.x, centre.y, 48.0, 500.0);
+        assert!(!destroyed.is_empty());
+        world.rebuild_segments(&map, &destroyed);
+
+        let mut from_world: Vec<Segment> = world.segments().collect();
+        let mut from_map = all_segments(&map);
+        from_world.sort_by_key(|s| (s.row, s.start_x));
+        from_map.sort_by_key(|s| (s.row, s.start_x));
+        assert_eq!(from_world, from_map, "colliders drifted from the map");
+    }
+
+    #[test]
+    fn blast_under_a_player_makes_them_fall() {
+        // T2.7 step 3: "blast under a standing player -> player falls".
+        let floor_row = 40;
+        let mut map = flat_map(floor_row);
+        let mut world = PhysicsWorld::new(&map);
+        let floor_top = floor_row as f32 * TILE_SIZE;
+        let col = 25u32;
+        let mut player = Player::new(
+            0,
+            "p".into(),
+            Vec2::new((col as f32 + 0.5) * TILE_SIZE, floor_top - BODY_HALF_HEIGHT),
+        );
+
+        let step = |player: &mut Player, world: &PhysicsWorld, map: &Map| {
+            let on_ground = player.on_ground(map);
+            let ax = player.step_horizontal(false, false, on_ground);
+            let before = player.pos;
+            player.integrate(Vec2::new(ax, GRAVITY), DT);
+            player.clamp_fall_speed();
+            let desired = player.pos - before;
+            let result = world.move_player(before, desired, DT);
+            player.pos = before + result.translation;
+            if result.translation.y.abs() < desired.y.abs() - 1e-4 {
+                player.vel.y = 0.0;
+            }
+        };
+
+        for _ in 0..5 {
+            step(&mut player, &world, &map);
+        }
+        let resting = player.pos.y;
+        assert!(player.on_ground(&map));
+
+        // Blow a hole through every row beneath the player.
+        let mut destroyed = Vec::new();
+        for dx in -1i32..=1 {
+            let x = (col as i32 + dx) as u32;
+            for y in floor_row..map.height {
+                if let Some(e) = map.destroy_tile_deferred(x, y) {
+                    destroyed.push(e);
+                }
+            }
+        }
+        map.apply_surface_conversion();
+        world.rebuild_segments(&map, &destroyed);
+
+        for _ in 0..20 {
+            step(&mut player, &world, &map);
+        }
+        assert!(
+            player.pos.y > resting + TILE_SIZE,
+            "player did not fall after the ground was destroyed: {resting} -> {}",
+            player.pos.y,
+        );
+    }
+
+    #[test]
+    fn blast_elsewhere_leaves_collider_count_unchanged() {
+        // T2.7 step 3, second half.
+        let floor_row = 40;
+        let mut map = flat_map(floor_row);
+        let mut world = PhysicsWorld::new(&map);
+        let before = world.collider_count();
+
+        // Destroy nothing (blast in open sky above the floor).
+        let destroyed = map.apply_blast(320.0, 100.0, 48.0, 500.0);
+        assert!(destroyed.is_empty(), "sky blast should destroy nothing");
+        world.rebuild_segments(&map, &destroyed);
+
+        assert_eq!(world.collider_count(), before);
+    }
+
+    #[test]
+    fn rebuild_of_a_wide_row_is_fast() {
+        // T2.7 Acceptance: "rebuild of a 160-wide row < 1 ms (assert < 5 ms)".
+        // Wall-clock, but with a 5x documented margin — same call as D21.
+        let floor_row = 60;
+        let (width, height) = Scale::Medium.dimensions();
+        let mut map = Map {
+            seed: 0,
+            scale: Scale::Medium,
+            width,
+            height,
+            tiles: vec![Tile::AIR; (width * height) as usize],
+            decor: Vec::new(),
+            spawns: Vec::new(),
+            version: 0,
+        };
+        for y in floor_row..height {
+            for x in 0..width {
+                map.set_tile(x, y, Tile::new(TileKind::Stone));
+            }
+        }
+        assert_eq!(map.width, 160);
+        let mut world = PhysicsWorld::new(&map);
+
+        let destroyed: Vec<_> = (0..width)
+            .step_by(3)
+            .filter_map(|x| map.destroy_tile_deferred(x, floor_row))
+            .collect();
+        map.apply_surface_conversion();
+
+        let start = std::time::Instant::now();
+        world.rebuild_segments(&map, &destroyed);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed.as_millis() < 5,
+            "rebuilding a 160-wide row took {elapsed:?}, over the 5 ms bound",
+        );
+        println!("160-wide row rebuild: {elapsed:?} (doc target < 1 ms)");
+    }
+
+    #[test]
+    fn rebuilding_with_no_destruction_is_a_noop() {
+        let map = flat_map(40);
+        let mut world = PhysicsWorld::new(&map);
+        let before: Vec<Segment> = world.segments().collect();
+        world.rebuild_segments(&map, &[]);
+        let after: Vec<Segment> = world.segments().collect();
+        assert_eq!(before, after);
     }
 }

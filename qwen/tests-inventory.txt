@@ -61,6 +61,14 @@ physics::rapier_tests::player_does_not_sink_through_a_floor_it_rests_on
 physics::rapier_tests::player_falls_and_lands
 physics::rapier_tests::player_falls_into_hole
 physics::rapier_tests::world_has_one_collider_per_segment
+physics::rebuild_tests::blast_elsewhere_leaves_collider_count_unchanged
+physics::rebuild_tests::blast_under_a_player_makes_them_fall
+physics::rebuild_tests::rebuild_keeps_colliders_matching_the_map
+physics::rebuild_tests::rebuild_of_a_wide_row_is_fast
+physics::rebuild_tests::rebuild_scope_matches_the_distinct_destroyed_rows
+physics::rebuild_tests::rebuild_splits_a_run_where_a_tile_was_destroyed
+physics::rebuild_tests::rebuild_touches_only_affected_rows
+physics::rebuild_tests::rebuilding_with_no_destruction_is_a_noop
 physics::tests::a_gap_of_one_tile_splits_a_segment
 physics::tests::a_run_reaching_the_right_edge_is_closed
 physics::tests::all_segments_covers_every_solid_tile_exactly_once
