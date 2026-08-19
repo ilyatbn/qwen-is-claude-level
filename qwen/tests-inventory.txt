@@ -3,6 +3,12 @@
 
 ## rust
 different_seeds_produce_different_maps
+effects::day_night_tests::a_round_starts_in_full_day
+effects::day_night_tests::day_night_phase_values
+effects::day_night_tests::day_phase_is_continuous
+effects::day_night_tests::day_phase_stays_in_range
+effects::day_night_tests::the_cycle_repeats_every_120_seconds
+effects::day_night_tests::the_transitions_are_five_seconds_each
 every_scale_produces_all_tile_kinds
 generate_deterministic_100_seeds
 generated_map_has_expected_dimensions

@@ -34,7 +34,7 @@ starting this file.
 
 ---
 
-## T4.2 — Day/night cycle [ ]
+## T4.2 — Day/night cycle [x]
 
 **Goal**: `day_phase` in snapshot; 60/60 s with 5 s transitions.
 **Read**: `docs/02-map-effects.md` §1.
