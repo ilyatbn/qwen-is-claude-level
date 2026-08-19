@@ -40,6 +40,124 @@ pub struct TraversalReport {
     pub passed: bool,
 }
 
+/// Where the player body fits, and which of those positions connect.
+///
+/// This is the edge type the four ballistic predicates cannot express. A cave is
+/// reached through a **winding** shaft: no straight line and no parabola runs from
+/// a surface point down into it, so a graph built only from those predicates scores
+/// every cave floor as its own island. Measured on a medium map, that put the
+/// traversable fraction at 0.59 while a body flood proved 100% of chambers were in
+/// fact reachable — the map was fine and the model was wrong.
+///
+/// A player with a jetpack can move anywhere within a connected region of positions
+/// their box fits in, so two surface points in the same region are connected. Fuel
+/// is not modelled here; the `JETPACK_RANGE` slack in `can_jetpack` already stands
+/// in for it, and the failure this validation exists to catch is a sealed pocket,
+/// not a long flight.
+pub struct NavRegions {
+    w: i32,
+    labels: Vec<u32>,
+}
+
+impl NavRegions {
+    /// Both dilations are separable and run with a sliding count, so this is O(w·h)
+    /// rather than O(w·h·PLAYER_W·PLAYER_H).
+    pub fn build(mask: &Mask) -> Self {
+        let (w, h) = (mask.w as i32, mask.h as i32);
+        let half = (crate::constants::PLAYER_W as i32) / 2;
+        let body_h = crate::constants::PLAYER_H as i32;
+        let (wu, hu) = (w as usize, h as usize);
+
+        // 1. Horizontal dilation: `wide[y][x]` = any solid in row y over the box's
+        //    column span [x-half, x+half-1].
+        let mut wide = vec![false; wu * hu];
+        for y in 0..h {
+            let mut count = 0i32;
+            // Prime the window over [-half, half-1].
+            for x in -half..half {
+                if mask.get(x, y) {
+                    count += 1;
+                }
+            }
+            for x in 0..w {
+                wide[y as usize * wu + x as usize] = count > 0;
+                // Slide: drop x-half, take x+half.
+                if mask.get(x - half, y) {
+                    count -= 1;
+                }
+                if mask.get(x + half, y) {
+                    count += 1;
+                }
+            }
+        }
+
+        // 2. Vertical dilation over `wide`: the box with its bottom edge at y spans
+        //    rows y-body_h+1 ..= y.
+        let mut fits = vec![false; wu * hu];
+        for x in 0..w {
+            let mut count = 0i32;
+            for y in 0..body_h.min(h) {
+                if wide[y as usize * wu + x as usize] {
+                    count += 1;
+                }
+            }
+            for y in (body_h - 1)..h {
+                fits[y as usize * wu + x as usize] = count == 0;
+                let leaving = y - body_h + 1;
+                if wide[leaving as usize * wu + x as usize] {
+                    count -= 1;
+                }
+                if y + 1 < h && wide[(y + 1) as usize * wu + x as usize] {
+                    count += 1;
+                }
+            }
+        }
+
+        // 3. Label the connected regions of `fits`.
+        let mut labels = vec![0u32; wu * hu];
+        let mut next = 0u32;
+        let mut stack: Vec<Point> = Vec::with_capacity(4096);
+        for y0 in 0..h {
+            for x0 in 0..w {
+                let i0 = y0 as usize * wu + x0 as usize;
+                if labels[i0] != 0 || !fits[i0] {
+                    continue;
+                }
+                next += 1;
+                labels[i0] = next;
+                stack.clear();
+                stack.push(Point::new(x0, y0));
+                while let Some(p) = stack.pop() {
+                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                        let (nx, ny) = (p.x + dx, p.y + dy);
+                        if nx < 0 || ny < 0 || nx >= w || ny >= h {
+                            continue;
+                        }
+                        let i = ny as usize * wu + nx as usize;
+                        if labels[i] != 0 || !fits[i] {
+                            continue;
+                        }
+                        labels[i] = next;
+                        stack.push(Point::new(nx, ny));
+                    }
+                }
+            }
+        }
+
+        NavRegions { w, labels }
+    }
+
+    /// 0 means the body does not fit here at all.
+    #[inline]
+    pub fn label_at(&self, p: Point) -> u32 {
+        if p.x < 0 || p.y < 0 || p.x >= self.w {
+            return 0;
+        }
+        let i = p.y as usize * self.w as usize + p.x as usize;
+        self.labels.get(i).copied().unwrap_or(0)
+    }
+}
+
 /// Build the graph, find components, and check the invariants.
 pub fn analyse(mask: &Mask, surface: &[Point]) -> TraversalReport {
     let n = surface.len();
@@ -53,6 +171,24 @@ pub fn analyse(mask: &Mask, surface: &[Point]) -> TraversalReport {
     }
 
     let mut uf = UnionFind::new(n);
+
+    // Union by navigable region first: this is the edge the ballistic predicates
+    // cannot express, and it is what makes winding cave passages count.
+    let nav = NavRegions::build(mask);
+    let mut first_of_region: std::collections::HashMap<u32, usize> =
+        std::collections::HashMap::new();
+    for (i, p) in surface.iter().enumerate() {
+        let l = nav.label_at(*p);
+        if l == 0 {
+            continue;
+        }
+        match first_of_region.get(&l) {
+            Some(&j) => uf.union(i, j),
+            None => {
+                first_of_region.insert(l, i);
+            }
+        }
+    }
 
     // Spatial buckets sized to the jetpack range, so only neighbouring buckets need
     // testing. A dense all-pairs graph over a few thousand points is millions of
@@ -498,6 +634,89 @@ mod tests {
         let low = Point::new(310, feet_on(500));
         assert!(can_drop(&m, high, low), "should be able to fall");
         assert!(!can_drop(&m, low, high), "cannot fall upward");
+    }
+
+    #[test]
+    fn nav_regions_separate_a_sealed_chamber_from_the_sky() {
+        let mut m = Mask::new_full(W, H);
+        // Open sky at the top.
+        for y in 0..100 {
+            m.clear_run(y, 0, W as i32 - 1);
+        }
+        // A sealed room deep in the rock.
+        for y in 400..460 {
+            m.clear_run(y, 300, 400);
+        }
+        let nav = NavRegions::build(&m);
+        let sky = nav.label_at(Point::new(500, 99));
+        let room = nav.label_at(Point::new(350, 459));
+        assert_ne!(sky, 0, "the sky must be navigable");
+        assert_ne!(room, 0, "the room must be navigable");
+        assert_ne!(sky, room, "a sealed room must not share the sky's region");
+    }
+
+    #[test]
+    fn nav_regions_follow_a_winding_shaft() {
+        // The case the ballistic predicates cannot express, and the reason this
+        // type exists: a zig-zag passage with no straight line through it.
+        let mut m = Mask::new_full(W, H);
+        for y in 0..100 {
+            m.clear_run(y, 0, W as i32 - 1);
+        }
+        for y in 400..460 {
+            m.clear_run(y, 300, 400);
+        }
+
+        let sky = NavRegions::build(&m).label_at(Point::new(350, 99));
+        let sealed = NavRegions::build(&m).label_at(Point::new(350, 459));
+        assert_ne!(sky, sealed, "precondition: the room starts sealed");
+
+        // Carve a zig-zag from the room up to the sky, wide enough for the body.
+        let bore = 20;
+        let mut cx = 350;
+        let mut cy = 430;
+        for (tx, ty) in [(250, 340), (450, 250), (350, 150), (350, 90)] {
+            let steps = 60;
+            for s in 0..=steps {
+                let t = s as f32 / steps as f32;
+                let x = cx + ((tx - cx) as f32 * t) as i32;
+                let y = cy + ((ty - cy) as f32 * t) as i32;
+                for dy in -bore..=bore {
+                    let dx = ((bore * bore - dy * dy) as f32).sqrt() as i32;
+                    m.clear_run(y + dy, x - dx, x + dx);
+                }
+            }
+            cx = tx;
+            cy = ty;
+        }
+
+        let nav = NavRegions::build(&m);
+        assert_eq!(
+            nav.label_at(Point::new(350, 459)),
+            nav.label_at(Point::new(350, 99)),
+            "a winding shaft must join the room to the sky"
+        );
+    }
+
+    #[test]
+    fn nav_regions_reject_a_gap_narrower_than_the_body() {
+        let mut m = Mask::new_full(W, H);
+        for y in 0..100 {
+            m.clear_run(y, 0, W as i32 - 1);
+        }
+        for y in 400..460 {
+            m.clear_run(y, 300, 400);
+        }
+        // A shaft only 10 px wide: the 16-wide body cannot use it.
+        for y in 100..430 {
+            m.clear_run(y, 345, 354);
+        }
+        let nav = NavRegions::build(&m);
+        assert_ne!(
+            nav.label_at(Point::new(350, 459)),
+            nav.label_at(Point::new(350, 99)),
+            "a 10 px shaft must not connect a 16 px-wide body"
+        );
     }
 
     #[test]

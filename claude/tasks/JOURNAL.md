@@ -342,3 +342,30 @@ Notes: A9 said TUNNEL_RADIUS_MIN 15 / ENTRANCE_RADIUS 13->15. MEASURED: 15 gives
        correction by remaining distance, so corridors wander in the middle.
 Left for later: T1.10's traversable fraction is still the open question — measured
        0.369 BEFORE these radii changes. Re-measure in T1.11/T1.16 and report.
+
+## T1.10 — Passes 7b-7c: traversal graph and validation — DONE
+Files: crates/game-core/src/map/gen/traversal.rs, gen/mod.rs
+Verified: `cargo test -p game-core --lib traversal` — 15 passed
+Notes: THE BIG ONE. Traversable fraction on a real medium map went
+       0.369 -> 0.587 (A9 bore fix) -> 0.967 (NavRegions), passed=false -> true.
+       MIN_TRAVERSABLE_FRACTION was never lowered.
+       The gap was a MODEL error, not a map error: a cave is entered through a
+       WINDING shaft, and no straight line or parabola runs from a surface point
+       into it, so a graph built only from walk/drop/jump/jetpack scored every cave
+       floor as its own island — while a body flood proved 100% of chambers were
+       reachable. NavRegions labels the connected regions of positions the 16x28 box
+       fits in (separable horizontal+vertical dilation, sliding counts, O(w*h)) and
+       unions surface points sharing a region.
+       Two other real fixes found by failing tests:
+       - can_jump tried only the ASCENDING ballistic root. Covering 60 px before the
+         apex needs 526 px/s; the descending arrival needs 120. Both roots are tried
+         now, or most real jumps are rejected.
+       - can_drop traced the slanted line a->b, which starts inside the platform you
+         are standing on and is therefore always blocked. A drop is: step off, then
+         fall. The corridor is vertical at b.x.
+       TEST TRAP: JETPACK_RANGE is 260*5*0.6 = 780 px, so "300 px apart with nothing
+       between" IS connected by design. Test masks must also be >= 1536 px wide or
+       6 spawns at 256 px separation cannot exist and `passed` is false for that
+       reason alone.
+Left for later: analyse costs 354 ms in DEBUG on a medium map (NavRegions dominates).
+       Fine in release; re-measure in T1.11's timing test.
