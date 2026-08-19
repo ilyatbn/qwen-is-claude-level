@@ -16,5 +16,6 @@ pub mod carvings;
 pub mod caves;
 pub mod network;
 pub mod silhouette;
+pub mod smooth;
 
 pub use silhouette::{borders_hold, force_borders, solid_fraction, GenParams};
