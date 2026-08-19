@@ -357,9 +357,12 @@ tests::vec2_math
 tick::tick_tests::a_snapshot_is_produced_on_every_second_tick
 tick::tick_tests::a_snapshot_round_trips_as_json
 tick::tick_tests::dropped_frames_are_reported_once_per_tick
+tick::tick_tests::effect_started_carries_the_per_kind_payload
 tick::tick_tests::events_are_produced_immediately_not_batched_to_snapshots
+tick::tick_tests::every_event_payload_matches_docs_06_2
 tick::tick_tests::the_dev_seed_override_wins_when_set
 tick::tick_tests::the_tick_rate_is_20hz
+tick::tick_tests::tile_destroyed_reports_an_uncovered_item
 tiles::tests::new_tile_starts_at_full_hp
 tiles::tests::solid_iff_not_air
 tiles::tests::tile_byte_encoding_round_trips

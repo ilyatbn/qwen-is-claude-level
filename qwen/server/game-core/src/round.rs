@@ -73,7 +73,12 @@ pub enum Event {
     Explosion { x: f32, y: f32, radius: f32 },
     Kill { victim: u8, killer: Option<u8>, weapon: &'static str },
     Respawned { player: u8, x: f32, y: f32 },
-    EffectStarted { kind: EffectKind },
+    /// docs/06 §2: `effect_started { kind, data }`. The payload is built at
+    /// start time so the event is self-contained — reading it back off the
+    /// round when the broadcast happens would race the effect's own mutation
+    /// (spots expire, meteors fire) and ship a state that never existed at
+    /// the moment the effect began.
+    EffectStarted { kind: EffectKind, data: EffectData },
     EffectEnded { kind: EffectKind },
 }
 
@@ -379,7 +384,7 @@ impl Round {
                     "[effect] {} started index={} [tick={}]",
                     kind.as_str(), self.effects_started, self.tick,
                 );
-                events.push(Event::EffectStarted { kind });
+                events.push(Event::EffectStarted { kind, data: effect_data_for(&effect) });
                 self.active_effect = Some(effect);
                 self.effects_started += 1;
             }
@@ -1366,7 +1371,7 @@ mod round_tests {
         let started: Vec<EffectKind> = events
             .iter()
             .filter_map(|e| match e {
-                Event::EffectStarted { kind } => Some(*kind),
+                Event::EffectStarted { kind, .. } => Some(*kind),
                 _ => None,
             })
             .collect();

@@ -1,7 +1,11 @@
 //! `tick` — the fixed 20 Hz loop (docs/00 §2, docs/05 §3).
 
 use crate::rooms::Room;
-use game_core::protocol::{Point, RoundStarted};
+use game_core::protocol::{
+    CrateDropped, EffectEnded, EffectStarted, Explosion, ItemPicked, ItemSpawned, ItemUncovered,
+    Kill, MapData, Point, ProjectileFired, Respawned, RoundEnded, RoundStarted, TileDestroyedMsg,
+    TilePos,
+};
 use game_core::round::Event;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,7 +23,7 @@ const SNAPSHOT_LOG_INTERVAL: u64 = 100;
 /// What one tick produced, for the caller to broadcast.
 pub struct TickOutput {
     /// The room's current map, so `round_started` can carry it (docs/06 §2).
-    pub map_data: game_core::protocol::MapData,
+    pub map_data: MapData,
     /// Carried for future per-room socket.io rooms; v1 runs one room per
     /// instance, so the namespace broadcast is the room broadcast.
     #[allow(dead_code)]
@@ -96,7 +100,7 @@ fn log_event(room: u32, tick: u64, event: &Event) {
             debug!("[round] P{player} respawned [tick={tick} room={room}]");
         }
         Event::CrateDropped { x } => debug!("[item] crate at x={x} [tick={tick} room={room}]"),
-        Event::EffectStarted { kind } => {
+        Event::EffectStarted { kind, .. } => {
             info!("[effect] {} started [tick={tick} room={room}]", kind.as_str());
         }
         Event::EffectEnded { kind } => {
@@ -165,78 +169,19 @@ async fn broadcast(io: &socketioxide::SocketIo, output: &TickOutput) {
         }
     }
     for event in &output.events {
-        let (name, payload) = match event {
-            // docs/06 §2 requires the map here too — the round is regenerated
-            // on restart, so a client that only got the map on join would be
-            // rendering the previous round's terrain.
-            //
-            // `spawn` is documented as "this client's spawn", which a room-wide
-            // broadcast cannot personalise; the client reads its own spawn from
-            // the snapshot instead. See DEVIATIONS.md D45.
-            Event::RoundStarted { seed, scale } => (
-                s2c::ROUND_STARTED,
-                serde_json::to_value(RoundStarted {
-                    seed: *seed,
-                    scale: scale.as_str().to_string(),
-                    map: map_data.clone(),
-                    spawn: Point { x: 0.0, y: 0.0 },
-                })
-                .unwrap_or_else(|_| serde_json::json!({})),
-            ),
-            // docs/06 §2: round_ended carries the score table. RoundEndScene
-            // renders it, and an empty payload gave it nothing to show.
-            Event::RoundEnded { scores } => (
-                s2c::ROUND_ENDED,
-                serde_json::json!({ "scores": scores }),
-            ),
-            Event::TileDestroyed { tiles, version } => (
-                s2c::TILE_DESTROYED,
-                serde_json::json!({
-                    "tiles": tiles.iter().map(|t| serde_json::json!({"x": t.x, "y": t.y}))
-                        .collect::<Vec<_>>(),
-                    "version": version,
-                    "item_uncovered": serde_json::Value::Null,
-                }),
-            ),
-            Event::ItemSpawned { item, x, y, is_crate } => (
-                s2c::ITEM_SPAWNED,
-                serde_json::json!({ "item": item.as_str(), "x": x, "y": y, "crate": is_crate }),
-            ),
-            Event::ItemPicked { player, item } => (
-                s2c::ITEM_PICKED,
-                serde_json::json!({ "player": player, "item": item.as_str() }),
-            ),
-            Event::CrateDropped { x } => (s2c::CRATE_DROPPED, serde_json::json!({ "x": x })),
-            Event::ProjectileFired { id, owner, kind, x, y, angle } => (
-                s2c::PROJECTILE_FIRED,
-                serde_json::json!({
-                    "id": id, "owner": owner, "kind": kind.as_str(),
-                    "x": x, "y": y, "angle": angle,
-                }),
-            ),
-            Event::Explosion { x, y, radius } => (
-                s2c::EXPLOSION,
-                serde_json::json!({ "x": x, "y": y, "radius": radius }),
-            ),
-            Event::Kill { victim, killer, weapon } => (
-                s2c::KILL,
-                serde_json::json!({ "victim": victim, "killer": killer, "weapon": weapon }),
-            ),
-            Event::Respawned { player, x, y } => (
-                s2c::RESPAWNED,
-                serde_json::json!({ "player": player, "x": x, "y": y }),
-            ),
-            // docs/06 §2. The per-kind payload rides in the snapshot's
-            // `effect` field (docs/06 §4), so the event carries the kind and
-            // the client reads the data from the next snapshot.
-            Event::EffectStarted { kind } => (
-                s2c::EFFECT_STARTED,
-                serde_json::json!({ "kind": kind.as_str(), "data": {} }),
-            ),
-            Event::EffectEnded { kind } => (
-                s2c::EFFECT_ENDED,
-                serde_json::json!({ "kind": kind.as_str() }),
-            ),
+        // Every payload goes through its struct in protocol.rs. Hand-built
+        // `json!` objects compiled and shipped, but the protocol pins guard
+        // the structs — so a rename on either side left the other silent.
+        // See DEVIATIONS.md D46.
+        let (name, payload) = match event_payload(event, map_data) {
+            Ok(pair) => pair,
+            Err(err) => {
+                // Skip the event rather than emitting an empty object: a
+                // client that receives `kill {}` cannot tell it from a kill
+                // with missing fields.
+                warn!("[net] failed to serialize {event:?}: {err}");
+                continue;
+            }
         };
         if let Some(ns) = io.of(namespace) {
             if let Err(err) = ns.emit(name, &payload).await {
@@ -244,6 +189,123 @@ async fn broadcast(io: &socketioxide::SocketIo, output: &TickOutput) {
             }
         }
     }
+}
+
+/// One event's wire name and payload (docs/06 §2).
+///
+/// Split out of [`broadcast`] so it is testable without a socket: the tests
+/// below assert the shipping payload against docs/06 §2 directly, which the
+/// in-line `json!` version could not be.
+fn event_payload(
+    event: &Event,
+    map_data: &MapData,
+) -> Result<(&'static str, serde_json::Value), serde_json::Error> {
+    use game_core::protocol::s2c;
+    let payload = match event {
+        // docs/06 §2 requires the map here too — the round is regenerated on
+        // restart, so a client that only got the map on join would be
+        // rendering the previous round's terrain.
+        //
+        // `spawn` is documented as "this client's spawn", which a room-wide
+        // broadcast cannot personalise; the client reads its own spawn from
+        // the snapshot instead. See DEVIATIONS.md D45.
+        Event::RoundStarted { seed, scale } => (
+            s2c::ROUND_STARTED,
+            serde_json::to_value(RoundStarted {
+                seed: *seed,
+                scale: scale.as_str().to_string(),
+                map: map_data.clone(),
+                spawn: Point { x: 0.0, y: 0.0 },
+            })?,
+        ),
+        // docs/06 §2: round_ended carries the score table. RoundEndScene
+        // renders it, and an empty payload gave it nothing to show.
+        Event::RoundEnded { scores } => (
+            s2c::ROUND_ENDED,
+            serde_json::to_value(RoundEnded { scores: scores.clone() })?,
+        ),
+        Event::TileDestroyed { tiles, version } => (
+            s2c::TILE_DESTROYED,
+            serde_json::to_value(TileDestroyedMsg {
+                tiles: tiles.iter().map(|t| TilePos { x: t.x, y: t.y }).collect(),
+                version: *version,
+                item_uncovered: uncovered(tiles),
+            })?,
+        ),
+        Event::ItemSpawned { item, x, y, is_crate } => (
+            s2c::ITEM_SPAWNED,
+            serde_json::to_value(ItemSpawned {
+                item: item.as_str().to_string(),
+                x: *x,
+                y: *y,
+                is_crate: *is_crate,
+            })?,
+        ),
+        Event::ItemPicked { player, item } => (
+            s2c::ITEM_PICKED,
+            serde_json::to_value(ItemPicked {
+                player: *player,
+                item: item.as_str().to_string(),
+            })?,
+        ),
+        Event::CrateDropped { x } => {
+            (s2c::CRATE_DROPPED, serde_json::to_value(CrateDropped { x: *x })?)
+        }
+        Event::ProjectileFired { id, owner, kind, x, y, angle } => (
+            s2c::PROJECTILE_FIRED,
+            serde_json::to_value(ProjectileFired {
+                id: *id,
+                owner: *owner,
+                kind: kind.as_str().to_string(),
+                x: *x,
+                y: *y,
+                angle: *angle,
+            })?,
+        ),
+        Event::Explosion { x, y, radius } => (
+            s2c::EXPLOSION,
+            serde_json::to_value(Explosion { x: *x, y: *y, radius: *radius })?,
+        ),
+        Event::Kill { victim, killer, weapon } => (
+            s2c::KILL,
+            serde_json::to_value(Kill {
+                victim: *victim,
+                killer: *killer,
+                weapon: weapon.to_string(),
+            })?,
+        ),
+        Event::Respawned { player, x, y } => (
+            s2c::RESPAWNED,
+            serde_json::to_value(Respawned { player: *player, x: *x, y: *y })?,
+        ),
+        Event::EffectStarted { kind, data } => (
+            s2c::EFFECT_STARTED,
+            serde_json::to_value(EffectStarted {
+                kind: kind.as_str().to_string(),
+                data: data.clone(),
+            })?,
+        ),
+        Event::EffectEnded { kind } => (
+            s2c::EFFECT_ENDED,
+            serde_json::to_value(EffectEnded { kind: kind.as_str().to_string() })?,
+        ),
+    };
+    Ok(payload)
+}
+
+/// docs/06 §2 `tile_destroyed.item_uncovered`.
+///
+/// The wire field is a single optional item, but one blast can uncover
+/// several tiles that each hid one. The first goes here; every uncovered item
+/// — including this one — also gets its own `item_spawned`, which is what the
+/// client actually spawns from. See DEVIATIONS.md D47.
+fn uncovered(tiles: &[game_core::tiles::TileDestroyed]) -> Option<ItemUncovered> {
+    tiles.iter().find_map(|t| {
+        t.item.map(|item| {
+            let centre = game_core::map::Map::tile_center(t.x, t.y);
+            ItemUncovered { item: item.as_str().to_string(), x: centre.x, y: centre.y }
+        })
+    })
 }
 
 /// Whether a fresh round should use the dev seed override (docs/05 §7).
@@ -351,5 +413,155 @@ mod tick_tests {
         assert_eq!(TICK_HZ, 20);
         assert_eq!(TICK_DURATION, Duration::from_millis(50));
         assert!((TICK_DT - 0.05).abs() < 1e-6);
+    }
+
+    /// docs/06 §2, one row per S->C event. Key sets, not just types: a struct
+    /// whose field is renamed still serializes, so only the wire keys catch
+    /// drift.
+    #[test]
+    fn every_event_payload_matches_docs_06_2() {
+        use game_core::effects::EffectKind;
+        use game_core::protocol::{EffectData, HeavyFogData, ItemId, ScoreEntry};
+        use game_core::tiles::{TileDestroyed, TileKind};
+
+        let map = room_with_players(1).round.map.to_map_data();
+        let cases: Vec<(Event, &str, &[&str])> = vec![
+            (
+                Event::RoundStarted { seed: 1, scale: Scale::Small },
+                "round_started",
+                &["map", "scale", "seed", "spawn"],
+            ),
+            (
+                Event::RoundEnded {
+                    scores: vec![ScoreEntry {
+                        id: 1, name: "p".into(), score: 2, kills: 3, deaths: 4,
+                    }],
+                },
+                "round_ended",
+                &["scores"],
+            ),
+            (
+                Event::TileDestroyed {
+                    tiles: vec![TileDestroyed { x: 1, y: 2, kind: TileKind::Rock, item: None }],
+                    version: 7,
+                },
+                "tile_destroyed",
+                &["item_uncovered", "tiles", "version"],
+            ),
+            (
+                Event::ItemSpawned { item: ItemId::Medkit, x: 1.0, y: 2.0, is_crate: false },
+                "item_spawned",
+                &["crate", "item", "x", "y"],
+            ),
+            (
+                Event::ItemPicked { player: 1, item: ItemId::Pistol },
+                "item_picked",
+                &["item", "player"],
+            ),
+            (Event::CrateDropped { x: 3.0 }, "crate_dropped", &["x"]),
+            (
+                Event::ProjectileFired {
+                    id: 1, owner: 2, kind: ItemId::Rocket, x: 3.0, y: 4.0, angle: 0.5,
+                },
+                "projectile_fired",
+                &["angle", "id", "kind", "owner", "x", "y"],
+            ),
+            (
+                Event::Explosion { x: 1.0, y: 2.0, radius: 3.0 },
+                "explosion",
+                &["radius", "x", "y"],
+            ),
+            (
+                Event::Kill { victim: 1, killer: Some(2), weapon: "rocket" },
+                "kill",
+                &["killer", "victim", "weapon"],
+            ),
+            (
+                Event::Respawned { player: 1, x: 2.0, y: 3.0 },
+                "respawned",
+                &["player", "x", "y"],
+            ),
+            (
+                Event::EffectStarted {
+                    kind: EffectKind::HeavyFog,
+                    data: EffectData::HeavyFog(HeavyFogData {}),
+                },
+                "effect_started",
+                &["data", "kind"],
+            ),
+            (Event::EffectEnded { kind: EffectKind::HeavyFog }, "effect_ended", &["kind"]),
+        ];
+
+        // Guard the guard: the table must cover every variant, or a new event
+        // could ship unchecked. `Event` has 12 variants (round.rs).
+        assert_eq!(cases.len(), 12, "an Event variant is missing from the table");
+
+        for (event, expected_name, expected_keys) in cases {
+            let (name, payload) = event_payload(&event, &map).expect("payload serializes");
+            assert_eq!(name, expected_name, "wire name for {event:?}");
+            let mut keys: Vec<&str> =
+                payload.as_object().expect("object payload").keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            assert_eq!(keys, expected_keys, "wire keys for {name}");
+        }
+    }
+
+    /// docs/06 §2 + §5: `effect_started.data` is the per-kind payload, not a
+    /// placeholder. The hand-built version shipped `"data": {}` for every
+    /// kind, which is indistinguishable from HeavyFog's real (empty) payload.
+    #[test]
+    fn effect_started_carries_the_per_kind_payload() {
+        let mut room = room_with_players(2);
+        room.set_ready("s0", true);
+        room.set_ready("s1", true);
+        let map = room.round.map.to_map_data();
+        let started = (0..6000)
+            .find_map(|_| {
+                room.step().into_iter().find_map(|e| match e {
+                    Event::EffectStarted { kind, data } => Some((kind, data)),
+                    _ => None,
+                })
+            })
+            .expect("an effect starts within a round");
+        let (kind, data) = started;
+        let (_, payload) = event_payload(
+            &Event::EffectStarted { kind, data },
+            &map,
+        )
+        .expect("payload serializes");
+        let data = &payload["data"];
+        // Every kind but HeavyFog has a non-empty shape (docs/06 §5).
+        if kind != game_core::effects::EffectKind::HeavyFog {
+            assert!(
+                data.as_object().is_some_and(|o| !o.is_empty()),
+                "{} shipped an empty data payload: {payload}",
+                kind.as_str(),
+            );
+        }
+    }
+
+    /// docs/06 §2 `tile_destroyed.item_uncovered`. Populated from the batch,
+    /// which the hand-built payload hardcoded to null. See D47.
+    #[test]
+    fn tile_destroyed_reports_an_uncovered_item() {
+        use game_core::protocol::ItemId;
+        use game_core::tiles::{TileDestroyed, TileKind};
+
+        let map = room_with_players(1).round.map.to_map_data();
+        let event = Event::TileDestroyed {
+            tiles: vec![
+                TileDestroyed { x: 1, y: 2, kind: TileKind::Dirt, item: None },
+                TileDestroyed { x: 3, y: 4, kind: TileKind::Dirt, item: Some(ItemId::Shotgun) },
+            ],
+            version: 9,
+        };
+        let (_, payload) = event_payload(&event, &map).expect("payload serializes");
+        assert_eq!(payload["item_uncovered"]["item"], "shotgun");
+        // Pixel centre of tile (3, 4), not the tile coordinate (docs/06 §2:
+        // x/y are f32 pixels here, while `tiles[]` carries tile coords).
+        let centre = game_core::map::Map::tile_center(3, 4);
+        assert_eq!(payload["item_uncovered"]["x"], centre.x);
+        assert_eq!(payload["item_uncovered"]["y"], centre.y);
+        assert_eq!(payload["tiles"][1]["x"], 3);
     }
 }

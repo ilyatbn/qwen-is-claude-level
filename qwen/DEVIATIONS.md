@@ -1456,3 +1456,97 @@ and map delivery is part of the join flow in docs/05 §2 and T4.1 step 4's "per 
 fire on it, because I applied the rule to the tasks I was ticking at that moment
 (T4.4–T4.8) and never re-audited the tasks already ticked (T4.1, T4.10). That is the
 same shape as applying D27's lesson forward to T2.2 but not backward to T2.1.
+
+---
+
+### D47 — `tile_destroyed.item_uncovered` is singular; a blast uncovers many
+
+`docs/06-protocol.md` §2 types the field as
+`item_uncovered: Option<{item: string, x: f32, y: f32}>` — **one** item per event. But
+the same event carries `tiles: [{x, y}]`, a whole batch: a rocket blast destroys a
+radius of tiles (docs/01 §5, docs/03 §4), and every DIRT/STONE tile in that radius may
+hide an item. The two fields disagree about cardinality — a batch of N destroyed tiles
+can uncover up to N items, and the wire has room for one.
+
+The same mismatch as D3 (`spawns` fixed at 6) and D28's family: a field typed for the
+common case, sitting next to a field that admits the uncommon one.
+
+**Implemented as specified, minimally.** `item_uncovered` carries the **first**
+uncovered item in the batch, in pixel centre coordinates. This is not a loss of
+information: `Round::step_projectiles` already pushes a separate `item_spawned` for
+**every** uncovered item, and `item_spawned` is what the client actually spawns ground
+items from. `item_uncovered` is therefore a hint for the reveal animation, and the first
+one is enough for that.
+
+Recording it because the field cannot be implemented faithfully as typed, not because
+the behaviour is wrong.
+
+**Found by the class fix, not by reading the docs.** The hand-built payload hardcoded
+`"item_uncovered": null` for four phases. Switching to `TileDestroyedMsg` made the field
+mandatory to think about — which is the argument for typed payloads in one line:
+`serde_json::json!` lets you omit a field silently, and a struct does not.
+
+---
+
+### The `json!` class, closed
+
+D46 diagnosed one instance — `net.rs` building `joined` by hand. The same shape was in
+`tick.rs`, which hand-built **13** S→C payloads. For 11 of the 19 events in docs/06 §2,
+the protocol pins constrained nothing about what shipped: rename a field on the struct
+and the wire kept working; rename it on the wire and the struct kept compiling.
+
+Field names all happened to be correct, so nothing was broken — but `round_ended`'s bare
+`{}` (found by the retroactive sweep and fixed by populating the `json!` rather than
+switching to `RoundEnded`) is proof the shape produces defects, and that fixing the
+instance leaves the class in place.
+
+All 13 now go through their structs. Three things fell out of the conversion that the
+hand-built version had hidden:
+
+1. **`effect_started.data` was a placeholder.** docs/06 §2 requires the per-kind payload
+   from §5; the code shipped `"data": {}` for every kind. `EffectData` is an untagged
+   enum, so `{}` is *also* a valid `HeavyFog` payload — the placeholder was
+   indistinguishable from a correct value. `Event::EffectStarted` now carries its
+   `EffectData`, built at start time rather than read off the round at broadcast time,
+   which would race the effect's own mutation (spots expire, meteors fire).
+2. **`item_uncovered` was hardcoded null** — D47.
+3. **A serialization failure emitted `{}`.** `RoundStarted` used
+   `.unwrap_or_else(|_| json!({}))`. Events now skip on error and log, because a client
+   receiving `kill {}` cannot distinguish it from a kill with missing fields.
+
+`event_payload` is split out of `broadcast` so it is testable without a socket: 12 rows
+of (event, wire name, sorted key set) asserted against docs/06 §2, with a length
+assertion so a new `Event` variant cannot be added without a row. Injecting a renamed
+struct field, the `data` placeholder, and a null `item_uncovered` fails those tests.
+
+---
+
+### D48 — Three documented events have no owning task, so nothing ever sends them
+
+`docs/06-protocol.md` §2 lists 19 server→client events. Three of them —
+`player_joined`, `player_left` and `lobby_state` — have **no emit site anywhere in the
+server**. `lobby_state` is mentioned by exactly one task, T5.3 step 2, and only in
+passing ("skin per player id … sent in `joined`/`lobby_state`"), as if the event already
+existed. `player_joined` and `player_left` are named by **no task at all**.
+
+This is the D46 shape again, and the reason it is a spec finding rather than a coding
+slip: the task list is not a cover of the protocol. Nothing in `tasks/` ever says "emit
+the lobby events", so following the tasks exactly — which is this experiment's rule —
+produces a server that cannot drive its own lobby UI. A client showing who is in the
+room, who is ready, and the countdown has no event to do it from; `LobbyScene` currently
+only knows about itself.
+
+**Found by the live wire check**, not by reading code: `scripts/event-check.mjs`
+connects two real clients and compares every arriving payload's key set against
+docs/06 §2, and reported `lobby_state never arrived`. A static check then proved the
+distinction that matters — an event this scenario did not *trigger* (idle clients never
+shoot, so no `kill`) versus an event with no emit site at all.
+
+**Guarded going forward.** `scripts/wire-coverage.sh` parses the `s2c` constants out of
+`protocol.rs` and requires each one to have an emit site, with disclosed gaps listed
+against the task that owns them. It fails on an *undisclosed* gap — verified by adding a
+constant with no emit site. This is the check that would have caught D46 four phases
+early, and it costs one grep.
+
+**Being fixed in T5.3**, which is where `lobby_state` belongs; `player_joined` /
+`player_left` are wired at the same site since they are the same lifecycle moment.
