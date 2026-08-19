@@ -391,6 +391,72 @@ mod tests {
     }
 }
 
+/// Fixed simulation timestep, seconds (docs/00 §2: 20 Hz).
+pub const DT: f32 = 0.05;
+
+impl Player {
+    /// Ground probe: is the tile 2 px below the feet solid? (docs/03 §4)
+    ///
+    /// "Ground detection: 2 px downward probe from feet, tile-based (check the
+    /// tile under the feet point is solid) — cheaper than a rapier raycast,
+    /// deterministic."
+    ///
+    /// Samples both lower corners as well as the centre, because the body is
+    /// wider than a tile (D6): standing with one corner over a ledge is still
+    /// standing.
+    pub fn on_ground(&self, map: &Map) -> bool {
+        let probe_y = self.feet_y() + 2.0;
+        [
+            self.pos.x - BODY_HALF_WIDTH + 0.5,
+            self.pos.x,
+            self.pos.x + BODY_HALF_WIDTH - 0.5,
+        ]
+        .iter()
+        .any(|&x| map.is_solid_at_pixel(x, probe_y))
+    }
+
+    /// Horizontal movement for one tick (docs/03 §4, T2.3 step 3).
+    ///
+    /// On ground A/D set velocity directly — "snappy Worms feel, no accel on
+    /// ground". In air they accelerate toward ±AIR_MAX at AIR_ACCEL.
+    pub fn step_horizontal(&mut self, left: bool, right: bool, on_ground: bool, dt: f32) {
+        let direction = match (left, right) {
+            (true, false) => -1.0,
+            (false, true) => 1.0,
+            // Both or neither held: no input.
+            _ => 0.0,
+        };
+
+        if on_ground {
+            self.vel.x = direction * MOVE_SPEED;
+            return;
+        }
+
+        if direction == 0.0 {
+            // docs/03 §4 / T2.4 step 2: no air drag in v1 — keep vel.x.
+            return;
+        }
+
+        let target = direction * AIR_MAX;
+        let delta = direction * AIR_ACCEL * dt;
+        self.vel.x += delta;
+        // Do not accelerate past the cap, and never reduce speed already above
+        // it (a jetpack boost can legitimately exceed AIR_MAX).
+        if direction > 0.0 {
+            self.vel.x = self.vel.x.min(target.max(self.vel.x - delta));
+        } else {
+            self.vel.x = self.vel.x.max(target.min(self.vel.x - delta));
+        }
+    }
+
+    /// Integrate position from velocity (T2.3 step 4).
+    ///
+    /// The pure path: rapier resolves collisions afterwards (D2).
+    pub fn integrate(&mut self, dt: f32) {
+        self.pos = self.pos + self.vel * dt;
+    }
+}
+
 /// T2.2's input tests.
 ///
 /// In their own module so the task's documented Test command,
@@ -507,4 +573,202 @@ fn use_slot_is_edge_triggered() {
     }
     assert_eq!(presses, vec![2, 2, 3], "expected press, re-press, then slot 3");
 }
+}
+
+/// T2.3–T2.5 movement tests.
+///
+/// Named `movement_tests` so the tasks' documented Test commands
+/// (`cargo test -p game-core movement`, `... jump`, `... jetpack`) select them
+/// — see DEVIATIONS.md D27 for why that is not automatic.
+#[cfg(test)]
+mod movement_tests {
+    use super::*;
+    use crate::map::Scale;
+    use crate::tiles::{Tile, TileKind};
+
+    /// A flat floor across the whole map, with its surface at row `floor_row`.
+    fn flat_map(floor_row: u32) -> Map {
+        let (width, height) = Scale::Small.dimensions();
+        let mut map = Map {
+            seed: 0,
+            scale: Scale::Small,
+            width,
+            height,
+            tiles: vec![Tile::AIR; (width * height) as usize],
+            decor: Vec::new(),
+            spawns: Vec::new(),
+            version: 0,
+        };
+        for y in floor_row..height {
+            for x in 0..width {
+                map.set_tile(x, y, Tile::new(TileKind::Stone));
+            }
+        }
+        map
+    }
+
+    /// A player standing on the floor of `map` at tile column `col`.
+    fn standing(map: &Map, col: u32, floor_row: u32) -> Player {
+        let pos = Vec2::new(
+            (col as f32 + 0.5) * TILE_SIZE,
+            floor_row as f32 * TILE_SIZE - BODY_HALF_HEIGHT,
+        );
+        Player::new(0, "p".into(), pos)
+    }
+
+    #[test]
+    fn player_walks_on_ground() {
+        // docs/08 §1 (physics row) + T2.3 Acceptance: "movement speed is
+        // exactly 140 px/s (assert Δx over 10 ticks = 70 px)".
+        //
+        // 140 px/s * 10 ticks * 0.05 s = 70 px exactly.
+        let floor_row = 40;
+        let map = flat_map(floor_row);
+        let mut player = standing(&map, 20, floor_row);
+        let start_x = player.pos.x;
+        let start_y = player.pos.y;
+
+        for _ in 0..10 {
+            let on_ground = player.on_ground(&map);
+            assert!(on_ground, "player left the ground while walking");
+            player.step_horizontal(false, true, on_ground, DT);
+            player.integrate(DT);
+        }
+
+        let dx = player.pos.x - start_x;
+        assert!(
+            (dx - 70.0).abs() < 1e-4,
+            "Δx over 10 ticks was {dx}, expected exactly 70",
+        );
+        assert_eq!(player.vel.x, MOVE_SPEED);
+        assert_eq!(player.pos.y, start_y, "walking must not change height");
+    }
+
+    #[test]
+    fn walking_left_mirrors_walking_right() {
+        let floor_row = 40;
+        let map = flat_map(floor_row);
+        let mut player = standing(&map, 20, floor_row);
+        let start_x = player.pos.x;
+        for _ in 0..10 {
+            let g = player.on_ground(&map);
+            player.step_horizontal(true, false, g, DT);
+            player.integrate(DT);
+        }
+        assert!((player.pos.x - start_x + 70.0).abs() < 1e-4);
+        assert_eq!(player.vel.x, -MOVE_SPEED);
+    }
+
+    #[test]
+    fn no_input_stops_instantly_on_ground() {
+        // docs/03 §4: "neither → 0", no ground friction model.
+        let floor_row = 40;
+        let map = flat_map(floor_row);
+        let mut player = standing(&map, 20, floor_row);
+        player.vel.x = MOVE_SPEED;
+        player.step_horizontal(false, false, true, DT);
+        assert_eq!(player.vel.x, 0.0);
+        // Both keys held is also "no input", not a tie broken arbitrarily.
+        player.vel.x = MOVE_SPEED;
+        player.step_horizontal(true, true, true, DT);
+        assert_eq!(player.vel.x, 0.0);
+    }
+
+    #[test]
+    fn walking_off_a_cliff_leaves_the_ground() {
+        // T2.3 step 5: "walking off a cliff → next tick on_ground false".
+        let floor_row = 40;
+        let mut map = flat_map(floor_row);
+        // Remove the floor beyond column 30 to make a cliff edge.
+        for y in floor_row..map.height {
+            for x in 31..map.width {
+                map.set_tile(x, y, Tile::AIR);
+            }
+        }
+        let mut player = standing(&map, 28, floor_row);
+        assert!(player.on_ground(&map), "should start on solid ground");
+
+        let mut left_ground = false;
+        for _ in 0..40 {
+            let g = player.on_ground(&map);
+            player.step_horizontal(false, true, g, DT);
+            player.integrate(DT);
+            if !player.on_ground(&map) {
+                left_ground = true;
+                break;
+            }
+        }
+        assert!(left_ground, "player never left the ground walking off a cliff");
+    }
+
+    #[test]
+    fn ground_probe_is_two_pixels() {
+        // docs/03 §4: the probe is 2 px below the feet. Lifting the player
+        // 3 px off the floor must read as airborne, 1 px as grounded.
+        let floor_row = 40;
+        let map = flat_map(floor_row);
+        let mut player = standing(&map, 20, floor_row);
+        assert!(player.on_ground(&map));
+
+        player.pos.y -= 1.0;
+        assert!(player.on_ground(&map), "1 px above the floor is still grounded");
+
+        player.pos.y -= 2.5;
+        assert!(!player.on_ground(&map), "3.5 px above the floor is airborne");
+    }
+
+    #[test]
+    fn air_control_accelerates_toward_the_cap() {
+        // docs/03 §4: in air, A/D accelerate toward ±AIR_MAX at AIR_ACCEL.
+        let map = flat_map(40);
+        let mut player = standing(&map, 20, 40);
+        player.pos.y -= 200.0; // airborne
+        assert!(!player.on_ground(&map));
+
+        player.step_horizontal(false, true, false, DT);
+        assert!(
+            (player.vel.x - AIR_ACCEL * DT).abs() < 1e-4,
+            "one tick of air control should add {} px/s, got {}",
+            AIR_ACCEL * DT,
+            player.vel.x,
+        );
+
+        // Accelerating for many ticks must stop at the cap, not overshoot.
+        for _ in 0..100 {
+            player.step_horizontal(false, true, false, DT);
+        }
+        assert!(
+            (player.vel.x - AIR_MAX).abs() < 1e-4,
+            "air control overshot the cap: {} vs {AIR_MAX}",
+            player.vel.x,
+        );
+    }
+
+    #[test]
+    fn air_control_reverses_direction() {
+        // T2.4 step 4: "mid-air A flips direction within 1 tick" — the sign of
+        // acceleration must flip immediately even at full speed.
+        let map = flat_map(40);
+        let mut player = standing(&map, 20, 40);
+        player.pos.y -= 200.0;
+        player.vel.x = AIR_MAX;
+        player.step_horizontal(true, false, false, DT);
+        assert!(
+            player.vel.x < AIR_MAX,
+            "holding left at full right speed must decelerate immediately",
+        );
+    }
+
+    #[test]
+    fn no_air_drag_without_input() {
+        // docs/03 §4 / T2.4 step 2: "else keeps vel.x (no air drag in v1)".
+        let map = flat_map(40);
+        let mut player = standing(&map, 20, 40);
+        player.pos.y -= 200.0;
+        player.vel.x = 123.0;
+        for _ in 0..20 {
+            player.step_horizontal(false, false, false, DT);
+        }
+        assert_eq!(player.vel.x, 123.0, "air velocity decayed without input");
+    }
 }

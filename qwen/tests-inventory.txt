@@ -55,6 +55,12 @@ map::tests::terrain_ascii_dump_seed1_small
 map::tests::tile_center_is_tile_midpoint
 map::tests::value_noise_is_bounded_and_sized
 map::tests::version_increments
+physics::tests::a_gap_of_one_tile_splits_a_segment
+physics::tests::a_run_reaching_the_right_edge_is_closed
+physics::tests::all_segments_covers_every_solid_tile_exactly_once
+physics::tests::an_empty_row_has_no_segments
+physics::tests::row_segments_merges_consecutive_solid_tiles
+physics::tests::segment_geometry_matches_tile_bounds
 player::input_tests::a_jump_arriving_and_ending_between_ticks_is_still_one_edge
 player::input_tests::first_tick_without_a_frame_is_all_false
 player::input_tests::holding_jump_yields_exactly_one_edge
@@ -62,6 +68,14 @@ player::input_tests::latest_frame_wins_within_one_tick
 player::input_tests::missing_frame_repeats_the_last_one
 player::input_tests::releasing_and_repressing_jump_yields_a_second_edge
 player::input_tests::use_slot_is_edge_triggered
+player::movement_tests::air_control_accelerates_toward_the_cap
+player::movement_tests::air_control_reverses_direction
+player::movement_tests::ground_probe_is_two_pixels
+player::movement_tests::no_air_drag_without_input
+player::movement_tests::no_input_stops_instantly_on_ground
+player::movement_tests::player_walks_on_ground
+player::movement_tests::walking_left_mirrors_walking_right
+player::movement_tests::walking_off_a_cliff_leaves_the_ground
 player::tests::body_dimensions_reconcile_all_three_docs
 player::tests::player_defaults_match_doc
 player::tests::six_players_get_six_distinct_spawns

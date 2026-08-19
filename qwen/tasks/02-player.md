@@ -49,7 +49,7 @@ Read `docs/03-player.md` in full before starting this file.
 
 ---
 
-## T2.3 — Ground movement [ ]
+## T2.3 — Ground movement [x]
 
 **Goal**: A/D sets horizontal velocity on ground; ground probe works.
 **Read**: `docs/03-player.md` §4.
