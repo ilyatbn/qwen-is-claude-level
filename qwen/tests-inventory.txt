@@ -326,6 +326,7 @@ rooms::rooms_tests::snapshots_broadcast_every_second_tick
 rooms::rooms_tests::the_input_queue_is_latest_wins
 rooms::rooms_tests::the_seventh_joiner_is_rejected_as_room_full
 round::round_tests::a_full_round_runs_without_panic_and_leaves_sane_state
+round::round_tests::a_gone_players_seat_is_reused
 round::round_tests::a_meteor_shower_digs_craters_in_a_live_round
 round::round_tests::a_partial_lobby_waits_for_everyone_to_be_ready
 round::round_tests::a_player_falling_out_of_the_world_is_killed_not_lost

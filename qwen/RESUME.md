@@ -2,7 +2,8 @@
 
 Single source of truth for picking this up cold. Updated at each phase gate.
 
-**Last updated:** Phase 5 signed off — **build complete**
+**Last updated:** Phase 5 signed off; Docker verified and three
+playability defects found by actually playing (D55–D57) — see below
 
 > **Updating this file is the LAST action of a phase gate**, after the reviewer signs
 > off — not a mid-round note. It went stale three gates running: twice by being
@@ -31,13 +32,21 @@ design and is not used).
 | 2 — Player | T2.1–T2.10 | **done, signed off** |
 | 3 — Items | T3.1–T3.9 | **done, signed off** |
 | 4 — Rounds | T4.1–T4.10 | **done, signed off** |
-| 5 — Sprites | T5.1–T5.5 | **done, signed off** (T5.5 Docker unverified) |
+| 5 — Sprites | T5.1–T5.5 | **done, signed off**; T5.5 Docker now verified |
 
-**47/47 checkboxes ticked. All five phases signed off. 56 deviations recorded.**
+**47/47 checkboxes ticked. All five phases signed off. 59 deviations recorded.**
 
 **Known-open at completion:**
-- **T5.5 Docker is unverified** — files written, image never built (D13). The only
-  task whose Test command has never been executed. Closing it needs Docker installed.
+- ~~**T5.5 Docker is unverified**~~ — **closed.** Docker installed; image built, run and
+  verified end to end, including a real browser playing a round against the container.
+- **D55/D56/D57 — the game was unplayable and no gate caught it.** Found on the first
+  real play-through: the client never sent `input` at all (WASD/jump/fire dead), the
+  lobby's action listener was registered on a `null` scene so `ready` never reached the
+  server (no countdown, ever), and a gone player's seat was never reused so six joins
+  wedged the room permanently. All three fixed and guarded; see DEVIATIONS D55–D57.
+  **The lesson worth keeping**: every headless check emits on its own socket, so all of
+  them passed while the client's own UI path sent nothing. `scripts/c2s-coverage.sh` now
+  covers that direction, but only *running the game* found this.
 - **D51** — the tile texture variant `(seed + x + y) % 3` collapses to one variant for
   ~99.9% of real seeds (u64 → JS double, rounds away above 2^53). Cosmetic, but the
   feature is dead in production while working under `?seed=777`.
@@ -59,9 +68,11 @@ design and is not used).
 ## How to verify the current state
 
 ```bash
-cd qwen/server && cargo build && cargo test      # expect 323 + 11 + 17 + 23, 0 warnings
-cd qwen/client && npm test && npm run build      # expect 118 passed
-cd qwen && bash scripts/test-inventory.sh        # expect OK (478 tests)
+cd qwen/server && cargo build && cargo test      # expect 332 + 11 + 23 + 29, 0 build warnings
+cd qwen/client && npm test && npm run build      # expect 165 passed
+cd qwen && bash scripts/test-inventory.sh        # expect OK (540 tests)
+cd qwen && bash scripts/wire-coverage.sh         # s2c: every event has an emit site
+cd qwen && bash scripts/c2s-coverage.sh          # c2s: ditto, in the client
 cd qwen/server && cargo run -q -p game-core --example e2e_scenario   # 48/48
 cd qwen/server && cargo run -q -p game-core --example e2e_stress     # 23/23
 ```
@@ -80,7 +91,7 @@ cd qwen/server && cargo run -q -p game-core --example e2e_stress     # 23/23
 1. `HANDOFF-phase5.md` — most recent; has all four standing rules consolidated.
 1b. `dev_summary.md` — all deviations, ~2 lines each, grouped by failure class.
 2. `HANDOFF-phase2.md` — standing rules 1–3 live here; rule 4 in phase 4's.
-3. `DEVIATIONS.md` — 56 entries; D1–D52 with gaps.
+3. `DEVIATIONS.md` — 59 entries; D1–D57 with gaps. D55–D57 are the playability bugs.
 4. `HANDOFF-phase0.md`, `HANDOFF-phase1.md` for earlier context.
 
 ## Phase gate checklist

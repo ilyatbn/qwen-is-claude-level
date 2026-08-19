@@ -1796,3 +1796,85 @@ while T5.1's Files list puts it at `client/src/assets/manifest.json`. They canno
 right; the task's location was taken, since it is the more specific instruction, and the
 paths *inside* the manifest are docs/07 §2's verbatim (`processed/tiles/grass_1.png`),
 resolved by pointing Vite's `publicDir` at the repo-root `assets/` tree.
+
+### D55 — The client never sent `input`: the game was unplayable end to end
+
+Found by **playing the game in a browser** after Docker made it runnable — not by any
+test. `GameScene.sendInput` builds a correct `InputFrame` at 20 Hz and emits it as a
+**scene-local** event, `this.events.emit('input-frame', frame)`. Nothing anywhere
+listened for it. `C2S.INPUT` had **zero emit sites in the whole client**, so `input` was
+never sent to the server at all: WASD, jump, aim, fire and slot presses did nothing.
+
+The server side was complete and correct the whole time (`net.rs:182` handles
+`c2s::INPUT`), which is why the defect is invisible from the server.
+
+Two sibling cases of the same shape, both also dead:
+
+| Scene event | Carries | Listener |
+|---|---|---|
+| `input-frame` | WASD, jump, aim, fire, slots | **none** |
+| `round-end-action` | `restart`, `quit` (docs/06 §1) | **none** |
+| `lobby-action` | name, skin, **ready** | registered on `null` — see D56 |
+
+**Why every gate passed.** `scripts/wire-coverage.sh` checks that every **s2c** constant
+has an emit site, and there was no equivalent for **c2s**. The headless live checks in
+`client/scripts/` each emit on their own socket, so they exercise the protocol while
+bypassing the client's UI path entirely — the same blind spot recorded in D48, where the
+client never sent `join_room`. `npm run build` cannot fail for an event nobody sends.
+
+**Fixed** by forwarding all three scene events onto the socket in `main.ts`. Swept the
+class rather than the instance: `scripts/c2s-coverage.sh` is the mirror of
+`wire-coverage.sh` and fails if any `C2S` constant loses its emit site (verified by
+deleting the `input` emit and watching it fail). `use_slot` and `set_log_level` are
+disclosed gaps in it, with reasons.
+
+### D56 — `getScene()` at module load returns null, so the ready button was dead
+
+`main.ts` registered the lobby's action listener eagerly, in the module body:
+
+```ts
+lobbyScene()?.events.on('lobby-action', ...)   // lobbyScene() is null here
+```
+
+Phaser fills `SceneManager.keys` — what `getScene()` reads — in `bootQueue`, which runs
+on the game's `READY` event, long after this module body. So `lobbyScene()` was `null`,
+**the optional chain silently skipped the registration**, and every lobby action was
+dropped: name, skin, and `ready`.
+
+The visible symptom was the one reported: two players connect and **the timer never
+starts**. Nobody was ever marked ready, so `should_start_countdown` (docs/05 §2, "all
+present players ready") was never satisfied. It is not a countdown bug — the countdown
+never had a reason to begin.
+
+`?.` is what made it silent: with a plain `.` this would have been a `TypeError` on the
+first load. Same class as D48.
+
+**Fixed** by registering the forwarding after boot (`game.events.once(READY, …)`, with an
+immediate path when the scene already exists). Verified in a real headless Chromium
+against the container: clicking `[ ready ]` flips the player's `ready` flag to `true` in
+the broadcast `lobby_state`, the round starts, and holding `D` moves the player 188 px
+while `Space` raises them 312 px on the server's own snapshots.
+
+### D57 — A gone player's seat was never reused, wedging the room after six joins
+
+`Round::join` (docs/05 §2) allocated `id = self.players.len()` and unconditionally
+**pushed**. `leave` never removes anyone — docs/05 §2 says a leaver is "marked gone", so
+it only sets `connected = false`. The roster therefore grew by one on **every** join and
+never shrank, and once `players.len()` hit `MAX_PLAYERS` the room returned `room_full`
+**forever — even when completely empty**.
+
+Six browser refreshes were enough to make the server unjoinable until restarted. Observed
+live: player ids climbing `P0…P5` across reconnects with only two tabs ever open, after
+which new clients were silently refused.
+
+docs/05 §2's "Max 6 players; 7th joiner gets `room_full`" is a limit on players *present*,
+so holding a seat for someone already gone is a defect, not the design.
+
+**Why the suite missed it.** `the_seventh_joiner_is_rejected_as_room_full` joins six
+players and never disconnects any of them, so the leak is outside the case it covers —
+the test is right and stays right.
+
+**Fixed** in `Round::join`: reuse the seat of any `!connected` player, append only when
+none is free. Guarded by `a_gone_players_seat_is_reused`, written **before** the fix and
+seen to fail (`left: None, right: Some(2)`), plus a live check of 12 sequential
+connect/disconnect cycles, all 12 admitted.

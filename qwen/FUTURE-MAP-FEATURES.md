@@ -1,4 +1,4 @@
-# Future map features — beyond the heightmap
+1# Future map features — beyond the heightmap
 
 Not scheduled. This records two observations from looking at rendered maps, and what
 it would take to act on them. Nothing here is part of qwen's design; it is all

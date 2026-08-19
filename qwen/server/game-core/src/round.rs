@@ -169,10 +169,17 @@ impl Round {
     /// Add a player to the lobby (docs/05 §2). Returns their id, or `None`
     /// when the room is full — the 7th joiner gets `error{room_full}`.
     pub fn join(&mut self, name: String) -> Option<u8> {
-        if self.players.len() >= MAX_PLAYERS {
-            return None;
-        }
-        let id = self.players.len() as u8;
+        // A gone player's seat is reusable. `leave` only marks them
+        // `connected = false` (docs/05 §2: "player marked gone"), so appending
+        // unconditionally leaked a seat per join: after six joins the room was
+        // full forever and every later joiner got `room_full`, even with the
+        // room empty. Six browser refreshes were enough to wedge the server.
+        let reusable = self.players.iter().position(|p| !p.connected);
+        let id = match reusable {
+            Some(index) => self.players[index].player.id,
+            None if self.players.len() < MAX_PLAYERS => self.players.len() as u8,
+            None => return None,
+        };
         let spawn = self
             .map
             .spawns
@@ -180,7 +187,10 @@ impl Round {
             .copied()
             .unwrap_or(Vec2::ZERO);
         let player = Player::new(id, name, Player::spawn_position(spawn));
-        self.players.push(RoundPlayer::new(player));
+        match reusable {
+            Some(index) => self.players[index] = RoundPlayer::new(player),
+            None => self.players.push(RoundPlayer::new(player)),
+        }
         Some(id)
     }
 
@@ -917,6 +927,28 @@ mod round_tests {
             round.join(format!("p{id}"));
         }
         round
+    }
+
+    /// docs/05 §2: "Max 6 players" means six PRESENT players -- a player who
+    /// has gone ("player marked gone") must not keep holding a seat. `leave`
+    /// only sets `connected = false`, so a seat that is never reused made the
+    /// room permanently unjoinable after six joins: six browser refreshes and
+    /// the server rejects everyone until it is restarted.
+    #[test]
+    fn a_gone_players_seat_is_reused() {
+        let mut round = lobby_with(6);
+        assert_eq!(round.players.len(), 6);
+        assert_eq!(round.join("seventh".to_string()), None, "a full room is full");
+
+        // P2 disconnects: rooms.rs marks them gone rather than removing them.
+        round.players[2].connected = false;
+
+        let id = round.join("newcomer".to_string());
+        assert_eq!(id, Some(2), "the gone player's seat should be handed out");
+        assert_eq!(round.players.len(), 6, "reuse must not grow the roster");
+        assert!(round.players[2].connected, "the reused seat is connected again");
+        assert_eq!(round.players[2].player.name, "newcomer");
+        assert!(!round.players[2].ready, "a reused seat starts un-ready");
     }
 
     fn ready_all(round: &mut Round) {

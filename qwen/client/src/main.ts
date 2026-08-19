@@ -12,6 +12,7 @@ import {
   NAMESPACE,
   PROTOCOL_VERSION,
   S2C,
+  type InputFrame,
   type Joined,
   type Kill,
   type LobbyState,
@@ -79,13 +80,38 @@ export function connect(url: string = SERVER_URL): Socket {
     game.scene.getScene('GameScene') as GameScene | undefined;
   const lobbyScene = (): LobbyScene | undefined =>
     game.scene.getScene('LobbyScene') as LobbyScene | undefined;
+  const roundEndScene = (): RoundEndScene | undefined =>
+    game.scene.getScene('RoundEndScene') as RoundEndScene | undefined;
 
-  // The lobby owns no socket (it stays testable that way), so its actions are
-  // events this layer forwards. Registered once, before the scene starts.
-  lobbyScene()?.events.on('lobby-action', (action: LobbyAction) => {
-    const { type, ...payload } = action;
-    socket.emit(type, payload);
-  });
+  // The scenes own no socket (they stay testable that way), so their actions
+  // are local events this layer forwards.
+  //
+  // These MUST be registered only once the scenes exist. `getScene()` reads
+  // SceneManager's `keys` map, which `bootQueue` fills on the game's READY
+  // event -- long after this module body runs. Registering eagerly left
+  // `lobbyScene()` null, the optional chain silently skipped the listener, and
+  // the ready button never reached the server: nobody was ever marked ready,
+  // so the countdown never started. Same class as D48.
+  const wireScenes = (): void => {
+    const forward = (action: LobbyAction): void => {
+      const { type, ...payload } = action;
+      socket.emit(type, payload);
+    };
+    // name, skin and ready (docs/06 §1).
+    lobbyScene()?.events.on('lobby-action', forward);
+    // restart / quit had no listener at all.
+    roundEndScene()?.events.on('round-end-action', forward);
+    // The 20 Hz input frame -- WASD, jump, aim, fire, slots. GameScene emitted
+    // it and nothing ever listened, so `input` was never sent at all.
+    gameScene()?.events.on('input-frame', (frame: InputFrame) => {
+      socket.emit(C2S.INPUT, frame);
+    });
+  };
+  if (lobbyScene()) {
+    wireScenes();
+  } else {
+    game.events.once(Phaser.Core.Events.READY, wireScenes);
+  }
 
   socket.on('connect', () => {
     // docs/05 §2's flow starts with join_room, and nothing sent it: the client

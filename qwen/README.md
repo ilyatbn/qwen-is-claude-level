@@ -50,9 +50,8 @@ Rules for the executing agent:
 - **Client**: Phaser 3 + TypeScript + Vite. Sends inputs at 20 Hz,
   interpolates 10 Hz server snapshots.
 - **Assets**: placeholder shapes first; Kenney packs fetched in T5.1.
-- **Docker**: `docker-compose.yml` is written per docs/05 §6 (T5.5) but the image
-  has **never been built** — Docker was not available on the build host. Unverified.
-  No DB in v1.
+- **Docker**: `docker-compose.yml` per docs/05 §6 (T5.5). Built, run and
+  verified end to end. No DB in v1.
 
 ## How to run
 
@@ -78,12 +77,14 @@ message (docs/05 §5).
 ### Docker
 
 ```bash
-# NOT VERIFIED — Docker was unavailable on the build host, so this image has
-# never been built, the binary never run in a container, and the socket.io
-# handshake curl never executed. See DEVIATIONS.md D13.
-docker compose up --build          # server on :3001 (untested)
-cd client && npm run dev           # client still runs from Vite, on :5173
+docker compose up --build          # server on :3001
+cd client && npm run dev           # client runs from Vite, on :5173
 ```
+
+**Verified.** The image builds and runs, the server listens as uid 10001, the
+socket.io handshake answers, and the full live-check suite in `client/scripts/`
+passes against the container, including a real browser playing a round. D13 is
+closed.
 
 The image contains **the server binary only** (docs/05 §6 lists no client
 service). In dev the client is served by Vite; for production it is a static
