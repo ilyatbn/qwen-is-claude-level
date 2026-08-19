@@ -133,3 +133,14 @@ Left for later: nothing. M0 complete.
 `./scripts/check.sh` green: 77 rust tests, 8 vitest, fmt + clippy -D warnings clean.
 Docker path verified separately in T0.07 (same echo, transport websocket via nginx).
 Foundation is done; M1 (map generation) is next and is the milestone that matters.
+
+## T1.01 — Mask: the 1-bit-per-pixel bitset — DONE
+Files: crates/game-core/src/map/{mask.rs,mod.rs}, lib.rs, game-core/Cargo.toml
+Verified: `cargo test -p game-core mask` — 18 passed
+Notes: added blake3 to game-core for hash(); it builds for wasm32 fine.
+       Because w is a multiple of 64 there are NO padding bits anywhere, so
+       count_solid needs no tail handling — do not add any. Added count_run()
+       beyond the task list (the coarse grid and the cave reachability test both
+       want a read-only run count). The fuzz test cross-checks set_run/clear_run
+       against a naive per-pixel reference over 400 random runs — keep it.
+Left for later: nothing

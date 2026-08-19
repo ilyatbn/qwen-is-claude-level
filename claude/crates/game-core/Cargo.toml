@@ -8,6 +8,7 @@ description = "Pure simulation core: map generation, destruction, physics, items
 [dependencies]
 rand.workspace = true
 rand_chacha.workspace = true
+blake3.workspace = true
 serde = { workspace = true, optional = true }
 png = { workspace = true, optional = true }
 

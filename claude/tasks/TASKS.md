@@ -34,7 +34,7 @@ browser console logs an echo round-trip. `./scripts/check.sh` is green.
 The most important milestone. Ends with maps that are provably traversable and can
 be eyeballed as PNGs.
 
-- [ ] [T1.01](M1/T1.01-mask.md) — `Mask`: the 1-bit-per-pixel bitset
+- [x] [T1.01](M1/T1.01-mask.md) — `Mask`: the 1-bit-per-pixel bitset
 - [ ] [T1.02](M1/T1.02-coarse-grid.md) — `CoarseGrid`: 8×8 occupancy counts
 - [ ] [T1.03](M1/T1.03-noise.md) — Value noise, fBm, domain warp
 - [ ] [T1.04](M1/T1.04-silhouette.md) — Pass 1–2: preset and silhouette
