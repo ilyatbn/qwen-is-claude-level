@@ -44,7 +44,7 @@ Individual tasks list the exact sections they need.
 
 ---
 
-## T1.3 — Heightmap generation [ ]
+## T1.3 — Heightmap generation [x]
 
 **Goal**: surface row per column, per doc §3 steps 1.
 **Read**: `docs/01-map.md` §3 (step 1 only).

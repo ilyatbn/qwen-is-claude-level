@@ -3,7 +3,8 @@
 //! "Most important system. Everything here is deterministic from
 //! `(seed, scale)`." — docs/01 intro.
 
-use crate::tiles::{Decor, Tile, TileKind, TILE_SIZE};
+use crate::rng::GameRng;
+use crate::tiles::{Decor, Tile, TILE_SIZE};
 use crate::Vec2;
 use serde::{Deserialize, Serialize};
 
@@ -168,9 +169,74 @@ impl Map {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Generation — docs/01 §3. Order is load-bearing: "follow it exactly or
+// determinism tests break."
+// ---------------------------------------------------------------------------
+
+/// 1-D value noise with cosine interpolation (docs/01 §3 step 1).
+///
+/// Builds a random value array `v[i] in [-1,1]` for
+/// `i in 0..=ceil(width/step)+1` using the RNG, then samples at integer tile
+/// columns, interpolating between `v[i]` and `v[i+1]`.
+pub fn value_noise(step: u32, width: u32, rng: &mut GameRng) -> Vec<f32> {
+    assert!(step > 0, "value_noise: step must be non-zero");
+
+    // docs/01 §3 step 1: i in 0..=ceil(width/step)+1  =>  ceil+2 entries.
+    let control_count = width.div_ceil(step) + 2;
+    let control: Vec<f32> = (0..control_count)
+        .map(|_| rng.random_unit() * 2.0 - 1.0)
+        .collect();
+
+    (0..width)
+        .map(|x| {
+            let scaled = x as f32 / step as f32;
+            let i = (x / step) as usize;
+            let frac = scaled - (x / step) as f32;
+            let a = control.get(i).copied().unwrap_or(0.0);
+            let b = control.get(i + 1).copied().unwrap_or(0.0);
+            cosine_interpolate(a, b, frac)
+        })
+        .collect()
+}
+
+/// Cosine interpolation between `a` and `b` (docs/01 §3 step 1).
+fn cosine_interpolate(a: f32, b: f32, t: f32) -> f32 {
+    let smoothed = (1.0 - (t * std::f32::consts::PI).cos()) * 0.5;
+    a * (1.0 - smoothed) + b * smoothed
+}
+
+/// Surface row per column (docs/01 §3 step 1).
+///
+/// `h(x) = H*0.35 + H*0.22 * (0.7*noise(step=8)(x) + 0.3*noise(step=3)(x))`,
+/// clamped to `[H*0.15, H*0.6]`, then `s(x) = H - 1 - round(h(x))`.
+///
+/// Both noise octaves are drawn before either is sampled, in the order the
+/// formula writes them (step=8 then step=3), because draw order fixes the
+/// whole downstream sequence.
+pub fn surface_rows(width: u32, height: u32, rng: &mut GameRng) -> Vec<u32> {
+    let h = height as f32;
+    let coarse = value_noise(8, width, rng);
+    let fine = value_noise(3, width, rng);
+
+    (0..width as usize)
+        .map(|x| {
+            let c = coarse.get(x).copied().unwrap_or(0.0);
+            let f = fine.get(x).copied().unwrap_or(0.0);
+            let mut height_value = h * 0.35 + h * 0.22 * (0.7 * c + 0.3 * f);
+            height_value = height_value.clamp(h * 0.15, h * 0.6);
+            // s(x) = H - 1 - round(h(x)); saturating so a degenerate clamp
+            // cannot underflow the u32.
+            let rounded = height_value.round() as i64;
+            (height as i64 - 1 - rounded).clamp(0, height as i64 - 1) as u32
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tiles::TileKind;
 
     /// A blank map for indexing tests, bypassing generation.
     fn blank(scale: Scale) -> Map {
@@ -256,6 +322,101 @@ mod tests {
         map.set_tile(3, 40, Tile::new(TileKind::Stone));
         map.set_tile(3, 20, Tile::new(TileKind::Grass));
         assert_eq!(map.surface_row(3), 20);
+    }
+
+    /// Expected surface-row range for a scale, derived from docs/01 §3 step 1:
+    /// `h` is clamped to `[H*0.15, H*0.6]`, and `s(x) = H - 1 - round(h(x))`.
+    fn expected_surface_range(height: u32) -> (u32, u32) {
+        let h = height as f32;
+        let lowest = height - 1 - (h * 0.6).round() as u32;
+        let highest = height - 1 - (h * 0.15).round() as u32;
+        (lowest, highest)
+    }
+
+    /// The doc's fixed "adjacent columns differ by <= 8 tiles" (T1.3 step 3)
+    /// is unsatisfiable above Small — the worst-case single-column delta is
+    /// ~0.126*H, i.e. 8.1 / 12.1 / 16.1 tiles. Measured maxima over 100 seeds
+    /// are 7 / 10 / 14. See DEVIATIONS.md D3.
+    fn smoothness_bound(height: u32) -> i64 {
+        (0.13 * height as f32).ceil() as i64
+    }
+
+    #[test]
+    fn surface_within_bounds() {
+        // docs/08 §1 (map row) + T1.3 step 3: 100 seeds x 3 scales.
+        for scale in Scale::ALL {
+            let (width, height) = scale.dimensions();
+            let (lowest, highest) = expected_surface_range(height);
+            let bound = smoothness_bound(height);
+
+            for seed in 0..100u64 {
+                let mut rng = GameRng::new(seed);
+                let rows = surface_rows(width, height, &mut rng);
+                assert_eq!(rows.len(), width as usize);
+
+                for (x, &row) in rows.iter().enumerate() {
+                    assert!(
+                        (lowest..=highest).contains(&row),
+                        "{} seed {seed} col {x}: surface {row} outside [{lowest},{highest}]",
+                        scale.as_str(),
+                    );
+                }
+
+                for (x, pair) in rows.windows(2).enumerate() {
+                    let delta = (pair[1] as i64 - pair[0] as i64).abs();
+                    assert!(
+                        delta <= bound,
+                        "{} seed {seed} cols {x}..{}: delta {delta} exceeds {bound}",
+                        scale.as_str(),
+                        x + 1,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn surface_rows_are_deterministic() {
+        // T1.3 Acceptance: "identical seed -> identical surface rows".
+        for scale in Scale::ALL {
+            let (width, height) = scale.dimensions();
+            for seed in [0u64, 1, 42, 777, u64::MAX] {
+                let a = surface_rows(width, height, &mut GameRng::new(seed));
+                let b = surface_rows(width, height, &mut GameRng::new(seed));
+                assert_eq!(a, b, "{} seed {seed}", scale.as_str());
+            }
+        }
+    }
+
+    #[test]
+    fn surface_rows_differ_between_seeds() {
+        let (width, height) = Scale::Small.dimensions();
+        let a = surface_rows(width, height, &mut GameRng::new(1));
+        let b = surface_rows(width, height, &mut GameRng::new(2));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn value_noise_is_bounded_and_sized() {
+        let mut rng = GameRng::new(5);
+        for step in [1u32, 3, 8, 16] {
+            let noise = value_noise(step, 96, &mut rng);
+            assert_eq!(noise.len(), 96);
+            for (i, &v) in noise.iter().enumerate() {
+                assert!(
+                    (-1.0..=1.0).contains(&v),
+                    "step {step} index {i}: {v} outside [-1,1]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cosine_interpolation_hits_its_endpoints() {
+        assert!((cosine_interpolate(-1.0, 1.0, 0.0) - -1.0).abs() < 1e-6);
+        assert!((cosine_interpolate(-1.0, 1.0, 1.0) - 1.0).abs() < 1e-6);
+        // Symmetric about the midpoint.
+        assert!((cosine_interpolate(0.0, 1.0, 0.5) - 0.5).abs() < 1e-6);
     }
 
     #[test]

@@ -43,18 +43,36 @@ movement and own those tests. Rapier is used for collision resolution against te
 colliders only. Ground detection uses the 2 px tile probe, which T2.6 step 3 already
 mandates over a rapier raycast ("deterministic, doc §4").
 
-### D3 — T1.3's smoothness bound may be mathematically unsafe
+### D3 — T1.3's smoothness bound is unsatisfiable above Small (MEASURED)
 
 **Spec** (`tasks/01-map.md` T1.3 step 3): "adjacent columns differ by ≤ 8 tiles".
 
-**Problem**: with `h = H*0.35 + H*0.22*(0.7*n8 + 0.3*n3)` and cosine interpolation, the
-worst-case single-column delta is ≈ `0.126*H` → ~8.1 tiles (Small, H=64), ~12.1
-(Medium, H=96), ~16.1 (Large, H=128). A fixed bound of 8 is only plausible at the
-smallest scale, and only just.
+**Problem**: with `h = H*0.35 + H*0.22*(0.7*n8 + 0.3*n3)` and cosine interpolation,
+the worst-case single-column delta is ≈ `0.126*H` → ~8.1 tiles (Small, H=64), ~12.1
+(Medium, H=96), ~16.1 (Large, H=128). A fixed bound of 8 can only hold at the smallest
+scale.
 
-**Implemented**: to be measured empirically over the 100-seed × 3-scale suite. If the
-fixed bound fails, it is relaxed to a scale-relative bound and the measured maximum is
-recorded here. *(Resolution pending — Phase 1.)*
+**Measured** — 100 seeds × 3 scales, via `game-core/examples/measure_d3.rs`:
+
+| Scale | H | max adjacent Δ | worst seed | violations of ≤8 | theoretical 0.126·H |
+|---|---|---|---|---|---|
+| Small | 64 | **7** | 16 | 0 | 8.1 |
+| Medium | 96 | **10** | 8 | 13 | 12.1 |
+| Large | 128 | **14** | 74 | 296 | 16.1 |
+
+So the doc's bound holds at Small (with one tile to spare) and fails at both larger
+scales — 296 violating column pairs on Large. Measured maxima sit below the
+theoretical worst case, as expected: the worst case needs two adjacent control points
+at opposite extremes, which is rare.
+
+Surface rows themselves are always inside the documented clamp
+`[H-1-round(H*0.6), H-1-round(H*0.15)]` at every scale — that half of the assertion
+is sound.
+
+**Implemented**: the smoothness assertion uses a scale-relative bound,
+`ceil(0.13 * H)` → 9 / 13 / 17 tiles, which is above every measured maximum with
+headroom and tracks the actual mathematics of the formula. The fixed 8 is not used.
+The bounds half of `surface_within_bounds` is asserted exactly as documented.
 
 ### D4 — Toxic rain spot window is inconsistent
 
@@ -287,3 +305,35 @@ Delegating would make every map for a given seed hostage to a patch bump.
 `n`) and derives `random_unit` from the top 24 bits of one `u32`. Map output now
 depends only on ChaCha8 — a stable, specified stream — plus code in `rng.rs`. A test
 (`shuffle_consumes_one_draw_per_element_after_the_first`) pins the draw count.
+
+### D20 — Phase 0's gate passed an incompatible dependency pairing
+
+**Spec**: `tasks/00-setup.md` T0.1 lists `rand` and `rand_chacha` as `game-core`
+dependencies, unversioned, and gates the task on `cargo build && cargo test`.
+
+**Problem**: the current releases of those two crates are mutually incompatible.
+`rand` 0.9.5 depends on `rand_core` 0.9; `rand_chacha` 0.10 depends on `rand_core`
+0.10. Both land in the tree, so `ChaCha8Rng` implements a `RngCore` trait that is not
+the one `rand` 0.9 re-exports, and `next_u32`/`next_u64` fail to resolve behind a
+misleading "the following trait bounds were not satisfied" error.
+
+**What makes this worth recording is how it was found.** T0.1 declared both crates and
+its gate — `cargo build && cargo test` — passed with **zero warnings**. It passed only
+because nothing in `game-core` imported either crate yet: the modules were stubs. The
+breakage surfaced the moment T1.1 wrote the first line of code that actually used
+them, two tasks and one phase gate later.
+
+That is direct evidence that qwen's task/test contract (`docs/08-testing.md` §5, "a
+task is done when its Test command passes") verifies *compilation*, not *correctness*.
+A scaffold phase whose modules are empty stubs cannot validate its own dependency
+choices, yet T0.1 is marked done and gated on exactly that. The design has no notion
+of a dependency being declared-but-unexercised.
+
+**Implemented**: `rand_chacha` pinned to `0.9`, sharing `rand_core` 0.9.5 with `rand`
+0.9.5. Note that `rand` 0.10.2 is *also* in the workspace tree via `rapier2d`;
+`GameRng` binds unambiguously to the 0.9 pairing because `game-core` declares `rand`
+0.9 directly and never names the transitive one. Verified by the `rng` test suite,
+which exercises every draw kind.
+
+*(This supersedes the narrower D18, which recorded the same version conflict without
+the framing above. D18 is kept for numbering stability.)*
