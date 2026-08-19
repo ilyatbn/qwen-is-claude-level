@@ -43,15 +43,20 @@ TS is `strict` + `noUncheckedIndexedAccess`, **zero `any`**. Pinned `phaser ^3.8
 
 ## Public entry points
 
-**Rust**
+**`game-core` — a real library, importable by other crates**
 - `game_core::protocol::{PROTOCOL_VERSION, NAMESPACE}` — `1` and `"/game"`.
 - `game_core::protocol::{c2s, s2c}` — every event-name string constant. Use these;
   never re-type a literal, or Rust and TS will drift on the wire names.
 - `game_core::Vec2` — minimal vector type (D8).
-- `server::net::register(&io, log_level)` — installs the namespace and handlers.
-- `server::tick::{run, TICK_HZ, TICK_DURATION, TICK_DT}` — `TICK_DT` is
-  `#[allow(dead_code)]` until T2.x consumes it.
-- `server::LogLevelHandle::set(&str)` — live tracing filter reload (docs/05 §5).
+
+**`server` — internal map, NOT public API.** `server/` is a bin-only crate: no
+`[lib]` target, no `lib.rs`, and `main.rs` declares `mod net;` / `mod tick;` as
+private. Nothing outside the binary can import these; they are listed only so the
+next task knows where the code is.
+- `net::register(&io, log_level)` — installs the namespace and handlers.
+- `tick::{run, TICK_HZ, TICK_DURATION, TICK_DT}` — `TICK_DT` is `#[allow(dead_code)]`
+  until T2.x consumes it.
+- `LogLevelHandle::set(&str)` — live tracing filter reload (docs/05 §5).
 
 **TypeScript**
 - `PROTOCOL_VERSION`, `NAMESPACE`, `C2S`, `S2C` — mirrors of the above.
@@ -74,8 +79,22 @@ TS is `strict` + `noUncheckedIndexedAccess`, **zero `any`**. Pinned `phaser ^3.8
   missing-field payload must all error rather than falling through to `HeavyFog`;
   all four documented shapes still map to the right variant.
 
-These are genuinely protective — the tests build struct literals, so a field rename
-is a compile error.
+**Coverage is partial, by design.** Where a test constructs a struct literal, a field
+rename *is* a compile error — that is genuinely protective. But it only covers the
+types a test actually builds. As of Phase 1's T1.7 that is **22 of 43 Rust types**;
+the remainder (e.g. `LobbyPlayer`, `ScoreEntry`, `Joined`, `EffectStarted`) have no
+constructing test and would drift silently. The same holds in TS: **12 of 30 types**
+are pinned by an annotated fixture.
+
+Types pinned so far are the ones Phases 0–2 depend on: `Snapshot`, `PlayerSnap`,
+`MapData`, `InputFrame`, `TileDestroyedMsg`, `ProjectileSnap`, `GroundItemSnap`,
+`Kill`, `EffectData` (all four shapes), `LobbyState.ready`, `ItemId`. Pinning the
+rest is deliberately deferred rather than forgotten — extend coverage when a phase
+first depends on a type, not speculatively.
+
+One gap worth knowing: a *required* field added to a TS interface is caught (the
+fixture no longer satisfies it), but an **optional** one is not — `server_time_ms?:
+number` compiles clean against every existing fixture.
 
 **TypeScript — 13 tests, `npm test`**
 - Same field-name checks, driven from a `Snapshot`-annotated fixture.

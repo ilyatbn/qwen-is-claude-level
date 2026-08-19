@@ -17,6 +17,56 @@ pub const PROTOCOL_VERSION: u8 = 1;
 pub const NAMESPACE: &str = "/game";
 
 // ---------------------------------------------------------------------------
+// Item ids
+// ---------------------------------------------------------------------------
+
+/// Item identifiers (docs/04 §1).
+///
+/// T1.7 asks for "a string enum stub in protocol.rs if missing"; the full
+/// `ItemDef` catalog with the doc's numbers lands in T3.1. Serde names are the
+/// lowercase wire strings the protocol carries (`item: string`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemId {
+    Pistol,
+    Shotgun,
+    Rocket,
+    Grenade,
+    Medkit,
+    Overcharge,
+    ShieldGen,
+    Flashlight,
+}
+
+impl ItemId {
+    /// Every item, for exhaustive tests and weighted tables (docs/04 §1).
+    pub const ALL: [ItemId; 8] = [
+        ItemId::Pistol,
+        ItemId::Shotgun,
+        ItemId::Rocket,
+        ItemId::Grenade,
+        ItemId::Medkit,
+        ItemId::Overcharge,
+        ItemId::ShieldGen,
+        ItemId::Flashlight,
+    ];
+
+    /// Wire name (docs/06: `item: string`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ItemId::Pistol => "pistol",
+            ItemId::Shotgun => "shotgun",
+            ItemId::Rocket => "rocket",
+            ItemId::Grenade => "grenade",
+            ItemId::Medkit => "medkit",
+            ItemId::Overcharge => "overcharge",
+            ItemId::ShieldGen => "shield_gen",
+            ItemId::Flashlight => "flashlight",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // §3 — InputFrame (client -> server, 20 Hz)
 // ---------------------------------------------------------------------------
 
@@ -784,6 +834,77 @@ mod tests {
             slots: [None, None, None, None, None, None],
             selected: 0,
             ammo: [0; 6],
+        }
+    }
+
+    #[test]
+    fn tile_destroyed_msg_field_names_match_doc() {
+        // docs/06 §2. T1.7 emits this and T1.9 consumes it, so pin it on both
+        // sides before either lands.
+        let msg = TileDestroyedMsg {
+            tiles: vec![TilePos { x: 3, y: 4 }],
+            version: 9,
+            item_uncovered: Some(ItemUncovered {
+                item: "medkit".into(),
+                x: 56.0,
+                y: 72.0,
+            }),
+        };
+        let v = serde_json::to_value(&msg).unwrap();
+        assert_eq!(field_names(&v), sorted(&["tiles", "version", "item_uncovered"]));
+        assert_eq!(field_names(&v["tiles"][0]), sorted(&["x", "y"]));
+        assert_eq!(
+            field_names(&v["item_uncovered"]),
+            sorted(&["item", "x", "y"])
+        );
+
+        // `item_uncovered` is nullable — the common case is no hidden item.
+        let bare = TileDestroyedMsg {
+            tiles: vec![],
+            version: 1,
+            item_uncovered: None,
+        };
+        assert_eq!(
+            serde_json::to_value(bare).unwrap()["item_uncovered"],
+            json!(null)
+        );
+
+        let back: TileDestroyedMsg = serde_json::from_value(v).unwrap();
+        assert_eq!(back, msg);
+    }
+
+    #[test]
+    fn projectile_snap_field_names_match_doc() {
+        // docs/06 §4. Pinned on the Rust side because the TS fixture pins it
+        // and nothing here constructed one — a Rust rename would drift silently.
+        let v = serde_json::to_value(ProjectileSnap {
+            id: 7,
+            kind: "rocket".into(),
+            x: 10.0,
+            y: 20.0,
+        })
+        .unwrap();
+        assert_eq!(field_names(&v), sorted(&["id", "kind", "x", "y"]));
+    }
+
+    #[test]
+    fn item_id_wire_names_match_doc() {
+        // docs/04 §1 catalog names, lowercase on the wire.
+        let expected = [
+            "pistol",
+            "shotgun",
+            "rocket",
+            "grenade",
+            "medkit",
+            "overcharge",
+            "shield_gen",
+            "flashlight",
+        ];
+        for (item, want) in ItemId::ALL.iter().zip(expected) {
+            assert_eq!(item.as_str(), want);
+            assert_eq!(serde_json::to_value(item).unwrap(), json!(want));
+            let back: ItemId = serde_json::from_value(json!(want)).unwrap();
+            assert_eq!(back, *item);
         }
     }
 

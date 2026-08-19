@@ -4,7 +4,7 @@
 //! `(seed, scale)`." — docs/01 intro.
 
 use crate::rng::GameRng;
-use crate::tiles::{Decor, DecorKind, Tile, TileKind, TILE_SIZE};
+use crate::tiles::{Decor, DecorKind, Tile, TileDestroyed, TileKind, TILE_SIZE};
 use crate::Vec2;
 use serde::{Deserialize, Serialize};
 
@@ -444,6 +444,51 @@ impl Map {
         // 5. Spawns, last — so the draw order in docs/01 §3 stays intact.
         map.spawns = find_spawns(&map, &mut rng);
         map
+    }
+
+    /// Destroy a tile (docs/01 §5).
+    ///
+    /// A solid tile becomes AIR, `version` is bumped, and a [`TileDestroyed`]
+    /// is returned. Destroying AIR, or a tile out of bounds, is a no-op that
+    /// returns `None` and does NOT bump the version.
+    ///
+    /// Does not run the surface conversion pass — callers that destroy in
+    /// batches (`apply_blast`) run it once at the end, so a tile is not
+    /// converted and then immediately destroyed again.
+    pub fn destroy_tile(&mut self, x: u32, y: u32) -> Option<TileDestroyed> {
+        let tile = self.tile(x, y);
+        if !tile.is_solid() {
+            return None;
+        }
+        self.set_tile(x, y, Tile::AIR);
+        self.version += 1;
+        Some(TileDestroyed {
+            x,
+            y,
+            kind: tile.kind,
+            item: tile.item,
+        })
+    }
+
+    /// Convert DIRT tiles that are now exposed to the sky into GRASS
+    /// (docs/01 §5: "for every DIRT tile whose tile directly above is AIR →
+    /// convert to GRASS (recompute hp to 20)").
+    ///
+    /// Runs over the whole grid; cheap relative to a blast and immune to the
+    /// ordering bugs a localised pass would invite.
+    pub fn apply_surface_conversion(&mut self) {
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.tile(x, y).kind != TileKind::Dirt {
+                    continue;
+                }
+                // Row 0 has open sky above it.
+                let above_is_air = y == 0 || !self.tile(x, y - 1).is_solid();
+                if above_is_air {
+                    self.set_tile(x, y, Tile::new(TileKind::Grass));
+                }
+            }
+        }
     }
 
     /// An ASCII dump of the grid, for the debug-inspection test in T1.4.
@@ -944,6 +989,92 @@ mod tests {
                 assert_eq!(a.spawns, b.spawns, "{} seed {seed}", scale.as_str());
             }
         }
+    }
+
+    #[test]
+    fn destroy_tile_returns_event() {
+        // docs/08 §1 (tiles row).
+        let mut map = Map::generate(1, Scale::Small);
+        let x = 10;
+        let s = map.surface_row(x);
+        let before = map.tile(x, s);
+        assert!(before.is_solid());
+
+        let event = map.destroy_tile(x, s).expect("destroying a solid tile");
+        assert_eq!((event.x, event.y), (x, s));
+        assert_eq!(event.kind, before.kind);
+        assert_eq!(event.item, None, "no hidden items until T3.3");
+        assert_eq!(map.tile(x, s), Tile::AIR);
+
+        // Destroying AIR, or out of bounds, is a no-op returning None.
+        assert_eq!(map.destroy_tile(x, s), None);
+        assert_eq!(map.destroy_tile(map.width, 0), None);
+        assert_eq!(map.destroy_tile(0, map.height), None);
+    }
+
+    #[test]
+    fn version_increments() {
+        // docs/08 §1 (tiles row); docs/01 §4: "+1 on every destruction".
+        let mut map = Map::generate(2, Scale::Small);
+        assert_eq!(map.version, 0);
+
+        let x = 20;
+        let s = map.surface_row(x);
+        map.destroy_tile(x, s).unwrap();
+        assert_eq!(map.version, 1);
+        map.destroy_tile(x, s + 1).unwrap();
+        assert_eq!(map.version, 2);
+
+        // A no-op destruction must NOT bump the version, or clients resync for
+        // nothing on every missed shot.
+        let before = map.version;
+        assert_eq!(map.destroy_tile(x, s), None);
+        assert_eq!(map.destroy_tile(map.width + 5, 0), None);
+        assert_eq!(map.version, before);
+    }
+
+    #[test]
+    fn surface_conversion_grass_on_air_above() {
+        // docs/08 §1 (tiles row); docs/01 §5.
+        let mut map = Map::generate(3, Scale::Small);
+        let x = 30;
+        let s = map.surface_row(x);
+        // Directly under the GRASS surface is the DIRT band.
+        assert_eq!(map.tile(x, s + 1).kind, TileKind::Dirt);
+
+        map.destroy_tile(x, s).unwrap();
+        map.apply_surface_conversion();
+
+        let converted = map.tile(x, s + 1);
+        assert_eq!(converted.kind, TileKind::Grass, "exposed DIRT became GRASS");
+        assert_eq!(converted.hp, 20.0, "docs/01 §5: recompute hp to 20");
+    }
+
+    #[test]
+    fn surface_conversion_leaves_buried_dirt_alone() {
+        let mut map = Map::generate(4, Scale::Small);
+        let x = 40;
+        let s = map.surface_row(x);
+        let buried = map.tile(x, s + 2);
+        map.apply_surface_conversion();
+        assert_eq!(
+            map.tile(x, s + 2),
+            buried,
+            "DIRT with solid tile above must not convert",
+        );
+    }
+
+    #[test]
+    fn surface_conversion_does_not_promote_stone() {
+        // Only DIRT converts (docs/01 §5). STONE exposed by a blast stays STONE.
+        let mut map = Map::generate(5, Scale::Small);
+        let x = 50;
+        let s = map.surface_row(x);
+        for depth in 0..=3 {
+            map.destroy_tile(x, s + depth);
+        }
+        map.apply_surface_conversion();
+        assert_eq!(map.tile(x, s + 4).kind, TileKind::Stone);
     }
 
     #[test]

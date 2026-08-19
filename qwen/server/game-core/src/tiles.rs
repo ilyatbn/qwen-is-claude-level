@@ -1,5 +1,6 @@
 //! `tiles` — the tile grid: kinds, HP, destruction (docs/01 §2, §5).
 
+use crate::protocol::ItemId;
 use serde::{Deserialize, Serialize};
 
 /// Tile size in pixels (docs/01 §1).
@@ -59,10 +60,14 @@ impl TileKind {
 }
 
 /// docs/01 §2: "Tile struct: `{ kind, hp }`".
+///
+/// `item` is added by T3.3 (docs/01 §5: "a ROCK tile may hold one hidden
+/// item"); it is `None` everywhere until then.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Tile {
     pub kind: TileKind,
     pub hp: f32,
+    pub item: Option<ItemId>,
 }
 
 impl Tile {
@@ -71,6 +76,7 @@ impl Tile {
         Tile {
             kind,
             hp: kind.base_hp(),
+            item: None,
         }
     }
 
@@ -78,11 +84,25 @@ impl Tile {
     pub const AIR: Tile = Tile {
         kind: TileKind::Air,
         hp: 0.0,
+        item: None,
     };
 
     pub const fn is_solid(self) -> bool {
         self.kind.is_solid()
     }
+}
+
+/// A destroyed tile (docs/01 §5), reported so the server can broadcast
+/// `tile_destroyed` immediately rather than waiting for a snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TileDestroyed {
+    pub x: u32,
+    pub y: u32,
+    /// The kind the tile was before it became AIR.
+    pub kind: TileKind,
+    /// A hidden item uncovered by this destruction (docs/01 §5). Always `None`
+    /// until T3.3 places hidden items.
+    pub item: Option<ItemId>,
 }
 
 /// Decor kind (docs/01 §3 step 4) — visual only, non-solid.
@@ -163,6 +183,23 @@ mod tests {
         assert_eq!(Tile::new(TileKind::Grass).hp, 20.0);
         assert_eq!(Tile::AIR.kind, TileKind::Air);
         assert!(!Tile::AIR.is_solid());
+    }
+
+    #[test]
+    fn tile_destroyed_field_names_match_doc() {
+        // docs/06 §2 `tile_destroyed.tiles[]` carries {x, y}; the kind and item
+        // fields are game-core-internal (T1.7 step 1 defines the struct).
+        let event = TileDestroyed {
+            x: 3,
+            y: 4,
+            kind: TileKind::Rock,
+            item: None,
+        };
+        let value = serde_json::to_value(event).unwrap();
+        let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["item", "kind", "x", "y"]);
+        assert_eq!(value["item"], serde_json::Value::Null);
     }
 
     #[test]

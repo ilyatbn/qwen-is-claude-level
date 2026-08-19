@@ -113,7 +113,7 @@ runs.
 
 ---
 
-## T1.7 — Tile destruction API [ ]
+## T1.7 — Tile destruction API [x]
 
 **Goal**: `destroy_tile` + `version` + `TileDestroyed` event type.
 **Read**: `docs/01-map.md` §5 (first two bullets only).

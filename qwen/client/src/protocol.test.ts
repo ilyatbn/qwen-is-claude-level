@@ -21,10 +21,12 @@ import {
   TILE_GRASS,
   TILE_ROCK,
   TILE_STONE,
+  type InputFrame,
   type MapData,
   type PlayerSnap,
   type Six,
   type Snapshot,
+  type TileDestroyedMsg,
 } from './protocol';
 
 /** docs/06 §4: "missing players: alive=false, x=y=0". */
@@ -206,6 +208,77 @@ describe('MapData', () => {
     expect([TILE_AIR, TILE_GRASS, TILE_DIRT, TILE_STONE, TILE_ROCK]).toEqual([
       0, 1, 2, 3, 4,
     ]);
+  });
+});
+
+describe('TileDestroyedMsg', () => {
+  // docs/06 §2. T1.7 emits this and T1.9 consumes it. Annotated, not cast —
+  // the annotation is what makes a drift a compile error.
+  const FIXTURE: TileDestroyedMsg = {
+    tiles: [{ x: 3, y: 4 }],
+    version: 9,
+    item_uncovered: { item: 'medkit', x: 56.0, y: 72.0 },
+  };
+
+  it('has exactly the field names docs/06 §2 lists', () => {
+    const msg = roundTrip(FIXTURE);
+    expect(Object.keys(msg).sort()).toEqual(
+      ['tiles', 'version', 'item_uncovered'].sort(),
+    );
+    expect(Object.keys(msg.tiles[0] ?? {}).sort()).toEqual(['x', 'y'].sort());
+    expect(Object.keys(msg.item_uncovered ?? {}).sort()).toEqual(
+      ['item', 'x', 'y'].sort(),
+    );
+  });
+
+  it('allows a null item_uncovered (the common case)', () => {
+    const bare: TileDestroyedMsg = { tiles: [], version: 1, item_uncovered: null };
+    expect(roundTrip(bare).item_uncovered).toBeNull();
+  });
+
+  it('carries tile coordinates, not pixels', () => {
+    const msg = roundTrip(FIXTURE);
+    for (const tile of msg.tiles) {
+      expect(Number.isInteger(tile.x)).toBe(true);
+      expect(Number.isInteger(tile.y)).toBe(true);
+    }
+  });
+});
+
+describe('InputFrame', () => {
+  // docs/06 §3 — the 20 Hz C->S message T2.2/T2.9 are built on.
+  const FIXTURE: InputFrame = {
+    tick: 7,
+    left: true,
+    right: false,
+    up: false,
+    down: false,
+    jump: true,
+    aim: 1.5,
+    fire: true,
+    use_slot: 2,
+  };
+
+  it('has exactly the field names docs/06 §3 lists', () => {
+    expect(Object.keys(roundTrip(FIXTURE)).sort()).toEqual(
+      [
+        'tick',
+        'left',
+        'right',
+        'up',
+        'down',
+        'jump',
+        'aim',
+        'fire',
+        'use_slot',
+      ].sort(),
+    );
+  });
+
+  it('carries a null use_slot except on the tick it is pressed (docs/06 §3)', () => {
+    const released: InputFrame = { ...FIXTURE, use_slot: null };
+    expect(roundTrip(released).use_slot).toBeNull();
+    expect(roundTrip(FIXTURE).use_slot).toBe(2);
   });
 });
 
