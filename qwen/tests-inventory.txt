@@ -273,13 +273,16 @@ round::round_tests::ammo_is_reset_on_pickup_not_inherited
 round::round_tests::an_empty_lobby_never_starts
 round::round_tests::colliders_are_rebuilt_when_a_blast_destroys_ground
 round::round_tests::crates_and_timed_items_fire_on_their_documented_schedule
+round::round_tests::death_scores_kill_and_death
 round::round_tests::max_6_players
 round::round_tests::respawn_after_3s_keeps_inventory
+round::round_tests::respawn_uses_the_spawn_farthest_from_living_players
 round::round_tests::restart_new_seed
 round::round_tests::round_240s
 round::round_tests::round_state_machine_full_cycle
 round::round_tests::score_kill_plus_death_minus
 round::round_tests::start_round_follows_the_documented_determinism_order
+round::round_tests::weather_kill_no_score
 round::round_tests::weather_kills_score_nobody
 round_start_is_reproducible
 round_start_matches_golden_hashes

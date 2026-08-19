@@ -51,7 +51,7 @@ starting this file.
 
 ---
 
-## T4.3 — Scoring + respawn [ ]
+## T4.3 — Scoring + respawn [x]
 
 **Goal**: +1 kill / −1 death; 3 s respawn keeping inventory; weather kills
 score no one.

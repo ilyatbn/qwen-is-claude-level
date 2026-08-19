@@ -977,6 +977,77 @@ mod round_tests {
     }
 
     #[test]
+    fn death_scores_kill_and_death() {
+        // docs/08 §1 (player row). The doc-named test for the basic case.
+        let mut round = lobby_with(2);
+        round.start_round(1, Scale::Small);
+        let mut events = Vec::new();
+        round.kill(0, DamageSource::Player(1), "rocket", &mut events);
+
+        assert_eq!(round.players[0].player.deaths, 1, "the victim records a death");
+        assert_eq!(round.players[0].player.kills, 0, "the victim records no kill");
+        assert_eq!(round.players[1].player.kills, 1, "the killer records a kill");
+        assert_eq!(round.players[1].player.deaths, 0, "the killer records no death");
+    }
+
+    #[test]
+    fn weather_kill_no_score() {
+        // docs/08 §1 (player row) — the doc-named test.
+        let mut round = lobby_with(3);
+        round.start_round(1, Scale::Small);
+        let before: Vec<i32> = round.players.iter().map(|p| p.player.score).collect();
+        let mut events = Vec::new();
+        round.kill(1, DamageSource::Weather, "lava", &mut events);
+
+        assert_eq!(round.players[1].player.score, before[1] - 1, "victim -1");
+        assert_eq!(round.players[0].player.score, before[0], "bystander scored");
+        assert_eq!(round.players[2].player.score, before[2], "bystander scored");
+        assert!(round.players.iter().all(|p| p.player.kills == 0), "weather credited a kill");
+    }
+
+    #[test]
+    fn respawn_uses_the_spawn_farthest_from_living_players() {
+        // docs/03 §2: "placed at the spawn farthest (Chebyshev, tile distance)
+        // from all living players".
+        let mut round = lobby_with(3);
+        round.start_round(4, Scale::Medium);
+        assert!(round.map.spawns.len() >= 3);
+
+        // Park the two survivors on the FIRST spawn so it is the worst choice.
+        let crowded = round.map.spawns[0];
+        let crowded_px = Player::spawn_position(crowded);
+        for index in [1usize, 2] {
+            round.players[index].player.pos = crowded_px;
+            round.players[index].player.alive = true;
+        }
+
+        let mut events = Vec::new();
+        round.kill(0, DamageSource::Player(1), "rocket", &mut events);
+        for _ in 0..70 {
+            round.step(&[]);
+        }
+        assert!(round.players[0].player.alive, "did not respawn");
+
+        // The chosen spawn must not be the crowded one, and must be at least
+        // as far from the survivors as any other spawn.
+        let respawn = round.players[0].player.pos;
+        let dist = |a: Vec2, b: Vec2| {
+            ((a.x - b.x) / TILE_SIZE).abs().max(((a.y - b.y) / TILE_SIZE).abs())
+        };
+        let chosen = dist(respawn, crowded_px);
+        let best = round
+            .map
+            .spawns
+            .iter()
+            .map(|s| dist(Player::spawn_position(*s), crowded_px))
+            .fold(0.0f32, f32::max);
+        assert!(
+            (chosen - best).abs() < 1e-3,
+            "respawned {chosen} tiles from the survivors; the farthest spawn is {best}",
+        );
+    }
+
+    #[test]
     fn score_kill_plus_death_minus() {
         // docs/08 §1 (round row) + T4.3 step 4: "3 kills 2 deaths -> +1".
         let mut round = lobby_with(2);
