@@ -10,6 +10,75 @@
 use game_core::map::{Map, Scale};
 use game_core::tiles::TileKind;
 
+/// FNV-1a (64-bit), inlined.
+///
+/// Deliberately NOT `std::collections::hash_map::DefaultHasher`: its algorithm
+/// is explicitly unstable across Rust releases, so pinning a golden value
+/// computed with it would make this suite hostage to the toolchain — exactly
+/// the coupling DEVIATIONS.md D19 exists to remove. FNV-1a is a fixed,
+/// specified algorithm; the constants below are part of the spec.
+struct Fnv1a(u64);
+
+impl Fnv1a {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn new() -> Self {
+        Fnv1a(Self::OFFSET_BASIS)
+    }
+
+    fn byte(&mut self, b: u8) {
+        self.0 ^= b as u64;
+        self.0 = self.0.wrapping_mul(Self::PRIME);
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.byte(b);
+        }
+    }
+
+    fn u32(&mut self, v: u32) {
+        self.bytes(&v.to_le_bytes());
+    }
+
+    /// f32 by bit pattern, so a 1-ULP drift is caught rather than rounded away.
+    fn f32(&mut self, v: f32) {
+        self.bytes(&v.to_bits().to_le_bytes());
+    }
+
+    fn finish(self) -> u64 {
+        self.0
+    }
+}
+
+/// A golden hash over everything `Map::generate` produces.
+///
+/// This is the anchor the suite was missing. `generate_deterministic_100_seeds`
+/// compares two runs of the same binary, which cannot fail when the algorithm
+/// itself changes — both sides change together. Pinning a literal makes any
+/// change to generation output a test failure, including a single wasted RNG
+/// draw.
+fn golden_hash(map: &Map) -> u64 {
+    let mut h = Fnv1a::new();
+    h.u32(map.width);
+    h.u32(map.height);
+    for tile in &map.tiles {
+        h.byte(tile.kind.to_byte());
+        h.f32(tile.hp);
+    }
+    for decor in &map.decor {
+        h.u32(decor.x);
+        h.u32(decor.y);
+        h.bytes(decor.kind.as_str().as_bytes());
+    }
+    for spawn in &map.spawns {
+        h.f32(spawn.x);
+        h.f32(spawn.y);
+    }
+    h.finish()
+}
+
 /// A compact, total fingerprint of everything `Map::generate` produces.
 ///
 /// Compared instead of `Map` itself so a mismatch reports which field drifted
@@ -137,4 +206,76 @@ fn large_map_generation_is_fast_enough() {
         "Large map generation took {elapsed:?}, over the 200 ms bound",
     );
     println!("Large map generated in {elapsed:?} (doc target < 50 ms)");
+}
+
+/// Golden generation output, pinned to literals.
+///
+/// **This is the test that catches an algorithm change.** Everything else in
+/// this file compares `Map::generate` against itself and therefore cannot fail
+/// when generation changes — a single extra `rng.next_u32()` at the top of
+/// `generate()` shifts every downstream value while leaving those tests green.
+///
+/// If this test fails, generation output changed. That is either a bug (a
+/// stray draw, a reordered step, a changed constant) or a deliberate spec
+/// change — in which case update these constants **in the same commit that
+/// changes generation**, and say so in the message. Never update them to make
+/// a red build green without knowing which draw moved.
+///
+/// Covers all three scales because pocket count and dimensions differ per
+/// scale, so a scale-dependent bug could hide behind a single-scale anchor.
+const GOLDEN_MAPS: [(u64, Scale, u64); 3] = [
+    (1, Scale::Small, 0x95e2_483e_27cb_1154),
+    (42, Scale::Medium, 0x4dbc_481b_538a_f63d),
+    (12345, Scale::Large, 0x5b3b_a3d1_4094_1e45),
+];
+
+#[test]
+fn generation_matches_golden_hashes() {
+    for (seed, scale, expected) in GOLDEN_MAPS {
+        let map = Map::generate(seed, scale);
+        let actual = golden_hash(&map);
+        assert_eq!(
+            actual,
+            expected,
+            "\ngeneration output changed for seed {seed} / {}.\n\
+             expected 0x{expected:016x}, got 0x{actual:016x}\n\
+             If this was intentional, update GOLDEN_MAPS in the same commit \
+             that changed generation.",
+            scale.as_str(),
+        );
+    }
+}
+
+/// The seed 1 / Small grid, pinned exactly.
+///
+/// T1.4 says "print an ASCII grid in a #[test] for seed 1, scale Small — keep
+/// the test". Pinning it as a literal turns that debug aid into a real
+/// regression anchor and doubles as the human-readable artefact: a reviewer can
+/// diff this against the printed output and see *where* terrain changed, which
+/// a hash cannot show.
+const GOLDEN_SEED1_SMALL: &str = include_str!("golden/seed1_small.txt");
+
+#[test]
+fn seed1_small_ascii_dump_is_unchanged() {
+    let map = Map::generate(1, Scale::Small);
+    let actual = map.ascii_dump();
+    if actual != GOLDEN_SEED1_SMALL {
+        // Show the first differing row, so a failure is diagnosable.
+        let mismatch = actual
+            .lines()
+            .zip(GOLDEN_SEED1_SMALL.lines())
+            .enumerate()
+            .find(|(_, (a, b))| a != b);
+        if let Some((row, (got, want))) = mismatch {
+            panic!(
+                "seed 1 / Small terrain changed, first difference at row {row}:\n\
+                 want: {want}\n got: {got}",
+            );
+        }
+        panic!(
+            "seed 1 / Small terrain changed (line count {} vs {})",
+            actual.lines().count(),
+            GOLDEN_SEED1_SMALL.lines().count(),
+        );
+    }
 }

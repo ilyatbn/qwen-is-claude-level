@@ -1,10 +1,11 @@
 # Handoff — Phase 1 (Map generation & destruction, T1.1–T1.10)
 
-State: `Map::generate(seed, scale)` produces deterministic Worms-style maps
-(terrain, rock pockets, decor, ≥6 spawns) verified byte-identical over 100 seeds ×
-3 scales; `apply_blast` destroys tiles with the documented falloff and surface
-conversion; the client renders terrain from `MapData`, applies `tile_destroyed`, and
-clamps the camera to map bounds.
+State: `Map::generate(seed, scale)` produces Worms-style maps (terrain, rock pockets,
+decor, ≥6 spawns). Output is **pinned to golden hashes** for three (seed, scale) pairs
+and to a literal ASCII grid for seed 1 / Small, and is separately verified
+reproducible within a process over 100 seeds × 3 scales. `apply_blast` destroys tiles
+with the documented falloff and surface conversion; the client renders terrain from
+`MapData`, applies `tile_destroyed`, and clamps the camera to map bounds.
 
 Commits `8a70652`(T1.1) … `5d0e381`(T1.10), one per task.
 
@@ -18,9 +19,10 @@ Commits `8a70652`(T1.1) … `5d0e381`(T1.10), one per task.
 |---|---|
 | `rng.rs` | `GameRng` — the single randomness source. Fisher–Yates shuffle, Lemire `gen_range`, `random_unit`, `weighted_index`. |
 | `tiles.rs` | `TileKind` (+`base_hp`, byte encoding), `Tile { kind, hp, item }`, `TileDestroyed`, `Decor`/`DecorKind`. |
-| `map.rs` | `Scale`, `Map`, generation (`value_noise`, `surface_rows`, `fill_columns`, `carve_pocket`, `place_decor`, `find_spawns`), destruction (`destroy_tile`, `apply_surface_conversion`, `apply_blast`), `ascii_dump`. |
+| `map.rs` | `Scale`, `Map`, generation (`value_noise`, `surface_rows`, `fill_columns`, `carve_pocket`, `place_decor`, `find_spawns`), destruction (`destroy_tile`, `destroy_tile_deferred`, `apply_surface_conversion`, `apply_blast`), `ascii_dump`. |
 | `protocol.rs` | `ItemId` added (T1.7). Full catalog in T3.1. |
-| `tests/determinism.rs` | The 100-seed × 3-scale suite. |
+| `tests/determinism.rs` | Golden hashes + the 100-seed × 3-scale reproducibility suite. |
+| `tests/golden/seed1_small.txt` | Pinned seed 1 / Small ASCII grid. Regenerate only via `examples/dump_seed1.rs`. |
 | `examples/measure_d3.rs`, `measure_d5.rs`, `measure_spawns.rs` | Measurement harnesses backing the DEVIATIONS numbers. Not tests — run with `cargo run --example`. |
 
 ### `client/src/`
@@ -41,7 +43,8 @@ Commits `8a70652`(T1.1) … `5d0e381`(T1.10), one per task.
 **`game-core`** (a real library crate)
 - `Map::generate(seed, scale) -> Map` — the one generation entry point.
 - `Map::{tile, set_tile, is_solid, surface_row, tile_at_pixel, is_solid_at_pixel, tile_center, pixel_size}`
-- `Map::destroy_tile(x, y) -> Option<TileDestroyed>`
+- `Map::destroy_tile(x, y) -> Option<TileDestroyed>` — destroys **and** converts (D22).
+- `Map::destroy_tile_deferred(x, y)` — batch path; caller runs conversion once.
 - `Map::apply_blast(cx, cy, radius, max_damage) -> Vec<TileDestroyed>`
 - `Map::apply_blast_with(..., skip_items: bool)` — weather passes `true` (T4.6).
 - `Map::apply_surface_conversion()` — run after a batch of destructions.
@@ -67,15 +70,54 @@ Commits `8a70652`(T1.1) … `5d0e381`(T1.10), one per task.
 `surface_conversion_grass_on_air_above`, `destroy_tile_returns_event`,
 `version_increments`.
 
-Beyond the doc, each closing a way the suite could pass without proving anything:
+**What the determinism tests do and do not prove.** `generate_deterministic_100_seeds`
+generates twice in one process and compares. That proves freedom from
+address-ordering, `HashMap`-ordering and uninitialised-memory nondeterminism — real
+value — but it **cannot fail when the generation algorithm itself changes**, because
+both sides change together. A single wasted `rng.next_u32()` in `generate()` passed it
+(and every other test) until review caught it.
+
+The anchor is `generation_matches_golden_hashes` plus
+`seed1_small_ascii_dump_is_unchanged`: literal FNV-1a hashes for seed 1/Small, 42/
+Medium, 12345/Large, and the seed 1/Small grid pinned as a file. **These are the tests
+that fail when generation changes.** Verified by injection — see "Golden anchor" below.
+
+Tests beyond the doc, each closing a specific gap:
+- **golden hashes + pinned ASCII grid** — the algorithm anchor described above
 - **interleaving** — generating other maps between two runs of the same seed must not
   perturb it, or RNG state is leaking out of the round
 - **different seeds must differ** — otherwise determinism is trivially satisfiable
 - **every scale produces all 5 tile kinds + decor + spawns** — a generation step that
   silently does nothing is still "deterministic"
-- **shuffle draw count is pinned** — one extra draw shifts everything downstream
+- **shuffle `below()` call count is pinned** — one extra call shifts everything downstream
 - **no-op destruction must not bump `version`** — or clients resync on every miss
 - **blast bounds safety** at map edges and with zero/negative radius
+- **batch conversion does not heal damaged DIRT mid-blast** (D22)
+- **spawn fallback ignores spacing before returning fewer than 6** (the ≥6 guarantee)
+
+### Golden anchor — maintenance
+
+`GOLDEN_MAPS` (`tests/determinism.rs`) and `tests/golden/seed1_small.txt` pin
+generation output. If they fail, generation changed: find which draw moved. If the
+change was deliberate, regenerate **in the same commit**:
+
+```bash
+cargo run -p game-core --example dump_seed1 > game-core/tests/golden/seed1_small.txt
+# then update GOLDEN_MAPS from the assertion's "got 0x..." values
+```
+
+Never update them to turn a red build green without knowing why it moved.
+
+FNV-1a is inlined deliberately — `DefaultHasher`'s algorithm is unstable across Rust
+releases, which would make the anchor hostage to the toolchain (the coupling D19
+exists to remove).
+
+**Verified by injection** (both reverted afterwards, suite green):
+
+| Injection | Before the anchor | After |
+|---|---|---|
+| `let _wasted = rng.next_u32();` in `generate()` | all 75 pass | `generation_matches_golden_hashes` + `seed1_small_ascii_dump_is_unchanged` **FAIL** |
+| swap `value_noise(8)` / `value_noise(3)` order | 68/69 pass (one incidental) | both anchors **FAIL**, unit suite clean |
 
 **Client — 49 Vitest.** `terrainGrid` (grid, `applyDestroyed` incl. idempotence and
 out-of-bounds, base64 decode, `variantAt`), `camera` (clamp incl. oversized viewport),
@@ -95,6 +137,8 @@ No Phaser import reaches Vitest (D10).
 | **D18 / D20** | `rand_chacha` 0.10 and `rand` 0.9 pull incompatible `rand_core` versions. D20 records that T0.1's gate passed this anyway, because nothing imported the crates yet. |
 | **D19** | `shuffle`/`random_unit` implemented here, not delegated to `rand`, so map output is not hostage to a patch bump. |
 | **D21** | T1.6's wall-clock perf assertion kept (unlike D12) — 200× margin makes flake implausible. |
+| **D22** | Surface conversion is per-batch, not per-destruction — converting mid-blast would reset a damaged DIRT tile's hp to 20 and make output order-dependent. `destroy_tile` converts; `destroy_tile_deferred` is the explicit batch path. |
+| **D23** | `cosine_interpolate` uses platform `libm`; 1-ULP drift can survive `.round()` at a tile boundary, so maps are deterministic per-platform, not across. Pairs with the rapier `enhanced-determinism` decision in T2.6. |
 
 ---
 
@@ -127,4 +171,10 @@ Phase 0's list items 1–11 still stand except where noted. New/updated:
 - Blast damage to *players* is not implemented; `apply_blast` returns destroyed tiles
   only.
 - **Tick the checkbox by content match, not line number.** T1.5's tick silently
-  no-opped because the heading sat one line lower than assumed.
+  no-opped because the heading sat one line lower than assumed. Note `tasks/01-map.md`
+  is now LF while the other task files are CRLF — a side effect of that repair. Edit
+  the remaining task files with content-matched replacements so they are not converted
+  wholesale, which makes the phase diff unreadable.
+- **`destroy_tile` converts; use `destroy_tile_deferred` + one
+  `apply_surface_conversion()` when destroying in bulk** (D22). T4.6's `clear_area`
+  is the next batch caller.

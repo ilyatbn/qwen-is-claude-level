@@ -385,6 +385,35 @@ pub fn find_spawns(map: &Map, rng: &mut GameRng) -> Vec<Vec2> {
         }
     }
 
+    // docs/01 §3 step 5 says spawns are "guaranteed >= 6" and §4 declares
+    // `len >= 6`. The spacing ladder alone does not guarantee that: if even
+    // spacing 6 cannot place 6 spawns, the loop above falls out with whatever
+    // the last pass produced. Measured minimum across 100 seeds x 3 scales is
+    // 6 / 8 / 15, so this is unreachable in practice — but a 100-seed
+    // observation is not an invariant, and a later change to generation could
+    // make it reachable silently. Drop the spacing rule rather than the
+    // guarantee: spacing is a quality heuristic, ">= 6 spawns" is a
+    // correctness requirement (fewer than 6 means a 6-player round cannot
+    // start).
+    if accepted.len() < MIN_SPAWNS {
+        for &candidate in &candidates {
+            if accepted.len() >= MIN_SPAWNS {
+                break;
+            }
+            if !accepted.contains(&candidate) {
+                accepted.push(candidate);
+            }
+        }
+    }
+
+    debug_assert!(
+        accepted.len() >= MIN_SPAWNS || candidates.len() < MIN_SPAWNS,
+        "find_spawns produced {} spawns from {} candidates, below the \
+         documented minimum of {MIN_SPAWNS}",
+        accepted.len(),
+        candidates.len(),
+    );
+
     accepted
         .into_iter()
         .map(|(x, y)| Vec2::new(x as f32, y as f32))
@@ -446,16 +475,33 @@ impl Map {
         map
     }
 
-    /// Destroy a tile (docs/01 §5).
+    /// Destroy a tile (docs/01 §5, T1.7).
     ///
-    /// A solid tile becomes AIR, `version` is bumped, and a [`TileDestroyed`]
-    /// is returned. Destroying AIR, or a tile out of bounds, is a no-op that
-    /// returns `None` and does NOT bump the version.
+    /// A solid tile becomes AIR, `version` is bumped, the surface conversion
+    /// pass runs, and a [`TileDestroyed`] is returned. Destroying AIR, or a
+    /// tile out of bounds, is a no-op that returns `None` and does NOT bump the
+    /// version or run conversion.
     ///
-    /// Does not run the surface conversion pass — callers that destroy in
-    /// batches (`apply_blast`) run it once at the end, so a tile is not
-    /// converted and then immediately destroyed again.
+    /// This is the entry point for *single* destructions and it converts, per
+    /// T1.7 step 3 ("surface conversion pass after destroy"). Batch callers
+    /// must NOT loop over it — see [`Map::destroy_tile_deferred`] and
+    /// DEVIATIONS.md D22.
     pub fn destroy_tile(&mut self, x: u32, y: u32) -> Option<TileDestroyed> {
+        let event = self.destroy_tile_deferred(x, y)?;
+        self.apply_surface_conversion();
+        Some(event)
+    }
+
+    /// Destroy a tile WITHOUT running the surface conversion pass.
+    ///
+    /// For callers that destroy many tiles at once and run
+    /// [`Map::apply_surface_conversion`] exactly once at the end. Converting
+    /// inside a batch would reset an already-damaged DIRT tile's hp to 20
+    /// partway through, making the result depend on tile iteration order —
+    /// which would break determinism (docs/00 §2). See DEVIATIONS.md D22.
+    ///
+    /// Used by [`Map::apply_blast`], and by T4.6's lava `clear_area`.
+    pub fn destroy_tile_deferred(&mut self, x: u32, y: u32) -> Option<TileDestroyed> {
         let tile = self.tile(x, y);
         if !tile.is_solid() {
             return None;
@@ -565,9 +611,8 @@ impl Map {
                 let mut tile = self.tile(x, y);
                 tile.hp -= damage;
                 if tile.hp <= 0.0 {
-                    // Route through destroy_tile so version bumping and event
-                    // shape stay in one place.
-                    if let Some(mut event) = self.destroy_tile(x, y) {
+                    // Deferred: conversion runs once after the whole batch.
+                    if let Some(mut event) = self.destroy_tile_deferred(x, y) {
                         if skip_items {
                             event.item = None;
                         }
@@ -1042,6 +1087,43 @@ mod tests {
     }
 
     #[test]
+    fn spawn_fallback_ignores_spacing_before_returning_too_few() {
+        // The >=6 guarantee outranks the spacing heuristic. Build a map whose
+        // GRASS candidates are all clustered so no spacing can separate 6 of
+        // them, and confirm we still get 6 rather than silently returning 2.
+        let (width, height) = Scale::Small.dimensions();
+        let mut map = Map {
+            seed: 0,
+            scale: Scale::Small,
+            width,
+            height,
+            tiles: vec![Tile::AIR; (width * height) as usize],
+            decor: Vec::new(),
+            spawns: Vec::new(),
+            version: 0,
+        };
+        // A single 10-tile-wide strip of GRASS: every pair is closer than 15,
+        // and only one pair could satisfy spacing 6.
+        let row = height - 10;
+        for x in 20..30 {
+            map.set_tile(x, row, Tile::new(TileKind::Grass));
+        }
+
+        let spawns = find_spawns(&map, &mut GameRng::new(1));
+        assert!(
+            spawns.len() >= MIN_SPAWNS,
+            "clustered candidates yielded only {} spawns",
+            spawns.len(),
+        );
+        // All distinct.
+        for (i, a) in spawns.iter().enumerate() {
+            for b in spawns.iter().skip(i + 1) {
+                assert_ne!((a.x, a.y), (b.x, b.y), "duplicate spawn");
+            }
+        }
+    }
+
+    #[test]
     fn spawns_are_on_grass_with_headroom() {
         // docs/01 §3 step 5: "candidates: GRASS tiles with the 2 tiles above AIR".
         for scale in Scale::ALL {
@@ -1055,6 +1137,9 @@ mod tests {
                         "{} seed {seed}: spawn ({x},{y}) is not GRASS",
                         scale.as_str(),
                     );
+                    // Guard the subtraction: a spawn at y < 2 would panic on
+                    // u32 underflow instead of failing the assertion.
+                    assert!(y >= 2, "spawn ({x},{y}) is too close to the map top");
                     assert!(!map.tile(x, y - 1).is_solid(), "no headroom at ({x},{y})");
                     assert!(!map.tile(x, y - 2).is_solid(), "no headroom at ({x},{y})");
                 }
@@ -1131,6 +1216,12 @@ mod tests {
     #[test]
     fn surface_conversion_grass_on_air_above() {
         // docs/08 §1 (tiles row); docs/01 §5.
+        //
+        // Asserts T1.7's Acceptance verbatim — "destroying a surface DIRT
+        // column converts the new surface tile to GRASS" — using ONLY
+        // destroy_tile. An earlier version called apply_surface_conversion()
+        // explicitly, which asserted this implementation's two-step contract
+        // rather than the documented behaviour. See DEVIATIONS.md D22.
         let mut map = Map::generate(3, Scale::Small);
         let x = 30;
         let s = map.surface_row(x);
@@ -1138,11 +1229,50 @@ mod tests {
         assert_eq!(map.tile(x, s + 1).kind, TileKind::Dirt);
 
         map.destroy_tile(x, s).unwrap();
-        map.apply_surface_conversion();
 
         let converted = map.tile(x, s + 1);
         assert_eq!(converted.kind, TileKind::Grass, "exposed DIRT became GRASS");
         assert_eq!(converted.hp, 20.0, "docs/01 §5: recompute hp to 20");
+    }
+
+    #[test]
+    fn deferred_destroy_does_not_convert_until_asked() {
+        // The batch contract: destroy_tile_deferred leaves conversion pending,
+        // so a blast cannot reset a damaged DIRT tile's hp partway through.
+        let mut map = Map::generate(3, Scale::Small);
+        let x = 31;
+        let s = map.surface_row(x);
+        assert_eq!(map.tile(x, s + 1).kind, TileKind::Dirt);
+
+        map.destroy_tile_deferred(x, s).unwrap();
+        assert_eq!(
+            map.tile(x, s + 1).kind,
+            TileKind::Dirt,
+            "deferred destroy must not convert",
+        );
+
+        map.apply_surface_conversion();
+        assert_eq!(map.tile(x, s + 1).kind, TileKind::Grass);
+    }
+
+    #[test]
+    fn batch_conversion_does_not_reset_damaged_dirt_midway() {
+        // Why the batch path exists (D22). A DIRT tile damaged by the same
+        // blast that exposes it must not be healed back to 20 hp mid-batch.
+        let mut map = solid_map(TileKind::Dirt);
+        let center = Map::tile_center(20, 20);
+        // Enough to destroy the centre tiles, not enough to destroy the ring.
+        map.apply_blast(center.x, center.y, 48.0, 45.0);
+
+        // Some surviving tile in the blast ring should still carry damage.
+        let damaged = (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| map.tile(x, y).kind != TileKind::Air)
+            .any(|(x, y)| {
+                let t = map.tile(x, y);
+                t.hp < t.kind.base_hp()
+            });
+        assert!(damaged, "no surviving tile retained blast damage");
     }
 
     #[test]
@@ -1161,12 +1291,22 @@ mod tests {
 
     #[test]
     fn surface_conversion_does_not_promote_stone() {
-        // Only DIRT converts (docs/01 §5). STONE exposed by a blast stays STONE.
+        // Only DIRT converts (docs/01 §5). STONE exposed by digging stays STONE.
+        //
+        // The column is found by inspection rather than hardcoded: a fixed x
+        // makes this test fail for incidental reasons whenever generation
+        // changes, which masks real regressions.
         let mut map = Map::generate(5, Scale::Small);
-        let x = 50;
+        let x = (0..map.width)
+            .find(|&x| {
+                let s = map.surface_row(x);
+                s + 4 < map.height && map.tile(x, s + 4).kind == TileKind::Stone
+            })
+            .expect("no column with STONE at depth 4");
+
         let s = map.surface_row(x);
         for depth in 0..=3 {
-            map.destroy_tile(x, s + depth);
+            map.destroy_tile_deferred(x, s + depth);
         }
         map.apply_surface_conversion();
         assert_eq!(map.tile(x, s + 4).kind, TileKind::Stone);

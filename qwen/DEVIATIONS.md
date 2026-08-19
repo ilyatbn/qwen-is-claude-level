@@ -325,10 +325,21 @@ order is load-bearing ("follow it exactly or determinism tests break"); the numb
 draws is equally load-bearing, because one extra draw shifts every value downstream.
 Delegating would make every map for a given seed hostage to a patch bump.
 
-**Implemented**: `GameRng` spells out Fisher–Yates (exactly `n-1` draws for length
-`n`) and derives `random_unit` from the top 24 bits of one `u32`. Map output now
-depends only on ChaCha8 — a stable, specified stream — plus code in `rng.rs`. A test
-(`shuffle_consumes_one_draw_per_element_after_the_first`) pins the draw count.
+**Implemented**: `GameRng` spells out Fisher–Yates — `n-1` calls to `below()` for a
+slice of length `n` — and derives `random_unit` from the top 24 bits of one `u32`.
+Map output now depends only on ChaCha8 — a stable, specified stream — plus code in
+`rng.rs`.
+
+**Correction**: an earlier version of this entry claimed the shuffle consumes
+"exactly `n-1` draws". That is wrong. It makes `n-1` *calls to `below()`*, but each
+call consumes **one or more** `u32` draws, because Lemire's rejection loop redraws
+when the sample lands in the biased window. The word count is therefore data
+dependent, not fixed. The test
+(`shuffle_consumes_one_draw_per_element_after_the_first`) is stronger than the claim
+was: it replays the exact `below()` call sequence and compares the RNG's subsequent
+output, so it pins the real consumption whatever the rejection loop did. The
+guarantee that matters — *reproducibility* for a given seed — is unaffected; only
+the prose was inaccurate.
 
 ### D20 — Phase 0's gate passed an incompatible dependency pairing
 
@@ -386,3 +397,67 @@ assertion carries real regression value (it would catch an accidentally quadrati
 generation step) at negligible flake risk. Recorded because the *category* is one this
 project otherwise rejects, and the decision to keep this instance is a judgement call
 rather than an oversight.
+
+### D22 — Surface conversion is per-batch, not per-destruction
+
+**Spec**: `tasks/01-map.md` T1.7 step 3 says "Surface conversion pass (DIRT under AIR →
+GRASS, hp=20) after destroy", and its Acceptance is "destroying a surface DIRT column
+converts the new surface tile to GRASS". docs/01 §5 likewise: "after any destruction,
+for every DIRT tile whose tile directly above is AIR → convert to GRASS (recompute hp
+to 20)".
+
+**Problem**: read literally — convert after *every* destruction — the pass is wrong
+inside a blast. `apply_blast` damages many tiles in one call. If conversion ran per
+tile, a DIRT tile that had already absorbed partial blast damage could be converted
+mid-batch, which **resets its hp to 20** (the doc says "recompute hp to 20"). Whether
+that happens depends on the order tiles are visited, so identical blasts would produce
+different terrain depending on iteration order. That breaks determinism (docs/00 §2),
+which outranks a literal reading of §5.
+
+**Implemented**: two entry points, so the correct behaviour is the default and the
+batch case is explicit rather than remembered:
+
+- `Map::destroy_tile(x, y)` — destroys **and converts**. This is T1.7's contract
+  verbatim, and is what any caller gets by default. T3.3 (hidden-item uncovery) and
+  T4.6 (lava `clear_area`) can call it without knowing conversion exists.
+- `Map::destroy_tile_deferred(x, y)` — destroys without converting, for callers that
+  run `Map::apply_surface_conversion()` once at the end. Used by `apply_blast`.
+
+The observable result for a single destruction is exactly what the doc specifies; the
+result for a batch is order-independent. `surface_conversion_grass_on_air_above` now
+asserts T1.7's Acceptance using only `destroy_tile` — an earlier version called
+`apply_surface_conversion()` explicitly, which asserted this implementation's contract
+instead of the documented behaviour.
+
+*(Structure changed on review: conversion was originally omitted from `destroy_tile`
+entirely, leaving every future caller responsible for remembering the second call.
+That was a latent bug factory, and undocumented.)*
+
+### D23 — Cosine interpolation uses platform `libm`, which is not bit-identical
+
+**Spec**: `docs/01-map.md` §3 step 1 mandates "cosine interpolation between `v[i]` and
+`v[i+1]`". `docs/00-architecture.md` §2 states the determinism rule unconditionally:
+"`game-core` must produce identical state for the same (seed, tick count, input
+sequence)".
+
+**Problem**: `cosine_interpolate` calls `f32::cos`, which dispatches to the platform's
+`libm`. Results may differ by 1 ULP between glibc, musl and macOS. A 1-ULP difference
+in the interpolated noise can survive the `.round()` in `surface_rows` when a column's
+height sits exactly on a `.5` boundary, changing that column's surface row by one tile
+— and from there, every downstream RNG-consuming step diverges. So the map is
+deterministic *on a given platform* but not necessarily *across* platforms.
+
+The two documents conflict: §3 mandates the transcendental, §2 promises bit-identical
+output. There is no compliant way to satisfy both, since any lookup-table or
+polynomial substitute would no longer be "cosine interpolation".
+
+**Implemented**: the doc's algorithm, as specified. The golden hashes in
+`tests/determinism.rs` are computed on `x86_64-unknown-linux-gnu` and would need
+regenerating if they ever fail *only* on another platform — which is precisely the
+signal this entry predicts. In practice v1 runs one authoritative server, so
+cross-platform bit-equality is not required for correctness; it matters only for
+replaying a seed on a different machine.
+
+**Pairs with the rapier `enhanced-determinism` decision due in T2.6.** Both are the
+same question — how much cross-platform bit-equality the project actually wants —
+and should be answered together rather than piecemeal.
