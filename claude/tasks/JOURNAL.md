@@ -701,3 +701,27 @@ Notes: starts vite itself and READS THE PORT FROM VITE'S OUTPUT — 5173 is take
        element (Phaser inserts it well before the first frame), then waits waitMs.
        Dumps window.__game.debug() if the page exposes it, plus console errors.
        Exits non-zero on a pageerror, so it works as a CI gate later.
+
+## T3.03 — Mask -> stencil -> textured chunk — DONE
+## T3.04 — The grass/edge band — DONE
+Files: client/src/render/{chunkBake-math.ts,chunkBake.ts,chunkBake.test.ts}
+Verified: `npm --prefix client test -- --run chunkBake` — 14 passed; typecheck clean
+Notes: SPLIT PER §A8 — chunkBake-math.ts is DOM-free and Phaser-free (stencilBits,
+       edgeBits, tileOffset, chunkOrigin, solidIn) and holds ALL the testable logic;
+       chunkBake.ts does canvas work and imports it, never the reverse. That is why
+       these tests run in node with no jsdom.
+       chunkBake-math takes a MaskSource interface ({width, height, maskView()}), so
+       tests supply a synthetic mask packed exactly like Rust's rather than
+       generating a real map.
+       Edge band: single downward pass per column, run counter resets on air, so
+       ONLY upward-facing surfaces are banded and overhang undersides stay dark.
+       The scan starts EDGE_BAND_PX rows ABOVE the chunk — without that margin a
+       column already solid at the chunk's top edge starts its run at 0 and paints a
+       false band across the seam (a visible horizontal line at every boundary).
+       There is a dedicated test for exactly that.
+       Stencil is written through a Uint32Array view (one 32-bit store per pixel)
+       and BakeScratch owns both canvases + both ImageDatas — nothing allocates per
+       bake. No getImageData anywhere in the bake path.
+Left for later: visual confirmation of the band happens in T3.07's sandbox, as the
+       task file says; the pixel output itself is deliberately not unit tested
+       (docs/60-testing.md §7).
