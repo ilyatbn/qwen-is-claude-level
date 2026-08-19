@@ -142,6 +142,11 @@ is what tells the difference, and running it unprompted found both.
 | **D29** | T2.6's "never moves > 45 px" is unsatisfiable under Verlet (46.125 px) **and** meaningless (45 px spans 2.9 tiles). Replaced with shape-cast movement, which prevents tunneling at any speed. |
 | **D30** | Cross-platform determinism **decided**: same-platform guaranteed, cross-platform not. Records cost, and the three triggers that force a revisit. |
 | **D31** | docs/08 §3 mandates duplicating the FOV formula across languages with no "update both" rule. Pinned to a generated shared fixture. |
+| **D32** | The collision→velocity rule is load-bearing and absent from docs/03. Also promoted the per-tick sequence out of a test helper into `Player::step_tick`. |
+| **D33** | Step order in the tick is load-bearing — jump must follow horizontal, or the ground rule overwrites `JUMP_DIR_BIAS` (140 instead of 70). |
+| **D34** | Combined-axis collision silently cost 20% of walking speed (56 px per 10 ticks instead of 70). Axes now resolve in two separate shape-casts. |
+| **D35** | Ground speed is slope-dependent; T2.3's "exactly 140 px/s" holds only on flat ground. Not a violation — correct Verlet integration on airborne ticks. **Documentation only.** |
+| **D36** | A player cannot walk up a single 16 px step (`autostep: None`). Every upward terrain feature needs a jump. **Phase 4 decision.** |
 
 ---
 
@@ -159,6 +164,8 @@ is what tells the difference, and running it unprompted found both.
 | 16 | Protocol pinning partial (22/43 Rust, 12/30 TS). | ongoing |
 | **17** | **`PhysicsWorld` is built but never driven by a round.** `Player::step_tick` now *is* the sequence (D32) and is production code; T4.1 must call it per player per tick, and call `rebuild_segments` after destruction. Do not reimplement the sequence. | **T4.1** |
 | **18** | **Player damage, shield, overcharge, respawn, scoring are unimplemented.** docs/08 lists them under `player` but their tasks are Phase 3/4, so they were correctly not pulled forward. | T3.7 / T3.8 / T4.3 |
+| **21** | **D36: jump-to-climb vs autostep is an undecided movement model.** A player cannot walk up a 16 px step, and D3 measured adjacent-column deltas up to 7/10/14 tiles, so every upward feature requires a jump. Decide at T4.1: enable one-tile autostep, or accept jump-to-climb and record it as intended. | **T4.1 decision** |
+| **22** | **D35 is recorded, not open.** No action — but do not "fix" a 7.45 px tick on sloped terrain as a bug; it is correct Verlet integration, and T2.3's flat-ground assertion is not a global invariant. | — |
 | **19** | **D26's spawn overlap is a Phase 4 PREREQUISITE, not an open item.** 70–80% of spawns embed the body up to 175 px into neighbouring terrain; ejection direction from that depth is undefined. Phase 3 is unaffected (item placement and pickup geometry are independent of spawns), but T4.1 wires physics and T4.3 makes "farthest spawn from living players" a scoring input. Fix: widen `find_spawns` to require columns `x-1..=x+1` clear, and re-pin the golden anchors in the same commit. | **before T4.1** |
 | **20** | **`GameScene.localPlayerId` is hardcoded 0.** Set it from `joined` (docs/06 §2). | T4.10 |
 
@@ -217,3 +224,12 @@ before and after is not evidence — it is the symptom.
   the jump's directional bias overrides the ground rule. Do not reorder.
 - **`apply_collision` resolves axes in two separate casts** (D34). A single combined
   cast drops whole ticks of horizontal movement. Do not merge them.
+- **The body penetrates the floor by up to 1.115 px while walking** (0 px standing).
+  Bounded and non-accumulating — it stays ~1.12 px over 120 ticks and slowly decreases,
+  with `on_ground` and `blocked_y` true throughout and Δx exact. Not a defect, but it is
+  the same order of magnitude as Phase 3's **16 px pickup radius** and **12 px hit
+  circle**, so geometry that assumes feet sit exactly on the surface will be off by
+  about a pixel.
+- **Three Phase 4 prerequisites share one code path** — D26 (spawn overlap), D35 (slope
+  speed) and D36 (step climbing) all sit on the spawn/collision path. Decide them
+  together at T4.1, not piecemeal.

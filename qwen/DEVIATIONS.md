@@ -877,3 +877,92 @@ resting drift −0.009 px over 200 ticks with `vel.y` exactly 0; and a player wh
 is destroyed falls 80 px and is caught by the floor below. Guarded by
 `walking_on_flat_ground_loses_no_distance` (per-tick, not just the total, so a dropped
 tick cannot be averaged away) and `walking_into_a_wall_still_falls` (axis independence).
+
+### D35 — Ground speed is slope-dependent; T2.3's "exactly 140 px/s" is a flat-ground property
+
+**Spec** (`tasks/02-player.md` T2.3 Acceptance): "movement speed is exactly 140 px/s
+(assert Δx over 10 ticks = 70 px)". docs/03 §4: "On ground ... A/D set horizontal
+velocity to ±MOVE_SPEED directly".
+
+**Observation**: horizontal distance per tick varies with terrain slope. Measured on
+synthetic staircase terrain with a settled body (`examples/probe_slope.rs`, 10 ticks,
+flat expectation 70.000 px):
+
+| terrain | Δx / 10 ticks | px/tick | airborne ticks | max &#124;vel.x&#124; |
+|---|---|---|---|---|
+| flat | 70.000 | 7.000 | 0/10 | 140.0 |
+| downhill 1 tile / 4 cols | 70.000 | 7.000 | 0/10 | 140.0 |
+| downhill 1 tile / 2 cols | **73.000** | 7.300 | 4/10 | 140.0 |
+| downhill 1 tile / 1 col | **74.500** | 7.450 | 6/10 | 140.0 |
+| uphill 1 tile / 4 cols | **51.990** | 5.199 | 0/10 | 140.0 |
+| uphill 1 tile / 2 cols | **19.990** | 1.999 | 0/10 | 140.0 |
+| uphill 1 tile / 1 col | **3.990** | 0.399 | 0/10 | 0.0 |
+
+**Mechanism — it is not slope-sliding.** `max|vel.x|` is exactly 140.0 in every row, and
+`apply_collision` discards the vertical cast's horizontal component by construction
+(D34). The cause is Verlet's acceleration term on **airborne** ticks: stepping off each
+stair edge reads airborne, so `step_horizontal` *returns* `AIR_ACCEL = 600` instead of
+*setting* velocity, and `integrate` adds `½·a·dt² = ½·600·0.05² = 0.75 px` that tick.
+
+- grounded tick: 7.00 px
+- airborne tick: 7.75 px
+
+The arithmetic closes exactly: 4 airborne → `6×7.00 + 4×7.75 = 73.000`; 6 airborne →
+`4×7.00 + 6×7.75 = 74.500`. Both match measurement to three decimals.
+
+Over a long traverse it compounds and then stabilises — 200 ticks on 1-tile-per-2-column
+downhill gave 1418.59 px against a flat expectation of 1400.00, a ratio of **1.013**.
+
+The uphill rows are a different effect entirely: the body is blocked by each riser and
+loses horizontal distance to the collision, down to a standstill at 1 tile per column
+(D36).
+
+**Verdict: not a violation, but an unrecorded qualification.** docs/03 §4 is honoured
+literally in both branches — grounded sets exactly ±140, airborne accelerates toward
+`AIR_MAX = 140` and never exceeds it. The excess *displacement* is correct velocity
+Verlet integration, which D28 established as mandatory for T2.4's jump apex. What is
+undocumented is that **T2.3's acceptance is a flat-ground property**. It passes because
+`walking_on_flat_ground_loses_no_distance` and `player_walks_on_ground` both use a flat
+map; on any real generated map, "exactly 140 px/s" is not the observed speed.
+
+No code change. Recorded so nobody later "fixes" a 7.45 px tick as a bug, and so the
+T2.3 assertion is not mistaken for a global invariant.
+
+### D36 — A player cannot walk up a single 16 px step
+
+**Spec**: nothing in docs/01 or docs/03 states whether terrain steps are walkable. The
+design assumes Worms-style traversal without describing how vertical terrain is
+negotiated.
+
+**Observation** (`examples/probe_slope.rs`): walking right into a step of any height,
+80 ticks, body half-width 12:
+
+| step rise | result |
+|---|---|
+| 1 tile (16 px) | reached x = 388.0, edge at 400.0 → **BLOCKED** |
+| 2 tiles (32 px) | reached x = 388.0 → **BLOCKED** |
+| 3 tiles (48 px) | reached x = 388.0 → **BLOCKED** |
+| 1 tile, jumping periodically | reached x = 883.2 → **CLEARED** |
+
+`388.0 + BODY_HALF_WIDTH 12 = 400.0` exactly: the body comes to rest flush against the
+riser and stays there indefinitely.
+
+**Cause**: `autostep: None` in `PhysicsWorld::new`. That was a deliberate choice, argued
+at the time as "either would silently move the player in ways the documented numbers do
+not describe" — sound in isolation, since autostep teleports the body upward outside the
+documented movement rules.
+
+**Consequence**: docs/01 §3's heightmap produces per-column steps continuously, and D3
+measured adjacent-column deltas up to **7 / 10 / 14 tiles** on Small / Medium / Large.
+So in practice *every* upward terrain feature requires a jump. That is a legitimate
+movement model — Worms itself is jump-heavy — but no document states it and nobody has
+chosen it.
+
+**No code change now. This is a Phase 4 decision**, to be taken at T4.1:
+
+1. **Enable a small autostep** (one tile, 16 px), accepting that the body moves
+   vertically outside the documented rules; or
+2. **Accept jump-to-climb** as the movement model, and record it as intended.
+
+It shares the ejection path with D26 (spawn overlap) and the tick sequence with D35, so
+all three should be decided together rather than piecemeal.
