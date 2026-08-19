@@ -545,3 +545,27 @@ Notes: aabb_overlaps_solid walks coarse cells, Empty/Full decide with ZERO bit
        step_up_clearance returns the SMALLEST working lift (test builds a case where
        2 and 5 both clear and asserts 2) or players visibly hop up slopes.
 Left for later: nothing
+
+## T2.04 — Sub-stepped X movement and step-up — DONE
+## T2.05 — Y movement, grounding, ground snap — DONE
+Files: crates/game-core/src/physics/{resolve.rs,mod.rs}
+Verified: `cargo test -p game-core --release --lib physics::resolve` — 23 passed
+Notes: THE BUG THAT MATTERED — my first substeps() divided the delta by the CAPPED
+       step count. At 10x terminal velocity that is 9000 px / 64 = 140 px per step,
+       and the body tunnelled straight through a 1 px floor ("fell through to 9200").
+       The cap must limit DISTANCE TRAVELLED, not step size: per = delta / ideal
+       (uncapped), steps = min(ideal, MAX_SUBSTEPS). A fast body now moves slower
+       than asked, which is recoverable; the far side of a wall is not.
+       There is now a loop asserting every delta from 0.1 to 1e6 px yields a step
+       <= MAX_SUBSTEP_PX.
+       §A1 WORLD LIMITS implemented in clamp_to_world, called from integrate:
+       centre clamped to [WALL_W + PLAYER_W/2, w - WALL_W - PLAYER_W/2] with vel.x
+       cleared on contact, and a hard ceiling at y=0 with vel.y = max(vel.y, 0).
+       Tested from both sides plus a jetpack burn into the ceiling.
+       integrate() clears `grounded` BEFORE resolving so walking off a ledge
+       registers the same tick — that is what makes coyote time mean anything.
+       TEST TRAPS: (1) tests must drive movement in TICK-SIZED steps; a single
+       200 px move_x call is truncated to 64 px by the substep cap and never
+       reaches the wall. (2) a 0.577 slope on a 512-tall map runs out of terrain at
+       x ~ 540 — bound the walk.
+Left for later: nothing

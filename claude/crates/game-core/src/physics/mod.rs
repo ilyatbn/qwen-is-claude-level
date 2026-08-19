@@ -6,6 +6,7 @@
 
 pub mod body;
 pub mod collide;
+pub mod resolve;
 
 pub use body::{move_state, Body, MoveState, COYOTE_TICKS};
 pub use collide::{

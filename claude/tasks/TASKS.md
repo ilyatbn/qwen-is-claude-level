@@ -66,8 +66,8 @@ Headless movement in `game-core`. No rendering, no server.
 - [x] [T2.01](M2/T2.01-body.md) — `Body` and the physics state
 - [x] [T2.02](M2/T2.02-collide-queries.md) — `solid_at`, `aabb_overlaps_solid`
 - [x] [T2.03](M2/T2.03-ground-probe.md) — `ground_probe` and `approach`
-- [ ] [T2.04](M2/T2.04-resolve-x.md) — Sub-stepped X movement and step-up
-- [ ] [T2.05](M2/T2.05-resolve-y.md) — Y movement, grounding, ground snap
+- [x] [T2.04](M2/T2.04-resolve-x.md) — Sub-stepped X movement and step-up
+- [x] [T2.05](M2/T2.05-resolve-y.md) — Y movement, grounding, ground snap
 - [ ] [T2.06](M2/T2.06-input.md) — `Input`, edge derivation
 - [ ] [T2.07](M2/T2.07-walk.md) — Walking, friction, air control
 - [ ] [T2.08](M2/T2.08-jump.md) — Jump, coyote time, jump buffer
