@@ -10,6 +10,7 @@
 //! another (`docs/10-map-generation.md` §2). Order is from
 //! `docs/70-amendments-v2.md` §A2.
 
+pub mod blobs;
 pub mod silhouette;
 
 pub use silhouette::{borders_hold, force_borders, solid_fraction, GenParams};

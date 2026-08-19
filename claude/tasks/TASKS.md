@@ -38,7 +38,7 @@ be eyeballed as PNGs.
 - [x] [T1.02](M1/T1.02-coarse-grid.md) — `CoarseGrid`: 8×8 occupancy counts
 - [x] [T1.03](M1/T1.03-noise.md) — Value noise, fBm, domain warp
 - [x] [T1.04](M1/T1.04-silhouette.md) — Pass 1–2: preset and silhouette
-- [ ] [T1.05](M1/T1.05-blobs.md) — Pass 3: floating islands
+- [x] [T1.05](M1/T1.05-blobs.md) — Pass 3: floating islands
 - [ ] [T1.05b](M1/T1.05b-bridges.md) — Pass 3b: bridges between islands **(v2)**
 - [ ] [T1.06](M1/T1.06-caves.md) — Pass 4: random-walk tunnels
 - [ ] [T1.06b](M1/T1.06b-cave-network.md) — Pass 4: chambers, loops, entrances **(v2)**

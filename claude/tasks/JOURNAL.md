@@ -184,3 +184,17 @@ Notes: PERF — per-pixel warped_fbm was 1127 ms at large scale (medium ~630 ms 
        TWO IGNORED TESTS, run them with:
          cargo test -p game-core --release silhouette -- --ignored --nocapture
 Left for later: nothing
+
+## T1.05 — Pass 3: floating islands — DONE
+Files: crates/game-core/src/map/gen/blobs.rs, map/shape.rs, map/{mod.rs}, gen/mod.rs
+Verified: `cargo test -p game-core -- shape blobs` — 19 passed
+Notes: stamp_circle lives in map/shape.rs, NOT in blobs.rs — bridges, tunnels,
+       chambers, crevices, voids and carve all call it, and a second float-distance
+       rasteriser would disagree at the edges and diverge client vs server masks.
+       shape.rs also has carve_circle_counted (returns px removed, for T1.14's
+       coarse maintenance) and stamp_capsule (bridges now, lava in M5).
+       add_blobs RETURNS the centres (v2) — T1.05b needs them.
+       Flat tops: >= half the circles in a cluster share the centre y (+-8). Tested
+       by measuring the surface profile over the middle 60 px of each island.
+       NOTE: i32::div_ceil is unstable on 1.97 — use (n+1)/2.
+Left for later: nothing
