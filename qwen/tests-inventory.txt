@@ -75,6 +75,11 @@ physics::tests::all_segments_covers_every_solid_tile_exactly_once
 physics::tests::an_empty_row_has_no_segments
 physics::tests::row_segments_merges_consecutive_solid_tiles
 physics::tests::segment_geometry_matches_tile_bounds
+player::fov_tests::fov_clamps_day_phase_to_its_documented_range
+player::fov_tests::fov_flashlight_restores_night
+player::fov_tests::fov_is_monotonic_in_day_phase
+player::fov_tests::fov_night_fog_lowhealth
+player::fov_tests::low_health_threshold_is_exactly_50
 player::input_tests::a_jump_arriving_and_ending_between_ticks_is_still_one_edge
 player::input_tests::first_tick_without_a_frame_is_all_false
 player::input_tests::holding_jump_yields_exactly_one_edge
@@ -178,6 +183,25 @@ src/logic/camera.test.ts > clampCamera (T1.10 step 1) > clamps at the left and t
 src/logic/camera.test.ts > clampCamera (T1.10 step 1) > clamps at the right and bottom edges
 src/logic/camera.test.ts > clampCamera (T1.10 step 1) > leaves an in-bounds position alone
 src/logic/camera.test.ts > clampCamera (T1.10 step 1) > never shows anything outside the map
+src/logic/fov.test.ts > computeFov matches the server implementation > has vectors to check
+src/logic/fov.test.ts > computeFov matches the server implementation > matches the server for day_phase=0 fog=false health=100 flashlight=false
+src/logic/fov.test.ts > computeFov matches the server implementation > matches the server for day_phase=0 fog=false health=49 flashlight=false
+src/logic/fov.test.ts > computeFov matches the server implementation > matches the server for day_phase=0 fog=false health=50 flashlight=false
+src/logic/fov.test.ts > computeFov matches the server implementation > matches the server for day_phase=0 fog=true health=100 flashlight=false
+src/logic/fov.test.ts > computeFov matches the server implementation > matches the server for day_phase=0.5 fog=false health=100 flashlight=false
+src/logic/fov.test.ts > computeFov matches the server implementation > matches the server for day_phase=1 fog=false health=10 flashlight=false
+src/logic/fov.test.ts > computeFov matches the server implementation > matches the server for day_phase=1 fog=false health=10 flashlight=true
+src/logic/fov.test.ts > computeFov matches the server implementation > matches the server for day_phase=1 fog=false health=100 flashlight=false
+src/logic/fov.test.ts > computeFov matches the server implementation > matches the server for day_phase=1 fog=false health=100 flashlight=true
+src/logic/fov.test.ts > computeFov matches the server implementation > matches the server for day_phase=1 fog=true health=10 flashlight=false
+src/logic/fov.test.ts > computeFov matches the server implementation > matches the server for day_phase=1 fog=true health=100 flashlight=false
+src/logic/fov.test.ts > computeFov matches the server implementation > matches the server for day_phase=1 fog=true health=100 flashlight=true
+src/logic/fov.test.ts > documented FOV cases (docs/03 §7) > hides a player at 400 px at night, reveals them with a flashlight
+src/logic/fov.test.ts > documented FOV cases (docs/03 §7) > is 189 at full night (420 * 0.45)
+src/logic/fov.test.ts > documented FOV cases (docs/03 §7) > is 189 in fog by day — T4.7 asserts exactly this
+src/logic/fov.test.ts > documented FOV cases (docs/03 §7) > is 420 in full day, healthy, no fog
+src/logic/fov.test.ts > documented FOV cases (docs/03 §7) > lets a flashlight cancel night but not fog or low health
+src/logic/fov.test.ts > documented FOV cases (docs/03 §7) > treats exactly 50 hp as healthy (docs says "health >= 50")
 src/logic/inputFrame.test.ts > InputSender > carries use_slot only on the frame it is pressed (docs/06 §3)
 src/logic/inputFrame.test.ts > InputSender > does not emit again before the interval elapses
 src/logic/inputFrame.test.ts > InputSender > emits roughly 20 frames per second

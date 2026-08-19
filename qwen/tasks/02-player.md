@@ -194,7 +194,7 @@ input at 20 Hz.
 
 ---
 
-## T2.10 — FOV + darkness overlay [ ]
+## T2.10 — FOV + darkness overlay [x]
 
 **Goal**: server computes per-player FOV; client renders night/fog mask.
 **Read**: `docs/03-player.md` §7, `docs/02-map-effects.md` §1, §6.

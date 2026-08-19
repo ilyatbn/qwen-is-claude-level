@@ -484,6 +484,37 @@ impl Player {
         }
     }
 
+    /// Field-of-view radius in px (docs/03 §7, T2.10 step 1).
+    ///
+    /// ```text
+    /// base = 420
+    /// night_factor:  1.0 (full day) -> 0.45 (full night), lerp by day_phase
+    /// fog_factor:    1.0, or 0.45 while heavy fog active
+    /// health_factor: 1.0 if health >= 50, else 0.7
+    /// fov = base * night_factor * fog_factor * health_factor
+    /// if flashlight active: night_factor = 1.0 for this player
+    /// ```
+    ///
+    /// A free function rather than a method, because the client mirrors it in
+    /// `client/src/logic/fov.ts` and the two are pinned to a shared fixture —
+    /// see DEVIATIONS.md D31.
+    pub fn compute_fov(day_phase: f32, fog_active: bool, health: f32, flashlight: bool) -> f32 {
+        let night_factor = if flashlight {
+            // "if flashlight active: night_factor = 1.0 for this player"
+            1.0
+        } else {
+            // Lerp 1.0 -> 0.45 by day_phase.
+            1.0 + (FOV_NIGHT_MIN - 1.0) * day_phase.clamp(0.0, 1.0)
+        };
+        let fog_factor = if fog_active { FOV_FOG } else { 1.0 };
+        let health_factor = if health >= FOV_LOW_HEALTH {
+            1.0
+        } else {
+            FOV_LOW_HEALTH_FACTOR
+        };
+        FOV_BASE * night_factor * fog_factor * health_factor
+    }
+
     /// Store the aim angle from an input frame (docs/03 §8, T2.8 step 1).
     ///
     /// "`aim` is a free angle from the client mouse (server stores it, no
@@ -1285,5 +1316,104 @@ mod jetpack_tests {
             player.jetpack.fuel,
         );
         assert!((expected - 5.0).abs() < 1e-6, "script arithmetic drifted");
+    }
+}
+
+/// T2.10 FOV tests.
+#[cfg(test)]
+mod fov_tests {
+    use super::*;
+
+    /// The canonical cases. This table is ALSO emitted as a JSON fixture by
+    /// `examples/fov_vectors.rs` and asserted by the client's `fov.test.ts`,
+    /// so both implementations are pinned to one source of truth (D31).
+    ///
+    /// `(day_phase, fog, health, flashlight, expected_fov)`
+    pub const FOV_VECTORS: [(f32, bool, f32, bool, f32); 12] = [
+        // Full day, healthy, no fog: the base radius.
+        (0.0, false, 100.0, false, 420.0),
+        // Full night: 420 * 0.45.
+        (1.0, false, 100.0, false, 189.0),
+        // Half-way to night: night_factor = 1 - 0.55*0.5 = 0.725.
+        (0.5, false, 100.0, false, 304.5),
+        // Fog by day: 420 * 0.45 (T4.7 asserts exactly this).
+        (0.0, true, 100.0, false, 189.0),
+        // Low health by day: 420 * 0.7.
+        (0.0, false, 49.0, false, 294.0),
+        // Exactly 50 hp is NOT low (docs/03 §7 says "health >= 50").
+        (0.0, false, 50.0, false, 420.0),
+        // Night + fog: 420 * 0.45 * 0.45.
+        (1.0, true, 100.0, false, 85.05),
+        // Night + low health: 420 * 0.45 * 0.7.
+        (1.0, false, 10.0, false, 132.3),
+        // All three: 420 * 0.45 * 0.45 * 0.7.
+        (1.0, true, 10.0, false, 59.535),
+        // Flashlight cancels night entirely.
+        (1.0, false, 100.0, true, 420.0),
+        // Flashlight does NOT cancel fog or low health.
+        (1.0, true, 100.0, true, 189.0),
+        (1.0, false, 10.0, true, 294.0),
+    ];
+
+    #[test]
+    fn fov_night_fog_lowhealth() {
+        // docs/08 §1 (player row): "assert exact values for given inputs".
+        for (day_phase, fog, health, flashlight, expected) in FOV_VECTORS {
+            let actual = Player::compute_fov(day_phase, fog, health, flashlight);
+            assert!(
+                (actual - expected).abs() < 1e-3,
+                "fov(day_phase={day_phase}, fog={fog}, health={health}, \
+                 flashlight={flashlight}) = {actual}, expected {expected}",
+            );
+        }
+    }
+
+    #[test]
+    fn fov_flashlight_restores_night() {
+        // docs/08 §1 (player row).
+        let without = Player::compute_fov(1.0, false, 100.0, false);
+        let with = Player::compute_fov(1.0, false, 100.0, true);
+        assert!((without - 189.0).abs() < 1e-3);
+        assert!((with - FOV_BASE).abs() < 1e-3);
+        assert!(with > without, "flashlight must widen the view at night");
+
+        // T2.10 Acceptance: "at full night without flashlight, a player 400 px
+        // away is invisible; with flashlight, visible."
+        assert!(without < 400.0, "400 px should be outside night FOV");
+        assert!(with > 400.0, "400 px should be inside flashlight FOV");
+    }
+
+    #[test]
+    fn fov_is_monotonic_in_day_phase() {
+        // Night closes in gradually; no jumps or reversals.
+        let mut previous = f32::INFINITY;
+        for step in 0..=100 {
+            let phase = step as f32 / 100.0;
+            let fov = Player::compute_fov(phase, false, 100.0, false);
+            assert!(fov <= previous + 1e-4, "fov increased at day_phase {phase}");
+            previous = fov;
+        }
+    }
+
+    #[test]
+    fn fov_clamps_day_phase_to_its_documented_range() {
+        // day_phase is documented as 0..1 (docs/02 §1). Out-of-range input must
+        // not produce a negative or runaway radius.
+        assert_eq!(
+            Player::compute_fov(-5.0, false, 100.0, false),
+            Player::compute_fov(0.0, false, 100.0, false),
+        );
+        assert_eq!(
+            Player::compute_fov(5.0, false, 100.0, false),
+            Player::compute_fov(1.0, false, 100.0, false),
+        );
+        assert!(Player::compute_fov(99.0, true, 1.0, false) > 0.0);
+    }
+
+    #[test]
+    fn low_health_threshold_is_exactly_50() {
+        // docs/03 §7: "health_factor: 1.0 if health >= 50, else 0.7".
+        assert_eq!(Player::compute_fov(0.0, false, 50.0, false), 420.0);
+        assert!(Player::compute_fov(0.0, false, 49.999, false) < 420.0);
     }
 }

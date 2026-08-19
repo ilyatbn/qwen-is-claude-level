@@ -3,6 +3,7 @@ import { Terrain } from '../entities/Terrain';
 import { Hud } from '../hud/Hud';
 import { PlayerSprite } from '../entities/PlayerSprite';
 import { aimAngle } from '../logic/aim';
+import { computeFov } from '../logic/fov';
 import { InputSender, type RawInput } from '../logic/inputFrame';
 import { SnapshotInterpolator } from '../logic/interpolation';
 import type { Snapshot } from '../protocol';
@@ -31,9 +32,14 @@ export class GameScene extends Phaser.Scene {
   private readonly interpolator = new SnapshotInterpolator();
   private readonly inputSender = new InputSender();
   private readonly sprites = new Map<number, PlayerSprite>();
+  /** Assigned by the server in `joined` (docs/06 §2); 0 until then. */
+  private localPlayerId = 0;
   private keys?: Record<string, Phaser.Input.Keyboard.Key>;
   /** Set by the socket layer when a snapshot arrives (T4.x). */
   private pendingSlot: number | null = null;
+  private darkness?: Phaser.GameObjects.Graphics;
+  /** Local player's FOV radius, from the snapshot (docs/03 §7). */
+  private fovRadius = computeFov(0, false, 100, false);
 
   constructor() {
     super({ key: 'GameScene' });
@@ -49,6 +55,7 @@ export class GameScene extends Phaser.Scene {
     this.buildTerrain(map);
 
     this.hud = new Hud(this);
+    this.darkness = this.add.graphics().setDepth(400);
     this.keys = this.input.keyboard?.addKeys('W,A,S,D,SPACE') as
       | Record<string, Phaser.Input.Keyboard.Key>
       | undefined;
@@ -78,6 +85,7 @@ export class GameScene extends Phaser.Scene {
   update(time: number, delta: number): void {
     this.updateAim();
     this.renderPlayers(time);
+    this.drawDarkness();
     this.sendInput(time);
 
     if (!this.debugCamera || !this.cursors) {
@@ -103,11 +111,46 @@ export class GameScene extends Phaser.Scene {
   /** Feed an arriving snapshot to the interpolator (T2.9 step 1). */
   applySnapshot(snapshot: Snapshot, receivedAt: number): void {
     this.interpolator.push(snapshot, receivedAt);
+    // The server computes fov per player (docs/03 §7); the mask is for the
+    // LOCAL player only (T2.10 step 4).
+    const local = snapshot.players.find((p) => p.id === this.localPlayerId);
+    if (local) {
+      this.fovRadius = local.fov;
+      this.aimOrigin = { x: local.x, y: local.y };
+    }
     for (const snap of snapshot.players) {
       if (!this.sprites.has(snap.id)) {
         this.sprites.set(snap.id, new PlayerSprite(this, snap.id, snap.name));
       }
     }
+  }
+
+  /**
+   * Night/fog mask: a dark overlay with a circular hole of radius `fov`
+   * around the LOCAL player (T2.10 step 4, docs/07 §5 "alpha up to 0.85").
+   *
+   * Remote players are drawn normally underneath — v1 renders one mask, for
+   * your own eyes, not per-player visibility.
+   */
+  private drawDarkness(): void {
+    const g = this.darkness;
+    if (!g) {
+      return;
+    }
+    g.clear();
+    const camera = this.cameras.main;
+    // Fully lit at the base radius; darkness grows as fov shrinks.
+    const alpha = Math.min(0.85, Math.max(0, 1 - this.fovRadius / 420) * 0.85);
+    if (alpha <= 0.001) {
+      return;
+    }
+    g.fillStyle(0x000000, alpha);
+    g.fillRect(camera.scrollX, camera.scrollY, camera.width, camera.height);
+    // Punch the FOV hole.
+    g.setBlendMode(Phaser.BlendModes.ERASE);
+    g.fillStyle(0x000000, 1);
+    g.fillCircle(this.aimOrigin.x, this.aimOrigin.y, this.fovRadius);
+    g.setBlendMode(Phaser.BlendModes.NORMAL);
   }
 
   /** Draw every known player at its interpolated position (T2.9 step 1). */

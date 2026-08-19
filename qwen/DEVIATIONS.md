@@ -694,3 +694,44 @@ only the collision-resolution path while costing performance on every query.
 1.3% of noise samples and therefore generated maps. Migrating is cheap today and
 strictly more expensive after Phase 3 adds item placement and Phase 4 adds effect
 schedules to the seeded stream.
+
+### D31 — The FOV formula is implemented twice; the copies are pinned to a shared fixture
+
+**Spec**: `docs/03-player.md` §7 defines the FOV formula. `docs/08-testing.md` §3 then
+requires the client implement it independently: "`fov.ts`: same formula as server (copy
+of the math) — assert night/fog/health/flashlight cases match docs/03 §7 values."
+
+**Problem**: the design *mandates* duplicating a formula across two languages. That is
+the same drift hazard docs/06 explicitly guards against for the protocol ("when a task
+changes a message, it updates BOTH files"), except here there is no corresponding
+instruction — nothing says to update both copies of the FOV maths, and nothing detects
+it if you don't.
+
+Two hand-written test tables do not solve it. Each side's table would be written from
+the same doc, and a wrong change on one side gets a matching wrong table, so both
+suites stay green while server and client disagree about what a player can see. The
+symptom in play would be a remote player rendered inside your darkness mask, or
+invisible when they should be lit — hard to attribute and impossible to reproduce from
+a unit test.
+
+**Implemented**: one source of truth, generated. `game-core/examples/fov_vectors.rs`
+evaluates `Player::compute_fov` over 12 cases spanning every branch (day, night,
+half-phase, fog, low health, the exact 50 hp boundary, flashlight with and without fog
+and low health) and writes `client/src/logic/fov-vectors.json`. The Rust test table and
+the client's `fov.test.ts` both assert against those vectors. The client fixture is
+committed, so CI needs no Rust step.
+
+Verified in **both** directions:
+
+| Injection | Result |
+|---|---|
+| TS-only change (`FOV_NIGHT_MIN` 0.45 → 0.50) | **6 TS tests fail** |
+| Rust-only change (`FOV_LOW_HEALTH_FACTOR` 0.7 → 0.8) | Rust test fails; and after regenerating the fixture from the changed Rust, **4 TS tests still fail** |
+
+The second row is the one that matters: regenerating the fixture does **not** launder a
+one-sided change, because the client's implementation still disagrees with the new
+vectors. Both copies must be changed for the suite to go green — which is exactly the
+"update BOTH files" discipline docs/06 states for the protocol and omits here.
+
+Regenerate deliberately, when the formula changes on purpose:
+`cargo run -p game-core --example fov_vectors`.
