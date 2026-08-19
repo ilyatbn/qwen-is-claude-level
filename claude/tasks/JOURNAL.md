@@ -278,3 +278,19 @@ Notes: BUG I ALMOST SHIPPED — smooth_once only SETS runs, so dst must be clear
        so the threshold is 15% rather than the task's 10%, plus an assertion that
        the third delta is below the second.
 Left for later: nothing
+
+## T1.08 — Pass 6: connected components and cleanup — DONE
+Files: crates/game-core/src/map/gen/components.rs, gen/mod.rs
+Verified: `cargo test -p game-core components` — 13 passed
+Notes: iterative flood fill, ONE reused stack across all components. The
+       a_million_pixel_component test exists purely to catch someone converting it
+       to recursion later.
+       The subtle correctness point has its own test
+       (re_labelling_after_blob_deletion_is_not_skipped): deleting solid blobs
+       MERGES air regions, so air must be re-labelled AFTER the deletion. With
+       stale labels, two sub-threshold pockets that merge into a legitimate cave
+       both get filled and the cave silently vanishes.
+       The first labels Vec (up to 32 MB at large scale) is dropped in an inner
+       scope before the second one allocates.
+       Sky region = the air component containing (w/2, 0).
+Left for later: nothing
