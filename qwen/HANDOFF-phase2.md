@@ -102,13 +102,14 @@ none fails zero tests: `MOVE_SPEED` 3, `AIR_ACCEL` 1, `AIR_MAX` 1, `GRAVITY` 2,
 `FOV_LOW_HEALTH_FACTOR` 1, `FOV_LOW_HEALTH` 2, `TERMINAL_VELOCITY` 1,
 `BODY_HALF_WIDTH` 1, `BODY_HALF_HEIGHT` 1.
 
-`AIR_ACCEL` and `AIR_MAX` failed **zero** before this sweep — the third instance of
-the self-referential shape, after the jetpack assist and the rebuild-scope test. Doing
-this as a *sweep* rather than per-test is what found them; spot-checking does not.
+Review found the `AIR_ACCEL` / `AIR_MAX` instances; the sweep's own contribution was the
+**negative result** — confirming the other 18 constants are genuinely guarded, so the
+shape was two specific tests rather than a pervasive rot. That negative result is the
+reason to run a sweep: it bounds the problem instead of leaving it open.
 
-### Three tests the injection pass caught as worthless
+### Tests the injection pass caught as worthless
 
-Both looked authoritative, both were green, neither constrained anything:
+Each looked authoritative, each was green, none constrained anything:
 
 0. **Air control was self-referential on both constants.**
    `air_control_accelerates_toward_the_cap` asserted `vel.x - AIR_ACCEL * DT` and
@@ -163,6 +164,42 @@ is what tells the difference, and running it unprompted found both.
 
 ---
 
+## The standing rule for Phase 3 onward: sweep the class, not the instance
+
+Phase 1 left a rule — *a test described as guarding an invariant must have been seen to
+fail when that invariant is violated* — and it worked, because it was written here and
+so got applied unprompted. This phase produced a second rule, from a failure that has
+now recurred four times:
+
+> **When a defect is found, fix the instance, then sweep for the class before
+> reporting.** Ask: *what else has this shape?* and *what does this change affect that
+> nothing observes?* Answer both with a script over every candidate, not by inspection.
+
+The record it comes from:
+
+| Phase | Instance fixed | Class missed |
+|---|---|---|
+| 0 | TS drift guard | protocol pinning gap persisted |
+| 1 | D22's non-discriminating test | a deleted test went unnoticed |
+| 2 | T2.2's Test filter | T2.1 had the same defect |
+| 2 | jetpack self-referential assertion | `AIR_ACCEL`/`AIR_MAX` had it too |
+| 2 | promoted the tick sequence (D32) | reordering broke `JUMP_DIR_BIAS`, and the combined-axis cast cost 20% walking speed (D33, D34) |
+
+The last row is the sharpest: the fix was correct and necessary, and it introduced two
+regressions in exactly the interactions the old code path never exercised. A green suite
+before and after is not evidence — it is the symptom.
+
+**Concretely, before each phase gate**, and not after a reviewer asks:
+
+1. **Constant sweep** — inject every documented constant the phase touches, one at a
+   time; record failure counts; any zero is an unguarded constant. The negative result
+   matters as much as the positive: it bounds the problem.
+2. **Test-command sweep** — run every task's Test command verbatim and record how many
+   tests each selects. Any zero means a task is gated on nothing.
+3. **Interaction sweep** — for any code path promoted, reordered or rewired, enumerate
+   the input dimensions it now covers that its predecessor did not, and assert each one
+   end to end. This is what D33/D34 came from.
+
 ## Notes for Phase 3
 
 - **`Player::integrate` takes acceleration and uses Verlet** (D28). Do not "simplify"
@@ -176,3 +213,7 @@ is what tells the difference, and running it unprompted found both.
   rest must stay CRLF.
 - **Run `./scripts/test-inventory.sh check`** in the gate; `update` only after an
   intentional removal.
+- **`Player::step_tick` order is load-bearing** (D33): horizontal → jetpack → jump, so
+  the jump's directional bias overrides the ground rule. Do not reorder.
+- **`apply_collision` resolves axes in two separate casts** (D34). A single combined
+  cast drops whole ticks of horizontal movement. Do not merge them.

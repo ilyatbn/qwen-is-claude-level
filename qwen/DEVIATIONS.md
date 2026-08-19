@@ -814,3 +814,66 @@ in production code, so the shipped binary could not land a player, and
 `Player::step_tick` is now the production sequence — probe → jump → jetpack →
 horizontal → integrate → clamp → resolve — and the tests call it, so they exercise
 shipped code and T4.1 inherits the semantics instead of re-deriving them.
+
+### D33 — Step order in the tick is load-bearing: jump must follow horizontal
+
+**Spec** (`docs/03-player.md` §4): "On ground ... A/D set horizontal velocity to
+±MOVE_SPEED directly" and "Jump (rising edge of space, on ground): apply JUMP_VY
+impulse; **if A or D held, also set horizontal vel to ±(MOVE_SPEED × JUMP_DIR_BIAS)**".
+
+**Problem**: both rules *set* `vel.x` on a grounded player, so whichever runs second
+wins. The doc describes the jump as overriding ("also set"), which only holds if the
+jump is applied after the ground rule. Nothing in docs/03 states the ordering.
+
+**How it was found — and why this entry exists**: promoting the per-tick sequence out
+of a test helper (D32) reordered these steps, and a directional jump began launching at
+**140 px/s instead of the documented 70**. All 146 tests passed before and after. The
+old helper never passed `jump_pressed: true` — it only exercised jetpack and horizontal
+— and every jump test called `step_jump` directly, so no test jumped through the
+production tick. The regression lived in the one dimension nothing observed.
+
+**Implemented**: `step_tick` runs **horizontal → jetpack → jump**, with the reason
+stated at the call site. `directional_jump_through_step_tick_uses_the_documented_bias`
+asserts the literal 70.0 through the production path; restoring the old order fails it
+with "gave vel.x 140, expected 70 (the ground rule overwrote the bias)".
+
+`mod step_tick_tests` now exercises **every** input field through `step_tick` rather
+than through the individual step functions: jump edges (with and without), directional
+jump both ways, walking distance, jetpack on the jump tick, held-space jetpack in the
+air, W/S assist, aim (including NaN rejection), ceiling collision, and ground-state
+reporting.
+
+### D34 — Combined-axis collision silently cost 20% of walking speed
+
+**Spec**: docs/03 §4 sets ground speed at `MOVE_SPEED = 140 px/s`; T2.3's Acceptance
+pins it as "Δx over 10 ticks = 70 px".
+
+**Problem**: that assertion was only ever checked on the **pure** path. Through the
+production tick it was false. `apply_collision` passed the full desired translation to
+rapier's character controller in one call, and when a resting player's downward gravity
+component was being resolved, the controller intermittently consumed its entire budget
+on the vertical contact and returned **zero** horizontal movement.
+
+Measured on flat ground: **56 px per 10 ticks instead of 70** — whole ticks dropped
+(ticks 1 and 7 of 10 moved 0 px), a silent 20% speed loss. Probing `move_player`
+directly showed it is not position-dependent: `desired = (7.0, 0.0)` passes through
+intact, while `(7.0, anything > 0)` from a body resting 0.005 px above the surface
+returns `(0.0, -0.0001)`. Adjusting the controller `offset` — absolute 0.01/0.1/0.5 and
+relative 0.01 — changed nothing.
+
+**Implemented**: the two axes are resolved in **separate shape-casts** — horizontal
+first, then vertical from the updated position. This is the standard resolution order
+for tile platformers, and it has three benefits here:
+
+1. horizontal motion no longer depends on how the vertical contact resolves — walking
+   is exactly 7.0 px per tick, 30 ticks running;
+2. "which axis was blocked" becomes exact rather than inferred from a combined
+   translation, which is precisely what D32's per-axis velocity rule needs;
+3. anti-tunneling (D29) is unaffected — each call is still a swept cast.
+
+Re-verified against the changed path: no tunneling through a 1-tile floor at 45,
+46.125, 100, 500, 2000 or **10,000 px/tick**, nor through a 1×1 ledge at 5,000;
+resting drift −0.009 px over 200 ticks with `vel.y` exactly 0; and a player whose floor
+is destroyed falls 80 px and is caught by the floor below. Guarded by
+`walking_on_flat_ground_loses_no_distance` (per-tick, not just the total, so a dropped
+tick cannot be averaged away) and `walking_into_a_wall_still_falls` (axis independence).

@@ -964,3 +964,377 @@ mod rebuild_tests {
         assert_eq!(before, after);
     }
 }
+
+/// End-to-end tests of the PRODUCTION tick, `Player::step_tick`.
+///
+/// These exist because promoting the tick sequence out of a test helper
+/// changed behaviour in a dimension nothing observed: the old helper never
+/// passed `jump_pressed: true`, so reordering the steps silently broke
+/// `JUMP_DIR_BIAS` while all 146 tests stayed green (D33).
+///
+/// Every input field of `InputFrame` and `InputEdges` is exercised through
+/// `step_tick` here, not through the individual step functions.
+#[cfg(test)]
+mod step_tick_tests {
+    use super::*;
+    use crate::map::Scale;
+    use crate::player::player_config::*;
+    use crate::player::{InputEdges, Player, TickOutcome, DT};
+    use crate::protocol::InputFrame;
+    use crate::tiles::{Tile, TileKind};
+    use crate::Vec2;
+
+    const FLOOR_ROW: u32 = 40;
+
+    fn flat_map() -> Map {
+        let (width, height) = Scale::Small.dimensions();
+        let mut map = Map {
+            seed: 0,
+            scale: Scale::Small,
+            width,
+            height,
+            tiles: vec![Tile::AIR; (width * height) as usize],
+            decor: Vec::new(),
+            spawns: Vec::new(),
+            version: 0,
+        };
+        for y in FLOOR_ROW..height {
+            for x in 0..width {
+                map.set_tile(x, y, Tile::new(TileKind::Stone));
+            }
+        }
+        map
+    }
+
+    /// A player that has settled on the floor through the production tick.
+    fn settled(map: &Map, world: &PhysicsWorld) -> Player {
+        let mut player = Player::new(
+            0,
+            "p".into(),
+            Vec2::new(320.0, FLOOR_ROW as f32 * TILE_SIZE - BODY_HALF_HEIGHT),
+        );
+        for _ in 0..40 {
+            player.step_tick(world, map, &InputFrame::default(), InputEdges::default(), DT);
+        }
+        player
+    }
+
+    fn jump_edge() -> InputEdges {
+        InputEdges {
+            jump_pressed: true,
+            use_slot_pressed: None,
+        }
+    }
+
+    fn run(player: &mut Player, world: &PhysicsWorld, map: &Map, frame: &InputFrame, edges: InputEdges) -> TickOutcome {
+        player.step_tick(world, map, frame, edges, DT)
+    }
+
+    #[test]
+    fn directional_jump_through_step_tick_uses_the_documented_bias() {
+        // D33. docs/03 §4: "if A or D held, also set horizontal vel to
+        // ±(MOVE_SPEED * JUMP_DIR_BIAS)" = ±(140 * 0.5) = ±70.
+        //
+        // Literals, not constants: asserting against MOVE_SPEED*JUMP_DIR_BIAS
+        // would move with the code.
+        let map = flat_map();
+        let world = PhysicsWorld::new(&map);
+
+        let mut player = settled(&map, &world);
+        let outcome = run(
+            &mut player,
+            &world,
+            &map,
+            &InputFrame { right: true, jump: true, ..InputFrame::default() },
+            jump_edge(),
+        );
+        assert!(outcome.jumped, "the tick did not report a jump");
+        assert!(
+            (player.vel.x - 70.0).abs() < 1e-4,
+            "jump+right through step_tick gave vel.x {}, expected 70 \
+             (the ground rule overwrote the bias)",
+            player.vel.x,
+        );
+
+        let mut player = settled(&map, &world);
+        run(
+            &mut player,
+            &world,
+            &map,
+            &InputFrame { left: true, jump: true, ..InputFrame::default() },
+            jump_edge(),
+        );
+        assert!(
+            (player.vel.x + 70.0).abs() < 1e-4,
+            "jump+left through step_tick gave vel.x {}, expected -70",
+            player.vel.x,
+        );
+    }
+
+    #[test]
+    fn a_jump_through_step_tick_leaves_the_ground() {
+        let map = flat_map();
+        let world = PhysicsWorld::new(&map);
+        let mut player = settled(&map, &world);
+        let resting_y = player.pos.y;
+
+        run(&mut player, &world, &map, &InputFrame { jump: true, ..InputFrame::default() }, jump_edge());
+        assert!(
+            player.pos.y < resting_y,
+            "the player did not rise: {resting_y} -> {}",
+            player.pos.y,
+        );
+        // JUMP_VY -330 plus one tick of gravity: -330 + 900*0.05 = -285.
+        assert!(
+            (player.vel.y + 285.0).abs() < 1e-3,
+            "vel.y after the jump tick is {}, expected -285",
+            player.vel.y,
+        );
+    }
+
+    #[test]
+    fn walking_through_step_tick_matches_the_documented_speed() {
+        // The ground rule, end to end: 140 px/s * 10 ticks * 0.05 = 70 px.
+        let map = flat_map();
+        let world = PhysicsWorld::new(&map);
+        let mut player = settled(&map, &world);
+        let start_x = player.pos.x;
+
+        for _ in 0..10 {
+            run(
+                &mut player,
+                &world,
+                &map,
+                &InputFrame { right: true, ..InputFrame::default() },
+                InputEdges::default(),
+            );
+        }
+        assert!(
+            (player.pos.x - start_x - 70.0).abs() < 1e-3,
+            "10 ticks of walking moved {} px, expected 70",
+            player.pos.x - start_x,
+        );
+    }
+
+    #[test]
+    fn jetpack_does_not_fire_on_the_jump_tick() {
+        // docs/03 §5: "Jetpack cannot start on the ground (space on ground =
+        // jump only)". Holding W as well must not burn fuel or add thrust.
+        let map = flat_map();
+        let world = PhysicsWorld::new(&map);
+        let mut player = settled(&map, &world);
+
+        let outcome = run(
+            &mut player,
+            &world,
+            &map,
+            &InputFrame { jump: true, up: true, ..InputFrame::default() },
+            jump_edge(),
+        );
+        assert!(!outcome.jetpack_active, "jetpack fired on the ground");
+        assert_eq!(player.jetpack.fuel, 5.0, "jetpack burned fuel on the ground");
+    }
+
+    #[test]
+    fn holding_space_after_the_jump_engages_the_jetpack() {
+        // The airborne half of the same input: once off the ground, held space
+        // is thrust, and fuel drains at the documented 1.0/s.
+        let map = flat_map();
+        let world = PhysicsWorld::new(&map);
+        let mut player = settled(&map, &world);
+
+        run(&mut player, &world, &map, &InputFrame { jump: true, ..InputFrame::default() }, jump_edge());
+        let fuel_before = player.jetpack.fuel;
+
+        let held = InputFrame { jump: true, ..InputFrame::default() };
+        let mut saw_thrust = false;
+        for _ in 0..10 {
+            // No jump edge — space is HELD, not re-pressed.
+            let outcome = run(&mut player, &world, &map, &held, InputEdges::default());
+            saw_thrust |= outcome.jetpack_active;
+        }
+        assert!(saw_thrust, "held space never engaged the jetpack in the air");
+        // 10 ticks * 0.05 s * 1.0 fuel/s = 0.5.
+        assert!(
+            (fuel_before - player.jetpack.fuel - 0.5).abs() < 1e-3,
+            "10 airborne thrust ticks burned {}, expected 0.5",
+            fuel_before - player.jetpack.fuel,
+        );
+    }
+
+    #[test]
+    fn w_and_s_reach_the_jetpack_through_step_tick() {
+        // docs/03 §5's ±300 assist, routed through the production tick rather
+        // than called directly.
+        let map = flat_map();
+        let world = PhysicsWorld::new(&map);
+
+        let climb = |up: bool, down: bool| {
+            let mut player = settled(&map, &world);
+            run(&mut player, &world, &map, &InputFrame { jump: true, ..InputFrame::default() }, jump_edge());
+            let held = InputFrame { jump: true, up, down, ..InputFrame::default() };
+            for _ in 0..10 {
+                run(&mut player, &world, &map, &held, InputEdges::default());
+            }
+            player.vel.y
+        };
+
+        let plain = climb(false, false);
+        let with_up = climb(true, false);
+        let with_down = climb(false, true);
+        // 10 ticks * 0.05 s * 300 px/s^2 = 150 px/s of extra velocity.
+        assert!(
+            (plain - with_up - 150.0).abs() < 1e-2,
+            "W over 10 ticks changed vel.y by {}, expected 150 upward",
+            plain - with_up,
+        );
+        assert!(
+            (with_down - plain - 150.0).abs() < 1e-2,
+            "S over 10 ticks changed vel.y by {}, expected 150 downward",
+            with_down - plain,
+        );
+    }
+
+    #[test]
+    fn aim_reaches_the_player_through_step_tick() {
+        // set_aim is called inside step_tick; nothing tested that path.
+        let map = flat_map();
+        let world = PhysicsWorld::new(&map);
+        let mut player = settled(&map, &world);
+
+        run(
+            &mut player,
+            &world,
+            &map,
+            &InputFrame { aim: 1.25, ..InputFrame::default() },
+            InputEdges::default(),
+        );
+        assert_eq!(player.facing, 1.25);
+
+        // A non-finite aim must not reach the player (poisons projectiles).
+        run(
+            &mut player,
+            &world,
+            &map,
+            &InputFrame { aim: f32::NAN, ..InputFrame::default() },
+            InputEdges::default(),
+        );
+        assert_eq!(player.facing, 1.25, "NaN aim was stored");
+    }
+
+    #[test]
+    fn jumping_into_a_ceiling_stops_upward_motion() {
+        // An interaction the old helper never had: blocked_y on the way UP.
+        let mut map = flat_map();
+        for x in 0..map.width {
+            map.set_tile(x, FLOOR_ROW - 3, Tile::new(TileKind::Stone));
+        }
+        let world = PhysicsWorld::new(&map);
+        let mut player = settled(&map, &world);
+
+        run(&mut player, &world, &map, &InputFrame { jump: true, ..InputFrame::default() }, jump_edge());
+        let mut bonked = false;
+        for _ in 0..10 {
+            let outcome = run(&mut player, &world, &map, &InputFrame::default(), InputEdges::default());
+            if outcome.blocked_y {
+                bonked = true;
+                assert_eq!(player.vel.y, 0.0, "hitting a ceiling did not zero vel.y");
+                break;
+            }
+        }
+        assert!(bonked, "the player never reached the ceiling");
+    }
+
+    #[test]
+    fn holding_jump_without_an_edge_does_not_jump() {
+        // The edge contract, end to end: a held space with no rising edge must
+        // not re-launch a grounded player.
+        let map = flat_map();
+        let world = PhysicsWorld::new(&map);
+        let mut player = settled(&map, &world);
+
+        let outcome = run(
+            &mut player,
+            &world,
+            &map,
+            &InputFrame { jump: true, ..InputFrame::default() },
+            InputEdges::default(),
+        );
+        assert!(!outcome.jumped, "jumped without a rising edge");
+        assert!(player.vel.y >= 0.0, "vel.y went upward without a jump");
+    }
+
+    #[test]
+    fn walking_into_a_wall_still_falls() {
+        // Axis independence (D34): a blocked horizontal move must not consume
+        // the vertical one. Before axes were resolved separately, a combined
+        // cast could spend its whole budget on one axis and drop the other.
+        let mut map = flat_map();
+        // Remove the floor beyond column 25 and put a wall at column 25.
+        for y in FLOOR_ROW..map.height {
+            for x in 26..map.width {
+                map.set_tile(x, y, Tile::AIR);
+            }
+        }
+        for y in (FLOOR_ROW - 4)..FLOOR_ROW {
+            map.set_tile(25, y, Tile::new(TileKind::Stone));
+        }
+        let world = PhysicsWorld::new(&map);
+
+        // Start airborne, just left of the wall, pushing right into it.
+        let mut player = Player::new(
+            0,
+            "p".into(),
+            Vec2::new(24.0 * TILE_SIZE, (FLOOR_ROW - 6) as f32 * TILE_SIZE),
+        );
+        let start_y = player.pos.y;
+        let pushing = InputFrame { right: true, ..InputFrame::default() };
+        for _ in 0..10 {
+            player.step_tick(&world, &map, &pushing, InputEdges::default(), DT);
+        }
+        assert!(
+            player.pos.y > start_y + 5.0,
+            "a player pressed against a wall stopped falling: {start_y} -> {}",
+            player.pos.y,
+        );
+    }
+
+    #[test]
+    fn walking_on_flat_ground_loses_no_distance() {
+        // D34 regression. A combined-axis cast silently dropped whole ticks of
+        // horizontal movement when the downward gravity component was being
+        // resolved: 56 px per 10 ticks instead of 70, a 20% speed loss that
+        // no test observed because nothing walked through the production tick.
+        let map = flat_map();
+        let world = PhysicsWorld::new(&map);
+        let mut player = settled(&map, &world);
+
+        let walking = InputFrame { right: true, ..InputFrame::default() };
+        for tick in 0..30 {
+            let before = player.pos.x;
+            player.step_tick(&world, &map, &walking, InputEdges::default(), DT);
+            let step = player.pos.x - before;
+            assert!(
+                (step - 7.0).abs() < 1e-3,
+                "tick {tick} moved {step} px, expected exactly 7 (140 px/s * 0.05 s)",
+            );
+        }
+    }
+
+    #[test]
+    fn outcome_reports_ground_state_from_the_start_of_the_tick() {
+        let map = flat_map();
+        let world = PhysicsWorld::new(&map);
+        let mut player = settled(&map, &world);
+
+        let grounded = run(&mut player, &world, &map, &InputFrame::default(), InputEdges::default());
+        assert!(grounded.on_ground);
+
+        let jumped = run(&mut player, &world, &map, &InputFrame { jump: true, ..InputFrame::default() }, jump_edge());
+        assert!(jumped.on_ground, "the jump tick started on the ground");
+        assert!(jumped.jumped);
+
+        let airborne = run(&mut player, &world, &map, &InputFrame::default(), InputEdges::default());
+        assert!(!airborne.on_ground, "the tick after a jump is airborne");
+    }
+}

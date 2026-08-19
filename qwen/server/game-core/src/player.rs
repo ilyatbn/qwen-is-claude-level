@@ -669,9 +669,17 @@ impl Player {
         let on_ground = self.on_ground(map);
         self.set_aim(frame.aim);
 
-        let jumped = self.step_jump(edges.jump_pressed, frame.left, frame.right, on_ground);
-        let jet_accel = self.step_jetpack(frame.jump, frame.up, frame.down, on_ground, dt);
+        // ORDER IS LOAD-BEARING. `step_horizontal` SETS vel.x directly when
+        // grounded (docs/03 §4: "A/D set horizontal velocity to ±MOVE_SPEED
+        // directly"), and `step_jump` then OVERRIDES it with the directional
+        // bias ("if A or D held, also set horizontal vel to
+        // ±(MOVE_SPEED * JUMP_DIR_BIAS)"). Jump must come last of the three or
+        // the ground rule overwrites the bias and a directional jump launches
+        // at full ground speed — 140 px/s instead of the documented 70.
+        // See DEVIATIONS.md D33.
         let accel_x = self.step_horizontal(frame.left, frame.right, on_ground);
+        let jet_accel = self.step_jetpack(frame.jump, frame.up, frame.down, on_ground, dt);
+        let jumped = self.step_jump(edges.jump_pressed, frame.left, frame.right, on_ground);
 
         let previous_vx = self.vel.x;
         let before = self.pos;
@@ -717,14 +725,30 @@ impl Player {
         desired: Vec2,
         dt: f32,
     ) -> (bool, bool) {
-        let result = world.move_player(before, desired, dt);
-        self.pos = before + result.translation;
+        // Axes are resolved SEPARATELY, in two shape-casts. A single combined
+        // cast loses horizontal motion entirely when the body is a hair above
+        // the floor and the move has any downward component: the controller
+        // spends its whole budget resolving the vertical contact and returns
+        // zero horizontal. Measured before this change: a player walking on
+        // flat ground travelled 56 px per 10 ticks instead of the documented
+        // 70 — a silent 20% speed loss. See DEVIATIONS.md D34.
+        //
+        // Splitting also makes "which axis was blocked" exact rather than
+        // inferred from a combined translation, which is what D32's rule needs.
+        // Each call is still a swept cast, so D29's anti-tunneling property is
+        // unaffected.
+        const EPSILON: f32 = 1e-4;
+
+        let horizontal = world.move_player(before, Vec2::new(desired.x, 0.0), dt);
+        let after_x = before + Vec2::new(horizontal.translation.x, 0.0);
+
+        let vertical = world.move_player(after_x, Vec2::new(0.0, desired.y), dt);
+        self.pos = after_x + Vec2::new(0.0, vertical.translation.y);
 
         // "Stopped short" rather than "moved zero": a slide along a wall still
         // travels, but not as far as asked.
-        const EPSILON: f32 = 1e-4;
-        let blocked_x = result.translation.x.abs() + EPSILON < desired.x.abs();
-        let blocked_y = result.translation.y.abs() + EPSILON < desired.y.abs();
+        let blocked_x = horizontal.translation.x.abs() + EPSILON < desired.x.abs();
+        let blocked_y = vertical.translation.y.abs() + EPSILON < desired.y.abs();
 
         if blocked_x {
             self.vel.x = 0.0;
