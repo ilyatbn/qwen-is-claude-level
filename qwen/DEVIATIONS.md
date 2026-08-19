@@ -87,17 +87,41 @@ of the 8 s effect, contradicting the assertion.
 3.2 s (4.8 → 8.0). The doc's "so the 8 s window covers all" is read as intent that the
 window is the authority.
 
-### D5 — Pocket size assertion can fail from pocket merging
+### D5 — Pocket size assertion fails at every scale, not just Large (MEASURED)
 
-**Spec** (`tasks/01-map.md` T1.4 step 4): "each connected ROCK component ≤ 15 tiles".
+**Spec** (`tasks/01-map.md` T1.4 step 4, and `docs/08-testing.md` §1 map row):
+"each connected ROCK component ≤ 15 tiles, all rows > surface".
 
-**Problem**: a random walk of up to 12 steps marks up to 13 tiles for a single pocket,
-which is within 15 — but nothing stops two of the 20 pockets on a Large map from
-landing adjacent and merging into one connected component larger than 15.
+**Problem**: a random walk of up to 12 steps marks at most 13 tiles — within 15 — but
+nothing prevents independently-placed pockets from landing adjacent and merging into
+one larger connected component. The ≤15 bound describes a per-pocket property and is
+then asserted against connected components, which is a different thing.
 
-**Implemented**: per-pocket size is asserted at generation time (the property the walk
-actually guarantees). The connected-component bound is recorded as measured rather than
-asserted at 15. *(Exact resolution recorded in Phase 1.)*
+**Measured** — 100 seeds × 3 scales, 4-connected flood fill, via
+`game-core/examples/measure_d5.rs`:
+
+| Scale | pockets/map | max connected component | worst seed | components > 15 | total components |
+|---|---|---|---|---|---|
+| Small | 8 | **27** | 14 | 36 | 1518 |
+| Medium | 14 | **28** | 49 | 59 | 2596 |
+| Large | 20 | **30** | 34 | 58 | 3811 |
+
+Merging happens at **every** scale, including Small — the original prediction (that
+only Medium/Large would be affected) understated it. Roughly 1.5–2.4% of components
+exceed the documented bound, and the largest observed is double it.
+
+**Implemented**: `pockets_below_surface_and_sized` asserts the properties the
+algorithm actually guarantees:
+
+1. every ROCK tile is strictly below its column's surface (`y > s(x)+1`) — this half
+   of the doc's assertion is real and holds at every scale;
+2. per-pocket size ≤ 13 tiles (1 start + ≤12 steps), asserted at generation time via
+   `debug_assert!` and directly in `a_single_pocket_marks_at_most_13_tiles`;
+3. a regression ceiling of 40 tiles on merged components, well above the measured
+   maximum of 30, to catch a future change that makes pockets grow without pinning
+   them to an arbitrary number the design never justified.
+
+The doc's ≤15 connected-component bound is not asserted, because it is false.
 
 ### D6 — Player body dimensions conflict across three docs
 

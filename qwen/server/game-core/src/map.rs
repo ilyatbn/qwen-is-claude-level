@@ -4,7 +4,7 @@
 //! `(seed, scale)`." — docs/01 intro.
 
 use crate::rng::GameRng;
-use crate::tiles::{Decor, Tile, TILE_SIZE};
+use crate::tiles::{Decor, DecorKind, Tile, TileKind, TILE_SIZE};
 use crate::Vec2;
 use serde::{Deserialize, Serialize};
 
@@ -233,6 +233,180 @@ pub fn surface_rows(width: u32, height: u32, rng: &mut GameRng) -> Vec<u32> {
         .collect()
 }
 
+/// Fill each column from its surface row down (docs/01 §3 step 2).
+///
+/// `d = s(x) - y`: `d==0` → GRASS, `d<=3` → DIRT, else STONE. Everything
+/// above `s(x)` stays AIR.
+fn fill_columns(tiles: &mut [Tile], width: u32, height: u32, surface: &[u32]) {
+    for x in 0..width {
+        let Some(&s) = surface.get(x as usize) else {
+            continue;
+        };
+        for y in s..height {
+            let depth = y - s;
+            let kind = if depth == 0 {
+                TileKind::Grass
+            } else if depth <= 3 {
+                TileKind::Dirt
+            } else {
+                TileKind::Stone
+            };
+            if let Some(slot) = tiles.get_mut((y * width + x) as usize) {
+                *slot = Tile::new(kind);
+            }
+        }
+    }
+}
+
+/// The tiles marked by one rock-pocket random walk (docs/01 §3 step 3).
+///
+/// Returned rather than written directly so generation can assert the
+/// per-pocket size the algorithm actually guarantees — see DEVIATIONS.md D5.
+fn carve_pocket(
+    width: u32,
+    height: u32,
+    surface: &[u32],
+    rng: &mut GameRng,
+) -> Vec<(u32, u32)> {
+    let mut marked = Vec::new();
+
+    // Pick a random column, and a depth d0 in [2,6] below its surface.
+    let x0 = rng.gen_range(0, width);
+    let d0 = rng.gen_range_inclusive(2, 6);
+    let s0 = surface.get(x0 as usize).copied().unwrap_or(0);
+    let y0 = (s0 + d0).min(height.saturating_sub(1));
+
+    let mut x = x0;
+    let mut y = y0;
+    // The starting tile is marked unconditionally per the doc ("start at
+    // (x0,y0), mark ROCK"); the walk steps then apply the below-surface rule.
+    marked.push((x, y));
+
+    // Up to 12 steps of (dx, dy) in {-1,0,1}, not both zero.
+    for _ in 0..12 {
+        let (dx, dy) = loop {
+            let dx = rng.gen_range_inclusive(0, 2) as i64 - 1;
+            let dy = rng.gen_range_inclusive(0, 2) as i64 - 1;
+            if dx != 0 || dy != 0 {
+                break (dx, dy);
+            }
+        };
+
+        let nx = x as i64 + dx;
+        let ny = y as i64 + dy;
+        if nx < 0 || ny < 0 || nx >= width as i64 || ny >= height as i64 {
+            continue;
+        }
+        let (nx, ny) = (nx as u32, ny as u32);
+
+        // "Mark ROCK only if inside grid AND row > s(x)+1" — strictly below
+        // the surface, evaluated against the column being stepped into.
+        let column_surface = surface.get(nx as usize).copied().unwrap_or(0);
+        if ny > column_surface + 1 {
+            marked.push((nx, ny));
+            x = nx;
+            y = ny;
+        }
+    }
+
+    marked
+}
+
+/// Place decor on surface tiles (docs/01 §3 step 4).
+///
+/// 12% chance per surface tile of one of bush / rock / flower, equal weight.
+fn place_decor(width: u32, surface: &[u32], rng: &mut GameRng) -> Vec<Decor> {
+    let mut decor = Vec::new();
+    for x in 0..width {
+        let Some(&y) = surface.get(x as usize) else {
+            continue;
+        };
+        if rng.random_unit() < 0.12 {
+            let kind = match rng.gen_range(0, 3) {
+                0 => DecorKind::Bush,
+                1 => DecorKind::Rock,
+                _ => DecorKind::Flower,
+            };
+            decor.push(Decor { x, y, kind });
+        }
+    }
+    decor
+}
+
+/// Maximum tiles one rock pocket can mark: the start tile plus at most 12
+/// walk steps (docs/01 §3 step 3).
+pub const MAX_POCKET_TILES: usize = 13;
+
+impl Map {
+    /// Generate a map (docs/01 §3, §4).
+    ///
+    /// The step order — surface → fill → pockets → decor → spawns — is
+    /// load-bearing: docs/01 §3 says "follow it exactly or determinism tests
+    /// break". One `GameRng` drives all of it.
+    pub fn generate(seed: u64, scale: Scale) -> Self {
+        let (width, height) = scale.dimensions();
+        let mut rng = GameRng::new(seed);
+
+        // 1. Heightmap.
+        let surface = surface_rows(width, height, &mut rng);
+
+        // 2. Fill (consumes no randomness).
+        let mut tiles = vec![Tile::AIR; (width * height) as usize];
+        fill_columns(&mut tiles, width, height, &surface);
+
+        // 3. Rock pockets.
+        for _ in 0..scale.pockets() {
+            let marked = carve_pocket(width, height, &surface, &mut rng);
+            debug_assert!(
+                marked.len() <= MAX_POCKET_TILES,
+                "pocket marked {} tiles, max is {MAX_POCKET_TILES}",
+                marked.len(),
+            );
+            for (x, y) in marked {
+                if let Some(slot) = tiles.get_mut((y * width + x) as usize) {
+                    *slot = Tile::new(TileKind::Rock);
+                }
+            }
+        }
+
+        // 4. Decor.
+        let decor = place_decor(width, &surface, &mut rng);
+
+        // 5. Spawns are appended by T1.5, after decor, so the RNG order in
+        // docs/01 §3 stays intact.
+        Map {
+            seed,
+            scale,
+            width,
+            height,
+            tiles,
+            decor,
+            spawns: Vec::new(),
+            version: 0,
+        }
+    }
+
+    /// An ASCII dump of the grid, for the debug-inspection test in T1.4.
+    ///
+    /// `.` AIR, `#` GRASS, `:` DIRT, `%` STONE, `@` ROCK.
+    pub fn ascii_dump(&self) -> String {
+        let mut out = String::with_capacity(((self.width + 1) * self.height) as usize);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                out.push(match self.tile(x, y).kind {
+                    TileKind::Air => '.',
+                    TileKind::Grass => '#',
+                    TileKind::Dirt => ':',
+                    TileKind::Stone => '%',
+                    TileKind::Rock => '@',
+                });
+            }
+            out.push('\n');
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,6 +591,211 @@ mod tests {
         assert!((cosine_interpolate(-1.0, 1.0, 1.0) - 1.0).abs() < 1e-6);
         // Symmetric about the midpoint.
         assert!((cosine_interpolate(0.0, 1.0, 0.5) - 0.5).abs() < 1e-6);
+    }
+
+    /// Connected ROCK components by 4-connected flood fill.
+    fn rock_components(map: &Map) -> Vec<usize> {
+        let (w, h) = (map.width as usize, map.height as usize);
+        let mut seen = vec![false; w * h];
+        let mut sizes = Vec::new();
+        for start in 0..w * h {
+            let (sx, sy) = ((start % w) as u32, (start / w) as u32);
+            if seen[start] || map.tile(sx, sy).kind != TileKind::Rock {
+                continue;
+            }
+            let mut stack = vec![start];
+            seen[start] = true;
+            let mut size = 0usize;
+            while let Some(i) = stack.pop() {
+                size += 1;
+                let (x, y) = ((i % w) as i64, (i / w) as i64);
+                for (dx, dy) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 {
+                        continue;
+                    }
+                    let j = ny as usize * w + nx as usize;
+                    if !seen[j] && map.tile(nx as u32, ny as u32).kind == TileKind::Rock {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+            sizes.push(size);
+        }
+        sizes
+    }
+
+    #[test]
+    fn all_columns_have_ground() {
+        // docs/08 §1 (map row): "every column has >=1 solid tile".
+        for scale in Scale::ALL {
+            for seed in 0..100u64 {
+                let map = Map::generate(seed, scale);
+                for x in 0..map.width {
+                    assert!(
+                        map.surface_row(x) < map.height,
+                        "{} seed {seed} col {x} has no solid tile",
+                        scale.as_str(),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fill_follows_depth_bands() {
+        // docs/01 §3 step 2: d==0 GRASS, d<=3 DIRT, else STONE; above s is AIR.
+        let map = Map::generate(1, Scale::Small);
+        for x in 0..map.width {
+            let s = map.surface_row(x);
+            for y in 0..s {
+                assert_eq!(
+                    map.tile(x, y).kind,
+                    TileKind::Air,
+                    "col {x} row {y} above surface {s} is not AIR",
+                );
+            }
+            assert_eq!(map.tile(x, s).kind, TileKind::Grass, "col {x} surface");
+            for depth in 1..=3u32 {
+                let y = s + depth;
+                if y >= map.height {
+                    break;
+                }
+                // Rock pockets legally overwrite the dirt band.
+                let kind = map.tile(x, y).kind;
+                assert!(
+                    kind == TileKind::Dirt || kind == TileKind::Rock,
+                    "col {x} depth {depth} is {kind:?}, expected DIRT (or ROCK)",
+                );
+            }
+            for depth in 4..8u32 {
+                let y = s + depth;
+                if y >= map.height {
+                    break;
+                }
+                let kind = map.tile(x, y).kind;
+                assert!(
+                    kind == TileKind::Stone || kind == TileKind::Rock,
+                    "col {x} depth {depth} is {kind:?}, expected STONE (or ROCK)",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pockets_below_surface_and_sized() {
+        // docs/08 §1 (map row) + T1.4 step 4.
+        //
+        // The doc asks for "each connected ROCK component <= 15 tiles". That is
+        // NOT a property the algorithm provides: a walk marks at most 13 tiles,
+        // but independent pockets can land adjacent and merge. Measured maxima
+        // over 100 seeds are 27 / 28 / 30 for Small / Medium / Large, with
+        // merged components at every scale. See DEVIATIONS.md D5.
+        //
+        // Asserted here: the per-pocket bound the walk really guarantees, that
+        // every ROCK tile is strictly below its column's surface, and a
+        // regression ceiling on merged-component size.
+        const MERGED_COMPONENT_CEILING: usize = 40;
+
+        for scale in Scale::ALL {
+            for seed in 0..100u64 {
+                let map = Map::generate(seed, scale);
+
+                for x in 0..map.width {
+                    let s = map.surface_row(x);
+                    for y in 0..map.height {
+                        if map.tile(x, y).kind == TileKind::Rock {
+                            assert!(
+                                y > s + 1,
+                                "{} seed {seed}: ROCK at ({x},{y}) not strictly \
+                                 below surface {s}",
+                                scale.as_str(),
+                            );
+                        }
+                    }
+                }
+
+                for size in rock_components(&map) {
+                    assert!(
+                        size <= MERGED_COMPONENT_CEILING,
+                        "{} seed {seed}: ROCK component of {size} tiles exceeds \
+                         the {MERGED_COMPONENT_CEILING}-tile regression ceiling",
+                        scale.as_str(),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_single_pocket_marks_at_most_13_tiles() {
+        // The property the random walk actually guarantees: 1 start + <=12
+        // steps. This is what D5 asserts in place of the doc's component bound.
+        let (width, height) = Scale::Large.dimensions();
+        for seed in 0..200u64 {
+            let mut rng = GameRng::new(seed);
+            let surface = surface_rows(width, height, &mut rng);
+            for _ in 0..20 {
+                let marked = carve_pocket(width, height, &surface, &mut rng);
+                assert!(
+                    marked.len() <= MAX_POCKET_TILES,
+                    "seed {seed}: pocket marked {} tiles",
+                    marked.len(),
+                );
+                assert!(!marked.is_empty(), "pocket marked nothing");
+            }
+        }
+    }
+
+    #[test]
+    fn decor_sits_on_surface_tiles() {
+        // docs/01 §3 step 4: decor y = surface row, ~12% of surface tiles.
+        let mut total_decor = 0usize;
+        let mut total_columns = 0usize;
+        for seed in 0..50u64 {
+            let map = Map::generate(seed, Scale::Small);
+            for decor in &map.decor {
+                assert_eq!(
+                    decor.y,
+                    map.surface_row(decor.x),
+                    "seed {seed}: decor at ({},{}) is not on the surface",
+                    decor.x,
+                    decor.y,
+                );
+            }
+            total_decor += map.decor.len();
+            total_columns += map.width as usize;
+        }
+        let rate = total_decor as f32 / total_columns as f32;
+        assert!(
+            (0.09..0.15).contains(&rate),
+            "decor rate {rate:.3} is not close to the documented 12%",
+        );
+    }
+
+    #[test]
+    fn terrain_ascii_dump_seed1_small() {
+        // T1.4 Acceptance: "map looks like Worms terrain in a debug dump
+        // (print an ASCII grid in a #[test] for seed 1, scale Small — keep the
+        // test)." This is an eyeball criterion, so the test prints the grid and
+        // asserts only the structural invariants.
+        let map = Map::generate(1, Scale::Small);
+        let dump = map.ascii_dump();
+        println!("--- seed 1, Small ({}x{}) ---", map.width, map.height);
+        println!("{dump}");
+
+        let lines: Vec<&str> = dump.lines().collect();
+        assert_eq!(lines.len(), map.height as usize);
+        for line in &lines {
+            assert_eq!(line.chars().count(), map.width as usize);
+        }
+        // The top row is open sky and the bottom row is solid ground.
+        assert!(lines[0].chars().all(|c| c == '.'), "top row is not all AIR");
+        assert!(
+            !lines[lines.len() - 1].contains('.'),
+            "bottom row has holes before any destruction",
+        );
     }
 
     #[test]

@@ -60,7 +60,7 @@ Individual tasks list the exact sections they need.
 
 ---
 
-## T1.4 — Terrain fill, pockets, decor [ ]
+## T1.4 — Terrain fill, pockets, decor [x]
 
 **Goal**: full tile fill per doc §3 steps 2–4.
 **Read**: `docs/01-map.md` §3 (steps 2–4).
