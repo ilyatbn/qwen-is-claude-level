@@ -8,6 +8,15 @@ generate_deterministic_100_seeds
 generated_map_has_expected_dimensions
 generation_is_order_independent_across_interleaving
 generation_matches_golden_hashes
+items::catalog_tests::catalog_ammo_matches_doc
+items::catalog_tests::catalog_is_indexed_by_item_id
+items::catalog_tests::explosive_weapons_are_exactly_rocket_and_grenade
+items::catalog_tests::hidden_weights_make_flashlight_twice_as_likely
+items::catalog_tests::only_weapons_carry_weapon_fields
+items::catalog_tests::pick_item_consumes_one_draw
+items::catalog_tests::pick_item_follows_the_weights
+items::catalog_tests::pick_item_is_deterministic
+items::catalog_tests::spawn_weights_match_doc
 items::tests::first_free_slot_skips_filled_slots
 items::tests::full_inventory_reports_no_free_slot
 items::tests::inventory_starts_empty_with_six_slots

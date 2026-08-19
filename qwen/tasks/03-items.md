@@ -8,7 +8,7 @@ Read `docs/04-items.md` in full before starting this file.
 
 ---
 
-## T3.1 — Data-driven item catalog [ ]
+## T3.1 — Data-driven item catalog [x]
 
 **Goal**: `ItemDef` table exactly matching docs/04 §1.
 **Read**: `docs/04-items.md` §1.

@@ -966,3 +966,32 @@ chosen it.
 
 It shares the ejection path with D26 (spawn overlap) and the tick sequence with D35, so
 all three should be decided together rather than piecemeal.
+
+---
+
+## Phase 3 defects
+
+### D37 — Spawn weights are stated as percentages but sum to 130
+
+**Spec** (`docs/04-items.md` §3 row A): "Weighted pick: **weapons 50%** (pistol 30 /
+shotgun 20 / rocket 15 / grenade 15), medkit 20%, shield 10%, overcharge 10%,
+flashlight 10%." Row B: "same as A but flashlight 20%".
+
+**Two problems.**
+
+*The itemised numbers contradict the stated total.* Pistol 30 + shotgun 20 + rocket 15
++ grenade 15 = **80**, not the "weapons 50%" the same sentence claims.
+
+*Nothing sums to 100.* The full row A list totals **130** (80 weapons + 20 medkit + 10
+shield + 10 overcharge + 10 flashlight), so they cannot be percentages. Row B totals
+**140**.
+
+**Implemented**: treated as relative **weights**, which is the only reading under which
+the numbers are self-consistent. A pistol is drawn 30/130 ≈ 23% of the time, not 30%.
+The "weapons 50%" clause is ignored as unimplementable — honouring it would require
+rescaling every itemised weight, and the doc gives no basis for choosing which.
+
+One visible consequence: because row B raises the total to 140 rather than
+redistributing, doubling the flashlight's weight from 10 to 20 makes it **1.86×** more
+likely in rock pockets, not 2×. Measured over 60,000 draws per table. Asserted as a
+band rather than an exact ratio, with the reason recorded in the test.

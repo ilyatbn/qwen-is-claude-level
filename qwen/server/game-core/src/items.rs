@@ -5,7 +5,169 @@
 //! arrive in Phase 3.
 
 use crate::protocol::ItemId;
+use crate::rng::GameRng;
 use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Catalog (T3.1, docs/04 §1)
+// ---------------------------------------------------------------------------
+
+/// docs/04 §1: `Weapon | Health | Shield | Utility`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemKind {
+    Weapon,
+    Health,
+    Shield,
+    Utility,
+}
+
+/// docs/04 §1. Weapon-only fields are `None` for non-weapons.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ItemDef {
+    pub id: ItemId,
+    pub kind: ItemKind,
+    pub name: &'static str,
+    /// docs/04 §1: "1 for all v1 items".
+    pub max_stack: u8,
+    pub ammo: Option<u8>,
+    pub damage: Option<f32>,
+    /// Px — projectile lifetime distance.
+    pub range: Option<f32>,
+    /// Px — blast radius. `Some(0.0)` means non-explosive but still a weapon.
+    pub impact_radius: Option<f32>,
+    pub cooldown_s: Option<f32>,
+    /// Px/s.
+    pub projectile_speed: Option<f32>,
+    pub explosive: Option<bool>,
+}
+
+impl ItemDef {
+    /// A non-weapon entry: every weapon-only field is absent.
+    const fn consumable(id: ItemId, kind: ItemKind, name: &'static str) -> Self {
+        ItemDef {
+            id,
+            kind,
+            name,
+            max_stack: 1,
+            ammo: None,
+            damage: None,
+            range: None,
+            impact_radius: None,
+            cooldown_s: None,
+            projectile_speed: None,
+            explosive: None,
+        }
+    }
+}
+
+/// The v1 item catalog, exactly per the docs/04 §1 table.
+///
+/// `catalog_ammo_matches_doc` asserts every field of every entry against
+/// literals transcribed from the doc — per T3.1's Acceptance, "test fails if
+/// anyone changes a number without updating the doc". Do not rewrite that test
+/// to compare against these constants; it would then check nothing.
+pub const CATALOG: [ItemDef; 8] = [
+    ItemDef {
+        id: ItemId::Pistol,
+        kind: ItemKind::Weapon,
+        name: "Pistol",
+        max_stack: 1,
+        ammo: Some(30),
+        damage: Some(12.0),
+        range: Some(600.0),
+        impact_radius: Some(0.0),
+        cooldown_s: Some(0.25),
+        projectile_speed: Some(700.0),
+        explosive: Some(false),
+    },
+    ItemDef {
+        id: ItemId::Shotgun,
+        kind: ItemKind::Weapon,
+        name: "Shotgun",
+        max_stack: 1,
+        ammo: Some(12),
+        // Per PELLET; 5 pellets fire per shot (docs/04 §4).
+        damage: Some(7.0),
+        range: Some(260.0),
+        impact_radius: Some(0.0),
+        cooldown_s: Some(0.8),
+        projectile_speed: Some(600.0),
+        explosive: Some(false),
+    },
+    ItemDef {
+        id: ItemId::Rocket,
+        kind: ItemKind::Weapon,
+        name: "Rocket",
+        max_stack: 1,
+        ammo: Some(6),
+        damage: Some(60.0),
+        range: Some(900.0),
+        impact_radius: Some(48.0),
+        cooldown_s: Some(1.0),
+        projectile_speed: Some(500.0),
+        explosive: Some(true),
+    },
+    ItemDef {
+        id: ItemId::Grenade,
+        kind: ItemKind::Weapon,
+        name: "Grenade",
+        max_stack: 1,
+        ammo: Some(4),
+        damage: Some(45.0),
+        range: Some(400.0),
+        impact_radius: Some(40.0),
+        cooldown_s: Some(1.2),
+        projectile_speed: Some(400.0),
+        explosive: Some(true),
+    },
+    ItemDef::consumable(ItemId::Medkit, ItemKind::Health, "Medkit"),
+    ItemDef::consumable(ItemId::Overcharge, ItemKind::Health, "Overcharge"),
+    ItemDef::consumable(ItemId::ShieldGen, ItemKind::Shield, "Shield Gen"),
+    ItemDef::consumable(ItemId::Flashlight, ItemKind::Utility, "Flashlight"),
+];
+
+/// Look up an item's definition.
+pub fn def(id: ItemId) -> &'static ItemDef {
+    // ItemId::ALL and CATALOG are declared in the same order; asserted by
+    // `catalog_is_indexed_by_item_id`.
+    &CATALOG[id as usize]
+}
+
+/// Which spawn-weight table to draw from (docs/04 §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnWeights {
+    /// Sources A, C and D — ground, crates, timed.
+    Ground,
+    /// Source B — hidden in rock. Same as [`SpawnWeights::Ground`] but
+    /// flashlight is twice as likely.
+    Hidden,
+}
+
+impl SpawnWeights {
+    /// Weights in `ItemId::ALL` order (docs/04 §3 rows A and B).
+    ///
+    /// These are relative WEIGHTS, not percentages — see DEVIATIONS.md D37.
+    pub const fn table(self) -> [u32; 8] {
+        match self {
+            //          pistol shotgun rocket grenade medkit overch shield flash
+            SpawnWeights::Ground => [30, 20, 15, 15, 20, 10, 10, 10],
+            SpawnWeights::Hidden => [30, 20, 15, 15, 20, 10, 10, 20],
+        }
+    }
+}
+
+/// Draw one item from a weight table (docs/04 §3).
+///
+/// All randomness goes through the round `GameRng` (docs/00 §4). One draw per
+/// call — the draw count is part of the determinism contract (D19).
+pub fn pick_item(rng: &mut GameRng, weights: SpawnWeights) -> ItemId {
+    let table = weights.table();
+    let index = rng
+        .weighted_index(&table)
+        .expect("spawn weight table is non-empty and has a positive total");
+    ItemId::ALL[index]
+}
 
 /// Inventory slot count (docs/04 §5: "6 slots, each holds 1 item").
 pub const SLOT_COUNT: usize = 6;
@@ -98,5 +260,219 @@ mod tests {
         inv.slots[0] = Some(ItemId::Rocket);
         inv.selected = 99;
         assert_eq!(inv.selected_item(), None);
+    }
+}
+
+/// T3.1 catalog tests.
+///
+/// Named `catalog_tests` so T3.1's Test command, `cargo test -p game-core
+/// catalog`, selects them (D27).
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    #[test]
+    fn catalog_ammo_matches_doc() {
+        // docs/08 §1 (items row) + T3.1 step 4: "assert every field of every
+        // def against the doc table (this test IS the doc check)".
+        //
+        // Every expected value below is a LITERAL transcribed from
+        // docs/04-items.md §1. Comparing against CATALOG's own constants would
+        // make this test vacuous — it would pass for any table whatsoever.
+        //
+        // (id, kind, ammo, damage, range, impact_radius, cooldown_s, speed, explosive)
+        type Row = (
+            ItemId,
+            ItemKind,
+            Option<u8>,
+            Option<f32>,
+            Option<f32>,
+            Option<f32>,
+            Option<f32>,
+            Option<f32>,
+            Option<bool>,
+        );
+        let doc: [Row; 8] = [
+            // | Pistol | Weapon | 30 | 12 | 600 | 0 | 0.25 s | 700 | non-explosive |
+            (ItemId::Pistol, ItemKind::Weapon, Some(30), Some(12.0), Some(600.0),
+             Some(0.0), Some(0.25), Some(700.0), Some(false)),
+            // | Shotgun | Weapon | 12 | 7 x5 pellets | 260 | 0 | 0.8 s | 600 |
+            (ItemId::Shotgun, ItemKind::Weapon, Some(12), Some(7.0), Some(260.0),
+             Some(0.0), Some(0.8), Some(600.0), Some(false)),
+            // | Rocket | Weapon | 6 | 60 | 900 | 48 | 1.0 s | 500 | explosive |
+            (ItemId::Rocket, ItemKind::Weapon, Some(6), Some(60.0), Some(900.0),
+             Some(48.0), Some(1.0), Some(500.0), Some(true)),
+            // | Grenade | Weapon | 4 | 45 | 400 | 40 | 1.2 s | 400 | explosive |
+            (ItemId::Grenade, ItemKind::Weapon, Some(4), Some(45.0), Some(400.0),
+             Some(40.0), Some(1.2), Some(400.0), Some(true)),
+            // | Medkit | Health | - | +50 hp | - | - | - | - |
+            (ItemId::Medkit, ItemKind::Health, None, None, None, None, None, None, None),
+            // | Overcharge | Health | - | max 150 / 10 s | - | - | - | - |
+            (ItemId::Overcharge, ItemKind::Health, None, None, None, None, None, None, None),
+            // | Shield Gen | Shield | - | 50% dmg red, 20 s | - | - | - | - |
+            (ItemId::ShieldGen, ItemKind::Shield, None, None, None, None, None, None, None),
+            // | Flashlight | Utility | - | FOV at night | - | - | - | - |
+            (ItemId::Flashlight, ItemKind::Utility, None, None, None, None, None, None, None),
+        ];
+
+        assert_eq!(CATALOG.len(), 8, "docs/04 §1 lists 8 items");
+        for (id, kind, ammo, damage, range, radius, cooldown, speed, explosive) in doc {
+            let entry = def(id);
+            assert_eq!(entry.id, id, "{id:?}: wrong id");
+            assert_eq!(entry.kind, kind, "{id:?}: kind");
+            assert_eq!(entry.ammo, ammo, "{id:?}: ammo");
+            assert_eq!(entry.damage, damage, "{id:?}: damage");
+            assert_eq!(entry.range, range, "{id:?}: range");
+            assert_eq!(entry.impact_radius, radius, "{id:?}: impact_radius");
+            assert_eq!(entry.cooldown_s, cooldown, "{id:?}: cooldown_s");
+            assert_eq!(entry.projectile_speed, speed, "{id:?}: projectile_speed");
+            assert_eq!(entry.explosive, explosive, "{id:?}: explosive");
+            // docs/04 §1: "max_stack: 1 for all v1 items".
+            assert_eq!(entry.max_stack, 1, "{id:?}: max_stack");
+        }
+    }
+
+    #[test]
+    fn catalog_is_indexed_by_item_id() {
+        // `def()` indexes CATALOG by the enum discriminant; that is only valid
+        // while the two are declared in the same order.
+        for (index, id) in ItemId::ALL.iter().enumerate() {
+            assert_eq!(CATALOG[index].id, *id, "CATALOG[{index}] is not {id:?}");
+            assert_eq!(def(*id).id, *id);
+        }
+    }
+
+    #[test]
+    fn only_weapons_carry_weapon_fields() {
+        // The structural half of docs/04 §1: weapon-only fields exist for
+        // weapons and for nothing else.
+        for entry in CATALOG {
+            let is_weapon = entry.kind == ItemKind::Weapon;
+            assert_eq!(
+                entry.ammo.is_some(), is_weapon,
+                "{:?}: ammo presence should match weapon-ness", entry.id,
+            );
+            assert_eq!(entry.cooldown_s.is_some(), is_weapon, "{:?}: cooldown", entry.id);
+            assert_eq!(
+                entry.projectile_speed.is_some(), is_weapon,
+                "{:?}: projectile_speed", entry.id,
+            );
+        }
+    }
+
+    #[test]
+    fn explosive_weapons_are_exactly_rocket_and_grenade() {
+        // docs/04 §1 notes: rocket "explosive, destroys tiles", grenade
+        // "arcs with gravity, bounces 1x"; pistol/shotgun "non-explosive".
+        let explosive: Vec<ItemId> = CATALOG
+            .iter()
+            .filter(|d| d.explosive == Some(true))
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(explosive, vec![ItemId::Rocket, ItemId::Grenade]);
+        // An explosive weapon must have a non-zero blast radius, and a
+        // non-explosive one must not.
+        for entry in CATALOG {
+            if let Some(explodes) = entry.explosive {
+                let radius = entry.impact_radius.unwrap_or(0.0);
+                assert_eq!(
+                    explodes, radius > 0.0,
+                    "{:?}: explosive={explodes} but impact_radius={radius}", entry.id,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spawn_weights_match_doc() {
+        // docs/04 §3 row A: "pistol 30 / shotgun 20 / rocket 15 / grenade 15,
+        // medkit 20%, shield 10%, overcharge 10%, flashlight 10%".
+        // Row B: "same as A but flashlight 20%".
+        //
+        // Literals in ItemId::ALL order, transcribed from the doc.
+        assert_eq!(
+            SpawnWeights::Ground.table(),
+            [30, 20, 15, 15, 20, 10, 10, 10],
+            "source A/C/D weights",
+        );
+        assert_eq!(
+            SpawnWeights::Hidden.table(),
+            [30, 20, 15, 15, 20, 10, 10, 20],
+            "source B weights (flashlight doubled)",
+        );
+        // B differs from A in exactly one entry: flashlight.
+        let (a, b) = (SpawnWeights::Ground.table(), SpawnWeights::Hidden.table());
+        let differing: Vec<usize> = (0..8).filter(|&i| a[i] != b[i]).collect();
+        assert_eq!(differing, vec![7], "only flashlight should differ");
+    }
+
+    #[test]
+    fn pick_item_follows_the_weights() {
+        let mut rng = GameRng::new(1);
+        let mut counts = [0u32; 8];
+        const DRAWS: u32 = 130_000;
+        for _ in 0..DRAWS {
+            let id = pick_item(&mut rng, SpawnWeights::Ground);
+            counts[ItemId::ALL.iter().position(|c| *c == id).unwrap()] += 1;
+        }
+        // Total weight is 130, so a weight-30 item should land ~30/130 of the
+        // time. Allow 15% relative slack.
+        let table = SpawnWeights::Ground.table();
+        let total: u32 = table.iter().sum();
+        for (i, &weight) in table.iter().enumerate() {
+            let expected = DRAWS as f32 * weight as f32 / total as f32;
+            let actual = counts[i] as f32;
+            assert!(
+                (actual - expected).abs() < expected * 0.15,
+                "{:?}: drew {actual} times, expected ~{expected}",
+                ItemId::ALL[i],
+            );
+        }
+    }
+
+    #[test]
+    fn hidden_weights_make_flashlight_twice_as_likely() {
+        let mut ground = GameRng::new(7);
+        let mut hidden = GameRng::new(7);
+        let (mut g, mut h) = (0u32, 0u32);
+        for _ in 0..60_000 {
+            if pick_item(&mut ground, SpawnWeights::Ground) == ItemId::Flashlight {
+                g += 1;
+            }
+            if pick_item(&mut hidden, SpawnWeights::Hidden) == ItemId::Flashlight {
+                h += 1;
+            }
+        }
+        // 10/130 vs 20/140 -> ratio ~1.86, not exactly 2, because the total
+        // weight grows too. Assert the direction and a plausible band.
+        let ratio = h as f32 / g as f32;
+        assert!(
+            (1.6..2.1).contains(&ratio),
+            "flashlight ratio hidden/ground was {ratio}, expected ~1.86",
+        );
+    }
+
+    #[test]
+    fn pick_item_is_deterministic() {
+        let draw = |seed: u64| {
+            let mut rng = GameRng::new(seed);
+            (0..50).map(|_| pick_item(&mut rng, SpawnWeights::Ground)).collect::<Vec<_>>()
+        };
+        assert_eq!(draw(42), draw(42));
+        assert_ne!(draw(1), draw(2));
+    }
+
+    #[test]
+    fn pick_item_consumes_one_draw() {
+        // Draw count is part of the determinism contract (D19): if pick_item
+        // consumed a variable number of words, every later draw in the round
+        // would shift depending on which item came out.
+        let mut probe = GameRng::new(11);
+        let _ = pick_item(&mut probe, SpawnWeights::Ground);
+        let after = probe.next_u64();
+
+        let mut manual = GameRng::new(11);
+        let _ = manual.weighted_index(&SpawnWeights::Ground.table());
+        assert_eq!(manual.next_u64(), after);
     }
 }
