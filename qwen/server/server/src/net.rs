@@ -4,8 +4,8 @@
 use crate::rooms::{Room, RoomId};
 use game_core::map::Scale;
 use game_core::protocol::{
-    c2s, s2c, Empty, ErrorMsg, InputFrame, JoinRoom, SelectSkin, SetLogLevel, UseSlot,
-    NAMESPACE, PROTOCOL_VERSION,
+    c2s, s2c, Empty, ErrorMsg, InputFrame, JoinRoom, Joined, SelectSkin, SetLogLevel,
+    UseSlot, NAMESPACE, PROTOCOL_VERSION,
 };
 use socketioxide::extract::{Data, SocketRef};
 use socketioxide::socket::DisconnectReason;
@@ -63,16 +63,24 @@ pub fn register(io: &SocketIo, log_level: LogLevelHandle, rooms: Rooms, dev_seed
                     Some(room) => match room.join(&socket_id, &payload.name) {
                         Ok(id) => {
                             info!("[net] P{id} joined name={} [room={}]", payload.name, room.id);
-                            let _ = socket.emit(
-                                s2c::JOINED,
-                                &serde_json::json!({
-                                    "id": id,
-                                    "room": room.id,
-                                    "seed": room.round.seed,
-                                    "scale": room.round.scale.as_str(),
-                                    "protocol_version": PROTOCOL_VERSION,
-                                }),
-                            );
+                            // Emitted through the TYPED struct, not json!.
+                            // A hand-built json! bypasses `Joined` entirely, so
+                            // every protocol-pinning test guarding it would
+                            // constrain nothing about what actually ships.
+                            let joined = Joined {
+                                id,
+                                room: room.id,
+                                seed: room.round.seed,
+                                scale: room.round.scale.as_str().to_string(),
+                                // docs/06 §2: the client renders terrain from
+                                // this. Absent until now, so every client drew
+                                // a local placeholder unrelated to the map the
+                                // server simulates.
+                                map: room.round.map.to_map_data(),
+                                players: room.lobby_players(),
+                                protocol_version: PROTOCOL_VERSION,
+                            };
+                            let _ = socket.emit(s2c::JOINED, &joined);
                         }
                         Err(err) => {
                             warn!("[net] join refused: {}", err.code());

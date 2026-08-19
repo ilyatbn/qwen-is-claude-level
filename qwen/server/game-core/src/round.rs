@@ -371,6 +371,12 @@ impl Round {
                         });
                     }
                 }
+                // docs/05 §5, T4.9 step 2: [effect] comes from game-core,
+                // with the seed-derived schedule index.
+                tracing::info!(
+                    "[effect] {} started index={} [tick={}]",
+                    kind.as_str(), self.effects_started, self.tick,
+                );
                 events.push(Event::EffectStarted { kind });
                 self.active_effect = Some(effect);
                 self.effects_started += 1;
@@ -519,6 +525,13 @@ impl Round {
             let weapon = weapon_name(projectile.kind);
             if projectile.explosive {
                 let destroyed = self.map.apply_blast(*x, *y, projectile.radius, projectile.damage);
+                // docs/05 §5, T4.9 step 2: [tiles] comes from game-core.
+                if !destroyed.is_empty() {
+                    tracing::debug!(
+                        "[tiles] blast@({x:.0},{y:.0}) r={} destroyed={} version={}",
+                        projectile.radius, destroyed.len(), self.map.version,
+                    );
+                }
                 events.push(Event::Explosion { x: *x, y: *y, radius: projectile.radius });
                 if !destroyed.is_empty() {
                     events.push(Event::TileDestroyed {
@@ -680,6 +693,11 @@ impl Round {
 
         // docs/03 §6: killer +1, but only when the killer is another player.
         // "weather kills give no score to anyone", and self-kills score nobody.
+        // docs/05 §5, T4.9 step 2: [dmg] comes from game-core.
+        tracing::info!(
+            "[dmg] victim=P{victim_id} src={source:?} weapon={weapon} [tick={}]",
+            self.tick,
+        );
         let killer = match source {
             DamageSource::Player(id) if id != victim_id => {
                 if let Some(k) = self.players.iter_mut().find(|p| p.player.id == id) {

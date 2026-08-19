@@ -37,6 +37,8 @@ export class GameScene extends Phaser.Scene {
   private readonly sprites = new Map<number, PlayerSprite>();
   /** Assigned by the server in `joined` (docs/06 §2); 0 until then. */
   private localPlayerId = 0;
+  /** True until server terrain arrives, so the placeholder is visible in logs. */
+  private usingDevMap = false;
   private keys?: Record<string, Phaser.Input.Keyboard.Key>;
   /** Set by the socket layer when a snapshot arrives (T4.x). */
   private pendingSlot: number | null = null;
@@ -52,10 +54,14 @@ export class GameScene extends Phaser.Scene {
     const options = parseDevOptions(window.location.search);
     this.debugCamera = options.dev;
 
-    // Until a server round supplies one (docs/06 §2 `round_started`), build a
-    // dev map locally so any seed can be rendered offline.
+    // The SERVER's map is authoritative (docs/06 §2: `joined` and
+    // `round_started` both carry MapData). `applyMapData` replaces this the
+    // moment one arrives. The dev map is only a placeholder so `?seed=` still
+    // renders something with no server running — it is NOT what a connected
+    // client draws.
     const map: MapData = buildDevMap(options.seed, options.scale);
     this.buildTerrain(map);
+    this.usingDevMap = true;
 
     this.hud = new Hud(this);
     this.inventoryUi = new InventoryUi(this);
@@ -131,6 +137,41 @@ export class GameScene extends Phaser.Scene {
     if (this.cursors.down.isDown) {
       camera.scrollY += step;
     }
+  }
+
+  /**
+   * Adopt the server's map (docs/06 §2, from `joined` or `round_started`).
+   *
+   * Until this is called the scene renders a local placeholder, which shares no
+   * tiles with the server — so `tile_destroyed` events would land on the wrong
+   * grid entirely.
+   */
+  applyMapData(map: MapData, localPlayerId?: number): void {
+    if (localPlayerId !== undefined) {
+      this.localPlayerId = localPlayerId;
+    }
+    this.buildTerrain(map);
+    this.usingDevMap = false;
+    console.log(
+      `[map] server terrain: seed=${map.seed} scale=${map.scale} ` +
+        `${map.width}x${map.height} tiles=${this.terrain?.grid.width ?? 0} cols`,
+    );
+  }
+
+  /** Apply a `tile_destroyed` event (docs/06 §2). */
+  applyTileDestroyed(tiles: readonly { x: number; y: number }[], version: number): void {
+    if (this.usingDevMap) {
+      // Destruction against a placeholder grid is meaningless; warn rather
+      // than corrupt the render silently.
+      console.warn('[map] tile_destroyed arrived before server terrain — ignoring');
+      return;
+    }
+    this.terrain?.applyDestroyed(tiles, version);
+  }
+
+  /** Whether the scene is still on the offline placeholder. */
+  get isUsingDevMap(): boolean {
+    return this.usingDevMap;
   }
 
   /** Feed an arriving snapshot to the interpolator (T2.9 step 1). */

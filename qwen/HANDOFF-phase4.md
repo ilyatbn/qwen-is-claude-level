@@ -109,9 +109,7 @@ D26/D36/D39 (geometry) all applied as recorded.
 
 | # | Item | Owner |
 |---|---|---|
-| 30 | **`lobby_state` and `round_ended` are not broadcast.** The scenes exist and render them; nothing sends them. | T5.x |
-| 31 | **`joined` omits `map`** (docs/06 §2). The client cannot render terrain from the server yet — `devmap.ts` still supplies it. Needs `MapData` with base64 tiles. | T5.x |
-| 32 | Client never consumes `snapshot`/`tile_destroyed`; `GameScene.applySnapshot` exists but nothing calls it from the socket. | T5.x |
+| 30 | **`lobby_state` and `round_ended` are not broadcast.** The scenes exist and render them; nothing sends them. `joined` now carries the roster, so the lobby is populated on join but not updated as others join. | T5.x |
 | 16 | Protocol pinning still partial. | ongoing |
 
 ---

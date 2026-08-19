@@ -4,7 +4,7 @@
 //! identity and the input queue, and holds NO game logic (docs/05 §1).
 
 use game_core::map::Scale;
-use game_core::protocol::InputFrame;
+use game_core::protocol::{InputFrame, LobbyPlayer};
 use game_core::round::{Event, Round, RoundState};
 use std::collections::HashMap;
 
@@ -105,6 +105,21 @@ impl Room {
             .iter()
             .filter(|(_, &count)| count > 1)
             .map(|(&id, &count)| (id, count - 1))
+            .collect()
+    }
+
+    /// The lobby roster for `joined` / `lobby_state` (docs/06 §2).
+    pub fn lobby_players(&self) -> Vec<LobbyPlayer> {
+        self.round
+            .players
+            .iter()
+            .filter(|p| p.connected)
+            .map(|p| LobbyPlayer {
+                id: p.player.id,
+                name: p.player.name.clone(),
+                skin: p.player.skin,
+                ready: p.ready,
+            })
             .collect()
     }
 

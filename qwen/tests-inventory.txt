@@ -168,6 +168,10 @@ map::tests::deferred_destroy_does_not_convert_until_asked
 map::tests::destroy_tile_returns_event
 map::tests::fill_follows_depth_bands
 map::tests::indexing_is_row_major_with_y0_on_top
+map::tests::map_data_carries_decor_and_spawns_as_tile_coords
+map::tests::map_data_hides_server_only_state
+map::tests::map_data_reflects_destruction
+map::tests::map_data_round_trips_the_tile_grid
 map::tests::out_of_bounds_reads_as_air_and_never_panics
 map::tests::pixel_lookup_maps_to_the_containing_tile
 map::tests::pixel_size_matches_doc

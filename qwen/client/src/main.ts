@@ -7,7 +7,16 @@ import { BootScene } from './scenes/BootScene';
 import { GameScene } from './scenes/GameScene';
 import { LobbyScene } from './scenes/LobbyScene';
 import { RoundEndScene } from './scenes/RoundEndScene';
-import { C2S, NAMESPACE, PROTOCOL_VERSION, S2C } from './protocol';
+import {
+  C2S,
+  NAMESPACE,
+  PROTOCOL_VERSION,
+  S2C,
+  type Joined,
+  type RoundStarted,
+  type Snapshot,
+  type TileDestroyedMsg,
+} from './protocol';
 
 /** docs/00 §6: the client connects to the Rust server on :3001. */
 const SERVER_URL = `ws://localhost:3001${NAMESPACE}`;
@@ -51,6 +60,36 @@ export function connect(url: string = SERVER_URL): Socket {
 
   socket.on(S2C.PONG, () => {
     console.log('[net] pong');
+  });
+
+  // docs/06 §2: the server's map is authoritative. Route it into GameScene so
+  // the client renders the terrain the server actually simulates rather than
+  // the offline placeholder.
+  const gameScene = (): GameScene | undefined =>
+    game.scene.getScene('GameScene') as GameScene | undefined;
+
+  socket.on(S2C.JOINED, (payload: Joined) => {
+    console.log(`[net] joined as ${payload.id} in room ${payload.room}`);
+    gameScene()?.applyMapData(payload.map, payload.id);
+    if (payload.protocol_version !== PROTOCOL_VERSION) {
+      console.warn(
+        `[net] protocol mismatch: client v${PROTOCOL_VERSION}, ` +
+          `server v${payload.protocol_version}`,
+      );
+    }
+  });
+
+  socket.on(S2C.ROUND_STARTED, (payload: RoundStarted) => {
+    console.log(`[net] round_started seed=${payload.seed}`);
+    gameScene()?.applyMapData(payload.map);
+  });
+
+  socket.on(S2C.TILE_DESTROYED, (payload: TileDestroyedMsg) => {
+    gameScene()?.applyTileDestroyed(payload.tiles, payload.version);
+  });
+
+  socket.on(S2C.SNAPSHOT, (snap: Snapshot) => {
+    gameScene()?.applySnapshot(snap, performance.now());
   });
 
   window.setInterval(() => {

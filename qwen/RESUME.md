@@ -2,7 +2,10 @@
 
 Single source of truth for picking this up cold. Updated at each phase gate.
 
-**Last updated:** end of Phase 3 (T3.9 signed off) · commit `d10e4de`
+**Last updated:** end of Phase 4 (T4.10, review in progress) · commit `bb5c46d`
+
+> **This file is part of the phase gate.** It has been stale at two consecutive
+> gates. Update it *before* reporting a phase complete, not after.
 
 ---
 
@@ -25,10 +28,18 @@ design and is not used).
 | 1 — Map | T1.1–T1.10 | **done, signed off** |
 | 2 — Player | T2.1–T2.10 | **done, signed off** |
 | 3 — Items | T3.1–T3.9 | **done, signed off** |
-| 4 — Rounds | T4.1–T4.10 | not started |
+| 4 — Rounds | T4.1–T4.10 | code complete, **review found map delivery missing** |
 | 5 — Sprites | T5.1–T5.5 | not started |
 
-32/32 checkboxes ticked through Phase 3. 42 deviations recorded.
+42/42 checkboxes ticked through Phase 4. 43 deviations recorded.
+
+**Open at the Phase 4 gate:**
+- **The server never sends the map.** `MapData` is never constructed; `joined` and
+  `round_started` omit it; `base64` (added in T0.1 for exactly this) has never been
+  called. The client still renders `devmap.ts`'s local sine wave, so every client
+  draws terrain unrelated to the map the server simulates. Phase 4 work, not Phase 5.
+- `game-core` declares `tracing` with a comment claiming it is used; it has **zero**
+  tracing calls. Use it per T4.9 step 2 or drop it.
 
 **End-to-end pass (post-Phase-3)** — see `dev_summary.md`:
 - **D41** — a player standing on a tile could not pick up the item on it (22 px
@@ -45,9 +56,11 @@ design and is not used).
 ## How to verify the current state
 
 ```bash
-cd qwen/server && cargo build && cargo test      # expect 246 + 9, 0 warnings
+cd qwen/server && cargo build && cargo test      # expect 323 + 11 + 17 + 23, 0 warnings
 cd qwen/client && npm test && npm run build      # expect 118 passed
-cd qwen && bash scripts/test-inventory.sh        # expect OK (375 tests)
+cd qwen && bash scripts/test-inventory.sh        # expect OK (478 tests)
+cd qwen/server && cargo run -q -p game-core --example e2e_scenario   # 48/48
+cd qwen/server && cargo run -q -p game-core --example e2e_stress     # 23/23
 ```
 
 ## Process (agreed with the user)
@@ -66,6 +79,14 @@ cd qwen && bash scripts/test-inventory.sh        # expect OK (375 tests)
 3. `DEVIATIONS.md` — 40 entries; D1–D40 with gaps.
 4. `HANDOFF-phase0.md`, `HANDOFF-phase1.md` for earlier context.
 
+## Phase gate checklist
+
+1. Every task's numbered steps implemented in the shipping path (not just its Test command green).
+2. Full suite + client + inventory green, 0 build warnings.
+3. Full E2E pass **including the live server**, failures treated as blocking.
+4. Constants sweep + Test-command-selection sweep.
+5. **Update this file.** It is the cold-restart artefact and has been stale twice.
+
 ## Standing rules earned the hard way
 
 - **A test described as guarding an invariant must have been seen to fail when that
@@ -81,9 +102,7 @@ cd qwen && bash scripts/test-inventory.sh        # expect OK (375 tests)
 
 All four are collision-geometry decisions on the same code path. Do not fix piecemeal.
 
-- **D26** — spawn candidates check one column but the body is 1.5 tiles wide, so
-  70–80% of spawns overlap terrain by up to 175 px. Fix: require columns `x-1..=x+1`
-  clear. Must land before T4.1 (T4.3 makes spawn choice a scoring input).
+- ~~**D26**~~ — **fixed** at T4.0; neighbour overlap 70–80% → 0%.
 - **D35** — ground speed is slope-dependent (7.525 px/tick downhill vs 7.0 flat).
   Not a violation; T2.3's "exactly 140 px/s" is a flat-ground property. Recorded only.
 - **D36** — the player cannot walk up a single 16 px step (`autostep: None`). Given

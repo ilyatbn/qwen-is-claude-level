@@ -1389,3 +1389,70 @@ message: *a test that stops one layer short of the boundary cannot see a bug tha
 at the boundary.* This is the same shape as D41, where every unit test placed the player
 at the item rather than deriving where a player stands. Both were found by running the
 real thing.
+
+### D45 — `round_started.spawn` cannot be personalised in a room broadcast
+
+**Spec** (`docs/06-protocol.md` §2): `round_started { seed, scale, map, spawn: { x, y } }`,
+where §2's table describes `spawn` as **this client's** spawn.
+
+**Problem**: `round_started` is a room-wide broadcast — one message to every player. A
+per-client field cannot be carried by a broadcast without sending six different
+messages, which the doc does not describe and which the event tables do not model
+(every other S→C event is uniform across the room).
+
+**Implemented**: `round_started` carries `seed`, `scale` and `map` as documented, with
+`spawn` sent as `{0,0}`. The client reads its own spawn from the **snapshot** instead —
+`Snapshot.players[id].x/y` (docs/06 §4) is authoritative, arrives within 100 ms, and is
+per-player by construction. Nothing is lost: a client needs its spawn to place its
+camera, and the snapshot provides it before the first frame is rendered.
+
+The alternative — a per-socket `round_started` — is a defensible reading, but it makes
+one documented event behave unlike every other broadcast, and the snapshot already
+carries the information. Recorded rather than silently zeroed.
+
+### D46 — Map delivery was missing entirely for four phases
+
+**Not a spec defect — an implementation gap, recorded for the same reason as D44:
+because of how it hid.**
+
+`docs/06-protocol.md` §2 requires `joined { id, room, seed, scale, map: MapData,
+players }` and `round_started { …, map: MapData, … }`. Neither carried a map. The
+`base64` crate was added in T0.1 **specifically** for `MapData.tiles` (D7) and was never
+called until T4.x. `MapData` was defined in T0.2, pinned by protocol tests, and never
+constructed.
+
+So every connected client rendered `devmap.ts` — a local sine wave with no relation to
+the terrain the server simulates. `tile_destroyed` events were broadcast against a grid
+the client did not share, and T4.10's manual check ("two browser tabs agree on player
+positions") could not have been meaningful.
+
+**How it survived**: `net.rs` hand-built `joined` with `serde_json::json!`, which
+bypasses the typed `Joined` struct. Every protocol-pinning test guarding `Joined`
+therefore constrained nothing about what actually went on the wire — a hole in the
+drift guard built in Phase 0. The tests were real; the code under test was not the code
+that shipped.
+
+**Fixed**: `Map::to_map_data()` encodes the grid (kinds only — hp and `Tile.item` stay
+server-side, or the client would learn where every hidden item is), and both `joined`
+and `round_started` are emitted through their **typed structs**. `GameScene.applyMapData`
+adopts server terrain; `applyTileDestroyed` refuses to apply destruction while still on
+the placeholder rather than corrupting the render silently.
+
+**Verified end to end.** A real client's decoded grid, fingerprinted on arrival before
+any destruction, against the server's independently-computed fingerprint:
+
+| | tiles | solid | FNV-1a |
+|---|---|---|---|
+| server (`examples/map_fingerprint.rs`) | 15360 | 5455 | `19a42d92b118724a` |
+| client (`scripts/map-check.mjs`) | 15360 | 5455 | `19a42d92b118724a` |
+
+After the client applied 8 `tile_destroyed` events its grid diverged by exactly 8 solid
+tiles — the destruction pipeline working, measured rather than assumed.
+
+**The classification failure is the lesson.** This was disclosed in the Phase 4 handoff
+as deferred item 31 and assigned to "T5.x" — but Phase 5 is assets, skins and Docker,
+and map delivery is part of the join flow in docs/05 §2 and T4.1 step 4's "per docs/06
+§2". Standing rule 4 was written *during* Phase 4 to catch exactly this, and did not
+fire on it, because I applied the rule to the tasks I was ticking at that moment
+(T4.4–T4.8) and never re-audited the tasks already ticked (T4.1, T4.10). That is the
+same shape as applying D27's lesson forward to T2.2 but not backward to T2.1.

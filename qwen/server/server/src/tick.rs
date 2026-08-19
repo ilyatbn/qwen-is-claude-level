@@ -1,6 +1,7 @@
 //! `tick` — the fixed 20 Hz loop (docs/00 §2, docs/05 §3).
 
 use crate::rooms::Room;
+use game_core::protocol::{Point, RoundStarted};
 use game_core::round::Event;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,6 +18,8 @@ const SNAPSHOT_LOG_INTERVAL: u64 = 100;
 
 /// What one tick produced, for the caller to broadcast.
 pub struct TickOutput {
+    /// The room's current map, so `round_started` can carry it (docs/06 §2).
+    pub map_data: game_core::protocol::MapData,
     /// Carried for future per-room socket.io rooms; v1 runs one room per
     /// instance, so the namespace broadcast is the room broadcast.
     #[allow(dead_code)]
@@ -66,7 +69,12 @@ pub fn step_room(room: &mut Room) -> TickOutput {
         None
     };
 
-    TickOutput { room_id: room.id, snapshot, events }
+    TickOutput {
+        room_id: room.id,
+        map_data: room.round.map.to_map_data(),
+        snapshot,
+        events,
+    }
 }
 
 /// docs/05 §5: every line carries tick and room.
@@ -138,6 +146,7 @@ pub async fn run(rooms: Arc<Mutex<Vec<Room>>>, io: socketioxide::SocketIo) {
 /// `let _ = ns.emit(..)` built a future and dropped it unpolled. See
 /// DEVIATIONS.md D44.
 async fn broadcast(io: &socketioxide::SocketIo, output: &TickOutput) {
+    let map_data = &output.map_data;
     use game_core::protocol::s2c;
     let namespace = game_core::protocol::NAMESPACE;
     if let Some(json) = &output.snapshot {
@@ -155,9 +164,22 @@ async fn broadcast(io: &socketioxide::SocketIo, output: &TickOutput) {
     }
     for event in &output.events {
         let (name, payload) = match event {
+            // docs/06 §2 requires the map here too — the round is regenerated
+            // on restart, so a client that only got the map on join would be
+            // rendering the previous round's terrain.
+            //
+            // `spawn` is documented as "this client's spawn", which a room-wide
+            // broadcast cannot personalise; the client reads its own spawn from
+            // the snapshot instead. See DEVIATIONS.md D45.
             Event::RoundStarted { seed, scale } => (
                 s2c::ROUND_STARTED,
-                serde_json::json!({ "seed": seed, "scale": scale.as_str() }),
+                serde_json::to_value(RoundStarted {
+                    seed: *seed,
+                    scale: scale.as_str().to_string(),
+                    map: map_data.clone(),
+                    spawn: Point { x: 0.0, y: 0.0 },
+                })
+                .unwrap_or_else(|_| serde_json::json!({})),
             ),
             Event::RoundEnded => (s2c::ROUND_ENDED, serde_json::json!({})),
             Event::TileDestroyed { tiles, version } => (

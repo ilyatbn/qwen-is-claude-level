@@ -677,6 +677,43 @@ impl Map {
         destroyed
     }
 
+    /// Build the `MapData` payload the client renders from (docs/06 §6).
+    ///
+    /// "tiles: base64 of u8 array, width*height, 0=AIR 1=GRASS 2=DIRT
+    /// 3=STONE 4=ROCK". hp values stay server-side (docs/05 §2), and so does
+    /// `Tile::item` — a base64 grid of KINDS would otherwise leak where every
+    /// hidden item is.
+    ///
+    /// This is the first use of the `base64` crate, added in T0.1 for exactly
+    /// this field (D7) and unused until now.
+    pub fn to_map_data(&self) -> crate::protocol::MapData {
+        use base64::Engine as _;
+
+        let bytes: Vec<u8> = self.tiles.iter().map(|t| t.kind.to_byte()).collect();
+        crate::protocol::MapData {
+            seed: self.seed,
+            scale: self.scale.as_str().to_string(),
+            width: self.width,
+            height: self.height,
+            tiles: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            decor: self
+                .decor
+                .iter()
+                .map(|d| crate::protocol::DecorData {
+                    x: d.x,
+                    y: d.y,
+                    kind: d.kind.as_str().to_string(),
+                })
+                .collect(),
+            // Tile coords (docs/06 §6, D9).
+            spawns: self
+                .spawns
+                .iter()
+                .map(|s| crate::protocol::TilePos { x: s.x as u32, y: s.y as u32 })
+                .collect(),
+        }
+    }
+
     /// An ASCII dump of the grid, for the debug-inspection test in T1.4.
     ///
     /// `.` AIR, `#` GRASS, `:` DIRT, `%` STONE, `@` ROCK.
@@ -1640,6 +1677,108 @@ mod tests {
         let center = Map::tile_center(25, 25);
         let destroyed = map.apply_blast(center.x, center.y, 48.0, 100.0);
         assert_eq!(map.version, destroyed.len() as u64);
+    }
+
+    #[test]
+    fn map_data_round_trips_the_tile_grid() {
+        // docs/06 §6. The client renders from this, so a wrong encoding means
+        // every client draws different terrain from the server's.
+        use base64::Engine as _;
+        let map = Map::generate(7, Scale::Small);
+        let data = map.to_map_data();
+
+        assert_eq!(data.seed, 7);
+        assert_eq!(data.scale, "small");
+        assert_eq!(data.width, map.width);
+        assert_eq!(data.height, map.height);
+
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&data.tiles)
+            .expect("tiles must be valid base64");
+        assert_eq!(
+            decoded.len(),
+            (map.width * map.height) as usize,
+            "the grid must carry width*height bytes",
+        );
+        // Every byte matches the live grid, row-major, y=0 top.
+        for y in 0..map.height {
+            for x in 0..map.width {
+                let index = (y * map.width + x) as usize;
+                assert_eq!(
+                    decoded[index],
+                    map.tile(x, y).kind.to_byte(),
+                    "tile ({x},{y}) encoded as {} but the map says {:?}",
+                    decoded[index],
+                    map.tile(x, y).kind,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn map_data_carries_decor_and_spawns_as_tile_coords() {
+        // docs/06 §6: decor {x,y,kind}, spawns as TILE coords (D9).
+        let map = Map::generate(3, Scale::Small);
+        let data = map.to_map_data();
+
+        assert_eq!(data.decor.len(), map.decor.len());
+        for (wire, live) in data.decor.iter().zip(&map.decor) {
+            assert_eq!((wire.x, wire.y), (live.x, live.y));
+            assert_eq!(wire.kind, live.kind.as_str());
+        }
+
+        assert_eq!(data.spawns.len(), map.spawns.len());
+        for (wire, live) in data.spawns.iter().zip(&map.spawns) {
+            assert_eq!(wire.x, live.x as u32);
+            assert_eq!(wire.y, live.y as u32);
+            assert!(
+                wire.x < map.width && wire.y < map.height,
+                "spawn ({},{}) is outside the tile grid — looks like pixels",
+                wire.x, wire.y,
+            );
+        }
+    }
+
+    #[test]
+    fn map_data_hides_server_only_state() {
+        // docs/05 §2: "map_data = full tile grid (kinds only, no hp) ... hp
+        // values stay server-side". Tile.item must not leak either, or the
+        // client learns where every hidden item is.
+        let mut map = Map::generate(5, Scale::Small);
+        let mut rng = crate::rng::GameRng::new(5);
+        let hidden = crate::items::place_hidden(&mut map, &mut rng);
+        assert!(!hidden.is_empty());
+
+        let data = map.to_map_data();
+        use base64::Engine as _;
+        let decoded = base64::engine::general_purpose::STANDARD.decode(&data.tiles).unwrap();
+        // The tile holding an item encodes as plain ROCK, indistinguishable
+        // from any other ROCK tile.
+        for (hx, hy, _) in &hidden {
+            let index = (hy * map.width + hx) as usize;
+            assert_eq!(
+                decoded[index],
+                TileKind::Rock.to_byte(),
+                "a hidden-item tile encodes differently from plain ROCK",
+            );
+        }
+    }
+
+    #[test]
+    fn map_data_reflects_destruction() {
+        // The client applies tile_destroyed against this grid, so a stale
+        // encoding desyncs terrain permanently.
+        let mut map = Map::generate(9, Scale::Small);
+        let x = 30;
+        let surface = map.surface_row(x);
+        map.destroy_tile(x, surface);
+
+        use base64::Engine as _;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&map.to_map_data().tiles)
+            .unwrap();
+        let index = (surface * map.width + x) as usize;
+        assert_eq!(decoded[index], TileKind::Air.to_byte(), "the destroyed tile is not AIR");
     }
 
     #[test]

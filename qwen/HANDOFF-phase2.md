@@ -248,6 +248,12 @@ qwen's Test commands have selected the wrong thing five times now (D14, D27 for 
 T2.1, T1.5's `spawn_spacing` filter, and T4.8). A green command is evidence about the
 command, not about the task.
 
+**Apply the rule to tasks already ticked, not only to the one in hand.** It recurred
+within a single phase: written during T4.4–T4.8, it did not fire on T4.1/T4.10's missing
+map delivery (D46), because I audited what I was ticking and not what I had ticked. The
+same shape as applying D27 forward to T2.2 and never back to T2.1. **A new rule's first
+job is a sweep over prior work.**
+
 ## Notes for Phase 3
 
 - **`Player::integrate` takes acceleration and uses Verlet** (D28). Do not "simplify"
