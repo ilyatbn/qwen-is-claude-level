@@ -9,6 +9,13 @@ effects::day_night_tests::day_phase_is_continuous
 effects::day_night_tests::day_phase_stays_in_range
 effects::day_night_tests::the_cycle_repeats_every_120_seconds
 effects::day_night_tests::the_transitions_are_five_seconds_each
+effects::lava_tests::lava_constants_match_doc
+effects::lava_tests::lava_leaves_hidden_items_buried
+effects::lava_tests::lava_spew_then_ground_fire
+effects::lava_tests::no_damage_after_the_effect_ends
+effects::lava_tests::particles_expire_after_one_second
+effects::lava_tests::particles_spew_upward_at_the_documented_speed
+effects::lava_tests::the_dug_area_is_exactly_nine_tiles_and_persists
 effects::meteor_tests::a_meteor_can_uncover_a_hidden_item
 effects::meteor_tests::meteor_constants_match_doc
 effects::meteor_tests::meteor_destroys_tiles_and_damages

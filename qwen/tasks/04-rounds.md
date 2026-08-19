@@ -109,7 +109,7 @@ score no one.
 
 ---
 
-## T4.6 — Lava burst [ ]
+## T4.6 — Lava burst [x]
 
 **Goal**: 3×3 dig, 5 s spew, 3 s ground fire, 15 hp/s.
 **Read**: `docs/02-map-effects.md` §5.

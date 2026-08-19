@@ -211,6 +211,155 @@ pub fn meteor_blast(map: &mut Map, target: &MeteorTarget) -> Vec<crate::tiles::T
     map.apply_blast(target.x, target.y, METEOR_RADIUS, METEOR_DAMAGE)
 }
 
+// ---------------------------------------------------------------------------
+// Lava burst (T4.6, docs/02 §5)
+// ---------------------------------------------------------------------------
+
+/// Spew phase length, seconds (docs/02 §5: "Phase 1 (0-5 s)").
+pub const LAVA_SPEW_S: f32 = 5.0;
+/// Total effect length, seconds (docs/02 §5: "Phase 2 (5-8 s)").
+pub const LAVA_DURATION_S: f32 = 8.0;
+/// Damage per second in either phase (docs/02 §2, §5).
+pub const LAVA_DPS: f32 = 15.0;
+/// Fire particles emitted per tick during the spew (docs/02 §5).
+pub const LAVA_PARTICLES_PER_TICK: usize = 2;
+/// Particle speed, px/s, and life, seconds (docs/02 §5).
+pub const LAVA_PARTICLE_SPEED: f32 = 150.0;
+pub const LAVA_PARTICLE_LIFE_S: f32 = 1.0;
+
+/// Which half of a lava burst is running (docs/02 §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LavaPhase {
+    Spew,
+    Fire,
+}
+
+impl LavaPhase {
+    /// Wire name (docs/06 §5: `phase: "spew"|"fire"`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            LavaPhase::Spew => "spew",
+            LavaPhase::Fire => "fire",
+        }
+    }
+}
+
+/// The phase at `elapsed_s`, or `None` once the effect is over.
+pub fn lava_phase_at(elapsed_s: f32) -> Option<LavaPhase> {
+    if elapsed_s < LAVA_SPEW_S {
+        Some(LavaPhase::Spew)
+    } else if elapsed_s < LAVA_DURATION_S {
+        Some(LavaPhase::Fire)
+    } else {
+        None
+    }
+}
+
+/// A single fire particle (docs/02 §5).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FireParticle {
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
+    pub life_s: f32,
+}
+
+/// Dig the 3x3 hole a lava burst opens (docs/02 §5, T4.6 step 1).
+///
+/// "a 3x3 tile area around the site becomes AIR (emits tile_destroyed events,
+/// **no hidden-item spawn for these** — weather destruction skips item
+/// uncovery)".
+///
+/// This is the first caller of `skip_items`, added speculatively in T3.3.
+/// Uses the deferred destroy path with one conversion pass at the end (D22).
+pub fn lava_clear_area(map: &mut Map, site_x: u32, site_y: u32) -> Vec<crate::tiles::TileDestroyed> {
+    let mut destroyed = Vec::new();
+    for dy in -1i32..=1 {
+        for dx in -1i32..=1 {
+            let x = site_x as i32 + dx;
+            let y = site_y as i32 + dy;
+            if x < 0 || y < 0 || x >= map.width as i32 || y >= map.height as i32 {
+                continue;
+            }
+            if let Some(mut event) = map.destroy_tile_deferred(x as u32, y as u32) {
+                // Weather skips uncovery: the item stays buried rather than
+                // being destroyed with the tile (docs/02 §5, D-note in T3.3).
+                if event.item.is_some() {
+                    let mut tile = map.tile(x as u32, y as u32);
+                    tile.item = event.item;
+                    map.set_tile(x as u32, y as u32, tile);
+                    event.item = None;
+                }
+                destroyed.push(event);
+            }
+        }
+    }
+    if !destroyed.is_empty() {
+        map.apply_surface_conversion();
+    }
+    destroyed
+}
+
+/// Emit this tick's fire particles (docs/02 §5, T4.6 step 2).
+///
+/// "per tick, 2 fire particles fly from the site in random directions (RNG,
+/// 30 degree spread upward +- 120 degrees), speed 150 px/s, live 1 s".
+pub fn spew_particles(site_x: f32, site_y: f32, rng: &mut GameRng) -> Vec<FireParticle> {
+    (0..LAVA_PARTICLES_PER_TICK)
+        .map(|_| {
+            // Upward is -y; the spread is measured about straight up.
+            let spread = rng.gen_range_f32(-120.0, 120.0).to_radians();
+            let angle = std::f32::consts::FRAC_PI_2 + spread;
+            FireParticle {
+                x: site_x,
+                y: site_y,
+                vx: angle.cos() * LAVA_PARTICLE_SPEED,
+                vy: -angle.sin() * LAVA_PARTICLE_SPEED,
+                life_s: LAVA_PARTICLE_LIFE_S,
+            }
+        })
+        .collect()
+}
+
+/// Advance a fire particle. Returns false once it has expired.
+pub fn step_particle(particle: &mut FireParticle, dt: f32) -> bool {
+    particle.x += particle.vx * dt;
+    particle.y += particle.vy * dt;
+    particle.vy += crate::player::player_config::GRAVITY * dt;
+    particle.life_s -= dt;
+    particle.life_s > 0.0
+}
+
+/// Damage a player takes this tick from lava (docs/02 §5).
+///
+/// Spew phase: overlapping a fire particle. Fire phase: standing on the burnt
+/// 3x3. Both are 15 hp/s.
+pub fn lava_damage_at(
+    phase: LavaPhase,
+    particles: &[FireParticle],
+    burning: &[(u32, u32)],
+    px: f32,
+    py: f32,
+    dt: f32,
+) -> f32 {
+    let hit = match phase {
+        LavaPhase::Spew => particles
+            .iter()
+            .any(|p| (p.x - px).hypot(p.y - py) <= crate::items::PLAYER_HIT_RADIUS),
+        LavaPhase::Fire => {
+            let tx = (px / crate::tiles::TILE_SIZE) as u32;
+            let ty = (py / crate::tiles::TILE_SIZE) as u32;
+            burning.iter().any(|&(bx, by)| bx == tx && by == ty)
+        }
+    };
+    if hit {
+        LAVA_DPS * dt
+    } else {
+        0.0
+    }
+}
+
 /// The precomputed effect timeline for a round (docs/02 §8).
 ///
 /// Built at round start from the round RNG so a seed replays the same
@@ -575,5 +724,137 @@ mod meteor_tests {
         assert_eq!(METEOR_DAMAGE, 60.0);
         assert_eq!(METEOR_STAGGER_S, 0.8);
         assert_eq!(METEOR_DURATION_S, 4.0);
+    }
+}
+
+/// T4.6 lava-burst tests.
+#[cfg(test)]
+mod lava_tests {
+    use super::*;
+    use crate::map::Scale;
+    use crate::player::DT;
+    use crate::tiles::{TileKind, TILE_SIZE};
+
+    #[test]
+    fn lava_spew_then_ground_fire() {
+        // docs/08 §1 (effects row) + T4.6 step 5: "phase switch at 5 s; damage
+        // in both phases; no damage after 8 s".
+        assert_eq!(lava_phase_at(0.0), Some(LavaPhase::Spew));
+        assert_eq!(lava_phase_at(4.9), Some(LavaPhase::Spew));
+        assert_eq!(lava_phase_at(5.0), Some(LavaPhase::Fire), "phase switches at 5 s");
+        assert_eq!(lava_phase_at(7.9), Some(LavaPhase::Fire));
+        assert_eq!(lava_phase_at(8.0), None, "the effect is over at 8 s");
+        assert_eq!(lava_phase_at(100.0), None);
+
+        // Damage in BOTH phases, at the documented 15 hp/s.
+        let particle = FireParticle { x: 100.0, y: 100.0, vx: 0.0, vy: 0.0, life_s: 1.0 };
+        let spew = lava_damage_at(LavaPhase::Spew, &[particle], &[], 100.0, 100.0, DT);
+        assert!((spew - 15.0 * DT).abs() < 1e-4, "spew damage {spew} per tick");
+
+        let burning = [(6u32, 6u32)];
+        let fire = lava_damage_at(LavaPhase::Fire, &[], &burning, 6.5 * TILE_SIZE, 6.5 * TILE_SIZE, DT);
+        assert!((fire - 15.0 * DT).abs() < 1e-4, "fire damage {fire} per tick");
+
+        // Away from both: nothing.
+        assert_eq!(lava_damage_at(LavaPhase::Spew, &[particle], &[], 500.0, 500.0, DT), 0.0);
+        assert_eq!(lava_damage_at(LavaPhase::Fire, &[], &burning, 500.0, 500.0, DT), 0.0);
+    }
+
+    #[test]
+    fn the_dug_area_is_exactly_nine_tiles_and_persists() {
+        // T4.6 step 5: "dug area is exactly 9 tiles (+- tiles already AIR)";
+        // Acceptance: "after the burst the hole persists (tiles stay AIR)".
+        let (w, h) = Scale::Small.dimensions();
+        let mut map = Map {
+            seed: 0, scale: Scale::Small, width: w, height: h,
+            tiles: vec![crate::tiles::Tile::new(TileKind::Stone); (w * h) as usize],
+            decor: Vec::new(), spawns: Vec::new(), version: 0,
+        };
+        let destroyed = lava_clear_area(&mut map, 20, 20);
+        assert_eq!(destroyed.len(), 9, "a 3x3 dig should remove 9 solid tiles");
+        for dy in -1i32..=1 {
+            for dx in -1i32..=1 {
+                let (x, y) = ((20 + dx) as u32, (20 + dy) as u32);
+                assert_eq!(map.tile(x, y).kind, TileKind::Air, "({x},{y}) is not AIR");
+            }
+        }
+        // The hole persists: nothing refills it.
+        assert_eq!(map.tile(20, 20).kind, TileKind::Air);
+        // Tiles already AIR are not counted twice.
+        let again = lava_clear_area(&mut map, 20, 20);
+        assert!(again.is_empty(), "re-digging AIR reported destruction");
+    }
+
+    #[test]
+    fn lava_leaves_hidden_items_buried() {
+        // docs/02 §5: "no hidden-item spawn for these — weather destruction
+        // skips item uncovery". T4.6 is the first caller of skip_items.
+        let mut map = Map::generate(3, Scale::Small);
+        let mut rng = GameRng::new(3);
+        let hidden = crate::items::place_hidden(&mut map, &mut rng);
+        let (hx, hy, item) = hidden[0];
+
+        let destroyed = lava_clear_area(&mut map, hx, hy);
+        assert!(!destroyed.is_empty());
+        assert!(
+            destroyed.iter().all(|e| e.item.is_none()),
+            "lava uncovered a hidden item",
+        );
+        assert_eq!(
+            map.tile(hx, hy).item, Some(item),
+            "the item was destroyed rather than left buried",
+        );
+    }
+
+    #[test]
+    fn particles_spew_upward_at_the_documented_speed() {
+        // docs/02 §5: 2 per tick, 150 px/s, 1 s life, upward +- 120 degrees.
+        let mut rng = GameRng::new(1);
+        for _ in 0..200 {
+            let particles = spew_particles(100.0, 100.0, &mut rng);
+            assert_eq!(particles.len(), 2, "2 particles per tick");
+            for p in particles {
+                let speed = p.vx.hypot(p.vy);
+                assert!((speed - 150.0).abs() < 1e-2, "speed {speed}, expected 150");
+                assert_eq!(p.life_s, 1.0);
+                // The spread is +-120 degrees about straight up, so the
+                // steepest downward component is cos(120 deg) of the speed.
+                assert!(
+                    p.vy <= 150.0 * 0.5 + 1e-2,
+                    "particle vy {} is steeper than the 120 degree spread allows", p.vy,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn particles_expire_after_one_second() {
+        let mut p = FireParticle { x: 0.0, y: 0.0, vx: 100.0, vy: -100.0, life_s: 1.0 };
+        let mut ticks = 0;
+        while step_particle(&mut p, DT) {
+            ticks += 1;
+            assert!(ticks < 100, "the particle never expired");
+        }
+        // 1 s = 20 ticks.
+        assert!((19..=21).contains(&ticks), "particle lived {ticks} ticks, expected ~20");
+    }
+
+    #[test]
+    fn no_damage_after_the_effect_ends() {
+        // T4.6 step 5: "no damage after 8 s".
+        assert_eq!(lava_phase_at(8.0), None);
+        assert_eq!(lava_phase_at(8.1), None);
+    }
+
+    #[test]
+    fn lava_constants_match_doc() {
+        assert_eq!(LAVA_SPEW_S, 5.0);
+        assert_eq!(LAVA_DURATION_S, 8.0);
+        assert_eq!(LAVA_DPS, 15.0);
+        assert_eq!(LAVA_PARTICLES_PER_TICK, 2);
+        assert_eq!(LAVA_PARTICLE_SPEED, 150.0);
+        assert_eq!(LAVA_PARTICLE_LIFE_S, 1.0);
+        assert_eq!(LavaPhase::Spew.as_str(), "spew");
+        assert_eq!(LavaPhase::Fire.as_str(), "fire");
     }
 }
