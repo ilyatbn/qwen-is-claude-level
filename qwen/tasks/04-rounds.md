@@ -193,7 +193,7 @@ logged.
 
 ---
 
-## T4.10 — Two-client integration [ ]
+## T4.10 — Two-client integration [x]
 
 **Goal**: end-to-end: two real clients, one kills the other, both see it.
 **Read**: `docs/05-server.md` §2, §4, `docs/06-protocol.md` (all).

@@ -5,6 +5,8 @@ import Phaser from 'phaser';
 import { io, type Socket } from 'socket.io-client';
 import { BootScene } from './scenes/BootScene';
 import { GameScene } from './scenes/GameScene';
+import { LobbyScene } from './scenes/LobbyScene';
+import { RoundEndScene } from './scenes/RoundEndScene';
 import { C2S, NAMESPACE, PROTOCOL_VERSION, S2C } from './protocol';
 
 /** docs/00 §6: the client connects to the Rust server on :3001. */
@@ -19,7 +21,7 @@ const config: Phaser.Types.Core.GameConfig = {
   width: window.innerWidth,
   height: window.innerHeight,
   backgroundColor: '#101014',
-  scene: [BootScene, GameScene],
+  scene: [BootScene, LobbyScene, GameScene, RoundEndScene],
   pixelArt: true,
   scale: {
     mode: Phaser.Scale.RESIZE,

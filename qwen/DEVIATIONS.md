@@ -1307,3 +1307,40 @@ knowing when T4.5's meteors — which also use 60 — are implemented.
 
 **Status**: no action. Not a blocker, not a defect, and the original blocker claim is
 withdrawn.
+
+### D43 — T4.10's integration test drives the room layer, not a real socket
+
+**Spec** (`tasks/04-rounds.md` T4.10 step 1, and `docs/08-testing.md` §2): "One
+integration test with two fake socket.io clients (socketioxide test support or manual
+TCP): join both, start round, send inputs, assert both receive snapshots and a kill
+event when P1's rocket hits P2's position. **(Keep it coarse — the fine logic is
+already covered in game-core.)**"
+
+**Problem**: socketioxide 0.18 ships no test harness for driving a client in-process.
+The alternatives are to stand up a real listener and connect over TCP from the test —
+which makes the suite bind a port, depend on the network stack, and become
+timing-dependent — or to drive the layer beneath the socket.
+
+**Implemented**: `server/tests/two_clients.rs` drives `Room` and `tick::step_room`
+directly, with two socket **identities** (`"sock-p1"`, `"sock-p2"`) standing in for two
+connections. It covers everything T4.10 asks for: both players join and ready, the round
+starts, snapshots arrive at 10 Hz carrying both players, P1's rocket kills P2, P2
+receives a `Kill` event naming P1 as killer, P1's `+1` appears in the next snapshot, and
+P2 respawns after 3 s. Plus a mid-round disconnect, a 7th joiner refused with
+`room_full`, and seed-pinned reproducibility.
+
+**What this does NOT cover**, stated plainly rather than implied:
+
+- socket.io framing, the `/game` namespace handshake, and event-name wiring between
+  `net.rs` and the client;
+- serde round-tripping over the actual transport (the test does serialize and
+  deserialize the snapshot JSON, but not through a socket);
+- concurrency between the tick loop and socket handlers.
+
+The first of those is partly covered elsewhere: `client/scripts/ping-check.mjs` drives a
+real `socket.io-client` against the running server over the real namespace, and is run
+at every phase gate (D14). What remains untested end-to-end is the *game* messages over
+a real socket, which is a T5.5 concern once the server is running in Docker.
+
+*(The doc's own instruction — "keep it coarse, the fine logic is already covered in
+game-core" — is the reason this is acceptable rather than a gap to close now.)*

@@ -2,6 +2,10 @@
 # A deleted line here means a test was removed. That must be deliberate.
 
 ## rust
+a_disconnect_mid_round_removes_the_player_from_snapshots
+a_pinned_seed_reproduces_the_same_round_for_both_clients
+a_seventh_client_is_refused_with_room_full
+both_clients_receive_snapshots_at_10hz
 different_seeds_produce_different_maps
 effects::day_night_tests::a_round_starts_in_full_day
 effects::day_night_tests::day_night_phase_values
@@ -191,6 +195,7 @@ map::tests::terrain_ascii_dump_seed1_small
 map::tests::tile_center_is_tile_midpoint
 map::tests::value_noise_is_bounded_and_sized
 map::tests::version_increments
+p1_rockets_p2_and_both_see_the_kill
 physics::rapier_tests::horizontal_movement_is_blocked_by_a_wall
 physics::rapier_tests::landing_reports_blocked_y_and_zeroes_velocity
 physics::rapier_tests::no_tunneling_at_terminal_velocity
@@ -346,6 +351,7 @@ tiles::tests::tile_byte_encoding_round_trips
 tiles::tests::tile_destroyed_field_names_match_doc
 tiles::tests::tile_hp_matches_doc_table
 tiles::tests::tile_size_is_16px
+two_clients_join_ready_and_start_a_round
 
 ## typescript
 src/devmap.test.ts > buildDevMap > decodes to a full grid with ground in every column
