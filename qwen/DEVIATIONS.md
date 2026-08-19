@@ -1149,21 +1149,85 @@ in the seam between them.
 items at the tile top like crates, or widen the pickup radius to ≥22 px. Both change a
 documented number, so it is a decision, not a patch.
 
-### D42 — Rocket damage exactly equals STONE's hp, and no weapon can break ROCK
+---
+
+**RESOLVED at the start of Phase 4 — the finding above is unchanged and stands.**
+
+That qwen's four numbers are jointly unsatisfiable is the experiment's output and is
+not erased by fixing the code. What changed is only the *reading* of one of them.
+
+**Implemented**: pickup distance is measured from the player's **body** — the 24×28
+AABB — rather than from their centre. `items::body_distance_to` returns the distance
+from that box to a point, zero when the point is inside it.
+
+Why this reading rather than the alternatives:
+
+- docs/04 §5 says "**walking over** a ground item (16 px radius)". Walking over
+  something is a relation between the item and where you are standing, not between the
+  item and the midpoint of your torso. A body-relative test expresses that; a
+  centre-relative one does not.
+- It **preserves both documented numbers**: tile-centre placement (docs/04 §3) and the
+  16 px radius (docs/04 §5) are both kept exactly. The two alternatives — moving items
+  to the tile top, or widening the radius to ≥22 px — each change a number the design
+  states.
+- It **explains the crate case**. Crates land on the tile *top* rather than its centre,
+  putting them 14 px from a standing player's centre, which is why they alone worked
+  under the old rule. Under the new rule both are simply "at your feet".
+
+With the feet 8 px from a surface item, the margin is comfortable: the ~1.1 px floor
+penetration a walking body exhibits (HANDOFF-phase2) cannot flip a pickup.
+
+**Verified**: a test that derives the player's position from where a player actually
+stands — rather than teleporting them onto the item — went from **0/200 reachable to
+200/200**. The stress harness's section B went from *70 missed, 0 reached* to *70
+reached, 0 missed*. Injection: reverting to centre-relative distance fails 2 tests;
+dropping the half-extents from the body distance fails 3; `PICKUP_RADIUS` 16→24 and
+16→10 each fail 2, so the documented number is still pinned.
+
+**Note the class.** Every unit test passed before this fix because each placed the
+player *at* the item or within 16 px of it directly. None derived the player's position
+from the geometry of standing on a tile. The defect lived in the seam between three
+subsystems that were each individually correct.
+
+### D42 — Rocket damage exactly equals STONE's hp (CORRECTED — the original claim was wrong)
+
+> **This entry originally claimed that no weapon can destroy ROCK, and therefore that
+> source-B hidden items were "permanently unreachable dead content". That claim was
+> false.** It assumed single-shot destruction. Tile hp **persists between blasts** —
+> T1.8's own acceptance says "a blast with max_damage < tile hp damages but does not
+> destroy (hp persists on the tile)" — so damage accumulates and ROCK is destroyed by a
+> second hit. The wrong claim is left visible here rather than quietly deleted, because
+> the record should show a corrected error rather than a tidy wrong statement.
 
 **Spec**: docs/01 §2 gives tile hp GRASS 20 / DIRT 30 / STONE 60 / ROCK 80. docs/04 §1
 gives the rocket 60 damage at 48 px and the grenade 45 at 40 px, with falloff
 `dmg = max_damage * (1 - dist/radius)` (docs/01 §5).
 
-**Problem**: the rocket's maximum damage is **exactly** STONE's hp, so stone is
-destroyed only by a tile whose centre is at distance 0 — a measured crater of **5 tiles**
-underground. More seriously, **no weapon in the game can destroy ROCK (80 hp)**: the
-strongest is the rocket at 60. The meteor (docs/02 §4) also uses 60.
+**What is actually true**, measured with `examples/probe_rock_hp.rs`:
 
-**Consequence**: source-B hidden items are placed inside ROCK tiles (docs/04 §3 row B)
-and are uncovered only by destroying that tile. If nothing reaches 80 damage, **4 items
-per round are permanently unreachable** and a documented item source is dead content.
+| tile | hp | direct rocket hits to destroy | direct grenade hits |
+|---|---|---|---|
+| STONE | 60 | **1** | 2 |
+| ROCK | 80 | **2** (80 → 20 → destroyed) | 2 (80 → 35 → destroyed) |
 
-**Status**: **not fixed** — recorded for Phase 4, and it needs verifying against the
-weather effects once T4.5/T4.6 exist. This is a design-level consequence of qwen's own
-numbers, not an implementation choice.
+**Source-B hidden items are reachable.** Two direct rocket hits, or two grenades, break
+the ROCK holding them. Nothing is dead content.
+
+**What remains worth recording** is a balance consequence, not a defect: the rocket's
+60 damage **exactly equals** STONE's 60 hp, so underground only a tile whose centre sits
+at distance 0 takes lethal damage. Measured single-rocket craters:
+
+| location | tiles destroyed |
+|---|---|
+| uniform STONE | **1** |
+| real map, 2 tiles below surface (DIRT band, 30 hp) | 8 |
+| real map, 6 tiles below surface | **0** — no tile centre landed close enough |
+| real map, 12 tiles below surface (STONE) | 1 |
+
+So digging near the surface is easy and digging deep is close to futile: a rocket
+underground removes one tile, or none at all if it is not well aligned with a tile
+centre. That is a direct consequence of qwen's numbers (60 damage vs 60 hp) and worth
+knowing when T4.5's meteors — which also use 60 — are implemented.
+
+**Status**: no action. Not a blocker, not a defect, and the original blocker claim is
+withdrawn.

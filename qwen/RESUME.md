@@ -30,12 +30,17 @@ design and is not used).
 
 32/32 checkboxes ticked through Phase 3. 42 deviations recorded.
 
-**End-to-end pass (post-Phase-3) found two defects 375 unit tests missed** — see
-`dev_summary.md`. Both are Phase 4 work and are NOT fixed:
-- **D41** — a player standing on a tile cannot pick up the item on it (22 px
-  separation vs a 16 px radius). 0 of 500 items reachable across 50 maps.
-- **D42** — no weapon reaches ROCK's 80 hp, so source-B hidden items may be
-  permanently unreachable.
+**End-to-end pass (post-Phase-3)** — see `dev_summary.md`:
+- **D41** — a player standing on a tile could not pick up the item on it (22 px
+  separation vs a 16 px radius; 0 of 500 items reachable across 50 maps).
+  **Fixed at the start of Phase 4** by measuring pickup distance from the
+  player's body rather than their centre, which preserves both documented
+  numbers. The finding is kept in DEVIATIONS as the experiment's output.
+- **D42** — **corrected; the original claim was wrong.** It said no weapon
+  reaches ROCK's 80 hp and that source-B items were permanently unreachable.
+  Tile hp persists between blasts, so ROCK falls to 2 rockets or 2 grenades and
+  hidden items are reachable. What remains is a balance note: a rocket
+  underground destroys 1 tile, or 0 if poorly aligned.
 
 ## How to verify the current state
 

@@ -624,20 +624,41 @@ pub enum Pickup {
     AlreadyHeld,
 }
 
+/// Distance from the player's body (an AABB centred on `px, py`) to a point.
+///
+/// Zero when the point is inside the body. See [`try_pickup`] and
+/// DEVIATIONS.md D41 for why pickup is body-relative rather than
+/// centre-relative.
+pub fn body_distance_to(px: f32, py: f32, x: f32, y: f32) -> f32 {
+    let dx = ((x - px).abs() - player_config::BODY_HALF_WIDTH).max(0.0);
+    let dy = ((y - py).abs() - player_config::BODY_HALF_HEIGHT).max(0.0);
+    dx.hypot(dy)
+}
+
 /// Try to pick up one ground item (docs/04 §5, T3.6 step 2).
 ///
 /// "walking over a ground item (16 px radius) auto-picks it up IF a slot is
 /// free; else the item stays (no swap in v1)."
 ///
-/// Distance is measured from the player's CENTRE to the item, matching the
-/// projectile hit convention in docs/04 §2. Note the body penetrates the floor
-/// by up to ~1.1 px while walking (HANDOFF-phase2), which is inside this 16 px
-/// radius and so cannot flip a pickup on its own.
+/// **Distance is measured from the player's BODY, not their centre** — see
+/// DEVIATIONS.md D41. Source-A items sit at a tile's CENTRE (docs/04 §3) while
+/// a standing player's feet rest on that tile's TOP (docs/01 §3 step 5), so the
+/// centre-to-centre separation is `BODY_HALF_HEIGHT + TILE_SIZE/2` = 22 px —
+/// beyond a 16 px radius, making every surface item unreachable (measured
+/// 0 of 500). Measuring from the body puts the feet 8 px from the item, well
+/// inside the documented radius, and matches the wording "walking over".
+///
+/// This preserves both documented numbers: tile-centre placement from §3 and
+/// the 16 px radius from §5. It also explains why crates already worked — they
+/// land on the tile top rather than its centre.
+///
+/// The body penetrates the floor by up to ~1.1 px while walking
+/// (HANDOFF-phase2), far inside this margin, so it cannot flip a pickup.
 pub fn try_pickup(inventory: &mut Inventory, item: &GroundItem, px: f32, py: f32) -> Pickup {
     if item.hidden {
         return Pickup::OutOfRange;
     }
-    if (item.x - px).hypot(item.y - py) > PICKUP_RADIUS {
+    if body_distance_to(px, py, item.x, item.y) > PICKUP_RADIUS {
         return Pickup::OutOfRange;
     }
     // docs/04 §1: the flashlight "occupies 1 inventory slot"; T3.6 step 3 makes
@@ -2035,30 +2056,101 @@ mod inventory_tests {
     }
 
     #[test]
+    fn a_player_standing_on_a_tile_reaches_the_item_on_it() {
+        // D41. The realistic case, derived from where a player actually
+        // STANDS rather than by teleporting them onto the item.
+        //
+        // docs/04 §3 places source-A items at the tile CENTRE; docs/01 §3
+        // step 5 rests the player's feet on the tile TOP. With a 28 px body
+        // that is a 22 px centre-to-centre separation against a 16 px radius,
+        // so a centre-relative test can never reach it — measured 0 of 500
+        // items across 50 maps.
+        //
+        // docs/04 §5 says "walking over a ground item (16 px radius)", and the
+        // feet are 8 px from the item. Distance is therefore measured from the
+        // player's BODY, not their centre.
+        use crate::map::Scale;
+        use crate::player::player_config::BODY_HALF_HEIGHT;
+        use crate::tiles::TILE_SIZE;
+
+        let map = Map::generate(7, Scale::Medium);
+        let mut reachable = 0;
+        let mut total = 0;
+        for seed in 0..20u64 {
+            let map = if seed == 0 { map.clone() } else { Map::generate(seed, Scale::Medium) };
+            let mut rng = GameRng::new(seed);
+            let mut ids = ItemIdCounter::default();
+            for item in place_initial(&map, &mut rng, &mut ids) {
+                total += 1;
+                // Where a player standing on that tile actually is.
+                let tile_y = (item.y / TILE_SIZE) as u32;
+                let player_y = tile_y as f32 * TILE_SIZE - BODY_HALF_HEIGHT;
+                let mut inv = Inventory::new();
+                if matches!(try_pickup(&mut inv, &item, item.x, player_y), Pickup::Taken { .. }) {
+                    reachable += 1;
+                }
+            }
+        }
+        assert_eq!(
+            reachable, total,
+            "only {reachable}/{total} source-A items are reachable by a player \
+             standing on their tile",
+        );
+    }
+
+    #[test]
     fn pickup_radius_is_sixteen_pixels() {
         // docs/04 §5: "walking over a ground item (16 px radius)".
+        //
+        // Measured from the player's BODY (24x28, half-extents 12x14), not
+        // their centre — D41. So the reach from the centre is 12 + 16 = 28 px
+        // horizontally and 14 + 16 = 30 px vertically, and the boundary is a
+        // rounded rectangle rather than a circle.
         let item = ground(ItemId::Medkit, 100.0, 100.0);
-        for (dx, dy, reachable) in [
-            (0.0, 0.0, true),
-            (15.9, 0.0, true),
-            (16.0, 0.0, true),
-            (16.1, 0.0, false),
-            (0.0, 16.0, true),
-            (0.0, 20.0, false),
-            // Diagonal: 12,12 is 16.97 px away — outside, though both axes are
-            // within 16. A box check instead of a circle would accept it.
-            (12.0, 12.0, false),
-            (11.0, 11.0, true),
+        for (dx, dy, reachable, why) in [
+            (0.0f32, 0.0f32, true, "item inside the body"),
+            (12.0, 0.0, true, "at the body's edge"),
+            (27.9, 0.0, true, "just inside 12 + 16 horizontally"),
+            (28.0, 0.0, true, "exactly 12 + 16"),
+            (28.2, 0.0, false, "just beyond 12 + 16"),
+            (0.0, 22.0, true, "the D41 case: a surface item below a standing player"),
+            (0.0, 29.9, true, "just inside 14 + 16 vertically"),
+            (0.0, 30.2, false, "just beyond 14 + 16"),
+            // Diagonal: body distance is hypot(24-12, 20-14) = hypot(12,6) = 13.4.
+            (24.0, 20.0, true, "diagonal inside the radius"),
+            // hypot(30-12, 30-14) = hypot(18,16) = 24.1 -> outside.
+            (30.0, 30.0, false, "diagonal outside the radius"),
         ] {
             let mut inv = Inventory::new();
             let result = try_pickup(&mut inv, &item, 100.0 + dx, 100.0 + dy);
             let taken = matches!(result, Pickup::Taken { .. });
             assert_eq!(
                 taken, reachable,
-                "offset ({dx},{dy}) = {:.2} px: expected reachable={reachable}",
-                (dx * dx + dy * dy).sqrt(),
+                "offset ({dx},{dy}) [{why}]: body distance {:.2}, expected reachable={reachable}",
+                body_distance_to(100.0 + dx, 100.0 + dy, item.x, item.y),
             );
         }
+    }
+
+    #[test]
+    fn body_distance_is_zero_inside_the_body_and_grows_outside() {
+        // The helper D41 turns on, pinned independently of pickup.
+        assert_eq!(body_distance_to(100.0, 100.0, 100.0, 100.0), 0.0);
+        assert_eq!(body_distance_to(100.0, 100.0, 111.0, 113.0), 0.0, "inside the AABB");
+        // 22 px below the centre is 8 px below the feet — the D41 geometry.
+        assert!((body_distance_to(100.0, 100.0, 100.0, 122.0) - 8.0).abs() < 1e-4);
+        // Purely horizontal.
+        assert!((body_distance_to(100.0, 100.0, 120.0, 100.0) - 8.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_crate_sized_offset_still_reaches() {
+        // Crates land on the tile TOP, 14 px from a standing player's centre,
+        // and worked even under the old centre-relative rule. They must keep
+        // working under the body-relative one.
+        let item = ground(ItemId::Medkit, 100.0, 114.0);
+        let mut inv = Inventory::new();
+        assert!(matches!(try_pickup(&mut inv, &item, 100.0, 100.0), Pickup::Taken { .. }));
     }
 
     #[test]

@@ -42,8 +42,11 @@ items::initial_tests::placement_a_respects_six_tile_spacing
 items::initial_tests::placement_a_sits_on_grass_tile_centres
 items::initial_tests::placement_draws_position_then_item
 items::initial_tests::source_a_uses_the_ground_weight_table
+items::inventory_tests::a_crate_sized_offset_still_reaches
 items::inventory_tests::a_full_inventory_still_rejects_a_duplicate_flashlight_as_already_held
+items::inventory_tests::a_player_standing_on_a_tile_reaches_the_item_on_it
 items::inventory_tests::a_second_flashlight_is_a_no_op
+items::inventory_tests::body_distance_is_zero_inside_the_body_and_grows_outside
 items::inventory_tests::hidden_items_cannot_be_picked_up
 items::inventory_tests::out_of_range_pickup_leaves_the_inventory_untouched
 items::inventory_tests::pickup_fills_the_first_free_slot
