@@ -515,3 +515,14 @@ At full-map zoom the tunnels read like canals (bore 30-52 px against a 28 px
 player) and the lower third is one undifferentiated mass. Both may be non-issues at
 the real gameplay zoom of 640x360 visible px. To be judged in M3 with textures and
 a camera, and tuned then. Do not tune blind before that.
+
+## T2.01 — Body and physics state — DONE
+Files: crates/game-core/src/physics/{body.rs,mod.rs}, lib.rs
+Verified: `cargo test -p game-core --lib body` — 8 passed
+Notes: pos is the CENTRE of the AABB. The test asserts exact numbers (92,86)-(108,114)
+       for a body at (100,100) so the convention is pinned, not assumed.
+       move_state is a free function over (grounded, jetpack_active), never a stored
+       field — a stored mode desyncs and strands players in a jetpack animation.
+       COYOTE_TICKS = 6 exported here; airborne_ticks is a tick count so coyote time
+       is exact rather than float-accumulated.
+Left for later: nothing

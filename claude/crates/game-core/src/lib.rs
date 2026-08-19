@@ -10,4 +10,5 @@
 pub mod constants;
 pub mod map;
 pub mod math;
+pub mod physics;
 pub mod rng;
