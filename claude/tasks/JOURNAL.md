@@ -294,3 +294,24 @@ Notes: iterative flood fill, ONE reused stack across all components. The
        scope before the second one allocates.
        Sky region = the air component containing (w/2, 0).
 Left for later: nothing
+
+## T1.09 — Pass 7a: walkable surface extraction — DONE
+Files: crates/game-core/src/map/gen/surface.rs, gen/mod.rs
+Verified: `cargo test -p game-core --lib surface` — 13 passed
+Notes: TWO REAL FINDINGS, both from tests failing first.
+  1. The doc's literal rule ("(x,y) air, (x,y+1) solid, box clear") rejected 168 of
+     192 sampled columns on a medium map — because requiring solid directly under
+     the CENTRE fails on any upslope: 8 px to the left the terrain is higher and
+     intrudes into the box. That is not how an AABB rests. is_standable now tests
+     the row under the whole box width for >= MIN_SUPPORT_PX (3) solid pixels.
+     Surface points on a medium map went 50 -> 135 for a partial pipeline.
+  2. MIN_SUPPORT_PX = 3 is also what rejects a 1-px pinnacle (physically 1 px does
+     stop an AABB, but nothing useful can be spawned there).
+  3. x must be bounds-checked explicitly: out-of-bounds reads as AIR, so an x a few
+     px off the left edge looked standable (outside half of the box "clear", inside
+     half found real support).
+  MEASURED with the full v2 pipeline (5 seeds each):
+     Small 73-172, Medium 212-285, Large 324-360 surface points.
+  A partial pipeline undercounts badly — islands, bridges and chambers all add
+  floors — so the plausibility test runs the full pipeline.
+Left for later: nothing

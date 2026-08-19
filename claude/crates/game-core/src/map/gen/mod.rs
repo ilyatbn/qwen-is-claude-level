@@ -18,5 +18,6 @@ pub mod components;
 pub mod network;
 pub mod silhouette;
 pub mod smooth;
+pub mod surface;
 
 pub use silhouette::{borders_hold, force_borders, solid_fraction, GenParams};

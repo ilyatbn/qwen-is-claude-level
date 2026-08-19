@@ -45,7 +45,7 @@ be eyeballed as PNGs.
 - [x] [T1.06c](M1/T1.06c-crevices-voids.md) — Pass 4b/4c: crevices and voids **(v2)**
 - [x] [T1.07](M1/T1.07-smoothing.md) — Pass 5: cellular-automata smoothing
 - [x] [T1.08](M1/T1.08-cleanup.md) — Pass 6: connected components and cleanup
-- [ ] [T1.09](M1/T1.09-surface.md) — Pass 7a: walkable surface extraction
+- [x] [T1.09](M1/T1.09-surface.md) — Pass 7a: walkable surface extraction
 - [ ] [T1.10](M1/T1.10-traversal.md) — Pass 7b–c: traversal graph and validation
 - [ ] [T1.11](M1/T1.11-generate.md) — The retry loop, safe preset, and `generate()`
 - [ ] [T1.12](M1/T1.12-spawns.md) — Pass 8: spawn point selection
