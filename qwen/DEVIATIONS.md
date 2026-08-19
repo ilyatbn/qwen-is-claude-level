@@ -1762,3 +1762,30 @@ is run as well, which is what actually guards the work. Recorded because the pat
 now four instances across the project (T2.1, T5.2, T5.3, T5.4) and it is a property of the
 task list rather than an accident: tasks whose Acceptance is visual were given a build
 command instead of a test command, and nothing reconciles the two.
+
+---
+
+### D54 — The manifest is bundled, not fetched
+
+docs/07 §2 says "BootScene loads manifest.json, then every referenced file", and T5.1
+step 5 says "fetch manifest". The manifest is instead **imported** — `import manifestJson
+from '../assets/manifest.json'` — because T5.1's own Files list puts it at
+`client/src/assets/manifest.json`, inside the bundled source tree, and a runtime `fetch`
+of a file in `src/` is not a thing Vite serves in a production build.
+
+The import buys the drift guard that matters: `const MANIFEST: AssetManifest =
+manifestJson` is checked by `tsc`, so a manifest that stops matching the loader's type is
+a build failure rather than a runtime surprise. A fetched manifest is `unknown` and would
+need its own validator to reach the same place.
+
+**The cost, stated plainly**: docs/07 §4 promises "adding a new skin later = add file +
+manifest entry ... no code change". Adding the *file* still needs no rebuild — `assets/`
+is served as-is. Adding the *manifest entry* now needs a client rebuild for a production
+bundle (in dev, Vite reloads on the JSON change). So the promise holds for art that fits
+paths the manifest already names, and costs a rebuild for art that does not.
+
+Also worth noting: docs/07 §1 puts the manifest at `assets/manifest.json` (repo root)
+while T5.1's Files list puts it at `client/src/assets/manifest.json`. They cannot both be
+right; the task's location was taken, since it is the more specific instruction, and the
+paths *inside* the manifest are docs/07 §2's verbatim (`processed/tiles/grass_1.png`),
+resolved by pointing Vite's `publicDir` at the repo-root `assets/` tree.

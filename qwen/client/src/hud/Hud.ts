@@ -34,6 +34,9 @@ export class Hud {
   private readonly panel?: Phaser.GameObjects.Image;
   private readonly feed = new KillFeed();
   private readonly scene: Phaser.Scene;
+  /** T5.4 step 3: bar fills as manifest UI textures, tinted per bar. */
+  private readonly barImages: Phaser.GameObjects.Image[] = [];
+  private readonly barTexture: string | null;
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene;
@@ -52,6 +55,20 @@ export class Hud {
           .setDepth(889)
       : undefined;
     this.bars = scene.add.graphics().setScrollFactor(0).setDepth(890);
+    const barKey = uiTextureKey('hud_bar');
+    this.barTexture = scene.textures.exists(barKey) ? barKey : null;
+    if (this.barTexture !== null) {
+      for (let i = 0; i < 3; i += 1) {
+        this.barImages.push(
+          scene.add
+            .image(0, 0, this.barTexture)
+            .setOrigin(0, 0)
+            .setScrollFactor(0)
+            .setDepth(890)
+            .setVisible(false),
+        );
+      }
+    }
     this.text = scene.add
       .text(16, 62, '', { font: '12px monospace', color: '#ffffff' })
       .setScrollFactor(0)
@@ -142,25 +159,30 @@ export class Hud {
     const x = 16;
     const width = 180;
 
-    // Health.
+    // Troughs stay drawn: they are background, not the styled element.
     g.fillStyle(0x000000, 0.6);
     g.fillRect(x - 2, 14, width + 4, 14);
-    g.fillStyle(0x3ac04a, 1);
-    g.fillRect(x, 16, width * view.healthFraction, 10);
-
-    // Jetpack fuel (5 s capacity).
     g.fillStyle(0x000000, 0.6);
     g.fillRect(x - 2, 32, width + 4, 10);
-    g.fillStyle(0x4aa3f0, 1);
-    g.fillRect(x, 34, width * view.jetpackFraction, 6);
-
-    // Shield: a bar only while active.
     if (view.shieldActive) {
       g.fillStyle(0x000000, 0.6);
       g.fillRect(x - 2, 46, width + 4, 10);
-      g.fillStyle(0xc9a227, 1);
-      g.fillRect(x, 48, width * Math.min(1, view.shieldRemaining / 20), 6);
     }
+
+    // T5.4 step 3: the fills use the manifest's hud_bar texture, tinted per
+    // bar, and fall back to drawn rects when there is no texture at all.
+    this.fill(0, x, 16, width * view.healthFraction, 10, 0x3ac04a);
+    // Jetpack fuel (5 s capacity).
+    this.fill(1, x, 34, width * view.jetpackFraction, 6, 0x4aa3f0);
+    // Shield: a bar only while active.
+    this.fill(
+      2,
+      x,
+      48,
+      view.shieldActive ? width * Math.min(1, view.shieldRemaining / 20) : 0,
+      6,
+      0xc9a227,
+    );
 
     const weapon =
       view.weaponName === null
@@ -170,6 +192,30 @@ export class Hud {
     this.text.setText(
       `${Math.ceil(view.health)}/${Math.ceil(view.maxHealth)}  ${weapon}${shield}`,
     );
+  }
+
+  /** One bar fill: a tinted UI texture, or a drawn rect if none is loaded. */
+  private fill(
+    index: number,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    colour: number,
+  ): void {
+    const image = this.barImages[index];
+    if (image === undefined) {
+      if (width > 0) {
+        this.bars.fillStyle(colour, 1);
+        this.bars.fillRect(x, y, width, height);
+      }
+      return;
+    }
+    if (width <= 0) {
+      image.setVisible(false);
+      return;
+    }
+    image.setVisible(true).setPosition(x, y).setDisplaySize(width, height).setTint(colour);
   }
 
   /**
@@ -201,6 +247,9 @@ export class Hud {
     this.text.destroy();
     this.clockText.destroy();
     this.panel?.destroy();
+    for (const image of this.barImages) {
+      image.destroy();
+    }
     for (const label of this.feedTexts) {
       label.destroy();
     }

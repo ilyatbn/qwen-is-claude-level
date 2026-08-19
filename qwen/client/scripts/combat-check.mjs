@@ -43,20 +43,27 @@ const loop = setInterval(() => {
   for (const bot of bots) {
     if (bot.self === null || bot.id === null) continue;
     const target = bot.other;
-    // Chase the other player; wander right when alone so items get walked over.
+    // Armed = holding something with ammo. Chasing a moving target and hitting
+    // it is a coin flip; firing a rocket at your own feet is not, and a
+    // self-kill exercises the same path plus docs/03 §6's "self-kills score
+    // nobody" rule. So: hunt for a weapon, then use it on yourself.
+    const armed = (bot.self.ammo?.[bot.self.selected] ?? 0) > 0;
     const dx = target === null ? 1 : target.x - bot.self.x;
     const dy = target === null ? 0 : target.y - bot.self.y;
     bot.socket.emit('input', {
       tick: bot.tick,
-      left: dx < -4,
-      right: dx > 4,
+      // Keep walking while unarmed so items get walked over (pickup is
+      // proximity-based, D41).
+      left: !armed && dx < -4,
+      right: !armed && dx > 4,
       up: false,
       down: false,
       // Jump often: spawns are on separate platforms and a bot that cannot
-      // climb never meets anyone.
-      jump: bot.tick % 20 < 3,
-      // Screen y grows downward; protocol angles are CCW positive (docs/06).
-      aim: Math.atan2(-dy, dx),
+      // climb never reaches anything.
+      jump: !armed && bot.tick % 20 < 3,
+      // Screen y grows downward; protocol angles are CCW positive (docs/06),
+      // so -PI/2 aims straight down at the ground the bot is standing on.
+      aim: armed ? -Math.PI / 2 : Math.atan2(-dy, dx),
       fire: true,
       use_slot: null,
     });

@@ -435,9 +435,9 @@ src/logic/fov.test.ts > documented FOV cases (docs/03 §7) > is 189 in fog by da
 src/logic/fov.test.ts > documented FOV cases (docs/03 §7) > is 420 in full day, healthy, no fog
 src/logic/fov.test.ts > documented FOV cases (docs/03 §7) > lets a flashlight cancel night but not fog or low health
 src/logic/fov.test.ts > documented FOV cases (docs/03 §7) > treats exactly 50 hp as healthy (docs says "health >= 50")
-src/logic/hudModel.test.ts > KillFeed > drops entries older than the 4 s TTL
+src/logic/hudModel.test.ts > KillFeed > drops entries older than the 4 s TTL (T5.4 step 2)
 src/logic/hudModel.test.ts > KillFeed > fades over the last second rather than vanishing
-src/logic/hudModel.test.ts > KillFeed > keeps only the last 5, newest first
+src/logic/hudModel.test.ts > KillFeed > keeps only the last 5, newest first (T5.4 step 2)
 src/logic/hudModel.test.ts > KillFeed > prunes, so a long round cannot grow the list without bound
 src/logic/hudModel.test.ts > day/night indicator > is the sun by day and the moon by night (docs/02 §1)
 src/logic/hudModel.test.ts > kill feed lines > names the weather for a null killer (docs/06 §2)
