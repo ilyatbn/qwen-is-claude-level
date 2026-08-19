@@ -255,6 +255,29 @@ mod tests {
     use crate::map::Scale;
 
     #[test]
+    fn set_aim_stores_the_angle_unvalidated() {
+        // docs/03 §8: "server stores it, no validation needed for v1".
+        let mut p = Player::new(0, "p".into(), Vec2::ZERO);
+        for angle in [0.0, 1.5, -2.0, 100.0, -100.0] {
+            p.set_aim(angle);
+            assert_eq!(p.facing, angle, "aim {angle} was altered");
+        }
+    }
+
+    #[test]
+    fn set_aim_rejects_non_finite_angles() {
+        // Not validation of RANGE (the doc declines that), but a NaN facing
+        // would poison every projectile spawned from it in T3.8 and would
+        // serialize as null in the snapshot.
+        let mut p = Player::new(0, "p".into(), Vec2::ZERO);
+        p.set_aim(1.0);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            p.set_aim(bad);
+            assert_eq!(p.facing, 1.0, "non-finite aim {bad} was stored");
+        }
+    }
+
+    #[test]
     fn body_dimensions_reconcile_all_three_docs() {
         // DEVIATIONS.md D6. If someone "fixes" the half-extents to 12x14 full,
         // this fails and points at the deviation.
@@ -458,6 +481,18 @@ impl Player {
             self.vel.x = AIR_MAX.max(previous_vx.min(self.vel.x));
         } else if direction < 0.0 && self.vel.x < -AIR_MAX {
             self.vel.x = (-AIR_MAX).min(previous_vx.max(self.vel.x));
+        }
+    }
+
+    /// Store the aim angle from an input frame (docs/03 §8, T2.8 step 1).
+    ///
+    /// "`aim` is a free angle from the client mouse (server stores it, no
+    /// validation needed for v1)." Non-finite values are rejected rather than
+    /// stored, since a NaN facing would poison every projectile spawned from
+    /// it (T3.8) and propagate into snapshots.
+    pub fn set_aim(&mut self, aim: f32) {
+        if aim.is_finite() {
+            self.facing = aim;
         }
     }
 

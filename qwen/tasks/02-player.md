@@ -151,7 +151,7 @@ Read `docs/03-player.md` in full before starting this file.
 
 ---
 
-## T2.8 — Aim + crosshair [ ]
+## T2.8 — Aim + crosshair [x]
 
 **Goal**: server stores aim; client draws circle + crosshair.
 **Read**: `docs/03-player.md` §8.

@@ -108,6 +108,8 @@ player::movement_tests::walking_left_mirrors_walking_right
 player::movement_tests::walking_off_a_cliff_leaves_the_ground
 player::tests::body_dimensions_reconcile_all_three_docs
 player::tests::player_defaults_match_doc
+player::tests::set_aim_rejects_non_finite_angles
+player::tests::set_aim_stores_the_angle_unvalidated
 player::tests::six_players_get_six_distinct_spawns
 player::tests::spawn_formula_does_not_bury_the_player
 player::tests::spawn_out_of_range_returns_none
@@ -160,6 +162,17 @@ src/devmap.test.ts > parseDevOptions > defaults to seed 1, small, no dev
 src/devmap.test.ts > parseDevOptions > falls back on a non-numeric seed
 src/devmap.test.ts > parseDevOptions > falls back on an unknown scale rather than producing a broken map
 src/devmap.test.ts > parseDevOptions > reads seed, scale and dev flag
+src/logic/aim.test.ts > aimAngle (docs/06 intro: 0 = right, CCW positive) > increases counter-clockwise through the first quadrant
+src/logic/aim.test.ts > aimAngle (docs/06 intro: 0 = right, CCW positive) > is independent of distance
+src/logic/aim.test.ts > aimAngle (docs/06 intro: 0 = right, CCW positive) > reports +π/2 for a point ABOVE the player
+src/logic/aim.test.ts > aimAngle (docs/06 intro: 0 = right, CCW positive) > reports +π/4 for up-and-right
+src/logic/aim.test.ts > aimAngle (docs/06 intro: 0 = right, CCW positive) > reports -π/2 for a point below the player
+src/logic/aim.test.ts > aimAngle (docs/06 intro: 0 = right, CCW positive) > reports 0 for a point to the right
+src/logic/aim.test.ts > aimAngle (docs/06 intro: 0 = right, CCW positive) > reports ±π for a point to the left
+src/logic/aim.test.ts > crosshairPosition (docs/03 §8) > places the crosshair above the player for +π/2
+src/logic/aim.test.ts > crosshairPosition (docs/03 §8) > round-trips with aimAngle
+src/logic/aim.test.ts > crosshairPosition (docs/03 §8) > sits on the ring at radius 60
+src/logic/aim.test.ts > crosshairPosition (docs/03 §8) > uses the documented 60 px radius by default
 src/logic/camera.test.ts > clampCamera (T1.10 step 1) > centres the map when the viewport is larger than it
 src/logic/camera.test.ts > clampCamera (T1.10 step 1) > clamps at the left and top edges
 src/logic/camera.test.ts > clampCamera (T1.10 step 1) > clamps at the right and bottom edges

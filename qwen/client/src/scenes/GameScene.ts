@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { Terrain } from '../entities/Terrain';
+import { Hud } from '../hud/Hud';
+import { aimAngle } from '../logic/aim';
 import { buildDevMap, parseDevOptions } from '../devmap';
 import { TerrainGrid } from '../logic/terrainGrid';
 import type { MapData } from '../protocol';
@@ -15,8 +17,13 @@ const DEBUG_PAN_SPEED = 600;
  */
 export class GameScene extends Phaser.Scene {
   private terrain?: Terrain;
+  private hud?: Hud;
   private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
   private debugCamera = false;
+  /** Stand-in for the local player until snapshots arrive (T2.9). */
+  private aimOrigin = { x: 0, y: 0 };
+  /** Latest aim angle, in the protocol convention (docs/06 intro). */
+  private aim = 0;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -30,6 +37,12 @@ export class GameScene extends Phaser.Scene {
     // dev map locally so any seed can be rendered offline.
     const map: MapData = buildDevMap(options.seed, options.scale);
     this.buildTerrain(map);
+
+    this.hud = new Hud(this);
+    this.aimOrigin = {
+      x: (map.width * 16) / 2,
+      y: (map.height * 16) / 2,
+    };
 
     if (this.debugCamera) {
       this.cursors = this.input.keyboard?.createCursorKeys();
@@ -50,6 +63,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number): void {
+    this.updateAim();
+
     if (!this.debugCamera || !this.cursors) {
       return;
     }
@@ -68,6 +83,19 @@ export class GameScene extends Phaser.Scene {
     if (this.cursors.down.isDown) {
       camera.scrollY += step;
     }
+  }
+
+  /** Mouse -> aim angle -> crosshair (T2.8 step 2). */
+  private updateAim(): void {
+    const pointer = this.input.activePointer;
+    const world = pointer.positionToCamera(this.cameras.main) as Phaser.Math.Vector2;
+    this.aim = aimAngle(this.aimOrigin.x, this.aimOrigin.y, world.x, world.y);
+    this.hud?.drawCrosshair(this.aimOrigin.x, this.aimOrigin.y, this.aim);
+  }
+
+  /** Current aim angle, for the input frame sent in T2.9. */
+  get aimAngle(): number {
+    return this.aim;
   }
 
   private addDebugOverlay(map: MapData): void {
