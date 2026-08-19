@@ -213,3 +213,17 @@ Notes: the load-bearing test is a_bridge_actually_connects_the_two_islands — a
        TEST TRAP: do not scan a whole column for "the lowest solid pixel" — bedrock
        is always solid, so the scan must be bounded to the bridge neighbourhood.
 Left for later: nothing
+
+## T1.06 — Pass 4: random-walk tunnels — DONE
+Files: crates/game-core/src/map/gen/caves.rs, gen/mod.rs
+Verified: `cargo test -p game-core caves` — 12 passed
+Notes: caves.rs also exports walk_to() (the STEERED walk) plus is_buried() and
+       out_of_carveable_bounds(), which T1.06b/T1.06c all reuse — do not write a
+       second walker.
+       Heading bias: sample a in -PI..PI, use a*0.55, mirror through PI on a coin
+       flip. Without it every tunnel drills down through bedrock and the map
+       becomes vertical shafts; there is a test over 50 seeds asserting mean |dx|
+       > mean |dy|.
+       Test helper caves::tests::air_reaches is the air flood fill; T1.06b's
+       reachability test uses the same idea.
+Left for later: nothing

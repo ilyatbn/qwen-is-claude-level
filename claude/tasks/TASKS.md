@@ -40,7 +40,7 @@ be eyeballed as PNGs.
 - [x] [T1.04](M1/T1.04-silhouette.md) — Pass 1–2: preset and silhouette
 - [x] [T1.05](M1/T1.05-blobs.md) — Pass 3: floating islands
 - [x] [T1.05b](M1/T1.05b-bridges.md) — Pass 3b: bridges between islands **(v2)**
-- [ ] [T1.06](M1/T1.06-caves.md) — Pass 4: random-walk tunnels
+- [x] [T1.06](M1/T1.06-caves.md) — Pass 4: random-walk tunnels
 - [ ] [T1.06b](M1/T1.06b-cave-network.md) — Pass 4: chambers, loops, entrances **(v2)**
 - [ ] [T1.06c](M1/T1.06c-crevices-voids.md) — Pass 4b/4c: crevices and voids **(v2)**
 - [ ] [T1.07](M1/T1.07-smoothing.md) — Pass 5: cellular-automata smoothing
