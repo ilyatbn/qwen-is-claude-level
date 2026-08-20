@@ -2265,3 +2265,24 @@ Left for later: nothing in M9.
        flush_events on readiness, so no broadcast could ever reach it. With bo
        readied, changing scope_of to Everyone fails properly. A scoping test on
        an unready socket asserts nothing.
+
+## FINDING (open) — the join window drops carves, exposed by T9.09
+Where: crates/game-server/src/{session,room}.rs, `flush_events` readiness gate.
+Symptom: `node scripts/e2e.mjs full-round` FAILS on "map resyncs during the
+       round: 1-2 per client". Everything else in that check passes: 7-9 deaths
+       (6-8 from combat), 3 weather effects, darkness 0->0.82, masks agree,
+       165k px destroyed, 0 page errors.
+Mechanism: `map_init` is encoded at JOIN with carve_seq = N, but events only
+       flush to READY sockets. Every carve between those two moments is dropped
+       for that client, so its first delivered carve is M+1 while it expects
+       N+1 — a permanent gap, resolved as a full resync 2 s later (docs/42 §6).
+       The window has always been open. It was invisible until T9.09 made the
+       bots actually fire and a round went from ~1 carve to hundreds.
+DO NOT REPEAT: re-sending `map_init` when `ready` is processed makes it WORSE
+       (resyncs 1 -> 4, measured). The second map_init resets nextCarveSeq
+       while carves are still in flight and opens a fresh gap. Reverted.
+Likely correct fix, NOT attempted: separate "ready for events" from "ready for
+       snapshots". The snapshot gate is what T6.16 actually needed (the 20 Hz
+       stream beat map_init mid-handshake). Carves can be delivered from join
+       onward because the client ALREADY buffers them by seq and drains on
+       map_init, dropping seq <= N as duplicates — so no gap can form.
