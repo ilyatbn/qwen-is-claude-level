@@ -1,6 +1,6 @@
 # Master task list
 
-101 tasks across 9 milestones.
+105 tasks across 10 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added. Counted, not assumed.) Work them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
@@ -194,3 +194,19 @@ changes the character.
 
 **Checkpoint:** Record a round, replay it headlessly, and confirm the final world
 hash matches. A bug can now be reproduced from a seed and a tick.
+
+---
+
+## M9 — The polish that makes it a game (4)
+
+Everything here was named by the people who built and played it, not by the
+original plan. Three are features whose **data already exists and was never
+drawn**; the fourth is two carried defects with their consequences attached.
+
+- [ ] [T9.01](M9/T9.01-audio.md) — Audio: cues, spatial attenuation, CC0 packs **(v2)**
+- [ ] [T9.02](M9/T9.02-decorations.md) — Draw `MapMeta.decorations`, generated since M1 **(v2)**
+- [ ] [T9.03](M9/T9.03-item-sprites.md) — Item, crate and pickup sprites **(v2)**
+- [ ] [T9.04](M9/T9.04-palette-and-rasteriser.md) — Theme contrast, and one capsule rasteriser **(v2)**
+
+**Checkpoint:** play a full round against bots with sound on, at night, on each of
+the three themes. It should be a game you want to keep playing.
