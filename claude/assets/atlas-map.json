@@ -2,16 +2,16 @@
   "_comment": [
     "Which vendor PNGs go into which atlas, under which frame name.",
     "",
-    "Frame names are OURS, not Kenney's (docs/51 §4). That indirection is the",
+    "Frame names are OURS, not Kenney's (docs/51 \u00a74). That indirection is the",
     "whole point: swapping art packs is an edit to this file, and skins.json",
     "never learns where a pixel came from.",
     "",
     "Paths are relative to assets/vendor/kenney/. A missing source is reported",
-    "and skipped — the atlas still builds, and the frame falls back to a",
-    "procedural placeholder at runtime (docs/50 §8)."
+    "and skipped \u2014 the atlas still builds, and the frame falls back to a",
+    "procedural placeholder at runtime (docs/50 \u00a78)."
   ],
   "chars": {
-    "_note": "Five colour/character variants of one rig, which is exactly the prefix scheme in docs/50 §2. Kenney gives a 2-frame walk cycle, so walk is a/b rather than a..d.",
+    "_note": "Five colour/character variants of one rig, which is exactly the prefix scheme in docs/50 \u00a72. Kenney gives a 2-frame walk cycle, so walk is a/b rather than a..d.",
     "_variants": {
       "adventurer": "platformer-characters/PNG/Adventurer/Poses/adventurer_",
       "female": "platformer-characters/PNG/Female/Poses/female_",
@@ -31,6 +31,27 @@
       "dead": "duck.png",
       "stand": "stand.png"
     }
+  },
+  "decor": {
+    "_note": "Decoration kinds are theme*6 + 0..5 (crates/game-core/src/map/meta.rs), so grassland is 0-5, desert 6-11, frost 12-17. Frame names are ours; a theme with no art for a kind simply skips it (docs/50 \u00a76).",
+    "decor_0": "pixel-platformer/Tiles/tile_0124.png",
+    "decor_1": "pixel-platformer/Tiles/tile_0125.png",
+    "decor_2": "pixel-platformer/Tiles/tile_0096.png",
+    "decor_3": "pixel-platformer/Tiles/tile_0097.png",
+    "decor_4": "pixel-platformer/Tiles/tile_0007.png",
+    "decor_5": "pixel-platformer/Tiles/tile_0128.png",
+    "decor_6": "pixel-platformer/Tiles/tile_0127.png",
+    "decor_7": "pixel-platformer/Tiles/tile_0008.png",
+    "decor_8": "pixel-platformer/Tiles/tile_0140.png",
+    "decor_9": "pixel-platformer/Tiles/tile_0084.png",
+    "decor_10": "pixel-platformer/Tiles/tile_0007.png",
+    "decor_11": "pixel-platformer/Tiles/tile_0110.png",
+    "decor_12": "pixel-platformer/Tiles/tile_0153.png",
+    "decor_13": "pixel-platformer/Tiles/tile_0154.png",
+    "decor_14": "pixel-platformer/Tiles/tile_0145.png",
+    "decor_15": "pixel-platformer/Tiles/tile_0126.png",
+    "decor_16": "pixel-platformer/Tiles/tile_0008.png",
+    "decor_17": "pixel-platformer/Tiles/tile_0146.png"
   },
   "fx": {
     "_note": "Transparent variants, not the black-background ones: the lightmap multiplies and additive blending both want real alpha.",

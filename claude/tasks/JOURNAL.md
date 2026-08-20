@@ -1989,3 +1989,34 @@ Notes: THE CHECK ASSERTS ON EFFECTS, NOT INTENT. Chromium with no audio device
        scales by fall speed rather than a second copy of the number client-side.
        Sound set: 17 cues / 23 files / 655 kB, four CC0 Kenney packs.
 Left for later: T9.02.
+
+## T9.02 — Draw the decorations — DONE
+Files: client/src/render/{decorations,decorations-math,decorations-math.test}.ts,
+       worldView.ts, scenes/SandboxScene.ts, assets/atlas-map.json,
+       scripts/build-atlas.mjs, scripts/checks/decorations.mjs, scripts/e2e.mjs
+Verified: `npm --prefix client test -- --run decorations-math` — 19 passed;
+       `node scripts/e2e.mjs decorations` — ok, 35 of 35 drawn, 5 in the viewport,
+       carving removes them. Falsified twice (nothing placed; destroyedBy never
+       reports a hit) — each fails the test that names it.
+Notes: I REPEATED A BUG THE GENERATOR ALREADY DOCUMENTS. My first support test
+       was `solidAt(x, y+1)` — the single pixel under the anchor — and it drew
+       10 of 35. `is_standable` in map/gen/surface.rs tests support ACROSS THE
+       BODY WIDTH, and its comment records why: on a slope the box rests on the
+       highest ground beneath it and the centre column is air, measured at 168 of
+       192 sampled columns rejected. Decorations are anchored to those same
+       surface points. Fixed by using surface.rs's own numbers (HALF_W 8,
+       MIN_SUPPORT_PX 3) rather than a similar-looking guess: 35 of 35.
+       MY FIRST FALSIFICATION HIT THE WRONG LINE, AGAIN. Disabling the compaction
+       branch still showed 35->34, because the sprite is destroyed before it.
+       Re-aimed at destroyedBy and it went red properly.
+       MY FIRST SCREENSHOT CONTAINED NO DECORATIONS (§A22) — an empty snowfield
+       while 35 props stood elsewhere. The check now frames one and asserts a
+       count inside the viewport before it shoots.
+       build-atlas.mjs REWROTE THE WHOLE MANIFEST and emptied manifest.audio on
+       every atlas rebuild — two writers to one file, each assuming it owned all
+       of it (§A24). It merges now, and both build orders were verified.
+Left for later: T9.03. NOTED: WorldView's docstring claimed the sandbox and the
+       game build the stack the same way; only GameScene uses it, and the sandbox
+       still builds it inline. Every addition has to be made twice — this is the
+       second feature to pay that. Comment corrected to say what is true;
+       migrating the sandbox deserves its own task.

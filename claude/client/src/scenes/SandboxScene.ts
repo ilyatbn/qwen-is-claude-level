@@ -21,6 +21,8 @@ import { Crosshair, LocalInput } from '../input/localInput'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { Minimap } from '../ui/minimap'
 import { traumaFromExplosion } from '../render/cameraRig-math'
+import { DecorationLayer } from '../render/decorations'
+import { fromMeta } from '../render/decorations-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { SkyLayer } from '../render/sky'
@@ -75,6 +77,7 @@ export class SandboxScene extends Phaser.Scene {
   private feelEnabled = true
   private minimap: Minimap | null = null
   /** Silent until audio.json loads; `docs/50` §8 — no assets is supported. */
+  private decor: DecorationLayer | null = null
   private audio = new Mixer()
   private audioSink: { unlock(): void; sampleCount: number; liveVoices: number; isUnlocked: boolean } | null = null
   private stepAcc = 0
@@ -310,6 +313,11 @@ export class SandboxScene extends Phaser.Scene {
     this.terrain.buildAll()
     this.timings.buildAllMs = performance.now() - t1
 
+    // Props, against the same mask the chunks were baked from.
+    this.decor?.destroy()
+    this.decor = new DecorationLayer(this)
+    this.decor.build(fromMeta(this.core.meta.decorations), (x, y) => this.core.solidAt(x, y))
+
     const spawn = this.core.meta.spawn_points[0] ?? { x: mapW / 2, y: mapH / 2 }
     // Spawn points are feet positions; the body is positioned by its centre.
     this.core.removePlayer(0)
@@ -340,6 +348,7 @@ export class SandboxScene extends Phaser.Scene {
 
   private carveAt(x: number, y: number): void {
     this.core.carve(x, y, this.carveRadius)
+    this.decor?.onCarve(x, y, this.carveRadius)
     const dirty = this.core.takeDirtyChunks()
     const t0 = performance.now()
     this.terrain.markDirty(dirty)
@@ -617,6 +626,9 @@ export class SandboxScene extends Phaser.Scene {
        * Audio state for the e2e check. `voices` and `gains` are effects — a
        * voice actually started with a real gain — not a count of play() calls.
        */
+      decorations() {
+        return { count: self.decor?.count ?? 0, total: self.core.meta.decorations.length }
+      },
       audio() {
         return {
           samples: self.audioSink?.sampleCount ?? 0,
@@ -828,6 +840,7 @@ export class SandboxScene extends Phaser.Scene {
       this.ordnance.removeProjectile(e.id)
       this.ordnance.addImpact(e.x, e.y, e.r)
       this.cue('explode', e.x, e.y)
+      this.decor?.onCarve(e.x, e.y, e.r)
       this.terrain.markDirty(this.core.takeDirtyChunks())
     this.minimap?.setTerrainDirty()
       // Trauma scaled by distance and blast size, from the layer that owns it

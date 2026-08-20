@@ -204,7 +204,7 @@ original plan. Three are features whose **data already exists and was never
 drawn**; the fourth is two carried defects with their consequences attached.
 
 - [x] [T9.01](M9/T9.01-audio.md) — Audio: cues, spatial attenuation, CC0 packs **(v2)**
-- [ ] [T9.02](M9/T9.02-decorations.md) — Draw `MapMeta.decorations`, generated since M1 **(v2)**
+- [x] [T9.02](M9/T9.02-decorations.md) — Draw `MapMeta.decorations`, generated since M1 **(v2)**
 - [ ] [T9.03](M9/T9.03-item-sprites.md) — Item, crate and pickup sprites **(v2)**
 - [ ] [T9.04](M9/T9.04-palette-and-rasteriser.md) — Theme contrast, and one capsule rasteriser **(v2)**
 

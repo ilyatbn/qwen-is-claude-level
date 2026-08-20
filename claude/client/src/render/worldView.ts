@@ -5,6 +5,13 @@
  * render paths is how the sandbox stops predicting what the game does — and the
  * sandbox is the tool everything after M3 is debugged with, so the moment it
  * renders differently it starts lying.
+ *
+ * **That is the intent, and it is not yet true.** `GameScene` uses this class;
+ * `SandboxScene` still builds the same stack inline, as it did before this class
+ * existed. So every addition here has to be made twice, which is precisely the
+ * drift the extraction was meant to end — T9.02's decoration layer is the second
+ * feature to pay that cost. Migrating the sandbox is worth its own task; until
+ * then this comment says what is, not what was intended.
  */
 
 import Phaser from 'phaser'
@@ -14,6 +21,8 @@ import { CameraRig } from './cameraRig'
 import { Backdrop, DEFAULT_THEME, DEPTH } from './backdrop'
 import { resolveTheme } from '../render/themes-math'
 import { makeBackTexture, makeEdgeTexture, makeFillTexture } from './procTextures'
+import { DecorationLayer } from './decorations'
+import { fromMeta } from './decorations-math'
 
 export interface WorldViewTimings {
   buildAllMs: number
@@ -23,6 +32,7 @@ export interface WorldViewTimings {
 export class WorldView {
   readonly terrain: TerrainRenderer
   readonly rig: CameraRig
+  readonly decorations: DecorationLayer
   readonly timings: WorldViewTimings = { buildAllMs: 0, lastRebakeMs: 0 }
 
   private readonly backdrop: Backdrop
@@ -62,6 +72,21 @@ export class WorldView {
     this.timings.buildAllMs = performance.now() - t0
 
     this.rig = new CameraRig(scene.cameras.main, mapW, mapH)
+
+    // Props last, so they are placed against the mask the chunks were baked
+    // from. Built here rather than in each scene for the same reason the rest of
+    // this class exists: two render paths that differ are two render paths that
+    // drift.
+    this.decorations = new DecorationLayer(scene)
+    this.decorations.build(fromMeta(core.meta.decorations), (x, y) => core.solidAt(x, y))
+  }
+
+  /**
+   * A carve landed. Re-bakes are the terrain's business; this removes the props
+   * that were standing on what just left.
+   */
+  onCarve(x: number, y: number, r: number): number {
+    return this.decorations.onCarve(x, y, r)
   }
 
   /** Re-bake the chunks a carve dirtied, within the per-frame budget. */
@@ -80,6 +105,7 @@ export class WorldView {
   }
 
   destroy(): void {
+    this.decorations.destroy()
     this.terrain.destroy()
     this.backdrop.destroy()
     this.container.destroy()

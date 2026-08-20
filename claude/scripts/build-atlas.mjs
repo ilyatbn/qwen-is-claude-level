@@ -220,13 +220,26 @@ const themes = existsSync(join(root, 'assets/terrain'))
       existsSync(join(root, 'assets/terrain', d, 'theme.json')),
     )
   : []
+//
+// **Merge, do not replace.** `build-audio.mjs` owns `manifest.audio` and this
+// script owns `manifest.atlases`; the first version of this wrote the whole
+// object and silently emptied the audio list every time an atlas was rebuilt.
+// Two writers to one file, each assuming it owned all of it (§A24).
+const manifestPath = join(root, 'assets/manifest.json')
+const existing = existsSync(manifestPath)
+  ? JSON.parse(readFileSync(manifestPath, 'utf8'))
+  : {}
 const manifest = {
+  ...existing,
   atlases: results
     .filter((r) => r.frames > 0)
     .map((r) => ({ key: r.name, png: `atlas/${r.name}.png`, json: `atlas/${r.name}.json` })),
-  images: [],
+  images: existing.images ?? [],
   themes,
-  audio: [],
+  audio: existing.audio ?? [],
 }
-writeFileSync(join(root, 'assets/manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
-console.log(`\nmanifest: ${manifest.atlases.length} atlas(es), ${themes.length} theme(s)`)
+writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+console.log(
+  `\nmanifest: ${manifest.atlases.length} atlas(es), ${themes.length} theme(s), ` +
+    `${manifest.audio.length} audio file(s)`,
+)
