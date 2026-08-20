@@ -1678,3 +1678,25 @@ Notes: A32 CHANGE 1 (BACKDROP_RAY_LEN 320->160) IS NOT ADOPTED. The stated
        be darker than its daytime sky by >30 lum. Measured margins grassland 171,
        desert 140, frost 142. Falsified — a bright frost backdrop fails it.
 Left for later: M8 (T8.01-T8.08) not started.
+
+## T8.01 — Replay recorder — DONE
+Files: crates/game-server/src/replay.rs (new), room.rs, lib.rs,
+       crates/game-server/tests/replay.rs (new)
+Verified: `cargo test -p game-server --test replay` — 11 passed;
+       `cargo test -p game-server --lib replay` — 13 passed.
+Notes: ReplayCommand is NOT a mirror of Command. Two differences carry weight:
+       Join/Inspect can't be recorded (oneshot sender, closure), and
+       DropUnready exists because sweep_unready fires on WALL-CLOCK elapsed
+       time — a replay has no clock, so without recording its effect a
+       replayed round keeps a seat the live round freed and diverges there.
+       Commands recorded AS APPLIED: Input is noted after seq filtering, so a
+       replay never re-simulates input the live round rejected.
+       docs/61 §4's "a few hundred KB" size estimate is WRONG and not close:
+       240s x 60Hz x 6 players = 86,400 accepted inputs x 14 bytes = 1.21 MB.
+       It omitted the player count and the input rate. Delta-encoding the tick
+       gives 0.95 MB; the Input payload alone is 0.60 MB, so no framing change
+       reaches the estimate. Test bound is 2 MB, with a 500 KB floor so it
+       cannot pass by recording nothing. NEEDS AN AMENDMENT.
+       My tag-uniqueness test was wrong before the code was — it deduped by
+       value, and every_command() carries two VoteRestarts on purpose.
+Left for later: T8.02 (the runner) is next and is the payoff.

@@ -189,6 +189,23 @@ impl Seats {
     }
 }
 
+/// Where `RECORD_REPLAY=1` writes. Bind-mounted in compose (`docs/62` §4), so a
+/// user asked for "the replay file" can actually find one after the container is
+/// gone.
+pub const REPLAY_DIR: &str = "replays";
+
+/// Seconds since the epoch, zero-padded so filenames sort chronologically.
+///
+/// The clock is read *here*, in the caller, and never inside the recorder —
+/// `docs/61` §4 is explicit that the replay runner has no clock, and a recorder
+/// that stamps itself cannot be asked for the same filename twice in a test.
+pub fn stamp_for(_seed: u64) -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    format!("{secs:012}")
+}
+
 pub struct Room {
     pub world: World,
     seats: Seats,
@@ -206,6 +223,16 @@ pub struct Room {
     /// Bots are seated newest-last, so kicking to make room for a human takes
     /// the one that has been playing for the shortest time.
     bot_seq: u32,
+    /// Present only when `RECORD_REPLAY=1`. A write error disables recording and
+    /// logs once rather than taking the round down: losing the debugging aid is
+    /// bad, losing the round because the debugging aid failed is worse.
+    replay: Option<crate::replay::ReplayWriter>,
+    /// So a phase transition can flush the recorder without polling for one.
+    last_recorded_phase: game_core::world::RoundPhase,
+    /// The seed and secret this room's world was built from, so a restart can
+    /// open a fresh replay file for the new round.
+    seed: u64,
+    buried_secret: u64,
 }
 
 impl Room {
@@ -232,6 +259,10 @@ impl Room {
             bots: Vec::new(),
             bot_seq: 0,
             round: crate::round::RoundController::new(seed),
+            replay: None,
+            last_recorded_phase: game_core::world::RoundPhase::Warmup,
+            seed,
+            buried_secret,
         };
         // `ROUND_SECONDS` is an environment override for testing (`docs/41` §5)
         // and it was parsed and then dropped: the world used the constant, so a
@@ -314,9 +345,31 @@ impl Room {
         }
     }
 
+    /// Note the command in the replay, if one is being recorded.
+    ///
+    /// A write failure drops the recorder and logs once. The alternative — an
+    /// error path that can end a live round — trades a real game for a debugging
+    /// aid, which is the wrong way round.
+    fn note(&mut self, cmd: crate::replay::ReplayCommand) {
+        let tick = self.world.tick;
+        let Some(w) = self.replay.as_mut() else {
+            return;
+        };
+        if let Err(e) = w.record(tick, &cmd) {
+            tracing::error!(target: "game::round", "replay recording stopped: {e}");
+            self.replay = None;
+        }
+    }
+
     /// Apply one command. Nothing here can panic on client-controlled data: every
     /// index is bounds-checked by the callee and every unknown id is a no-op.
+    ///
+    /// Commands are recorded **as applied**, not as received: `Input` is noted
+    /// after sequence filtering, and a command for an unseated player is not
+    /// noted at all. A replay that re-applied rejected input would simulate
+    /// something the live round never did.
     fn apply(&mut self, cmd: Command) {
+        use crate::replay::ReplayCommand as R;
         match cmd {
             Command::Join {
                 name,
@@ -328,6 +381,10 @@ impl Room {
                     id = self.seats.alloc(self.config.max_players);
                 }
                 if let Some(id) = id {
+                    self.note(R::Join {
+                        name: name.clone(),
+                        skin_id,
+                    });
                     self.world.add_player(id, skin_id, name);
                     self.grant_dev_loadout(id);
                 }
@@ -336,12 +393,14 @@ impl Room {
             Command::Ready(id) => {
                 if let Some(s) = self.seats.get_mut(id) {
                     s.ready = true;
+                    self.note(R::Ready(id));
                 }
             }
             Command::Input(id, inputs) => {
                 let Some(seat) = self.seats.get_mut(id) else {
                     return;
                 };
+                let mut accepted = Vec::new();
                 for input in inputs {
                     // Duplicates and stale sequences are rejected, which is what
                     // makes INPUT_REDUNDANCY free rather than a source of
@@ -355,26 +414,46 @@ impl Room {
                     }
                     seat.last_seq = input.seq;
                     seat.accepted_this_tick += 1;
-                    self.world.queue_input(id, input);
+                    accepted.push(input);
                 }
                 if seat.dropped_this_tick > 0 {
                     let n = seat.dropped_this_tick;
                     tracing::debug!(target: "game::net", player = id, dropped = n, "input queue full");
                 }
+                if !accepted.is_empty() {
+                    self.note(R::Input(id, accepted.clone()));
+                    for input in accepted {
+                        self.world.queue_input(id, input);
+                    }
+                }
             }
             Command::UseItem(id, slot) => {
                 let now = self.world.round_time;
+                self.note(R::UseItem(id, slot));
                 let _ = self.world.use_item(id, slot, now);
             }
-            Command::SelectSlot(id, slot) => self.world.select_slot(id, slot),
+            Command::SelectSlot(id, slot) => {
+                self.note(R::SelectSlot(id, slot));
+                self.world.select_slot(id, slot)
+            }
             Command::Fire(id) => {
                 let now = self.world.round_time;
+                self.note(R::Fire(id));
                 let _ = self.world.fire(id, now);
             }
-            Command::ToggleFlashlight(id) => self.world.toggle_flashlight(id),
-            Command::VoteRestart(id, v) => self.round.vote(&self.world, id, v),
+            Command::ToggleFlashlight(id) => {
+                self.note(R::ToggleFlashlight(id));
+                self.world.toggle_flashlight(id)
+            }
+            Command::VoteRestart(id, v) => {
+                self.note(R::VoteRestart(id, v));
+                self.round.vote(&self.world, id, v)
+            }
+            // Not recorded: a resync sends the client a fresh map and changes
+            // nothing about the simulation.
             Command::ResyncMap(_) => {}
             Command::Leave(id) => {
+                self.note(R::Leave(id));
                 self.seats.free_seat(id);
                 self.world.remove_player(id);
                 self.round.forget(id);
@@ -397,6 +476,10 @@ impl Room {
             .collect();
         for id in &stale {
             tracing::info!(target: "game::net", player = id, "dropping: never sent ready");
+            // Recorded, because this fires on wall-clock elapsed time and a
+            // replay has no clock. Without it a replayed round keeps a seat the
+            // live round freed, and diverges from there.
+            self.note(crate::replay::ReplayCommand::DropUnready(*id));
             self.seats.free_seat(*id);
             self.world.remove_player(*id);
         }
@@ -452,6 +535,15 @@ impl Room {
         let connected = self.seats.seats.len();
         let min = self.config.min_players_to_start;
         let (mut events, outcome) = self.round.tick(&mut self.world, connected, min);
+
+        // Flush on a phase transition, not per command. A round that dies during
+        // `Playing` then still has its warmup on disk, and the cost is four
+        // flushes a round rather than thousands.
+        if self.world.phase != self.last_recorded_phase {
+            self.last_recorded_phase = self.world.phase;
+            self.flush_recording();
+        }
+
         match outcome {
             crate::round::RoundOutcome::Continue => {}
             crate::round::RoundOutcome::Restart { seed } => {
@@ -469,11 +561,107 @@ impl Room {
     /// Everyone already seated keeps their seat and gets a fresh `map_init` —
     /// the alternative, dropping every socket, turns a vote into a reconnect
     /// storm.
+    /// Open a replay file for the current round. No-op unless `RECORD_REPLAY=1`.
+    ///
+    /// `stamp` comes from the caller because the recorder has no business
+    /// reading a clock: a recorder that timestamps itself cannot be asked to
+    /// write the same file name twice in a test, and the runner has no clock at
+    /// all (`docs/61` §4).
+    pub fn start_recording(&mut self, dir: &std::path::Path, stamp: &str) {
+        if !self.config.record_replay {
+            return;
+        }
+        let header =
+            crate::replay::ReplayHeader::from_config(&self.config, self.seed, self.buried_secret);
+        match crate::replay::ReplayWriter::create(dir, stamp, &header) {
+            Ok(w) => {
+                tracing::info!(
+                    target: "game::round",
+                    path = %w.path().display(),
+                    seed = self.seed,
+                    "recording replay"
+                );
+                self.replay = Some(w);
+            }
+            Err(e) => {
+                tracing::error!(target: "game::round", "could not start replay: {e}");
+            }
+        }
+    }
+
+    /// Close the current replay, writing the footer that makes it verifiable.
+    ///
+    /// Called on graceful shutdown and on a restart. A round that ends without
+    /// this still replays — it just cannot be checked, which is why the footer
+    /// is optional in the reader rather than required.
+    pub fn finish_recording(&mut self) {
+        let Some(w) = self.replay.take() else {
+            return;
+        };
+        let scores: Vec<(PlayerId, i16)> =
+            self.world.players.iter().map(|p| (p.id, p.score)).collect();
+        match w.finish(&self.world, &scores) {
+            Ok(path) => tracing::info!(
+                target: "game::round",
+                path = %path.display(),
+                tick = self.world.tick,
+                "replay written"
+            ),
+            Err(e) => tracing::error!(target: "game::round", "replay footer failed: {e}"),
+        }
+    }
+
+    /// Flush without closing, so a round killed mid-`Playing` still has its
+    /// earlier phases on disk.
+    pub fn flush_recording(&mut self) {
+        if let Some(w) = self.replay.as_mut() {
+            if let Err(e) = w.flush() {
+                tracing::error!(target: "game::round", "replay flush failed: {e}");
+                self.replay = None;
+            }
+        }
+    }
+
+    /// How many commands the recorder has written.
+    ///
+    /// Public because the replay tests live in `tests/`, which is a separate
+    /// crate and cannot see `#[cfg(test)]` items. Same reason `Command::Inspect`
+    /// exists — the alternative is a test that asserts on the file instead of on
+    /// the thing that wrote it.
+    pub fn recorded_commands(&self) -> u64 {
+        self.replay.as_ref().map_or(0, |w| w.commands)
+    }
+
+    /// Apply one command directly, bypassing the channel. Test hook.
+    pub fn apply_for_test(&mut self, cmd: Command) {
+        self.apply(cmd);
+    }
+
+    /// Run the unready sweep with an explicit timeout. Test hook: the production
+    /// caller passes `READY_TIMEOUT`, and a test that had to wait 30 s to see a
+    /// sweep would not be written.
+    pub fn sweep_unready_for_test(&mut self, timeout: Duration) -> Vec<PlayerId> {
+        self.sweep_unready(timeout)
+    }
+
+    /// Reset the per-tick input allowance without stepping the world. Test hook
+    /// for measuring what a tick's *commands* cost, separately from what the
+    /// simulation costs.
+    pub fn begin_tick_for_test(&mut self) {
+        self.seats.begin_tick();
+    }
+
     fn restart(&mut self, seed: u64) -> Vec<game_core::world::GameEvent> {
         let buried_secret = match self.config.fixed_seed {
             Some(_) => 0,
             None => seed.rotate_left(17) ^ 0x9E37_79B9_7F4A_7C15,
         };
+        // One file per round. A single file spanning a restart would carry two
+        // seeds and two maps, and the footer hash could only describe one of them.
+        let recording = self.replay.is_some();
+        self.finish_recording();
+        self.seed = seed;
+        self.buried_secret = buried_secret;
         let seated: Vec<(PlayerId, u16)> = self
             .world
             .players
@@ -490,6 +678,9 @@ impl Room {
         self.world.set_phase(game_core::world::RoundPhase::Warmup);
         self.last_checksum_at = 0.0;
         tracing::info!(target: "game::round", seed, "round restarted");
+        if recording {
+            self.start_recording(std::path::Path::new(REPLAY_DIR), &stamp_for(seed));
+        }
         self.world.drain_events()
     }
 
@@ -575,6 +766,7 @@ async fn run(
     mut shutdown: oneshot::Receiver<()>,
 ) {
     let mut room = Room::new_async(config).await;
+    room.start_recording(std::path::Path::new(REPLAY_DIR), &stamp_for(room.seed));
     let mut ticker = interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
     // Burst, so a 50 ms descheduling is caught up rather than silently making the
     // round run slow — round time stays true to wall-clock (`docs/41` §2).
@@ -631,6 +823,9 @@ async fn run(
             _ = &mut shutdown => {
                 tracing::info!(target: "game::round", "shutting down");
                 crate::events::emit_round_end(&io, room.world.tick, "server_shutdown");
+                // Before the break, or `docker compose down` truncates exactly
+                // the round someone wanted to inspect (`docs/41` §7).
+                room.finish_recording();
                 break;
             }
         }

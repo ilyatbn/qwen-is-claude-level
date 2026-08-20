@@ -8,6 +8,7 @@ pub mod codec;
 pub mod config;
 pub mod events;
 pub mod logging;
+pub mod replay;
 pub mod room;
 pub mod round;
 pub mod session;

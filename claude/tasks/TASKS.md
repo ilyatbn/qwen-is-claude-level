@@ -181,7 +181,7 @@ changes the character.
 
 ## M8 — Polish and operations (5)
 
-- [ ] [T8.01](M8/T8.01-replay-record.md) — Replay recorder
+- [x] [T8.01](M8/T8.01-replay-record.md) — Replay recorder
 - [ ] [T8.02](M8/T8.02-replay-binary.md) — Headless replay binary
 - [ ] [T8.03](M8/T8.03-debug-hud.md) — F3 debug HUD
 - [ ] [T8.04](M8/T8.04-metrics.md) — `/metrics`, `DEBUG_DUMP`, log audit
