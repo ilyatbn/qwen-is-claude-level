@@ -1297,3 +1297,30 @@ at zoom 1. Every screen-space element is verified by screenshot **at
 And the meta-lesson, from a probe that failed to converge: when two candidate
 mappings both produce nothing, the model is wrong and guessing a third will not
 help. Go and find what already works in the codebase.
+
+## A36 — `ping_rtt`, and the number that was a constant
+
+`42-netcode-prediction.md` §7 says RTT "is measured from socket.io's own
+ping/pong". That measurement is not reachable from the application layer in this
+client, so `ClockSync` was fed `addSample(..., 0)` — it had the whole estimator and
+nothing ever supplied a sample. The debug HUD's headline number was a hardcoded
+zero, and it looked like a working readout.
+
+`40-net-protocol.md` §2 gains one message pair:
+
+| direction | event | payload |
+|---|---|---|
+| client → server | `ping_rtt` | `{ id: u32 }` |
+| server → client | `pong_rtt` | `{ id: u32 }` |
+
+The client stamps a send time per `id`, echoes are matched on it, and the round
+trip feeds `ClockSync`. Sent at 1 Hz — RTT changes far more slowly than anything
+else on the wire, and the debug HUD is the only consumer. Reads 9.8–14.0 ms on
+loopback.
+
+`42-netcode-prediction.md` §7's design is unchanged: an exponentially-weighted mean
+that rejects samples more than 3σ out. It just has an input now.
+
+The general point is the one §A15 already made and this repeats in a new place:
+**a readout that cannot fail is not a readout.** A zero RTT is indistinguishable
+from a perfect connection, which is exactly what it looked like.
