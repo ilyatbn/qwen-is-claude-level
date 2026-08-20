@@ -128,7 +128,7 @@ take self-damage, and see the inventory panel open on right-click.
 
 ## M5 — Weather and the day/night cycle (7)
 
-- [ ] [T5.01](M5/T5.01-scheduler.md) — The effect scheduler
+- [x] [T5.01](M5/T5.01-scheduler.md) — The effect scheduler
 - [ ] [T5.02](M5/T5.02-toxic-rain.md) — Toxic rain
 - [ ] [T5.03](M5/T5.03-meteor-shower.md) — Meteor shower
 - [ ] [T5.04](M5/T5.04-lava-burst.md) — Lava bursts and `carve_capsule`

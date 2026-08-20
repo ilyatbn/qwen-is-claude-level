@@ -1005,3 +1005,23 @@ Notes: MAJOR 1 — items early-returned on `grounded` forever, so anything stand
        air showing daylight is the recurring, confusing failure; sky drawn dark
        reads as haze.
 Left for later: M5. Buried-slots-not-sent-to-clients verified at T6.04.
+
+## T5.01 — The effect scheduler — DONE
+Files: crates/game-core/src/effects/{mod,scheduler}.rs, crates/game-core/src/lib.rs
+Verified: `cargo test -p game-core scheduler` — 15 passed
+Notes: SPEC CONTRADICTION in docs/13 §1: "never repeat the same effect twice in a
+       row" and "re-roll once if it comes up again" are incompatible — re-rolling
+       once still repeats with probability w_i/total, measured at 9% per step for
+       the weight-3 kinds, so over 1000 effects a repeat is certain. Fixed by
+       zeroing the last kind's weight and drawing ONCE: repeats impossible by
+       construction, and a single draw from the remaining weights is exactly the
+       conditional distribution, so it is unbiased. (The task file's warning is
+       about a re-roll LOOP; this is not a loop.) Stationary distribution is
+       0.284/0.284/0.216/0.216, not the raw 0.30/0.30/0.20/0.20 — the test asserts
+       the former AND that the shares are distinguishable from the latter, so it
+       cannot pass against an implementation with no rule at all.
+       MY OWN ANTI-DRIFT TEST WAS VACUOUS. At 60 Hz, `next_at = now + interval`
+       and `next_at += interval` differ by half a tick per interval — invisible.
+       Falsification caught it. The replacement ticks the same seed at DT and at
+       0.5 s and requires identical schedules; it fails against the bug.
+Left for later: T5.02 onward.
