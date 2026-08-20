@@ -9,6 +9,7 @@ pub mod config;
 pub mod events;
 pub mod logging;
 pub mod metrics;
+pub mod registry;
 pub mod replay;
 pub mod room;
 pub mod round;

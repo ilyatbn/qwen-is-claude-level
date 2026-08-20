@@ -2321,3 +2321,45 @@ Notes: READINESS FOR EVENTS AND FOR SNAPSHOTS ARE DIFFERENT THINGS (§A40). The
        `carves2.len() >= 10` — without carves in the window it would pass against
        a server that drops every one of them.
 Left for later: nothing in M9.
+
+## T10.01 — RoomRegistry: many rooms in one process — DONE
+Files: crates/game-server/src/{registry,app,session,events,room,state}.rs,
+       crates/game-server/tests/rooms.rs, crates/game-core/src/constants.rs (v3 block)
+Verified: `cargo test -p game-server --test rooms` — 6 passed; full server suite
+       174 passed / 0 failed; fmt + clippy -D warnings clean.
+Notes: SCOPING USES THE ROOM'S OWN SessionMap, NOT socket.io rooms. Each room
+       already owns the list that backs per-owner delivery, so broadcasts iterate
+       that same list and there is one answer to "who is in this room" instead of
+       two that can disagree (§A24). Every `io.sockets()` in an output path is
+       gone: flush_events, broadcast_except, emit_round_end, emit_mask_checksum.
+       FALSIFIED AT THE LIVE BINDING SITE: restoring `io.sockets()` in
+       broadcast_except fails with "ana was told about a join in another room,
+       left: 1, right: 0". The negative test carries its control —
+       `two_clients_in_one_room_do_hear_each_other` — because "neither hears the
+       other" also passes for a server whose broadcast is broken entirely.
+       MY OWN TEST HELPER HAD THE §A11 BUG IT WAS WRITTEN TO CATCH. It took
+       `.last()` of `io.sockets()` to find the newest socket; that collection has
+       no defined order, so it picked wrong about a third of the time and seated
+       the second client in the first one's room. Set difference against a
+       pre-connect snapshot instead. Flaky 1-in-3 -> 6/6.
+       A REAL BUG THE SWEEP FOUND: normalise_code folded 'L' -> '1' (Crockford's
+       rule), but the alphabet EXCLUDES 0/1/I/O and INCLUDES L — so ~17% of
+       generated codes could never be looked up. The single-code test passed
+       five times in six. Fixed by not folding at all (every confusable
+       character is already absent, so a code containing one was misread and no
+       substitution recovers it), plus a 500-code round-trip sweep whose control
+       asserts an 'L' actually appeared in the sample.
+       /healthz reported a hardcoded `rooms: 1`. The registry publishes into the
+       same gauge now — the two-sources-of-truth trap /healthz was already caught
+       by once.
+       Stack::shutdown is a relay: rooms belong to the registry, so signalling it
+       drops them all, and main still waits on the handles so the replay footer
+       is written (`docs/41` §7, asserted by two tests).
+       emit_to (inventory/damage) is DELIBERATELY UNGATED and now says so in the
+       code: broadcasts gate on map delivery (§A40), snapshots on `ready`, and a
+       third unwritten rule is how the original join gap survived four
+       milestones. Scoped events are JSON (no binary interleave), carry no
+       ordering token, and are re-sent at join anyway (T9.08).
+Left for later: T10.02 wires the lobby messages; until then a socket joins the
+       default room and tests move it via the registry directly. JOIN_EVENT_QUEUE
+       overflow is still only asserted at the seam, never through a real socket.

@@ -559,6 +559,57 @@ pub const MINIMAP_ALPHA: f32 = 0.75;
 /// World px revealed around the player each tick.
 pub const MINIMAP_REVEAL_R: f32 = 260.0;
 
+// ---- v3 amendments ----  mirrors docs/71-amendments-v3.md
+
+// --- B1: multiple concurrent rooms ---
+
+/// Provisional until T10.07 measures it. `docs/71` §B2 is explicit that this is
+/// **not** to stay a guess: a room over budget does not merely run slow, because
+/// `MissedTickBehavior::Burst` catches up in a spike.
+pub const MAX_ROOMS: usize = 8;
+/// Seconds after the last **human** leaves before the room is dropped. Bots do
+/// not keep a room alive.
+pub const ROOM_EMPTY_TTL: f32 = 30.0;
+pub const JOIN_CODE_LEN: usize = 6;
+/// No `I`, `1`, `O` or `0` — people read these aloud.
+pub const JOIN_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+/// Quick match seats bots and starts rather than leaving someone on a spinner,
+/// for the same reason `MIN_PLAYERS_TO_START` is 1.
+pub const QUEUE_WAIT_BEFORE_BOTS: f32 = 20.0;
+
+// --- B4: death and the respawn timer ---
+// RESPAWN_DELAY moved to 5.0 by §B4; it lives with the other player constants.
+
+// --- B5: the battery ---
+
+pub const BATTERY_MAX: f32 = 100.0;
+pub const BATTERY_PACK_AMOUNT: f32 = 50.0;
+/// Battery per second while a shield is up. The shield ends early at zero, so
+/// every laser shot is a shield you are not going to have.
+pub const SHIELD_DRAIN: f32 = 2.0;
+/// Energy weapons pierce: this replaces `SHIELD_DAMAGE_MULT` for them.
+pub const LASER_SHIELD_MULT: f32 = 0.85;
+/// Drained from the victim on an energy hit, which cuts a shield's life directly.
+pub const LASER_BATTERY_DRAIN: f32 = 8.0;
+
+// --- B7: the arsenal ---
+
+pub const AIRBURST_PELLETS: u32 = 9;
+/// Radians, downward.
+pub const AIRBURST_FAN: f32 = 0.9;
+pub const FOV_SMOKE_MULT: f32 = 0.35;
+pub const SMOKE_RADIUS: f32 = 110.0;
+pub const SMOKE_DURATION: f32 = 8.0;
+pub const MINE_ARM_TIME: f32 = 1.0;
+pub const MINE_TRIGGER_RADIUS: f32 = 36.0;
+pub const MINE_LIFETIME: f32 = 90.0;
+
+// --- B8: tombstones ---
+
+pub const TOMBSTONE_W: f32 = 14.0;
+pub const TOMBSTONE_H: f32 = 18.0;
+pub const MAX_TOMBSTONES: usize = 32;
+
 // ---------------------------------------------------------------------------
 // Map scale and its per-scale parameter table
 // ---------------------------------------------------------------------------

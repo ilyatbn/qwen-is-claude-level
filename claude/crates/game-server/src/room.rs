@@ -97,6 +97,30 @@ impl RoomHandle {
         }
     }
 
+    /// A handle to nothing, for tests that exercise bookkeeping around rooms
+    /// rather than rooms themselves.
+    ///
+    /// The registry's lifecycle logic — codes, capacity, reaping, quick-match
+    /// tie-breaks — has nothing to do with simulation, and a real room task
+    /// ticks at 60 Hz and generates a map first. Making those tests spawn one
+    /// would cost minutes and would assert on timing rather than on the logic.
+    /// The shutdown receiver is held so dropping the handle still stops
+    /// whatever the caller wired up.
+    #[cfg(test)]
+    pub fn inert(shutdown: oneshot::Receiver<()>) -> Self {
+        // No task, so this works outside a Tokio runtime: the registry's
+        // lifecycle logic is synchronous and its tests should be too.
+        // The receiver is dropped, so `send` fails and logs at debug — the same
+        // path a real room takes when its channel is gone. Leaking one to make
+        // sends succeed would be leaking a channel per test room.
+        let (tx, _rx) = mpsc::channel(1);
+        drop(shutdown);
+        RoomHandle {
+            tx,
+            task: Arc::new(tokio::sync::Mutex::new(None)),
+        }
+    }
+
     /// Wait for the room task to finish, up to `grace`.
     ///
     /// Returns whether it stopped in time. A room that does not stop is a bug
@@ -933,7 +957,14 @@ pub fn spawn_room(
     config: Arc<Config>,
     shutdown: oneshot::Receiver<()>,
 ) -> RoomHandle {
-    spawn_room_with(io, config, Arc::new(SessionMap::default()), shutdown, None)
+    spawn_room_with(
+        io,
+        config,
+        Arc::new(SessionMap::default()),
+        shutdown,
+        None,
+        0,
+    )
 }
 
 /// As [`spawn_room`], but sharing a [`SessionMap`] with the socket layer so events
@@ -944,15 +975,17 @@ pub fn spawn_room_with(
     sessions: Arc<SessionMap>,
     shutdown: oneshot::Receiver<()>,
     metrics: Option<Arc<crate::metrics::Metrics>>,
+    room_id: u32,
 ) -> RoomHandle {
     let (tx, rx) = mpsc::channel(1024);
-    let task = tokio::spawn(run(io, config, sessions, rx, shutdown, metrics));
+    let task = tokio::spawn(run(io, config, sessions, rx, shutdown, metrics, room_id));
     RoomHandle {
         tx,
         task: Arc::new(tokio::sync::Mutex::new(Some(task))),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     io: SocketIo,
     config: Arc<Config>,
@@ -960,6 +993,7 @@ async fn run(
     mut rx: mpsc::Receiver<Command>,
     mut shutdown: oneshot::Receiver<()>,
     metrics: Option<Arc<crate::metrics::Metrics>>,
+    room_id: u32,
 ) {
     let mut room = Room::new_async(config).await;
     let dir = std::path::PathBuf::from(room.config.replay_dir.clone());
@@ -977,7 +1011,7 @@ async fn run(
                 // One span per tick, so every line logged inside the loop carries
                 // `room` and `tick` automatically rather than by remembering
                 // (`docs/61-logging-debug.md` §2).
-                let span = tracing::info_span!("room", room = 0, tick = room.world.tick + 1);
+                let span = tracing::info_span!("room", room = room_id, tick = room.world.tick + 1);
                 let _g = span.enter();
 
                 let tick_started = Instant::now();
@@ -1022,7 +1056,7 @@ async fn run(
 
                 if room.due_for_checksum() {
                     let hash = room.world.map.mask.hash_hex();
-                    crate::events::emit_mask_checksum(&io, room.world.tick, &hash);
+                    crate::events::emit_mask_checksum(&io, &sessions, room.world.tick, &hash);
                 }
 
                 // Expected tick count from wall-clock, so a slow tick shows up.
@@ -1038,7 +1072,7 @@ async fn run(
             }
             _ = &mut shutdown => {
                 tracing::info!(target: "game::round", "shutting down");
-                crate::events::emit_round_end(&io, room.world.tick, "server_shutdown");
+                crate::events::emit_round_end(&io, &sessions, room.world.tick, "server_shutdown");
                 // Before the break, or `docker compose down` truncates exactly
                 // the round someone wanted to inspect (`docs/41` §7).
                 room.finish_recording();

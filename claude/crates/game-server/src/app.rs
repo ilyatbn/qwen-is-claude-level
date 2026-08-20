@@ -52,35 +52,104 @@ async fn metrics(State(state): State<AppState>) -> String {
 pub struct Stack {
     pub router: Router,
     pub io: SocketIo,
+    /// The default room, for tests that predate the registry and only ever want
+    /// one. New code should go through `registry`.
     pub room: crate::room::RoomHandle,
     pub sessions: std::sync::Arc<crate::session::SessionMap>,
-    /// Dropping or sending on this stops the room task.
+    pub registry: std::sync::Arc<std::sync::Mutex<crate::registry::RoomRegistry>>,
+    pub default_room: crate::registry::RoomId,
+    /// Kept for API compatibility; rooms are stopped through the registry.
     pub shutdown: tokio::sync::oneshot::Sender<()>,
+}
+
+impl Stack {
+    /// Stop every room and wait for the tasks, so a replay footer is written
+    /// (`docs/41` §7).
+    pub async fn shutdown_all(&self, grace: std::time::Duration) {
+        let handles = {
+            let mut r = match self.registry.lock() {
+                Ok(r) => r,
+                Err(p) => p.into_inner(),
+            };
+            let hs = r.handles();
+            for (id, _) in &hs {
+                r.drop_room(*id);
+            }
+            hs
+        };
+        for (_, h) in handles {
+            h.wait_for_shutdown(grace).await;
+        }
+    }
 }
 
 pub fn build_stack(state: AppState) -> Stack {
     let config = std::sync::Arc::new(state.config().clone());
     let state_metrics = state.metrics();
-    // One room per process in v1 (`docs/41` §9 leaves the registry as future
-    // work). Set here rather than left at 0, so `/healthz` and `/metrics` report
-    // what is actually running.
-    state.set_rooms(1);
+    let rooms_gauge = state.rooms_gauge();
     let (router, io) = build(state);
-    let sessions = std::sync::Arc::new(crate::session::SessionMap::default());
-    let (shutdown, rx) = tokio::sync::oneshot::channel();
-    let room = crate::room::spawn_room_with(
-        io.clone(),
-        config.clone(),
-        sessions.clone(),
-        rx,
-        Some(state_metrics),
-    );
-    crate::session::register(&io, room.clone(), sessions.clone(), config);
+
+    // The registry owns every room, including this default one. A process with
+    // one room is the same code path as a process with eight — there is no
+    // "single room mode" to diverge (`docs/71` §B1).
+    let registry = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::registry::RoomRegistry::new(
+            io.clone(),
+            config.clone(),
+            std::sync::Arc::new(crate::registry::RealSpawner {
+                metrics: Some(state_metrics),
+            }),
+        )
+        .with_gauge(rooms_gauge),
+    ));
+
+    let (room, sessions, default_room) = {
+        let mut r = registry.lock().expect("fresh registry is never poisoned");
+        let (id, _) = r
+            .create(config.map_scale, false)
+            .expect("the first room is always under MAX_ROOMS");
+        let e = r.get(id).expect("just created");
+        (e.handle.clone(), e.sessions.clone(), id)
+    };
+
+    // One signal that stops every room.
+    //
+    // Rooms are owned by the registry now, so this cannot be a room's own
+    // shutdown channel any more. It is a relay: signalling it drops every room,
+    // which sends each room's own shutdown. `main` then waits on the handles, so
+    // the replay footer is still written before the process exits (`docs/41`
+    // §7) — that path is asserted by two tests and is the `docker compose down`
+    // case.
+    let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
+    {
+        let registry = registry.clone();
+        tokio::spawn(async move {
+            let _ = rx.await;
+            let ids = {
+                let r = match registry.lock() {
+                    Ok(r) => r,
+                    Err(p) => p.into_inner(),
+                };
+                r.ids().to_vec()
+            };
+            let mut r = match registry.lock() {
+                Ok(r) => r,
+                Err(p) => p.into_inner(),
+            };
+            for id in ids {
+                r.drop_room(id);
+            }
+        });
+    }
+
+    crate::session::register(&io, registry.clone(), default_room, config);
     Stack {
         router,
         io,
         room,
         sessions,
+        registry,
+        default_room,
         shutdown,
     }
 }

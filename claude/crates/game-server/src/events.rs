@@ -321,9 +321,14 @@ pub fn flush_events(
                 // window — 1–2 full map resyncs per client per round once the
                 // bots started firing. `queue_or_emit` either emits now or holds
                 // the event for the join handler to flush in order.
-                for s in io.sockets() {
-                    if sessions.queue_or_emit(s.id, name, &payload) {
-                        let _ = s.emit(name, &payload);
+                // The room's own socket list, not `io.sockets()` — that
+                // reaches every socket in the process, and with more than one
+                // room a carve in one game would land in another (`docs/71` §B1).
+                for sid in sessions.sids() {
+                    if sessions.queue_or_emit(sid, name, &payload) {
+                        if let Some(s) = io.get_socket(sid) {
+                            let _ = s.emit(name, &payload);
+                        }
                     }
                 }
             }
@@ -342,6 +347,29 @@ pub fn flush_events(
 ///
 /// A bot has none (§A5), so this is also the guard that keeps the per-owner emit
 /// path from trying to send an `inventory` to something that cannot receive one.
+///
+/// ## Deliberately ungated, and there are exactly two readiness rules
+///
+/// Broadcasts gate on **map delivery** (§A40) and snapshots gate on **`ready`**.
+/// This path gates on **neither**, and that is a decision rather than an
+/// oversight — the original join-window gap survived four milestones precisely
+/// because a third, unwritten rule existed without anyone deciding it.
+///
+/// Scoped events are safe to deliver early for reasons broadcasts are not:
+///
+/// - They are **JSON**, so they cannot interleave with the binary `map_init` the
+///   way the 20 Hz snapshot stream did. That interleave is the whole reason the
+///   `ready` gate exists.
+/// - They carry **no ordering token**. A carve has a monotonic `seq` and a hole
+///   in it costs a full map resync; an `inventory` is a complete current value
+///   and a `damage` is self-contained, so an early one is applied or ignored
+///   harmlessly.
+/// - The current value is **re-sent at join anyway** (T9.08), so a scoped event
+///   arriving before the client is ready cannot leave it stale.
+///
+/// With multiple rooms this path must be right about **which socket** and
+/// **which room**. The room half is structural: `sessions` is the room's own map,
+/// so a `PlayerId` from room A cannot resolve to a socket in room B.
 fn emit_to(
     io: &SocketIo,
     sessions: &SessionMap,
@@ -386,19 +414,24 @@ pub fn broadcast_snapshot(
     total
 }
 
-pub fn emit_round_end(io: &SocketIo, tick: u32, reason: &str) {
+pub fn emit_round_end(io: &SocketIo, sessions: &SessionMap, tick: u32, reason: &str) {
     let payload = serde_json::json!({ "tick": tick, "reason": reason });
-    for s in io.sockets() {
-        let _ = s.emit("round_end", &payload);
+    for sid in sessions.sids() {
+        if let Some(s) = io.get_socket(sid) {
+            let _ = s.emit("round_end", &payload);
+        }
     }
 }
 
-pub fn emit_mask_checksum(io: &SocketIo, tick: u32, hash: &str) {
+pub fn emit_mask_checksum(io: &SocketIo, sessions: &SessionMap, tick: u32, hash: &str) {
     let payload = serde_json::json!({ "tick": tick, "hash": hash });
-    // Inline, and to every socket: a client still loading its map has nothing to
-    // compare yet and ignores it, which is cheaper than tracking readiness here.
-    for s in io.sockets() {
-        let _ = s.emit("mask_checksum", &payload);
+    // Inline, and to every socket **in this room**: a client still loading its
+    // map has nothing to compare yet and ignores it, which is cheaper than
+    // tracking readiness here.
+    for sid in sessions.sids() {
+        if let Some(s) = io.get_socket(sid) {
+            let _ = s.emit("mask_checksum", &payload);
+        }
     }
 }
 

@@ -14,7 +14,48 @@ use socketioxide::SocketIo;
 
 use crate::codec::{b64_encode, decode_input_batch, encode_map_init_at};
 use crate::config::Config;
+use crate::registry::{RoomId, RoomRegistry};
 use crate::room::{Command, RoomHandle};
+
+/// What a handler needs to find its room.
+///
+/// Handlers used to close over one `RoomHandle` and one `SessionMap`, which is
+/// exactly as many as a process could have. With a registry they resolve per
+/// call instead: a socket is in whichever room it was attached to, and in the
+/// default room until it chooses one.
+#[derive(Clone)]
+pub struct Ctx {
+    pub registry: Arc<std::sync::Mutex<RoomRegistry>>,
+    pub default_room: RoomId,
+}
+
+impl Ctx {
+    fn lock(&self) -> std::sync::MutexGuard<'_, RoomRegistry> {
+        match self.registry.lock() {
+            Ok(g) => g,
+            // A poisoned registry means a handler panicked while holding it.
+            // Refusing to serve anyone afterwards turns one bad request into an
+            // outage, so carry on with the state as it was left.
+            Err(p) => p.into_inner(),
+        }
+    }
+
+    /// The room this socket belongs to, with its handle and session map.
+    pub fn resolve(&self, sid: Sid) -> Option<(RoomId, RoomHandle, Arc<SessionMap>)> {
+        let r = self.lock();
+        let id = r.room_of(sid).unwrap_or(self.default_room);
+        let e = r.get(id)?;
+        Some((id, e.handle.clone(), e.sessions.clone()))
+    }
+
+    pub fn attach(&self, sid: Sid, room: RoomId) {
+        self.lock().attach(sid, room);
+    }
+
+    pub fn detach(&self, sid: Sid) -> Option<RoomId> {
+        self.lock().detach(sid)
+    }
+}
 
 /// Player id ↔ socket, so an event can be delivered to one player rather than
 /// broadcast.
@@ -161,6 +202,21 @@ impl SessionMap {
         self.ready.read().map(|v| v.clone()).unwrap_or_default()
     }
 
+    /// Every socket seated in this room, in `PlayerId` order.
+    ///
+    /// **This is what scopes a broadcast to one room** (`docs/71` §B1). Iterating
+    /// `io.sockets()` reaches every socket on the process, which with more than
+    /// one room means a carve in one game lands in another — the multi-room form
+    /// of the inventory leak in `docs/30` §6. Using the same list that already
+    /// backs per-owner delivery keeps one answer to "who is in this room" rather
+    /// than two that can disagree (§A24).
+    pub fn sids(&self) -> Vec<Sid> {
+        self.inner
+            .read()
+            .map(|v| v.iter().map(|(_, s)| *s).collect())
+            .unwrap_or_default()
+    }
+
     pub fn remove_sid(&self, sid: Sid) -> Option<PlayerId> {
         if let Ok(mut r) = self.ready.write() {
             r.retain(|s| *s != sid);
@@ -214,11 +270,19 @@ pub fn sanitise_name(raw: &str) -> Option<String> {
 }
 
 /// Register every handler on the default namespace.
-pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, config: Arc<Config>) {
+pub fn register(
+    io: &SocketIo,
+    registry: Arc<std::sync::Mutex<RoomRegistry>>,
+    default_room: RoomId,
+    config: Arc<Config>,
+) {
     let io2 = io.clone();
+    let ctx0 = Ctx {
+        registry,
+        default_room,
+    };
     io.ns("/", move |socket: SocketRef| {
-        let room = room.clone();
-        let sessions = sessions.clone();
+        let ctx = ctx0.clone();
         let config = config.clone();
         let io = io2.clone();
         async move {
@@ -226,14 +290,16 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
 
             // ------------------------------------------------------------ join
             {
-                let (room, sessions, io, config) =
-                    (room.clone(), sessions.clone(), io.clone(), config.clone());
+                let (ctx, io, config) = (ctx.clone(), io.clone(), config.clone());
                 socket.on(
                     "join",
                     move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
-                        let (room, sessions, io, config) =
-                            (room.clone(), sessions.clone(), io.clone(), config.clone());
+                        let (ctx, io, config) = (ctx.clone(), io.clone(), config.clone());
                         async move {
+                            let Some((room_id, room, sessions)) = ctx.resolve(socket.id) else {
+                                emit(&socket, "join_error", &serde_json::json!({ "reason": "no_room" }));
+                                return;
+                            };
                             // A second join on one socket is ignored, not a second
                             // player: a client that retries must not consume two
                             // seats.
@@ -263,6 +329,7 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                                 return;
                             };
                             sessions.insert(id, socket.id);
+                            ctx.attach(socket.id, room_id);
 
                             let Some(w) = room
                                 .inspect(move |w| {
@@ -448,7 +515,7 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                             let joined = serde_json::json!({
                                 "tick": tick, "id": id, "name": name, "skin_id": skin_id,
                             });
-                            broadcast_except(&io, socket.id, "player_join", &joined);
+                            broadcast_except(&io, &sessions, socket.id, "player_join", &joined);
                             tracing::info!(target: "game::net", player = id, %name, "joined");
                         }
                     },
@@ -457,10 +524,11 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
 
             // ----------------------------------------------------------- ready
             {
-                let (room, sessions) = (room.clone(), sessions.clone());
+                let ctx = ctx.clone();
                 socket.on("ready", move |socket: SocketRef| {
-                    let (room, sessions) = (room.clone(), sessions.clone());
+                    let ctx = ctx.clone();
                     async move {
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
                         if let Some(id) = sessions.player_of(socket.id) {
                             sessions.mark_ready(socket.id);
                             room.send(Command::Ready(id));
@@ -471,10 +539,11 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
 
             // ----------------------------------------------------------- input
             {
-                let (room, sessions) = (room.clone(), sessions.clone());
+                let ctx = ctx.clone();
                 socket.on("input", move |socket: SocketRef, Data::<String>(b64)| {
-                    let (room, sessions) = (room.clone(), sessions.clone());
+                    let ctx = ctx.clone();
                     async move {
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
                         let Some(id) = sessions.player_of(socket.id) else {
                             return;
                         };
@@ -501,12 +570,13 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
 
             // ------------------------------------------------------ item verbs
             {
-                let (room, sessions) = (room.clone(), sessions.clone());
+                let ctx = ctx.clone();
                 socket.on(
                     "use_item",
                     move |socket: SocketRef, Data::<serde_json::Value>(p)| {
-                        let (room, sessions) = (room.clone(), sessions.clone());
+                        let ctx = ctx.clone();
                         async move {
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
                             if let Some(id) = sessions.player_of(socket.id) {
                                 let slot = p.get("slot").and_then(|v| v.as_u64()).unwrap_or(255);
                                 room.send(Command::UseItem(id, slot.min(255) as u8));
@@ -516,12 +586,13 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                 );
             }
             {
-                let (room, sessions) = (room.clone(), sessions.clone());
+                let ctx = ctx.clone();
                 socket.on(
                     "select_slot",
                     move |socket: SocketRef, Data::<serde_json::Value>(p)| {
-                        let (room, sessions) = (room.clone(), sessions.clone());
+                        let ctx = ctx.clone();
                         async move {
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
                             if let Some(id) = sessions.player_of(socket.id) {
                                 let slot = p.get("slot").and_then(|v| v.as_u64()).unwrap_or(255);
                                 room.send(Command::SelectSlot(id, slot.min(255) as u8));
@@ -531,7 +602,7 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                 );
             }
             {
-                let (room, sessions) = (room.clone(), sessions.clone());
+                let ctx = ctx.clone();
                 // RTT. `docs/42` §7 says it comes from "socket.io's own ping/pong",
                 // but the client library does not surface that measurement, so the
                 // client's rtt was hardcoded to 0 and the debug HUD reported 0 ms
@@ -543,8 +614,9 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                     let _ = socket.emit("pong_rtt", &t);
                 });
                 socket.on("toggle_flashlight", move |socket: SocketRef| {
-                    let (room, sessions) = (room.clone(), sessions.clone());
+                    let ctx = ctx.clone();
                     async move {
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
                         if let Some(id) = sessions.player_of(socket.id) {
                             room.send(Command::ToggleFlashlight(id));
                         }
@@ -552,10 +624,11 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                 });
             }
             {
-                let (room, sessions) = (room.clone(), sessions.clone());
+                let ctx = ctx.clone();
                 socket.on("fire", move |socket: SocketRef| {
-                    let (room, sessions) = (room.clone(), sessions.clone());
+                    let ctx = ctx.clone();
                     async move {
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
                         if let Some(id) = sessions.player_of(socket.id) {
                             room.send(Command::Fire(id));
                         }
@@ -563,12 +636,13 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                 });
             }
             {
-                let (room, sessions) = (room.clone(), sessions.clone());
+                let ctx = ctx.clone();
                 socket.on(
                     "vote_restart",
                     move |socket: SocketRef, Data::<serde_json::Value>(p)| {
-                        let (room, sessions) = (room.clone(), sessions.clone());
+                        let ctx = ctx.clone();
                         async move {
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
                             if let Some(id) = sessions.player_of(socket.id) {
                                 let yes =
                                     p.get("restart").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -579,10 +653,11 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                 );
             }
             {
-                let (room, sessions) = (room.clone(), sessions.clone());
+                let ctx = ctx.clone();
                 socket.on("resync_map", move |socket: SocketRef| {
-                    let (room, sessions) = (room.clone(), sessions.clone());
+                    let ctx = ctx.clone();
                     async move {
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
                         let Some(_id) = sessions.player_of(socket.id) else {
                             return;
                         };
@@ -598,16 +673,20 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
 
             // ------------------------------------------------------ disconnect
             {
-                let (room, sessions, io) = (room.clone(), sessions.clone(), io.clone());
+                let (ctx, io) = (ctx.clone(), io.clone());
                 socket.on_disconnect(move |socket: SocketRef| {
-                    let (room, sessions, io) = (room.clone(), sessions.clone(), io.clone());
+                    let (ctx, io) = (ctx.clone(), io.clone());
                     async move {
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
                         // Fires on an abrupt drop as well as a clean close, which
                         // is what keeps a crashed client from holding a seat.
                         if let Some(id) = sessions.remove_sid(socket.id) {
                             room.send(Command::Leave(id));
                             let payload = serde_json::json!({ "id": id, "reason": "disconnect" });
-                            broadcast_except(&io, socket.id, "player_leave", &payload);
+                            broadcast_except(&io, &sessions, socket.id, "player_leave", &payload);
+                            // Also drop it from the registry, or the room's human
+                            // count never reaches zero and it is never reaped.
+                            ctx.detach(socket.id);
                             tracing::info!(target: "game::net", player = id, "left");
                         }
                     }
@@ -632,17 +711,26 @@ fn emit(socket: &SocketRef, ev: &'static str, payload: &serde_json::Value) {
     }
 }
 
-/// Broadcast to everyone but one socket, without awaiting in a handler.
-fn broadcast_except(io: &SocketIo, except: Sid, ev: &'static str, payload: &serde_json::Value) {
-    let (io, payload) = (io.clone(), payload.clone());
-    tokio::spawn(async move {
-        for s in io.sockets() {
-            if s.id == except {
-                continue;
-            }
-            let _ = s.emit(ev, &payload);
+/// Broadcast to everyone in **this room** but one socket.
+///
+/// Scoped through the room's `SessionMap` rather than `io.sockets()`, for the
+/// reason in [`SessionMap::sids`]: with more than one room, a process-wide
+/// iteration announces every join to every game.
+fn broadcast_except(
+    io: &SocketIo,
+    sessions: &SessionMap,
+    except: Sid,
+    ev: &'static str,
+    payload: &serde_json::Value,
+) {
+    for sid in sessions.sids() {
+        if sid == except {
+            continue;
         }
-    });
+        if let Some(s) = io.get_socket(sid) {
+            let _ = s.emit(ev, payload);
+        }
+    }
 }
 
 #[cfg(test)]

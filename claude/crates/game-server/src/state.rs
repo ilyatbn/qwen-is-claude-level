@@ -11,7 +11,7 @@ use crate::config::Config;
 pub struct Inner {
     pub config: Config,
     pub started: Instant,
-    pub rooms: AtomicUsize,
+    pub rooms: Arc<AtomicUsize>,
     pub players: AtomicUsize,
     pub metrics: std::sync::Arc<crate::metrics::Metrics>,
 }
@@ -25,7 +25,7 @@ impl AppState {
         AppState(Arc::new(Inner {
             config,
             started: Instant::now(),
-            rooms: AtomicUsize::new(0),
+            rooms: Arc::new(AtomicUsize::new(0)),
             players: AtomicUsize::new(0),
             metrics: std::sync::Arc::new(crate::metrics::Metrics::default()),
         }))
@@ -68,6 +68,17 @@ impl AppState {
 
     pub fn set_rooms(&self, n: usize) {
         self.0.rooms.store(n, Ordering::Relaxed);
+    }
+
+    /// The live room gauge, for the registry to keep current.
+    ///
+    /// `/healthz` used to report a hardcoded `1`, which was true for exactly as
+    /// long as the process could only hold one room. Handing the registry the
+    /// same counter keeps one source of truth rather than two that drift — the
+    /// trap `/healthz` had already been caught by once, when it read a pair of
+    /// counters nothing incremented.
+    pub fn rooms_gauge(&self) -> Arc<AtomicUsize> {
+        self.0.rooms.clone()
     }
 }
 
