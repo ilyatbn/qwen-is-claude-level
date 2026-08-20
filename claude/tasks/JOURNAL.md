@@ -2363,3 +2363,39 @@ Notes: SCOPING USES THE ROOM'S OWN SessionMap, NOT socket.io rooms. Each room
 Left for later: T10.02 wires the lobby messages; until then a socket joins the
        default room and tests move it via the registry directly. JOIN_EVENT_QUEUE
        overflow is still only asserted at the seam, never through a real socket.
+
+## T10.02 — Lobby protocol: create, join by code, quick match — DONE
+Files: crates/game-server/src/{session,registry}.rs, tests/lobby.rs,
+       client/src/net/{lobby,lobby.test}.ts
+Verified: `cargo test -p game-server --test lobby` — 5 passed;
+       `npm --prefix client test -- --run lobby` — 16 passed;
+       workspace 815 passed / 0 failed; fmt + clippy -D warnings clean.
+Notes: ONE SEATING PATH, FOUR ENTRY POINTS. Extracted the join handler's body
+       into `seat()`; create_room / join_room / quick_match choose a room and
+       then call it. Four copies would have meant four copies of the name
+       validation, the map encode, the join-window flush AND the world-state
+       catch-up — and the catch-up alone is three things that were each missing
+       once (initial items, scores, inventory: §A39).
+       A REAL BUG THE TEST CAUGHT: `attach` was documented "idempotent for the
+       same pair" and was not. The lobby attaches, then seat() attaches again,
+       so every quick-matched player counted twice — the room's human count
+       never reached 0 and it could never be reaped. Caught by asserting the OLD
+       room shows 0 humans after leave_room, not by asserting the new one works.
+       FALSIFIED AT THE LIVE BINDING SITE: making join_room ignore the code and
+       use the default room fails 2 of 5 with "a bad code seated somebody:
+       welcomes 1" and "same code, different worlds".
+       The e2e test reads the join code OFF THE WIRE (`room_created.code`) and
+       types it into the second client, so it proves what a player can actually
+       do rather than what the registry knows.
+       Hostile codes are rejected before any lookup: normalise_code bounds its
+       own output and code_looks_valid gates it, so a 5000-byte "code" never
+       reaches a map or a log line. Seven malformed joins -> seven join_errors,
+       zero welcomes.
+       The client half is Phaser-free (§A8) and shares the alphabet with the
+       server, with a test asserting every server-generatable code passes the
+       client check — and a control asserting an 'L' appeared in the sample,
+       since that is the character the server bug turned on.
+Left for later: T10.07 (measure MAX_ROOMS), T10.03 title/attract, T10.04 menu.
+       `room_list` currently reports waiting:0 eta_s:0 — quick match seats
+       immediately, so there is no queue to report yet; QUEUE_WAIT_BEFORE_BOTS
+       is unused until a real queue exists.

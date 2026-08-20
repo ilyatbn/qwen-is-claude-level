@@ -48,8 +48,40 @@ impl Ctx {
         Some((id, e.handle.clone(), e.sessions.clone()))
     }
 
+    /// The parts of a specific room, by id.
+    pub fn room_parts(&self, room: RoomId) -> Option<(RoomHandle, Arc<SessionMap>)> {
+        let r = self.lock();
+        let e = r.get(room)?;
+        Some((e.handle.clone(), e.sessions.clone()))
+    }
+
+    /// The room this socket has chosen, or the default one.
+    pub fn room_or_default(&self, sid: Sid) -> RoomId {
+        self.lock().room_of(sid).unwrap_or(self.default_room)
+    }
+
     pub fn attach(&self, sid: Sid, room: RoomId) {
         self.lock().attach(sid, room);
+    }
+
+    pub fn create(
+        &self,
+        scale: game_core::constants::MapScale,
+        private: bool,
+    ) -> Result<(RoomId, Option<String>), crate::registry::JoinRejection> {
+        self.lock().create(scale, private)
+    }
+
+    pub fn by_code(&self, code: &str) -> Option<RoomId> {
+        self.lock().by_code(code)
+    }
+
+    pub fn quick_match(
+        &self,
+        scale: game_core::constants::MapScale,
+        max_players: usize,
+    ) -> crate::registry::QuickMatch {
+        self.lock().quick_match(scale, max_players)
     }
 
     pub fn detach(&self, sid: Sid) -> Option<RoomId> {
@@ -296,230 +328,151 @@ pub fn register(
                     move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
                         let (ctx, io, config) = (ctx.clone(), io.clone(), config.clone());
                         async move {
-                            let Some((room_id, room, sessions)) = ctx.resolve(socket.id) else {
-                                emit(&socket, "join_error", &serde_json::json!({ "reason": "no_room" }));
-                                return;
-                            };
-                            // A second join on one socket is ignored, not a second
-                            // player: a client that retries must not consume two
-                            // seats.
-                            if sessions.player_of(socket.id).is_some() {
-                                tracing::debug!(target: "game::net", socket = %socket.id, "duplicate join ignored");
-                                return;
-                            }
-
-                            let name = payload
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default();
-                            let Some(name) = sanitise_name(name) else {
-                                emit(&socket, "join_error", &serde_json::json!({ "reason": "bad_name" }));
-                                return;
-                            };
-                            // Never validated against a list — the server does not
-                            // know what skins exist (`docs/50` §1) — but bounded.
-                            let skin_id = payload
-                                .get("skin_id")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0)
-                                .min(u16::MAX as u64) as u16;
-
-                            let Some(id) = room.join(name.clone(), skin_id).await else {
-                                emit(&socket, "join_error", &serde_json::json!({ "reason": "full" }));
-                                return;
-                            };
-                            sessions.insert(id, socket.id);
-                            ctx.attach(socket.id, room_id);
-
-                            let Some(w) = room
-                                .inspect(move |w| {
-                                    (
-                                        w.tick,
-                                        w.round_time,
-                                        w.phase.as_str().to_string(),
-                                        w.seed,
-                                        w.map.meta.scale,
-                                        w.players
-                                            .iter()
-                                            .map(|p| {
-                                                serde_json::json!({
-                                                    "id": p.id,
-                                                    "skin_id": p.skin_id,
-                                                    "score": p.score,
-                                                })
-                                            })
-                                            .collect::<Vec<_>>(),
-                                        encode_map_init_at(&w.map, w.carve_seq()),
-                                    )
-                                })
-                                .await
-                            else {
-                                return;
-                            };
-                            let (tick, round_time, phase, seed, scale, players, map_bytes) = w;
-
-                            emit(
-                                &socket,
-                                "welcome",
-                                &serde_json::json!({
-                                    "player_id": id,
-                                    "tick": tick,
-                                    "round_time": round_time,
-                                    "phase": phase,
-                                    "sim_hz": game_core::constants::SIM_HZ,
-                                    "snapshot_hz": game_core::constants::SNAPSHOT_HZ,
-                                    "players": players,
-                                    // On the HUD, so a bug report carries a
-                                    // reproducible seed (`docs/61` §8).
-                                    "seed": seed.to_string(),
-                                    "scale": scale_name(scale),
-                                    "max_players": config.max_players,
-                                }),
-                            );
-
-                            // Binary: `Bytes` becomes a socket.io attachment.
-                            // Base64 text, not a binary attachment — see
-                            // `codec::b64_encode` for why.
-                            if let Err(e) = socket.emit("map_init", &b64_encode(&map_bytes)) {
-                                tracing::warn!(target: "game::net", socket = %socket.id, "map_init failed: {e}");
-                            }
-
-                            // The map is on the wire, so this socket can take
-                            // carves now — and the ones that landed while it was
-                            // being encoded are owed to it, in order.
-                            //
-                            // Dropping them was the bug (§A40): `map_init` is
-                            // stamped `carve_seq = N`, so the client picks the
-                            // stream up at N+1, and any carve skipped in this
-                            // window leaves a hole it can only resolve by
-                            // refetching the whole map two seconds later. Carves
-                            // already baked into this mask carry `seq <= N` and
-                            // the client discards them as duplicates, so
-                            // replaying the whole queue is safe.
-                            match sessions.go_live(socket.id) {
-                                Ok(held) => {
-                                    if !held.is_empty() {
-                                        tracing::debug!(
-                                            target: "game::net", player = id, count = held.len(),
-                                            "flushed events held during the join window",
-                                        );
-                                    }
-                                    for (name, payload) in held {
-                                        if let Err(e) = socket.emit(name, &payload) {
-                                            tracing::warn!(
-                                                target: "game::net", socket = %socket.id,
-                                                "held {name} failed: {e}"
-                                            );
-                                            break;
-                                        }
-                                    }
-                                }
-                                // Overflowed: a replay with a hole in it is worse
-                                // than the resync it would cause, so take the
-                                // resync now and deliberately.
-                                Err(()) => {
-                                    if let Some(bytes) = room
-                                        .inspect(|w| encode_map_init_at(&w.map, w.carve_seq()))
-                                        .await
-                                    {
-                                        let _ = socket.emit("map_init", &b64_encode(&bytes));
-                                        tracing::warn!(
-                                            target: "game::net", player = id,
-                                            "join queue overflowed; resent map_init",
-                                        );
-                                    }
-                                }
-                            }
-
-                            // The world already on the ground.
-                            //
-                            // `place_initial` runs inside `World::new`, before
-                            // any event buffer exists, so the 8–20 items every
-                            // round starts with were never announced to anyone —
-                            // the server had them and no client could see them,
-                            // which for items is not cosmetic: they are the
-                            // reason to move (`docs/30`). A player joining
-                            // mid-round needs the same list for the same reason
-                            // (`docs/41` §4), so this is sent per socket rather
-                            // than broadcast at round start.
-                            if let Some(items) = room
-                                .inspect(|w| {
-                                    w.items
-                                        .iter()
-                                        .map(|it| {
-                                            serde_json::json!({
-                                                "tick": w.tick,
-                                                "world_item_id": it.id,
-                                                "item_id": it.item,
-                                                "count": it.count,
-                                                "x": it.pos.x.round() as i32,
-                                                "y": it.pos.y.round() as i32,
-                                                "source": format!("{:?}", it.source),
-                                            })
-                                        })
-                                        .collect::<Vec<_>>()
-                                })
-                                .await
-                            {
-                                for it in &items {
-                                    emit(&socket, "item_spawn", it);
-                                }
-                                tracing::debug!(
-                                    target: "game::items",
-                                    player = id,
-                                    count = items.len(),
-                                    "sent the existing world items",
-                                );
-                            }
-
-                            // Their own inventory.
-                            //
-                            // `inventory` is pushed on pickup, use and death and
-                            // never on join, so a player who starts with anything
-                            // — a DEV_LOADOUT, or a mid-round joiner who will pick
-                            // something up before the first event — saw "(empty)"
-                            // while holding it. Third instance of one pattern
-                            // (initial items, scores, this): events describe
-                            // *changes*, and a joiner needs the *current value*.
-                            //
-                            // Owner-scoped, like every other `inventory`
-                            // (`docs/30` §6): emitted to this socket only, never
-                            // broadcast.
-                            if let Some(inv) = room
-                                .inspect(move |w| {
-                                    let p = w.player(id)?;
-                                    let slots = (0..game_core::constants::INVENTORY_SLOTS)
-                                        .map(|i| match p.inventory.slot(i as u8) {
-                                            Some(st) => serde_json::json!({
-                                                "item": st.item,
-                                                "count": st.count,
-                                                "key": game_core::items::registry::def(st.item)
-                                                    .map(|d| d.key)
-                                                    .unwrap_or("?"),
-                                            }),
-                                            None => serde_json::Value::Null,
-                                        })
-                                        .collect::<Vec<_>>();
-                                    Some(serde_json::json!({
-                                        "tick": w.tick,
-                                        "slots": slots,
-                                        "selected": p.inventory.selected(),
-                                    }))
-                                })
-                                .await
-                                .flatten()
-                            {
-                                emit(&socket, "inventory", &inv);
-                            }
-
-                            let joined = serde_json::json!({
-                                "tick": tick, "id": id, "name": name, "skin_id": skin_id,
-                            });
-                            broadcast_except(&io, &sessions, socket.id, "player_join", &joined);
-                            tracing::info!(target: "game::net", player = id, %name, "joined");
+                            // Whichever room this socket has chosen, or the
+                            // default one if it has not chosen (the single-room
+                            // path every test before T10.02 uses).
+                            let room_id = ctx.room_or_default(socket.id);
+                            seat(socket, ctx, io, config, room_id, payload).await;
                         }
                     },
                 );
+            }
+
+            // ----------------------------------------------------------- lobby
+            //
+            // Three ways into a room, all ending in `seat` (§B9). They select a
+            // room and then take the same path `join` does, so name validation,
+            // the map encode, the join-window flush and the world-state
+            // catch-up exist once rather than four times.
+            {
+                let (ctx, io, config) = (ctx.clone(), io.clone(), config.clone());
+                socket.on(
+                    "create_room",
+                    move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
+                        let (ctx, io, config) = (ctx.clone(), io.clone(), config.clone());
+                        async move {
+                            let scale = scale_from(&payload, config.map_scale);
+                            let private = payload
+                                .get("private")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(true);
+                            match ctx.create(scale, private) {
+                                Ok((room_id, code)) => {
+                                    ctx.attach(socket.id, room_id);
+                                    emit(
+                                        &socket,
+                                        "room_created",
+                                        &serde_json::json!({
+                                            "room_id": room_id,
+                                            "code": code,
+                                            "scale": scale_name(scale),
+                                        }),
+                                    );
+                                    seat(socket, ctx, io, config, room_id, payload).await;
+                                }
+                                Err(reason) => emit(
+                                    &socket,
+                                    "join_error",
+                                    &serde_json::json!({ "reason": reason.as_str() }),
+                                ),
+                            }
+                        }
+                    },
+                );
+            }
+            {
+                let (ctx, io, config) = (ctx.clone(), io.clone(), config.clone());
+                socket.on(
+                    "join_room",
+                    move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
+                        let (ctx, io, config) = (ctx.clone(), io.clone(), config.clone());
+                        async move {
+                            // Attacker-controlled text. `normalise_code` bounds
+                            // its own output and `code_looks_valid` rejects
+                            // anything that is not exactly a code, so a 5000-byte
+                            // "code" never reaches a map lookup or a log line.
+                            let raw = payload.get("code").and_then(|v| v.as_str()).unwrap_or("");
+                            let code = crate::registry::normalise_code(raw);
+                            if !crate::registry::code_looks_valid(&code) {
+                                emit(
+                                    &socket,
+                                    "join_error",
+                                    &serde_json::json!({ "reason": "unknown_code" }),
+                                );
+                                return;
+                            }
+                            let Some(room_id) = ctx.by_code(&code) else {
+                                emit(
+                                    &socket,
+                                    "join_error",
+                                    &serde_json::json!({ "reason": "unknown_code" }),
+                                );
+                                return;
+                            };
+                            ctx.attach(socket.id, room_id);
+                            seat(socket, ctx, io, config, room_id, payload).await;
+                        }
+                    },
+                );
+            }
+            {
+                let (ctx, io, config) = (ctx.clone(), io.clone(), config.clone());
+                socket.on(
+                    "quick_match",
+                    move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
+                        let (ctx, io, config) = (ctx.clone(), io.clone(), config.clone());
+                        async move {
+                            let scale = scale_from(&payload, config.map_scale);
+                            let max = config.max_players;
+                            match ctx.quick_match(scale, max) {
+                                crate::registry::QuickMatch::Existing(room_id)
+                                | crate::registry::QuickMatch::Created(room_id) => {
+                                    ctx.attach(socket.id, room_id);
+                                    // Status before the map: a client that has to
+                                    // wait for a 20 KB `map_init` should already
+                                    // know it got a seat.
+                                    emit(
+                                        &socket,
+                                        "room_list",
+                                        &serde_json::json!({
+                                            "room_id": room_id,
+                                            "waiting": 0,
+                                            "eta_s": 0,
+                                        }),
+                                    );
+                                    seat(socket, ctx, io, config, room_id, payload).await;
+                                }
+                                crate::registry::QuickMatch::Full => emit(
+                                    &socket,
+                                    "join_error",
+                                    &serde_json::json!({ "reason": "server_full" }),
+                                ),
+                            }
+                        }
+                    },
+                );
+            }
+            {
+                let (ctx, io) = (ctx.clone(), io.clone());
+                socket.on("leave_room", move |socket: SocketRef| {
+                    let (ctx, io) = (ctx.clone(), io.clone());
+                    async move {
+                        // Leaving must free the seat in the *old* room before the
+                        // socket can be seated anywhere else, or a client that
+                        // hops rooms holds two seats and the first room never
+                        // empties.
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                            return;
+                        };
+                        if let Some(id) = sessions.remove_sid(socket.id) {
+                            room.send(Command::Leave(id));
+                            let payload = serde_json::json!({ "id": id, "reason": "left" });
+                            broadcast_except(&io, &sessions, socket.id, "player_leave", &payload);
+                        }
+                        ctx.detach(socket.id);
+                        emit(&socket, "room_left", &serde_json::json!({}));
+                    }
+                });
             }
 
             // ----------------------------------------------------------- ready
@@ -528,7 +481,9 @@ pub fn register(
                 socket.on("ready", move |socket: SocketRef| {
                     let ctx = ctx.clone();
                     async move {
-                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                            return;
+                        };
                         if let Some(id) = sessions.player_of(socket.id) {
                             sessions.mark_ready(socket.id);
                             room.send(Command::Ready(id));
@@ -543,7 +498,9 @@ pub fn register(
                 socket.on("input", move |socket: SocketRef, Data::<String>(b64)| {
                     let ctx = ctx.clone();
                     async move {
-                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                            return;
+                        };
                         let Some(id) = sessions.player_of(socket.id) else {
                             return;
                         };
@@ -576,7 +533,9 @@ pub fn register(
                     move |socket: SocketRef, Data::<serde_json::Value>(p)| {
                         let ctx = ctx.clone();
                         async move {
-                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
                             if let Some(id) = sessions.player_of(socket.id) {
                                 let slot = p.get("slot").and_then(|v| v.as_u64()).unwrap_or(255);
                                 room.send(Command::UseItem(id, slot.min(255) as u8));
@@ -592,7 +551,9 @@ pub fn register(
                     move |socket: SocketRef, Data::<serde_json::Value>(p)| {
                         let ctx = ctx.clone();
                         async move {
-                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
                             if let Some(id) = sessions.player_of(socket.id) {
                                 let slot = p.get("slot").and_then(|v| v.as_u64()).unwrap_or(255);
                                 room.send(Command::SelectSlot(id, slot.min(255) as u8));
@@ -610,13 +571,18 @@ pub fn register(
                 // An echo with the client's own timestamp costs one tiny message
                 // and makes it real. Stateless, unauthenticated and harmless: the
                 // server never reads the value, it only sends it back.
-                socket.on("ping_rtt", |socket: SocketRef, Data::<String>(t)| async move {
-                    let _ = socket.emit("pong_rtt", &t);
-                });
+                socket.on(
+                    "ping_rtt",
+                    |socket: SocketRef, Data::<String>(t)| async move {
+                        let _ = socket.emit("pong_rtt", &t);
+                    },
+                );
                 socket.on("toggle_flashlight", move |socket: SocketRef| {
                     let ctx = ctx.clone();
                     async move {
-                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                            return;
+                        };
                         if let Some(id) = sessions.player_of(socket.id) {
                             room.send(Command::ToggleFlashlight(id));
                         }
@@ -628,7 +594,9 @@ pub fn register(
                 socket.on("fire", move |socket: SocketRef| {
                     let ctx = ctx.clone();
                     async move {
-                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                            return;
+                        };
                         if let Some(id) = sessions.player_of(socket.id) {
                             room.send(Command::Fire(id));
                         }
@@ -642,7 +610,9 @@ pub fn register(
                     move |socket: SocketRef, Data::<serde_json::Value>(p)| {
                         let ctx = ctx.clone();
                         async move {
-                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
                             if let Some(id) = sessions.player_of(socket.id) {
                                 let yes =
                                     p.get("restart").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -657,11 +627,16 @@ pub fn register(
                 socket.on("resync_map", move |socket: SocketRef| {
                     let ctx = ctx.clone();
                     async move {
-                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                            return;
+                        };
                         let Some(_id) = sessions.player_of(socket.id) else {
                             return;
                         };
-                        let Some(bytes) = room.inspect(|w| encode_map_init_at(&w.map, w.carve_seq())).await else {
+                        let Some(bytes) = room
+                            .inspect(|w| encode_map_init_at(&w.map, w.carve_seq()))
+                            .await
+                        else {
                             return;
                         };
                         if let Err(e) = socket.emit("map_init", &b64_encode(&bytes)) {
@@ -677,7 +652,9 @@ pub fn register(
                 socket.on_disconnect(move |socket: SocketRef| {
                     let (ctx, io) = (ctx.clone(), io.clone());
                     async move {
-                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else { return };
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                            return;
+                        };
                         // Fires on an abrupt drop as well as a clean close, which
                         // is what keeps a crashed client from holding a seat.
                         if let Some(id) = sessions.remove_sid(socket.id) {
@@ -694,6 +671,285 @@ pub fn register(
             }
         }
     });
+}
+
+/// Seat a socket in `room_id` and send it everything it needs to start playing.
+///
+/// One path, four entry points: `join` uses the socket's current room, and
+/// `create_room` / `join_room` / `quick_match` each choose a room first and then
+/// come here. Duplicating this for each of them would mean four copies of the
+/// name validation, the map encode, the join-window flush and the world-state
+/// catch-up — and the catch-up alone is three separate things that were each
+/// missing once (`docs/70-amendments-v2.md` §A39).
+async fn seat(
+    socket: SocketRef,
+    ctx: Ctx,
+    io: SocketIo,
+    config: Arc<Config>,
+    room_id: RoomId,
+    payload: serde_json::Value,
+) {
+    let Some((room, sessions)) = ctx.room_parts(room_id) else {
+        emit(
+            &socket,
+            "join_error",
+            &serde_json::json!({ "reason": "no_room" }),
+        );
+        return;
+    };
+    // A second join on one socket is ignored, not a second
+    // player: a client that retries must not consume two
+    // seats.
+    if sessions.player_of(socket.id).is_some() {
+        tracing::debug!(target: "game::net", socket = %socket.id, "duplicate join ignored");
+        return;
+    }
+
+    let name = payload
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let Some(name) = sanitise_name(name) else {
+        emit(
+            &socket,
+            "join_error",
+            &serde_json::json!({ "reason": "bad_name" }),
+        );
+        return;
+    };
+    // Never validated against a list — the server does not
+    // know what skins exist (`docs/50` §1) — but bounded.
+    let skin_id = payload
+        .get("skin_id")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        .min(u16::MAX as u64) as u16;
+    // §B9. Like `skin_id`, never validated against a list: the server does not
+    // know what any skin looks like (`docs/50` §1). Echoed so other clients can
+    // draw this player's grave with their chosen stone.
+    let tombstone_skin_id = payload
+        .get("tombstone_skin_id")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        .min(u16::MAX as u64) as u16;
+
+    let Some(id) = room.join(name.clone(), skin_id).await else {
+        emit(
+            &socket,
+            "join_error",
+            &serde_json::json!({ "reason": "full" }),
+        );
+        return;
+    };
+    sessions.insert(id, socket.id);
+    ctx.attach(socket.id, room_id);
+
+    let Some(w) = room
+        .inspect(move |w| {
+            (
+                w.tick,
+                w.round_time,
+                w.phase.as_str().to_string(),
+                w.seed,
+                w.map.meta.scale,
+                w.players
+                    .iter()
+                    .map(|p| {
+                        serde_json::json!({
+                            "id": p.id,
+                            "skin_id": p.skin_id,
+                            "score": p.score,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+                encode_map_init_at(&w.map, w.carve_seq()),
+            )
+        })
+        .await
+    else {
+        return;
+    };
+    let (tick, round_time, phase, seed, scale, players, map_bytes) = w;
+
+    emit(
+        &socket,
+        "welcome",
+        &serde_json::json!({
+            "player_id": id,
+            "tick": tick,
+            "round_time": round_time,
+            "phase": phase,
+            "sim_hz": game_core::constants::SIM_HZ,
+            "snapshot_hz": game_core::constants::SNAPSHOT_HZ,
+            "players": players,
+            // On the HUD, so a bug report carries a
+            // reproducible seed (`docs/61` §8).
+            "seed": seed.to_string(),
+            "scale": scale_name(scale),
+            "max_players": config.max_players,
+        }),
+    );
+
+    // Binary: `Bytes` becomes a socket.io attachment.
+    // Base64 text, not a binary attachment — see
+    // `codec::b64_encode` for why.
+    if let Err(e) = socket.emit("map_init", &b64_encode(&map_bytes)) {
+        tracing::warn!(target: "game::net", socket = %socket.id, "map_init failed: {e}");
+    }
+
+    // The map is on the wire, so this socket can take
+    // carves now — and the ones that landed while it was
+    // being encoded are owed to it, in order.
+    //
+    // Dropping them was the bug (§A40): `map_init` is
+    // stamped `carve_seq = N`, so the client picks the
+    // stream up at N+1, and any carve skipped in this
+    // window leaves a hole it can only resolve by
+    // refetching the whole map two seconds later. Carves
+    // already baked into this mask carry `seq <= N` and
+    // the client discards them as duplicates, so
+    // replaying the whole queue is safe.
+    match sessions.go_live(socket.id) {
+        Ok(held) => {
+            if !held.is_empty() {
+                tracing::debug!(
+                    target: "game::net", player = id, count = held.len(),
+                    "flushed events held during the join window",
+                );
+            }
+            for (name, payload) in held {
+                if let Err(e) = socket.emit(name, &payload) {
+                    tracing::warn!(
+                        target: "game::net", socket = %socket.id,
+                        "held {name} failed: {e}"
+                    );
+                    break;
+                }
+            }
+        }
+        // Overflowed: a replay with a hole in it is worse
+        // than the resync it would cause, so take the
+        // resync now and deliberately.
+        Err(()) => {
+            if let Some(bytes) = room
+                .inspect(|w| encode_map_init_at(&w.map, w.carve_seq()))
+                .await
+            {
+                let _ = socket.emit("map_init", &b64_encode(&bytes));
+                tracing::warn!(
+                    target: "game::net", player = id,
+                    "join queue overflowed; resent map_init",
+                );
+            }
+        }
+    }
+
+    // The world already on the ground.
+    //
+    // `place_initial` runs inside `World::new`, before
+    // any event buffer exists, so the 8–20 items every
+    // round starts with were never announced to anyone —
+    // the server had them and no client could see them,
+    // which for items is not cosmetic: they are the
+    // reason to move (`docs/30`). A player joining
+    // mid-round needs the same list for the same reason
+    // (`docs/41` §4), so this is sent per socket rather
+    // than broadcast at round start.
+    if let Some(items) = room
+        .inspect(|w| {
+            w.items
+                .iter()
+                .map(|it| {
+                    serde_json::json!({
+                        "tick": w.tick,
+                        "world_item_id": it.id,
+                        "item_id": it.item,
+                        "count": it.count,
+                        "x": it.pos.x.round() as i32,
+                        "y": it.pos.y.round() as i32,
+                        "source": format!("{:?}", it.source),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+    {
+        for it in &items {
+            emit(&socket, "item_spawn", it);
+        }
+        tracing::debug!(
+            target: "game::items",
+            player = id,
+            count = items.len(),
+            "sent the existing world items",
+        );
+    }
+
+    // Their own inventory.
+    //
+    // `inventory` is pushed on pickup, use and death and
+    // never on join, so a player who starts with anything
+    // — a DEV_LOADOUT, or a mid-round joiner who will pick
+    // something up before the first event — saw "(empty)"
+    // while holding it. Third instance of one pattern
+    // (initial items, scores, this): events describe
+    // *changes*, and a joiner needs the *current value*.
+    //
+    // Owner-scoped, like every other `inventory`
+    // (`docs/30` §6): emitted to this socket only, never
+    // broadcast.
+    if let Some(inv) = room
+        .inspect(move |w| {
+            let p = w.player(id)?;
+            let slots = (0..game_core::constants::INVENTORY_SLOTS)
+                .map(|i| match p.inventory.slot(i as u8) {
+                    Some(st) => serde_json::json!({
+                        "item": st.item,
+                        "count": st.count,
+                        "key": game_core::items::registry::def(st.item)
+                            .map(|d| d.key)
+                            .unwrap_or("?"),
+                    }),
+                    None => serde_json::Value::Null,
+                })
+                .collect::<Vec<_>>();
+            Some(serde_json::json!({
+                "tick": w.tick,
+                "slots": slots,
+                "selected": p.inventory.selected(),
+            }))
+        })
+        .await
+        .flatten()
+    {
+        emit(&socket, "inventory", &inv);
+    }
+
+    let joined = serde_json::json!({
+        "tick": tick, "id": id, "name": name,
+        "skin_id": skin_id, "tombstone_skin_id": tombstone_skin_id,
+    });
+    broadcast_except(&io, &sessions, socket.id, "player_join", &joined);
+    tracing::info!(target: "game::net", player = id, %name, "joined");
+}
+
+/// Map size from a lobby payload, falling back to the server's default.
+///
+/// An unknown string is the default rather than an error: a client sending
+/// "huge" is a version skew, and refusing the whole request over it is worse
+/// than giving them a medium map (`docs/40` §6 takes the same line on malformed
+/// payloads).
+fn scale_from(
+    p: &serde_json::Value,
+    fallback: game_core::constants::MapScale,
+) -> game_core::constants::MapScale {
+    use game_core::constants::MapScale::*;
+    match p.get("scale").and_then(|v| v.as_str()).unwrap_or("") {
+        "small" => Small,
+        "medium" => Medium,
+        "large" => Large,
+        _ => fallback,
+    }
 }
 
 fn scale_name(s: game_core::constants::MapScale) -> &'static str {

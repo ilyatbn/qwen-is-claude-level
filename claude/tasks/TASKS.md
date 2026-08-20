@@ -226,7 +226,7 @@ The front end the game never had, and the multi-room server `docs/41` §9 always
 described but never built.
 
 - [x] [T10.01](M10/T10.01-room-registry.md) — `RoomRegistry`: many rooms in one process **(v3)**
-- [ ] [T10.02](M10/T10.02-lobby-protocol.md) — Create, join by code, quick match **(v3)**
+- [x] [T10.02](M10/T10.02-lobby-protocol.md) — Create, join by code, quick match **(v3)**
 - [ ] [T10.03](M10/T10.03-title-attract.md) — Title screen with a live attract mode **(v3)**
 - [ ] [T10.04](M10/T10.04-start-menu.md) — Start Game menu and lobby **(v3)**
 - [ ] [T10.05](M10/T10.05-skins-menu.md) — Skins menu (weapons greyed out) **(v3)**

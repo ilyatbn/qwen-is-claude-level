@@ -282,12 +282,18 @@ impl RoomRegistry {
         Ok((id, code))
     }
 
-    /// Seat a socket in a room. Idempotent for the same pair.
+    /// Seat a socket in a room. **Idempotent for the same pair.**
+    ///
+    /// Genuinely idempotent, not just documented as such: the lobby entry points
+    /// attach and then call `seat`, which attaches again, so a naive `humans +=
+    /// 1` counted every quick-matched player twice and left the room permanently
+    /// non-empty — it could never be reaped.
     pub fn attach(&mut self, sid: Sid, room: RoomId) {
-        if let Some(prev) = self.sid_room.insert(sid, room) {
-            if prev != room {
-                self.detach_from(sid, prev);
-            }
+        match self.sid_room.insert(sid, room) {
+            // Already here: nothing to count.
+            Some(prev) if prev == room => return,
+            Some(prev) => self.detach_from(sid, prev),
+            None => {}
         }
         if let Some(e) = self.rooms.get_mut(&room) {
             e.humans += 1;
@@ -668,6 +674,26 @@ mod tests {
                 "tie must go to the lower id"
             );
         }
+    }
+
+    /// The lobby attaches, then `seat` attaches again. If that counts twice the
+    /// room never empties and is never reaped — a leak that only shows up on a
+    /// server that has been up a while.
+    #[test]
+    fn attaching_the_same_socket_to_the_same_room_counts_once() {
+        let mut r = reg();
+        let (id, _) = r.create(MapScale::Small, false).expect("created");
+        let sid = Sid::new();
+        r.attach(sid, id);
+        r.attach(sid, id);
+        r.attach(sid, id);
+        assert_eq!(r.get(id).map(|e| e.humans()), Some(1));
+        r.detach(sid);
+        assert_eq!(
+            r.get(id).map(|e| e.humans()),
+            Some(0),
+            "one detach must undo one attach"
+        );
     }
 
     #[test]
