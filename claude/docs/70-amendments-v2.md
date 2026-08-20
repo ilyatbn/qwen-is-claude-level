@@ -956,3 +956,58 @@ milestone found a warmup-damage test that passed against a build with no damage
 gate at all, because `SPAWN_IFRAMES` refuses damage for the first two seconds
 regardless. A test asserting an absence needs a control asserting the presence —
 "no damage during warmup" is satisfied by a game that never deals damage.
+
+## A27 — Binary payloads travel base64, not as socket.io attachments
+
+`40-net-protocol.md` §3 specifies `map_init` and `snapshot` as socket.io binary
+attachments. On this stack they do not work, and the failure mode is far worse
+than a dropped message.
+
+A payload containing `0x1e` — engine.io's packet separator — corrupts the stream
+so completely that the client receives **nothing further on that socket, not even
+later plain-text events**. It presents as a dead connection rather than a bad
+message, which is what made it expensive to find. Isolated, in order:
+
+| payload | result |
+|---|---|
+| `vec![7u8; 13433]` | arrives fine |
+| real map bytes, 13,491 with 48 separator bytes | lost |
+| `vec![0x1e; 64]` | loses even the text event sent *before* it |
+| same, websocket-only transport | fails identically |
+
+Every generated map contains separator bytes, so this is the normal case, not an
+edge case.
+
+Both payloads are therefore **base64 text**. The cost is a third more bytes:
+`map_init` ~13 KB → ~18 KB once per round, and a six-player snapshot 102 → 136
+bytes, i.e. 2.7 KB/s at 20 Hz. `40-net-protocol.md` §4's budget has room several
+times over, and correctness on the one channel that carries the map is worth more
+than 34 bytes a snapshot.
+
+The binary framing in §3 stands as the *encoding*; only the transport wrapper
+changes. If a future socketioxide release fixes attachment handling, dropping the
+base64 layer is a one-line change on each side and the wire format underneath is
+unaffected.
+
+## A28 — A flaky gate is worse than a failing one
+
+The join-flow end-to-end test fails about half the time with an empty inbox. It is
+`#[ignore]`d with its diagnosis rather than left to gate the build, which is
+correct: a gate that fails on a coin flip teaches people to re-run it, and after
+that it gates nothing.
+
+That is a holding position, not a resolution. What is already excluded: map
+generation blocking a tokio worker, the fixture racing the room, snapshot and
+`map_init` interleaving mid-handshake, raw binary attachments (§A27), and two
+servers in one process. A notable clue: all seven original tests passed
+*individually* and interfered when run together — in parallel **and** under
+`--test-threads=1` — which points at process-global state rather than concurrency.
+
+**The test client is not the client that ships.** The product uses
+`socket.io-client` 4.x in a browser, which buffers emits until the handshake
+completes; the integration tests use `rust_socketio`, which may not. Before
+spending another session on the harness, establish which side is actually broken
+by driving the real browser client through Playwright against the same server. If
+the browser joins reliably a hundred times, the defect is in the test client and
+the product is sound — and that is a very different bug from the same symptom in
+shipping code.
