@@ -208,13 +208,13 @@ describe('BackdropMask', () => {
   }
 
   it('treats open sky above the terrain as outside', () => {
-    const b = new BackdropMask(hill())
+    const b = new BackdropMask(hill(), undefined, 96)
     expect(b.insideAt(256, 20)).toBe(false)
     expect(b.insideAt(256, 60)).toBe(false)
   })
 
   it('treats the inside of the landmass as interior', () => {
-    const b = new BackdropMask(hill())
+    const b = new BackdropMask(hill(), undefined, 96)
     expect(b.insideAt(256, 200)).toBe(true)
   })
 
@@ -224,8 +224,33 @@ describe('BackdropMask', () => {
     // A 20 px tunnel: no 28 px disc fits, so the sky never reaches in.
     for (let y = 150; y < 170; y++) for (let x = 100; x < 400; x++) m.clear(x, y)
 
-    const b = new BackdropMask(m)
+    const b = new BackdropMask(m, undefined, 96)
     expect(b.insideAt(250, 160)).toBe(true)
+  })
+
+  it('does not turn a cavern with a wide mouth into sky (A14)', () => {
+    // The regression: seeding the flood from all four borders made any chamber
+    // joined to open air by a passage wider than 2*reach flood and render as sky.
+    // A 312x360 cavern measured 0% sky before that change and 84% after.
+    const m = new FakeMask(512, 512)
+    m.fillRect(0, 100, 511, 511)
+    // A big cavern deep inside the rock, opening only sideways to the map edge —
+    // no route to the sky at all. Seeding the flood from every border let it in
+    // from the right; seeding from the sky cannot reach it.
+    for (let y = 250; y < 450; y++) for (let x = 100; x < 412; x++) m.clear(x, y)
+    for (let y = 300; y < 400; y++) for (let x = 412; x < 512; x++) m.clear(x, y)
+
+    const b = new BackdropMask(m, undefined, 96)
+    let interior = 0
+    let total = 0
+    for (let y = 240; y < 420; y++) {
+      for (let x = 130; x < 380; x++) {
+        total++
+        if (b.insideAt(x, y)) interior++
+      }
+    }
+    // The cavern is a hole in a mountain; it must read as rock behind, not sky.
+    expect(interior / total).toBeGreaterThan(0.9)
   })
 
   it('fills a large enclosed cavern that closing alone would miss', () => {
@@ -234,14 +259,14 @@ describe('BackdropMask', () => {
     // 200 px across — far wider than the disc, but sealed, so unreachable.
     for (let y = 140; y < 220; y++) for (let x = 150; x < 350; x++) m.clear(x, y)
 
-    const b = new BackdropMask(m)
+    const b = new BackdropMask(m, undefined, 96)
     expect(b.insideAt(250, 180)).toBe(true)
   })
 
   it('does not paint the backdrop out into open sky', () => {
     const m = new FakeMask(512, 256)
     m.fillRect(0, 200, 511, 255)
-    const b = new BackdropMask(m)
+    const b = new BackdropMask(m, undefined, 96)
     // Well above the surface must stay sky.
     expect(b.insideAt(256, 100)).toBe(false)
     expect(b.insideAt(256, 150)).toBe(false)
@@ -273,7 +298,7 @@ describe('BackdropMask', () => {
       const top = Math.round(140 + 25 * Math.sin(x / 60))
       m.fillRect(x, top, x, 255)
     }
-    expect(worstOverhang(new BackdropMask(m), m, 512, 256)).toBeLessThanOrEqual(4)
+    expect(worstOverhang(new BackdropMask(m, undefined, 96), m, 512, 256)).toBeLessThanOrEqual(4)
   })
 
   it('bounds the shading in a concave notch by the disc radius', () => {
@@ -286,7 +311,7 @@ describe('BackdropMask', () => {
       const top = 120 + (x >= 200 && x < 300 ? 60 : 0)
       m.fillRect(x, top, x, 255)
     }
-    expect(worstOverhang(new BackdropMask(m), m, 512, 256)).toBeLessThanOrEqual(
+    expect(worstOverhang(new BackdropMask(m, undefined, 96), m, 512, 256)).toBeLessThanOrEqual(
       BackdropMask.REACH_PX,
     )
   })
@@ -298,7 +323,7 @@ describe('BackdropMask', () => {
     const m = new FakeMask(512, 256)
     m.fillRect(0, 100, 511, 255)
     for (let y = 100; y < 200; y++) for (let x = 250; x < 268; x++) m.clear(x, y)
-    const b = new BackdropMask(m)
+    const b = new BackdropMask(m, undefined, 96)
     expect(b.insideAt(259, 180)).toBe(true)
     expect(b.insideAt(259, 130)).toBe(true)
   })
@@ -311,7 +336,7 @@ describe('BackdropMask', () => {
       const top = Math.round(140 + 25 * Math.sin(x / 37) + 12 * Math.sin(x / 11))
       m.fillRect(x, top, x, 255)
     }
-    const b = new BackdropMask(m)
+    const b = new BackdropMask(m, undefined, 96)
 
     const boundary: number[] = []
     for (let x = 0; x < 512; x++) {

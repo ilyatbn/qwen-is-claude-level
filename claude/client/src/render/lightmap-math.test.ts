@@ -38,9 +38,13 @@ describe('fovRadius', () => {
       flashlightOn: false,
     })
     expect(v).toBeCloseTo(c.FOV_NIGHT * c.FOV_FOG_MULT, 4)
-    // The doc's own worst case: a foggy night is about three player-heights.
-    expect(v).toBeGreaterThan(90)
-    expect(v).toBeLessThan(110)
+    // The worst case the game reaches, restated for §A16's radii: roughly
+    // 1.8 player-heights of world, which at CAMERA_ZOOM 2 is about 99 screen px.
+    // The doc's original "three player-heights" was written for a 1x camera.
+    expect(v).toBeGreaterThan(45)
+    expect(v).toBeLessThan(55)
+    expect(v * c.CAMERA_ZOOM).toBeGreaterThan(90)
+    expect(v * c.CAMERA_ZOOM).toBeLessThan(110)
   })
 
   it('applies the health multiplier at 0 health and not above BASE_HEALTH', () => {

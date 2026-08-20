@@ -154,10 +154,18 @@ export function edgeBits(
  * roll in from the border.** Everything else is interior.
  *
  * ```
- *   1. distance transform from solid            -> where does a disc of radius R fit?
- *   2. flood the border through those positions -> where can the sky actually reach?
- *   3. distance transform from that flood       -> interior is air further than R away
+ *   1. distance transform from solid          -> where does a disc of radius R fit?
+ *   2. flood **from the sky** through those    -> where can the sky actually reach?
+ *   3. distance transform from that flood      -> interior is air further than R away
  * ```
+ *
+ * Step 2 seeds from **genuine sky only** — the top border and anything above
+ * `SKY_MARGIN` — never from all four borders (§A14). Seeding from every border made
+ * any chamber joined to open air by a passage wider than `2 * reach` flood and
+ * render as sky: a 312 x 360 cavern measured 0 % sky before, 84 % after. Tunnels
+ * (bore 30-52) stayed under the threshold, which is exactly why the network still
+ * looked right and the failure hid in the biggest holes on the map. The disc is the
+ * width gate; it is not the definition of "outside".
  *
  * A cave mouth narrower than `2 * reach` admits no disc, so the cave is interior all
  * the way to its lip. A wide bay admits one, so it reads as open sky. A sealed
@@ -187,7 +195,7 @@ export class BackdropMask implements MaskSource {
   private static readonly DIAG = 4
   private static readonly FAR = 255
 
-  constructor(src: MaskSource, reach = BackdropMask.REACH_PX) {
+  constructor(src: MaskSource, reach = BackdropMask.REACH_PX, skyMargin = 96) {
     const w = (this.width = src.width)
     const h = (this.height = src.height)
     const n = w * h
@@ -218,13 +226,11 @@ export class BackdropMask implements MaskSource {
       open[i] = 1
       stack.push(i)
     }
+    // Genuine sky only: the top row, plus every row above SKY_MARGIN, which the
+    // generator guarantees is empty. The side and bottom borders are rock or
+    // bedrock and seeding from them is what let caverns flood.
     for (let x = 0; x < w; x++) {
-      seed(x, 0)
-      seed(x, h - 1)
-    }
-    for (let y = 0; y < h; y++) {
-      seed(0, y)
-      seed(w - 1, y)
+      for (let y = 0; y < Math.min(skyMargin, h); y++) seed(x, y)
     }
     while (stack.length) {
       const i = stack.pop()!

@@ -118,13 +118,14 @@ pub const KNOCKBACK_MAX: f32 = 320.0;
 // Field of view and light
 // ---------------------------------------------------------------------------
 
-pub const FOV_DAY: f32 = 640.0;
-pub const FOV_NIGHT: f32 = 220.0;
+/// Corrected for CAMERA_ZOOM 2.0 — see docs/70 §A16.
+pub const FOV_DAY: f32 = 320.0;
+pub const FOV_NIGHT: f32 = 110.0;
 pub const FOV_FOG_MULT: f32 = 0.45;
 pub const FOV_HEALTH_MIN_MULT: f32 = 0.80;
 /// Fraction of the radius used for the gradient falloff.
 pub const FOV_EDGE_SOFTNESS: f32 = 0.35;
-pub const FLASHLIGHT_RANGE: f32 = 520.0;
+pub const FLASHLIGHT_RANGE: f32 = 260.0;
 pub const FLASHLIGHT_CONE_DEG: f32 = 55.0;
 pub const FLASHLIGHT_AMBIENT_MULT: f32 = 0.65;
 pub const NIGHT_DARKNESS: f32 = 0.82;

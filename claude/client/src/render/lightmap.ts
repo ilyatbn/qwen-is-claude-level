@@ -1,9 +1,25 @@
 /**
  * The darkness overlay, and the lights that cut holes in it.
  *
- * `docs/14-daynight-visibility.md` §5: fill a full-screen texture with the night
- * colour at the current darkness, **erase** each light source into it, then draw it
- * over the scene. Night is not a filter — it is a mask you carry a hole in.
+ * `docs/14-daynight-visibility.md` §5: fill with the night colour at the current
+ * darkness, **erase** each light source, then composite over the scene with
+ * MULTIPLY. Night is not a filter — it is a mask you carry a hole in.
+ *
+ * ## Why a 2D canvas rather than `RenderTexture.erase`
+ *
+ * The first implementation filled a `RenderTexture` and erased a scaled `Image`
+ * into it. Measured against the radius it was *asked* for, the rendered hole did
+ * not match and did not track: r=100 rendered ≈103 px, r=300 rendered ≈156, r=450
+ * rendered ≈232 — it stopped growing near the eraser texture's native size and sat
+ * off-centre. Setting the transform on the object instead of passing `(obj, x, y)`
+ * did not fix it.
+ *
+ * A canvas gives exact, boring 2D semantics — `fillRect` then `destination-out` —
+ * which is the same technique the chunk baker already uses in this codebase, and
+ * `rendered radius == requested radius` is now asserted by a test.
+ *
+ * It is drawn at half resolution and scaled up. The whole layer is soft gradients,
+ * so the resolution loss is invisible, and it cuts the per-frame upload by 4×.
  */
 
 import Phaser from 'phaser'
@@ -27,90 +43,50 @@ export interface LightSource {
   intensity: number
 }
 
-const RADIAL_KEY = '__light_radial'
-const CONE_KEY = '__light_cone'
-const RADIAL_SIZE = 256
-const CONE_SIZE = 256
+const TEX_KEY = '__lightmap'
+/** Half resolution: the layer is all soft gradients, so nothing is lost. */
+const SCALE = 0.5
 
 export class Lightmap {
   private readonly scene: Phaser.Scene
-  private readonly rt: Phaser.GameObjects.RenderTexture
-  private readonly nightColor: number
-  private readonly eraser: Phaser.GameObjects.Image
-  readonly stats = { drawsLastFrame: 0 }
+  private readonly texture: Phaser.Textures.CanvasTexture | null
+  private readonly image: Phaser.GameObjects.Image
+  private readonly nightColor: string
+  private readonly lw: number
+  private readonly lh: number
+  /**
+   * `filled` is the one that means anything (§A15).
+   *
+   * `drawsLastFrame` counts **erased lights**, so it reads 0 both when the pass was
+   * skipped and when it ran at full darkness with nothing lit on screen — it
+   * reports that work was attempted, not that it happened. The daylight-skip
+   * assertion is on `filled`; night darkness is asserted on sampled pixels by
+   * `night_darkens_the_world`.
+   */
+  readonly stats = { drawsLastFrame: 0, filled: false }
 
   constructor(scene: Phaser.Scene, nightColor = 0x000818) {
     this.scene = scene
-    this.nightColor = nightColor
     const c = C()
+    this.lw = Math.round(c.VIEWPORT_W * SCALE)
+    this.lh = Math.round(c.VIEWPORT_H * SCALE)
+    this.nightColor = `#${nightColor.toString(16).padStart(6, '0')}`
 
-    Lightmap.ensureTextures(scene)
+    if (scene.textures.exists(TEX_KEY)) scene.textures.remove(TEX_KEY)
+    this.texture = scene.textures.createCanvas(TEX_KEY, this.lw, this.lh) ?? null
 
-    this.rt = scene.add
-      .renderTexture(0, 0, c.VIEWPORT_W, c.VIEWPORT_H)
+    this.image = scene.add
+      .image(0, 0, TEX_KEY)
       .setOrigin(0, 0)
       .setScrollFactor(0)
       .setDepth(DEPTH.lightmap)
       .setBlendMode(Phaser.BlendModes.MULTIPLY)
       .setVisible(false)
-
-    // One reusable image, re-positioned and re-scaled per source. Building a
-    // gradient per light per frame is the obvious way to write this and it halves
-    // the frame rate.
-    this.eraser = scene.add.image(0, 0, RADIAL_KEY).setVisible(false)
   }
 
   /**
-   * The gradient and cone textures, generated once.
-   *
-   * `FOV_EDGE_SOFTNESS` is baked into the colour stops: opaque for the inner 65 %
-   * of the radius, fading over the outer 35 %, so vision ends in a gradient rather
-   * than at a line.
-   */
-  private static ensureTextures(scene: Phaser.Scene): void {
-    const c = C()
-    if (!scene.textures.exists(RADIAL_KEY)) {
-      const tex = scene.textures.createCanvas(RADIAL_KEY, RADIAL_SIZE, RADIAL_SIZE)
-      const ctx = tex?.getContext()
-      if (ctx) {
-        const r = RADIAL_SIZE / 2
-        const g = ctx.createRadialGradient(r, r, 0, r, r, r)
-        const solid = 1 - c.FOV_EDGE_SOFTNESS
-        g.addColorStop(0, 'rgba(255,255,255,1)')
-        g.addColorStop(solid, 'rgba(255,255,255,1)')
-        g.addColorStop(1, 'rgba(255,255,255,0)')
-        ctx.fillStyle = g
-        ctx.fillRect(0, 0, RADIAL_SIZE, RADIAL_SIZE)
-        tex?.refresh()
-      }
-    }
-
-    if (!scene.textures.exists(CONE_KEY)) {
-      const tex = scene.textures.createCanvas(CONE_KEY, CONE_SIZE, CONE_SIZE)
-      const ctx = tex?.getContext()
-      if (ctx) {
-        // Drawn pointing right (+x), so it can simply be rotated to the aim angle.
-        const half = ((c.FLASHLIGHT_CONE_DEG * Math.PI) / 180) / 2
-        const cx = 0
-        const cy = CONE_SIZE / 2
-        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, CONE_SIZE)
-        g.addColorStop(0, 'rgba(255,255,255,1)')
-        g.addColorStop(0.65, 'rgba(255,255,255,0.85)')
-        g.addColorStop(1, 'rgba(255,255,255,0)')
-        ctx.fillStyle = g
-        ctx.beginPath()
-        ctx.moveTo(cx, cy)
-        ctx.arc(cx, cy, CONE_SIZE, -half, half)
-        ctx.closePath()
-        ctx.fill()
-        tex?.refresh()
-      }
-    }
-  }
-
-  /**
-   * Fill, erase, done. Costs **nothing** in daylight: the whole pass is skipped and
-   * `stats.drawsLastFrame` stays 0, which `docs/14` §7 requires and T3.11 displays.
+   * Fill, erase, composite. Costs **nothing** in daylight: the whole pass is
+   * skipped and `stats.drawsLastFrame` stays 0, which `docs/14` §7 requires.
    */
   render(
     camera: Phaser.Cameras.Scene2D.Camera,
@@ -119,50 +95,106 @@ export class Lightmap {
     fogActive = false,
   ): void {
     this.stats.drawsLastFrame = 0
+    this.stats.filled = false
 
     if (!lightmapNeeded(darkness, fogActive)) {
-      this.rt.setVisible(false)
+      this.image.setVisible(false)
       return
     }
 
-    this.rt.setVisible(true)
-    this.rt.clear()
-    this.rt.fill(this.nightColor, darkness)
+    const ctx = this.texture?.getContext()
+    if (!ctx) return
 
+    const c = C()
     const zoom = camera.zoom
+    // A scroll-factor-0 object is still scaled by zoom about the camera midpoint,
+    // so the image is counter-scaled to cover exactly the viewport at any zoom.
+    // Getting this wrong is invisible at zoom 1 and wrong everywhere else.
+    const midX = c.VIEWPORT_W / 2
+    const midY = c.VIEWPORT_H / 2
+    this.image.setPosition(midX * (1 - 1 / zoom), midY * (1 - 1 / zoom))
+    this.image.setDisplaySize(c.VIEWPORT_W / zoom, c.VIEWPORT_H / zoom)
+    this.image.setVisible(true)
+
+    // World px → canvas px.
+    const k = (this.lw / c.VIEWPORT_W) * zoom
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.clearRect(0, 0, this.lw, this.lh)
+    ctx.globalAlpha = darkness
+    ctx.fillStyle = this.nightColor
+    ctx.fillRect(0, 0, this.lw, this.lh)
+    ctx.globalAlpha = 1
+    this.stats.filled = true
+
+    ctx.globalCompositeOperation = 'destination-out'
     for (const s of sources) {
-      // World → screen, by hand rather than through a container: the render
-      // texture is pinned to the camera so everything drawn into it is in screen
-      // space, and the sources are in world space.
-      const sx = (s.x - camera.worldView.x) * zoom
-      const sy = (s.y - camera.worldView.y) * zoom
-      const r = s.radius * zoom
+      const cx = (s.x - camera.worldView.x) * k
+      const cy = (s.y - camera.worldView.y) * k
+      const r = s.radius * k
+      if (r <= 0) continue
+      if (cx < -r || cy < -r || cx > this.lw + r || cy > this.lh + r) continue
 
-      // Off-screen lights are skipped, which matters during a meteor shower.
-      if (sx < -r || sy < -r || sx > this.rt.width + r || sy > this.rt.height + r) continue
-
+      const a = Math.max(0, Math.min(1, s.intensity))
       if (s.kind === 'cone') {
-        this.eraser.setTexture(CONE_KEY)
-        this.eraser.setOrigin(0, 0.5)
-        this.eraser.setDisplaySize(r, r * 2)
-        this.eraser.setRotation(s.angle ?? 0)
+        this.eraseCone(ctx, cx, cy, r, s.angle ?? 0, s.coneDeg ?? c.FLASHLIGHT_CONE_DEG, a)
       } else {
-        this.eraser.setTexture(RADIAL_KEY)
-        this.eraser.setOrigin(0.5, 0.5)
-        this.eraser.setDisplaySize(r * 2, r * 2)
-        this.eraser.setRotation(0)
+        this.eraseRadial(ctx, cx, cy, r, a)
       }
-      this.eraser.setAlpha(Math.max(0, Math.min(1, s.intensity)))
-      this.rt.erase(this.eraser, sx, sy)
       this.stats.drawsLastFrame++
     }
+
+    ctx.globalCompositeOperation = 'source-over'
+    this.texture?.refresh()
+  }
+
+  /**
+   * `FOV_EDGE_SOFTNESS` (0.35) is the fraction of the radius used for the falloff,
+   * so vision fades out instead of ending at a line.
+   */
+  private eraseRadial(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    r: number,
+    alpha: number,
+  ): void {
+    const solid = 1 - C().FOV_EDGE_SOFTNESS
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r)
+    g.addColorStop(0, `rgba(0,0,0,${alpha})`)
+    g.addColorStop(solid, `rgba(0,0,0,${alpha})`)
+    g.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.fillStyle = g
+    ctx.beginPath()
+    ctx.arc(cx, cy, r, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  private eraseCone(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    r: number,
+    angle: number,
+    coneDeg: number,
+    alpha: number,
+  ): void {
+    const half = ((coneDeg * Math.PI) / 180) / 2
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r)
+    g.addColorStop(0, `rgba(0,0,0,${alpha})`)
+    g.addColorStop(0.6, `rgba(0,0,0,${alpha * 0.9})`)
+    g.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.fillStyle = g
+    ctx.beginPath()
+    ctx.moveTo(cx, cy)
+    ctx.arc(cx, cy, r, angle - half, angle + half)
+    ctx.closePath()
+    ctx.fill()
   }
 
   destroy(): void {
-    this.rt.destroy()
-    this.eraser.destroy()
-    for (const k of [RADIAL_KEY, CONE_KEY]) {
-      if (this.scene.textures.exists(k)) this.scene.textures.remove(k)
-    }
+    this.image.destroy()
+    if (this.scene.textures.exists(TEX_KEY)) this.scene.textures.remove(TEX_KEY)
   }
 }

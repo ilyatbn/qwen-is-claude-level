@@ -19,7 +19,7 @@ import { Crosshair, LocalInput } from '../input/localInput'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { DebugOverlay } from '../render/debugOverlay'
-import { cycleU, skyPhase } from '../render/sky-math'
+import { cycleU, darknessAt, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
 
 const SCALES: Record<string, MapScale> = {
@@ -47,6 +47,7 @@ export class SandboxScene extends Phaser.Scene {
   private lightmap!: Lightmap
   private overlay!: DebugOverlay
   private fogActive = false
+  private fovOverride: number | null = null
   /** Round time in seconds, driven by the clock or scrubbed by the slider. */
   private roundTime = 0
   private timeScrub = false
@@ -61,9 +62,12 @@ export class SandboxScene extends Phaser.Scene {
   private readout!: HTMLPreElement
   private ui!: HTMLDivElement
   private seedInput!: HTMLInputElement
+  private timeInput: HTMLInputElement | undefined
+  private timeLabel: HTMLSpanElement | undefined
 
   private timings = { generateMs: 0, buildAllMs: 0, lastRebakeMs: 0 }
   private frameBakes = 0
+  private readoutAcc = 0
 
   constructor() {
     super('Sandbox')
@@ -245,6 +249,8 @@ export class SandboxScene extends Phaser.Scene {
     time.style.width = '150px'
     const timeOut = document.createElement('span')
     timeOut.textContent = 'morning'
+    this.timeInput = time
+    this.timeLabel = timeOut
     time.oninput = () => {
       // Scrubbing the slider takes the clock over, so a phase can be inspected
       // without waiting two minutes for it to come round.
@@ -273,6 +279,12 @@ export class SandboxScene extends Phaser.Scene {
     ui.addEventListener('keydown', (e) => e.stopPropagation())
   }
 
+  /** Keep the time slider and its label showing what `roundTime` actually is. */
+  private syncTimeControl(): void {
+    if (this.timeInput) this.timeInput.value = String(Math.round((this.roundTime % 120) / 120 * 1000))
+    if (this.timeLabel) this.timeLabel.textContent = skyPhase(cycleU(this.roundTime))
+  }
+
   private refreshReadout(): void {
     const m = this.core.meta
     const t = this.timings
@@ -287,7 +299,7 @@ export class SandboxScene extends Phaser.Scene {
       `generate ${t.generateMs.toFixed(0)} ms  bakeAll ${t.buildAllMs.toFixed(0)} ms\n` +
       `last carve rebake ${t.lastRebakeMs.toFixed(1)} ms  bakes/frame ${this.frameBakes}\n` +
       `fps ${Math.round(this.game.loop.actualFps)}  pending ${this.terrain.stats.pending}  ` +
-      `lightmap draws ${this.lightmap?.stats.drawsLastFrame ?? 0}`
+      `lightmap ${this.lightmap?.stats.filled ? 'on' : 'off'} draws ${this.lightmap?.stats.drawsLastFrame ?? 0}`
   }
 
   private exposeDebugHandle(): void {
@@ -319,17 +331,31 @@ export class SandboxScene extends Phaser.Scene {
           animState: self.player?.state ?? 'idle',
           roundTime: self.roundTime,
           skyPhase: self.sky?.currentPhase ?? 'morning',
-          darkness: sandboxDarkness(self.roundTime),
+          darkness: darknessAt(cycleU(self.roundTime), C().NIGHT_DARKNESS),
           fogActive: self.fogActive,
           lightmapDraws: self.lightmap?.stats.drawsLastFrame ?? 0,
+          lightmapFilled: self.lightmap?.stats.filled ?? false,
           fov: fovRadius({
-            darkness: sandboxDarkness(self.roundTime),
+            darkness: darknessAt(cycleU(self.roundTime), C().NIGHT_DARKNESS),
             fogActive: self.fogActive,
             health: C().BASE_HEALTH,
             flashlightOn: false,
           }),
           overlays: self.overlay?.enabled ?? false,
+          worldView: {
+            x: self.cameras.main.worldView.x,
+            y: self.cameras.main.worldView.y,
+            w: self.cameras.main.worldView.width,
+            h: self.cameras.main.worldView.height,
+          },
         }
+      },
+      setFov(r: number | null) {
+        self.fovOverride = r
+      },
+      /** Diagnostic seam: prove whether a defect is zoom-dependent. */
+      setZoom(z: number) {
+        self.cameras.main.setZoom(z)
       },
       setFog(on: boolean) {
         self.fogActive = on
@@ -341,6 +367,10 @@ export class SandboxScene extends Phaser.Scene {
       setTime(t: number) {
         self.timeScrub = true
         self.roundTime = t
+        // Move the control with it. Setting roundTime alone left the slider and
+        // its label reading "morning" on a night screenshot, which cost a
+        // reviewer real time and produced a wrong diagnosis.
+        self.syncTimeControl()
       },
       /** Teleport, so a movement check can start from known ground. */
       place(x: number, y: number) {
@@ -413,21 +443,32 @@ export class SandboxScene extends Phaser.Scene {
     if (!this.timeScrub) this.roundTime += dt
     // Darkness is the server's scalar in M6; here it follows the doc's formula so
     // the sandbox shows what a real round will.
-    this.sky.update(this.roundTime, sandboxDarkness(this.roundTime), C().NIGHT_DARKNESS)
+    this.sky.update(this.roundTime, darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS), C().NIGHT_DARKNESS)
 
     this.rig.update(dt)
     this.terrain.update(this.rig.center)
     this.frameBakes = this.terrain.stats.bakesThisFrame
 
-    const darkness = sandboxDarkness(this.roundTime)
+    // The readout used to refresh only on regenerate/carve, so it displayed
+    // live-looking numbers (fps, pending, lightmap) that never changed.
+    this.readoutAcc += dt
+    if (this.readoutAcc >= 0.25) {
+      this.readoutAcc = 0
+      this.syncTimeControl()
+      this.refreshReadout()
+    }
+
+    const darkness = darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS)
     const lights: LightSource[] = []
     if (body) {
-      const fov = fovRadius({
-        darkness,
-        fogActive: this.fogActive,
-        health: C().BASE_HEALTH,
-        flashlightOn: false,
-      })
+      const fov =
+        this.fovOverride ??
+        fovRadius({
+          darkness,
+          fogActive: this.fogActive,
+          health: C().BASE_HEALTH,
+          flashlightOn: false,
+        })
       lights.push({ x: body.x, y: body.y, radius: fov, kind: 'radial', intensity: 1 })
     }
     this.lightmap.render(this.cameras.main, darkness, lights, this.fogActive)
@@ -450,32 +491,6 @@ export class SandboxScene extends Phaser.Scene {
         : [],
     )
   }
-}
-
-/**
- * The `docs/14-daynight-visibility.md` §1 darkness curve, local to the sandbox.
- *
- * In a real round this arrives in the snapshot header — the server owns the clock.
- * Duplicating the formula here is deliberate and temporary: the sandbox has no
- * server, and M6 replaces this call with the transmitted value rather than keeping
- * two implementations.
- */
-function sandboxDarkness(roundTime: number): number {
-  const c = C()
-  const day = c.DAY_DURATION
-  const night = c.NIGHT_DURATION
-  const ramp = c.CYCLE_TRANSITION
-  const t = roundTime % (day + night)
-  const smooth = (x: number) => {
-    const k = Math.max(0, Math.min(1, x))
-    return k * k * (3 - 2 * k)
-  }
-  // Dusk is centred on the day/night boundary, dawn on the end of the cycle.
-  if (t < day - ramp / 2) return 0
-  if (t < day + ramp / 2) return c.NIGHT_DARKNESS * smooth((t - (day - ramp / 2)) / ramp)
-  const endRamp = day + night - ramp / 2
-  if (t < endRamp) return c.NIGHT_DARKNESS
-  return c.NIGHT_DARKNESS * (1 - smooth((t - endRamp) / ramp))
 }
 
 function label(text: string): HTMLSpanElement {

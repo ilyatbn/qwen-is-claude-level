@@ -41,7 +41,17 @@ banner "client tests"
 npm --prefix client test -- --run
 
 if [ "$FAST" -eq 0 ]; then
-  banner "assets"
+  if [ "$FAST" -eq 0 ]; then
+  banner "visual: night_darkens_the_world"
+  # A browser check, in the gate on purpose. Night visibility is a pillar of the
+  # game and it broke while every unit test and every counter stayed green — only
+  # sampled pixels caught it (docs/70 §A15, §A16).
+  node scripts/drive.mjs scripts/checks/night_darkens_the_world.mjs '?sandbox=1&seed=4242'
+else
+  banner "visual (skipped: --fast)"
+fi
+
+banner "assets"
   node scripts/verify-assets.mjs
 else
   banner "assets (skipped: --fast)"

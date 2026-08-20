@@ -98,6 +98,32 @@ export function skyColors(u: number): { top: number; bottom: number } {
   return { top: mixColor(top0, top1, tt), bottom: mixColor(bot0, bot1, tt) }
 }
 
+/**
+ * Darkness at cycle position `u`, derived from the **same phase table the sky
+ * uses** (§A13).
+ *
+ * The original spec ramped over `CYCLE_TRANSITION` (8 s) centred on t = 60, so the
+ * world was fully dark at t = 64 while the sky was still showing the orange sunset
+ * keyframe at u = 0.55 — ten of evening's fourteen seconds played a sunset
+ * underneath a black overlay. One description of the day, and everything reads
+ * from it.
+ *
+ * This is the client's copy for the sandbox. In a real round the server owns the
+ * clock and sends `darkness` in the snapshot header; M6 replaces the *call*, not
+ * this function, which stays as the shared definition.
+ */
+export function darknessAt(u: number, nightDarkness: number): number {
+  const t = cycleU(u * CYCLE_LENGTH)
+  const smooth = (x: number) => {
+    const k = Math.max(0, Math.min(1, x))
+    return k * k * (3 - 2 * k)
+  }
+  if (t < 0.5) return 0
+  if (t < 0.62) return nightDarkness * smooth((t - 0.5) / 0.12)
+  if (t < 0.9) return nightDarkness
+  return nightDarkness * (1 - smooth((t - 0.9) / 0.1))
+}
+
 export interface Body {
   x: number
   y: number

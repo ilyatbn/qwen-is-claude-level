@@ -892,3 +892,32 @@ Notes: The daylight skip is asserted as draws == 0, not as "looks the same" —
        Overlays live at depth 55, ABOVE the lightmap, or they are invisible at
        night — which is when you need them most.
 Left for later: M3 is complete. M4 next.
+
+## A13-A16 review fixes — night visibility — DONE
+Files: docs/70-amendments-v2.md (A16), crates/game-core/src/constants.rs,
+       client/src/render/{sky-math.ts,sky-math.test.ts,lightmap.ts,
+       lightmap-math.test.ts,chunkBake-math.ts,chunkBake.test.ts,terrain.ts},
+       client/src/scenes/SandboxScene.ts, scripts/check.sh,
+       scripts/checks/night_darkens_the_world.mjs
+Verified: check.sh green INCLUDING the new browser check. 24 chunkBake, 22 sky-math,
+       8 lightmap-math. night_darkens_the_world: near 101%, mid 21%, far 22%,
+       lit radius 181 px vs 220 asked.
+Notes: THE REAL CAUSE WAS §A16, NOT THE LIGHTMAP. FOV_DAY/FOV_NIGHT/FLASHLIGHT_RANGE
+       are world-px radii authored when the viewport showed 1280x720 WORLD px. §A1
+       set CAMERA_ZOOM 2, so the viewport shows 640x360 and every FoV covered twice
+       the screen fraction intended: the night pool was 440 screen px on a 1280x720
+       screen. Every number was right except the one nobody stated — the radius
+       RELATIVE TO WHAT IS ON SCREEN. Halved all three.
+       MY FIRST VERSION OF THE TEST PASSED AT THE OLD VALUE. near-vs-far is
+       identical (101%/22%) whether the pool is 220 or 440 px; only a MID band
+       (250-400 px) discriminates: 21% fixed vs 79% broken. A test for a
+       "too much of X" bug needs a sample point inside the region that changes.
+       Phaser's RenderTexture.erase(obj,x,y) does not carry the object's scale
+       reliably; the lightmap is a 2D canvas (fill + destination-out) at half res,
+       counter-scaled against camera zoom. The old RT version was also wrong at
+       zoom != 1 (double-applied zoom).
+       Backdrop floods from the SKY only (y < SKY_MARGIN), never all four borders.
+       Falsified: restoring border seeding fails the new cavern test.
+       stats.filled (fill executed) replaces drawsLastFrame for the daylight-skip
+       assertion; drawsLastFrame counts intent, not effect.
+Left for later: M4 part A (T4.01-T4.07) not started.

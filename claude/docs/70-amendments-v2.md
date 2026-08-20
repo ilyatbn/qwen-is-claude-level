@@ -596,3 +596,47 @@ materially darker at night than at day, and lighter near the player than at the
 screen corner. Note that a whole-frame luminance mean does **not** work: the sky
 dominates the average and reports a healthy day→night drop while the world stays
 lit. Sample terrain.
+
+## A16 — The FoV radii were authored for a 1× camera
+
+**This corrects the FoV rows of `02-constants.md`, and it is the cause of "night
+does not darken the world".**
+
+`FOV_DAY` (640) and `FOV_NIGHT` (220) are world-pixel radii, chosen when the
+viewport showed `VIEWPORT_W × VIEWPORT_H` = 1280 × 720 **world** pixels. §A1 then
+set `CAMERA_ZOOM = 2.0`, so the viewport now shows 640 × 360 world pixels — and
+every FoV radius covers **twice the fraction of the screen** it was designed to.
+
+Measured at zoom 2, seed 4242, terrain pixels on the row through the player:
+
+| distance from player | day | night |
+|---|---|---|
+| 60 px | 76 | 77 |
+| 124 px | 70 | 68 |
+| 188 px | 70 | 55 |
+
+The lit circle is 220 × 2 = **440 screen px** in radius on a 1280 × 720 screen,
+whose half-diagonal is 734. The player is always at the centre of it, so at night
+they see a pool of light covering 60 % of the way to the corners. The design
+intended 220 / 734 = 30 %.
+
+Nothing was wrong with the lightmap; it was faithfully rendering a radius that is
+twice as generous as intended. This is why the effect survived a `drawsLastFrame`
+check, a `darkness` check and an FoV-formula check — every number was correct
+except the one nobody stated: the radius **relative to what is on screen**.
+
+### Corrected values
+
+| Name | Was | Now | Notes |
+|---|---|---|---|
+| `FOV_DAY` | 640 | 320 | still larger than the visible half-width, so daylight stays effectively unrestricted |
+| `FOV_NIGHT` | 220 | 110 | restores the intended 30 % of the screen half-diagonal |
+| `FLASHLIGHT_RANGE` | 520 | 260 | the cone keeps its advantage over ambient sight at the same ratio |
+
+### The rule
+
+> A radius that exists to control **what the player can see** is meaningless
+> without the zoom it is seen at. Any future change to `CAMERA_ZOOM` must scale
+> `FOV_DAY`, `FOV_NIGHT` and `FLASHLIGHT_RANGE` with it, and the test that guards
+> night visibility must assert on **sampled terrain pixels at a known screen
+> distance from the player**, never on the radius alone.
