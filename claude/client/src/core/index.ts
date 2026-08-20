@@ -109,6 +109,16 @@ export interface Constants {
   BTN_JUMP: number
   BTN_FIRE: number
   BTN_FLASHLIGHT: number
+  SUN_RADIUS: number
+  MOON_RADIUS: number
+  SKY_BODY_ARC_H: number
+  SKY_BODY_PARALLAX: number
+  STAR_COUNT: number
+  STAR_FADE_START: number
+  NIGHT_DARKNESS: number
+  DAY_DURATION: number
+  NIGHT_DURATION: number
+  CYCLE_TRANSITION: number
 }
 
 /**

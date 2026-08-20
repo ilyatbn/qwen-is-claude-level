@@ -847,3 +847,25 @@ Notes: PHASER FIELD-NAME COLLISIONS BIT ME TWICE: `scale` is ScaleManager and
        A movement check must read game-core's body, not the sprite: a sprite can
        move for reasons unrelated to input.
 Left for later: T3.10 lightmap, T3.11 overlays, T3.12 sky.
+
+## T3.12 — Five-phase sky, sun, moon, stars — DONE
+Files: client/src/render/{sky-math.ts,sky-math.test.ts,sky.ts,backdrop.ts},
+       client/src/scenes/SandboxScene.ts, crates/game-wasm/src/lib.rs,
+       scripts/checks/sky.mjs
+Verified: `npm --prefix client test -- --run sky-math` 16 passed.
+       `node scripts/drive.mjs scripts/checks/sky.mjs` — measured sky rgb:
+       morning (102,122,160) day (97,158,216) evening (121,95,119) night (29,16,46);
+       day luminance 149 vs night 21; all four phases visually distinct.
+Notes: TWO THINGS DREW THE SKY. Backdrop's flat placeholder sat at DEPTH.sky and was
+       re-created on every regenerate, so it was always added last and painted over
+       the real gradient. Backdrop no longer draws anything; it is the depth table.
+       §A4's keyframe table had a gap: 0.92 (near black) straight to 0.0 (bright
+       sunrise) put all of dawn in 9 s and stepped visibly. Added a 0.96 keyframe
+       and recorded it in the doc. Interpolation is in LINEAR rgb, which is why the
+       step was worst near black.
+       gl.readPixels on Phaser's canvas returns ZEROS — the drawing buffer is not
+       preserved. Measure colour from an actual screenshot decoded through a 2D
+       canvas; that is also what a person would see.
+       constants_json outgrew serde_json::json!'s macro recursion limit at ~40 keys.
+       It builds a Map now, so adding a constant cannot break the ones above it.
+Left for later: T3.10 lightmap, T3.11 overlays.

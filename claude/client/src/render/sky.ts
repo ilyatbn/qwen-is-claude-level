@@ -1,0 +1,181 @@
+/**
+ * The sky: a five-phase gradient, a sun and a moon on their arcs, and stars.
+ *
+ * `docs/70-amendments-v2.md` §A4. All the maths lives in `sky-math.ts`, which is
+ * Phaser-free and therefore tested (§A8); this file only draws.
+ */
+
+import Phaser from 'phaser'
+import { C } from '../core'
+import {
+  bodyPositions,
+  cycleU,
+  skyColors,
+  skyPhase,
+  starAlpha,
+  starField,
+  type SkyPhase,
+  type Star,
+} from './sky-math'
+import { DEPTH } from './backdrop'
+
+const GRAD_KEY = '__sky_gradient'
+const GRAD_H = 256
+
+export class SkyLayer {
+  private readonly scene: Phaser.Scene
+  private readonly gradient: Phaser.GameObjects.Image
+  private readonly starGfx: Phaser.GameObjects.Graphics
+  private readonly sun: Phaser.GameObjects.Arc
+  private readonly sunGlow: Phaser.GameObjects.Arc
+  private readonly moon: Phaser.GameObjects.Arc
+  private readonly moonGlow: Phaser.GameObjects.Arc
+  private readonly stars: Star[]
+  private readonly texture: Phaser.Textures.CanvasTexture | null
+
+  /** Last colours baked, so the gradient is not redrawn every frame. */
+  private lastTop = -1
+  private lastBottom = -1
+  private phase: SkyPhase = 'morning'
+
+  constructor(scene: Phaser.Scene) {
+    this.scene = scene
+    const c = C()
+    const w = c.VIEWPORT_W
+    const h = c.VIEWPORT_H
+
+    if (scene.textures.exists(GRAD_KEY)) scene.textures.remove(GRAD_KEY)
+    this.texture = scene.textures.createCanvas(GRAD_KEY, 2, GRAD_H) ?? null
+
+    // Drawn generously oversized and pinned to the camera: with scrollFactor 0 the
+    // image is in camera space, so at zoom < 1 a viewport-sized one covers only
+    // part of the screen and the rest shows the clear colour.
+    this.gradient = scene.add
+      .image(-w, -h, GRAD_KEY)
+      .setOrigin(0, 0)
+      .setDisplaySize(w * 4, h * 4)
+      .setScrollFactor(0)
+      .setDepth(DEPTH.sky)
+
+    this.stars = starField(c.STAR_COUNT ?? 220, w, h * 0.75)
+    this.starGfx = scene.add
+      .graphics()
+      .setScrollFactor(c.SKY_BODY_PARALLAX ?? 0.08)
+      .setDepth(DEPTH.sky + 1)
+
+    const sunR = c.SUN_RADIUS ?? 34
+    const moonR = c.MOON_RADIUS ?? 26
+    this.sunGlow = scene.add
+      .circle(0, 0, sunR * 2.6, 0xffd27a, 0.16)
+      .setScrollFactor(c.SKY_BODY_PARALLAX ?? 0.08)
+      .setDepth(DEPTH.sky + 1)
+    this.sun = scene.add
+      .circle(0, 0, sunR, 0xfff2c4)
+      .setScrollFactor(c.SKY_BODY_PARALLAX ?? 0.08)
+      .setDepth(DEPTH.sky + 2)
+    this.moonGlow = scene.add
+      .circle(0, 0, moonR * 2.2, 0xbfd4ff, 0.1)
+      .setScrollFactor(c.SKY_BODY_PARALLAX ?? 0.08)
+      .setDepth(DEPTH.sky + 1)
+    this.moon = scene.add
+      .circle(0, 0, moonR, 0xe8eeff)
+      .setScrollFactor(c.SKY_BODY_PARALLAX ?? 0.08)
+      .setDepth(DEPTH.sky + 2)
+  }
+
+  /** `darkness` is the server's scalar; the sky only uses it to fade the stars. */
+  update(roundTime: number, darkness: number, nightDarkness = 0.82): void {
+    const c = C()
+    const u = cycleU(roundTime)
+    this.phase = skyPhase(u)
+
+    const { top, bottom } = skyColors(u)
+    // Re-bake only when the interpolated colours actually change. At 120 s per day
+    // that is a handful of times a second, not 60.
+    if (top !== this.lastTop || bottom !== this.lastBottom) {
+      this.lastTop = top
+      this.lastBottom = bottom
+      this.bakeGradient(top, bottom)
+    }
+
+    const w = c.VIEWPORT_W
+    const horizon = c.VIEWPORT_H * 0.82
+    const { sun, moon } = bodyPositions(u, w, horizon, c.SKY_BODY_ARC_H ?? 300)
+
+    const place = (
+      disc: Phaser.GameObjects.Arc,
+      glow: Phaser.GameObjects.Arc,
+      b: { x: number; y: number; a: number } | null,
+    ) => {
+      const on = b !== null && b.a > 0.001
+      disc.setVisible(on)
+      glow.setVisible(on)
+      if (!b) return
+      disc.setPosition(b.x, b.y).setAlpha(b.a)
+      glow.setPosition(b.x, b.y).setAlpha(b.a * 0.5)
+    }
+    place(this.sun, this.sunGlow, sun)
+    place(this.moon, this.moonGlow, moon)
+
+    // The sun warms toward the horizon, which is most of what sells sunrise and
+    // sunset as different from midday.
+    if (sun) {
+      const height = 1 - Math.min(1, (horizon - sun.y) / (c.SKY_BODY_ARC_H ?? 300))
+      this.sun.setFillStyle(mix(0xfff2c4, 0xff9d4a, height))
+      this.sunGlow.setFillStyle(mix(0xffd27a, 0xff7a3a, height))
+    }
+
+    this.drawStars(starAlpha(u, darkness, nightDarkness))
+  }
+
+  get currentPhase(): SkyPhase {
+    return this.phase
+  }
+
+  private bakeGradient(top: number, bottom: number): void {
+    const ctx = this.texture?.getContext()
+    if (!ctx) return
+    const g = ctx.createLinearGradient(0, 0, 0, GRAD_H)
+    g.addColorStop(0, `#${top.toString(16).padStart(6, '0')}`)
+    g.addColorStop(1, `#${bottom.toString(16).padStart(6, '0')}`)
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, 2, GRAD_H)
+    this.texture?.refresh()
+  }
+
+  private drawStars(alpha: number): void {
+    this.starGfx.clear()
+    if (alpha <= 0.002) {
+      this.starGfx.setVisible(false)
+      return
+    }
+    this.starGfx.setVisible(true)
+    const t = this.scene.time.now / 1000
+    for (const s of this.stars) {
+      // Twinkle: a slow per-star sine, so the field shimmers instead of blinking
+      // in unison.
+      const tw = 0.75 + 0.25 * Math.sin(t * 1.7 + s.phase)
+      this.starGfx.fillStyle(0xffffff, alpha * s.b * tw)
+      this.starGfx.fillRect(s.x, s.y, 1, 1)
+    }
+  }
+
+  destroy(): void {
+    this.gradient.destroy()
+    this.starGfx.destroy()
+    this.sun.destroy()
+    this.sunGlow.destroy()
+    this.moon.destroy()
+    this.moonGlow.destroy()
+    if (this.scene.textures.exists(GRAD_KEY)) this.scene.textures.remove(GRAD_KEY)
+  }
+}
+
+function mix(a: number, b: number, t: number): number {
+  const ch = (sh: number) => {
+    const av = (a >> sh) & 255
+    const bv = (b >> sh) & 255
+    return Math.round(av + (bv - av) * t) & 255
+  }
+  return (ch(16) << 16) | (ch(8) << 8) | ch(0)
+}

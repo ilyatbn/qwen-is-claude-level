@@ -261,6 +261,13 @@ Interpolated in linear RGB between adjacent keyframes, wrapping at 1.0:
 | 0.64 | `#221041` | `#6b2f5c` |
 | 0.78 | `#030616` | `#0d1a3a` |
 | 0.92 | `#050a1c` | `#10204a` |
+| 0.96 | `#101a44` | `#6a4a6e` | *(added during T3.12 — see below)*
+
+The `0.96` keyframe was **not** in the original table and was added when T3.12
+measured the gradient's continuity: without it the sky went from near-black at 0.92
+straight to a bright sunrise at 0.0, putting the whole of dawn into 9 seconds and
+producing a visible step. Interpolation is in **linear** RGB, which is also why the
+step was worst there — near black, a small linear change is a large sRGB one.
 
 ### Sun and moon
 

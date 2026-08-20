@@ -1,16 +1,17 @@
 /**
- * The layers behind the terrain.
+ * Depth table and theme colours.
  *
- * **The real sky is T3.12's** (`docs/70-amendments-v2.md` §A4: five phases, sun,
- * moon, stars). This deliberately draws a flat placeholder colour instead — writing
- * a gradient here would mean writing it twice and throwing one away.
+ * **The sky belongs to `SkyLayer`** (`docs/70-amendments-v2.md` §A4). This file used
+ * to draw a flat placeholder at `DEPTH.sky`; once the real sky arrived the two sat
+ * at the same depth and the placeholder — re-created on every regenerate, therefore
+ * always added last — silently painted over the gradient. Two things drawing the
+ * sky is one too many.
  *
  * The **cave backdrop is what makes destruction read correctly**: without it a
  * crater punched through a hillside shows sky through it and the map looks like
- * paper rather than rock.
+ * paper rather than rock. It is baked into each chunk, not drawn here.
  */
 
-import { C } from '../core'
 
 export interface ThemeColors {
   skyPlaceholder: number
@@ -40,25 +41,12 @@ export class Backdrop {
   private readonly objects: Array<{ destroy(): void }> = []
 
   constructor(scene: Phaser.Scene, theme: ThemeColors, mapW: number, mapH: number) {
-    const c = C()
-
-    // Flat placeholder sky, fixed to the camera. Replaced wholesale by T3.12.
-    //
-    // Sized generously rather than to the viewport: with scrollFactor 0 the rect is
-    // drawn in camera space, so at zoom < 1 a viewport-sized rect covers only part
-    // of the screen and the rest shows the clear colour. The first preview
-    // screenshot was mostly black for exactly this reason.
-    const sky = scene.add
-      .rectangle(-c.VIEWPORT_W, -c.VIEWPORT_H, c.VIEWPORT_W * 4, c.VIEWPORT_H * 4, theme.skyPlaceholder)
-      .setOrigin(0, 0)
-      .setScrollFactor(0)
-      .setDepth(DEPTH.sky)
-    this.objects.push(sky)
-
-    // The cave backdrop is NOT a layer here: it is baked into each chunk, masked
-    // by the dilated terrain silhouette (`BackdropMask`). A full-map rectangle at
-    // depth -10 would hide the sky everywhere, which is what the first preview
-    // screenshot showed.
+    // Nothing to draw: the sky is SkyLayer's and the cave backdrop is baked into
+    // each chunk, masked by `BackdropMask`. A full-map rectangle at depth -10 would
+    // hide the sky everywhere, which is what the very first preview screenshot
+    // showed. The class stays as the home of the depth table and theme colours.
+    void scene
+    void theme
     void mapW
     void mapH
   }

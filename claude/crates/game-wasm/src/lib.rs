@@ -232,44 +232,61 @@ impl GameCore {
 #[wasm_bindgen]
 pub fn constants_json() -> String {
     use game_core::constants as c;
-    serde_json::json!({
-        "VIEWPORT_W": c::VIEWPORT_W,
-        "VIEWPORT_H": c::VIEWPORT_H,
-        "CHUNK_SIZE": c::CHUNK_SIZE,
-        "COARSE_CELL": c::COARSE_CELL,
-        "BEDROCK_H": c::BEDROCK_H,
-        "WALL_W": c::WALL_W,
-        "SKY_MARGIN": c::SKY_MARGIN,
-        "PLAYER_W": c::PLAYER_W,
-        "PLAYER_H": c::PLAYER_H,
-        "EDGE_BAND_PX": c::EDGE_BAND_PX,
-        "CHUNK_REBAKE_BUDGET": c::CHUNK_REBAKE_BUDGET,
-        "PARALLAX_FACTOR": c::PARALLAX_FACTOR,
-        "CAMERA_LERP": c::CAMERA_LERP,
-        "CAMERA_ZOOM": c::CAMERA_ZOOM,
-        "CAMERA_DEADZONE_W": c::CAMERA_DEADZONE_W,
-        "CAMERA_DEADZONE_H": c::CAMERA_DEADZONE_H,
-        "CAMERA_LOOKAHEAD": c::CAMERA_LOOKAHEAD,
-        "CAMERA_LOOKAHEAD_LERP": c::CAMERA_LOOKAHEAD_LERP,
-        "SIM_DT": c::SIM_DT,
-        "SIM_HZ": c::SIM_HZ,
-        "AIM_RADIUS": c::AIM_RADIUS,
-        "JETPACK_MAX_FUEL": c::JETPACK_MAX_FUEL,
-        "MINIMAP_W": c::MINIMAP_W,
-        "MINIMAP_H": c::MINIMAP_H,
-        "AIM_DEADZONE": c::AIM_DEADZONE,
-        // Button bits, so the client never re-declares the wire layout. A
-        // TypeScript copy of these is exactly the drift this boundary exists to
-        // prevent — see crates/game-core/src/player/input.rs.
-        "BTN_LEFT": game_core::player::input::button::LEFT,
-        "BTN_RIGHT": game_core::player::input::button::RIGHT,
-        "BTN_UP": game_core::player::input::button::UP,
-        "BTN_DOWN": game_core::player::input::button::DOWN,
-        "BTN_JUMP": game_core::player::input::button::JUMP,
-        "BTN_FIRE": game_core::player::input::button::FIRE,
-        "BTN_FLASHLIGHT": game_core::player::input::button::FLASHLIGHT,
-    })
-    .to_string()
+    // Built into a Map rather than one big `json!` literal: `json!` expands
+    // recursively once per key and blew the macro recursion limit as this list
+    // grew. A Map also keeps each value's expansion independent, so adding a
+    // constant can never break the ones above it.
+    let mut m = serde_json::Map::new();
+    macro_rules! put {
+        ($($name:ident => $value:expr),* $(,)?) => {
+            $( m.insert(stringify!($name).to_string(), serde_json::json!($value)); )*
+        };
+    }
+    put! {
+        VIEWPORT_W => c::VIEWPORT_W,
+        VIEWPORT_H => c::VIEWPORT_H,
+        CHUNK_SIZE => c::CHUNK_SIZE,
+        COARSE_CELL => c::COARSE_CELL,
+        BEDROCK_H => c::BEDROCK_H,
+        WALL_W => c::WALL_W,
+        SKY_MARGIN => c::SKY_MARGIN,
+        PLAYER_W => c::PLAYER_W,
+        PLAYER_H => c::PLAYER_H,
+        EDGE_BAND_PX => c::EDGE_BAND_PX,
+        CHUNK_REBAKE_BUDGET => c::CHUNK_REBAKE_BUDGET,
+        PARALLAX_FACTOR => c::PARALLAX_FACTOR,
+        CAMERA_LERP => c::CAMERA_LERP,
+        CAMERA_ZOOM => c::CAMERA_ZOOM,
+        CAMERA_DEADZONE_W => c::CAMERA_DEADZONE_W,
+        CAMERA_DEADZONE_H => c::CAMERA_DEADZONE_H,
+        CAMERA_LOOKAHEAD => c::CAMERA_LOOKAHEAD,
+        CAMERA_LOOKAHEAD_LERP => c::CAMERA_LOOKAHEAD_LERP,
+        SIM_DT => c::SIM_DT,
+        SIM_HZ => c::SIM_HZ,
+        AIM_RADIUS => c::AIM_RADIUS,
+        JETPACK_MAX_FUEL => c::JETPACK_MAX_FUEL,
+        MINIMAP_W => c::MINIMAP_W,
+        MINIMAP_H => c::MINIMAP_H,
+        AIM_DEADZONE => c::AIM_DEADZONE,
+        SUN_RADIUS => c::SUN_RADIUS,
+        MOON_RADIUS => c::MOON_RADIUS,
+        SKY_BODY_ARC_H => c::SKY_BODY_ARC_H,
+        SKY_BODY_PARALLAX => c::SKY_BODY_PARALLAX,
+        STAR_COUNT => c::STAR_COUNT,
+        STAR_FADE_START => c::STAR_FADE_START,
+        NIGHT_DARKNESS => c::NIGHT_DARKNESS,
+        DAY_DURATION => c::DAY_DURATION,
+        NIGHT_DURATION => c::NIGHT_DURATION,
+        CYCLE_TRANSITION => c::CYCLE_TRANSITION,
+        BTN_LEFT => game_core::player::input::button::LEFT,
+        BTN_RIGHT => game_core::player::input::button::RIGHT,
+        BTN_UP => game_core::player::input::button::UP,
+        BTN_DOWN => game_core::player::input::button::DOWN,
+        BTN_JUMP => game_core::player::input::button::JUMP,
+        BTN_FIRE => game_core::player::input::button::FIRE,
+        BTN_FLASHLIGHT => game_core::player::input::button::FLASHLIGHT,
+    }
+    serde_json::Value::Object(m).to_string()
 }
 
 /// Angle → wire word. The server dequantises with the Rust version, so a

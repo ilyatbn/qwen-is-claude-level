@@ -16,6 +16,8 @@ import { Backdrop, DEFAULT_THEME, DEPTH } from '../render/backdrop'
 import { makeBackTexture, makeEdgeTexture, makeFillTexture } from '../render/procTextures'
 import { PlayerView } from '../render/playerView'
 import { Crosshair, LocalInput } from '../input/localInput'
+import { SkyLayer } from '../render/sky'
+import { cycleU, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
 
 const SCALES: Record<string, MapScale> = {
@@ -38,6 +40,11 @@ export class SandboxScene extends Phaser.Scene {
   private seed = 0n
   private mapScale: MapScale = MapScale.Medium
   private carveRadius = 42
+
+  private sky!: SkyLayer
+  /** Round time in seconds, driven by the clock or scrubbed by the slider. */
+  private roundTime = 0
+  private timeScrub = false
 
   private player!: PlayerView
   private localInput!: LocalInput
@@ -68,6 +75,7 @@ export class SandboxScene extends Phaser.Scene {
     this.buildUi()
     this.regenerate()
 
+    this.sky = new SkyLayer(this)
     this.player = new PlayerView(this, 0)
     this.player.container.setDepth(DEPTH.actors)
     this.localInput = new LocalInput(this)
@@ -217,10 +225,31 @@ export class SandboxScene extends Phaser.Scene {
     }
     r2.append(label('scale'), scaleSel, label('carve r'), radius, radiusOut)
 
+    const r3 = row()
+    const time = document.createElement('input')
+    time.type = 'range'
+    time.min = '0'
+    time.max = '1000'
+    time.value = '0'
+    time.style.width = '150px'
+    const timeOut = document.createElement('span')
+    timeOut.textContent = 'morning'
+    time.oninput = () => {
+      // Scrubbing the slider takes the clock over, so a phase can be inspected
+      // without waiting two minutes for it to come round.
+      this.timeScrub = true
+      this.roundTime = (Number(time.value) / 1000) * 120
+      timeOut.textContent = skyPhase(cycleU(this.roundTime))
+    }
+    const live = button('Live', () => {
+      this.timeScrub = false
+    })
+    r3.append(label('time'), time, timeOut, live)
+
     this.readout = document.createElement('pre')
     this.readout.style.cssText = 'margin:0;white-space:pre-wrap'
 
-    ui.append(r1, r2, this.readout)
+    ui.append(r1, r2, r3, this.readout)
     document.body.append(ui)
     this.ui = ui
 
@@ -270,7 +299,15 @@ export class SandboxScene extends Phaser.Scene {
           player: self.core.playerState(0),
           aim: self.localInput?.aimAngle ?? 0,
           animState: self.player?.state ?? 'idle',
+          roundTime: self.roundTime,
+          skyPhase: self.sky?.currentPhase ?? 'morning',
+          darkness: sandboxDarkness(self.roundTime),
         }
+      },
+      /** Jump to a point in the day, for inspecting a phase. */
+      setTime(t: number) {
+        self.timeScrub = true
+        self.roundTime = t
       },
       /** Teleport, so a movement check can start from known ground. */
       place(x: number, y: number) {
@@ -340,10 +377,41 @@ export class SandboxScene extends Phaser.Scene {
       this.rig.setAim(aim)
     }
 
+    if (!this.timeScrub) this.roundTime += dt
+    // Darkness is the server's scalar in M6; here it follows the doc's formula so
+    // the sandbox shows what a real round will.
+    this.sky.update(this.roundTime, sandboxDarkness(this.roundTime), C().NIGHT_DARKNESS)
+
     this.rig.update(dt)
     this.terrain.update(this.rig.center)
     this.frameBakes = this.terrain.stats.bakesThisFrame
   }
+}
+
+/**
+ * The `docs/14-daynight-visibility.md` §1 darkness curve, local to the sandbox.
+ *
+ * In a real round this arrives in the snapshot header — the server owns the clock.
+ * Duplicating the formula here is deliberate and temporary: the sandbox has no
+ * server, and M6 replaces this call with the transmitted value rather than keeping
+ * two implementations.
+ */
+function sandboxDarkness(roundTime: number): number {
+  const c = C()
+  const day = c.DAY_DURATION
+  const night = c.NIGHT_DURATION
+  const ramp = c.CYCLE_TRANSITION
+  const t = roundTime % (day + night)
+  const smooth = (x: number) => {
+    const k = Math.max(0, Math.min(1, x))
+    return k * k * (3 - 2 * k)
+  }
+  // Dusk is centred on the day/night boundary, dawn on the end of the cycle.
+  if (t < day - ramp / 2) return 0
+  if (t < day + ramp / 2) return c.NIGHT_DARKNESS * smooth((t - (day - ramp / 2)) / ramp)
+  const endRamp = day + night - ramp / 2
+  if (t < endRamp) return c.NIGHT_DARKNESS
+  return c.NIGHT_DARKNESS * (1 - smooth((t - endRamp) / ramp))
 }
 
 function label(text: string): HTMLSpanElement {
