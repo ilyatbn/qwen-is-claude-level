@@ -28,6 +28,8 @@ import { OrdnanceLayer } from '../render/ordnance'
 import { cycleU, darknessAt } from '../render/sky-math'
 import { formatClock, phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
 import { FLAG, flag } from '../net/codec'
+import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
+import { traumaFromExplosion } from '../render/cameraRig-math'
 
 interface RemoteView {
   view: PlayerView
@@ -51,6 +53,7 @@ export class GameScene extends Phaser.Scene {
   private localInput!: LocalInput
   private crosshair!: Crosshair
   private hud!: HTMLDivElement
+  private feel!: FeelLayer
 
   private me = -1
   private seq = 0
@@ -96,6 +99,7 @@ export class GameScene extends Phaser.Scene {
     this.localInput = new LocalInput(this)
     this.crosshair = new Crosshair(this, DEPTH.hud)
     this.buildHud()
+    this.feel = new FeelLayer()
 
     this.mirror.onResyncNeeded = () => this.conn.requestResync()
 
@@ -124,7 +128,40 @@ export class GameScene extends Phaser.Scene {
     }
     this.conn.on('explosion', (raw) => {
       const p = asRecord(raw)
-      this.ordnance.addImpact(Number(p['x'] ?? 0), Number(p['y'] ?? 0), Number(p['r'] ?? 0), 'blast')
+      const x = Number(p['x'] ?? 0)
+      const y = Number(p['y'] ?? 0)
+      const r = Number(p['r'] ?? 0)
+      this.ordnance.addImpact(x, y, r, 'blast')
+      // Distance-scaled trauma, from the layer that owns trauma (§A24).
+      const me = this.predictor?.state
+      const dist = me ? Math.hypot(me.x - x, me.y - y) : 0
+      this.world?.rig.shake(traumaFromExplosion(dist, r))
+    })
+    // `damage` is scoped to victim and attacker only (docs/40 §3), so receiving
+    // one already means it concerns me — no filtering needed here.
+    this.conn.on('damage', (raw) => {
+      const p = asRecord(raw)
+      const victim = Number(p['victim'] ?? -1)
+      const amount = Number(p['amount'] ?? 0)
+      const at = this.predictor?.renderPos ?? { x: 0, y: 0 }
+      const x = Number(p['x'] ?? at.x)
+      const y = Number(p['y'] ?? at.y)
+      if (victim === this.me) this.feel.damageTaken(x, y, amount)
+      else this.feel.damageDealt(x, y, amount, false)
+    })
+    this.conn.on('death', (raw) => {
+      const p = asRecord(raw)
+      const victim = Number(p['victim'] ?? -1)
+      const attacker = p['attacker'] === null ? undefined : Number(p['attacker'])
+      const cause = String(p['cause'] ?? 'player')
+      const nameOf = (id: number) => this.scores.get(id)?.name ?? `p${id}`
+      this.feel.kill({
+        victim: nameOf(victim),
+        killer: attacker === undefined ? undefined : nameOf(attacker),
+        cause: attacker === victim ? 'self' : cause === 'weather' ? 'weather' : 'player',
+        by: String(p['by'] ?? cause),
+        involvesYou: victim === this.me || attacker === this.me,
+      })
     })
     this.conn.on('hitscan', (raw) => {
       const p = asRecord(raw)
@@ -145,6 +182,7 @@ export class GameScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.conn.close()
       this.hud?.remove()
+      this.feel?.destroy()
       this.world?.destroy()
       this.lightmap.destroy()
       this.sky.destroy()
@@ -310,6 +348,7 @@ export class GameScene extends Phaser.Scene {
     const darkness = this.serverDarkness || darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS)
     this.sky.update(this.roundTime, darkness)
     this.ordnance.update(dt)
+    this.feel.update(dt, this.feelFrame())
 
     const fov = fovRadius({
       darkness,
@@ -389,6 +428,23 @@ export class GameScene extends Phaser.Scene {
 
   private setStatus(text: string): void {
     if (this.hud) this.hud.dataset['status'] = text
+  }
+
+  /** §A35: `worldView` and the canvas's CSS rect, never the camera transform. */
+  private feelFrame(): FeelFrame {
+    const cam = this.cameras.main
+    const r = this.game.canvas.getBoundingClientRect()
+    return {
+      view: {
+        x: cam.worldView.x,
+        y: cam.worldView.y,
+        width: cam.worldView.width,
+        height: cam.worldView.height,
+      },
+      canvasRect: { x: r.left, y: r.top, width: r.width, height: r.height },
+      canvasW: this.scale.width,
+      canvasH: this.scale.height,
+    }
   }
 
   private refreshHud(): void {

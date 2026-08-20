@@ -18,6 +18,8 @@ import { makeBackTexture, makeEdgeTexture, makeFillTexture } from '../render/pro
 import { PlayerView } from '../render/playerView'
 import { loadAssetManifest, runLoader } from '../render/assets'
 import { Crosshair, LocalInput } from '../input/localInput'
+import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
+import { traumaFromExplosion } from '../render/cameraRig-math'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { DebugOverlay } from '../render/debugOverlay'
@@ -66,6 +68,7 @@ export class SandboxScene extends Phaser.Scene {
   private fovOverride: number | null = null
   private ordnance!: OrdnanceLayer
   private hud!: HTMLDivElement
+  private feel!: FeelLayer
   private invOpen = false
   /** Round time in seconds, driven by the clock or scrubbed by the slider. */
   private roundTime = 0
@@ -145,6 +148,7 @@ export class SandboxScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.ui.remove()
       this.hud?.remove()
+      this.feel?.destroy()
       this.ordnance.destroy()
       this.terrain.destroy()
       this.lightmap.destroy()
@@ -153,6 +157,7 @@ export class SandboxScene extends Phaser.Scene {
     })
 
     this.buildHud()
+    this.feel = new FeelLayer()
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       if (p.rightButtonDown()) {
@@ -380,6 +385,29 @@ export class SandboxScene extends Phaser.Scene {
   }
 
   /** The permanently-visible strip, plus the right-click panel. */
+  /**
+   * What the DOM feel layer needs to place things over the canvas.
+   *
+   * `worldView` rather than the camera transform, and the canvas's *CSS* rect
+   * rather than its backing size, because `Scale.FIT` letterboxes it — §A35.
+   */
+  private feelFrame(): FeelFrame {
+    const cam = this.cameras.main
+    const canvas = this.game.canvas
+    const r = canvas.getBoundingClientRect()
+    return {
+      view: {
+        x: cam.worldView.x,
+        y: cam.worldView.y,
+        width: cam.worldView.width,
+        height: cam.worldView.height,
+      },
+      canvasRect: { x: r.left, y: r.top, width: r.width, height: r.height },
+      canvasW: this.scale.width,
+      canvasH: this.scale.height,
+    }
+  }
+
   private buildHud(): void {
     const hud = document.createElement('div')
     hud.style.cssText = `position:fixed;left:50%;bottom:10px;transform:translateX(-50%);z-index:10;
@@ -480,6 +508,7 @@ export class SandboxScene extends Phaser.Scene {
             flashlightOn: false,
           }),
           overlays: self.overlay?.enabled ?? false,
+          trauma: self.rig.traumaLevel,
           worldView: {
             x: self.cameras.main.worldView.x,
             y: self.cameras.main.worldView.y,
@@ -559,6 +588,13 @@ export class SandboxScene extends Phaser.Scene {
             flashlightOn: false,
           }),
         }
+      },
+      /** §A15: counts DOM nodes, not model entries — see FeelLayer.stats(). */
+      feel() {
+        return self.feel.stats()
+      },
+      banner(text: string) {
+        self.feel.showBanner(text, 0xffd166)
       },
       setFog(on: boolean) {
         self.fogActive = on
@@ -653,7 +689,25 @@ export class SandboxScene extends Phaser.Scene {
       this.ordnance.removeProjectile(e.id)
       this.ordnance.addImpact(e.x, e.y, e.r)
       this.terrain.markDirty(this.core.takeDirtyChunks())
-      this.rig.shake(Math.min(1, e.r / 60))
+      // Trauma scaled by distance and blast size, from the layer that owns it
+      // (§A24 — this file briefly had a second Trauma of its own).
+      const me = this.core.playerState(0)
+      const dist = me ? Math.hypot(me.x - e.x, me.y - e.y) : 0
+      this.rig.shake(traumaFromExplosion(dist, e.r))
+      for (const h of e.hits) {
+        const lethal = h.health_after <= 0
+        if (h.id === 0) this.feel.damageTaken(e.x, e.y, h.damage)
+        else this.feel.damageDealt(e.x, e.y, h.damage, lethal)
+        if (lethal) {
+          this.feel.kill({
+            victim: h.id === 0 ? 'you' : `p${h.id}`,
+            killer: h.id === 0 ? undefined : 'you',
+            cause: h.id === 0 ? 'self' : 'player',
+            by: 'bazooka',
+            involvesYou: true,
+          })
+        }
+      }
       if (e.hits.length) this.refreshHud()
     }
     for (const p of this.core.liveProjectiles()) {
@@ -671,6 +725,7 @@ export class SandboxScene extends Phaser.Scene {
     this.sky.update(this.roundTime, darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS), C().NIGHT_DARKNESS)
 
     this.rig.update(dt)
+    this.feel.update(dt, this.feelFrame())
     this.terrain.update(this.rig.center)
     this.frameBakes = this.terrain.stats.bakesThisFrame
 

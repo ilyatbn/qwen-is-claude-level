@@ -1831,3 +1831,28 @@ Two traps that cost a debugging round each, both the same shape: in the
        `place` removes and re-adds the player, which resets the inventory. A
        check that sets up its own state must re-grant or avoid both.
 Left for later: T8.03, T8.05, T8.06, and T8.08's rendering.
+
+## T8.08 — Game feel — DONE
+Files: client/src/ui/feelLayer.ts (new), feelLayer-math.ts (+test, new),
+       render/feel-math.ts, render/cameraRig-math.ts, cameraRig.test.ts,
+       scenes/SandboxScene.ts, scenes/GameScene.ts, scripts/checks/feel.mjs (new)
+Verified: `node scripts/e2e.mjs feel` — ok. check.sh --fast green, 279 client tests.
+Notes: DRAWN IN THE DOM, per §A35 — a scrollFactor(0) Phaser object is still
+       scaled by camera zoom. The HUD and scoreboard were already DOM for the
+       same reason; this is that answer applied consistently, not a third
+       attempt at the Phaser transform. Positions map through worldToCss, which
+       goes via camera.worldView rather than re-deriving the engine transform.
+       A SECOND Trauma EXISTED. feel-math had its own, while cameraRig-math's
+       is the one wired to the camera — §A24 duplication. Deleted feel-math's;
+       its genuinely-new part (distance + blast-radius scaling) moved to
+       cameraRig-math as traumaFromExplosion(), beside the class that owns
+       trauma, plus roll(). Tests moved with it.
+       MY FIRST TWO ATTEMPTS AT THE CHECK PASSED AGAINST THE BUG. (1) A single
+       sample at 700 ms read vignette 0 — it decays in 0.55 s. Fixed by polling
+       for the peak and snapshotting the DOM while nodes are still mounted.
+       (2) "Inside the viewport" does not discriminate: with the zoom dropped
+       from the mapping the number moved 638,526 -> 309,248 and stayed on
+       screen, so the assertion passed. The check now derives the expected
+       screen position independently (worldView + canvas rect, its own
+       arithmetic) and asserts proximity — falsified at 469 px away.
+Left for later: T8.03, T8.05, T8.06.

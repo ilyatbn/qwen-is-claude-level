@@ -98,6 +98,27 @@ export function stepLookahead(current: Vec, aimAngle: number | null, t: CameraTu
 /** Trauma decay per second. */
 export const TRAUMA_DECAY = 2.5
 
+/** World px beyond which an explosion adds no trauma at all. */
+export const TRAUMA_MAX_DISTANCE = 620
+/** The blast this scale is calibrated against: a bazooka's 42 px. */
+export const TRAUMA_REFERENCE_BLAST = 42
+/** Radians of camera roll at full trauma. Small — roll reads as impact, not as a bug. */
+export const TRAUMA_MAX_ROLL = 0.035
+
+/**
+ * Trauma from an explosion, by distance and blast size.
+ *
+ * Quadratic falloff to zero at `TRAUMA_MAX_DISTANCE`, scaled by the blast's own
+ * radius so a grenade and a meteor do not shake alike. This lives beside `Trauma`
+ * rather than in the feel layer because trauma is camera state, and a second copy
+ * of it in another file is how this codebase ended up with two of them.
+ */
+export function traumaFromExplosion(distance: number, radius: number): number {
+  const near = Math.max(0, 1 - Math.max(0, distance) / TRAUMA_MAX_DISTANCE)
+  const weight = Math.min(1.5, radius / TRAUMA_REFERENCE_BLAST)
+  return near * near * weight
+}
+
 /**
  * Trauma-based shake.
  *
@@ -118,6 +139,13 @@ export class Trauma {
 
   get level(): number {
     return this.value
+  }
+
+  /** Camera roll, same squared curve. Deterministic in `phase`, like `offset`. */
+  roll(phase: number): number {
+    const t = this.value * this.value
+    if (t === 0) return 0
+    return Math.sin(phase * 31.4159) * t * TRAUMA_MAX_ROLL
   }
 
   /** Deterministic offset, so a replay shakes identically. `phase` is a tick count. */

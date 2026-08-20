@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
+  TRAUMA_MAX_DISTANCE,
+  TRAUMA_MAX_ROLL,
   Trauma,
   TRAUMA_DECAY,
+  traumaFromExplosion,
   clampCenter,
   desiredCenter,
   stepCenter,
@@ -174,5 +177,35 @@ describe('Trauma', () => {
     const b = new Trauma()
     b.add(0.5)
     expect(a.offset(10, 42)).toEqual(b.offset(10, 42))
+  })
+})
+
+describe('traumaFromExplosion', () => {
+  it('is squared, so a small hit barely shakes and a close one throws the camera', () => {
+    const near = traumaFromExplosion(0, 42)
+    const far = traumaFromExplosion(TRAUMA_MAX_DISTANCE * 0.5, 42)
+    // Linear falloff would make the far one half; the square makes it much less.
+    expect(far).toBeLessThan(near * 0.3)
+  })
+
+  it('adds nothing at all beyond the maximum distance', () => {
+    expect(traumaFromExplosion(TRAUMA_MAX_DISTANCE + 1, 42)).toBe(0)
+  })
+
+  it('scales with blast radius, so a meteor does not shake like a grenade', () => {
+    expect(traumaFromExplosion(100, 50)).toBeGreaterThan(traumaFromExplosion(100, 36))
+  })
+
+  it('caps the radius weight, so a hypothetical huge blast is not unbounded', () => {
+    expect(traumaFromExplosion(0, 4200)).toBeLessThanOrEqual(1.5)
+  })
+
+  it('rolls the camera, deterministically and only while shaking', () => {
+    const t = new Trauma()
+    expect(t.roll(3)).toBe(0)
+    t.add(1)
+    expect(t.roll(3)).toBe(t.roll(3))
+    expect(Math.abs(t.roll(3))).toBeLessThanOrEqual(TRAUMA_MAX_ROLL)
+    expect(t.roll(3)).not.toBe(t.roll(4))
   })
 })

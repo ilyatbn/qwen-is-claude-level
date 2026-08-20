@@ -1,74 +1,11 @@
 /**
  * Game feel, the parts that are arithmetic (§A8 — no Phaser in this file).
  *
- * Trauma-based screen shake: you add *trauma*, and shake is `trauma^2`. The
- * square is what makes it feel right — a small hit barely registers while a
- * rocket at your feet throws the camera — and it is also what makes the decay
- * read as a settling rather than a fade.
+ * **Trauma is not here.** It is camera state and it lives in `cameraRig-math.ts`
+ * beside the class that owns it — this file briefly had a second `Trauma` of its
+ * own, which is exactly the duplication §A24 warns about. The scene calls
+ * `rig.shake(traumaFromExplosion(distance, radius))`.
  */
-
-/** Seconds for trauma to fall from 1 to 0. */
-export const TRAUMA_DECAY_S = 0.9
-/** World px beyond which an explosion adds no trauma at all. */
-export const TRAUMA_MAX_DISTANCE = 620
-/** Screen px of displacement at full trauma. */
-export const SHAKE_MAX_PX = 22
-/** Radians of camera roll at full trauma. Small — roll reads as impact, not as a bug. */
-export const SHAKE_MAX_ROLL = 0.035
-
-export class Trauma {
-  private value = 0
-
-  /** Trauma is capped at 1: two rockets must not shake twice as hard as physics allows. */
-  add(amount: number): void {
-    this.value = Math.min(1, Math.max(0, this.value + amount))
-  }
-
-  /**
-   * Trauma from an explosion, by distance. Linear falloff to zero at
-   * `TRAUMA_MAX_DISTANCE`, scaled by the blast's own radius so a grenade and a
-   * meteor do not shake alike.
-   */
-  addExplosion(distance: number, radius: number): void {
-    const reach = Math.max(1, TRAUMA_MAX_DISTANCE)
-    const near = Math.max(0, 1 - Math.max(0, distance) / reach)
-    // A 42 px bazooka is the reference blast; a 50 px meteor hits harder.
-    const weight = Math.min(1.5, radius / 42)
-    this.add(near * near * weight)
-  }
-
-  update(dt: number): void {
-    this.value = Math.max(0, this.value - dt / TRAUMA_DECAY_S)
-  }
-
-  get level(): number {
-    return this.value
-  }
-
-  /** The squared curve the shake actually uses. */
-  get shake(): number {
-    return this.value * this.value
-  }
-
-  /**
-   * Camera offset for this frame. `seed` advances per frame so successive frames
-   * are uncorrelated — a smooth wobble reads as a camera bug, a jittery one reads
-   * as impact.
-   */
-  offset(seed: number): { x: number; y: number; roll: number } {
-    const s = this.shake
-    if (s <= 0) return { x: 0, y: 0, roll: 0 }
-    const n = (k: number) => {
-      const v = Math.sin((seed + k) * 12.9898) * 43758.5453
-      return (v - Math.floor(v)) * 2 - 1
-    }
-    return {
-      x: n(0) * SHAKE_MAX_PX * s,
-      y: n(1.7) * SHAKE_MAX_PX * s,
-      roll: n(3.3) * SHAKE_MAX_ROLL * s,
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Floating damage numbers

@@ -6,71 +6,9 @@ import {
   DamageNumbers,
   HIT_MARKER_LIFETIME,
   HitMarkers,
-  SHAKE_MAX_PX,
-  TRAUMA_DECAY_S,
-  TRAUMA_MAX_DISTANCE,
-  Trauma,
   VIGNETTE_MAX_ALPHA,
   Vignette,
 } from './feel-math'
-
-describe('trauma', () => {
-  it('decays to zero within the stated time and never goes negative', () => {
-    const t = new Trauma()
-    t.add(1)
-    t.update(TRAUMA_DECAY_S)
-    expect(t.level).toBe(0)
-    t.update(1)
-    expect(t.level).toBe(0)
-  })
-
-  it('never exceeds 1, however many explosions land at once', () => {
-    const t = new Trauma()
-    for (let i = 0; i < 20; i++) t.addExplosion(0, 42)
-    expect(t.level).toBe(1)
-    expect(t.shake).toBe(1)
-  })
-
-  it('is squared, so a small hit barely shakes and a close one throws the camera', () => {
-    const near = new Trauma()
-    near.addExplosion(0, 42)
-    const far = new Trauma()
-    far.addExplosion(TRAUMA_MAX_DISTANCE * 0.5, 42)
-    // Linear falloff would make the far one half; the square makes it much less.
-    expect(far.shake).toBeLessThan(near.shake * 0.2)
-  })
-
-  it('adds nothing at all beyond the maximum distance', () => {
-    const t = new Trauma()
-    t.addExplosion(TRAUMA_MAX_DISTANCE + 1, 42)
-    expect(t.level).toBe(0)
-  })
-
-  it('scales with blast radius, so a meteor does not shake like a grenade', () => {
-    const grenade = new Trauma()
-    grenade.addExplosion(100, 36)
-    const meteor = new Trauma()
-    meteor.addExplosion(100, 50)
-    expect(meteor.level).toBeGreaterThan(grenade.level)
-  })
-
-  it('offsets stay inside the stated bound and are uncorrelated frame to frame', () => {
-    const t = new Trauma()
-    t.add(1)
-    const a = t.offset(1)
-    const b = t.offset(2)
-    expect(Math.abs(a.x)).toBeLessThanOrEqual(SHAKE_MAX_PX)
-    expect(Math.abs(a.y)).toBeLessThanOrEqual(SHAKE_MAX_PX)
-    // A smooth wobble reads as a camera bug rather than as impact.
-    expect(a.x).not.toBe(b.x)
-    expect(a.roll).not.toBe(b.roll)
-  })
-
-  it('is exactly zero when there is no trauma, so a calm camera is perfectly still', () => {
-    const t = new Trauma()
-    expect(t.offset(5)).toEqual({ x: 0, y: 0, roll: 0 })
-  })
-})
 
 describe('damage numbers', () => {
   it('expire exactly at their lifetime', () => {
