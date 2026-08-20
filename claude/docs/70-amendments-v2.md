@@ -895,3 +895,64 @@ the original already fixed.
 The practical rule for this codebase: anything that writes to the mask goes
 through one guarded entry point, and anything that reports an event carries the
 identity of what caused it rather than a handle to something already freed.
+
+## A25 — The snapshot is 8 + n·15 + 4 bytes
+
+`40-net-protocol.md` §3's snapshot block is internally inconsistent in two places,
+and the field lists are right where the totals are wrong.
+
+**Header.** `u32 tick` + `u16 round_time_ds` + `u8 darkness` + `u8 player_count`
+= **8 bytes**. The doc's total says 9.
+
+**Per player.** `u8 id` + `i16 x` + `i16 y` + `i16 vx` + `i16 vy` + `u16 aim` +
+`u8 health` + `u8 flags` + `u8 jetpack_fuel` + `u8 selected_item` = **15 bytes**.
+The doc's total and `SNAPSHOT_PLAYER_BYTES` say 14.
+
+Reaching 14 means deleting a field the client needs. The velocities exist so the
+client can extrapolate through a dropped snapshot (`42-netcode-prediction.md` §4),
+and aim is fixed at `u16` by `22-aiming-crosshair.md` §2. Quantising velocity to
+`i8` would fit, but buys two bytes per player at the cost of a scale factor and a
+rounding rule on the one field whose whole job is smoothness.
+
+So the field lists stand and the totals are corrected:
+
+```
+snapshot = 8 + player_count * 15 + 4        (footer: u32 last_input_seq)
+```
+
+`SNAPSHOT_PLAYER_BYTES` is **15**, with `SNAPSHOT_HEADER_BYTES` 8 and
+`SNAPSHOT_FOOTER_BYTES` 4 beside it, and the size tests pin to the constants
+rather than to literals (§A19). Six players is **102 bytes**, so 2.0 KB/s at
+20 Hz — unchanged in substance from the doc's 1.9 KB/s estimate and far inside the
+bandwidth budget in §4.
+
+## A26 — A position means nothing without its frame of reference
+
+`is_standable(x, y)` asks whether the box whose **bottom edge** is at `y` fits.
+`Body::new(pos)` takes a **centre**. `MapMeta.spawn_points` are produced by the
+first and were being fed to the second, so a spawned player was buried to the waist
+in rock.
+
+The failure is quiet in every way that matters: they spawn *alive*, *grounded*, at a
+plausible-looking position, and the only symptom is that they cannot move at all —
+every horizontal step already overlaps solid, and step-up cannot clear it. No
+assertion about position, health or grounding detects it. Only asking the player to
+walk does.
+
+It survived because the convention was implicit: the M4 respawn test had been
+compensating by hand with `at.y - PLAYER_H / 2.0`, which is exactly how an unstated
+convention gets encoded in one place and got wrong in the next.
+
+> Any function returning a position states its frame of reference in its name or
+> its type — `feet`, `centre`, `top_left` — and the two are never interchangeable
+> just because both are `Point`.
+
+`choose_respawn` and every spawn-selection path return a **centre**, and say so.
+The general test for this class: it is not enough to assert a spawned body is not
+overlapping solid; assert it can **walk**.
+
+Related, and the reason this section exists rather than a one-line fix: the same
+milestone found a warmup-damage test that passed against a build with no damage
+gate at all, because `SPAWN_IFRAMES` refuses damage for the first two seconds
+regardless. A test asserting an absence needs a control asserting the presence —
+"no damage during warmup" is satisfied by a game that never deals damage.
