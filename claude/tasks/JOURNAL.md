@@ -1496,3 +1496,27 @@ Notes: buried slots were hidden from an honest client, not from the wire — the
        reproduces the whole round rather than a map with different loot.
        The test asserts the terrain hash and spawn points are UNCHANGED by the
        secret — it must feed the buried stream only, or every golden breaks.
+
+## T6.14 + T6.15 — bots — DONE
+Files: crates/game-core/src/bots/mod.rs, crates/game-core/src/lib.rs,
+       crates/game-server/src/room.rs, crates/game-server/tests/bots.rs,
+       crates/game-server/tests/room.rs
+Verified: `cargo test -p game-core --lib bots` — 7 passed;
+       `cargo test -p game-server --test bots` — 4 passed; whole workspace green.
+Notes: A bot produces an Input and nothing else, so there is NO bot branch inside
+       World::step — it queues through queue_input like a socket does. That is
+       what makes bots a test of the real game rather than a parallel one.
+       Belief LAGS the truth by the reaction time rather than the aim being
+       jittered after the fact: a weak bot shoots where you WERE, which reads as
+       slow instead of as randomly inaccurate.
+       TWO OF MY BOT TESTS WERE WRONG, both by measuring terrain instead of the
+       bot. An unarmed bot correctly prefers an item to an enemy, so "walks
+       toward a target" was measuring shopping; and a firing-line test at
+       arbitrary coordinates measures whatever the generator put in the way.
+       `clear_line()` finds 260 px of air first — the same fix as the client's
+       solidPoint().
+       Config::default() now seats 3 bots, which broke four existing tests that
+       counted seats. They were right to break: the fixtures wanted a bot-free
+       room, so cfg() sets bot_count 0 and bot seating has its own suite.
+Left for later: T6.12 round state and T6.13 integration tests are the two
+       remaining M6 boxes.

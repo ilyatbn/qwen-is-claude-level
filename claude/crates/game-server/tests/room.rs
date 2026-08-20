@@ -24,9 +24,14 @@ use tokio::sync::oneshot;
 /// test binary. Cargo runs test binaries in parallel, and several of those at once
 /// starved the M0 socket handshake into a 10 s timeout — a failure in an unrelated
 /// suite, caused entirely by how expensive these fixtures were.
+///
+/// `bot_count` is 0 for the same class of reason: `BOT_COUNT` defaults to 3
+/// (§A5), and these tests count seats and players. Bot seating has its own
+/// suite in `tests/bots.rs`.
 pub fn test_config() -> Config {
     Config {
         map_scale: MapScale::Small,
+        bot_count: 0,
         ..Config::default()
     }
 }

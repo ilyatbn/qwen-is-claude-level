@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use game_core::constants::{MASK_CHECKSUM_INTERVAL, MAX_INPUT_QUEUE, SIM_DT, SIM_HZ, SNAPSHOT_HZ};
 
+use game_core::bots::Bot;
 use game_core::player::input::Input;
 use game_core::player::state::PlayerId;
 use game_core::world::World;
@@ -194,6 +195,16 @@ pub struct Room {
     config: Arc<Config>,
     lag_warned_at: u32,
     last_checksum_at: f32,
+    /// Seated AI players (`docs/70-amendments-v2.md` §A5).
+    ///
+    /// They hold real `PlayerId`s and appear in `welcome`, `player_join`,
+    /// snapshots and the scoreboard. Nothing in the sim knows they are bots —
+    /// they push an `Input` through the same path a socket does — so a bug that
+    /// affects them affects players.
+    bots: Vec<Bot>,
+    /// Bots are seated newest-last, so kicking to make room for a human takes
+    /// the one that has been playing for the shortest time.
+    bot_seq: u32,
 }
 
 impl Room {
@@ -211,13 +222,55 @@ impl Room {
             Some(_) => 0,
             None => seed.rotate_left(17) ^ 0x9E37_79B9_7F4A_7C15,
         };
-        Room {
+        let mut room = Room {
             world: World::with_buried_secret(seed, config.map_scale, buried_secret),
             seats: Seats::default(),
             config,
             lag_warned_at: 0,
             last_checksum_at: 0.0,
+            bots: Vec::new(),
+            bot_seq: 0,
+        };
+        room.seat_bots(seed);
+        room
+    }
+
+    /// Seat `BOT_COUNT` bots, up to the room's capacity.
+    fn seat_bots(&mut self, seed: u64) {
+        let want = self.config.bot_count.min(self.config.max_players);
+        for _ in 0..want {
+            let Some(id) = self.seats.alloc(self.config.max_players) else {
+                break;
+            };
+            let index = self.bot_seq;
+            self.bot_seq += 1;
+            self.world.add_player(id, 0, format!("Bot {}", index + 1));
+            self.bots
+                .push(Bot::new(id, seed, index, self.config.bot_skill));
         }
+        if !self.bots.is_empty() {
+            tracing::info!(
+                target: "game::round",
+                bots = self.bots.len(),
+                skill = self.config.bot_skill,
+                "seated bots"
+            );
+        }
+    }
+
+    /// Free a seat for a human by removing the newest bot.
+    ///
+    /// A person is never refused a seat because of a bot. Newest rather than
+    /// oldest so the bot that has been in the round longest — and is likely
+    /// mid-fight with someone — is the last to go.
+    fn kick_newest_bot(&mut self) -> bool {
+        let Some(bot) = self.bots.pop() else {
+            return false;
+        };
+        tracing::info!(target: "game::round", player = bot.player, "kicked a bot for a human");
+        self.world.remove_player(bot.player);
+        self.seats.free_seat(bot.player);
+        true
     }
 
     /// Build a room without blocking the runtime.
@@ -250,7 +303,10 @@ impl Room {
                 skin_id,
                 reply,
             } => {
-                let id = self.seats.alloc(self.config.max_players);
+                let mut id = self.seats.alloc(self.config.max_players);
+                if id.is_none() && self.kick_newest_bot() {
+                    id = self.seats.alloc(self.config.max_players);
+                }
                 if let Some(id) = id {
                     self.world.add_player(id, skin_id, name);
                 }
@@ -368,7 +424,41 @@ impl Room {
     /// One simulation step plus the bookkeeping around it.
     pub fn tick_once(&mut self, dt: f32) {
         self.seats.begin_tick();
+        self.drive_bots(dt);
         self.world.step(dt);
+    }
+
+    /// Bots think **before** the step, so their input is consumed by the same
+    /// tick a human's would be. Queued through `queue_input` like everything
+    /// else — there is no bot branch inside `World::step`.
+    fn drive_bots(&mut self, dt: f32) {
+        if self.bots.is_empty() {
+            return;
+        }
+        let now = self.world.round_time;
+        let mut uses: Vec<(PlayerId, u8)> = Vec::new();
+        // Split the borrow: `think` reads the world, so it cannot run while the
+        // world is mutably borrowed for `queue_input`.
+        let mut inputs: Vec<(PlayerId, game_core::player::input::Input)> =
+            Vec::with_capacity(self.bots.len());
+        for bot in &mut self.bots {
+            let input = bot.think(&self.world, now, dt);
+            if let Some(slot) = bot.wants_use() {
+                uses.push((bot.player, slot));
+            }
+            inputs.push((bot.player, input));
+        }
+        for (id, input) in inputs {
+            self.world.queue_input(id, input);
+        }
+        for (id, slot) in uses {
+            let _ = self.world.use_item(id, slot, now);
+        }
+    }
+
+    /// How many bots are seated. Used by the integration tests and `/healthz`.
+    pub fn bot_count(&self) -> usize {
+        self.bots.len()
     }
 }
 
@@ -467,7 +557,18 @@ async fn run(
 mod tests {
     use super::*;
 
+    /// No bots. These tests are about seat allocation and readiness sweeping,
+    /// and `BOT_COUNT` defaults to 3 (§A5) — a room that seats bots is the right
+    /// production behaviour and the wrong fixture for counting human seats.
     fn cfg() -> Arc<Config> {
+        Arc::new(Config {
+            bot_count: 0,
+            ..Config::default()
+        })
+    }
+
+    /// A room with the production bot default, for the seating tests.
+    fn cfg_with_bots() -> Arc<Config> {
         Arc::new(Config::default())
     }
 
@@ -571,6 +672,43 @@ mod tests {
         room.apply(Command::Leave(0));
         assert_eq!(room.player_count(), 0);
         assert_eq!(room.world.players.len(), 0);
+    }
+
+    /// Bots are seated at construction and hold real seats.
+    #[test]
+    fn the_default_config_seats_bots_and_they_occupy_seats() {
+        let room = Room::new(cfg_with_bots());
+        let bots = room.bot_count();
+        assert!(bots > 0, "BOT_COUNT defaults to 0, so §A5 is not in effect");
+        assert_eq!(
+            room.world.players.len(),
+            bots,
+            "seated bots are not in the world"
+        );
+    }
+
+    /// A bot never costs a person a seat.
+    #[test]
+    fn a_full_room_of_bots_still_admits_a_human() {
+        let cfg = Arc::new(Config {
+            bot_count: 6,
+            max_players: 6,
+            ..Config::default()
+        });
+        let mut room = Room::new(cfg);
+        assert_eq!(room.world.players.len(), 6);
+        let (reply, _rx) = oneshot::channel();
+        room.apply(Command::Join {
+            name: "human".into(),
+            skin_id: 0,
+            reply,
+        });
+        assert_eq!(room.bot_count(), 5, "no bot was kicked");
+        assert_eq!(
+            room.world.players.len(),
+            6,
+            "capacity was exceeded rather than a bot removed"
+        );
     }
 
     #[test]
