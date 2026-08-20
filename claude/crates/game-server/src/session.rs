@@ -254,6 +254,46 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                                 );
                             }
 
+                            // Their own inventory.
+                            //
+                            // `inventory` is pushed on pickup, use and death and
+                            // never on join, so a player who starts with anything
+                            // — a DEV_LOADOUT, or a mid-round joiner who will pick
+                            // something up before the first event — saw "(empty)"
+                            // while holding it. Third instance of one pattern
+                            // (initial items, scores, this): events describe
+                            // *changes*, and a joiner needs the *current value*.
+                            //
+                            // Owner-scoped, like every other `inventory`
+                            // (`docs/30` §6): emitted to this socket only, never
+                            // broadcast.
+                            if let Some(inv) = room
+                                .inspect(move |w| {
+                                    let p = w.player(id)?;
+                                    let slots = (0..game_core::constants::INVENTORY_SLOTS)
+                                        .map(|i| match p.inventory.slot(i as u8) {
+                                            Some(st) => serde_json::json!({
+                                                "item": st.item,
+                                                "count": st.count,
+                                                "key": game_core::items::registry::def(st.item)
+                                                    .map(|d| d.key)
+                                                    .unwrap_or("?"),
+                                            }),
+                                            None => serde_json::Value::Null,
+                                        })
+                                        .collect::<Vec<_>>();
+                                    Some(serde_json::json!({
+                                        "tick": w.tick,
+                                        "slots": slots,
+                                        "selected": p.inventory.selected(),
+                                    }))
+                                })
+                                .await
+                                .flatten()
+                            {
+                                emit(&socket, "inventory", &inv);
+                            }
+
                             let joined = serde_json::json!({
                                 "tick": tick, "id": id, "name": name, "skin_id": skin_id,
                             });

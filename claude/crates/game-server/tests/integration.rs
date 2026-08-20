@@ -548,3 +548,88 @@ async fn malformed_input_is_ignored_and_the_socket_keeps_working() {
     let _ = stop_tx.send(());
     let _ = fuzzer.await;
 }
+
+// ------------------------------------------------------- state that predates you
+
+/// `inventory` is pushed on pickup, use and death — and was never pushed on
+/// join, so a player holding something from the first frame saw "(empty)".
+///
+/// Third instance of one pattern on this project: the initial world items were
+/// never announced (T9.03), the score table was discarded by the client
+/// (T9.06), and this. Events describe *changes*; a joiner needs the *current
+/// value*, and `docs/41` §4 makes joining mid-round a normal path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_joiner_is_told_what_it_is_already_holding() {
+    let cfg = Config {
+        dev_loadout: true,
+        ..test_config()
+    };
+    let s = spawn_server(cfg).await;
+    let addr = s.addr;
+
+    let inv = tokio::task::spawn_blocking(move || {
+        let (c, inbox, rx) = join_and_ready(addr, "ana", &["inventory"]);
+        wait_for(&rx, "inventory", 15);
+        let got = got(&inbox, "inventory");
+        let _ = c.disconnect();
+        got
+    })
+    .await
+    .expect("client thread");
+
+    assert!(
+        !inv.is_empty(),
+        "joined with a loadout and was never told about it"
+    );
+    let filled = inv[0]["slots"]
+        .as_array()
+        .expect("slots array")
+        .iter()
+        .filter(|s| !s.is_null())
+        .count();
+    assert!(
+        filled > 0,
+        "inventory arrived but every slot was empty: {}",
+        inv[0]
+    );
+}
+
+/// The negative half, and the one that matters for §A31's class of mistake:
+/// `inventory` is owner-scoped (`docs/30` §6). A second client joining must
+/// receive its **own** — and never the first client's.
+///
+/// Without the control above this test passes against a server that sends no
+/// inventory at all, which is exactly the build it is meant to catch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_joiner_never_receives_another_player_s_inventory() {
+    let cfg = Config {
+        dev_loadout: true,
+        ..test_config()
+    };
+    let s = spawn_server(cfg).await;
+    let addr = s.addr;
+
+    let (first_id, second_id, seen) = tokio::task::spawn_blocking(move || {
+        let (a, a_in, a_rx) = join_and_ready(addr, "ana", &["inventory"]);
+        wait_for(&a_rx, "inventory", 15);
+        let a_id = got(&a_in, "welcome")[0]["player_id"].as_i64().expect("id");
+
+        let (b, b_in, b_rx) = join_and_ready(addr, "bo", &["inventory"]);
+        wait_for(&b_rx, "inventory", 15);
+        let b_id = got(&b_in, "welcome")[0]["player_id"].as_i64().expect("id");
+
+        // Everything the second client was told about an inventory.
+        let seen = got(&b_in, "inventory").len();
+        let _ = a.disconnect();
+        let _ = b.disconnect();
+        (a_id, b_id, seen)
+    })
+    .await
+    .expect("client thread");
+
+    assert_ne!(first_id, second_id, "the two clients got the same id");
+    assert_eq!(
+        seen, 1,
+        "the second client received {seen} inventory events; exactly one — its own — is correct"
+    );
+}

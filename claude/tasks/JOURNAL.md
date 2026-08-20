@@ -2241,3 +2241,19 @@ Notes: NOT A TUNING PROBLEM. THE BOTS HAD NEVER FIRED A SHOT.
        its effect on kills is close to noise, reported not tuned.
 Left for later: T9.08. Encounter rate is a density problem — fewer/closer
        spawns, more bots, or a smaller default map — and is a design call.
+
+## T9.08 — Announce the state that existed before the client — DONE
+Files: crates/game-server/src/session.rs, tests/integration.rs
+Verified: `cargo test -p game-server --test integration -- --test-threads=1` —
+       6 passed. Falsified by not emitting: both new tests go red.
+Notes: TWO OF THE THREE WERE ALREADY FIXED, and checking beat assuming — the
+       initial world items are sent per socket on join (T9.03) and the score
+       table rides in `welcome`'s `players` array (read by the client since
+       T9.06's fix). Only `inventory` was still missing.
+       The negative test is the point: "a joiner never receives another
+       player's inventory" passes against a server that sends no inventory at
+       all, which is the build it exists to catch. It only means something
+       beside the positive control asserting the owner does get exactly one.
+       Sent per socket after `map_init`, owner-scoped like every other
+       `inventory` (docs/30 §6), never broadcast.
+Left for later: nothing in M9.
