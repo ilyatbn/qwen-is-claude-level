@@ -1245,3 +1245,33 @@ Notes: SPAWN PLACEMENT WAS ORDER-DEPENDENT and the spec's own test caught it.
 Left for later: stamp_capsule (float, r/2 steps) and Map::carve_capsule (integer,
        1 px) are still two capsule geometries. Unifying changes generated maps, so
        it needs its own commit plus a golden regeneration and a sweep re-run.
+
+## T6.02 — Room task, command channel and tick loop — DONE
+Files: crates/game-server/src/{room,events,lib}.rs, tests/{room,room_logging}.rs,
+       crates/game-core/src/{player/state,world/mod}.rs, tests/{world_step,combat}.rs
+Verified: `cargo test -p game-server --test room` — 7 passed; `--test room_logging`
+       1 passed; lib 21; workspace green, clippy -D warnings clean.
+Notes: SPAWN POINTS ARE FEET LINES, NOT BODY CENTRES, and World got it wrong.
+       is_standable(x,y) means "the box whose BOTTOM EDGE is at y fits", so
+       Body::new(spawn_point) buries the lower half in rock. The player is alive,
+       grounded and at a plausible position — and simply cannot move, because
+       every horizontal step already overlaps solid and step-up cannot clear it.
+       Nothing but asking them to walk detects it. choose_respawn now returns a
+       CENTRE (surface_to_centre does the conversion, documented at the seam);
+       the M4 respawn test had been compensating by hand, which is what let the
+       convention stay implicit. Falsified both ways.
+       MY TEST WAS WRONG BEFORE THE CODE WAS, twice. Asserting on vel.x 200 ms
+       after the last input reads 0 whether or not input arrived — GROUND_FRICTION
+       zeroes it in ~0.1 s; displacement is the honest observable. And the span
+       test measured a fixed 250 ms window that was almost entirely World::new
+       generating the map, so it saw one tick and one span; it now waits for the
+       room to be live first.
+       THE LOGGING TEST NEEDS ITS OWN BINARY. Observing the real task's spans
+       needs set_global_default (once per process); a thread-local with_default
+       does not reach a tokio::spawn'd task on another worker, so it observes
+       nothing and passes for the wrong reason.
+       RoomHandle::inspect(closure) is the test seam — the world is reachable only
+       through the channel, so tests never hold a reference to it.
+Left for later: Room::new generates the map inline, blocking a tokio worker for
+       ~0.6 s at startup (longer in debug). Fine before the loop starts, but
+       spawn_blocking would be tidier. T6.03 wires real sockets to Command.

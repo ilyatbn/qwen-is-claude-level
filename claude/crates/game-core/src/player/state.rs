@@ -260,7 +260,23 @@ impl PlayerState {
 /// The map has been getting blown up, and a point from `MapMeta` may now be
 /// mid-air or inside a crater. Skipping this check is how players end up spawning
 /// inside rock (`docs/21` §4), so it is not optional.
+///
+/// **Returns a body CENTRE, not a surface point.** Surface points are feet lines —
+/// `is_standable(x, y)` means "the box whose bottom edge is at `y` fits" — so
+/// handing one straight to `Body::new` buries the lower half of the player in
+/// rock, and they cannot move at all. That is not hypothetical: it is exactly what
+/// happened when `World` first called this, and it was invisible until a player
+/// was asked to walk. The conversion lives here so no caller has to remember it.
 pub fn choose_respawn(map: &Map, living: &[Vec2], rng: &mut ChaCha8Rng) -> Vec2 {
+    surface_to_centre(choose_surface_point(map, living, rng))
+}
+
+/// Feet line to body centre.
+pub fn surface_to_centre(p: Vec2) -> Vec2 {
+    Vec2::new(p.x, p.y - crate::constants::PLAYER_H / 2.0)
+}
+
+fn choose_surface_point(map: &Map, living: &[Vec2], rng: &mut ChaCha8Rng) -> Vec2 {
     let standable = |p: &crate::math::Point| is_standable(&map.mask, p.x, p.y);
 
     // Prefer a listed spawn point that is still ground and far from the living.

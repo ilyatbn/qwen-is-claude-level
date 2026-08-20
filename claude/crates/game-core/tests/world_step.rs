@@ -451,3 +451,68 @@ fn six_players_and_twenty_projectiles_step_under_two_milliseconds() {
     let ceiling = if cfg!(debug_assertions) { 40.0 } else { 2.0 };
     assert!(per < ceiling, "tick took {per:.3} ms (ceiling {ceiling})");
 }
+
+// ---------------------------------------------------------------------------
+// Spawning
+// ---------------------------------------------------------------------------
+
+/// A spawn point is a **feet line**, not a body centre: `is_standable(x, y)` means
+/// "the box whose bottom edge is at `y` fits". Handing one straight to `Body::new`
+/// buries the lower half of the player in rock.
+///
+/// The failure mode is silent — the player is alive, grounded and at a plausible
+/// position; they simply cannot move, because every horizontal step already
+/// overlaps solid and step-up cannot clear it. Nothing short of asking them to walk
+/// detects it, which is why this test does.
+#[test]
+fn a_spawned_player_is_not_buried_and_can_walk() {
+    let mut w = playing();
+    for id in 0..6u8 {
+        w.add_player(id, 0, format!("p{id}"));
+        let p = w.player(id).expect("seated");
+        assert!(
+            !game_core::physics::collide::aabb_overlaps_solid(&w.map, p.body.aabb()),
+            "player {id} spawned inside rock at {:?}",
+            p.body.pos
+        );
+    }
+
+    let before: Vec<f32> = (0..6u8)
+        .map(|id| w.player(id).expect("seated").body.pos.x)
+        .collect();
+    for seq in 1..=60u32 {
+        for id in 0..6u8 {
+            w.queue_input(id, Input::new(seq, button::RIGHT, 0));
+        }
+        w.step(SIM_DT);
+    }
+    for id in 0..6u8 {
+        let after = w.player(id).expect("seated").body.pos.x;
+        let moved = after - before[id as usize];
+        assert!(
+            moved > 1.0,
+            "player {id} held right for a second and moved {moved} px"
+        );
+    }
+}
+
+/// The same for a respawn, which uses a different code path on a damaged map.
+#[test]
+fn a_respawned_player_is_not_buried_either() {
+    let mut w = playing();
+    spawn_at(&mut w, 1);
+    if let Some(p) = w.player_mut(1) {
+        p.health = 0.0;
+    }
+    // Death, then the respawn delay.
+    for _ in 0..(60 * 4) {
+        w.step(SIM_DT);
+    }
+    let p = w.player(1).expect("seated");
+    assert!(p.alive, "should have respawned");
+    assert!(
+        !game_core::physics::collide::aabb_overlaps_solid(&w.map, p.body.aabb()),
+        "respawned inside rock at {:?}",
+        p.body.pos
+    );
+}

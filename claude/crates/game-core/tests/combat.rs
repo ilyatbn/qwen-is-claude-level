@@ -774,8 +774,8 @@ fn respawn_never_places_a_player_inside_terrain_even_with_every_spawn_destroyed(
     let mut rng = substream(1, "respawn");
     for _ in 0..50 {
         let at = choose_respawn(&map, &[], &mut rng);
-        let aabb =
-            Aabb::from_center_size(Vec2::new(at.x, at.y - PLAYER_H / 2.0), PLAYER_W, PLAYER_H);
+        // `choose_respawn` returns a body centre, so no compensation here.
+        let aabb = Aabb::from_center_size(at, PLAYER_W, PLAYER_H);
         assert!(
             !aabb_overlaps_solid(&map, aabb),
             "respawned inside rock at {at:?}"

@@ -19,7 +19,9 @@ use crate::map::{generate, CarveResult, Map};
 use crate::math::{Aabb, Vec2};
 use crate::player::apply_input;
 use crate::player::input::Input;
-use crate::player::state::{choose_respawn, DeathCause, PlayerId, PlayerState, UseError};
+use crate::player::state::{
+    choose_respawn, surface_to_centre, DeathCause, PlayerId, PlayerState, UseError,
+};
 use crate::rng::{range_f32, substream, ChaCha8Rng};
 use crate::weapons::defs::{self, Delivery};
 use crate::weapons::explode::{
@@ -456,9 +458,9 @@ impl World {
             return choose_respawn(&self.map, &[], &mut self.rng);
         }
         let p = pts[id as usize % pts.len()];
-        let v = Vec2::new(p.x as f32, p.y as f32);
         if is_standable(&self.map.mask, p.x, p.y) {
-            v
+            // A spawn point is a feet line, not a centre (`choose_respawn`).
+            surface_to_centre(Vec2::new(p.x as f32, p.y as f32))
         } else {
             choose_respawn(&self.map, &[], &mut self.rng)
         }
