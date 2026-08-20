@@ -2521,3 +2521,14 @@ Left for later: T10.06 death overlay -> T12.01 tombstones -> T10.05 skins menu.
        still uncalled after T10.06, that is a bug.
        The attract camera zoom (0.75) is a presentation number for that scene,
        not a gameplay one; the game's CAMERA_ZOOM is untouched.
+
+## M10 — IN PROGRESS (T10.01, T10.02, T10.07, T10.03, T10.04 + B10 done; T10.06/T12.01/T10.05 remain)
+State on disk: clean. Client 407 tests / 28 files, game-server 183, e2e 16/16
+       (title included), typecheck + fmt + clippy -D warnings all clean.
+A player now meets: title with a live bot fight behind it -> Start Game menu
+       (map size, quick match, create/join private, skins) -> lobby.
+Next: T10.06 death overlay -> T12.01 tombstones -> T10.05 skins menu.
+       T10.06 owns the app-level socket wiring, so MenuScene.setSocket() gets its
+       first caller there. The countdown must come from the server's respawn_at,
+       not a local timer, or it disagrees with when you actually respawn; and it
+       is an overlay, not a pause — assert the world behind it kept ticking.
