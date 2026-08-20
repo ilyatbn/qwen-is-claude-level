@@ -2475,3 +2475,49 @@ For whoever takes T10.03: the attract mode runs game-core in WASM client-side
        with no server, so reuse SandboxScene's local stepping and the T6.14 bot
        controller. §A15 applies to "stop it when the scene is not visible" —
        assert zero ticks after the transition, not that stop() was called.
+
+## T10.03 + T10.04 — Title with a live attract mode, and the Start menu — DONE
+Files: crates/game-wasm/src/lib.rs (AttractCore), client/src/core/{attract,index}.ts,
+       client/src/scenes/{TitleScene,MenuScene}.ts, client/src/ui/{menu,menu.test}.ts,
+       client/index.html, client/src/main.ts, client/package.json,
+       scripts/checks/title.mjs, scripts/e2e.mjs, scripts/{e2e-two-clients,checks/full-round}.mjs
+Verified: `node scripts/e2e.mjs title` — ok; `npm test -- --run menu` — 10 passed;
+       full e2e 16/16; client 407 tests / 28 files; typecheck, fmt, clippy clean.
+Notes: THE ATTRACT MODE WRAPS A REAL `World` AND REAL `Bot`s, not GameCore's
+       prediction subset — AttractCore ticks think/queue/use/fire/step exactly as
+       room.rs::drive_bots does. That is what makes the title screen a smoke test
+       of game-core (§B3) rather than a pretty background: a JS-scripted
+       background would smoke-test nothing. `Bot::think` needs world.items and
+       world.round_time, which GameCore does not have, so a `World` was the only
+       honest option.
+       "STOPPING IT ACTUALLY STOPS IT" PASSED FOR THE WRONG REASON FIRST. debug()
+       read `attract?.tickCount ?? 0`, and after teardown attract is null — so
+       the assertion compared 0 against 0 and would have passed however the sim
+       behaved. Fixed to a scene-level monotonic counter, plus a control that it
+       is non-zero beforehand.
+       THEN THE FALSIFICATION FAILED TO FALSIFY: deleting the SHUTDOWN handler
+       still passed, because Phaser stops calling update() on a stopped scene
+       regardless — "no ticks" is guaranteed by the engine, not by teardown. The
+       assertion that actually witnesses the release is `attractTicks === -1`
+       (the handle is gone). With both hooks removed it fails properly: "still
+       allocated behind the menu (attractTicks 82)".
+       §A22 AGAIN, IN THE ONE ENTRY POINT IT MISSED: predev/prebuild/pretest all
+       rebuild the wasm; `typecheck` had no hook, so it read a stale pkg and
+       reported AttractCore missing. Added pretypecheck.
+       THE E2E HARNESS HARDCODED `window.__game` as its readiness condition, so
+       it was silently un-runnable for any screen that is not the sandbox. A
+       check now declares its own `ready`.
+       I BROKE two-clients AND full-round by changing what the default URL shows.
+       Both now use `?game=1`, which skips the title: they predate the front end
+       and exist to drive a round, not to click through a menu.
+       The e2e reads the join code from the DOM (`#host-code`), so it proves what
+       a player can see rather than what the socket knows.
+       Screenshots looked at: title.png (four bot markers fighting across a
+       generated map, evening sky, cave network visible), menu.png, menu-join.png.
+Left for later: T10.06 death overlay -> T12.01 tombstones -> T10.05 skins menu.
+       MenuScene.setSocket() has NO CALLER yet — the menu emits nothing until the
+       app wires a socket into it, which is the §A39 shape and is deliberate here
+       only because T10.06 is the task that owns the app-level wiring. If it is
+       still uncalled after T10.06, that is a bug.
+       The attract camera zoom (0.75) is a presentation number for that scene,
+       not a gameplay one; the game's CAMERA_ZOOM is untouched.

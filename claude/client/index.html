@@ -3,11 +3,54 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Deathmatch</title>
+    <title>Deep Cut</title>
     <style>
       html, body { margin: 0; padding: 0; height: 100%; background: #0b1020; overflow: hidden; }
       #game { width: 100vw; height: 100vh; }
       canvas { display: block; }
+
+      /* Screen-space UI is DOM, never a scrollFactor(0) Phaser object, because
+         camera zoom still applies to those (docs/70-amendments-v2.md A35). */
+      .title-screen, .menu-screen {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 0.75rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #e8ecff; text-align: center; pointer-events: none;
+        text-shadow: 0 2px 8px rgba(0,0,0,0.9);
+      }
+      .title-screen > *, .menu-screen > * { pointer-events: auto; }
+      .title-screen h1 {
+        margin: 0; font-size: 5rem; letter-spacing: 0.35rem; font-weight: 800;
+      }
+      .title-screen .tagline { margin: 0 0 1.5rem; opacity: 0.85; }
+      .title-screen .hint, .menu-screen .hint { opacity: 0.6; font-size: 0.85rem; }
+      .menu-screen {
+        background: rgba(6, 10, 26, 0.82); backdrop-filter: blur(2px);
+      }
+      .menu-screen h2 { margin: 0 0 0.5rem; letter-spacing: 0.15rem; }
+      button {
+        font: inherit; padding: 0.6rem 1.4rem; cursor: pointer;
+        background: #1b2450; color: #e8ecff;
+        border: 1px solid #3a4a92; border-radius: 4px;
+      }
+      button:hover, button:focus-visible { background: #2a3a78; outline: none; }
+      button.on { background: #3a5ad0; border-color: #7f9bff; }
+      #start-game { font-size: 1.5rem; padding: 0.8rem 2.4rem; }
+      .scales, .actions {
+        display: flex; gap: 0.5rem; border: none; padding: 0; margin: 0;
+        flex-wrap: wrap; justify-content: center;
+      }
+      .scales legend { padding: 0 0.5rem; opacity: 0.7; }
+      #code {
+        font: inherit; font-size: 2rem; letter-spacing: 0.5rem; width: 9ch;
+        text-align: center; text-transform: uppercase;
+        background: #0d1330; color: #e8ecff;
+        border: 1px solid #3a4a92; border-radius: 4px; padding: 0.4rem;
+      }
+      .code { font-size: 3rem; letter-spacing: 0.6rem; margin: 0; color: #ffd23f; }
+      .code-label { margin: 0; opacity: 0.7; }
+      .room-info { opacity: 0.85; }
+      .error { color: #ff8080; margin: 0.5rem 0 0; }
     </style>
   </head>
   <body>

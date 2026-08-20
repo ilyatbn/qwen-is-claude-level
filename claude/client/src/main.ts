@@ -3,6 +3,8 @@ import { BootScene } from './scenes/BootScene'
 import { PreviewScene } from './scenes/PreviewScene'
 import { SandboxScene } from './scenes/SandboxScene'
 import { GameScene } from './scenes/GameScene'
+import { TitleScene } from './scenes/TitleScene'
+import { MenuScene } from './scenes/MenuScene'
 import { C, Core } from './core'
 
 // No constants are declared here. VIEWPORT_W/H used to be literals in this file —
@@ -14,8 +16,13 @@ function pickScene(): Phaser.Types.Scenes.SceneType[] {
   if (q.get('sandbox') === '1') return [SandboxScene]
   if (q.get('preview') === '1') return [PreviewScene]
   if (q.get('boot') === '1') return [BootScene]
-  // The multiplayer scene is the default: the sandbox is a tool, not the game.
-  return [GameScene]
+  // `?game=1` drops straight into a round, which is what the e2e suite and the
+  // two-client checks want — they were written before there was a front end and
+  // should not have to click through it.
+  if (q.get('game') === '1') return [GameScene]
+  // Otherwise a player meets the title screen first (§B3). Every scene is
+  // registered so `scene.start('Menu')` resolves.
+  return [TitleScene, MenuScene, GameScene]
 }
 
 async function main(): Promise<Phaser.Game> {

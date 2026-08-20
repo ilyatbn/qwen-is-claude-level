@@ -11,6 +11,7 @@
  *    are read across the boundary once, so there is exactly one source of truth.
  */
 
+import { Attract } from './attract'
 import init, {
   GameCore,
   constants_json,
@@ -18,6 +19,7 @@ import init, {
   core_fov_radius,
   quantize_angle,
   dequantize_angle,
+  AttractCore,
 } from './pkg/game_wasm.js'
 import wasmUrl from './pkg/game_wasm_bg.wasm?url'
 
@@ -207,6 +209,7 @@ export function dequantizeAngle(q: number): number {
 
 /** Populated by `Core.init()`. Throws if read before then, rather than silently
  *  handing out zeros. */
+let wasmMemory: WebAssembly.Memory | null = null
 let constantsCache: Constants | null = null
 
 export function C(): Constants {
@@ -251,7 +254,29 @@ export class Core {
   static async init(source?: BufferSource | WebAssembly.Module): Promise<Core> {
     const wasm = await init({ module_or_path: source ?? wasmUrl })
     constantsCache = JSON.parse(constants_json()) as Constants
+    wasmMemory = wasm.memory
     return new Core(new GameCore(), wasm.memory)
+  }
+
+  /**
+   * A self-contained round of bots fighting, for the title screen (§B3).
+   *
+   * Separate from `Core` because it wraps a real `World` rather than the
+   * prediction subset — which is what makes the title screen a smoke test of
+   * the simulation rather than a decorative background.
+   */
+  static attract(
+    seed: bigint,
+    scale: MapScale,
+    bots: number,
+    skill: number,
+  ): Attract {
+    if (!wasmMemory) {
+      throw new Error('Core.init() must run before Core.attract()')
+    }
+    const lo = Number(seed & 0xffffffffn) >>> 0
+    const hi = Number((seed >> 32n) & 0xffffffffn) >>> 0
+    return new Attract(new AttractCore(lo, hi, scale, bots, skill), wasmMemory)
   }
 
   generate(seed: bigint, scale: MapScale): void {

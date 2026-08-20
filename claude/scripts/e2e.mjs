@@ -54,6 +54,14 @@ const chromePath = join(
  * than after the two-client round.
  */
 const CHECKS = [
+  // The front end a player actually meets first (§B3). Its URL has no scene
+  // flag: the title screen is the default.
+  {
+    name: 'title',
+    file: 'scripts/checks/title.mjs',
+    url: '',
+    ready: '!!window.__title',
+  },
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'sky', file: 'scripts/checks/sky.mjs', url: '?sandbox=1&seed=4242' },
@@ -177,7 +185,13 @@ try {
     let shots = 0
     try {
       await page.goto(`http://localhost:${port}/${check.url}`, { waitUntil: 'load' })
-      await page.waitForFunction(() => !!window.__game, null, { timeout: 60_000 })
+      // What "loaded" means is per check. It defaults to the game handle,
+      // because thirteen checks drive the sandbox — but the title screen has no
+      // `__game` and never will, and hardcoding one scene's handle here made
+      // the harness silently un-runnable for any other screen.
+      await page.waitForFunction(check.ready ?? (() => !!window.__game), null, {
+        timeout: 60_000,
+      })
 
       const shot = async (name) => {
         await page.screenshot({ path: join(shotsDir, `${name}.png`) })

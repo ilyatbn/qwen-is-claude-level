@@ -112,7 +112,9 @@ async function openClient(name) {
   const page = await ctx.newPage()
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
-  await page.goto(`${viteUrl}/?e2e=1&name=${name}`)
+  // `game=1` skips the title screen: these checks predate the front end and
+  // exist to drive a round, not to click through a menu (§B3).
+  await page.goto(`${viteUrl}/?e2e=1&game=1&name=${name}`)
   await page.waitForFunction('window.__game && window.__game.debug().ready === true', null, {
     timeout: 90_000,
   })

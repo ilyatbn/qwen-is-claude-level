@@ -919,3 +919,169 @@ fn apply_hits(players: &mut [LocalPlayer], hits: &[(u8, f32)], now: f32) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Attract mode (`docs/71-amendments-v3.md` §B3)
+// ---------------------------------------------------------------------------
+
+/// A whole round running behind the title screen, client-side, with no server.
+///
+/// This wraps a real [`World`] and real [`Bot`]s rather than `GameCore`'s
+/// hand-rolled subset, and it ticks them exactly the way `room.rs::drive_bots`
+/// plus `World::step` does. That is the entire point: §B3 wants the title screen
+/// to be *"a continuous smoke test of the simulation that anyone can see"*, and a
+/// background driven by scripted JS movement would smoke-test nothing. If the
+/// bots on the title screen stop fighting, something in `game-core` is broken —
+/// and that is visible before anyone opens a test suite.
+#[wasm_bindgen]
+pub struct AttractCore {
+    world: game_core::world::World,
+    bots: Vec<game_core::bots::Bot>,
+}
+
+#[wasm_bindgen]
+impl AttractCore {
+    /// A fresh map with `bots` bots fighting on it.
+    #[wasm_bindgen(constructor)]
+    pub fn new(seed_lo: u32, seed_hi: u32, scale: u8, bots: u32, skill: f32) -> AttractCore {
+        console_error_panic_hook::set_once();
+        let seed = ((seed_hi as u64) << 32) | seed_lo as u64;
+        let scale = MapScale::from_u8(scale).unwrap_or(MapScale::Medium);
+        let mut world = game_core::world::World::new(seed, scale);
+        let n = bots.min(game_core::constants::MAX_PLAYERS as u32);
+        let mut list = Vec::new();
+        for i in 0..n {
+            let id = i as u8;
+            world.add_player(id, (i % 5) as u16, format!("Bot {}", i + 1));
+            list.push(game_core::bots::Bot::new(id, seed, i, skill));
+        }
+        AttractCore { world, bots: list }
+    }
+
+    /// One tick. Mirrors `room.rs::drive_bots` — think, queue, use, fire, step.
+    ///
+    /// Firing is a *command* and not a button the sim reads, so it has to be
+    /// sent explicitly; that is the defect that left bots never firing a shot in
+    /// the game's history, and reproducing the room's exact sequence here is
+    /// what keeps this a faithful smoke test rather than a lookalike.
+    pub fn step(&mut self, dt: f32) {
+        let now = self.world.round_time;
+        let mut inputs = Vec::with_capacity(self.bots.len());
+        let mut fires = Vec::new();
+        let mut uses = Vec::new();
+        for bot in &mut self.bots {
+            let input = bot.think(&self.world, now, dt);
+            if let Some(slot) = bot.wants_use() {
+                uses.push((bot.player, slot));
+            }
+            if input.buttons & game_core::player::input::button::FIRE != 0 {
+                fires.push(bot.player);
+            }
+            inputs.push((bot.player, input));
+        }
+        for (id, input) in inputs {
+            self.world.queue_input(id, input);
+        }
+        for (id, slot) in uses {
+            let _ = self.world.use_item(id, slot, now);
+        }
+        for id in fires {
+            let _ = self.world.fire(id, now);
+        }
+        self.world.step(dt);
+        // The events are not rendered here — the attract mode is a background,
+        // not a game — but they must be drained or the buffer grows for the
+        // lifetime of the title screen.
+        self.world.drain_events();
+    }
+
+    pub fn tick(&self) -> u32 {
+        self.world.tick
+    }
+
+    pub fn round_time(&self) -> f32 {
+        self.world.round_time
+    }
+
+    pub fn mask_ptr(&self) -> *const u8 {
+        self.world.map.mask.words().as_ptr() as *const u8
+    }
+
+    pub fn mask_byte_len(&self) -> usize {
+        self.world.map.mask.words().len() * 8
+    }
+
+    pub fn width(&self) -> u32 {
+        self.world.map.mask.w
+    }
+
+    pub fn height(&self) -> u32 {
+        self.world.map.mask.h
+    }
+
+    pub fn chunks_x(&self) -> u32 {
+        self.world.map.mask.w / game_core::constants::CHUNK_SIZE
+    }
+
+    pub fn chunks_y(&self) -> u32 {
+        self.world.map.mask.h / game_core::constants::CHUNK_SIZE
+    }
+
+    pub fn solid_at(&self, x: i32, y: i32) -> bool {
+        self.world.map.mask.get(x, y)
+    }
+
+    pub fn take_dirty_chunks(&mut self) -> Vec<u32> {
+        self.world.map.drain_dirty()
+    }
+
+    pub fn meta_json(&self) -> String {
+        serde_json::to_string(&self.world.map.meta).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    pub fn count_solid(&self) -> f64 {
+        self.world.map.mask.count_solid() as f64
+    }
+
+    /// Every bot, flattened: `[id, x, y, vx, vy, aim, alive, moveState] * n`.
+    ///
+    /// One flat array rather than JSON per frame: this runs every frame behind a
+    /// menu and must not allocate a string sixty times a second.
+    pub fn players(&self) -> Box<[f32]> {
+        let mut out = Vec::with_capacity(self.world.players.len() * 8);
+        for p in &self.world.players {
+            let state = match game_core::physics::body::move_state(&p.body, p.jetpack.active) {
+                game_core::physics::body::MoveState::Grounded => 0.0,
+                game_core::physics::body::MoveState::Airborne => 1.0,
+                game_core::physics::body::MoveState::Jetpack => 2.0,
+            };
+            out.extend_from_slice(&[
+                p.id as f32,
+                p.body.pos.x,
+                p.body.pos.y,
+                p.body.vel.x,
+                p.body.vel.y,
+                game_core::math::dequantize_angle(p.aim),
+                if p.alive { 1.0 } else { 0.0 },
+                state,
+            ]);
+        }
+        out.into_boxed_slice()
+    }
+
+    /// Where the action is: the living bot nearest to the most recent damage,
+    /// falling back to the first living one. The camera follows this.
+    pub fn focus(&self) -> Box<[f32]> {
+        let p = self
+            .world
+            .players
+            .iter()
+            .filter(|p| p.alive)
+            .min_by_key(|p| (p.health * 10.0) as i32)
+            .or_else(|| self.world.players.first());
+        match p {
+            Some(p) => Box::new([p.body.pos.x, p.body.pos.y]),
+            None => Box::new([0.0, 0.0]),
+        }
+    }
+}
