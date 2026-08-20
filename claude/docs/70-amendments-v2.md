@@ -640,3 +640,76 @@ except the one nobody stated: the radius **relative to what is on screen**.
 > `FOV_DAY`, `FOV_NIGHT` and `FLASHLIGHT_RANGE` with it, and the test that guards
 > night visibility must assert on **sampled terrain pixels at a known screen
 > distance from the player**, never on the radius alone.
+
+## A17 — The cave backdrop is an enclosure test, not a connectivity test
+
+**This supersedes §A14, which was correctly implemented and aimed at the wrong
+question.**
+
+§A14 made sealed air render as cave backdrop, and it does: measured over a real
+generated map, 27,420 sealed air pixels, **zero** drawn as sky. But sealed air was
+never the problem. Measured on the same map:
+
+| | px | share |
+|---|---|---|
+| roofed air (rock somewhere above it in its column) | 1,122,382 | — |
+| …drawn as **sky** | **552,848** | **49.3 %** |
+
+Half of all roofed air renders as open daylight. The player stands under a rock
+ceiling and sees sky above them. On a map whose headline features are voids
+140–310 px across and an ant-farm cave system, the sky region reaches deep into the
+terrain through every wide mouth, so "is this air connected to the sky" is not a
+proxy for "is this outdoors".
+
+Neither is roofedness on its own: air under a **floating island** is roofed, and it
+is unambiguously sky. That is the case that kills the simple fix, and it is why two
+rounds of work on this have not landed it.
+
+### The rule
+
+What separates a cavern from the space under an island is **enclosure**, not roof.
+A cavern has rock in most directions; under an island there is rock above and open
+air below and to the sides.
+
+> Cast `BACKDROP_RAYS` rays from an air sample in evenly spaced directions. Count
+> how many strike solid within `BACKDROP_RAY_LEN`. The sample is **interior** when
+> at least `BACKDROP_MIN_HITS` of them do, or when its air component is sealed
+> (§A14's rule, kept as an `OR`).
+
+| Name | Value | Notes |
+|---|---|---|
+| `BACKDROP_RAYS` | 8 | evenly spaced, starting at 0 rad |
+| `BACKDROP_RAY_LEN` | 320 | world px |
+| `BACKDROP_MIN_HITS` | 6 | of 8 |
+
+Checked against every case on the map:
+
+| case | rays hitting | verdict |
+|---|---|---|
+| cavern interior, tunnel, chamber | 8 | interior ✓ |
+| crevice (open above, rock on both sides and below) | 6–7 | interior ✓ |
+| under a floating island | 1–3 | sky ✓ |
+| just above the ground surface | 1–2 | sky ✓ |
+| open sky | 0 | sky ✓ |
+
+### Resolution, and the blockiness trap
+
+Eight rays per pixel over 8.4 M pixels is too slow, and computing the decision on
+the coarse grid is what produced the axis-aligned rectangles in the first place.
+So: evaluate the **hit count per coarse cell**, then **bilinearly interpolate** that
+field to pixel resolution and threshold there. The field is smooth, so the
+boundary follows the rock rather than the grid. The `EDGE_BAND_PX` proximity bound
+from §A14's test still applies.
+
+### The test that would have caught all of this
+
+`BackdropMask` has only ever been tested against a synthetic hand-built mask, and
+every defect in it has lived exclusively in real generated terrain. So the test is:
+generate a real map, then assert on measured shares —
+
+- enclosed air drawn as sky: **< 2 %**
+- open sky drawn as backdrop: **< 2 %**
+- the specific case: sample air 60 px below a floating island, assert it is sky
+- longest axis-aligned interior/exterior boundary run: **< 40 px** (the original
+  defect produced ~100 px runs; the §A14 implementation measured 35 px, so this
+  bound holds the line already won)
