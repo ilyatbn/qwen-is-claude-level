@@ -800,3 +800,21 @@ Notes: FALSIFY EVERY GATE TEST. My first falsification of the new adversarial ma
        crack open at the top has no rock above it either. Width is the distinction
        and only the disc measures width.
 Left for later: T3.07-T3.12 (M3 part B).
+
+## T3.07 — The sandbox scene — DONE
+Files: client/src/scenes/SandboxScene.ts, client/src/main.ts,
+       scripts/drive.mjs, scripts/checks/sandbox.mjs
+Verified: all 8 checks headlessly — `node scripts/drive.mjs scripts/checks/sandbox.mjs`
+       generate: small 277 / medium 604 / large 1118 ms; bakeAll 227 ms (72 chunks);
+       carve r=42 rebake 1.1 ms, r=200 rebake 2.7 ms; 10 regenerates leak 0 textures.
+Notes: `scale` is Phaser.Scene's ScaleManager — naming a field `scale` breaks the
+       base class contract with a confusing error. Field is `mapScale`.
+       scripts/drive.mjs is the general headless driver (a check file gets {page,
+       shot, log}); reuse it for T3.09's WASD proof. It needs playwright-CORE, not
+       playwright, which is what client/ actually has.
+       A carve check must dig INTO rock: my first version carved 40 px above a spawn,
+       removed 80 px of air, and would have passed against a broken carve. It now
+       asserts >= 4000 px removed.
+Left for later: large-map generate is 1118 ms in the browser (WASM, debug-ish) vs the
+       <1000 ms budget in docs/60 §6 — that budget is for native release; revisit in
+       T8.05 rather than now.

@@ -1,11 +1,20 @@
 import Phaser from 'phaser'
 import { BootScene } from './scenes/BootScene'
 import { PreviewScene } from './scenes/PreviewScene'
+import { SandboxScene } from './scenes/SandboxScene'
 import { C, Core } from './core'
 
 // No constants are declared here. VIEWPORT_W/H used to be literals in this file —
 // a second source of truth for numbers that live in game-core/src/constants.rs.
 // They now cross the WASM boundary with everything else. See docs/01-architecture.md.
+/** `?sandbox=1` is the dev tool, `?preview=1` the bare render harness. */
+function pickScene(): Phaser.Types.Scenes.SceneType[] {
+  const q = new URLSearchParams(location.search)
+  if (q.get('sandbox') === '1') return [SandboxScene]
+  if (q.get('preview') === '1') return [PreviewScene]
+  return [BootScene]
+}
+
 async function main(): Promise<Phaser.Game> {
   const core = await Core.init()
   const c = C()
@@ -24,7 +33,7 @@ async function main(): Promise<Phaser.Game> {
       pixelArt: true,
       antialias: false,
     },
-    scene: new URLSearchParams(location.search).get('preview') === '1' ? [PreviewScene] : [BootScene],
+    scene: pickScene(),
   })
 
   // Right-click is the inventory toggle (docs/30-items-inventory.md §3), so the

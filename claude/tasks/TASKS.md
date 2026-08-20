@@ -91,7 +91,7 @@ server involved.
 - [x] [T3.04](M3/T3.04-edge-band.md) — The grass/edge band
 - [x] [T3.05](M3/T3.05-chunk-manager.md) — Chunk placement and the rebake budget
 - [x] [T3.06](M3/T3.06-camera.md) — Camera, sky gradient, parallax
-- [ ] [T3.07](M3/T3.07-sandbox-scene.md) — Sandbox scene: seed, regenerate, click-to-carve
+- [x] [T3.07](M3/T3.07-sandbox-scene.md) — Sandbox scene: seed, regenerate, click-to-carve
 - [ ] [T3.08](M3/T3.08-player-sprite.md) — Player sprite, animation states, placeholders
 - [ ] [T3.09](M3/T3.09-input-crosshair.md) — Keyboard/mouse input, aim ring, crosshair
 - [ ] [T3.10](M3/T3.10-lightmap.md) — Lightmap, day/night, fog
