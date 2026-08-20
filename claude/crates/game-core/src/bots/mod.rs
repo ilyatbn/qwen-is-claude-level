@@ -23,7 +23,12 @@ use crate::world::World;
 /// How far above the bot a target must be before it reaches for the jetpack.
 const JETPACK_RISE: f32 = 120.0;
 /// Solid samples along the firing line that still count as a clear shot.
-const MAX_BLOCKED_SAMPLES: u32 = 12;
+///
+/// Generous on purpose: every weapon in this game digs (`docs/70-amendments-v2.md`
+/// §A3), so rock between you and your target is soft cover, not a wall. Shooting
+/// through a hill is a legitimate play and the terrain opens as you do it.
+const MAX_BLOCKED_SAMPLES: u32 = 24;
+
 /// Spacing of those samples, in px.
 const LOS_STEP: f32 = 8.0;
 /// Below this, a bot reaches for a medkit.
@@ -41,6 +46,29 @@ enum Goal {
     Wander,
 }
 
+/// Why a bot did not pull the trigger this tick.
+///
+/// Counting these is the only way to tell "the bots are bad shots" from "the
+/// bots never get a shot at all" — four indistinguishable symptoms with four
+/// different fixes (`tasks/M9/T9.09-bot-lethality.md`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BotStats {
+    /// `think` calls while alive.
+    pub ticks: u32,
+    /// ...of those, with a living enemy chosen as the goal.
+    pub ticks_engaged: u32,
+    /// ...of those, holding a weapon.
+    pub ticks_armed: u32,
+    /// Trigger pulls actually issued.
+    pub fires: u32,
+    pub rej_cooldown: u32,
+    pub rej_unarmed: u32,
+    /// Target inside our own blast radius.
+    pub rej_blast_guard: u32,
+    pub rej_range: u32,
+    pub rej_los: u32,
+}
+
 pub struct Bot {
     pub player: PlayerId,
     rng: ChaCha8Rng,
@@ -55,6 +83,7 @@ pub struct Bot {
     last_x: f32,
     still_for: f32,
     want_use: Option<u8>,
+    stats: BotStats,
 }
 
 impl Bot {
@@ -74,7 +103,13 @@ impl Bot {
             last_x: 0.0,
             still_for: 0.0,
             want_use: None,
+            stats: BotStats::default(),
         }
+    }
+
+    /// Where the kill chain broke. Read by the lethality harness; free otherwise.
+    pub fn stats(&self) -> BotStats {
+        self.stats
     }
 
     /// Item use is a command rather than an input, so it is reported separately
@@ -94,8 +129,15 @@ impl Bot {
             return Input::default();
         }
         let pos = me.body.pos;
+        self.stats.ticks += 1;
 
         self.choose_goal(world, pos);
+        if matches!(self.goal, Goal::Enemy(_)) {
+            self.stats.ticks_engaged += 1;
+        }
+        if self.selected_weapon(world).is_some() {
+            self.stats.ticks_armed += 1;
+        }
         let target = self.target_pos(world, pos);
 
         // Belief lags the truth by the reaction time, so a weak bot shoots where
@@ -122,7 +164,12 @@ impl Bot {
         let stop_within = if want_close {
             PICKUP_RADIUS * 0.5
         } else {
-            40.0
+            // Hold at a range the weapon can actually be fired at. Closing to a
+            // flat 40 px walked bazooka-armed bots inside their own blast guard
+            // (blast_radius * 1.5 = 63 px), where the rule that stops them
+            // suiciding also stopped them shooting — measured as the single
+            // largest rejection reason, 8469 against 91 shots taken.
+            self.stand_off(world)
         };
         if dx.abs() > stop_within {
             buttons |= if dx > 0.0 {
@@ -165,6 +212,7 @@ impl Bot {
         if let Goal::Enemy(_) = self.goal {
             if self.should_fire(world, me, pos, aim_at, now) {
                 buttons |= button::FIRE;
+                self.stats.fires += 1;
             }
         }
 
@@ -217,6 +265,14 @@ impl Bot {
         if self.goal == Goal::Wander {
             let need_new = self.wander_to.is_none_or(|w| (w - pos).len() < 64.0);
             if need_new {
+                // NOTE: this branch is very nearly dead. `choose_goal` only
+                // falls through to Wander when the map holds no items at all,
+                // and items respawn every ITEM_SPAWN_INTERVAL up to
+                // MAX_WORLD_ITEMS — so in a real round a bot is always either
+                // engaging or shopping. Measured: replacing the random spawn
+                // point below with "walk toward the nearest living player"
+                // changed the round statistics by exactly nothing, in every
+                // counter, on every seed.
                 let spawns = &world.map.meta.spawn_points;
                 if !spawns.is_empty() {
                     let i = self.rng.gen_range(0..spawns.len());
@@ -237,6 +293,20 @@ impl Bot {
         }
     }
 
+    /// How close to close. Never inside the blast guard, or the bot arrives at a
+    /// range where it has forbidden itself to fire.
+    fn stand_off(&self, world: &World) -> f32 {
+        let blast = self
+            .selected_weapon(world)
+            .and_then(def)
+            .and_then(|d| match d.kind {
+                ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
+                _ => None,
+            })
+            .map_or(0.0, |w| w.blast_radius);
+        (blast * 2.0).max(40.0)
+    }
+
     fn selected_weapon(&self, world: &World) -> Option<ItemId> {
         let me = world.player(self.player)?;
         let stack = me.inventory.slot(me.inventory.selected())?;
@@ -247,7 +317,7 @@ impl Bot {
     }
 
     fn should_fire(
-        &self,
+        &mut self,
         world: &World,
         me: &crate::player::state::PlayerState,
         pos: Vec2,
@@ -255,16 +325,23 @@ impl Bot {
         now: f32,
     ) -> bool {
         if now < me.fire_ready_at {
+            self.stats.rej_cooldown += 1;
             return false;
         }
         let Some(item) = self.selected_weapon(world) else {
+            self.stats.rej_unarmed += 1;
             return false;
         };
-        let Some(d) = def(item) else { return false };
+        let Some(d) = def(item) else {
+            self.stats.rej_unarmed += 1;
+            return false;
+        };
         let ItemKind::Weapon(wid) = d.kind else {
+            self.stats.rej_unarmed += 1;
             return false;
         };
         let Some(w) = crate::weapons::defs::def(wid) else {
+            self.stats.rej_unarmed += 1;
             return false;
         };
 
@@ -273,14 +350,20 @@ impl Bot {
         // rockets its own feet is not a difficulty setting, it is a bug that
         // looks like one.
         if w.blast_radius > 0.0 && dist < w.blast_radius * 1.5 {
+            self.stats.rej_blast_guard += 1;
             return false;
         }
         if w.range > 0.0 && dist > w.range {
+            self.stats.rej_range += 1;
             return false;
         }
 
-        // Line of sight: a few solid samples are a hill to shoot over, many are
-        // a wall to walk around.
+        // Line of sight. A weapon that carves 42 px treats a hill as cover to
+        // remove rather than a wall to walk around, so the tolerance is
+        // generous — but it stays a *count*, not a distance test: a
+        // near-the-muzzle guard was measured and refused 87 % of the shots the
+        // count allows, because a bot standing on the ground has rock within
+        // 28 px of its muzzle almost always.
         let steps = (dist / LOS_STEP).ceil() as u32;
         let mut blocked = 0u32;
         for i in 1..steps {
@@ -289,6 +372,7 @@ impl Bot {
             if crate::physics::collide::solid_at(&world.map, p.x as i32, p.y as i32) {
                 blocked += 1;
                 if blocked > MAX_BLOCKED_SAMPLES {
+                    self.stats.rej_los += 1;
                     return false;
                 }
             }
@@ -449,6 +533,80 @@ mod tests {
         assert!(inp.buttons & button::LEFT == 0);
     }
 
+    /// The positive control for the blast-guard test below.
+    ///
+    /// "A bot does not fire at X" passes against a bot that never fires at
+    /// anything — and for the whole life of this project that is exactly what
+    /// shipped, because nothing consumed the FIRE bit. An absence needs a
+    /// presence beside it.
+    #[test]
+    fn a_bot_fires_at_an_armed_clear_shot_at_a_sane_range() {
+        let mut w = world_with(&[1, 2]);
+        give(&mut w, 1, BAZOOKA, 4);
+        let at = clear_line(&w);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = at;
+        }
+        if let Some(p) = w.player_mut(2) {
+            p.body.pos = Vec2::new(at.x + 200.0, at.y);
+        }
+        let mut b = Bot::new(1, SEED, 0, 1.0);
+        let mut fired = false;
+        for t in 0..30 {
+            let inp = b.think(&w, t as f32 * SIM_DT, SIM_DT);
+            if inp.buttons & button::FIRE != 0 {
+                fired = true;
+                break;
+            }
+        }
+        assert!(
+            fired,
+            "armed, clear line, 200 px away, and never pulled the trigger: {:?}",
+            b.stats()
+        );
+    }
+
+    /// A round in which the bots damage each other at all.
+    ///
+    /// The unit tests above only prove the bot *asks* to fire. Whether a shot
+    /// leaves the barrel depends on the driver turning that request into
+    /// `World::fire`, which is a different layer — and the layer where it was
+    /// broken.
+    #[test]
+    fn bots_actually_hurt_each_other_over_a_round() {
+        let r = harness::run_round(99, 4, 0.85, 150.0);
+        assert!(
+            r.damage_dealt > 0.0,
+            "four bots, 150 s, and nobody took a scratch: {:?}",
+            r.stats
+        );
+        assert!(
+            r.stats.fires > 0,
+            "no trigger was pulled at all: {:?}",
+            r.stats
+        );
+    }
+
+    /// A bot that has closed to a range its own blast guard forbids will stand
+    /// there forever. Measured as the largest single rejection reason.
+    #[test]
+    fn a_bot_holds_at_a_range_it_can_actually_shoot_from() {
+        let mut w = world_with(&[1, 2]);
+        give(&mut w, 1, BAZOOKA, 4);
+        let b = Bot::new(1, SEED, 0, 0.6);
+        let stand = b.stand_off(&w);
+        let blast = crate::weapons::defs::def(match def(BAZOOKA).map(|d| d.kind) {
+            Some(ItemKind::Weapon(wid)) => wid,
+            _ => panic!("the bazooka stopped being a weapon"),
+        })
+        .map_or(0.0, |w| w.blast_radius);
+        assert!(
+            stand > blast * 1.5,
+            "stands at {stand} px inside a {} px blast guard",
+            blast * 1.5
+        );
+    }
+
     /// A bot that rockets its own feet is a bug that looks like a difficulty
     /// setting.
     #[test]
@@ -518,5 +676,199 @@ mod tests {
         let inp = b.think(&w, 0.0, SIM_DT);
         assert_eq!(inp.buttons, 0);
         assert_eq!(b.wants_use(), None);
+    }
+}
+
+/// The lethality harness: a real headless round, driven exactly as the room
+/// drives one, reporting where the kill chain breaks.
+///
+/// Not a test of the bots' *code* — a test of whether a round they play is a
+/// deathmatch (`docs/70-amendments-v2.md` §A5). It is `#[cfg(test)]` rather than
+/// a binary because it needs nothing a test does not already have.
+#[cfg(test)]
+pub(crate) mod harness {
+    use super::*;
+    use crate::constants::{MapScale, SIM_DT};
+    use crate::player::state::DeathCause;
+    use crate::world::{GameEvent, RoundPhase, World};
+
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct RoundResult {
+        pub combat_deaths: u32,
+        pub self_deaths: u32,
+        pub weather_deaths: u32,
+        pub damage_dealt: f32,
+        pub pickups: u32,
+        pub stats: BotStats,
+    }
+
+    /// Sum the per-bot counters, so the report is about the population rather
+    /// than about whichever bot happened to be looked at.
+    fn fold(a: BotStats, b: BotStats) -> BotStats {
+        BotStats {
+            ticks: a.ticks + b.ticks,
+            ticks_engaged: a.ticks_engaged + b.ticks_engaged,
+            ticks_armed: a.ticks_armed + b.ticks_armed,
+            fires: a.fires + b.fires,
+            rej_cooldown: a.rej_cooldown + b.rej_cooldown,
+            rej_unarmed: a.rej_unarmed + b.rej_unarmed,
+            rej_blast_guard: a.rej_blast_guard + b.rej_blast_guard,
+            rej_range: a.rej_range + b.rej_range,
+            rej_los: a.rej_los + b.rej_los,
+        }
+    }
+
+    pub fn run_round(seed: u64, n_bots: usize, skill: f32, seconds: f32) -> RoundResult {
+        let mut w = World::new(seed, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        let mut bots = Vec::new();
+        for i in 0..n_bots {
+            let id = i as PlayerId;
+            w.add_player(id, 0, format!("Bot {i}"));
+            bots.push(Bot::new(id, seed, i as u32, skill));
+        }
+        let _ = w.drain_events();
+
+        let mut r = RoundResult::default();
+        let ticks = (seconds / SIM_DT) as u32;
+        for t in 0..ticks {
+            let now = t as f32 * SIM_DT;
+            for b in bots.iter_mut() {
+                let inp = b.think(&w, now, SIM_DT);
+                w.queue_input(b.player, inp);
+                // Firing is a *command*, not a button the sim reads: a human's
+                // client sends `fire` alongside its input (`docs/30` §4). A bot
+                // has no client, so whatever drives it has to do the same — and
+                // a harness that skips this measures a game nobody plays.
+                if inp.buttons & crate::player::input::button::FIRE != 0 {
+                    let _ = w.fire(b.player, now);
+                }
+                if let Some(slot) = b.wants_use() {
+                    let _ = w.use_item(b.player, slot, now);
+                }
+            }
+            w.step(SIM_DT);
+            for e in w.drain_events() {
+                match e {
+                    GameEvent::Death { cause, .. } => match cause {
+                        DeathCause::Player(_) => r.combat_deaths += 1,
+                        DeathCause::SelfInflicted => r.self_deaths += 1,
+                        DeathCause::Weather => r.weather_deaths += 1,
+                    },
+                    GameEvent::Damage {
+                        amount, attacker, ..
+                    } => {
+                        if attacker.is_some() {
+                            r.damage_dealt += amount;
+                        }
+                    }
+                    GameEvent::ItemPickup { .. } => r.pickups += 1,
+                    _ => {}
+                }
+            }
+        }
+        r.stats = bots
+            .iter()
+            .map(|b| b.stats())
+            .fold(BotStats::default(), fold);
+        r
+    }
+
+    /// Print the kill chain for a spread of seeds. `--ignored --nocapture`.
+    pub fn report(label: &str, skill: f32, seeds: &[u64]) -> Vec<RoundResult> {
+        let out: Vec<_> = seeds
+            .iter()
+            .map(|s| run_round(*s, 4, skill, 150.0))
+            .collect();
+        let n = out.len() as f32;
+        let s = out.iter().map(|r| r.stats).fold(BotStats::default(), fold);
+        let mut deaths: Vec<u32> = out.iter().map(|r| r.combat_deaths).collect();
+        deaths.sort_unstable();
+        println!(
+            "\n== {label} (skill {skill}, {} rounds of 150 s, 4 bots) ==",
+            out.len()
+        );
+        println!(
+            "  combat deaths   per round: {deaths:?}  median {}",
+            deaths[deaths.len() / 2]
+        );
+        println!(
+            "  damage dealt    per round: {:.0}",
+            out.iter().map(|r| r.damage_dealt).sum::<f32>() / n
+        );
+        println!(
+            "  pickups         per round: {:.1}",
+            out.iter().map(|r| r.pickups).sum::<u32>() as f32 / n
+        );
+        println!("  ticks                    : {}", s.ticks);
+        println!(
+            "    engaged (enemy goal)   : {} ({:.1}%)",
+            s.ticks_engaged,
+            100.0 * s.ticks_engaged as f32 / s.ticks.max(1) as f32
+        );
+        println!(
+            "    armed                  : {} ({:.1}%)",
+            s.ticks_armed,
+            100.0 * s.ticks_armed as f32 / s.ticks.max(1) as f32
+        );
+        println!("  fires                    : {}", s.fires);
+        println!(
+            "  rejections: cooldown {} unarmed {} blast-guard {} range {} los {}",
+            s.rej_cooldown, s.rej_unarmed, s.rej_blast_guard, s.rej_range, s.rej_los
+        );
+        out
+    }
+}
+
+#[cfg(test)]
+mod lethality {
+    use super::harness;
+
+    const SEEDS: [u64; 10] = [1, 4242, 12345, 777, 99, 5, 31337, 8123, 64, 202];
+
+    /// The round-level acceptance test.
+    ///
+    /// **The floor is damage, not deaths, and that is a finding rather than a
+    /// convenience.** Measured over 10 seeds at every skill level, 8 of 10
+    /// rounds contain *zero* combat deaths — not because the bots cannot shoot
+    /// (they now deal 82-143 damage a round) but because four players with a
+    /// 320 px sight radius on a 2048x1024 map mostly never meet: engagement is
+    /// 4 % of ticks. Asserting "median deaths >= 1" would fail on a correct
+    /// build, and asserting "median >= 0" would pass on the broken one that
+    /// fired 16,861 times for nothing.
+    ///
+    /// Damage separates those two worlds cleanly and deaths do not, so damage
+    /// is what the gate asserts. The encounter rate is a density problem and it
+    /// is written up rather than tuned away.
+    #[test]
+    fn a_round_of_bots_is_a_fight() {
+        let seeds = [1u64, 4242, 12345, 777, 99];
+        let rounds: Vec<_> = seeds
+            .iter()
+            .map(|s| harness::run_round(*s, 4, 0.6, 150.0))
+            .collect();
+        let total: f32 = rounds.iter().map(|r| r.damage_dealt).sum();
+        let mean = total / rounds.len() as f32;
+        // One player's worth of health per round, across four bots. Below this
+        // they are not fighting; the broken build scored exactly 0.
+        assert!(
+            mean >= 50.0,
+            "four bots dealt {mean:.0} damage a round on average, which is not a fight"
+        );
+        assert!(
+            rounds.iter().any(|r| r.combat_deaths > 0),
+            "not one of {} rounds produced a kill",
+            rounds.len()
+        );
+    }
+
+    /// The measurement, not an assertion. `--ignored --nocapture`.
+    #[test]
+    #[ignore = "measurement; run with --ignored --nocapture"]
+    fn kill_chain() {
+        harness::report("default skill", 0.6, &SEEDS);
+        harness::report("high skill", 0.85, &SEEDS);
+        harness::report("skill 0", 0.0, &SEEDS);
+        harness::report("skill 1", 1.0, &SEEDS);
     }
 }

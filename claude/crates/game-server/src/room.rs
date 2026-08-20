@@ -864,6 +864,7 @@ impl Room {
         }
         let now = self.world.round_time;
         let mut uses: Vec<(PlayerId, u8)> = Vec::new();
+        let mut fires: Vec<PlayerId> = Vec::new();
         // Split the borrow: `think` reads the world, so it cannot run while the
         // world is mutably borrowed for `queue_input`.
         let mut inputs: Vec<(PlayerId, game_core::player::input::Input)> =
@@ -873,6 +874,20 @@ impl Room {
             if let Some(slot) = bot.wants_use() {
                 uses.push((bot.player, slot));
             }
+            // Firing is a *command*, not a button the sim reads: a human's
+            // client sends `fire` alongside its input (`docs/30` §4), and
+            // nothing anywhere consumes `Input`'s FIRE bit — `fire_pressed` is
+            // derived in `input.rs` and read by no production code. A bot has no
+            // client, so the room has to send that command on its behalf, the
+            // same way it does for `wants_use`.
+            //
+            // Without this the bots had never fired a shot: measured at 16,861
+            // trigger pulls across five rounds for zero damage and zero
+            // cooldown rejections, which is what a fire path that is never
+            // reached looks like from the outside.
+            if input.buttons & game_core::player::input::button::FIRE != 0 {
+                fires.push(bot.player);
+            }
             inputs.push((bot.player, input));
         }
         for (id, input) in inputs {
@@ -880,6 +895,11 @@ impl Room {
         }
         for (id, slot) in uses {
             let _ = self.world.use_item(id, slot, now);
+        }
+        for id in fires {
+            if let Err(e) = self.world.fire(id, now) {
+                tracing::debug!(target: "game::weapons", player = id, reason = ?e, "bot fire rejected");
+            }
         }
     }
 
@@ -1045,6 +1065,79 @@ mod tests {
     /// A room with the production bot default, for the seating tests.
     fn cfg_with_bots() -> Arc<Config> {
         Arc::new(Config::default())
+    }
+
+    /// The room must turn a bot's FIRE bit into `World::fire`, because nothing
+    /// in the sim reads that bit — a human's client sends the command
+    /// separately (`docs/30` §4) and a bot has no client.
+    ///
+    /// This lived in `drive_bots` and was missing for the entire life of the
+    /// project. Every bot-side test passed: the bot asked to fire perfectly
+    /// well, and the request went nowhere. The fingerprint from outside is
+    /// trigger pulls with **zero** cooldown rejections, because a shot that is
+    /// never taken never starts a cooldown.
+    #[test]
+    fn the_room_turns_a_bot_s_fire_button_into_a_shot() {
+        let cfg = Arc::new(Config {
+            bot_count: 2,
+            bot_skill: 1.0,
+            map_scale: game_core::constants::MapScale::Small,
+            ..Config::default()
+        });
+        let mut room = Room::new(cfg);
+        room.world.set_phase(game_core::world::RoundPhase::Playing);
+
+        // Arm both bots and stand them in a clear line, so the only thing under
+        // test is whether the trigger reaches the world.
+        let ids: Vec<PlayerId> = room.world.players.iter().map(|p| p.id).collect();
+        assert_eq!(ids.len(), 2, "bots were not seated");
+        for id in &ids {
+            game_core::world::give(&mut room.world, *id, game_core::items::registry::SMG, 60);
+        }
+
+        // Stand them 200 px apart on a clear line. Left to wander a 2048x1024
+        // map they may simply never meet inside the test's budget, and a test
+        // that depends on an encounter is measuring the map, not the wiring.
+        let at = {
+            let w = &room.world;
+            let mut found = None;
+            'y: for y in (200..(w.map.mask.h as i32 - 200)).step_by(16) {
+                'x: for x in (100..(w.map.mask.w as i32 - 400)).step_by(16) {
+                    for s in (0..=260).step_by(4) {
+                        if game_core::physics::collide::solid_at(&w.map, x + s, y) {
+                            continue 'x;
+                        }
+                    }
+                    found = Some((x as f32, y as f32));
+                    break 'y;
+                }
+            }
+            found.expect("no clear 260 px span; the fixture is wrong, not the room")
+        };
+        if let Some(p) = room.world.player_mut(ids[0]) {
+            p.body.pos = game_core::math::Vec2::new(at.0, at.1);
+        }
+        if let Some(p) = room.world.player_mut(ids[1]) {
+            p.body.pos = game_core::math::Vec2::new(at.0 + 200.0, at.1);
+        }
+
+        let mut fired = false;
+        for _ in 0..600 {
+            room.tick_once(1.0 / 60.0);
+            if room
+                .world
+                .players
+                .iter()
+                .any(|p| p.fire_ready_at > room.world.round_time)
+            {
+                fired = true;
+                break;
+            }
+        }
+        assert!(
+            fired,
+            "600 ticks of armed bots and not one shot reached the world"
+        );
     }
 
     #[test]

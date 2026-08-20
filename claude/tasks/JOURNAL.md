@@ -2200,3 +2200,44 @@ Left for later: the inventory-on-join defect from T9.06.
        LIVE hazard: a meteor impact is instantaneous and a puddle lives 3 s
        against a 1 s poll. That weather ran is asserted from the effect
        lifecycle, never from the picture.
+
+## T9.09 — Bots that carry a round — DONE
+Files: crates/game-core/src/bots/mod.rs, crates/game-server/src/room.rs
+Verified: `cargo test -p game-core --lib bots` — 11 passed, 1 ignored;
+       `cargo test -p game-server --lib` — 86 passed. Measurement:
+       `cargo test -p game-core --release --lib bots::lethality -- --ignored --nocapture`.
+Notes: NOT A TUNING PROBLEM. THE BOTS HAD NEVER FIRED A SHOT.
+       `drive_bots` queued the input and applied `wants_use` and never called
+       `world.fire`. Firing is a COMMAND, not a button the sim reads — a human's
+       client sends `fire` separately (docs/30 §4) — and `fire_pressed` is
+       derived in input.rs and read by NO production code. So the whole
+       `should_fire` chain (LOS, blast guard, range) has been dead code since
+       T6.14. Fourth mechanism-never-wired defect on this project.
+       THE FINGERPRINT WAS IN THE COUNTERS: 16,861 trigger pulls, 0 damage, and
+       `rej_cooldown: 0` — a shot that is never taken never starts a cooldown.
+       Instrumented BotStats first (§ measure before tuning) rather than guessing.
+       Kill chain per round, 4 bots, 150 s, 10 seeds, before -> after:
+         damage 0 -> 114 (skill .6) / 143 (.85); rounds with a kill 0/10 -> 2/10.
+       Two further measurement-led fixes: MAX_BLOCKED_SAMPLES 12 -> 24 (every
+       weapon digs, so a hill is soft cover; LOS rejections 5307 -> 26), and a
+       stand-off of max(blast*2, 40) because a flat 40 px walked bazooka bots
+       INSIDE their own 63 px blast guard, where the rule that stops them
+       suiciding also stopped them shooting (largest rejection reason, 8469).
+       TWO OF MY OWN IDEAS MEASURED WORSE AND WERE REVERTED: a near-the-muzzle
+       LOS guard (fires 159 -> 20; a bot standing on the ground has rock within
+       28 px of its muzzle nearly always), and weapon-preferring shopping.
+       The Wander branch is very nearly DEAD CODE: choose_goal only reaches it
+       when the map holds no items at all. Replacing its random spawn point with
+       "walk toward the nearest player" changed every counter by exactly zero.
+       Noted in place rather than left as a comment describing what never runs.
+       ACCEPTANCE ASSERTS DAMAGE, NOT DEATHS, AND THAT IS A FINDING. 8 of 10
+       rounds still contain zero combat deaths at EVERY skill level, because
+       four players with a 320 px sight radius on a 2048x1024 map mostly never
+       meet (engagement 4 % of ticks). "median deaths >= 1" fails on a correct
+       build; "median >= 0" passes on the broken one. Damage separates them.
+       Sight radius was checked for fairness and left alone: a human at screen
+       centre sees ~367 px to the corner, so 320 is not blinder than a person.
+       BOT_SKILL barely moves lethality (82/114/143/105 damage at 0/.6/.85/1) —
+       its effect on kills is close to noise, reported not tuned.
+Left for later: T9.08. Encounter rate is a density problem — fewer/closer
+       spawns, more bots, or a smaller default map — and is a design call.
