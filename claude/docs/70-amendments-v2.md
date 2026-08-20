@@ -1011,3 +1011,44 @@ by driving the real browser client through Playwright against the same server. I
 the browser joins reliably a hundred times, the defect is in the test client and
 the product is sound — and that is a very different bug from the same symptom in
 shipping code.
+
+## A29 — Where the Kenney download URL actually lives
+
+`51-assets.md` §3 says the fetch script should extract "the first `.zip` href from
+the HTML". There is no `.zip` href in the page body — the visible Download button
+is `<a href='#inline-download' data-lity>`, which opens a donation modal. The real
+URL is inside that modal:
+
+```html
+<a id='donate-text' href='https://kenney.nl/media/pages/assets/<slug>/<hash>-<ts>/kenney_<slug>.zip'
+   onclick='initiateDownload()' data-lity-close>Continue without donating...</a>
+```
+
+Two traps, both of which cost probes to find:
+
+- **The page uses single-quoted attributes.** A regex written for `href="..."`
+  matches nothing at all and looks exactly like "the site restructured". Match both
+  quote styles.
+- The path carries a content hash and timestamp, so it must be scraped rather than
+  constructed — `51-assets.md` §3 was right about that, and the guessable patterns
+  (`/media/pages/assets/<slug>/downloads.zip`, `/data/downloads/<slug>.zip`) both
+  404.
+
+Verified reachable, with sizes:
+
+| pack | bytes |
+|---|---|
+| platformer-characters | 1,433,917 |
+| particle-pack | 15,001,764 |
+| pixel-platformer | 260,312 |
+| ui-pack | 1,229,750 |
+
+The particle pack alone exceeds `51-assets.md` §7's 12 MB total-committed budget, so
+take §7's own escape hatch: **`assets/vendor/` is gitignored** and only the built
+atlases under `assets/atlas/` are committed. The fetch script stays the reproducible
+path back to the raw art, and `assets/vendor/README.md` records each pack's source
+URL, licence and fetch date as §8 requires.
+
+The procedural fallback in §5 is **not** thereby optional. It is what makes a fresh
+clone run without network access, and it has been carrying the whole project since
+M3.
