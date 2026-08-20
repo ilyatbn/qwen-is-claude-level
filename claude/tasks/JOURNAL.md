@@ -1951,3 +1951,14 @@ Notes: FOUND BY PLAYING IT, NOT BY A TEST. Driving a real round and polling the
        socket. Bots are marked ready at seat time.
        The test's control is the second half: a human who never readies MUST
        still be swept, so it cannot pass by disabling the sweep.
+
+## HUD lines collapsed into one — FIXED
+Files: client/src/scenes/GameScene.ts
+Verified: hud box 66px tall for 3 lines (was one unreadable run). shots/play2-ui.png.
+Notes: MY OWN DEFECT, FROM THIS SESSION, AND ONLY A SCREENSHOT FOUND IT. I joined
+       the strip, the inventory panel and the scoreboard with "\n" into
+       textContent — and HTML does not honour newlines without `white-space:pre`.
+       The console log printed three lines (textContent HAS the newlines), so
+       every readout said it was correct while the screen showed
+       "3:54 | HP 100 smg x60 1:— [2:smg x60] 3:— ... =1 p0:0 · =1 p1:0 ...".
+       Same shape as §A15: the model was right and the render was not.

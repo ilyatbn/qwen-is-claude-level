@@ -552,8 +552,12 @@ export class GameScene extends Phaser.Scene {
     this.hud.dataset['hud'] = 'root'
     this.hud.id = 'game-hud'
     this.hud.style.cssText =
-      'position:fixed;left:0;right:0;bottom:0;padding:6px 10px;font:12px monospace;' +
-      'color:#fff;text-shadow:0 1px 2px #000;pointer-events:none;z-index:10'
+      'position:fixed;left:0;right:0;bottom:0;padding:6px 10px;font:12px/1.5 monospace;' +
+      'color:#fff;text-shadow:0 1px 2px #000;pointer-events:none;z-index:10;' +
+      // The strip, the inventory panel and the scoreboard are separate lines.
+      // Without this they collapse into one unreadable run of text — the
+      // newlines are in `textContent` and HTML simply does not honour them.
+      'white-space:pre'
     document.body.appendChild(this.hud)
   }
 
