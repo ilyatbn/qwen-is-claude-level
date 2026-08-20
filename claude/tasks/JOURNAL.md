@@ -1401,3 +1401,21 @@ Notes: THE FLAKE WAS THE TEST CLIENT, NOT THE SERVER. Establishing that took one
 Left for later: the seven original sub-tests are still consolidated into one
        sequential test. Their mutual interference was most likely the same
        connect-race; worth re-splitting if granularity is ever wanted.
+       WHY THE #[ignore] WAS CORRECT, AND WHAT RETIRED IT — read this before
+       citing it as precedent. It was a HOLDING POSITION, not a verdict, and it
+       was allowed only because all four of these held at once:
+         1. the test was known-good — falsifiable, and it caught a real bug
+            (making `inventory` broadcast instead of Scope::Only fails it);
+         2. the failure was in the harness's reliability, not in an assertion
+            anyone doubted, and the assertions themselves had passed;
+         3. the ignore carried its full diagnosis and the exact command to run
+            it, plus every hypothesis already eliminated, so the next session
+            started from evidence rather than from scratch;
+         4. the boxes were NOT ticked. An ignored test means the task is not
+            done. That is the part that makes the rest defensible.
+       It was retired one session later by fixing the cause (rust_socketio's
+       connect-race), not by loosening the test. An #[ignore] that survives more
+       than a session or two has stopped being a holding position and become a
+       deleted test that still costs compile time. It is never a licence to
+       ignore a test that fails because the code is wrong — that is a red gate,
+       and a red gate stops the milestone.
