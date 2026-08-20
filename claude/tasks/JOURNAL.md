@@ -1739,3 +1739,31 @@ Notes: TWO REAL BUGS, both found by falsifying rather than by a failing test.
        REPLAY_DIR is configurable (was hardcoded "replays").
 Left for later: T8.03-T8.08. docs/61 §4's replay size estimate needs an
        amendment (see T8.01 entry).
+
+## T8.07 — End-to-end suite — DONE
+Files: scripts/e2e.mjs (new), scripts/check.sh
+Verified: `node scripts/e2e.mjs` — 9/9 passed in ~137 s (sandbox, wasd, sky,
+       lightmap, night_darkens_the_world, m4-checkpoint, night-combat,
+       m5-weather, two-clients). `./scripts/check.sh` green with it in the gate.
+Notes: The checks already existed; only ONE of them ran in the gate. This is
+       the suite that runs the rest. One vite + one Chromium for all of them,
+       so the whole suite costs about what a single check used to.
+       DEVIATION: not @playwright/test. drive.mjs already solves the two hard
+       parts (reading vite's port from its own output, LD_LIBRARY_PATH to
+       ~/.cache/pwlibs), and a second runner means a second place for those
+       workarounds to drift. The task asked for a suite that runs in the gate,
+       not for a particular runner.
+       A STANDALONE SCRIPT IN THE LIST KILLED THE SUITE. m5-weather.mjs is not
+       a check module — it launches its own vite and browser and calls
+       process.exit. Imported, its body ran and exited 0 MID-SUITE, so the
+       summary never printed and any earlier failure would have been hidden
+       while the gate went green. Standalone entries now run as subprocesses,
+       and a non-module in the module path is a clear error naming the fix.
+       Falsified: breaking the wasd threshold gives FAIL wasd / ok sky, exit 1,
+       and shots/FAILED-wasd.png. A check that writes no screenshot also fails
+       — on this box the picture is the only way a failure is seen.
+       check.sh had two nested identical `if [ "$FAST" -eq 0 ]` blocks with
+       mismatched indentation. Balanced, but the next person adding a check
+       would have got it wrong. Now one block.
+Left for later: T8.03 (F3 HUD), T8.04 (/metrics — not implemented at all),
+       T8.05 (perf + docs), T8.06 (minimap), T8.08 (game feel).

@@ -187,7 +187,7 @@ changes the character.
 - [ ] [T8.04](M8/T8.04-metrics.md) — `/metrics`, `DEBUG_DUMP`, log audit
 - [ ] [T8.05](M8/T8.05-perf-and-docs.md) — Performance pass and run documentation
 - [ ] [T8.06](M8/T8.06-minimap.md) — Explored-terrain minimap **(v2)**
-- [ ] [T8.07](M8/T8.07-e2e-playwright.md) — Playwright end-to-end suite **(v2)**
+- [x] [T8.07](M8/T8.07-e2e-playwright.md) — Playwright end-to-end suite **(v2)**
 - [ ] [T8.08](M8/T8.08-game-feel.md) — Screen shake, kill feed, polish pass **(v2)**
 
 **Checkpoint:** Record a round, replay it headlessly, and confirm the final world
