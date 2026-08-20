@@ -328,6 +328,86 @@ pub fn dimensions_are_sane(w: u32, h: u32) -> bool {
         && h <= 8192
 }
 
+// ---------------------------------------------------------------------------
+// Base64, because raw binary attachments are not reliable on this stack
+// ---------------------------------------------------------------------------
+
+/// Standard base64, no line breaks.
+///
+/// **Why the binary payloads are wrapped in text.** `map_init` and `snapshot` are
+/// specified as socket.io binary attachments (`docs/40-net-protocol.md` §3), and
+/// that does not survive: a payload containing `0x1e` — engine.io's packet
+/// separator — corrupts the stream. Measured on a real Small map: 13,491 bytes
+/// carrying **48** separator bytes, after which the client received nothing at all
+/// on that socket, not even later plain-text events. It reads as a dead connection
+/// rather than a dropped message, which is what made it expensive to find.
+///
+/// It is not the polling transport alone: forcing websocket-only fails the same
+/// way. Arbitrary bytes are simply not safe as attachments here.
+///
+/// Base64 costs a third more: `map_init` goes from ~13 KB to ~18 KB once per round,
+/// and a six-player snapshot from 102 to 136 bytes, so 2.7 KB/s at 20 Hz against
+/// the 1.9 KB/s the doc budgeted. Both are far inside `docs/40` §4, and a correct
+/// 136 bytes beats a corrupt 102.
+pub fn b64_encode(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let b = [c[0], *c.get(1).unwrap_or(&0), *c.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if c.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// The inverse, for tests and for the replay tooling.
+pub fn b64_decode(s: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => (c - b'A') as u32,
+            b'a'..=b'z' => (c - b'a') as u32 + 26,
+            b'0'..=b'9' => (c - b'0') as u32 + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        })
+    };
+    let raw: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if !raw.len().is_multiple_of(4) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(raw.len() / 4 * 3);
+    for c in raw.chunks(4) {
+        let pad = c.iter().filter(|b| **b == b'=').count();
+        if pad > 2 {
+            return None;
+        }
+        let mut n = 0u32;
+        for (i, b) in c.iter().enumerate() {
+            n |= if *b == b'=' { 0 } else { val(*b)? } << (18 - 6 * i);
+        }
+        out.push((n >> 16) as u8);
+        if pad < 2 {
+            out.push((n >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(n as u8);
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -654,6 +734,38 @@ mod tests {
                 let _ = decode_input_batch(&base[..i]);
             }
         }
+    }
+
+    #[test]
+    fn base64_round_trips_including_every_byte_value_and_both_paddings() {
+        for len in 0..8usize {
+            let v: Vec<u8> = (0..len).map(|i| (i * 37 + 11) as u8).collect();
+            assert_eq!(
+                b64_decode(&b64_encode(&v)).as_deref(),
+                Some(&v[..]),
+                "len {len}"
+            );
+        }
+        let all: Vec<u8> = (0..=255u8).collect();
+        assert_eq!(b64_decode(&b64_encode(&all)).as_deref(), Some(&all[..]));
+        // The byte that started all this.
+        let seps = vec![0x1eu8; 100];
+        assert_eq!(b64_decode(&b64_encode(&seps)).as_deref(), Some(&seps[..]));
+        assert!(b64_decode("abc").is_none(), "bad length rejected");
+        assert!(b64_decode("ab*d").is_none(), "bad alphabet rejected");
+    }
+
+    /// The encoded form must not contain engine.io's packet separator, which is
+    /// the entire point of encoding it.
+    #[test]
+    fn encoded_payloads_are_free_of_the_separator_byte() {
+        let map = game_core::map::generate(4242, MapScale::Small);
+        let raw = encode_map_init(&map);
+        assert!(
+            raw.contains(&0x1e),
+            "this map has no separator bytes, so it proves nothing"
+        );
+        assert!(!b64_encode(&raw).as_bytes().contains(&0x1e));
     }
 
     #[test]

@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use game_core::constants::{MAX_INPUT_QUEUE, SIM_DT, SIM_HZ};
+use game_core::constants::{MASK_CHECKSUM_INTERVAL, MAX_INPUT_QUEUE, SIM_DT, SIM_HZ, SNAPSHOT_HZ};
 
 use game_core::player::input::Input;
 use game_core::player::state::PlayerId;
@@ -21,6 +21,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, MissedTickBehavior};
 
 use crate::config::Config;
+use crate::session::SessionMap;
 
 /// How many commands one tick will drain before getting on with the simulation.
 ///
@@ -192,9 +193,13 @@ pub struct Room {
     seats: Seats,
     config: Arc<Config>,
     lag_warned_at: u32,
+    last_checksum_at: f32,
 }
 
 impl Room {
+    /// Generates the map inline. Use [`Room::new_async`] from a tokio context:
+    /// map generation is hundreds of milliseconds of pure CPU and blocks whatever
+    /// worker it lands on.
     pub fn new(config: Arc<Config>) -> Self {
         let seed = config.fixed_seed.unwrap_or(0x5EED_1234_ABCD_0001);
         Room {
@@ -202,6 +207,28 @@ impl Room {
             seats: Seats::default(),
             config,
             lag_warned_at: 0,
+            last_checksum_at: 0.0,
+        }
+    }
+
+    /// Build a room without blocking the runtime.
+    ///
+    /// `World::new` runs the whole generator — 0.3–1.1 s in release and several
+    /// times that in debug — and it was running directly on a tokio worker. With a
+    /// small worker pool that starves the socket.io accept and polling tasks, and
+    /// the symptom is not "the room is slow to start": it is a client whose
+    /// handshake or join round-trip never completes, which looks like a protocol
+    /// bug and is not one.
+    pub async fn new_async(config: Arc<Config>) -> Self {
+        let c = config.clone();
+        match tokio::task::spawn_blocking(move || Room::new(c)).await {
+            Ok(room) => room,
+            // The only way this fails is a panic inside generation, which is a bug
+            // worth surfacing rather than papering over with a retry.
+            Err(e) => {
+                tracing::error!(target: "game::map", "map generation task failed: {e}");
+                Room::new(config)
+            }
         }
     }
 
@@ -293,6 +320,38 @@ impl Room {
         self.seats.seats.len()
     }
 
+    /// The last input sequence accepted from each **ready** player, for the
+    /// per-recipient `last_input_seq` in their snapshot.
+    ///
+    /// Ready-gated, and that is load-bearing rather than an optimisation. A
+    /// socket.io binary event is two packets — a header naming the attachment
+    /// count, then the attachment — and they must not interleave with another
+    /// binary event on the same socket. A player is seated before `welcome` is
+    /// sent, so without this gate the 20 Hz snapshot stream starts *during* the
+    /// join handshake and races the `map_init` attachment. The symptom is not a
+    /// dropped snapshot: the client's parser loses sync and **every subsequent
+    /// event on that socket vanishes**, which reads as a dead connection.
+    ///
+    /// It is also just what `docs/40-net-protocol.md` §1 says: a client that has
+    /// not sent `ready` is seated but not simulated.
+    pub fn last_seqs(&self) -> Vec<(PlayerId, u32)> {
+        self.seats
+            .seats
+            .iter()
+            .filter(|s| s.ready)
+            .map(|s| (s.id, s.last_seq))
+            .collect()
+    }
+
+    /// True once per `MASK_CHECKSUM_INTERVAL`.
+    pub fn due_for_checksum(&mut self) -> bool {
+        if self.world.round_time - self.last_checksum_at < MASK_CHECKSUM_INTERVAL {
+            return false;
+        }
+        self.last_checksum_at = self.world.round_time;
+        true
+    }
+
     pub fn ready_count(&self) -> usize {
         self.seats.seats.iter().filter(|s| s.ready).count()
     }
@@ -313,18 +372,30 @@ pub fn spawn_room(
     config: Arc<Config>,
     shutdown: oneshot::Receiver<()>,
 ) -> RoomHandle {
+    spawn_room_with(io, config, Arc::new(SessionMap::default()), shutdown)
+}
+
+/// As [`spawn_room`], but sharing a [`SessionMap`] with the socket layer so events
+/// can be delivered to one player rather than broadcast.
+pub fn spawn_room_with(
+    io: SocketIo,
+    config: Arc<Config>,
+    sessions: Arc<SessionMap>,
+    shutdown: oneshot::Receiver<()>,
+) -> RoomHandle {
     let (tx, rx) = mpsc::channel(1024);
-    tokio::spawn(run(io, config, rx, shutdown));
+    tokio::spawn(run(io, config, sessions, rx, shutdown));
     RoomHandle { tx }
 }
 
 async fn run(
     io: SocketIo,
     config: Arc<Config>,
+    sessions: Arc<SessionMap>,
     mut rx: mpsc::Receiver<Command>,
     mut shutdown: oneshot::Receiver<()>,
 ) {
-    let mut room = Room::new(config);
+    let mut room = Room::new_async(config).await;
     let mut ticker = interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
     // Burst, so a 50 ms descheduling is caught up rather than silently making the
     // round run slow — round time stays true to wall-clock (`docs/41` §2).
@@ -353,8 +424,17 @@ async fn run(
                 room.sweep_unready(READY_TIMEOUT);
 
                 let events = room.world.drain_events();
-                if !events.is_empty() {
-                    crate::events::flush(&io, &events);
+                crate::events::flush_events(&io, &room.world, &sessions, &events);
+
+                // Every third tick: 20 Hz, as SNAPSHOT_HZ says.
+                if room.world.tick.is_multiple_of(SIM_HZ / SNAPSHOT_HZ) {
+                    let seqs = room.last_seqs();
+                    crate::events::broadcast_snapshot(&io, &room.world, &sessions, &seqs);
+                }
+
+                if room.due_for_checksum() {
+                    let hash = room.world.map.mask.hash_hex();
+                    crate::events::emit_mask_checksum(&io, room.world.tick, &hash);
                 }
 
                 // Expected tick count from wall-clock, so a slow tick shows up.

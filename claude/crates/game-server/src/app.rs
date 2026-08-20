@@ -2,35 +2,18 @@
 
 use axum::{extract::State, routing::get, Json, Router};
 use serde_json::json;
-use socketioxide::extract::{Data, SocketRef};
 use socketioxide::SocketIo;
 
 use crate::state::AppState;
 
-/// Build the router and hand back the `SocketIo` handle so a caller (the room task,
-/// from M6) can emit into it.
+/// Build the router and hand back the `SocketIo` handle.
+///
+/// Handlers are registered separately by [`crate::session::register`], because they
+/// need the room handle — which needs this `SocketIo` to emit into. The cycle is
+/// broken by building the layer first and registering the namespace after the room
+/// exists.
 pub fn build(state: AppState) -> (Router, SocketIo) {
     let (layer, io) = SocketIo::new_layer();
-
-    io.ns("/", async |socket: SocketRef| {
-        tracing::info!(target: "game::net", socket = %socket.id, "socket connected");
-
-        // M0 proof-of-transport: echo whatever arrives straight back. Replaced by
-        // the real join/input handlers in M6 (docs/40-net-protocol.md §2).
-        socket.on(
-            "echo",
-            async |socket: SocketRef, Data::<serde_json::Value>(payload)| {
-                tracing::debug!(target: "game::net", socket = %socket.id, "echo");
-                if let Err(e) = socket.emit("echo_back", &payload) {
-                    tracing::warn!(target: "game::net", socket = %socket.id, "echo_back failed: {e}");
-                }
-            },
-        );
-
-        socket.on_disconnect(async |socket: SocketRef| {
-            tracing::info!(target: "game::net", socket = %socket.id, "socket disconnected");
-        });
-    });
 
     let router = Router::new()
         .route("/healthz", get(healthz))
@@ -47,4 +30,33 @@ async fn healthz(State(state): State<AppState>) -> Json<serde_json::Value> {
         "rooms": state.rooms(),
         "players": state.players(),
     }))
+}
+
+/// The whole stack: router, room task, and socket handlers wired together.
+///
+/// Returned pieces are what a test needs to drive the server directly; `main`
+/// only needs the router.
+pub struct Stack {
+    pub router: Router,
+    pub io: SocketIo,
+    pub room: crate::room::RoomHandle,
+    pub sessions: std::sync::Arc<crate::session::SessionMap>,
+    /// Dropping or sending on this stops the room task.
+    pub shutdown: tokio::sync::oneshot::Sender<()>,
+}
+
+pub fn build_stack(state: AppState) -> Stack {
+    let config = std::sync::Arc::new(state.config().clone());
+    let (router, io) = build(state);
+    let sessions = std::sync::Arc::new(crate::session::SessionMap::default());
+    let (shutdown, rx) = tokio::sync::oneshot::channel();
+    let room = crate::room::spawn_room_with(io.clone(), config.clone(), sessions.clone(), rx);
+    crate::session::register(&io, room.clone(), sessions.clone(), config);
+    Stack {
+        router,
+        io,
+        room,
+        sessions,
+        shutdown,
+    }
 }

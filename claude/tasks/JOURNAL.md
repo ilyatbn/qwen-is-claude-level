@@ -1331,3 +1331,48 @@ Two things carried forward that nothing checks yet:
     tested (see cec9b9e); the event half needs T6.07.
   - SNAPSHOT_PLAYER_BYTES is 15 in constants.rs against 14 in docs/02 and
     docs/40 §3. Needs a doc amendment from the authority.
+
+## T6.03 + T6.07 — join flow and event scoping — IN PROGRESS
+Files: crates/game-server/src/{session,events,room,app,codec,main,lib}.rs,
+       tests/{join,skeleton}.rs
+Verified: `cargo test -p game-server` — 57 lib + 7 room + 1 room_logging + 3
+       skeleton, all green, 1 ignored. clippy -D warnings and fmt clean.
+NOT TICKED: the end-to-end join test is ~50% flaky, so neither box is done.
+
+RAW BINARY ATTACHMENTS DO NOT SURVIVE THIS STACK. docs/40 §3 specifies map_init
+and snapshot as socket.io binary attachments. A payload containing 0x1e —
+engine.io's packet separator — corrupts the stream: the client then receives
+NOTHING further on that socket, not even later plain-text events, so it reads as
+a dead connection rather than a dropped message. A real Small map's map_init is
+13,491 bytes containing 48 separator bytes, so this is not an edge case, it is
+every map. Isolated repro: vec![7u8; 13433] arrives fine, the real bytes do not,
+and vec![0x1e; 64] loses even the text event sent before it. Forcing
+websocket-only fails identically, so it is not the polling transport alone.
+Both payloads are now base64 text (codec::b64_encode, with the reasoning in its
+doc comment). Costs a third: map_init ~13KB -> ~18KB once per round, a six-player
+snapshot 102 -> 136 bytes (2.7 KB/s at 20 Hz), both far inside docs/40 §4.
+THIS NEEDS A DOC AMENDMENT — I cannot edit docs/.
+
+Two other real bugs fixed on the way:
+  - Room::new generated the map on a tokio worker (the flagged issue). Now
+    Room::new_async via spawn_blocking. The symptom was not "slow startup": it
+    was a client whose join round-trip never completed.
+  - Snapshots were sent to seated-but-not-ready players, so the 20 Hz binary
+    stream started DURING the join handshake and raced the map_init attachment.
+    last_seqs() is now ready-gated, which is what docs/40 §1 says anyway.
+
+THE REMAINING FLAKE, and what is already ruled out. `tests/join.rs` fails ~50% on
+"never received welcome within 15s" with an empty inbox. Ruled out: map
+generation blocking a worker (fixed); the fixture racing the room (it now polls
+until the room is ticking rather than sleeping 400 ms); snapshot/map_init
+interleaving (fixed); raw binary (fixed); two servers in one process (verified
+fine). Also: all seven original tests passed individually and interfered when run
+together, in parallel AND with --test-threads=1, which is why they were
+consolidated into one sequential test — a round is sequential anyway.
+The test is #[ignore]d with that explanation and IS falsifiable: making
+`inventory` broadcast instead of Scope::Only makes it fail.
+Run: cargo test -p game-server --test join -- --ignored
+
+Also: M0's echo handler and its test are gone — T6.03 replaced the handler, and
+the transport is now proven by the join flow doing something the game needs.
+Left for later: the flake; then T6.08-T6.15.

@@ -29,7 +29,11 @@ async fn main() -> ExitCode {
 
     let bind = config.bind_addr;
     let state = AppState::new(config);
-    let (router, _io) = app::build(state);
+    // The room task starts here and lives as long as the process.
+    let stack = app::build_stack(state);
+    let router = stack.router;
+    // Held so the room is not shut down by the sender being dropped.
+    let _shutdown = stack.shutdown;
 
     let listener = match tokio::net::TcpListener::bind(bind).await {
         Ok(l) => l,
