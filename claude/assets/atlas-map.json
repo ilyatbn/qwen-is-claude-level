@@ -1,0 +1,58 @@
+{
+  "_comment": [
+    "Which vendor PNGs go into which atlas, under which frame name.",
+    "",
+    "Frame names are OURS, not Kenney's (docs/51 §4). That indirection is the",
+    "whole point: swapping art packs is an edit to this file, and skins.json",
+    "never learns where a pixel came from.",
+    "",
+    "Paths are relative to assets/vendor/kenney/. A missing source is reported",
+    "and skipped — the atlas still builds, and the frame falls back to a",
+    "procedural placeholder at runtime (docs/50 §8)."
+  ],
+  "chars": {
+    "_note": "Five colour/character variants of one rig, which is exactly the prefix scheme in docs/50 §2. Kenney gives a 2-frame walk cycle, so walk is a/b rather than a..d.",
+    "_variants": {
+      "adventurer": "platformer-characters/PNG/Adventurer/Poses/adventurer_",
+      "female": "platformer-characters/PNG/Female/Poses/female_",
+      "soldier": "platformer-characters/PNG/Soldier/Poses/soldier_",
+      "player": "platformer-characters/PNG/Player/Poses/player_",
+      "zombie": "platformer-characters/PNG/Zombie/Poses/zombie_"
+    },
+    "_poses": {
+      "idle": "idle.png",
+      "walk_a": "walk1.png",
+      "walk_b": "walk2.png",
+      "jump": "jump.png",
+      "fall": "fall.png",
+      "jetpack_a": "climb1.png",
+      "jetpack_b": "climb2.png",
+      "hurt": "hurt.png",
+      "dead": "duck.png",
+      "stand": "stand.png"
+    }
+  },
+  "fx": {
+    "_note": "Transparent variants, not the black-background ones: the lightmap multiplies and additive blending both want real alpha.",
+    "explosion_a": "particle-pack/PNG (Transparent)/flame_01.png",
+    "explosion_b": "particle-pack/PNG (Transparent)/flame_04.png",
+    "explosion_c": "particle-pack/PNG (Transparent)/flame_06.png",
+    "fire_a": "particle-pack/PNG (Transparent)/fire_01.png",
+    "fire_b": "particle-pack/PNG (Transparent)/fire_02.png",
+    "smoke_a": "particle-pack/PNG (Transparent)/smoke_01.png",
+    "smoke_b": "particle-pack/PNG (Transparent)/smoke_05.png",
+    "smoke_c": "particle-pack/PNG (Transparent)/smoke_09.png",
+    "spark_a": "particle-pack/PNG (Transparent)/spark_01.png",
+    "spark_b": "particle-pack/PNG (Transparent)/spark_04.png",
+    "muzzle_a": "particle-pack/PNG (Transparent)/muzzle_01.png",
+    "muzzle_b": "particle-pack/PNG (Transparent)/muzzle_04.png",
+    "star_a": "particle-pack/PNG (Transparent)/star_01.png",
+    "circle_soft": "particle-pack/PNG (Transparent)/circle_05.png",
+    "dirt_a": "particle-pack/PNG (Transparent)/dirt_01.png",
+    "dirt_b": "particle-pack/PNG (Transparent)/dirt_03.png",
+    "trace_a": "particle-pack/PNG (Transparent)/trace_01.png",
+    "light_a": "particle-pack/PNG (Transparent)/light_01.png",
+    "flare_a": "particle-pack/PNG (Transparent)/flare_01.png",
+    "scorch_a": "particle-pack/PNG (Transparent)/scorch_01.png"
+  }
+}

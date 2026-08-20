@@ -12,6 +12,7 @@
  */
 
 import Phaser from 'phaser'
+import { loadAssetManifest, runLoader } from '../render/assets'
 import { C, Core, dequantizeAngle } from '../core'
 import { asRecord, Connection, type Welcome } from '../net/connection'
 import { WorldMirror, hex } from '../net/worldMirror'
@@ -78,6 +79,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   async create(): Promise<void> {
+    await loadAssetManifest(this)
+    await runLoader(this)
+
     this.core = this.registry.get('core') as Core
     const params = new URLSearchParams(location.search)
 
@@ -255,6 +259,7 @@ export class GameScene extends Phaser.Scene {
   // ------------------------------------------------------------------- frame
 
   override update(_time: number, delta: number): void {
+    if (!this.ready) return
     const dt = delta / 1000
     if (!this.ready || !this.world || !this.predictor) return
 
@@ -399,12 +404,21 @@ export class GameScene extends Phaser.Scene {
       })),
     )
     const banner = phaseBanner(this.phase, this.timeLeft)
+    // Readability matters here: the previous format rendered as
+    // "3:56 1= p0 0 1= p1 0 1= cy 0", where the trailing "=" reads as an equals
+    // sign and nothing separates a name from a score. Ties now lead with "=",
+    // as in chess, the score follows a colon, and entries are visibly separated.
     const board = rows
-      .map((r) => `${r.rank}${r.tied ? '=' : ''} ${r.name} ${r.score}`)
-      .join('   ')
+      .map((r) => {
+        const rank = `${r.tied ? '=' : ''}${r.rank}`
+        const name = r.isLocal ? `[${r.name}]` : r.name
+        return `${rank} ${name}:${r.score}`
+      })
+      .join('   ·   ')
     const status = this.hud.dataset['status'] ?? ''
-    this.hud.textContent =
-      `${status} ${banner ?? formatClock(this.timeLeft)}   ${board}`.trim()
+    this.hud.textContent = [status, banner ?? formatClock(this.timeLeft), board]
+      .filter((p) => p !== '')
+      .join('   │   ')
   }
 
   private exposeDebugHandle(): void {

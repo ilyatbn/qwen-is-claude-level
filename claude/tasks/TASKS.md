@@ -168,11 +168,11 @@ one round, terrain destruction visible in both, scores tracking.
 
 ## M7 — Sprites, skins and assets (5)
 
-- [ ] [T7.01](M7/T7.01-fetch-assets.md) — `fetch-assets.sh`
-- [ ] [T7.02](M7/T7.02-atlas-build.md) — Atlas builder and `manifest.json`
-- [ ] [T7.03](M7/T7.03-skin-registry.md) — `skins.json`, resolution, fallbacks
-- [ ] [T7.04](M7/T7.04-weapon-sprites.md) — Weapon rendering, pivot and muzzle
-- [ ] [T7.05](M7/T7.05-terrain-themes.md) — Three themes and the procedural fallback
+- [x] [T7.01](M7/T7.01-fetch-assets.md) — `fetch-assets.sh`
+- [x] [T7.02](M7/T7.02-atlas-build.md) — Atlas builder and `manifest.json`
+- [x] [T7.03](M7/T7.03-skin-registry.md) — `skins.json`, resolution, fallbacks
+- [x] [T7.04](M7/T7.04-weapon-sprites.md) — Weapon rendering, pivot and muzzle
+- [x] [T7.05](M7/T7.05-terrain-themes.md) — Three themes and the procedural fallback
 
 **Checkpoint:** Three rounds in a row look visibly different; switching skin id
 changes the character.

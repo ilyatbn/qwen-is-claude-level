@@ -12,6 +12,7 @@ import type { Core } from '../core'
 import { TerrainRenderer } from './terrain'
 import { CameraRig } from './cameraRig'
 import { Backdrop, DEFAULT_THEME, DEPTH } from './backdrop'
+import { resolveTheme } from '../render/themes-math'
 import { makeBackTexture, makeEdgeTexture, makeFillTexture } from './procTextures'
 
 export interface WorldViewTimings {
@@ -38,6 +39,8 @@ export class WorldView {
     this.backdrop = new Backdrop(scene, DEFAULT_THEME, mapW, mapH)
     this.container = scene.add.container(0, 0).setDepth(DEPTH.terrain)
 
+    // Seeded from the map, so a seed always looks the same (`docs/12` §4).
+    const theme = resolveTheme(core.meta.theme)
     this.terrain = new TerrainRenderer(
       scene.textures,
       {
@@ -48,10 +51,10 @@ export class WorldView {
         },
       },
       core,
-      makeFillTexture(),
-      makeEdgeTexture(),
+      makeFillTexture(256, theme),
+      makeEdgeTexture(256, theme),
       undefined,
-      makeBackTexture(),
+      makeBackTexture(256, theme),
     )
 
     const t0 = performance.now()

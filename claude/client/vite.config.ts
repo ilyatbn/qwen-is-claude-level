@@ -1,6 +1,11 @@
 import { defineConfig } from 'vite'
 
 export default defineConfig({
+  // Art lives at the project root, not under client/, because `assets/` is shared
+  // with the build scripts and the docs describe it there (`docs/51` §1). Vite
+  // serves it as the public dir, so manifest paths like `atlas/chars.png` resolve
+  // as `/atlas/chars.png` in dev and are copied verbatim into dist on build.
+  publicDir: '../assets',
   server: {
     port: 5173,
     proxy: {

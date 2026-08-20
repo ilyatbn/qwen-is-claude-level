@@ -1606,3 +1606,48 @@ Notes: The suite covers only what nothing else does — capacity refusal OVER TH
        then poked the wrong field. Offset is now derived. The real path was
        always fine (checkpoint: 0 resyncs); only the fixture was stale.
 Left for later: M7 (T7.01-T7.05) is next. M6 is complete.
+
+## T7.01–T7.05 — assets, atlases, skins, weapons, themes — DONE
+Files: scripts/{fetch-assets.sh,build-atlas.mjs,verify-assets.mjs,shot.mjs},
+       assets/{atlas-map.json,skins.json,atlas/*,manifest.json},
+       client/src/render/{assets,skins-math,themes-math,weaponTextures,playerView,
+       procTextures,worldView}.ts, client/src/scenes/{Sandbox,Game}Scene.ts,
+       client/vite.config.ts, crates/game-wasm/src/lib.rs
+Verified: `./scripts/fetch-assets.sh && ls assets/vendor/kenney/*/LICENSE.txt | wc -l`
+       — 4; `./scripts/check.sh` — EXIT=0, all checks passed (249 client tests).
+Notes: THE PLAYER IS A CHARACTER NOW, not a magenta box. 5 Kenney variants x 10
+       poses = 50 frames, which is exactly the prefix scheme docs/50 §2 predicted:
+       five skins, five registry entries, no new art.
+       THREE BUGS IN MY OWN FETCH SCRIPT, all found by running it:
+       1. `head -1` in a pipeline under `set -o pipefail` — head closes the pipe,
+          grep dies of SIGPIPE, and a SUCCESSFUL extraction reports as failed.
+          It printed "no .zip link found", which is indistinguishable from the
+          site having restructured. Take the first line in bash, not with head.
+       2. fail_with_manual_instructions returned 1 but callers ignored it, so
+          every failure path fell through and "ok ()" printed for a pack that
+          did not exist.
+       3. `unzip` is NOT INSTALLED on this box, and my error message blamed a
+          truncated download — sending the reader to the network instead of
+          their PATH. Falls back to python's zipfile now and says which is
+          missing.
+       vendor/ is gitignored (A29, 24MB fetched vs a 12MB budget); atlases are
+       committed. fx particles ship at 512x512 and made a 2048x4096 atlas, over
+       docs/51 §7's cap — downscaled to 128 with a PREMULTIPLIED box filter,
+       because averaging straight RGBA drags every soft edge toward black.
+       DEVIATION: docs/51 §4 names free-tex-packer-core; used pngjs + a 40-line
+       shelf packer instead. Smaller dep, and frame names come from atlas-map.json
+       rather than being derived from a path.
+       DEVIATION: weapons are drawn procedurally (weaponTextures.ts) — Kenney has
+       no side-view bazooka/grenade/SMG at a usable size. skins.json records this
+       as `atlas: null` rather than deleting the entries, so muzzle/pivot survive
+       and verify-assets skips them deliberately instead of by omission.
+       `playwright-core` was installed but NEVER IN package.json, so my `npm i -D`
+       pruned it and shot.mjs died. Now a recorded devDependency.
+       ASYNC create() IS NOT AWAITED BY PHASER. Loading art made create() async and
+       update() started running against an undefined core on frame 1. Both scenes
+       now guard on a `ready` flag set at the end of create().
+       WALK_SPEED now crosses the WASM boundary rather than being duplicated
+       client-side (the M0 review's finding 4, applied rather than repeated).
+Left for later: M8. Noticed, not fixed: at theme 2 (frost) the sky shows large
+       angular lighter-grey regions that may be backdrop misclassification rather
+       than terrain — see shots/m7-theme-4242.png, top-right and right edge.

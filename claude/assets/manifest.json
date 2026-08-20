@@ -1,0 +1,17 @@
+{
+  "atlases": [
+    {
+      "key": "chars",
+      "png": "atlas/chars.png",
+      "json": "atlas/chars.json"
+    },
+    {
+      "key": "fx",
+      "png": "atlas/fx.png",
+      "json": "atlas/fx.json"
+    }
+  ],
+  "images": [],
+  "themes": [],
+  "audio": []
+}

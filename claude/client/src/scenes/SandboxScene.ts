@@ -13,8 +13,10 @@ import { C, Core, MapScale, type WeatherState } from '../core'
 import { TerrainRenderer } from '../render/terrain'
 import { CameraRig } from '../render/cameraRig'
 import { Backdrop, DEFAULT_THEME, DEPTH } from '../render/backdrop'
+import { resolveTheme } from '../render/themes-math'
 import { makeBackTexture, makeEdgeTexture, makeFillTexture } from '../render/procTextures'
 import { PlayerView } from '../render/playerView'
+import { loadAssetManifest, runLoader } from '../render/assets'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
@@ -91,7 +93,21 @@ export class SandboxScene extends Phaser.Scene {
     super('Sandbox')
   }
 
-  create(): void {
+  /**
+   * False until `create()` has finished.
+   *
+   * `create()` is async because art is fetched, and Phaser does **not** await
+   * it — `update()` starts running immediately and would touch `this.core`
+   * before it exists. The symptom is a page error on the very first frame.
+   */
+  private ready = false
+
+  async create(): Promise<void> {
+    // Art first. Every draw path falls back if this finds nothing, so a failure
+    // here is a console line, not a broken scene (`docs/50` §8).
+    await loadAssetManifest(this)
+    await runLoader(this)
+
     const params = new URLSearchParams(location.search)
     this.core = this.registry.get('core') as Core
 
@@ -154,6 +170,9 @@ export class SandboxScene extends Phaser.Scene {
     })
 
     this.exposeDebugHandle()
+  
+    // Everything the update loop touches now exists.
+    this.ready = true
   }
 
   // ---------------------------------------------------------------- generation
@@ -174,6 +193,7 @@ export class SandboxScene extends Phaser.Scene {
     this.backdrop = new Backdrop(this, DEFAULT_THEME, mapW, mapH)
     this.container = this.add.container(0, 0).setDepth(DEPTH.terrain)
 
+    const theme = resolveTheme(this.core.meta.theme)
     this.terrain = new TerrainRenderer(
       this.textures,
       {
@@ -184,10 +204,10 @@ export class SandboxScene extends Phaser.Scene {
         },
       },
       this.core,
-      makeFillTexture(),
-      makeEdgeTexture(),
+      makeFillTexture(256, theme),
+      makeEdgeTexture(256, theme),
       undefined,
-      makeBackTexture(),
+      makeBackTexture(256, theme),
     )
 
     const t1 = performance.now()
@@ -375,6 +395,9 @@ export class SandboxScene extends Phaser.Scene {
     const inv = this.core.inventory(0)
     if (!inv) return
     const sel = inv.slots[inv.selected]
+    // The held sprite follows the selected slot, so switching weapons is
+    // visible on the character rather than only in the HUD strip.
+    this.player?.setWeapon(sel?.key ?? '')
     const strip = `HP ${inv.health.toFixed(0)}   ${sel ? `${sel.key} x${sel.count}` : 'empty'}   [LMB carve] [F fire] [RMB inventory]`
     if (!this.invOpen) {
       this.hud.textContent = strip
@@ -573,6 +596,7 @@ export class SandboxScene extends Phaser.Scene {
   // ------------------------------------------------------------------- update
 
   override update(_time: number, delta: number): void {
+    if (!this.ready) return
     const dt = delta / 1000
     const k = this.input.keyboard
     if (k) {

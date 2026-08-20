@@ -82,6 +82,9 @@ let failed = false
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } })
   const logs = []
+  page.on('response', (r) => {
+    if (r.status() === 404) console.log('404:', r.url())
+  })
   page.on('console', (m) => logs.push(`${m.type()}: ${m.text()}`))
   page.on('pageerror', (e) => {
     logs.push(`PAGEERROR: ${e.message}`)

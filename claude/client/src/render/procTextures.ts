@@ -41,6 +41,8 @@ function wrappedNoise(x: number, y: number, cells: number, size: number, seed: n
   return top + (bot - top) * s(ty)
 }
 
+import { resolveTheme } from './themes-math'
+
 export interface Rgb {
   r: number
   g: number
@@ -80,15 +82,20 @@ export function makeNoiseTile(size: number, base: Rgb, spread: number, seed: num
   return canvas
 }
 
-export function makeFillTexture(size = 256): HTMLCanvasElement {
-  return makeNoiseTile(size, { r: 92, g: 78, b: 62 }, 46, 7)
+/**
+ * Theme-aware tiles. The palette comes from `themes-math`, the noise seeds are
+ * fixed per layer so a theme change recolours the map without reshaping it —
+ * which makes two themes comparable in a screenshot.
+ */
+export function makeFillTexture(size = 256, theme = resolveTheme(0)): HTMLCanvasElement {
+  return makeNoiseTile(size, theme.fill, theme.spread.fill, 7)
 }
 
-export function makeEdgeTexture(size = 256): HTMLCanvasElement {
-  return makeNoiseTile(size, { r: 104, g: 152, b: 68 }, 40, 23)
+export function makeEdgeTexture(size = 256, theme = resolveTheme(0)): HTMLCanvasElement {
+  return makeNoiseTile(size, theme.edge, theme.spread.edge, 23)
 }
 
 /** Dark rock seen through craters, behind the terrain body. */
-export function makeBackTexture(size = 256): HTMLCanvasElement {
-  return makeNoiseTile(size, { r: 38, g: 32, b: 27 }, 20, 41)
+export function makeBackTexture(size = 256, theme = resolveTheme(0)): HTMLCanvasElement {
+  return makeNoiseTile(size, theme.back, theme.spread.back, 41)
 }

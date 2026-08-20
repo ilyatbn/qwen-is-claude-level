@@ -599,6 +599,9 @@ pub fn constants_json() -> String {
         SKY_MARGIN => c::SKY_MARGIN,
         PLAYER_W => c::PLAYER_W,
         PLAYER_H => c::PLAYER_H,
+        // The walk animation's reference speed, so a slowed player trudges.
+        // Exported rather than duplicated client-side (M0 review, finding 4).
+        WALK_SPEED => c::WALK_SPEED,
         EDGE_BAND_PX => c::EDGE_BAND_PX,
         CHUNK_REBAKE_BUDGET => c::CHUNK_REBAKE_BUDGET,
         PARALLAX_FACTOR => c::PARALLAX_FACTOR,

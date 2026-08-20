@@ -85,6 +85,11 @@ if (existsSync(skinsPath) && manifest) {
   for (const w of skins?.weapons ?? []) {
     if (seenWeaponIds.has(w.id)) problems.push(`weapon skin id ${w.id} is duplicated`)
     seenWeaponIds.add(w.id)
+    // `atlas: null` is a deliberate declaration that the weapon is drawn at
+    // runtime (client/src/render/weaponTextures.ts), not packed. Verifying a
+    // frame name against an atlas that is not supposed to exist would fail the
+    // gate for a decision the registry is documenting rather than a mistake.
+    if (w.atlas === null) continue
     const frames = atlasFrames.get(w.atlas)
     if (!frames) { problems.push(`weapon skin ${w.id}: unknown atlas "${w.atlas}"`); continue }
     if (!frames.has(w.frame)) problems.push(`weapon skin ${w.id}: frame "${w.frame}" not in atlas ${w.atlas}`)
