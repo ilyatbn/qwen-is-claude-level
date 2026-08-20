@@ -1328,36 +1328,96 @@ impl World {
             .map_or(1.0, |(_, f)| f.fov_multiplier(self.round_time))
     }
 
-    /// blake3 over the mask and every mutable piece of simulation state.
+    /// blake3 over every piece of mutable simulation state.
     ///
     /// The footer of a replay file (T8.01) and the fastest way to locate a
     /// determinism regression: the first tick where two runs disagree is the tick
     /// the bug is on.
+    ///
+    /// **Coverage is the whole point.** An earlier version hashed the mask, the
+    /// tick, and player positions — and a probe that leaked `SystemTime` into
+    /// `wind` every tick replayed *green*, because `wind` was not hashed and no
+    /// projectile happened to be in flight at the final tick. A determinism test
+    /// with blind spots certifies the parts nobody was worried about.
+    ///
+    /// So: every field of `World` that a tick can change is folded in here, and
+    /// the subsystems with private state hash themselves (`hash_into`) so the
+    /// obligation sits next to the fields rather than in this function.
     pub fn state_hash(&self) -> [u8; 32] {
         let mut h = blake3::Hasher::new();
         h.update(&self.map.mask.hash());
         h.update(&self.tick.to_le_bytes());
         h.update(&self.round_time.to_le_bytes());
+        h.update(&self.wind.to_le_bytes());
+        h.update(&self.carve_seq.to_le_bytes());
+        h.update(&[self.phase as u8, self.last_day_phase as u8]);
+        h.update(&self.phase_started_at.to_le_bytes());
+        h.update(&self.round_seconds.to_le_bytes());
+
+        h.update(&(self.players.len() as u32).to_le_bytes());
         for p in &self.players {
             h.update(&[p.id]);
             h.update(&p.body.pos.x.to_le_bytes());
             h.update(&p.body.pos.y.to_le_bytes());
             h.update(&p.body.vel.x.to_le_bytes());
             h.update(&p.body.vel.y.to_le_bytes());
+            h.update(&[p.body.grounded as u8]);
+            h.update(&p.aim.to_le_bytes());
             h.update(&p.health.to_le_bytes());
             h.update(&p.score.to_le_bytes());
-            h.update(&[p.alive as u8]);
+            h.update(&p.deaths.to_le_bytes());
+            h.update(&[
+                p.alive as u8,
+                p.flashlight_on as u8,
+                p.jetpack.active as u8,
+                p.jetpack.locked_out as u8,
+            ]);
+            h.update(&p.jetpack.fuel.to_le_bytes());
+            h.update(&p.jetpack.idle_ticks.to_le_bytes());
+            h.update(&p.jetpack.ticks_since_jump.to_le_bytes());
+            h.update(&p.jump.buffered_ticks.to_le_bytes());
+            h.update(&p.shield_until.unwrap_or(f32::NAN).to_le_bytes());
+            h.update(&p.respawn_at.to_le_bytes());
+            h.update(&p.iframes_until.to_le_bytes());
+            h.update(&p.fire_ready_at.to_le_bytes());
+            p.inventory.hash_into(&mut h);
         }
+
+        h.update(&(self.items.len() as u32).to_le_bytes());
         for it in self.items.iter() {
             h.update(&it.id.to_le_bytes());
+            h.update(&it.item.to_le_bytes());
+            h.update(&[it.count, it.grounded as u8]);
             h.update(&it.pos.x.to_le_bytes());
             h.update(&it.pos.y.to_le_bytes());
+            h.update(&it.vel.x.to_le_bytes());
+            h.update(&it.vel.y.to_le_bytes());
         }
+
+        h.update(&(self.projectiles.len() as u32).to_le_bytes());
         for p in self.projectiles.iter() {
             h.update(&p.id.to_le_bytes());
+            h.update(&p.weapon.0.to_le_bytes());
+            h.update(&[p.owner, p.resting as u8]);
             h.update(&p.pos.x.to_le_bytes());
             h.update(&p.pos.y.to_le_bytes());
+            h.update(&p.vel.x.to_le_bytes());
+            h.update(&p.vel.y.to_le_bytes());
+            h.update(&p.age_ticks.to_le_bytes());
+            h.update(&p.fuse_at.unwrap_or(f32::NAN).to_le_bytes());
         }
+
+        for slot in &self.buried_items {
+            h.update(&slot.to_le_bytes());
+        }
+
+        self.effects.hash_into(&mut h);
+        self.spawn_schedule.hash_into(&mut h);
+
+        // The world's own stream, by position — see `EffectScheduler::hash_into`.
+        let mut probe = self.rng.clone();
+        h.update(&rand::RngCore::next_u64(&mut probe).to_le_bytes());
+
         *h.finalize().as_bytes()
     }
 }
@@ -1367,5 +1427,124 @@ impl World {
 pub fn give(world: &mut World, id: PlayerId, item: ItemId, count: u8) {
     if let Some(p) = world.player_mut(id) {
         p.inventory.add(item, count);
+    }
+}
+
+#[cfg(test)]
+mod state_hash_tests {
+    use super::*;
+    use crate::constants::MapScale;
+
+    fn world() -> World {
+        let mut w = World::with_buried_secret(4242, MapScale::Small, 7);
+        w.add_player(0, 0, "ana".into());
+        w.add_player(1, 0, "bo".into());
+        w
+    }
+
+    /// Every field a tick can change must move the hash.
+    ///
+    /// This exists because it did not. An earlier `state_hash` covered the mask,
+    /// the tick and player positions, and a probe that leaked `SystemTime` into
+    /// `wind` on every tick replayed **green** — the determinism test that guards
+    /// this entire project had blind spots over most of the simulation.
+    ///
+    /// Each case below is a field that was unhashed then. A new field added to
+    /// `World` without a line in `state_hash` will not be caught automatically —
+    /// Rust has no reflection here — so add a case when you add a field.
+    #[test]
+    fn the_hash_is_sensitive_to_every_field_a_tick_can_change() {
+        let base = world().state_hash();
+
+        let mut changed: Vec<(&str, [u8; 32])> = Vec::new();
+
+        let mut w = world();
+        w.wind += 0.0001;
+        changed.push(("wind", w.state_hash()));
+
+        let mut w = world();
+        w.carve_seq += 1;
+        changed.push(("carve_seq", w.state_hash()));
+
+        let mut w = world();
+        w.phase = RoundPhase::Ended;
+        changed.push(("phase", w.state_hash()));
+
+        let mut w = world();
+        w.round_seconds += 1.0;
+        changed.push(("round_seconds", w.state_hash()));
+
+        let mut w = world();
+        w.players[0].aim = w.players[0].aim.wrapping_add(1);
+        changed.push(("aim", w.state_hash()));
+
+        let mut w = world();
+        w.players[0].jetpack.fuel -= 0.5;
+        changed.push(("jetpack fuel", w.state_hash()));
+
+        let mut w = world();
+        w.players[0].jetpack.locked_out = !w.players[0].jetpack.locked_out;
+        changed.push(("jetpack lockout", w.state_hash()));
+
+        let mut w = world();
+        w.players[0].shield_until = Some(12.0);
+        changed.push(("shield", w.state_hash()));
+
+        let mut w = world();
+        w.players[0].iframes_until = 9.0;
+        changed.push(("iframes", w.state_hash()));
+
+        let mut w = world();
+        w.players[0].fire_ready_at = 9.0;
+        changed.push(("cooldown", w.state_hash()));
+
+        let mut w = world();
+        w.players[0].flashlight_on = true;
+        changed.push(("flashlight", w.state_hash()));
+
+        let mut w = world();
+        w.players[0].deaths += 1;
+        changed.push(("deaths", w.state_hash()));
+
+        let mut w = world();
+        crate::world::give(&mut w, 0, crate::items::registry::MEDKIT, 1);
+        changed.push(("inventory", w.state_hash()));
+
+        let mut w = world();
+        w.buried_items[0] = crate::items::registry::MEDKIT;
+        changed.push(("buried items", w.state_hash()));
+
+        // Draining the world RNG changes only its stream position — nothing
+        // visible — which is exactly the divergence a position probe exists to
+        // catch.
+        let mut w = world();
+        let _ = rand::RngCore::next_u64(&mut w.rng);
+        changed.push(("world rng position", w.state_hash()));
+
+        for (what, h) in changed {
+            assert_ne!(h, base, "changing `{what}` did not change the state hash");
+        }
+    }
+
+    /// The control: an untouched world must hash the same twice, or the test
+    /// above would pass for the wrong reason.
+    #[test]
+    fn the_hash_is_stable_for_an_untouched_world() {
+        assert_eq!(world().state_hash(), world().state_hash());
+    }
+
+    /// The scheduler's stream position is state even when its visible fields are
+    /// identical: two schedulers that have drawn a different number of times will
+    /// roll different effects next.
+    #[test]
+    fn the_hash_covers_scheduler_stream_position() {
+        let mut a = world();
+        let b = world();
+        a.effects.drain_one_for_test();
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "advancing the weather stream left the hash unchanged"
+        );
     }
 }

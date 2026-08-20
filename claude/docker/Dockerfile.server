@@ -15,10 +15,14 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/game-core/Cargo.toml   crates/game-core/Cargo.toml
 COPY crates/game-server/Cargo.toml crates/game-server/Cargo.toml
 COPY crates/game-wasm/Cargo.toml   crates/game-wasm/Cargo.toml
-RUN mkdir -p crates/game-core/src crates/game-server/src crates/game-wasm/src \
+# The stub tree must cover EVERY [[bin]] the manifest declares, or the
+# dependency layer fails to build: game-server has two (the server and the
+# replay runner).
+RUN mkdir -p crates/game-core/src crates/game-server/src/bin crates/game-wasm/src \
  && echo "" > crates/game-core/src/lib.rs \
  && echo "" > crates/game-wasm/src/lib.rs \
  && echo "fn main() {}" > crates/game-server/src/main.rs \
+ && echo "fn main() {}" > crates/game-server/src/bin/replay.rs \
  && cargo build --release -p game-server \
  && rm -rf crates/*/src
 

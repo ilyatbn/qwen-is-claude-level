@@ -33,7 +33,8 @@ async fn main() -> ExitCode {
     let stack = app::build_stack(state);
     let router = stack.router;
     // Held so the room is not shut down by the sender being dropped.
-    let _shutdown = stack.shutdown;
+    let shutdown = stack.shutdown;
+    let room = stack.room.clone();
 
     let listener = match tokio::net::TcpListener::bind(bind).await {
         Ok(l) => l,
@@ -56,6 +57,20 @@ async fn main() -> ExitCode {
         .with_graceful_shutdown(shutdown_signal())
         .await;
 
+    // Tell the room, then **wait for it**. Returning here without waiting is a
+    // race the room loses: the process exits before the task is scheduled again,
+    // and a recorded round loses the footer that makes it verifiable — the round
+    // interrupted by `docker compose down` being exactly the one worth keeping
+    // (`docs/41` §7).
+    let _ = shutdown.send(());
+    if !room.wait_for_shutdown(SHUTDOWN_GRACE).await {
+        tracing::warn!(
+            target: "game::net",
+            "room did not stop within {}s; a replay may be missing its footer",
+            SHUTDOWN_GRACE.as_secs()
+        );
+    }
+
     match served {
         Ok(()) => {
             tracing::info!(target: "game::net", "shutdown complete");
@@ -67,6 +82,11 @@ async fn main() -> ExitCode {
         }
     }
 }
+
+/// How long the room gets to finish after the listener stops. `docs/41` §7 gives
+/// sockets 2 s to drain; compose allows 10 s before SIGKILL (`docs/62` §4), so
+/// this sits comfortably inside both.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// SIGTERM (what `docker compose down` sends) and Ctrl-C both mean the same thing:
 /// stop accepting, let the sockets drain (`docs/41-server-loop-rooms.md` §7).

@@ -33,6 +33,13 @@ pub const REPLAY_MAGIC: u32 = 0x5250_4C31;
 pub const FOOTER_MAGIC: u32 = 0x5250_4C45;
 pub const REPLAY_VERSION: u16 = 1;
 
+/// Ticks between recorded state hashes — 10 seconds at 60 Hz.
+///
+/// The runner bisects between the last matching checkpoint and the first failing
+/// one, so this bounds how much of the round has to be re-simulated to localise
+/// a divergence, not how precisely it can be reported.
+pub const CHECKPOINT_STRIDE: u32 = 600;
+
 // ---------------------------------------------------------------------------
 // The recordable command
 // ---------------------------------------------------------------------------
@@ -59,6 +66,16 @@ pub enum ReplayCommand {
     ToggleFlashlight(PlayerId),
     VoteRestart(PlayerId, bool),
     Leave(PlayerId),
+    /// A periodic state hash written by the recorder.
+    ///
+    /// Not a command — it changes nothing when replayed. It exists because the
+    /// footer alone can only say *that* a replay diverged, never *where*, and
+    /// "where" is the number that names the subsystem. One 32-byte hash every
+    /// `CHECKPOINT_STRIDE` ticks is ~800 bytes for a full round.
+    Checkpoint {
+        tick: u32,
+        hash: [u8; 32],
+    },
     /// A player dropped by `sweep_unready`.
     ///
     /// This one is not a client command at all, and it is the reason the enum is
@@ -81,6 +98,7 @@ impl ReplayCommand {
             ReplayCommand::VoteRestart(..) => 8,
             ReplayCommand::Leave(_) => 9,
             ReplayCommand::DropUnready(_) => 10,
+            ReplayCommand::Checkpoint { .. } => 11,
         }
     }
 }
@@ -242,6 +260,10 @@ impl ReplayWriter {
         let path = dir.join(format!("{stamp}-{:016x}.replay", header.seed));
         let mut file = BufWriter::new(File::create(&path)?);
         write_header(&mut file, header)?;
+        // Flushed immediately, so a round killed with SIGKILL still leaves a file
+        // that names its seed and scale. A zero-byte replay tells you nothing at
+        // all; a header tells you which map to regenerate.
+        file.flush()?;
         Ok(ReplayWriter {
             file,
             path,
@@ -332,6 +354,10 @@ fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayErro
             w.write_all(&[*id, *slot])?
         }
         ReplayCommand::VoteRestart(id, v) => w.write_all(&[*id, u8::from(*v)])?,
+        ReplayCommand::Checkpoint { tick, hash } => {
+            put_u32(w, *tick)?;
+            w.write_all(hash)?;
+        }
     }
     Ok(())
 }
@@ -524,6 +550,12 @@ fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
         8 => ReplayCommand::VoteRestart(c.u8()?, c.u8()? != 0),
         9 => ReplayCommand::Leave(c.u8()?),
         10 => ReplayCommand::DropUnready(c.u8()?),
+        11 => {
+            let tick = c.u32()?;
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(c.take(32)?);
+            ReplayCommand::Checkpoint { tick, hash }
+        }
         other => return Err(ReplayError::BadTag(other)),
     })
 }
@@ -578,6 +610,10 @@ mod tests {
             ReplayCommand::VoteRestart(5, false),
             ReplayCommand::Leave(5),
             ReplayCommand::DropUnready(4),
+            ReplayCommand::Checkpoint {
+                tick: 600,
+                hash: [7u8; 32],
+            },
         ]
     }
 
@@ -774,7 +810,7 @@ mod tests {
         };
         assert_eq!(
             one_of_each.len(),
-            10,
+            11,
             "every_command() must cover all 10 variants, or this proves less than it claims"
         );
         let mut seen = std::collections::BTreeSet::new();

@@ -106,6 +106,17 @@ impl Inventory {
         true
     }
 
+    /// Fold the inventory into a world hash. Private slots, so it lives here.
+    pub fn hash_into(&self, h: &mut blake3::Hasher) {
+        for s in &self.slots {
+            match s {
+                Some(st) => h.update(&[1, st.count]).update(&st.item.to_le_bytes()),
+                None => h.update(&[0u8]),
+            };
+        }
+        h.update(&[self.selected]);
+    }
+
     pub fn slot(&self, slot: u8) -> Option<Stack> {
         self.slots.get(slot as usize).copied().flatten()
     }

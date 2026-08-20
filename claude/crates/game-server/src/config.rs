@@ -26,6 +26,10 @@ pub struct Config {
     pub min_players_to_start: usize,
     pub fixed_seed: Option<u64>,
     pub record_replay: bool,
+    /// Where `RECORD_REPLAY=1` writes. Configurable so a test can point at a
+    /// scratch directory, and so an operator can put replays on a volume that
+    /// is not the working directory (`docs/62` §4 bind-mounts one).
+    pub replay_dir: String,
     pub debug_dump: bool,
     /// v2 (`docs/70-amendments-v2.md` §A5)
     pub bot_count: usize,
@@ -69,6 +73,7 @@ impl Default for Config {
             min_players_to_start: MIN_PLAYERS_TO_START,
             fixed_seed: None,
             record_replay: false,
+            replay_dir: "replays".to_string(),
             debug_dump: false,
             bot_count: BOT_COUNT_DEFAULT,
             dev_loadout: false,
@@ -149,6 +154,7 @@ impl Config {
         };
 
         let record_replay = parse_bool(&get, "RECORD_REPLAY", d.record_replay)?;
+        let replay_dir = get("REPLAY_DIR").unwrap_or(d.replay_dir);
         let debug_dump = parse_bool(&get, "DEBUG_DUMP", d.debug_dump)?;
 
         let bot_count = parse_usize(&get, "BOT_COUNT", d.bot_count, 0, MAX_PLAYERS)?;
@@ -180,6 +186,7 @@ impl Config {
             min_players_to_start,
             fixed_seed,
             record_replay,
+            replay_dir,
             debug_dump,
             bot_count,
             bot_skill,

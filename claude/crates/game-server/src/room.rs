@@ -77,6 +77,14 @@ impl std::fmt::Debug for Command {
 #[derive(Clone)]
 pub struct RoomHandle {
     tx: mpsc::Sender<Command>,
+    /// The room task, so shutdown can **wait** for it.
+    ///
+    /// Without this, signalling shutdown and returning from `main` races the
+    /// room: the process exits before the task is scheduled again, and the
+    /// replay footer — the thing that makes a recorded round verifiable — is
+    /// never written. `docs/41` §7 asks for a clean path precisely so that
+    /// `docker compose down` leaves an inspectable file behind.
+    task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl RoomHandle {
@@ -87,6 +95,18 @@ impl RoomHandle {
         if let Err(e) = self.tx.try_send(c) {
             tracing::debug!(target: "game::net", "room command dropped: {e}");
         }
+    }
+
+    /// Wait for the room task to finish, up to `grace`.
+    ///
+    /// Returns whether it stopped in time. A room that does not stop is a bug
+    /// worth seeing, so the caller logs rather than ignoring the result.
+    pub async fn wait_for_shutdown(&self, grace: Duration) -> bool {
+        let mut guard = self.task.lock().await;
+        let Some(handle) = guard.take() else {
+            return true;
+        };
+        tokio::time::timeout(grace, handle).await.is_ok()
     }
 
     /// Await a reply. Used by `join`, which needs the assigned id.
@@ -188,11 +208,6 @@ impl Seats {
         }
     }
 }
-
-/// Where `RECORD_REPLAY=1` writes. Bind-mounted in compose (`docs/62` §4), so a
-/// user asked for "the replay file" can actually find one after the container is
-/// gone.
-pub const REPLAY_DIR: &str = "replays";
 
 /// Seconds since the epoch, zero-padded so filenames sort chronologically.
 ///
@@ -536,6 +551,23 @@ impl Room {
         let min = self.config.min_players_to_start;
         let (mut events, outcome) = self.round.tick(&mut self.world, connected, min);
 
+        // A state hash every CHECKPOINT_STRIDE ticks, so a failed verification can
+        // report *where* it diverged rather than only that it did. Written after
+        // the step, so the hash describes the state at the tick it names.
+        if self.replay.is_some()
+            && self.world.tick > 0
+            && self
+                .world
+                .tick
+                .is_multiple_of(crate::replay::CHECKPOINT_STRIDE)
+        {
+            let cp = crate::replay::ReplayCommand::Checkpoint {
+                tick: self.world.tick,
+                hash: self.world.state_hash(),
+            };
+            self.note(cp);
+        }
+
         // Flush on a phase transition, not per command. A round that dies during
         // `Playing` then still has its warmup on disk, and the cost is four
         // flushes a round rather than thousands.
@@ -679,7 +711,8 @@ impl Room {
         self.last_checksum_at = 0.0;
         tracing::info!(target: "game::round", seed, "round restarted");
         if recording {
-            self.start_recording(std::path::Path::new(REPLAY_DIR), &stamp_for(seed));
+            let dir = std::path::PathBuf::from(self.config.replay_dir.clone());
+            self.start_recording(&dir, &stamp_for(seed));
         }
         self.world.drain_events()
     }
@@ -754,8 +787,11 @@ pub fn spawn_room_with(
     shutdown: oneshot::Receiver<()>,
 ) -> RoomHandle {
     let (tx, rx) = mpsc::channel(1024);
-    tokio::spawn(run(io, config, sessions, rx, shutdown));
-    RoomHandle { tx }
+    let task = tokio::spawn(run(io, config, sessions, rx, shutdown));
+    RoomHandle {
+        tx,
+        task: Arc::new(tokio::sync::Mutex::new(Some(task))),
+    }
 }
 
 async fn run(
@@ -766,7 +802,8 @@ async fn run(
     mut shutdown: oneshot::Receiver<()>,
 ) {
     let mut room = Room::new_async(config).await;
-    room.start_recording(std::path::Path::new(REPLAY_DIR), &stamp_for(room.seed));
+    let dir = std::path::PathBuf::from(room.config.replay_dir.clone());
+    room.start_recording(&dir, &stamp_for(room.seed));
     let mut ticker = interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
     // Burst, so a 50 ms descheduling is caught up rather than silently making the
     // round run slow — round time stays true to wall-clock (`docs/41` §2).

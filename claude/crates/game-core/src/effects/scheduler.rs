@@ -82,6 +82,41 @@ pub struct EffectScheduler {
 }
 
 impl EffectScheduler {
+    /// Fold this scheduler's whole state into a world hash.
+    ///
+    /// Lives here rather than in `World::state_hash` so the fields stay private
+    /// and so the obligation is next to them: a new field added above without a
+    /// line here silently shrinks the determinism test that guards the entire
+    /// project.
+    ///
+    /// The RNG is hashed by cloning and drawing, which captures the **stream
+    /// position**. Two schedulers that have drawn a different number of times
+    /// are not equivalent even when every visible field matches, and that
+    /// divergence would otherwise stay invisible until the next effect rolled.
+    /// Advance the weather stream without doing anything else. Test hook for
+    /// proving the world hash notices a stream-position divergence.
+    #[cfg(test)]
+    pub fn drain_one_for_test(&mut self) {
+        let _ = rand::RngCore::next_u64(&mut self.rng);
+    }
+
+    pub fn hash_into(&self, h: &mut blake3::Hasher) {
+        h.update(&self.next_at.to_le_bytes());
+        h.update(&(self.active.len() as u32).to_le_bytes());
+        for a in &self.active {
+            h.update(&a.id.to_le_bytes());
+            h.update(&[a.kind as u8, a.phase as u8]);
+            h.update(&a.started_at.to_le_bytes());
+            h.update(&a.phase_started_at.to_le_bytes());
+            h.update(&a.seed.to_le_bytes());
+        }
+        h.update(&[self.last_kind.map_or(255, |k| k as u8)]);
+        h.update(&self.next_id.to_le_bytes());
+        h.update(&self.last_now.unwrap_or(f32::NAN).to_le_bytes());
+        let mut probe = self.rng.clone();
+        h.update(&rand::RngCore::next_u64(&mut probe).to_le_bytes());
+    }
+
     pub fn new(seed: u64, round_start: f32) -> Self {
         let mut rng = substream(seed, "weather");
         let next_at = round_start + range_f32(&mut rng, EFFECT_INTERVAL_MIN, EFFECT_INTERVAL_MAX);

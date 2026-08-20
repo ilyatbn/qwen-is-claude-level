@@ -1700,3 +1700,42 @@ Notes: ReplayCommand is NOT a mirror of Command. Two differences carry weight:
        My tag-uniqueness test was wrong before the code was — it deduped by
        value, and every_command() carries two VoteRestarts on purpose.
 Left for later: T8.02 (the runner) is next and is the payoff.
+
+## T8.02 — Headless replay binary — DONE
+Files: crates/game-server/src/bin/replay.rs (new), replay.rs, room.rs, main.rs,
+       config.rs, Cargo.toml, docker/Dockerfile.server,
+       crates/game-core/src/world/mod.rs, effects/scheduler.rs,
+       items/{spawning,inventory}.rs, crates/game-server/tests/replay_run.rs
+Verified: `cargo test -p game-server --test replay_run` — 14 passed.
+       End to end: real server, RECORD_REPLAY=1, SIGTERM, then
+       `./target/release/replay <file>` — "VERIFIED — matches the footer",
+       1068 ticks of 3 bots, EXIT=0. ./scripts/check.sh green.
+Notes: TWO REAL BUGS, both found by falsifying rather than by a failing test.
+       1. state_hash COVERED ALMOST NOTHING. Its doc said "every mutable piece
+          of simulation state"; it hashed mask+tick+round_time+player pos/vel/
+          health/score/alive and item/projectile positions. A probe leaking
+          SystemTime into world.wind every tick REPLAYED GREEN. Unhashed:
+          wind, carve_seq, phase, all timers (shield/iframes/respawn/cooldown),
+          jetpack + jump state, aim, inventories, buried items, the effect
+          scheduler, the spawn schedule, and every RNG stream position. Now
+          hashed, with subsystems providing hash_into() so the obligation sits
+          next to the private fields. RNG streams are hashed by CLONING AND
+          DRAWING, which captures stream POSITION — two schedulers with
+          identical visible fields but different draw counts are not equal.
+          Pinned by the_hash_is_sensitive_to_every_field_a_tick_can_change.
+       2. SIGTERM NEVER WROTE THE FOOTER. main returned as soon as axum
+          stopped, so the room task was never scheduled again — exactly the
+          `docker compose down` case docs/41 §7 exists for. Every unit test
+          passed because they call finish_recording() directly. main now
+          signals and WAITS (SHUTDOWN_GRACE 3s). Control: SIGKILL must leave
+          no footer, and it must be a SUBPROCESS test — in-process the room is
+          scheduled the instant the oneshot fires, so an in-process "don't
+          wait" case writes the footer anyway and proves nothing.
+       Header is flushed on create, so a SIGKILLed round still names its seed.
+       Checkpoints (a state hash every 600 ticks) are recorded so a mismatch
+       reports WHERE it diverged; the footer alone can only say THAT it did.
+       Two binaries now, so Cargo.toml needs default-run and the Dockerfile's
+       stub layer needs a stub for EVERY [[bin]] or the dep layer fails.
+       REPLAY_DIR is configurable (was hardcoded "replays").
+Left for later: T8.03-T8.08. docs/61 §4's replay size estimate needs an
+       amendment (see T8.01 entry).

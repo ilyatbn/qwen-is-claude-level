@@ -196,6 +196,14 @@ pub struct SpawnSchedule {
 }
 
 impl SpawnSchedule {
+    /// See `EffectScheduler::hash_into` — same reasoning, same RNG probe.
+    pub fn hash_into(&self, h: &mut blake3::Hasher) {
+        h.update(&self.next_item_at.to_le_bytes());
+        h.update(&self.next_crate_at.to_le_bytes());
+        let mut probe = self.rng.clone();
+        h.update(&rand::RngCore::next_u64(&mut probe).to_le_bytes());
+    }
+
     /// `place_initial` must already have run on the same seed, so this continues
     /// the `"items"` stream where that left off.
     pub fn new(seed: u64, round_start: f32, initial_draws: u32) -> Self {
