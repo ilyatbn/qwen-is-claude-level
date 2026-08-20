@@ -802,3 +802,65 @@ attributed to a meteor — and an owner passed without a weapon is also swallowe
 losing `SelfInflicted`. Lava and toxic rain both route through `explode`, so
 without this every environmental death in the kill feed reads "meteor". `explode`
 takes the `DamageSource` from its caller.
+
+## A21 — Interior air has something above it
+
+§A19's *value* is withdrawn. It was measured against a **stale WASM build** — the
+client suite had no `pretest` hook, so Rust constant changes were invisible to it
+and every backdrop number measured from the client was reading an old binary. That
+is fixed (the hook now rebuilds), and it invalidates §A18's and §A19's tables
+alike. Re-measure everything from a fresh build.
+
+Re-measured, no `BACKDROP_MIN_HITS` passes both of §A17's bounds at all three
+scales. The reason is structural rather than a bad threshold: an exposed **crest**
+— a hilltop with sky on three sides — still collects enough side and downward ray
+hits to cross the threshold, so it wears a halo of backdrop along its skyline
+(measured mean 3.4–6.3 px at the shipped value).
+
+The missing constraint is the one thing every cave, tunnel, chamber and crevice
+has and no crest does:
+
+> Interior air must have **rock above it**. At least one of the upward rays must
+> strike solid, in addition to the `BACKDROP_MIN_HITS` total.
+
+This is a conjunct, not a replacement — roofedness alone fails on floating islands
+(§A17), and enclosure alone fails on crests. Together they are exactly the
+statement "you are inside the rock": something over your head, and rock most of the
+way around you.
+
+Adopting it: re-measure the table at 4, 5 and 6 **with the conjunct, at all three
+scales, against a fresh WASM build**, and take the value that satisfies both bounds.
+If none does, take the one whose worse failure is the milder one — enclosed air
+showing daylight reads as a hole through the world, sky drawn dark reads as haze
+(§A18) — and write the numbers down.
+
+## A22 — Two process defects worth more than the bugs they hid
+
+**The client suite was testing a stale WASM build.** There was no `pretest` hook,
+so `game-core` constant changes did not reach the client tests, and every
+measurement taken through the client was reading an old binary. `docs/62` §6 says
+`predev`/`prebuild` must run `wasm-pack` "so the WASM is never stale" — it did not
+say `pretest`, and that gap silently invalidated two rounds of threshold tuning.
+Any hook that keeps a build fresh must cover **every** entry point that consumes
+it, tests included.
+
+**A screenshot that does not contain its subject is not evidence.** A lava run was
+photographed against an empty hillside while three vents erupted off-camera, and it
+looked like a clean pass. Where a screenshot is the proof, the assertion is on the
+frame containing the thing — point the camera at it, and assert something numeric
+about those pixels as well.
+
+## A23 — "Never twice in a row" means never
+
+`13-weather-effects.md` §1 asks for two incompatible things: *"never repeat the
+same effect twice in a row"* and *"re-roll once if it comes up again"*. A single
+re-roll still repeats with probability `w_i / total` — 9 % per step for the
+weight-3 kinds, so over a 1000-effect run a repeat is certain.
+
+The rule that satisfies the intent: **zero the previous kind's weight and draw
+once.** Repeats become impossible by construction rather than improbable, and the
+draw stays unbiased, because a single draw from the remaining weights *is* the
+conditional distribution given "not the last kind". Stationary distribution
+0.284 / 0.284 / 0.216 / 0.216 for weights 3/3/2/2, and the test asserts both that
+and that those shares are distinguishable from the raw weights — otherwise it
+would pass against a plain weighted draw.
