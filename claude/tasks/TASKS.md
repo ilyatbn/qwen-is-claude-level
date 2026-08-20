@@ -259,7 +259,7 @@ report has no weapon nobody picks up.
 
 ## M12 — Tombstones (1)
 
-- [ ] [T12.01](M12/T12.01-tombstones.md) — Tombstones, with an effect seam **(v3)**
+- [x] [T12.01](M12/T12.01-tombstones.md) — Tombstones, with an effect seam **(v3)**
 
 **Checkpoint:** die three times in a round; three graves stand where you fell, and
 a player joining late sees all of them.

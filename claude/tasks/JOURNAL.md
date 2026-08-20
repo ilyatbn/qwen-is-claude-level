@@ -2604,3 +2604,35 @@ Notes: THE PREVIOUS SESSION'S DEAD END #4 WAS THE DESIGN WORKING. A synthetic
        that §B4 moved to 5.0. The wait is derived from the constant now — a wait
        hardcoded against a tunable is a test that expires.
 Left for later: T12.01 tombstones, T10.05 skins menu, the M10 checkpoint.
+
+## T12.01 — Tombstones — DONE
+Files: crates/game-core/src/world/{tombstones.rs,mod.rs}, player/state.rs,
+       crates/game-server/src/{room,session,events,config}.rs, bin/replay.rs,
+       client/src/render/{tombstones,tombstones-math,tombstones-math.test}.ts,
+       client/src/net/worldMirror.ts, client/src/scenes/GameScene.ts,
+       crates/game-wasm/src/lib.rs, scripts/checks/death.mjs
+Verified: `--lib tombstones` 5 passed; `--test world_step` 28 passed;
+       `--test integration a_mid_round_joiner` passed; `--run tombstones-math`
+       8 passed; `node scripts/checks/death.mjs` ok 3/3 consecutive runs.
+Notes: WIRED AT FOUR LEVELS BECAUSE UNIT TESTS CANNOT CATCH WIRING (§A39, now
+       six times). Tombstones' own tests would all pass if the death path never
+       called place(); the world test covers that; the integration test covers
+       the join announce; the e2e covers the client actually drawing them.
+       THREE WIRING GAPS FOUND, each by the next level up:
+       1. `tombstone_skin_id` was parsed from `join` and dropped on the floor.
+       2. the client had a `tombstone_spawn` handler in WorldMirror and no
+          subscription in GameScene — the e2e said "0 graves" while the server
+          held one. §A39 one layer down: a handler with no subscription.
+       3. `skin_id` must NOT be in state_hash (PlayerState.skin_id is not
+          either) — hashing it would have forced a replay format change for a
+          cosmetic the server cannot interpret.
+       The cap frees a slot BEFORE pushing: `while len > MAX` does nothing at
+       len == MAX and the next push lands on MAX+1 — the WorldItems::cull
+       off-by-one. Sabotaging >= back to > reproduces it exactly.
+       DEV_START_HEALTH added (sibling of DEV_LOADOUT, dev-only, default off):
+       a rocket at your own feet gets weaker every shot because each blast
+       deepens the crater, so 8 rockets against 100 health killed on some runs
+       and left 22 on others. A coin-flip gate gates nothing (§A28). Only the
+       STARTING health is arranged; the kill is a real rocket resolved by the
+       server with real attribution.
+Left for later: T10.05 skins menu, the M10 checkpoint.

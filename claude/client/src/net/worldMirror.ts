@@ -10,6 +10,7 @@
 import type { Core } from '../core'
 import { fromBase64 } from './connection'
 import { decodeMapInit, decodeSnapshot, type MapInit, type Snapshot } from './codec'
+import type { TombstoneView } from '../render/tombstones-math'
 
 export interface RemotePlayerState {
   id: number
@@ -62,6 +63,12 @@ type Pending = { seq: number; apply: () => void }
 export class WorldMirror {
   readonly players = new Map<number, RemotePlayerState>()
   readonly items = new Map<number, WorldItemView>()
+  /**
+   * The graveyard (§B8). Kept as current state rather than a stream of events,
+   * so a client that missed a despawn converges on the next full list and a
+   * mid-round joiner starts from the server's own set.
+   */
+  readonly tombstones = new Map<number, TombstoneView>()
   readonly projectiles = new Map<number, ProjectileView>()
 
   private readonly core: Core
@@ -250,6 +257,20 @@ export class WorldMirror {
         })
         break
       }
+      case 'tombstone_spawn': {
+        const id = n(p['id'])
+        this.tombstones.set(id, {
+          id,
+          owner: n(p['owner']),
+          x: n(p['x']),
+          y: n(p['y']),
+          skinId: n(p['skin_id']),
+        })
+        break
+      }
+      case 'tombstone_despawn':
+        this.tombstones.delete(n(p['id']))
+        break
       case 'item_pickup':
       case 'item_despawn':
         this.items.delete(n(p['world_item_id']))

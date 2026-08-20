@@ -41,6 +41,20 @@ pub struct Config {
     /// destruction cannot begin by walking a bot to a crate. The sandbox already
     /// grants a loadout for the same reason.
     pub dev_loadout: bool,
+
+    /// Spawn every player on this much health. **Development only, 0 = off.**
+    ///
+    /// Sibling of `dev_loadout`, and for the same reason. The death-overlay check
+    /// has to produce a real death through the real damage path, and a rocket at
+    /// your own feet gets weaker every shot: each blast deepens the crater, so
+    /// the next detonates further below you (~10 damage against ~25 for the
+    /// first, measured). At `BASE_HEALTH` and eight rockets that is a coin flip,
+    /// and a gate that fails on a coin flip gates nothing (§A28).
+    ///
+    /// This changes the **starting** health only. The kill is still a real
+    /// rocket, resolved by the server, with real attribution — the same thing
+    /// `world_step`'s unit test does when it sets 20 health and fires once.
+    pub dev_start_health: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +91,7 @@ impl Default for Config {
             debug_dump: false,
             bot_count: BOT_COUNT_DEFAULT,
             dev_loadout: false,
+            dev_start_health: 0.0,
             bot_skill: BOT_SKILL_DEFAULT,
         }
     }
@@ -191,6 +206,10 @@ impl Config {
             bot_count,
             bot_skill,
             dev_loadout: matches!(get("DEV_LOADOUT").as_deref(), Some("1") | Some("true")),
+            dev_start_health: get("DEV_START_HEALTH")
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| *v > 0.0)
+                .unwrap_or(0.0),
         })
     }
 

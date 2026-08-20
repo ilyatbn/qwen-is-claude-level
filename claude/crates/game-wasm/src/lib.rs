@@ -604,6 +604,9 @@ pub fn constants_json() -> String {
         };
     }
     put! {
+        TOMBSTONE_W => c::TOMBSTONE_W,
+        TOMBSTONE_H => c::TOMBSTONE_H,
+        MAX_TOMBSTONES => c::MAX_TOMBSTONES,
         VIEWPORT_W => c::VIEWPORT_W,
         VIEWPORT_H => c::VIEWPORT_H,
         CHUNK_SIZE => c::CHUNK_SIZE,

@@ -14,6 +14,7 @@
 import Phaser from 'phaser'
 import { loadAssetManifest, runLoader } from '../render/assets'
 import { DeathOverlay } from '../ui/deathOverlay'
+import { TombstoneLayer } from '../render/tombstones'
 import { C, Core, dequantizeAngle } from '../core'
 import { asRecord, Connection, type LobbyIntent, type Welcome } from '../net/connection'
 import { WorldMirror, hex } from '../net/worldMirror'
@@ -85,6 +86,7 @@ export class GameScene extends Phaser.Scene {
   private acc = 0
   private roundTime = 0
   private readonly death = new DeathOverlay()
+  private tombstones!: TombstoneLayer
   /** The server's word on whether the local player is alive. */
   private meAlive = true
   private phase: Phase = 'lobby'
@@ -155,6 +157,7 @@ export class GameScene extends Phaser.Scene {
     this.lightmap = new Lightmap(this)
     this.ordnance = new OrdnanceLayer(this)
     this.items = new ItemLayer(this)
+    this.tombstones = new TombstoneLayer(this, C().TOMBSTONE_W, C().TOMBSTONE_H)
     this.items.setRegistry(this.core.itemRegistryJson())
     this.localInput = new LocalInput(this)
     this.crosshair = new Crosshair(this, DEPTH.hud)
@@ -236,7 +239,10 @@ export class GameScene extends Phaser.Scene {
     })
     this.conn.on('player_leave', (raw) => this.dropRemote(Number(asRecord(raw)['id'] ?? -1)))
     for (const ev of ['carve', 'carve_capsule', 'item_spawn', 'crate_spawn', 'item_pickup',
-      'item_despawn', 'projectile_spawn', 'projectile_despawn', 'mask_checksum']) {
+      'item_despawn', 'projectile_spawn', 'projectile_despawn', 'mask_checksum',
+      // §B8. The mirror handles these; this list is what actually subscribes,
+      // and a handler with no subscription is the §A39 shape one layer down.
+      'tombstone_spawn', 'tombstone_despawn']) {
       this.conn.on(ev, (raw) => {
         const p = asRecord(raw)
         this.mirror.applyEvent(ev, p, performance.now())
@@ -745,6 +751,7 @@ export class GameScene extends Phaser.Scene {
     // World items were tracked from T6.08 and drawn by nothing: a medkit on the
     // ground was invisible in the real game.
     this.items.update(dt, [...this.mirror.items.values()], this.ear())
+    this.tombstones.update([...this.mirror.tombstones.values()])
     this.feel.update(dt, this.feelFrame())
 
     const fov = fovRadius({
@@ -956,6 +963,10 @@ export class GameScene extends Phaser.Scene {
           // three milestones: the mirror tracked them and nothing drew them.
           worldItems: self.mirror.items.size,
           itemsDrawn: self.items?.count ?? 0,
+          // Two numbers, not one (§A39): the server's graveyard against the
+          // graves actually on screen.
+          tombstones: self.mirror.tombstones.size,
+          tombstonesDrawn: self.tombstones?.count ?? 0,
           // The snapshot roster includes the local player, so this is the
           // total — not remotes plus one.
           playerCount: self.mirror.players.size,

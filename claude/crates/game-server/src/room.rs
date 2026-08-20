@@ -404,6 +404,12 @@ impl Room {
     /// end-to-end run can demonstrate terrain destruction without first walking
     /// to a crate.
     fn grant_dev_loadout(&mut self, id: PlayerId) {
+        // Independent of the loadout: a check may want one without the other.
+        if self.config.dev_start_health > 0.0 {
+            if let Some(p) = self.world.player_mut(id) {
+                p.health = self.config.dev_start_health;
+            }
+        }
         if !self.config.dev_loadout {
             return;
         }

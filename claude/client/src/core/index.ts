@@ -113,6 +113,9 @@ export interface PlayerState {
  * prevent — see `docs/01-architecture.md`.
  */
 export interface Constants {
+  TOMBSTONE_W: number
+  TOMBSTONE_H: number
+  MAX_TOMBSTONES: number
   VIEWPORT_W: number
   VIEWPORT_H: number
   CHUNK_SIZE: number

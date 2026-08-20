@@ -77,6 +77,13 @@ const server = spawn('cargo', ['run', '--quiet', '--release', '-p', 'game-server
     ROUND_SECONDS: '120',
     BOT_COUNT: '0',
     DEV_LOADOUT: '1',
+    // 40 health, so two clean rockets kill. The death is still entirely real —
+    // fired, resolved by the server, attributed to the player. Only the starting
+    // health is arranged, exactly as `world_step`'s unit test arranges 20 before
+    // firing once. Without it this check is a coin flip: each blast deepens the
+    // crater so the next detonates further below you, and eight rockets against
+    // 100 health killed on some runs and left 22 on others.
+    DEV_START_HEALTH: '40',
   },
   stdio: ['ignore', 'inherit', 'inherit'],
 })
@@ -164,21 +171,35 @@ else ok('control: overlay is down while alive')
 await page.keyboard.press('Digit1') // the rocket stack
 await new Promise((r) => setTimeout(r, 300))
 const startHealth = (await dbg()).health
+if (startHealth > 60) fail(`DEV_START_HEALTH did not apply: ${startHealth}`)
+else ok(`starting on ${startHealth} health`)
 let switched = false
-for (let i = 0; i < 14; i++) {
+//
+// Walk **further than the crater** between shots. A bazooka's blast radius is 42,
+// so a 260 ms step (~39 px at WALK_SPEED 150) lands the next rocket inside the
+// hole the last one dug, where it detonates below your feet for a fraction of the
+// damage — measured by T9.06 at ~12 against ~25. 700 ms clears it.
+//
+// The loop runs to a deadline rather than a fixed count: at 8 rockets and
+// variable terrain, a fixed 14 made this a coin flip, and a gate that fails on a
+// coin flip gates nothing (§A28).
+const killDeadline = Date.now() + 60_000
+for (let i = 0; Date.now() < killDeadline; i++) {
   const d = await dbg()
   if (!d.player || d.health <= 0 || d.death.visible) break
   // When the first stack empties, selection moves to the smg — and hitscan
   // excludes its owner (`docs/31` §4), so it cannot self-damage. Take the
   // second rocket stack.
-  if (!switched && i >= 4) {
+  if (!switched && i >= 3) {
     switched = true
     await page.keyboard.press('Digit3')
     await new Promise((r) => setTimeout(r, 300))
   }
-  await page.keyboard.down('d')
-  await new Promise((r) => setTimeout(r, 260))
-  await page.keyboard.up('d')
+  // Alternate direction so a wall does not trap the walk on one side.
+  const dir = i % 2 === 0 ? 'd' : 'a'
+  await page.keyboard.down(dir)
+  await new Promise((r) => setTimeout(r, 700))
+  await page.keyboard.up(dir)
   for (let w = 0; w < 20 && !(await dbg()).player?.grounded; w++) {
     await new Promise((r) => setTimeout(r, 200))
   }
@@ -207,6 +228,20 @@ if (dead) {
   else fail(`cause reads "${dead.death.cause}", expected the self-kill wording`)
 
   await page.screenshot({ path: join(shots, 'death-overlay.png') })
+
+  // §B8 — a grave where you fell, and one that is actually drawn.
+  //
+  // Two numbers, not one (§A39): the mirror's count against the layer's. They
+  // were silently different for three milestones in the item layer, and
+  // "the server placed a tombstone" passes the whole time.
+  const g = await dbg()
+  if (g.tombstones >= 1) ok(`the server placed ${g.tombstones} grave(s)`)
+  else fail(`no tombstone after a death: ${g.tombstones}`)
+  if (g.tombstonesDrawn === g.tombstones) {
+    ok(`and all ${g.tombstonesDrawn} are drawn`)
+  } else {
+    fail(`${g.tombstones} graves tracked but ${g.tombstonesDrawn} drawn`)
+  }
 
   // It is an overlay, not a pause: the world behind it must still be running.
   const t0 = (await dbg()).roundTime
