@@ -55,19 +55,18 @@ impl Body {
         Aabb::from_center_size(self.pos, self.size.x, self.size.y)
     }
 
-    #[inline]
-    pub fn aabb_at(&self, pos: Vec2) -> Aabb {
-        Aabb::from_center_size(pos, PLAYER_W, PLAYER_H)
-    }
-
+    // Sized from `self.size`, not from PLAYER_H. `Body` became polymorphic when
+    // world items started using it, and a 16x16 item asking for `feet_y()` would
+    // otherwise get a 14 px offset instead of 8 — silently, and only in whichever
+    // M5/M6 caller asked first.
     #[inline]
     pub fn feet_y(&self) -> f32 {
-        self.pos.y + PLAYER_H / 2.0
+        self.pos.y + self.size.y / 2.0
     }
 
     #[inline]
     pub fn head_y(&self) -> f32 {
-        self.pos.y - PLAYER_H / 2.0
+        self.pos.y - self.size.y / 2.0
     }
 
     /// A jump still works for this long after walking off a ledge.
@@ -110,15 +109,6 @@ mod tests {
         let b = Body::new(Vec2::new(100.0, 100.0));
         assert_eq!(b.aabb().min(), Vec2::new(92.0, 86.0));
         assert_eq!(b.aabb().max(), Vec2::new(108.0, 114.0));
-    }
-
-    #[test]
-    fn aabb_at_does_not_move_the_body() {
-        let b = Body::new(Vec2::new(10.0, 10.0));
-        let hypothetical = b.aabb_at(Vec2::new(500.0, 500.0));
-        assert_eq!(hypothetical.center, Vec2::new(500.0, 500.0));
-        assert_eq!(b.pos, Vec2::new(10.0, 10.0));
-        assert_eq!(hypothetical.half, b.aabb().half);
     }
 
     #[test]
@@ -176,5 +166,25 @@ mod tests {
         assert_eq!(b.vel, Vec2::ZERO);
         assert!(!b.grounded, "grounding must be established by the resolver");
         assert_eq!(b.airborne_ticks, 0);
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+    use crate::constants::{PLAYER_H, PLAYER_W};
+
+    #[test]
+    fn the_helpers_follow_the_body_size_not_the_players() {
+        let player = Body::new(Vec2::new(100.0, 100.0));
+        assert_eq!(player.feet_y(), 100.0 + PLAYER_H / 2.0);
+        assert_eq!(player.aabb().width(), PLAYER_W);
+
+        // A world item is 16x16: its feet are 8 px below centre, not 14.
+        let item = Body::sized(Vec2::new(100.0, 100.0), 16.0, 16.0);
+        assert_eq!(item.feet_y(), 108.0);
+        assert_eq!(item.head_y(), 92.0);
+        assert_eq!(item.aabb().width(), 16.0);
+        assert_eq!(item.aabb().height(), 16.0);
     }
 }

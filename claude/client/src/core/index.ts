@@ -168,6 +168,9 @@ export interface Constants {
   GRENADE_BLAST_RADIUS: number
   SMG_BLAST_RADIUS: number
   SMG_RANGE: number
+  BACKDROP_RAYS: number
+  BACKDROP_RAY_LEN: number
+  BACKDROP_MIN_HITS: number
 }
 
 /**

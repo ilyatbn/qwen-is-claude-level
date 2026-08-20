@@ -74,6 +74,11 @@ export class Lightmap {
 
     if (scene.textures.exists(TEX_KEY)) scene.textures.remove(TEX_KEY)
     this.texture = scene.textures.createCanvas(TEX_KEY, this.lw, this.lh) ?? null
+    // `pixelArt: true` sets NEAREST globally, which quantises this half-resolution
+    // falloff into 2-px stairs when it is scaled up. The lightmap is the one layer
+    // that is all gradient, so it opts out on its own texture rather than the game
+    // opting out everywhere.
+    this.texture?.setFilter(Phaser.Textures.FilterMode.LINEAR)
 
     this.image = scene.add
       .image(0, 0, TEX_KEY)

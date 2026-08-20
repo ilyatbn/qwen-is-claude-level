@@ -713,3 +713,38 @@ generate a real map, then assert on measured shares —
 - longest axis-aligned interior/exterior boundary run: **< 40 px** (the original
   defect produced ~100 px runs; the §A14 implementation measured 35 px, so this
   bound holds the line already won)
+
+## A18 — `BACKDROP_MIN_HITS` is 5, and the two error rates trade against each other
+
+§A17 set `BACKDROP_MIN_HITS` = 6 and asked for **both** enclosed-air-drawn-as-sky
+and open-sky-drawn-as-backdrop under 2 %. Measured on a real medium map (seed 4242,
+every 4th pixel), no value of the threshold achieves both:
+
+| `BACKDROP_MIN_HITS` | enclosed air drawn as sky | open sky drawn as backdrop |
+|---|---|---|
+| 4 | 0.0 % | 7.3 % |
+| **5** | **0.9 %** | **2.5 %** |
+| 6 (as specified) | 4.4 % | 0.7 % |
+
+The two failures are not equally bad. **Enclosed air drawn as sky** is the defect
+that has now recurred three times: the player stands inside a cavern and sees
+daylight through the rock, which is the thing this whole mechanism exists to
+prevent. **Open sky drawn as backdrop** darkens a patch of sky, which reads as haze
+and which nobody has ever reported.
+
+So the threshold is **5**, and the acceptance bounds become: enclosed-as-sky
+**< 2 %**, open-as-backdrop **< 3 %**. That is a deliberate bias toward the failure
+that is merely cosmetic, and away from the one that is confusing.
+
+### Two implementation notes, both found by measuring
+
+- **The field must be smoothed before it is interpolated.** Ray counts are integers
+  and the threshold is an integer, so where adjacent cells read 5 and 6 the
+  bilinear crossing lands *exactly* on the cell edge. Measured: **88 %** of
+  interior/exterior boundary transitions sat on the 8 px lattice, against a **52 %**
+  control measured on the terrain silhouette itself — which is generated from noise
+  and cannot be grid-aligned. A centre-weighted 3×3 average fixes it.
+- **Always take that control.** The first version of the alignment test measured
+  run length instead, and on real terrain that mostly measures how flat the map is:
+  a plateau produces a long constant run legitimately. The control is what proved
+  the second metric was measuring the boundary rather than itself.

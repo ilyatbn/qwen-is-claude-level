@@ -146,7 +146,14 @@ export class TerrainRenderer {
     const t0 = now()
 
     // The backdrop silhouette, computed once from the pristine mask.
-    this.snapshot = new BackdropMask(this.core, undefined, C().SKY_MARGIN)
+    this.snapshot = new BackdropMask(
+      this.core,
+      undefined,
+      C().SKY_MARGIN,
+      C().BACKDROP_RAYS,
+      C().BACKDROP_RAY_LEN,
+      C().BACKDROP_MIN_HITS,
+    )
 
     for (let cy = 0; cy < this.chunksY; cy++) {
       for (let cx = 0; cx < this.chunksX; cx++) {

@@ -208,13 +208,13 @@ describe('BackdropMask', () => {
   }
 
   it('treats open sky above the terrain as outside', () => {
-    const b = new BackdropMask(hill(), undefined, 96)
+    const b = new BackdropMask(hill(), undefined, 96, 8, 320, 6)
     expect(b.insideAt(256, 20)).toBe(false)
     expect(b.insideAt(256, 60)).toBe(false)
   })
 
   it('treats the inside of the landmass as interior', () => {
-    const b = new BackdropMask(hill(), undefined, 96)
+    const b = new BackdropMask(hill(), undefined, 96, 8, 320, 6)
     expect(b.insideAt(256, 200)).toBe(true)
   })
 
@@ -224,7 +224,7 @@ describe('BackdropMask', () => {
     // A 20 px tunnel: no 28 px disc fits, so the sky never reaches in.
     for (let y = 150; y < 170; y++) for (let x = 100; x < 400; x++) m.clear(x, y)
 
-    const b = new BackdropMask(m, undefined, 96)
+    const b = new BackdropMask(m, undefined, 96, 8, 320, 6)
     expect(b.insideAt(250, 160)).toBe(true)
   })
 
@@ -240,7 +240,7 @@ describe('BackdropMask', () => {
     for (let y = 250; y < 450; y++) for (let x = 100; x < 412; x++) m.clear(x, y)
     for (let y = 300; y < 400; y++) for (let x = 412; x < 512; x++) m.clear(x, y)
 
-    const b = new BackdropMask(m, undefined, 96)
+    const b = new BackdropMask(m, undefined, 96, 8, 320, 6)
     let interior = 0
     let total = 0
     for (let y = 240; y < 420; y++) {
@@ -259,14 +259,14 @@ describe('BackdropMask', () => {
     // 200 px across — far wider than the disc, but sealed, so unreachable.
     for (let y = 140; y < 220; y++) for (let x = 150; x < 350; x++) m.clear(x, y)
 
-    const b = new BackdropMask(m, undefined, 96)
+    const b = new BackdropMask(m, undefined, 96, 8, 320, 6)
     expect(b.insideAt(250, 180)).toBe(true)
   })
 
   it('does not paint the backdrop out into open sky', () => {
     const m = new FakeMask(512, 256)
     m.fillRect(0, 200, 511, 255)
-    const b = new BackdropMask(m, undefined, 96)
+    const b = new BackdropMask(m, undefined, 96, 8, 320, 6)
     // Well above the surface must stay sky.
     expect(b.insideAt(256, 100)).toBe(false)
     expect(b.insideAt(256, 150)).toBe(false)
@@ -298,22 +298,27 @@ describe('BackdropMask', () => {
       const top = Math.round(140 + 25 * Math.sin(x / 60))
       m.fillRect(x, top, x, 255)
     }
-    expect(worstOverhang(new BackdropMask(m, undefined, 96), m, 512, 256)).toBeLessThanOrEqual(4)
+    expect(worstOverhang(new BackdropMask(m, undefined, 96, 8, 320, 6), m, 512, 256)).toBeLessThanOrEqual(4)
   })
 
-  it('bounds the shading in a concave notch by the disc radius', () => {
-    // The defect this replaced: a *square* structuring element filled concave
-    // corners with ~100 px axis-aligned rectangles standing out into the sky. A
-    // disc cannot reach the last `REACH_PX` into a corner, so a little shading
-    // there is inherent — but it is bounded, and it follows the rock.
-    const m = new FakeMask(512, 256)
-    for (let x = 0; x < 512; x++) {
-      const top = 120 + (x >= 200 && x < 300 ? 60 : 0)
-      m.fillRect(x, top, x, 255)
-    }
-    expect(worstOverhang(new BackdropMask(m, undefined, 96), m, 512, 256)).toBeLessThanOrEqual(
-      BackdropMask.REACH_PX,
-    )
+  it('treats a crevice as interior and the space under an island as sky (A17)', () => {
+    // §A17's table, which is the whole rule: enclosure, not roof. A crevice has
+    // rock on both sides and below (6-7 rays hit) and is interior; under a
+    // floating island there is rock above and open air everywhere else (1-3 rays)
+    // and it is sky. Roofedness alone cannot tell these apart, which is why two
+    // earlier attempts at this file missed.
+    // The island sits in open air, further above the ground than BACKDROP_RAY_LEN
+    // — which is what a floating island is. (An island only ~250 px up is a
+    // covered gallery, and reading as interior there is correct.)
+    const m = new FakeMask(768, 900)
+    m.fillRect(0, 700, 767, 899) // ground
+    for (let y = 700; y < 860; y++) for (let x = 300; x < 320; x++) m.clear(x, y) // crevice
+    m.fillRect(120, 120, 400, 160) // a floating island
+
+    const b = new BackdropMask(m, undefined, 96, 8, 320, 6)
+    expect(b.insideAt(310, 800)).toBe(true) // deep in the crevice
+    expect(b.insideAt(260, 220)).toBe(false) // 60 px under the island: sky
+    expect(b.insideAt(600, 400)).toBe(false) // open sky
   })
 
   it('fills a crevice rather than showing sky down it', () => {
@@ -323,7 +328,7 @@ describe('BackdropMask', () => {
     const m = new FakeMask(512, 256)
     m.fillRect(0, 100, 511, 255)
     for (let y = 100; y < 200; y++) for (let x = 250; x < 268; x++) m.clear(x, y)
-    const b = new BackdropMask(m, undefined, 96)
+    const b = new BackdropMask(m, undefined, 96, 8, 320, 6)
     expect(b.insideAt(259, 180)).toBe(true)
     expect(b.insideAt(259, 130)).toBe(true)
   })
@@ -336,7 +341,7 @@ describe('BackdropMask', () => {
       const top = Math.round(140 + 25 * Math.sin(x / 37) + 12 * Math.sin(x / 11))
       m.fillRect(x, top, x, 255)
     }
-    const b = new BackdropMask(m, undefined, 96)
+    const b = new BackdropMask(m, undefined, 96, 8, 320, 6)
 
     const boundary: number[] = []
     for (let x = 0; x < 512; x++) {

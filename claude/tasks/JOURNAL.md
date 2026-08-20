@@ -977,3 +977,31 @@ Notes: PROJECTILES TUNNELLED ON THE FIRST ATTEMPT, exactly as M2's bodies did. I
        photograph one, drive sustained fire from inside the page with setInterval.
 Left for later: M4 review items (world-item grounded-after-carve, §A17 backdrop,
        3 minors).
+
+## M4 review fixes: A17/A18 backdrop, item support, 3 minors — DONE
+Files: client/src/render/{chunkBake-math.ts,chunkBake.test.ts,backdrop-real.test.ts,
+       lightmap.ts,cameraRig.ts,terrain.ts}, crates/game-core/src/items/world.rs,
+       crates/game-core/src/physics/body.rs, crates/game-core/src/constants.rs,
+       crates/game-wasm/src/lib.rs, docs/70-amendments-v2.md (A18)
+Verified: check.sh green. backdrop-real 3 passed; chunkBake 24; items::world 16.
+Notes: MAJOR 1 — items early-returned on `grounded` forever, so anything standing on
+       ground that got blown away hung in mid-air. docs/32 §4 says the opposite in
+       as many words. step() now re-probes support across the item's FOOTPRINT (not
+       its centre, so an item on a crater lip goes too). Falsified: restoring the
+       unconditional early-out fails both new tests.
+       A17/A18 — THE REAL-TERRAIN TEST IS THE WHOLE LESSON. BackdropMask had only
+       ever been tested against a synthetic FakeMask, and it caught all three
+       remaining defects on first run. Anything whose failure mode only exists in
+       real terrain gets a test against real terrain.
+       TAKE A CONTROL WHEN A METRIC LOOKS DAMNING. "88% of boundary transitions sit
+       on the cell grid" was real, but I only knew because the same metric on the
+       raw terrain silhouette — which is noise and cannot be grid-aligned — read
+       52%. My FIRST alignment metric (run length) was measuring how flat the map
+       is, not grid snapping; the control is what exposed that.
+       The snapping cause: integer ray counts against an integer threshold put the
+       bilinear crossing EXACTLY on the cell edge. Centre-weighted 3x3 blur first.
+       A18: no minHits satisfies both of A17's bounds (4 -> 0.0%/7.3%,
+       5 -> 0.9%/2.5%, 6 -> 4.4%/0.7%). Chose 5 and documented the trade: enclosed
+       air showing daylight is the recurring, confusing failure; sky drawn dark
+       reads as haze.
+Left for later: M5. Buried-slots-not-sent-to-clients verified at T6.04.

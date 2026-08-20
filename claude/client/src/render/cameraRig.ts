@@ -57,9 +57,15 @@ export class CameraRig {
     this.camera.centerOn(this.center.x, this.center.y)
   }
 
-  /** The world area actually visible, at the current zoom. */
+  /**
+   * The world area actually visible, at the camera's **live** zoom.
+   *
+   * Reading `CAMERA_ZOOM` here reported 640x360 whatever the camera was actually
+   * doing, which made the §A1 bounds clamp unverifiable through the debug hook —
+   * the one place it is checked.
+   */
   get visible(): { w: number; h: number } {
-    return visibleSize(this.tuning)
+    return visibleSize({ ...this.tuning, zoom: this.camera.zoom })
   }
 
   follow(target: Vec): void {

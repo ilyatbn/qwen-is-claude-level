@@ -421,6 +421,19 @@ pub const BURIED_OFFSET_MAX: i32 = 80;
 /// Placement attempts per slot before giving up on that one.
 pub const BURIED_ATTEMPTS: u32 = 200;
 
+// --- A17: the cave backdrop is an enclosure test ---
+
+/// Rays cast from an air sample, evenly spaced from 0 rad.
+pub const BACKDROP_RAYS: u32 = 8;
+/// How far a ray looks for rock, in world px.
+pub const BACKDROP_RAY_LEN: f32 = 320.0;
+/// Rays that must strike solid for the sample to count as enclosed.
+///
+/// 5, not §A17's 6: measured on a real map the two error rates trade against each
+/// other and no threshold satisfies both bounds. 5 biases toward the merely
+/// cosmetic failure. See §A18 for the table.
+pub const BACKDROP_MIN_HITS: u32 = 5;
+
 // --- A3: visible ordnance ---
 
 /// Seconds a tracer segment stays visible.

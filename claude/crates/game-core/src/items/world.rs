@@ -105,9 +105,18 @@ impl WorldItems {
     /// through terrain a player cannot walk through.
     pub fn step(&mut self, map: &Map, dt: f32) {
         for it in self.items.iter_mut() {
-            // Idle items cost nothing.
+            // Idle items cost nothing — but only while the ground is still there.
+            //
+            // Without the re-probe an item whose support is blown away hangs over
+            // the crater for the rest of the round, which `docs/32` §4 forbids in
+            // as many words: "If a crate would land on a spot that gets carved out
+            // from under it, it simply keeps falling." In a game that is entirely
+            // explosions, and where items sit on the ground, this fires constantly.
             if it.grounded {
-                continue;
+                if Self::supported(map, it) {
+                    continue;
+                }
+                it.grounded = false;
             }
             let (w, h) = it.size();
             let mut body = Body::sized(it.pos, w, h);
@@ -122,6 +131,19 @@ impl WorldItems {
             it.vel = body.vel;
             it.grounded = body.grounded;
         }
+    }
+
+    /// Is there still solid ground directly under this item's footprint?
+    ///
+    /// One row below the AABB's bottom edge, across its full width, so an item on
+    /// the lip of a new crater falls as soon as its own support goes — not only
+    /// when the pixel under its centre does.
+    fn supported(map: &Map, it: &WorldItem) -> bool {
+        let (w, h) = it.size();
+        let y = (it.pos.y + h / 2.0).round() as i32;
+        let x0 = (it.pos.x - w / 2.0).round() as i32;
+        let x1 = (it.pos.x + w / 2.0).round() as i32 - 1;
+        (x0..=x1).any(|x| crate::physics::collide::solid_at(map, x, y))
     }
 
     /// TTL and `MAX_WORLD_ITEMS` eviction. Returns the despawned ids.
@@ -526,5 +548,89 @@ mod tests {
         assert!(w.remove(a).is_none());
         let b = w.spawn(MEDKIT, 1, Vec2::ZERO, Vec2::ZERO, SpawnSource::Initial, 0.0);
         assert_ne!(a, b, "ids must never be reused");
+    }
+
+    /// `docs/32` §4: a crate whose landing spot is carved out simply keeps falling.
+    #[test]
+    fn an_item_whose_ground_is_blown_away_falls_again() {
+        let mut map = flat_map(400);
+        let mut w = WorldItems::new();
+        let id = w.spawn(
+            MEDKIT,
+            1,
+            Vec2::new(256.0, 100.0),
+            Vec2::ZERO,
+            SpawnSource::Initial,
+            0.0,
+        );
+        for _ in 0..600 {
+            w.step(&map, crate::constants::SIM_DT);
+        }
+        let resting = w.get(id).expect("there").pos.y;
+        assert!(w.get(id).expect("there").grounded);
+
+        // Blow the ground out from under it.
+        map.carve_circle(256, 400, 60);
+        for _ in 0..600 {
+            w.step(&map, crate::constants::SIM_DT);
+        }
+        let after = w.get(id).expect("there");
+        assert!(
+            after.pos.y > resting + 20.0,
+            "the item hung over the crater at y {} (was {resting})",
+            after.pos.y
+        );
+        assert!(after.grounded, "it should come to rest on the crater floor");
+    }
+
+    #[test]
+    fn a_crate_on_a_carved_ledge_falls_too() {
+        // Same rule for the 24x24 body, and asserted on the footprint rather than
+        // the centre: a crate on the lip of a crater must go when its support does.
+        let mut map = flat_map(400);
+        let mut w = WorldItems::new();
+        let id = w.spawn(
+            MEDKIT,
+            1,
+            Vec2::new(256.0, 300.0),
+            Vec2::ZERO,
+            SpawnSource::Crate,
+            0.0,
+        );
+        for _ in 0..600 {
+            w.step(&map, crate::constants::SIM_DT);
+        }
+        let resting = w.get(id).expect("there").pos.y;
+        map.carve_circle(256, 405, 70);
+        for _ in 0..600 {
+            w.step(&map, crate::constants::SIM_DT);
+        }
+        assert!(
+            w.get(id).expect("there").pos.y > resting + 20.0,
+            "the crate did not fall into the new hole"
+        );
+    }
+
+    #[test]
+    fn an_item_on_untouched_ground_still_costs_nothing() {
+        // The re-probe must not reintroduce per-tick work for the common case.
+        let map = flat_map(400);
+        let mut w = WorldItems::new();
+        let id = w.spawn(
+            MEDKIT,
+            1,
+            Vec2::new(256.0, 100.0),
+            Vec2::ZERO,
+            SpawnSource::Initial,
+            0.0,
+        );
+        for _ in 0..600 {
+            w.step(&map, crate::constants::SIM_DT);
+        }
+        let at_rest = w.get(id).expect("there").pos;
+        for _ in 0..600 {
+            w.step(&map, crate::constants::SIM_DT);
+        }
+        assert_eq!(w.get(id).expect("there").pos, at_rest);
     }
 }
