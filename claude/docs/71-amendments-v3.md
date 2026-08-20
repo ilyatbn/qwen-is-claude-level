@@ -288,3 +288,35 @@ for `battery` (quantised `battery / BATTERY_MAX * 255`), taking it from 15 to
 **16 bytes** and the snapshot to `8 + n*16 + 4` — 104 bytes at six players, still
 far inside the budget in `40-net-protocol.md` §4. §A25's rule stands: the size test
 pins to the constants, never to a literal.
+
+## B10 — There is no queue, and that is better
+
+§B1 specified a quick-match **queue** with `QUEUE_WAIT_BEFORE_BOTS`: wait for other
+players, then seat bots and start. Building it revealed the queue is unnecessary,
+and the constant went unused.
+
+The pieces already in place do the job:
+
+- quick match fills **the fullest room that still has space**, so a second
+  quick-matcher lands in the first one's room by construction — which is what the
+  queue was for;
+- `MIN_PLAYERS_TO_START` is 1 and bots fill the room from the start, so nobody ever
+  waits;
+- a human joining a full room **kicks the newest bot** (T6.15), so a person is never
+  refused a seat and every human arrival displaces an AI.
+
+Together those give the queue's intended outcome — play together if you arrive
+together, never wait alone — without a waiting state to be stuck in. A queue would
+only add a screen that can hang.
+
+So: **`QUEUE_WAIT_BEFORE_BOTS` is removed**, and `room_list` stops reporting
+`waiting`/`eta_s`, which were structurally always zero. It reports what is true
+instead: the room's player count, its capacity, and how many of those are bots — so
+"3/6, two of them bots" is visible before the round starts, which is more useful
+than an ETA that was never going to be non-zero.
+
+The general point, and it is the fifth time on this project: **a design written
+before the code exists can specify machinery the code turns out not to need.**
+§A19, §A32, §A37 and §A38 were all numbers that did not survive measurement; this
+is a mechanism that did not survive implementation. Deleting it is the result, not
+a shortcut around it.
