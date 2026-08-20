@@ -244,6 +244,9 @@ pub struct Room {
     replay: Option<crate::replay::ReplayWriter>,
     /// So a phase transition can flush the recorder without polling for one.
     last_recorded_phase: game_core::world::RoundPhase,
+    /// Drained into `/metrics` by the loop; counted here because this is where
+    /// the drop happens.
+    pub dropped_inputs: u64,
     /// The seed and secret this room's world was built from, so a restart can
     /// open a fresh replay file for the new round.
     seed: u64,
@@ -276,6 +279,7 @@ impl Room {
             round: crate::round::RoundController::new(seed),
             replay: None,
             last_recorded_phase: game_core::world::RoundPhase::Warmup,
+            dropped_inputs: 0,
             seed,
             buried_secret,
         };
@@ -284,6 +288,23 @@ impl Room {
         // shortened round never shortened.
         room.world.set_round_seconds(room.config.round_seconds);
         room.seat_bots(seed);
+        // `docs/61` §3 row 1: the line a report of "the map was unplayable" maps
+        // onto. Without `attempts` and `traversable_fraction` there is nothing to
+        // look at but the seed.
+        let m = &room.world.map.meta;
+        tracing::info!(
+            target: "game::map",
+            seed = m.seed,
+            requested_seed = m.requested_seed,
+            attempts = m.attempts,
+            used_safe_preset = m.used_safe_preset,
+            traversable_fraction = m.traversable_fraction,
+            spawns = m.spawn_points.len(),
+            surface_points = m.surface_points.len(),
+            theme = m.theme,
+            "map generated"
+        );
+        room.debug_dump();
         room
     }
 
@@ -433,6 +454,7 @@ impl Room {
                 }
                 if seat.dropped_this_tick > 0 {
                     let n = seat.dropped_this_tick;
+                    self.dropped_inputs += n as u64;
                     tracing::debug!(target: "game::net", player = id, dropped = n, "input queue full");
                 }
                 if !accepted.is_empty() {
@@ -445,7 +467,9 @@ impl Room {
             Command::UseItem(id, slot) => {
                 let now = self.world.round_time;
                 self.note(R::UseItem(id, slot));
-                let _ = self.world.use_item(id, slot, now);
+                if let Err(e) = self.world.use_item(id, slot, now) {
+                    tracing::debug!(target: "game::items", player = id, slot, reason = ?e, "use rejected");
+                }
             }
             Command::SelectSlot(id, slot) => {
                 self.note(R::SelectSlot(id, slot));
@@ -454,7 +478,11 @@ impl Room {
             Command::Fire(id) => {
                 let now = self.world.round_time;
                 self.note(R::Fire(id));
-                let _ = self.world.fire(id, now);
+                // `docs/61` §3 row 6: "my rocket did nothing" has six possible
+                // answers and the server already knows which one it was.
+                if let Err(e) = self.world.fire(id, now) {
+                    tracing::debug!(target: "game::weapons", player = id, reason = ?e, "fire rejected");
+                }
             }
             Command::ToggleFlashlight(id) => {
                 self.note(R::ToggleFlashlight(id));
@@ -551,6 +579,37 @@ impl Room {
         let min = self.config.min_players_to_start;
         let (mut events, outcome) = self.round.tick(&mut self.world, connected, min);
 
+        // `docs/61` §3, the rows that only the event stream can answer. These are
+        // deliberate diagnostic lines, not verbosity: each one is the thing you
+        // grep for when a player says something vague.
+        for e in self.world.events_so_far() {
+            match e {
+                // "I spawned inside a rock" — the chosen point, so it can be
+                // compared against the map.
+                game_core::world::GameEvent::Respawn { id, x, y, .. } => {
+                    tracing::debug!(target: "game::player", player = id, x, y, "respawned");
+                }
+                // "the item vanished" — TTL or eviction, which are different bugs.
+                game_core::world::GameEvent::ItemDespawn { world_item_id, .. } => {
+                    tracing::debug!(target: "game::items", world_item = world_item_id, "item despawned");
+                }
+                // "the weather never fired" — what was rolled and when.
+                game_core::world::GameEvent::EffectStart {
+                    id, kind, duration, ..
+                } => {
+                    tracing::info!(
+                        target: "game::effects",
+                        effect = id,
+                        kind = ?kind,
+                        duration,
+                        round_time = self.world.round_time,
+                        "effect telegraphing"
+                    );
+                }
+                _ => {}
+            }
+        }
+
         // A state hash every CHECKPOINT_STRIDE ticks, so a failed verification can
         // report *where* it diverged rather than only that it did. Written after
         // the step, so the hash describes the state at the tick it names.
@@ -593,6 +652,60 @@ impl Room {
     /// Everyone already seated keeps their seat and gets a fresh `map_init` —
     /// the alternative, dropping every socket, turns a vote into a reconnect
     /// storm.
+    /// `DEBUG_DUMP=1`: write `debug/<seed>/{map.png,surface.png,meta.json}`
+    /// (`docs/61` §6).
+    ///
+    /// `surface.png` is the direct visual answer to "why did validation reject
+    /// this map?", and is the easiest of the three to forget.
+    ///
+    /// Off by default — it costs disk and a few hundred milliseconds, and it runs
+    /// before `Warmup` ends so it never lands inside a tick.
+    fn debug_dump(&self) {
+        if !self.config.debug_dump {
+            return;
+        }
+        let dir = std::path::PathBuf::from("debug").join(format!("{:016x}", self.seed));
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            tracing::error!(target: "game::map", "DEBUG_DUMP: cannot create {}: {e}", dir.display());
+            return;
+        }
+        match serde_json::to_string_pretty(&self.world.map.meta) {
+            Ok(j) => {
+                if let Err(e) = std::fs::write(dir.join("meta.json"), j) {
+                    tracing::error!(target: "game::map", "DEBUG_DUMP: meta.json: {e}");
+                }
+            }
+            Err(e) => tracing::error!(target: "game::map", "DEBUG_DUMP: meta.json: {e}"),
+        }
+
+        #[cfg(feature = "dump-png")]
+        {
+            if let Err(e) = game_core::map::dump::dump_map(&self.world.map, &dir.join("map.png")) {
+                tracing::error!(target: "game::map", "DEBUG_DUMP: map.png: {e}");
+            }
+            let report = game_core::map::gen::traversal::analyse(
+                &self.world.map.mask,
+                &self.world.map.meta.surface_points,
+            );
+            if let Err(e) = game_core::map::dump::dump_surface(
+                &self.world.map,
+                &report,
+                &dir.join("surface.png"),
+            ) {
+                tracing::error!(target: "game::map", "DEBUG_DUMP: surface.png: {e}");
+            }
+        }
+        #[cfg(not(feature = "dump-png"))]
+        // Named, rather than silently writing one file of three: the PNGs are the
+        // useful part and their absence must not look like a dump that worked.
+        tracing::warn!(
+            target: "game::map",
+            "DEBUG_DUMP: meta.json only — rebuild with `--features dump-png` for map.png and surface.png"
+        );
+
+        tracing::info!(target: "game::map", path = %dir.display(), "DEBUG_DUMP written");
+    }
+
     /// Open a replay file for the current round. No-op unless `RECORD_REPLAY=1`.
     ///
     /// `stamp` comes from the caller because the recorder has no business
@@ -775,7 +888,7 @@ pub fn spawn_room(
     config: Arc<Config>,
     shutdown: oneshot::Receiver<()>,
 ) -> RoomHandle {
-    spawn_room_with(io, config, Arc::new(SessionMap::default()), shutdown)
+    spawn_room_with(io, config, Arc::new(SessionMap::default()), shutdown, None)
 }
 
 /// As [`spawn_room`], but sharing a [`SessionMap`] with the socket layer so events
@@ -785,9 +898,10 @@ pub fn spawn_room_with(
     config: Arc<Config>,
     sessions: Arc<SessionMap>,
     shutdown: oneshot::Receiver<()>,
+    metrics: Option<Arc<crate::metrics::Metrics>>,
 ) -> RoomHandle {
     let (tx, rx) = mpsc::channel(1024);
-    let task = tokio::spawn(run(io, config, sessions, rx, shutdown));
+    let task = tokio::spawn(run(io, config, sessions, rx, shutdown, metrics));
     RoomHandle {
         tx,
         task: Arc::new(tokio::sync::Mutex::new(Some(task))),
@@ -800,6 +914,7 @@ async fn run(
     sessions: Arc<SessionMap>,
     mut rx: mpsc::Receiver<Command>,
     mut shutdown: oneshot::Receiver<()>,
+    metrics: Option<Arc<crate::metrics::Metrics>>,
 ) {
     let mut room = Room::new_async(config).await;
     let dir = std::path::PathBuf::from(room.config.replay_dir.clone());
@@ -820,6 +935,7 @@ async fn run(
                 let span = tracing::info_span!("room", room = 0, tick = room.world.tick + 1);
                 let _g = span.enter();
 
+                let tick_started = Instant::now();
                 let mut drained = 0;
                 while drained < DRAIN_CAP {
                     match rx.try_recv() {
@@ -841,7 +957,22 @@ async fn run(
                 // Every third tick: 20 Hz, as SNAPSHOT_HZ says.
                 if room.world.tick.is_multiple_of(SIM_HZ / SNAPSHOT_HZ) {
                     let seqs = room.last_seqs();
-                    crate::events::broadcast_snapshot(&io, &room.world, &sessions, &seqs);
+                    let bytes =
+                        crate::events::broadcast_snapshot(&io, &room.world, &sessions, &seqs);
+                    if let Some(m) = metrics.as_ref() {
+                        m.record_snapshot(bytes);
+                    }
+                }
+
+                if let Some(m) = metrics.as_ref() {
+                    // Measured around the whole tick — drain, step, flush and
+                    // snapshot — because that is what has to fit in 16.7 ms.
+                    m.record_tick(tick_started.elapsed().as_micros().min(u32::MAX as u128) as u32, drained as u32);
+                    m.set_players(room.player_count());
+                    if room.dropped_inputs > 0 {
+                        m.record_inputs_dropped(room.dropped_inputs);
+                        room.dropped_inputs = 0;
+                    }
                 }
 
                 if room.due_for_checksum() {
@@ -854,6 +985,9 @@ async fn run(
                 let behind = expected.saturating_sub(room.world.tick);
                 if behind > LAG_WARN_TICKS && room.world.tick > room.lag_warned_at + SIM_HZ {
                     room.lag_warned_at = room.world.tick;
+                    if let Some(m) = metrics.as_ref() {
+                        m.record_overrun();
+                    }
                     tracing::warn!(target: "game::sim", lagging = behind, "tick overrun");
                 }
             }

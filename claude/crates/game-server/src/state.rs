@@ -13,6 +13,7 @@ pub struct Inner {
     pub started: Instant,
     pub rooms: AtomicUsize,
     pub players: AtomicUsize,
+    pub metrics: std::sync::Arc<crate::metrics::Metrics>,
 }
 
 /// Cheap to clone; every handler gets one.
@@ -26,7 +27,12 @@ impl AppState {
             started: Instant::now(),
             rooms: AtomicUsize::new(0),
             players: AtomicUsize::new(0),
+            metrics: std::sync::Arc::new(crate::metrics::Metrics::default()),
         }))
+    }
+
+    pub fn metrics(&self) -> std::sync::Arc<crate::metrics::Metrics> {
+        self.0.metrics.clone()
     }
 
     pub fn config(&self) -> &Config {

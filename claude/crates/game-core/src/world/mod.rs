@@ -1310,6 +1310,15 @@ impl World {
 
     // ----------------------------------------------------------------- events
 
+    /// The events accumulated this tick, without taking them.
+    ///
+    /// The server logs from these (`docs/61` §3) and then flushes them to
+    /// clients; draining to log would mean the log and the wire could not both
+    /// see the same event.
+    pub fn events_so_far(&self) -> &[GameEvent] {
+        &self.events
+    }
+
     pub fn drain_events(&mut self) -> Vec<GameEvent> {
         std::mem::take(&mut self.events)
     }

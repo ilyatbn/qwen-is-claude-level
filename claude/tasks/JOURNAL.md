@@ -1767,3 +1767,35 @@ Notes: The checks already existed; only ONE of them ran in the gate. This is
        would have got it wrong. Now one block.
 Left for later: T8.03 (F3 HUD), T8.04 (/metrics — not implemented at all),
        T8.05 (perf + docs), T8.06 (minimap), T8.08 (game feel).
+
+## T8.04 — /metrics, DEBUG_DUMP and the log audit — DONE
+Files: crates/game-server/src/metrics.rs (new), app.rs, state.rs, room.rs,
+       events.rs, lib.rs, crates/game-core/src/world/mod.rs
+Verified: `cargo test -p game-server --lib metrics` — 4 passed. Live server:
+       /metrics gives rooms 1, players 2, ticks 560, p50 0.02ms, p99 0.05ms;
+       a real client join gives snapshot_bytes_per_s 314 over 61 snapshots.
+       DEBUG_DUMP=1 wrote map.png + surface.png + meta.json. check.sh green.
+Notes: THE AUDIT IS THE FINDING. Five of docs/61 §3's seven diagnostic lines
+       DID NOT EXIST. Only the tick-overrun line and a map-generation-FAILURE
+       line were there. Added: game::map generation summary (attempts,
+       traversable_fraction, used_safe_preset — the "unplayable map" line),
+       game::weapons fire rejection with the reason (world.fire's Result was
+       being discarded with `let _ =`, so the server knew exactly why and threw
+       it away), game::items use rejection and despawn, game::player respawn
+       point, game::effects roll. Only carve-seq gaps remain client-side.
+       TWO SOURCES OF TRUTH FOR ONE NUMBER: /healthz read AppState.rooms and
+       .players, which NOTHING EVER INCREMENTED — a healthy server with two
+       players reported players 0. Both endpoints now read the metrics
+       registry, and rooms is set at build_stack.
+       The tick ring is 1024 samples (~17 s) ON PURPOSE: percentiles describe
+       NOW. A lifetime histogram lets a healthy first minute hide a bad one,
+       which is the opposite of what "why does it feel bad" needs. Pinned by
+       the_ring_forgets_old_samples.
+       World::events_so_far() added so the server can log from events and
+       still flush them to clients — draining to log would mean the log and
+       the wire could not both see the same event.
+       DEBUG_DUMP writes meta.json always and the PNGs only with --features
+       dump-png, and SAYS SO at warn when the feature is absent: one file of
+       three, silently, would look like a dump that worked.
+Left for later: T8.03 (F3 HUD), T8.05 (perf + docs), T8.06 (minimap),
+       T8.08 (game feel). Nothing is blocked; each is independent.

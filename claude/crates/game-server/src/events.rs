@@ -333,12 +333,13 @@ fn emit_to(
 
 /// Broadcast the snapshot for this tick. Binary, and `last_input_seq` is per
 /// recipient, so each socket gets its own frame.
+/// Returns the total bytes sent, for `/metrics`.
 pub fn broadcast_snapshot(
     io: &SocketIo,
     world: &World,
     sessions: &Arc<SessionMap>,
     last_seq: &[(PlayerId, u32)],
-) {
+) -> usize {
     let mut frames: Vec<(socketioxide::socket::Sid, Vec<u8>)> = Vec::new();
     for (player, seq) in last_seq {
         if let Some(sid) = sessions.sid_of(*player) {
@@ -346,8 +347,9 @@ pub fn broadcast_snapshot(
         }
     }
     if frames.is_empty() {
-        return;
+        return 0;
     }
+    let total: usize = frames.iter().map(|(_, b)| b.len()).sum();
     // Inline for the same reason as `flush_events`: a spawned task per tick lets
     // a stale snapshot land after a newer one.
     for (sid, bytes) in frames {
@@ -355,6 +357,7 @@ pub fn broadcast_snapshot(
             let _ = s.emit("snapshot", &crate::codec::b64_encode(&bytes));
         }
     }
+    total
 }
 
 pub fn emit_round_end(io: &SocketIo, tick: u32, reason: &str) {
