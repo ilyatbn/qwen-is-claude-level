@@ -1,6 +1,6 @@
 # Master task list
 
-101 tasks across 9 milestones. Work them **in order**. See `README.md` for the
+102 tasks across 9 milestones. Work them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
 
 Tasks marked **(v2)** come from `docs/70-amendments-v2.md`, which overrides the
@@ -159,6 +159,7 @@ Wire the finished core into the server. Nothing built so far gets rewritten.
 - [ ] [T6.13](M6/T6.13-integration-tests.md) — Multi-client integration tests
 - [x] [T6.14](M6/T6.14-bot-controller.md) — Bot controller in `game-core` **(v2)**
 - [x] [T6.15](M6/T6.15-bot-seating.md) — Seating bots in the room **(v2)**
+- [ ] [T6.16](M6/T6.16-game-scene.md) — The Game scene: the thing that runs it all **(v2)**
 
 **Checkpoint:** `docker compose -f docker/docker-compose.yml up` — two browsers,
 one round, terrain destruction visible in both, scores tracking.
