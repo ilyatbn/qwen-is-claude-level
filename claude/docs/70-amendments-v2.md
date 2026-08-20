@@ -680,7 +680,7 @@ air below and to the sides.
 |---|---|---|
 | `BACKDROP_RAYS` | 8 | evenly spaced, starting at 0 rad |
 | `BACKDROP_RAY_LEN` | 320 | world px |
-| `BACKDROP_MIN_HITS` | 6 | of 8 |
+| `BACKDROP_MIN_HITS` | 4 | of 8 — see §A18, then §A19 |
 
 Checked against every case on the map:
 
@@ -748,3 +748,57 @@ that is merely cosmetic, and away from the one that is confusing.
   run length instead, and on real terrain that mostly measures how flat the map is:
   a plateau produces a long constant run legitimately. The control is what proved
   the second metric was measuring the boundary rather than itself.
+
+## A19 — `BACKDROP_MIN_HITS` is 4, and the bound is enforced at every scale
+
+§A18 chose 5 from a table measured on **one medium map**. §A1 sets
+`DEFAULT_MAP_SCALE = Large`. Measured independently across four seed/scale
+combinations (enclosed air drawn as sky, 44 k–70 k samples each):
+
+| case | 4 | 5 | 6 |
+|---|---|---|---|
+| medium/4242 | 0.00 % | 0.85 % | 4.43 % |
+| medium/12345 | 0.00 % | 0.11 % | 2.00 % |
+| small/777 | 0.00 % | 0.02 % | 0.31 % |
+| **large/99** | **0.53 %** | **2.85 %** | 7.25 % |
+
+At Large — the scale the game actually ships — 5 gives 2.85 % against §A18's own
+2 % bound. **4 passes both bounds at every scale** (worst case 0.53 % enclosed-as-sky,
+1.67 % sky-as-backdrop). `BACKDROP_MIN_HITS` is therefore **4**, and §A18's choice
+of 5 is superseded.
+
+The tuning error is the interesting part, not the value:
+
+> A threshold measured on one map is tuned to one map. Any constant chosen by
+> measurement is measured at **every scale the game can ship**, and the acceptance
+> test covers all of them — otherwise the bound is enforced where it does not
+> matter and unenforced where it does.
+
+Two consequences that are now rules:
+
+- `BackdropMask` takes `minHits` with **no default**. A default that disagreed with
+  the shipped constant is what let the synthetic tests sit at 6 while production ran
+  at 5, and at the shipped value two of those tests fail — one of them violating
+  §A17's own `EDGE_BAND_PX` proximity bound at 13 px.
+- Tests pin to `C().BACKDROP_MIN_HITS`, never to a literal. A test pinned to a value
+  the game does not use is testing a build nobody runs.
+
+## A20 — Report damage that was applied, and name the source that caused it
+
+Two defects in `explode`, both latent today and both expensive once M6 wires the
+`damage` event (`40-net-protocol.md` §3).
+
+**Report what was applied.** `apply_damage` returns whether the damage landed, and
+the return is discarded — a hit is recorded at full value even when the callee
+refused it. A player under `SPAWN_IFRAMES` therefore emits a stream of phantom
+damage events, and any kill attribution built on that list inherits the error.
+Knockback still applying is correct and stays. Also: a player at exactly
+`d == radius` currently produces an entry of `(id, 0.0, zero impulse)` — a spurious
+event for a no-op, which should not be recorded at all.
+
+**Name the source.** The fallback arm hardcodes
+`DamageSource::Weather(EffectKind::MeteorShower)`, so every ownerless explosion is
+attributed to a meteor — and an owner passed without a weapon is also swallowed,
+losing `SelfInflicted`. Lava and toxic rain both route through `explode`, so
+without this every environmental death in the kill feed reads "meteor". `explode`
+takes the `DamageSource` from its caller.
