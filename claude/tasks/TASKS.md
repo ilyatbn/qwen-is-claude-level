@@ -1,12 +1,13 @@
 # Master task list
 
-111 tasks across 10 milestones.
+128 tasks across 13 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added. Counted, not assumed.) Work them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
 
-Tasks marked **(v2)** come from `docs/70-amendments-v2.md`, which overrides the
-earlier docs where they disagree. Read it before starting M1.
+Tasks marked **(v2)** come from `docs/70-amendments-v2.md` and **(v3)** from
+`docs/71-amendments-v3.md`. Both override the earlier docs where they disagree.
+Read v2 before M1 and v3 before M10.
 
 Tick a box only when the task's **Done when** command passes.
 
@@ -216,3 +217,49 @@ drawn**; the fourth is two carried defects with their consequences attached.
 
 **Checkpoint:** play a full round against bots with sound on, at night, on each of
 the three themes. It should be a game you want to keep playing.
+
+---
+
+## M10 — Menus, rooms and matchmaking (7)
+
+The front end the game never had, and the multi-room server `docs/41` §9 always
+described but never built.
+
+- [ ] [T10.01](M10/T10.01-room-registry.md) — `RoomRegistry`: many rooms in one process **(v3)**
+- [ ] [T10.02](M10/T10.02-lobby-protocol.md) — Create, join by code, quick match **(v3)**
+- [ ] [T10.03](M10/T10.03-title-attract.md) — Title screen with a live attract mode **(v3)**
+- [ ] [T10.04](M10/T10.04-start-menu.md) — Start Game menu and lobby **(v3)**
+- [ ] [T10.05](M10/T10.05-skins-menu.md) — Skins menu (weapons greyed out) **(v3)**
+- [ ] [T10.06](M10/T10.06-death-overlay.md) — Death overlay and respawn countdown **(v3)**
+- [ ] [T10.07](M10/T10.07-room-capacity.md) — Measure what a room costs **(v3)**
+
+**Checkpoint:** two browsers, one creates a private game and reads the code aloud,
+the other joins it. A third runs quick match. All three rounds run at once.
+
+---
+
+## M11 — The arsenal (9)
+
+Three weapons becomes twenty-two. Deathmatch is the point; variety is the game.
+
+- [ ] [T11.01](M11/T11.01-delivery-kinds.md) — Melee, cone and placed delivery **(v3)**
+- [ ] [T11.02](M11/T11.02-battery.md) — The battery, shields and shield-piercing **(v3)**
+- [ ] [T11.03](M11/T11.03-ballistics.md) — Pistol, revolver, deagle, machinegun **(v3)**
+- [ ] [T11.04](M11/T11.04-energy.md) — Laser pistol and laser SMG **(v3)**
+- [ ] [T11.05](M11/T11.05-melee.md) — Knife, bat, whip, axe, hammer **(v3)**
+- [ ] [T11.06](M11/T11.06-flamethrower.md) — Flamethrower **(v3)**
+- [ ] [T11.07](M11/T11.07-mines.md) — Proximity mines **(v3)**
+- [ ] [T11.08](M11/T11.08-grenades.md) — Airburst, smoke, molotov, toxic **(v3)**
+- [ ] [T11.09](M11/T11.09-balance.md) — Balance the arsenal by measurement **(v3)**
+
+**Checkpoint:** a full round where every weapon class gets used, and the balance
+report has no weapon nobody picks up.
+
+---
+
+## M12 — Tombstones (1)
+
+- [ ] [T12.01](M12/T12.01-tombstones.md) — Tombstones, with an effect seam **(v3)**
+
+**Checkpoint:** die three times in a round; three graves stand where you fell, and
+a player joining late sees all of them.
