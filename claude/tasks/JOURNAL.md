@@ -1308,3 +1308,26 @@ Left for later: T6.03 (join flow) and T6.07 (event scoping) are the two unticked
        M6 boxes. T6.07's `inventory` reaches only its owner and `damage` only the
        victim and attacker — events.rs currently broadcasts nothing at all, it is
        a skeleton with a flush() that drops events on the floor.
+
+## M6 part A — IN PROGRESS (T6.03 and T6.07 remain)
+Done and committed: T6.01 (4c831ef), T6.02 (047cc17), T6.04+T6.05+T6.06 (cec9b9e).
+Not started: T6.03 join/ready/welcome, T6.07 event emission and delivery scoping.
+On disk: compiles, `./scripts/check.sh` green, working tree clean, 77/101 ticked.
+
+Next session starts at T6.03. What is already in place for it:
+  - `RoomHandle::join(name, skin_id) -> Option<PlayerId>` awaits the seat and
+    returns None when full; `Command::Ready/Leave` are wired; ids are reused from
+    a free list; unready seats are swept after READY_TIMEOUT (30 s).
+  - `codec::encode_map_init` is ready to send after `welcome`.
+  - `app.rs` still has the M0 echo handler on the namespace — T6.03 replaces it.
+  - `session.rs` does not exist yet.
+T6.07's `events.rs` is a SKELETON: `flush()` takes the events and drops them on
+the floor. Nothing is broadcast yet, so no client can see a carve. The scoping
+rules are the point of the task — `inventory` to its owner only, `damage` to the
+victim and attacker only, everything else to everyone.
+
+Two things carried forward that nothing checks yet:
+  - buried slots must not reach a client before reveal. The map_init half is
+    tested (see cec9b9e); the event half needs T6.07.
+  - SNAPSHOT_PLAYER_BYTES is 15 in constants.rs against 14 in docs/02 and
+    docs/40 §3. Needs a doc amendment from the authority.
