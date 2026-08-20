@@ -1489,3 +1489,66 @@ reproduce at 16.4 / 5.3 / 6.7).
 
 A/B'd in the same load window: median 299 → 295, **max 402 → 330**. It removes the
 tail, not the median. Worth keeping and not worth overclaiming.
+
+## A39 — Five mechanisms that were built and never wired
+
+The single most common defect class on this project, and not one instance was
+caught by a test:
+
+| # | Mechanism | Consumer | Symptom |
+|---|---|---|---|
+| 1 | `Connection` + `WorldMirror` (T6.08) | no scene existed | the M6 checkpoint was unreachable; two M8 tasks listed `Game.ts` as if it existed |
+| 2 | `sendUseItem` / `sendSelectSlot` (T6.08) | no key binding | medkits, shields and **the flashlight** unusable in the real game |
+| 3 | `ItemDef.sprite` (T4.01) + world items (T6.08) | nothing drew them | a medkit on the ground was invisible |
+| 4 | `MapMeta.decorations` (M1) | nothing drew them | terrain read as bare for eight milestones |
+| 5 | `fire_pressed` → `should_fire` (T6.14) | `drive_bots` never called `world.fire` | **bots never fired a shot in the game's history** |
+
+Each half was tested. `should_fire` had unit tests. `sendUseItem` had a codec test.
+`ItemDef.sprite` was populated and validated. **The wiring between them was tested
+by nothing, because a unit test's whole premise is that it calls the unit itself.**
+
+Two diagnostics that work, both proven here:
+
+> **Count the thing at both ends and assert the two numbers against each other.**
+> T9.03's e2e asserts *items tracked* against *items drawn* — they had been
+> silently different for three milestones, and asserting only "the server spawned
+> items" would have passed the whole time. T9.09's counters showed **16,861 trigger
+> pulls, 0 damage, 0 cooldown rejections** — a shot never taken never starts a
+> cooldown, and that zero is the fingerprint.
+
+> **Grep for the callers of anything you just built.** A function with no
+> non-test caller is not finished, however green its tests are.
+
+The structural cause is visible in the task list: nearly every task named a
+*mechanism*, and the tasks that named a *consumer* were added late, by builders who
+tried to run a checkpoint and found they could not. A plan made of mechanisms
+produces exactly this.
+
+## A40 — Carves between join and ready are dropped
+
+`map_init` is encoded at **join** and stamped with the current `carve_seq = N`.
+Events flush only to **ready** sockets. So every carve landing in that window is
+dropped, and the client's first delivered carve is `M+1` while it expects `N+1` —
+a gap, which `42-netcode-prediction.md` §6 resolves by requesting a full
+`resync_map` after 2 s.
+
+The window has always been open. It was invisible until §A39's fifth defect was
+fixed and the bots started shooting: a round went from roughly one carve to
+hundreds, and the measured cost is **1–2 resyncs per client per round**.
+
+**Re-sending `map_init` on ready is not the fix** — measured, resyncs went 1 → 4,
+because a second full map transfer simply widens the window it was meant to close.
+That attempt was reverted rather than kept.
+
+The fix is to stop conflating two different readinesses:
+
+> A socket is ready for **events** as soon as it has a mask to apply them to —
+> which is the moment `map_init` is *sent*, not the moment the client reports it
+> has finished decoding. Carves occurring between those two moments are queued per
+> session and flushed in `seq` order at `ready`.
+
+The client already buffers carves by `seq` and applies them in order
+(`11-map-destruction.md` §6), so delivery ahead of `ready` is safe by construction;
+it is the *gap* that is unsafe, not the earliness. Snapshot readiness is unchanged
+and stays gated on `ready`, because a snapshot references a world the client cannot
+render yet.

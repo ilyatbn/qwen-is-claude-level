@@ -1,6 +1,6 @@
 # Master task list
 
-110 tasks across 10 milestones.
+111 tasks across 10 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added. Counted, not assumed.) Work them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
@@ -212,6 +212,7 @@ drawn**; the fourth is two carried defects with their consequences attached.
 - [x] [T9.07](M9/T9.07-bake-regression.md) — The bake got slower and nobody knows why **(v2)**
 - [x] [T9.08](M9/T9.08-join-state.md) — Announce the state that existed before the client **(v2)**
 - [x] [T9.09](M9/T9.09-bot-lethality.md) — Bots that carry a round **(v2)**
+- [ ] [T9.10](M9/T9.10-join-carve-gap.md) — Close the join-window carve gap **(v2)**
 
 **Checkpoint:** play a full round against bots with sound on, at night, on each of
 the three themes. It should be a game you want to keep playing.
