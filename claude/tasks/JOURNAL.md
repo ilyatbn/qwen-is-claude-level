@@ -2463,3 +2463,15 @@ Left for later / HONEST GAP: `checksum::a_joiner_that_delays_ready_still_gets_
        the same reason: 0/17 clean at three earlier commits, 2/8 failures at
        HEAD, which is p~0.06 and not decisive. If it recurs, the reproducer is
        real concurrent cargo builds (I/O + memory pressure), not busy loops.
+
+## M10 — IN PROGRESS (T10.01, T10.02, T10.07 + B10 done; T10.03/T10.04/T10.06/T12.01/T10.05 remain)
+State on disk: clean, game-server 183 passed / 0 failed, clippy -D warnings
+       clean, fmt clean. Multi-room works end to end over real sockets; the
+       lobby has create / join-by-code / quick-match / leave.
+Next in order: T10.03 title + attract mode -> T10.04 start menu -> T10.06 death
+       overlay -> T12.01 tombstones -> T10.05 skins menu (needs T12.01's
+       tombstone skins).
+For whoever takes T10.03: the attract mode runs game-core in WASM client-side
+       with no server, so reuse SandboxScene's local stepping and the T6.14 bot
+       controller. §A15 applies to "stop it when the scene is not visible" —
+       assert zero ticks after the transition, not that stop() was called.
