@@ -1263,3 +1263,37 @@ unit test passed, because they call `finish_recording()` directly. And the contr
 for the fix had to be a **subprocess** `SIGKILL`: in-process, the room is scheduled
 the instant the oneshot fires, so a "don't wait" control writes the footer anyway
 and proves nothing.
+
+## A35 — Screen space is not world space with the scrolling switched off
+
+Third instance of the §A16 class on this project: a quantity correct in world units
+and wrong relative to what is on screen.
+
+The game-feel layer computed correct values — trauma 0.79, one damage number,
+vignette 0.11, health 100 → 75 — and drew **nothing**. A Phaser object with
+`setScrollFactor(0)` still has the camera's **zoom** applied, so at
+`CAMERA_ZOOM = 2` every screen-space element landed off-viewport.
+
+The two earlier instances were the same mistake in different clothes: §A16, where
+every FoV radius covered twice the screen fraction it was designed for; and §A26,
+where a feet line was fed to something expecting a centre. In all three the
+arithmetic was right and the frame of reference was unstated.
+
+> Anything positioned in **screen space** is rendered by something that does not
+> inherit the world camera's zoom — a dedicated UI camera at zoom 1, or the DOM.
+> `scrollFactor(0)` alone is not screen space; it is world space that does not
+> scroll.
+
+This codebase already had the answer and it was missed: the HUD strip and
+scoreboard are DOM, where world → screen is just `(x - scrollX) * zoom` with no
+engine quirk. Phaser's own idiom is a second camera that renders only UI objects,
+with `cameras.main.ignore(ui)` and `uiCam.ignore(world)`.
+
+Either is acceptable. What is **not** acceptable is verifying a screen-space
+element at zoom 1: it works at zoom 1 by construction, and this game does not run
+at zoom 1. Every screen-space element is verified by screenshot **at
+`CAMERA_ZOOM`**.
+
+And the meta-lesson, from a probe that failed to converge: when two candidate
+mappings both produce nothing, the model is wrong and guessing a third will not
+help. Go and find what already works in the codebase.
