@@ -360,6 +360,14 @@ impl Room {
         }
         game_core::world::give(&mut self.world, id, game_core::items::registry::BAZOOKA, 4);
         game_core::world::give(&mut self.world, id, game_core::items::registry::SMG, 60);
+        // A second rocket stack, in the slot after the smg.
+        //
+        // `MAX_STACK` for a bazooka is 4, and 4 rockets is not enough to be
+        // "armed" for anything that runs longer than a few seconds — T9.06's
+        // full round burns them in the first minute. Granted *after* the smg so
+        // the slot order stays bazooka / smg / bazooka and nothing that already
+        // presses a hotkey has to change.
+        game_core::world::give(&mut self.world, id, game_core::items::registry::BAZOOKA, 4);
     }
 
     /// Free a seat for a human by removing the newest bot.

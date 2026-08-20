@@ -78,12 +78,24 @@ const CHECKS = [
   // The M6 checkpoint: two browser contexts, one server, one round. Standalone
   // because it needs a real game-server and two clients rather than the sandbox.
   { name: 'two-clients', file: 'scripts/e2e-two-clients.mjs', standalone: true },
+  // T9.06 — one *complete* round, ~3 minutes of wall clock. Opt-in rather than
+  // in the default path: it is the slowest thing in the repo by an order of
+  // magnitude, and a gate people skip because it takes four minutes is a gate
+  // that gates nothing.
+  {
+    name: 'full-round',
+    file: 'scripts/checks/full-round.mjs',
+    standalone: true,
+    optIn: true,
+  },
 ]
 
 const filters = process.argv.slice(2)
 const selected = filters.length
   ? CHECKS.filter((c) => filters.some((f) => c.name.includes(f)))
-  : CHECKS
+  : // An opt-in check is only skipped when nothing was asked for by name, so
+    // `e2e.mjs full-round` still runs it.
+    CHECKS.filter((c) => !c.optIn)
 if (!selected.length) {
   console.error(`no checks match ${filters.join(', ')}`)
   console.error(`available: ${CHECKS.map((c) => c.name).join(', ')}`)

@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 
+use game_core::effects::scheduler::EffectPhase;
 use game_core::items::registry::def;
 use game_core::player::state::{DeathCause, PlayerId};
 use game_core::world::{GameEvent, World};
@@ -91,6 +92,18 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::PhaseChange { .. } => "phase_change",
         GameEvent::RoundState { .. } => "round_state",
         GameEvent::RoundEnd { .. } => "round_end",
+    }
+}
+
+/// Wire name for an effect's lifecycle phase.
+///
+/// Named explicitly rather than derived from the enum, so the wire format cannot
+/// change because someone renamed a variant — `docs/40` §3 fixes these strings.
+fn effect_phase_name(p: EffectPhase) -> &'static str {
+    match p {
+        EffectPhase::Telegraph => "telegraph",
+        EffectPhase::Active => "active",
+        EffectPhase::Done => "cleanup",
     }
 }
 
@@ -223,8 +236,15 @@ pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
             "tick": tick, "id": id, "kind": format!("{kind:?}"), "phase": "telegraph",
             "seed": seed.to_string(), "duration": duration
         }),
+        // `docs/40` §3 and `docs/13` §2 both give this field's literal values as
+        // lowercase, and `effect_start` above hardcodes `"telegraph"`. Serialising
+        // the enum's `Debug` here instead sent `"Active"`, so the *same field*
+        // arrived in two different casings depending on which event carried it,
+        // and a client switching on it had to know which one it came from.
+        // Found by the first check that watched a whole round (T9.06); no unit
+        // test compares two events' encodings against each other.
         GameEvent::EffectPhaseChanged { id, phase, .. } => {
-            json!({"tick": tick, "id": id, "phase": format!("{phase:?}")})
+            json!({"tick": tick, "id": id, "phase": effect_phase_name(*phase)})
         }
         GameEvent::EffectEnd { id, .. } => json!({"tick": tick, "id": id}),
         GameEvent::HazardSpawn {
@@ -556,5 +576,44 @@ mod tests {
             &w,
         );
         assert_eq!(p["seed"], w.seed.to_string());
+    }
+
+    /// The same field, on the two events that carry it, must agree.
+    ///
+    /// `effect_start` hardcoded `"telegraph"` while `effect_phase` serialised the
+    /// enum's `Debug`, so the wire carried `"telegraph"` and `"Active"` for one
+    /// field and a client switching on it had to know which event it came from.
+    /// No unit test compared two events' encodings against each other, so it took
+    /// a check that watched a whole round to notice (T9.06).
+    #[test]
+    fn effect_phase_uses_the_same_casing_on_both_events() {
+        let w = world();
+        let start = payload_of(
+            &GameEvent::EffectStart {
+                tick: 1,
+                id: 7,
+                kind: game_core::weapons::explode::EffectKind::HeavyFog,
+                seed: 1,
+                duration: 15.0,
+            },
+            &w,
+        );
+        let changed = payload_of(
+            &GameEvent::EffectPhaseChanged {
+                tick: 2,
+                id: 7,
+                phase: EffectPhase::Active,
+            },
+            &w,
+        );
+        let a = start["phase"].as_str().expect("phase is a string");
+        let b = changed["phase"].as_str().expect("phase is a string");
+        assert_eq!(a, a.to_lowercase(), "effect_start phase must be lowercase");
+        assert_eq!(b, b.to_lowercase(), "effect_phase phase must be lowercase");
+        // And the literal values docs/40 §3 fixes.
+        assert_eq!(a, "telegraph");
+        assert_eq!(b, "active");
+        assert_eq!(effect_phase_name(EffectPhase::Telegraph), "telegraph");
+        assert_eq!(effect_phase_name(EffectPhase::Done), "cleanup");
     }
 }

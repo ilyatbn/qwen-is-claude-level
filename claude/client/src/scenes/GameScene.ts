@@ -91,6 +91,34 @@ export class GameScene extends Phaser.Scene {
   private serverDarkness = 0
 
   /**
+   * What actually happened during the round, accumulated as it arrives.
+   *
+   * T9.06 needs to assert on a four-minute round, and the things worth asserting
+   * are **events**, not states: a weather telegraph lasts `EFFECT_TELEGRAPH` (3 s)
+   * and a death is instantaneous. A check that polls `debug()` once a second sees
+   * neither, and would pass on a round where nothing ever happened — so the scene
+   * records them at the moment they land instead of the check sampling for them.
+   *
+   * Every field here is a count or a set of things seen. None of it feeds
+   * rendering; removing it changes nothing the player sees.
+   */
+  private observed = {
+    phases: new Set<string>(),
+    dayPhases: new Set<string>(),
+    /** effect id -> the lifecycle phases seen for it, so "ran start to finish" is checkable. */
+    effects: new Map<number, { kind: string; phases: Set<string> }>(),
+    hazards: 0,
+    deaths: [] as Array<{ victim: number; attacker: number | null; cause: string }>,
+    respawns: 0,
+    itemSpawns: 0,
+    itemPickups: 0,
+    darknessMin: 1,
+    darknessMax: 0,
+    /** Largest gap between the server's tick and the last one we applied. */
+    maxTickLag: 0,
+  }
+
+  /**
    * Snapshots that arrived before the mask did.
    *
    * A mid-round join is normal (`docs/41` §4), and the server starts the 20 Hz
@@ -142,8 +170,32 @@ export class GameScene extends Phaser.Scene {
       const p = asRecord(raw)
       this.phase = String(p['phase'] ?? 'lobby') as Phase
       this.timeLeft = Number(p['time_left'] ?? 0)
+      this.observed.phases.add(this.phase)
     })
-    this.conn.on('score', () => this.refreshHud())
+    // The payload is the point: `score` carries the whole table (`docs/40` §3),
+    // and this handler used to discard it and merely re-render `this.scores` —
+    // a map only ever written by `welcome` and `player_join`, both of which set
+    // 0. So the scoreboard read 0 for everyone for the whole round no matter who
+    // killed whom, and the HUD refreshed faithfully to show it. Found by the
+    // first check that played a round and then reconciled the scoreboard against
+    // the deaths it had watched (T9.06).
+    this.conn.on('score', (raw) => {
+      const rows = asRecord(raw)['scores']
+      if (Array.isArray(rows)) {
+        for (const row of rows) {
+          const r = asRecord(row)
+          const id = Number(r['id'] ?? -1)
+          if (id < 0) continue
+          const prev = this.scores.get(id)
+          this.scores.set(id, {
+            name: prev?.name ?? `p${id}`,
+            score: Number(r['score'] ?? 0),
+            deaths: Number(r['deaths'] ?? 0),
+          })
+        }
+      }
+      this.refreshHud()
+    })
     // Owner-only (docs/30 §6). The whole 8-slot array arrives on every change,
     // which removes a class of desync bug for 16 bytes.
     this.conn.on('inventory', (raw) => {
@@ -192,6 +244,30 @@ export class GameScene extends Phaser.Scene {
     for (const ev of ['phase_change', 'effect_start', 'hazard_spawn', 'respawn']) {
       this.conn.on(ev, (raw) => this.cueFor(ev, asRecord(raw)))
     }
+    // Record the effect lifecycle. `effect_start` carries the telegraph phase,
+    // `effect_phase` the activation and `effect_end` the cleanup (`docs/13` §2),
+    // so "an effect ran start to finish" is only answerable by keeping all three
+    // against the same id — a single sample cannot distinguish a full run from
+    // one that was cut short by the round ending.
+    for (const ev of ['effect_start', 'effect_phase', 'effect_end']) {
+      this.conn.on(ev, (raw) => {
+        const p = asRecord(raw)
+        const id = Number(p['id'] ?? -1)
+        if (id < 0) return
+        const rec = this.observed.effects.get(id) ?? { kind: '', phases: new Set<string>() }
+        if (p['kind'] !== undefined) rec.kind = String(p['kind'])
+        rec.phases.add(ev === 'effect_end' ? 'end' : String(p['phase'] ?? ev))
+        this.observed.effects.set(id, rec)
+      })
+    }
+    this.conn.on('hazard_spawn', () => this.observed.hazards++)
+    this.conn.on('phase_change', (raw) => {
+      const p = asRecord(raw)
+      this.observed.dayPhases.add(String(p['day_phase'] ?? p['phase'] ?? ''))
+    })
+    this.conn.on('respawn', () => this.observed.respawns++)
+    this.conn.on('item_spawn', () => this.observed.itemSpawns++)
+    this.conn.on('item_pickup', () => this.observed.itemPickups++)
     this.conn.on('explosion', (raw) => {
       const p = asRecord(raw)
       const x = Number(p['x'] ?? 0)
@@ -225,6 +301,11 @@ export class GameScene extends Phaser.Scene {
       const victim = Number(p['victim'] ?? -1)
       const attacker = p['attacker'] === null ? undefined : Number(p['attacker'])
       const cause = String(p['cause'] ?? 'player')
+      this.observed.deaths.push({
+        victim,
+        attacker: attacker === undefined ? null : attacker,
+        cause,
+      })
       const nameOf = (id: number) => this.scores.get(id)?.name ?? `p${id}`
       this.feel.kill({
         victim: nameOf(victim),
@@ -313,6 +394,11 @@ export class GameScene extends Phaser.Scene {
     this.me = w.playerId
     this.roundTime = w.roundTime
     this.phase = w.phase as Phase
+    // `welcome` is the only place a client learns the phase it *joined* in:
+    // `round_state` is broadcast on transitions and once a second during
+    // `Playing` (`docs/41` §3), so the transition into `Warmup` happens before
+    // anyone is seated and no client ever receives a `round_state` for it.
+    this.observed.phases.add(this.phase)
     for (const p of w.players) {
       this.scores.set(p.id, { name: p.name ?? `p${p.id}`, score: p.score, deaths: 0 })
     }
@@ -367,10 +453,14 @@ export class GameScene extends Phaser.Scene {
     const now = performance.now()
     const s = this.mirror.applySnapshotB64(b64, now)
 
+    const lag = s.tick - this.lastServerTick
+    if (this.lastServerTick > 0 && lag > this.observed.maxTickLag) this.observed.maxTickLag = lag
     this.lastServerTick = s.tick
     this.debugHud?.noteSnapshot(now, s.tick)
     this.roundTime = s.roundTime
     this.serverDarkness = s.darkness
+    if (s.darkness < this.observed.darknessMin) this.observed.darknessMin = s.darkness
+    if (s.darkness > this.observed.darknessMax) this.observed.darknessMax = s.darkness
     this.clock.addSample(s.roundTime * 1000, now, this.lastRtt)
     this.interp.push(
       s.tick,
@@ -818,6 +908,37 @@ export class GameScene extends Phaser.Scene {
           carvesApplied: self.mirror.stats.carvesApplied,
           resyncs: self.mirror.stats.resyncs,
           interp: self.interp.stats,
+          // Round state, for a check that has to watch a whole round rather
+          // than a moment of one.
+          roundTime: self.roundTime,
+          timeLeft: self.timeLeft,
+          darkness: self.serverDarkness,
+          health: self.health,
+          scores: [...self.scores.entries()].map(([id, s]) => ({
+            id,
+            name: s.name,
+            score: s.score,
+          })),
+          // Accumulated events (see `observed`). Sets and Maps do not survive
+          // `page.evaluate`'s structured clone as anything useful, so they are
+          // flattened here rather than in the check.
+          observed: {
+            phases: [...self.observed.phases],
+            dayPhases: [...self.observed.dayPhases],
+            effects: [...self.observed.effects.entries()].map(([id, e]) => ({
+              id,
+              kind: e.kind,
+              phases: [...e.phases],
+            })),
+            hazards: self.observed.hazards,
+            deaths: self.observed.deaths,
+            respawns: self.observed.respawns,
+            itemSpawns: self.observed.itemSpawns,
+            itemPickups: self.observed.itemPickups,
+            darknessMin: self.observed.darknessMin,
+            darknessMax: self.observed.darknessMax,
+            maxTickLag: self.observed.maxTickLag,
+          },
         }
       },
       fire() {

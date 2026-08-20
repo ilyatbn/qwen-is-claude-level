@@ -2130,3 +2130,39 @@ Left for later: the perf ceiling (pre-existing, bimodal samples suggest a
        systematic effect not noise); §A37's aggregate claim needs correcting in
        the doc; one ~40x20 screen-px backdrop patch remains at bottom-left of
        m9-grassland-day.png, within the accepted residual.
+
+## T9.06 — Play a full round — DONE
+Files: scripts/checks/full-round.mjs (new), scripts/e2e.mjs,
+       client/src/scenes/GameScene.ts, crates/game-server/src/{events,room}.rs
+Verified: `node scripts/e2e.mjs full-round` — all 13 assertions ok, three times
+       running. 150 s round + 10 s warmup, 2 clients + 3 bots, ~161k px destroyed,
+       3 weather effects telegraph→active→end, darkness 0.00→0.82, masks agree,
+       0 resyncs, max tick lag 3.
+Notes: THE SCENE RECORDS, THE CHECK DOES NOT POLL. The things worth asserting are
+       events and most are brief — a telegraph is 3 s, a death instantaneous — so
+       `GameScene.observed` accumulates them as they arrive. A once-a-second
+       sample would miss them and pass on a round where nothing happened.
+       THREE DEFECTS, none reachable by a unit test:
+       (1) `effect_phase` serialised the enum's Debug (`"Active"`) while
+       `effect_start` hardcoded `"telegraph"` — the SAME FIELD in two casings
+       depending on which event carried it, against docs/40 §3. No unit test
+       compared two events' encodings to each other. Now `effect_phase_name`,
+       with a test that falsifies at the live binding site.
+       (2) THE `score` HANDLER DISCARDED ITS PAYLOAD and only re-rendered a map
+       written by `welcome`/`player_join`, both of which set 0 — so the
+       scoreboard read 0 for everyone all round however many kills happened, and
+       the HUD refreshed faithfully to show it. Caught by reconciling the
+       scoreboard against the deaths the check had watched.
+       (3) `Inventory` is pushed on pickup/use/death and NEVER ON JOIN, and
+       `give()` pushes nothing — so with DEV_LOADOUT the HUD says "(empty)" while
+       you hold 4 rockets. Same class as T9.03's un-announced initial items.
+       REPORTED, NOT FIXED: it needs the join path, which is outside this task.
+       Self-kill is scripted rather than left to bots: two trial rounds gave 0
+       and 1 deaths, so "at least one death" from combat is a coin flip and a
+       flaky gate teaches people to re-run it (§A28). Self-damage is a real
+       mechanic (SELF_DAMAGE_MULT 1.0). It needed three fixes to be reliable —
+       drive with the smg so rockets survive (hitscan cannot hurt its owner),
+       step onto fresh ground between shots (each blast deepens the crater so the
+       next detonates further below you: 12 dmg/shot standing still vs 25), and
+       DEV_LOADOUT grants a second rocket stack because 4 is not "armed".
+Left for later: T9.07; the inventory-on-join defect above.
