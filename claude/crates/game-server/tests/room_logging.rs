@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use game_core::constants::MapScale;
 use game_server::config::Config;
 use game_server::room::spawn_room;
 use socketioxide::SocketIo;
@@ -53,6 +54,14 @@ where
     }
 }
 
+/// Small, not the shipped Large default: see the note in `tests/room.rs`.
+fn test_config() -> Config {
+    Config {
+        map_scale: MapScale::Small,
+        ..Config::default()
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_tick_span_carries_room_and_tick() {
     let cap = Arc::new(Captured::default());
@@ -61,7 +70,7 @@ async fn every_tick_span_carries_room_and_tick() {
 
     let (_layer, io) = SocketIo::new_layer();
     let (_tx, rx) = oneshot::channel();
-    let handle = spawn_room(io, Arc::new(Config::default()), rx);
+    let handle = spawn_room(io, Arc::new(test_config()), rx);
 
     // Wait for the room to be live before measuring. `Room::new` generates the map
     // first, which takes hundreds of milliseconds — a fixed sleep measures map

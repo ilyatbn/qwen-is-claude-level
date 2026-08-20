@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use game_core::constants::MapScale;
 use game_core::constants::SIM_HZ;
 use game_core::player::input::{button, Input};
 use game_server::config::Config;
@@ -16,10 +17,24 @@ use game_server::state::AppState;
 use socketioxide::SocketIo;
 use tokio::sync::oneshot;
 
+/// A **Small** map, not the shipped default.
+///
+/// `DEFAULT_MAP_SCALE` is Large (§A1), so a room built from `Config::default()`
+/// generates 4096x2048 and then steps that world at 60 Hz for the lifetime of the
+/// test binary. Cargo runs test binaries in parallel, and several of those at once
+/// starved the M0 socket handshake into a 10 s timeout — a failure in an unrelated
+/// suite, caused entirely by how expensive these fixtures were.
+pub fn test_config() -> Config {
+    Config {
+        map_scale: MapScale::Small,
+        ..Config::default()
+    }
+}
+
 /// A room with no HTTP server around it: `SocketIo` is built and dropped into the
 /// task, which is all the room needs to emit.
 fn room() -> (RoomHandle, oneshot::Sender<()>) {
-    let config = Arc::new(Config::default());
+    let config = Arc::new(test_config());
     let (_layer, io) = SocketIo::new_layer();
     let (tx, rx) = oneshot::channel();
     let handle = spawn_room(io, config, rx);

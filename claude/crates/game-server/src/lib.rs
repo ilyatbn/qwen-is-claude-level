@@ -4,6 +4,7 @@
 //! `main.rs` is a thin wrapper over [`app::build`].
 
 pub mod app;
+pub mod codec;
 pub mod config;
 pub mod events;
 pub mod logging;

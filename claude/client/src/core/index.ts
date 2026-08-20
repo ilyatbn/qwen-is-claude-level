@@ -114,6 +114,14 @@ export interface Constants {
   VIEWPORT_W: number
   VIEWPORT_H: number
   CHUNK_SIZE: number
+  INPUT_REDUNDANCY: number
+  MAX_INPUT_QUEUE: number
+  SNAPSHOT_PLAYER_BYTES: number
+  SNAPSHOT_HEADER_BYTES: number
+  SNAPSHOT_FOOTER_BYTES: number
+  SNAPSHOT_HZ: number
+  INTERP_DELAY_MS: number
+  RECONCILE_EPSILON_PX: number
   COARSE_CELL: number
   BEDROCK_H: number
   WALL_W: number

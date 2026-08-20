@@ -330,7 +330,29 @@ pub const INPUT_REDUNDANCY: usize = 3;
 pub const RECONCILE_EPSILON_PX: f32 = 2.0;
 /// Seconds between server mask hashes.
 pub const MASK_CHECKSUM_INTERVAL: f32 = 5.0;
-pub const SNAPSHOT_PLAYER_BYTES: usize = 14;
+/// Bytes per player in a snapshot.
+///
+/// **15, not the 14 in `docs/02-constants.md` and `docs/40-net-protocol.md` §3.**
+/// The doc's own field list is
+/// `u8 id, i16 x, i16 y, i16 vx, i16 vy, u16 aim, u8 health, u8 flags,
+///  u8 jetpack_fuel, u8 selected_item`
+/// which sums to 1+2+2+2+2+2+1+1+1+1 = **15**. The same block has a second slip:
+/// its header list (`u32 tick, u16 round_time_ds, u8 darkness, u8 player_count`)
+/// sums to **8** while the stated total uses 9.
+///
+/// The field lists are authoritative because they are complete and typed; the
+/// totals are arithmetic. Hitting 14 would mean dropping a field the client needs
+/// — velocities are required for extrapolation through a dropped snapshot
+/// (`docs/42` §4), and aim is fixed at `u16` by `docs/22` §2.
+///
+/// A snapshot is therefore `8 + 15n + 4`: **102 bytes for six players**, against
+/// the doc's 97. At 20 Hz that is 2.0 KB/s down rather than 1.9 — well inside the
+/// budget in `docs/40` §4.
+pub const SNAPSHOT_PLAYER_BYTES: usize = 15;
+/// Header bytes before the player array: tick, round_time_ds, darkness, count.
+pub const SNAPSHOT_HEADER_BYTES: usize = 8;
+/// Trailing `last_input_seq`.
+pub const SNAPSHOT_FOOTER_BYTES: usize = 4;
 /// Per player per tick; excess is dropped and logged.
 pub const MAX_INPUT_QUEUE: usize = 8;
 

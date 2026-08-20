@@ -1275,3 +1275,36 @@ Notes: SPAWN POINTS ARE FEET LINES, NOT BODY CENTRES, and World got it wrong.
 Left for later: Room::new generates the map inline, blocking a tokio worker for
        ~0.6 s at startup (longer in debug). Fine before the loop starts, but
        spawn_blocking would be tidier. T6.03 wires real sockets to Command.
+
+## T6.04 + T6.05 + T6.06 — the binary codecs — DONE
+Files: crates/game-server/src/codec.rs, client/src/net/codec.ts + codec.test.ts,
+       crates/game-core/src/constants.rs, crates/game-wasm/src/lib.rs,
+       client/src/core/index.ts
+Verified: `cargo test -p game-server --lib codec` — 20 passed;
+       `npm test -- --run src/net/codec.test.ts` — 20 passed.
+Notes: docs/40 §3's SNAPSHOT BLOCK IS INTERNALLY INCONSISTENT, twice, and the
+       field lists win over the totals. The header list (u32 tick, u16
+       round_time_ds, u8 darkness, u8 player_count) sums to 8 while the doc
+       totals it as 9; the per-player list (u8 id, 4x i16, u16 aim, 4x u8) sums
+       to 15 while the doc and SNAPSHOT_PLAYER_BYTES say 14. Hitting 14 means
+       dropping a field the client needs — velocities are required to extrapolate
+       through a dropped snapshot (docs/42 §4) and aim is fixed at u16 by
+       docs/22 §2. SNAPSHOT_PLAYER_BYTES is now 15, with SNAPSHOT_HEADER_BYTES
+       and SNAPSHOT_FOOTER_BYTES beside it, and the size tests assert against the
+       constants rather than literals so the two cannot drift. A six-player
+       snapshot is 102 bytes, not 97: 2.0 KB/s down at 20 Hz, well inside the
+       docs/40 §4 budget. THIS NEEDS A DOC AMENDMENT — I cannot edit docs/.
+       THE ANTI-WALLHACK TEST IS REAL: it searches the whole map_init payload for
+       each buried slot's packed (x,y) and fails if any appears. Falsified by
+       appending the slots — "buried slot Point { x: 524, y: 557 } is recoverable".
+       `npx vitest` BYPASSES THE pretest HOOK, so it silently tested a stale wasm
+       and every new constant read NaN. Use `npm test --`. Same §A22 trap, new
+       guise: a freshness hook only covers the entry points that trigger it.
+       The client fuzz test asserts the thrown error is a CodecError specifically
+       — a TypeError from an unchecked index or a RangeError from a huge
+       allocation is the bug it exists to catch, and `expect(...).toThrow()`
+       would accept both.
+Left for later: T6.03 (join flow) and T6.07 (event scoping) are the two unticked
+       M6 boxes. T6.07's `inventory` reaches only its owner and `damage` only the
+       victim and attacker — events.rs currently broadcasts nothing at all, it is
+       a skeleton with a flush() that drops events on the floor.
