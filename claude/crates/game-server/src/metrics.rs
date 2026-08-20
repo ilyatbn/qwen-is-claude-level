@@ -5,6 +5,7 @@
 //! curl, or an agent reading a paste; the exposition format is future work and
 //! the numbers are the point.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -28,6 +29,15 @@ pub struct Metrics {
     players: AtomicU64,
     /// Micros, so the ring is integers and the lock is never held for maths.
     tick_us: Mutex<Vec<u32>>,
+    /// Per-room worst recent tick, in micros (§B2).
+    ///
+    /// The process-wide `tick_p99_ms` averages every room together, so one room
+    /// in trouble is invisible behind seven healthy ones — and one room in
+    /// trouble is exactly the thing an operator needs to see, because
+    /// `MissedTickBehavior::Burst` makes it catch up in a spike rather than
+    /// degrade gently. Keyed by room id; only counted and maxed over, never
+    /// iterated for output (§A11).
+    room_worst_us: Mutex<HashMap<u32, u32>>,
 }
 
 impl Default for Metrics {
@@ -41,11 +51,43 @@ impl Default for Metrics {
             snapshot_bytes: AtomicU64::new(0),
             players: AtomicU64::new(0),
             tick_us: Mutex::new(Vec::with_capacity(RING)),
+            room_worst_us: Mutex::new(HashMap::new()),
         }
     }
 }
 
 impl Metrics {
+    /// A room's worst tick since it last reported. Decays, so a spike five
+    /// minutes ago does not make a healthy server look permanently sick.
+    pub fn record_room_tick(&self, room: u32, micros: u32) {
+        if let Ok(mut m) = self.room_worst_us.lock() {
+            let e = m.entry(room).or_insert(0);
+            *e = (*e).max(micros);
+        }
+    }
+
+    pub fn forget_room(&self, room: u32) {
+        if let Ok(mut m) = self.room_worst_us.lock() {
+            m.remove(&room);
+        }
+    }
+
+    /// (worst room tick in ms, how many rooms are over half the tick budget).
+    ///
+    /// Half, not the whole budget, for the same reason §B2 sets the capacity
+    /// threshold there: a room at 100 % of budget has no room to catch up in.
+    pub fn room_health(&self) -> (f64, usize) {
+        let half_us = (1_000_000.0 / crate::SIM_HZ_F / 2.0) as u32;
+        match self.room_worst_us.lock() {
+            Ok(m) => {
+                let worst = m.values().copied().max().unwrap_or(0);
+                let over = m.values().filter(|v| **v > half_us).count();
+                (worst as f64 / 1000.0, over)
+            }
+            Err(_) => (0.0, 0),
+        }
+    }
+
     pub fn record_tick(&self, micros: u32, commands: u32) {
         self.ticks.fetch_add(1, Ordering::Relaxed);
         self.commands.fetch_add(commands as u64, Ordering::Relaxed);
@@ -111,7 +153,10 @@ impl Metrics {
              tick_overruns {}\n\
              snapshot_bytes_per_s {:.0}\n\
              commands_per_tick_avg {:.2}\n\
-             inputs_dropped {}\n",
+             inputs_dropped {}\n\
+             rooms_active {rooms}\n\
+             tick_p99_ms_max_over_rooms {:.2}\n\
+             rooms_over_budget {}\n",
             uptime,
             self.players.load(Ordering::Relaxed),
             self.percentile(0.50),
@@ -124,6 +169,8 @@ impl Metrics {
                 commands as f64 / ticks as f64
             },
             self.inputs_dropped.load(Ordering::Relaxed),
+            self.room_health().0,
+            self.room_health().1,
         )
     }
 }

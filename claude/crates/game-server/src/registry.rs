@@ -117,11 +117,23 @@ pub trait RoomSpawner: Send + Sync + 'static {
         shutdown: oneshot::Receiver<()>,
         room_id: RoomId,
     ) -> RoomHandle;
+
+    /// A dropped room must stop being counted, or `rooms_over_budget` reports a
+    /// room that no longer exists forever.
+    fn on_dropped(&self, _room: RoomId) {}
 }
 
 /// The real one: a room task per room, ticking at `SIM_HZ`.
 pub struct RealSpawner {
     pub metrics: Option<Arc<crate::metrics::Metrics>>,
+}
+
+impl RealSpawner {
+    fn forget(&self, room: RoomId) {
+        if let Some(m) = &self.metrics {
+            m.forget_room(room);
+        }
+    }
 }
 
 impl RoomSpawner for RealSpawner {
@@ -141,6 +153,10 @@ impl RoomSpawner for RealSpawner {
             self.metrics.clone(),
             room_id,
         )
+    }
+
+    fn on_dropped(&self, room: RoomId) {
+        self.forget(room);
     }
 }
 
@@ -388,6 +404,7 @@ impl RoomRegistry {
         if let Some(tx) = e.shutdown.take() {
             let _ = tx.send(());
         }
+        self.spawner.on_dropped(id);
         self.publish_count();
         tracing::info!(target: "game::round", room = id, "room dropped");
         true

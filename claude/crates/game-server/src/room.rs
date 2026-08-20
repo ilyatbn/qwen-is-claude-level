@@ -1066,7 +1066,12 @@ async fn run(
                 if let Some(m) = metrics.as_ref() {
                     // Measured around the whole tick — drain, step, flush and
                     // snapshot — because that is what has to fit in 16.7 ms.
-                    m.record_tick(tick_started.elapsed().as_micros().min(u32::MAX as u128) as u32, drained as u32);
+                    let us = tick_started.elapsed().as_micros().min(u32::MAX as u128) as u32;
+                    m.record_tick(us, drained as u32);
+                    // Per room as well as process-wide: one room in trouble is
+                    // invisible behind seven healthy ones in a shared p99, and
+                    // one room in trouble is what an operator needs to see.
+                    m.record_room_tick(room_id, us);
                     m.set_players(room.player_count());
                     if room.dropped_inputs > 0 {
                         m.record_inputs_dropped(room.dropped_inputs);

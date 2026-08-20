@@ -563,10 +563,35 @@ pub const MINIMAP_REVEAL_R: f32 = 260.0;
 
 // --- B1: multiple concurrent rooms ---
 
-/// Provisional until T10.07 measures it. `docs/71` §B2 is explicit that this is
-/// **not** to stay a guess: a room over budget does not merely run slow, because
-/// `MissedTickBehavior::Burst` catches up in a spike.
-pub const MAX_ROOMS: usize = 8;
+/// Measured, T10.07. **Tick cost is not what bounds this.**
+///
+/// §B2 asked for the room count at which tick p99 crosses half the 16.67 ms
+/// budget. It never crosses: on 16 logical cores, release build, medium scale,
+/// 6 firing bots per room and 45 s of warm-up so the terrain is genuinely chewed
+/// up, p99 is flat from 1 room to 128 —
+///
+/// | rooms | p50 ms | p99 ms | max ms |
+/// |---|---|---|---|
+/// | 1 | 0.002 | 0.004 | 0.009 |
+/// | 8 | 0.002 | 0.009 | 0.051 |
+/// | 32 | 0.002 | 0.008 | 0.541 |
+/// | 128 | 0.003 | 0.010 | 0.518 |
+///
+/// At 128 rooms the p99 uses **0.12 %** of half a tick budget, and per-room cost
+/// is flat (8 rooms cost 1.01x per room versus 1). Control drift 1.5 %, so the
+/// box was idle and these are numbers about the code (§A38).
+///
+/// So the cap comes from what *is* bounded, with the sim measured well clear:
+/// terrain is 648 KiB per room at medium and ~1.2 MiB at large, and **room
+/// creation** — not ticking — is the expensive operation at roughly 0.6 s
+/// (medium) to 1.1 s (large) of map generation, which is why it runs off the
+/// tokio workers. 32 rooms is ~38 MiB of terrain at large scale and leaves a 4x
+/// margin below the highest count actually measured.
+///
+/// **Not measured:** the socket layer at that scale (32 rooms is up to 192
+/// concurrent clients), and memory under real load rather than by arithmetic.
+/// If either turns out to bind first, this is the number to lower.
+pub const MAX_ROOMS: usize = 32;
 /// Seconds after the last **human** leaves before the room is dropped. Bots do
 /// not keep a room alive.
 pub const ROOM_EMPTY_TTL: f32 = 30.0;

@@ -478,7 +478,31 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
             std::thread::sleep(Duration::from_millis(110));
         }
         c2.emit("ready", serde_json::json!({})).expect("emit ready");
-        std::thread::sleep(Duration::from_millis(1200));
+
+        // Wait for the carve stream to **settle**, not for a fixed duration.
+        //
+        // This used to sleep 1200 ms and then read whatever had arrived, which
+        // made it load-sensitive: with other builds running on the box the last
+        // carve landed after the deadline and the replayed mask diverged, about
+        // one run in four. A gate that fails on a coin flip gates nothing
+        // (§A28), and "the box was busy" is not a defect in the carve stream —
+        // it is a defect in how the test decides it has seen everything.
+        let mut last = 0usize;
+        let mut stable = 0;
+        for _ in 0..120 {
+            std::thread::sleep(Duration::from_millis(50));
+            let n = got(&i2, "carve").len();
+            if n == last && n > 0 {
+                stable += 1;
+                // 400 ms with nothing new, well past the 110 ms firing cadence.
+                if stable >= 8 {
+                    break;
+                }
+            } else {
+                stable = 0;
+                last = n;
+            }
+        }
 
         let m2 = got(&i2, "map_init");
         let carves2 = got(&i2, "carve");

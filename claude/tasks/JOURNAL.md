@@ -2415,3 +2415,51 @@ Carried, unrelated to M10: JOIN_EVENT_QUEUE overflow is asserted at the seam
        but never driven through a real socket (needs 4096 broadcasts inside one
        join window), and `full-round` is opt-in, so multi-room interactions will
        not be caught by the default gate.
+
+## T10.07 — Measure what a room costs — DONE
+Files: crates/game-server/tests/capacity.rs (new), crates/game-core/src/constants.rs,
+       crates/game-server/src/{metrics,room,registry}.rs, tests/rooms.rs, tests/checksum.rs
+Verified: `cargo test -p game-server --release --test capacity -- --ignored
+       --nocapture` (table below); game-server suite 183 passed / 0 failed;
+       clippy -D warnings clean.
+Notes: THE BRIEF'S PREMISE WAS WRONG AND THE MEASUREMENT SAYS SO. §B2 asked for
+       the room count where tick p99 crosses half the 16.67 ms budget. It never
+       crosses. 16 cores, release, medium, 6 firing bots/room, 45 s warm-up:
+         1 room   p50 0.002  p99 0.004  max 0.009
+         8 rooms  p50 0.002  p99 0.009  max 0.051
+         32 rooms p50 0.002  p99 0.008  max 0.541
+         128      p50 0.003  p99 0.010  max 0.518
+       At 128 rooms p99 uses 0.12% of half a budget; per-room cost is flat
+       (8 rooms = 1.01x per room vs 1). Control drift 1.5%, so the box was idle
+       and these are numbers about the code (§A38).
+       MAX_ROOMS 8 -> 32, and the doc comment carries the table, what actually
+       bounds it (terrain 648 KiB/room medium, ~1.2 MiB large; room CREATION at
+       0.6-1.1 s is the expensive operation, not ticking) AND what was NOT
+       measured (the socket layer at 192 concurrent clients; memory under real
+       load rather than by arithmetic).
+       MY FIRST VERSION MEASURED SIX PLAYERS STANDING STILL — p50 and p99 both
+       rounded to 0.000 ms, max 11 us. `full_room` added plain players and
+       stepped the world; no bots thinking, no firing, no weather. It would have
+       justified any MAX_ROOMS at all. Now it drives bots exactly as
+       room.rs::drive_bots does and warms up past EFFECT_INTERVAL_MIN.
+       `max_rooms_carries_its_basis` ALSO PASSED FOR THE WRONG REASON at first:
+       it checked the doc mentions "T10.07", which the placeholder "Provisional
+       until T10.07 measures it" already contained. It requires a p99, a ms
+       figure and the machine now, and fails against the placeholder.
+       /metrics gains rooms_active, tick_p99_ms_max_over_rooms, rooms_over_budget
+       (§B2). Per-room worst tick is tracked separately because the process-wide
+       p99 averages one sick room behind seven healthy ones — and Burst makes a
+       sick room spike rather than degrade. A dropped room is forgotten, or it
+       is reported over budget forever.
+Left for later / HONEST GAP: `checksum::a_joiner_that_delays_ready_still_gets_
+       every_carve` failed ~1 in 4 while three cargo builds shared the box. It
+       waited a FIXED 1200 ms after `ready` and read whatever had arrived, so a
+       late carve under load reads as mask divergence. Changed to wait for the
+       stream to SETTLE (8 x 50 ms with nothing new). That is strictly better
+       regardless — a fixed sleep over an accumulating buffer is a latent flake
+       by construction — BUT I COULD NOT FALSIFY IT: under synthetic 8-core busy
+       loops the OLD version also passes 4/4, so I never reproduced the failure
+       on demand and cannot claim the fix is proven. Bisect was inconclusive for
+       the same reason: 0/17 clean at three earlier commits, 2/8 failures at
+       HEAD, which is p~0.06 and not decisive. If it recurs, the reproducer is
+       real concurrent cargo builds (I/O + memory pressure), not busy loops.

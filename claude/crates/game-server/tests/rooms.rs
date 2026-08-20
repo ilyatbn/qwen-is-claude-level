@@ -353,6 +353,56 @@ async fn healthz_reports_the_real_room_count() {
     h.stack.shutdown_all(Duration::from_secs(2)).await;
 }
 
+/// §B2's fields must exist and must move, or an operator watching a multi-room
+/// server is reading a number that cannot change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn metrics_report_the_new_room_fields() {
+    let h = spawn_server().await;
+    let body = reqwest_get(h.addr, "/metrics").await;
+    for field in [
+        "rooms_active",
+        "tick_p99_ms_max_over_rooms",
+        "rooms_over_budget",
+    ] {
+        assert!(body.contains(field), "/metrics is missing {field}:\n{body}");
+    }
+
+    // rooms_active must track the registry, not a constant.
+    let before = field_of(&body, "rooms_active");
+    let ids: Vec<_> = {
+        let mut r = h.stack.registry.lock().expect("registry");
+        (0..2)
+            .map(|_| r.create(MapScale::Small, false).expect("under cap").0)
+            .collect()
+    };
+    let after = field_of(&reqwest_get(h.addr, "/metrics").await, "rooms_active");
+    assert_eq!(after, before + 2.0, "rooms_active did not move");
+
+    // And a dropped room stops being counted, or a room that no longer exists
+    // is reported as over budget forever.
+    {
+        let mut r = h.stack.registry.lock().expect("registry");
+        for id in ids {
+            r.drop_room(id);
+        }
+    }
+    let final_body = reqwest_get(h.addr, "/metrics").await;
+    assert_eq!(field_of(&final_body, "rooms_active"), before);
+    assert_eq!(
+        field_of(&final_body, "rooms_over_budget"),
+        0.0,
+        "a healthy server reported rooms over budget:\n{final_body}"
+    );
+
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+fn field_of(body: &str, name: &str) -> f64 {
+    body.lines()
+        .find_map(|l| l.strip_prefix(name).and_then(|v| v.trim().parse().ok()))
+        .unwrap_or_else(|| panic!("{name} not in:\n{body}"))
+}
+
 /// Minimal HTTP GET, so the test reads what an operator would actually see
 /// rather than calling the handler directly.
 async fn reqwest_get(addr: SocketAddr, path: &str) -> String {

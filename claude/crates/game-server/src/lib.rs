@@ -15,3 +15,6 @@ pub mod room;
 pub mod round;
 pub mod session;
 pub mod state;
+
+/// `SIM_HZ` as a float, for the millisecond arithmetic in `metrics`.
+pub const SIM_HZ_F: f64 = game_core::constants::SIM_HZ as f64;
