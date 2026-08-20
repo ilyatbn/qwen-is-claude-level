@@ -13,7 +13,8 @@ import { C, Core, MapScale } from '../core'
 import type { Attract } from '../core/attract'
 import { WorldView } from '../render/worldView'
 import { SkyLayer } from '../render/sky'
-import { DEPTH } from '../render/backdrop'
+import { PlayerView } from '../render/playerView'
+import { loadAssetManifest, runLoader } from '../render/assets'
 
 /** How long one attract round runs before a fresh map is generated. */
 const ATTRACT_ROUND_SECONDS = 45
@@ -40,7 +41,7 @@ export class TitleScene extends Phaser.Scene {
   private attract: Attract | null = null
   private view: WorldView | null = null
   private sky: SkyLayer | null = null
-  private markers: Phaser.GameObjects.Rectangle[] = []
+  private views: PlayerView[] = []
   private acc = 0
   private elapsed = 0
   private ui: HTMLElement | null = null
@@ -51,7 +52,15 @@ export class TitleScene extends Phaser.Scene {
     super('Title')
   }
 
-  create(): void {
+  async create(): Promise<void> {
+    // The same atlases the game loads. Without this `PlayerView` falls back to
+    // its placeholder box — which is correct behaviour (`docs/50` §8) and was
+    // exactly the §B12 defect: routing the attract bots through the real sprite
+    // path is worth nothing if the art is never loaded, and the frame looks
+    // identical to the coloured rectangles it replaced.
+    await loadAssetManifest(this)
+    await runLoader(this)
+
     this.startAttract()
     this.buildUi()
 
@@ -79,14 +88,15 @@ export class TitleScene extends Phaser.Scene {
     this.cameras.main.setZoom(ATTRACT_ZOOM)
     this.elapsed = 0
 
-    // A marker per bot. Deliberately not the real player sprite: the attract
-    // mode must not fail because an atlas is missing (`docs/50` §8), and at this
-    // zoom a coloured block reads better than a 16 px character anyway.
-    this.markers = this.attract.bots().map((b) =>
-      this.add
-        .rectangle(b.x, b.y, 14, 22, [0xff3fa4, 0x3fd0ff, 0xffd23f, 0x7cff5a][b.id % 4])
-        .setDepth(DEPTH.actors),
-    )
+    // The **same** sprite path the game uses (§B12): facing from aim, animation
+    // state from the movement flags, held weapon. A second render path for the
+    // title screen is a second thing to keep in sync, and the first time it
+    // drifts the title is advertising a game that no longer looks like that.
+    //
+    // `PlayerView` already falls back to a coloured box when an atlas is
+    // missing (`docs/50` §8), so this does not cost the "starts with no art"
+    // guarantee — it inherits it instead of reimplementing it.
+    this.views = this.attract.bots().map((b) => new PlayerView(this, b.id % 5))
   }
 
   private teardown(): void {
@@ -94,8 +104,8 @@ export class TitleScene extends Phaser.Scene {
     this.attract = null
     this.view?.destroy()
     this.view = null
-    this.markers.forEach((m) => m.destroy())
-    this.markers = []
+    this.views.forEach((v) => v.destroy())
+    this.views = []
     this.ui?.remove()
     this.ui = null
   }
@@ -149,12 +159,17 @@ export class TitleScene extends Phaser.Scene {
     }
 
     const bots = a.bots()
-    for (let i = 0; i < this.markers.length; i++) {
+    for (let i = 0; i < this.views.length; i++) {
       const b = bots[i]
-      const m = this.markers[i]
-      if (!b || !m) continue
-      m.setPosition(b.x, b.y)
-      m.setAlpha(b.alive ? 1 : 0.25)
+      const v = this.views[i]
+      if (!b || !v) continue
+      v.setState(b.x, b.y, b.vx, b.vy, b.aim, {
+        alive: b.alive,
+        grounded: b.moveState === 0,
+        jetpack: b.moveState === 2,
+        shield: false,
+        iframes: false,
+      })
     }
 
     // Follow the action rather than sitting still, so it reads as a fight.
