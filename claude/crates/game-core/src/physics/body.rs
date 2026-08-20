@@ -19,6 +19,13 @@ pub struct Body {
     /// Ticks since last grounded; 0 while grounded. A tick count rather than a
     /// float timer, so coyote time is exact and frame-rate independent.
     pub airborne_ticks: u32,
+    /// AABB width and height. Defaults to the player's `PLAYER_W × PLAYER_H`.
+    ///
+    /// Carried on the body so world items (16×16) and crates (`CRATE_W × CRATE_H`)
+    /// go through **this** resolver rather than a second one. An item that falls
+    /// through terrain a player cannot walk through is a confusing bug, and two
+    /// collision paths guarantee it eventually.
+    pub size: Vec2,
 }
 
 /// Coyote window in ticks: 0.10 s × 60 Hz = 6.
@@ -31,12 +38,21 @@ impl Body {
             vel: Vec2::ZERO,
             grounded: false,
             airborne_ticks: 0,
+            size: Vec2::new(PLAYER_W, PLAYER_H),
+        }
+    }
+
+    /// A body with a non-player AABB — world items and crates.
+    pub fn sized(pos: Vec2, w: f32, h: f32) -> Self {
+        Body {
+            size: Vec2::new(w, h),
+            ..Body::new(pos)
         }
     }
 
     #[inline]
     pub fn aabb(&self) -> Aabb {
-        Aabb::from_center_size(self.pos, PLAYER_W, PLAYER_H)
+        Aabb::from_center_size(self.pos, self.size.x, self.size.y)
     }
 
     #[inline]

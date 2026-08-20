@@ -105,13 +105,13 @@ holes in it, watch the day/night slider change visibility.
 
 ## M4 — Items, weapons and stats (14)
 
-- [ ] [T4.01](M4/T4.01-item-registry.md) — The item registry
-- [ ] [T4.02](M4/T4.02-inventory.md) — 8-slot stacking inventory
-- [ ] [T4.03](M4/T4.03-world-items.md) — World items, physics, pickup
-- [ ] [T4.04](M4/T4.04-initial-spawn.md) — Initial item placement
-- [ ] [T4.05](M4/T4.05-periodic-spawn.md) — Periodic spawns with surface re-validation
-- [ ] [T4.06](M4/T4.06-crates.md) — Supply crates
-- [ ] [T4.07](M4/T4.07-buried.md) — Buried slot reveal wiring
+- [x] [T4.01](M4/T4.01-item-registry.md) — The item registry
+- [x] [T4.02](M4/T4.02-inventory.md) — 8-slot stacking inventory
+- [x] [T4.03](M4/T4.03-world-items.md) — World items, physics, pickup
+- [x] [T4.04](M4/T4.04-initial-spawn.md) — Initial item placement
+- [x] [T4.05](M4/T4.05-periodic-spawn.md) — Periodic spawns with surface re-validation
+- [x] [T4.06](M4/T4.06-crates.md) — Supply crates
+- [x] [T4.07](M4/T4.07-buried.md) — Buried slot reveal wiring
 - [ ] [T4.08](M4/T4.08-weapon-defs.md) — Weapon definitions
 - [ ] [T4.09](M4/T4.09-projectiles.md) — Projectile simulation and bouncing
 - [ ] [T4.10](M4/T4.10-explode.md) — `explode`: carve, falloff damage, knockback

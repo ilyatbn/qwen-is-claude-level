@@ -921,3 +921,34 @@ Notes: THE REAL CAUSE WAS §A16, NOT THE LIGHTMAP. FOV_DAY/FOV_NIGHT/FLASHLIGHT_
        stats.filled (fill executed) replaces drawsLastFrame for the daylight-skip
        assertion; drawsLastFrame counts intent, not effect.
 Left for later: M4 part A (T4.01-T4.07) not started.
+
+## T4.01-T4.07 — M4 part A: items — DONE
+Files: crates/game-core/src/items/{mod,registry,inventory,world,spawning}.rs,
+       crates/game-core/src/physics/{body,resolve}.rs (Body gains `size`)
+Verified: `cargo test -p game-core --lib items` — 63 passed. check.sh green
+       (including the browser night check). Workspace 465 lib tests.
+Notes: DEVIATION — T4.03 says "touch only items/world.rs" but also "reuse the M2
+       resolver, do not write a second integrator". The resolver was hardcoded to
+       PLAYER_W x PLAYER_H, so Body gains a `size: Vec2` (defaulting to the player
+       AABB) plus `Body::sized`. Items are 16x16 and crates CRATE_W x CRATE_H and
+       go through the SAME integrate(). Writing a second path would eventually let
+       an item fall through terrain a player cannot walk through.
+       BUG FOUND BY THE CAP TEST: cull() evicts only while len > MAX, so at exactly
+       MAX it did nothing and the next spawn landed on MAX+1. Added make_room(),
+       which is what a caller about to add an item actually needs; cull() keeps
+       meaning "enforce the cap". Enforcing a cap and freeing a slot are not the
+       same operation.
+       BOTH LOAD-BEARING TESTS FALSIFIED. Removing the is_standable re-validation
+       fails a_periodic_spawn_lands_on_ground_that_is_still_there; replacing the
+       buried-reveal disc test with a bounding box fails
+       a_carve_over_a_slot_reveals_it_and_one_pixel_short_does_not.
+       PICKUP_RADIUS STAYS A GAMEPLAY NUMBER (20 world px, 40 screen px at zoom 2).
+       Unlike the FoV radii in A16 it does not govern what you can SEE, it governs
+       where your body must be — the player judges it against their own sprite,
+       which scales with the zoom, so the relationship is already zoom-invariant.
+       Do not scale it if CAMERA_ZOOM changes. Same reasoning for SPAWN_MIN_ENEMY_DIST
+       and the blast radii: all gameplay distances, all zoom-invariant. AIM_RADIUS
+       and MINIMAP_REVEAL_R are the perceptual ones and would need restating.
+       SpawnSchedule::new takes `initial_draws` to fast-forward the "items" stream
+       past place_initial, so both share one stream in a fixed order (docs/32 §7).
+Left for later: M4 part B (T4.08-T4.15).

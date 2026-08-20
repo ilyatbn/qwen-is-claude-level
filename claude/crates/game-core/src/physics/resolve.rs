@@ -10,7 +10,7 @@
 //! See `docs/20-player-movement.md` §2.
 
 use crate::constants::{
-    GRAVITY, MAX_FALL_SPEED, MAX_SUBSTEPS, MAX_SUBSTEP_PX, PLAYER_W, STEP_DOWN, STEP_UP, WALL_W,
+    GRAVITY, MAX_FALL_SPEED, MAX_SUBSTEPS, MAX_SUBSTEP_PX, STEP_DOWN, STEP_UP, WALL_W,
 };
 use crate::map::Map;
 use crate::math::Vec2;
@@ -134,7 +134,7 @@ pub fn apply_gravity(body: &mut Body, gravity_scale: f32, dt: f32) {
 /// `y = 0` has no terrain behind it at all, so without this a jetpack simply leaves
 /// the world.
 pub fn clamp_to_world(map: &Map, body: &mut Body) {
-    let half_w = PLAYER_W / 2.0;
+    let half_w = body.size.x / 2.0;
     let min_x = WALL_W as f32 + half_w;
     let max_x = map.mask.w as f32 - WALL_W as f32 - half_w;
 
@@ -147,7 +147,7 @@ pub fn clamp_to_world(map: &Map, body: &mut Body) {
     }
 
     // Hard ceiling: the body's top edge may not pass y = 0.
-    let min_y = crate::constants::PLAYER_H / 2.0;
+    let min_y = body.size.y / 2.0;
     if body.pos.y < min_y {
         body.pos.y = min_y;
         body.vel.y = body.vel.y.max(0.0);
@@ -189,7 +189,7 @@ pub fn integrate(map: &Map, body: &mut Body, gravity_scale: f32, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{PLAYER_H, SIM_DT, WALK_SPEED};
+    use crate::constants::{PLAYER_H, PLAYER_W, SIM_DT, WALK_SPEED};
     use crate::physics::collide::tests::{floor_at, test_map};
 
     const W: u32 = 512;

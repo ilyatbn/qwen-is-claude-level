@@ -8,6 +8,7 @@
 //! See `docs/01-architecture.md`.
 
 pub mod constants;
+pub mod items;
 pub mod map;
 pub mod math;
 pub mod physics;
