@@ -1125,3 +1125,23 @@ Notes: carve_capsule stamps the shared circle() along a Bresenham walk ONE PIXEL
        small or heavily carved map the 200px separation can be unsatisfiable, and
        looping until satisfied would hang the tick.
 Left for later: T5.05 fog, T5.06 cycle, T5.07 flashlight.
+
+## T5.05 + T5.06 — Heavy fog, the cycle and the FoV formula — DONE
+Files: crates/game-core/src/effects/fog.rs, crates/game-core/src/world/{mod,cycle}.rs,
+       crates/game-core/src/lib.rs
+Verified: `cargo test -p game-core fog` — 6 passed; `... cycle` — 11 passed;
+       `... fov` — 12 passed
+Notes: T5.06 implements the A13 curve, NOT docs/14 §1's. The task file's own
+       tests (darkness == NIGHT_DARKNESS at t=64) are superseded: at t=64,
+       u=0.533 and darkness is ~0.16. There is a named regression test asserting
+       t=64 is NOT full night, which fails if the old CYCLE_TRANSITION curve
+       comes back.
+       cycle_matches_the_client transcribes the TS darknessAt and sweeps 2000
+       points against the Rust one. That is the guard against the two copies
+       drifting — and it is what caught the falsification when I restored the old
+       curve, before the phase-table test did.
+       fov_radius is the single authority; the TS copy in lightmap-math.ts is for
+       rendering and is pinned by the same cross-check style.
+       HeavyFog holds no RNG and no map — a pure timer, so the client can compute
+       strength locally from the start time with no per-tick updates.
+Left for later: T5.07 flashlight + sandbox effect controls, then the M5 checkpoint.
