@@ -20,6 +20,11 @@
 //! no caller has to remember.
 
 use game_core::constants::{MapScale, SIM_DT};
+use game_core::effects::fog::HeavyFog;
+use game_core::effects::lava::LavaBurst;
+use game_core::effects::meteor::MeteorShower;
+use game_core::effects::toxic::ToxicRain;
+use game_core::effects::{EffectKind, EffectPhase, EffectScheduler};
 use game_core::items::registry::{self, ItemId, WeaponId};
 use game_core::map::{generate, rle, CoarseGrid, Map};
 use game_core::math::Vec2;
@@ -53,6 +58,23 @@ pub struct GameCore {
     players: Vec<LocalPlayer>,
     projectiles: Projectiles,
     rng: ChaCha8Rng,
+    weather: Weather,
+}
+
+/// The sandbox's weather, driven by `weather_step`.
+///
+/// M6 moves this into `World` on the server; the shape is deliberately the same
+/// so the move is a relocation rather than a rewrite. Hazard positions are
+/// already produced here and handed out as data, which is what the server will
+/// broadcast — clients never roll their own (`docs/13-weather-effects.md` §7).
+#[derive(Default)]
+struct Weather {
+    scheduler: Option<EffectScheduler>,
+    toxic: Option<ToxicRain>,
+    meteor: Option<MeteorShower>,
+    lava: Option<LavaBurst>,
+    fog: Option<HeavyFog>,
+    forced: Option<(EffectKind, f32)>,
 }
 
 impl Default for GameCore {
@@ -73,6 +95,7 @@ impl GameCore {
             players: Vec::new(),
             projectiles: Projectiles::new(),
             rng: substream(1, "wasm"),
+            weather: Weather::default(),
         }
     }
 
@@ -401,6 +424,14 @@ impl GameCore {
         serde_json::to_string(&self.map.meta).unwrap_or_else(|_| "{}".to_string())
     }
 
+    /// Solid pixel count — the honest way to ask "did that effect change the
+    /// map", rather than inferring it from an event.
+    pub fn count_solid(&self) -> f64 {
+        // f64 rather than u32: a large map has more than 4 billion... no, but a
+        // u64 across the boundary drags in BigInt, and f64 is exact to 2^53.
+        self.map.mask.count_solid() as f64
+    }
+
     pub fn mask_hash(&self) -> Box<[u8]> {
         Box::new(self.map.mask.hash())
     }
@@ -408,6 +439,115 @@ impl GameCore {
     /// RLE of the current mask, for tests and for the future replay path.
     pub fn mask_rle(&self) -> Box<[u8]> {
         rle::encode(&self.map.mask).into_boxed_slice()
+    }
+
+    // --- weather (M5) ---------------------------------------------------
+
+    /// Force an effect to begin its telegraph now: 0 toxic, 1 meteor, 2 lava,
+    /// 3 fog. The sandbox control for the M5 checkpoint.
+    pub fn force_effect(&mut self, kind: u8, now: f32) {
+        let kind = match kind {
+            0 => EffectKind::ToxicRain,
+            1 => EffectKind::MeteorShower,
+            2 => EffectKind::LavaBurst,
+            _ => EffectKind::HeavyFog,
+        };
+        let seed = self.map.meta.seed;
+        let sched = self
+            .weather
+            .scheduler
+            .get_or_insert_with(|| EffectScheduler::new(seed, now));
+        sched.force(kind, now);
+        self.weather.forced = Some((kind, now));
+        match kind {
+            EffectKind::ToxicRain => self.weather.toxic = Some(ToxicRain::new(seed, now)),
+            EffectKind::MeteorShower => self.weather.meteor = Some(MeteorShower::new(seed, now)),
+            EffectKind::LavaBurst => self.weather.lava = Some(LavaBurst::new(seed, &self.map, now)),
+            EffectKind::HeavyFog => self.weather.fog = Some(HeavyFog::new(now)),
+        }
+    }
+
+    /// Advance the scheduler and every active effect. Returns the hazards the
+    /// client should draw, as JSON.
+    pub fn weather_step(&mut self, now: f32, dt: f32) -> String {
+        let Some(sched) = self.weather.scheduler.as_mut() else {
+            return "{\"active\":[],\"puddles\":[],\"vents\":[],\"fog\":0.0}".to_string();
+        };
+        sched.tick(now, f32::MAX);
+
+        let toxic_on = sched.is_active(EffectKind::ToxicRain);
+        let meteor_on = sched.is_active(EffectKind::MeteorShower);
+        let lava_on = sched.is_active(EffectKind::LavaBurst);
+        let fog_on = sched.is_active(EffectKind::HeavyFog);
+
+        let active: Vec<serde_json::Value> = sched
+            .active()
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "id": e.id,
+                    "kind": match e.kind {
+                        EffectKind::ToxicRain => "toxic",
+                        EffectKind::MeteorShower => "meteor",
+                        EffectKind::LavaBurst => "lava",
+                        EffectKind::HeavyFog => "fog",
+                    },
+                    "phase": match e.phase {
+                        EffectPhase::Telegraph => "telegraph",
+                        EffectPhase::Active => "active",
+                        EffectPhase::Done => "done",
+                    },
+                })
+            })
+            .collect();
+
+        // Every effect damages through the same PlayerHitTarget path a weapon
+        // does, so shields and i-frames are handled once rather than per effect.
+        let mut puddles = Vec::new();
+        if let Some(t) = self.weather.toxic.as_mut() {
+            let hits: HitLog = Default::default();
+            {
+                let mut targets = build_targets(&mut self.players, &hits);
+                t.tick(&self.map, &mut targets, toxic_on, now, dt);
+            }
+            apply_hits(&mut self.players, &hits.borrow(), now);
+            for p in t.puddles() {
+                puddles.push(serde_json::json!({"x": p.pos.x, "y": p.pos.y, "r": p.radius}));
+            }
+        }
+
+        if let Some(m) = self.weather.meteor.as_mut() {
+            m.tick(&mut self.projectiles, &self.map, meteor_on, now);
+        }
+
+        let mut vents = Vec::new();
+        if let Some(l) = self.weather.lava.as_mut() {
+            let hits: HitLog = Default::default();
+            {
+                let mut targets = build_targets(&mut self.players, &hits);
+                l.tick(&mut self.map, &mut targets, lava_on, now, dt);
+            }
+            apply_hits(&mut self.players, &hits.borrow(), now);
+            for v in l.vents() {
+                vents.push(serde_json::json!({
+                    "x": v.pos.x, "y": v.pos.y, "lean": v.lean,
+                    "jetting": now < v.jet_until, "burning": now >= v.jet_until && now < v.burn_until,
+                }));
+            }
+        }
+
+        let fog = match self.weather.fog.as_ref() {
+            Some(f) if fog_on => f.strength(now),
+            _ => 0.0,
+        };
+
+        serde_json::json!({
+            "active": active,
+            "puddles": puddles,
+            "vents": vents,
+            "fog": fog,
+        })
+        .to_string()
     }
 }
 
@@ -472,6 +612,9 @@ pub fn constants_json() -> String {
         FLASHLIGHT_CONE_DEG => c::FLASHLIGHT_CONE_DEG,
         FLASHLIGHT_AMBIENT_MULT => c::FLASHLIGHT_AMBIENT_MULT,
         BASE_HEALTH => c::BASE_HEALTH,
+        LAVA_BURN_RADIUS => c::LAVA_BURN_RADIUS,
+        TOXIC_PUDDLE_RADIUS => c::TOXIC_PUDDLE_RADIUS,
+        HEALTH_CAP => c::HEALTH_CAP,
         TRACER_LIFETIME => c::TRACER_LIFETIME,
         TRACER_WIDTH => c::TRACER_WIDTH,
         PROJECTILE_TRAIL_LEN => c::PROJECTILE_TRAIL_LEN,
@@ -663,5 +806,64 @@ mod tests {
         let mut c = GameCore::new();
         c.generate(0x1234_5678, 0, 0);
         assert_ne!(a.mask_hash(), c.mask_hash(), "the high half must matter");
+    }
+}
+
+/// The Rust FoV formula, exposed so the client can **prove** its TypeScript copy
+/// agrees rather than assuming it (`docs/14-daynight-visibility.md` §3, T5.07).
+///
+/// Not the render path — `fovRadius` in `lightmap-math.ts` is, and calling across
+/// the boundary every frame for every light would be wasteful. This exists so a
+/// test can sweep both and fail if they diverge, which is the drift the shared-core
+/// architecture exists to stop.
+#[wasm_bindgen]
+pub fn core_fov_radius(darkness: f32, fog_mult: f32, health: f32, flashlight_on: bool) -> f32 {
+    game_core::world::cycle::fov_radius(darkness, fog_mult, health, flashlight_on)
+}
+
+/// The Rust darkness curve (§A13), exposed for the same reason.
+#[wasm_bindgen]
+pub fn core_darkness_at(u: f32) -> f32 {
+    game_core::world::cycle::darkness_at(u)
+}
+
+/// Build the `PlayerHitTarget` view the effects damage through.
+///
+/// Damage is *recorded* rather than applied here: `PlayerState::apply_damage`
+/// needs `&mut` on the same players the slice already borrows. Collecting
+/// (id, amount) and applying afterwards keeps one damage path — shields,
+/// i-frames and death all stay in `PlayerState` rather than being re-implemented
+/// per effect.
+type HitLog = std::rc::Rc<std::cell::RefCell<Vec<(u8, f32)>>>;
+
+fn build_targets<'a>(players: &'a mut [LocalPlayer], hits: &HitLog) -> Vec<PlayerHitTarget<'a>> {
+    players
+        .iter_mut()
+        .map(|p| {
+            let id = p.id;
+            let alive = p.stats.alive;
+            let pos = p.body.pos;
+            let log = hits.clone();
+            PlayerHitTarget {
+                id,
+                pos,
+                vel: &mut p.body.vel,
+                alive,
+                apply_damage: Box::leak(Box::new(move |amount: f32, _s: DamageSource| {
+                    log.borrow_mut().push((id, amount));
+                    true
+                })),
+            }
+        })
+        .collect()
+}
+
+/// Apply what `build_targets` recorded, through the real stats path.
+fn apply_hits(players: &mut [LocalPlayer], hits: &[(u8, f32)], now: f32) {
+    for (id, amount) in hits {
+        if let Some(p) = players.iter_mut().find(|p| p.id == *id) {
+            p.stats
+                .apply_damage(*amount, DamageSource::Weather(EffectKind::ToxicRain), now);
+        }
     }
 }

@@ -9,7 +9,7 @@
  */
 
 import Phaser from 'phaser'
-import { C, Core, MapScale } from '../core'
+import { C, Core, MapScale, type WeatherState } from '../core'
 import { TerrainRenderer } from '../render/terrain'
 import { CameraRig } from '../render/cameraRig'
 import { Backdrop, DEFAULT_THEME, DEPTH } from '../render/backdrop'
@@ -49,6 +49,18 @@ export class SandboxScene extends Phaser.Scene {
   private lightmap!: Lightmap
   private overlay!: DebugOverlay
   private fogActive = false
+  private hazardGfx!: Phaser.GameObjects.Graphics
+  private lastWeather: WeatherState | null = null
+  /**
+   * The weather's own clock, which **always** advances.
+   *
+   * The day/night slider freezes `roundTime` so a phase can be inspected, and a
+   * frozen clock stops the effect scheduler dead — its double-tick guard
+   * correctly refuses to advance a phase twice for the same `now`. In a real
+   * round these are one clock; here they must not be, or forcing an effect while
+   * scrubbed leaves it telegraphing forever.
+   */
+  private weatherTime = 0
   private fovOverride: number | null = null
   private ordnance!: OrdnanceLayer
   private hud!: HTMLDivElement
@@ -95,6 +107,9 @@ export class SandboxScene extends Phaser.Scene {
     // `true`: this is the sandbox, the one place buried slots may be drawn.
     this.overlay = new DebugOverlay(this, this.core, true)
     this.ordnance = new OrdnanceLayer(this)
+    // Hazards sit just under the ordnance layer: both are world-space FX, and
+    // a puddle should never draw over a rocket.
+    this.hazardGfx = this.add.graphics().setDepth(38)
     this.player = new PlayerView(this, 0)
     this.player.container.setDepth(DEPTH.actors)
     this.localInput = new LocalInput(this)
@@ -301,10 +316,24 @@ export class SandboxScene extends Phaser.Scene {
     const overlays = button('F4 overlays', () => this.overlay.toggle())
     r3.append(label('time'), time, timeOut, live, fog, overlays)
 
+    // The M5 checkpoint is "force each effect and watch it run start to finish",
+    // so each gets a button. Telegraph -> active -> end runs on the real
+    // scheduler; these only inject the start.
+    const r4 = row()
+    for (const [name, kind] of [
+      ['Toxic', 0],
+      ['Meteors', 1],
+      ['Lava', 2],
+      ['Fog FX', 3],
+    ] as const) {
+      r4.append(button(name, () => this.core.forceEffect(kind, this.weatherTime)))
+    }
+    r4.prepend(label('weather'))
+
     this.readout = document.createElement('pre')
     this.readout.style.cssText = 'margin:0;white-space:pre-wrap'
 
-    ui.append(r1, r2, r3, this.readout)
+    ui.append(r1, r2, r3, r4, this.readout)
     document.body.append(ui)
     this.ui = ui
 
@@ -418,12 +447,12 @@ export class SandboxScene extends Phaser.Scene {
           roundTime: self.roundTime,
           skyPhase: self.sky?.currentPhase ?? 'morning',
           darkness: darknessAt(cycleU(self.roundTime), C().NIGHT_DARKNESS),
-          fogActive: self.fogActive,
+          fogMult: self.fogActive ? C().FOV_FOG_MULT : 1,
           lightmapDraws: self.lightmap?.stats.drawsLastFrame ?? 0,
           lightmapFilled: self.lightmap?.stats.filled ?? false,
           fov: fovRadius({
             darkness: darknessAt(cycleU(self.roundTime), C().NIGHT_DARKNESS),
-            fogActive: self.fogActive,
+            fogMult: self.fogActive ? C().FOV_FOG_MULT : 1,
             health: C().BASE_HEALTH,
             flashlightOn: false,
           }),
@@ -465,6 +494,38 @@ export class SandboxScene extends Phaser.Scene {
       /** Diagnostic seam: prove whether a defect is zoom-dependent. */
       setZoom(z: number) {
         self.cameras.main.setZoom(z)
+      },
+      /** Force a weather effect at the current round time. */
+      forceEffect(kind: 0 | 1 | 2 | 3) {
+        self.core.forceEffect(kind, self.weatherTime)
+      },
+      /** First hazard position, so a screenshot can actually show the effect. */
+      hazardAt() {
+        const w = self.lastWeather
+        const v = w?.vents[0]
+        if (v) return { x: v.x, y: v.y }
+        const p = w?.puddles[0]
+        if (p) return { x: p.x, y: p.y }
+        return null
+      },
+      /** What the weather is doing right now — the M5 checkpoint reads this. */
+      weatherProbe() {
+        const w = self.lastWeather
+        return {
+          active: w?.active ?? [],
+          puddles: w?.puddles.length ?? 0,
+          vents: w?.vents.length ?? 0,
+          fog: w?.fog ?? 0,
+          solid: self.core.countSolid(),
+          fov: fovRadius({
+            darkness: darknessAt(cycleU(self.roundTime), C().NIGHT_DARKNESS),
+            fogMult: self.fogActive
+              ? C().FOV_FOG_MULT
+              : 1 - (1 - C().FOV_FOG_MULT) * (w?.fog ?? 0),
+            health: C().BASE_HEALTH,
+            flashlightOn: false,
+          }),
+        }
       },
       setFog(on: boolean) {
         self.fogActive = on
@@ -588,6 +649,17 @@ export class SandboxScene extends Phaser.Scene {
       this.refreshReadout()
     }
 
+    // Weather runs on the real scheduler; the buttons only inject a start.
+    this.weatherTime += dt
+    const weather = this.core.weatherStep(this.weatherTime, dt)
+    this.lastWeather = weather
+    this.drawHazards(weather)
+    // Fog from the effect ramps; the Fog button is a separate manual override so
+    // visibility can be inspected without waiting for a burst.
+    const fogMult = this.fogActive
+      ? C().FOV_FOG_MULT
+      : 1 - (1 - C().FOV_FOG_MULT) * weather.fog
+
     const darkness = darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS)
     const lights: LightSource[] = []
     if (body) {
@@ -595,7 +667,7 @@ export class SandboxScene extends Phaser.Scene {
         this.fovOverride ??
         fovRadius({
           darkness,
-          fogActive: this.fogActive,
+          fogMult,
           health: C().BASE_HEALTH,
           flashlightOn: false,
         })
@@ -606,7 +678,13 @@ export class SandboxScene extends Phaser.Scene {
     for (const l of this.ordnance.lights()) {
       lights.push({ x: l.x, y: l.y, radius: l.r, kind: 'radial', intensity: l.a })
     }
-    this.lightmap.render(this.cameras.main, darkness, lights, this.fogActive)
+    // Lava lights the map, exactly as ordnance does — a vent at night is a
+    // beacon and that is the point of digging yourself a hole being punished.
+    for (const v of weather.vents) {
+      if (v.jetting) lights.push({ x: v.x, y: v.y - 60, radius: 150, kind: 'radial', intensity: 0.9 })
+      else if (v.burning) lights.push({ x: v.x, y: v.y, radius: 90, kind: 'radial', intensity: 0.6 })
+    }
+    this.lightmap.render(this.cameras.main, darkness, lights, this.fogActive || weather.fog > 0)
 
     this.overlay.update(
       this.cameras.main,
@@ -617,7 +695,7 @@ export class SandboxScene extends Phaser.Scene {
               y: body.y,
               fov: fovRadius({
                 darkness,
-                fogActive: this.fogActive,
+                fogMult: this.fogActive ? C().FOV_FOG_MULT : 1,
                 health: C().BASE_HEALTH,
                 flashlightOn: false,
               }),
@@ -626,6 +704,49 @@ export class SandboxScene extends Phaser.Scene {
         : [],
     )
   }
+  /**
+   * Draw the active hazards.
+   *
+   * Deliberately primitive shapes rather than art: the sandbox exists to prove
+   * the simulation runs telegraph -> active -> end, and M7 brings the sprites.
+   * The positions are the server's data, not locally rolled — that seam is what
+   * stops a client from disagreeing about where the lava is.
+   */
+  private drawHazards(w: WeatherState): void {
+    const g = this.hazardGfx
+    g.clear()
+
+    for (const p of w.puddles) {
+      g.fillStyle(0x6dff4a, 0.35)
+      g.fillCircle(p.x, p.y, p.r)
+      g.lineStyle(2, 0x9dff7a, 0.8)
+      g.strokeCircle(p.x, p.y, p.r)
+    }
+
+    for (const v of w.vents) {
+      if (v.jetting) {
+        // A cone from the vent, leaning as the sim leans it.
+        const h = 180
+        const half = 0.35
+        const a = -Math.PI / 2 + v.lean
+        g.fillStyle(0xff6a1a, 0.55)
+        g.beginPath()
+        g.moveTo(v.x, v.y)
+        g.lineTo(v.x + Math.cos(a - half) * h, v.y + Math.sin(a - half) * h)
+        g.lineTo(v.x + Math.cos(a + half) * h, v.y + Math.sin(a + half) * h)
+        g.closePath()
+        g.fillPath()
+      } else if (v.burning) {
+        g.fillStyle(0xff4400, 0.45)
+        g.fillCircle(v.x, v.y, C().LAVA_BURN_RADIUS)
+      } else {
+        // Telegraph: cracks at the points that are about to open.
+        g.lineStyle(2, 0xff8800, 0.9)
+        g.strokeCircle(v.x, v.y, 10)
+      }
+    }
+  }
+
 }
 
 function label(text: string): HTMLSpanElement {
@@ -647,4 +768,6 @@ function randomSeed(): bigint {
   const a = new Uint32Array(2)
   crypto.getRandomValues(a)
   return (BigInt(a[0]!) << 32n) | BigInt(a[1]!)
+
+
 }

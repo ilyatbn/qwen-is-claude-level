@@ -1145,3 +1145,33 @@ Notes: T5.06 implements the A13 curve, NOT docs/14 §1's. The task file's own
        HeavyFog holds no RNG and no map — a pure timer, so the client can compute
        strength locally from the start time with no per-tick updates.
 Left for later: T5.07 flashlight + sandbox effect controls, then the M5 checkpoint.
+
+## T5.07 — Flashlight, light sources and the M5 checkpoint — DONE
+Files: client/src/render/{lightmap-math.ts,lightmap-math.test.ts},
+       client/src/core/index.ts, client/src/scenes/SandboxScene.ts,
+       crates/game-wasm/src/lib.rs, scripts/checks/m5-weather.mjs
+Verified: `npm --prefix client test -- --run lightmap-math` — 19 passed;
+       `node scripts/checks/m5-weather.mjs` — 15/15 checks; check.sh green
+       (146 client tests, full Rust workspace).
+Notes: fovRadius now takes fogMult (a number), not fogActive (a boolean). Fog
+       ramps over FOG_RAMP, and a boolean snapped the whole field of view between
+       two values at the ramp edges.
+       THE RUST FoV IS NOW CROSS-CHECKED FROM THE CLIENT. core_fov_radius and
+       core_darkness_at are exposed from wasm purely so a test can sweep 150
+       combinations against the TS copies and fail on drift. Falsified: changing
+       the TS flashlight multiplier to 0.75 fails it. This is the guard docs/01
+       asks for and it did not exist before.
+       Remote players' flashlight cones are in collectLightSources and have their
+       own named test — omitting them silently removes the entire trade that
+       makes the item a decision.
+       THE SANDBOX NEEDS TWO CLOCKS. The day/night slider FREEZES roundTime so a
+       phase can be inspected; the scheduler's double-tick guard then correctly
+       refuses to advance and every forced effect telegraphed forever. weatherTime
+       always advances. In a real round they are one clock — noted at the seam.
+       A SCREENSHOT THAT DOES NOT CONTAIN ITS SUBJECT IS NOT EVIDENCE. The first
+       lava run photographed an empty hillside while three vents erupted
+       off-screen; the check now moves the player to a hazard before shooting.
+       Also: the checkpoint tracks the effect ID it forced, not the kind — the
+       real scheduler runs alongside and may roll the same kind, which is legal
+       overlap (docs/13 §1), and my first version failed on it.
+Left for later: M6. Backdrop halo + classifier redesign still with the authority.

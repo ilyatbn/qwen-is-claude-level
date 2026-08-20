@@ -14,6 +14,8 @@
 import init, {
   GameCore,
   constants_json,
+  core_darkness_at,
+  core_fov_radius,
   quantize_angle,
   dequantize_angle,
 } from './pkg/game_wasm.js'
@@ -160,6 +162,9 @@ export interface Constants {
   FLASHLIGHT_CONE_DEG: number
   FLASHLIGHT_AMBIENT_MULT: number
   BASE_HEALTH: number
+  LAVA_BURN_RADIUS: number
+  TOXIC_PUDDLE_RADIUS: number
+  HEALTH_CAP: number
   TRACER_LIFETIME: number
   TRACER_WIDTH: number
   PROJECTILE_TRAIL_LEN: number
@@ -195,6 +200,22 @@ export function C(): Constants {
     throw new Error('constants read before Core.init() — call it first')
   }
   return constantsCache
+}
+
+/**
+ * The Rust FoV formula and darkness curve, for cross-checking the TypeScript
+ * copies in `lightmap-math.ts` and `sky-math.ts`. Not the render path — see the
+ * doc comments on the Rust side.
+ */
+export const coreFovRadius = core_fov_radius
+export const coreDarknessAt = core_darkness_at
+
+export interface WeatherState {
+  active: { id: number; kind: 'toxic' | 'meteor' | 'lava' | 'fog'; phase: string }[]
+  puddles: { x: number; y: number; r: number }[]
+  vents: { x: number; y: number; lean: number; jetting: boolean; burning: boolean }[]
+  /** 0..1 */
+  fog: number
 }
 
 export class Core {
@@ -347,6 +368,21 @@ export class Core {
 
   fire(id: number, now: number): FireEvent {
     return JSON.parse(this.inner.fire(id, now)) as FireEvent
+  }
+
+  /** Solid pixel count, for asserting an effect did or did not reshape the map. */
+  countSolid(): number {
+    return this.inner.count_solid()
+  }
+
+  /** Force a weather effect: 0 toxic, 1 meteor, 2 lava, 3 fog. */
+  forceEffect(kind: 0 | 1 | 2 | 3, now: number): void {
+    this.inner.force_effect(kind, now)
+  }
+
+  /** Advance the weather and return the hazards to draw. */
+  weatherStep(now: number, dt: number): WeatherState {
+    return JSON.parse(this.inner.weather_step(now, dt)) as WeatherState
   }
 
   combatStep(now: number, dt: number): CombatEvent[] {

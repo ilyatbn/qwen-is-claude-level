@@ -134,7 +134,7 @@ take self-damage, and see the inventory panel open on right-click.
 - [x] [T5.04](M5/T5.04-lava-burst.md) — Lava bursts and `carve_capsule`
 - [x] [T5.05](M5/T5.05-heavy-fog.md) — Heavy fog
 - [x] [T5.06](M5/T5.06-day-night.md) — Cycle state and the FoV formula
-- [ ] [T5.07](M5/T5.07-flashlight.md) — Flashlight and lightmap wiring
+- [x] [T5.07](M5/T5.07-flashlight.md) — Flashlight and lightmap wiring
 
 **Checkpoint:** In the sandbox, force each effect and watch it run start to finish.
 

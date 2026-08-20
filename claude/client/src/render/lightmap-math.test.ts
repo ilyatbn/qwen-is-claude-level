@@ -1,8 +1,10 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { C, Core } from '../core'
-import { fovRadius, lightmapNeeded } from './lightmap-math'
+import { C, Core, coreDarknessAt, coreFovRadius } from '../core'
+import { darknessAt } from './sky-math'
+import { FLASH_DECAY, collectLightSources, fovRadius, lightmapNeeded } from './lightmap-math'
+import type { PlayerLight, WorldLights } from './lightmap-math'
 
 beforeAll(async () => {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
@@ -13,7 +15,7 @@ describe('fovRadius', () => {
   it('is FOV_DAY in daylight, full health, no fog, no flashlight', () => {
     const c = C()
     expect(
-      fovRadius({ darkness: 0, fogActive: false, health: c.BASE_HEALTH, flashlightOn: false }),
+      fovRadius({ darkness: 0, fogMult: 1, health: c.BASE_HEALTH, flashlightOn: false }),
     ).toBeCloseTo(c.FOV_DAY, 4)
   })
 
@@ -22,7 +24,7 @@ describe('fovRadius', () => {
     expect(
       fovRadius({
         darkness: c.NIGHT_DARKNESS,
-        fogActive: false,
+        fogMult: 1,
         health: c.BASE_HEALTH,
         flashlightOn: false,
       }),
@@ -33,7 +35,7 @@ describe('fovRadius', () => {
     const c = C()
     const v = fovRadius({
       darkness: c.NIGHT_DARKNESS,
-      fogActive: true,
+      fogMult: C().FOV_FOG_MULT,
       health: c.BASE_HEALTH,
       flashlightOn: false,
     })
@@ -50,18 +52,18 @@ describe('fovRadius', () => {
   it('applies the health multiplier at 0 health and not above BASE_HEALTH', () => {
     const c = C()
     expect(
-      fovRadius({ darkness: 0, fogActive: false, health: 0, flashlightOn: false }),
+      fovRadius({ darkness: 0, fogMult: 1, health: 0, flashlightOn: false }),
     ).toBeCloseTo(c.FOV_DAY * c.FOV_HEALTH_MIN_MULT, 4)
     // Overheal does not buy extra sight — the ratio is clamped at 1.
     expect(
-      fovRadius({ darkness: 0, fogActive: false, health: 150, flashlightOn: false }),
+      fovRadius({ darkness: 0, fogMult: 1, health: 150, flashlightOn: false }),
     ).toBeCloseTo(c.FOV_DAY, 4)
   })
 
   it('shrinks ambient sight when the flashlight is on', () => {
     const c = C()
-    const off = fovRadius({ darkness: 0, fogActive: false, health: 100, flashlightOn: false })
-    const on = fovRadius({ darkness: 0, fogActive: false, health: 100, flashlightOn: true })
+    const off = fovRadius({ darkness: 0, fogMult: 1, health: 100, flashlightOn: false })
+    const on = fovRadius({ darkness: 0, fogMult: 1, health: 100, flashlightOn: true })
     // It is a trade for the cone, not an upgrade.
     expect(on).toBeCloseTo(off * c.FLASHLIGHT_AMBIENT_MULT, 4)
     expect(on).toBeLessThan(off)
@@ -73,7 +75,7 @@ describe('fovRadius', () => {
     for (let i = 0; i <= 20; i++) {
       const v = fovRadius({
         darkness: (i / 20) * c.NIGHT_DARKNESS,
-        fogActive: false,
+        fogMult: 1,
         health: 100,
         flashlightOn: false,
       })
@@ -91,5 +93,163 @@ describe('lightmapNeeded', () => {
   it('is true for any darkness, or for fog in daylight', () => {
     expect(lightmapNeeded(0.01, false)).toBe(true)
     expect(lightmapNeeded(0, true)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// collectLightSources (T5.07)
+// ---------------------------------------------------------------------------
+
+describe('collectLightSources', () => {
+  const player = (over: Partial<PlayerLight> = {}): PlayerLight => ({
+    x: 100,
+    y: 200,
+    health: 100,
+    flashlightOn: false,
+    aim: 0,
+    ...over,
+  })
+  const world = (over: Partial<WorldLights> = {}): WorldLights => ({
+    localPlayer: player(),
+    remotePlayers: [],
+    explosions: [],
+    hazards: [],
+    darkness: 0.82,
+    fogMult: 1,
+    ...over,
+  })
+
+  it('does no work in full daylight', () => {
+    expect(collectLightSources(world({ darkness: 0 }))).toEqual([])
+  })
+
+  it('gives the local player one radial source at night', () => {
+    const ls = collectLightSources(world())
+    expect(ls).toHaveLength(1)
+    expect(ls[0]!.kind).toBe('radial')
+    expect(ls[0]!.x).toBe(100)
+    expect(ls[0]!.radius).toBeCloseTo(
+      fovRadius({ darkness: 0.82, fogMult: 1, health: 100, flashlightOn: false }),
+      3,
+    )
+  })
+
+  it('adds a cone at the aim angle when the flashlight is on', () => {
+    const ls = collectLightSources(
+      world({ localPlayer: player({ flashlightOn: true, aim: 1.25 }) }),
+    )
+    const cone = ls.find((l) => l.kind === 'cone')
+    expect(cone).toBeDefined()
+    expect(cone!.angle).toBe(1.25)
+    expect(cone!.coneDeg).toBe(C().FLASHLIGHT_CONE_DEG)
+    expect(cone!.radius).toBeCloseTo(C().FLASHLIGHT_RANGE, 3)
+  })
+
+  it('shrinks the ambient radius when the flashlight is on — it is a trade', () => {
+    const off = collectLightSources(world())[0]!.radius
+    const on = collectLightSources(
+      world({ localPlayer: player({ flashlightOn: true }) }),
+    ).find((l) => l.kind === 'radial')!.radius
+    expect(on).toBeCloseTo(off * C().FLASHLIGHT_AMBIENT_MULT, 3)
+  })
+
+  it('draws a remote player’s cone — the whole point of the trade', () => {
+    // Omitting this silently removes the reason a flashlight is a decision: it
+    // is meant to be a beacon that gets you seen first.
+    const ls = collectLightSources(
+      world({ remotePlayers: [{ x: 700, y: 300, flashlightOn: true, aim: -0.5 }] }),
+    )
+    const cones = ls.filter((l) => l.kind === 'cone')
+    expect(cones).toHaveLength(1)
+    expect(cones[0]!.x).toBe(700)
+    expect(cones[0]!.angle).toBe(-0.5)
+  })
+
+  it('ignores a remote player without one', () => {
+    const ls = collectLightSources(
+      world({ remotePlayers: [{ x: 700, y: 300, flashlightOn: false, aim: 0 }] }),
+    )
+    expect(ls.filter((l) => l.kind === 'cone')).toHaveLength(0)
+  })
+
+  it('decays an explosion flash to nothing over FLASH_DECAY', () => {
+    const at = (age: number) =>
+      collectLightSources(world({ explosions: [{ x: 0, y: 0, age }] })).filter(
+        (l) => l.x === 0 && l.y === 0,
+      )
+    expect(at(0)[0]!.intensity).toBeCloseTo(1, 3)
+    expect(at(FLASH_DECAY / 2)[0]!.intensity).toBeCloseTo(0.5, 3)
+    expect(at(FLASH_DECAY)).toHaveLength(0)
+    expect(at(FLASH_DECAY + 1)).toHaveLength(0)
+  })
+
+  it('lights lava, burning ground and meteors while they are active', () => {
+    const ls = collectLightSources(
+      world({
+        hazards: [
+          { x: 1, y: 1, kind: 'lava' },
+          { x: 2, y: 2, kind: 'burn' },
+          { x: 3, y: 3, kind: 'meteor' },
+        ],
+      }),
+    )
+    expect(ls).toHaveLength(4) // the player plus three hazards
+    expect(ls.filter((l) => l.intensity === 0.85)).toHaveLength(3)
+  })
+
+  it('shrinks every radius in fog', () => {
+    const clear = collectLightSources(
+      world({ localPlayer: player({ flashlightOn: true }), hazards: [{ x: 1, y: 1, kind: 'lava' }] }),
+    )
+    const foggy = collectLightSources(
+      world({
+        localPlayer: player({ flashlightOn: true }),
+        hazards: [{ x: 1, y: 1, kind: 'lava' }],
+        fogMult: C().FOV_FOG_MULT,
+      }),
+    )
+    expect(foggy).toHaveLength(clear.length)
+    for (let i = 0; i < clear.length; i++) {
+      expect(foggy[i]!.radius).toBeLessThan(clear[i]!.radius)
+    }
+  })
+})
+
+/**
+ * The TypeScript FoV must agree with the Rust one across the whole input space.
+ *
+ * Two independent copies of this formula is precisely the drift the shared-core
+ * architecture exists to prevent (`docs/01-architecture.md`). The TS copy exists
+ * only because calling across the WASM boundary per light per frame would be
+ * wasteful — not because the two are allowed to differ.
+ */
+describe('the TypeScript FoV matches the Rust authority', () => {
+  it('agrees across a grid of darkness, fog, health and flashlight', () => {
+    const c = C()
+    let checked = 0
+    for (const darkness of [0, 0.1, 0.4, c.NIGHT_DARKNESS * 0.5, c.NIGHT_DARKNESS]) {
+      for (const fogMult of [1, 0.7, c.FOV_FOG_MULT]) {
+        for (const health of [0, 1, 37, c.BASE_HEALTH, c.HEALTH_CAP]) {
+          for (const flashlightOn of [false, true]) {
+            const ts = fovRadius({ darkness, fogMult, health, flashlightOn })
+            const rs = coreFovRadius(darkness, fogMult, health, flashlightOn)
+            expect(
+              Math.abs(ts - rs),
+              `darkness=${darkness} fog=${fogMult} health=${health} torch=${flashlightOn}: ts=${ts} rs=${rs}`,
+            ).toBeLessThan(0.01)
+            checked++
+          }
+        }
+      }
+    }
+    expect(checked).toBe(150)
+  })
+
+  it('agrees on the darkness curve across the whole cycle', () => {
+    for (let u = 0; u < 1; u += 0.005) {
+      const ts = darknessAt(u, C().NIGHT_DARKNESS)
+      const rs = coreDarknessAt(u)
+      expect(Math.abs(ts - rs), `u=${u}: ts=${ts} rs=${rs}`).toBeLessThan(1e-4)
+    }
   })
 })
