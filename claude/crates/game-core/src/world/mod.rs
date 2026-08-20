@@ -17,7 +17,7 @@ use crate::items::registry::{def, ItemId, ItemKind, WeaponId};
 use crate::items::spawning::{assign_buried_items, place_initial, reveal_buried, SpawnSchedule};
 use crate::items::world::{SpawnSource, WorldItemId, WorldItems};
 use crate::map::gen::surface::is_standable;
-use crate::map::{generate, CarveResult, Map};
+use crate::map::{CarveResult, Map};
 use crate::math::{Aabb, Vec2};
 use crate::player::apply_input;
 use crate::player::input::Input;
