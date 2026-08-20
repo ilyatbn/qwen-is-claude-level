@@ -47,6 +47,12 @@ if [ "$FAST" -eq 0 ]; then
   # game and it broke while every unit test and every counter stayed green — only
   # sampled pixels caught it (docs/70 §A15, §A16).
   node scripts/drive.mjs scripts/checks/night_darkens_the_world.mjs '?sandbox=1&seed=4242'
+
+  banner "net smoke (shipping client)"
+  # The control for the join flake (docs/70 §A28): the Rust integration tests use
+  # `rust_socketio`, which is not the client that ships. When they go red, this
+  # says whether the server is at fault or the harness is.
+  node scripts/net-smoke.mjs 25
 else
   banner "visual (skipped: --fast)"
 fi

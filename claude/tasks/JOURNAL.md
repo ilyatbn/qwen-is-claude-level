@@ -1376,3 +1376,28 @@ Run: cargo test -p game-server --test join -- --ignored
 Also: M0's echo handler and its test are gone — T6.03 replaced the handler, and
 the transport is now proven by the join flow doing something the game needs.
 Left for later: the flake; then T6.08-T6.15.
+
+## T6.03 + T6.07 — join flow and event scoping — DONE
+Files: crates/game-server/tests/join.rs, scripts/net-smoke.mjs, scripts/check.sh
+Verified: `cargo test -p game-server --test join` — 1 passed, **12/12 consecutive
+       runs green** (was 1-in-4); `node scripts/net-smoke.mjs 25` — 25/25 joined,
+       map_init 17,912 b64 bytes.
+Notes: THE FLAKE WAS THE TEST CLIENT, NOT THE SERVER. Establishing that took one
+       experiment, and it is the technique worth keeping: run the client that
+       actually SHIPS against the same server. node's socket.io-client joined
+       100/100 while rust_socketio managed 1-in-4, which located the bug in the
+       harness after four server-side hypotheses had been (correctly) eliminated.
+       Root cause: `ClientBuilder::connect()` returns when engine.io is up, but
+       the socket.io namespace CONNECT is still in flight, and the `join` emitted
+       on the next line is dropped WITH NO ERROR. socket.io-client buffers emits
+       until connected; rust_socketio does not. `connect()` now blocks on the
+       `open` callback.
+       A browser probe through the vite proxy fails with
+       ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS when the page is served by
+       Playwright's route interception — a harness artifact of the intercepted
+       origin, not a product bug. Use node's socket.io-client (same library, no
+       display, no proxy, no LNA exemption) — that is what scripts/net-smoke.mjs
+       does, and it is now in the gate.
+Left for later: the seven original sub-tests are still consolidated into one
+       sequential test. Their mutual interference was most likely the same
+       connect-race; worth re-splitting if granularity is ever wanted.

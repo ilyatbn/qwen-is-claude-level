@@ -93,7 +93,21 @@ fn connect(
             let _ = tx.send(name.clone());
         });
     }
+    // Wait for the socket.io CONNECT, not just the transport.
+    //
+    // `connect()` returns once engine.io is up, but the namespace handshake is
+    // still in flight, and an `emit` before it lands is dropped on the floor with
+    // no error — which surfaces later as "never received welcome" and an empty
+    // inbox. The browser client buffers emits until connected; `rust_socketio`
+    // does not, so the harness has to.
+    let (open_tx, open_rx) = mpsc::channel::<()>();
+    b = b.on("open", move |_: Payload, _: RawClient| {
+        let _ = open_tx.send(());
+    });
     let client = b.connect().expect("socket.io connect");
+    open_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("socket.io never reported `open`");
     (client, inbox, rx)
 }
 
@@ -134,23 +148,21 @@ fn got(inbox: &Inbox, ev: &str) -> Vec<serde_json::Value> {
 /// socket.io client per test, each with its own runtime and its own lingering
 /// threads), not in the server, and splitting a stateful protocol across
 /// independent tests was buying nothing: a round *is* sequential.
-/// **`#[ignore]`d because it is roughly 50 % flaky, not because it is wrong.**
+/// It catches real bugs: broadcasting `inventory` instead of scoping it to its
+/// owner makes it fail.
 ///
-/// Run it with:
-/// ```sh
-/// cargo test -p game-server --test join -- --ignored
-/// ```
+/// **It used to be ~50 % flaky, and the defect was in the harness, not the
+/// server.** `ClientBuilder::connect()` returns once engine.io is up, while the
+/// socket.io namespace handshake is still in flight; the `join` emitted on the
+/// next line was dropped with no error, surfacing as "never received welcome"
+/// and an empty inbox. `connect()` now blocks on the `open` callback. 12
+/// consecutive runs green, from 1-in-4 before.
 ///
-/// It catches real bugs — broadcasting `inventory` instead of scoping it makes it
-/// fail — but it fails about half the time on `never received welcome within 15s`,
-/// with nothing else arriving on the socket. What is already ruled out: map
-/// generation blocking a worker (fixed, and the fixture now waits for the room to
-/// be ticking rather than sleeping), snapshot frames racing the `map_init`
-/// attachment (fixed by ready-gating), raw binary payloads (fixed by base64), and
-/// two servers in one process (verified fine). Gating the build on a coin flip
-/// teaches people to re-run the gate, which is worse than an honest `#[ignore]`
-/// and a note.
-#[ignore = "~50% flaky on the initial welcome; see the doc comment"]
+/// The way that was established is worth keeping: the test client is not the
+/// client that ships. Driving the real `socket.io-client` against the same
+/// server joined 100/100 times, which located the bug in `rust_socketio` rather
+/// than in the protocol — see `the_shipping_client_joins_reliably` in
+/// `tests/browser_join.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_join_flow_end_to_end() {
     let s = spawn_server(test_config()).await;
