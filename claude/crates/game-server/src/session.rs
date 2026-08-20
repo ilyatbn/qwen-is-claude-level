@@ -213,6 +213,47 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                                 tracing::warn!(target: "game::net", socket = %socket.id, "map_init failed: {e}");
                             }
 
+                            // The world already on the ground.
+                            //
+                            // `place_initial` runs inside `World::new`, before
+                            // any event buffer exists, so the 8–20 items every
+                            // round starts with were never announced to anyone —
+                            // the server had them and no client could see them,
+                            // which for items is not cosmetic: they are the
+                            // reason to move (`docs/30`). A player joining
+                            // mid-round needs the same list for the same reason
+                            // (`docs/41` §4), so this is sent per socket rather
+                            // than broadcast at round start.
+                            if let Some(items) = room
+                                .inspect(|w| {
+                                    w.items
+                                        .iter()
+                                        .map(|it| {
+                                            serde_json::json!({
+                                                "tick": w.tick,
+                                                "world_item_id": it.id,
+                                                "item_id": it.item,
+                                                "count": it.count,
+                                                "x": it.pos.x.round() as i32,
+                                                "y": it.pos.y.round() as i32,
+                                                "source": format!("{:?}", it.source),
+                                            })
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .await
+                            {
+                                for it in &items {
+                                    emit(&socket, "item_spawn", it);
+                                }
+                                tracing::debug!(
+                                    target: "game::items",
+                                    player = id,
+                                    count = items.len(),
+                                    "sent the existing world items",
+                                );
+                            }
+
                             let joined = serde_json::json!({
                                 "tick": tick, "id": id, "name": name, "skin_id": skin_id,
                             });

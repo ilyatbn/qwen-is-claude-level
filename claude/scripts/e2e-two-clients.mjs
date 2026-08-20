@@ -208,6 +208,20 @@ if (dc.maskChecksum !== daF.maskChecksum) {
 // would be asserting zeros.
 const hudBefore = await a.page.evaluate('window.__game.debugHud()')
 if (hudBefore.visible) fail('the debug HUD is visible before F3 is pressed')
+// --- world items are drawn, not merely tracked (T9.03) --------------------
+// Two numbers, because they were silently different for three milestones: the
+// mirror tracked items from T6.08 and nothing rendered them, so a medkit on the
+// ground was invisible. Asserting only "the server spawned items" would have
+// passed the whole time.
+const itemsA = await dbg(a)
+if (itemsA.worldItems > 0 && itemsA.itemsDrawn === 0) {
+  fail(`${itemsA.worldItems} world items exist and ${itemsA.itemsDrawn} are drawn`)
+}
+if (itemsA.itemsDrawn > itemsA.worldItems) {
+  fail(`drew ${itemsA.itemsDrawn} items from ${itemsA.worldItems}`)
+}
+console.log(`  items: ${itemsA.itemsDrawn} drawn of ${itemsA.worldItems} tracked`)
+
 await a.page.keyboard.press('F3')
 await new Promise((r) => setTimeout(r, 700))
 const hud = await a.page.evaluate('window.__game.debugHud()')

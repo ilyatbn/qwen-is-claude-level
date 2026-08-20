@@ -11,6 +11,11 @@
       "json": "atlas/decor.json"
     },
     {
+      "key": "items",
+      "png": "atlas/items.png",
+      "json": "atlas/items.json"
+    },
+    {
       "key": "fx",
       "png": "atlas/fx.png",
       "json": "atlas/fx.json"

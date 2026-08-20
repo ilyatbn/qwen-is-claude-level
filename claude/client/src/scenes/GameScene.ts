@@ -25,6 +25,7 @@ import { Crosshair, LocalInput } from '../input/localInput'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceLayer } from '../render/ordnance'
+import { ItemLayer } from '../render/itemSprites'
 import { cycleU, darknessAt } from '../render/sky-math'
 import { formatClock, phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
 import { FLAG, flag } from '../net/codec'
@@ -52,6 +53,7 @@ export class GameScene extends Phaser.Scene {
   private sky!: SkyLayer
   private lightmap!: Lightmap
   private ordnance!: OrdnanceLayer
+  private items!: ItemLayer
   private localView: PlayerView | null = null
   private remotes = new Map<number, RemoteView>()
   private localInput!: LocalInput
@@ -118,6 +120,8 @@ export class GameScene extends Phaser.Scene {
     this.sky = new SkyLayer(this)
     this.lightmap = new Lightmap(this)
     this.ordnance = new OrdnanceLayer(this)
+    this.items = new ItemLayer(this)
+    this.items.setRegistry(this.core.itemRegistryJson())
     this.localInput = new LocalInput(this)
     this.crosshair = new Crosshair(this, DEPTH.hud)
     this.buildHud()
@@ -280,6 +284,7 @@ export class GameScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.conn.close()
       this.audio.stopAll()
+      this.items?.destroy()
       this.hud?.remove()
       this.feel?.destroy()
       this.minimap?.destroy()
@@ -591,6 +596,9 @@ export class GameScene extends Phaser.Scene {
     const darkness = this.serverDarkness || darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS)
     this.sky.update(this.roundTime, darkness)
     this.ordnance.update(dt)
+    // World items were tracked from T6.08 and drawn by nothing: a medkit on the
+    // ground was invisible in the real game.
+    this.items.update(dt, [...this.mirror.items.values()], this.ear())
     this.feel.update(dt, this.feelFrame())
 
     const fov = fovRadius({
@@ -789,6 +797,11 @@ export class GameScene extends Phaser.Scene {
           seed: self.core.meta.seed,
           phase: self.phase,
           players: [...self.mirror.players.keys()],
+          // Items the server says exist, and items actually on screen. Two
+          // numbers rather than one, because they were silently different for
+          // three milestones: the mirror tracked them and nothing drew them.
+          worldItems: self.mirror.items.size,
+          itemsDrawn: self.items?.count ?? 0,
           // The snapshot roster includes the local player, so this is the
           // total — not remotes plus one.
           playerCount: self.mirror.players.size,

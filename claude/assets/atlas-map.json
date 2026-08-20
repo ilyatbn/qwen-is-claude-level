@@ -53,6 +53,17 @@
     "decor_16": "pixel-platformer/Tiles/tile_0008.png",
     "decor_17": "pixel-platformer/Tiles/tile_0146.png"
   },
+  "items": {
+    "_note": "Frames named for ItemDef.sprite (crates/game-core/src/items/registry.rs), which has been populated since T4.01 and unreadable by the client until item_registry_json() exported it. A missing frame falls back to a tinted box and logs once (docs/50 \u00a78).",
+    "item_medkit": "pixel-platformer/Tiles/tile_0044.png",
+    "item_shield": "pixel-platformer/Tiles/tile_0067.png",
+    "item_flashlight": "pixel-platformer/Tiles/tile_0129.png",
+    "weapon_bazooka": "pixel-platformer/Tiles/tile_0065.png",
+    "weapon_grenade": "pixel-platformer/Tiles/tile_0151.png",
+    "weapon_smg": "pixel-platformer/Tiles/tile_0066.png",
+    "crate": "pixel-platformer/Tiles/tile_0026.png",
+    "crate_open": "pixel-platformer/Tiles/tile_0028.png"
+  },
   "fx": {
     "_note": "Transparent variants, not the black-background ones: the lightmap multiplies and additive blending both want real alpha.",
     "explosion_a": "particle-pack/PNG (Transparent)/flame_01.png",

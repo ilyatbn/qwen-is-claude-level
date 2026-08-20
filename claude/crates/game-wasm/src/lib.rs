@@ -271,6 +271,28 @@ impl GameCore {
         }
     }
 
+    /// The item registry as `[{id, key, sprite, max_stack}]`.
+    ///
+    /// `ItemDef.sprite` has been populated since T4.01 and nothing could read
+    /// it, because the wire carries only a numeric `item_id`. Exported rather
+    /// than duplicated client-side, so an item's art and its definition cannot
+    /// drift apart (the M0 review's finding 4, in a new place).
+    pub fn item_registry_json(&self) -> String {
+        let items: Vec<serde_json::Value> = registry::ITEMS
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "id": d.id,
+                    "key": d.key,
+                    "name": d.name,
+                    "sprite": d.sprite,
+                    "max_stack": d.max_stack,
+                })
+            })
+            .collect();
+        serde_json::to_string(&items).unwrap_or_else(|_| "[]".into())
+    }
+
     pub fn inventory_json(&self, id: u8) -> String {
         let Some(p) = self.players.iter().find(|p| p.id == id) else {
             return "null".into();

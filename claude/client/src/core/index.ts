@@ -384,6 +384,17 @@ export class Core {
     this.inner.select_slot(id, slot)
   }
 
+  /**
+   * The item registry as JSON — id, key, name, sprite, max stack.
+   *
+   * The wire carries only a numeric `item_id`, so without this the client cannot
+   * turn a world item into a sprite. `ItemDef.sprite` has existed since T4.01 and
+   * was unreadable here until now.
+   */
+  itemRegistryJson(): string {
+    return this.inner.item_registry_json()
+  }
+
   inventory(id: number): InventoryView | null {
     return JSON.parse(this.inner.inventory_json(id)) as InventoryView | null
   }

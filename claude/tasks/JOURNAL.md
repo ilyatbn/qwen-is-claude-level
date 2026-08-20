@@ -2020,3 +2020,28 @@ Left for later: T9.03. NOTED: WorldView's docstring claimed the sandbox and the
        still builds it inline. Every addition has to be made twice — this is the
        second feature to pay that. Comment corrected to say what is true;
        migrating the sandbox deserves its own task.
+
+## T9.03 — Item, crate and pickup sprites — DONE
+Files: client/src/render/{itemSprites,itemSprites-math,itemSprites-math.test}.ts,
+       core/index.ts, crates/game-wasm/src/lib.rs, crates/game-server/src/session.rs,
+       assets/atlas-map.json, scripts/e2e-two-clients.mjs, scenes/GameScene.ts
+Verified: `npm --prefix client test -- --run itemSprites-math` — 16 passed;
+       `node scripts/e2e.mjs two-clients` — items: 8 drawn of 8 tracked.
+       Falsified by skipping the layer update: "8 world items exist and 0 are
+       drawn", exit 1.
+Notes: THIS WAS NOT A COSMETIC TASK. World items were tracked by WorldMirror
+       from T6.08 and drawn by NOTHING — a medkit on the ground was invisible in
+       the real game. Items are the reason to move (docs/30) and an invisible
+       reason to move is no reason at all.
+       WORSE: the initial 8-20 items were never announced to anyone. place_initial
+       runs inside World::new, before any event buffer exists, so no item_spawn
+       was ever emitted for them — the server had them and no client could know.
+       Fixed by sending the existing item list per socket on join, which also
+       covers the mid-round joiner docs/41 §4 explicitly supports.
+       The e2e assertion is deliberately TWO numbers, tracked vs drawn, because
+       they were silently different for three milestones; asserting only "the
+       server spawned items" would have passed the whole time.
+       ItemDef.sprite has been populated since T4.01 and was unreadable by the
+       client — the wire carries only a numeric item_id. Exported the registry
+       through item_registry_json() rather than duplicating six entries.
+Left for later: T9.04.
