@@ -1175,3 +1175,39 @@ Notes: fovRadius now takes fogMult (a number), not fogActive (a boolean). Fog
        real scheduler runs alongside and may roll the same kind, which is legal
        overlap (docs/13 §1), and my first version failed on it.
 Left for later: M6. Backdrop halo + classifier redesign still with the authority.
+
+## A21: the backdrop conjunct, and tracer visibility — DONE
+Files: crates/game-core/src/constants.rs, crates/game-wasm/src/lib.rs,
+       client/src/core/index.ts, client/src/render/{chunkBake-math,terrain,
+       ordnance,ordnance-state}.ts + their tests, scripts/checks/night-combat.mjs
+Verified: chunkBake 24 + backdrop-real 9 + ordnance-state 7; check.sh green (147
+       client tests). night-combat.mjs exit 0.
+Notes: BACKDROP_MIN_HITS 4 + new BACKDROP_MIN_UP 0.5. Full table, fresh wasm,
+       all three scales (enc-as-sky / sky-as-backdrop / crest halo):
+         4/0.5  0.00/16.42/3.3   1.42/5.86/4.7   2.49/7.18/3.9
+         4/1.0  0.01/14.97/0.7   2.76/5.41/1.8   3.65/6.84/1.4
+         5/1.0  0.02/ 9.20/0.7   2.78/2.36/1.3   4.74/2.43/0.9
+         6/any  0.31/ 2.69/0.3   4.43/0.73/0.5   7.25/0.47/0.5
+       No row passes both bounds everywhere, so per A21 took the milder failure:
+       4/0.5 has the lowest worst-case enclosed-as-sky (2.49%). Residual
+       sky-as-backdrop is air under a floating island's FLANK, reached by a
+       DIAGONAL upward ray while the column overhead is clear — worst at small
+       scale, which packs six islands into a small sky.
+       THE TWO SYNTHETIC HALO TESTS ARE BACK AT THEIR ORIGINAL BOUNDS (4px, 40px)
+       rather than the ceilings I pinned last session: measured 4px and 17px with
+       the conjunct, against 13px and 143px without. A ceiling around a fixed bug
+       guards nothing. Falsified: removing the conjunct gives 37px and 177px.
+       TRACERS WERE NEVER FAILING TO DRAW. They render at DEPTH.particles 40,
+       above terrain — but the lightmap MULTIPLIES at depth 50, so at darkness
+       0.82 a white line became ~RGB 46 against RGB 20 terrain. The fix is that a
+       tracer LIGHTS ITS OWN PATH (6 samples along the segment) plus a brighter
+       muzzle light, so the beam carves its own hole instead of being dimmed by
+       the dark it is meant to be visible in. Proof: shots/night-tracer-proof.png,
+       13521 near-white px, lightmap draws 9.
+       A 0.09s tracer is shorter than a screenshot round-trip, so the check
+       froze decay (holdTracers, debug-only) before capturing — third instance
+       now of "the screenshot did not contain its subject".
+       PROJECTILE SIZE DOES NOT REPRODUCE: drawn in WORLD space at r=3 (bazooka,
+       6px across) and r=7 (meteor) against a 16x28 player, so it scales with
+       CAMERA_ZOOM correctly and is if anything small. Left alone.
+Left for later: M6 part A.

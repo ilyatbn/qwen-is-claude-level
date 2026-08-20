@@ -33,7 +33,7 @@ function build(scale: MapScale, seed: bigint) {
   w = core.width
   h = core.height
   const c = C()
-  bd = new BackdropMask(core, undefined, c.SKY_MARGIN, c.BACKDROP_RAYS, c.BACKDROP_RAY_LEN, c.BACKDROP_MIN_HITS)
+  bd = new BackdropMask(core, undefined, c.SKY_MARGIN, c.BACKDROP_RAYS, c.BACKDROP_RAY_LEN, c.BACKDROP_MIN_HITS, c.BACKDROP_MIN_UP)
 }
 
 beforeAll(async () => {
@@ -109,21 +109,25 @@ for (const [name, scale, seed] of CASES)
     expect(open).toBeGreaterThan(1000)
     const share = asBackdrop / open
     console.log(`   ${name}: ${(share * 100).toFixed(1)}% of open sky drawn as backdrop`)
-    // §A18's 3% holds only at medium. Re-measured at every scale against a FRESHLY
-    // BUILT wasm (see below), no value of BACKDROP_MIN_HITS satisfies both this
-    // bound and the enclosed-air one everywhere:
+    // §A21's accepted trade, with the numbers written down as it requires.
     //
-    //   value | small/777 | medium/4242 | large/99      (enclosed-as-sky / sky-as-backdrop)
-    //     4   |  -- /19.2 |  pass/ 7.3  |  -- / 7.3
-    //     5   |  -- / 9.6 |  pass/ pass | 2.9 / --
-    //     6   | 4.4 / --  |  pass/ pass | 7.2 / --
+    // Measured from a FRESH wasm build at BACKDROP_MIN_HITS 4 + BACKDROP_MIN_UP
+    // 0.5 (enclosed-as-sky / this metric / crest halo):
     //
-    // So the single global threshold is the wrong instrument, not a mistuned one.
-    // Until that is redesigned, the tight bound is asserted where it is achievable
-    // and a loose REGRESSION ceiling is asserted elsewhere — deliberately not a
-    // silent relaxation: a real regression still trips it, and the gap is recorded
-    // here and in the journal rather than hidden by deleting the case.
-    const bound = scale === MapScale.Medium ? 0.03 : 0.25
+    //   small/777    0.00% / 16.42% / 3.3px
+    //   medium/4242  1.42% /  5.86% / 4.7px
+    //   large/99     2.49% /  7.18% / 3.9px
+    //
+    // No configuration satisfies both of §A17's bounds at all three scales, so
+    // the milder failure was taken: enclosed air showing daylight is a hole
+    // through the world, sky drawn dark is haze. These are therefore REGRESSION
+    // ceilings on an accepted trade, not the design bound — set just above the
+    // measured value so a real regression still trips them.
+    //
+    // The residual is air beside and below a floating island's flank, reached by
+    // a diagonal upward ray while the column overhead is clear. It concentrates
+    // at small scale because a small map packs six islands into a small sky.
+    const bound = scale === MapScale.Small ? 0.2 : 0.09
     expect(share, `${(share * 100).toFixed(1)}% of open sky drawn as backdrop`).toBeLessThan(bound)
   })
 

@@ -429,27 +429,40 @@ pub const BACKDROP_RAYS: u32 = 8;
 pub const BACKDROP_RAY_LEN: f32 = 320.0;
 /// Rays that must strike solid for the sample to count as enclosed.
 ///
-/// **5, and §A19's 4 is not adopted — see the journal entry for T5.02b.**
+/// **4, with `BACKDROP_MIN_UP` as a conjunct (§A21).** §A18's 5 and §A19's 4 were
+/// both measured against a stale WASM build and are withdrawn.
 ///
-/// §A19's table does not reproduce against a freshly built WASM. Re-measured at
-/// all three scales with the acceptance test (shares: enclosed air drawn as sky /
-/// open sky drawn as backdrop):
+/// Re-measured from a fresh build at every scale (enclosed-air-drawn-as-sky /
+/// open-sky-drawn-as-backdrop / mean backdrop halo above an exposed crest):
 ///
-/// | value | small/777 | medium/4242 | large/99 |
+/// | hits/up | small/777 | medium/4242 | large/99 |
 /// |---|---|---|---|
-/// | 4 | -- / **19.2 %** | -- / **7.3 %** | -- / **7.3 %** |
-/// | 5 | -- / **9.6 %** | pass / pass | **2.9 %** / -- |
-/// | 6 | **4.4 %** / -- | pass / pass | **7.2 %** / -- |
+/// | 4 / 0.5 | 0.00 / 16.42 / 3.3 | 1.42 / 5.86 / 4.7 | 2.49 / 7.18 / 3.9 |
+/// | 4 / 1.0 | 0.01 / 14.97 / 0.7 | 2.76 / 5.41 / 1.8 | 3.65 / 6.84 / 1.4 |
+/// | 5 / 1.0 | 0.02 / 9.20 / 0.7 | 2.78 / 2.36 / 1.3 | 4.74 / 2.43 / 0.9 |
+/// | 6 / any | 0.31 / 2.69 / 0.3 | 4.43 / 0.73 / 0.5 | 7.25 / 0.47 / 0.5 |
 ///
-/// No value satisfies both bounds at every scale, so the single global threshold
-/// is the wrong instrument rather than mistuned — the same conclusion §A17 reached
-/// about connectivity, one level down. 5 is retained as the least-bad and because
-/// it is what the game has shipped throughout; changing it is a design decision,
-/// not a build one.
+/// No configuration satisfies both of §A17's bounds (2 % / 3 %) at all three
+/// scales, so this takes the milder failure per §A21: enclosed air showing
+/// daylight reads as a hole through the world, sky drawn dark reads as haze.
+/// 4/0.5 has the lowest worst-case enclosed-as-sky of any row (2.49 %) and keeps
+/// the halo inside `EDGE_BAND_PX`.
 ///
-/// §A19's structural requirements ARE adopted, and they are the durable half: no
-/// default for `minHits`, tests pinned to this constant, acceptance at every scale.
-pub const BACKDROP_MIN_HITS: u32 = 5;
+/// The residual sky-as-backdrop is concentrated at **small** scale, and is air
+/// beside and below a floating island's flank — reached by a diagonal upward ray
+/// while the column overhead is clear. Drawing that slightly dark is defensible;
+/// it is the same "under the eave" geometry the conjunct is meant to catch.
+pub const BACKDROP_MIN_HITS: u32 = 4;
+/// Upward ray hits required in addition to the total (§A21).
+///
+/// Interior air has rock above it. Without this an exposed crest collects enough
+/// side and downward hits to cross any workable total and wears a backdrop halo
+/// along its skyline — 30.2 px mean at `BACKDROP_MIN_HITS` 4, cut to 3.3 px by
+/// this one term. Roofedness alone is not sufficient either (§A17: air under a
+/// floating island is roofed and is plainly sky), which is why it is a conjunct.
+///
+/// Fractional because the ray-count field is blurred before thresholding.
+pub const BACKDROP_MIN_UP: f32 = 0.5;
 
 // --- A3: visible ordnance ---
 

@@ -28,6 +28,10 @@ export class OrdnanceLayer {
     // One Graphics, cleared and redrawn: an object per tracer at 10 shots/s would
     // allocate constantly.
     this.gfx = scene.add.graphics().setDepth(DEPTH.particles)
+    // Tracers, trails and flashes are all light. ADD makes them read against dark
+    // terrain at night, which is exactly where §A3's "all bullets are visible"
+    // was failing — a 2 px white line at 0.09 s was almost impossible to find.
+    this.gfx.setBlendMode(Phaser.BlendModes.ADD)
   }
 
   addTracer(x0: number, y0: number, x1: number, y1: number): void {
@@ -60,13 +64,27 @@ export class OrdnanceLayer {
     const c = C()
     g.clear()
 
-    // Tracers: a bright core that fades over TRACER_LIFETIME.
+    // Tracers: a wide warm halo, a bright core, and a muzzle flash.
+    //
+    // At 10 shots/s with a 0.09 s life there is often nothing on screen between
+    // shots, so each one has to land. Three passes rather than two, all additive:
+    // the halo gives it presence against terrain, the core gives it the line, and
+    // the muzzle flash marks the shooter — which is the point of a tracer at
+    // night. Shooting in the dark should tell everyone where you are.
     for (const t of this.state.tracers) {
       const k = t.life / t.ttl
-      g.lineStyle(c.TRACER_WIDTH * 2, 0xfff3c0, 0.25 * k)
+      g.lineStyle(c.TRACER_WIDTH * 5, 0xff9a3c, 0.18 * k)
       g.lineBetween(t.x0, t.y0, t.x1, t.y1)
-      g.lineStyle(c.TRACER_WIDTH, 0xffffff, 0.95 * k)
+      g.lineStyle(c.TRACER_WIDTH * 2, 0xffe9a0, 0.55 * k)
       g.lineBetween(t.x0, t.y0, t.x1, t.y1)
+      g.lineStyle(c.TRACER_WIDTH, 0xffffff, 1.0 * k)
+      g.lineBetween(t.x0, t.y0, t.x1, t.y1)
+
+      // Muzzle flash at the origin, biggest at the instant of firing.
+      g.fillStyle(0xffd27a, 0.5 * k)
+      g.fillCircle(t.x0, t.y0, 7 * k)
+      g.fillStyle(0xffffff, 0.85 * k)
+      g.fillCircle(t.x0, t.y0, 3 * k)
     }
 
     // Trails: a tapering polyline, oldest thinnest.

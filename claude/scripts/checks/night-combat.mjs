@@ -35,7 +35,19 @@ export default async function ({ page, shot, log }) {
     window.__smg = setInterval(() => window.__game.fire(), 40)
   })
   await page.waitForTimeout(400)
+  // Freeze tracer decay before the shot: 0.09 s is shorter than a screenshot
+  // round-trip, and the first version of this check photographed an empty
+  // hillside while asserting a tracer existed.
+  await page.evaluate('window.__game.holdTracers(true)')
+  await page.waitForFunction('window.__game.ordnance().tracers > 0', null, { timeout: 10000 })
+  // Let the frozen tracer survive at least one render + lightmap pass before the
+  // capture. Without this the shot lands between frames and photographs the
+  // hillside the tracer is about to cross.
+  await page.waitForTimeout(400)
+  const lit = await page.evaluate(() => window.__game.ordnance().lights)
+  if (lit < 3) throw new Error(`tracer emits only ${lit} lights — it will be lost in the dark`)
   await shot('night-tracers')
+  await page.evaluate('window.__game.holdTracers(false)')
   const during = await page.evaluate(() => window.__game.ordnance())
   await page.evaluate(() => clearInterval(window.__smg))
   log(`during sustained fire: ${JSON.stringify(during)}`)

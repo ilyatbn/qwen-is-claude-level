@@ -199,6 +199,17 @@ export class BackdropMask implements MaskSource {
     rays = 8,
     rayLen = 320,
     minHits: number,
+    /**
+     * Upward ray hits required, in addition to `minHits` total (§A21).
+     *
+     * Interior air has rock above it. Without this, an exposed crest collects
+     * enough side and downward hits to cross any workable total, and wears a
+     * halo of backdrop along its skyline — measured mean 3.4-6.3 px. Roofedness
+     * alone is not enough either (§A17: the air under a floating island is
+     * roofed and is plainly sky), which is why this is a conjunct: something
+     * over your head, AND rock most of the way around you.
+     */
+    minUp = 0.5,
   ) {
     const w = (this.width = src.width)
     const h = (this.height = src.height)
@@ -246,6 +257,7 @@ export class BackdropMask implements MaskSource {
     const cw = Math.ceil(w / cell) + 1
     const ch = Math.ceil(h / cell) + 1
     const hits = new Float32Array(cw * ch)
+    const upHits = new Float32Array(cw * ch)
     const dirs: Array<[number, number]> = []
     for (let k = 0; k < rays; k++) {
       const a = (k / rays) * Math.PI * 2
@@ -259,15 +271,19 @@ export class BackdropMask implements MaskSource {
         const px = cx * cell
         const py = cy * cell
         let count = 0
+        let up = 0
         for (const [dx, dy] of dirs) {
           for (let t = STEP; t <= rayLen; t += STEP) {
             if (isSolid(Math.round(px + dx * t), Math.round(py + dy * t))) {
               count++
+              // Screen coordinates: negative y is up.
+              if (dy < -0.3) up++
               break
             }
           }
         }
         hits[cy * cw + cx] = count
+        upHits[cy * cw + cx] = up
       }
     }
 
@@ -279,6 +295,27 @@ export class BackdropMask implements MaskSource {
     // transitions sat on the 8 px lattice, against a 52 % control taken on the
     // terrain silhouette itself. A 3x3 average makes the field genuinely
     // continuous, so the crossing moves with the geometry instead of snapping.
+    // Both fields are blurred, for the same reason: integer counts against an
+    // integer threshold put the bilinear crossing exactly on a cell edge.
+    const smoothUp = new Float32Array(cw * ch)
+    for (let cy = 0; cy < ch; cy++) {
+      for (let cx = 0; cx < cw; cx++) {
+        let sum = 0
+        let wsum = 0
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = cx + dx
+            const ny = cy + dy
+            if (nx < 0 || ny < 0 || nx >= cw || ny >= ch) continue
+            const wt = dx === 0 && dy === 0 ? 8 : 1
+            sum += upHits[ny * cw + nx]! * wt
+            wsum += wt
+          }
+        }
+        smoothUp[cy * cw + cx] = sum / wsum
+      }
+    }
+
     const smooth = new Float32Array(cw * ch)
     for (let cy = 0; cy < ch; cy++) {
       for (let cx = 0; cx < cw; cx++) {
@@ -301,6 +338,7 @@ export class BackdropMask implements MaskSource {
       }
     }
     hits.set(smooth)
+    upHits.set(smoothUp)
 
     // --- threshold at pixel resolution ------------------------------------
     const inside = new Uint8Array(n)
@@ -331,7 +369,16 @@ export class BackdropMask implements MaskSource {
         const d = hits[y1 * cw + x1]!
         const top = a + (b - a) * fx
         const bot = c2 + (d - c2) * fx
-        if (top + (bot - top) * fy >= minHits) inside[i] = 1
+        if (top + (bot - top) * fy < minHits) continue
+        // §A21: and something over your head.
+        const ua = upHits[y0 * cw + x0]!
+        const ub = upHits[y0 * cw + x1]!
+        const uc = upHits[y1 * cw + x0]!
+        const ud = upHits[y1 * cw + x1]!
+        const utop = ua + (ub - ua) * fx
+        const ubot = uc + (ud - uc) * fx
+        if (utop + (ubot - utop) * fy < minUp) continue
+        inside[i] = 1
       }
     }
     this.inside = inside

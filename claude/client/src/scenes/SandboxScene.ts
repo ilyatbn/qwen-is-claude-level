@@ -499,6 +499,16 @@ export class SandboxScene extends Phaser.Scene {
       forceEffect(kind: 0 | 1 | 2 | 3) {
         self.core.forceEffect(kind, self.weatherTime)
       },
+      /** Raw tracer segments, for diagnosing why one is not on screen. */
+      ordnanceState() {
+        return self.ordnance.state.tracers.map((t) => ({
+          x0: t.x0, y0: t.y0, x1: t.x1, y1: t.y1, life: t.life,
+        }))
+      },
+      /** Freeze tracer decay so a screenshot can catch one (debug only). */
+      holdTracers(on: boolean) {
+        self.ordnance.state.holdTracers = on
+      },
       /** First hazard position, so a screenshot can actually show the effect. */
       hazardAt() {
         const w = self.lastWeather

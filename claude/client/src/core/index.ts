@@ -176,6 +176,7 @@ export interface Constants {
   BACKDROP_RAYS: number
   BACKDROP_RAY_LEN: number
   BACKDROP_MIN_HITS: number
+  BACKDROP_MIN_UP: number
 }
 
 /**

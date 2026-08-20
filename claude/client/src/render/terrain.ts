@@ -153,6 +153,7 @@ export class TerrainRenderer {
       C().BACKDROP_RAYS,
       C().BACKDROP_RAY_LEN,
       C().BACKDROP_MIN_HITS,
+      C().BACKDROP_MIN_UP,
     )
 
     for (let cy = 0; cy < this.chunksY; cy++) {

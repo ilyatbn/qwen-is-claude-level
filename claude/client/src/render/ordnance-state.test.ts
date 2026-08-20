@@ -70,3 +70,21 @@ describe('OrdnanceState', () => {
     expect(o.lights()[0]!.a).toBeLessThan(first)
   })
 })
+
+it('a tracer lights its muzzle as well as its impact', () => {
+  // Firing at night must give away the shooter's position, not only the target's
+  // (`docs/14-daynight-visibility.md` §2). Lighting only the far end inverts the
+  // trade the whole night design rests on.
+  const s = new OrdnanceState(0.09, 12)
+  s.addTracer(100, 100, 500, 300)
+  const lights = s.lights()
+  const muzzle = lights.find((l) => l.x === 100 && l.y === 100)
+  const impact = lights.find((l) => l.x === 500 && l.y === 300)
+  expect(muzzle, 'no light at the muzzle').toBeDefined()
+  expect(impact, 'no light at the impact').toBeDefined()
+  expect(muzzle!.a).toBeGreaterThan(0)
+
+  // And both fade with the tracer rather than lingering.
+  s.update(0.09)
+  expect(s.lights().filter((l) => l.x === 100 || l.x === 500)).toHaveLength(0)
+})

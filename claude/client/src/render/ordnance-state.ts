@@ -8,6 +8,10 @@
  * readable at all, which is why `lights()` lives here and is tested.
  */
 
+/** Light samples along a tracer's path. Enough to read as a beam, few enough
+ * that 10 shots/s does not flood the lightmap. */
+const TRACER_LIGHT_SAMPLES = 6
+
 export interface Tracer {
   x0: number
   y0: number
@@ -59,6 +63,14 @@ const GLOW: Record<ProjectileKind, { r: number; a: number }> = {
 
 export class OrdnanceState {
   readonly tracers: Tracer[] = []
+  /**
+   * Freeze tracer decay. Debug-only, for headless screenshots.
+   *
+   * A tracer lives 0.09 s, which is shorter than a Playwright screenshot
+   * round-trip, so a shot of "the tracer" reliably captured an empty hillside
+   * instead. Holding decay makes the evidence deterministic rather than a race.
+   */
+  holdTracers = false
   readonly projectiles = new Map<number, TrackedProjectile>()
   readonly impacts: Impact[] = []
 
@@ -95,6 +107,7 @@ export class OrdnanceState {
 
   update(dt: number): void {
     for (let i = this.tracers.length - 1; i >= 0; i--) {
+      if (this.holdTracers) break
       const t = this.tracers[i]!
       t.life -= dt
       if (t.life <= 0) this.tracers.splice(i, 1)
@@ -120,8 +133,31 @@ export class OrdnanceState {
       out.push({ x: p.x, y: p.y, r: g.r, a: g.a })
     }
     for (const t of this.tracers) {
-      // A tracer lights its own impact end, brightest when freshest.
-      out.push({ x: t.x1, y: t.y1, r: 55, a: 0.7 * (t.life / t.ttl) })
+      const k = t.life / t.ttl
+      // A tracer LIGHTS ITS OWN PATH, not just its ends.
+      //
+      // Drawing it was never the problem: it renders at DEPTH.particles (40),
+      // above terrain — but the lightmap multiplies at depth 50, so at full
+      // darkness a white line became roughly RGB 46 against RGB 20 terrain and
+      // was, as reported, nearly invisible. §A3 requires every shot to be
+      // visible, so the beam has to carve its own hole in the dark rather than
+      // be dimmed by it.
+      //
+      // Sampling the segment rather than adding one huge radial keeps the lit
+      // region the shape of the beam.
+      for (let i = 0; i <= TRACER_LIGHT_SAMPLES; i++) {
+        const f = i / TRACER_LIGHT_SAMPLES
+        out.push({
+          x: t.x0 + (t.x1 - t.x0) * f,
+          y: t.y0 + (t.y1 - t.y0) * f,
+          r: 46,
+          a: 0.75 * k,
+        })
+      }
+      // The muzzle is brighter and wider: firing at night must give away the
+      // shooter, not only the target ("shooting in the dark tells everyone where
+      // you are", `docs/14-daynight-visibility.md` §2).
+      out.push({ x: t.x0, y: t.y0, r: 80, a: 0.9 * k })
     }
     for (const im of this.impacts) {
       // A bright, fast decay: the flash of the blast, not a lingering lamp.
