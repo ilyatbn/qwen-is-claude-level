@@ -320,3 +320,50 @@ before the code exists can specify machinery the code turns out not to need.**
 §A19, §A32, §A37 and §A38 were all numbers that did not survive measurement; this
 is a mechanism that did not survive implementation. Deleting it is the result, not
 a shortcut around it.
+
+### B2 — corrected
+
+**Tick cost does not bound `MAX_ROOMS`, and §B2 asked the wrong question.** It
+specified "set `MAX_ROOMS` where p99 crosses half the 16.67 ms budget". It never
+crosses. Measured on 16 cores, release, medium maps, 6 firing bots per room, after
+a 45 s warm-up:
+
+| rooms | p50 | p99 | max |
+|---|---|---|---|
+| 1 | 0.002 | 0.004 | 0.009 ms |
+| 8 | 0.002 | 0.009 | 0.051 |
+| 32 | 0.002 | 0.008 | 0.541 |
+| 128 | 0.003 | 0.010 | 0.518 |
+
+At **128 rooms** p99 is using **0.12 % of half a tick budget**, and per-room cost is
+flat (8 rooms costs 1.01× per room versus 1). Control drift 1.5 %, so the box was
+genuinely idle — the §A38 lesson applied.
+
+`MAX_ROOMS` is **32**, and the constant's doc comment carries the table plus what
+actually bounds it:
+
+- **Memory**: terrain is ~648 KiB per medium room, ~1.2 MiB per large.
+- **Room creation**, at **0.6–1.1 s**, is the expensive operation — not ticking. A
+  burst of players creating private rooms is the load worth worrying about, and it
+  is why generation runs off the tick thread.
+- **Not measured, and stated as such**: the socket layer at 192 concurrent clients,
+  and memory under real load rather than by arithmetic.
+
+The interesting part is not the number. It is that **the instrument was broken
+before the code was**, twice:
+
+> The first measurement measured six players **standing still** — no bots thinking,
+> no firing, no weather. p50 and p99 both rounded to 0.000 ms and max was 11 µs. It
+> would have justified any `MAX_ROOMS` whatsoever.
+
+> `max_rooms_carries_its_basis` asserted the doc comment mentions "T10.07" — which
+> the placeholder *"Provisional until T10.07 measures it"* already contained. **The
+> test passed against exactly the state it exists to reject.**
+
+Both are the §A15 failure — asserting an intention rather than an effect — and the
+second is its purest form yet: a test whose subject and whose sentinel were the
+same string.
+
+`/metrics` reports the three fields **per room**, not process-wide, because a
+process-wide p99 hides one sick room behind seven healthy ones, and
+`MissedTickBehavior::Burst` makes a sick room spike rather than degrade.
