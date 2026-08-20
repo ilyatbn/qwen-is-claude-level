@@ -602,6 +602,10 @@ pub fn constants_json() -> String {
         // The walk animation's reference speed, so a slowed player trudges.
         // Exported rather than duplicated client-side (M0 review, finding 4).
         WALK_SPEED => c::WALK_SPEED,
+        // Terminal velocity, as the reference for how hard a landing sounds
+        // (T9.01). Exported for the same reason WALK_SPEED is: the alternative
+        // is a second copy of the number on the client.
+        MAX_FALL_SPEED => c::MAX_FALL_SPEED,
         EDGE_BAND_PX => c::EDGE_BAND_PX,
         CHUNK_REBAKE_BUDGET => c::CHUNK_REBAKE_BUDGET,
         PARALLAX_FACTOR => c::PARALLAX_FACTOR,

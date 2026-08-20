@@ -22,7 +22,9 @@ vendor="$root/assets/vendor/kenney"
 force=0
 [ "${1:-}" = "--force" ] && force=1
 
-slugs=(platformer-characters particle-pack pixel-platformer ui-pack)
+# Art packs, then audio (T9.01). All CC0.
+slugs=(platformer-characters particle-pack pixel-platformer ui-pack
+       impact-sounds interface-sounds sci-fi-sounds digital-audio)
 
 # ---------------------------------------------------------------------------
 
@@ -195,4 +197,4 @@ fi
 
 echo
 echo "Total: $(du -sh "$root/assets/vendor" | cut -f1)"
-echo "Licences: $(find "$vendor" -maxdepth 2 -name 'LICENSE.txt' | wc -l)/4"
+echo "Licences: $(find "$vendor" -maxdepth 2 -name 'LICENSE.txt' | wc -l)/${#slugs[@]}"

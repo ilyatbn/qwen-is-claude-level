@@ -32,6 +32,8 @@ import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { Minimap } from '../ui/minimap'
 import { DebugHud } from '../ui/debugHud'
 import { traumaFromExplosion } from '../render/cameraRig-math'
+import { Mixer } from '../audio/mixer'
+import { loadAudio } from '../audio/sfx'
 
 interface RemoteView {
   view: PlayerView
@@ -58,6 +60,13 @@ export class GameScene extends Phaser.Scene {
   private feel!: FeelLayer
   private minimap: Minimap | null = null
   private debugHud!: DebugHud
+  /** Silent until `audio.json` loads; `docs/50` §8 — no assets is a supported state. */
+  private audio = new Mixer()
+  private unlockAudio: () => void = () => {}
+  /** Footstep pacing and edge detection for land/jetpack cues. */
+  private stepAcc = 0
+  private wasGrounded = true
+  private wasJetting = false
   private serverPos: { x: number; y: number } | null = null
   private lastRtt = 0
   private invOpen = false
@@ -116,6 +125,7 @@ export class GameScene extends Phaser.Scene {
     this.debugHud = new DebugHud(this, C().PLAYER_W, C().PLAYER_H)
     this.input.keyboard?.on('keydown-F3', () => this.debugHud.toggle())
     this.input.keyboard?.on('keydown-M', () => this.minimap?.toggle())
+    this.initAudio()
 
     this.mirror.onResyncNeeded = () => this.conn.requestResync()
 
@@ -166,9 +176,17 @@ export class GameScene extends Phaser.Scene {
     for (const ev of ['carve', 'carve_capsule', 'item_spawn', 'crate_spawn', 'item_pickup',
       'item_despawn', 'projectile_spawn', 'projectile_despawn', 'mask_checksum']) {
       this.conn.on(ev, (raw) => {
-        this.mirror.applyEvent(ev, asRecord(raw), performance.now())
+        const p = asRecord(raw)
+        this.mirror.applyEvent(ev, p, performance.now())
         if (ev === 'carve' || ev === 'carve_capsule') this.minimap?.setTerrainDirty()
+        this.cueFor(ev, p)
       })
+    }
+    // Cue-only subscriptions. The world does not simulate these — they are
+    // server-authoritative announcements (`docs/13` §7) — but they are exactly
+    // the moments a player needs to hear.
+    for (const ev of ['phase_change', 'effect_start', 'hazard_spawn', 'respawn']) {
+      this.conn.on(ev, (raw) => this.cueFor(ev, asRecord(raw)))
     }
     this.conn.on('explosion', (raw) => {
       const p = asRecord(raw)
@@ -176,6 +194,10 @@ export class GameScene extends Phaser.Scene {
       const y = Number(p['y'] ?? 0)
       const r = Number(p['r'] ?? 0)
       this.ordnance.addImpact(x, y, r, 'blast')
+      // A meteor is a different, heavier sound from a rocket: the kind is on the
+      // event already (`docs/40` §3), so nothing new has to be sent for it.
+      const kind = String(p['kind'] ?? '')
+      this.audio.spatial(kind === 'meteor' ? 'meteor' : 'explode', x, y, this.ear())
       // Distance-scaled trauma, from the layer that owns trauma (§A24).
       const me = this.predictor?.state
       const dist = me ? Math.hypot(me.x - x, me.y - y) : 0
@@ -192,6 +214,7 @@ export class GameScene extends Phaser.Scene {
       const y = Number(p['y'] ?? at.y)
       if (victim === this.me) this.feel.damageTaken(x, y, amount)
       else this.feel.damageDealt(x, y, amount, false)
+      this.audio.spatial('hit', x, y, this.ear())
     })
     this.conn.on('death', (raw) => {
       const p = asRecord(raw)
@@ -206,15 +229,14 @@ export class GameScene extends Phaser.Scene {
         by: String(p['by'] ?? cause),
         involvesYou: victim === this.me || attacker === this.me,
       })
+      this.audio.play('death', { volume: victim === this.me ? 1 : 0.5 })
     })
     this.conn.on('hitscan', (raw) => {
       const p = asRecord(raw)
-      this.ordnance.addTracer(
-        Number(p['x0'] ?? 0),
-        Number(p['y0'] ?? 0),
-        Number(p['x1'] ?? 0),
-        Number(p['y1'] ?? 0),
-      )
+      const x0 = Number(p['x0'] ?? 0)
+      const y0 = Number(p['y0'] ?? 0)
+      this.ordnance.addTracer(x0, y0, Number(p['x1'] ?? 0), Number(p['y1'] ?? 0))
+      this.audio.spatial('fire_smg', x0, y0, this.ear())
     })
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
@@ -222,6 +244,7 @@ export class GameScene extends Phaser.Scene {
         // docs/30 §3: right-click toggles the inventory panel. It is client-side
         // and sends nothing; the round keeps running while it is open.
         this.invOpen = !this.invOpen
+        this.audio.play('ui_click', { volume: 0.5 })
         this.refreshHud()
         return
       }
@@ -238,6 +261,7 @@ export class GameScene extends Phaser.Scene {
       this.input.keyboard?.on(`keydown-${key}`, () => {
         this.selectedSlot = i
         this.conn.sendSelectSlot(i)
+        this.audio.play('ui_click', { volume: 0.4 })
         this.refreshHud()
       })
     }
@@ -255,6 +279,7 @@ export class GameScene extends Phaser.Scene {
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.conn.close()
+      this.audio.stopAll()
       this.hud?.remove()
       this.feel?.destroy()
       this.minimap?.destroy()
@@ -380,6 +405,128 @@ export class GameScene extends Phaser.Scene {
 
   // ------------------------------------------------------------------- frame
 
+  /**
+   * Footsteps, landing and the jetpack.
+   *
+   * These are the only cues driven by *state* rather than by an event, because
+   * there is no `footstep` message and there should not be one — it is the local
+   * player's own body and the client already knows it exactly.
+   */
+  private movementCues(dt: number, body: { vx: number; vy: number; grounded: boolean; moveState: number }): void {
+    const jetting = body.moveState === 2
+    if (jetting !== this.wasJetting) {
+      this.audio.hold('jetpack', jetting, 0.35)
+      this.wasJetting = jetting
+    }
+
+    if (body.grounded && !this.wasGrounded) {
+      // Land, scaled by how hard: a step off a ledge and a fall from a jetpack
+      // burn should not sound the same.
+      const force = Math.min(1, Math.abs(body.vy) / C().MAX_FALL_SPEED + 0.25)
+      this.audio.play('land', { volume: force })
+      this.stepAcc = 0
+    }
+    this.wasGrounded = body.grounded
+
+    const speed = Math.abs(body.vx)
+    if (body.grounded && speed > 10) {
+      // Stride spacing rather than a fixed interval, so a slowed player (docs/21
+      // §3) audibly trudges instead of running on the spot.
+      this.stepAcc += (speed * dt) / 26
+      if (this.stepAcc >= 1) {
+        this.stepAcc = 0
+        this.audio.play('walk', { volume: 0.35 * Math.min(1, speed / C().WALK_SPEED) })
+      }
+    } else {
+      this.stepAcc = 0
+    }
+  }
+
+  /**
+   * Load the samples and wire the sink. Deliberately not awaited: audio is the
+   * one subsystem whose absence is fully supported (`docs/50` §8), so the scene
+   * must not wait on it to start a round.
+   */
+  private initAudio(): void {
+    const c = C()
+    this.audio = new Mixer({
+      // You hear about as far as you can see in daylight, and pan across the
+      // width you can actually see — both are perceptual, so both are stated in
+      // screen terms rather than world terms (§A16, §A35).
+      falloff: c.FOV_DAY,
+      panHalfWidth: c.VIEWPORT_W / c.CAMERA_ZOOM / 2,
+    })
+    void loadAudio().then(({ cues, sustained, sink }) => {
+      this.audio.setCues(cues, sustained)
+      if (sink) {
+        sink.onEnded = (h) => this.audio.onVoiceEnded(h)
+        this.audio.setSink(sink)
+        this.unlockAudio = () => sink.unlock()
+        // A browser refuses to start an AudioContext without a gesture, so the
+        // first real input is the trigger. Both, because a player may click or
+        // may press a key first.
+        this.input.once('pointerdown', () => this.unlockAudio())
+        this.input.keyboard?.once('keydown', () => this.unlockAudio())
+      }
+    })
+  }
+
+  /**
+   * One place mapping a wire event to a sound, so adding a cue is an entry here
+   * rather than another handler threaded through the scene.
+   */
+  private cueFor(ev: string, p: Record<string, unknown>): void {
+    const x = Number(p['x'] ?? 0)
+    const y = Number(p['y'] ?? 0)
+    const ear = this.ear()
+    switch (ev) {
+      case 'projectile_spawn':
+        this.audio.spatial(
+          String(p['weapon'] ?? '') === 'grenade' ? 'fire_grenade' : 'fire_bazooka',
+          x,
+          y,
+          ear,
+        )
+        break
+      case 'item_pickup':
+        // Only your own pickup is a confirmation; someone else's is information
+        // you should not get for free.
+        if (Number(p['player_id'] ?? -1) === this.me) this.audio.play('pickup')
+        break
+      case 'crate_spawn':
+        this.audio.spatial('crate_land', x, y, ear, 0.8)
+        break
+      case 'item_spawn':
+        if (String(p['source'] ?? '') === 'Crate') this.audio.spatial('crate_land', x, y, ear)
+        break
+      case 'hazard_spawn': {
+        const kind = String(p['kind'] ?? '')
+        if (kind.includes('meteor')) this.audio.spatial('meteor', x, y, ear)
+        else if (kind.includes('toxic')) this.audio.spatial('toxic', x, y, ear, 0.7)
+        else if (kind.includes('lava')) this.audio.spatial('lava', x, y, ear, 0.7)
+        break
+      }
+      case 'effect_start':
+        // The telegraph is the point of the three seconds (`docs/13` §2): it has
+        // to be audible even when the sky tint is off-screen.
+        this.audio.play('effect_telegraph', { volume: 0.9 })
+        break
+      case 'phase_change':
+        this.audio.play('phase_change', { volume: 0.7 })
+        break
+      case 'respawn':
+        if (Number(p['id'] ?? -1) === this.me) this.audio.play('pickup', { volume: 0.6 })
+        break
+      default:
+        break
+    }
+  }
+
+  /** Where the listener is. Cues are mixed relative to the local player. */
+  private ear(): { x: number; y: number } {
+    return this.predictor?.renderPos ?? this.world?.rig.center ?? { x: 0, y: 0 }
+  }
+
   override update(_time: number, delta: number): void {
     if (!this.ready) return
     const dt = delta / 1000
@@ -432,6 +579,7 @@ export class GameScene extends Phaser.Scene {
       })
       this.crosshair.update(rp.x, rp.y, aim)
       this.world.rig.follow({ x: rp.x, y: rp.y })
+      this.movementCues(dt, body)
     }
     this.world.rig.update(dt)
     this.world.update(this.world.rig.center)

@@ -1962,3 +1962,30 @@ Notes: MY OWN DEFECT, FROM THIS SESSION, AND ONLY A SCREENSHOT FOUND IT. I joine
        every readout said it was correct while the screen showed
        "3:54 | HP 100 smg x60 1:— [2:smg x60] 3:— ... =1 p0:0 · =1 p1:0 ...".
        Same shape as §A15: the model was right and the render was not.
+
+## T9.01 — Audio — DONE
+Files: client/src/audio/{mixer,mixer.test,sfx}.ts, assets/audio-map.json,
+       scripts/build-audio.mjs, scripts/checks/audio.mjs, scenes, fetch-assets.sh
+Verified: `npm --prefix client test -- --run mixer` — 29 passed;
+       `node scripts/e2e.mjs audio` — ok (23 samples, context unlocks, walking
+       gives footsteps, firing gives fire_bazooka+explode, master 0 gives zero).
+Notes: THE CHECK ASSERTS ON EFFECTS, NOT INTENT. Chromium with no audio device
+       still runs every line of the mixer and returns from play(), so "a sound
+       played" has to mean "a voice started with gain > 0" — the mixer returns
+       the applied gain precisely so that is observable (§A15). The control is
+       master volume 0 starting *nothing*: without it, the check passes against
+       a build that plays unconditionally.
+       Falsified four mixer tests at the live binding site (cap removed, curve
+       made linear, jitter switched to Math.random, spatial using dx only) —
+       each fails exactly the test that names it. Falsified the e2e check by
+       feeding the mixer no cues: "walking produced no footstep cue".
+       `place()` WIPED THE LOADOUT and every caller had to remember to re-grant
+       — the trap the T8.08 journal entry recorded. Fixed at the source (§A24)
+       rather than in the caller, which is what cost two debugging rounds.
+       DEVIATIONS: (1) added `hold(cue,on)` for sustained cues — a jetpack fired
+       as a one-shot every tick stutters; jetpack and lava loop and are stopped
+       with a 30 ms ramp, because cutting a waveform mid-cycle clicks.
+       (2) exported MAX_FALL_SPEED across the WASM boundary so landing volume
+       scales by fall speed rather than a second copy of the number client-side.
+       Sound set: 17 cues / 23 files / 655 kB, four CC0 Kenney packs.
+Left for later: T9.02.

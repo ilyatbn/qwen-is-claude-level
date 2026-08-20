@@ -129,6 +129,7 @@ export interface Constants {
   PLAYER_W: number
   PLAYER_H: number
   WALK_SPEED: number
+  MAX_FALL_SPEED: number
   EDGE_BAND_PX: number
   CHUNK_REBAKE_BUDGET: number
   PARALLAX_FACTOR: number

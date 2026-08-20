@@ -21,6 +21,8 @@ import { Crosshair, LocalInput } from '../input/localInput'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { Minimap } from '../ui/minimap'
 import { traumaFromExplosion } from '../render/cameraRig-math'
+import { Mixer } from '../audio/mixer'
+import { loadAudio } from '../audio/sfx'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { DebugOverlay } from '../render/debugOverlay'
@@ -72,6 +74,13 @@ export class SandboxScene extends Phaser.Scene {
   private feel!: FeelLayer
   private feelEnabled = true
   private minimap: Minimap | null = null
+  /** Silent until audio.json loads; `docs/50` §8 — no assets is supported. */
+  private audio = new Mixer()
+  private audioSink: { unlock(): void; sampleCount: number; liveVoices: number; isUnlocked: boolean } | null = null
+  private stepAcc = 0
+  private wasGrounded = true
+  private wasJetting = false
+  private cueLog: string[] = []
   private invOpen = false
   /** Round time in seconds, driven by the clock or scrubbed by the slider. */
   private roundTime = 0
@@ -175,14 +184,91 @@ export class SandboxScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-THREE', () => this.pickSlot(2))
     this.input.keyboard?.on('keydown-F', () => {
       const inv = this.core.inventory(0)
-      if (inv) this.core.fire(0, this.simTime)
+      if (inv) {
+        const ev = this.core.fire(0, this.simTime)
+        const sel = inv.slots[inv.selected]
+        if (ev.hitscan?.length) {
+          const first = ev.hitscan[0]
+          if (first) this.cue('fire_smg', first.x0, first.y0)
+        } else if (sel) {
+          this.cue(sel.key === 'grenade' ? 'fire_grenade' : 'fire_bazooka')
+        }
+      }
       this.refreshHud()
     })
 
+    this.initAudio()
     this.exposeDebugHandle()
   
     // Everything the update loop touches now exists.
     this.ready = true
+  }
+
+  /** Load samples; never awaited — silence is a supported configuration. */
+  private initAudio(): void {
+    const c = C()
+    this.audio = new Mixer({
+      falloff: c.FOV_DAY,
+      panHalfWidth: c.VIEWPORT_W / c.CAMERA_ZOOM / 2,
+    })
+    void loadAudio().then(({ cues, sustained, sink }) => {
+      this.audio.setCues(cues, sustained)
+      if (sink) {
+        sink.onEnded = (h) => this.audio.onVoiceEnded(h)
+        this.audio.setSink(sink)
+        this.audioSink = sink
+        this.input.once('pointerdown', () => sink.unlock())
+        this.input.keyboard?.once('keydown', () => sink.unlock())
+      }
+    })
+  }
+
+  /**
+   * Fire a cue and record that it happened.
+   *
+   * The log exists because the e2e check must assert on an *effect*: a browser
+   * with no audio device still runs every line of the mixer, so "did a sound
+   * play" has to mean "was a voice started with a real gain", not "was play()
+   * called" (§A15).
+   */
+  private cue(name: Parameters<Mixer['play']>[0], x?: number, y?: number, volume = 1): void {
+    const body = this.core.playerState(0)
+    const ear = body ? { x: body.x, y: body.y } : this.rig.center
+    const gain =
+      x === undefined || y === undefined
+        ? this.audio.play(name, { volume })
+        : this.audio.spatial(name, x, y, ear, volume)
+    if (gain > 0) {
+      this.cueLog.push(name)
+      if (this.cueLog.length > 64) this.cueLog.shift()
+    }
+  }
+
+  /** Footsteps, landing and the jetpack — driven by state, not by an event. */
+  private movementCues(dt: number, body: { vx: number; vy: number; grounded: boolean; moveState: number }): void {
+    const jetting = body.moveState === 2
+    if (jetting !== this.wasJetting) {
+      this.audio.hold('jetpack', jetting, 0.35)
+      if (jetting) this.cueLog.push('jetpack')
+      this.wasJetting = jetting
+    }
+    if (body.grounded && !this.wasGrounded) {
+      this.cue('land', undefined, undefined, Math.min(1, Math.abs(body.vy) / C().MAX_FALL_SPEED + 0.25))
+      this.stepAcc = 0
+    }
+    this.wasGrounded = body.grounded
+
+    const speed = Math.abs(body.vx)
+    if (body.grounded && speed > 10) {
+      // Stride spacing, so a slowed player audibly trudges (docs/21 §3).
+      this.stepAcc += (speed * dt) / 26
+      if (this.stepAcc >= 1) {
+        this.stepAcc = 0
+        this.cue('walk', undefined, undefined, 0.35 * Math.min(1, speed / C().WALK_SPEED))
+      }
+    } else {
+      this.stepAcc = 0
+    }
   }
 
   // ---------------------------------------------------------------- generation
@@ -527,11 +613,39 @@ export class SandboxScene extends Phaser.Scene {
           },
         }
       },
+      /**
+       * Audio state for the e2e check. `voices` and `gains` are effects — a
+       * voice actually started with a real gain — not a count of play() calls.
+       */
+      audio() {
+        return {
+          samples: self.audioSink?.sampleCount ?? 0,
+          unlocked: self.audioSink?.isUnlocked ?? false,
+          live: self.audioSink?.liveVoices ?? 0,
+          cues: [...self.cueLog],
+          master: self.audio.masterVolume,
+        }
+      },
+      clearCues() {
+        self.cueLog = []
+      },
+      setMasterVolume(v: number) {
+        self.audio.setMasterVolume(v)
+      },
       fire() {
+        const inv = self.core.inventory(0)
+        const sel = inv?.slots[inv.selected]
         const ev = self.core.fire(0, self.simTime)
-        if (ev.hitscan) {
+        if (ev.hitscan?.length) {
           for (const s of ev.hitscan) self.ordnance.addTracer(s.x0, s.y0, s.x1, s.y1)
+          const first = ev.hitscan[0]
+          if (first) self.cue('fire_smg', first.x0, first.y0)
           self.terrain.markDirty(self.core.takeDirtyChunks())
+        } else if (ev.projectile !== undefined && sel) {
+          // A launch cue only when a projectile actually left the tube: firing
+          // an empty slot or inside a cooldown is rejected server-side and must
+          // not make a noise (docs/30 §4).
+          self.cue(sel.key === 'grenade' ? 'fire_grenade' : 'fire_bazooka')
         }
         self.refreshHud()
         return ev
@@ -635,6 +749,10 @@ export class SandboxScene extends Phaser.Scene {
       place(x: number, y: number) {
         self.core.removePlayer(0)
         self.core.addPlayer(0, x, y)
+        // Re-grant, because removing the player takes the inventory with it.
+        // This cost two debugging rounds as a caller's responsibility, which is
+        // the definition of a trap — §A24: make the correct use the only use.
+        self.grantSandboxLoadout()
       },
       regenerate(seed?: string, scale?: string) {
         if (seed !== undefined) self.seed = BigInt(seed)
@@ -698,6 +816,7 @@ export class SandboxScene extends Phaser.Scene {
       this.crosshair.update(body.x, body.y, aim)
       this.rig.follow({ x: body.x, y: body.y })
       this.rig.setAim(aim)
+      this.movementCues(dt, body)
     }
 
     this.simTime += dt
@@ -708,6 +827,7 @@ export class SandboxScene extends Phaser.Scene {
       const e = ev.explosion
       this.ordnance.removeProjectile(e.id)
       this.ordnance.addImpact(e.x, e.y, e.r)
+      this.cue('explode', e.x, e.y)
       this.terrain.markDirty(this.core.takeDirtyChunks())
     this.minimap?.setTerrainDirty()
       // Trauma scaled by distance and blast size, from the layer that owns it
@@ -719,6 +839,8 @@ export class SandboxScene extends Phaser.Scene {
         const lethal = h.health_after <= 0
         if (h.id === 0) this.feel.damageTaken(e.x, e.y, h.damage)
         else this.feel.damageDealt(e.x, e.y, h.damage, lethal)
+        this.cue('hit', e.x, e.y)
+        if (lethal) this.cue('death')
         if (lethal) {
           this.feel.kill({
             victim: h.id === 0 ? 'you' : `p${h.id}`,
