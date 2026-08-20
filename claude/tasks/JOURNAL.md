@@ -1856,3 +1856,22 @@ Notes: DRAWN IN THE DOM, per §A35 — a scrollFactor(0) Phaser object is still
        screen position independently (worldView + canvas rect, its own
        arithmetic) and asserts proximity — falsified at 469 px away.
 Left for later: T8.03, T8.05, T8.06.
+
+## T8.06 — Explored-terrain minimap — DONE
+Files: client/src/ui/minimap-math.ts (+test, new), ui/minimap.ts (new),
+       scenes/GameScene.ts, scenes/SandboxScene.ts, core/index.ts,
+       crates/game-wasm/src/lib.rs, scripts/checks/minimap.mjs (new)
+Verified: `npm --prefix client test -- --run minimap-math` — 14 passed.
+       `node scripts/e2e.mjs minimap` — ok. 695/20000 cells at start, 903 after
+       walking right, 950 after walking back (never shrinks).
+Notes: A DOM <canvas>, not a Phaser object — §A35 again, and the minimap IS a
+       per-pixel image so a 2D context is the right tool anyway.
+       MINIMAP_ALPHA and MINIMAP_REVEAL_R were in constants.rs but were NOT
+       crossing the WASM boundary — the constants bridge is opt-in per name, so
+       a constant can exist and still be unreachable from the client. Added.
+       Both scenes pass the SAME `fov` the lightmap uses rather than
+       recomputing it: two copies of that number would let the minimap and the
+       screen disagree about who is visible, which is exactly what §A6 forbids.
+       Falsified: revealing the whole map at once fails with
+       "20000/20000 cells explored before moving — the map is being given away".
+Left for later: T8.03, T8.05.

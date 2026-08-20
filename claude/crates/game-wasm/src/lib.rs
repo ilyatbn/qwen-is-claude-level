@@ -617,6 +617,8 @@ pub fn constants_json() -> String {
         JETPACK_MAX_FUEL => c::JETPACK_MAX_FUEL,
         MINIMAP_W => c::MINIMAP_W,
         MINIMAP_H => c::MINIMAP_H,
+        MINIMAP_ALPHA => c::MINIMAP_ALPHA,
+        MINIMAP_REVEAL_R => c::MINIMAP_REVEAL_R,
         AIM_DEADZONE => c::AIM_DEADZONE,
         SUN_RADIUS => c::SUN_RADIUS,
         MOON_RADIUS => c::MOON_RADIUS,

@@ -19,6 +19,7 @@ import { PlayerView } from '../render/playerView'
 import { loadAssetManifest, runLoader } from '../render/assets'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
+import { Minimap } from '../ui/minimap'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
@@ -69,6 +70,7 @@ export class SandboxScene extends Phaser.Scene {
   private ordnance!: OrdnanceLayer
   private hud!: HTMLDivElement
   private feel!: FeelLayer
+  private minimap: Minimap | null = null
   private invOpen = false
   /** Round time in seconds, driven by the clock or scrubbed by the slider. */
   private roundTime = 0
@@ -149,6 +151,7 @@ export class SandboxScene extends Phaser.Scene {
       this.ui.remove()
       this.hud?.remove()
       this.feel?.destroy()
+      this.minimap?.destroy()
       this.ordnance.destroy()
       this.terrain.destroy()
       this.lightmap.destroy()
@@ -158,6 +161,7 @@ export class SandboxScene extends Phaser.Scene {
 
     this.buildHud()
     this.feel = new FeelLayer()
+    this.input.keyboard?.on('keydown-M', () => this.minimap?.toggle())
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       if (p.rightButtonDown()) {
@@ -226,6 +230,10 @@ export class SandboxScene extends Phaser.Scene {
     this.rig = new CameraRig(this.cameras.main, mapW, mapH)
     this.rig.follow(spawn)
     this.rig.snapTo(spawn)
+
+    // A new map is a new world: the explored set does not survive it.
+    this.minimap?.destroy()
+    this.minimap = new Minimap(this.core, mapW, mapH)
 
     // A shareable link is worth the two lines it costs: a map worth talking about
     // can be sent to someone else exactly.
@@ -593,6 +601,12 @@ export class SandboxScene extends Phaser.Scene {
       feel() {
         return self.feel.stats()
       },
+      minimap() {
+        return self.minimap?.stats() ?? null
+      },
+      toggleMinimap() {
+        return self.minimap?.toggle() ?? false
+      },
       banner(text: string) {
         self.feel.showBanner(text, 0xffd166)
       },
@@ -689,6 +703,7 @@ export class SandboxScene extends Phaser.Scene {
       this.ordnance.removeProjectile(e.id)
       this.ordnance.addImpact(e.x, e.y, e.r)
       this.terrain.markDirty(this.core.takeDirtyChunks())
+    this.minimap?.setTerrainDirty()
       // Trauma scaled by distance and blast size, from the layer that owns it
       // (§A24 — this file briefly had a second Trauma of its own).
       const me = this.core.playerState(0)
@@ -761,6 +776,9 @@ export class SandboxScene extends Phaser.Scene {
           flashlightOn: false,
         })
       lights.push({ x: body.x, y: body.y, radius: fov, kind: 'radial', intensity: 1 })
+      // The same `fov` the lightmap uses, not a second copy of the formula —
+      // two of them would let the minimap and the screen disagree (§A6).
+      this.minimap?.update(dt, { x: body.x, y: body.y }, [], fov)
     }
     // Ordnance lights the map. Shooting in the dark tells everyone where you are,
     // and it is most of what makes night combat readable at all.

@@ -29,6 +29,7 @@ import { cycleU, darknessAt } from '../render/sky-math'
 import { formatClock, phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
 import { FLAG, flag } from '../net/codec'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
+import { Minimap } from '../ui/minimap'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 
 interface RemoteView {
@@ -54,6 +55,7 @@ export class GameScene extends Phaser.Scene {
   private crosshair!: Crosshair
   private hud!: HTMLDivElement
   private feel!: FeelLayer
+  private minimap: Minimap | null = null
 
   private me = -1
   private seq = 0
@@ -124,7 +126,10 @@ export class GameScene extends Phaser.Scene {
     this.conn.on('player_leave', (raw) => this.dropRemote(Number(asRecord(raw)['id'] ?? -1)))
     for (const ev of ['carve', 'carve_capsule', 'item_spawn', 'crate_spawn', 'item_pickup',
       'item_despawn', 'projectile_spawn', 'projectile_despawn', 'mask_checksum']) {
-      this.conn.on(ev, (raw) => this.mirror.applyEvent(ev, asRecord(raw), performance.now()))
+      this.conn.on(ev, (raw) => {
+        this.mirror.applyEvent(ev, asRecord(raw), performance.now())
+        if (ev === 'carve' || ev === 'carve_capsule') this.minimap?.setTerrainDirty()
+      })
     }
     this.conn.on('explosion', (raw) => {
       const p = asRecord(raw)
@@ -183,6 +188,7 @@ export class GameScene extends Phaser.Scene {
       this.conn.close()
       this.hud?.remove()
       this.feel?.destroy()
+      this.minimap?.destroy()
       this.world?.destroy()
       this.lightmap.destroy()
       this.sky.destroy()
@@ -235,6 +241,9 @@ export class GameScene extends Phaser.Scene {
     this.world.rig.follow(spawn)
     this.world.rig.snapTo(spawn)
     this.world.flush(spawn)
+
+    this.minimap?.destroy()
+    this.minimap = new Minimap(this.core, this.core.width, this.core.height)
 
     this.ready = true
     this.conn.sendRaw('ready', {})
@@ -356,6 +365,18 @@ export class GameScene extends Phaser.Scene {
       health: C().BASE_HEALTH,
       flashlightOn: false,
     })
+    if (this.minimap) {
+      const dots = [...this.remotes.entries()].map(([id, r]) => ({
+        id,
+        x: r.view.container.x,
+        y: r.view.container.y,
+      }))
+      // The *same* fov the lightmap and the renderer cull with — computed once,
+      // above, rather than recomputed here. Two copies of this number would let
+      // the minimap and the screen disagree about who is visible (§A6).
+      this.minimap.update(dt, rp, dots, fov)
+    }
+
     const lights: LightSource[] = [
       // The player's own field of view is a light like any other.
       { x: rp.x, y: rp.y, radius: fov, kind: 'radial', intensity: 1 },

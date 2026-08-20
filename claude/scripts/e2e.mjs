@@ -65,6 +65,7 @@ const CHECKS = [
   { name: 'm4-checkpoint', file: 'scripts/checks/m4-checkpoint.mjs', url: '?sandbox=1&seed=12345' },
   { name: 'night-combat', file: 'scripts/checks/night-combat.mjs', url: '?sandbox=1&seed=12345' },
   { name: 'feel', file: 'scripts/checks/feel.mjs', url: '?sandbox=1&seed=12345' },
+  { name: 'minimap', file: 'scripts/checks/minimap.mjs', url: '?sandbox=1&seed=12345' },
   // Standalone: it launches its own vite and browser and calls `process.exit`.
   // Imported into this process it would terminate the suite mid-run — and exit 0
   // while doing it, hiding every earlier failure. Run as a subprocess instead.

@@ -144,6 +144,8 @@ export interface Constants {
   JETPACK_MAX_FUEL: number
   MINIMAP_W: number
   MINIMAP_H: number
+  MINIMAP_ALPHA: number
+  MINIMAP_REVEAL_R: number
   AIM_DEADZONE: number
   BTN_LEFT: number
   BTN_RIGHT: number
