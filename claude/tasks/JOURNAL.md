@@ -1901,3 +1901,34 @@ Notes: RTT WAS HARDCODED TO ZERO. `clock.addSample(..., 0)` — ClockSync had th
        The panel is DOM (§A35); the two ghosts are Phaser objects ON PURPOSE,
        because they mark WORLD positions and should scale with zoom.
 Left for later: T8.05.
+
+## T8.05 — Performance pass and run documentation — DONE
+Files: RUNNING.md (new), scripts/checks/perf.mjs (new), scripts/e2e.mjs,
+       client/src/scenes/GameScene.ts, SandboxScene.ts, scripts/e2e-two-clients.mjs
+Verified: `node scripts/e2e.mjs perf` — ok. Numbers below.
+Notes: THE fps 36 QUESTION IS ANSWERED, AND IT WAS THE INSTRUMENT. Measured by
+       rAF frame times the game runs 59.9 fps (p50 16.70 ms, p99 17.70 ms), and
+       THE FEEL LAYER COSTS 0.00 ms/frame — measured with it on and off, since a
+       number with no control is not evidence. Phaser's `actualFps` is a smoothed
+       average that under-reports for seconds after a stall: 42 just after a
+       regenerate (which stalls ~0.9 s for generate + full bake), still 54 four
+       seconds later, while the real frame time was 16.7 ms throughout. The check
+       logs it and deliberately does NOT assert on it — asserting on a counter
+       the same check just proved unreliable is the §A15 mistake.
+       A SINGLE SAMPLE OF THE FULL BAKE DECIDES NOTHING: 250–428 ms across runs
+       with no code change, against a 400 ms ceiling. Now judged on the median of
+       five (280–296 ms). Software rendering; real hardware is faster.
+       WRITING THE DOC FOUND A REAL GAP. I wrote the controls table from the spec
+       and then checked it against the code: E, 1–8, wheel, Tab and right-click
+       were NOT BOUND in the multiplayer scene. `Connection.sendUseItem` and
+       `sendSelectSlot` existed since T6.08 and nothing called them, so a medkit,
+       a shield and THE FLASHLIGHT were unusable in the real game — the flashlight
+       being the item the whole night design turns on. Same shape as the missing
+       Game scene: mechanisms built, never wired to the thing that runs them.
+       Now bound, with the inventory strip and panel in the HUD, and asserted in
+       e2e-two-clients (the HUD must *change*, since a binding wired to nothing
+       looks identical from outside).
+Ceilings (docs/60 §6): medium generate median 618 ms (<1000); full 72-chunk bake
+       median 296 ms (<400); chunk rebake 0.00 ms (<4); carve 0.30 ms.
+Left for later: nothing in M8. Decorations, item sprites and the frost contrast
+       assertion remain as noted improvements, not tasks.

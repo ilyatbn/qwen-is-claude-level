@@ -60,6 +60,11 @@ export class GameScene extends Phaser.Scene {
   private debugHud!: DebugHud
   private serverPos: { x: number; y: number } | null = null
   private lastRtt = 0
+  private invOpen = false
+  private scoreboardOpen = false
+  private selectedSlot = 0
+  private slots: Array<{ key: string; count: number } | null> = Array(8).fill(null)
+  private health = 100
   private rttSamples = 0
   private rttAcc = 0
 
@@ -125,6 +130,21 @@ export class GameScene extends Phaser.Scene {
       this.timeLeft = Number(p['time_left'] ?? 0)
     })
     this.conn.on('score', () => this.refreshHud())
+    // Owner-only (docs/30 §6). The whole 8-slot array arrives on every change,
+    // which removes a class of desync bug for 16 bytes.
+    this.conn.on('inventory', (raw) => {
+      const p = asRecord(raw)
+      const arr = Array.isArray(p['slots']) ? (p['slots'] as unknown[]) : []
+      this.slots = Array.from({ length: 8 }, (_, i) => {
+        const sl = arr[i]
+        if (!sl || typeof sl !== 'object') return null
+        const r = sl as Record<string, unknown>
+        return { key: String(r['key'] ?? '?'), count: Number(r['count'] ?? 0) }
+      })
+      const sel = p['selected']
+      if (typeof sel === 'number') this.selectedSlot = sel
+      this.refreshHud()
+    })
     // RTT, measured. `docs/42` §7 says it comes from socket.io's own ping/pong,
     // but the client library does not expose that measurement, so this was
     // hardcoded to 0 and the HUD reported "rtt 0ms" on every connection.
@@ -198,10 +218,40 @@ export class GameScene extends Phaser.Scene {
     })
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      if (p.rightButtonDown()) return
+      if (p.rightButtonDown()) {
+        // docs/30 §3: right-click toggles the inventory panel. It is client-side
+        // and sends nothing; the round keeps running while it is open.
+        this.invOpen = !this.invOpen
+        this.refreshHud()
+        return
+      }
       this.conn.sendFire()
     })
     this.input.keyboard?.on('keydown-F', () => this.conn.sendFire())
+
+    // Slot selection and item use. `Connection` has had `sendSelectSlot` and
+    // `sendUseItem` since T6.08 and nothing called them, so in the real game a
+    // medkit, a shield and the flashlight were all unusable — the flashlight
+    // being the item the whole night design turns on (docs/30 §4, docs/14 §4).
+    for (let i = 0; i < 8; i++) {
+      const key = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT'][i] as string
+      this.input.keyboard?.on(`keydown-${key}`, () => {
+        this.selectedSlot = i
+        this.conn.sendSelectSlot(i)
+        this.refreshHud()
+      })
+    }
+    this.input.on('wheel', (_p: unknown, _o: unknown, _dx: number, dy: number) => {
+      this.selectedSlot = (this.selectedSlot + (dy > 0 ? 1 : 7)) % 8
+      this.conn.sendSelectSlot(this.selectedSlot)
+      this.refreshHud()
+    })
+    this.input.keyboard?.on('keydown-E', () => this.conn.sendUseItem(this.selectedSlot))
+    this.input.keyboard?.on('keydown-TAB', (e: KeyboardEvent) => {
+      e.preventDefault()
+      this.scoreboardOpen = !this.scoreboardOpen
+      this.refreshHud()
+    })
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.conn.close()
@@ -299,7 +349,10 @@ export class GameScene extends Phaser.Scene {
     )
 
     const mine = s.players.find((p) => p.id === this.me)
-    if (mine) this.serverPos = { x: mine.x, y: mine.y }
+    if (mine) {
+      this.serverPos = { x: mine.x, y: mine.y }
+      this.health = mine.health
+    }
     if (mine && this.predictor) {
       this.predictor.reconcile({
         lastInputSeq: s.lastInputSeq,
@@ -496,6 +549,7 @@ export class GameScene extends Phaser.Scene {
 
   private buildHud(): void {
     this.hud = document.createElement('div')
+    this.hud.dataset['hud'] = 'root'
     this.hud.id = 'game-hud'
     this.hud.style.cssText =
       'position:fixed;left:0;right:0;bottom:0;padding:6px 10px;font:12px monospace;' +
@@ -549,9 +603,25 @@ export class GameScene extends Phaser.Scene {
       })
       .join('   ·   ')
     const status = this.hud.dataset['status'] ?? ''
-    this.hud.textContent = [status, banner ?? formatClock(this.timeLeft), board]
-      .filter((p) => p !== '')
-      .join('   │   ')
+    // The always-visible strip: what you are holding and how much of it, so the
+    // panel is only needed to change loadout (docs/30 §3).
+    const held = this.slots[this.selectedSlot]
+    const strip = `HP ${Math.round(this.health)}   ${held ? `${held.key} x${held.count}` : '(empty)'}`
+    const lines = [
+      [status, banner ?? formatClock(this.timeLeft), strip].filter((p) => p !== '').join('   │   '),
+    ]
+    if (this.invOpen) {
+      lines.push(
+        this.slots
+          .map((sl, i) => {
+            const label = sl ? `${sl.key} x${sl.count}` : '—'
+            return i === this.selectedSlot ? `[${i + 1}:${label}]` : ` ${i + 1}:${label} `
+          })
+          .join(' '),
+      )
+    }
+    if (this.scoreboardOpen) lines.push(board)
+    this.hud.textContent = lines.join('\n')
   }
 
   private exposeDebugHandle(): void {

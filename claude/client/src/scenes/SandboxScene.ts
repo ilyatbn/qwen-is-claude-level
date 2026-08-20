@@ -70,6 +70,7 @@ export class SandboxScene extends Phaser.Scene {
   private ordnance!: OrdnanceLayer
   private hud!: HTMLDivElement
   private feel!: FeelLayer
+  private feelEnabled = true
   private minimap: Minimap | null = null
   private invOpen = false
   /** Round time in seconds, driven by the clock or scrubbed by the slider. */
@@ -517,6 +518,7 @@ export class SandboxScene extends Phaser.Scene {
           }),
           overlays: self.overlay?.enabled ?? false,
           trauma: self.rig.traumaLevel,
+          fps: self.game.loop.actualFps,
           worldView: {
             x: self.cameras.main.worldView.x,
             y: self.cameras.main.worldView.y,
@@ -600,6 +602,10 @@ export class SandboxScene extends Phaser.Scene {
       /** §A15: counts DOM nodes, not model entries — see FeelLayer.stats(). */
       feel() {
         return self.feel.stats()
+      },
+      /** For the perf check: measuring the layer's cost needs a control. */
+      setFeelEnabled(on: boolean) {
+        self.feelEnabled = on
       },
       minimap() {
         return self.minimap?.stats() ?? null
@@ -740,7 +746,7 @@ export class SandboxScene extends Phaser.Scene {
     this.sky.update(this.roundTime, darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS), C().NIGHT_DARKNESS)
 
     this.rig.update(dt)
-    this.feel.update(dt, this.feelFrame())
+    if (this.feelEnabled) this.feel.update(dt, this.feelFrame())
     this.terrain.update(this.rig.center)
     this.frameBakes = this.terrain.stats.bakesThisFrame
 

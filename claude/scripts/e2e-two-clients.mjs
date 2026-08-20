@@ -182,6 +182,26 @@ if (dc.maskChecksum !== daF.maskChecksum) {
   fail(`a late joiner disagrees with the round in progress:\n  late ${dc.maskChecksum}\n  ana  ${daF.maskChecksum}`)
 }
 
+// T8.05 — the inventory verbs. `Connection` has had sendSelectSlot and
+// sendUseItem since T6.08 and nothing in the scene called them, so a medkit, a
+// shield and the flashlight were all unusable in the real game while every unit
+// test passed. Asserting the HUD *changes* is the point: a keybinding that is
+// registered but wired to nothing looks identical from outside.
+{
+  const hudText = () => a.page.evaluate('document.querySelector("[data-hud]")?.textContent ?? ""')
+  const before = await hudText()
+  await a.page.keyboard.press('Digit2')
+  await new Promise((r) => setTimeout(r, 250))
+  const afterSelect = await hudText()
+  if (afterSelect === before) fail(`selecting slot 2 changed nothing in the HUD:\n${before}`)
+  await a.page.mouse.click(640, 360, { button: 'right' })
+  await new Promise((r) => setTimeout(r, 250))
+  const withPanel = await hudText()
+  if (!withPanel.includes('\n')) fail(`right-click did not open the inventory panel:\n${withPanel}`)
+  await a.page.mouse.click(640, 360, { button: 'right' })
+  console.log('  inventory: slot select and right-click panel both respond')
+}
+
 // T8.03 — the F3 HUD, checked here because this is the only place a *server* is
 // running: every number on it (rtt, snapshot rate, reconciliation, checksum) is
 // meaningless without one, and a HUD asserted against a sandbox with no network
