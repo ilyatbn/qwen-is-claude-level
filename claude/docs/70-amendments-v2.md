@@ -1117,3 +1117,41 @@ The comparable compromise in `14-daynight-visibility.md` §5 — a modified clie
 see players in the dark — stays accepted for v1, because closing it needs
 server-side visibility culling rather than a different sub-stream. The difference
 worth naming: §5 documents its hole and §32 believed it had none.
+
+## A32 — Enclosure is measured at the scale of a cave
+
+The residual backdrop error accepted in §A19 — about 6 % of open sky drawn as cave
+backdrop — was judged tolerable on the `grassland` theme, where the backdrop is
+darker than the sky and a misclassified patch reads as shadow. On `frost` the
+backdrop is *lighter* than the sky, and the same 6 % renders as large flat
+polygons hanging in the air. Nothing changed but the palette; the defect was
+always there and was being hidden by a colour choice.
+
+Two corrections, and the first is the real one.
+
+**`BACKDROP_RAY_LEN` 320 → 160.** A ray that reaches 320 px finds terrain from
+half a screen away, so air beside and below a floating island's flank collects
+enough hits to pass — which is exactly where the residual concentrates. But the
+things the test is meant to identify are cave-sized: tunnels bore 30–52 px,
+chambers reach 124 px, voids 140–310 px. Enclosure should be sampled at the scale
+of the space you are standing in, not at the scale of the screen. Re-measure the
+§A19 table at 160 across all three scales and both themes; the expectation is that
+sky-as-backdrop falls sharply while enclosed-as-sky barely moves, because a cave
+wall is close by definition.
+
+**A theme's backdrop is never lighter than its sky.** `theme.json` gains no new
+field — this is a constraint on the values, asserted by a test: the backdrop tint's
+luminance must be below `skyBottom`'s by a stated margin, for every theme. Then a
+residual misclassification degrades into shadow rather than into a hole in the
+world, on every theme, permanently.
+
+The lesson is the one worth keeping:
+
+> An error rate signed off on one theme was signed off on one *palette*. A defect
+> that is invisible because of a colour choice is not fixed, and the next colour
+> choice will reveal it.
+
+Same shape as §A19 (a threshold tuned on one map at a scale the game does not
+ship) and §A22 (a measurement taken against a stale build). Every one of these was
+a number that looked settled because the conditions it was measured under were
+narrower than the conditions it would ship under.
