@@ -818,3 +818,32 @@ Notes: `scale` is Phaser.Scene's ScaleManager — naming a field `scale` breaks 
 Left for later: large-map generate is 1118 ms in the browser (WASM, debug-ish) vs the
        <1000 ms budget in docs/60 §6 — that budget is for native release; revisit in
        T8.05 rather than now.
+
+## T3.08 — Player sprite and animation states — DONE
+## T3.09 — Keyboard/mouse input, aim ring, crosshair — DONE
+Files: client/src/render/{playerView-math.ts,playerView.ts,playerView-math.test.ts},
+       client/src/input/{localInput-math.ts,localInput.ts,localInput-math.test.ts},
+       client/src/scenes/SandboxScene.ts, client/src/core/index.ts,
+       crates/game-wasm/src/lib.rs, scripts/checks/wasd.mjs
+Verified: `npm --prefix client test -- --run playerView` 8 passed;
+       `-- --run localInput` 9 passed; check.sh green 3x consecutively.
+       WASD DRIVEN THROUGH A REAL BROWSER (scripts/checks/wasd.mjs):
+       D x1184->1319 | A x1319->1186 | Space grounded->airborne vy -290, lands
+       jetpack y1418->1364 fuel 4.08 moveState 2 | S airborne y1364->1418
+       aim right cos>0.5 / left cos<-0.5 with the camera at (1184,1356)
+Notes: PHASER FIELD-NAME COLLISIONS BIT ME TWICE: `scale` is ScaleManager and
+       `input` is InputPlugin. Naming a Scene field either one breaks the base
+       class contract with a confusing error. Fields are `mapScale`/`localInput`.
+       Button bits + AIM_DEADZONE + quantize/dequantize_angle now cross the WASM
+       boundary (constants_json + two exported fns). The client must never own a
+       copy of the wire layout.
+       THE SOCKET ECHO FLAKE WAS REAL, NOT LOAD. `#[tokio::test]` is a
+       CURRENT-THREAD runtime, so the spawned axum server shares one thread with
+       the test future; game-core's minute-long map tests saturate every core and
+       starve it mid-handshake. Fixed at the cause with
+       `flavor = "multi_thread", worker_threads = 2`. I had first bumped the
+       timeout 5s->30s and it failed again at 30s — the bigger timeout was the
+       wrong instinct and hid the cause.
+       A movement check must read game-core's body, not the sprite: a sprite can
+       move for reasons unrelated to input.
+Left for later: T3.10 lightmap, T3.11 overlays, T3.12 sky.

@@ -9,11 +9,14 @@
  */
 
 import Phaser from 'phaser'
-import { Core, MapScale } from '../core'
+import { C, Core, MapScale } from '../core'
 import { TerrainRenderer } from '../render/terrain'
 import { CameraRig } from '../render/cameraRig'
 import { Backdrop, DEFAULT_THEME, DEPTH } from '../render/backdrop'
 import { makeBackTexture, makeEdgeTexture, makeFillTexture } from '../render/procTextures'
+import { PlayerView } from '../render/playerView'
+import { Crosshair, LocalInput } from '../input/localInput'
+import { dequantizeAngle } from '../core'
 
 const SCALES: Record<string, MapScale> = {
   small: MapScale.Small,
@@ -36,6 +39,13 @@ export class SandboxScene extends Phaser.Scene {
   private mapScale: MapScale = MapScale.Medium
   private carveRadius = 42
 
+  private player!: PlayerView
+  private localInput!: LocalInput
+  private crosshair!: Crosshair
+  private seq = 0
+  /** Fixed-step accumulator: the sim must advance at SIM_HZ, not at frame rate. */
+  private acc = 0
+
   private readout!: HTMLPreElement
   private ui!: HTMLDivElement
   private seedInput!: HTMLInputElement
@@ -57,6 +67,11 @@ export class SandboxScene extends Phaser.Scene {
 
     this.buildUi()
     this.regenerate()
+
+    this.player = new PlayerView(this, 0)
+    this.player.container.setDepth(DEPTH.actors)
+    this.localInput = new LocalInput(this)
+    this.crosshair = new Crosshair(this, DEPTH.hud)
 
     // Click to carve. Pointer coordinates must go through the camera: using screen
     // coordinates works perfectly until the camera scrolls, and then silently
@@ -113,6 +128,9 @@ export class SandboxScene extends Phaser.Scene {
     this.timings.buildAllMs = performance.now() - t1
 
     const spawn = this.core.meta.spawn_points[0] ?? { x: mapW / 2, y: mapH / 2 }
+    // Spawn points are feet positions; the body is positioned by its centre.
+    this.core.removePlayer(0)
+    this.core.addPlayer(0, spawn.x, spawn.y - C().PLAYER_H / 2)
     this.rig = new CameraRig(this.cameras.main, mapW, mapH)
     this.rig.follow(spawn)
     this.rig.snapTo(spawn)
@@ -249,7 +267,15 @@ export class SandboxScene extends Phaser.Scene {
           visible: self.rig.visible,
           zoom: self.cameras.main.zoom,
           camera: self.rig.center,
+          player: self.core.playerState(0),
+          aim: self.localInput?.aimAngle ?? 0,
+          animState: self.player?.state ?? 'idle',
         }
+      },
+      /** Teleport, so a movement check can start from known ground. */
+      place(x: number, y: number) {
+        self.core.removePlayer(0)
+        self.core.addPlayer(0, x, y)
       },
       regenerate(seed?: string, scale?: string) {
         if (seed !== undefined) self.seed = BigInt(seed)
@@ -282,6 +308,36 @@ export class SandboxScene extends Phaser.Scene {
         const p = this.rig.center
         this.rig.follow({ x: p.x + dx, y: p.y + dy })
       }
+    }
+
+    // Fixed timestep. Stepping by the frame delta would make movement depend on
+    // frame rate, and the whole point of game-core is that the browser runs the
+    // same simulation the server does.
+    const step = C().SIM_DT
+    this.acc = Math.min(this.acc + dt, 0.25)
+    let body = this.core.playerState(0)
+    while (this.acc >= step) {
+      const centre = body ? { x: body.x, y: body.y } : this.rig.center
+      const inp = this.localInput.sample(++this.seq, centre, this.cameras.main)
+      this.core.applyInput(0, inp.seq, inp.buttons, inp.aim, step)
+      this.acc -= step
+      body = this.core.playerState(0)
+    }
+
+    if (body) {
+      const aim = dequantizeAngle(
+        this.localInput.sample(this.seq, { x: body.x, y: body.y }, this.cameras.main).aim,
+      )
+      this.player.setState(body.x, body.y - C().PLAYER_H / 2, body.vx, body.vy, aim, {
+        alive: true,
+        grounded: body.grounded,
+        jetpack: body.moveState === 2,
+        shield: false,
+        iframes: false,
+      })
+      this.crosshair.update(body.x, body.y, aim)
+      this.rig.follow({ x: body.x, y: body.y })
+      this.rig.setAim(aim)
     }
 
     this.rig.update(dt)

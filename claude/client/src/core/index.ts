@@ -11,7 +11,12 @@
  *    are read across the boundary once, so there is exactly one source of truth.
  */
 
-import init, { GameCore, constants_json } from './pkg/game_wasm.js'
+import init, {
+  GameCore,
+  constants_json,
+  quantize_angle,
+  dequantize_angle,
+} from './pkg/game_wasm.js'
 import wasmUrl from './pkg/game_wasm_bg.wasm?url'
 
 export const enum MapScale {
@@ -96,6 +101,27 @@ export interface Constants {
   JETPACK_MAX_FUEL: number
   MINIMAP_W: number
   MINIMAP_H: number
+  AIM_DEADZONE: number
+  BTN_LEFT: number
+  BTN_RIGHT: number
+  BTN_UP: number
+  BTN_DOWN: number
+  BTN_JUMP: number
+  BTN_FIRE: number
+  BTN_FLASHLIGHT: number
+}
+
+/**
+ * Angle ↔ wire word, from `game-core`. The server dequantises with the same code,
+ * so a TypeScript reimplementation that rounds differently would put every shot a
+ * fraction off its aim.
+ */
+export function quantizeAngle(a: number): number {
+  return quantize_angle(a)
+}
+
+export function dequantizeAngle(q: number): number {
+  return dequantize_angle(q)
 }
 
 /** Populated by `Core.init()`. Throws if read before then, rather than silently

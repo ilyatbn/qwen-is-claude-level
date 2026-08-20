@@ -257,8 +257,32 @@ pub fn constants_json() -> String {
         "JETPACK_MAX_FUEL": c::JETPACK_MAX_FUEL,
         "MINIMAP_W": c::MINIMAP_W,
         "MINIMAP_H": c::MINIMAP_H,
+        "AIM_DEADZONE": c::AIM_DEADZONE,
+        // Button bits, so the client never re-declares the wire layout. A
+        // TypeScript copy of these is exactly the drift this boundary exists to
+        // prevent — see crates/game-core/src/player/input.rs.
+        "BTN_LEFT": game_core::player::input::button::LEFT,
+        "BTN_RIGHT": game_core::player::input::button::RIGHT,
+        "BTN_UP": game_core::player::input::button::UP,
+        "BTN_DOWN": game_core::player::input::button::DOWN,
+        "BTN_JUMP": game_core::player::input::button::JUMP,
+        "BTN_FIRE": game_core::player::input::button::FIRE,
+        "BTN_FLASHLIGHT": game_core::player::input::button::FLASHLIGHT,
     })
     .to_string()
+}
+
+/// Angle → wire word. The server dequantises with the Rust version, so a
+/// TypeScript reimplementation that rounds differently would put every shot a
+/// fraction off. One implementation, called from both sides.
+#[wasm_bindgen]
+pub fn quantize_angle(a: f32) -> u16 {
+    game_core::math::quantize_angle(a)
+}
+
+#[wasm_bindgen]
+pub fn dequantize_angle(q: u16) -> f32 {
+    game_core::math::dequantize_angle(q)
 }
 
 #[cfg(test)]

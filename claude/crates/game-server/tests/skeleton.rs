@@ -53,7 +53,16 @@ async fn unknown_routes_are_404_not_a_panic() {
 
 /// The one that matters: a real socket.io client completes the handshake and gets
 /// its payload back. If this passes, the transport works end to end.
-#[tokio::test]
+/// A **multi-thread** runtime, unlike the other tests here, and that is load-bearing.
+///
+/// `#[tokio::test]` gives a current-thread runtime, so the spawned axum server
+/// shares one thread with the test future. A socket.io handshake is several round
+/// trips, and when `cargo test --workspace` runs game-core's minute-long map
+/// generation tests on every core, that single thread is starved long enough for
+/// the handshake to time out. The test then fails for reasons that have nothing to
+/// do with the transport. Giving the server real workers fixes it at the cause; a
+/// bigger timeout only hides it and teaches people to re-run the gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn socket_io_echo_round_trips() {
     use rust_socketio::{ClientBuilder, Payload, RawClient};
 
@@ -87,12 +96,9 @@ async fn socket_io_echo_round_trips() {
             .expect("emit echo");
 
         let received = rx
-            // 30 s, not 5: this timeout exists to stop a hung test, not to assert a
-            // latency budget. Under `check.sh` the whole workspace's tests run
-            // concurrently and 5 s produced a false failure on a loaded machine — a
-            // gate that fails at random teaches people to re-run instead of look.
-            .recv_timeout(Duration::from_secs(30))
-            .expect("echo_back within 30 s");
+            // Generous, because this bounds a hang rather than asserting latency.
+            .recv_timeout(Duration::from_secs(10))
+            .expect("echo_back within 10 s");
 
         let _ = client.disconnect();
         received
