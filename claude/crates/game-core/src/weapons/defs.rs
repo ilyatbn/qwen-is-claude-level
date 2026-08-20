@@ -12,7 +12,12 @@ use crate::constants::{
     GRENADE_RESTITUTION, GRENADE_WIND_SCALE, SMG_AMMO, SMG_BLAST_RADIUS, SMG_COOLDOWN, SMG_DAMAGE,
     SMG_GRAVITY_SCALE, SMG_RANGE, SMG_SHOTS, SMG_SPREAD, SMG_WIND_SCALE,
 };
-use crate::items::registry::{WeaponId, WEAPON_BAZOOKA, WEAPON_GRENADE, WEAPON_SMG};
+use crate::constants::{
+    METEOR_CARVE_R, METEOR_DAMAGE, METEOR_FRAG_CARVE_R, METEOR_FRAG_DAMAGE, METEOR_SPEED,
+};
+use crate::items::registry::{
+    WeaponId, WEAPON_BAZOOKA, WEAPON_GRENADE, WEAPON_METEOR, WEAPON_METEOR_FRAG, WEAPON_SMG,
+};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Delivery {
@@ -94,6 +99,45 @@ pub static WEAPONS: &[WeaponDef] = &[
         muzzle_speed: 0.0,
         gravity_scale: SMG_GRAVITY_SCALE,
         wind_scale: SMG_WIND_SCALE,
+    },
+    // --- weather ordnance (M5) ---
+    //
+    // Ordinary projectiles in every respect: they fall under gravity and step
+    // against the mask through the same code a rocket does. `explode_on_contact`
+    // with no fuse, and wind_scale 0 — a meteor is heavy enough not to drift.
+    WeaponDef {
+        id: WEAPON_METEOR,
+        key: "meteor",
+        delivery: Delivery::Projectile {
+            fuse: None,
+            restitution: 0.0,
+            friction: 0.0,
+            explode_on_contact: true,
+        },
+        damage: METEOR_DAMAGE,
+        blast_radius: METEOR_CARVE_R,
+        range: 0.0,
+        cooldown: 0.0,
+        muzzle_speed: METEOR_SPEED,
+        gravity_scale: 1.0,
+        wind_scale: 0.0,
+    },
+    WeaponDef {
+        id: WEAPON_METEOR_FRAG,
+        key: "meteor_fragment",
+        delivery: Delivery::Projectile {
+            fuse: None,
+            restitution: 0.0,
+            friction: 0.0,
+            explode_on_contact: true,
+        },
+        damage: METEOR_FRAG_DAMAGE,
+        blast_radius: METEOR_FRAG_CARVE_R,
+        range: 0.0,
+        cooldown: 0.0,
+        muzzle_speed: 0.0,
+        gravity_scale: 1.0,
+        wind_scale: 0.0,
     },
 ];
 

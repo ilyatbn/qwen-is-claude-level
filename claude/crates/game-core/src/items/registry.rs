@@ -21,6 +21,12 @@ pub struct WeaponId(pub u16);
 pub const WEAPON_BAZOOKA: WeaponId = WeaponId(0);
 pub const WEAPON_GRENADE: WeaponId = WeaponId(1);
 pub const WEAPON_SMG: WeaponId = WeaponId(2);
+/// Weather ordnance. Not carryable and never in the item registry — they exist so
+/// meteors reuse the projectile simulation (gravity, sub-stepped terrain
+/// collision, player AABB tests) rather than growing a parallel one that drifts
+/// (`docs/13-weather-effects.md` §4).
+pub const WEAPON_METEOR: WeaponId = WeaponId(3);
+pub const WEAPON_METEOR_FRAG: WeaponId = WeaponId(4);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UtilityId {

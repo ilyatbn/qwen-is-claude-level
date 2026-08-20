@@ -1083,3 +1083,24 @@ Notes: A20 DONE. explode() now takes a BlastSource from the caller instead of
        Two synthetic chunkBake tests were pinned at a hardcoded 6 and fail at the
        shipped 5; bounds raised to regression ceilings with the cause documented.
 Left for later: T5.03 onward. Backdrop classifier redesign is with the authority.
+
+## T5.03 — Meteor shower — DONE
+Files: crates/game-core/src/effects/meteor.rs, .../items/registry.rs (2 weapon ids),
+       .../weapons/defs.rs (2 defs)
+Verified: `cargo test -p game-core meteor` — 12 passed
+Notes: DEVIATION: added WEAPON_METEOR / WEAPON_METEOR_FRAG to the weapon table
+       (registry.rs + defs.rs, outside the task's Touch-only). The task offered
+       "a weapon id or an explicit flag"; the ids mean meteors reuse the whole
+       projectile path — gravity, sub-stepping, player AABB — with no parallel
+       simulation to drift. Never in the item registry, so uncarryable.
+       I REPRODUCED THE FORK BOMB BY ACCIDENT. My run_shower harness guessed
+       is_fragment from the projectile id instead of its weapon, got it wrong for
+       every impact, and the test hung: 6 -> 36 -> 216. The weapon must be read
+       BEFORE step(), which removes the projectile as it reports the outcome.
+       Falsified: allowing recursion gives "generation two produced 36 more".
+       TEST FIXTURES MUST NOT CALL generate(). Building solid_map() via
+       Map::from_parts took this module from >10 min to 0.02 s in debug. The
+       generator was being run ~18 times for maps whose shape did not matter.
+       Also: H=512 with BEDROCK_H=24 makes y=500 indestructible — two carve tests
+       were silently aiming into bedrock and measuring nothing.
+Left for later: T5.04 onward.
