@@ -1203,3 +1203,63 @@ differ from the daytime sky by a stated margin, per theme.**
 The correction is worth more than the amendment was. A defect reported from a
 screenshot read by eye sent a builder to re-measure a subsystem that was working,
 and only measuring the pixels settled it. Report what you sampled, not what you saw.
+
+## A33 — A replay is about 1.2 MB, not "a few hundred KB"
+
+`61-logging-debug.md` §4 estimates a 4-minute six-player replay at "a few hundred
+KB". The arithmetic omits both the player count and the input rate:
+
+```
+240 s x 60 Hz x 6 players = 86,400 accepted inputs
+86,400 x 14 bytes         = 1.21 MB
+```
+
+Delta-encoding the tick brings it to 0.95 MB, and the `Input` payload alone is
+0.60 MB, so no framing change reaches the doc's figure. The estimate was wrong by
+roughly 4×, and it is the kind of wrong that only surfaces when someone records a
+full round rather than a test fixture.
+
+The bound is **2 MB**, with a **500 KB floor** so the test also fails if recording
+silently stops — an upper bound alone is satisfied by writing nothing. The
+arithmetic goes in the test, so the next person who changes the input format sees
+why the number is what it is.
+
+Nothing else about replays changes. `61-logging-debug.md` §4's claim that they are
+small enough to attach to a bug report still holds at 1.2 MB.
+
+## A34 — A hash is only worth what it covers
+
+`state_hash` is the footer of every replay and the whole basis of the determinism
+guarantee in `60-testing.md` §4. Its doc comment claimed it covered "every mutable
+piece of simulation state". It hashed the mask, the tick, round time and player
+positions.
+
+Probed by leaking `SystemTime` into `world.wind` on every tick — deliberately
+making the simulation nondeterministic — the replay verified **green**.
+
+Unhashed: wind, `carve_seq`, phase, every timer (shield, i-frames, respawn,
+cooldown), jetpack and jump state, aim, inventories, buried items, the effect
+scheduler, the spawn schedule, and every RNG stream position. The best regression
+test in the project was certifying the parts nobody was worried about.
+
+Two rules come out of it:
+
+> A subsystem hashes **itself**, via a `hash_into` next to its private fields.
+> A hash written from outside covers what the author happened to remember.
+
+> **RNG streams are hashed by cloning and drawing.** Two schedulers with identical
+> visible fields but different draw counts are not equivalent, and the difference
+> is invisible to any structural comparison.
+
+The test that would have caught it is the probe itself: deliberately introduce
+nondeterminism and require the verifier to go red. That belongs in the suite
+permanently, because a hash silently narrowing again is exactly as undetectable as
+this was.
+
+Related, same milestone, same shape: **SIGTERM never wrote the replay footer.**
+`main` returned as soon as axum stopped, so the room task was never scheduled again
+— the `docker compose down` path `41-server-loop-rooms.md` §7 exists for. Every
+unit test passed, because they call `finish_recording()` directly. And the control
+for the fix had to be a **subprocess** `SIGKILL`: in-process, the room is scheduled
+the instant the oneshot fires, so a "don't wait" control writes the footer anyway
+and proves nothing.
