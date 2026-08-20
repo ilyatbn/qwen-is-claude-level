@@ -314,9 +314,15 @@ pub fn flush_events(
     for (name, payload, scope) in batch {
         match scope {
             Scope::Everyone => {
-                // Ready sockets only: see `SessionMap::ready`.
+                // Gated on **map delivery**, not on `ready` (§A40).
+                //
+                // A socket can apply carves as soon as it has a mask, and holding
+                // them until `ready` is what dropped every carve in the join
+                // window — 1–2 full map resyncs per client per round once the
+                // bots started firing. `queue_or_emit` either emits now or holds
+                // the event for the join handler to flush in order.
                 for s in io.sockets() {
-                    if sessions.is_ready(s.id) {
+                    if sessions.queue_or_emit(s.id, name, &payload) {
                         let _ = s.emit(name, &payload);
                     }
                 }

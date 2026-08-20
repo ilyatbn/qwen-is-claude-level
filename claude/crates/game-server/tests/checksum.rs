@@ -399,3 +399,138 @@ async fn a_client_flooding_inputs_does_not_outrun_one_sending_normally() {
         game_core::constants::MAX_INPUT_QUEUE
     );
 }
+
+/// A client that joins **while carves are happening** and delays `ready` must
+/// still receive every carve after the mask it was given.
+///
+/// The bug (§A40): `map_init` is stamped `carve_seq = N`, so the client picks the
+/// stream up at `N+1` — but broadcasts were gated on `ready`, so every carve in
+/// that window was dropped. The client buffers the first one it *does* get,
+/// cannot fill the hole, and refetches the whole map two seconds later
+/// (`docs/42` §6). Measured on a live round: 1–2 resyncs per client.
+///
+/// Joining mid-firefight is a normal path (`docs/41` §4), and it is exactly when
+/// the window is widest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_joiner_that_delays_ready_still_gets_every_carve() {
+    let s = spawn_server().await;
+    let addr = s.addr;
+    let room = s.room.clone();
+    let arm = room.clone();
+
+    let out = tokio::task::spawn_blocking(move || {
+        let evs = ["welcome", "map_init", "carve"];
+
+        // The shooter, live and firing.
+        let (c1, _i1, r1) = connect(addr, &evs);
+        c1.emit("join", serde_json::json!({ "name": "ana" }))
+            .expect("emit join");
+        wait_for(&r1, "welcome", 15);
+        wait_for(&r1, "map_init", 15);
+        c1.emit("ready", serde_json::json!({})).expect("emit ready");
+
+        let handle = tokio::runtime::Handle::current();
+        handle
+            .block_on(arm.inspect(|w| {
+                let ids: Vec<_> = w.players.iter().map(|p| p.id).collect();
+                for id in ids {
+                    for _ in 0..10 {
+                        game_core::world::give(w, id, game_core::items::registry::SMG, 60);
+                    }
+                }
+            }))
+            .expect("room alive");
+
+        let fire = |i: u32| {
+            let t = (i as f32) / 40.0;
+            let angle = std::f32::consts::PI * (0.25 + 0.5 * t);
+            let q = ((angle / std::f32::consts::TAU) * 65536.0) as u16;
+            let inp = game_server::codec::encode_input_batch(&[game_core::player::input::Input {
+                seq: i + 1,
+                aim: q,
+                buttons: 0,
+            }]);
+            c1.emit(
+                "input",
+                serde_json::json!(game_server::codec::b64_encode(&inp)),
+            )
+            .ok();
+            c1.emit("fire", serde_json::json!({})).ok();
+        };
+
+        // Carve the map for a while so the joiner arrives mid-firefight.
+        for i in 0..12 {
+            fire(i);
+            std::thread::sleep(Duration::from_millis(110));
+        }
+
+        // The joiner. It joins and then sits on `ready` — the window under test.
+        let (c2, i2, r2) = connect(addr, &evs);
+        c2.emit("join", serde_json::json!({ "name": "bo" }))
+            .expect("emit join");
+        wait_for(&r2, "welcome", 15);
+        wait_for(&r2, "map_init", 15);
+
+        // Keep shooting while bo is seated, mapped and *not* ready. Every one of
+        // these is a carve that used to be dropped on the floor.
+        for i in 12..32 {
+            fire(i);
+            std::thread::sleep(Duration::from_millis(110));
+        }
+        c2.emit("ready", serde_json::json!({})).expect("emit ready");
+        std::thread::sleep(Duration::from_millis(1200));
+
+        let m2 = got(&i2, "map_init");
+        let carves2 = got(&i2, "carve");
+        let _ = c1.disconnect();
+        let _ = c2.disconnect();
+        (m2, carves2)
+    })
+    .await
+    .expect("client thread");
+
+    let (m2, carves2) = out;
+    assert_eq!(
+        m2.len(),
+        1,
+        "the joiner got exactly one map_init, not a resync"
+    );
+    let b2 = m2[0].as_str().expect("map_init is base64 text");
+
+    // The control: without carves in the window this test passes against a server
+    // that drops every one of them.
+    assert!(
+        carves2.len() >= 10,
+        "the joiner should have seen the fires during its ready window; got {}",
+        carves2.len()
+    );
+
+    // No hole in the sequence. This is the property, not a count: one missing
+    // `seq` is what costs a full map resync.
+    let mut seqs: Vec<u64> = carves2
+        .iter()
+        .map(|c| c["seq"].as_u64().unwrap_or(0))
+        .collect();
+    seqs.sort_unstable();
+    seqs.dedup();
+    let first = *seqs.first().expect("checked non-empty");
+    let last = *seqs.last().expect("checked non-empty");
+    assert_eq!(
+        seqs.len() as u64,
+        last - first + 1,
+        "the joiner's carve stream has a hole: {first}..={last} but only {} distinct seqs",
+        seqs.len()
+    );
+
+    // And the mask it ends up with is the server's, byte for byte — the check a
+    // carve count cannot make.
+    let client_hash = replay(b2, &carves2);
+    let server_hash = room
+        .inspect(|w| w.map.mask.hash_hex())
+        .await
+        .expect("room alive");
+    assert_eq!(
+        client_hash, server_hash,
+        "the late-ready joiner's mask diverged from the server's"
+    );
+}

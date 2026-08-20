@@ -27,12 +27,31 @@ pub struct SessionMap {
     inner: RwLock<Vec<(PlayerId, Sid)>>,
     /// Sockets that have sent `ready` and decoded their map.
     ///
-    /// Broadcasts are gated on this. A seated-but-not-ready socket that receives
-    /// `carve` events while its `map_init` is still in flight drops them, and
-    /// carves carry a monotonic `seq` the client must apply in order — so the
-    /// gap it leaves triggers a full `resync_map` two seconds later
-    /// (`docs/42` §6). Joining mid-firefight would cost an immediate resync.
+    /// **Snapshots** are gated on this, and that gate is load-bearing: a player is
+    /// seated before `welcome` is sent, so without it the 20 Hz stream starts
+    /// during the join handshake and races `map_init` on the same socket.
     ready: RwLock<Vec<Sid>>,
+    /// Per-socket delivery state for **broadcast events**.
+    ///
+    /// Readiness for events and readiness for snapshots are different things
+    /// (`docs/70-amendments-v2.md` §A40). A socket can take carves as soon as it
+    /// has a mask to apply them to — the moment `map_init` is *sent* — but the
+    /// carves landing between the map being encoded and that emit must not be
+    /// dropped: they carry a monotonic `seq`, and a hole in it costs a full map
+    /// resync two seconds later. They are queued here and flushed in order.
+    delivery: RwLock<Vec<(Sid, Delivery)>>,
+}
+
+/// Where a socket's broadcast events go right now.
+#[derive(Debug)]
+pub enum Delivery {
+    /// Seated, map not yet on the wire: hold events in order.
+    Queueing(Vec<(&'static str, serde_json::Value)>),
+    /// The queue exceeded `JOIN_EVENT_QUEUE_MAX` and was dropped. The socket is
+    /// owed a fresh `map_init` rather than a stream with a hole in it.
+    Overflowed,
+    /// `map_init` is on the wire; emit directly.
+    Live,
 }
 
 impl SessionMap {
@@ -42,6 +61,88 @@ impl SessionMap {
             v.push((player, sid));
             v.sort_by_key(|(p, _)| *p);
         }
+        // Seated but mapless: hold broadcasts rather than dropping them.
+        if let Ok(mut d) = self.delivery.write() {
+            d.retain(|(s, _)| *s != sid);
+            d.push((sid, Delivery::Queueing(Vec::new())));
+        }
+    }
+
+    /// Take one broadcast event for a socket: emit it now, or hold it.
+    ///
+    /// Returns `true` when the caller should emit. Holding and going live are
+    /// decided under the same lock, so an event cannot slip between the two and
+    /// be lost — either it lands in the queue that `go_live` is about to drain,
+    /// or it is emitted directly after the drain.
+    pub fn queue_or_emit(&self, sid: Sid, name: &'static str, payload: &serde_json::Value) -> bool {
+        let Ok(mut d) = self.delivery.write() else {
+            return false;
+        };
+        let Some((_, state)) = d.iter_mut().find(|(s, _)| *s == sid) else {
+            return false; // not seated: nothing is owed to it
+        };
+        match state {
+            Delivery::Live => true,
+            Delivery::Overflowed => false,
+            Delivery::Queueing(q) => {
+                if q.len() >= game_core::constants::JOIN_EVENT_QUEUE_MAX {
+                    tracing::warn!(
+                        target: "game::net", socket = %sid,
+                        held = q.len(),
+                        "join event queue overflowed; owed a fresh map_init"
+                    );
+                    *state = Delivery::Overflowed;
+                } else {
+                    q.push((name, payload.clone()));
+                }
+                false
+            }
+        }
+    }
+
+    /// `map_init` is on the wire. Returns what was held, in arrival order.
+    ///
+    /// `Err(())` means the queue overflowed and the socket needs a fresh
+    /// `map_init` instead of a replay with a hole in it.
+    #[allow(clippy::result_unit_err)]
+    pub fn go_live(&self, sid: Sid) -> Result<Vec<(&'static str, serde_json::Value)>, ()> {
+        let Ok(mut d) = self.delivery.write() else {
+            return Ok(Vec::new());
+        };
+        let Some((_, state)) = d.iter_mut().find(|(s, _)| *s == sid) else {
+            return Ok(Vec::new());
+        };
+        let prev = std::mem::replace(state, Delivery::Live);
+        match prev {
+            Delivery::Queueing(q) => Ok(q),
+            Delivery::Overflowed => Err(()),
+            Delivery::Live => Ok(Vec::new()),
+        }
+    }
+
+    /// Test seam: how many events are being held for a socket.
+    pub fn queued_len(&self, sid: Sid) -> usize {
+        self.delivery
+            .read()
+            .ok()
+            .and_then(|d| {
+                d.iter().find(|(s, _)| *s == sid).map(|(_, st)| match st {
+                    Delivery::Queueing(q) => q.len(),
+                    _ => 0,
+                })
+            })
+            .unwrap_or(0)
+    }
+
+    pub fn is_live(&self, sid: Sid) -> bool {
+        self.delivery
+            .read()
+            .ok()
+            .map(|d| {
+                d.iter()
+                    .any(|(s, st)| *s == sid && matches!(st, Delivery::Live))
+            })
+            .unwrap_or(false)
     }
 
     pub fn mark_ready(&self, sid: Sid) {
@@ -63,6 +164,9 @@ impl SessionMap {
     pub fn remove_sid(&self, sid: Sid) -> Option<PlayerId> {
         if let Ok(mut r) = self.ready.write() {
             r.retain(|s| *s != sid);
+        }
+        if let Ok(mut d) = self.delivery.write() {
+            d.retain(|(s, _)| *s != sid);
         }
         let mut v = self.inner.write().ok()?;
         let i = v.iter().position(|(_, s)| *s == sid)?;
@@ -211,6 +315,53 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                             // `codec::b64_encode` for why.
                             if let Err(e) = socket.emit("map_init", &b64_encode(&map_bytes)) {
                                 tracing::warn!(target: "game::net", socket = %socket.id, "map_init failed: {e}");
+                            }
+
+                            // The map is on the wire, so this socket can take
+                            // carves now — and the ones that landed while it was
+                            // being encoded are owed to it, in order.
+                            //
+                            // Dropping them was the bug (§A40): `map_init` is
+                            // stamped `carve_seq = N`, so the client picks the
+                            // stream up at N+1, and any carve skipped in this
+                            // window leaves a hole it can only resolve by
+                            // refetching the whole map two seconds later. Carves
+                            // already baked into this mask carry `seq <= N` and
+                            // the client discards them as duplicates, so
+                            // replaying the whole queue is safe.
+                            match sessions.go_live(socket.id) {
+                                Ok(held) => {
+                                    if !held.is_empty() {
+                                        tracing::debug!(
+                                            target: "game::net", player = id, count = held.len(),
+                                            "flushed events held during the join window",
+                                        );
+                                    }
+                                    for (name, payload) in held {
+                                        if let Err(e) = socket.emit(name, &payload) {
+                                            tracing::warn!(
+                                                target: "game::net", socket = %socket.id,
+                                                "held {name} failed: {e}"
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                                // Overflowed: a replay with a hole in it is worse
+                                // than the resync it would cause, so take the
+                                // resync now and deliberately.
+                                Err(()) => {
+                                    if let Some(bytes) = room
+                                        .inspect(|w| encode_map_init_at(&w.map, w.carve_seq()))
+                                        .await
+                                    {
+                                        let _ = socket.emit("map_init", &b64_encode(&bytes));
+                                        tracing::warn!(
+                                            target: "game::net", player = id,
+                                            "join queue overflowed; resent map_init",
+                                        );
+                                    }
+                                }
                             }
 
                             // The world already on the ground.
@@ -537,6 +688,101 @@ mod tests {
         assert_eq!(m.player_of(a), None);
         assert_eq!(m.remove_sid(a), None);
         assert_eq!(m.len(), 1);
+    }
+
+    fn ev(n: u32) -> serde_json::Value {
+        serde_json::json!({ "seq": n })
+    }
+
+    /// The bug §A40 describes: an event arriving before `map_init` is on the wire
+    /// must be **held**, not dropped, because carves carry a `seq` the client
+    /// applies in order.
+    #[test]
+    fn events_are_held_until_the_map_is_on_the_wire_then_replayed_in_order() {
+        let m = SessionMap::default();
+        let sid = Sid::new();
+        m.insert(1, sid);
+
+        // Seated, mapless: held, not emitted.
+        for i in 1..=3 {
+            assert!(
+                !m.queue_or_emit(sid, "carve", &ev(i)),
+                "carve {i} was emitted before map_init"
+            );
+        }
+        assert_eq!(m.queued_len(sid), 3);
+
+        let held = m.go_live(sid).expect("not overflowed");
+        let seqs: Vec<u64> = held
+            .iter()
+            .map(|(_, p)| p["seq"].as_u64().unwrap_or(0))
+            .collect();
+        assert_eq!(seqs, vec![1, 2, 3], "replayed out of order");
+        assert!(m.is_live(sid));
+
+        // And afterwards it goes straight out.
+        assert!(m.queue_or_emit(sid, "carve", &ev(4)));
+        assert_eq!(m.queued_len(sid), 0);
+    }
+
+    /// The control: without it, "events are held" also passes for a socket that
+    /// is never seated and is simply skipped forever.
+    #[test]
+    fn an_unseated_socket_is_skipped_and_is_owed_nothing() {
+        let m = SessionMap::default();
+        let sid = Sid::new();
+        assert!(!m.queue_or_emit(sid, "carve", &ev(1)));
+        assert_eq!(m.queued_len(sid), 0);
+        assert!(m.go_live(sid).expect("no queue").is_empty());
+    }
+
+    /// A client that never sends `ready` holds its seat for READY_TIMEOUT_SECS,
+    /// and a busy round is hundreds of carves. Overflow is deliberate: drop the
+    /// queue and take the resync, rather than replaying a stream with a hole.
+    #[test]
+    fn an_overflowing_queue_asks_for_a_fresh_map_instead_of_a_holed_replay() {
+        let m = SessionMap::default();
+        let sid = Sid::new();
+        m.insert(2, sid);
+        let cap = game_core::constants::JOIN_EVENT_QUEUE_MAX;
+        for i in 0..cap {
+            assert!(!m.queue_or_emit(sid, "carve", &ev(i as u32)));
+        }
+        assert_eq!(m.queued_len(sid), cap);
+        // One past the cap tips it.
+        assert!(!m.queue_or_emit(sid, "carve", &ev(cap as u32)));
+        assert!(m.go_live(sid).is_err(), "overflow must demand a resync");
+    }
+
+    /// Snapshot readiness and event delivery are different things (§A40): going
+    /// live must not imply `ready`, or the 20 Hz binary stream restarts racing
+    /// `map_init` — the bug the ready gate was added for in the first place.
+    #[test]
+    fn going_live_for_events_does_not_make_a_socket_ready_for_snapshots() {
+        let m = SessionMap::default();
+        let sid = Sid::new();
+        m.insert(1, sid);
+        let _ = m.go_live(sid);
+        assert!(m.is_live(sid));
+        assert!(
+            !m.is_ready(sid),
+            "map on the wire is not the same as decoded"
+        );
+        m.mark_ready(sid);
+        assert!(m.is_ready(sid));
+    }
+
+    /// A disconnect must not leave a queue behind for a dead socket.
+    #[test]
+    fn removing_a_socket_forgets_what_it_was_owed() {
+        let m = SessionMap::default();
+        let sid = Sid::new();
+        m.insert(1, sid);
+        m.queue_or_emit(sid, "carve", &ev(1));
+        assert_eq!(m.queued_len(sid), 1);
+        assert_eq!(m.remove_sid(sid), Some(1));
+        assert_eq!(m.queued_len(sid), 0);
+        assert!(!m.queue_or_emit(sid, "carve", &ev(2)));
     }
 
     /// A reconnecting socket that reuses a player id must not leave a stale entry

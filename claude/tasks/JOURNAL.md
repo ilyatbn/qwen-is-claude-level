@@ -2286,3 +2286,38 @@ Likely correct fix, NOT attempted: separate "ready for events" from "ready for
        stream beat map_init mid-handshake). Carves can be delivered from join
        onward because the client ALREADY buffers them by seq and drains on
        map_init, dropping seq <= N as duplicates — so no gap can form.
+
+## T9.10 — Close the join-window carve gap — DONE
+Files: crates/game-core/src/constants.rs, crates/game-server/src/{session,events}.rs,
+       crates/game-server/tests/checksum.rs
+Verified: `cargo test -p game-server` — 91 lib + 4 bots + 4 checksum + 6 integration
+       + 1 join + 12 replay + 14 replay_run, 0 failed. `node scripts/e2e.mjs
+       full-round` — **ok, "no map resyncs"** (before: "ana 0, bo 1"), 8 deaths
+       all from combat, 168k px destroyed, masks agree, EXIT=0.
+Notes: READINESS FOR EVENTS AND FOR SNAPSHOTS ARE DIFFERENT THINGS (§A40). The
+       snapshot gate stays on `ready` and is load-bearing — the 20 Hz binary
+       stream must not race `map_init` on the same socket. Broadcasts now gate on
+       *map delivery* instead: `Delivery::{Queueing,Overflowed,Live}` per socket.
+       Events arriving before `map_init` is emitted are HELD, not dropped, and
+       flushed in order right after it. Carves already baked into that mask carry
+       seq <= N and the client discards them as duplicates, so replaying the whole
+       queue is safe — that is why holding beats filtering.
+       QUEUEING AND GOING LIVE DECIDE UNDER ONE LOCK. Marking "mapped" after the
+       emit and letting flush_events check a flag has a window between encoding
+       the mask (seq N) and setting the flag: carves in it are seq > N and would
+       be skipped, which is the same gap in a smaller window. `queue_or_emit` and
+       `go_live` share the `delivery` lock, so an event either lands in the queue
+       that `go_live` drains or is emitted after the drain. Never both, never
+       neither.
+       Overflow is deliberate (JOIN_EVENT_QUEUE_MAX 4096): drop the queue and send
+       a fresh map_init, rather than replay a stream with a hole in it. A client
+       that never sends `ready` holds a seat for READY_TIMEOUT_SECS.
+       FALSIFIED TWICE AT THE LIVE BINDING SITE: making queue_or_emit drop instead
+       of hold fails 3 unit tests by name; restoring the old `is_ready` gate in
+       flush_events fails the new integration test with the mask hashes differing
+       ("the late-ready joiner's mask diverged from the server's").
+       The integration test asserts the PROPERTY, not a count: no hole in the seq
+       range, and the replayed mask hash equals the server's. Its control is
+       `carves2.len() >= 10` — without carves in the window it would pass against
+       a server that drops every one of them.
+Left for later: nothing in M9.

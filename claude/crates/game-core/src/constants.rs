@@ -161,6 +161,22 @@ pub const MIN_PLAYERS_TO_START: usize = 1;
 /// a number that lives only in a sentence cannot be checked against the code.
 pub const READY_TIMEOUT_SECS: f32 = 30.0;
 
+/// Broadcast events held for a socket between `map_init` being sent and `ready`
+/// arriving (`docs/70-amendments-v2.md` §A40).
+///
+/// A client cannot be sent carves until it has a mask to apply them to, but the
+/// carves that land in that window must not be *dropped*: they carry a monotonic
+/// `seq` the client applies in order, so a hole in the sequence costs a full map
+/// resync two seconds later. They are queued instead, and flushed in order once
+/// the map is on the wire.
+///
+/// Bounded because a client that never sends `ready` holds its seat for
+/// `READY_TIMEOUT_SECS`, and a busy round produces hundreds of carves. On
+/// overflow the queue is dropped and the socket is sent a fresh `map_init`
+/// instead — which is the same full resync the gap would have caused, taken
+/// deliberately rather than two seconds late.
+pub const JOIN_EVENT_QUEUE_MAX: usize = 4096;
+
 // ---------------------------------------------------------------------------
 // Map generation
 // ---------------------------------------------------------------------------
