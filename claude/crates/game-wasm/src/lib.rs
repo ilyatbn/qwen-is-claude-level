@@ -20,10 +20,16 @@
 //! no caller has to remember.
 
 use game_core::constants::{MapScale, SIM_DT};
+use game_core::items::registry::{self, ItemId, WeaponId};
 use game_core::map::{generate, rle, CoarseGrid, Map};
 use game_core::math::Vec2;
 use game_core::physics::body::Body;
+use game_core::player::state::PlayerState;
 use game_core::player::{apply_input, Input, JetpackState, JumpState};
+use game_core::rng::{substream, ChaCha8Rng};
+use game_core::weapons::defs;
+use game_core::weapons::explode::{explode, fire_hitscan, DamageSource, PlayerHitTarget};
+use game_core::weapons::projectile::{ProjectileOutcome, Projectiles};
 use wasm_bindgen::prelude::*;
 
 /// One locally-simulated player: the body plus the two bits of movement state
@@ -34,12 +40,17 @@ struct LocalPlayer {
     jump: JumpState,
     jet: JetpackState,
     prev_input: Input,
+    /// Health, inventory, cooldowns. The sandbox needs the whole record so firing
+    /// goes through the same validation the server will use.
+    stats: PlayerState,
 }
 
 #[wasm_bindgen]
 pub struct GameCore {
     map: Map,
     players: Vec<LocalPlayer>,
+    projectiles: Projectiles,
+    rng: ChaCha8Rng,
 }
 
 impl Default for GameCore {
@@ -58,6 +69,8 @@ impl GameCore {
         GameCore {
             map: generate(1, MapScale::Small),
             players: Vec::new(),
+            projectiles: Projectiles::new(),
+            rng: substream(1, "wasm"),
         }
     }
 
@@ -134,6 +147,7 @@ impl GameCore {
             body: Body::new(Vec2::new(x, y)),
             jump: JumpState::default(),
             jet: JetpackState::default(),
+            stats: PlayerState::new(id, Vec2::new(x, y), 0),
             prev_input: Input::default(),
         });
     }
@@ -209,6 +223,180 @@ impl GameCore {
     // ---- metadata --------------------------------------------------------
 
     /// JSON, because this is called once per round and the cost is irrelevant.
+    /// Put items in a player's inventory. Sandbox only — the real game finds them.
+    pub fn give(&mut self, id: u8, item: u16, count: u8) {
+        if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {
+            p.stats.inventory.add(item as ItemId, count);
+        }
+    }
+
+    pub fn select_slot(&mut self, id: u8, slot: u8) {
+        if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {
+            p.stats.inventory.select(slot);
+        }
+    }
+
+    pub fn inventory_json(&self, id: u8) -> String {
+        let Some(p) = self.players.iter().find(|p| p.id == id) else {
+            return "null".into();
+        };
+        let slots: Vec<serde_json::Value> = (0..game_core::constants::INVENTORY_SLOTS)
+            .map(|i| match p.stats.inventory.slot(i as u8) {
+                Some(s) => serde_json::json!({
+                    "item": s.item,
+                    "count": s.count,
+                    "key": registry::def(s.item).map(|d| d.key).unwrap_or(""),
+                }),
+                None => serde_json::Value::Null,
+            })
+            .collect();
+        serde_json::json!({
+            "slots": slots,
+            "selected": p.stats.inventory.selected(),
+            "health": p.stats.health,
+            "alive": p.stats.alive,
+            "score": p.stats.score,
+        })
+        .to_string()
+    }
+
+    /// Fire the selected weapon. Returns a JSON event, or `{"rejected":...}`.
+    ///
+    /// Goes through `PlayerState::try_fire`, so the sandbox exercises the same
+    /// validation order (kind, cooldown, ammo) the server will.
+    pub fn fire(&mut self, id: u8, now: f32) -> String {
+        let Some(idx) = self.players.iter().position(|p| p.id == id) else {
+            return "{\"rejected\":\"no_player\"}".into();
+        };
+        let aim = game_core::math::dequantize_angle(self.players[idx].prev_input.aim);
+        let centre = self.players[idx].body.pos;
+
+        let wid = match self.players[idx].stats.try_fire(now) {
+            Ok(w) => w,
+            Err(e) => return format!("{{\"rejected\":\"{e:?}\"}}"),
+        };
+        let Some(w) = defs::def(wid) else {
+            return "{\"rejected\":\"no_weapon\"}".into();
+        };
+
+        match w.delivery {
+            defs::Delivery::Hitscan { .. } => {
+                let mut shots_json = Vec::new();
+                let map = &mut self.map;
+                let mut rng = self.rng.clone();
+                let mut targets: Vec<PlayerHitTarget> = Vec::new();
+                let shots = fire_hitscan(map, &mut targets, w, id, centre, aim, &mut rng, now);
+                self.rng = rng;
+                for s in shots {
+                    shots_json.push(serde_json::json!({
+                        "x0": s.from.x, "y0": s.from.y, "x1": s.to.x, "y1": s.to.y,
+                        "hit": format!("{:?}", s.hit),
+                    }));
+                }
+                serde_json::json!({ "hitscan": shots_json, "weapon": wid.0 }).to_string()
+            }
+            defs::Delivery::Projectile { .. } => {
+                let pid = self.projectiles.spawn(wid, id, centre, aim, now);
+                let p = self.projectiles.get(pid).map(|p| (p.pos.x, p.pos.y));
+                serde_json::json!({
+                    "projectile": { "id": pid, "weapon": wid.0, "key": w.key,
+                                    "x": p.map(|q| q.0), "y": p.map(|q| q.1) }
+                })
+                .to_string()
+            }
+        }
+    }
+
+    /// Step projectiles and resolve whatever they hit. Returns JSON events.
+    pub fn combat_step(&mut self, now: f32, dt: f32) -> String {
+        let boxes: Vec<(u8, game_core::math::Aabb)> = self
+            .players
+            .iter()
+            .filter(|p| p.stats.alive)
+            .map(|p| (p.id, p.body.aabb()))
+            .collect();
+        let wind = self.map.meta.wind;
+        let outcomes = self.projectiles.step(&self.map, &boxes, wind, now, dt);
+
+        let mut events = Vec::new();
+        for (pid, out) in outcomes {
+            let (at, _victim) = match out {
+                ProjectileOutcome::Alive => continue,
+                ProjectileOutcome::Exploded { at } => (at, None),
+                ProjectileOutcome::HitPlayer { at, victim } => (at, Some(victim)),
+            };
+            // Every projectile explodes: contact, fuse or lifetime.
+            let (radius, damage, weapon) = (
+                game_core::constants::BAZOOKA_BLAST_RADIUS,
+                game_core::constants::BAZOOKA_DAMAGE,
+                WeaponId(0),
+            );
+            let mut hits_json = Vec::new();
+            for i in 0..self.players.len() {
+                let (before, pos, alive) = {
+                    let p = &self.players[i];
+                    (p.stats.health, p.body.pos, p.stats.alive)
+                };
+                let mut vel = self.players[i].body.vel;
+                let mut taken = 0.0f32;
+                {
+                    let mut cb = |d: f32, _s: DamageSource| {
+                        taken += d;
+                        true
+                    };
+                    let mut targets = [PlayerHitTarget {
+                        id: self.players[i].id,
+                        pos,
+                        vel: &mut vel,
+                        alive,
+                        apply_damage: &mut cb,
+                    }];
+                    explode(
+                        &mut self.map,
+                        &mut targets,
+                        at,
+                        radius,
+                        damage,
+                        Some(0),
+                        Some(weapon),
+                        now,
+                    );
+                }
+                self.players[i].body.vel = vel;
+                if taken > 0.0 {
+                    let src = DamageSource::SelfInflicted { weapon };
+                    self.players[i].stats.apply_damage(taken, src, now);
+                    hits_json.push(serde_json::json!({
+                        "id": self.players[i].id,
+                        "damage": taken,
+                        "health_before": before,
+                        "health_after": self.players[i].stats.health,
+                    }));
+                }
+            }
+            events.push(serde_json::json!({
+                "explosion": { "id": pid, "x": at.x, "y": at.y, "r": radius, "hits": hits_json }
+            }));
+        }
+        serde_json::json!(events).to_string()
+    }
+
+    /// Live projectiles, for the renderer.
+    pub fn projectiles_json(&self) -> String {
+        let v: Vec<serde_json::Value> = self
+            .projectiles
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.id,
+                    "key": defs::def(p.weapon).map(|w| w.key).unwrap_or("bazooka"),
+                    "x": p.pos.x, "y": p.pos.y,
+                })
+            })
+            .collect();
+        serde_json::json!(v).to_string()
+    }
+
     pub fn meta_json(&self) -> String {
         serde_json::to_string(&self.map.meta).unwrap_or_else(|_| "{}".to_string())
     }
@@ -284,6 +472,14 @@ pub fn constants_json() -> String {
         FLASHLIGHT_CONE_DEG => c::FLASHLIGHT_CONE_DEG,
         FLASHLIGHT_AMBIENT_MULT => c::FLASHLIGHT_AMBIENT_MULT,
         BASE_HEALTH => c::BASE_HEALTH,
+        TRACER_LIFETIME => c::TRACER_LIFETIME,
+        TRACER_WIDTH => c::TRACER_WIDTH,
+        PROJECTILE_TRAIL_LEN => c::PROJECTILE_TRAIL_LEN,
+        MUZZLE_OFFSET => c::MUZZLE_OFFSET,
+        BAZOOKA_BLAST_RADIUS => c::BAZOOKA_BLAST_RADIUS,
+        GRENADE_BLAST_RADIUS => c::GRENADE_BLAST_RADIUS,
+        SMG_BLAST_RADIUS => c::SMG_BLAST_RADIUS,
+        SMG_RANGE => c::SMG_RANGE,
         DAY_DURATION => c::DAY_DURATION,
         NIGHT_DURATION => c::NIGHT_DURATION,
         CYCLE_TRANSITION => c::CYCLE_TRANSITION,

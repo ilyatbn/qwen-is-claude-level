@@ -58,6 +58,38 @@ export interface MapMeta {
   traversable_fraction: number
 }
 
+export interface InventoryView {
+  slots: Array<{ item: number; count: number; key: string } | null>
+  selected: number
+  health: number
+  alive: boolean
+  score: number
+}
+
+export interface FireEvent {
+  rejected?: string
+  weapon?: number
+  hitscan?: Array<{ x0: number; y0: number; x1: number; y1: number; hit: string }>
+  projectile?: { id: number; weapon: number; key: string; x: number; y: number }
+}
+
+export interface CombatEvent {
+  explosion?: {
+    id: number
+    x: number
+    y: number
+    r: number
+    hits: Array<{ id: number; damage: number; health_before: number; health_after: number }>
+  }
+}
+
+export interface LiveProjectile {
+  id: number
+  key: string
+  x: number
+  y: number
+}
+
 export interface PlayerState {
   x: number
   y: number
@@ -128,6 +160,14 @@ export interface Constants {
   FLASHLIGHT_CONE_DEG: number
   FLASHLIGHT_AMBIENT_MULT: number
   BASE_HEALTH: number
+  TRACER_LIFETIME: number
+  TRACER_WIDTH: number
+  PROJECTILE_TRAIL_LEN: number
+  MUZZLE_OFFSET: number
+  BAZOOKA_BLAST_RADIUS: number
+  GRENADE_BLAST_RADIUS: number
+  SMG_BLAST_RADIUS: number
+  SMG_RANGE: number
 }
 
 /**
@@ -288,6 +328,30 @@ export class Core {
       fuel: a[5]!,
       moveState: a[6]!,
     }
+  }
+
+  give(id: number, item: number, count: number): void {
+    this.inner.give(id, item, count)
+  }
+
+  selectSlot(id: number, slot: number): void {
+    this.inner.select_slot(id, slot)
+  }
+
+  inventory(id: number): InventoryView | null {
+    return JSON.parse(this.inner.inventory_json(id)) as InventoryView | null
+  }
+
+  fire(id: number, now: number): FireEvent {
+    return JSON.parse(this.inner.fire(id, now)) as FireEvent
+  }
+
+  combatStep(now: number, dt: number): CombatEvent[] {
+    return JSON.parse(this.inner.combat_step(now, dt)) as CombatEvent[]
+  }
+
+  liveProjectiles(): LiveProjectile[] {
+    return JSON.parse(this.inner.projectiles_json()) as LiveProjectile[]
   }
 
   maskHash(): Uint8Array {

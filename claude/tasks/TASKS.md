@@ -112,14 +112,14 @@ holes in it, watch the day/night slider change visibility.
 - [x] [T4.05](M4/T4.05-periodic-spawn.md) — Periodic spawns with surface re-validation
 - [x] [T4.06](M4/T4.06-crates.md) — Supply crates
 - [x] [T4.07](M4/T4.07-buried.md) — Buried slot reveal wiring
-- [ ] [T4.08](M4/T4.08-weapon-defs.md) — Weapon definitions
-- [ ] [T4.09](M4/T4.09-projectiles.md) — Projectile simulation and bouncing
-- [ ] [T4.10](M4/T4.10-explode.md) — `explode`: carve, falloff damage, knockback
-- [ ] [T4.11](M4/T4.11-hitscan.md) — Hitscan resolution
-- [ ] [T4.12](M4/T4.12-player-stats.md) — Health, overheal, shield, speed multiplier
-- [ ] [T4.13](M4/T4.13-damage-death.md) — Damage, death, respawn, scoring
-- [ ] [T4.14](M4/T4.14-inventory-ui.md) — Client inventory panel and HUD
-- [ ] [T4.15](M4/T4.15-visible-ordnance.md) — Tracers, trails, impact FX **(v2)**
+- [x] [T4.08](M4/T4.08-weapon-defs.md) — Weapon definitions
+- [x] [T4.09](M4/T4.09-projectiles.md) — Projectile simulation and bouncing
+- [x] [T4.10](M4/T4.10-explode.md) — `explode`: carve, falloff damage, knockback
+- [x] [T4.11](M4/T4.11-hitscan.md) — Hitscan resolution
+- [x] [T4.12](M4/T4.12-player-stats.md) — Health, overheal, shield, speed multiplier
+- [x] [T4.13](M4/T4.13-damage-death.md) — Damage, death, respawn, scoring
+- [x] [T4.14](M4/T4.14-inventory-ui.md) — Client inventory panel and HUD
+- [x] [T4.15](M4/T4.15-visible-ordnance.md) — Tracers, trails, impact FX **(v2)**
 
 **Checkpoint:** In the sandbox, pick up a bazooka, fire it, watch the crater form,
 take self-damage, and see the inventory panel open on right-click.

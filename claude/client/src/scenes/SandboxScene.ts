@@ -19,6 +19,8 @@ import { Crosshair, LocalInput } from '../input/localInput'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { DebugOverlay } from '../render/debugOverlay'
+import { OrdnanceLayer } from '../render/ordnance'
+import type { ProjectileKind } from '../render/ordnance-state'
 import { cycleU, darknessAt, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
 
@@ -48,6 +50,9 @@ export class SandboxScene extends Phaser.Scene {
   private overlay!: DebugOverlay
   private fogActive = false
   private fovOverride: number | null = null
+  private ordnance!: OrdnanceLayer
+  private hud!: HTMLDivElement
+  private invOpen = false
   /** Round time in seconds, driven by the clock or scrubbed by the slider. */
   private roundTime = 0
   private timeScrub = false
@@ -58,6 +63,7 @@ export class SandboxScene extends Phaser.Scene {
   private seq = 0
   /** Fixed-step accumulator: the sim must advance at SIM_HZ, not at frame rate. */
   private acc = 0
+  private simTime = 0
 
   private readout!: HTMLPreElement
   private ui!: HTMLDivElement
@@ -88,6 +94,7 @@ export class SandboxScene extends Phaser.Scene {
     this.lightmap = new Lightmap(this)
     // `true`: this is the sandbox, the one place buried slots may be drawn.
     this.overlay = new DebugOverlay(this, this.core, true)
+    this.ordnance = new OrdnanceLayer(this)
     this.player = new PlayerView(this, 0)
     this.player.container.setDepth(DEPTH.actors)
     this.localInput = new LocalInput(this)
@@ -96,17 +103,39 @@ export class SandboxScene extends Phaser.Scene {
     // Click to carve. Pointer coordinates must go through the camera: using screen
     // coordinates works perfectly until the camera scrolls, and then silently
     // carves the wrong place (`docs/22-aiming-crosshair.md` §7).
+    // Left click carves (the terrain tool); firing is on the F key and on LMB
+    // once a weapon is selected, so the checkpoint can drive either.
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      if (p.rightButtonDown()) return
       const w = this.cameras.main.getWorldPoint(p.x, p.y)
       this.carveAt(Math.round(w.x), Math.round(w.y))
     })
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.ui.remove()
+      this.hud?.remove()
+      this.ordnance.destroy()
       this.terrain.destroy()
       this.lightmap.destroy()
       this.overlay.destroy()
       this.sky.destroy()
+    })
+
+    this.buildHud()
+
+    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      if (p.rightButtonDown()) {
+        this.invOpen = !this.invOpen
+        this.refreshHud()
+      }
+    })
+    this.input.keyboard?.on('keydown-ONE', () => this.pickSlot(0))
+    this.input.keyboard?.on('keydown-TWO', () => this.pickSlot(1))
+    this.input.keyboard?.on('keydown-THREE', () => this.pickSlot(2))
+    this.input.keyboard?.on('keydown-F', () => {
+      const inv = this.core.inventory(0)
+      if (inv) this.core.fire(0, this.simTime)
+      this.refreshHud()
     })
 
     this.exposeDebugHandle()
@@ -165,6 +194,10 @@ export class SandboxScene extends Phaser.Scene {
     url.searchParams.set('seed', this.seed.toString())
     url.searchParams.set('scale', SCALE_NAMES[this.mapScale] ?? 'medium')
     history.replaceState(null, '', url)
+
+    // Regenerating recreates the player, so the loadout is granted here rather
+    // than once at create() — otherwise every regenerate silently disarms you.
+    this.grantSandboxLoadout()
 
     this.seedInput.value = this.seed.toString()
     this.refreshReadout()
@@ -280,6 +313,59 @@ export class SandboxScene extends Phaser.Scene {
   }
 
   /** Keep the time slider and its label showing what `roundTime` actually is. */
+  /**
+   * Sandbox only — the real game makes you find these. It exists so the M4
+   * checkpoint (fire, crater, self-damage, inventory) can be driven headlessly.
+   */
+  private grantSandboxLoadout(): void {
+    this.core.give(0, 3 /* bazooka */, 4)
+    this.core.give(0, 4 /* grenade */, 3)
+    this.core.give(0, 5 /* smg */, 60)
+    this.core.selectSlot(0, 0)
+    this.refreshHud()
+  }
+
+  private pickSlot(slot: number): void {
+    this.core.selectSlot(0, slot)
+    this.refreshHud()
+  }
+
+  /** The permanently-visible strip, plus the right-click panel. */
+  private buildHud(): void {
+    const hud = document.createElement('div')
+    hud.style.cssText = `position:fixed;left:50%;bottom:10px;transform:translateX(-50%);z-index:10;
+      font:12px/1.5 ui-monospace,monospace;color:#dfe6ee;background:rgba(12,16,22,.82);
+      padding:6px 10px;border-radius:6px;text-align:center;white-space:pre`
+    document.body.append(hud)
+    this.hud = hud
+    this.refreshHud()
+  }
+
+  private refreshHud(): void {
+    if (!this.hud) return
+    const inv = this.core.inventory(0)
+    if (!inv) return
+    const sel = inv.slots[inv.selected]
+    const strip = `HP ${inv.health.toFixed(0)}   ${sel ? `${sel.key} x${sel.count}` : 'empty'}   [LMB carve] [F fire] [RMB inventory]`
+    if (!this.invOpen) {
+      this.hud.textContent = strip
+      return
+    }
+    // A 4x2 grid, as docs/30 §3 describes.
+    const rows: string[] = []
+    for (let r = 0; r < 2; r++) {
+      const cells: string[] = []
+      for (let c = 0; c < 4; c++) {
+        const i = r * 4 + c
+        const s = inv.slots[i]
+        const mark = i === inv.selected ? '>' : ' '
+        cells.push(`${mark}${i + 1} ${s ? `${s.key.slice(0, 8)} x${s.count}` : '--'}`.padEnd(18))
+      }
+      rows.push(cells.join(''))
+    }
+    this.hud.textContent = `${strip}\n${rows.join('\n')}`
+  }
+
   private syncTimeControl(): void {
     if (this.timeInput) this.timeInput.value = String(Math.round((this.roundTime % 120) / 120 * 1000))
     if (this.timeLabel) this.timeLabel.textContent = skyPhase(cycleU(this.roundTime))
@@ -349,6 +435,29 @@ export class SandboxScene extends Phaser.Scene {
             h: self.cameras.main.worldView.height,
           },
         }
+      },
+      fire() {
+        const ev = self.core.fire(0, self.simTime)
+        if (ev.hitscan) {
+          for (const s of ev.hitscan) self.ordnance.addTracer(s.x0, s.y0, s.x1, s.y1)
+          self.terrain.markDirty(self.core.takeDirtyChunks())
+        }
+        self.refreshHud()
+        return ev
+      },
+      selectSlot(slot: number) {
+        self.pickSlot(slot)
+      },
+      inventory() {
+        return self.core.inventory(0)
+      },
+      toggleInventory() {
+        self.invOpen = !self.invOpen
+        self.refreshHud()
+        return self.invOpen
+      },
+      ordnance() {
+        return { ...self.ordnance.state.counts, lights: self.ordnance.lights().length }
       },
       setFov(r: number | null) {
         self.fovOverride = r
@@ -440,6 +549,27 @@ export class SandboxScene extends Phaser.Scene {
       this.rig.setAim(aim)
     }
 
+    this.simTime += dt
+
+    // Projectiles, explosions and their consequences.
+    for (const ev of this.core.combatStep(this.simTime, dt)) {
+      if (!ev.explosion) continue
+      const e = ev.explosion
+      this.ordnance.removeProjectile(e.id)
+      this.ordnance.addImpact(e.x, e.y, e.r)
+      this.terrain.markDirty(this.core.takeDirtyChunks())
+      this.rig.shake(Math.min(1, e.r / 60))
+      if (e.hits.length) this.refreshHud()
+    }
+    for (const p of this.core.liveProjectiles()) {
+      if (!this.ordnance.state.projectiles.has(p.id)) {
+        this.ordnance.addProjectile(p.id, p.key as ProjectileKind, p.x, p.y)
+      } else {
+        this.ordnance.moveProjectile(p.id, p.x, p.y)
+      }
+    }
+    this.ordnance.update(dt)
+
     if (!this.timeScrub) this.roundTime += dt
     // Darkness is the server's scalar in M6; here it follows the doc's formula so
     // the sandbox shows what a real round will.
@@ -470,6 +600,11 @@ export class SandboxScene extends Phaser.Scene {
           flashlightOn: false,
         })
       lights.push({ x: body.x, y: body.y, radius: fov, kind: 'radial', intensity: 1 })
+    }
+    // Ordnance lights the map. Shooting in the dark tells everyone where you are,
+    // and it is most of what makes night combat readable at all.
+    for (const l of this.ordnance.lights()) {
+      lights.push({ x: l.x, y: l.y, radius: l.r, kind: 'radial', intensity: l.a })
     }
     this.lightmap.render(this.cameras.main, darkness, lights, this.fogActive)
 

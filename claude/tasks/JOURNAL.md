@@ -952,3 +952,28 @@ Notes: DEVIATION — T4.03 says "touch only items/world.rs" but also "reuse the 
        SpawnSchedule::new takes `initial_draws` to fast-forward the "items" stream
        past place_initial, so both share one stream in a fixed order (docs/32 §7).
 Left for later: M4 part B (T4.08-T4.15).
+
+## T4.08-T4.15 — M4 part B: combat — DONE
+Files: crates/game-core/src/weapons/{mod,defs,projectile,explode}.rs,
+       crates/game-core/src/player/state.rs, crates/game-core/tests/combat.rs,
+       crates/game-wasm/src/lib.rs (combat API), client/src/render/{ordnance-state,
+       ordnance}.ts, client/src/scenes/SandboxScene.ts, scripts/checks/{m4-checkpoint,
+       night-combat}.mjs
+Verified: `cargo test -p game-core --test combat` 29 passed; ordnance-state 6 passed;
+       check.sh green. M4 CHECKPOINT DRIVEN HEADLESSLY: crater 2910 px, self-damage
+       100 -> 75.3, ammo 4 -> 3, inventory opens on right-click, smg draws a tracer
+       and digs 16 px. Night: rocket in flight emits light (draws 1 -> 2).
+Notes: PROJECTILES TUNNELLED ON THE FIRST ATTEMPT, exactly as M2's bodies did. I
+       recomputed the substep split locally instead of calling physics::substeps,
+       and at 10x terminal velocity a "substep" was 2.34 px, so a rocket went
+       through a 1 px wall. Now it calls substeps() — the shared one keeps the step
+       at 1 px and travels LESS FAR when the cap binds. Do not re-derive that split.
+       fire_ready_at is per PLAYER, not per weapon, so swapping weapons cannot
+       bypass a cooldown. Noticed while writing the night check.
+       The sandbox loadout is granted in regenerate(), not create(): regenerate
+       recreates the player, so granting once silently disarmed you on every
+       regenerate.
+       A tracer lives 90 ms, shorter than a Playwright screenshot round-trip. To
+       photograph one, drive sustained fire from inside the page with setInterval.
+Left for later: M4 review items (world-item grounded-after-carve, §A17 backdrop,
+       3 minors).
