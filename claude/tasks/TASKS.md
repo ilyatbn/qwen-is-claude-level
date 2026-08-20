@@ -152,8 +152,8 @@ Wire the finished core into the server. Nothing built so far gets rewritten.
 - [x] [T6.06](M6/T6.06-input-codec.md) — Input encode, decode, sequence handling
 - [x] [T6.07](M6/T6.07-events.md) — Event emission and delivery scoping
 - [x] [T6.08](M6/T6.08-client-net.md) — Client socket layer and event application
-- [ ] [T6.09](M6/T6.09-prediction.md) — Prediction and reconciliation
-- [ ] [T6.10](M6/T6.10-interpolation.md) — Remote player interpolation
+- [x] [T6.09](M6/T6.09-prediction.md) — Prediction and reconciliation
+- [x] [T6.10](M6/T6.10-interpolation.md) — Remote player interpolation
 - [ ] [T6.11](M6/T6.11-checksum.md) — Mask checksum and resync
 - [ ] [T6.12](M6/T6.12-round-state.md) — Round phases, scoring, restart vote
 - [ ] [T6.13](M6/T6.13-integration-tests.md) — Multi-client integration tests

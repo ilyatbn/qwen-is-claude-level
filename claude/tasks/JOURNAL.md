@@ -1438,3 +1438,22 @@ Notes: THE CLIENT COULD NOT APPLY carve_capsule AT ALL. T5.04 added it to
        and the capsule test asserts countSolid actually dropped, so a no-op
        binding cannot pass it.
 Left for later: T6.09 prediction is next.
+
+## T6.09 + T6.10 — prediction, reconciliation, interpolation — DONE
+Files: client/src/net/{prediction,interpolation}.ts + their .test.ts
+Verified: `npm --prefix client test -- --run prediction` — 10 passed;
+       `... --run interpolation` — 19 passed; typecheck clean.
+Notes: THE RECONCILIATION IDENTITY IS TESTED AGAINST TWO REAL CORES, not a fake.
+       One plays the server (applies inputs 1..4), the client predicts 1..12, is
+       nudged 40 px off, reconciles at lastInputSeq=4 and replays 5..12; the
+       server then applies 5..12 itself. Both land on the same x/y/vx/vy to 4dp.
+       A stubbed applyInput would make that trivially true, which is why it uses
+       the wasm.
+       RENDER SMOOTHING IS FRAME-RATE INDEPENDENT (1 - exp(-k*dt), not a fixed
+       per-frame lerp). A fixed lerp corrects ~3x faster at 144 Hz than at 50 Hz,
+       so the same correction would feel different per display. Tested by
+       comparing 6 steps at 1/60 against 3 at 1/30.
+       The naive-aim-lerp falsification is in the file: the same 350°->10° pair
+       through a plain lerp lands at 180°, which is the weapon-spin bug.
+Left for later: T6.11 checksum is next; the resync path exists client-side
+       (WorldMirror.onResyncNeeded) and the server has a resync_map handler.
