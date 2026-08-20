@@ -1799,3 +1799,35 @@ Notes: THE AUDIT IS THE FINDING. Five of docs/61 §3's seven diagnostic lines
        three, silently, would look like a dump that worked.
 Left for later: T8.03 (F3 HUD), T8.05 (perf + docs), T8.06 (minimap),
        T8.08 (game feel). Nothing is blocked; each is independent.
+
+## T8.08 — Game feel — PARTIAL (model done and tested; rendering NOT done)
+Files: client/src/render/feel-math.ts (+test), client/src/ui/killfeed-state.ts (+test)
+Verified: `npm --prefix client test -- --run feel-math killfeed-state` — 22 passed.
+       typecheck clean. THE BOX IS NOT TICKED.
+Done: the pure model — trauma (squared curve, distance + blast-radius scaled,
+       decays to 0, capped at 1), floating damage numbers, damage vignette,
+       hit markers, phase banner, kill feed (evicts past 5, expires at 6 s,
+       self-kills and weather deaths read differently from a normal kill).
+NOT done: the Phaser layer that draws any of it. I wrote it, wired it into
+       SandboxScene, and the numbers were all correct while NOTHING APPEARED
+       ON SCREEN — feelProbe showed trauma 0.79, one damage number, vignette
+       0.11, health 100->75, and the frame showed only the crater.
+       Cause: a `scrollFactor(0)` object is STILL scaled by camera zoom, so
+       every screen-space element was drawn off-viewport at zoom 2. This is
+       the §A16 class of bug again — correct in world units, wrong relative to
+       what is on screen. I probed it with two test rects (setPosition(0,0),
+       and mid-(w/2)/z with scale 1/z) and NEITHER was visible, so my model of
+       the transform is wrong and guessing further was not converging.
+       THE ANSWER IS ALREADY IN THIS CODEBASE: the existing HUD strip and
+       scoreboard are DOM elements, not Phaser objects. Screen-space UI here
+       should be DOM (world->screen is then just (x - scrollX) * zoom, with no
+       Phaser zoom quirk), or a second camera at zoom 1. Do that rather than
+       re-deriving the Phaser transform.
+       I reverted the scene wiring and deleted the non-rendering Phaser files
+       rather than commit a feature whose acceptance criterion is "does it
+       look good" while it looks like nothing.
+Two traps that cost a debugging round each, both the same shape: in the
+       sandbox, BOTH `regenerate()` AND `place()` wipe the dev loadout —
+       `place` removes and re-adds the player, which resets the inventory. A
+       check that sets up its own state must re-grant or avoid both.
+Left for later: T8.03, T8.05, T8.06, and T8.08's rendering.
