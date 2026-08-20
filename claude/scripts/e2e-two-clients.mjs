@@ -182,6 +182,43 @@ if (dc.maskChecksum !== daF.maskChecksum) {
   fail(`a late joiner disagrees with the round in progress:\n  late ${dc.maskChecksum}\n  ana  ${daF.maskChecksum}`)
 }
 
+// T8.03 — the F3 HUD, checked here because this is the only place a *server* is
+// running: every number on it (rtt, snapshot rate, reconciliation, checksum) is
+// meaningless without one, and a HUD asserted against a sandbox with no network
+// would be asserting zeros.
+const hudBefore = await a.page.evaluate('window.__game.debugHud()')
+if (hudBefore.visible) fail('the debug HUD is visible before F3 is pressed')
+await a.page.keyboard.press('F3')
+await new Promise((r) => setTimeout(r, 700))
+const hud = await a.page.evaluate('window.__game.debugHud()')
+if (!hud.visible) fail('F3 did not show the debug HUD')
+{
+  const text = hud.text
+  // The two numbers docs/42 §8 exists for. Their absence is the failure mode:
+  // a HUD that shows rtt and nothing else does not turn a netcode bug into a
+  // reading.
+  for (const needle of ['reconcile', 'mean', 'max', 'snapshots', 'inputs', 'pending', 'mask']) {
+    if (!text.includes(needle)) fail(`the debug HUD does not report "${needle}":\n${text}`)
+  }
+  // And they must be live, not placeholders: this client has been sending input
+  // and receiving snapshots for several seconds.
+  const snaps = Number(/snapshots ([\d.]+)\/s/.exec(text)?.[1] ?? '0')
+  const inputs = Number(/inputs ([\d.]+)\/s/.exec(text)?.[1] ?? '0')
+  if (!(snaps > 1)) fail(`the HUD reports ${snaps} snapshots/s against a 20 Hz server`)
+  if (!(inputs > 1)) fail(`the HUD reports ${inputs} inputs/s while this client is sending them`)
+  if (!/mask (matched|pending)/.test(text)) fail(`mask status missing:\n${text}`)
+  // RTT was hardcoded to 0 and never measured; the HUD's headline number was a
+  // constant. On loopback it is sub-millisecond, so assert it is *measured*
+  // (present and finite) rather than asserting a threshold a LAN would fail.
+  const rttSeen = /rtt ([\d.]+)ms/.test(text)
+  if (!rttSeen) fail(`the HUD does not report rtt:\n${text}`)
+  const pinged = await a.page.evaluate('window.__game.debug().rttMeasured')
+  if (!pinged) fail('rtt is not being measured — no pong_rtt was ever received')
+  console.log(`  debug HUD: ${snaps.toFixed(1)} snapshots/s, ${inputs.toFixed(1)} inputs/s`)
+}
+await a.page.screenshot({ path: join(shots, 'm6-debug-hud.png') })
+await a.page.keyboard.press('F3')
+
 await a.page.screenshot({ path: join(shots, 'm6-client-a.png') })
 await b.page.screenshot({ path: join(shots, 'm6-client-b.png') })
 await c.page.screenshot({ path: join(shots, 'm6-client-late.png') })

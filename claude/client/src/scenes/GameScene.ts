@@ -30,6 +30,7 @@ import { formatClock, phaseBanner, rankScores, type Phase } from '../ui/scoreboa
 import { FLAG, flag } from '../net/codec'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { Minimap } from '../ui/minimap'
+import { DebugHud } from '../ui/debugHud'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 
 interface RemoteView {
@@ -56,6 +57,11 @@ export class GameScene extends Phaser.Scene {
   private hud!: HTMLDivElement
   private feel!: FeelLayer
   private minimap: Minimap | null = null
+  private debugHud!: DebugHud
+  private serverPos: { x: number; y: number } | null = null
+  private lastRtt = 0
+  private rttSamples = 0
+  private rttAcc = 0
 
   private me = -1
   private seq = 0
@@ -102,6 +108,9 @@ export class GameScene extends Phaser.Scene {
     this.crosshair = new Crosshair(this, DEPTH.hud)
     this.buildHud()
     this.feel = new FeelLayer()
+    this.debugHud = new DebugHud(this, C().PLAYER_W, C().PLAYER_H)
+    this.input.keyboard?.on('keydown-F3', () => this.debugHud.toggle())
+    this.input.keyboard?.on('keydown-M', () => this.minimap?.toggle())
 
     this.mirror.onResyncNeeded = () => this.conn.requestResync()
 
@@ -116,6 +125,16 @@ export class GameScene extends Phaser.Scene {
       this.timeLeft = Number(p['time_left'] ?? 0)
     })
     this.conn.on('score', () => this.refreshHud())
+    // RTT, measured. `docs/42` §7 says it comes from socket.io's own ping/pong,
+    // but the client library does not expose that measurement, so this was
+    // hardcoded to 0 and the HUD reported "rtt 0ms" on every connection.
+    this.conn.on('pong_rtt', (raw) => {
+      const sent = Number(raw)
+      if (Number.isFinite(sent)) {
+        this.lastRtt = performance.now() - sent
+        this.rttSamples++
+      }
+    })
     this.conn.on('player_join', (raw) => {
       const p = asRecord(raw)
       const id = Number(p['id'] ?? -1)
@@ -189,6 +208,7 @@ export class GameScene extends Phaser.Scene {
       this.hud?.remove()
       this.feel?.destroy()
       this.minimap?.destroy()
+      this.debugHud?.destroy()
       this.world?.destroy()
       this.lightmap.destroy()
       this.sky.destroy()
@@ -268,9 +288,10 @@ export class GameScene extends Phaser.Scene {
     const s = this.mirror.applySnapshotB64(b64, now)
 
     this.lastServerTick = s.tick
+    this.debugHud?.noteSnapshot(now, s.tick)
     this.roundTime = s.roundTime
     this.serverDarkness = s.darkness
-    this.clock.addSample(s.roundTime * 1000, now, 0)
+    this.clock.addSample(s.roundTime * 1000, now, this.lastRtt)
     this.interp.push(
       s.tick,
       now,
@@ -278,6 +299,7 @@ export class GameScene extends Phaser.Scene {
     )
 
     const mine = s.players.find((p) => p.id === this.me)
+    if (mine) this.serverPos = { x: mine.x, y: mine.y }
     if (mine && this.predictor) {
       this.predictor.reconcile({
         lastInputSeq: s.lastInputSeq,
@@ -326,7 +348,18 @@ export class GameScene extends Phaser.Scene {
     }
     // Redundant sends: the last few inputs go with every packet, so a dropped
     // one costs nothing (`docs/40` §2).
-    if (batch.length) this.conn.sendInput(batch.slice(-C().INPUT_REDUNDANCY))
+    if (batch.length) {
+      this.conn.sendInput(batch.slice(-C().INPUT_REDUNDANCY))
+      this.debugHud?.noteInputs(performance.now(), batch.length)
+    }
+
+    // One tiny echo a second is enough to keep the estimate current without
+    // adding meaningful traffic.
+    this.rttAcc += dt
+    if (this.rttAcc >= 1) {
+      this.rttAcc = 0
+      this.conn.sendRaw('ping_rtt', String(performance.now()))
+    }
 
     this.predictor.updateRender(dt)
     this.roundTime += dt
@@ -384,6 +417,29 @@ export class GameScene extends Phaser.Scene {
         .lights()
         .map((l) => ({ x: l.x, y: l.y, radius: l.r, kind: 'radial' as const, intensity: l.a })),
     ]
+    this.debugHud.update(performance.now(), {
+      rttMs: this.clock.rtt,
+      pendingInputs: this.predictor.stats.pending,
+      corrections: this.predictor.stats.corrections,
+      lastCorrectionPx: this.predictor.stats.lastCorrectionPx,
+      maxCorrectionPx: this.predictor.stats.maxCorrectionPx,
+      snaps: this.predictor.stats.snaps,
+      interpDepth: this.interp.stats.bufferDepth,
+      extrapolatingMs: this.interp.stats.extrapolatingMs,
+      frozen: this.interp.stats.frozen,
+      localPos: rp,
+      serverPos: this.serverPos,
+      checksums: {
+        checked: this.mirror.stats.checksumsChecked,
+        mismatched: this.mirror.stats.checksumMismatches,
+        resyncs: this.mirror.stats.resyncs,
+      },
+      tick: Math.round(this.roundTime * C().SIM_HZ),
+      serverTick: this.lastServerTick,
+      clockOffsetMs: this.clock.offset,
+      seed: String(this.core.meta.seed),
+      fps: this.game.loop.actualFps,
+    })
     this.lightmap.render(this.cameras.main, darkness, lights)
     this.refreshHud()
   }
@@ -520,6 +576,7 @@ export class GameScene extends Phaser.Scene {
           corrections: self.predictor?.stats.corrections ?? 0,
           lastServerTick: self.lastServerTick,
           rtt: self.clock.rtt,
+          rttMeasured: self.rttSamples > 0,
           maskChecksum: hex(self.core.maskHash()),
           solid: self.core.countSolid(),
           pendingCarves: self.mirror.pendingCarves,
@@ -530,6 +587,15 @@ export class GameScene extends Phaser.Scene {
       },
       fire() {
         self.conn.sendFire()
+      },
+      debugHud() {
+        return self.debugHud.stats()
+      },
+      minimap() {
+        return self.minimap?.stats() ?? null
+      },
+      feel() {
+        return self.feel.stats()
       },
       core: self.core,
     }

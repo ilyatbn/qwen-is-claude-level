@@ -1875,3 +1875,29 @@ Notes: A DOM <canvas>, not a Phaser object — §A35 again, and the minimap IS a
        Falsified: revealing the whole map at once fails with
        "20000/20000 cells explored before moving — the map is being given away".
 Left for later: T8.03, T8.05.
+
+## T8.03 — F3 debug HUD — DONE
+Files: client/src/ui/debugHud-math.ts (+test, new), ui/debugHud.ts (new),
+       scenes/GameScene.ts, crates/game-server/src/session.rs,
+       scripts/e2e-two-clients.mjs
+Verified: `npm --prefix client test -- --run debugHud-math` — 15 passed.
+       `node scripts/e2e-two-clients.mjs` — HUD reports 20.0 snapshots/s against
+       a 20 Hz server and 59.3 inputs/s against a 60 Hz sim. shots/m6-debug-hud.png.
+Notes: RTT WAS HARDCODED TO ZERO. `clock.addSample(..., 0)` — ClockSync had the
+       machinery and nothing ever fed it, so the HUD's headline number was a
+       constant on every connection. docs/42 §7 says rtt comes from "socket.io's
+       own ping/pong", but the client library does not surface that measurement.
+       Added a `ping_rtt`/`pong_rtt` echo (client timestamp, server echoes it
+       back, one message a second). NEEDS AN AMENDMENT — it is a protocol
+       addition not in docs/40 §2.
+       Falsified: with the server not answering, the check fails with "rtt is
+       not being measured — no pong_rtt was ever received".
+       DEVIATION from the task's single-file deliverable: the rate/jitter/loss
+       arithmetic is in debugHud-math.ts per §A8, which overrides the task file.
+       Rates use a 3 s trailing window for the same reason the server's tick ring
+       is 1024 samples: a session average lets a healthy first minute hide a bad
+       minute. A rate meter that divides by the observed span rather than the
+       window reports one event as an infinite rate — tested.
+       The panel is DOM (§A35); the two ghosts are Phaser objects ON PURPOSE,
+       because they mark WORLD positions and should scale with zoom.
+Left for later: T8.05.

@@ -300,6 +300,16 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
             }
             {
                 let (room, sessions) = (room.clone(), sessions.clone());
+                // RTT. `docs/42` §7 says it comes from "socket.io's own ping/pong",
+                // but the client library does not surface that measurement, so the
+                // client's rtt was hardcoded to 0 and the debug HUD reported 0 ms
+                // on every connection — a number that reports nothing (§A15).
+                // An echo with the client's own timestamp costs one tiny message
+                // and makes it real. Stateless, unauthenticated and harmless: the
+                // server never reads the value, it only sends it back.
+                socket.on("ping_rtt", |socket: SocketRef, Data::<String>(t)| async move {
+                    let _ = socket.emit("pong_rtt", &t);
+                });
                 socket.on("toggle_flashlight", move |socket: SocketRef| {
                     let (room, sessions) = (room.clone(), sessions.clone());
                     async move {
