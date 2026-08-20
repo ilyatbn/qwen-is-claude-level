@@ -864,3 +864,34 @@ conditional distribution given "not the last kind". Stationary distribution
 0.284 / 0.284 / 0.216 / 0.216 for weights 3/3/2/2, and the test asserts both that
 and that those shares are distinguishable from the raw weights — otherwise it
 would pass against a plain weighted draw.
+
+## A24 — Make the correct use the only use
+
+Two bugs in M5 were the same bug wearing different clothes, and both were found
+after they had already caused a failure once.
+
+`ProjectileSet::step` removes each projectile before returning
+`Vec<(ProjectileId, ProjectileOutcome)>`, so the weapon and owner of anything that
+exploded are unrecoverable by the time the caller sees the outcome. Every caller
+must snapshot `(id → weapon, owner)` first, and nothing in the signature says so.
+Two things depend on getting it right: the fragment fork-bomb guard
+(`is_fragment(p.weapon)`) and §A20's kill attribution. The trap had already
+produced an actual fork bomb in a test harness before anyone noticed the API
+invited it.
+
+`Map::carve_capsule` reimplemented `carve_circle`'s entry path and dropped its
+deliberate i64 overflow guard — a guard that exists because M1 measured
+`cy + dy` silently wrapping in release and carving a crater in an unrelated part
+of the map. The sibling function is a fresh opportunity to make the same mistake
+the original already fixed.
+
+> An API that requires the caller to preserve state the API is about to destroy
+> will eventually be called incorrectly. Return what the caller needs.
+>
+> A second function that touches the same invariant reimplements the entry path,
+> and reimplementing an entry path is how a hard-won guard gets dropped. Share the
+> guard, or share the function.
+
+The practical rule for this codebase: anything that writes to the mask goes
+through one guarded entry point, and anything that reports an event carries the
+identity of what caused it rather than a handle to something already freed.
