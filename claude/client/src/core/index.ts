@@ -189,6 +189,7 @@ export interface Constants {
   BACKDROP_RAY_LEN: number
   BACKDROP_MIN_HITS: number
   BACKDROP_MIN_UP: number
+  BACKDROP_MAX_DIST_TO_SOLID: number
 }
 
 /**

@@ -19,6 +19,7 @@ import { mkdirSync, existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
+import { matchVitePort } from './vite-url.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const shotsDir = join(root, 'shots')
@@ -49,8 +50,10 @@ function startVite() {
     const onData = (buf) => {
       const text = buf.toString()
       process.stdout.write(text.replace(/^/gm, '  [vite] '))
-      // "  ➜  Local:   http://localhost:5174/"
-      const m = text.match(/Local:\s+(http:\/\/[^\s/]+)/)
+      // "  ➜  Local:   http://localhost:5174/" — but coloured, with an ANSI
+      // escape between the colon and the port (scripts/vite-url.mjs).
+      const port = matchVitePort(text)
+      const m = port ? [null, `http://localhost:${port}`] : null
       if (m && !settled) {
         settled = true
         resolvePort({ proc, url: m[1] })

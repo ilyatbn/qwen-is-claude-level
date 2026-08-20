@@ -17,6 +17,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
+import { matchVitePort } from './vite-url.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const shotsDir = join(root, 'shots')
@@ -47,7 +48,7 @@ let port = null
 const portReady = new Promise((res, rej) => {
   const onData = (b) => {
     const s = b.toString()
-    const m = s.match(/localhost:(\d+)/)
+    const m = matchVitePort(s) ? [null, String(matchVitePort(s))] : null
     if (m && !port) {
       port = Number(m[1])
       res(port)

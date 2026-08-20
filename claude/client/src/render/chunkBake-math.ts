@@ -214,6 +214,24 @@ export class BackdropMask implements MaskSource {
      * synthetic tests run at 6 while production ran at 5.
      */
     minUp: number,
+    /**
+     * Air further than this from the nearest solid pixel is sky, whatever the two
+     * tests above say (§A37).
+     *
+     * The backdrop fills holes **in** the rock, so the bound comes from the widest
+     * hole the generator makes — a void at `VOID_RADIUS_MAX` puts its centre
+     * 155 px from a wall, hence 160.
+     *
+     * §A37 predicted this would drop the residual "well below 1 %". Measured, it
+     * does not: most false positives sit 45-160 px from rock and overlap
+     * genuinely enclosed air (p90 63-69 px), so the aggregate barely moves. It
+     * removes the **far tail** — the regions hanging clear of any terrain, which
+     * are what read as hard-edged rectangles in the sky — for 0.11-0.13 points of
+     * enclosed-as-sky. Kept on that basis, not on the aggregate.
+     *
+     * No default, for the same reason as the two above.
+     */
+    maxDistToSolid: number,
   ) {
     const w = (this.width = src.width)
     const h = (this.height = src.height)
@@ -291,6 +309,30 @@ export class BackdropMask implements MaskSource {
       }
     }
 
+    // --- distance to rock, per coarse cell (§A37) --------------------------
+    //
+    // The full-resolution `distSolid` above cannot serve: it is a Uint8 chamfer at
+    // 3 units per pixel, so it saturates at 85 px — half the bound we need. The
+    // coarse grid is the right resolution anyway (§A17's argument: deciding per
+    // cell caused the axis-aligned rectangles, but *sampling* a smooth field per
+    // cell and interpolating does not), and it is 64x less work.
+    // Built by scattering from the per-pixel `solid` array rather than gathering
+    // per cell through `isSolid`: one linear pass with direct indexing instead of
+    // w*h closure calls with bounds checks. The bake is the hot path (`docs/12`
+    // §8) and this is the difference between ~10 ms and ~1 ms on a large map.
+    const coarseSolid = new Uint8Array(cw * ch)
+    for (let y = 0; y < h; y++) {
+      const cyRow = ((y / cell) | 0) * cw
+      const row = y * w
+      for (let x = 0; x < w; x++) {
+        if (solid[row + x]) coarseSolid[cyRow + ((x / cell) | 0)] = 1
+      }
+    }
+    // Chamfer units are 3 per cell step and a cell is `cell` px, so px = d/3*cell.
+    const coarseDist = BackdropMask.chamfer(coarseSolid, cw, ch)
+    const distPx = new Float32Array(cw * ch)
+    for (let i = 0; i < coarseDist.length; i++) distPx[i] = (coarseDist[i]! / BackdropMask.ORTH) * cell
+
     // Blur the field before interpolating.
     //
     // Ray counts are integers and the threshold is an integer, so where two
@@ -357,15 +399,29 @@ export class BackdropMask implements MaskSource {
           inside[i] = 1
           continue
         }
+        const gx = x / cell
+        const x0 = Math.min(cw - 1, Math.floor(gx))
+        const x1 = Math.min(cw - 1, x0 + 1)
+        const fx = gx - x0
+
+        // §A37, applied before the sealed-air branch as well as the ray tests:
+        // the rule is unconditional. In practice it never fires on sealed air —
+        // the widest hole the generator makes puts its centre 155 px from a wall
+        // against a 160 px bound — so this bounds the classifier without ever
+        // punching sky into a sealed cavern.
+        const da = distPx[y0 * cw + x0]!
+        const db = distPx[y0 * cw + x1]!
+        const dc = distPx[y1 * cw + x0]!
+        const dd = distPx[y1 * cw + x1]!
+        const dtop = da + (db - da) * fx
+        const dbot = dc + (dd - dc) * fx
+        if (dtop + (dbot - dtop) * fy > maxDistToSolid) continue
+
         // Sealed air is interior regardless of the ray count.
         if (distOpen[i]! > rC) {
           inside[i] = 1
           continue
         }
-        const gx = x / cell
-        const x0 = Math.min(cw - 1, Math.floor(gx))
-        const x1 = Math.min(cw - 1, x0 + 1)
-        const fx = gx - x0
         // Bilinear: the smooth field is what keeps the boundary off the grid.
         const a = hits[y0 * cw + x0]!
         const b = hits[y0 * cw + x1]!

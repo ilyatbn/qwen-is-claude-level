@@ -33,7 +33,7 @@ function build(scale: MapScale, seed: bigint) {
   w = core.width
   h = core.height
   const c = C()
-  bd = new BackdropMask(core, undefined, c.SKY_MARGIN, c.BACKDROP_RAYS, c.BACKDROP_RAY_LEN, c.BACKDROP_MIN_HITS, c.BACKDROP_MIN_UP)
+  bd = new BackdropMask(core, undefined, c.SKY_MARGIN, c.BACKDROP_RAYS, c.BACKDROP_RAY_LEN, c.BACKDROP_MIN_HITS, c.BACKDROP_MIN_UP, c.BACKDROP_MAX_DIST_TO_SOLID)
 }
 
 beforeAll(async () => {
@@ -45,6 +45,51 @@ beforeAll(async () => {
 function roofed(x: number, y: number): boolean {
   for (let yy = y - 1; yy >= 0; yy--) if (core.solidAt(x, yy)) return true
   return false
+}
+
+/**
+ * Distance from every pixel to the nearest solid one, in px.
+ *
+ * Computed independently of the class under test — `BackdropMask` derives its own
+ * field from the coarse grid, and a test that reused it would be asking the
+ * implementation to grade itself. Chamfer 3-4, which is within ~2 % of Euclidean.
+ */
+function distToSolid(): Float32Array {
+  const ORTH = 3
+  const DIAG = 4
+  const CAP = 3 * 500
+  const d = new Int32Array(w * h)
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) d[y * w + x] = core.solidAt(x, y) ? 0 : CAP
+  const relax = (i: number, from: number, cost: number) => {
+    const v = d[from]! + cost
+    if (v < d[i]!) d[i] = v
+  }
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      if (d[i] === 0) continue
+      if (x > 0) relax(i, i - 1, ORTH)
+      if (y > 0) {
+        relax(i, i - w, ORTH)
+        if (x > 0) relax(i, i - w - 1, DIAG)
+        if (x + 1 < w) relax(i, i - w + 1, DIAG)
+      }
+    }
+  for (let y = h - 1; y >= 0; y--)
+    for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x
+      if (d[i] === 0) continue
+      if (x + 1 < w) relax(i, i + 1, ORTH)
+      if (y + 1 < h) {
+        relax(i, i + w, ORTH)
+        if (x + 1 < w) relax(i, i + w + 1, DIAG)
+        if (x > 0) relax(i, i + w - 1, DIAG)
+      }
+    }
+  const px = new Float32Array(w * h)
+  for (let i = 0; i < d.length; i++) px[i] = d[i]! / ORTH
+  return px
 }
 
 for (const [name, scale, seed] of CASES)
@@ -111,6 +156,18 @@ for (const [name, scale, seed] of CASES)
     console.log(`   ${name}: ${(share * 100).toFixed(1)}% of open sky drawn as backdrop`)
     // §A21's accepted trade, with the numbers written down as it requires.
     //
+    // §A37 added a distance bound and PREDICTED this share would fall "well below
+    // 1 %". It does not, and the prediction was wrong for a measurable reason: the
+    // false positives sit 45-160 px from rock (p50 ~100), overlapping genuinely
+    // enclosed air (p90 63-69), so no distance cut separates the populations. The
+    // measured effect of the bound is small — 16.42/5.86/7.18 % before,
+    // 16.42/5.26/6.71 % after. What it does remove is the far tail, and the far
+    // tail is what renders as a rectangle in the sky: the deepest backdrop pixel
+    // went 204 -> 168 px at medium and 196 -> 165 px at large, and the four
+    // pixels sampled from the shipped frame that were backdrop-coloured are now
+    // sky. That is why the bound is kept despite this number barely moving; the
+    // guarantee it actually buys is asserted separately, above.
+    //
     // Measured from a FRESH wasm build at BACKDROP_MIN_HITS 4 + BACKDROP_MIN_UP
     // 0.5 (enclosed-as-sky / this metric / crest halo):
     //
@@ -129,6 +186,79 @@ for (const [name, scale, seed] of CASES)
     // at small scale because a small map packs six islands into a small sky.
     const bound = scale === MapScale.Small ? 0.2 : 0.09
     expect(share, `${(share * 100).toFixed(1)}% of open sky drawn as backdrop`).toBeLessThan(bound)
+  })
+
+  /**
+   * §A37's guarantee, stated directly: nothing further than the bound from rock is
+   * ever backdrop.
+   *
+   * This is the assertion the amendment is actually worth. Its *aggregate*
+   * prediction — that the residual would fall "well below 1 %" — was wrong, and the
+   * numbers are recorded on the sibling test below. What the bound does deliver is
+   * this: the far tail is gone, and the far tail is what renders as a hard-edged
+   * rectangle hanging in the sky rather than as shadow hugging a cliff.
+   */
+  it('never draws backdrop far from any rock', () => {
+    const maxD = C().BACKDROP_MAX_DIST_TO_SOLID
+    // Slack for the coarse field: the distance is sampled per 8 px cell and
+    // bilinearly interpolated, so a pixel can read a little under its true
+    // distance. Measured worst overshoot across the three maps is ~8 px.
+    const slack = 12
+    let far = 0
+    let violations = 0
+    let worst = 0
+    const dist = distToSolid()
+    for (let y = 8; y < h; y += 4) {
+      for (let x = 8; x < w; x += 4) {
+        if (core.solidAt(x, y)) continue
+        const d = dist[y * w + x]!
+        if (d <= maxD + slack) continue
+        far++
+        if (bd.insideAt(x, y)) {
+          violations++
+          if (d > worst) worst = d
+        }
+      }
+    }
+    // Control: the population has to be non-empty, or this passes on a map with
+    // no deep sky at all (§A26 — an absence needs a presence).
+    expect(far).toBeGreaterThan(500)
+    expect(
+      violations,
+      `${violations} of ${far} air px beyond ${maxD}+${slack} px from rock are backdrop (worst ${worst.toFixed(0)} px)`,
+    ).toBe(0)
+  })
+
+  it('still draws the deep interior of a wide void as backdrop', () => {
+    // The failure §A18 ranks worst is standing in a cavern and seeing daylight, and
+    // a distance bound is exactly the kind of change that could cause it. A void at
+    // VOID_RADIUS_MAX puts its centre ~155 px from a wall, which is why the bound
+    // is 160 and not lower — so the deepest enclosed air must still be backdrop.
+    const dist = distToSolid()
+    let deep = 0
+    let asSky = 0
+    for (let y = 8; y < h; y += 4) {
+      for (let x = 8; x < w; x += 4) {
+        if (core.solidAt(x, y)) continue
+        const d = dist[y * w + x]!
+        // Deep enclosed air: far from rock, but genuinely roofed and walled.
+        if (d < 90 || d > 150) continue
+        if (!roofed(x, y)) continue
+        let below = false
+        for (let k = 1; k < 320 && !below; k++) below = core.solidAt(x, y + k)
+        let left = false
+        for (let k = 1; k < 320 && !left; k++) left = core.solidAt(x - k, y)
+        let right = false
+        for (let k = 1; k < 320 && !right; k++) right = core.solidAt(x + k, y)
+        if (!(below && left && right)) continue
+        deep++
+        if (!bd.insideAt(x, y)) asSky++
+      }
+    }
+    expect(deep).toBeGreaterThan(50)
+    const share = asSky / deep
+    console.log(`   ${name}: ${(share * 100).toFixed(1)}% of deep enclosed air drawn as sky`)
+    expect(share, `${(share * 100).toFixed(1)}% of deep enclosed air drawn as sky`).toBeLessThan(0.35)
   })
 
   it('keeps the interior boundary off the coarse grid', () => {

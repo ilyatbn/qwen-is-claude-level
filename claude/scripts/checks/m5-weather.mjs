@@ -12,6 +12,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
+import { matchVitePort } from '../vite-url.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const shots = join(root, 'shots')
@@ -20,9 +21,12 @@ process.env.LD_LIBRARY_PATH = `${process.env.HOME}/.cache/pwlibs/root/usr/lib/x8
 
 const vite = await new Promise((res, rej) => {
   const p = spawn('npx', ['vite', '--strictPort=false'], { cwd: join(root, 'client') })
+  // Shared parse (scripts/vite-url.mjs): vite puts an ANSI escape between
+  // `localhost:` and the port, so a bare regex here matches nothing whenever the
+  // inherited environment turns colour on. Fifth copy of this bug.
   const on = (b) => {
-    const m = b.toString().match(/Local:\s+(http:\/\/[^\s/]+)/)
-    if (m) res({ p, url: m[1] })
+    const port = matchVitePort(b)
+    if (port) res({ p, url: `http://localhost:${port}` })
   }
   p.stdout.on('data', on)
   p.stderr.on('data', on)

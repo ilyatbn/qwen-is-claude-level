@@ -17,6 +17,7 @@ import { mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { matchVitePort } from './vite-url.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const shots = join(root, 'shots')
@@ -88,9 +89,11 @@ const vite = spawn('npx', ['vite', '--strictPort=false'], {
 })
 kids.push(vite)
 const viteUrl = await new Promise((res, rej) => {
+  // Shared parse: vite puts an ANSI bold escape between `localhost:` and the
+  // port, so a bare regex here silently never matches (scripts/vite-url.mjs).
   const on = (b) => {
-    const m = b.toString().match(/Local:\s+(http:\/\/[^\s/]+)/)
-    if (m) res(m[1])
+    const port = matchVitePort(b)
+    if (port) res(`http://localhost:${port}`)
   }
   vite.stdout.on('data', on)
   vite.stderr.on('data', on)

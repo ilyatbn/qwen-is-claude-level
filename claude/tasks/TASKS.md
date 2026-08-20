@@ -207,7 +207,7 @@ drawn**; the fourth is two carried defects with their consequences attached.
 - [x] [T9.02](M9/T9.02-decorations.md) — Draw `MapMeta.decorations`, generated since M1 **(v2)**
 - [x] [T9.03](M9/T9.03-item-sprites.md) — Item, crate and pickup sprites **(v2)**
 - [x] [T9.04](M9/T9.04-palette-and-rasteriser.md) — Theme contrast, and one capsule rasteriser **(v2)**
-- [ ] [T9.05](M9/T9.05-backdrop-distance.md) — Bound the backdrop by distance to rock **(v2)**
+- [x] [T9.05](M9/T9.05-backdrop-distance.md) — Bound the backdrop by distance to rock **(v2)**
 
 **Checkpoint:** play a full round against bots with sound on, at night, on each of
 the three themes. It should be a game you want to keep playing.

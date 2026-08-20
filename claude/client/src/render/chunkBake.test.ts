@@ -25,11 +25,13 @@ const EDGE_BAND_PX = 5
  */
 let MIN_HITS = 0
 let MIN_UP = 0
+let MAX_DIST = 0
 beforeAll(async () => {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
   await Core.init(readFileSync(fileURLToPath(url)))
   MIN_HITS = C().BACKDROP_MIN_HITS
   MIN_UP = C().BACKDROP_MIN_UP
+  MAX_DIST = C().BACKDROP_MAX_DIST_TO_SOLID
 }, 120_000)
 
 /** A synthetic mask, packed exactly as Rust packs it. */
@@ -227,13 +229,13 @@ describe('BackdropMask', () => {
   }
 
   it('treats open sky above the terrain as outside', () => {
-    const b = new BackdropMask(hill(), undefined, 96, 8, 320, MIN_HITS, MIN_UP)
+    const b = new BackdropMask(hill(), undefined, 96, 8, 320, MIN_HITS, MIN_UP, MAX_DIST)
     expect(b.insideAt(256, 20)).toBe(false)
     expect(b.insideAt(256, 60)).toBe(false)
   })
 
   it('treats the inside of the landmass as interior', () => {
-    const b = new BackdropMask(hill(), undefined, 96, 8, 320, MIN_HITS, MIN_UP)
+    const b = new BackdropMask(hill(), undefined, 96, 8, 320, MIN_HITS, MIN_UP, MAX_DIST)
     expect(b.insideAt(256, 200)).toBe(true)
   })
 
@@ -243,7 +245,7 @@ describe('BackdropMask', () => {
     // A 20 px tunnel: no 28 px disc fits, so the sky never reaches in.
     for (let y = 150; y < 170; y++) for (let x = 100; x < 400; x++) m.clear(x, y)
 
-    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP)
+    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP, MAX_DIST)
     expect(b.insideAt(250, 160)).toBe(true)
   })
 
@@ -259,7 +261,7 @@ describe('BackdropMask', () => {
     for (let y = 250; y < 450; y++) for (let x = 100; x < 412; x++) m.clear(x, y)
     for (let y = 300; y < 400; y++) for (let x = 412; x < 512; x++) m.clear(x, y)
 
-    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP)
+    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP, MAX_DIST)
     let interior = 0
     let total = 0
     for (let y = 240; y < 420; y++) {
@@ -278,14 +280,14 @@ describe('BackdropMask', () => {
     // 200 px across — far wider than the disc, but sealed, so unreachable.
     for (let y = 140; y < 220; y++) for (let x = 150; x < 350; x++) m.clear(x, y)
 
-    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP)
+    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP, MAX_DIST)
     expect(b.insideAt(250, 180)).toBe(true)
   })
 
   it('does not paint the backdrop out into open sky', () => {
     const m = new FakeMask(512, 256)
     m.fillRect(0, 200, 511, 255)
-    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP)
+    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP, MAX_DIST)
     // Well above the surface must stay sky.
     expect(b.insideAt(256, 100)).toBe(false)
     expect(b.insideAt(256, 150)).toBe(false)
@@ -323,7 +325,7 @@ describe('BackdropMask', () => {
       const top = Math.round(140 + 25 * Math.sin(x / 60))
       m.fillRect(x, top, x, 255)
     }
-    const worst = worstOverhang(new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP), m, 512, 256)
+    const worst = worstOverhang(new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP, MAX_DIST), m, 512, 256)
     expect(worst).toBeLessThanOrEqual(4)
   })
 
@@ -341,7 +343,7 @@ describe('BackdropMask', () => {
     for (let y = 700; y < 860; y++) for (let x = 300; x < 320; x++) m.clear(x, y) // crevice
     m.fillRect(120, 120, 400, 160) // a floating island
 
-    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP)
+    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP, MAX_DIST)
     expect(b.insideAt(310, 800)).toBe(true) // deep in the crevice
     expect(b.insideAt(260, 220)).toBe(false) // 60 px under the island: sky
     expect(b.insideAt(600, 400)).toBe(false) // open sky
@@ -354,7 +356,7 @@ describe('BackdropMask', () => {
     const m = new FakeMask(512, 256)
     m.fillRect(0, 100, 511, 255)
     for (let y = 100; y < 200; y++) for (let x = 250; x < 268; x++) m.clear(x, y)
-    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP)
+    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP, MAX_DIST)
     expect(b.insideAt(259, 180)).toBe(true)
     expect(b.insideAt(259, 130)).toBe(true)
   })
@@ -367,7 +369,7 @@ describe('BackdropMask', () => {
       const top = Math.round(140 + 25 * Math.sin(x / 37) + 12 * Math.sin(x / 11))
       m.fillRect(x, top, x, 255)
     }
-    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP)
+    const b = new BackdropMask(m, undefined, 96, 8, 320, MIN_HITS, MIN_UP, MAX_DIST)
 
     const boundary: number[] = []
     for (let x = 0; x < 512; x++) {

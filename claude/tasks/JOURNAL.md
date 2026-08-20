@@ -2087,3 +2087,46 @@ Notes: THE FROST PALETTE BRIEF DID NOT SURVIVE MEASUREMENT, and I did not change
        screenshot instead. I wrote a second way to read pixels rather than using
        the one that worked.
 Left for later: nothing in M9.
+
+## T9.05 — Bound the backdrop by distance to rock — DONE
+Files: client/src/render/{chunkBake-math,backdrop-real.test}.ts, terrain.ts,
+       chunkBake.test.ts, crates/game-core/src/constants.rs, game-wasm/src/lib.rs,
+       client/src/core/index.ts, scripts/vite-url.mjs (new),
+       scripts/{e2e,shot,drive,e2e-two-clients}.mjs, scripts/checks/m5-weather.mjs
+Verified: `npm test -- --run backdrop-real` — 15 passed; `node scripts/e2e.mjs
+       decorations` — ok. Falsified at the live binding site (disabled the conjunct
+       in chunkBake-math.ts): 190 and 643 violations, worst 202 and 269 px.
+Notes: §A37'S AGGREGATE PREDICTION WAS WRONG AND I MEASURED BEFORE IMPLEMENTING.
+       It predicted sky-as-backdrop would fall "well below 1 %". Measured, the
+       false positives sit 45-160 px from rock (p50 ~100) and OVERLAP genuinely
+       enclosed air (p90 63-69), so no distance cut separates the populations:
+       16.42/5.86/7.18 % -> 16.42/5.26/6.71 %. Every cut that moves it meaningfully
+       makes enclosed-as-sky worse by more (medium at 80 px: 5.86->1.68 but
+       1.42->8.39). Same monotonic trade §A32 found with ray length.
+       WHAT IT DOES BUY, and why I kept it: the FAR TAIL. Deepest backdrop pixel
+       204->168 px (medium), 196->165 (large), and the four pixels the parent
+       sampled from the shipped frame as backdrop-coloured (35,29,24) are now sky
+       (109,168,225). The island underside is still backdrop. A fringe hugging a
+       cliff reads as shadow; a blob 180 px from anything reads as a glitch, and
+       the aggregate share cannot tell them apart. New test asserts the guarantee
+       directly (nothing beyond the bound is backdrop) with a control that the
+       far-air population is non-empty; a sibling asserts deep void interiors are
+       STILL backdrop, since a distance bound is exactly what could cause the
+       failure §A18 ranks worst.
+       FIVE COPIES OF ONE PARSE, ALL BROKEN (§A24). The gate hung 90 s for me and
+       passed for the previous session with no code change between: vite prints
+       `localhost:<ESC>[1m5174`, so `/localhost:(\d+)/` cannot match, and whether
+       it colourises depends on the INHERITED environment — a shell exporting
+       FORCE_COLOR makes it colour through a pipe. e2e.mjs, shot.mjs, drive.mjs,
+       e2e-two-clients.mjs and checks/m5-weather.mjs had each written this by hand.
+       Now one `matchVitePort` in scripts/vite-url.mjs. This was not my defect and
+       it was blocking my Done-when.
+       PERF IS FAILING AND IT IS NOT MINE — A/B'd rather than assumed. With the
+       conjunct fully disabled the bake median is 435 ms; with it, 425 ms; ceiling
+       400. Samples swing 293-455 within a single run. I then made my own cost
+       ~0 anyway by scattering from the existing per-pixel `solid` array instead
+       of gathering through the `isSolid` closure. I did NOT touch the ceiling.
+Left for later: the perf ceiling (pre-existing, bimodal samples suggest a
+       systematic effect not noise); §A37's aggregate claim needs correcting in
+       the doc; one ~40x20 screen-px backdrop patch remains at bottom-left of
+       m9-grassland-day.png, within the accepted residual.

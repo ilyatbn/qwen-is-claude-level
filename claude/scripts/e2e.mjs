@@ -34,6 +34,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
+import { matchVitePort } from './vite-url.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const shotsDir = join(root, 'shots')
@@ -99,8 +100,13 @@ const vite = spawn('npm', ['--prefix', 'client', 'run', 'dev'], {
 
 let port = null
 const portReady = new Promise((res, rej) => {
+  // Shared parse (scripts/vite-url.mjs): vite puts an ANSI bold escape between
+  // `localhost:` and the port, and whether it colourises at all depends on the
+  // inherited environment — a shell exporting FORCE_COLOR makes it do so even
+  // through a pipe. Four scripts each wrote this by hand and all four broke.
   const onData = (b) => {
-    const m = b.toString().match(/localhost:(\d+)/)
+    const found = matchVitePort(b)
+    const m = found ? [null, String(found)] : null
     if (m && !port) {
       port = Number(m[1])
       res(port)

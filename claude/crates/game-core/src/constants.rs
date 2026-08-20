@@ -492,6 +492,23 @@ pub const BACKDROP_MIN_HITS: u32 = 4;
 ///
 /// Fractional because the ray-count field is blurred before thresholding.
 pub const BACKDROP_MIN_UP: f32 = 0.5;
+/// Air further than this from the nearest solid pixel is sky, whatever the
+/// enclosure and roofedness tests say (§A37).
+///
+/// The cave backdrop exists to fill holes **in** the rock, so the bound is set by
+/// the widest hole the generator can make: a void at `VOID_RADIUS_MAX` (155) puts
+/// its centre 155 px from a wall. Lowering it starts drawing void centres as sky,
+/// the failure §A18 ranked worst.
+///
+/// **This does not move the aggregate residual**, and §A37 predicted that it
+/// would. Measured, the sky-as-backdrop share barely shifts (small 16.42 % →
+/// 16.42 %, medium 5.86 % → 5.23 %, large 7.18 % → 6.66 %) because most false
+/// positives sit 45–160 px from rock, overlapping genuinely enclosed air. What it
+/// does remove is the far tail — the large contiguous regions hanging clear of any
+/// terrain, which are the ones that read as rectangles in the sky rather than as
+/// shadow. It costs 0.11–0.13 points of enclosed-as-sky, which is why it is worth
+/// keeping despite the aggregate.
+pub const BACKDROP_MAX_DIST_TO_SOLID: f32 = 160.0;
 
 // --- A3: visible ordnance ---
 
