@@ -2257,3 +2257,11 @@ Notes: TWO OF THE THREE WERE ALREADY FIXED, and checking beat assuming — the
        Sent per socket after `map_init`, owner-scoped like every other
        `inventory` (docs/30 §6), never broadcast.
 Left for later: nothing in M9.
+       FOLLOW-UP: the join-flow scoping test could not fail. It counted bo's
+       TOTAL inventory events and expected 0 — a valid proxy only while nobody
+       received one on join, so T9.08 broke it. Rewritten as a DELTA around
+       ana's action, which is the property the rule actually claims. Then the
+       leak falsification STILL passed: bo never sent `ready`, and T9.06 gates
+       flush_events on readiness, so no broadcast could ever reach it. With bo
+       readied, changing scope_of to Everyone fails properly. A scoping test on
+       an unready socket asserts nothing.

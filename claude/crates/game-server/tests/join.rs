@@ -215,13 +215,32 @@ async fn the_join_flow_end_to_end() {
             .expect("emit");
         wait_for(&r2, "welcome", 15);
         wait_for(&r1, "player_join", 15);
+        // bo must be *ready*, or it receives no broadcasts at all (T9.06 gates
+        // `flush_events` on readiness) and the scoping assertion below cannot
+        // fail — it would pass against a server that broadcasts every
+        // inventory to everyone. Verified: without this, deliberately changing
+        // `scope_of` to `Scope::Everyone` still passes.
+        c2.emit("ready", serde_json::json!({})).expect("emit ready");
 
         // --- scoping: inventory is private ------------------------------
+        //
+        // Counted as a *delta*, not a total. A joiner now receives its own
+        // inventory on join (T9.08), so "bo received zero inventory events
+        // ever" stopped being a proxy for "bo received ana's" — it would fail
+        // on correct behaviour. What the scoping rule actually claims is that
+        // an action by ana produces nothing on bo's socket, so that is what is
+        // measured: bo's count before ana acts, and after.
+        std::thread::sleep(Duration::from_millis(400));
+        let their_before = got(&i2, "inventory").len();
         c1.emit("select_slot", serde_json::json!({ "slot": 0 }))
             .expect("emit");
         std::thread::sleep(Duration::from_millis(800));
         report.insert("my_inventory".into(), got(&i1, "inventory").len().into());
-        report.insert("their_inventory".into(), got(&i2, "inventory").len().into());
+        report.insert("their_own_on_join".into(), their_before.into());
+        report.insert(
+            "their_inventory".into(),
+            (got(&i2, "inventory").len() - their_before).into(),
+        );
 
         // --- terrain is public: both see the same carves ----------------
         for _ in 0..5 {
@@ -290,7 +309,13 @@ async fn the_join_flow_end_to_end() {
     );
     assert_eq!(
         out["their_inventory"], 0,
-        "another player received an inventory event: {out}"
+        "ana selected a slot and bo was told about it: {out}"
+    );
+    // The control. Without it the assertion above passes against a server that
+    // sends no inventory to anybody, which is the build T9.08 exists to fix.
+    assert!(
+        out["their_own_on_join"].as_u64().unwrap_or(0) > 0,
+        "bo was never sent its own inventory on join: {out}"
     );
 
     // ---- terrain is public and ordered ----
