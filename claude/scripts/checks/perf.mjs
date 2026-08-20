@@ -44,25 +44,61 @@ export default async function ({ page, shot, log }) {
     throw new Error(`the feel layer costs ${delta.toFixed(2)} ms/frame — that is a real regression`)
   }
 
-  // docs/60 §6 ceilings. Measured over several runs and judged on the median:
-  // a single sample of the full bake varied 262–411 ms on this box across a
-  // couple of minutes with no code change, so one sample decides nothing. This
-  // is software rendering (swiftshader) — real hardware is faster.
+  // docs/60 §6 ceilings, measured over several runs and judged on the median: a
+  // single sample decides nothing here. This is software rendering
+  // (swiftshader) — real hardware is faster.
+  //
+  // ## Three ceilings, not one (T9.07, §A38)
+  //
+  // §6's 400 ms is on "a full 72-chunk bake". `buildAllMs` stopped being that
+  // some milestones ago: it is now the chunk bake **plus** the backdrop
+  // classification pass (§A17/§A21/§A37), which did not exist when the number
+  // was written and is two thirds of the total. The check was comparing a
+  // growing total against a ceiling written for one of its parts, so it went red
+  // without anything in the chunk bake getting slower — the chunk bake measures
+  // ~90 ms against its own 400.
+  //
+  // ## The numbers move with machine load, and that is measured, not assumed
+  //
+  // Under a deliberate 8-core load every pass rose together — including
+  // `generateMs`, which is pure WASM with no canvas and no GPU. Nothing done to
+  // the bake can slow that down, so the swing is contention, and it is what the
+  // "bimodal" samples were: whether a regenerate lands in a contended window.
+  // Quiet: total median 295, max 330. Loaded: median 378, max 502. Ceilings
+  // below carry headroom for a gate that runs beside other work.
   const bakes = []
+  const backs = []
+  const chunkOnly = []
   const gens = []
   for (let i = 0; i < 5; i++) {
     await page.evaluate(() => window.__game.regenerate('4242', 'medium'))
     await page.waitForTimeout(600)
     const d = await page.evaluate(() => window.__game.debug())
     bakes.push(d.buildAllMs)
+    backs.push(d.backdropMs)
+    chunkOnly.push(d.chunkBakeMs)
     gens.push(d.generateMs)
   }
   const median = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)]
+  const list = (a) => a.map((n) => n.toFixed(0)).join(', ')
   const chunks = (await page.evaluate(() => window.__game.debug())).chunkCount
-  log(`medium generate: median ${median(gens).toFixed(0)} ms of [${gens.map((n) => n.toFixed(0)).join(', ')}] (ceiling 1000)`)
-  log(`full ${chunks}-chunk bake: median ${median(bakes).toFixed(0)} ms of [${bakes.map((n) => n.toFixed(0)).join(', ')}] (ceiling 400)`)
-  if (median(bakes) > 400) {
-    throw new Error(`full bake median ${median(bakes).toFixed(0)} ms exceeds 400`)
+  log(`medium generate: median ${median(gens).toFixed(0)} ms of [${list(gens)}] (ceiling 1000)`)
+  log(`  ${chunks}-chunk bake: median ${median(chunkOnly).toFixed(0)} ms of [${list(chunkOnly)}] (ceiling 400 — docs/60 §6)`)
+  log(`  backdrop pass:  median ${median(backs).toFixed(0)} ms of [${list(backs)}] (ceiling 500)`)
+  log(`  round-start total: median ${median(bakes).toFixed(0)} ms of [${list(bakes)}] (ceiling 800)`)
+
+  // The ceiling docs/60 §6 actually states, against the quantity it names.
+  if (median(chunkOnly) > 400) {
+    throw new Error(`72-chunk bake median ${median(chunkOnly).toFixed(0)} ms exceeds 400`)
+  }
+  // Set from measurement: 176–237 quiet, 218–349 under an 8-core load.
+  if (median(backs) > 500) {
+    throw new Error(`backdrop pass median ${median(backs).toFixed(0)} ms exceeds 500`)
+  }
+  // What the player actually waits for at round start, inside a 10 s warmup.
+  // 295 quiet / 378 loaded, worst single sample 502.
+  if (median(bakes) > 800) {
+    throw new Error(`round-start bake median ${median(bakes).toFixed(0)} ms exceeds 800`)
   }
 
   const t0 = await page.evaluate(() => {

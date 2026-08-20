@@ -586,6 +586,9 @@ export class SandboxScene extends Phaser.Scene {
           mapW: self.core.width,
           mapH: self.core.height,
           chunkCount: self.terrain.stats.chunkCount,
+          // The buildAll split (T9.07): mask-only backdrop vs the canvas loop.
+          backdropMs: self.terrain.stats.backdropMs,
+          chunkBakeMs: self.terrain.stats.chunkBakeMs,
           pending: self.terrain.stats.pending,
           // Phaser's texture manager is global. A missing destroy() shows up here
           // as an unbounded key count long before the browser reports memory

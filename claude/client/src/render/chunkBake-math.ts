@@ -245,9 +245,6 @@ export class BackdropMask implements MaskSource {
         if (solidIn(view, w, h, x, y)) solid[row + x] = 1
       }
     }
-    const isSolid = (x: number, y: number) =>
-      x < 0 || y < 0 || x >= w || y >= h ? false : solid[y * w + x] === 1
-
     // --- sealed air (§A14), kept as one half of the OR --------------------
     const rC = reach * BackdropMask.ORTH
     const distSolid = BackdropMask.chamfer(solid, w, h)
@@ -287,16 +284,39 @@ export class BackdropMask implements MaskSource {
     }
     // Step along each ray in 4-px increments: the features that matter are tens of
     // pixels across, and per-pixel marching here costs 8x for no extra fidelity.
+    //
+    // Indexed directly into `solid` rather than through the `isSolid` closure.
+    // This loop is `cells * rays * steps` — up to 47 M calls on a medium map — and
+    // it was two thirds of the whole round-start bake. The pass immediately below
+    // already carries the note that direct indexing beats "w*h closure calls with
+    // bounds checks" by roughly 10x; the same argument applies here with far more
+    // iterations behind it, and it had not been applied (T9.07).
+    //
+    // The arithmetic is deliberately unchanged — same `px + dx * t`, same
+    // `Math.round`, same order — so the classification is bit-identical rather
+    // than merely similar. Accumulating the ray position instead would drift in
+    // the last bit and move a rounded coordinate, which moves a boundary pixel.
     const STEP = 4
+    const dxs = new Float64Array(rays)
+    const dys = new Float64Array(rays)
+    for (let k = 0; k < rays; k++) {
+      dxs[k] = dirs[k]![0]
+      dys[k] = dirs[k]![1]
+    }
     for (let cy = 0; cy < ch; cy++) {
       for (let cx = 0; cx < cw; cx++) {
         const px = cx * cell
         const py = cy * cell
         let count = 0
         let up = 0
-        for (const [dx, dy] of dirs) {
+        for (let k = 0; k < rays; k++) {
+          const dx = dxs[k]!
+          const dy = dys[k]!
           for (let t = STEP; t <= rayLen; t += STEP) {
-            if (isSolid(Math.round(px + dx * t), Math.round(py + dy * t))) {
+            const sx = Math.round(px + dx * t)
+            const sy = Math.round(py + dy * t)
+            if (sx < 0 || sy < 0 || sx >= w || sy >= h) continue
+            if (solid[sy * w + sx] === 1) {
               count++
               // Screen coordinates: negative y is up.
               if (dy < -0.3) up++

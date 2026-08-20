@@ -2166,3 +2166,30 @@ Notes: THE SCENE RECORDS, THE CHECK DOES NOT POLL. The things worth asserting ar
        next detonates further below you: 12 dmg/shot standing still vs 25), and
        DEV_LOADOUT grants a second rocket stack because 4 is not "armed".
 Left for later: T9.07; the inventory-on-join defect above.
+
+## T9.07 — The bake regression — DONE
+Files: client/src/render/{chunkBake-math,terrain}.ts, scenes/SandboxScene.ts,
+       scripts/checks/perf.mjs, docs/70-amendments-v2.md (§A38)
+Verified: `node scripts/e2e.mjs perf` ok — 72-chunk bake median 96 ms (ceiling
+       400), backdrop 212 (500), round-start total 308 (800), 59.9 fps.
+Notes: IT WAS NOT A CODE REGRESSION AND THE CEILING MEASURED THE WRONG QUANTITY.
+       Splitting buildAll: chunk bake 84-102 ms, backdrop classification 176-237,
+       total 264-330. docs/60 §6's 400 ms is on "a full 72-chunk bake" — that part
+       sits at a QUARTER of its ceiling. Two thirds of the total is the backdrop
+       pass, which did not exist when the number was written and grew through
+       §A17/§A21/§A37.
+       THE BIMODALITY WAS THE BOX, PROVED BY A CONTROL. Under a deliberate 8-core
+       load every pass rose together INCLUDING generateMs (627-665 -> 694-744),
+       which is pure WASM with no canvas and no GPU — nothing done to the bake can
+       slow that down. The 280-296 recorded two sessions ago and the 427 measured
+       in the next are the same code on a differently-loaded box.
+       Optimisation kept but not overclaimed: the ray loop indexed `solid` through
+       a closure, up to 47 M calls per build, while the pass directly below it
+       already carried a note that direct indexing beats closure calls ~10x. Same
+       arithmetic (bit-identical: §A19 shares reproduce at 16.4/5.3/6.7). A/B'd in
+       one load window: median 299->295, max 402->330. It removes the tail only.
+       Ceiling NOT relaxed: pointed at the chunk bake, which is what it described.
+       Two new ones set from measurement with their basis written down.
+       TRAP, twice on this project now: `pkill -f "while :"` matches its own shell
+       (as `pkill -f vite` did). Kill by pid or use a pattern that cannot match.
+Left for later: the inventory-on-join defect from T9.06.

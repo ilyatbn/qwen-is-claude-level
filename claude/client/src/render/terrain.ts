@@ -45,6 +45,10 @@ export interface TerrainStats {
   bakesThisFrame: number
   lastBakeMs: number
   totalBakeMs: number
+  /** `buildAll` split: the mask-only backdrop pass... */
+  backdropMs: number
+  /** ...and the loop that allocates canvases and bakes into them. */
+  chunkBakeMs: number
   pending: number
   chunkCount: number
 }
@@ -73,6 +77,8 @@ export class TerrainRenderer {
     bakesThisFrame: 0,
     lastBakeMs: 0,
     totalBakeMs: 0,
+    backdropMs: 0,
+    chunkBakeMs: 0,
     pending: 0,
     chunkCount: 0,
   }
@@ -156,6 +162,12 @@ export class TerrainRenderer {
       C().BACKDROP_MIN_UP,
       C().BACKDROP_MAX_DIST_TO_SOLID,
     )
+    // Split, because the two halves are different kinds of work and only one of
+    // them is stable. `backdropMs` is pure CPU over the mask; the chunk loop
+    // allocates canvases and hands them to the renderer. When the total moves
+    // and this does not, the cost is not in our arithmetic (T9.07).
+    this.stats.backdropMs = now() - t0
+    const tChunks = now()
 
     for (let cy = 0; cy < this.chunksY; cy++) {
       for (let cx = 0; cx < this.chunksX; cx++) {
@@ -175,6 +187,7 @@ export class TerrainRenderer {
     }
 
     this.stats.chunkCount = this.keys.length
+    this.stats.chunkBakeMs = now() - tChunks
     this.stats.totalBakeMs = now() - t0
   }
 

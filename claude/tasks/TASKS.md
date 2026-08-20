@@ -209,7 +209,7 @@ drawn**; the fourth is two carried defects with their consequences attached.
 - [x] [T9.04](M9/T9.04-palette-and-rasteriser.md) — Theme contrast, and one capsule rasteriser **(v2)**
 - [x] [T9.05](M9/T9.05-backdrop-distance.md) — Bound the backdrop by distance to rock **(v2)**
 - [x] [T9.06](M9/T9.06-full-round.md) — Play a full round, end to end **(v2)**
-- [ ] [T9.07](M9/T9.07-bake-regression.md) — The bake got slower and nobody knows why **(v2)**
+- [x] [T9.07](M9/T9.07-bake-regression.md) — The bake got slower and nobody knows why **(v2)**
 
 **Checkpoint:** play a full round against bots with sound on, at night, on each of
 the three themes. It should be a game you want to keep playing.

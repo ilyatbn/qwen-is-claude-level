@@ -1423,3 +1423,69 @@ The general lesson, and it is the fourth time this project has learned a version
 of it: **an aggregate metric can be the wrong instrument even when it is measured
 correctly.** Two defects with different severities can share a number. When they
 do, assert the property, not the percentage.
+
+## A38 — The bake ceiling was measuring a different thing than it names
+
+`60-testing.md` §6 sets **400 ms** on "a full 72-chunk bake at round start". The
+perf check compared `buildAllMs` against it, went red at ~427 ms, and nothing in
+the chunk bake had got slower.
+
+Splitting `buildAll` settles it. On a medium map, quiet:
+
+| pass | ms |
+|---|---|
+| chunk bake, 72 chunks | **84–102** |
+| backdrop classification | 176–237 |
+| **total `buildAllMs`** | 264–330 |
+
+The chunk bake — the thing §6 names — sits at a quarter of its ceiling. Two thirds
+of the total is the **backdrop classification pass**, which did not exist when the
+number was written and grew through §A17, §A21 and §A37. The check was comparing a
+growing total against a ceiling written for one of its parts.
+
+### The variance was the machine, and that is measured
+
+The samples looked bimodal, which reads like a code-shaped problem. Under a
+deliberate 8-core load every pass rose **together**:
+
+| pass | quiet | loaded |
+|---|---|---|
+| `generateMs` (pure WASM, no canvas, no GPU) | 627–665 | **694–744** |
+| chunk bake | 84–102 | 101–152 |
+| backdrop | 176–237 | 218–349 |
+| total | median 295 | median 378, max 502 |
+
+Nothing done to the bake can slow down WASM map generation. So the swing is CPU
+contention, and the "bimodality" is simply whether a given regenerate landed in a
+contended window. The 280–296 recorded two sessions ago and the 427 measured in
+the next are the **same code on a differently-loaded box**.
+
+> A number that moved without a code change is a measurement suspect before it is
+> a performance suspect — and the control is a pass in the same process that the
+> change could not possibly have touched.
+
+### What replaces it
+
+Three ceilings against three quantities, each with its basis stated:
+
+| quantity | ceiling | basis |
+|---|---|---|
+| 72-chunk bake | 400 | `60-testing.md` §6, unchanged, against the quantity it names |
+| backdrop classification | 500 | measured 176–237 quiet, 218–349 loaded |
+| round-start total | 800 | what the player waits for inside a 10 s warmup; 295 quiet, 378 loaded, worst single sample 502 |
+
+`docs/60` §6's 400 ms is **not** relaxed. It is pointed at the chunk bake, which
+is what it always described.
+
+### A real optimisation, honestly small
+
+The ray-casting loop indexed `solid` through a closure — up to 47 M calls per
+build. The pass immediately below it already carried a note that direct indexing
+beats "w\*h closure calls with bounds checks" by roughly 10×, and the argument had
+not been applied to the loop with far more iterations behind it. Rewritten with
+direct indexing and identical arithmetic (same `px + dx * t`, same `Math.round`,
+same order, so the classification is bit-identical — verified: the §A19 shares
+reproduce at 16.4 / 5.3 / 6.7).
+
+A/B'd in the same load window: median 299 → 295, **max 402 → 330**. It removes the
+tail, not the median. Worth keeping and not worth overclaiming.
