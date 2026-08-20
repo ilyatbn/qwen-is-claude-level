@@ -1457,3 +1457,27 @@ Notes: THE RECONCILIATION IDENTITY IS TESTED AGAINST TWO REAL CORES, not a fake.
        through a plain lerp lands at 180°, which is the weapon-spin bug.
 Left for later: T6.11 checksum is next; the resync path exists client-side
        (WorldMirror.onResyncNeeded) and the server has a resync_map handler.
+
+## T6.11 + review batch (A30, ready-gating, emit ordering) — DONE
+Files: crates/game-core/src/world/mod.rs, crates/game-core/tests/world_step.rs,
+       crates/game-server/src/{events,session,codec}.rs,
+       crates/game-server/tests/checksum.rs
+Verified: `cargo test -p game-server --test checksum` — 3 passed (the two-client
+       agreement runs 100 real SMG fires and takes 14 s); full game-server suite
+       57+3+1+7+1+3 all green; `cargo test -p game-core --test world_step` — 22 passed.
+Notes: A30 — a tick now applies EXACTLY ONE input per player, surplus to a
+       bounded backlog. MY FIRST TEST FOR IT PASSED AGAINST THE BUG: measuring
+       over 60 ticks, both rates walk into the same wall and report the same
+       distance. Measured over a SINGLE TICK it is unambiguous — falsified at
+       0.5500 px vs 0.1833 px. Sample where the bug is visible.
+       EMIT IS NOT ASYNC. `SocketRef::emit` returns Result, not a Future, so the
+       `tokio::spawn` per batch was unnecessary — and it was the sole cause of
+       cross-tick reordering. All four emit paths are inline now; the ordering
+       claim in flush_events' doc comment is finally true. Fifth wrong rationale
+       comment on this project.
+       Broadcasts are gated on SessionMap::ready, so a mid-round joiner no longer
+       drops carves during its map_init and eats a resync two seconds later.
+       codec gained `decode_map_init_mask` — encode_map_init had no inverse, so
+       nothing could prove it round-trips and the agreement test would have had
+       to parse the format a second time.
+Left for later: A31 (buried_secret) not done. T6.12-T6.15 remain.

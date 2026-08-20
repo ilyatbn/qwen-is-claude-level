@@ -23,6 +23,7 @@ pub enum CodecError {
     Truncated { need: usize, had: usize },
     BadCount(u8),
     TrailingBytes(usize),
+    BadMapInit(&'static str),
 }
 
 impl std::fmt::Display for CodecError {
@@ -33,6 +34,7 @@ impl std::fmt::Display for CodecError {
             }
             CodecError::BadCount(n) => write!(f, "bad input count {n}"),
             CodecError::TrailingBytes(n) => write!(f, "{n} trailing bytes"),
+            CodecError::BadMapInit(what) => write!(f, "bad map_init: {what}"),
         }
     }
 }
@@ -87,6 +89,44 @@ pub fn encode_map_init(map: &Map) -> Vec<u8> {
     b.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     b.extend_from_slice(&payload);
     b
+}
+
+/// The inverse of `encode_map_init`, as far as the mask.
+///
+/// Only the mask is recovered: it is what a replay, a divergence check or a
+/// headless tool actually needs, and reconstructing a full `MapMeta` from the
+/// wire would be inventing the fields the format deliberately omits (buried
+/// slots never cross the wire — `docs/32` §5).
+///
+/// This exists because `encode_map_init` had no inverse, so nothing could prove
+/// it round-trips, and the mask-agreement test would otherwise have had to parse
+/// the format a second time — two parsers that will eventually disagree.
+pub fn decode_map_init_mask(bytes: &[u8]) -> Result<game_core::map::Mask, CodecError> {
+    let mut r = Reader::new(bytes);
+    if r.u32()? != MAP_MAGIC {
+        return Err(CodecError::BadMapInit("magic"));
+    }
+    let w = r.u32()?;
+    let h = r.u32()?;
+    if !dimensions_are_sane(w, h) {
+        return Err(CodecError::BadMapInit("dimensions"));
+    }
+    r.take(8)?; // seed
+    r.u8()?; // scale
+    r.u8()?; // theme
+    r.take(4)?; // wind
+
+    let spawns = r.u16()? as usize;
+    r.take(spawns * 4)?;
+    let decos = r.u16()? as usize;
+    r.take(decos * 7)?;
+
+    let payload_len = r.u32()? as usize;
+    let payload = r.take(payload_len)?;
+    let mask =
+        game_core::map::rle::decode(w, h, payload).map_err(|_| CodecError::BadMapInit("rle"))?;
+    r.finish()?;
+    Ok(mask)
 }
 
 fn scale_byte(s: game_core::constants::MapScale) -> u8 {

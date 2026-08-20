@@ -9,7 +9,9 @@
 
 pub mod cycle;
 
-use crate::constants::{MapScale, ENDED_SECONDS, MAX_PLAYERS, ROUND_SECONDS, WARMUP_SECONDS};
+use crate::constants::{
+    MapScale, ENDED_SECONDS, MAX_INPUT_QUEUE, MAX_PLAYERS, ROUND_SECONDS, WARMUP_SECONDS,
+};
 use crate::items::inventory::Inventory;
 use crate::items::registry::{def, ItemId, ItemKind, WeaponId};
 use crate::items::spawning::{assign_buried_items, place_initial, reveal_buried, SpawnSchedule};
@@ -484,6 +486,12 @@ impl World {
         self.pending.push((id, input));
     }
 
+    /// Unconsumed inputs still queued. Bounded by `MAX_INPUT_QUEUE` per player
+    /// after each tick (`docs/70-amendments-v2.md` §A30).
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
     pub fn is_full(&self) -> bool {
         self.players.len() >= MAX_PLAYERS
     }
@@ -597,10 +605,55 @@ impl World {
     }
 
     fn apply_inputs(&mut self, dt: f32) {
-        // Ascending id, and at most the latest input per player this tick.
+        // Ascending id, and **exactly one input per player per tick**.
+        //
+        // Applying every queued input in one tick, each with a full `dt`, makes
+        // packet rate a speed multiplier: measured over 60 ticks, 1 input/tick
+        // moved 140.79 px and 2 input/tick moved 290.80 px — 2.06x, from the
+        // client simply choosing to send more often. Server-authoritative
+        // movement means the server decides how much time an input is worth, and
+        // one input is worth one tick (`docs/70-amendments-v2.md` §A30).
+        //
+        // The surplus stays in `pending` as a bounded backlog and is consumed on
+        // later ticks, which is also what makes a jitter burst catch up smoothly
+        // instead of teleporting.
         self.pending.sort_by_key(|(id, inp)| (*id, inp.seq));
-        let pending = std::mem::take(&mut self.pending);
-        for (id, input) in pending {
+
+        // Take the first (lowest-seq) input for each distinct player, leaving the
+        // rest queued. `pending` is sorted by (id, seq), so the first entry for an
+        // id is the oldest unconsumed input for that player.
+        let mut this_tick: Vec<(PlayerId, Input)> = Vec::new();
+        let mut backlog: Vec<(PlayerId, Input)> = Vec::new();
+        let mut taken: Vec<PlayerId> = Vec::new();
+        for (id, input) in std::mem::take(&mut self.pending) {
+            if taken.contains(&id) {
+                backlog.push((id, input));
+            } else {
+                taken.push(id);
+                this_tick.push((id, input));
+            }
+        }
+        // A backlog longer than the queue cap means the client is sending faster
+        // than the sim runs, indefinitely. Dropping the *oldest* keeps the player
+        // responsive to their most recent intent rather than replaying stale
+        // stick positions.
+        for id in &taken {
+            let count = backlog.iter().filter(|(i, _)| i == id).count();
+            if count > MAX_INPUT_QUEUE {
+                let mut excess = count - MAX_INPUT_QUEUE;
+                backlog.retain(|(i, _)| {
+                    if i == id && excess > 0 {
+                        excess -= 1;
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+        }
+        self.pending = backlog;
+
+        for (id, input) in this_tick {
             let Some(idx) = self.players.iter().position(|p| p.id == id) else {
                 continue;
             };

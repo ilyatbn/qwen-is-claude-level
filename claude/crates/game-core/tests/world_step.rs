@@ -516,3 +516,119 @@ fn a_respawned_player_is_not_buried_either() {
         p.body.pos
     );
 }
+
+// ---------------------------------------------------------------------------
+// §A30 — packet rate must not be a speed multiplier
+// ---------------------------------------------------------------------------
+
+/// The server decides how much time an input is worth, and one input is worth
+/// one tick.
+///
+/// Before `docs/70-amendments-v2.md` §A30 the tick applied *every* queued input
+/// with a full `dt`, so a client sending 2 inputs per tick travelled 2.06x as
+/// far as one sending 1 — server-authoritative movement defeated by the client
+/// choosing its own packet rate.
+///
+/// **Measured over a single tick.** A 60-tick run walks into terrain, and once
+/// both rates are stopped by the same wall they report the same distance and the
+/// test passes against the bug — which is exactly what happened to the first
+/// version of this test.
+#[test]
+fn sending_more_inputs_in_one_tick_does_not_move_you_further() {
+    fn one_tick(inputs: u32) -> f32 {
+        let mut w = playing();
+        let start = spawn_at(&mut w, 1);
+        for seq in 1..=inputs {
+            w.queue_input(
+                1,
+                Input {
+                    seq,
+                    buttons: button::RIGHT,
+                    aim: 0,
+                },
+            );
+        }
+        w.step(SIM_DT);
+        w.player(1).expect("player").body.pos.x - start.x
+    }
+
+    let one = one_tick(1);
+    let two = one_tick(2);
+    let eight = one_tick(8);
+
+    // The control: a tick that produces no movement makes every comparison
+    // below vacuously true.
+    assert!(
+        one.abs() > 0.001,
+        "one input produced no movement at all ({one:.6} px); nothing is proven"
+    );
+    assert!(
+        (two - one).abs() < 0.001,
+        "2 inputs in one tick moved {two:.4} px against {one:.4} px for 1 — \
+         packet rate is a speed multiplier"
+    );
+    assert!(
+        (eight - one).abs() < 0.001,
+        "8 inputs in one tick moved {eight:.4} px against {one:.4} px for 1"
+    );
+}
+
+/// The surplus is a *backlog*, not a discard: a jitter burst catches up on the
+/// following ticks rather than being thrown away.
+#[test]
+fn a_burst_is_consumed_over_later_ticks() {
+    let mut w = playing();
+    let start = spawn_at(&mut w, 1);
+    for seq in 1..=8u32 {
+        w.queue_input(
+            1,
+            Input {
+                seq,
+                buttons: button::RIGHT,
+                aim: 0,
+            },
+        );
+    }
+    // One tick consumes one input.
+    w.step(SIM_DT);
+    let after_one = w.player(1).expect("player").body.pos.x;
+    // The remaining seven are consumed over the next seven ticks, with no more
+    // input arriving.
+    for _ in 0..7 {
+        w.step(SIM_DT);
+    }
+    let after_eight = w.player(1).expect("player").body.pos.x;
+    assert!(
+        after_eight > after_one,
+        "the backlog was discarded rather than consumed: {after_one:.2} -> {after_eight:.2}"
+    );
+    assert!(
+        after_eight - start.x > 0.0,
+        "the burst produced no movement at all"
+    );
+}
+
+/// A client that sends faster than the sim runs, forever, must not queue an
+/// unbounded future.
+#[test]
+fn the_input_backlog_is_bounded() {
+    let mut w = playing();
+    spawn_at(&mut w, 1);
+    for seq in 1..=500u32 {
+        w.queue_input(
+            1,
+            Input {
+                seq,
+                buttons: button::RIGHT,
+                aim: 0,
+            },
+        );
+    }
+    w.step(SIM_DT);
+    assert!(
+        w.pending_len() <= game_core::constants::MAX_INPUT_QUEUE,
+        "backlog grew to {} against a cap of {}",
+        w.pending_len(),
+        game_core::constants::MAX_INPUT_QUEUE
+    );
+}

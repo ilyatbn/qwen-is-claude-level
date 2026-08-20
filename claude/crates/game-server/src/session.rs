@@ -25,6 +25,14 @@ use crate::room::{Command, RoomHandle};
 #[derive(Default, Debug)]
 pub struct SessionMap {
     inner: RwLock<Vec<(PlayerId, Sid)>>,
+    /// Sockets that have sent `ready` and decoded their map.
+    ///
+    /// Broadcasts are gated on this. A seated-but-not-ready socket that receives
+    /// `carve` events while its `map_init` is still in flight drops them, and
+    /// carves carry a monotonic `seq` the client must apply in order — so the
+    /// gap it leaves triggers a full `resync_map` two seconds later
+    /// (`docs/42` §6). Joining mid-firefight would cost an immediate resync.
+    ready: RwLock<Vec<Sid>>,
 }
 
 impl SessionMap {
@@ -36,7 +44,26 @@ impl SessionMap {
         }
     }
 
+    pub fn mark_ready(&self, sid: Sid) {
+        if let Ok(mut v) = self.ready.write() {
+            if !v.contains(&sid) {
+                v.push(sid);
+            }
+        }
+    }
+
+    pub fn is_ready(&self, sid: Sid) -> bool {
+        self.ready.read().map(|v| v.contains(&sid)).unwrap_or(false)
+    }
+
+    pub fn ready_sids(&self) -> Vec<Sid> {
+        self.ready.read().map(|v| v.clone()).unwrap_or_default()
+    }
+
     pub fn remove_sid(&self, sid: Sid) -> Option<PlayerId> {
+        if let Ok(mut r) = self.ready.write() {
+            r.retain(|s| *s != sid);
+        }
         let mut v = self.inner.write().ok()?;
         let i = v.iter().position(|(_, s)| *s == sid)?;
         Some(v.remove(i).0)
@@ -203,6 +230,7 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                     let (room, sessions) = (room.clone(), sessions.clone());
                     async move {
                         if let Some(id) = sessions.player_of(socket.id) {
+                            sessions.mark_ready(socket.id);
                             room.send(Command::Ready(id));
                         }
                     }
