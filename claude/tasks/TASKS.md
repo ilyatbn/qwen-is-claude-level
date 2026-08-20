@@ -131,7 +131,7 @@ take self-damage, and see the inventory panel open on right-click.
 - [x] [T5.01](M5/T5.01-scheduler.md) — The effect scheduler
 - [x] [T5.02](M5/T5.02-toxic-rain.md) — Toxic rain
 - [x] [T5.03](M5/T5.03-meteor-shower.md) — Meteor shower
-- [ ] [T5.04](M5/T5.04-lava-burst.md) — Lava bursts and `carve_capsule`
+- [x] [T5.04](M5/T5.04-lava-burst.md) — Lava bursts and `carve_capsule`
 - [ ] [T5.05](M5/T5.05-heavy-fog.md) — Heavy fog
 - [ ] [T5.06](M5/T5.06-day-night.md) — Cycle state and the FoV formula
 - [ ] [T5.07](M5/T5.07-flashlight.md) — Flashlight and lightmap wiring

@@ -37,6 +37,56 @@ impl Map {
         self.circle(cx, cy, r, true)
     }
 
+    /// Clear a thick line: a circle of radius `r` swept from `(x0,y0)` to
+    /// `(x1,y1)`.
+    ///
+    /// Deferred from T1.14 until it had a user (`docs/11-map-destruction.md` §1);
+    /// lava channels are it. Built by stamping `circle` along a Bresenham walk, so
+    /// it inherits bit-exactness, bedrock and wall clamping, coarse-grid
+    /// maintenance and buried-slot reveal from the one rasteriser rather than
+    /// reimplementing any of them.
+    ///
+    /// Stepping one pixel at a time rather than by the radius is deliberate: a
+    /// sweep sampled at `r` intervals leaves lens-shaped gaps on the diagonal,
+    /// which is the classic bug here and exactly what
+    /// `a_diagonal_capsule_leaves_no_gaps` pins.
+    pub fn carve_capsule(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, r: i32) -> CarveResult {
+        let mut acc = CarveResult::default();
+        if r < 0 {
+            return acc;
+        }
+
+        let (mut x, mut y) = (x0, y0);
+        let (dx, dy) = ((x1 - x0).abs(), -(y1 - y0).abs());
+        let (sx, sy) = (if x0 < x1 { 1 } else { -1 }, if y0 < y1 { 1 } else { -1 });
+        let mut err = dx + dy;
+
+        loop {
+            let step = self.circle(x, y, r, false);
+            acc.pixels_removed += step.pixels_removed;
+            for c in step.dirty_chunks {
+                if !acc.dirty_chunks.contains(&c) {
+                    acc.dirty_chunks.push(c);
+                }
+            }
+            acc.revealed.extend(step.revealed);
+
+            if x == x1 && y == y1 {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y += sy;
+            }
+        }
+        acc
+    }
+
     fn circle(&mut self, cx: i32, cy: i32, r: i32, solid: bool) -> CarveResult {
         let mut result = CarveResult::default();
         if r < 0 {
@@ -488,5 +538,124 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // carve_capsule (T5.04)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_vertical_capsule_clears_a_band_of_the_right_width() {
+        let mut map = solid_map();
+        map.carve_capsule(100, 100, 100, 200, 10);
+        for y in 100..=200 {
+            for dx in -10..=10 {
+                assert!(!map.mask.get(100 + dx, y), "solid at ({}, {y})", 100 + dx);
+            }
+            assert!(map.mask.get(100 - 12, y), "cleared too wide");
+            assert!(map.mask.get(100 + 12, y), "cleared too wide");
+        }
+    }
+
+    #[test]
+    fn a_horizontal_capsule_clears_a_horizontal_band() {
+        let mut map = solid_map();
+        map.carve_capsule(100, 300, 300, 300, 8);
+        for x in 100..=300 {
+            for dy in -8..=8 {
+                assert!(!map.mask.get(x, 300 + dy), "solid at ({x}, {})", 300 + dy);
+            }
+        }
+        assert!(map.mask.get(200, 300 - 10));
+    }
+
+    #[test]
+    fn a_diagonal_capsule_leaves_no_gaps() {
+        // The classic bug: sampling the sweep at radius intervals leaves
+        // lens-shaped holes between stamps on the diagonal.
+        let mut map = solid_map();
+        map.carve_capsule(120, 120, 320, 260, 6);
+        let (dx, dy) = (200.0f32, 140.0f32);
+        let steps = 400;
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32;
+            let x = (120.0 + dx * t).round() as i32;
+            let y = (120.0 + dy * t).round() as i32;
+            assert!(!map.mask.get(x, y), "gap on the sweep line at ({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn a_zero_length_capsule_equals_a_circle() {
+        let mut a = solid_map();
+        let mut b = solid_map();
+        a.carve_capsule(200, 200, 200, 200, 15);
+        b.carve_circle(200, 200, 15);
+        assert_eq!(a.mask.count_solid(), b.mask.count_solid());
+        for y in 180..220 {
+            for x in 180..220 {
+                assert_eq!(a.mask.get(x, y), b.mask.get(x, y), "differ at ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn a_capsule_respects_bedrock_and_walls() {
+        let mut map = solid_map();
+        let h = map.mask.h as i32;
+        map.carve_capsule(0, h - 10, map.mask.w as i32, h - 10, 20);
+        for y in (h - BEDROCK_H as i32)..h {
+            for x in 0..map.mask.w as i32 {
+                assert!(map.mask.get(x, y), "bedrock cleared at ({x}, {y})");
+            }
+        }
+        for y in 0..h {
+            for x in 0..WALL_W as i32 {
+                assert!(map.mask.get(x, y), "wall cleared at ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn a_capsule_keeps_the_coarse_grid_exact() {
+        let mut map = solid_map();
+        map.carve_capsule(150, 150, 500, 380, 18);
+        map.carve_capsule(500, 120, 200, 400, 9);
+        assert!(map.coarse.verify(&map.mask).is_ok(), "coarse grid drifted");
+    }
+
+    #[test]
+    fn a_capsule_dirties_every_chunk_it_touched() {
+        let mut map = solid_map();
+        let before: Vec<bool> = (0..map.mask.chunks_x() * map.mask.chunks_y())
+            .map(|i| {
+                let (cw, cs) = (map.mask.chunks_x(), CHUNK_SIZE as i32);
+                let (cx, cy) = ((i % cw) as i32 * cs, (i / cw) as i32 * cs);
+                (0..cs).any(|dy| (0..cs).any(|dx| map.mask.get(cx + dx, cy + dy)))
+            })
+            .collect();
+        let res = map.carve_capsule(150, 150, 500, 380, 18);
+        let after: Vec<bool> = (0..map.mask.chunks_x() * map.mask.chunks_y())
+            .map(|i| {
+                let (cw, cs) = (map.mask.chunks_x(), CHUNK_SIZE as i32);
+                let (cx, cy) = ((i % cw) as i32 * cs, (i / cw) as i32 * cs);
+                (0..cs).any(|dy| (0..cs).any(|dx| map.mask.get(cx + dx, cy + dy)))
+            })
+            .collect();
+        for (i, (b, a)) in before.iter().zip(after.iter()).enumerate() {
+            if b != a {
+                assert!(
+                    res.dirty_chunks.contains(&(i as u32)),
+                    "chunk {i} changed but was not reported dirty"
+                );
+            }
+        }
+        // And no duplicates: the caller applies them, and a repeated id is a
+        // wasted rebake per stamp along the sweep.
+        let mut sorted = res.dirty_chunks.clone();
+        sorted.sort_unstable();
+        let len = sorted.len();
+        sorted.dedup();
+        assert_eq!(sorted.len(), len, "duplicate dirty chunk ids");
     }
 }

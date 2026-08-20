@@ -1104,3 +1104,24 @@ Notes: DEVIATION: added WEAPON_METEOR / WEAPON_METEOR_FRAG to the weapon table
        Also: H=512 with BEDROCK_H=24 makes y=500 indestructible — two carve tests
        were silently aiming into bedrock and measuring nothing.
 Left for later: T5.04 onward.
+
+## T5.04 — Lava bursts and carve_capsule — DONE
+Files: crates/game-core/src/map/carve.rs (carve_capsule + 6 tests),
+       crates/game-core/src/effects/lava.rs
+Verified: `cargo test -p game-core capsule` — 9 passed; `... lava` — 8 passed
+Notes: carve_capsule stamps the shared circle() along a Bresenham walk ONE PIXEL
+       AT A TIME, so it inherits bit-exactness, bedrock/wall clamping, coarse
+       maintenance and buried reveal instead of reimplementing them.
+       MY FIRST FALSIFICATION OF THE GAP TEST WAS NOT A BUG. Stepping r px between
+       stamps of radius r still overlaps (r < 2r), so the test correctly passed. A
+       genuine gap needs step > 2r; at 2r+2 the test fails with "gap on the sweep
+       line at (125,124)". Worth remembering: a falsification that does not break
+       the property proves nothing about the test.
+       Vent clock is re-based on the tick the vent actually OPENS, not on
+       construction, so a telegraph of a different length cannot shift the jet or
+       burn windows. Falsified the timeline: doubling burn_until gives 69.9 total
+       against the expected 54.
+       Vent placement is rejection-sampled with a hard 200-attempt cap — on a
+       small or heavily carved map the 200px separation can be unsatisfiable, and
+       looping until satisfied would hang the tick.
+Left for later: T5.05 fog, T5.06 cycle, T5.07 flashlight.
