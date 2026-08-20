@@ -9,5 +9,6 @@ pub mod config;
 pub mod events;
 pub mod logging;
 pub mod room;
+pub mod round;
 pub mod session;
 pub mod state;

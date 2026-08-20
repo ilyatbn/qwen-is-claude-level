@@ -202,6 +202,7 @@ pub struct Room {
     /// they push an `Input` through the same path a socket does — so a bug that
     /// affects them affects players.
     bots: Vec<Bot>,
+    round: crate::round::RoundController,
     /// Bots are seated newest-last, so kicking to make room for a human takes
     /// the one that has been playing for the shortest time.
     bot_seq: u32,
@@ -230,7 +231,12 @@ impl Room {
             last_checksum_at: 0.0,
             bots: Vec::new(),
             bot_seq: 0,
+            round: crate::round::RoundController::new(seed),
         };
+        // `ROUND_SECONDS` is an environment override for testing (`docs/41` §5)
+        // and it was parsed and then dropped: the world used the constant, so a
+        // shortened round never shortened.
+        room.world.set_round_seconds(room.config.round_seconds);
         room.seat_bots(seed);
         room
     }
@@ -351,11 +357,12 @@ impl Room {
                 let _ = self.world.fire(id, now);
             }
             Command::ToggleFlashlight(id) => self.world.toggle_flashlight(id),
-            Command::VoteRestart(_, _) => {}
+            Command::VoteRestart(id, v) => self.round.vote(&self.world, id, v),
             Command::ResyncMap(_) => {}
             Command::Leave(id) => {
                 self.seats.free_seat(id);
                 self.world.remove_player(id);
+                self.round.forget(id);
             }
             Command::Inspect(f) => f(&mut self.world),
         }
@@ -422,10 +429,53 @@ impl Room {
     }
 
     /// One simulation step plus the bookkeeping around it.
-    pub fn tick_once(&mut self, dt: f32) {
+    pub fn tick_once(&mut self, dt: f32) -> Vec<game_core::world::GameEvent> {
         self.seats.begin_tick();
         self.drive_bots(dt);
         self.world.step(dt);
+
+        let connected = self.seats.seats.len();
+        let min = self.config.min_players_to_start;
+        let (mut events, outcome) = self.round.tick(&mut self.world, connected, min);
+        match outcome {
+            crate::round::RoundOutcome::Continue => {}
+            crate::round::RoundOutcome::Restart { seed } => {
+                events.extend(self.restart(seed));
+            }
+            crate::round::RoundOutcome::ToLobby => {
+                self.world.set_phase(game_core::world::RoundPhase::Lobby);
+            }
+        }
+        events
+    }
+
+    /// A new round on a fresh seat list: new map, scores reset, back to Warmup.
+    ///
+    /// Everyone already seated keeps their seat and gets a fresh `map_init` —
+    /// the alternative, dropping every socket, turns a vote into a reconnect
+    /// storm.
+    fn restart(&mut self, seed: u64) -> Vec<game_core::world::GameEvent> {
+        let buried_secret = match self.config.fixed_seed {
+            Some(_) => 0,
+            None => seed.rotate_left(17) ^ 0x9E37_79B9_7F4A_7C15,
+        };
+        let seated: Vec<(PlayerId, u16)> = self
+            .world
+            .players
+            .iter()
+            .map(|p| (p.id, p.skin_id))
+            .collect();
+        self.world = World::with_buried_secret(seed, self.config.map_scale, buried_secret);
+        self.world.set_round_seconds(self.config.round_seconds);
+        self.bots.clear();
+        for (id, skin) in seated {
+            self.world.add_player(id, skin, String::new());
+        }
+        self.seat_bots(seed);
+        self.world.set_phase(game_core::world::RoundPhase::Warmup);
+        self.last_checksum_at = 0.0;
+        tracing::info!(target: "game::round", seed, "round restarted");
+        self.world.drain_events()
     }
 
     /// Bots think **before** the step, so their input is consumed by the same
@@ -454,6 +504,17 @@ impl Room {
         for (id, slot) in uses {
             let _ = self.world.use_item(id, slot, now);
         }
+    }
+
+    /// Test seams. The room owns the controller, and a test that reached in and
+    /// constructed its own would be testing a different object than the one the
+    /// tick loop drives.
+    pub fn vote_for_test(&mut self, id: PlayerId, restart: bool) {
+        self.round.vote(&self.world, id, restart);
+    }
+
+    pub fn leave_for_test(&mut self, id: PlayerId) {
+        self.apply(Command::Leave(id));
     }
 
     /// How many bots are seated. Used by the integration tests and `/healthz`.
@@ -519,10 +580,14 @@ async fn run(
                     }
                 }
 
-                room.tick_once(SIM_DT);
+                // The round controller's own events (periodic `round_state`, and
+                // anything a restart produced) come back from `tick_once` and are
+                // flushed with the world's, in that order.
+                let round_events = room.tick_once(SIM_DT);
                 room.sweep_unready(READY_TIMEOUT);
 
-                let events = room.world.drain_events();
+                let mut events = room.world.drain_events();
+                events.extend(round_events);
                 crate::events::flush_events(&io, &room.world, &sessions, &events);
 
                 // Every third tick: 20 Hz, as SNAPSHOT_HZ says.
@@ -655,7 +720,7 @@ mod tests {
         room.apply(Command::ToggleFlashlight(200));
         room.apply(Command::Ready(200));
         room.apply(Command::Leave(200));
-        room.tick_once(SIM_DT);
+        let _ = room.tick_once(SIM_DT);
     }
 
     #[test]

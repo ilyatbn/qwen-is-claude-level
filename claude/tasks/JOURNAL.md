@@ -1520,3 +1520,23 @@ Notes: A bot produces an Input and nothing else, so there is NO bot branch insid
        room, so cfg() sets bot_count 0 and bot seating has its own suite.
 Left for later: T6.12 round state and T6.13 integration tests are the two
        remaining M6 boxes.
+
+## T6.12 — round state, votes and the scoreboard — DONE
+Files: crates/game-server/src/{round,room,lib}.rs, crates/game-server/tests/round.rs,
+       crates/game-core/src/world/mod.rs, client/src/ui/scoreboard{,.test}.ts
+Verified: `cargo test -p game-server --test round` — 7 passed; `--lib round` — 8 passed;
+       `npm --prefix client test -- --run scoreboard` — 11 passed.
+Notes: ROUND_SECONDS WAS PARSED AND THEN DROPPED. Config read it, the world used
+       the constant, so `ROUND_SECONDS=5` produced a 240-second round — a test
+       asserting on phase transitions would have HUNG rather than failed, which
+       is why nobody noticed. World::set_round_seconds now carries it.
+       Non-voters abstain: the majority is of votes CAST, not of players
+       connected. Silence as a veto is how a lobby dies. The test has the control
+       (an actual majority of NO still loses) so it cannot pass by always
+       restarting.
+       Rank is assigned by VALUE, not array position — two players on equal score
+       and deaths are both 1st and the next is 3rd. Displaying them as 1st and
+       2nd is a different claim than the game makes (docs/21 §6).
+       votes live in a BTreeMap, not a HashMap: it is iterated to count, and A11
+       already cost this project one order-dependent bug.
+Left for later: T6.16 (Game scene) then T6.13.

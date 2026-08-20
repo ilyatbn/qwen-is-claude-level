@@ -155,7 +155,7 @@ Wire the finished core into the server. Nothing built so far gets rewritten.
 - [x] [T6.09](M6/T6.09-prediction.md) — Prediction and reconciliation
 - [x] [T6.10](M6/T6.10-interpolation.md) — Remote player interpolation
 - [x] [T6.11](M6/T6.11-checksum.md) — Mask checksum and resync
-- [ ] [T6.12](M6/T6.12-round-state.md) — Round phases, scoring, restart vote
+- [x] [T6.12](M6/T6.12-round-state.md) — Round phases, scoring, restart vote
 - [ ] [T6.13](M6/T6.13-integration-tests.md) — Multi-client integration tests
 - [x] [T6.14](M6/T6.14-bot-controller.md) — Bot controller in `game-core` **(v2)**
 - [x] [T6.15](M6/T6.15-bot-seating.md) — Seating bots in the room **(v2)**

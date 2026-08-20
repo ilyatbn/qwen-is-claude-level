@@ -371,6 +371,8 @@ pub struct World {
     pending: Vec<(PlayerId, Input)>,
     prev_input: Vec<(PlayerId, Input)>,
     phase_started_at: f32,
+    /// `Playing` duration. Defaults to `ROUND_SECONDS`; overridden for tests.
+    round_seconds: f32,
     last_day_phase: DayPhase,
 
     toxic: Option<(u32, ToxicRain)>,
@@ -408,6 +410,7 @@ impl World {
             round_time: 0.0,
             tick: 0,
             phase: RoundPhase::Warmup,
+            round_seconds: ROUND_SECONDS,
             wind,
             seed,
             events: Vec::new(),
@@ -508,6 +511,21 @@ impl World {
 
     // ----------------------------------------------------------------- phases
 
+    /// Override the `Playing` duration.
+    ///
+    /// `ROUND_SECONDS` is documented as an environment override "for testing"
+    /// (`docs/41-server-loop-rooms.md` §5), and it was parsed into `Config` and
+    /// then never reached the phase machine — the world used the constant, so
+    /// `ROUND_SECONDS=5` produced a 240-second round and a test asserting on
+    /// phase transitions would have hung rather than failed.
+    pub fn set_round_seconds(&mut self, secs: f32) {
+        self.round_seconds = secs.max(0.0);
+    }
+
+    pub fn round_seconds(&self) -> f32 {
+        self.round_seconds
+    }
+
     pub fn set_phase(&mut self, phase: RoundPhase) {
         if self.phase == phase {
             return;
@@ -529,7 +547,7 @@ impl World {
         let d = match self.phase {
             RoundPhase::Lobby => return f32::INFINITY,
             RoundPhase::Warmup => WARMUP_SECONDS,
-            RoundPhase::Playing => ROUND_SECONDS,
+            RoundPhase::Playing => self.round_seconds,
             RoundPhase::Ended => ENDED_SECONDS,
         };
         (self.phase_started_at + d - self.round_time).max(0.0)
@@ -539,7 +557,7 @@ impl World {
     /// it never starts something that would still be running at the end.
     fn round_ends_at(&self) -> f32 {
         match self.phase {
-            RoundPhase::Playing => self.phase_started_at + ROUND_SECONDS,
+            RoundPhase::Playing => self.phase_started_at + self.round_seconds,
             _ => f32::INFINITY,
         }
     }
