@@ -539,7 +539,11 @@ impl Room {
 }
 
 /// How long a seated-but-never-ready client keeps its slot.
-pub const READY_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// The value lives in `constants.rs` like every other tunable; this is just the
+/// `Duration` the sweep wants.
+pub const READY_TIMEOUT: Duration =
+    Duration::from_millis((game_core::constants::READY_TIMEOUT_SECS * 1000.0) as u64);
 
 /// Spawn the room task. The returned handle is the only way to reach it.
 pub fn spawn_room(

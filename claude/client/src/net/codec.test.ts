@@ -26,13 +26,18 @@ function mapInitFixture(opts: Partial<{
   decoCount: number
   rle: Uint8Array
   rleLenLie: number
+  carveSeq: number
 }> = {}): ArrayBuffer {
   const width = opts.width ?? 2048
   const height = opts.height ?? 1024
   const spawns = opts.spawnCount ?? 2
   const decos = opts.decoCount ?? 1
   const rle = opts.rle ?? new Uint8Array([1, 2, 3, 4])
-  const size = 4 + 4 + 4 + 8 + 1 + 1 + 4 + 2 + spawns * 4 + 2 + decos * 7 + 4 + rle.length
+  // magic, w, h, seed, scale, theme, wind, carve_seq, then the counted sections.
+  // `carve_seq` (u32) arrived with T6.16 and this fixture did not follow it —
+  // 4 bytes short, so the decoder read `spawn_count` out of the middle of it.
+  const size =
+    4 + 4 + 4 + 8 + 1 + 1 + 4 + 4 + 2 + spawns * 4 + 2 + decos * 7 + 4 + rle.length
   const b = new ArrayBuffer(size)
   const v = new DataView(b)
   let at = 0
@@ -43,6 +48,7 @@ function mapInitFixture(opts: Partial<{
   v.setUint8(at++, 1)
   v.setUint8(at++, 2)
   v.setFloat32(at, -42.5, true); at += 4
+  v.setUint32(at, opts.carveSeq ?? 0, true); at += 4
   v.setUint16(at, spawns, true); at += 2
   for (let i = 0; i < spawns; i++) {
     v.setInt16(at, 100 + i, true); at += 2
@@ -133,7 +139,10 @@ describe('map_init', () => {
   it('rejects an absurd spawn count without allocating for it', () => {
     const b = mapInitFixture()
     // Overwrite spawn_count with 65535; the payload cannot hold it.
-    new DataView(b).setUint16(26, 0xffff, true)
+    // Derived, not a magic 26: this offset silently rotted when `carve_seq`
+    // was inserted ahead of it, and the test then poked the wrong field.
+    const SPAWN_COUNT_AT = 4 + 4 + 4 + 8 + 1 + 1 + 4 + 4
+    new DataView(b).setUint16(SPAWN_COUNT_AT, 0xffff, true)
     expect(() => decodeMapInit(b)).toThrow(/exceeds the payload/)
   })
 

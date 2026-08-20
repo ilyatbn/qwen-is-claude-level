@@ -142,31 +142,42 @@ async fn a_human_is_never_refused_a_seat_because_of_a_bot() {
         "the room should be full of bots"
     );
 
-    let welcome = tokio::task::spawn_blocking(move || {
+    // The human stays connected while the assertions run.
+    //
+    // This test used to disconnect immediately and then assert on
+    // `players.len()`, which raced its own `Leave` command — 3 failures in 5
+    // runs on an untouched tree. Its comment claimed the bot count avoided that
+    // race, but `players.len()` counts humans too, so it was the racing quantity.
+    // Parking the client removes the race instead of widening a sleep.
+    let (welcome_tx, welcome_rx) = mpsc::channel::<serde_json::Value>();
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    let human = tokio::task::spawn_blocking(move || {
         let (c, w) = join(addr, "human");
+        let _ = welcome_tx.send(w);
+        let _ = stop_rx.recv_timeout(Duration::from_secs(30));
         let _ = c.disconnect();
-        w
-    })
-    .await
-    .expect("client thread");
+        drop(c);
+    });
 
+    let welcome = welcome_rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("no welcome");
     assert!(
         welcome["player_id"].as_u64().is_some(),
         "a human was refused a seat in a room full of bots: {welcome}"
     );
 
-    // Assert on the bot count, not the total: the client above has already
-    // disconnected by now, and racing its `Leave` would make this flaky.
+    // The room started full at 6 bots, the human is seated (asserted above), and
+    // capacity is 6 — so a total of 6 means exactly one bot was removed to make
+    // room. No bot-count accessor is needed to prove the claim.
     let seated = s.room.inspect(|w| w.players.len()).await.expect("room");
-    assert!(
-        seated <= 6,
-        "capacity was exceeded rather than a bot kicked: {seated} players"
-    );
     assert_eq!(
-        seated, 5,
-        "a bot should have been kicked to seat the human, leaving 5 bots after \
-         the human disconnected"
+        seated, 6,
+        "expected 5 bots + 1 human; capacity was exceeded or a bot was not kicked"
     );
+
+    let _ = stop_tx.send(());
+    let _ = human.await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -1576,3 +1576,33 @@ Noticed, not fixed: at Small scale the backdrop covers noticeably more sky than
        stair-stepping on backdrop/sky edges is still visible (the ~2x-chance
        grid snapping the M5 review measured).
 Left for later: T6.13 integration tests is the last M6 box.
+
+## T6.13 — multi-client integration tests — DONE
+Files: crates/game-server/tests/integration.rs, crates/game-server/tests/bots.rs,
+       crates/game-server/src/room.rs, crates/game-core/src/constants.rs,
+       client/src/net/codec.test.ts
+Verified: `cargo test -p game-server --test integration -- --test-threads=1` — 4 passed;
+       `./scripts/check.sh` — EXIT=0, all checks passed.
+Notes: The suite covers only what nothing else does — capacity refusal OVER THE
+       WIRE, disconnect propagation, snapshot cadence/size, input ack, malformed
+       payload tolerance. A header table records which existing suite owns each
+       of docs/41 §8's other claims; duplicating them costs minutes and buys zero.
+       NEARLY SHIPPED A DUPLICATE MECHANISM. The ready timeout looked missing
+       because session.rs never mentions ready expiry — it is in room.rs
+       (sweep_unready, every tick, already tested both directions with a control).
+       My second copy broke tests/bots.rs by shifting the seating race. Grep the
+       layer that OWNS the state, not the layer you happen to be reading. Only
+       READY_TIMEOUT_SECS moving to constants.rs survived.
+       TWO PRE-EXISTING FLAKES, both the same race, both found by running a
+       baseline more than once. bots.rs `a_human_is_never_refused...` failed 3/5
+       on an UNTOUCHED tree: it disconnected the human then asserted on
+       players.len(), racing its own Leave. My own malformed-input test had it
+       too — passed alone, failed under the loaded workspace run. Both fixed by
+       PARKING the client until the assertion has run, not by widening a sleep.
+       My first "baseline passed" was a single lucky sample. One run is not
+       evidence; that is the same lesson this project keeps re-learning.
+       map_init's TS test fixture was 4 bytes short — T6.16 added carve_seq to
+       the encoder and the decoder but not the fixture, and a hardcoded offset 26
+       then poked the wrong field. Offset is now derived. The real path was
+       always fine (checkpoint: 0 resyncs); only the fixture was stale.
+Left for later: M7 (T7.01-T7.05) is next. M6 is complete.

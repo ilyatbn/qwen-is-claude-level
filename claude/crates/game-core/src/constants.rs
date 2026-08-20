@@ -153,6 +153,13 @@ pub const KILL_POINTS: i16 = 1;
 pub const DEATH_POINTS: i16 = -1;
 /// 1 for development; raise later.
 pub const MIN_PLAYERS_TO_START: usize = 1;
+/// Seconds a seated socket may go without sending `ready` before its seat is
+/// swept (`room::sweep_unready`).
+///
+/// `docs/40-net-protocol.md` §1 states this in prose ("dropped after 30 s") and
+/// not as a table row, so it is here for the same reason as the §A7 constants:
+/// a number that lives only in a sentence cannot be checked against the code.
+pub const READY_TIMEOUT_SECS: f32 = 30.0;
 
 // ---------------------------------------------------------------------------
 // Map generation
