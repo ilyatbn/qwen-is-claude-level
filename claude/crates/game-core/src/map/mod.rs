@@ -14,5 +14,5 @@ pub mod shape;
 pub use carve::{CarveResult, ChunkId};
 pub use coarse::{CellState, CoarseGrid};
 pub use mask::Mask;
-pub use meta::{generate, BuriedSlot, Decoration, Map, MapMeta};
+pub use meta::{generate, generate_with_secret, BuriedSlot, Decoration, Map, MapMeta};
 pub use shape::{carve_circle_counted, stamp_capsule, stamp_circle};

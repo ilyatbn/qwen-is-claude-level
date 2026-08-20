@@ -381,9 +381,19 @@ pub struct World {
 
 impl World {
     pub fn new(seed: u64, scale: MapScale) -> Self {
-        let map = generate(seed, scale);
+        Self::with_buried_secret(seed, scale, 0)
+    }
+
+    /// A world whose buried slots and their contents are hidden behind a secret
+    /// that never crosses the wire (`docs/70-amendments-v2.md` §A31).
+    ///
+    /// `welcome` carries the seed and `game-core` ships as WASM, so without this
+    /// a modified client recomputes every buried slot exactly. Defaults to 0
+    /// everywhere except a live server, so goldens and sweeps are unaffected.
+    pub fn with_buried_secret(seed: u64, scale: MapScale, buried_secret: u64) -> Self {
+        let map = crate::map::generate_with_secret(seed, scale, buried_secret);
         let wind = map.meta.wind;
-        let buried_items = assign_buried_items(&map, seed);
+        let buried_items = assign_buried_items(&map, seed ^ buried_secret);
         let mut items = WorldItems::new();
         let initial_draws = place_initial(&mut items, &map, seed, 0.0);
 

@@ -102,7 +102,24 @@ impl Map {
 }
 
 /// The full pipeline: terrain, spawns, buried slots, decorations, coarse grid.
+///
+/// Buried slots come from the default (zero) secret. Use `generate_with_secret`
+/// on a live server so a modified client cannot recompute them (`docs/70` §A31).
 pub fn generate(requested_seed: u64, scale: MapScale) -> Map {
+    generate_with_secret(requested_seed, scale, 0)
+}
+
+/// As `generate`, with a per-round `buried_secret` that never crosses the wire.
+///
+/// Every buried slot is currently derivable by anyone holding the seed, and the
+/// seed is in `welcome` — `game-core` ships as WASM, so a modified client can
+/// call the same function and get all ten exactly. Hiding them from an honest
+/// client is not hiding them.
+///
+/// The secret defaults to 0 so golden tables, the seed sweep and every existing
+/// test are unaffected; only the server rolls a real one, and it goes in the
+/// replay header so a round stays reproducible.
+pub fn generate_with_secret(requested_seed: u64, scale: MapScale, buried_secret: u64) -> Map {
     let outcome = generate_terrain(requested_seed, scale);
     let params = scale.params();
 
@@ -120,7 +137,7 @@ pub fn generate(requested_seed: u64, scale: MapScale) -> Map {
         &outcome.mask,
         &outcome.sealed_pockets,
         &outcome.tunnel_paths,
-        outcome.seed,
+        outcome.seed ^ buried_secret,
         params.buried_slots as usize,
     );
 

@@ -632,3 +632,48 @@ fn the_input_backlog_is_bounded() {
         game_core::constants::MAX_INPUT_QUEUE
     );
 }
+
+// ---------------------------------------------------------------------------
+// §A31 — buried slots must not be recomputable from the seed
+// ---------------------------------------------------------------------------
+
+/// `welcome` carries the seed and `game-core` ships as WASM, so a modified
+/// client can call the generator itself. Hiding buried slots from an honest
+/// client is not hiding them.
+#[test]
+fn a_buried_secret_moves_the_slots_for_the_same_seed() {
+    let plain = World::new(SEED, MapScale::Small);
+    let secret = World::with_buried_secret(SEED, MapScale::Small, 0xDEAD_BEEF_CAFE_F00D);
+
+    let a: Vec<_> = plain.map.meta.buried_slots.iter().map(|s| s.pos).collect();
+    let b: Vec<_> = secret.map.meta.buried_slots.iter().map(|s| s.pos).collect();
+
+    // The control: a map with no buried slots would make "they differ" vacuous.
+    assert!(
+        !a.is_empty(),
+        "no buried slots were placed; nothing is proven"
+    );
+    assert_ne!(
+        a, b,
+        "the same seed produced the same buried slots with and without a secret"
+    );
+
+    // Everything else about the map must be untouched — the secret feeds the
+    // buried stream only, or it would invalidate every golden hash.
+    assert_eq!(
+        plain.map.mask.hash_hex(),
+        secret.map.mask.hash_hex(),
+        "the secret changed the terrain, not just the buried slots"
+    );
+    assert_eq!(plain.map.meta.spawn_points, secret.map.meta.spawn_points);
+}
+
+/// Default zero, so every existing golden table and sweep is unaffected.
+#[test]
+fn the_default_secret_reproduces_the_plain_generator() {
+    let a = World::new(SEED, MapScale::Small);
+    let b = World::with_buried_secret(SEED, MapScale::Small, 0);
+    let pa: Vec<_> = a.map.meta.buried_slots.iter().map(|s| s.pos).collect();
+    let pb: Vec<_> = b.map.meta.buried_slots.iter().map(|s| s.pos).collect();
+    assert_eq!(pa, pb);
+}

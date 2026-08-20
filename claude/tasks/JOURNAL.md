@@ -1481,3 +1481,18 @@ Notes: A30 — a tick now applies EXACTLY ONE input per player, surplus to a
        nothing could prove it round-trips and the agreement test would have had
        to parse the format a second time.
 Left for later: A31 (buried_secret) not done. T6.12-T6.15 remain.
+
+## A31 — buried slots behind a secret — DONE
+Files: crates/game-core/src/map/{meta,mod}.rs, crates/game-core/src/world/mod.rs,
+       crates/game-server/src/room.rs, crates/game-core/tests/world_step.rs
+Verified: `cargo test --workspace` — 543+32+19+24+57+... all green, including the
+       golden tables, which is the point: the secret defaults to 0 so nothing
+       existing moved.
+Notes: buried slots were hidden from an honest client, not from the wire — the
+       seed is in `welcome` and game-core ships as WASM, so a modified client
+       called choose_buried_slots itself and got all ten. Now derived from
+       `seed ^ buried_secret`, rolled per round on the server, never sent.
+       FIXED_SEED pins the secret to 0 as well, so "reproduce the bug" still
+       reproduces the whole round rather than a map with different loot.
+       The test asserts the terrain hash and spawn points are UNCHANGED by the
+       secret — it must feed the buried stream only, or every golden breaks.

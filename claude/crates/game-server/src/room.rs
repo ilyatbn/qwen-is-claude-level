@@ -202,8 +202,17 @@ impl Room {
     /// worker it lands on.
     pub fn new(config: Arc<Config>) -> Self {
         let seed = config.fixed_seed.unwrap_or(0x5EED_1234_ABCD_0001);
+        // Buried slots are derived behind a secret that never crosses the wire
+        // (`docs/70-amendments-v2.md` §A31). `welcome` carries the seed and
+        // `game-core` ships as WASM, so without this a modified client
+        // recomputes every slot exactly. `FIXED_SEED` pins the secret too, so
+        // "reproduce the bug" still reproduces the whole round.
+        let buried_secret = match config.fixed_seed {
+            Some(_) => 0,
+            None => seed.rotate_left(17) ^ 0x9E37_79B9_7F4A_7C15,
+        };
         Room {
-            world: World::new(seed, config.map_scale),
+            world: World::with_buried_secret(seed, config.map_scale, buried_secret),
             seats: Seats::default(),
             config,
             lag_warned_at: 0,
