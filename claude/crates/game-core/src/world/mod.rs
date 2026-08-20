@@ -1557,3 +1557,69 @@ mod state_hash_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod state_hash_coverage {
+    use super::*;
+
+    /// A **compile-time** tripwire for `state_hash` silently narrowing.
+    ///
+    /// `the_hash_is_sensitive_to_every_field_a_tick_can_change` proves the fields
+    /// that exist today are covered. It cannot prove a field added tomorrow is.
+    ///
+    /// So this destructures `World` exhaustively — no `..`. Rust requires every
+    /// field to be named, so **adding a field to `World` makes this stop
+    /// compiling**, and the author has to come here and decide whether their new
+    /// field belongs in the hash. That is the only question this file exists to
+    /// force.
+    ///
+    /// I tried pinning `size_of::<World>()` first. It does not work: I added a
+    /// `u64` probe field and the size stayed 2304, because it landed in existing
+    /// padding. A tripwire that fails its own falsification is decoration.
+    ///
+    /// This exists because leaking `SystemTime` into `world.wind` on every tick
+    /// once replayed **green** — the determinism guarantee for the whole project
+    /// rested on a hash covering a fraction of the simulation.
+    #[test]
+    fn every_field_of_world_has_been_considered_for_the_state_hash() {
+        let w = World::new(1, crate::constants::MapScale::Small);
+        let World {
+            // Hashed: a tick can change these, so they are part of the state a
+            // replay must reproduce.
+            map: _,
+            players: _,
+            items: _,
+            projectiles: _,
+            spawn_schedule: _,
+            effects: _,
+            buried_items: _,
+            round_time: _,
+            tick: _,
+            phase: _,
+            wind: _,
+            rng: _,
+            carve_seq: _,
+            phase_started_at: _,
+            round_seconds: _,
+            last_day_phase: _,
+            toxic: _,
+            meteor: _,
+            lava: _,
+            fog: _,
+
+            // Deliberately NOT hashed, each for a stated reason:
+            // `seed` is an input, fixed for the round and carried in the replay
+            // header — hashing it would only prove the header was read.
+            seed: _,
+            // `events` is drained every tick and delivered to clients; it is
+            // output, not state, and two runs that produced identical state have
+            // by construction produced identical events.
+            events: _,
+            // `pending` and `prev_input` are consumed within the tick that fills
+            // them (§A30: one input per player per tick), so they are empty at
+            // every point a hash is taken.
+            pending: _,
+            prev_input: _,
+        } = w;
+    }
+}
