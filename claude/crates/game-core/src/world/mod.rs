@@ -8,6 +8,9 @@
 //! See `docs/41-server-loop-rooms.md` §2 for the tick order, which is a contract.
 
 pub mod cycle;
+pub mod tombstones;
+
+use tombstones::Tombstones;
 
 use crate::constants::{
     MapScale, ENDED_SECONDS, MAX_INPUT_QUEUE, MAX_PLAYERS, ROUND_SECONDS, WARMUP_SECONDS,
@@ -177,6 +180,20 @@ pub enum GameEvent {
         x: f32,
         y: f32,
     },
+    /// A grave where someone fell (§B8).
+    TombstoneSpawn {
+        tick: u32,
+        id: crate::world::tombstones::TombstoneId,
+        owner: PlayerId,
+        x: f32,
+        y: f32,
+        skin_id: u16,
+    },
+    /// Evicted by `MAX_TOMBSTONES`, oldest first.
+    TombstoneDespawn {
+        tick: u32,
+        id: crate::world::tombstones::TombstoneId,
+    },
     Score {
         tick: u32,
     },
@@ -238,6 +255,8 @@ impl GameEvent {
             | GameEvent::Damage { tick, .. }
             | GameEvent::Death { tick, .. }
             | GameEvent::Respawn { tick, .. }
+            | GameEvent::TombstoneSpawn { tick, .. }
+            | GameEvent::TombstoneDespawn { tick, .. }
             | GameEvent::Score { tick }
             | GameEvent::EffectStart { tick, .. }
             | GameEvent::EffectPhaseChanged { tick, .. }
@@ -355,6 +374,7 @@ pub struct World {
     pub players: Vec<PlayerState>,
     pub items: WorldItems,
     pub projectiles: Projectiles,
+    pub tombstones: Tombstones,
     pub spawn_schedule: SpawnSchedule,
     pub effects: EffectScheduler,
     pub buried_items: Vec<ItemId>,
@@ -404,6 +424,7 @@ impl World {
             players: Vec::new(),
             items,
             projectiles: Projectiles::new(),
+            tombstones: Tombstones::default(),
             spawn_schedule: SpawnSchedule::new(seed, 0.0, initial_draws),
             effects: EffectScheduler::new(seed, 0.0),
             buried_items,
@@ -607,8 +628,9 @@ impl World {
             self.step_weather(now, dt);
         }
 
-        // 6. world items and crates.
+        // 6. world items and crates — and the graves, which fall the same way.
         self.items.step(&self.map, dt);
+        self.tombstones.step(&self.map, dt);
         if playing {
             self.step_item_spawns(now);
         }
@@ -1126,6 +1148,22 @@ impl World {
                     attacker,
                     cause,
                 });
+                // A grave where they fell (§B8). Cosmetic, and it falls if the
+                // ground under it goes.
+                let skin = self.players[i].tombstone_skin_id;
+                let (stone, evicted) = self.tombstones.place(victim, pos, skin, now);
+                if let Some(gone) = evicted {
+                    self.events
+                        .push(GameEvent::TombstoneDespawn { tick, id: gone });
+                }
+                self.events.push(GameEvent::TombstoneSpawn {
+                    tick,
+                    id: stone.id,
+                    owner: victim,
+                    x: stone.pos.x,
+                    y: stone.pos.y,
+                    skin_id: stone.skin_id,
+                });
                 scored = true;
             }
         }
@@ -1429,6 +1467,7 @@ impl World {
 
         self.effects.hash_into(&mut h);
         self.spawn_schedule.hash_into(&mut h);
+        self.tombstones.hash_into(&mut h);
 
         // The world's own stream, by position — see `EffectScheduler::hash_into`.
         let mut probe = self.rng.clone();
@@ -1597,6 +1636,7 @@ mod state_hash_coverage {
             players: _,
             items: _,
             projectiles: _,
+            tombstones: _,
             spawn_schedule: _,
             effects: _,
             buried_items: _,

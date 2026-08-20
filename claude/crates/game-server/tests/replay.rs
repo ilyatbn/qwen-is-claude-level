@@ -75,6 +75,7 @@ fn seat(room: &mut Room, name: &str) -> u8 {
     room.apply_for_test(Command::Join {
         name: name.to_string(),
         skin_id: 0,
+        tombstone_skin_id: 0,
         reply: tx,
     });
     rx.blocking_recv()

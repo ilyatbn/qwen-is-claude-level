@@ -633,3 +633,79 @@ async fn a_joiner_never_receives_another_player_s_inventory() {
         "the second client received {seen} inventory events; exactly one — its own — is correct"
     );
 }
+
+// -------------------------------------------------------------- tombstones
+
+/// A player joining mid-round sees the graves that are already there (§B8).
+///
+/// **Counted at both ends** (§A39): the server's own tombstone count against the
+/// number of `tombstone_spawn` events the joiner received. Asserting only "the
+/// joiner got some tombstones" passes while the server holds thirty and sends
+/// one, and asserting only "the server has graves" passes while the client sees
+/// none — which is exactly the shape that hid initial world items for three
+/// milestones.
+///
+/// This is the fourth instance of one pattern: state that exists before a client
+/// connects is never announced to it. Initial items, scores, inventory, and now
+/// the graveyard.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mid_round_joiner_sees_the_graves_that_are_already_there() {
+    let s = spawn_server(test_config()).await;
+    let addr = s.addr;
+
+    // Someone dies before the second player has ever connected.
+    //
+    // The deaths are driven through the existing `Command::Inspect` hook rather
+    // than a new test-only command: it already gives mutable access to the world
+    // between ticks, and a second mechanism for the same thing is how duplicates
+    // get built (§A24).
+    let first = tokio::task::spawn_blocking(move || {
+        let (c, _inbox, _rx) = join_and_ready(addr, "ana", &[]);
+        c
+    })
+    .await
+    .expect("ana joined");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    for _ in 0..3 {
+        s.room.send(game_server::room::Command::Inspect(Box::new(
+            |w: &mut game_core::world::World| {
+                w.set_phase(game_core::world::RoundPhase::Playing);
+                if let Some(p) = w.player_mut(0) {
+                    p.alive = true;
+                    p.iframes_until = 0.0;
+                    p.health = 0.0;
+                }
+            },
+        )));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+
+    let server_graves = s
+        .room
+        .inspect(|w| w.tombstones.len())
+        .await
+        .expect("room alive");
+    assert!(
+        server_graves > 0,
+        "the control: nobody died, so nothing is being tested"
+    );
+
+    // Now a second client joins into that round.
+    let seen = tokio::task::spawn_blocking(move || {
+        let (c, inbox, _rx) = join_and_ready(addr, "bo", &["tombstone_spawn"]);
+        std::thread::sleep(Duration::from_millis(900));
+        let n = got(&inbox, "tombstone_spawn").len();
+        let _ = c.disconnect();
+        let _ = first.disconnect();
+        n
+    })
+    .await
+    .expect("bo joined");
+
+    assert_eq!(
+        seen, server_graves,
+        "the joiner must be told about every grave the server holds, \
+         got {seen} of {server_graves}"
+    );
+}

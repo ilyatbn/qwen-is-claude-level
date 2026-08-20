@@ -744,7 +744,7 @@ async fn seat(
         .unwrap_or(0)
         .min(u16::MAX as u64) as u16;
 
-    let Some(id) = room.join(name.clone(), skin_id).await else {
+    let Some(id) = room.join(name.clone(), skin_id, tombstone_skin_id).await else {
         emit(
             &socket,
             "join_error",
@@ -893,6 +893,43 @@ async fn seat(
             player = id,
             count = items.len(),
             "sent the existing world items",
+        );
+    }
+
+    // The graveyard.
+    //
+    // Fourth instance of the same pattern, and the one that made it a rule
+    // (§A39): a mid-round joiner arrives into a round where people have already
+    // died, and without this the map they see has no graves on it while everyone
+    // else's does. Per socket, like the item list, because it is current state
+    // rather than a change.
+    if let Some(stones) = room
+        .inspect(|w| {
+            w.tombstones
+                .all()
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "tick": w.tick,
+                        "id": t.id,
+                        "owner": t.owner,
+                        "x": t.pos.x,
+                        "y": t.pos.y,
+                        "skin_id": t.skin_id,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+    {
+        for t in &stones {
+            emit(&socket, "tombstone_spawn", t);
+        }
+        tracing::debug!(
+            target: "game::round",
+            player = id,
+            count = stones.len(),
+            "sent the existing tombstones",
         );
     }
 

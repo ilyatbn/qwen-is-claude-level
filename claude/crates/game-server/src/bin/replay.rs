@@ -319,6 +319,11 @@ fn to_command(c: &ReplayCommand) -> Command {
             Command::Join {
                 name: name.clone(),
                 skin_id: *skin_id,
+                // Not recorded, and not needed: a grave's skin is cosmetic and
+                // is excluded from `state_hash` for the same reason
+                // `PlayerState.skin_id` is. A replay reproduces the simulation,
+                // not the palette.
+                tombstone_skin_id: 0,
                 reply,
             }
         }

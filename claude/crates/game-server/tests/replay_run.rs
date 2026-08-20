@@ -70,6 +70,7 @@ fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
     room.apply_for_test(Command::Join {
         name: "ana".into(),
         skin_id: 0,
+        tombstone_skin_id: 0,
         reply: tx,
     });
     let id = rx.blocking_recv().ok().flatten().expect("seat");
@@ -117,6 +118,7 @@ fn resimulate(file: &replay::Replay, until: u32) -> Room {
                     Command::Join {
                         name: name.clone(),
                         skin_id: *skin_id,
+                        tombstone_skin_id: 0,
                         reply,
                     }
                 }
@@ -201,6 +203,7 @@ fn empty_ticks_are_simulated_not_skipped() {
     room.apply_for_test(Command::Join {
         name: "ana".into(),
         skin_id: 0,
+        tombstone_skin_id: 0,
         reply: tx,
     });
     let id = rx.blocking_recv().ok().flatten().expect("seat");

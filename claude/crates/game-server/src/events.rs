@@ -56,6 +56,8 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         | GameEvent::CrateSpawn { .. }
         | GameEvent::Death { .. }
         | GameEvent::Respawn { .. }
+        | GameEvent::TombstoneSpawn { .. }
+        | GameEvent::TombstoneDespawn { .. }
         | GameEvent::Score { .. }
         | GameEvent::EffectStart { .. }
         | GameEvent::EffectPhaseChanged { .. }
@@ -84,6 +86,8 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::Damage { .. } => "damage",
         GameEvent::Death { .. } => "death",
         GameEvent::Respawn { .. } => "respawn",
+        GameEvent::TombstoneSpawn { .. } => "tombstone_spawn",
+        GameEvent::TombstoneDespawn { .. } => "tombstone_despawn",
         GameEvent::Score { .. } => "score",
         GameEvent::EffectStart { .. } => "effect_start",
         GameEvent::EffectPhaseChanged { .. } => "effect_phase",
@@ -226,6 +230,15 @@ pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
             "round_time": world.round_time,
         }),
         GameEvent::Respawn { id, x, y, .. } => json!({"tick": tick, "id": id, "x": x, "y": y}),
+        GameEvent::TombstoneSpawn {
+            id,
+            owner,
+            x,
+            y,
+            skin_id,
+            ..
+        } => json!({"tick": tick, "id": id, "owner": owner, "x": x, "y": y, "skin_id": skin_id}),
+        GameEvent::TombstoneDespawn { id, .. } => json!({"tick": tick, "id": id}),
         GameEvent::Score { .. } => json!({
             "tick": tick,
             "scores": world.players.iter().map(|p| json!({

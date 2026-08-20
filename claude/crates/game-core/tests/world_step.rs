@@ -770,3 +770,73 @@ fn a_death_with_no_attacker_is_still_the_weather() {
         "nobody touched them, so nobody is to blame"
     );
 }
+
+/// A death leaves a grave where you fell (§B8).
+///
+/// Asserted at the **world** level, not on `Tombstones` alone: the unit tests
+/// prove a stone falls and the cap holds, and would all still pass if the death
+/// path never called `place`. That is §A39's shape — five mechanisms on this
+/// project were built, unit-tested and never wired — so the wiring gets its own
+/// assertion.
+#[test]
+fn a_death_leaves_a_tombstone_where_the_player_fell() {
+    let mut w = playing();
+    let pos = spawn_at(&mut w, 1);
+    let _ = w.drain_events();
+    assert_eq!(w.tombstones.len(), 0, "no graves before anyone dies");
+
+    if let Some(p) = w.player_mut(1) {
+        p.tombstone_skin_id = 3;
+        p.health = 0.0;
+    }
+    w.step(SIM_DT);
+
+    let ev = w.drain_events().into_iter().find_map(|e| match e {
+        GameEvent::TombstoneSpawn {
+            owner,
+            x,
+            y,
+            skin_id,
+            ..
+        } => Some((owner, x, y, skin_id)),
+        _ => None,
+    });
+    let (owner, x, y, skin) = ev.expect("a death must announce a tombstone");
+    assert_eq!(owner, 1);
+    assert_eq!(skin, 3, "the player's chosen grave, carried through");
+    assert_eq!(w.tombstones.len(), 1);
+    // Where they fell, within a pixel — the body has not fallen yet this tick.
+    assert!(
+        (x - pos.x).abs() < 2.0 && (y - pos.y).abs() < 2.0,
+        "grave at ({x}, {y}) but they died at {pos:?}"
+    );
+}
+
+/// The graveyard is capped, and the eviction is announced.
+///
+/// A client that never hears the despawn draws a grave the server has forgotten,
+/// which is the same leak as an item drawn by nothing — just in the other
+/// direction.
+#[test]
+fn the_graveyard_is_capped_and_evictions_are_announced() {
+    let mut w = playing();
+    spawn_at(&mut w, 1);
+    let _ = w.drain_events();
+    let cap = game_core::constants::MAX_TOMBSTONES;
+
+    let mut despawns = 0;
+    for _ in 0..(cap + 3) {
+        if let Some(p) = w.player_mut(1) {
+            p.alive = true;
+            p.health = 0.0;
+        }
+        w.step(SIM_DT);
+        despawns += w
+            .drain_events()
+            .iter()
+            .filter(|e| matches!(e, GameEvent::TombstoneDespawn { .. }))
+            .count();
+    }
+    assert_eq!(w.tombstones.len(), cap, "the cap holds");
+    assert_eq!(despawns, 3, "three over the cap, three evictions announced");
+}

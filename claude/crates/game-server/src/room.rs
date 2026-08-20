@@ -39,6 +39,9 @@ pub enum Command {
     Join {
         name: String,
         skin_id: u16,
+        /// The grave they leave (§B8). Meaningless to the server, carried for
+        /// the clients that draw it.
+        tombstone_skin_id: u16,
         reply: oneshot::Sender<Option<PlayerId>>,
     },
     Ready(PlayerId),
@@ -150,13 +153,19 @@ impl RoomHandle {
     }
 
     /// Await a reply. Used by `join`, which needs the assigned id.
-    pub async fn join(&self, name: String, skin_id: u16) -> Option<PlayerId> {
+    pub async fn join(
+        &self,
+        name: String,
+        skin_id: u16,
+        tombstone_skin_id: u16,
+    ) -> Option<PlayerId> {
         let (reply, rx) = oneshot::channel();
         if self
             .tx
             .send(Command::Join {
                 name,
                 skin_id,
+                tombstone_skin_id,
                 reply,
             })
             .await
@@ -475,6 +484,7 @@ impl Room {
             Command::Join {
                 name,
                 skin_id,
+                tombstone_skin_id,
                 reply,
             } => {
                 let mut id = self.seats.alloc(self.config.max_players);
@@ -487,6 +497,11 @@ impl Room {
                         skin_id,
                     });
                     self.world.add_player(id, skin_id, name);
+                    // §B8. Parsed from `join` and, until now, dropped on the
+                    // floor — the §A39 shape again, in the join path itself.
+                    if let Some(p) = self.world.player_mut(id) {
+                        p.tombstone_skin_id = tombstone_skin_id;
+                    }
                     self.grant_dev_loadout(id);
                 }
                 let _ = reply.send(id);
@@ -1228,6 +1243,7 @@ mod tests {
         room.apply(Command::Join {
             name: "a".into(),
             skin_id: 0,
+            tombstone_skin_id: 0,
             reply,
         });
         let id = 0;
@@ -1257,6 +1273,7 @@ mod tests {
         room.apply(Command::Join {
             name: "a".into(),
             skin_id: 0,
+            tombstone_skin_id: 0,
             reply,
         });
         room.seats.begin_tick();
@@ -1292,6 +1309,7 @@ mod tests {
         room.apply(Command::Join {
             name: "a".into(),
             skin_id: 0,
+            tombstone_skin_id: 0,
             reply,
         });
         assert_eq!(room.player_count(), 1);
@@ -1328,6 +1346,7 @@ mod tests {
         room.apply(Command::Join {
             name: "human".into(),
             skin_id: 0,
+            tombstone_skin_id: 0,
             reply,
         });
         assert_eq!(room.bot_count(), 5, "no bot was kicked");
@@ -1345,6 +1364,7 @@ mod tests {
         room.apply(Command::Join {
             name: "a".into(),
             skin_id: 0,
+            tombstone_skin_id: 0,
             reply,
         });
         // Nothing is dropped while the timeout has not elapsed.
@@ -1359,6 +1379,7 @@ mod tests {
         room.apply(Command::Join {
             name: "b".into(),
             skin_id: 0,
+            tombstone_skin_id: 0,
             reply,
         });
         room.apply(Command::Ready(0));
