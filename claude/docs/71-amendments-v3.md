@@ -367,3 +367,48 @@ same string.
 `/metrics` reports the three fields **per room**, not process-wide, because a
 process-wide p99 hides one sick room behind seven healthy ones, and
 `MissedTickBehavior::Burst` makes a sick room spike rather than degrade.
+
+## B11 — What an assertion actually witnesses
+
+T10.03 asked for "assert zero ticks after the scene transition, not that you called
+stop". That instruction caught two separate failures, and the second is worth more
+than the feature.
+
+**First:** the assertion read `attract?.tickCount ?? 0`. After teardown `attract` is
+null, so it compared **0 against 0** and would have passed however the simulation
+behaved. Fixed with a scene-level monotonic counter and a control asserting it is
+non-zero first.
+
+**Second, and this is the general lesson:** with the counter fixed, deleting the
+shutdown handler entirely *still passed* — because **Phaser stops calling `update()`
+on a stopped scene regardless.** "No ticks after the transition" is guaranteed by
+the engine, not by the teardown code. The assertion was true, the measurement was
+sound, and it witnessed nothing about the thing under test.
+
+> Ask what a passing assertion **rules out**. If the property would hold with your
+> code deleted, the framework is providing it and your test is watching the
+> framework.
+
+What actually witnesses the release is that the **handle is gone**: with both hooks
+removed, the test now fails with `still allocated behind the menu (attractTicks 82)`.
+
+This is distinct from §A15 (assert effects, not intentions) and sharper. There the
+counter reported an intention. Here the effect was real, measured correctly, and
+caused by something other than the code being tested — which no amount of asserting
+harder on that number would have revealed. Only deleting the implementation did.
+
+## B12 — The attract mode must show the game, not placeholders
+
+The title screen renders bots as **coloured rectangles** while the game itself has
+had character sprites since M7. It is the first thing a player sees, and it is
+currently showing the placeholder art that everything else outgrew.
+
+The attract mode wraps a real `World` and real `Bot`s — that part is right, and it
+is what makes the title a live smoke test of `game-core` rather than a decoration.
+It must render them through the **same sprite path the game uses**, including
+facing, animation state and held weapon.
+
+The rule this comes from is general enough to state: **a screen that exists to show
+the game must not render it differently from the game.** A separate render path in
+the attract mode is a second thing to keep in sync, and the first time it drifts,
+the title screen will be advertising a game that no longer looks like that.
