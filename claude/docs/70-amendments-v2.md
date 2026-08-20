@@ -1052,3 +1052,68 @@ URL, licence and fetch date as §8 requires.
 The procedural fallback in §5 is **not** thereby optional. It is what makes a fresh
 clone run without network access, and it has been carrying the whole project since
 M3.
+
+## A30 — One input per player per tick
+
+**This corrects `40-net-protocol.md` §2.**
+
+The world applied *every* queued input for a player in one tick, each with a full
+`dt`. `MAX_INPUT_QUEUE` (8) bounds how many are accepted, so a client that simply
+sends more packets — with increasing sequence numbers, which is all the validation
+checks — moves several times faster. Measured over 60 ticks on a medium map:
+
+| inputs sent per tick | displacement |
+|---|---|
+| 1 | 140.79 px |
+| 2 | 290.80 px (2.06×) |
+| 4 | 451.95 px (3.2×, then hit terrain) |
+
+This is server-authoritative movement defeated by the client choosing its own
+packet rate, which is the one thing the authority exists to prevent. `docs/40` §2's
+"at most `MAX_INPUT_QUEUE` inputs per player per tick are processed" was written as
+a flood guard and read as a licence: round time advances by one `dt` per tick
+regardless, so the surplus buys distance per unit of *game* time.
+
+> A tick advances each player by exactly **one** input. Surplus inputs go to a
+> bounded per-player backlog and are consumed on later ticks.
+
+`MAX_INPUT_QUEUE` then bounds the backlog rather than the per-tick application,
+which is also what makes a jitter burst catch up correctly instead of teleporting:
+the packets that arrive late are still simulated, just in order and one per tick.
+A backlog at its cap drops the oldest and logs at `debug` on `game::net`.
+
+This is load-bearing for `42-netcode-prediction.md`: reconciliation replays pending
+inputs one per tick, so the client's replay only matches the server's simulation if
+the server consumes them the same way.
+
+## A31 — Buried slots are hidden from an honest client, not from the wire
+
+`32-item-spawning.md` §5 says buried slots "are not sent to clients and there is no
+surface hint. Digging is speculative." The first half is true and verified: no slot
+coordinate appears in `map_init`, `welcome`, any snapshot, or any event before
+reveal.
+
+But `welcome` and `map_init` both carry the round seed, and `game-core` ships to the
+browser as WASM — so a modified client recomputes the generator and gets every slot
+exactly:
+
+```
+server slots: [(1530,1320), (2192,932), (2467,913), (689,964)]
+client slots: [(1530,1320), (2192,932), (2467,913), (689,964)]   10 of 10 exact
+```
+
+Shipping the generator to the client is what makes prediction work, so the seed
+cannot be withheld. The fix is to move the secret out of the seed:
+
+> Buried slot positions and contents derive from `substream(seed ^ buried_secret,
+> "buried")`, where `buried_secret` is a `u64` rolled per round on the server and
+> **never sent**.
+
+It is recorded in the replay header so a round stays reproducible, and defaults to
+`0` in tests so golden tables and the seed sweep are unaffected. Three lines, and it
+closes the hole rather than documenting it.
+
+The comparable compromise in `14-daynight-visibility.md` §5 — a modified client can
+see players in the dark — stays accepted for v1, because closing it needs
+server-side visibility culling rather than a different sub-stream. The difference
+worth naming: §5 documents its hole and §32 believed it had none.
