@@ -1540,3 +1540,39 @@ Notes: ROUND_SECONDS WAS PARSED AND THEN DROPPED. Config read it, the world used
        votes live in a BTreeMap, not a HashMap: it is iterated to count, and A11
        already cost this project one order-dependent bug.
 Left for later: T6.16 (Game scene) then T6.13.
+
+## T6.16 — the Game scene, and the M6 checkpoint — DONE
+Files: client/src/scenes/GameScene.ts, client/src/render/worldView.ts,
+       client/src/net/{connection,worldMirror,codec}.ts, client/src/main.ts,
+       client/vite.config.ts, scripts/e2e-two-clients.mjs,
+       crates/game-{core,server}/src/... (carve_seq in map_init, DEV_LOADOUT)
+Verified: `node scripts/e2e-two-clients.mjs` — two clients, same map, remote seen
+       moving 193 px, 4860 px of terrain removed IN BOTH, matching checksum,
+       late joiner agrees, **0 resyncs**, 0 page errors. Shots in shots/m6-*.png.
+Notes: THE CHECKPOINT EARNED ITS KEEP TWICE.
+       1. Connection coerced every payload to Record<string,unknown>, so the two
+          payloads that are plain STRINGS — map_init and snapshot, both base64
+          (A27) — arrived as {}. The client ignored every map and every snapshot
+          while looking perfectly healthy: connected, seated, no errors. Handlers
+          now receive the payload as sent.
+       2. EVERY CARVE CAUSED A FULL MAP RESEND. The world increments carve_seq
+          before emitting, so the first carve is seq 1, and a client reset its
+          expectation to 0 on map_init — buffered it, timed out at 2 s, refetched
+          the whole map, reset to 0 again. map_init now carries the carve_seq the
+          mask is current as of, which is also what lets a MID-ROUND joiner pick
+          up the stream. Resyncs went 1 -> 0 per client.
+       Also: mask_checksum arriving before map_init made the client resync in a
+       loop it could never win (the core still held its constructed map), so
+       verifyChecksum returns early until a map has landed.
+       WorldView extracts the terrain/backdrop/camera stack so Sandbox and Game
+       build it identically — two render paths is how the sandbox stops
+       predicting what the game does.
+       DEV_LOADOUT=1 (default OFF) arms players at spawn. Finding weapons is the
+       design; a checkpoint that must demonstrate destruction cannot start by
+       walking to a crate.
+Noticed, not fixed: at Small scale the backdrop covers noticeably more sky than
+       at Large — A19 measured 16.4% sky-as-backdrop at small vs 7.2% at large,
+       and the e2e uses Small for speed. The default is Large. Residual 8-px
+       stair-stepping on backdrop/sky edges is still visible (the ~2x-chance
+       grid snapping the M5 review measured).
+Left for later: T6.13 integration tests is the last M6 box.

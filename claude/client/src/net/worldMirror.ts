@@ -106,7 +106,11 @@ export class WorldMirror {
     // either already baked in or about to be re-sent.
     this.buffered.clear()
     this.gapSince = null
-    this.nextCarveSeq = 0
+    // Pick the stream up where this mask leaves off. Resetting to 0 instead is
+    // how every carve became a full resync: the world's first carve is `seq 1`,
+    // so a client expecting 0 buffers it, times out, and refetches the map —
+    // for every rocket, forever.
+    this.nextCarveSeq = m.carveSeq + 1
     this.mapLoaded = true
     return m
   }
@@ -194,6 +198,10 @@ export class WorldMirror {
    * — so it resyncs rather than trying to repair.
    */
   verifyChecksum(serverHashHex: string): boolean {
+    // Before `map_init` lands there is nothing meaningful to compare: the core
+    // still holds whatever map it was constructed with, so every checksum
+    // "mismatches" and the client resyncs in a loop it can never win.
+    if (!this.mapLoaded) return true
     this.stats.checksumsChecked++
     const ours = hex(this.core.maskHash())
     // The server truncates to 8 bytes (`docs/40` §5); compare the common prefix

@@ -31,7 +31,16 @@ export interface Welcome {
   maxPlayers: number
 }
 
-export type EventHandler = (payload: Record<string, unknown>) => void
+/**
+ * Handlers receive the payload **as sent**.
+ *
+ * An earlier version coerced everything to `Record<string, unknown>`, which
+ * silently turned the two payloads that are plain strings — `map_init` and
+ * `snapshot`, both base64 (§A27) — into `{}`. The client then ignored every
+ * map and every snapshot while looking completely healthy: connected, seated,
+ * no errors. Use `asRecord` for the JSON events.
+ */
+export type EventHandler = (payload: unknown) => void
 
 /** Injectable so tests can drive the whole flow without a server. */
 export interface SocketLike {
@@ -86,7 +95,7 @@ export class Connection {
 
     // Attach every registered handler, plus the ones we own.
     for (const [event, list] of this.handlers) {
-      for (const h of list) socket.on(event, (...a: unknown[]) => h(asRecord(a[0])))
+      for (const h of list) socket.on(event, (...a: unknown[]) => h(a[0]))
     }
 
     socket.on('connect', () => {
@@ -127,7 +136,7 @@ export class Connection {
     const list = this.handlers.get(event) ?? []
     list.push(cb)
     this.handlers.set(event, list)
-    if (this.socket) this.socket.on(event, (...a: unknown[]) => cb(asRecord(a[0])))
+    if (this.socket) this.socket.on(event, (...a: unknown[]) => cb(a[0]))
   }
 
   /**
@@ -137,6 +146,11 @@ export class Connection {
   sendInput(batch: readonly InputFrame[]): void {
     if (!batch.length) return
     this.emit('input', toBase64(encodeInputBatch(batch)))
+  }
+
+  /** Escape hatch for events with no typed helper yet, e.g. `ready`. */
+  sendRaw(event: string, payload: unknown): void {
+    this.emit(event, payload)
   }
 
   sendUseItem(slot: number): void {
@@ -182,7 +196,8 @@ export class Connection {
   }
 }
 
-function asRecord(v: unknown): Record<string, unknown> {
+/** JSON events arrive as objects; anything else becomes an empty record. */
+export function asRecord(v: unknown): Record<string, unknown> {
   return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {}
 }
 

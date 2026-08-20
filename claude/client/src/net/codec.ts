@@ -21,6 +21,8 @@ export interface MapInit {
   scale: number
   theme: number
   wind: number
+  /** The last carve `seq` this mask already contains. */
+  carveSeq: number
   spawnPoints: { x: number; y: number }[]
   decorations: { kind: number; x: number; y: number; flags: number }[]
   /** Fed straight to `Core.loadMask`, which decodes it in Rust. */
@@ -117,6 +119,7 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
   const scale = r.u8()
   const theme = r.u8()
   const wind = r.f32()
+  const carveSeq = r.u32()
 
   const spawnCount = r.u16()
   // 4 bytes each: a count the buffer cannot possibly hold is rejected before the
@@ -142,7 +145,7 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
   }
   const rle = r.bytes(rleLen)
 
-  return { width, height, seed, scale, theme, wind, spawnPoints, decorations, rle }
+  return { width, height, seed, scale, theme, wind, carveSeq, spawnPoints, decorations, rle }
 }
 
 export function decodeSnapshot(buf: ArrayBuffer): Snapshot {

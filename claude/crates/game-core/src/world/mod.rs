@@ -518,6 +518,16 @@ impl World {
     /// then never reached the phase machine — the world used the constant, so
     /// `ROUND_SECONDS=5` produced a 240-second round and a test asserting on
     /// phase transitions would have hung rather than failed.
+    /// The last carve `seq` this world emitted.
+    ///
+    /// It goes in `map_init` so a client knows which carve its mask is current
+    /// as of. Without it a joiner resets its expectation to 0, the next carve
+    /// arrives as `seq N`, and the gap triggers a full resync — for every carve,
+    /// forever.
+    pub fn carve_seq(&self) -> u32 {
+        self.carve_seq
+    }
+
     pub fn set_round_seconds(&mut self, secs: f32) {
         self.round_seconds = secs.max(0.0);
     }

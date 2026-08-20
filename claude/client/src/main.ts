@@ -2,6 +2,7 @@ import Phaser from 'phaser'
 import { BootScene } from './scenes/BootScene'
 import { PreviewScene } from './scenes/PreviewScene'
 import { SandboxScene } from './scenes/SandboxScene'
+import { GameScene } from './scenes/GameScene'
 import { C, Core } from './core'
 
 // No constants are declared here. VIEWPORT_W/H used to be literals in this file —
@@ -12,7 +13,9 @@ function pickScene(): Phaser.Types.Scenes.SceneType[] {
   const q = new URLSearchParams(location.search)
   if (q.get('sandbox') === '1') return [SandboxScene]
   if (q.get('preview') === '1') return [PreviewScene]
-  return [BootScene]
+  if (q.get('boot') === '1') return [BootScene]
+  // The multiplayer scene is the default: the sandbox is a tool, not the game.
+  return [GameScene]
 }
 
 async function main(): Promise<Phaser.Game> {

@@ -60,6 +60,13 @@ impl std::error::Error for CodecError {}
 /// `surface_points` are also not sent — large, and the client can derive
 /// standability from the mask if it ever needs to.
 pub fn encode_map_init(map: &Map) -> Vec<u8> {
+    encode_map_init_at(map, 0)
+}
+
+/// `carve_seq` is the last carve the mask already contains. A client sets its
+/// expectation from it, which is what lets a mid-round joiner — or any resync —
+/// pick the carve stream up in the right place.
+pub fn encode_map_init_at(map: &Map, carve_seq: u32) -> Vec<u8> {
     let payload = rle::encode(&map.mask);
     let m = &map.meta;
     let mut b = Vec::with_capacity(payload.len() + 64 + m.spawn_points.len() * 4);
@@ -71,6 +78,7 @@ pub fn encode_map_init(map: &Map) -> Vec<u8> {
     b.push(scale_byte(m.scale));
     b.push(m.theme);
     b.extend_from_slice(&m.wind.to_le_bytes());
+    b.extend_from_slice(&carve_seq.to_le_bytes());
 
     b.extend_from_slice(&(m.spawn_points.len() as u16).to_le_bytes());
     for p in &m.spawn_points {
@@ -115,6 +123,7 @@ pub fn decode_map_init_mask(bytes: &[u8]) -> Result<game_core::map::Mask, CodecE
     r.u8()?; // scale
     r.u8()?; // theme
     r.take(4)?; // wind
+    r.u32()?; // carve_seq
 
     let spawns = r.u16()? as usize;
     r.take(spawns * 4)?;
@@ -486,6 +495,7 @@ mod tests {
             + 1
             + 1
             + 4
+            + 4 // carve_seq
             + 2
             + map.meta.spawn_points.len() * 4
             + 2
@@ -503,7 +513,8 @@ mod tests {
         assert_eq!(u32::from_le_bytes([b[8], b[9], b[10], b[11]]), map.mask.h);
         let seed = u64::from_le_bytes(b[12..20].try_into().expect("8 bytes"));
         assert_eq!(seed, map.meta.seed);
-        let sc = u16::from_le_bytes([b[26], b[27]]) as usize;
+        // 4 magic + 4 w + 4 h + 8 seed + 1 scale + 1 theme + 4 wind + 4 carve_seq
+        let sc = u16::from_le_bytes([b[30], b[31]]) as usize;
         assert_eq!(sc, map.meta.spawn_points.len());
     }
 

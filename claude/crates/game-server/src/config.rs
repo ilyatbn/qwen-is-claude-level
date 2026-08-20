@@ -30,6 +30,13 @@ pub struct Config {
     /// v2 (`docs/70-amendments-v2.md` §A5)
     pub bot_count: usize,
     pub bot_skill: f32,
+    /// Spawn every player with a weapon. **Development only, default off.**
+    ///
+    /// The game's design is that you find your weapons (`docs/32`), and that is
+    /// not negotiable — but a checkpoint that has to demonstrate terrain
+    /// destruction cannot begin by walking a bot to a crate. The sandbox already
+    /// grants a loadout for the same reason.
+    pub dev_loadout: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +71,7 @@ impl Default for Config {
             record_replay: false,
             debug_dump: false,
             bot_count: BOT_COUNT_DEFAULT,
+            dev_loadout: false,
             bot_skill: BOT_SKILL_DEFAULT,
         }
     }
@@ -175,6 +183,7 @@ impl Config {
             debug_dump,
             bot_count,
             bot_skill,
+            dev_loadout: matches!(get("DEV_LOADOUT").as_deref(), Some("1") | Some("true")),
         })
     }
 

@@ -39,39 +39,78 @@ function solidPoint(c: Core): [number, number] {
   throw new Error('no solid point found — the generator is broken, not this test')
 }
 
+/** Put a mirror through a real `map_init` so its carve expectation is set. */
+function initMirror(c: Core, carveSeq = 0): WorldMirror {
+  const m = new WorldMirror(c)
+  m.applyMapInit({
+    width: c.width,
+    height: c.height,
+    seed: 4242n,
+    scale: 0,
+    theme: 0,
+    wind: 0,
+    carveSeq,
+    spawnPoints: [],
+    decorations: [],
+    rle: c.maskRle(),
+  })
+  return m
+}
+
+/**
+ * A mirror that has been through a real `map_init`.
+ *
+ * It matters that this goes through `applyMapInit` rather than a test seam:
+ * the mirror refuses to verify a checksum before a map has landed, and a
+ * fixture that faked that flag would test a state the client never reaches.
+ */
 function freshMirror(): { mirror: WorldMirror; resyncs: number[] } {
   core.generate(4242n, MapScale.Small)
   const mirror = new WorldMirror(core)
   const resyncs: number[] = []
   mirror.onResyncNeeded = () => resyncs.push(1)
+  mirror.applyMapInit({
+    width: core.width,
+    height: core.height,
+    seed: 4242n,
+    scale: 0,
+    theme: 0,
+    wind: 0,
+    carveSeq: 0,
+    spawnPoints: [],
+    decorations: [],
+    rle: core.maskRle(),
+  })
   return { mirror, resyncs }
 }
 
 describe('carve ordering', () => {
+  // Sequences start at 1: the world increments before emitting, so there is no
+  // carve 0 and a test that used one was testing a state the server never sends.
   it('applies carves in seq order and buffers what arrives early', () => {
     const { mirror } = freshMirror()
     const applied: number[] = []
-    mirror.applyCarve(2, () => applied.push(2), 0)
-    mirror.applyCarve(0, () => applied.push(0), 0)
-    expect(applied).toEqual([0])
+    mirror.applyCarve(3, () => applied.push(3), 0)
+    mirror.applyCarve(1, () => applied.push(1), 0)
+    expect(applied).toEqual([1])
     expect(mirror.pendingCarves).toBe(1)
 
-    mirror.applyCarve(1, () => applied.push(1), 0)
-    expect(applied).toEqual([0, 1, 2])
+    mirror.applyCarve(2, () => applied.push(2), 0)
+    expect(applied).toEqual([1, 2, 3])
     expect(mirror.pendingCarves).toBe(0)
   })
 
   it('ignores a duplicate seq rather than applying it twice', () => {
     const { mirror } = freshMirror()
     let n = 0
-    mirror.applyCarve(0, () => n++, 0)
-    mirror.applyCarve(0, () => n++, 0)
+    mirror.applyCarve(1, () => n++, 0)
+    mirror.applyCarve(1, () => n++, 0)
     expect(n).toBe(1)
   })
 
   it('resyncs when a gap persists past the timeout, and not before', () => {
     const { mirror, resyncs } = freshMirror()
-    mirror.applyCarve(1, () => {}, 1000) // seq 0 missing
+    mirror.applyCarve(2, () => {}, 1000) // seq 1 missing
     expect(resyncs.length).toBe(0)
 
     mirror.tick(2500) // 1.5 s later — still inside the window
@@ -83,7 +122,7 @@ describe('carve ordering', () => {
 
   it('does not resync while carves keep arriving in order', () => {
     const { mirror, resyncs } = freshMirror()
-    for (let i = 0; i < 50; i++) mirror.applyCarve(i, () => {}, i * 100)
+    for (let i = 1; i <= 50; i++) mirror.applyCarve(i, () => {}, i * 100)
     mirror.tick(100_000)
     expect(resyncs.length).toBe(0)
   })
@@ -100,7 +139,7 @@ describe('mask agreement', () => {
     other.generate(4242n, MapScale.Small)
     expect(hex(core.maskHash())).toBe(hex(other.maskHash()))
 
-    const mirror = new WorldMirror(core)
+    const mirror = initMirror(core)
     // Deterministic pseudo-random carves, so a failure is reproducible.
     let s = 12345
     const rnd = () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff)
@@ -122,7 +161,7 @@ describe('mask agreement', () => {
     }
     for (const i of order) {
       const [x, y, r] = carves[i]!
-      mirror.applyCarve(i, () => core.carve(x, y, r), 0)
+      mirror.applyCarve(i + 1, () => core.carve(x, y, r), 0)
     }
     for (const [x, y, r] of carves) other.carve(x, y, r)
 
@@ -146,10 +185,10 @@ describe('mask agreement', () => {
     const solidBefore = core.countSolid()
     const [x, y] = solidPoint(core)
 
-    const mirror = new WorldMirror(core)
+    const mirror = initMirror(core)
     mirror.applyEvent(
       'carve_capsule',
-      { seq: 0, x0: x, y0: y - 60, x1: x, y1: y + 60, r: 24 },
+      { seq: 1, x0: x, y0: y - 60, x1: x, y1: y + 60, r: 24 },
       0,
     )
     other.carveCapsule(x, y - 60, x, y + 60, 24)
@@ -252,10 +291,85 @@ describe('roster and entities', () => {
         scale: 0,
         theme: 0,
         wind: 0,
+        carveSeq: 0,
         spawnPoints: [],
         decorations: [],
         rle,
       }),
     ).toThrow() // an empty RLE cannot load — the guard is real
+  })
+})
+
+describe('checksum before the map arrives', () => {
+  it('does not resync while no map has been loaded', () => {
+    core.generate(4242n, MapScale.Small)
+    const mirror = new WorldMirror(core)
+    let resyncs = 0
+    mirror.onResyncNeeded = () => resyncs++
+    // A `mask_checksum` can arrive before `map_init` — the server broadcasts it
+    // to every socket, seated or not.
+    expect(mirror.verifyChecksum('deadbeefdeadbeef')).toBe(true)
+    expect(resyncs).toBe(0)
+  })
+
+  it('but does resync once a map is loaded and the hash is wrong', () => {
+    const { mirror, resyncs } = freshMirror()
+    expect(mirror.verifyChecksum('deadbeefdeadbeef')).toBe(false)
+    expect(resyncs.length).toBe(1)
+  })
+})
+
+describe('carve stream resumption', () => {
+  /**
+   * The bug the M6 checkpoint caught: the world's first carve is `seq 1`, and a
+   * client that reset its expectation to 0 buffered it, timed out, and refetched
+   * the whole map — for every rocket, forever.
+   */
+  it('picks the carve stream up from the seq map_init reports', () => {
+    core.generate(4242n, MapScale.Small)
+    const mirror = new WorldMirror(core)
+    let resyncs = 0
+    mirror.onResyncNeeded = () => resyncs++
+    mirror.applyMapInit({
+      width: core.width,
+      height: core.height,
+      seed: 4242n,
+      scale: 0,
+      theme: 0,
+      wind: 0,
+      // The mask already contains carves 1..41; the next one will be 42.
+      carveSeq: 41,
+      spawnPoints: [],
+      decorations: [],
+      rle: core.maskRle(),
+    })
+
+    let applied = 0
+    mirror.applyCarve(42, () => applied++, 0)
+    expect(applied).toBe(1)
+    mirror.tick(10_000)
+    expect(resyncs).toBe(0)
+  })
+
+  it('is falsifiable: a stream starting past the reported seq still gaps', () => {
+    core.generate(4242n, MapScale.Small)
+    const mirror = new WorldMirror(core)
+    let resyncs = 0
+    mirror.onResyncNeeded = () => resyncs++
+    mirror.applyMapInit({
+      width: core.width,
+      height: core.height,
+      seed: 4242n,
+      scale: 0,
+      theme: 0,
+      wind: 0,
+      carveSeq: 41,
+      spawnPoints: [],
+      decorations: [],
+      rle: core.maskRle(),
+    })
+    mirror.applyCarve(50, () => {}, 0) // 42..49 missing
+    mirror.tick(10_000)
+    expect(resyncs).toBe(1)
   })
 })

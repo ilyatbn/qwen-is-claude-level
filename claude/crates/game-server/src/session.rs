@@ -12,7 +12,7 @@ use socketioxide::extract::{Data, SocketRef};
 use socketioxide::socket::Sid;
 use socketioxide::SocketIo;
 
-use crate::codec::{b64_encode, decode_input_batch, encode_map_init};
+use crate::codec::{b64_encode, decode_input_batch, encode_map_init_at};
 use crate::config::Config;
 use crate::room::{Command, RoomHandle};
 
@@ -178,7 +178,7 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                                                 })
                                             })
                                             .collect::<Vec<_>>(),
-                                        encode_map_init(&w.map),
+                                        encode_map_init_at(&w.map, w.carve_seq()),
                                     )
                                 })
                                 .await
@@ -344,7 +344,7 @@ pub fn register(io: &SocketIo, room: RoomHandle, sessions: Arc<SessionMap>, conf
                         let Some(_id) = sessions.player_of(socket.id) else {
                             return;
                         };
-                        let Some(bytes) = room.inspect(|w| encode_map_init(&w.map)).await else {
+                        let Some(bytes) = room.inspect(|w| encode_map_init_at(&w.map, w.carve_seq())).await else {
                             return;
                         };
                         if let Err(e) = socket.emit("map_init", &b64_encode(&bytes)) {

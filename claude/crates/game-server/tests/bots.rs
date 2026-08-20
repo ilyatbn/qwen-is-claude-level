@@ -154,8 +154,19 @@ async fn a_human_is_never_refused_a_seat_because_of_a_bot() {
         welcome["player_id"].as_u64().is_some(),
         "a human was refused a seat in a room full of bots: {welcome}"
     );
-    let total = s.room.inspect(|w| w.players.len()).await.expect("room");
-    assert_eq!(total, 6, "capacity was exceeded rather than a bot kicked");
+
+    // Assert on the bot count, not the total: the client above has already
+    // disconnected by now, and racing its `Leave` would make this flaky.
+    let seated = s.room.inspect(|w| w.players.len()).await.expect("room");
+    assert!(
+        seated <= 6,
+        "capacity was exceeded rather than a bot kicked: {seated} players"
+    );
+    assert_eq!(
+        seated, 5,
+        "a bot should have been kicked to seat the human, leaving 5 bots after \
+         the human disconnected"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -253,6 +253,7 @@ impl Room {
             self.world.add_player(id, 0, format!("Bot {}", index + 1));
             self.bots
                 .push(Bot::new(id, seed, index, self.config.bot_skill));
+            self.grant_dev_loadout(id);
         }
         if !self.bots.is_empty() {
             tracing::info!(
@@ -262,6 +263,19 @@ impl Room {
                 "seated bots"
             );
         }
+    }
+
+    /// Development only (`DEV_LOADOUT=1`): arm a player at spawn.
+    ///
+    /// Off by default, because finding your weapons is the game. It exists so an
+    /// end-to-end run can demonstrate terrain destruction without first walking
+    /// to a crate.
+    fn grant_dev_loadout(&mut self, id: PlayerId) {
+        if !self.config.dev_loadout {
+            return;
+        }
+        game_core::world::give(&mut self.world, id, game_core::items::registry::BAZOOKA, 4);
+        game_core::world::give(&mut self.world, id, game_core::items::registry::SMG, 60);
     }
 
     /// Free a seat for a human by removing the newest bot.
@@ -315,6 +329,7 @@ impl Room {
                 }
                 if let Some(id) = id {
                     self.world.add_player(id, skin_id, name);
+                    self.grant_dev_loadout(id);
                 }
                 let _ = reply.send(id);
             }
