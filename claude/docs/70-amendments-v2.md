@@ -1324,3 +1324,61 @@ that rejects samples more than 3σ out. It just has an input now.
 The general point is the one §A15 already made and this repeats in a new place:
 **a readout that cannot fail is not a readout.** A zero RTT is indistinguishable
 from a perfect connection, which is exactly what it looked like.
+
+## A37 — Backdrop is bounded by distance to rock
+
+Sampled from the finished M9 frame (`shots/m9-grassland-day.png`), hard-edged dark
+rectangles hang in open sky near the bottom of the viewport:
+
+| sample | rgb |
+|---|---|
+| rectangle in the sky | `35,29,24` |
+| island underside (cave backdrop) | `35,29,24` — identical |
+| terrain fill | `91,77,61` |
+| clear sky | `108,167,225` |
+
+That is the ~6 % sky-as-backdrop residual §A19 accepted, and §A32 argued it would
+"degrade into shadow" on a dark-backdrop theme. It does not. A hard-edged dark
+rectangle in open sky reads as a rendering glitch, not as shade.
+
+The enclosure test alone cannot fix it, and three rounds have now proved that:
+`BACKDROP_MIN_HITS` = 4 of 8 is a low bar, and air a couple of hundred pixels below
+a floating island collects an upward hit from the island plus enough side hits from
+whatever is off-screen to pass — the exact "under a floating island" case §A17's own
+table promised would read as sky.
+
+The missing constraint is not about direction at all. It is about **distance**:
+
+> The cave backdrop exists to fill holes **in** the rock. An air pixel further than
+> `BACKDROP_MAX_DIST_TO_SOLID` from any solid pixel is sky, unconditionally,
+> whatever the enclosure test says.
+
+| Name | Value | Notes |
+|---|---|---|
+| `BACKDROP_MAX_DIST_TO_SOLID` | 160 | world px, to the nearest solid pixel |
+
+This is a conjunct on top of §A17's enclosure and §A21's roofedness, and it is
+sound by construction for every case the earlier rounds struggled with:
+
+| case | nearest rock | verdict |
+|---|---|---|
+| tunnel (bore 30–52) | ≤ 26 px | interior ✓ |
+| chamber (to 124 across) | ≤ 62 px | interior ✓ |
+| void (to 310 across) | ≤ 155 px | interior ✓ |
+| crevice | ≤ 18 px | interior ✓ |
+| air 200 px under an island | > 160 px | **sky ✓** |
+| open sky | far | sky ✓ |
+
+A void at `VOID_RADIUS_MAX` is the binding case at 155 px, which is why the bound
+is 160 and not lower — it is set from the widest hole the generator can produce,
+not from taste.
+
+Implementation: a distance transform over the **coarse grid** (already maintained
+exactly by every carve), bilinearly interpolated and thresholded at pixel
+resolution, exactly as §A17 does for the hit count — so the boundary follows the
+rock rather than the 8 px lattice.
+
+**Measure it the way §A19 requires**: all three scales, all three themes, from a
+fresh WASM build, reporting enclosed-air-drawn-as-sky and open-sky-drawn-as-backdrop
+for each. If the residual does not fall well below 1 %, the hypothesis is wrong —
+say so with the numbers rather than tuning the constant.
