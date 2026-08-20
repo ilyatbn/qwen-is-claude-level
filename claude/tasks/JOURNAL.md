@@ -869,3 +869,26 @@ Notes: TWO THINGS DREW THE SKY. Backdrop's flat placeholder sat at DEPTH.sky and
        constants_json outgrew serde_json::json!'s macro recursion limit at ~40 keys.
        It builds a Map now, so adding a constant cannot break the ones above it.
 Left for later: T3.10 lightmap, T3.11 overlays.
+
+## T3.10 — Lightmap, day/night, fog — DONE
+## T3.11 — F4 overlays and perf counters — DONE
+Files: client/src/render/{lightmap-math.ts,lightmap.ts,lightmap-math.test.ts,
+       debugOverlay.ts}, client/src/scenes/SandboxScene.ts,
+       crates/game-wasm/src/lib.rs, scripts/checks/lightmap.mjs
+Verified: `npm --prefix client test -- --run lightmap` 8 passed.
+       `node scripts/drive.mjs scripts/checks/lightmap.mjs`:
+       day darkness 0.00 LIGHTMAP DRAWS 0 corner lum 157
+       night darkness 0.82 fov 220 draws 1 corner lum 20 centre lum 58
+       fog fov 220 -> 99 | F4 overlays on
+Notes: The daylight skip is asserted as draws == 0, not as "looks the same" —
+       docs/14 §7 asks for exactly that and it is the difference between a free
+       layer and one that costs a full-screen fill every frame.
+       Gradient + cone textures are generated ONCE at construction and one reusable
+       Image is re-positioned per source. A gradient per light per frame is the
+       obvious way to write this and it halves the frame rate.
+       DebugOverlay gates buriedSlots on the SCENE (a constructor arg), not on the
+       flag: buried positions are never sent to clients (docs/32 §5), and a flag
+       someone can flip is not a guarantee.
+       Overlays live at depth 55, ABOVE the lightmap, or they are invisible at
+       night — which is when you need them most.
+Left for later: M3 is complete. M4 next.

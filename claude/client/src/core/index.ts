@@ -119,6 +119,15 @@ export interface Constants {
   DAY_DURATION: number
   NIGHT_DURATION: number
   CYCLE_TRANSITION: number
+  FOV_DAY: number
+  FOV_NIGHT: number
+  FOV_FOG_MULT: number
+  FOV_HEALTH_MIN_MULT: number
+  FOV_EDGE_SOFTNESS: number
+  FLASHLIGHT_RANGE: number
+  FLASHLIGHT_CONE_DEG: number
+  FLASHLIGHT_AMBIENT_MULT: number
+  BASE_HEALTH: number
 }
 
 /**

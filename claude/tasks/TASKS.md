@@ -94,8 +94,8 @@ server involved.
 - [x] [T3.07](M3/T3.07-sandbox-scene.md) — Sandbox scene: seed, regenerate, click-to-carve
 - [x] [T3.08](M3/T3.08-player-sprite.md) — Player sprite, animation states, placeholders
 - [x] [T3.09](M3/T3.09-input-crosshair.md) — Keyboard/mouse input, aim ring, crosshair
-- [ ] [T3.10](M3/T3.10-lightmap.md) — Lightmap, day/night, fog
-- [ ] [T3.11](M3/T3.11-debug-overlays.md) — F4 overlays and perf counters
+- [x] [T3.10](M3/T3.10-lightmap.md) — Lightmap, day/night, fog
+- [x] [T3.11](M3/T3.11-debug-overlays.md) — F4 overlays and perf counters
 - [x] [T3.12](M3/T3.12-sky.md) — Five-phase sky, sun, moon, stars **(v2)**
 
 **Checkpoint:** `npm --prefix client run dev` → run around a generated map, blow

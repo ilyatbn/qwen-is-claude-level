@@ -17,6 +17,8 @@ import { makeBackTexture, makeEdgeTexture, makeFillTexture } from '../render/pro
 import { PlayerView } from '../render/playerView'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { SkyLayer } from '../render/sky'
+import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
+import { DebugOverlay } from '../render/debugOverlay'
 import { cycleU, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
 
@@ -42,6 +44,9 @@ export class SandboxScene extends Phaser.Scene {
   private carveRadius = 42
 
   private sky!: SkyLayer
+  private lightmap!: Lightmap
+  private overlay!: DebugOverlay
+  private fogActive = false
   /** Round time in seconds, driven by the clock or scrubbed by the slider. */
   private roundTime = 0
   private timeScrub = false
@@ -76,6 +81,9 @@ export class SandboxScene extends Phaser.Scene {
     this.regenerate()
 
     this.sky = new SkyLayer(this)
+    this.lightmap = new Lightmap(this)
+    // `true`: this is the sandbox, the one place buried slots may be drawn.
+    this.overlay = new DebugOverlay(this, this.core, true)
     this.player = new PlayerView(this, 0)
     this.player.container.setDepth(DEPTH.actors)
     this.localInput = new LocalInput(this)
@@ -92,6 +100,9 @@ export class SandboxScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.ui.remove()
       this.terrain.destroy()
+      this.lightmap.destroy()
+      this.overlay.destroy()
+      this.sky.destroy()
     })
 
     this.exposeDebugHandle()
@@ -244,7 +255,12 @@ export class SandboxScene extends Phaser.Scene {
     const live = button('Live', () => {
       this.timeScrub = false
     })
-    r3.append(label('time'), time, timeOut, live)
+    const fog = button('Fog: off', () => {
+      this.fogActive = !this.fogActive
+      fog.textContent = `Fog: ${this.fogActive ? 'on' : 'off'}`
+    })
+    const overlays = button('F4 overlays', () => this.overlay.toggle())
+    r3.append(label('time'), time, timeOut, live, fog, overlays)
 
     this.readout = document.createElement('pre')
     this.readout.style.cssText = 'margin:0;white-space:pre-wrap'
@@ -269,7 +285,9 @@ export class SandboxScene extends Phaser.Scene {
       `traversable ${m.traversable_fraction.toFixed(3)}  surface ${m.surface_points.length}\n` +
       `${this.core.width}x${this.core.height}  chunks ${this.terrain.stats.chunkCount}\n` +
       `generate ${t.generateMs.toFixed(0)} ms  bakeAll ${t.buildAllMs.toFixed(0)} ms\n` +
-      `last carve rebake ${t.lastRebakeMs.toFixed(1)} ms  bakes/frame ${this.frameBakes}`
+      `last carve rebake ${t.lastRebakeMs.toFixed(1)} ms  bakes/frame ${this.frameBakes}\n` +
+      `fps ${Math.round(this.game.loop.actualFps)}  pending ${this.terrain.stats.pending}  ` +
+      `lightmap draws ${this.lightmap?.stats.drawsLastFrame ?? 0}`
   }
 
   private exposeDebugHandle(): void {
@@ -302,7 +320,22 @@ export class SandboxScene extends Phaser.Scene {
           roundTime: self.roundTime,
           skyPhase: self.sky?.currentPhase ?? 'morning',
           darkness: sandboxDarkness(self.roundTime),
+          fogActive: self.fogActive,
+          lightmapDraws: self.lightmap?.stats.drawsLastFrame ?? 0,
+          fov: fovRadius({
+            darkness: sandboxDarkness(self.roundTime),
+            fogActive: self.fogActive,
+            health: C().BASE_HEALTH,
+            flashlightOn: false,
+          }),
+          overlays: self.overlay?.enabled ?? false,
         }
+      },
+      setFog(on: boolean) {
+        self.fogActive = on
+      },
+      toggleOverlays() {
+        self.overlay.toggle()
       },
       /** Jump to a point in the day, for inspecting a phase. */
       setTime(t: number) {
@@ -385,6 +418,37 @@ export class SandboxScene extends Phaser.Scene {
     this.rig.update(dt)
     this.terrain.update(this.rig.center)
     this.frameBakes = this.terrain.stats.bakesThisFrame
+
+    const darkness = sandboxDarkness(this.roundTime)
+    const lights: LightSource[] = []
+    if (body) {
+      const fov = fovRadius({
+        darkness,
+        fogActive: this.fogActive,
+        health: C().BASE_HEALTH,
+        flashlightOn: false,
+      })
+      lights.push({ x: body.x, y: body.y, radius: fov, kind: 'radial', intensity: 1 })
+    }
+    this.lightmap.render(this.cameras.main, darkness, lights, this.fogActive)
+
+    this.overlay.update(
+      this.cameras.main,
+      body
+        ? [
+            {
+              x: body.x,
+              y: body.y,
+              fov: fovRadius({
+                darkness,
+                fogActive: this.fogActive,
+                health: C().BASE_HEALTH,
+                flashlightOn: false,
+              }),
+            },
+          ]
+        : [],
+    )
   }
 }
 
