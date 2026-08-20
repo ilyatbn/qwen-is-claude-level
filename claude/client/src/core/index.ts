@@ -176,6 +176,7 @@ export interface Constants {
   FLASHLIGHT_CONE_DEG: number
   FLASHLIGHT_AMBIENT_MULT: number
   BASE_HEALTH: number
+  RESPAWN_DELAY: number
   LAVA_BURN_RADIUS: number
   TOXIC_PUDDLE_RADIUS: number
   HEALTH_CAP: number

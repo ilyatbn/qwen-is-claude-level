@@ -20,6 +20,7 @@ export class LocalInput {
   private readonly scene: Phaser.Scene
   private readonly keys: Record<keyof KeyState, Phaser.Input.Keyboard.Key | undefined>
   private aim = 0
+  private aimLocked = false
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene
@@ -61,13 +62,31 @@ export class LocalInput {
   sample(seq: number, playerCentre: Vec, camera: Phaser.Cameras.Scene2D.Camera): Input {
     const p = this.scene.input.activePointer
     const world = camera.getWorldPoint(p.x, p.y)
-    this.aim = aimAngle(playerCentre, { x: world.x, y: world.y }, this.aim)
+    if (!this.aimLocked) {
+      this.aim = aimAngle(playerCentre, { x: world.x, y: world.y }, this.aim)
+    }
     return {
       seq,
       buttons: packButtons(this.keyState()),
       // Quantised by game-core, because the server dequantises with the same code.
       aim: quantizeAngle(this.aim),
     }
+  }
+
+  /**
+   * Point somewhere specific and **hold it**, for a headless check.
+   *
+   * A plain assignment does not survive: `sample()` recomputes the aim from the
+   * pointer every frame, so the forced value is gone before the next input
+   * packet leaves — which looked exactly like "firing does no damage".
+   */
+  forceAim(a: number): void {
+    this.aim = a
+    this.aimLocked = true
+  }
+
+  releaseAim(): void {
+    this.aimLocked = false
   }
 
   get aimAngle(): number {

@@ -8,7 +8,6 @@
 import Phaser from 'phaser'
 import {
   DEFAULT_MODEL,
-  describeRoom,
   loadScale,
   menuReducer,
   saveScale,
@@ -16,27 +15,13 @@ import {
   type MenuAction,
   type MenuModel,
 } from '../ui/menu'
-import {
-  checkCode,
-  codeError,
-  createRoomPayload,
-  joinErrorMessage,
-  joinRoomPayload,
-  quickMatchPayload,
-  type Identity,
-  type Scale,
-} from '../net/lobby'
+import { checkCode, codeError, type Identity, type Scale } from '../net/lobby'
 
 const SCALES: Scale[] = ['small', 'medium', 'large']
 
 export class MenuScene extends Phaser.Scene {
   private model: MenuModel = { ...DEFAULT_MODEL }
   private root: HTMLElement | null = null
-  private socket: {
-    emit(ev: string, payload?: unknown): void
-    on(ev: string, cb: (p: unknown) => void): void
-  } | null = null
-
   constructor() {
     super('Menu')
   }
@@ -56,23 +41,17 @@ export class MenuScene extends Phaser.Scene {
     this.exposeDebugHandle()
   }
 
-  /** Injected by the app so the menu is testable without a live socket. */
-  setSocket(s: NonNullable<MenuScene['socket']>): void {
-    this.socket = s
-    s.on('room_created', (p) => {
-      const code = (p as { code?: string }).code
-      this.dispatch(code ? { type: 'hosted', code } : { type: 'go', screen: 'lobby' })
-    })
-    s.on('room_list', (p) => {
-      const r = p as { players?: number; capacity?: number; bots?: number }
-      this.roomInfo = describeRoom(r.players ?? 0, r.capacity ?? 6, r.bots ?? 0)
-      this.dispatch({ type: 'go', screen: 'lobby' })
-    })
-    s.on('join_error', (p) => {
-      const reason = (p as { reason?: string }).reason ?? 'unknown'
-      this.dispatch({ type: 'error', message: joinErrorMessage(reason) })
-    })
-    s.on('welcome', () => this.scene.start('Game'))
+  /**
+   * Hand the choice to `GameScene`, which owns the only socket.
+   *
+   * The menu deliberately does **not** hold a socket of its own: two sockets
+   * mean two seats, and a `join` after a `quick_match` is a double join. The
+   * registry is the least surprising channel, and it is what `Core` already
+   * uses.
+   */
+  private go(intent: Record<string, unknown>): void {
+    this.registry.set('lobbyIntent', { ...intent, tombstoneSkinId: this.identity().tombstoneSkinId })
+    this.scene.start('Game')
   }
 
   private roomInfo = ''
@@ -186,35 +165,31 @@ export class MenuScene extends Phaser.Scene {
       el.querySelector('#copy')?.addEventListener('click', () => {
         void navigator.clipboard?.writeText(m.hostCode ?? '')
       })
-      el.querySelector('#back')?.addEventListener('click', () => {
-        this.socket?.emit('leave_room')
-        this.dispatch({ type: 'back' })
-      })
+      el.querySelector('#back')?.addEventListener('click', () =>
+        this.dispatch({ type: 'back' }),
+      )
     }
   }
 
   private quickMatch(): void {
     this.dispatch({ type: 'go', screen: 'matching' })
-    this.socket?.emit('quick_match', quickMatchPayload(this.identity(), this.model.scale))
+    this.go({ kind: 'quick', scale: this.model.scale })
   }
 
   private createRoom(): void {
     this.dispatch({ type: 'go', screen: 'create' })
-    this.socket?.emit(
-      'create_room',
-      createRoomPayload(this.identity(), this.model.scale, true),
-    )
+    this.go({ kind: 'create', scale: this.model.scale })
   }
 
   private joinByCode(): void {
     const c = checkCode(this.model.code)
     if (!c.ok) {
-      // Named locally rather than round-tripping to the server: the player gets
+      // Named locally rather than round-tripping to the server: the player is
       // told which character is wrong, immediately.
       this.dispatch({ type: 'error', message: codeError(c) })
       return
     }
-    this.socket?.emit('join_room', joinRoomPayload(this.identity(), c.code))
+    this.go({ kind: 'code', code: c.code })
   }
 
   private exposeDebugHandle(): void {

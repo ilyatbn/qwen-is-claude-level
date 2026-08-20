@@ -106,7 +106,11 @@ pub const OVERHEAL_DECAY: f32 = 2.0;
 pub const MEDKIT_HEAL: f32 = 50.0;
 pub const SHIELD_DURATION: f32 = 20.0;
 pub const SHIELD_DAMAGE_MULT: f32 = 0.5;
-pub const RESPAWN_DELAY: f32 = 3.0;
+/// §B4 raised this from 3.0. It is a **felt** number and the one constant in
+/// this file most likely to want playtesting: five seconds of watching the fight
+/// continue is a long time, and the overlay deliberately does not pause the
+/// round behind it.
+pub const RESPAWN_DELAY: f32 = 5.0;
 pub const SPAWN_IFRAMES: f32 = 2.0;
 pub const SPAWN_MIN_ENEMY_DIST: f32 = 384.0;
 /// Speed multiplier at 0 health, lerped to 1.0 at `BASE_HEALTH`.

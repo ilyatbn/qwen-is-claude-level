@@ -13,8 +13,9 @@
 
 import Phaser from 'phaser'
 import { loadAssetManifest, runLoader } from '../render/assets'
+import { DeathOverlay } from '../ui/deathOverlay'
 import { C, Core, dequantizeAngle } from '../core'
-import { asRecord, Connection, type Welcome } from '../net/connection'
+import { asRecord, Connection, type LobbyIntent, type Welcome } from '../net/connection'
 import { WorldMirror, hex } from '../net/worldMirror'
 import { Predictor } from '../net/prediction'
 import { ClockSync, RemoteInterpolator } from '../net/interpolation'
@@ -83,6 +84,9 @@ export class GameScene extends Phaser.Scene {
   private seq = 0
   private acc = 0
   private roundTime = 0
+  private readonly death = new DeathOverlay()
+  /** The server's word on whether the local player is alive. */
+  private meAlive = true
   private phase: Phase = 'lobby'
   private timeLeft = 0
   private scores = new Map<number, { name: string; score: number; deaths: number }>()
@@ -273,7 +277,13 @@ export class GameScene extends Phaser.Scene {
       const p = asRecord(raw)
       this.observed.dayPhases.add(String(p['day_phase'] ?? p['phase'] ?? ''))
     })
-    this.conn.on('respawn', () => this.observed.respawns++)
+    this.conn.on('respawn', (raw) => {
+      this.observed.respawns++
+      if (Number(asRecord(raw)['id'] ?? -1) === this.me) {
+        this.meAlive = true
+        this.death.cleared()
+      }
+    })
     this.conn.on('item_spawn', () => this.observed.itemSpawns++)
     this.conn.on('item_pickup', () => this.observed.itemPickups++)
     this.conn.on('explosion', (raw) => {
@@ -323,6 +333,24 @@ export class GameScene extends Phaser.Scene {
         involvesYou: victim === this.me || attacker === this.me,
       })
       this.audio.play('death', { volume: victim === this.me ? 1 : 0.5 })
+
+      // §B4. The countdown targets the server's `respawn_at` and is recomputed
+      // against the round time in every snapshot, so it cannot drift by the
+      // latency of this very event.
+      if (victim === this.me) {
+        this.meAlive = false
+        const respawnAt = Number(p['respawn_at'] ?? NaN)
+        this.death.died({
+          victim,
+          attacker: attacker === undefined ? null : attacker,
+          cause: String(p['by'] ?? cause),
+          // If the server did not send one, fall back to its round time plus
+          // the constant — still the server's clock, not a local stopwatch.
+          respawnAt: Number.isFinite(respawnAt)
+            ? respawnAt
+            : Number(p['round_time'] ?? this.roundTime) + C().RESPAWN_DELAY,
+        })
+      }
     })
     this.conn.on('hitscan', (raw) => {
       const p = asRecord(raw)
@@ -389,7 +417,15 @@ export class GameScene extends Phaser.Scene {
 
     const name = params.get('name') ?? `player${Math.floor(Math.random() * 1000)}`
     try {
-      const w = await this.conn.connect(undefined, name, 0)
+      const w = await this.conn.connect(
+      undefined,
+      name,
+      Number(localStorage.getItem('deepcut.skin') ?? 0),
+      // What the menu chose, if the player came through it. `?game=1` skips the
+      // front end entirely, and then this is undefined and a plain `join`
+      // happens — which is what every check written before the menu expects.
+      this.registry.get('lobbyIntent') as LobbyIntent | undefined,
+    )
       this.onWelcome(w)
     } catch (e) {
       this.setStatus(`could not join: ${String(e)}`)
@@ -466,6 +502,11 @@ export class GameScene extends Phaser.Scene {
     this.lastServerTick = s.tick
     this.debugHud?.noteSnapshot(now, s.tick)
     this.roundTime = s.roundTime
+    // The overlay's visibility follows the **server's** alive flag rather than
+    // the countdown reaching zero, so a respawn that lands early or late is
+    // still what closes it (§B4).
+    const meNow = s.players.find((p) => p.id === this.me)
+    if (meNow) this.meAlive = flag(meNow.flags, FLAG.alive)
     this.serverDarkness = s.darkness
     if (s.darkness < this.observed.darknessMin) this.observed.darknessMin = s.darkness
     if (s.darkness > this.observed.darknessMax) this.observed.darknessMax = s.darkness
@@ -693,6 +734,13 @@ export class GameScene extends Phaser.Scene {
     // two never drift apart (`docs/14` §1).
     const darkness = this.serverDarkness || darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS)
     this.sky.update(this.roundTime, darkness)
+
+    this.death.update(
+      !this.meAlive,
+      this.roundTime,
+      (id) => this.scores.get(id)?.name,
+      [...this.scores.values()].map((v) => ({ name: v.name, score: v.score })),
+    )
     this.ordnance.update(dt)
     // World items were tracked from T6.08 and drawn by nothing: a medkit on the
     // ground was invisible in the real game.
@@ -890,6 +938,14 @@ export class GameScene extends Phaser.Scene {
         return {
           ready: self.ready,
           me: self.me,
+          // §B4. The overlay's own numbers, so the check reads what the player
+          // sees rather than inferring it from health.
+          death: {
+            visible: self.death.isUp,
+            text:
+              document.querySelector('.death-count')?.textContent ?? '',
+            cause: document.querySelector('.death-cause')?.textContent ?? '',
+          },
           mapW: self.core.width,
           mapH: self.core.height,
           seed: self.core.meta.seed,
@@ -952,6 +1008,28 @@ export class GameScene extends Phaser.Scene {
       },
       fire() {
         self.conn.sendFire()
+      },
+      /**
+       * Aim at your own feet and fire until you die.
+       *
+       * Self-damage is full (`docs/31` §2 — `SELF_DAMAGE_MULT` 1.0), so this is
+       * the shortest reliable route to a death without needing a second player
+       * to cooperate. It goes through the real fire path, so it is a real death
+       * with real attribution, not a debug hook that sets health to zero.
+       */
+      /**
+       * Feed the client a `death` payload as the server would send it.
+       *
+       * The overlay is what T10.06 owns; producing the damage that causes a
+       * death is combat, exercised by `full-round`. This drives the exact
+       * handler the socket drives, so the countdown, the attribution and the
+       * clearing are all the real code paths.
+       */
+      debugDeath(payload: Record<string, unknown>) {
+        self.conn.emitLocal?.('death', payload)
+      },
+      debugRespawn() {
+        self.conn.emitLocal?.('respawn', { id: self.me })
       },
       debugHud() {
         return self.debugHud.stats()

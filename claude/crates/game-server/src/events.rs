@@ -217,7 +217,13 @@ pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
             cause,
             ..
         } => json!({
-            "tick": tick, "victim": victim, "attacker": attacker, "cause": cause_name(*cause)
+            "tick": tick, "victim": victim, "attacker": attacker, "cause": cause_name(*cause),
+            // The client counts down to *this*, against the round time in the
+            // snapshot header — not from a local timer started on arrival. A
+            // local timer drifts by the latency of the death event itself and
+            // then disagrees with the moment the player actually respawns.
+            "respawn_at": world.player(*victim).map(|p| p.respawn_at),
+            "round_time": world.round_time,
         }),
         GameEvent::Respawn { id, x, y, .. } => json!({"tick": tick, "id": id, "x": x, "y": y}),
         GameEvent::Score { .. } => json!({

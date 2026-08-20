@@ -2532,3 +2532,46 @@ Next: T10.06 death overlay -> T12.01 tombstones -> T10.05 skins menu.
        first caller there. The countdown must come from the server's respawn_at,
        not a local timer, or it disagrees with when you actually respawn; and it
        is an overlay, not a pause — assert the world behind it kept ticking.
+
+## T10.06 — Death overlay — IN PROGRESS, BOX NOT TICKED
+Files: client/src/ui/{deathOverlay,deathOverlay-math,deathOverlay-math.test}.ts,
+       client/src/scenes/GameScene.ts, client/src/net/connection.ts,
+       client/src/input/localInput.ts, client/index.html,
+       crates/game-core/src/constants.rs, crates/game-server/src/events.rs,
+       crates/game-wasm/src/lib.rs, client/src/core/index.ts
+Verified: `npm test -- --run deathOverlay` — 11 passed. Gate green otherwise:
+       client 418 tests, game-server 183, game-core 559, e2e 16/16, fmt +
+       clippy + typecheck clean.
+NOT VERIFIED, AND THIS IS WHY THE BOX IS UNTICKED: the overlay has never been
+       seen to appear in a running game. Its logic is unit-tested and its
+       wiring reads correct (death handler -> DeathOverlay.died, update() calls
+       death.update every frame, respawn clears it), but no end-to-end check
+       drives it.
+What was tried, so the next session does not repeat it:
+  1. Kill the local player with their own rocket. Health never moved off 100
+     across 40 paced shots. Firing itself works in that harness — the same
+     script already asserts terrain removal — so the shots are landing
+     somewhere other than the player's feet.
+  2. `LocalInput.forceAim` did not survive to the input packet: `sample()`
+     recomputes aim from the pointer every frame. Added an `aimLocked` flag
+     (kept — it is correct either way). Health still did not move.
+  3. Ruled out warmup: added a wait for phase === 'playing' first (§docs/41 §3
+     applies no damage during Warmup). No change.
+  4. Fed the client a synthetic `death` payload through a new
+     `Connection.emitLocal` (runs the real handlers, skips only the wire). The
+     overlay still did not raise, and I ran out of budget diagnosing it. The
+     e2e block was REMOVED rather than left red — `two-clients` is green.
+Next step I would take: check whether GameScene.update() early-returns before
+       the `death.update` call in the state the check reaches, and whether
+       `debug().roundTime` is populated at that moment (the countdown falls
+       back to round_time + RESPAWN_DELAY if respawn_at is not finite).
+Landed and sound regardless: RESPAWN_DELAY 3.0 -> 5.0 (§B4, and it is the
+       constant here most likely to want playtesting); `death` now carries
+       `respawn_at` and `round_time` so a client counts down against the
+       server's clock instead of a local stopwatch started on arrival;
+       `Connection.emitLocal`; `LocalInput` aim lock.
+MenuScene.setSocket IS GONE, and that closes the note I left. The menu records
+       a `lobbyIntent` in the registry and `Connection.connect` performs it —
+       two sockets would mean two seats, and a `join` after a `quick_match` is
+       a double join. `?game=1` leaves the intent undefined and a plain `join`
+       happens, which is what every check written before the menu expects.

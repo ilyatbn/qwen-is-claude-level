@@ -59,6 +59,12 @@ export interface ConnectionOptions {
   clearTimeout?: (handle: unknown) => void
 }
 
+/** What the menu decided, carried to the socket that acts on it. */
+export type LobbyIntent =
+  | { kind: 'quick'; scale: string; tombstoneSkinId?: number }
+  | { kind: 'create'; scale: string; tombstoneSkinId?: number }
+  | { kind: 'code'; code: string; tombstoneSkinId?: number }
+
 export class Connection {
   private socket: SocketLike | null = null
   private readonly handlers = new Map<string, EventHandler[]>()
@@ -83,7 +89,31 @@ export class Connection {
    * `join_error` or on timeout — both are terminal for this attempt, and a
    * caller that cannot tell them apart cannot show a useful message.
    */
-  connect(url: string | undefined, name: string, skinId: number): Promise<Welcome> {
+  /**
+   * How this client wants to be seated (§B9).
+   *
+   * The menu records an intent and `Connection` performs it, rather than the
+   * menu owning a second socket: two sockets would mean two seats, and a
+   * `join` after a `quick_match` is a double join. Every verb ends in
+   * `welcome`, so the promise's contract is unchanged.
+   */
+  /**
+   * Deliver an event to this client's own handlers, as if it had arrived.
+   *
+   * For headless checks that need a specific server event without having to
+   * manufacture the game state that produces it. It runs the **real** handlers,
+   * so what it exercises is the production path — it only skips the wire.
+   */
+  emitLocal(event: string, payload: unknown): void {
+    for (const h of this.handlers.get(event) ?? []) h(payload)
+  }
+
+  connect(
+    url: string | undefined,
+    name: string,
+    skinId: number,
+    intent?: LobbyIntent,
+  ): Promise<Welcome> {
     if (this.socket) return Promise.reject(new Error('already connected'))
     this.setState('connecting')
 
@@ -100,7 +130,24 @@ export class Connection {
 
     socket.on('connect', () => {
       this.setState('connected')
-      socket.emit('join', { name, skin_id: skinId })
+      const id = {
+        name,
+        skin_id: skinId,
+        tombstone_skin_id: intent?.tombstoneSkinId ?? 0,
+      }
+      switch (intent?.kind) {
+        case 'quick':
+          socket.emit('quick_match', { ...id, scale: intent.scale })
+          break
+        case 'create':
+          socket.emit('create_room', { ...id, scale: intent.scale, private: true })
+          break
+        case 'code':
+          socket.emit('join_room', { ...id, code: intent.code })
+          break
+        default:
+          socket.emit('join', id)
+      }
     })
     socket.on('disconnect', () => this.setState('reconnecting'))
 
