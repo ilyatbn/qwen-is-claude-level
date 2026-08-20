@@ -512,3 +512,87 @@ only the mask.
   (measured: 2 of 400 slots). Its test asserts the *same five pixels*, so it cannot
   catch it. Both must sample the full ray. The same weakness governs chamber
   placement at `CHAMBER_CLEARANCE`.
+
+## A13 — The sunset must happen while the sky is showing a sunset
+
+**This corrects §A4 above and `14-daynight-visibility.md` §1.**
+
+The two were specified independently and they disagree on pacing. `darkness` ramps
+0 → `NIGHT_DARKNESS` over `CYCLE_TRANSITION` (8 s) centred on the day/night
+boundary at t = 60, so the world is already fully dark at **t = 64**. §A4's
+`evening` phase runs u 0.50–0.62, i.e. **t = 60 → 74.4**. So roughly ten of
+evening's fourteen seconds play at full darkness, with the orange sunset keyframe
+(u = 0.55) displayed underneath a black overlay.
+
+The player sees the sky say "sunset" while the world says "midnight". Both clocks
+are correct about the time and wrong about each other.
+
+The fix is to derive darkness from the **same phase table the sky uses**, so there
+is one description of the day and everything reads from it:
+
+```
+darkness(u) =
+  0                                              u <  0.50          day
+  NIGHT_DARKNESS * smoothstep((u-0.50)/0.12)     0.50 <= u < 0.62    dusk ramp
+  NIGHT_DARKNESS                                 0.62 <= u < 0.90    night
+  NIGHT_DARKNESS * (1 - smoothstep((u-0.90)/0.10)) 0.90 <= u < 1.00  dawn ramp
+```
+
+Dusk is therefore 14.4 s and dawn 12 s, both matching their phases exactly, and
+`CYCLE_TRANSITION` is no longer used for darkness. It stays in `constants.rs` as
+the audio/UI cue lead time.
+
+`14-daynight-visibility.md` §7's tests are superseded on two rows: darkness at
+t = 64 is now ~0.31 rather than `NIGHT_DARKNESS`, and full darkness is first
+reached at t = 74.4. The properties that still hold and must still be tested are
+the ones that matter: darkness is 0 at t = 0, continuous everywhere (no jump
+larger than one tick's worth), monotonic within each ramp, and a 240 s round
+contains exactly two nights.
+
+## A14 — The cave backdrop is seeded from the sky, not from the border
+
+**This corrects the backdrop rule in §A2's implementation notes.**
+
+Flooding "outside" from all four borders and gating passage on a `REACH_PX` = 28
+disc means any chamber joined to open air by a passage wider than 56 px floods and
+renders as **open sky**. Measured: a 312 × 360 px cavern went from 0 % sky pixels
+to 84 % after the blockiness fix. Tunnels (bore 30–52 px) stay under the threshold
+and still render correctly, which is exactly why it looked fine at first glance —
+the failure is confined to voids (140–310 px) and large chambers (up to 124 px),
+which is to say to the biggest holes on the map.
+
+A hole through the mountain that shows sky is worse than the axis-aligned artifact
+it replaced.
+
+The disc test answers "is this passage wide enough to be a mouth", which is the
+right question for crack width and the wrong one for "is this the sky". So:
+
+> Seed the flood from **genuine sky only** — air connected to the top border, or
+> above `SKY_MARGIN` — never from all four borders. Keep the disc purely as the
+> width gate on what the flood may pass through.
+
+The rejected alternative stays rejected: a per-column "everything above the
+highest rock is exterior" clip paints bright sky down every crevice, because a
+crack open at the top has no rock above it either. Width is the distinction, and
+only the disc measures width.
+
+## A15 — Instrument effects, not intentions
+
+`docs/14` §7 asks to verify the lightmap does zero work in daylight. It was
+instrumented with a counter incremented **once per erased light** and never for the
+fill, so it reads 0 in two unrelated situations: the pass was skipped, and the pass
+ran at full darkness with no light on screen. A night frame reported
+`lightmap draws 0` while a night sky was on screen.
+
+Worse, the same measurement said `draws: 1` at night while terrain pixels were
+**bit-identical** to daylight — the pass ran and composited nothing.
+
+> A counter that reports that work was *attempted* is not evidence the work
+> *happened*. Where a test can assert on the rendered result, it must.
+
+So: the daylight-skip assertion is on a `filled` flag set when the fill actually
+executes, and the night-darkness assertion is on **sampled pixels** — terrain
+materially darker at night than at day, and lighter near the player than at the
+screen corner. Note that a whole-frame luminance mean does **not** work: the sky
+dominates the average and reports a healthy day→night drop while the world stays
+lit. Sample terrain.
