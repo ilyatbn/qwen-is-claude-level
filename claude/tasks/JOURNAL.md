@@ -2399,3 +2399,19 @@ Left for later: T10.07 (measure MAX_ROOMS), T10.03 title/attract, T10.04 menu.
        `room_list` currently reports waiting:0 eta_s:0 — quick match seats
        immediately, so there is no queue to report yet; QUEUE_WAIT_BEFORE_BOTS
        is unused until a real queue exists.
+
+## M10 — IN PROGRESS (T10.01, T10.02 done; T10.07/T10.03/T10.04/T10.06/T12.01/T10.05 remain)
+State on disk: clean, workspace 815 Rust + 397 client tests pass, fmt + clippy
+       -D warnings clean. Multi-room works end to end over real sockets.
+Next, in the order the coordinator set: T10.07 (measure MAX_ROOMS before
+       anything is built on top of a guessed 8) -> T10.03 title/attract ->
+       T10.04 start menu -> T10.06 death overlay -> T12.01 tombstones ->
+       T10.05 skins menu (which needs T12.01's tombstone skins).
+Carried, for whoever takes T10.07: `/metrics` still lacks §B2's
+       rooms_active / tick_p99_ms_max_over_rooms / rooms_over_budget — they are
+       T10.07's deliverable. `/healthz` already reports the live count via the
+       registry gauge.
+Carried, unrelated to M10: JOIN_EVENT_QUEUE overflow is asserted at the seam
+       but never driven through a real socket (needs 4096 broadcasts inside one
+       join window), and `full-round` is opt-in, so multi-room interactions will
+       not be caught by the default gate.
