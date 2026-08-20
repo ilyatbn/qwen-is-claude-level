@@ -26,7 +26,7 @@ const PHASES: Array<[SkyPhase, number, number]> = [
 ]
 
 /** Gradient keyframes, from §A4. */
-const KEYFRAMES: Array<[number, number, number]> = [
+export const KEYFRAMES: Array<[number, number, number]> = [
   [0.0, 0x1b2a5e, 0xf2a15c],
   [0.12, 0x3f7fd0, 0xbfe3f5],
   [0.3, 0x2f7fd8, 0xa8d8f0],

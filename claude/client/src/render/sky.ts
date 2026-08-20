@@ -27,9 +27,9 @@ export class SkyLayer {
   private readonly gradient: Phaser.GameObjects.Image
   private readonly starGfx: Phaser.GameObjects.Graphics
   private readonly sun: Phaser.GameObjects.Arc
-  private readonly sunGlow: Phaser.GameObjects.Arc
+  private readonly sunGlow: Phaser.GameObjects.Image
   private readonly moon: Phaser.GameObjects.Arc
-  private readonly moonGlow: Phaser.GameObjects.Arc
+  private readonly moonGlow: Phaser.GameObjects.Image
   private readonly stars: Star[]
   private readonly texture: Phaser.Textures.CanvasTexture | null
 
@@ -65,21 +65,33 @@ export class SkyLayer {
 
     const sunR = c.SUN_RADIUS ?? 34
     const moonR = c.MOON_RADIUS ?? 26
+    const par = c.SKY_BODY_PARALLAX ?? 0.08
+
+    // A glow is a **gradient**, not a translucent disc.
+    //
+    // These were flat `circle`s at uniform alpha, which draws a hard-edged pale
+    // ring around the sun — at zoom 2 it read as a rendering bug rather than as
+    // light. One texture each, generated once at boot, exactly as the lightmap
+    // does for the same reason.
     this.sunGlow = scene.add
-      .circle(0, 0, sunR * 2.6, 0xffd27a, 0.16)
-      .setScrollFactor(c.SKY_BODY_PARALLAX ?? 0.08)
+      .image(0, 0, glowTexture(scene, 'sky_glow_sun', 0xffd27a))
+      .setScrollFactor(par)
       .setDepth(DEPTH.sky + 1)
+      .setDisplaySize(sunR * 6, sunR * 6)
+      .setBlendMode(Phaser.BlendModes.ADD)
     this.sun = scene.add
       .circle(0, 0, sunR, 0xfff2c4)
-      .setScrollFactor(c.SKY_BODY_PARALLAX ?? 0.08)
+      .setScrollFactor(par)
       .setDepth(DEPTH.sky + 2)
     this.moonGlow = scene.add
-      .circle(0, 0, moonR * 2.2, 0xbfd4ff, 0.1)
-      .setScrollFactor(c.SKY_BODY_PARALLAX ?? 0.08)
+      .image(0, 0, glowTexture(scene, 'sky_glow_moon', 0xbfd4ff))
+      .setScrollFactor(par)
       .setDepth(DEPTH.sky + 1)
+      .setDisplaySize(moonR * 5, moonR * 5)
+      .setBlendMode(Phaser.BlendModes.ADD)
     this.moon = scene.add
       .circle(0, 0, moonR, 0xe8eeff)
-      .setScrollFactor(c.SKY_BODY_PARALLAX ?? 0.08)
+      .setScrollFactor(par)
       .setDepth(DEPTH.sky + 2)
   }
 
@@ -104,7 +116,7 @@ export class SkyLayer {
 
     const place = (
       disc: Phaser.GameObjects.Arc,
-      glow: Phaser.GameObjects.Arc,
+      glow: Phaser.GameObjects.Image,
       b: { x: number; y: number; a: number } | null,
     ) => {
       const on = b !== null && b.a > 0.001
@@ -122,7 +134,7 @@ export class SkyLayer {
     if (sun) {
       const height = 1 - Math.min(1, (horizon - sun.y) / (c.SKY_BODY_ARC_H ?? 300))
       this.sun.setFillStyle(mix(0xfff2c4, 0xff9d4a, height))
-      this.sunGlow.setFillStyle(mix(0xffd27a, 0xff7a3a, height))
+      this.sunGlow.setTint(mix(0xffd27a, 0xff7a3a, height))
     }
 
     this.drawStars(starAlpha(u, darkness, nightDarkness))
@@ -178,4 +190,32 @@ function mix(a: number, b: number, t: number): number {
     return Math.round(av + (bv - av) * t) & 255
   }
   return (ch(16) << 16) | (ch(8) << 8) | ch(0)
+}
+
+/**
+ * A soft radial glow, generated once and reused.
+ *
+ * White with an alpha falloff so a caller can tint it. `pixelArt: true` forces
+ * NEAREST filtering globally, which would stair-step a gradient this large, so
+ * the texture opts into LINEAR — the same fix the half-resolution lightmap needed.
+ */
+function glowTexture(scene: Phaser.Scene, key: string, _tint: number): string {
+  if (scene.textures.exists(key)) return key
+  const size = 256
+  const tex = scene.textures.createCanvas(key, size, size)
+  const ctx = tex?.getContext()
+  if (!ctx || !tex) return key
+  const r = size / 2
+  const g = ctx.createRadialGradient(r, r, 0, r, r, r)
+  // Bright core, long tail: a linear ramp reads as a disc with a soft edge
+  // rather than as light spilling into the sky.
+  g.addColorStop(0, 'rgba(255,255,255,0.55)')
+  g.addColorStop(0.18, 'rgba(255,255,255,0.34)')
+  g.addColorStop(0.45, 'rgba(255,255,255,0.12)')
+  g.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, size, size)
+  tex.refresh()
+  tex.setFilter(Phaser.Textures.FilterMode.LINEAR)
+  return key
 }

@@ -13,6 +13,7 @@
 //! See `docs/11-map-destruction.md` §1–§5.
 
 use crate::constants::{BEDROCK_H, CHUNK_SIZE, COARSE_CELL, WALL_W};
+use crate::map::shape;
 use crate::map::Map;
 use crate::math::isqrt;
 
@@ -56,34 +57,19 @@ impl Map {
             return acc;
         }
 
-        // Clamp the endpoints to the map **before** any i32 arithmetic on them.
-        //
-        // `(x1 - x0).abs()` is the trap: at `i32::MIN` it panics in debug, and in
-        // release `.abs()` of a wrapped value stays negative, `err` becomes
-        // garbage, and the sweep silently collapses to its endpoint — carving a few
-        // pixels where the correct clip is thousands. This is the same class of bug
-        // `circle` carries its i64 early-reject for; this sibling reimplemented the
-        // entry path and dropped the guard.
-        //
-        // Clamping first also bounds the cost by construction: the Bresenham loop
-        // runs once per pixel, so an unclamped 20-million-pixel endpoint took 103 ms
-        // in release for a carve that touches nothing.
-        let (w, h) = (self.mask.w as i64, self.mask.h as i64);
-        let r64 = r as i64;
-        let lo_x = -r64 - 1;
-        let hi_x = w + r64 + 1;
-        let lo_y = -r64 - 1;
-        let hi_y = h + r64 + 1;
-        let clamp = |v: i32, lo: i64, hi: i64| (v as i64).clamp(lo, hi) as i32;
-        let (x0, y0) = (clamp(x0, lo_x, hi_x), clamp(y0, lo_y, hi_y));
-        let (x1, y1) = (clamp(x1, lo_x, hi_x), clamp(y1, lo_y, hi_y));
+        // Clamp and walk through the shared helpers in `shape`, so a carved
+        // capsule and a stamped one cover exactly the same pixels. They used to
+        // be two different walks — integer 1-px here, float `r/2` there — which
+        // is two rasterisers against this crate's stated one-rasteriser
+        // invariant (§A24).
+        let (x0, y0, x1, y1) = shape::clamp_capsule(self.mask.w, self.mask.h, r, x0, y0, x1, y1);
 
-        let (mut x, mut y) = (x0, y0);
-        let (dx, dy) = ((x1 - x0).abs(), -(y1 - y0).abs());
-        let (sx, sy) = (if x0 < x1 { 1 } else { -1 }, if y0 < y1 { 1 } else { -1 });
-        let mut err = dx + dy;
+        // Collected first because `walk_capsule` borrows its closure mutably and
+        // `self.circle` needs `&mut self`.
+        let mut centres = Vec::new();
+        shape::walk_capsule(x0, y0, x1, y1, |x, y| centres.push((x, y)));
 
-        loop {
+        for (x, y) in centres {
             let step = self.circle(x, y, r, false);
             acc.pixels_removed += step.pixels_removed;
             for c in step.dirty_chunks {
@@ -92,19 +78,6 @@ impl Map {
                 }
             }
             acc.revealed.extend(step.revealed);
-
-            if x == x1 && y == y1 {
-                break;
-            }
-            let e2 = 2 * err;
-            if e2 >= dy {
-                err += dy;
-                x += sx;
-            }
-            if e2 <= dx {
-                err += dx;
-                y += sy;
-            }
         }
         acc
     }
@@ -589,6 +562,55 @@ mod tests {
             }
         }
         assert!(map.mask.get(200, 300 - 10));
+    }
+
+    /// The two capsule paths are one path.
+    ///
+    /// `stamp_capsule` (solid) and `carve_capsule` (clear) were two different
+    /// walks — integer 1-px here, float `r/2` there — against a stated
+    /// one-rasteriser invariant (§A24). Carving a capsule out of a full mask must
+    /// leave exactly the inverse of stamping the same capsule into an empty one,
+    /// for every endpoint pair and radius, or the two disagree at the edges and
+    /// the client and server masks eventually diverge.
+    #[test]
+    fn stamping_and_carving_a_capsule_cover_the_same_pixels() {
+        use crate::map::shape::stamp_capsule;
+
+        let cases = [
+            (60, 60, 300, 60, 9),    // horizontal
+            (60, 60, 60, 300, 13),   // vertical, the entrance-shaft case
+            (60, 60, 300, 300, 7),   // 45 degrees
+            (300, 60, 60, 300, 11),  // the other diagonal
+            (200, 200, 260, 210, 5), // shallow
+            (200, 200, 200, 200, 6), // zero length
+            (100, 100, 400, 180, 1), // radius 1
+            (100, 100, 400, 180, 0), // radius 0
+        ];
+
+        for (x0, y0, x1, y1, r) in cases {
+            let (mw, mh) = {
+                let m = solid_map();
+                (m.mask.w, m.mask.h)
+            };
+            let mut stamped = Mask::new_empty(mw, mh);
+            stamp_capsule(&mut stamped, x0, y0, x1, y1, r, true);
+
+            let mut map = solid_map();
+            map.carve_capsule(x0, y0, x1, y1, r);
+
+            // Compare only where carving is allowed: carve clamps bedrock and the
+            // wall columns, and stamp deliberately does not.
+            let (w, h) = (mw as i32, mh as i32);
+            for y in 0..(h - BEDROCK_H as i32) {
+                for x in (WALL_W as i32)..(w - WALL_W as i32) {
+                    assert_eq!(
+                        stamped.get(x, y),
+                        !map.mask.get(x, y),
+                        "({x},{y}) disagrees for capsule ({x0},{y0})-({x1},{y1}) r={r}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

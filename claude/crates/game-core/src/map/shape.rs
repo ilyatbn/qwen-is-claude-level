@@ -54,25 +54,76 @@ pub fn carve_circle_counted(mask: &mut Mask, cx: i32, cy: i32, r: i32) -> u32 {
     removed
 }
 
-/// Stamp a thick line as a swept circle, used for bridges, tunnels and (in M5)
-/// lava channels. Steps along the segment so consecutive discs overlap.
-pub fn stamp_capsule(mask: &mut Mask, x0: i32, y0: i32, x1: i32, y1: i32, r: i32, solid: bool) {
-    let (dx, dy) = ((x1 - x0) as f32, (y1 - y0) as f32);
-    let len = (dx * dx + dy * dy).sqrt();
-    // Step by at most half a radius so the discs overlap and leave no scalloping;
-    // never less than 1 px, or a long capsule becomes a very long loop.
-    let step = (r as f32 * 0.5).max(1.0);
-    let n = (len / step).ceil().max(1.0) as i32;
-    for i in 0..=n {
-        let t = i as f32 / n as f32;
-        stamp_circle(
-            mask,
-            x0 + (dx * t).round() as i32,
-            y0 + (dy * t).round() as i32,
-            r,
-            solid,
-        );
+/// Clamp capsule endpoints into a bounded box around the map, in i64.
+///
+/// `(x1 - x0).abs()` is the trap this exists to avoid: at `i32::MIN` it panics in
+/// debug, and in release `.abs()` of a wrapped value stays negative, the
+/// Bresenham error term becomes garbage and the sweep silently collapses to its
+/// endpoint. Clamping first also bounds the cost by construction — the walk runs
+/// once per pixel, so an unclamped 20-million-pixel endpoint took 103 ms in
+/// release for a carve that touches nothing.
+pub(crate) fn clamp_capsule(
+    w: u32,
+    h: u32,
+    r: i32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+) -> (i32, i32, i32, i32) {
+    let (w, h, r64) = (w as i64, h as i64, r as i64);
+    let clamp = |v: i32, lo: i64, hi: i64| (v as i64).clamp(lo, hi) as i32;
+    (
+        clamp(x0, -r64 - 1, w + r64 + 1),
+        clamp(y0, -r64 - 1, h + r64 + 1),
+        clamp(x1, -r64 - 1, w + r64 + 1),
+        clamp(y1, -r64 - 1, h + r64 + 1),
+    )
+}
+
+/// The centres a capsule stamps, one pixel at a time along a Bresenham walk.
+///
+/// **This is the only capsule path in the codebase.** `stamp_capsule` and
+/// `Map::carve_capsule` both walk it, so a solid capsule and a carved one of the
+/// same endpoints cover exactly the same pixels. They were two different walks —
+/// integer 1-px here and float `r/2` there — which is two rasterisers against a
+/// stated one-rasteriser invariant (§A24), and the seam that invariant exists to
+/// close.
+///
+/// Stepping one pixel rather than by the radius is deliberate: a sweep sampled at
+/// `r` intervals leaves lens-shaped gaps on the diagonal, which is the classic
+/// bug here.
+pub(crate) fn walk_capsule(x0: i32, y0: i32, x1: i32, y1: i32, mut f: impl FnMut(i32, i32)) {
+    let (mut x, mut y) = (x0, y0);
+    let (dx, dy) = ((x1 - x0).abs(), -(y1 - y0).abs());
+    let (sx, sy) = (if x0 < x1 { 1 } else { -1 }, if y0 < y1 { 1 } else { -1 });
+    let mut err = dx + dy;
+
+    loop {
+        f(x, y);
+        if x == x1 && y == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y += sy;
+        }
     }
+}
+
+/// Stamp a thick line as a swept circle, used for bridges, tunnels and lava
+/// channels.
+pub fn stamp_capsule(mask: &mut Mask, x0: i32, y0: i32, x1: i32, y1: i32, r: i32, solid: bool) {
+    if r < 0 {
+        return;
+    }
+    let (x0, y0, x1, y1) = clamp_capsule(mask.w, mask.h, r, x0, y0, x1, y1);
+    walk_capsule(x0, y0, x1, y1, |x, y| stamp_circle(mask, x, y, r, solid));
 }
 
 #[cfg(test)]

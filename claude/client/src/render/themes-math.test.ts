@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'vitest'
-import { THEMES, resolveTheme, paletteDistance, luminance, daySkyBottom } from './themes-math'
+import {
+  THEMES,
+  resolveTheme,
+  paletteDistance,
+  luminance,
+  daySkyBottom,
+  worstSkyContrast,
+  MIN_SKY_CONTRAST,
+  SKY_KEYFRAME_COLOURS,
+  type ThemeDef,
+} from './themes-math'
+import { KEYFRAMES as SKY_KEYFRAMES } from './sky-math'
 
 describe('themes', () => {
   it('ships the three the docs name', () => {
@@ -46,6 +57,40 @@ describe('themes', () => {
       expect(lum(t.edge), t.name).toBeGreaterThan(lum(t.fill))
       expect(lum(t.back), t.name).toBeLessThan(lum(t.fill))
     }
+  })
+
+  it('keeps its land visible against the sky at every point in the cycle', () => {
+    // Measured in colour distance, not luminance. Sky luminance sweeps the whole
+    // range twice a day, so it *must* cross fixed terrain luminance at dusk and
+    // dawn — grassland 7.1, desert 9.8, frost 5.3 at their worst. Judging on
+    // brightness alone calls frost the worst theme when by colour it is the best
+    // (18.4 against 7.1 and 7.9), which is how a real palette gets "fixed" for a
+    // defect it does not have.
+    for (const t of THEMES) {
+      expect(worstSkyContrast(t), t.name).toBeGreaterThanOrEqual(MIN_SKY_CONTRAST)
+    }
+  })
+
+  it('would reject a theme that reads as sky', () => {
+    // The control. Without it, the bound above passes for any palette at all if
+    // the metric is wrong — and this metric was wrong once already.
+    const skyLike: ThemeDef = {
+      ...THEMES[0]!,
+      name: 'sky-coloured',
+      fill: { r: 168, g: 216, b: 240 },
+      edge: { r: 168, g: 216, b: 240 },
+      skyTint: 0xffffff,
+    }
+    expect(worstSkyContrast(skyLike)).toBeLessThan(MIN_SKY_CONTRAST)
+  })
+
+  it('checks the sky colours the sky layer actually draws', () => {
+    // The keyframe table is duplicated here to keep this module free of a
+    // dependency on sky-math; duplicated data that nothing compares is data that
+    // drifts (§A24).
+    const fromSky = new Set(SKY_KEYFRAMES.flatMap(([, top, bottom]) => [top, bottom]))
+    for (const c of SKY_KEYFRAME_COLOURS) expect(fromSky.has(c), `0x${c.toString(16)}`).toBe(true)
+    expect(SKY_KEYFRAME_COLOURS.length).toBe(fromSky.size)
   })
 
   it('has ids matching their index, so resolveTheme cannot silently mismatch', () => {

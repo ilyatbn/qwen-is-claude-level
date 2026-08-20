@@ -2045,3 +2045,45 @@ Notes: THIS WAS NOT A COSMETIC TASK. World items were tracked by WorldMirror
        client — the wire carries only a numeric item_id. Exported the registry
        through item_registry_json() rather than duplicating six entries.
 Left for later: T9.04.
+
+## T9.04 — Theme contrast, and one capsule rasteriser — DONE
+Files: crates/game-core/src/map/{shape,carve}.rs, tests/golden_hashes.txt,
+       client/src/render/{themes-math,themes-math.test,sky-math,sky}.ts,
+       scripts/verify-assets.mjs, scripts/checks/m9-checkpoint.mjs
+Verified: `cargo test -p game-core --lib map::carve` — 26 passed incl. the new
+       stamping-vs-carving equality; `npm test -- --run themes-math` — 9 passed;
+       999-seed sweep re-run below. Gate green: 771 Rust + 375 client tests.
+Notes: THE FROST PALETTE BRIEF DID NOT SURVIVE MEASUREMENT, and I did not change
+       the palette. Judged on LUMINANCE frost looks worst (worst gap 5.3 against
+       grassland 7.1 and desert 9.8) — but sky luminance sweeps the whole range
+       twice a day, so it MUST cross fixed terrain luminance at dusk and dawn;
+       that is a property of having a day cycle, not a palette defect. Judged on
+       COLOUR DISTANCE, which is what decides whether you can see the boundary,
+       frost is comfortably the BEST at 18.4 against 7.1 and 7.9. The assertion
+       is now colour distance across all 18 sky keyframes, floor 6, chosen from
+       the measured values. Falsified two ways: swapping the metric back to
+       luminance fails it, and dropping a keyframe fails the table-agreement test.
+       ONE CAPSULE PATH NOW. shape::{clamp_capsule, walk_capsule} are shared, so
+       stamp_capsule and Map::carve_capsule walk identically; a new test asserts
+       carving from a full mask leaves exactly the inverse of stamping into an
+       empty one over 8 endpoint/radius cases. Falsified by restoring the float
+       r/2 walk: "(61,51) disagrees for capsule (60,60)-(300,60) r=9".
+       CONSEQUENCES THIS TASK OWNED: 5 of 12 golden mask hashes changed
+       (GOLDEN_UPDATE=1, intentional) — and every META hash is UNCHANGED, so
+       spawns, buried slots and component sizes were not perturbed. 999-seed
+       sweep is IDENTICAL to before: attempts [0,996,3,0,0], safe_preset 0,
+       fraction min 0.760 p50 0.929, cave_reachable 88.0%.
+       TWO VISUAL DEFECTS FOUND BY LOOKING: decor_3/decor_8 were tile_0097 and
+       tile_0140, which are 98% and 99% OPAQUE — terrain tiles, not props, and
+       they rendered as flat green and brown squares standing on the ground.
+       verify-assets now fails any decor frame over 90% opaque, so picking a tile
+       by eye off a numbered contact sheet cannot silently ship again. And the
+       sun/moon glows were flat-alpha circles, which draw a hard-edged pale ring;
+       they are radial-gradient textures now (LINEAR, since pixelArt forces
+       NEAREST globally — the same fix the half-res lightmap needed).
+       I ALSO WALKED INTO A DOCUMENTED TRAP: my first checkpoint luminance probe
+       drawImage'd the live WebGL canvas and read 0.0 everywhere. Phaser does not
+       preserve the drawing buffer; night_darkens_the_world.mjs already samples a
+       screenshot instead. I wrote a second way to read pixels rather than using
+       the one that worked.
+Left for later: nothing in M9.

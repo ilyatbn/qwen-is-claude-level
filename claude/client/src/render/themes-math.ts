@@ -112,6 +112,56 @@ export function unpackRgb(hex: number): Rgb {
  */
 export const DAY_SKY_BOTTOM = 0xa8d8f0
 
+/**
+ * The §A4 sky keyframes, as the theme layer needs them: a terrain palette has to
+ * hold up against the sky at **every** point in the cycle, not at one keyframe.
+ *
+ * Duplicated from `sky-math.ts` rather than imported to keep this module free of
+ * that dependency; the test asserts the two agree, so they cannot drift.
+ */
+export const SKY_KEYFRAME_COLOURS: number[] = [
+  0x1b2a5e, 0xf2a15c, 0x3f7fd0, 0xbfe3f5, 0x2f7fd8, 0xa8d8f0, 0x3a6fb8, 0xf0c07a,
+  0x4a2c6b, 0xe2723b, 0x221041, 0x6b2f5c, 0x030616, 0x0d1a3a, 0x050a1c, 0x10204a,
+  0x101a44, 0x6a4a6e,
+]
+
+/**
+ * How visible this theme's land is against the sky, at its worst moment.
+ *
+ * **Measured in colour distance, not luminance.** Sky luminance sweeps the whole
+ * range twice a day, so it necessarily crosses fixed terrain luminance at dusk
+ * and at dawn — every theme has a moment where the two match in brightness
+ * (measured: grassland 7.1, desert 9.8, frost 5.3). That is a property of having
+ * a day cycle, not a palette defect, and judging on luminance alone names frost
+ * the worst theme when by colour distance it is comfortably the best.
+ *
+ * Terrain also gets its bright edge band along every sky-facing surface
+ * (`docs/12` §3), which is the thing that actually separates land from sky; this
+ * takes the better of fill and edge for that reason.
+ */
+export function worstSkyContrast(theme: ThemeDef): number {
+  const tint = unpackRgb(theme.skyTint)
+  let worst = Number.POSITIVE_INFINITY
+  for (const hex of SKY_KEYFRAME_COLOURS) {
+    const s = unpackRgb(hex)
+    const sky: Rgb = {
+      r: (s.r * tint.r) / 255,
+      g: (s.g * tint.g) / 255,
+      b: (s.b * tint.b) / 255,
+    }
+    worst = Math.min(worst, paletteDistance(theme.fill, sky), paletteDistance(theme.edge, sky))
+  }
+  return worst
+}
+
+/**
+ * Floor for `worstSkyContrast`, chosen from the measured values rather than
+ * picked: grassland 7.1, desert 7.9, frost 18.4. A new theme that reads as sky
+ * at some point in the cycle fails here rather than in a screenshot nobody takes
+ * at that time of day.
+ */
+export const MIN_SKY_CONTRAST = 6
+
 export function daySkyBottom(theme: ThemeDef): Rgb {
   const sky = unpackRgb(DAY_SKY_BOTTOM)
   const tint = unpackRgb(theme.skyTint)

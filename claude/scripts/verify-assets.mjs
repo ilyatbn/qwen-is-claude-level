@@ -81,6 +81,39 @@ if (existsSync(skinsPath) && manifest) {
     }
   }
 
+  // Decorations must be *props*, not terrain tiles.
+  //
+  // Kenney's platformer tiles are numbered, not named, so picking a decoration
+  // by eye off a contact sheet is easy to get wrong — and it was: tile_0097 and
+  // tile_0140 are 98% and 99% opaque, and rendered as flat green and brown
+  // squares standing on the ground. A prop has transparent space around it; a
+  // tile does not, and that is mechanically checkable.
+  const decorJson = manifest.atlases?.find((a) => a.key === 'decor')
+  if (decorJson) {
+    const png = join(assets, decorJson.png)
+    if (existsSync(png)) {
+      const { PNG } = await import('../client/node_modules/pngjs/lib/png.js')
+      const img = PNG.sync.read(readFileSync(png))
+      const data = JSON.parse(readFileSync(join(assets, decorJson.json), 'utf8'))
+      for (const [name, f] of Object.entries(data.frames ?? {})) {
+        const { x, y, w, h } = f.frame
+        let opaque = 0
+        for (let py = y; py < y + h; py++) {
+          for (let px = x; px < x + w; px++) {
+            if (img.data[((img.width * py + px) << 2) + 3] > 200) opaque++
+          }
+        }
+        const frac = opaque / (w * h)
+        if (frac > 0.9) {
+          problems.push(
+            `decor frame "${name}" is ${(frac * 100).toFixed(0)}% opaque — that is a terrain ` +
+              `tile, not a prop; it will render as a flat square standing on the ground`,
+          )
+        }
+      }
+    }
+  }
+
   const seenWeaponIds = new Set()
   for (const w of skins?.weapons ?? []) {
     if (seenWeaponIds.has(w.id)) problems.push(`weapon skin id ${w.id} is duplicated`)
