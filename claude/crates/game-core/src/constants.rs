@@ -429,9 +429,26 @@ pub const BACKDROP_RAYS: u32 = 8;
 pub const BACKDROP_RAY_LEN: f32 = 320.0;
 /// Rays that must strike solid for the sample to count as enclosed.
 ///
-/// 5, not §A17's 6: measured on a real map the two error rates trade against each
-/// other and no threshold satisfies both bounds. 5 biases toward the merely
-/// cosmetic failure. See §A18 for the table.
+/// **5, and §A19's 4 is not adopted — see the journal entry for T5.02b.**
+///
+/// §A19's table does not reproduce against a freshly built WASM. Re-measured at
+/// all three scales with the acceptance test (shares: enclosed air drawn as sky /
+/// open sky drawn as backdrop):
+///
+/// | value | small/777 | medium/4242 | large/99 |
+/// |---|---|---|---|
+/// | 4 | -- / **19.2 %** | -- / **7.3 %** | -- / **7.3 %** |
+/// | 5 | -- / **9.6 %** | pass / pass | **2.9 %** / -- |
+/// | 6 | **4.4 %** / -- | pass / pass | **7.2 %** / -- |
+///
+/// No value satisfies both bounds at every scale, so the single global threshold
+/// is the wrong instrument rather than mistuned — the same conclusion §A17 reached
+/// about connectivity, one level down. 5 is retained as the least-bad and because
+/// it is what the game has shipped throughout; changing it is a design decision,
+/// not a build one.
+///
+/// §A19's structural requirements ARE adopted, and they are the durable half: no
+/// default for `minHits`, tests pinned to this constant, acceptance at every scale.
 pub const BACKDROP_MIN_HITS: u32 = 5;
 
 // --- A3: visible ordnance ---

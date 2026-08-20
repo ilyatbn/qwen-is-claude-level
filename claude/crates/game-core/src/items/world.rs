@@ -135,9 +135,16 @@ impl WorldItems {
 
     /// Is there still solid ground directly under this item's footprint?
     ///
-    /// One row below the AABB's bottom edge, across its full width, so an item on
-    /// the lip of a new crater falls as soon as its own support goes — not only
-    /// when the pixel under its centre does.
+    /// One row below the AABB's bottom edge, across its full width, and `.any()`
+    /// — so an item keeps standing while **any** part of its base is supported.
+    /// That is strictly more permissive than probing the centre alone: an item on
+    /// the lip of a crater stays put, and only one whose support is entirely gone
+    /// falls. That is the correct behaviour for a box resting on a ledge, and it
+    /// is what the tests pin (support fully removed -> falls 70.2 px; partial
+    /// support -> stays).
+    ///
+    /// The comment here previously claimed the opposite — that the footprint probe
+    /// made a lip-resting item fall. It does not, and could not.
     fn supported(map: &Map, it: &WorldItem) -> bool {
         let (w, h) = it.size();
         let y = (it.pos.y + h / 2.0).round() as i32;

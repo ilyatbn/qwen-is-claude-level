@@ -185,13 +185,20 @@ export class BackdropMask implements MaskSource {
   private static readonly DIAG = 4
   private static readonly FAR = 255
 
+  /**
+   * `minHits` has **no default**, deliberately (§A19). A default that disagreed
+   * with the shipped constant is exactly what let the synthetic tests run at 6
+   * while production ran at 5 — and at the shipped value two of those tests
+   * failed, one of them violating §A17's own EDGE_BAND_PX proximity bound.
+   * Callers pass `C().BACKDROP_MIN_HITS`; tests pin to the same constant.
+   */
   constructor(
     src: MaskSource,
     reach = BackdropMask.REACH_PX,
     skyMargin = 96,
     rays = 8,
     rayLen = 320,
-    minHits = 6,
+    minHits: number,
   ) {
     const w = (this.width = src.width)
     const h = (this.height = src.height)

@@ -28,7 +28,9 @@ use game_core::player::state::PlayerState;
 use game_core::player::{apply_input, Input, JetpackState, JumpState};
 use game_core::rng::{substream, ChaCha8Rng};
 use game_core::weapons::defs;
-use game_core::weapons::explode::{explode, fire_hitscan, DamageSource, PlayerHitTarget};
+use game_core::weapons::explode::{
+    explode, fire_hitscan, BlastSource, DamageSource, PlayerHitTarget,
+};
 use game_core::weapons::projectile::{ProjectileOutcome, Projectiles};
 use wasm_bindgen::prelude::*;
 
@@ -357,9 +359,7 @@ impl GameCore {
                         at,
                         radius,
                         damage,
-                        Some(0),
-                        Some(weapon),
-                        now,
+                        BlastSource::Fired { owner: 0, weapon },
                     );
                 }
                 self.players[i].body.vel = vel;

@@ -57,11 +57,35 @@ pub struct ExplosionResult {
     pub hits: Vec<(PlayerId, f32, Vec2)>,
 }
 
-/// Carve, then damage.
+/// How this blast should be attributed, before knowing who it hit.
 ///
-/// The argument list is long because this is the one primitive every damage
-/// source funnels through — a struct would only move the same fields.
-#[allow(clippy::too_many_arguments)]
+/// `explode` turns this into a per-victim [`DamageSource`]: a `Fired` blast whose
+/// owner *is* the victim becomes `SelfInflicted`, which is what makes a rocket-jump
+/// death cost you a point and give nobody else one.
+///
+/// This is a parameter rather than a default because **every** ownerless explosion
+/// used to be attributed to `MeteorShower` — so lava and toxic deaths would have
+/// read "meteor" in the kill feed the moment M6 wired the event
+/// (`docs/70-amendments-v2.md` §A20).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum BlastSource {
+    Fired { owner: PlayerId, weapon: WeaponId },
+    Weather(EffectKind),
+}
+
+impl BlastSource {
+    fn for_victim(self, victim: PlayerId) -> DamageSource {
+        match self {
+            BlastSource::Fired { owner, weapon } if owner == victim => {
+                DamageSource::SelfInflicted { weapon }
+            }
+            BlastSource::Fired { owner, weapon } => DamageSource::Player { id: owner, weapon },
+            BlastSource::Weather(kind) => DamageSource::Weather(kind),
+        }
+    }
+}
+
+/// Carve, then damage.
 ///
 /// **Order matters.** The carve's `revealed` slots belong to the same moment as the
 /// blast, so a rocket that exposes a buried item reports both in one result
@@ -72,9 +96,7 @@ pub fn explode(
     at: Vec2,
     radius: f32,
     damage: f32,
-    owner: Option<PlayerId>,
-    weapon: Option<WeaponId>,
-    _now: f32,
+    source: BlastSource,
 ) -> ExplosionResult {
     let carve = map.carve_circle(
         at.x.round() as i32,
@@ -95,18 +117,18 @@ pub fn explode(
         }
         let t = (1.0 - d / radius).clamp(0.0, 1.0);
 
-        let src = match (owner, weapon) {
-            (Some(o), Some(w)) if o == p.id => DamageSource::SelfInflicted { weapon: w },
-            (Some(o), Some(w)) => DamageSource::Player { id: o, weapon: w },
-            _ => DamageSource::Weather(EffectKind::MeteorShower),
-        };
+        let src = source.for_victim(p.id);
         let mult = if matches!(src, DamageSource::SelfInflicted { .. }) {
             SELF_DAMAGE_MULT
         } else {
             1.0
         };
         let dealt = damage * t * mult;
-        (p.apply_damage)(dealt, src);
+        // The return says whether it LANDED — i-frames and death refuse it. A hit
+        // recorded at full value regardless is a phantom `damage` event on the
+        // wire, and any kill attribution built on this list inherits the error
+        // (`docs/70-amendments-v2.md` §A20).
+        let applied = (p.apply_damage)(dealt, src);
 
         // Knockback is applied even through i-frames and through the shield —
         // being thrown is not damage. It is what makes rocket-jumping work and how
@@ -119,7 +141,11 @@ pub fn explode(
         let impulse = dir * (KNOCKBACK_MAX * t);
         *p.vel += impulse;
 
-        hits.push((p.id, dealt, impulse));
+        // A victim exactly at `d == radius` takes zero and is pushed by zero.
+        // Recording that is a wire event describing nothing happening.
+        if applied && dealt > 0.0 {
+            hits.push((p.id, dealt, impulse));
+        }
     }
 
     ExplosionResult { carve, hits }

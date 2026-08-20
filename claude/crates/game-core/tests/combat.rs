@@ -10,7 +10,7 @@ use game_core::player::state::{choose_respawn, DeathCause, PlayerState, UseError
 use game_core::rng::substream;
 use game_core::weapons::defs;
 use game_core::weapons::explode::{
-    explode, fire_hitscan, DamageSource, EffectKind, HitscanHit, PlayerHitTarget,
+    explode, fire_hitscan, BlastSource, DamageSource, EffectKind, HitscanHit, PlayerHitTarget,
 };
 use game_core::weapons::projectile::{ProjectileOutcome, Projectiles};
 
@@ -280,9 +280,13 @@ fn blast(map: &mut Map, victims: &mut [Victim], at: Vec2, r: f32, dmg: f32, owne
                 at,
                 r,
                 dmg,
-                owner,
-                Some(WEAPON_BAZOOKA),
-                0.0,
+                match owner {
+                    Some(o) => BlastSource::Fired {
+                        owner: o,
+                        weapon: WEAPON_BAZOOKA,
+                    },
+                    None => BlastSource::Weather(EffectKind::MeteorShower),
+                },
             );
         }
         taken[i] = acc;
@@ -396,9 +400,7 @@ fn explode_carves_before_it_damages_so_a_reveal_is_part_of_the_same_event() {
         Vec2::new(400.0, 340.0),
         BAZOOKA_BLAST_RADIUS,
         BAZOOKA_DAMAGE,
-        None,
-        None,
-        0.0,
+        BlastSource::Weather(EffectKind::MeteorShower),
     );
     assert!(res.carve.pixels_removed > 0, "the blast carved nothing");
     assert_eq!(
@@ -434,9 +436,7 @@ fn knockback_applies_through_iframes_and_through_the_shield() {
             at,
             BAZOOKA_BLAST_RADIUS,
             BAZOOKA_DAMAGE,
-            None,
-            None,
-            0.0,
+            BlastSource::Weather(EffectKind::MeteorShower),
         );
     }
     assert!(applied, "damage was never offered");
@@ -798,5 +798,125 @@ fn respawn_prefers_a_point_away_from_the_living() {
             "respawned {} px from a living player",
             (at - camper).len()
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A20: report damage that was applied, and name the source that caused it
+// ---------------------------------------------------------------------------
+
+/// A blast on a player who refuses the damage (i-frames) must record no hit —
+/// but must still throw them. Recording the refused amount would put a phantom
+/// `damage` event on the wire in M6 and poison kill attribution built on it.
+#[test]
+fn a_refused_hit_is_not_reported_but_is_still_thrown() {
+    let mut map = flat_map(400);
+    let at = Vec2::new(400.0, 340.0);
+    let mut vel = Vec2::ZERO;
+    let mut offered = 0.0f32;
+    // Refuses everything, exactly as `apply_damage` does under SPAWN_IFRAMES.
+    let mut cb = |amount: f32, _s: DamageSource| {
+        offered += amount;
+        false
+    };
+    let mut targets = [PlayerHitTarget {
+        id: 3,
+        pos: at,
+        vel: &mut vel,
+        alive: true,
+        apply_damage: &mut cb,
+    }];
+    let res = explode(
+        &mut map,
+        &mut targets,
+        at,
+        BAZOOKA_BLAST_RADIUS,
+        BAZOOKA_DAMAGE,
+        BlastSource::Weather(EffectKind::LavaBurst),
+    );
+
+    assert!(offered > 0.0, "the blast never reached the player");
+    assert!(
+        res.hits.is_empty(),
+        "recorded {:?} for damage the callee refused",
+        res.hits
+    );
+    assert!(
+        vel.len() > 0.0,
+        "knockback must apply through i-frames (docs/21 §5)"
+    );
+}
+
+/// The kill feed must not read "meteor" for every environmental death.
+#[test]
+fn an_ownerless_blast_is_attributed_to_the_source_that_caused_it() {
+    for kind in [
+        EffectKind::LavaBurst,
+        EffectKind::ToxicRain,
+        EffectKind::MeteorShower,
+    ] {
+        let mut map = flat_map(400);
+        let at = Vec2::new(400.0, 340.0);
+        let mut vel = Vec2::ZERO;
+        let mut seen: Option<DamageSource> = None;
+        let mut cb = |_a: f32, s: DamageSource| {
+            seen = Some(s);
+            true
+        };
+        let mut targets = [PlayerHitTarget {
+            id: 1,
+            pos: at,
+            vel: &mut vel,
+            alive: true,
+            apply_damage: &mut cb,
+        }];
+        explode(
+            &mut map,
+            &mut targets,
+            at,
+            BAZOOKA_BLAST_RADIUS,
+            BAZOOKA_DAMAGE,
+            BlastSource::Weather(kind),
+        );
+        assert_eq!(seen, Some(DamageSource::Weather(kind)), "for {kind:?}");
+    }
+}
+
+/// An owner blasting themselves is `SelfInflicted`, not `Player` — that is what
+/// makes a rocket-jump death cost a point and award nobody.
+#[test]
+fn a_fired_blast_names_self_inflicted_for_its_own_owner() {
+    let mut map = flat_map(400);
+    let at = Vec2::new(400.0, 340.0);
+    for (victim, expect_self) in [(7u8, true), (2u8, false)] {
+        let mut vel = Vec2::ZERO;
+        let mut seen: Option<DamageSource> = None;
+        let mut cb = |_a: f32, s: DamageSource| {
+            seen = Some(s);
+            true
+        };
+        let mut targets = [PlayerHitTarget {
+            id: victim,
+            pos: at,
+            vel: &mut vel,
+            alive: true,
+            apply_damage: &mut cb,
+        }];
+        explode(
+            &mut map,
+            &mut targets,
+            at,
+            BAZOOKA_BLAST_RADIUS,
+            BAZOOKA_DAMAGE,
+            BlastSource::Fired {
+                owner: 7,
+                weapon: WEAPON_BAZOOKA,
+            },
+        );
+        match (seen, expect_self) {
+            (Some(DamageSource::SelfInflicted { .. }), true) => {}
+            (Some(DamageSource::Player { id: 7, .. }), false) => {}
+            other => panic!("victim {victim}: got {other:?}"),
+        }
     }
 }

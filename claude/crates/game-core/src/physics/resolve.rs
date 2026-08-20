@@ -25,6 +25,15 @@ use crate::physics::collide::{aabb_overlaps_solid, ground_probe, step_up_clearan
 /// 140-px steps for a fast body and tunnel it straight through a wall — which is
 /// precisely the failure this whole mechanism exists to prevent. Moving slower than
 /// requested is recoverable; ending up on the far side of a wall is not.
+/// **Every moving thing in this crate must call this.** Bodies (M2) and
+/// projectiles (M4) each tunnelled through a 1 px wall on their first attempt for
+/// the identical reason: the split was re-derived locally, dividing the delta by
+/// the *capped* step count, which makes a "sub-step" arbitrarily large once the cap
+/// binds. The rule is that the cap bounds distance travelled, not step size — so
+/// when it binds the body moves LESS FAR rather than in bigger jumps.
+///
+/// `no_other_substep_derivation_exists` in the tests below is the guard against a
+/// third occurrence.
 pub fn substeps(delta: Vec2) -> (u32, Vec2) {
     let dist = delta.x.abs().max(delta.y.abs());
     let ideal = (dist / MAX_SUBSTEP_PX).ceil().max(1.0);
@@ -697,5 +706,57 @@ mod tests {
         let before = b;
         clamp_to_world(&map, &mut b);
         assert_eq!(b, before);
+    }
+}
+
+#[cfg(test)]
+mod substep_guard {
+    /// Nothing outside this module may derive its own sub-step count.
+    ///
+    /// This has been the same bug twice — M2's bodies and M4's projectiles both
+    /// tunnelled through a 1 px wall because the split was recomputed file-locally.
+    /// A comment asking people not to is not a guard; this is. It reads the crate's
+    /// own source, so a third re-derivation fails the suite rather than shipping
+    /// and being found by a tunnelling test that may not exist for that mover.
+    #[test]
+    fn no_other_substep_derivation_exists() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+        let mut offenders = Vec::new();
+        let mut stack = vec![std::path::PathBuf::from(root)];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read src") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                // `resolve.rs` is where the one derivation lives, and
+                // `constants.rs` is where the values are declared.
+                let name = path.file_name().and_then(|f| f.to_str());
+                if name == Some("resolve.rs") || name == Some("constants.rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("read file");
+                for (i, line) in text.lines().enumerate() {
+                    let l = line.trim();
+                    if l.starts_with("//") {
+                        continue;
+                    }
+                    if l.contains("MAX_SUBSTEP_PX") || l.contains("MAX_SUBSTEPS") {
+                        offenders.push(format!("{}:{}: {l}", path.display(), i + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "sub-step constants used outside physics::resolve — call substeps() \
+             instead. Dividing a delta by the capped count is how bodies and \
+             projectiles each tunnelled through a 1 px wall:\n{}",
+            offenders.join("\n")
+        );
     }
 }
