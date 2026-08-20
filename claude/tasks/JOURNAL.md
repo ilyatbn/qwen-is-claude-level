@@ -2193,3 +2193,10 @@ Notes: IT WAS NOT A CODE REGRESSION AND THE CEILING MEASURED THE WRONG QUANTITY.
        TRAP, twice on this project now: `pkill -f "while :"` matches its own shell
        (as `pkill -f vite` did). Kill by pid or use a pattern that cannot match.
 Left for later: the inventory-on-join defect from T9.06.
+       FOLLOW-UP (T9.06): the weather screenshot fired on "a hazard has been
+       announced somewhere", and produced a frame with no weather in it — the
+       §A22 trap. Gated on the hazard being within the 640x360 viewport and
+       renamed `round-3-hazard-nearby`, because even then it cannot promise a
+       LIVE hazard: a meteor impact is instantaneous and a puddle lives 3 s
+       against a 1 s poll. That weather ran is asserted from the effect
+       lifecycle, never from the picture.

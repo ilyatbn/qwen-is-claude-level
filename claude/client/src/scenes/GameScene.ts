@@ -108,6 +108,8 @@ export class GameScene extends Phaser.Scene {
     /** effect id -> the lifecycle phases seen for it, so "ran start to finish" is checkable. */
     effects: new Map<number, { kind: string; phases: Set<string> }>(),
     hazards: 0,
+    /** Where the most recent hazard landed, so a screenshot can frame one. */
+    lastHazard: null as { x: number; y: number } | null,
     deaths: [] as Array<{ victim: number; attacker: number | null; cause: string }>,
     respawns: 0,
     itemSpawns: 0,
@@ -260,7 +262,13 @@ export class GameScene extends Phaser.Scene {
         this.observed.effects.set(id, rec)
       })
     }
-    this.conn.on('hazard_spawn', () => this.observed.hazards++)
+    this.conn.on('hazard_spawn', (raw) => {
+      this.observed.hazards++
+      // Where, not just how many: a check that screenshots "the weather" needs to
+      // know whether any of it is actually in frame (§A22).
+      const p = asRecord(raw)
+      this.observed.lastHazard = { x: Number(p['x'] ?? 0), y: Number(p['y'] ?? 0) }
+    })
     this.conn.on('phase_change', (raw) => {
       const p = asRecord(raw)
       this.observed.dayPhases.add(String(p['day_phase'] ?? p['phase'] ?? ''))
@@ -931,6 +939,7 @@ export class GameScene extends Phaser.Scene {
               phases: [...e.phases],
             })),
             hazards: self.observed.hazards,
+            lastHazard: self.observed.lastHazard,
             deaths: self.observed.deaths,
             respawns: self.observed.respawns,
             itemSpawns: self.observed.itemSpawns,

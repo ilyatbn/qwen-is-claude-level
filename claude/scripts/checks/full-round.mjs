@@ -331,11 +331,27 @@ for (;;) {
     daylightShot = true
     await shot(a, 'round-2-daylight')
   }
-  // The active phase of a weather effect: something is telegraphed *and* has
-  // spawned a hazard, which is the moment the effect is actually on screen.
-  if (!effectShot && d.observed.hazards > 0) {
-    effectShot = true
-    await shot(a, 'round-3-weather')
+  // A weather effect, *in frame*.
+  //
+  // The first version fired on `hazards > 0` — "a hazard has been announced
+  // somewhere on the map" — and produced a frame with no weather in it at all.
+  // That is the §A22 trap: a screenshot that does not contain its subject is not
+  // evidence. The visible world is 640×360 at `CAMERA_ZOOM`, so require the most
+  // recent hazard to be inside it before shooting.
+  const hz = d.observed.lastHazard
+  if (!effectShot && hz && d.player) {
+    const inFrame = Math.abs(hz.x - d.player.x) < 300 && Math.abs(hz.y - d.player.y) < 165
+    if (inFrame) {
+      effectShot = true
+      // Named for what it can honestly promise. The proximity gate guarantees a
+      // hazard was announced *near the camera*; it cannot guarantee one is still
+      // alive when the shot lands, because a meteor impact is instantaneous and a
+      // toxic puddle lives 3 s while the poll interval is 1 s. Calling this
+      // "weather" would be claiming more than the frame shows (§A22). That
+      // weather *ran* is asserted from the effect lifecycle, not from a picture.
+      await shot(a, 'round-3-hazard-nearby')
+      console.log(`  hazard near the camera at ${hz.x.toFixed(0)},${hz.y.toFixed(0)}`)
+    }
   }
   if (!nightShot && d.darkness > 0.6) {
     nightShot = true
@@ -353,7 +369,10 @@ for (;;) {
     fail(`the round never reached \`ended\` (stuck in ${d.phase} at t=${d.roundTime.toFixed(1)})`)
     break
   }
-  await new Promise((r) => setTimeout(r, 2000))
+  // 1 s, not 2: hazards are transient (a toxic puddle lives 3 s, a meteor
+  // impact is instantaneous), so a slow poll misses the only frames worth
+  // photographing.
+  await new Promise((r) => setTimeout(r, 1000))
 }
 
 driving = false
@@ -408,6 +427,12 @@ else ok(`day/night: darkness ${o.darknessMin.toFixed(2)} → ${o.darknessMax.toF
 // that the same terrain was measurably lighter earlier (§A15: assert on the
 // rendered result, and sample terrain rather than a whole-frame mean, which the
 // sky dominates).
+if (!effectShot) {
+  // Not a failure: that weather *ran* is asserted from the effect lifecycle
+  // above. This only says no hazard happened to land in the camera's 640x360
+  // while it was alive, so there is no picture of it.
+  console.log('  note: no hazard landed near the camera this round — no nearby-hazard shot')
+}
 if (!nightShot) fail('never captured a night frame, so nothing was measured')
 if (!daylightShot) fail('never captured a daylight frame, so night had no control')
 
