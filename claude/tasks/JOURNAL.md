@@ -2575,3 +2575,32 @@ MenuScene.setSocket IS GONE, and that closes the note I left. The menu records
        two sockets would mean two seats, and a `join` after a `quick_match` is
        a double join. `?game=1` leaves the intent undefined and a plain `join`
        happens, which is what every check written before the menu expects.
+
+## T10.06 — Death overlay — DONE
+Files: scripts/checks/death.mjs (new), scripts/e2e.mjs,
+       crates/game-core/src/player/state.rs, crates/game-core/src/world/mod.rs,
+       crates/game-core/tests/world_step.rs
+Verified: `node scripts/checks/death.mjs` — 9/9 ok (overlay appears, countdown
+       4.2s falling to 2.9, cause "You killed yourself", round kept running
+       behind it, cleared on respawn at 100 health). `--test world_step` 26 passed.
+Notes: THE PREVIOUS SESSION'S DEAD END #4 WAS THE DESIGN WORKING. A synthetic
+       `death` event can never raise the overlay: `DeathOverlay.update` takes
+       `dead` from the SNAPSHOT's alive flag (§B4), so an injected event the
+       server never agreed with is correctly ignored. Only a real death works.
+       The i-frames hypothesis was WRONG — round_time is not reset on phase
+       change, so join-time i-frames expire long before Playing. What worked is
+       full-round's own selfKill technique: select the rocket slot, aim below
+       mid-screen, step onto fresh ground between shots.
+       REAL BUG THE CHECK FOUND ON ITS FIRST RUN: a rocket at your own feet
+       reported "Killed by weather". apply_damage recorded last_damaged_by only
+       for DamageSource::Player, so resolve_deaths saw no recent attacker and
+       fell through to Weather. SCORING HID IT — a self-kill and a weather death
+       are both -1 with no credit (docs/21 §6) — so only the cause was wrong and
+       nothing read the cause until this overlay did. The existing unit test
+       could not have caught it: it passes DeathCause::SelfInflicted into
+       killer() as its INPUT, handing the function the answer.
+       a_respawned_player_is_not_buried_either WAS ALREADY RED at 5013031
+       (verified by stashing): it waited `60 * 4` ticks against a RESPAWN_DELAY
+       that §B4 moved to 5.0. The wait is derived from the constant now — a wait
+       hardcoded against a tunable is a test that expires.
+Left for later: T12.01 tombstones, T10.05 skins menu, the M10 checkpoint.

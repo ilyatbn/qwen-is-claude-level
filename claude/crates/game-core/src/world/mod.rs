@@ -1094,7 +1094,14 @@ impl World {
             if self.players[i].alive && self.players[i].health <= 0.0 {
                 let direct = match self.players[i].last_damaged_by {
                     Some((who, when)) if now - when <= crate::player::state::ASSIST_WINDOW => {
-                        DeathCause::Player(who)
+                        // `who` may be the victim: self-damage is recorded too,
+                        // and a self-kill is not a player kill (`docs/21` §6 —
+                        // −1 to them, +0 to everyone).
+                        if who == self.players[i].id {
+                            DeathCause::SelfInflicted
+                        } else {
+                            DeathCause::Player(who)
+                        }
                     }
                     _ => DeathCause::Weather,
                 };

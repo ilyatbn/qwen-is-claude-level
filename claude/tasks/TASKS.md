@@ -230,7 +230,7 @@ described but never built.
 - [x] [T10.03](M10/T10.03-title-attract.md) — Title screen with a live attract mode **(v3)**
 - [x] [T10.04](M10/T10.04-start-menu.md) — Start Game menu and lobby **(v3)**
 - [ ] [T10.05](M10/T10.05-skins-menu.md) — Skins menu (weapons greyed out) **(v3)**
-- [ ] [T10.06](M10/T10.06-death-overlay.md) — Death overlay and respawn countdown **(v3)**
+- [x] [T10.06](M10/T10.06-death-overlay.md) — Death overlay and respawn countdown **(v3)**
 - [x] [T10.07](M10/T10.07-room-capacity.md) — Measure what a room costs **(v3)**
 
 **Checkpoint:** two browsers, one creates a private game and reads the code aloud,

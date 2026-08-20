@@ -504,8 +504,14 @@ fn a_respawned_player_is_not_buried_either() {
     if let Some(p) = w.player_mut(1) {
         p.health = 0.0;
     }
-    // Death, then the respawn delay.
-    for _ in 0..(60 * 4) {
+    // Death, then the respawn delay — **derived**, not a literal.
+    //
+    // This was `60 * 4` and broke silently when §B4 moved `RESPAWN_DELAY` from
+    // 3.0 to 5.0: four seconds of ticks stopped being long enough and the test
+    // began asserting "should have respawned" against a player who correctly had
+    // not yet. A wait hardcoded against a tunable is a test that expires.
+    let ticks = ((game_core::constants::RESPAWN_DELAY + 1.0) / SIM_DT).ceil() as u32;
+    for _ in 0..ticks {
         w.step(SIM_DT);
     }
     let p = w.player(1).expect("seated");
@@ -676,4 +682,91 @@ fn the_default_secret_reproduces_the_plain_generator() {
     let pa: Vec<_> = a.map.meta.buried_slots.iter().map(|s| s.pos).collect();
     let pb: Vec<_> = b.map.meta.buried_slots.iter().map(|s| s.pos).collect();
     assert_eq!(pa, pb);
+}
+
+/// A rocket at your own feet is a **self-kill**, not a death by the map.
+///
+/// This goes through the real derivation — fire, take the damage, let
+/// `resolve_deaths` decide — because that is where the bug was. The existing
+/// unit test passed `DeathCause::SelfInflicted` into `killer()` as its input and
+/// so could never have caught it: it handed the function the answer.
+///
+/// `apply_damage` recorded `last_damaged_by` only for `DamageSource::Player`, so
+/// after a rocket-jump death `resolve_deaths` saw no recent attacker and fell
+/// through to `Weather`. **Scoring hid it**: a self-kill and a weather death are
+/// both −1 with no credit (`docs/21` §6), so every score assertion passed. Only
+/// the cause was wrong, and nothing read the cause until the death overlay did —
+/// which reported "Killed by weather" for a player who had rocketed themselves.
+#[test]
+fn a_rocket_at_your_own_feet_is_a_self_kill_and_not_the_weather() {
+    let mut w = world();
+    spawn_at(&mut w, 1);
+    w.set_phase(RoundPhase::Playing);
+    let _ = w.drain_events();
+    while w.round_time < game_core::constants::SPAWN_IFRAMES + 0.2 {
+        w.step(SIM_DT);
+    }
+    if let Some(p) = w.player_mut(1) {
+        p.health = 20.0; // one rocket is enough
+        p.aim = (0.25f32 * 65536.0) as u16;
+    }
+    give(&mut w, 1, BAZOOKA, 4);
+    w.fire(1, w.round_time).expect("armed");
+
+    let mut death = None;
+    for _ in 0..120 {
+        w.step(SIM_DT);
+        for e in w.drain_events() {
+            if let GameEvent::Death {
+                victim,
+                attacker,
+                cause,
+                ..
+            } = e
+            {
+                death = Some((victim, attacker, cause));
+            }
+        }
+        if death.is_some() {
+            break;
+        }
+    }
+
+    let (victim, attacker, cause) = death.expect("the rocket must have killed them");
+    assert_eq!(victim, 1);
+    assert_eq!(
+        cause,
+        game_core::player::state::DeathCause::SelfInflicted,
+        "a rocket-jump death is self-inflicted, not weather"
+    );
+    assert_eq!(
+        attacker,
+        Some(1),
+        "attacker is the victim, which is what makes the client say \
+         'You killed yourself' rather than 'Killed by the map'"
+    );
+}
+
+/// The control for the test above: a death with **no** damage at all really is
+/// the weather, and must not be relabelled as a self-kill by the fix.
+#[test]
+fn a_death_with_no_attacker_is_still_the_weather() {
+    let mut w = playing();
+    spawn_at(&mut w, 1);
+    let _ = w.drain_events();
+    if let Some(p) = w.player_mut(1) {
+        p.health = 0.0;
+    }
+    w.step(SIM_DT);
+    let cause = w.drain_events().into_iter().find_map(|e| match e {
+        GameEvent::Death {
+            attacker, cause, ..
+        } => Some((attacker, cause)),
+        _ => None,
+    });
+    assert_eq!(
+        cause,
+        Some((None, game_core::player::state::DeathCause::Weather)),
+        "nobody touched them, so nobody is to blame"
+    );
 }

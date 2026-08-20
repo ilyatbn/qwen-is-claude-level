@@ -139,10 +139,18 @@ impl PlayerState {
         };
         self.health -= amount * mult;
 
-        if let DamageSource::Player { id, .. } = src {
-            if id != self.id {
-                self.last_damaged_by = Some((id, now));
-            }
+        // Remember who did it, **including yourself**.
+        //
+        // Recording only `Player` left `last_damaged_by` empty after a rocket at
+        // your own feet, so `resolve_deaths` saw no recent attacker and fell
+        // through to `Weather`: a self-kill reported as "killed by the map".
+        // Scoring hid it — a self-kill and a weather death are both −1 with no
+        // credit (`docs/21` §6) — so only the death *cause* was ever wrong, and
+        // nothing read the cause until the death overlay did.
+        match src {
+            DamageSource::Player { id, .. } => self.last_damaged_by = Some((id, now)),
+            DamageSource::SelfInflicted { .. } => self.last_damaged_by = Some((self.id, now)),
+            DamageSource::Weather(_) => {}
         }
         true
     }
@@ -155,8 +163,18 @@ impl PlayerState {
     pub fn killer(&self, direct: DeathCause, now: f32) -> DeathCause {
         match direct {
             DeathCause::Player(_) | DeathCause::SelfInflicted => direct,
+            // `last_damaged_by` can now name *you* (see `apply_damage`), so the
+            // assist window has to distinguish "someone shot me into the lava"
+            // from "I rocketed myself and then the lava finished it". The first
+            // credits them; the second credits nobody.
             DeathCause::Weather => match self.last_damaged_by {
-                Some((who, when)) if now - when <= ASSIST_WINDOW => DeathCause::Player(who),
+                Some((who, when)) if now - when <= ASSIST_WINDOW => {
+                    if who == self.id {
+                        DeathCause::SelfInflicted
+                    } else {
+                        DeathCause::Player(who)
+                    }
+                }
                 _ => DeathCause::Weather,
             },
         }

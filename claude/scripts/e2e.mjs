@@ -83,6 +83,10 @@ const CHECKS = [
   // Imported into this process it would terminate the suite mid-run — and exit 0
   // while doing it, hiding every earlier failure. Run as a subprocess instead.
   { name: 'm5-weather', file: 'scripts/checks/m5-weather.mjs', standalone: true },
+  // T10.06. Standalone: it needs a real game-server, because the overlay's
+  // visibility follows the **snapshot's** alive flag (§B4) and no sandbox or
+  // synthetic event can raise it — which is the property worth having.
+  { name: 'death', file: 'scripts/checks/death.mjs', standalone: true },
   // The M6 checkpoint: two browser contexts, one server, one round. Standalone
   // because it needs a real game-server and two clients rather than the sandbox.
   { name: 'two-clients', file: 'scripts/e2e-two-clients.mjs', standalone: true },
