@@ -1,0 +1,282 @@
+/**
+ * The client's view of the server's world.
+ *
+ * It maintains state and **does not render** — scenes read from it. That
+ * separation is what lets the whole thing be unit tested without Phaser, which
+ * matters here because carve ordering is the single place a client can silently
+ * corrupt itself.
+ */
+
+import type { Core } from '../core'
+import { fromBase64 } from './connection'
+import { decodeMapInit, decodeSnapshot, type MapInit, type Snapshot } from './codec'
+
+export interface RemotePlayerState {
+  id: number
+  x: number
+  y: number
+  vx: number
+  vy: number
+  aim: number
+  health: number
+  flags: number
+  jetpackFuel: number
+  /** `null` when the player is holding nothing. */
+  selectedItem: number | null
+  /** Server time this state was sampled at, for the interpolator. */
+  time: number
+}
+
+export interface WorldItemView {
+  id: number
+  item: number
+  count: number
+  x: number
+  y: number
+  source: string
+}
+
+export interface ProjectileView {
+  id: number
+  weapon: number
+  owner: number
+  x: number
+  y: number
+  vx: number
+  vy: number
+}
+
+export interface MirrorStats {
+  carvesApplied: number
+  pendingCarves: number
+  resyncs: number
+  checksumMismatches: number
+  checksumsChecked: number
+}
+
+/** How long a carve gap may persist before the local mask is declared lost. */
+const CARVE_GAP_TIMEOUT_MS = 2000
+
+type Pending = { seq: number; apply: () => void }
+
+export class WorldMirror {
+  readonly players = new Map<number, RemotePlayerState>()
+  readonly items = new Map<number, WorldItemView>()
+  readonly projectiles = new Map<number, ProjectileView>()
+
+  private readonly core: Core
+  private nextCarveSeq = 0
+  private readonly buffered = new Map<number, Pending>()
+  private gapSince: number | null = null
+  private mapLoaded = false
+
+  readonly stats: MirrorStats = {
+    carvesApplied: 0,
+    pendingCarves: 0,
+    resyncs: 0,
+    checksumMismatches: 0,
+    checksumsChecked: 0,
+  }
+
+  /** Called when the local mask is provably wrong and must be refetched. */
+  onResyncNeeded: (() => void) | null = null
+
+  constructor(core: Core) {
+    this.core = core
+  }
+
+  get loaded(): boolean {
+    return this.mapLoaded
+  }
+
+  get pendingCarves(): number {
+    return this.buffered.size
+  }
+
+  applyMapInitB64(b64: string): MapInit {
+    return this.applyMapInit(decodeMapInit(fromBase64(b64)))
+  }
+
+  applyMapInit(m: MapInit): MapInit {
+    if (!this.core.loadMask(m.width, m.height, m.rle)) {
+      throw new Error('map_init: mask failed to load')
+    }
+    // A resync restarts the carve stream: the mask we just loaded already
+    // contains every carve the server has applied, so anything buffered is
+    // either already baked in or about to be re-sent.
+    this.buffered.clear()
+    this.gapSince = null
+    this.nextCarveSeq = 0
+    this.mapLoaded = true
+    return m
+  }
+
+  applySnapshotB64(b64: string, now: number): Snapshot {
+    return this.applySnapshot(decodeSnapshot(fromBase64(b64)), now)
+  }
+
+  applySnapshot(s: Snapshot, now: number): Snapshot {
+    const seen = new Set<number>()
+    for (const p of s.players) {
+      seen.add(p.id)
+      this.players.set(p.id, {
+        id: p.id,
+        x: p.x,
+        y: p.y,
+        vx: p.vx,
+        vy: p.vy,
+        aim: p.aim,
+        health: p.health,
+        flags: p.flags,
+        jetpackFuel: p.jetpackFuel,
+        selectedItem: p.selectedItem,
+        time: now,
+      })
+    }
+    // A player absent from a snapshot has left: the snapshot is the full roster,
+    // not a delta (`docs/40` §3), so keeping stale entries would leave ghosts.
+    for (const id of [...this.players.keys()]) {
+      if (!seen.has(id)) this.players.delete(id)
+    }
+    return s
+  }
+
+  /**
+   * Apply a carve, or buffer it if it arrived ahead of its predecessor.
+   *
+   * Order is the whole game here. Carves are integer-exact, so applying them in
+   * the server's order gives a bit-identical mask; applying them out of order
+   * does not, and every prediction and collision after that is wrong.
+   */
+  applyCarve(seq: number, fn: () => void, now: number): void {
+    if (seq < this.nextCarveSeq) return // duplicate; already applied
+    this.buffered.set(seq, { seq, apply: fn })
+    this.drainCarves(now)
+  }
+
+  private drainCarves(now: number): void {
+    for (;;) {
+      const next = this.buffered.get(this.nextCarveSeq)
+      if (!next) break
+      next.apply()
+      this.buffered.delete(this.nextCarveSeq)
+      this.nextCarveSeq++
+      this.stats.carvesApplied++
+    }
+    this.stats.pendingCarves = this.buffered.size
+
+    if (this.buffered.size === 0) {
+      this.gapSince = null
+      return
+    }
+    // Something is buffered and cannot be applied, so a `seq` is missing.
+    this.gapSince ??= now
+    if (now - this.gapSince > CARVE_GAP_TIMEOUT_MS) {
+      this.requestResync()
+    }
+  }
+
+  /** Drives the gap timeout without needing a carve to arrive. */
+  tick(now: number): void {
+    if (this.buffered.size > 0) this.drainCarves(now)
+  }
+
+  private requestResync(): void {
+    this.stats.resyncs++
+    this.buffered.clear()
+    this.gapSince = null
+    this.onResyncNeeded?.()
+  }
+
+  /**
+   * Compare the server's mask hash with ours. A mismatch means the terrain has
+   * diverged, which is the bug this whole ordering discipline exists to prevent
+   * — so it resyncs rather than trying to repair.
+   */
+  verifyChecksum(serverHashHex: string): boolean {
+    this.stats.checksumsChecked++
+    const ours = hex(this.core.maskHash())
+    // The server truncates to 8 bytes (`docs/40` §5); compare the common prefix
+    // so a shorter server hash is not read as a mismatch.
+    const n = Math.min(ours.length, serverHashHex.length)
+    const match = n > 0 && ours.slice(0, n) === serverHashHex.slice(0, n)
+    if (!match) {
+      this.stats.checksumMismatches++
+      this.requestResync()
+    }
+    return match
+  }
+
+  // ---------------------------------------------------------------- events
+
+  applyEvent(name: string, p: Record<string, unknown>, now: number): void {
+    switch (name) {
+      case 'carve': {
+        const seq = n(p['seq'])
+        const x = n(p['x'])
+        const y = n(p['y'])
+        const r = n(p['r'])
+        this.applyCarve(seq, () => this.core.carve(x, y, r), now)
+        break
+      }
+      case 'carve_capsule': {
+        const seq = n(p['seq'])
+        const x0 = n(p['x0'])
+        const y0 = n(p['y0'])
+        const x1 = n(p['x1'])
+        const y1 = n(p['y1'])
+        const r = n(p['r'])
+        this.applyCarve(seq, () => this.core.carveCapsule(x0, y0, x1, y1, r), now)
+        break
+      }
+      case 'item_spawn':
+      case 'crate_spawn': {
+        const id = n(p['world_item_id'])
+        this.items.set(id, {
+          id,
+          item: n(p['item_id']),
+          count: n(p['count'], 1),
+          x: n(p['x']),
+          y: n(p['y']),
+          source: String(p['source'] ?? (name === 'crate_spawn' ? 'Crate' : 'Initial')),
+        })
+        break
+      }
+      case 'item_pickup':
+      case 'item_despawn':
+        this.items.delete(n(p['world_item_id']))
+        break
+      case 'projectile_spawn': {
+        const id = n(p['id'])
+        this.projectiles.set(id, {
+          id,
+          weapon: n(p['weapon']),
+          owner: n(p['owner']),
+          x: n(p['x']),
+          y: n(p['y']),
+          vx: n(p['vx']),
+          vy: n(p['vy']),
+        })
+        break
+      }
+      case 'projectile_despawn':
+        this.projectiles.delete(n(p['id']))
+        break
+      case 'mask_checksum':
+        this.verifyChecksum(String(p['hash'] ?? ''))
+        break
+      default:
+        break
+    }
+  }
+}
+
+function n(v: unknown, dflt = 0): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : dflt
+}
+
+export function hex(bytes: Uint8Array): string {
+  let s = ''
+  for (const b of bytes) s += b.toString(16).padStart(2, '0')
+  return s
+}

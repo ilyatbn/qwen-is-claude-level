@@ -1419,3 +1419,22 @@ Left for later: the seven original sub-tests are still consolidated into one
        deleted test that still costs compile time. It is never a licence to
        ignore a test that fails because the code is wrong — that is a red gate,
        and a red gate stops the milestone.
+
+## T6.08 — client net layer — DONE
+Files: client/src/net/{connection,worldMirror}.ts + worldMirror.test.ts,
+       crates/game-wasm/src/lib.rs, client/src/core/index.ts
+Verified: `npm --prefix client test -- --run worldMirror` — 14 passed; typecheck clean.
+Notes: THE CLIENT COULD NOT APPLY carve_capsule AT ALL. T5.04 added it to
+       game-core but never exposed it through game-wasm, so every lava vent would
+       have desynced the mask — invisible until T6.11's checksum started firing.
+       Added `carve_capsule` to the wasm shim and `carveCapsule` to Core.
+       `connect()` resolves on `welcome`, not on the socket opening: "connected"
+       is not "in the game", and a caller that conflates them races the handshake
+       the same way A28's harness did.
+       MY OWN TEST CARVED EMPTY SKY. Two mask-agreement tests hardcoded (300,300),
+       which on a Small map is above the terrain — the carve removed nothing, the
+       hash did not move, and the tests failed while the code was right. Same
+       species as A22's empty-hillside screenshot. `solidPoint()` now finds rock,
+       and the capsule test asserts countSolid actually dropped, so a no-op
+       binding cannot pass it.
+Left for later: T6.09 prediction is next.

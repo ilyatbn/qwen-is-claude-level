@@ -156,6 +156,16 @@ impl GameCore {
         self.map.carve_circle(cx, cy, r);
     }
 
+    /// A swept-circle carve, for lava channels.
+    ///
+    /// Exposed separately from `carve` because replaying a capsule as a circle
+    /// produces a *different mask*, and the whole reason carves cross the wire
+    /// instead of the mask is that they reproduce bit-for-bit
+    /// (`docs/11-map-destruction.md` §6).
+    pub fn carve_capsule(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, r: i32) {
+        self.map.carve_capsule(x0, y0, x1, y1, r);
+    }
+
     /// Chunk indices (`cy * chunks_x + cx`), clearing the set.
     pub fn take_dirty_chunks(&mut self) -> Vec<u32> {
         self.map.drain_dirty()

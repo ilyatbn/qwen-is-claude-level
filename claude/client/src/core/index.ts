@@ -329,6 +329,15 @@ export class Core {
     this.inner.carve(cx, cy, r)
   }
 
+  /**
+   * A swept-circle carve. Distinct from `carve` on purpose: replaying a lava
+   * channel as a circle gives a different mask, and a client whose mask differs
+   * from the server's is shot through walls it can still see.
+   */
+  carveCapsule(x0: number, y0: number, x1: number, y1: number, r: number): void {
+    this.inner.carve_capsule(x0, y0, x1, y1, r)
+  }
+
   takeDirtyChunks(): Uint32Array {
     return this.inner.take_dirty_chunks()
   }
