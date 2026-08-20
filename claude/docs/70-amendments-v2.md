@@ -1382,3 +1382,44 @@ rock rather than the 8 px lattice.
 fresh WASM build, reporting enclosed-air-drawn-as-sky and open-sky-drawn-as-backdrop
 for each. If the residual does not fall well below 1 %, the hypothesis is wrong —
 say so with the numbers rather than tuning the constant.
+
+### A37 — corrected
+
+**§A37's aggregate prediction was wrong.** It claimed the residual would fall "well
+below 1 %". Measured before implementing, from a fresh WASM build
+(sky-as-backdrop, before → after the 160 px bound):
+
+| scale | before | after |
+|---|---|---|
+| small/777 | 16.42 % | **16.42 %** |
+| medium/4242 | 5.86 % | **5.26 %** |
+| large/99 | 7.18 % | **6.71 %** |
+
+The reason is measurable and kills the hypothesis as stated: false positives sit
+**45–160 px** from rock (p50 ≈ 100), overlapping genuinely enclosed air (p90
+63–69). **The two populations are not separable by distance.** Every cut that
+moves the aggregate costs more than it buys — at medium, a cut at 80 px takes
+sky-as-backdrop 5.86 → 1.68 % while driving enclosed-as-sky 1.42 → **8.39 %**, the
+failure §A18 ranks worst. Same monotonic trade §A32 found with ray length.
+
+**The bound is kept anyway, for a different and better reason.** It removes the
+far *tail*: deepest backdrop pixel 204 → 168 px at medium, 196 → 165 at large. And
+on the shipped frame, the exact pixels sampled in §A37 as `35,29,24` are now
+`109,168,225` — sky — while the island underside is still backdrop.
+
+That is the real distinction, and the aggregate share cannot see it:
+
+> A backdrop fringe hugging a cliff reads as **shadow**. A backdrop blob 180 px
+> from anything reads as a **glitch**. They are the same percentage and they are
+> not the same defect.
+
+So the guarantee is asserted **directly** — nothing beyond the bound is backdrop,
+with a control that the far-air population is non-empty — rather than through a
+share that averages the two together. A sibling test asserts deep void interiors
+are *still* backdrop, because a distance bound is precisely what could cause the
+failure §A18 ranks worst.
+
+The general lesson, and it is the fourth time this project has learned a version
+of it: **an aggregate metric can be the wrong instrument even when it is measured
+correctly.** Two defects with different severities can share a number. When they
+do, assert the property, not the percentage.
