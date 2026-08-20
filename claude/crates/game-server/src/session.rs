@@ -431,13 +431,24 @@ pub fn register(
                                     // Status before the map: a client that has to
                                     // wait for a 20 KB `map_init` should already
                                     // know it got a seat.
+                                    //
+                                    // §B10: `waiting`/`eta_s` are gone — they
+                                    // were structurally always zero, because
+                                    // there is no queue to wait in. What is true
+                                    // and useful is who is already in there:
+                                    // "3/6, two of them bots".
+                                    let (players, bots) = match ctx.room_parts(room_id) {
+                                        Some((h, _)) => h.status().await.unwrap_or((0, 0)),
+                                        None => (0, 0),
+                                    };
                                     emit(
                                         &socket,
                                         "room_list",
                                         &serde_json::json!({
                                             "room_id": room_id,
-                                            "waiting": 0,
-                                            "eta_s": 0,
+                                            "players": players,
+                                            "capacity": max,
+                                            "bots": bots,
                                         }),
                                     );
                                     seat(socket, ctx, io, config, room_id, payload).await;

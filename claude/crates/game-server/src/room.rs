@@ -50,6 +50,14 @@ pub enum Command {
     VoteRestart(PlayerId, bool),
     ResyncMap(PlayerId),
     Leave(PlayerId),
+    /// Who is in this room: total seats taken, and how many are bots.
+    ///
+    /// A separate command rather than an `Inspect`, because `bots` lives on the
+    /// `Room` and not on the `World` — the sim has no concept of a bot, which is
+    /// the point (§A5: a bug in bots is a bug in the game).
+    Status {
+        reply: oneshot::Sender<(usize, usize)>,
+    },
     /// Test and debug hook: run `f` against the world between ticks.
     Inspect(Box<dyn FnOnce(&mut World) + Send>),
 }
@@ -69,6 +77,7 @@ impl std::fmt::Debug for Command {
             Command::VoteRestart(id, v) => write!(f, "VoteRestart({id}, {v})"),
             Command::ResyncMap(id) => write!(f, "ResyncMap({id})"),
             Command::Leave(id) => write!(f, "Leave({id})"),
+            Command::Status { .. } => f.write_str("Status"),
             Command::Inspect(_) => f.write_str("Inspect"),
         }
     }
@@ -119,6 +128,13 @@ impl RoomHandle {
             tx,
             task: Arc::new(tokio::sync::Mutex::new(None)),
         }
+    }
+
+    /// Seats taken and how many are bots, for the lobby (§B10).
+    pub async fn status(&self) -> Option<(usize, usize)> {
+        let (tx, rx) = oneshot::channel();
+        self.tx.try_send(Command::Status { reply: tx }).ok()?;
+        rx.await.ok()
     }
 
     /// Wait for the room task to finish, up to `grace`.
@@ -549,6 +565,10 @@ impl Room {
                 self.seats.free_seat(id);
                 self.world.remove_player(id);
                 self.round.forget(id);
+            }
+            // Not recorded: reading who is seated changes nothing.
+            Command::Status { reply } => {
+                let _ = reply.send((self.world.players.len(), self.bots.len()));
             }
             Command::Inspect(f) => f(&mut self.world),
         }

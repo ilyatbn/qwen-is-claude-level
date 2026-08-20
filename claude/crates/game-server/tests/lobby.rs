@@ -251,6 +251,10 @@ async fn quick_match_seats_two_clients_in_one_room() {
         let out = serde_json::json!({
             "a_room": first(&ia, "room_list", "room_id"),
             "b_room": first(&ib, "room_list", "room_id"),
+            // §B10: what the lobby reports is who is in there, not an ETA.
+            "b_players": first(&ib, "room_list", "players"),
+            "b_capacity": first(&ib, "room_list", "capacity"),
+            "b_bots": first(&ib, "room_list", "bots"),
             "a_seed": first(&ia, "welcome", "seed"),
             "b_seed": first(&ib, "welcome", "seed"),
         });

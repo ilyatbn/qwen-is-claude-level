@@ -571,11 +571,14 @@ pub const MAX_ROOMS: usize = 8;
 /// not keep a room alive.
 pub const ROOM_EMPTY_TTL: f32 = 30.0;
 pub const JOIN_CODE_LEN: usize = 6;
-/// No `I`, `1`, `O` or `0` — people read these aloud.
+/// No `I`, `1`, `O` or `0` — people read these aloud. It **does** contain `L`,
+/// which is why nothing folds `L` to `1`: doing so made roughly one code in six
+/// unreachable.
 pub const JOIN_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-/// Quick match seats bots and starts rather than leaving someone on a spinner,
-/// for the same reason `MIN_PLAYERS_TO_START` is 1.
-pub const QUEUE_WAIT_BEFORE_BOTS: f32 = 20.0;
+// §B10: there is no quick-match queue, so `QUEUE_WAIT_BEFORE_BOTS` is gone.
+// Filling the fullest room with space, MIN_PLAYERS_TO_START = 1, and a human
+// kicking the newest bot already give the queue's outcome with no waiting state
+// to be stuck in.
 
 // --- B4: death and the respawn timer ---
 // RESPAWN_DELAY moved to 5.0 by §B4; it lives with the other player constants.
