@@ -56,6 +56,28 @@ impl Map {
             return acc;
         }
 
+        // Clamp the endpoints to the map **before** any i32 arithmetic on them.
+        //
+        // `(x1 - x0).abs()` is the trap: at `i32::MIN` it panics in debug, and in
+        // release `.abs()` of a wrapped value stays negative, `err` becomes
+        // garbage, and the sweep silently collapses to its endpoint — carving a few
+        // pixels where the correct clip is thousands. This is the same class of bug
+        // `circle` carries its i64 early-reject for; this sibling reimplemented the
+        // entry path and dropped the guard.
+        //
+        // Clamping first also bounds the cost by construction: the Bresenham loop
+        // runs once per pixel, so an unclamped 20-million-pixel endpoint took 103 ms
+        // in release for a carve that touches nothing.
+        let (w, h) = (self.mask.w as i64, self.mask.h as i64);
+        let r64 = r as i64;
+        let lo_x = -r64 - 1;
+        let hi_x = w + r64 + 1;
+        let lo_y = -r64 - 1;
+        let hi_y = h + r64 + 1;
+        let clamp = |v: i32, lo: i64, hi: i64| (v as i64).clamp(lo, hi) as i32;
+        let (x0, y0) = (clamp(x0, lo_x, hi_x), clamp(y0, lo_y, hi_y));
+        let (x1, y1) = (clamp(x1, lo_x, hi_x), clamp(y1, lo_y, hi_y));
+
         let (mut x, mut y) = (x0, y0);
         let (dx, dy) = ((x1 - x0).abs(), -(y1 - y0).abs());
         let (sx, sy) = (if x0 < x1 { 1 } else { -1 }, if y0 < y1 { 1 } else { -1 });
@@ -573,16 +595,75 @@ mod tests {
     fn a_diagonal_capsule_leaves_no_gaps() {
         // The classic bug: sampling the sweep at radius intervals leaves
         // lens-shaped holes between stamps on the diagonal.
+        //
+        // Those lenses appear near the capsule EDGE, not on its centre line, so a
+        // test that walks the centre would pass while leaving the rim scalloped.
+        // Assert the real property instead: every pixel within `r` of the segment
+        // is clear.
         let mut map = solid_map();
-        map.carve_capsule(120, 120, 320, 260, 6);
-        let (dx, dy) = (200.0f32, 140.0f32);
-        let steps = 400;
-        for i in 0..=steps {
-            let t = i as f32 / steps as f32;
-            let x = (120.0 + dx * t).round() as i32;
-            let y = (120.0 + dy * t).round() as i32;
-            assert!(!map.mask.get(x, y), "gap on the sweep line at ({x}, {y})");
+        let (x0, y0, x1, y1, r) = (120i32, 120i32, 320i32, 260i32, 6i32);
+        map.carve_capsule(x0, y0, x1, y1, r);
+
+        let seg = ((x1 - x0) as f32, (y1 - y0) as f32);
+        let len2 = seg.0 * seg.0 + seg.1 * seg.1;
+        for y in (y0 - r - 2)..=(y1 + r + 2) {
+            for x in (x0 - r - 2)..=(x1 + r + 2) {
+                let d = ((x - x0) as f32, (y - y0) as f32);
+                let t = ((d.0 * seg.0 + d.1 * seg.1) / len2).clamp(0.0, 1.0);
+                let (px, py) = (d.0 - seg.0 * t, d.1 - seg.1 * t);
+                // Strictly inside, so the integer rasteriser's boundary rounding is
+                // not what is being asserted.
+                if px * px + py * py <= ((r - 1) * (r - 1)) as f32 {
+                    assert!(!map.mask.get(x, y), "gap inside the capsule at ({x}, {y})");
+                }
+            }
         }
+    }
+
+    #[test]
+    fn a_capsule_with_extreme_endpoints_is_a_no_op_and_does_not_panic() {
+        // `(x1 - x0).abs()` on i32::MIN panics in debug; in release the wrapped
+        // value stays negative, `err` becomes garbage and the sweep collapses to a
+        // point, carving a few pixels where the correct clip is thousands. Same
+        // class as the overflow `circle` guards against (`docs/11` §8).
+        let baseline = solid_map().mask.count_solid();
+        for (x0, y0, x1, y1, r) in [
+            (i32::MIN, i32::MIN, i32::MAX, i32::MAX, 8),
+            (i32::MAX, i32::MIN, i32::MIN, i32::MAX, 8),
+            (i32::MIN, 0, i32::MIN, 0, 8),
+            (i32::MAX, 100, i32::MAX, 200, 8),
+            (0, i32::MIN, 0, i32::MAX, 4),
+            (-20_000_000, 100, 20_000_000, 100, 3),
+        ] {
+            let mut map = solid_map();
+            let before = std::time::Instant::now();
+            let r0 = map.carve_capsule(x0, y0, x1, y1, r);
+            let took = before.elapsed();
+            // Bounded by construction now that endpoints are clamped first.
+            assert!(
+                took.as_millis() < 2_000,
+                "capsule ({x0},{y0})-({x1},{y1}) took {took:?}"
+            );
+            assert_eq!(
+                map.mask.count_solid() + r0.pixels_removed as u64,
+                baseline,
+                "removal count disagrees with the mask for ({x0},{y0})-({x1},{y1})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_clipped_capsule_carves_the_part_that_is_on_the_map() {
+        // The counterpart to the extreme test: a line that starts far off the map
+        // and crosses it must still carve the crossing, not collapse to nothing.
+        let mut map = solid_map();
+        let r = map.carve_capsule(-500_000, 300, 500_000, 300, 5);
+        assert!(
+            r.pixels_removed > 1_000,
+            "a full-width sweep removed only {}",
+            r.pixels_removed
+        );
+        assert!(!map.mask.get(map.mask.w as i32 / 2, 300));
     }
 
     #[test]

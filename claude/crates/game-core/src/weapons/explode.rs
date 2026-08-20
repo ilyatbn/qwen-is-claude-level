@@ -157,11 +157,18 @@ pub enum HitscanHit {
     Terrain,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct HitscanShot {
     pub from: Vec2,
     pub to: Vec2,
     pub hit: Option<HitscanHit>,
+    /// What the terrain hit removed, when there was one.
+    ///
+    /// Returned rather than discarded because a 3-px bullet carve can expose a
+    /// buried slot exactly as a rocket can, and the caller is the only place that
+    /// can turn `revealed` into an `item_spawn` event
+    /// (`docs/11-map-destruction.md` §5).
+    pub carve: Option<CarveResult>,
 }
 
 /// Resolve one trigger pull.
@@ -191,6 +198,7 @@ pub fn fire_hitscan(
         let from = player_centre + dir * MUZZLE_OFFSET;
 
         let mut hit = None;
+        let mut carve = None;
         let mut to = from + dir * weapon.range;
 
         // One pixel at a time, so the terrain march and the player test agree.
@@ -242,16 +250,21 @@ pub fn fire_hitscan(
                 }
             }
             Some(HitscanHit::Terrain) => {
-                map.carve_circle(
+                carve = Some(map.carve_circle(
                     to.x.round() as i32,
                     to.y.round() as i32,
                     weapon.blast_radius.round() as i32,
-                );
+                ));
             }
             None => {}
         }
 
-        out.push(HitscanShot { from, to, hit });
+        out.push(HitscanShot {
+            from,
+            to,
+            hit,
+            carve,
+        });
     }
     out
 }

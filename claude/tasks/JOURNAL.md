@@ -1211,3 +1211,37 @@ Notes: BACKDROP_MIN_HITS 4 + new BACKDROP_MIN_UP 0.5. Full table, fresh wasm,
        6px across) and r=7 (meteor) against a 16x28 player, so it scales with
        CAMERA_ZOOM correctly and is if anything small. Left alone.
 Left for later: M6 part A.
+
+## T6.01 — World::step, the ordered tick — DONE
+Files: crates/game-core/src/world/mod.rs, tests/world_step.rs,
+       weapons/{projectile,explode}.rs, map/carve.rs, effects/meteor.rs,
+       tests/combat.rs, game-wasm/src/lib.rs, client/src/render/chunkBake-math.ts
+Verified: `cargo test -p game-core --test world_step --release` — 17 passed;
+       full crate 542+32+19+17 passed, clippy -D warnings clean.
+Notes: SPAWN PLACEMENT WAS ORDER-DEPENDENT and the spec's own test caught it.
+       add_player used choose_respawn, which avoids already-seated players, so a
+       lobby filling 1,2,3 diverged from one filling 3,2,1 — a replay would
+       reproduce a different round. Before Playing, the spawn is now keyed by
+       PLAYER ID into MapMeta.spawn_points (farthest-point sampled, >= MAX_PLAYERS
+       of them, so still well separated). Mid-round joins keep choose_respawn:
+       that IS order-dependent and correctly so, since a join is an input to the
+       round, recorded with its tick.
+       THE WARMUP DAMAGE GATE DID NOT EXIST, and my first test PASSED against a
+       build with no gate at all — SPAWN_IFRAMES refuses all damage for 2 s, so
+       the test proved nothing. It now outlasts the i-frames and has a control
+       half (a_rocket_at_your_own_feet_hurts_you) asserting damage DOES land while
+       Playing. Without the control, "warmup does no damage" is satisfied by a
+       build that does no damage ever. The gate itself is one early-return in
+       apply_damage_log, which every damage source funnels through.
+       Falsified: reversed pickup order fails the tie test; order-dependent spawn
+       fails the hash test; removing the gate fails warmup and not the control.
+       Projectiles::step now returns `Impact { id, weapon, owner, outcome }` — it
+       removes the projectile before returning, so looking the weapon up
+       afterwards is impossible and every caller had to snapshot it. That trap
+       already produced a fork bomb in M5. Two call sites got simpler.
+       carve_capsule clamps endpoints in i64 BEFORE (x1-x0).abs(), which panicked
+       in debug and silently collapsed the sweep in release on i32::MIN. Also
+       bounds the Bresenham cost by construction (was 103 ms for a far endpoint).
+Left for later: stamp_capsule (float, r/2 steps) and Map::carve_capsule (integer,
+       1 px) are still two capsule geometries. Unifying changes generated maps, so
+       it needs its own commit plus a golden regeneration and a sweep re-run.

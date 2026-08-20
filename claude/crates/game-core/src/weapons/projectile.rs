@@ -37,6 +37,24 @@ pub enum ProjectileOutcome {
     HitPlayer { at: Vec2, victim: PlayerId },
 }
 
+/// What `step` reports about a projectile that is now gone.
+///
+/// **`weapon` and `owner` travel with the outcome on purpose.** `step` removes the
+/// projectile before returning, so by the time a caller sees the id there is
+/// nothing left to look up — and the two things that depend on getting it right
+/// are the fork-bomb guard (`MeteorShower::is_fragment(weapon)`) and §A20
+/// attribution (`BlastSource::Fired { owner, weapon }`). That trap already
+/// produced a fork bomb once, in M5's test harness, by reading the weapon after
+/// the step. An API that asks the caller to snapshot state the API is about to
+/// destroy will eventually be called wrongly, so the correct use is the only use.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Impact {
+    pub id: ProjectileId,
+    pub weapon: WeaponId,
+    pub owner: PlayerId,
+    pub outcome: ProjectileOutcome,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Projectiles {
     list: Vec<Projectile>,
@@ -121,7 +139,7 @@ impl Projectiles {
         wind: f32,
         now: f32,
         dt: f32,
-    ) -> Vec<(ProjectileId, ProjectileOutcome)> {
+    ) -> Vec<Impact> {
         let mut out = Vec::new();
 
         for p in self.list.iter_mut() {
@@ -129,13 +147,23 @@ impl Projectiles {
 
             // Nothing leaks: after PROJECTILE_MAX_LIFETIME it goes off wherever it is.
             if now - p.spawned_at >= PROJECTILE_MAX_LIFETIME {
-                out.push((p.id, ProjectileOutcome::Exploded { at: p.pos }));
+                out.push(Impact {
+                    id: p.id,
+                    weapon: p.weapon,
+                    owner: p.owner,
+                    outcome: ProjectileOutcome::Exploded { at: p.pos },
+                });
                 continue;
             }
             // A fuse fires in mid-air if the thing never touches anything.
             if let Some(t) = p.fuse_at {
                 if now >= t {
-                    out.push((p.id, ProjectileOutcome::Exploded { at: p.pos }));
+                    out.push(Impact {
+                        id: p.id,
+                        weapon: p.weapon,
+                        owner: p.owner,
+                        outcome: ProjectileOutcome::Exploded { at: p.pos },
+                    });
                     continue;
                 }
             }
@@ -221,14 +249,19 @@ impl Projectiles {
             }
 
             if outcome != ProjectileOutcome::Alive {
-                out.push((p.id, outcome));
+                out.push(Impact {
+                    id: p.id,
+                    weapon: p.weapon,
+                    owner: p.owner,
+                    outcome,
+                });
             }
         }
 
         // The caller decides what each outcome means; the projectile is gone either
         // way, so remove everything that reported one.
-        for (id, _) in &out {
-            self.remove(*id);
+        for i in &out {
+            self.remove(i.id);
         }
         out
     }

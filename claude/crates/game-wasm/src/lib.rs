@@ -344,8 +344,9 @@ impl GameCore {
         let outcomes = self.projectiles.step(&self.map, &boxes, wind, now, dt);
 
         let mut events = Vec::new();
-        for (pid, out) in outcomes {
-            let (at, _victim) = match out {
+        for im in outcomes {
+            let pid = im.id;
+            let (at, _victim) = match im.outcome {
                 ProjectileOutcome::Alive => continue,
                 ProjectileOutcome::Exploded { at } => (at, None),
                 ProjectileOutcome::HitPlayer { at, victim } => (at, Some(victim)),

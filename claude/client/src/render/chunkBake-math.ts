@@ -208,8 +208,12 @@ export class BackdropMask implements MaskSource {
      * alone is not enough either (§A17: the air under a floating island is
      * roofed and is plainly sky), which is why this is a conjunct: something
      * over your head, AND rock most of the way around you.
+     *
+     * No default, for the same reason `minHits` has none (§A19): a constructor
+     * default that can silently drift from the shipped constant is what let the
+     * synthetic tests run at 6 while production ran at 5.
      */
-    minUp = 0.5,
+    minUp: number,
   ) {
     const w = (this.width = src.width)
     const h = (this.height = src.height)

@@ -215,24 +215,18 @@ mod tests {
             // `is_fragment` from the id and got it wrong for every impact, so
             // fragments spawned fragments and the test hung — the fork bomb
             // `is_fragment` exists to prevent, reproduced by accident.
-            let kinds: Vec<(ProjectileId, bool)> = pr
-                .iter()
-                .map(|p| (p.id, MeteorShower::is_fragment(p.weapon)))
-                .collect();
-
-            for (id, outcome) in pr.step(&map, &[], 0.0, now, DT) {
-                let at = match outcome {
+            //
+            // `Impact` now carries the weapon, so there is nothing to snapshot and
+            // nothing to get wrong.
+            for im in pr.step(&map, &[], 0.0, now, DT) {
+                let at = match im.outcome {
                     ProjectileOutcome::Exploded { at } => at,
                     ProjectileOutcome::HitPlayer { at, .. } => at,
                     ProjectileOutcome::Alive => continue,
                 };
-                let is_frag = kinds
-                    .iter()
-                    .find(|(pid, _)| *pid == id)
-                    .map(|(_, f)| *f)
-                    .unwrap_or(true);
+                let is_frag = MeteorShower::is_fragment(im.weapon);
                 let before = pr.len();
-                MeteorShower::on_impact(&mut pr, &mut map, &mut [], at, is_frag, id as u64, now);
+                MeteorShower::on_impact(&mut pr, &mut map, &mut [], at, is_frag, im.id as u64, now);
                 frags += pr.len().saturating_sub(before);
             }
             peak = peak.max(pr.len());
@@ -488,8 +482,8 @@ mod tests {
         let mut hit = None;
         for i in 1..600 {
             let now = i as f32 * DT;
-            for (_, o) in pr.step(&map, &[], 0.0, now, DT) {
-                if let ProjectileOutcome::Exploded { at } = o {
+            for im in pr.step(&map, &[], 0.0, now, DT) {
+                if let ProjectileOutcome::Exploded { at } = im.outcome {
                     hit = Some(at);
                 }
             }

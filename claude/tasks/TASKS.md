@@ -144,7 +144,7 @@ take self-damage, and see the inventory panel open on right-click.
 
 Wire the finished core into the server. Nothing built so far gets rewritten.
 
-- [ ] [T6.01](M6/T6.01-world-step.md) — `World::step` and the ordered tick
+- [x] [T6.01](M6/T6.01-world-step.md) — `World::step` and the ordered tick
 - [ ] [T6.02](M6/T6.02-room-actor.md) — Room task, command channel, tick loop
 - [ ] [T6.03](M6/T6.03-join-flow.md) — join / ready / welcome
 - [ ] [T6.04](M6/T6.04-map-init.md) — `map_init` encode and client decode

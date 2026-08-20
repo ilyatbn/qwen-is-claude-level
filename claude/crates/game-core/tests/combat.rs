@@ -83,9 +83,9 @@ fn a_bazooka_explodes_on_the_wall_it_hits() {
     let mut hit_at = None;
     for i in 0..600 {
         let now = i as f32 * SIM_DT;
-        for (pid, out) in pr.step(&map, &[], 0.0, now, SIM_DT) {
-            assert_eq!(pid, id);
-            if let ProjectileOutcome::Exploded { at } = out {
+        for im in pr.step(&map, &[], 0.0, now, SIM_DT) {
+            assert_eq!(im.id, id);
+            if let ProjectileOutcome::Exploded { at } = im.outcome {
                 hit_at = Some(at);
             }
         }
@@ -157,9 +157,9 @@ fn a_grenade_fuse_fires_in_mid_air_if_it_never_touches_anything() {
     let mut exploded = None;
     for i in 0..(GRENADE_FUSE / SIM_DT) as i32 + 30 {
         let now = i as f32 * SIM_DT;
-        for (pid, out) in pr.step(&map, &[], 0.0, now, SIM_DT) {
-            if pid == id {
-                exploded = Some((now, out));
+        for im in pr.step(&map, &[], 0.0, now, SIM_DT) {
+            if im.id == id {
+                exploded = Some((now, im.outcome));
             }
         }
     }
@@ -188,8 +188,8 @@ fn a_projectile_never_passes_through_a_one_pixel_wall() {
     );
     let mut at = None;
     for i in 0..120 {
-        for (_, out) in pr.step(&map, &[], 0.0, i as f32 * SIM_DT, SIM_DT) {
-            if let ProjectileOutcome::Exploded { at: a } = out {
+        for im in pr.step(&map, &[], 0.0, i as f32 * SIM_DT, SIM_DT) {
+            if let ProjectileOutcome::Exploded { at: a } = im.outcome {
                 at = Some(a);
             }
         }
