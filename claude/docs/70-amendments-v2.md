@@ -1155,3 +1155,51 @@ Same shape as §A19 (a threshold tuned on one map at a scale the game does not
 ship) and §A22 (a measurement taken against a stale build). Every one of these was
 a number that looked settled because the conditions it was measured under were
 narrower than the conditions it would ship under.
+
+### A32 — corrected
+
+**Change 1 (`BACKDROP_RAY_LEN` 320 → 160) is withdrawn**, and its stated premise
+was false. Measured before changing, across three scales
+(enclosed-as-sky % / sky-as-backdrop %):
+
+| scale | 160 | 240 | 320 |
+|---|---|---|---|
+| small/777 | 5.63 / 0.90 | 0.43 / 7.16 | 0.00 / 16.42 |
+| medium/4242 | 13.70 / 0.46 | 4.58 / 2.42 | 1.42 / 5.86 |
+| large/99 | 10.85 / 0.11 | 5.35 / 2.75 | 2.49 / 7.18 |
+
+It is a clean monotonic trade, not a free win: shortening the ray does cut
+sky-as-backdrop, but raises enclosed-as-sky **5–10×** — making the failure §A18
+ranked *worse* dramatically worse. "A cave wall is close by definition" holds for
+tunnels at 30–52 px bore, but the dominant features are voids 140–310 px across,
+and the middle of one is beyond a 160 px ray. **320 stays.**
+
+**The observation that prompted this section was also wrong, and it was mine.**
+Frost's backdrop is not lighter than its sky. Sampled from the frame:
+
+| | rgb | lum |
+|---|---|---|
+| "light polygon in the sky" | `100,104,132` | 106 |
+| clear sky, same row | `100,104,132` | **106, identical** |
+| other "polygon" | `117,113,133` | 116 |
+| terrain fill near the player | `104,118,136` | **116, identical** |
+| actual backdrop | `27,33,41` | 32 |
+
+Two populations, sky and terrain. The backdrop is dark and nowhere near either.
+The angular shapes are **island silhouettes**, and I misread the frame.
+
+**Change 2 stands and is the useful half.** Every theme's backdrop must be darker
+than its daytime sky by more than 30 lum, asserted across the whole theme table so
+it holds for themes added later. Measured margins: grassland 171, desert 140,
+frost 142. Falsified — a bright frost backdrop fails the test.
+
+**What the measurement did find**, and it is a real defect of a different kind:
+frost's terrain (116) and frost's sky (106) are within 10 lum of each other, so the
+land barely reads against the sky. That is a **contrast** problem in the palette,
+not a classification problem in the mask. `frost`'s `fill` and `skyBottom` want
+separating — and the same assertion shape as change 2 applies: **terrain fill must
+differ from the daytime sky by a stated margin, per theme.**
+
+The correction is worth more than the amendment was. A defect reported from a
+screenshot read by eye sent a builder to re-measure a subsystem that was working,
+and only measuring the pixels settled it. Report what you sampled, not what you saw.
