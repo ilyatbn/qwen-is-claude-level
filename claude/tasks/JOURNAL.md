@@ -1932,3 +1932,22 @@ Ceilings (docs/60 §6): medium generate median 618 ms (<1000); full 72-chunk bak
        median 296 ms (<400); chunk rebake 0.00 ms (<4); carve 0.30 ms.
 Left for later: nothing in M8. Decorations, item sprites and the frost contrast
        assertion remain as noted improvements, not tasks.
+
+## Bot seats were swept 30 s into every round — FIXED
+Files: crates/game-server/src/room.rs, tests/replay.rs
+Verified: `cargo test -p game-server --test replay bots_survive` — ok; falsified
+       by reverting, which reproduces the exact production symptom
+       (`left: [0,1,2,3]  right: [3]`).
+Notes: FOUND BY PLAYING IT, NOT BY A TEST. Driving a real round and polling the
+       roster: [0,1,2,3] at t=25s, [3] at t=30s, and single-player from then on.
+       `seat_bots` allocated seats with `ready: false`; `sweep_unready` drops any
+       unready seat after READY_TIMEOUT (30 s, docs/40 §1). Bots have no socket,
+       so they can never send `ready` — every bot was dropped exactly 30 s in.
+       Nothing looked wrong: ZERO deaths, no errors, phase still "playing", and
+       the only log line was "dropping: never sent ready", which reads as correct
+       behaviour. A one-player deathmatch with three seated bots is the symptom.
+       `ready` means "in the simulation", and the handshake it gates on — download
+       the map, decode it, render it — does not exist for something with no
+       socket. Bots are marked ready at seat time.
+       The test's control is the second half: a human who never readies MUST
+       still be swept, so it cannot pass by disabling the sweep.

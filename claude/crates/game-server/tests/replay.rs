@@ -363,3 +363,40 @@ fn recording_costs_under_a_tenth_of_a_millisecond_per_tick() {
         per_command * 1000.0
     );
 }
+
+/// Bots have no socket, so they can never send `ready` — and `sweep_unready`
+/// drops every unready seat once the timeout elapses.
+///
+/// This shipped: the roster went `[0,1,2,3] -> [3]` exactly 30 s into every
+/// round, with **no deaths**, and nothing in the log but "dropping: never sent
+/// ready". The game quietly became single-player a minute in, which is the sort
+/// of thing only playing it finds.
+///
+/// The control is the second half: a *human* seat that never readies must still
+/// be swept, so this cannot pass by disabling the sweep.
+#[test]
+fn bots_survive_the_unready_sweep_and_humans_who_never_ready_do_not() {
+    let mut room = Room::new(Arc::new(Config {
+        map_scale: MapScale::Small,
+        fixed_seed: Some(4242),
+        bot_count: 3,
+        round_seconds: 8.0,
+        ..Config::default()
+    }));
+    // A human who joins and never sends `ready`.
+    let ghost = seat(&mut room, "ghost");
+
+    // Zero timeout: everything unready is stale immediately.
+    let dropped = room.sweep_unready_for_test(std::time::Duration::from_secs(0));
+
+    assert_eq!(
+        dropped,
+        vec![ghost],
+        "exactly the unready human should be swept, not the bots"
+    );
+    assert_eq!(
+        room.world.players.len(),
+        3,
+        "the three bots must still be in the world after the sweep"
+    );
+}

@@ -1,6 +1,8 @@
 # Master task list
 
-102 tasks across 9 milestones. Work them **in order**. See `README.md` for the
+101 tasks across 9 milestones.
+(The header read 102 while only 101 rows ever existed — an off-by-one introduced
+when the v2 tasks were added. Counted, not assumed.) Work them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
 
 Tasks marked **(v2)** come from `docs/70-amendments-v2.md`, which overrides the

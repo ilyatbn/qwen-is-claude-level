@@ -164,6 +164,14 @@ struct Seat {
 }
 
 impl Seats {
+    /// Mark a seat as in-simulation. Used by the join flow when `ready` arrives,
+    /// and by bot seating, which has no handshake to wait for.
+    fn mark_ready(&mut self, id: PlayerId) {
+        if let Some(s) = self.seats.iter_mut().find(|s| s.id == id) {
+            s.ready = true;
+        }
+    }
+
     fn alloc(&mut self, max: usize) -> Option<PlayerId> {
         if self.seats.len() >= max {
             return None;
@@ -318,6 +326,15 @@ impl Room {
             let index = self.bot_seq;
             self.bot_seq += 1;
             self.world.add_player(id, 0, format!("Bot {}", index + 1));
+            // A bot is ready the moment it is seated. `ready` means "in the
+            // simulation", and the handshake it normally gates on — download the
+            // map, decode it, render it — does not exist for something with no
+            // socket. Without this every bot was dropped by `sweep_unready`
+            // exactly READY_TIMEOUT into every round: the roster went
+            // [0,1,2,3] -> [3] at t=30s and the game silently became
+            // single-player with no deaths and nothing in the log but
+            // "dropping: never sent ready".
+            self.seats.mark_ready(id);
             self.bots
                 .push(Bot::new(id, seed, index, self.config.bot_skill));
             self.grant_dev_loadout(id);
