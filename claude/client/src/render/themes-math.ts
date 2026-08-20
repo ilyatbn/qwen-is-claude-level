@@ -93,3 +93,31 @@ export function paletteDistance(a: Rgb, b: Rgb): number {
   const db = (a.b - b.b) * 0.11
   return Math.sqrt(dr * dr + dg * dg + db * db)
 }
+
+/** Rec. 601 luminance, 0..255. */
+export function luminance(c: Rgb): number {
+  return 0.3 * c.r + 0.59 * c.g + 0.11 * c.b
+}
+
+/** Unpack a packed 0xRRGGBB into components. */
+export function unpackRgb(hex: number): Rgb {
+  return { r: (hex >> 16) & 0xff, g: (hex >> 8) & 0xff, b: hex & 0xff }
+}
+
+/**
+ * The daytime sky this theme shows, after its `skyTint` is applied.
+ *
+ * §A4's keyframe at u = 0.30 is full day — the brightest sky, and the condition
+ * under which a misclassified backdrop patch is most visible.
+ */
+export const DAY_SKY_BOTTOM = 0xa8d8f0
+
+export function daySkyBottom(theme: ThemeDef): Rgb {
+  const sky = unpackRgb(DAY_SKY_BOTTOM)
+  const tint = unpackRgb(theme.skyTint)
+  return {
+    r: (sky.r * tint.r) / 255,
+    g: (sky.g * tint.g) / 255,
+    b: (sky.b * tint.b) / 255,
+  }
+}

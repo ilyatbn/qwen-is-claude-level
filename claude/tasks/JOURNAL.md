@@ -1651,3 +1651,30 @@ Notes: THE PLAYER IS A CHARACTER NOW, not a magenta box. 5 Kenney variants x 10
 Left for later: M8. Noticed, not fixed: at theme 2 (frost) the sky shows large
        angular lighter-grey regions that may be backdrop misclassification rather
        than terrain — see shots/m7-theme-4242.png, top-right and right edge.
+
+## A32 — measured, and change 1 NOT adopted — DONE (partial, by evidence)
+Files: client/src/render/themes-math.ts, client/src/render/themes-math.test.ts
+Verified: `./scripts/check.sh` — EXIT=0. Ray-length table measured at 5 values x
+       3 scales (15 rows) before changing anything.
+Notes: A32 CHANGE 1 (BACKDROP_RAY_LEN 320->160) IS NOT ADOPTED. The stated
+       expectation — "sky-as-backdrop falls sharply while enclosed-as-sky barely
+       moves" — is FALSE. Measured, enclosed-as-sky/sky-as-backdrop:
+         small  160 5.63/0.90  200 1.67/2.60  240 0.43/7.16  320 0.00/16.42
+         medium 160 13.70/0.46 200 7.96/1.40  240 4.58/2.42  320 1.42/5.86
+         large  160 10.85/0.11 200 7.79/1.04  240 5.35/2.75  320 2.49/7.18
+       A clean monotonic trade, and no value satisfies both bounds at all scales.
+       At 160 the RECURRING failure (daylight inside a cavern) gets 5-10x WORSE.
+       Reason the expectation fails: "a cave wall is close by definition" is true
+       of tunnels, not of the features that dominate — voids are 140-310px across,
+       so the middle of one is >160px from every wall and reads as sky.
+       320 is the value that keeps enclosed-as-sky inside its bound at every
+       scale (0.00/1.42/2.49 vs 2/2/3), which is the failure A18 ranked worse.
+       A32'S PREMISE IS ALSO WRONG: frost's backdrop is NOT lighter than its sky.
+       Sampled from shots/m7-theme-4242.png — backdrop lum 43, sky lum 106. What
+       I reported as "angular lighter regions in the sky" is the terrain FILL
+       (lum 120): frost's rock is light, so islands read bright against a dark
+       backdrop. I had my own sample points inverted when I first read the image.
+       A32 CHANGE 2 IS ADOPTED and is the useful half: every theme's backdrop must
+       be darker than its daytime sky by >30 lum. Measured margins grassland 171,
+       desert 140, frost 142. Falsified — a bright frost backdrop fails it.
+Left for later: M8 (T8.01-T8.08) not started.

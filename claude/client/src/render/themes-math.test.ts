@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { THEMES, resolveTheme, paletteDistance } from './themes-math'
+import { THEMES, resolveTheme, paletteDistance, luminance, daySkyBottom } from './themes-math'
 
 describe('themes', () => {
   it('ships the three the docs name', () => {
@@ -50,5 +50,24 @@ describe('themes', () => {
 
   it('has ids matching their index, so resolveTheme cannot silently mismatch', () => {
     THEMES.forEach((t, i) => expect(t.id).toBe(i))
+  })
+})
+
+describe('A32: a backdrop that is lighter than its sky turns a residual into a hole', () => {
+  it('keeps every theme’s backdrop darker than its daytime sky', () => {
+    // §A19 accepted a few percent of open sky drawn as cave backdrop. That
+    // residual is only tolerable while it reads as *shadow*; a backdrop lighter
+    // than the sky would render the same error as flat polygons hanging in the
+    // air. This is a constraint on the palette, so it holds for every theme
+    // added later without anyone having to remember it.
+    const MARGIN = 30
+    for (const t of THEMES) {
+      const back = luminance(t.back)
+      const sky = luminance(daySkyBottom(t))
+      expect(
+        sky - back,
+        `${t.name}: backdrop lum ${back.toFixed(0)} vs day sky ${sky.toFixed(0)}`,
+      ).toBeGreaterThan(MARGIN)
+    }
   })
 })
