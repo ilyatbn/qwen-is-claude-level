@@ -1025,3 +1025,18 @@ Notes: SPEC CONTRADICTION in docs/13 §1: "never repeat the same effect twice in
        Falsification caught it. The replacement ticks the same seed at DT and at
        0.5 s and requires identical schedules; it fails against the bug.
 Left for later: T5.02 onward.
+
+## T5.02 — Toxic rain — DONE
+Files: crates/game-core/src/effects/{toxic,mod}.rs
+Verified: `cargo test -p game-core toxic` — 10 passed
+Notes: The first puddle lands on the FIRST ACTIVE TICK, not one cadence in.
+       Waiting a cadence puts the 20th spawn at exactly t=TOXIC_DURATION, i.e.
+       outside the active window, and the count comes out 19.
+       A TEST THAT PREDICTED WHERE A PUDDLE WOULD LAND was wrong: pick_position
+       reads player positions to bias toward their half, so a second run with the
+       player moved does not reproduce the first run's placement. The test now
+       teleports the player onto whichever puddle actually spawned.
+       Falsified both defining properties: carving during the effect fails the
+       mask test; PLAYER_HALF_BIAS=0 fails the bias test (mean x 1138 vs mid 1024).
+       Overlapping puddles stack deliberately (docs/13 §3) — not deduplicated.
+Left for later: T5.03 onward.
