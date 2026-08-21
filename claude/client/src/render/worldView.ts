@@ -27,6 +27,8 @@ import { resolveTheme } from '../render/themes-math'
 import { makeBackTexture, makeEdgeTexture, makeFillTexture } from './procTextures'
 import { DecorationLayer } from './decorations'
 import { fromMeta } from './decorations-math'
+import { OrdnanceLayer } from './ordnance'
+import { KIND_BY_WEAPON_KEY, WEAPON_KEYS, type ProjectileKind } from './ordnance-state'
 
 export interface WorldViewTimings {
   buildAllMs: number
@@ -37,18 +39,27 @@ export class WorldView {
   readonly terrain: TerrainRenderer
   readonly rig: CameraRig
   readonly decorations: DecorationLayer
+  /**
+   * Ordnance in flight. Owned here rather than per-scene for the reason the whole
+   * class exists: the layer already existed and the game never called
+   * `addProjectile`, so nothing was ever drawn. A scene that has a world gets
+   * projectiles in it without opting in.
+   */
+  readonly ordnance: OrdnanceLayer
   readonly timings: WorldViewTimings = { buildAllMs: 0, lastRebakeMs: 0 }
 
   private readonly backdrop: Backdrop
   private readonly container: Phaser.GameObjects.Container
   private readonly core: Core
+  private readonly tracked = new Map<number, ProjectileKind>()
+  private readonly weaponKeys: string[]
 
   /**
    * Building tears nothing down: the caller owns the lifetime. Phaser's texture
    * manager is global, so a rebuilt view over a reused key keeps the previous
    * map's pixels — call `destroy()` before constructing another (T3.05).
    */
-  constructor(scene: Phaser.Scene, core: Core) {
+  constructor(scene: Phaser.Scene, core: Core, weaponKeys: string[] = WEAPON_KEYS) {
     const { width: mapW, height: mapH } = core
     this.core = core
 
@@ -90,6 +101,9 @@ export class WorldView {
     // drift.
     this.decorations = new DecorationLayer(scene)
     this.decorations.build(fromMeta(core.meta.decorations), (x, y) => core.solidAt(x, y))
+
+    this.ordnance = new OrdnanceLayer(scene)
+    this.weaponKeys = weaponKeys
   }
 
   /**
@@ -142,8 +156,61 @@ export class WorldView {
     this.terrain.markDirty(this.core.takeDirtyChunks())
   }
 
+  /**
+   * Reconcile the drawn projectiles with the ones the server says are alive.
+   *
+   * A diff rather than a stream of add/remove calls: the authority is the list,
+   * so a missed `projectile_despawn` self-corrects on the next frame instead of
+   * leaving a rocket hanging in the air forever. `drawnProjectiles` is exposed so
+   * a check can count at both ends (§A39) — "the server has 3" and "3 are drawn"
+   * were silently different numbers for four milestones.
+   */
+  syncProjectiles(
+    live: Iterable<{ id: number; x: number; y: number; weapon?: number; key?: string }>,
+  ): void {
+    const seen = new Set<number>()
+    for (const p of live) {
+      seen.add(p.id)
+      // Two callers, two identifiers: the game carries the numeric weapon id off
+      // the wire, the sandbox simulates locally and already has the key.
+      const kind =
+        p.key !== undefined ? (KIND_BY_WEAPON_KEY[p.key] ?? 'fragment') : this.kindOf(p.weapon ?? -1)
+      if (!this.tracked.has(p.id)) {
+        this.tracked.set(p.id, kind)
+        this.ordnance.addProjectile(p.id, kind, p.x, p.y)
+      }
+      this.ordnance.moveProjectile(p.id, p.x, p.y)
+    }
+    for (const id of [...this.tracked.keys()]) {
+      if (seen.has(id)) continue
+      this.tracked.delete(id)
+      this.ordnance.removeProjectile(id)
+    }
+  }
+
+  /** How many projectiles are actually drawn. For counting at both ends. */
+  get drawnProjectiles(): number {
+    return this.tracked.size
+  }
+
+  /**
+   * Weapon id to how its projectile looks.
+   *
+   * Resolved through the registry's **keys**, not by trusting the numeric id to
+   * mean anything: the table is positional and §B16 is the bug where that was
+   * assumed silently and a laser resolved as a bazooka. An unknown weapon draws as
+   * a fragment rather than not drawing — an invisible projectile is the bug this
+   * task exists to fix, so the fallback must still be visible.
+   */
+  private kindOf(weapon: number): ProjectileKind {
+    const key = this.weaponKeys[weapon]
+    if (key === undefined) return 'fragment'
+    return KIND_BY_WEAPON_KEY[key] ?? 'fragment'
+  }
+
   /** Re-bake the chunks a carve dirtied, within the per-frame budget. */
-  update(near: { x: number; y: number }): void {
+  update(near: { x: number; y: number }, dt = 0): void {
+    if (dt > 0) this.ordnance.update(dt)
     this.drainDirty()
     const pendingBefore = this.terrain.stats.pending
     const t0 = performance.now()
@@ -160,6 +227,8 @@ export class WorldView {
   }
 
   destroy(): void {
+    this.tracked.clear()
+    this.ordnance.destroy()
     this.decorations.destroy()
     this.terrain.destroy()
     this.backdrop.destroy()

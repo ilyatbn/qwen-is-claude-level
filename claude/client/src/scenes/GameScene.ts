@@ -854,6 +854,11 @@ export class GameScene extends Phaser.Scene {
       (id) => this.scores.get(id)?.name,
       [...this.scores.values()].map((v) => ({ name: v.name, score: v.score })),
     )
+    // The mirror has tracked projectiles since T6.08 and nothing drew them
+    // (§A39). The server's live list is the authority, so this is a diff rather
+    // than a stream of add/remove calls: a missed despawn self-corrects next
+    // frame instead of leaving a rocket hanging in the air.
+    this.world?.syncProjectiles(this.mirror.projectiles.values())
     this.ordnance.update(dt)
     // Mine visibility is distance to the *player*, not to the camera centre —
     // the camera leads the aim, so those are not the same point.

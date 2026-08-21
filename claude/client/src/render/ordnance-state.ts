@@ -22,7 +22,101 @@ export interface Tracer {
   ttl: number
 }
 
-export type ProjectileKind = 'bazooka' | 'grenade' | 'meteor' | 'fragment'
+export type ProjectileKind =
+  | 'bazooka'
+  | 'grenade'
+  | 'meteor'
+  | 'fragment'
+  | 'airburst'
+  | 'pellet'
+  | 'smoke'
+  | 'molotov'
+  | 'toxic'
+
+/**
+ * How each projectile looks (§C4). Deliberately placeholder art — coloured dots
+ * sized so you can tell what is in the air — behind **one** lookup, so replacing
+ * them with sprites later touches this table and nothing else.
+ *
+ * The bug this exists for: the game drew no projectiles at all. You could not see
+ * what you fired or what was being fired at you, which is the single most
+ * important thing a shooter draws.
+ */
+export interface ProjectileLook {
+  /** Radius in world px. */
+  r: number
+  /** Fill colour, 0xRRGGBB. */
+  colour: number
+  /** Trail sample count; 0 draws no trail. */
+  trail: number
+}
+
+export const LOOK: Record<ProjectileKind, ProjectileLook> = {
+  bazooka: { r: 6, colour: 0xff8a3d, trail: 12 },
+  grenade: { r: 5, colour: 0x3f7d3f, trail: 6 },
+  airburst: { r: 5, colour: 0xa77dff, trail: 10 },
+  pellet: { r: 3, colour: 0xa77dff, trail: 4 },
+  smoke: { r: 5, colour: 0xb9bec6, trail: 0 },
+  molotov: { r: 5, colour: 0xff5a2b, trail: 10 },
+  toxic: { r: 5, colour: 0x7cd44a, trail: 10 },
+  meteor: { r: 8, colour: 0xff4433, trail: 14 },
+  fragment: { r: 3, colour: 0xff7755, trail: 5 },
+}
+
+/**
+ * Weapon **key** to how its projectile looks.
+ *
+ * Keyed by name, not by numeric id. The registry is positional (`WEAPONS[i].id ==
+ * WeaponId(i)`) and §B16 is the bug where that assumption was made silently and a
+ * laser resolved as a bazooka. `weaponKindPinnedToRegistry` in the test asserts
+ * this table against the Rust source, so inserting a weapon mid-table fails loudly
+ * instead of re-colouring every projectile after it.
+ */
+/**
+ * Weapon keys in registry order, so `WEAPON_KEYS[id]` is that weapon's key.
+ *
+ * The Rust registry is positional (`WEAPONS[i].id == WeaponId(i)`). Mirroring that
+ * order here is a duplication, and `weaponKeysMatchTheRustRegistry` in the test
+ * pins it against `defs.rs` — §B16 is the bug where exactly this assumption was
+ * made without an assertion and a laser resolved as a bazooka.
+ */
+export const WEAPON_KEYS: string[] = [
+  'bazooka',
+  'grenade',
+  'smg',
+  'meteor',
+  'meteor_fragment',
+  'laser_pistol',
+  'laser_smg',
+  'pistol',
+  'revolver',
+  'deagle',
+  'machinegun',
+  'knife',
+  'bat',
+  'whip',
+  'axe',
+  'hammer',
+  'flamethrower',
+  'mine',
+  'airburst',
+  'smoke',
+  'molotov',
+  'toxic_grenade',
+  'airburst_pellet',
+]
+
+export const KIND_BY_WEAPON_KEY: Record<string, ProjectileKind> = {
+  bazooka: 'bazooka',
+  grenade: 'grenade',
+  meteor: 'meteor',
+  meteor_fragment: 'fragment',
+  airburst: 'airburst',
+  airburst_pellet: 'pellet',
+  smoke: 'smoke',
+  molotov: 'molotov',
+  toxic_grenade: 'toxic',
+}
 
 export interface TrailPoint {
   x: number
@@ -59,6 +153,14 @@ const GLOW: Record<ProjectileKind, { r: number; a: number }> = {
   grenade: { r: 45, a: 0.5 },
   meteor: { r: 150, a: 1 },
   fragment: { r: 60, a: 0.7 },
+  // Energy ordnance reads cooler and brighter than ballistic, because what it
+  // does to a shield is different and the player has to be able to tell (§B5).
+  airburst: { r: 70, a: 0.7 },
+  pellet: { r: 40, a: 0.6 },
+  // Smoke denies sight; a bright glow on it would defeat its own purpose.
+  smoke: { r: 20, a: 0.15 },
+  molotov: { r: 80, a: 0.8 },
+  toxic: { r: 70, a: 0.6 },
 }
 
 export class OrdnanceState {

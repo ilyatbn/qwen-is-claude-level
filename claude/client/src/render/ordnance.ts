@@ -8,15 +8,12 @@
 
 import Phaser from 'phaser'
 import { C } from '../core'
-import { OrdnanceState, type Light, type ProjectileKind } from './ordnance-state'
+import { LOOK, OrdnanceState, type Light, type ProjectileKind } from './ordnance-state'
 import { DEPTH } from './backdrop'
 
-const KIND_COLOR: Record<ProjectileKind, number> = {
-  bazooka: 0xffd27a,
-  grenade: 0xbfe08a,
-  meteor: 0xff9a4a,
-  fragment: 0xffb066,
-}
+// The colour and radius tables used to live here as well as in ordnance-state,
+// which is two sources of truth for one thing and the exact shape §B16 warns
+// about. `LOOK` is the only one now.
 
 export class OrdnanceLayer {
   private readonly gfx: Phaser.GameObjects.Graphics
@@ -89,17 +86,21 @@ export class OrdnanceLayer {
 
     // Trails: a tapering polyline, oldest thinnest.
     for (const p of this.state.projectiles.values()) {
-      const col = KIND_COLOR[p.kind]
-      const n = p.trail.length
+      const look = LOOK[p.kind]
+      const n = look.trail === 0 ? 0 : p.trail.length
       for (let i = 1; i < n; i++) {
         const a = i / n
-        g.lineStyle(1 + 2 * a, col, 0.6 * a)
+        g.lineStyle(1 + 2 * a, look.colour, 0.6 * a)
         g.lineBetween(p.trail[i - 1]!.x, p.trail[i - 1]!.y, p.trail[i]!.x, p.trail[i]!.y)
       }
-      g.fillStyle(col, 1)
-      g.fillCircle(p.x, p.y, p.kind === 'meteor' ? 7 : 3)
-      g.fillStyle(0xffffff, 0.8)
-      g.fillCircle(p.x, p.y, p.kind === 'meteor' ? 3 : 1.4)
+      g.fillStyle(look.colour, 1)
+      g.fillCircle(p.x, p.y, look.r)
+      // A hot core, so a dot reads as ordnance rather than as a decal — except
+      // smoke, which is not hot and should not glow.
+      if (p.kind !== 'smoke') {
+        g.fillStyle(0xffffff, 0.8)
+        g.fillCircle(p.x, p.y, Math.max(1.2, look.r * 0.45))
+      }
     }
 
     // Impacts: a flash that collapses fast.

@@ -76,6 +76,8 @@ const CHECKS = [
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
   // §C0's gate: destroying terrain must change the picture, not just the mask.
   { name: 'terrain-render', file: 'scripts/checks/terrain-render.mjs', url: '?sandbox=1&seed=4242' },
+  // §C4: you must be able to see what you fired.
+  { name: 'ordnance-visible', file: 'scripts/checks/ordnance-visible.mjs', url: '?sandbox=1&seed=12345' },
   { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'sky', file: 'scripts/checks/sky.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'lightmap', file: 'scripts/checks/lightmap.mjs', url: '?sandbox=1&seed=4242' },

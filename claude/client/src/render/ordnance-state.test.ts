@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { OrdnanceState } from './ordnance-state'
+import { KIND_BY_WEAPON_KEY, LOOK, OrdnanceState, WEAPON_KEYS } from './ordnance-state'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const LIFE = 0.09
 const TRAIL = 12
@@ -87,4 +90,35 @@ it('a tracer lights its muzzle as well as its impact', () => {
   // And both fade with the tracer rather than lingering.
   s.update(0.09)
   expect(s.lights().filter((l) => l.x === 100 || l.x === 500)).toHaveLength(0)
+})
+
+// ------------------------------------------------------------------ §C4 tables
+
+describe('the projectile look-up tables', () => {
+  it('keeps the weapon key order the Rust registry declares', () => {
+    // The registry is positional and nothing asserted it. §B16 is the bug where
+    // inserting two weapons at the front shifted every later lookup and a laser
+    // resolved as a bazooka; the only symptom was an unrelated-looking failure.
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../../../crates/game-core/src/weapons/defs.rs'),
+      'utf8',
+    )
+    const rust = [...src.matchAll(/^\s+key:\s*"([^"]+)"/gm)].map((m) => m[1])
+    expect(rust.length).toBeGreaterThan(0) // or the regex silently proves nothing
+    expect(WEAPON_KEYS).toEqual(rust)
+  })
+
+  it('gives every projectile-bearing weapon a visible look', () => {
+    for (const [key, kind] of Object.entries(KIND_BY_WEAPON_KEY)) {
+      expect(WEAPON_KEYS, `${key} is not a real weapon`).toContain(key)
+      expect(LOOK[kind], `${kind} has no look`).toBeDefined()
+      expect(LOOK[kind].r, `${kind} would be invisible`).toBeGreaterThan(0)
+    }
+  })
+
+  it('draws something for every kind, so nothing is silently invisible', () => {
+    for (const kind of Object.keys(LOOK) as Array<keyof typeof LOOK>) {
+      expect(LOOK[kind].r).toBeGreaterThanOrEqual(3)
+    }
+  })
 })

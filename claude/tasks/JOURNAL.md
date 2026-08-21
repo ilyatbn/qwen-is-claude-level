@@ -3405,3 +3405,23 @@ Notes: THE FIX IS A DRAIN, NOT A CALL. `update()` now empties the core's dirty
 Left for later: cross-scene layer parity asserts the sandbox set only — `?game=1`
        cannot build a world without a server, so the two-scene comparison belongs
        in a check that runs one. Deferred to the M13 milestone verification.
+
+## T13.03 — Missiles, grenades and bullets you can see — DONE
+Files: client/src/render/{ordnance-state,ordnance,worldView}.ts + test,
+       scenes/{GameScene,SandboxScene}.ts, scripts/checks/ordnance-visible.mjs
+Verified: `e2e.mjs ordnance-visible` ok — core 1 alive / layer 1 drawn, patch
+       changed 24.5, control 0.0. Gate: 905 rust, e2e 23/23, EXIT=0.
+Notes: THIRTEENTH §A39. `OrdnanceLayer.addProjectile` existed, the mirror had
+       tracked projectiles since T6.08, and nothing called one from the other.
+       WorldView owns the layer now and `syncProjectiles` DIFFS against the
+       authoritative live list rather than replaying add/remove events, so a
+       missed despawn self-corrects instead of leaving a rocket in the air —
+       the sandbox's old loop never removed anything at all.
+       TWO COLOUR TABLES existed (KIND_COLOR in ordnance.ts, and the new LOOK);
+       collapsed to one. Two sources of truth for one thing is §B16's shape.
+       WEAPON_KEYS mirrors the positional Rust registry and is PINNED to
+       defs.rs by a test — falsified by swapping two entries. §B16 is the bug
+       where that assumption was silent and a laser resolved as a bazooka.
+       The both-ends count is what catches the original bug: falsifying the
+       sync gives "1 alive and 0 drawn" before any pixel is examined.
+Left for later: T13.04 weather, T13.05 crates, T13.06 round end.

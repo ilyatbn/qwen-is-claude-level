@@ -23,8 +23,6 @@ import { loadAudio } from '../audio/sfx'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { DebugOverlay } from '../render/debugOverlay'
-import { OrdnanceLayer } from '../render/ordnance'
-import type { ProjectileKind } from '../render/ordnance-state'
 import { cycleU, darknessAt, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
 
@@ -69,7 +67,6 @@ export class SandboxScene extends Phaser.Scene {
    */
   private weatherTime = 0
   private fovOverride: number | null = null
-  private ordnance!: OrdnanceLayer
   private hud!: HTMLDivElement
   private feel!: FeelLayer
   private feelEnabled = true
@@ -137,7 +134,6 @@ export class SandboxScene extends Phaser.Scene {
     this.lightmap = new Lightmap(this)
     // `true`: this is the sandbox, the one place buried slots may be drawn.
     this.overlay = new DebugOverlay(this, this.core, true)
-    this.ordnance = new OrdnanceLayer(this)
     // Hazards sit just under the ordnance layer: both are world-space FX, and
     // a puddle should never draw over a rocket.
     this.hazardGfx = this.add.graphics().setDepth(38)
@@ -162,7 +158,6 @@ export class SandboxScene extends Phaser.Scene {
       this.hud?.remove()
       this.feel?.destroy()
       this.minimap?.destroy()
-      this.ordnance.destroy()
       this.world.destroy()
       this.lightmap.destroy()
       this.overlay.destroy()
@@ -582,6 +577,11 @@ export class SandboxScene extends Phaser.Scene {
             flashlightOn: false,
           }),
           overlays: self.overlay?.enabled ?? false,
+          // Both ends of the same number (§A39). The server/core knows how many
+          // projectiles are alive; the layer knows how many it draws. They were
+          // silently different for four milestones and only one was ever asserted.
+          projectilesLive: self.core.liveProjectiles().length,
+          projectilesDrawn: self.world.drawnProjectiles,
           trauma: self.world.rig.traumaLevel,
           fps: self.game.loop.actualFps,
           worldView: {
@@ -636,7 +636,7 @@ export class SandboxScene extends Phaser.Scene {
         const sel = inv?.slots[inv.selected]
         const ev = self.core.fire(0, self.simTime)
         if (ev.hitscan?.length) {
-          for (const s of ev.hitscan) self.ordnance.addTracer(s.x0, s.y0, s.x1, s.y1)
+          for (const s of ev.hitscan) self.world.ordnance.addTracer(s.x0, s.y0, s.x1, s.y1)
           const first = ev.hitscan[0]
           if (first) self.cue('fire_smg', first.x0, first.y0)
           // The carve already happened in the core; drain it into the renderer.
@@ -662,7 +662,7 @@ export class SandboxScene extends Phaser.Scene {
         return self.invOpen
       },
       ordnance() {
-        return { ...self.ordnance.state.counts, lights: self.ordnance.lights().length }
+        return { ...self.world.ordnance.state.counts, lights: self.world.ordnance.lights().length }
       },
       setFov(r: number | null) {
         self.fovOverride = r
@@ -677,13 +677,13 @@ export class SandboxScene extends Phaser.Scene {
       },
       /** Raw tracer segments, for diagnosing why one is not on screen. */
       ordnanceState() {
-        return self.ordnance.state.tracers.map((t) => ({
+        return self.world.ordnance.state.tracers.map((t) => ({
           x0: t.x0, y0: t.y0, x1: t.x1, y1: t.y1, life: t.life,
         }))
       },
       /** Freeze tracer decay so a screenshot can catch one (debug only). */
       holdTracers(on: boolean) {
-        self.ordnance.state.holdTracers = on
+        self.world.ordnance.state.holdTracers = on
       },
       /** First hazard position, so a screenshot can actually show the effect. */
       hazardAt() {
@@ -825,8 +825,8 @@ export class SandboxScene extends Phaser.Scene {
     for (const ev of this.core.combatStep(this.simTime, dt)) {
       if (!ev.explosion) continue
       const e = ev.explosion
-      this.ordnance.removeProjectile(e.id)
-      this.ordnance.addImpact(e.x, e.y, e.r)
+      this.world.ordnance.removeProjectile(e.id)
+      this.world.ordnance.addImpact(e.x, e.y, e.r)
       this.cue('explode', e.x, e.y)
             this.world.onCarve(e.x, e.y, e.r)
     this.minimap?.setTerrainDirty()
@@ -853,14 +853,12 @@ export class SandboxScene extends Phaser.Scene {
       }
       if (e.hits.length) this.refreshHud()
     }
-    for (const p of this.core.liveProjectiles()) {
-      if (!this.ordnance.state.projectiles.has(p.id)) {
-        this.ordnance.addProjectile(p.id, p.key as ProjectileKind, p.x, p.y)
-      } else {
-        this.ordnance.moveProjectile(p.id, p.x, p.y)
-      }
-    }
-    this.ordnance.update(dt)
+    // A diff against the live list, not add-then-move: the old loop never
+    // removed anything, so a detonated rocket stayed drawn until the scene was
+    // rebuilt. `syncProjectiles` is shared with the game so both scenes get the
+    // same behaviour from one implementation.
+    this.world.syncProjectiles(this.core.liveProjectiles())
+    this.world.ordnance.update(dt)
 
     if (!this.timeScrub) this.roundTime += dt
     // Darkness is the server's scalar in M6; here it follows the doc's formula so
@@ -910,7 +908,7 @@ export class SandboxScene extends Phaser.Scene {
     }
     // Ordnance lights the map. Shooting in the dark tells everyone where you are,
     // and it is most of what makes night combat readable at all.
-    for (const l of this.ordnance.lights()) {
+    for (const l of this.world.ordnance.lights()) {
       lights.push({ x: l.x, y: l.y, radius: l.r, kind: 'radial', intensity: l.a })
     }
     // Lava lights the map, exactly as ordnance does — a vent at night is a
