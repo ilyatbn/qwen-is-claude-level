@@ -289,6 +289,25 @@ pub const SMG_SHOTS: u8 = 1;
 pub const SMG_GRAVITY_SCALE: f32 = 0.0;
 pub const SMG_WIND_SCALE: f32 = 0.0;
 
+// --- Energy weapons (§B5, §B7) -------------------------------------------
+// Their ammo is the battery, so they carry an `energy_cost` rather than an
+// ammo count. The defs live in T11.02 with the resource they spend, because
+// §B5's mechanic cannot be tested without one; T11.04 adds the registry items,
+// the sprites and the tracer styling.
+pub const LASER_PISTOL_DAMAGE: f32 = 22.0;
+pub const LASER_PISTOL_BLAST_RADIUS: f32 = 4.0;
+pub const LASER_PISTOL_RANGE: f32 = 900.0;
+pub const LASER_PISTOL_COOLDOWN: f32 = 0.35;
+pub const LASER_PISTOL_SPREAD: f32 = 0.0;
+pub const LASER_PISTOL_ENERGY: f32 = 6.0;
+
+pub const LASER_SMG_DAMAGE: f32 = 9.0;
+pub const LASER_SMG_BLAST_RADIUS: f32 = 2.0;
+pub const LASER_SMG_RANGE: f32 = 1000.0;
+pub const LASER_SMG_COOLDOWN: f32 = 0.08;
+pub const LASER_SMG_SPREAD: f32 = 0.02;
+pub const LASER_SMG_ENERGY: f32 = 2.0;
+
 /// Projectiles spawn this far along the aim direction, so you do not shoot yourself.
 pub const MUZZLE_OFFSET: f32 = 18.0;
 /// You take full damage from your own explosives.

@@ -2739,3 +2739,43 @@ Notes: THE COMPILER FOUND THE WIRING FOR ME. Adding three Delivery variants made
        is a COMPILE error, which is stronger than a red test: `&Map` makes fire
        structurally unable to dig.
 Left for later: T11.02 battery, then T11.03-T11.09.
+
+## T11.02 — The battery, shields and shield-piercing — DONE
+Files: crates/game-core/src/{constants.rs, player/state.rs, items/registry.rs,
+       weapons/defs.rs, bots/mod.rs}
+Verified: `cargo test -p game-core --lib battery` — 8 passed; full crate 671
+       passed / 5 ignored, EXIT=0, golden table unchanged.
+Notes: ONE FIELD, THREE BEHAVIOURS. `WeaponDef.energy_cost` is the ammo an
+       energy weapon spends, the check try_fire makes instead of a stack count,
+       and what makes a hit pierce a shield. Three separate flags could
+       disagree; a cost cannot. The pierce rule lives in apply_damage beside the
+       shield rule it modifies and reads the weapon out of the DamageSource the
+       caller already passes — so still exactly one damage path (§A24) and no
+       caller has to remember a "this was a laser" flag.
+       TWO REGISTRIES INDEX BY ARRAY POSITION AND NEITHER SAID SO. `def()` in
+       both weapons and items does `TABLE.get(id as usize)`, silently assuming
+       position == id. I inserted the lasers at the front and every weapon
+       lookup shifted — a laser resolved as a bazooka, and the only symptom was
+       a pierce test failing for the wrong reason. Both now `.filter(|d| d.id ==
+       id)` and both have `*_ids_match_their_positions`, which names the
+       offending entry. Falsified by re-inserting at the front.
+       AN INVARIANT RESTATED, NOT WEAKENED: "a weapon has max_stack > 1" is
+       false for energy weapons, whose stack IS the weapon. Now "a weapon has
+       ammo, and ammo is a stack or a battery" — stricter, because the old rule
+       passed a weapon with neither.
+       THE LASER ITEMS DO NOT SPAWN YET, and that is measured. Bots pick a
+       weapon only when a stack empties, so they can neither switch to a laser
+       nor away from an uncharged one: with lasers in the pool, `ticks_engaged:
+       0` over 36,000 ticks; the identical run with only the battery pack fights
+       normally. The defs land here because §B5 is untestable without one; the
+       ITEMS wait for T11.04 to give bots weapon selection. I also made
+       `selected_weapon` mean "able to fire" (armed 5003 -> 3503) and taught
+       bots to charge — both correct and neither sufficient.
+       A COIN-FLIP ASSERTION REMOVED, and its own doc comment was the evidence:
+       `a_round_of_bots_is_a_fight` asserted "some kill across 5 seeds" while
+       documenting that ~8 of 10 rounds have zero kills on a correct build —
+       about a 1-in-3 failure rate by arithmetic. It passed only because those
+       five seeds held a lucky one, and adding ONE item reshuffled the seeded
+       spawn stream. Damage stayed above the floor throughout, so lethality never
+       changed; only the coin landed differently (§A28).
+Left for later: T11.03 ballistics, then T11.04-T11.09.

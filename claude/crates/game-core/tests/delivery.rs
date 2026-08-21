@@ -78,6 +78,7 @@ fn melee_def(damage: f32, carve: f32) -> WeaponDef {
         muzzle_speed: 0.0,
         gravity_scale: 0.0,
         wind_scale: 0.0,
+        energy_cost: 0.0,
     }
 }
 
@@ -98,6 +99,7 @@ fn cone_def() -> WeaponDef {
         muzzle_speed: 0.0,
         gravity_scale: 0.0,
         wind_scale: 0.0,
+        energy_cost: 0.0,
     }
 }
 
@@ -117,6 +119,7 @@ fn mine_def() -> WeaponDef {
         muzzle_speed: 0.0,
         gravity_scale: 0.0,
         wind_scale: 0.0,
+        energy_cost: 0.0,
     }
 }
 

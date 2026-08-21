@@ -3,8 +3,9 @@
 //! See `docs/21-player-stats.md`.
 
 use crate::constants::{
-    BASE_HEALTH, DEATH_POINTS, HEALTH_CAP, HEALTH_SPEED_MIN, KILL_POINTS, OVERHEAL_DECAY,
-    RESPAWN_DELAY, SHIELD_DAMAGE_MULT, SHIELD_DURATION, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST,
+    BASE_HEALTH, BATTERY_MAX, DEATH_POINTS, HEALTH_CAP, HEALTH_SPEED_MIN, KILL_POINTS,
+    LASER_BATTERY_DRAIN, LASER_SHIELD_MULT, OVERHEAL_DECAY, RESPAWN_DELAY, SHIELD_DAMAGE_MULT,
+    SHIELD_DRAIN, SHIELD_DURATION, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST,
 };
 use crate::items::inventory::{Inventory, Stack};
 use crate::items::registry::{def, ItemId, ItemKind, WeaponId};
@@ -50,6 +51,9 @@ pub struct PlayerState {
     pub aim: u16,
     pub health: f32,
     pub shield_until: Option<f32>,
+    /// Shared by shields and energy weapons (§B5): every laser shot is a shield
+    /// you are not going to have.
+    pub battery: f32,
     pub inventory: Inventory,
     pub flashlight_on: bool,
     pub alive: bool,
@@ -76,6 +80,7 @@ impl PlayerState {
             aim: 0,
             health: BASE_HEALTH,
             shield_until: None,
+            battery: 0.0,
             inventory: Inventory::new(),
             flashlight_on: false,
             alive: true,
@@ -98,6 +103,21 @@ impl PlayerState {
     /// fresh 20 s, and never a stronger multiplier.
     pub fn apply_shield(&mut self, now: f32) {
         self.shield_until = Some(now + SHIELD_DURATION);
+    }
+
+    /// Add battery, clamped. A pack at 80 gives `BATTERY_MAX`, not 130.
+    pub fn add_battery(&mut self, amount: f32) {
+        self.battery = (self.battery + amount).clamp(0.0, BATTERY_MAX);
+    }
+
+    /// Spend battery if there is enough. Returns false and spends nothing
+    /// otherwise — a partial charge must not fire a partial shot.
+    pub fn spend_battery(&mut self, amount: f32) -> bool {
+        if self.battery + f32::EPSILON < amount {
+            return false;
+        }
+        self.battery = (self.battery - amount).max(0.0);
+        true
     }
 
     pub fn heal(&mut self, amount: f32) {
@@ -127,6 +147,15 @@ impl PlayerState {
         if let Some(t) = self.shield_until {
             if now >= t {
                 self.shield_until = None;
+            } else {
+                // An active shield runs off the battery (§B5). `SHIELD_DURATION`
+                // stays the maximum; the battery is what usually ends it first,
+                // and that is the whole tension — the charge keeping you alive is
+                // the charge your laser wants.
+                self.battery = (self.battery - SHIELD_DRAIN * dt).max(0.0);
+                if self.battery <= 0.0 {
+                    self.shield_until = None;
+                }
             }
         }
     }
@@ -136,8 +165,29 @@ impl PlayerState {
         if !self.alive || self.invulnerable(now) {
             return false;
         }
+        // Energy weapons pierce (§B5). The rule lives here, next to the shield
+        // rule it modifies, and reads the weapon out of the `DamageSource` the
+        // caller already supplies — so there is still exactly one damage path and
+        // no caller has to remember to pass a "this was a laser" flag.
+        let energy = match src {
+            DamageSource::Player { weapon, .. } | DamageSource::SelfInflicted { weapon } => {
+                defs::def(weapon).is_some_and(|w| w.is_energy())
+            }
+            DamageSource::Weather(_) => false,
+        };
         let mult = if self.shield_active(now) {
-            SHIELD_DAMAGE_MULT
+            if energy {
+                // Drains the victim's charge as well as piercing, which cuts the
+                // shield's remaining life directly — that is the payoff, not a
+                // side effect.
+                self.battery = (self.battery - LASER_BATTERY_DRAIN).max(0.0);
+                if self.battery <= 0.0 {
+                    self.shield_until = None;
+                }
+                LASER_SHIELD_MULT
+            } else {
+                SHIELD_DAMAGE_MULT
+            }
         } else {
             1.0
         };
@@ -240,6 +290,10 @@ impl PlayerState {
                 self.apply_shield(now);
                 self.inventory.consume(slot, 1);
             }
+            ItemKind::Battery { amount } => {
+                self.add_battery(amount);
+                self.inventory.consume(slot, 1);
+            }
             ItemKind::Utility(_) => {
                 // The flashlight is a toggle, not a consumable: the stack is
                 // untouched.
@@ -269,10 +323,21 @@ impl PlayerState {
         if stack.count == 0 {
             return Err(UseError::NoAmmo);
         }
-        let cooldown =
-            defs::def(wid).map_or(crate::constants::FIRE_COOLDOWN_DEFAULT, |w| w.cooldown);
+        let wdef = defs::def(wid);
+        // Energy weapons spend battery instead of a stack count (§B5): a laser
+        // with no charge is a paperweight, and the rejection has to happen in the
+        // same place and the same order as the ammo one (`docs/30` §4).
+        let cost = wdef.map_or(0.0, |w| w.energy_cost);
+        if cost > 0.0 && !self.spend_battery(cost) {
+            return Err(UseError::NoAmmo);
+        }
+        let cooldown = wdef.map_or(crate::constants::FIRE_COOLDOWN_DEFAULT, |w| w.cooldown);
         self.fire_ready_at = now + cooldown;
-        self.inventory.consume(slot, 1);
+        // The stack is the weapon itself for an energy weapon, so it is not
+        // consumed — otherwise picking one up would give you six shots of it.
+        if cost <= 0.0 {
+            self.inventory.consume(slot, 1);
+        }
         Ok(wid)
     }
 }
@@ -356,4 +421,184 @@ fn choose_surface_point(map: &Map, living: &[Vec2], rng: &mut ChaCha8Rng) -> Vec
         }
     }
     Vec2::new(map.mask.w as f32 / 2.0, crate::constants::SKY_MARGIN as f32)
+}
+
+#[cfg(test)]
+mod battery_tests {
+    use super::*;
+    use crate::constants::{BATTERY_MAX, BATTERY_PACK_AMOUNT, SHIELD_DRAIN, SIM_DT};
+    use crate::items::registry::BATTERY_PACK;
+    use crate::items::registry::{WEAPON_LASER_PISTOL, WEAPON_SMG};
+    use crate::weapons::explode::EffectKind;
+
+    fn player() -> PlayerState {
+        PlayerState::new(1, Vec2::new(100.0, 100.0), 0)
+    }
+
+    /// A **real** energy weapon. The first version of this used an unregistered
+    /// id, and `def()` returned `None`, so `is_energy()` was false and the pierce
+    /// silently never fired — the test failed for the right reason and told me
+    /// the rule is a no-op for any weapon not in the registry.
+    const ENERGY: WeaponId = WEAPON_LASER_PISTOL;
+
+    fn energy_source() -> DamageSource {
+        DamageSource::Player {
+            id: 9,
+            weapon: ENERGY,
+        }
+    }
+
+    fn ballistic_source() -> DamageSource {
+        DamageSource::Player {
+            id: 9,
+            weapon: WEAPON_SMG,
+        }
+    }
+
+    #[test]
+    fn battery_clamps_at_both_ends() {
+        let mut p = player();
+        p.add_battery(80.0);
+        p.add_battery(BATTERY_PACK_AMOUNT);
+        assert_eq!(p.battery, BATTERY_MAX, "a pack at 80 must not give 130");
+        p.battery = 3.0;
+        assert!(!p.spend_battery(10.0), "spent charge it did not have");
+        assert_eq!(p.battery, 3.0, "a refused spend must cost nothing");
+        assert!(p.spend_battery(3.0));
+        assert_eq!(p.battery, 0.0);
+    }
+
+    #[test]
+    fn a_battery_pack_charges_and_is_consumed() {
+        let mut p = player();
+        p.inventory.add(BATTERY_PACK, 1);
+        p.inventory.select(0);
+        assert!(p.use_item(0, 0.0).is_ok());
+        assert_eq!(p.battery, BATTERY_PACK_AMOUNT);
+        assert!(p.inventory.slot(0).is_none(), "the pack was not consumed");
+    }
+
+    #[test]
+    fn a_full_battery_lets_a_shield_run_its_whole_duration() {
+        let mut p = player();
+        p.add_battery(BATTERY_MAX);
+        p.apply_shield(0.0);
+        let mut t = 0.0;
+        while t < SHIELD_DURATION - SIM_DT {
+            t += SIM_DT;
+            p.tick_stats(t, SIM_DT);
+        }
+        assert!(
+            p.shield_active(t),
+            "the shield died early on a full battery"
+        );
+    }
+
+    /// The early end is the point, not the duration.
+    #[test]
+    fn a_shield_on_ten_charge_dies_at_five_seconds() {
+        let mut p = player();
+        p.add_battery(10.0);
+        p.apply_shield(0.0);
+        let mut t = 0.0;
+        let mut died_at = None;
+        while t < SHIELD_DURATION {
+            t += SIM_DT;
+            p.tick_stats(t, SIM_DT);
+            if died_at.is_none() && !p.shield_active(t) {
+                died_at = Some(t);
+            }
+        }
+        let died = died_at.expect("the shield never ran out of charge");
+        let want = 10.0 / SHIELD_DRAIN;
+        assert!(
+            (died - want).abs() < 0.1,
+            "shield died at {died}, expected about {want}"
+        );
+    }
+
+    #[test]
+    fn energy_pierces_a_shield_and_ballistic_does_not() {
+        // Energy: 0.85x through the shield, and it drains the victim.
+        let mut p = player();
+        p.add_battery(BATTERY_MAX);
+        p.apply_shield(0.0);
+        p.apply_damage(20.0, energy_source(), 5.0);
+        assert!(
+            (p.health - (BASE_HEALTH - 20.0 * LASER_SHIELD_MULT)).abs() < 0.01,
+            "energy did not pierce: health {}",
+            p.health
+        );
+        assert!(
+            (p.battery - (BATTERY_MAX - LASER_BATTERY_DRAIN)).abs() < 0.01,
+            "energy did not drain the victim: battery {}",
+            p.battery
+        );
+
+        // Ballistic: 0.5x, and the battery is untouched. The control that makes
+        // the above mean something — without it, "energy is special" would also
+        // pass for a build where every hit pierces.
+        let mut q = player();
+        q.add_battery(BATTERY_MAX);
+        q.apply_shield(0.0);
+        q.apply_damage(20.0, ballistic_source(), 5.0);
+        assert!(
+            (q.health - (BASE_HEALTH - 20.0 * SHIELD_DAMAGE_MULT)).abs() < 0.01,
+            "ballistic damage was not halved: health {}",
+            q.health
+        );
+        assert_eq!(q.battery, BATTERY_MAX, "a bullet drained the battery");
+    }
+
+    /// The payoff: drain someone's charge and their shield dies with it.
+    #[test]
+    fn draining_a_victims_battery_to_zero_ends_their_shield() {
+        let mut p = player();
+        p.add_battery(LASER_BATTERY_DRAIN * 2.0);
+        p.apply_shield(0.0);
+        assert!(p.shield_active(1.0));
+
+        p.apply_damage(5.0, energy_source(), 1.0);
+        assert!(p.shield_active(1.0), "one hit should not be enough here");
+
+        p.apply_damage(5.0, energy_source(), 1.0);
+        assert_eq!(p.battery, 0.0);
+        assert!(
+            !p.shield_active(1.0),
+            "the shield outlived the charge running it"
+        );
+
+        // And the next hit lands at full strength.
+        let before = p.health;
+        p.apply_damage(10.0, energy_source(), 1.0);
+        assert!(
+            (p.health - (before - 10.0)).abs() < 0.01,
+            "damage after the shield died was still reduced"
+        );
+    }
+
+    #[test]
+    fn weather_never_counts_as_energy() {
+        // Weather has no weapon, so it must take the ordinary shield rule.
+        let mut p = player();
+        p.add_battery(BATTERY_MAX);
+        p.apply_shield(0.0);
+        p.apply_damage(20.0, DamageSource::Weather(EffectKind::ToxicRain), 5.0);
+        assert_eq!(p.battery, BATTERY_MAX, "weather drained the battery");
+        assert!((p.health - (BASE_HEALTH - 20.0 * SHIELD_DAMAGE_MULT)).abs() < 0.01);
+    }
+
+    /// `docs/21` §4 clears the inventory on respawn and says nothing about
+    /// charge. Stated explicitly here so the answer is a decision rather than an
+    /// accident: the battery is **kept**, exactly like the score and unlike the
+    /// items — you respawn with the charge you had, and no weapon to spend it on.
+    #[test]
+    fn respawn_keeps_the_battery_and_clears_the_shield() {
+        let mut p = player();
+        p.add_battery(BATTERY_MAX);
+        p.apply_shield(0.0);
+        p.respawn(Vec2::new(10.0, 10.0), 0.0);
+        assert_eq!(p.battery, BATTERY_MAX, "respawn wiped the charge");
+        assert!(p.shield_until.is_none(), "the shield survived death");
+    }
 }

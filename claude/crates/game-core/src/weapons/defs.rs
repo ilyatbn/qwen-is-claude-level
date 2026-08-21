@@ -13,10 +13,16 @@ use crate::constants::{
     SMG_GRAVITY_SCALE, SMG_RANGE, SMG_SHOTS, SMG_SPREAD, SMG_WIND_SCALE,
 };
 use crate::constants::{
+    LASER_PISTOL_BLAST_RADIUS, LASER_PISTOL_COOLDOWN, LASER_PISTOL_DAMAGE, LASER_PISTOL_ENERGY,
+    LASER_PISTOL_RANGE, LASER_PISTOL_SPREAD, LASER_SMG_BLAST_RADIUS, LASER_SMG_COOLDOWN,
+    LASER_SMG_DAMAGE, LASER_SMG_ENERGY, LASER_SMG_RANGE, LASER_SMG_SPREAD,
+};
+use crate::constants::{
     METEOR_CARVE_R, METEOR_DAMAGE, METEOR_FRAG_CARVE_R, METEOR_FRAG_DAMAGE, METEOR_SPEED,
 };
 use crate::items::registry::{
-    WeaponId, WEAPON_BAZOOKA, WEAPON_GRENADE, WEAPON_METEOR, WEAPON_METEOR_FRAG, WEAPON_SMG,
+    WeaponId, WEAPON_BAZOOKA, WEAPON_GRENADE, WEAPON_LASER_PISTOL, WEAPON_LASER_SMG, WEAPON_METEOR,
+    WEAPON_METEOR_FRAG, WEAPON_SMG,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -71,6 +77,20 @@ pub struct WeaponDef {
     pub muzzle_speed: f32,
     pub gravity_scale: f32,
     pub wind_scale: f32,
+    /// Battery spent per shot (§B5). **Zero means ballistic.**
+    ///
+    /// One field drives three behaviours, which is why it is a cost rather than
+    /// an `is_energy` flag: it is the ammo an energy weapon spends, the check
+    /// `try_fire` makes instead of a stack count, and the thing that makes a hit
+    /// pierce a shield. Three separate flags could disagree; a cost cannot.
+    pub energy_cost: f32,
+}
+
+impl WeaponDef {
+    /// Energy weapons pierce shields and drain the victim's battery (§B5).
+    pub fn is_energy(&self) -> bool {
+        self.energy_cost > 0.0
+    }
 }
 
 pub static WEAPONS: &[WeaponDef] = &[
@@ -90,6 +110,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         muzzle_speed: BAZOOKA_MUZZLE_SPEED,
         gravity_scale: BAZOOKA_GRAVITY_SCALE,
         wind_scale: BAZOOKA_WIND_SCALE,
+        energy_cost: 0.0,
     },
     WeaponDef {
         id: WEAPON_GRENADE,
@@ -107,6 +128,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         muzzle_speed: GRENADE_MUZZLE_SPEED,
         gravity_scale: GRENADE_GRAVITY_SCALE,
         wind_scale: GRENADE_WIND_SCALE,
+        energy_cost: 0.0,
     },
     WeaponDef {
         id: WEAPON_SMG,
@@ -122,6 +144,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         muzzle_speed: 0.0,
         gravity_scale: SMG_GRAVITY_SCALE,
         wind_scale: SMG_WIND_SCALE,
+        energy_cost: 0.0,
     },
     // --- weather ordnance (M5) ---
     //
@@ -144,6 +167,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         muzzle_speed: METEOR_SPEED,
         gravity_scale: 1.0,
         wind_scale: 0.0,
+        energy_cost: 0.0,
     },
     WeaponDef {
         id: WEAPON_METEOR_FRAG,
@@ -161,11 +185,54 @@ pub static WEAPONS: &[WeaponDef] = &[
         muzzle_speed: 0.0,
         gravity_scale: 1.0,
         wind_scale: 0.0,
+        energy_cost: 0.0,
+    },
+    // Energy weapons (§B5). No ammo count: `energy_cost` is what they spend, and
+    // a laser with no charge is a paperweight.
+    WeaponDef {
+        id: WEAPON_LASER_PISTOL,
+        key: "laser_pistol",
+        delivery: Delivery::Hitscan {
+            shots: 1,
+            spread: LASER_PISTOL_SPREAD,
+        },
+        damage: LASER_PISTOL_DAMAGE,
+        blast_radius: LASER_PISTOL_BLAST_RADIUS,
+        range: LASER_PISTOL_RANGE,
+        cooldown: LASER_PISTOL_COOLDOWN,
+        muzzle_speed: 0.0,
+        gravity_scale: 0.0,
+        wind_scale: 0.0,
+        energy_cost: LASER_PISTOL_ENERGY,
+    },
+    WeaponDef {
+        id: WEAPON_LASER_SMG,
+        key: "laser_smg",
+        delivery: Delivery::Hitscan {
+            shots: 1,
+            spread: LASER_SMG_SPREAD,
+        },
+        damage: LASER_SMG_DAMAGE,
+        blast_radius: LASER_SMG_BLAST_RADIUS,
+        range: LASER_SMG_RANGE,
+        cooldown: LASER_SMG_COOLDOWN,
+        muzzle_speed: 0.0,
+        gravity_scale: 0.0,
+        wind_scale: 0.0,
+        energy_cost: LASER_SMG_ENERGY,
     },
 ];
 
+/// Look a weapon up by id.
+///
+/// **This indexes by array position**, which silently assumes
+/// `WEAPONS[i].id == WeaponId(i)`. Inserting a def anywhere but the end
+/// therefore remaps every weapon after it — and the symptom is not a crash, it
+/// is a laser resolving as a bazooka. `weapon_ids_match_their_positions` is what
+/// makes that a red test rather than a mystery; it exists because inserting two
+/// energy weapons at the front of this array is exactly what happened.
 pub fn def(id: WeaponId) -> Option<&'static WeaponDef> {
-    WEAPONS.get(id.0 as usize)
+    WEAPONS.get(id.0 as usize).filter(|w| w.id == id)
 }
 
 pub fn by_key(key: &str) -> Option<&'static WeaponDef> {
@@ -198,6 +265,21 @@ mod tests {
         assert_eq!(keys.len(), WEAPONS.len());
         assert!(def(WeaponId(99)).is_none());
         assert_eq!(by_key("smg").map(|w| w.id), Some(WEAPON_SMG));
+    }
+
+    /// `def()` indexes by position, so the table's order *is* the id mapping.
+    #[test]
+    fn weapon_ids_match_their_positions() {
+        for (i, w) in WEAPONS.iter().enumerate() {
+            assert_eq!(
+                w.id,
+                WeaponId(i as u16),
+                "{} sits at position {i} but claims id {:?} — every lookup after \
+                 it resolves to the wrong weapon",
+                w.key,
+                w.id
+            );
+        }
     }
 
     #[test]

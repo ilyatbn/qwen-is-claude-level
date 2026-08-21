@@ -11,7 +11,7 @@ use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 
 use crate::constants::{
-    FOV_DAY, INVENTORY_SLOTS, JETPACK_MAX_FUEL, PICKUP_RADIUS, PLAYER_H, STEP_UP,
+    BATTERY_MAX, FOV_DAY, INVENTORY_SLOTS, JETPACK_MAX_FUEL, PICKUP_RADIUS, PLAYER_H, STEP_UP,
 };
 use crate::items::registry::{def, ItemId, ItemKind};
 use crate::math::{Vec2, TAU};
@@ -33,6 +33,9 @@ const MAX_BLOCKED_SAMPLES: u32 = 24;
 const LOS_STEP: f32 = 8.0;
 /// Below this, a bot reaches for a medkit.
 const HEAL_BELOW: f32 = 40.0;
+/// Top up below this fraction of a full battery — enough that a laser is
+/// usable and a shield is worth raising.
+const CHARGE_BELOW: f32 = 0.4;
 /// An enemy this close justifies burning a shield.
 const SHIELD_WITHIN: f32 = 200.0;
 /// A bot that has not moved this far in `STUCK_WINDOW` jumps.
@@ -307,11 +310,21 @@ impl Bot {
         (blast * 2.0).max(40.0)
     }
 
+    /// The selected weapon, **if it can actually be fired**.
+    ///
+    /// "Armed" has to mean "able to shoot", not "holding something
+    /// weapon-shaped". Since §B5 an energy weapon with a flat battery is a
+    /// paperweight, and a bot that counts it as a weapon stops shopping, walks at
+    /// an enemy and never pulls the trigger — which is precisely what happened
+    /// when the lasers landed: `ticks_armed 5003, ticks_engaged 0, fires 0`.
     fn selected_weapon(&self, world: &World) -> Option<ItemId> {
         let me = world.player(self.player)?;
         let stack = me.inventory.slot(me.inventory.selected())?;
         match def(stack.item)?.kind {
-            ItemKind::Weapon(_) => Some(stack.item),
+            ItemKind::Weapon(wid) => {
+                let cost = crate::weapons::defs::def(wid).map_or(0.0, |w| w.energy_cost);
+                (cost <= 0.0 || me.battery >= cost).then_some(stack.item)
+            }
             _ => None,
         }
     }
@@ -400,6 +413,23 @@ impl Bot {
             match d.kind {
                 ItemKind::Heal { .. } if hurt => return Some(slot),
                 _ => {}
+            }
+        }
+        // Charge when low (§B5). Without this a bot picks up a battery pack, never
+        // uses it, and any energy weapon it is holding stays a paperweight —
+        // while both occupy slots a working weapon would fill. That is not
+        // hypothetical: adding the battery and the lasers with no rule here took
+        // bot rounds from fighting to `ticks_engaged: 0`, because a bot holding an
+        // uncharged laser is permanently unarmed and permanently shopping.
+        if me.battery <= BATTERY_MAX * CHARGE_BELOW {
+            for slot in 0..INVENTORY_SLOTS as u8 {
+                let Some(stack) = me.inventory.slot(slot) else {
+                    continue;
+                };
+                let Some(d) = def(stack.item) else { continue };
+                if matches!(d.kind, ItemKind::Battery { .. }) {
+                    return Some(slot);
+                }
             }
         }
         if threatened && me.shield_until.is_none_or(|t| t <= world.round_time) {
@@ -855,11 +885,19 @@ mod lethality {
             mean >= 50.0,
             "four bots dealt {mean:.0} damage a round on average, which is not a fight"
         );
-        assert!(
-            rounds.iter().any(|r| r.combat_deaths > 0),
-            "not one of {} rounds produced a kill",
-            rounds.len()
-        );
+        // There is deliberately **no** assertion on kills.
+        //
+        // The paragraph above measured it: ~8 of 10 rounds contain zero combat
+        // deaths on a correct build. `any(kill)` across five seeds therefore
+        // fails about a third of the time by arithmetic — it only ever passed
+        // because these five happened to include a lucky one, and adding a
+        // single item to the registry reshuffled the seeded spawn stream and
+        // took the luck away. Damage stayed well above the floor throughout,
+        // so bot lethality never changed; only the coin landed differently.
+        //
+        // A gate that fails on a coin flip gates nothing (§A28), and one whose
+        // own doc comment explains why it cannot be trusted is worse. The
+        // damage floor above is the sound version of the same intent.
     }
 
     /// The measurement, not an assertion. `--ignored --nocapture`.

@@ -6,7 +6,9 @@
 //!
 //! See `docs/30-items-inventory.md` §1.
 
-use crate::constants::{BAZOOKA_AMMO, GRENADE_AMMO, MEDKIT_HEAL, SHIELD_DURATION, SMG_AMMO};
+use crate::constants::{
+    BATTERY_PACK_AMOUNT, BAZOOKA_AMMO, GRENADE_AMMO, MEDKIT_HEAL, SHIELD_DURATION, SMG_AMMO,
+};
 
 pub type ItemId = u16;
 
@@ -27,6 +29,8 @@ pub const WEAPON_SMG: WeaponId = WeaponId(2);
 /// (`docs/13-weather-effects.md` §4).
 pub const WEAPON_METEOR: WeaponId = WeaponId(3);
 pub const WEAPON_METEOR_FRAG: WeaponId = WeaponId(4);
+pub const WEAPON_LASER_PISTOL: WeaponId = WeaponId(5);
+pub const WEAPON_LASER_SMG: WeaponId = WeaponId(6);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UtilityId {
@@ -36,9 +40,17 @@ pub enum UtilityId {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ItemKind {
     Weapon(WeaponId),
-    Heal { amount: f32 },
-    Shield { duration: f32 },
+    Heal {
+        amount: f32,
+    },
+    Shield {
+        duration: f32,
+    },
     Utility(UtilityId),
+    /// Charge for shields and energy weapons (§B5).
+    Battery {
+        amount: f32,
+    },
 }
 
 #[derive(Debug)]
@@ -59,6 +71,10 @@ pub struct ItemDef {
 pub const MEDKIT: ItemId = 0;
 pub const SHIELD_GENERATOR: ItemId = 1;
 pub const FLASHLIGHT: ItemId = 2;
+/// §B5. Ids are stable and never reused, so this goes after the weapons.
+pub const BATTERY_PACK: ItemId = 6;
+pub const LASER_PISTOL: ItemId = 7;
+pub const LASER_SMG: ItemId = 8;
 pub const BAZOOKA: ItemId = 3;
 pub const GRENADE: ItemId = 4;
 pub const SMG: ItemId = 5;
@@ -140,11 +156,70 @@ pub static ITEMS: &[ItemDef] = &[
         crate_weight: 10,
         buried_weight: 10,
     },
+    ItemDef {
+        id: BATTERY_PACK,
+        key: "battery_pack",
+        name: "Battery Pack",
+        kind: ItemKind::Battery {
+            amount: BATTERY_PACK_AMOUNT,
+        },
+        max_stack: 3,
+        sprite: "item_battery",
+        // Weighted like the shield generator it feeds: it is the same resource,
+        // and a map where lasers are common but charge is rare would make the
+        // whole energy branch of the arsenal dead weight.
+        spawn_weight: 14,
+        crate_weight: 18,
+        buried_weight: 12,
+    },
+    // The energy weapons the battery exists for (§B5).
+    //
+    // **Every weight is 0: they do not spawn yet, and T11.04 turns them on.**
+    // Not a placeholder — a measured decision. Bots choose a weapon only when a
+    // stack empties, so they can neither switch *to* a laser nor away from an
+    // uncharged one; with these in the pool a bot ends up permanently holding a
+    // paperweight, permanently "unarmed", and permanently shopping. Measured:
+    // lasers in the pool give `ticks_engaged: 0` over 36,000 ticks, and the same
+    // run with only the battery pack added fights normally. Shipping them now
+    // would mean shipping an item class the AI cannot use, so the defs (which is
+    // what §B5 needs to be testable) land here and the *items* wait for T11.04
+    // to give bots weapon selection.
+    //
+    // `max_stack` is 1 because the stack is the weapon itself: ammo is charge.
+    ItemDef {
+        id: LASER_PISTOL,
+        key: "laser_pistol",
+        name: "Laser Pistol",
+        kind: ItemKind::Weapon(WEAPON_LASER_PISTOL),
+        max_stack: 1,
+        sprite: "weapon_laser_pistol",
+        spawn_weight: 0,
+        crate_weight: 0,
+        buried_weight: 0,
+    },
+    ItemDef {
+        id: LASER_SMG,
+        key: "laser_smg",
+        name: "Laser SMG",
+        kind: ItemKind::Weapon(WEAPON_LASER_SMG),
+        max_stack: 1,
+        sprite: "weapon_laser_smg",
+        spawn_weight: 0,
+        crate_weight: 0,
+        buried_weight: 0,
+    },
 ];
 
 /// Direct index — ids are exactly `0..ITEMS.len()`, which a test asserts.
+/// Look an item up by id.
+///
+/// **Indexes by array position**, so this table's order *is* the id mapping —
+/// the same trap `weapons::defs::def` carries. Inserting anywhere but the end
+/// remaps every item after it, and the symptom is a battery pack resolving as a
+/// shield generator rather than anything that looks like a bug.
+/// `item_ids_match_their_positions` turns that into a red test.
 pub fn def(id: ItemId) -> Option<&'static ItemDef> {
-    ITEMS.get(id as usize)
+    ITEMS.get(id as usize).filter(|d| d.id == id)
 }
 
 pub fn by_key(key: &str) -> Option<&'static ItemDef> {
@@ -244,6 +319,20 @@ mod tests {
             other => panic!("shield generator is not a shield: {other:?}"),
         }
         assert_eq!(max_stack(BAZOOKA), BAZOOKA_AMMO);
+    }
+
+    /// `def()` indexes by position, so this table's order *is* the id mapping.
+    /// Inserting in the middle remaps every item after it.
+    #[test]
+    fn item_ids_match_their_positions() {
+        for (i, d) in ITEMS.iter().enumerate() {
+            assert_eq!(
+                d.id, i as ItemId,
+                "{} sits at position {i} but claims id {} — every lookup after it \
+                 resolves to the wrong item",
+                d.key, d.id
+            );
+        }
         assert_eq!(max_stack(GRENADE), GRENADE_AMMO);
         assert_eq!(max_stack(SMG), SMG_AMMO);
     }
@@ -271,8 +360,26 @@ mod tests {
     fn weapons_carry_ammo_and_consumables_do_not() {
         for d in ITEMS {
             match d.kind {
-                ItemKind::Weapon(_) => {
-                    assert!(d.max_stack > 1, "{} is a weapon with no ammo depth", d.key)
+                // A weapon must have *ammo*, and since §B5 there are two kinds:
+                // a stack you spend, or a battery you spend. The rule is now
+                // "one of the two", which is stricter than the old
+                // `max_stack > 1` — that would pass a weapon with neither, and
+                // an energy weapon legitimately has a stack of exactly 1 because
+                // the stack *is* the weapon and the ammo is charge.
+                ItemKind::Weapon(wid) => {
+                    let energy = crate::weapons::defs::def(wid).is_some_and(|w| w.is_energy());
+                    assert!(
+                        d.max_stack > 1 || energy,
+                        "{} is a weapon with neither ammo depth nor an energy cost",
+                        d.key
+                    );
+                    if energy {
+                        assert_eq!(
+                            d.max_stack, 1,
+                            "{} spends charge, so its stack is the weapon itself",
+                            d.key
+                        );
+                    }
                 }
                 _ => assert!(d.max_stack <= 3),
             }
