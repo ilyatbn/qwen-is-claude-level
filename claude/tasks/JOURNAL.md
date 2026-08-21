@@ -3190,3 +3190,36 @@ Notes: THE TASK FILE'S HYPOTHESIS WAS WRONG AND I DISPROVED IT FIRST. Two
        orphaned 32 busy loops permanently and pushed the box to load 31.5, which
        then contaminated the very next measurement.
 Left for later: T11.14, T11.13 — not started.
+
+## T11.14 — Bots walk into their own fire — IN PROGRESS (mechanism works, criterion not met)
+Files: crates/game-core/src/bots/mod.rs
+Verified: `cargo test -p game-core --lib bots` — 18 passed. Falsified both halves
+       at the live binding site: disabling the movement override fails only
+       `a_bot_steps_out_of_fire`; disabling the throw guard fails only
+       `a_bot_does_not_throw_a_molotov_at_its_own_feet`. Both controls
+       (`..._does_not_walk_away`, `..._does_throw_from_a_safe_distance`) stay
+       green in each case, so neither absence passes for a bot that never moves
+       or never throws.
+Notes: Two gaps, both perception not mechanics: `hazard_at` reads the existing
+       `BurnField` (no second hazard registry), and only within FOV_DAY — a bot
+       reacting to fire it cannot see would be cheating (§A5).
+       `zone_reach` guards on radius+scatter, because `blast_radius` is 0 for
+       exactly the weapons that needed a guard: a rule written against
+       blast_radius never fires for a Burst::Zone weapon.
+       SELF-HARM FELL AS INTENDED, AND THE STATED ACCEPTANCE CRITERION IS NOT
+       MET. 20 weapons x 8 seeds x 4 bots x 30 s:
+         molotov  self 1.68 -> 0.95 (-43%), dealt 0.46 -> 0.14
+         toxic    self 1.79 -> 0.60 (-66%), dealt 0.60 -> 0.05
+         flame    self 0.28 -> 0.32,        dealt 0.37 -> 0.36
+       "Self-damage below damage dealt" is still false, and the RATIO got worse
+       (molotov 0.27 -> 0.15). Fires are unchanged (71 -> 73), so bots throw as
+       often and land less.
+       WHY, AND IT MAY BE THE INSTRUMENT AGAIN: both sides now avoid the fire.
+       A zone weapon that successfully denies space damages nobody, and
+       damage-per-bot-second cannot see denied space — the same blind spot that
+       forced smoke to be excluded from the median in T11.09. The harness also
+       arms each bot with ONE weapon all round, so a molotov-only bot that must
+       hold >94 px and flees any fire has no follow-up. Before claiming the fix
+       works or the weapons are bad, the metric needs to measure area denial
+       (time an enemy is kept off ground, or forced repositioning).
+Left for later: decide the metric, then re-judge. T11.13 not started.

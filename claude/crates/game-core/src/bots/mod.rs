@@ -39,6 +39,12 @@ const CHARGE_BELOW: f32 = 0.4;
 /// An enemy this close justifies burning a shield.
 const SHIELD_WITHIN: f32 = 200.0;
 /// A bot that has not moved this far in `STUCK_WINDOW` jumps.
+/// Margin around a burning patch a bot treats as unsafe, on top of its radius.
+/// One player-width, so a bot standing at the rim is already leaving.
+const HAZARD_CLEARANCE: f32 = 20.0;
+/// How far ahead a bot looks before stepping into fire — about a walk-second.
+const HAZARD_LOOKAHEAD: f32 = 48.0;
+
 const STUCK_PX: f32 = 6.0;
 const STUCK_WINDOW: f32 = 0.5;
 
@@ -197,6 +203,34 @@ impl Bot {
             };
         }
 
+        // Standing in fire beats reaching the target. Overriding the direction
+        // rather than adding to it matters: a bot that keeps its original
+        // buttons set walks *through* the patch it is trying to leave, and the
+        // hazards that hurt bots most are the ones they are standing on.
+        if let Some(h) = self.hazard_at(world, pos, HAZARD_CLEARANCE) {
+            buttons &= !(button::LEFT | button::RIGHT);
+            buttons |= if pos.x >= h.x {
+                button::RIGHT
+            } else {
+                button::LEFT
+            };
+        } else if buttons & (button::LEFT | button::RIGHT) != 0 {
+            // Not in one yet — do not step into one. Probe one walk-second
+            // ahead in the direction already chosen.
+            let ahead = Vec2::new(
+                pos.x
+                    + if buttons & button::RIGHT != 0 {
+                        HAZARD_LOOKAHEAD
+                    } else {
+                        -HAZARD_LOOKAHEAD
+                    },
+                pos.y,
+            );
+            if self.hazard_at(world, ahead, 0.0).is_some() {
+                buttons &= !(button::LEFT | button::RIGHT);
+            }
+        }
+
         // Stuck against a wall: pressing a direction and going nowhere.
         if (pos.x - self.last_x).abs() < STUCK_PX && buttons & (button::LEFT | button::RIGHT) != 0 {
             self.still_for += dt;
@@ -312,6 +346,31 @@ impl Bot {
         }
     }
 
+    /// The nearest damaging ground hazard whose reach covers `at`, if any.
+    ///
+    /// Bots had a guard for a blast *radius* and none for a hazard that
+    /// **lingers**, so they threw a molotov and walked into the fire. T11.09
+    /// measured the result: molotov 0.46 damage dealt against 1.68 self, toxic
+    /// 0.60 against 1.79 — three times more harm to their user than to anyone
+    /// else. That is a perception gap, not a weapon-balance one, which is why
+    /// widening the flamethrower's range measured *worse* and was reverted.
+    ///
+    /// Only hazards within `FOV_DAY` count. A bot reacting to fire it cannot see
+    /// would be cheating (§A5); a human sees the fire they are standing in.
+    fn hazard_at(&self, world: &World, at: Vec2, margin: f32) -> Option<Vec2> {
+        let mut best: Option<(f32, Vec2)> = None;
+        for p in world.burn.patches() {
+            let d = (p.pos - at).len();
+            if d > FOV_DAY {
+                continue; // out of sight: not knowable, so not usable
+            }
+            if d <= p.radius + margin && best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, p.pos));
+            }
+        }
+        best.map(|(_, pos)| pos)
+    }
+
     /// How close to close. Never inside the blast guard, or the bot arrives at a
     /// range where it has forbidden itself to fire.
     fn stand_off(&self, world: &World) -> f32 {
@@ -375,6 +434,15 @@ impl Bot {
         };
 
         let dist = (target - pos).len();
+        // A weapon that leaves a zone is dangerous well past its blast radius:
+        // the fire outlives the explosion and the thrower walks into it. Guard
+        // on the zone's own reach, not on `blast_radius`, which is 0 for these.
+        if let Some(reach) = zone_reach(w) {
+            if dist < reach + HAZARD_CLEARANCE {
+                self.stats.rej_blast_guard += 1;
+                return false;
+            }
+        }
         // Never fire at something inside our own blast radius: a bot that
         // rockets its own feet is not a difficulty setting, it is a bug that
         // looks like one.
@@ -513,11 +581,25 @@ impl Bot {
     }
 }
 
+/// The radius a `Burst::Zone` weapon actually denies, or `None` if it leaves
+/// nothing behind.
+///
+/// `blast_radius` is 0 for these — the zone *is* the weapon — so a guard written
+/// against `blast_radius` never fires for exactly the weapons that need one.
+fn zone_reach(w: &crate::weapons::defs::WeaponDef) -> Option<f32> {
+    match w.burst {
+        crate::weapons::defs::Burst::Zone {
+            radius, scatter, ..
+        } => Some(radius + scatter),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::constants::{MapScale, SIM_DT};
-    use crate::items::registry::{BAZOOKA, MEDKIT};
+    use crate::items::registry::{BAZOOKA, MEDKIT, MOLOTOV};
     use crate::world::{give, RoundPhase, World};
 
     const SEED: u64 = 4242;
@@ -590,6 +672,116 @@ mod tests {
         assert!(
             same < total,
             "both bots produced identical aim on every one of {total} ticks"
+        );
+    }
+
+    // --- T11.14: bots and lingering hazards ------------------------------
+
+    /// The control for `a_bot_steps_out_of_fire`.
+    ///
+    /// "The bot moved away from the patch" also passes for a bot that wanders,
+    /// or for one that was walking that way anyway. Same geometry, no fire.
+    #[test]
+    fn a_bot_with_no_fire_under_it_does_not_walk_away() {
+        let mut w = world_with(&[1, 2]);
+        let at = clear_line(&w);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = at;
+        }
+        // Target to the RIGHT, so "walk right" is the wanted behaviour.
+        if let Some(p) = w.player_mut(2) {
+            p.body.pos = Vec2::new(at.x + 300.0, at.y);
+        }
+        let mut b = Bot::new(1, SEED, 0, 1.0);
+        let inp = b.think(&w, 0.0, SIM_DT);
+        assert!(
+            inp.buttons & button::RIGHT != 0 && inp.buttons & button::LEFT == 0,
+            "with no hazard the bot should close on a target 300 px right"
+        );
+    }
+
+    /// Standing in fire beats reaching the target.
+    #[test]
+    fn a_bot_steps_out_of_fire() {
+        let mut w = world_with(&[1, 2]);
+        let at = clear_line(&w);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = at;
+        }
+        if let Some(p) = w.player_mut(2) {
+            p.body.pos = Vec2::new(at.x + 300.0, at.y);
+        }
+        // Fire slightly to the RIGHT of the bot — the same side as the target,
+        // so the target's pull and the hazard's push disagree.
+        w.burn.light(
+            Vec2::new(at.x + 10.0, at.y),
+            0.0,
+            crate::weapons::explode::DamageSource::Weather(crate::effects::EffectKind::LavaBurst),
+        );
+        let mut b = Bot::new(1, SEED, 0, 1.0);
+        let inp = b.think(&w, 0.0, SIM_DT);
+        assert!(
+            inp.buttons & button::LEFT != 0,
+            "stood in fire at +10 px and did not move away from it"
+        );
+        assert!(
+            inp.buttons & button::RIGHT == 0,
+            "kept walking toward the target through the fire it is standing in"
+        );
+    }
+
+    /// A zone weapon is dangerous well past its blast radius, which is 0.
+    #[test]
+    fn a_bot_does_not_throw_a_molotov_at_its_own_feet() {
+        let mut w = world_with(&[1, 2]);
+        give(&mut w, 1, MOLOTOV, 2);
+        let at = clear_line(&w);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = at;
+        }
+        // Well inside the zone's reach (radius + scatter).
+        if let Some(p) = w.player_mut(2) {
+            p.body.pos = Vec2::new(at.x + 30.0, at.y);
+        }
+        let mut b = Bot::new(1, SEED, 0, 1.0);
+        let mut fired = false;
+        for t in 0..60 {
+            if b.think(&w, t as f32 * SIM_DT, SIM_DT).buttons & button::FIRE != 0 {
+                fired = true;
+                break;
+            }
+        }
+        assert!(
+            !fired,
+            "threw a molotov at a target 30 px away, inside its own zone: {:?}",
+            b.stats()
+        );
+    }
+
+    /// The presence beside that absence: far enough away, it does throw.
+    #[test]
+    fn a_bot_does_throw_a_molotov_from_a_safe_distance() {
+        let mut w = world_with(&[1, 2]);
+        give(&mut w, 1, MOLOTOV, 2);
+        let at = clear_line(&w);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = at;
+        }
+        if let Some(p) = w.player_mut(2) {
+            p.body.pos = Vec2::new(at.x + 260.0, at.y);
+        }
+        let mut b = Bot::new(1, SEED, 0, 1.0);
+        let mut fired = false;
+        for t in 0..120 {
+            if b.think(&w, t as f32 * SIM_DT, SIM_DT).buttons & button::FIRE != 0 {
+                fired = true;
+                break;
+            }
+        }
+        assert!(
+            fired,
+            "never threw a molotov at a target 260 px away: {:?}",
+            b.stats()
         );
     }
 
