@@ -29,3 +29,4 @@ shots/
 # Vendored art: 15MB+ against a 12MB budget (docs/70-amendments-v2.md A29).
 # scripts/fetch-assets.sh restores it; assets/atlas/ is what ships.
 assets/vendor/
+.run/

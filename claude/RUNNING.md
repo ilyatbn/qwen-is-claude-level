@@ -4,6 +4,29 @@ Everything below assumes you have just cloned the repo and have never seen it.
 
 ---
 
+## 0. The short version
+
+```sh
+make            # what the targets are
+make start      # server on :3000, client dev server, prints the URL
+make stop       # stops both, killing the whole process group
+make test       # the full gate
+```
+
+`make stop` kills the **process group**, not the direct child. `vite`,
+`npm run dev` and `cargo run` all fork the process that actually holds the port,
+so killing the child leaves an orphan on :3000 or :5174. Ten of those once
+accumulated on this machine and were blamed for three sessions of "flaky test"
+(`docs/71-amendments-v3.md` §B23). `make status` shows which pid holds each port.
+
+Do **not** run `make test` while `make start` is up — a loaded box turns every
+wall-clock assertion in the browser suite into a coin flip, which is the same
+finding.
+
+Everything below is the same thing done by hand.
+
+---
+
 ## 1. The fastest way to see it
 
 You do **not** need a server, Docker, or any downloaded art. The client runs
