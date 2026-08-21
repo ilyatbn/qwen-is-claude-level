@@ -79,10 +79,23 @@ export function assertChanged(before, after, { label, control, minDelta = 8 } = 
   }
   const d = colourDelta(before, after)
   const c = colourDelta(control.before, control.after)
-  if (d < minDelta) {
+  // The digest is part of the DECISION, not just the message. It used to be
+  // computed, self-tested, and then ignored — `assertChanged` decided on the mean
+  // alone while its own failure text printed "Same digest: false". A harness that
+  // advertises a capability in a comment, proves it in a self-test and leaves it
+  // out of the branch is the exact shape of bug this harness exists to catch.
+  const rearranged = before.digest !== after.digest
+  if (d < minDelta && !rearranged) {
     throw new Error(
       `${label}: expected the region to change, but it moved only ${d.toFixed(1)} ` +
-        `(threshold ${minDelta}). Same digest: ${before.digest === after.digest}`,
+        `(threshold ${minDelta}) and the digest is identical — nothing moved at all`,
+    )
+  }
+  if (d < minDelta) {
+    throw new Error(
+      `${label}: the mean moved only ${d.toFixed(1)} (threshold ${minDelta}), though ` +
+        `the pixels did rearrange. Too subtle to call a change — sample where the ` +
+        `change is (§A15), or lower the threshold deliberately`,
     )
   }
   if (c >= minDelta) {

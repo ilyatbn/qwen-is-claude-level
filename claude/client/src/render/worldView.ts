@@ -28,6 +28,7 @@ import { makeBackTexture, makeEdgeTexture, makeFillTexture } from './procTexture
 import { DecorationLayer } from './decorations'
 import { fromMeta } from './decorations-math'
 import { OrdnanceLayer } from './ordnance'
+import { WeatherLayer, type VentView } from './weather'
 import { KIND_BY_WEAPON_KEY, WEAPON_KEYS, type ProjectileKind } from './ordnance-state'
 
 export interface WorldViewTimings {
@@ -46,6 +47,8 @@ export class WorldView {
    * projectiles in it without opting in.
    */
   readonly ordnance: OrdnanceLayer
+  /** Rain, embers and burning ground. Shared, so both scenes show the weather. */
+  readonly weather: WeatherLayer
   readonly timings: WorldViewTimings = { buildAllMs: 0, lastRebakeMs: 0 }
 
   private readonly backdrop: Backdrop
@@ -103,6 +106,7 @@ export class WorldView {
     this.decorations.build(fromMeta(core.meta.decorations), (x, y) => core.solidAt(x, y))
 
     this.ordnance = new OrdnanceLayer(scene)
+    this.weather = new WeatherLayer(scene)
     this.weaponKeys = weaponKeys
   }
 
@@ -188,9 +192,15 @@ export class WorldView {
     }
   }
 
-  /** How many projectiles are actually drawn. For counting at both ends. */
+  /**
+   * How many projectiles the **layer** holds. For counting at both ends.
+   *
+   * Deliberately not `this.tracked.size`: that is a set this class fills in the
+   * same loop, so it reports intent rather than effect (§A15) — if the layer ever
+   * failed to take one, the counter would still say it had. Ask the layer.
+   */
   get drawnProjectiles(): number {
-    return this.tracked.size
+    return this.ordnance.state.projectiles.size
   }
 
   /**
@@ -209,8 +219,16 @@ export class WorldView {
   }
 
   /** Re-bake the chunks a carve dirtied, within the per-frame budget. */
-  update(near: { x: number; y: number }, dt = 0): void {
+  update(
+    near: { x: number; y: number },
+    dt = 0,
+    weather?: { toxicActive: boolean; vents: VentView[]; fallScale: number },
+  ): void {
     if (dt > 0) this.ordnance.update(dt)
+    if (dt > 0 && weather) {
+      this.weather.setToxic(weather.toxicActive)
+      this.weather.update(dt, weather.vents, weather.fallScale)
+    }
     this.drainDirty()
     const pendingBefore = this.terrain.stats.pending
     const t0 = performance.now()
@@ -228,6 +246,7 @@ export class WorldView {
 
   destroy(): void {
     this.tracked.clear()
+    this.weather.destroy()
     this.ordnance.destroy()
     this.decorations.destroy()
     this.terrain.destroy()

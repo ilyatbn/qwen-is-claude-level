@@ -350,6 +350,37 @@ if (!hud.visible) fail('F3 did not show the debug HUD')
   if (!pinged) fail('rtt is not being measured — no pong_rtt was ever received')
   console.log(`  debug HUD: ${snaps.toFixed(1)} snapshots/s, ${inputs.toFixed(1)} inputs/s`)
 }
+// Layer parity for the scene that was actually broken (§C1).
+//
+// `terrain-render` asserts the sandbox's world layers, which is the scene that
+// always worked. GameScene needs a live server to build a world, so this is the
+// only check that can see it — and this is where the divergence that caused §C0
+// would show up first.
+//
+// Measured, not reasoned from the DEPTH table — my first version of this listed
+// nine depths and the game builds twelve. Guessing a layer set and calling the
+// difference a regression is how a fixture reports working code as broken.
+//   -30,-29,-28 sky   0 terrain   10 decorations   11 tombstones
+//   20 world items    30 actors    39 weather vignette   40 particles
+//   45 ordnance fx    50 lightmap
+// 38 is the sandbox's own hazard graphics and is deliberately absent here: it is
+// scene furniture, not a world layer, which is why the two lists differ by it.
+{
+  const GAME_LAYERS = [-30, -29, -28, 0, 10, 11, 20, 30, 39, 40, 45, 50]
+  const depths = await a.page.evaluate('window.__game.sceneDepths()')
+  if (!Array.isArray(depths) || depths.length === 0) {
+    fail('GameScene.sceneDepths() returned nothing — this assertion could not fail')
+  }
+  if (depths.join(',') !== GAME_LAYERS.join(',')) {
+    fail(
+      `the game builds world layers [${depths.join(',')}], expected ` +
+        `[${GAME_LAYERS.join(',')}] — a layer added to one scene and not the shared ` +
+        'stack is §C0 starting again',
+    )
+  }
+  console.log(`  layer parity: game builds [${depths.join(',')}]`)
+}
+
 await a.page.screenshot({ path: join(shots, 'm6-debug-hud.png') })
 await a.page.keyboard.press('F3')
 
