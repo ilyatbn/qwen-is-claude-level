@@ -704,3 +704,78 @@ inferred.
 `smoke` reads 0.00 and is excluded from the median and the outlier check, because
 §B7 says it is "the only one with no damage at all". Judging it against a damage
 median reports a weapon working exactly as specified as the worst in the game.
+
+## B23 — A control that cannot affect the thing it controls for
+
+Three sessions logged `two-clients` as "contention" and moved on. A fourth
+disproved that with a deterministic repro and blamed rAF throttling. A fifth
+disproved **both** — and the fourth's error is the one worth keeping.
+
+It ran an attribution control: `git stash` its own script edits, rerun, still fails,
+therefore not its edits. **`git stash` cannot kill orphaned processes that are
+already running.** The control measured a loaded box in both arms, so it could only
+ever return "no difference". The three earlier sessions had the cause right; the
+load was self-inflicted and accumulating.
+
+Measured properly: two concurrent browsers, both pages `visible`, both
+`hasFocus: true`, both rAF advancing (314 and 180 frames), **both moved 221.4 px**.
+Not throttling. And the "deterministic repro" passed on a clean box — the only
+change being 4 orphaned vite and 2 chrome processes killed first.
+
+> **A control must be able to change the thing it controls for.** Ask what the
+> control would do differently if the hypothesis were true. If the answer is
+> "nothing", it is not a control — it is the same measurement twice.
+
+The mechanism, with a real control this time: leaked processes load the box → the
+client steps fewer fixed-timestep ticks per wall-clock second → **every assertion
+measuring over a wall-clock window becomes a coin flip.** Under 14 busy loops,
+`two-clients` failed at load 9.91 before the fix and **passed at load 28.18 after
+it**, nearly 3× heavier.
+
+The leak: `npx vite`, `npm run dev` and `cargo run` all fork the process that holds
+the port, and five scripts hand-wrote `child.kill()` against the **grandparent**.
+One shared `scripts/proc-group.mjs` now, and `e2e.mjs` samples stray pids before and
+after and fails on any it created.
+
+Two further notes, both honest:
+
+- That guard caught **two of its own false positives** — the suite's own vite, reaped
+  by an exit handler that ran later, and a chromium still winding down from
+  `close()`. A leak detector needs to know the difference between a leak and a
+  process that has not finished dying.
+- The session **made the exact bug it was sent to fix**: its load generators were
+  `timeout 240 bash -c 'while :; done'`, and killing the `timeout` parents orphaned
+  32 busy loops permanently, contaminating the next measurement. Process groups are
+  not a testing detail on this project; they are the bug.
+
+## B24 — Damage-per-second cannot measure area denial
+
+T11.14's acceptance criterion was mine and it is wrong: *"molotov and toxic
+self-damage falls below damage dealt"*.
+
+The mechanism works — bots no longer walk into their own fire, and self-harm fell
+sharply (molotov 1.68 → **0.95**, toxic 1.79 → **0.60**). But damage *dealt* fell
+further, because **both sides now avoid the fire**. A zone weapon that successfully
+denies space damages nobody, and damage-per-bot-second cannot see denied space.
+
+It is the same blind spot that already forced smoke out of T11.09's median: judging
+a deliberately damage-free weapon against a damage median reports a correct weapon
+as the worst in the game. Molotov and toxic are two-thirds of the way to smoke and
+the metric never noticed.
+
+The criterion is replaced. For a **zone weapon** — one whose payload is a lingering
+hazard — the measures are:
+
+| | |
+|---|---|
+| **Self-harm** | self-damage per bot-second below the arsenal median's, i.e. it is not a self-harm outlier. Not "below its own damage dealt". |
+| **Denial** | **denied-ground-seconds**: hazard area × duration, restricted to *walkable surface*, aggregated across seeds. A weapon that covers ground nobody can walk on has denied nothing. |
+| **Displacement** | enemy path deflections caused by a hazard — an enemy that changed direction because the ground was on fire. |
+
+A zone weapon is working when denial is high and self-harm is ordinary. Damage is
+the wrong axis and always was.
+
+Also recorded from the same run: the harness arms each bot with **one weapon for the
+whole round**, so a molotov-only bot that must hold >94 px and flees any fire has no
+follow-up. That is a property of the harness, not of the weapon, and any per-weapon
+number carries it.
