@@ -3565,3 +3565,33 @@ Left for later: `join` now means quick match, so "room full" is a property of a
        Bots still fire while walking (T13.06.3). Touched outside Touch only:
        main.rs and bin/replay.rs (compile breaks from the Command/Replay enums),
        and 6 test files whose harness waited for a tick a lobby never produces.
+
+## T13.06.1 (follow-up) — the replay suite hung, and it was the CPU burner — DONE
+Files: game-core/src/world/mod.rs, game-server/src/{room,bin/replay}.rs,
+       tests/{replay_run,lobby,room,round,skeleton}.rs
+Verified: `cargo test --workspace` 921 passed EXIT=0; fmt + clippy -D warnings clean.
+Notes: §C18 froze `world.tick` — it is incremented inside `step()`, and a Lobby
+       room does not step. Every replay loop is `while tick < until`, so a
+       recording with a lobby in it SPINS AT 100% CPU FOREVER. That is the
+       runaway the coordinator found eating the player's machine.
+       `World::tick_idle()` advances the clock without simulating. §C18 says a
+       lobby does not *simulate*; `tick` is a clock, not a step count. The
+       "does not tick" test now asserts `round_time == 0.0`, which is STRICTER —
+       round_time advances only inside step(), whereas tick advances in both.
+       Reported as a spec reading, not a doc edit.
+       MY FIRST FALSIFICATION PASSED. I changed two things (clock + fixture) and
+       falsified only the clock; the fixture carried it. Falsifying the other
+       axis passed too — so the test could not tell a real round from 1400 idle
+       lobby ticks, and would have passed against any build. Added a non-vacuity
+       assert (phase != Lobby); with both reverted it now names the reason in
+       1.34 s instead of hanging.
+       STALL GUARDS in the runner and the test loop turn any future frozen clock
+       into a named error rather than a silent spin.
+       FOUR MORE HARNESSES ASSUMED A ROOM IS ALREADY FIGHTING: room.rs (one
+       human never moves), round.rs x3 (a room "starts in Warmup"), skeleton.rs
+       (min_players_to_start pinned to a literal 1). cargo stops after a failing
+       target, so each fix revealed the next — 859 -> 896 -> 911 -> 918 -> 921.
+Left for later: the browser suite is still 22/27 (T13.06.1's reopen); T13.06.11
+       reaper; T13.06.2-.9. The 5 e2e failures are NOT all lobby-entry — `crates`
+       walks at a crate 300 px above it on a ledge, and `death` shows the alive
+       flag going false with the overlay never appearing.

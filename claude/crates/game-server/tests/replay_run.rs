@@ -15,6 +15,7 @@ use game_core::player::input::{button, Input};
 use game_server::config::Config;
 use game_server::replay::{self, ReplayCommand};
 use game_server::room::{Command, Room};
+use rust_socketio::{ClientBuilder, Payload, RawClient};
 
 struct Scratch(PathBuf);
 
@@ -75,6 +76,11 @@ fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
     });
     let id = rx.blocking_recv().ok().flatten().expect("seat");
     room.apply_for_test(Command::Ready(id));
+    // §C18: a room is born in `Lobby` and one human does not meet
+    // `MIN_PLAYERS_TO_START`. Without this the fixture records 1400 ticks of a
+    // room that never starts — and, because `tick` only advanced inside `step`,
+    // recorded every one of them at tick 0.
+    room.apply_for_test(Command::StartWithBots(id));
 
     for t in 1..=ticks {
         let buttons = if t % 90 < 45 {
@@ -91,6 +97,23 @@ fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
         }
         room.tick_once(SIM_DT);
     }
+    // NON-VACUITY. Both halves of this fixture's fix were falsified independently
+    // and the test passed either way: with the clock advancing but no round
+    // started, it replays 1400 ticks of an idle lobby and the hashes match
+    // trivially. A determinism test that cannot tell a real round from a room
+    // that never started is testing nothing (§B11).
+    assert_ne!(
+        room.world.phase,
+        game_core::world::RoundPhase::Lobby,
+        "the fixture recorded a room that never left Lobby — 1400 idle ticks, and \
+         the hash comparison below would pass against any build"
+    );
+    assert!(
+        room.world.tick > 0,
+        "the fixture recorded {} simulated ticks",
+        room.world.tick
+    );
+
     room.finish_recording();
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
         .expect("read")
@@ -105,6 +128,12 @@ fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
 fn resimulate(file: &replay::Replay, until: u32) -> Room {
     let mut room = Room::new(Arc::new(file.header.to_config()));
     let mut next = 0usize;
+    // Same guard as the binary: this loop is bounded by `world.tick`, and a room
+    // in a phase that does not step never advances it. Without this the test
+    // does not fail, it *hangs* — and it did, at 100 % CPU, on a machine someone
+    // was using.
+    let mut last_tick = room.world.tick;
+    let mut stalled = 0u32;
     while room.world.tick < until {
         while let Some((tick, cmd)) = file.body.get(next) {
             if *tick > room.world.tick {
@@ -135,6 +164,18 @@ fn resimulate(file: &replay::Replay, until: u32) -> Room {
             room.apply_for_test(c);
         }
         room.tick_once(SIM_DT);
+        if room.world.tick == last_tick {
+            stalled += 1;
+            assert!(
+                stalled <= 100,
+                "replay stalled at tick {} in phase {:?} — 100 steps advanced nothing",
+                room.world.tick,
+                room.world.phase
+            );
+        } else {
+            stalled = 0;
+            last_tick = room.world.tick;
+        }
     }
     room
 }
@@ -209,6 +250,11 @@ fn empty_ticks_are_simulated_not_skipped() {
     });
     let id = rx.blocking_recv().ok().flatten().expect("seat");
     room.apply_for_test(Command::Ready(id));
+    // §C18: a room is born in `Lobby` and one human does not meet
+    // `MIN_PLAYERS_TO_START`. Without this the fixture records 1400 ticks of a
+    // room that never starts — and, because `tick` only advanced inside `step`,
+    // recorded every one of them at tick 0.
+    room.apply_for_test(Command::StartWithBots(id));
     // One command at tick 0 and one at tick 800; everything between is empty.
     for t in 1..=800 {
         if t == 800 {
@@ -471,6 +517,16 @@ fn sigterm_leaves_a_verifiable_file_and_sigkill_does_not() {
             }
             p.join("game-server")
         };
+        // A free port chosen here rather than `:0`, because §C18 means the test
+        // has to *connect* to the server to make a room exist, and a port the
+        // OS picked inside the child is one the parent cannot learn with
+        // `GAME_LOG=error`.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("pick a port");
+            let p = l.local_addr().expect("addr").port();
+            drop(l);
+            p
+        };
         let mut child = Proc::new(&bin)
             .env("RECORD_REPLAY", "1")
             .env("REPLAY_DIR", s.path())
@@ -479,10 +535,36 @@ fn sigterm_leaves_a_verifiable_file_and_sigkill_does_not() {
             .env("ROUND_SECONDS", "60")
             .env("BOT_COUNT", "1")
             .env("GAME_LOG", "error")
-            // Port 0: the OS picks a free one, so parallel tests cannot collide.
-            .env("BIND_ADDR", "127.0.0.1:0")
+            .env("BIND_ADDR", format!("127.0.0.1:{port}"))
             .spawn()
             .expect("spawn the server");
+
+        // §C18: a fresh server has no room, and recording starts with a room's
+        // task. Before this change the binary recorded from startup, so this
+        // test only had to wait for a file. Now something has to ask for a game
+        // — which is the behaviour the change exists to produce.
+        let addr = format!("127.0.0.1:{port}");
+        let up = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::net::TcpStream::connect(&addr).is_err() {
+            assert!(std::time::Instant::now() < up, "server never bound {addr}");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let (open_tx, open_rx) = std::sync::mpsc::channel::<()>();
+        let sock = ClientBuilder::new(format!("http://{addr}"))
+            .namespace("/")
+            .on("open", move |_: Payload, _: RawClient| {
+                let _ = open_tx.send(());
+            })
+            .connect()
+            .expect("socket.io connect");
+        // `connect()` returns while the namespace CONNECT is still in flight and
+        // an emit sent on the next line is dropped with no error — the 1-in-4
+        // flake that cost a session (§A28). Wait for `open` first.
+        open_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("socket.io never reported `open`");
+        sock.emit("join", serde_json::json!({ "name": "ana", "skin_id": 0 }))
+            .expect("join");
 
         // Wait for the recorder to open a file, rather than sleeping a guess —
         // map generation in a debug build is seconds, not milliseconds.

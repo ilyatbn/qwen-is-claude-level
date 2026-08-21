@@ -794,6 +794,9 @@ impl Room {
         if !in_lobby {
             self.drive_bots(dt);
             self.world.step(dt);
+        } else {
+            // The clock runs; nothing else does. See `World::tick_idle`.
+            self.world.tick_idle();
         }
 
         let humans = self.human_count();

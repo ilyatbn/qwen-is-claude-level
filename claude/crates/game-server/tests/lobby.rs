@@ -446,8 +446,15 @@ async fn joining_creates_a_room_that_holds_a_map_and_does_not_tick() {
         r.get(id).expect("room").handle.clone()
     };
 
-    let (tick, surface, phase) = handle
-        .inspect(|w| (w.tick, w.map.meta.surface_points.len(), w.phase))
+    let (round_time, surface, phase, players) = handle
+        .inspect(|w| {
+            (
+                w.round_time,
+                w.map.meta.surface_points.len(),
+                w.phase,
+                w.players.len(),
+            )
+        })
         .await
         .expect("room alive");
 
@@ -460,9 +467,22 @@ async fn joining_creates_a_room_that_holds_a_map_and_does_not_tick() {
         game_core::world::RoundPhase::Lobby,
         "a room with one human is not in a lobby"
     );
+    // `tick` is no longer the witness for this. It is a **clock** and now
+    // advances in a lobby too (`World::tick_idle`), because freezing it made
+    // every command recorded during a lobby land on tick 0 and made every
+    // replay loop — bounded by `while tick < until` — over-simulate by the
+    // lobby's length, or never terminate at all.
+    //
+    // `round_time` is the stricter witness anyway: it is advanced *only* inside
+    // `World::step`, so it is zero exactly when nothing has been simulated,
+    // whereas `tick` was zero only because the clock had been stopped with it.
     assert_eq!(
-        tick, 0,
-        "a lobby room is simulating — {tick} ticks with one human in it"
+        round_time, 0.0,
+        "a lobby room is simulating — round_time {round_time} with one human in it"
+    );
+    assert_eq!(
+        players, 1,
+        "the lobby holds its roster: expected the one human who joined"
     );
 
     h.stack.shutdown_all(Duration::from_secs(2)).await;

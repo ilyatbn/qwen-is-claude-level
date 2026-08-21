@@ -681,6 +681,26 @@ impl World {
 
     // ------------------------------------------------------------------- step
 
+    /// Advance the clock without simulating anything.
+    ///
+    /// A `Lobby` room does not step (`docs/72` §C18) — no bots, no timers, no
+    /// scoring, no items, no weather. It must still advance `tick`, because
+    /// `tick` is a **clock**, not a count of simulation steps, and two things
+    /// break when it stands still:
+    ///
+    /// - every command recorded during a lobby lands on tick 0 and is re-applied
+    ///   in one burst on replay;
+    /// - `tick_once` calls stop matching `tick`, so a replay bounded by
+    ///   `while tick < until` over-simulates by exactly the lobby's length. That
+    ///   is how `empty_ticks_are_simulated_not_skipped` fails, and with no
+    ///   recorded round at all it never terminates.
+    ///
+    /// The lag warning already had to be re-based around a frozen lobby clock
+    /// (T13.06.1); that was the first symptom of the same thing.
+    pub fn tick_idle(&mut self) {
+        self.tick += 1;
+    }
+
     /// Advance one tick. **The ordering contract** — `docs/41-server-loop-rooms.md`
     /// §2, its ten numbered sub-steps, in order.
     pub fn step(&mut self, dt: f32) {

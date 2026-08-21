@@ -17,6 +17,13 @@ use game_core::constants::SIM_DT;
 use game_server::replay::{self, Replay, ReplayCommand};
 use game_server::room::{Command, Room};
 
+/// Steps that may advance nothing before the runner calls it a stall.
+///
+/// Generous on purpose: a real phase transition can leave the clock still for a
+/// step or two, and a false stall would be worse than the hang it replaces —
+/// it would blame a recording that is fine.
+const STALL_LIMIT: u32 = 100;
+
 const USAGE: &str = "\
 usage: replay <file> [flags]
 
@@ -194,6 +201,15 @@ fn simulate(
 
     // Commands recorded at tick 0 land before the first step, which is where a
     // join at the very start of a round belongs.
+    //
+    // The loop is bounded by `world.tick`, so anything that stops advancing it
+    // spins here at 100 % CPU forever rather than failing. That is not
+    // hypothetical: a `Lobby` room did not step, `tick` is incremented inside
+    // `step`, and two of these runners were found alive at ~97 % CPU for 35
+    // minutes on a machine someone was playing on. A guard costs one comparison
+    // per tick and turns a silent spin into a named error.
+    let mut last_tick = room.world.tick;
+    let mut stalled = 0u32;
     while room.world.tick < stop_at {
         while let Some((tick, cmd)) = file.body.get(next) {
             if *tick > room.world.tick {
@@ -218,6 +234,27 @@ fn simulate(
             if ms > slowest.1 {
                 slowest = (room.world.tick, ms);
             }
+        }
+
+        // A few stalled iterations are legitimate — nothing here advances the
+        // clock during a phase transition — but a hundred means it never will.
+        if room.world.tick == last_tick {
+            stalled += 1;
+            if stalled > STALL_LIMIT {
+                return Err(format!(
+                    "replay stalled at tick {} in phase {:?} after {STALL_LIMIT} steps that \
+                     advanced nothing — the recording never starts a round, or the room is \
+                     in a phase that does not tick ({} of {} commands applied)",
+                    room.world.tick,
+                    room.world.phase,
+                    next,
+                    file.body.len()
+                )
+                .into());
+            }
+        } else {
+            stalled = 0;
+            last_tick = room.world.tick;
         }
     }
 

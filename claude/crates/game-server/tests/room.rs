@@ -90,10 +90,37 @@ async fn a_seventh_join_is_refused() {
     assert!(room.join("seventh".into(), 0, 0).await.is_none());
 }
 
+/// Get a room out of `Lobby` and into a running round.
+///
+/// §C18: a room is born in `Lobby` and one human does not meet
+/// `MIN_PLAYERS_TO_START`, so a test that joins one player and expects movement
+/// is testing a room that never steps. `StartWithBots` is the solo path, and it
+/// still waits out `LOBBY_COUNTDOWN` — there is no override for it, so this
+/// really does take about five seconds.
+async fn start_round(room: &RoomHandle, id: u8) {
+    room.send(Command::StartWithBots(id));
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let phase = room
+            .inspect(|w| w.phase)
+            .await
+            .expect("room alive while waiting for the round to start");
+        if phase != game_core::world::RoundPhase::Lobby {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the round never started; still {phase:?} after 20 s"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn commands_sent_between_ticks_are_all_applied() {
     let (room, _shut) = room();
     let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    start_round(&room, id).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     let before = room
         .inspect(move |w| w.player(id).map(|p| p.body.pos.x).unwrap_or(0.0))

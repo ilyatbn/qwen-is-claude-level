@@ -33,9 +33,27 @@ fn the_round_seconds_override_actually_shortens_the_round() {
     );
 }
 
+/// Take a freshly-built room out of `Lobby`.
+///
+/// §C18: a room is born in `Lobby` and starts a round only when asked. These
+/// tests are about the phase machine *after* a round begins, so they say so
+/// explicitly instead of relying on a room that used to start itself — which is
+/// the behaviour §C18 removed.
+fn begin(room: &mut Room) {
+    room.request_start();
+    for _ in 0..(30 * 60) {
+        let _ = room.tick_once(SIM_DT);
+        if room.world.phase != RoundPhase::Lobby {
+            return;
+        }
+    }
+    panic!("the room never left Lobby");
+}
+
 #[test]
 fn the_phase_machine_advances_warmup_then_playing_then_ended() {
     let mut room = Room::new(cfg(3.0));
+    begin(&mut room);
     let mut seen: Vec<RoundPhase> = vec![room.world.phase];
 
     // Warmup (10 s) + Playing (3 s) + a margin, at 60 Hz.
@@ -59,11 +77,22 @@ fn the_phase_machine_advances_warmup_then_playing_then_ended() {
 /// The warmup damage gate itself is tested in `game-core`
 /// (`tests/world_step.rs::self_rocket`), with the control asserting damage
 /// *does* land while Playing. Duplicating it here would test the same function
-/// through a longer pipe; what is worth checking at this level is that the room
-/// actually starts in Warmup rather than skipping it.
+/// through a longer pipe; what is worth checking at this level is that a started
+/// round enters Warmup rather than skipping it into Playing.
+///
+/// The room no longer *starts* in Warmup — §C18 made it start in `Lobby` — so
+/// the control matters more than it used to: a fresh room must be in `Lobby`,
+/// and only asking for a round moves it to `Warmup`. Asserting only the second
+/// half would pass for a room that skipped the lobby entirely.
 #[test]
-fn a_room_starts_in_warmup() {
-    let room = Room::new(cfg(5.0));
+fn a_started_round_enters_warmup_and_a_fresh_room_does_not() {
+    let mut room = Room::new(cfg(5.0));
+    assert_eq!(
+        room.world.phase,
+        RoundPhase::Lobby,
+        "a fresh room must hold a lobby, not a battle nobody asked for"
+    );
+    begin(&mut room);
     assert_eq!(room.world.phase, RoundPhase::Warmup);
 }
 
@@ -79,6 +108,7 @@ fn a_majority_restart_starts_a_new_round_on_a_new_seed_with_zeroed_scores() {
     }
     let first_seed = room.world.seed;
 
+    begin(&mut room);
     // Run to Ended.
     for _ in 0..(20 * 60) {
         let _ = room.tick_once(SIM_DT);
