@@ -1,6 +1,6 @@
 # Master task list
 
-157 tasks across 17 milestones.
+158 tasks across 17 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added. Counted, not assumed.) Work them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
@@ -304,6 +304,7 @@ it; play a round to the end and press Play again.
 - [ ] [T14.05](M14/T14.05-inventory-ui.md) — Quick bar and backpack **(v4)**
 - [ ] [T14.06](M14/T14.06-escape-menu.md) — The escape menu **(v4)**
 - [ ] [T14.07](M14/T14.07-debug-mode.md) — Debug mode, and the aim line leaves production **(v4)**
+- [ ] [T14.08](M14/T14.08-no-dev-surface-in-production.md) — The dev surface is compiled out **(v4)**
 
 **Checkpoint:** play a round using only the HUD — no debug overlays — and never lose
 a fight to a menu.

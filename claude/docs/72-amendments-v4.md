@@ -339,3 +339,71 @@ Ambient life that is also a reason to shoot at the sky.
 | `BIRD_HEALTH` | 1.0 |
 | `BIRD_METAL_HEALTH` | 25.0 |
 | `BIRD_METAL_CHANCE` | 0.25 |
+
+## C17 — The dev surface is compiled out, not gated
+
+`?sandbox=1`, `?e2e=1`, `?preview=1`, `?game=1`, `?menu=1`, `?skins=1` and the
+`window.__game` handle are all reachable by anyone who types them into the address
+bar. Measured on the shipped bundle:
+
+| string in `client/dist/assets/*.js` | occurrences |
+|---|---|
+| `__game` | 3 |
+| `sandbox` | 2 |
+| `toggleOverlays` | 1 |
+| `regenerate` | 7 |
+
+`import.meta.env` appears **nowhere** in the source, so nothing is gated at build
+time today. `docs/60` §5 explicitly kept the sandbox "in the build after M6 as a
+debugging tool, behind a `?sandbox=1` flag" — that decision is now reversed for
+production builds.
+
+### The choice, and why
+
+Two options were on the table: a **server-side toggle the client queries**, or
+**removal at production build**. Removal wins on both counts, which is unusual
+enough to state:
+
+- **Simpler.** `import.meta.env.DEV` is statically replaced by Vite with `true` or
+  `false`, so `if (import.meta.env.DEV) { … }` is dead-code eliminated. No new
+  message, no server state, no round trip, nothing to get out of sync.
+- **Stronger.** A server toggle still *ships the code*; a modified client flips the
+  flag and has the sandbox back. Code that is not in the bundle cannot be enabled by
+  any means.
+
+> The dev surface is **absent** from a production build, not disabled in one.
+
+### What is removed
+
+The dev scenes (`Sandbox`, `Preview`, `Boot`), every scene-selection query
+parameter, `window.__game`, the debug overlays, the aim ring and direction line
+(§C12), and the FPS counter.
+
+What stays is what a player uses: Title → Menu → Lobby → Game, the Esc menu, the
+HUD, the inventory.
+
+### The escape hatch, and its default
+
+`vite build --mode e2e` sets a flag that re-enables the handle, for a check that
+must drive a **production** bundle. Plain `vite build` — what `make build` and
+`docker/Dockerfile.client` run — has none of it. The suite today drives the dev
+server, so this hatch is for future use and must not become the default by
+accident.
+
+### The acceptance test greps the artifact
+
+This is the §A15 rule applied to a build: **assert on the bundle, not on the
+intention.** A test that checks "the code is inside an `if (DEV)` block" passes for
+a build where the eliminator did not run.
+
+- The default production bundle contains **none** of the strings in the table above.
+- **Control**: an `--mode e2e` bundle *does* contain them — otherwise the grep also
+  passes for a build that produced nothing.
+- Loading the production bundle with `?sandbox=1` gives the normal title screen.
+
+### Server-side dev flags are already the right shape
+
+`DEV_LOADOUT`, `DEV_START_HEALTH`, `FIXED_SEED`, `RECORD_REPLAY` and `DEBUG_DUMP`
+are **server environment variables**. A client cannot set them, they default off,
+and they stay exactly as they are. The distinction worth keeping: a dev flag the
+*server* owns is fine; a dev flag the *client* can name is not.
