@@ -574,3 +574,48 @@ rather than the live registry, so it cannot see a registry entry that has no art
 
 > A test that validates data against a copy of that data validates nothing. Point it
 > at the registry the game actually loads.
+
+## B21 — Heavy fog has done nothing since M5
+
+`GameScene` hardcoded `fogMult: 1`, and `World::fog_multiplier` had **no caller at
+all**. Heavy fog — one of the four weather effects, scheduled, telegraphed,
+simulated and tested every round since M5 — has never changed anything a player
+could see.
+
+It was found only because smoke needed the same channel, which would have made it
+the identical bug one milestone later. Eleventh instance of §A39, and the longest
+lived: five milestones of a feature that ran correctly and reached nothing.
+
+The fix is not just a wire-up. Vision is now **per player**, as a sixteenth
+snapshot byte (`vision` = fog × smoke), because **smoke is positional**: what you
+can see depends on which cloud you are standing in, and no global effect flag can
+express that. `SNAPSHOT_PLAYER_BYTES` 15 → 16, snapshot `8 + n*16 + 4`.
+
+Two things this says beyond the bug:
+
+> A weather effect whose only observable is a multiplier nothing reads is
+> indistinguishable from one that does not exist. **Every effect needs an assertion
+> on what a player experiences**, not on what the simulation computed — the §A15
+> rule, applied to gameplay rather than to rendering.
+
+And the reason it survived: fog's tests all assert `fov_radius(...)` returns the
+right number, which it always did. The formula was never wrong. **Nothing tested
+that the number reached the screen.**
+
+## B22 — Two literals that pinned the wire format to a copy of itself
+
+Adding the vision byte broke two tests that hardcoded the layout: `codec.test.ts`
+had `const per = 15`, and the Rust size test had `102`. §A19's rule already covers
+this — tests pin to the constants, never to a literal — and it had drifted back in.
+
+Worth stating why it matters more here than as a style point: a fixture that
+hardcodes the wire layout can stay **green against a decoder that has drifted**.
+The literal agrees with the test's own expectation and neither agrees with the
+encoder.
+
+Same session, the same shape one layer out: `cargo test -p game-core --test thrown`
+passed while the workspace was broken, because the vision byte reached the encoder
+and the TypeScript decoder but not game-server's own Rust decoder — seven codec
+tests failing with `TrailingBytes`, one unread byte per player. Exactly §B18, made
+again by the session that had just been told about it. **The gate is the only thing
+that sees a cross-crate break**, and it is not optional.
