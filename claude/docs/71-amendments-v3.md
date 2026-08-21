@@ -471,3 +471,52 @@ Both passed for a year of nothing. The rule:
 
 Room identity is the **mask checksum**; ticking is `lastServerTick`. Both are values
 the server actually produces.
+
+## B16 — A table indexed by position must say so, or check
+
+`def()` in both the weapon and item registries does `TABLE.get(id as usize)` —
+silently assuming array position equals id. Nothing asserted it and nothing
+documented it. Inserting the two energy weapons at the front of the weapon table
+shifted every lookup after them, so **a laser resolved as a bazooka**, and the only
+symptom was a pierce test failing for a reason that looked unrelated to ordering.
+
+Both registries now verify the id they found, and both carry a test that names the
+offending entry rather than reporting a mismatch somewhere downstream.
+
+This matters more as the arsenal goes from 3 weapons to 22: the table will be
+edited often, and inserting in the middle is the natural thing to do.
+
+> An implicit invariant that holds today is a trap the first time someone edits the
+> data. Either encode it (`assert` the id matches the position) or remove the
+> assumption (look the id up properly).
+
+Related, and the same commit: the registry-integrity rule *"a weapon has
+`max_stack > 1`"* is false for energy weapons, whose stack **is** the weapon. It is
+now *"a weapon has ammo, and ammo is a stack or a battery"* — which is **stricter**,
+because the old rule silently passed a weapon with neither.
+
+## B17 — The spawn pool cannot simply accumulate
+
+Going from **6 items to 7** measurably perturbed bot behaviour: the seeded spawn
+stream reshuffled, and a lethality assertion that had been passing on a lucky draw
+started failing. The arsenal is heading to **22**.
+
+Two consequences, both for T11.09:
+
+- **Spawn weights are a budget, not a list.** Adding a weapon with weight 20 to a
+  table summing to 100 does not add a weapon; it dilutes every existing one by 17 %.
+  A player who used to find a bazooka every 20 s now finds one every 24 s, and the
+  bazooka's own weight never changed. The table must be rebalanced as a whole when
+  the arsenal lands, and the balance measurement must report **pick rate**, which is
+  the number that actually moves.
+- **Any test whose fixture depends on the seeded item stream is coupled to the
+  registry's contents.** Adding an item is enough to change what spawns where. Tests
+  that need a specific loadout should arrange it directly rather than relying on
+  what a seed happens to produce — the way `DEV_LOADOUT` already does.
+
+Also recorded, because it is the honest version of a green test: an assertion that
+"some kill happens across 5 seeds" was **removed**, not weakened. Its own doc comment
+stated that ~8 of 10 rounds have zero kills on a correct build — about a 1-in-3
+failure rate by arithmetic. It had been passing because those five seeds happened to
+contain a lucky one. The damage floor it sits beside never moved, so lethality was
+never in question; only the coin landed differently.
