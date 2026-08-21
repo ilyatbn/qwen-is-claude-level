@@ -242,6 +242,8 @@ pub struct SnapshotPlayer {
     pub flags: u8,
     pub jetpack_fuel: u8,
     pub selected_item: u8,
+    /// FoV multiplier, fog times smoke, quantised (T11.08).
+    pub vision: u8,
 }
 
 pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
@@ -264,6 +266,7 @@ pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
             flags: r.u8()?,
             jetpack_fuel: r.u8()?,
             selected_item: r.u8()?,
+            vision: r.u8()?,
         });
     }
     let last_input_seq = r.u32()?;
@@ -566,8 +569,15 @@ mod tests {
                 "n = {n}"
             );
         }
+        // Derived, not a literal (§A19). This said `102`, and T11.08's sixteenth
+        // byte expired it — a number spelled out here has to be edited by hand
+        // every time the wire grows, and the edit is indistinguishable from
+        // rubber-stamping whatever the encoder now happens to produce.
         let w = world_with(6);
-        assert_eq!(encode_snapshot(&w, 0, 0).len(), 102);
+        assert_eq!(
+            encode_snapshot(&w, 0, 0).len(),
+            SNAPSHOT_HEADER_BYTES + 6 * SNAPSHOT_PLAYER_BYTES + SNAPSHOT_FOOTER_BYTES
+        );
     }
 
     #[test]
