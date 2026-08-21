@@ -25,8 +25,9 @@
 use std::collections::BTreeMap;
 
 use game_core::bots::Bot;
-use game_core::constants::{MapScale, BATTERY_MAX, INVENTORY_SLOTS, SIM_DT};
+use game_core::constants::{MapScale, BATTERY_MAX, INVENTORY_SLOTS, SIM_DT, SURFACE_SAMPLE_STEP};
 use game_core::items::registry::{ItemDef, ItemId, ItemKind, ITEMS, PISTOL};
+use game_core::math::Vec2;
 use game_core::player::input::button;
 use game_core::player::state::DeathCause;
 use game_core::weapons::defs::def;
@@ -59,6 +60,20 @@ struct Round {
     /// and compared, and `HashMap` order is randomly seeded per process (§A11).
     picks: BTreeMap<u16, u32>,
     spawned: BTreeMap<u16, u32>,
+    /// §B24. Walkable ground covered by a lingering hazard, in px-seconds:
+    /// surface points inside a patch x the ground each point stands for x dt.
+    ///
+    /// Restricted to *walkable* surface on purpose — a molotov burning the
+    /// inside of a cliff has denied nobody anything, and area alone would score
+    /// it identically to one thrown across a walkway.
+    denied_px_s: f32,
+    /// Bot-seconds spent with smoke cutting a bot's vision. Smoke denies sight,
+    /// not ground, so counting it in `denied_px_s` would report the wrong thing
+    /// about the one weapon §B7 says has no damage at all.
+    blinded_s: f32,
+    /// Ticks an enemy spent walking out of, or refusing to walk into, a hazard
+    /// this weapon laid.
+    deflect: u32,
 }
 
 /// One headless round.
@@ -122,6 +137,34 @@ fn run(seed: u64, hold: Option<ItemId>, seconds: f32) -> Round {
             }
         }
         w.step(SIM_DT);
+
+        // Denial, measured from the world rather than from a damage event —
+        // that is the whole point of §B24. Guarded on `is_empty` so the 17
+        // weapons that light nothing pay nothing for the measurement.
+        if !w.burn.is_empty() {
+            let mut covered = 0u32;
+            for pt in &w.map.meta.surface_points {
+                let at = Vec2::new(pt.x as f32, pt.y as f32);
+                if w.burn
+                    .patches()
+                    .iter()
+                    .any(|p| (p.pos - at).len() <= p.radius)
+                {
+                    covered += 1;
+                }
+            }
+            r.denied_px_s += covered as f32 * SURFACE_SAMPLE_STEP as f32 * SIM_DT;
+        }
+        if !w.smoke.is_empty() {
+            for b in &bots {
+                if let Some(p) = w.player(b.player).filter(|p| p.alive) {
+                    if w.smoke.multiplier_at(p.body.pos, now) < 1.0 {
+                        r.blinded_s += SIM_DT;
+                    }
+                }
+            }
+        }
+
         for e in w.drain_events() {
             match e {
                 GameEvent::Death { cause, .. } => match cause {
@@ -168,6 +211,7 @@ fn run(seed: u64, hold: Option<ItemId>, seconds: f32) -> Round {
         let s = b.stats();
         r.fires += s.fires;
         r.ticks_armed += s.ticks_armed;
+        r.deflect += s.ticks_hazard_evaded + s.ticks_hazard_blocked;
     }
     r
 }
@@ -240,8 +284,17 @@ fn balance_report() {
     );
     println!("   ground swept every tick, battery full; damage is per bot-second");
     println!(
-        "\n{:<16}{:>10}{:>10}{:>8}{:>7}{:>8}{:>9}",
-        "weapon", "dmg/bot-s", "self/bot-s", "kills", "self", "fires", "dmg/pick"
+        "\n{:<16}{:>10}{:>10}{:>8}{:>7}{:>8}{:>9}{:>11}{:>9}{:>9}",
+        "weapon",
+        "dmg/bot-s",
+        "self/bot-s",
+        "kills",
+        "self",
+        "fires",
+        "dmg/pick",
+        "denied px-s",
+        "blind s",
+        "deflect"
     );
 
     let bot_seconds = BOTS as f32 * HOLD_SECONDS * SEEDS.len() as f32;
@@ -265,34 +318,96 @@ fn balance_report() {
             ItemKind::Weapon(w) => def(w).map_or(0.0, |x| x.damage) * d.max_stack as f32,
             _ => 0.0,
         };
+        let denied: f32 = rounds.iter().map(|r| r.denied_px_s).sum();
+        let blind: f32 = rounds.iter().map(|r| r.blinded_s).sum();
+        let deflect: u32 = rounds.iter().map(|r| r.deflect).sum();
         println!(
-            "{:<16}{dps:>10.2}{sdps:>10.2}{kills:>8}{selfk:>7}{fires:>8}{per_pick:>9.0}",
+            "{:<16}{dps:>10.2}{sdps:>10.2}{kills:>8}{selfk:>7}{fires:>8}{per_pick:>9.0}\
+             {denied:>11.0}{blind:>9.1}{deflect:>9}",
             d.key
         );
         let harmless =
             matches!(d.kind, ItemKind::Weapon(w) if def(w).is_some_and(|x| x.damage == 0.0));
-        rows.push((d.key, dps, fires, harmless));
+        // A zone weapon is one whose payload lingers: it is judged on denial,
+        // not on damage (§B24). Detected from what it actually did in the
+        // measurement rather than from a flag on the def, so a new zone weapon
+        // is classified correctly without anyone remembering to mark it.
+        let zone = denied > 0.0 || blind > 0.0;
+        // Can this weapon hurt its own user? Compared *within its class*, because
+        // a hitscan gun structurally cannot: 14 of 20 sit at exactly 0.00, so an
+        // arsenal-wide median of self-harm is 0.00 — a threshold nothing that
+        // self-harms can ever be below, which made §B24's first criterion
+        // unmeetable by construction.
+        //
+        // `blast_radius` is the wrong structural test: it doubles as the *carve*
+        // radius, so an axe (10) and the smg (3) read as explosive. The class is
+        // therefore "weapons that demonstrably hurt their user in the
+        // measurement" — not circular, because the question is whether this one
+        // is an outlier *among those that do it at all*.
+        let can_self_harm = sdps > 0.0;
+        rows.push((
+            d.key,
+            dps,
+            fires,
+            harmless,
+            sdps,
+            denied,
+            blind,
+            deflect,
+            zone,
+            can_self_harm,
+        ));
     }
 
     // A weapon with zero damage in its def is not an outlier, it is smoke
     // (§B7: "the only one with no damage at all"). Judging it against a damage
     // median reports a weapon working exactly as specified as the worst in the
     // game, which is how a report loses the reader's trust.
+    // Zone weapons are excluded from the damage median for the same reason
+    // smoke already was: a weapon that works by keeping people off ground
+    // damages nobody when it works, so scoring it against a damage median
+    // reports success as failure (§B24).
     let med = median(
         rows.iter()
-            .filter(|r| !r.3)
+            .filter(|r| !r.3 && !r.8)
             .map(|r| r.1)
             .collect::<Vec<_>>(),
     );
-    println!("\n   median dmg/bot-s = {med:.2}  (excluding no-damage utility weapons)");
+    let peers: Vec<f32> = rows.iter().filter(|r| r.9).map(|r| r.4).collect();
+    let med_self = median(peers.clone());
+    println!("\n   median dmg/bot-s  = {med:.2}  (direct-damage weapons only)");
+    println!(
+        "   median self/bot-s = {med_self:.2}  (over the {} weapons that CAN hurt their user)",
+        peers.len()
+    );
     let mut outliers = Vec::new();
-    for (key, dps, fires, harmless) in &rows {
+    for (key, dps, fires, harmless, sdps, denied, blind, deflect, zone, can_self_harm) in &rows {
+        if *fires == 0 {
+            outliers.push(format!("{key}: never fired"));
+            continue;
+        }
+        if *zone {
+            // §B24's criteria: self-harm ordinary for its kind, denial real.
+            if *can_self_harm && *sdps > med_self {
+                outliers.push(format!(
+                    "{key}: self {sdps:.2} above the {med_self:.2} median of weapons that can"
+                ));
+            }
+            if *denied <= 0.0 && *blind <= 0.0 {
+                outliers.push(format!("{key}: a zone weapon that denied nothing"));
+            }
+            // Deflections are how ground denial is *felt*. A weapon that denies
+            // sight rather than ground moves nobody by design — requiring it to
+            // would report smoke, working exactly as §B7 specifies, as broken.
+            if *denied > 0.0 && *deflect == 0 {
+                outliers.push(format!("{key}: denied ground but moved nobody"));
+            }
+            continue;
+        }
         if *harmless {
             continue;
         }
-        if *fires == 0 {
-            outliers.push(format!("{key}: never fired"));
-        } else if *dps > med * 2.0 {
+        if *dps > med * 2.0 {
             outliers.push(format!("{key}: {dps:.2} = {:.1}x median", dps / med));
         } else if *dps < med * 0.5 {
             outliers.push(format!("{key}: {dps:.2} = {:.2}x median", dps / med));
@@ -341,5 +456,146 @@ fn balance_report() {
     } else {
         println!("\n   NEVER SPAWNED ({}): {unobtained:?}", unobtained.len());
         println!("   a weapon nobody can pick up is a spawn-weight bug, not a balance result");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T11.13 — density (`docs/71-amendments-v3.md` §B17, `tasks/M11/T11.13`)
+// ---------------------------------------------------------------------------
+
+/// Distinct item **types** a round shows you, plus the things that bound it.
+///
+/// Density is not weight (§B17). Weights decide *which* item; `initial_items`
+/// and `ITEM_SPAWN_INTERVAL` decide *how many*, and no weight change can make a
+/// round show you more of a 24-item registry than it spawns.
+///
+/// `evicted` is the reason this cannot simply be turned up: `MAX_WORLD_ITEMS`
+/// evicts the **oldest non-crate** first, so past a point a higher rate deletes
+/// what spawned two minutes ago instead of adding to it — churn, not density.
+#[derive(Debug, Default)]
+struct Density {
+    distinct: usize,
+    spawned: u32,
+    live_peak: usize,
+    evicted: u32,
+    first_weapon_s: Option<f32>,
+}
+
+fn density(seed: u64, seconds: f32, scale: MapScale) -> Density {
+    let mut w = World::new(seed, scale);
+    w.set_phase(RoundPhase::Playing);
+    for i in 0..BOTS {
+        w.add_player(i as u8, 0, format!("Bot {i}"));
+    }
+    let mut bots: Vec<_> = (0..BOTS)
+        .map(|i| Bot::new(i as u8, seed, i as u32, SKILL))
+        .collect();
+    let _ = w.drain_events();
+
+    let mut d = Density::default();
+    let mut seen: std::collections::BTreeSet<u16> = Default::default();
+    // Initial placement runs inside `World::new`, before any event buffer
+    // exists (the same fact that made T9.03's initial items unannounced), so
+    // counting spawn *events* misses it entirely and undercounts a round's
+    // variety by the whole initial batch. Read the world instead.
+    for it in w.items.iter() {
+        seen.insert(it.item);
+        d.spawned += 1;
+    }
+    let ticks = (seconds / SIM_DT) as u32;
+    for t in 0..ticks {
+        let now = t as f32 * SIM_DT;
+        for b in bots.iter_mut() {
+            let inp = b.think(&w, now, SIM_DT);
+            w.queue_input(b.player, inp);
+            if let Some(slot) = b.wants_select() {
+                w.select_slot(b.player, slot);
+            }
+            if inp.buttons & button::FIRE != 0 {
+                let _ = w.fire(b.player, now);
+            }
+        }
+        w.step(SIM_DT);
+        d.live_peak = d.live_peak.max(w.items.iter().count());
+        for e in w.drain_events() {
+            match e {
+                GameEvent::ItemSpawn { item_id, .. } => {
+                    seen.insert(item_id);
+                    d.spawned += 1;
+                    if d.first_weapon_s.is_none()
+                        && ITEMS
+                            .iter()
+                            .any(|x| x.id == item_id && matches!(x.kind, ItemKind::Weapon(_)))
+                    {
+                        d.first_weapon_s = Some(now);
+                    }
+                }
+                GameEvent::ItemDespawn { .. } => d.evicted += 1,
+                _ => {}
+            }
+        }
+    }
+    d.distinct = seen.len();
+    d
+}
+
+/// `cargo test -p game-core --release --test balance -- --ignored --nocapture`
+#[test]
+#[ignore = "measurement: minutes in release"]
+fn density_report() {
+    println!("\n== DENSITY — {} seeds x {POOL_SECONDS}s ==", SEEDS.len());
+    println!("   registry holds {} item types", ITEMS.len());
+    // Every scale the game can ship, not just the fast one. §A19: a threshold
+    // measured on one scale is tuned to that scale, and `DEFAULT_MAP_SCALE` is
+    // Large — measuring only Small would tune the number where it does not
+    // matter and leave it unmeasured where it does.
+    // Floors, not exact values: the seeded spawn stream reshuffles whenever the
+    // registry changes (§B17), so pinning a number here would make adding an
+    // item a test failure. These are the T11.09 baselines the tuning had to beat
+    // — Small 51%, Medium 58%, Large 64% of a 24-item registry.
+    let floors = [
+        (MapScale::Small, 12.5_f32),
+        (MapScale::Medium, 14.5),
+        (MapScale::Large, 16.0),
+    ];
+    for (scale, floor) in floors {
+        let ds: Vec<_> = SEEDS
+            .iter()
+            .map(|s| density(*s, POOL_SECONDS, scale))
+            .collect();
+        let mean_distinct = ds.iter().map(|d| d.distinct).sum::<usize>() as f32 / ds.len() as f32;
+        let mean_spawn = ds.iter().map(|d| d.spawned).sum::<u32>() as f32 / ds.len() as f32;
+        let peak = ds.iter().map(|d| d.live_peak).max().unwrap_or(0);
+        let evict: u32 = ds.iter().map(|d| d.evicted).sum();
+        let first: Vec<f32> = ds.iter().filter_map(|d| d.first_weapon_s).collect();
+        println!(
+            "\n   {scale:?}: distinct {mean_distinct:.1}/{} ({:.0}%)  spawns {mean_spawn:.1}  \
+             peak live {peak}/{}  despawns {evict}  1st weapon {:.0}s",
+            ITEMS.len(),
+            100.0 * mean_distinct / ITEMS.len() as f32,
+            game_core::constants::MAX_WORLD_ITEMS,
+            first.iter().sum::<f32>() / first.len().max(1) as f32,
+        );
+        assert!(
+            mean_distinct >= floor,
+            "{scale:?}: a round shows {mean_distinct:.1} of {} item types, below the {floor} \
+             this task raised it to — density regressed",
+            ITEMS.len()
+        );
+        // Density is turnover, not accumulation. If raising the rate ever pushes
+        // the live count into `MAX_WORLD_ITEMS`, the cap starts evicting the
+        // oldest non-crate item and a higher rate deletes what spawned two
+        // minutes ago instead of adding to it — churn that looks like density.
+        assert!(
+            peak < game_core::constants::MAX_WORLD_ITEMS,
+            "{scale:?}: {peak} items alive against a cap of {} — eviction is now routine",
+            game_core::constants::MAX_WORLD_ITEMS
+        );
+        // Control: without this, both assertions above pass for a round that
+        // spawned nothing at all.
+        assert!(
+            mean_spawn > 10.0,
+            "{scale:?}: only {mean_spawn:.1} spawns — the measurement proves nothing"
+        );
     }
 }

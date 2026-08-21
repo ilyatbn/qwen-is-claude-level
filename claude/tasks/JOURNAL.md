@@ -3223,3 +3223,69 @@ Notes: Two gaps, both perception not mechanics: `hazard_at` reads the existing
        works or the weapons are bad, the metric needs to measure area denial
        (time an enemy is kept off ground, or forced repositioning).
 Left for later: decide the metric, then re-judge. T11.13 not started.
+
+## T11.14 — Bots walk into their own fire — STILL IN PROGRESS (measures built, one outlier left)
+Files: crates/game-core/src/bots/mod.rs, crates/game-core/tests/balance.rs
+Verified: `cargo test -p game-core --lib bots` — 19 passed. Gate GATE_EXIT=0,
+       903 rust tests, e2e 20/20.
+Notes: BUILT §B24'S MEASURES. denied-ground-seconds counts surface points inside a
+       patch x the ground each stands for x dt — walkable only, because a molotov
+       burning the inside of a cliff has denied nobody anything and raw area would
+       score it the same. Smoke gets `blind s` instead: it denies sight, not
+       ground, so folding it into denial reports the wrong thing about the one
+       weapon §B7 says has no damage. Deflections count only hazards an ENEMY lit
+       (`Hazard.lit_by`) — a bot fleeing its own fire has denied nobody anything,
+       and counting it would score a weapon highest exactly when it hurts its user
+       most, which is the mistake T11.09's first instrument made.
+       §B24'S SELF-HARM CRITERION WAS ALSO UNMEETABLE AS WRITTEN. "Below the
+       arsenal median" — 14 of 20 weapons are hitscan and sit at exactly 0.00, so
+       the median is 0.00 and nothing that self-harms can be below it. And
+       `blast_radius` is the wrong structural test for "can hurt its user": it
+       doubles as the CARVE radius, so an axe (10) and the smg (3) read as
+       explosive. The class is now "weapons that demonstrably hurt their user in
+       the measurement" — median 0.68 over 6.
+       A SECOND PLACE `blast_radius` WAS THE WRONG NUMBER. `stand_off` used it,
+       and it is 0 for exactly the Burst::Zone weapons, so a bot closed to the
+       40 px floor and stood in the fire it had just thrown. `zone_reach` already
+       existed for the throw guard. Fixed -> molotov denial 6515->8507, deflect
+       305->774, dealt 0.14->0.25, fires 73->111.
+       SELF/BOT-S ROSE (0.95 -> 1.54) AND THAT IS A RATE ARTEFACT: per throw it is
+       flat (0.0130 -> 0.0139), and toxic IMPROVED per throw (0.0072 -> 0.0052).
+       The metric conflates "dangerous per use" with "used more".
+       NOT TICKED. Final: flamethrower 0.32 and toxic 0.68 now meet §B24; molotov
+       1.54 is still the arsenal's only outlier. RESIDUAL CAUSE, evidenced: the
+       throw guard tests `dist` to the TARGET (`dist < reach + HAZARD_CLEARANCE`),
+       not where the projectile will land. A molotov is ballistic — thrown uphill
+       or into terrain it falls short, onto the thrower, and no target-distance
+       guard can see that. Needs impact prediction; its own task.
+       I ALSO SILENTLY DISABLED AN EXISTING TEST. My inserted `#[test]` stole the
+       attribute belonging to `a_bot_steps_out_of_fire`; `cargo test --lib bots`
+       reported "19 passed" while a T11.14 falsification test had left the run.
+       Only clippy's `never used` under -D warnings caught it. A test count going
+       UP is not evidence no test was removed.
+Left for later: molotov impact prediction. T11.13 done below.
+
+## T11.13 — Item density — DONE
+Files: crates/game-core/src/constants.rs, crates/game-core/tests/balance.rs
+Verified: `cargo test -p game-core --release --test balance -- --ignored --nocapture`
+       — density_report passes its floors. Gate GATE_EXIT=0, 903 rust, e2e 20/20.
+Notes: MEASURED AT EVERY SCALE (§A19), and the shipping one was not the problem
+       the task described: Small 51% / Medium 58% / LARGE 64% of a 24-item
+       registry. The "about half the arsenal" figure was Small-scale;
+       DEFAULT_MAP_SCALE is Large.
+       MY OWN INSTRUMENT UNDERCOUNTED FIRST. Initial placement runs inside
+       World::new before any event buffer exists (the same fact behind T9.03's
+       unannounced items), so counting spawn EVENTS missed the whole initial
+       batch: 10.2 distinct became 12.2 once read from the world.
+       TURNOVER, NOT ACCUMULATION. Raising the rate alone pushes live items into
+       MAX_WORLD_ITEMS, where eviction deletes what spawned two minutes ago —
+       churn that measures like density. ITEM_SPAWN_INTERVAL 20->14 PAIRED WITH
+       WORLD_ITEM_TTL 90->70: distinct 51/58/64% -> 57/64/70%, peak live 14/22/27
+       -> 14/20/27 (flat or LOWER), first weapon 18/20/23s -> 13/14/16s.
+       Floors asserted per scale, not exact values — the seeded spawn stream
+       reshuffles whenever the registry changes (§B17), so pinning a number would
+       make adding an item a test failure. Each floor carries a control
+       (`mean_spawn > 10`) or it passes for a round that spawned nothing.
+       Falsified by restoring both constants: fails with "Small: a round shows
+       12.2 of 24 item types, below the 12.5 this task raised it to".
+Left for later: nothing in T11.13.

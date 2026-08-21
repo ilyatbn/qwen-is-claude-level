@@ -239,7 +239,25 @@ pub const INVENTORY_SLOTS: usize = 8;
 pub const MAX_STACK: u8 = 9;
 /// From player centre to pickup centre.
 pub const PICKUP_RADIUS: f32 = 20.0;
-pub const ITEM_SPAWN_INTERVAL: f32 = 20.0;
+/// Periodic ground spawns. **20.0 → 14.0** (T11.13).
+///
+/// With a 24-item registry a round was showing 51 % / 58 % / 64 % of the arsenal
+/// by scale — "tons of weapons" was true of the game and not of any round of it.
+/// Measured over 8 seeds x 150 s at all three scales (§A19: `DEFAULT_MAP_SCALE`
+/// is Large, so tuning on Small would set the number where it does not matter):
+///
+/// | scale | distinct before → after | peak live | 1st weapon |
+/// |---|---|---|---|
+/// | Small | 12.2 → 13.8 of 24 | 14 → 14 | 18 s → 13 s |
+/// | Medium | 14.0 → 15.2 | 22 → 20 | 20 s → 14 s |
+/// | Large | 15.4 → **16.9** | 27 → 27 | 23 s → 16 s |
+///
+/// **Paired with the `WORLD_ITEM_TTL` cut, so this is turnover and not
+/// accumulation**: simultaneous items are flat or lower at every scale, well
+/// clear of `MAX_WORLD_ITEMS`. Raising the rate alone would have pushed the live
+/// count into the cap, where eviction deletes what spawned two minutes ago
+/// instead of adding to it — churn that measures like density.
+pub const ITEM_SPAWN_INTERVAL: f32 = 14.0;
 pub const ITEM_SPAWN_BATCH_MIN: u32 = 1;
 pub const ITEM_SPAWN_BATCH_MAX: u32 = 2;
 pub const CRATE_INTERVAL: f32 = 35.0;
@@ -249,8 +267,14 @@ pub const CRATE_H: f32 = 24.0;
 pub const CRATE_DRAG: f32 = 0.02;
 /// Hard cap; oldest un-picked item despawns first.
 pub const MAX_WORLD_ITEMS: usize = 40;
-/// Seconds before an untouched ground item despawns.
-pub const WORLD_ITEM_TTL: f32 = 90.0;
+/// Seconds before an untouched ground item despawns. **90.0 → 70.0** (T11.13).
+///
+/// Cut alongside `ITEM_SPAWN_INTERVAL` so a faster spawn rate raises *variety*
+/// without raising how many items are on the ground at once — see that
+/// constant's table. Not cut further: an item you saw a minute ago and walked
+/// back for should still be there, and below about a minute pickups start to
+/// read as evaporating rather than as competition.
+pub const WORLD_ITEM_TTL: f32 = 70.0;
 
 // ---------------------------------------------------------------------------
 // Weapons
