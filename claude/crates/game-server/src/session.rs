@@ -26,7 +26,6 @@ use crate::room::{Command, RoomHandle};
 #[derive(Clone)]
 pub struct Ctx {
     pub registry: Arc<std::sync::Mutex<RoomRegistry>>,
-    pub default_room: RoomId,
 }
 
 impl Ctx {
@@ -41,9 +40,14 @@ impl Ctx {
     }
 
     /// The room this socket belongs to, with its handle and session map.
+    ///
+    /// `None` when the socket has not joined one. §C18 removed the startup room
+    /// this used to fall back to, and falling back to *some* room is what put
+    /// people in a battle they never asked for. A handler with no room has
+    /// nothing to do.
     pub fn resolve(&self, sid: Sid) -> Option<(RoomId, RoomHandle, Arc<SessionMap>)> {
         let r = self.lock();
-        let id = r.room_of(sid).unwrap_or(self.default_room);
+        let id = r.room_of(sid)?;
         let e = r.get(id)?;
         Some((id, e.handle.clone(), e.sessions.clone()))
     }
@@ -55,9 +59,9 @@ impl Ctx {
         Some((e.handle.clone(), e.sessions.clone()))
     }
 
-    /// The room this socket has chosen, or the default one.
-    pub fn room_or_default(&self, sid: Sid) -> RoomId {
-        self.lock().room_of(sid).unwrap_or(self.default_room)
+    /// The room this socket has chosen, if any.
+    pub fn room_of(&self, sid: Sid) -> Option<RoomId> {
+        self.lock().room_of(sid)
     }
 
     pub fn attach(&self, sid: Sid, room: RoomId) {
@@ -302,17 +306,9 @@ pub fn sanitise_name(raw: &str) -> Option<String> {
 }
 
 /// Register every handler on the default namespace.
-pub fn register(
-    io: &SocketIo,
-    registry: Arc<std::sync::Mutex<RoomRegistry>>,
-    default_room: RoomId,
-    config: Arc<Config>,
-) {
+pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, config: Arc<Config>) {
     let io2 = io.clone();
-    let ctx0 = Ctx {
-        registry,
-        default_room,
-    };
+    let ctx0 = Ctx { registry };
     io.ns("/", move |socket: SocketRef| {
         let ctx = ctx0.clone();
         let config = config.clone();
@@ -328,10 +324,29 @@ pub fn register(
                     move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
                         let (ctx, io, config) = (ctx.clone(), io.clone(), config.clone());
                         async move {
-                            // Whichever room this socket has chosen, or the
-                            // default one if it has not chosen (the single-room
-                            // path every test before T10.02 uses).
-                            let room_id = ctx.room_or_default(socket.id);
+                            // A plain `join` names no room, so it means "put me
+                            // somewhere" — which is quick match. It used to fall
+                            // back to a room created at server startup, and that
+                            // room was mid-battle before anyone arrived (§C18).
+                            let room_id = match ctx.room_of(socket.id) {
+                                Some(id) => id,
+                                None => match ctx.quick_match(config.map_scale, config.max_players)
+                                {
+                                    crate::registry::QuickMatch::Existing(id)
+                                    | crate::registry::QuickMatch::Created(id) => {
+                                        ctx.attach(socket.id, id);
+                                        id
+                                    }
+                                    crate::registry::QuickMatch::Full => {
+                                        emit(
+                                            &socket,
+                                            "join_error",
+                                            &serde_json::json!({ "reason": "server_full" }),
+                                        );
+                                        return;
+                                    }
+                                },
+                            };
                             seat(socket, ctx, io, config, room_id, payload).await;
                         }
                     },
@@ -633,6 +648,25 @@ pub fn register(
                     },
                 );
             }
+            // --------------------------------------------- start_with_bots
+            //
+            // §C18's solo path. Any player in the room may press it; the room
+            // ignores it outside `Lobby`, so a stray press mid-round is a no-op
+            // rather than a second start.
+            {
+                let ctx = ctx.clone();
+                socket.on("start_with_bots", move |socket: SocketRef| {
+                    let ctx = ctx.clone();
+                    async move {
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                            return;
+                        };
+                        if let Some(id) = sessions.player_of(socket.id) {
+                            room.send(Command::StartWithBots(id));
+                        }
+                    }
+                });
+            }
             {
                 let ctx = ctx.clone();
                 socket.on("resync_map", move |socket: SocketRef| {
@@ -761,6 +795,7 @@ async fn seat(
                 w.tick,
                 w.round_time,
                 w.phase.as_str().to_string(),
+                w.phase_time_left(),
                 w.seed,
                 w.map.meta.scale,
                 w.players
@@ -780,7 +815,7 @@ async fn seat(
     else {
         return;
     };
-    let (tick, round_time, phase, seed, scale, players, map_bytes) = w;
+    let (tick, round_time, phase, time_left, seed, scale, players, map_bytes) = w;
 
     emit(
         &socket,
@@ -798,6 +833,21 @@ async fn seat(
             "seed": seed.to_string(),
             "scale": scale_name(scale),
             "max_players": config.max_players,
+        }),
+    );
+
+    // §A39, and §C18 makes it load-bearing: a `Lobby` room does not tick, so it
+    // broadcasts no `round_state`, and a joining client would never be told
+    // which phase it arrived into. It would sit in a lobby with no lobby on
+    // screen. State that exists before the client does has to be announced to
+    // it — the same rule that put `inventory` and the item list in this path.
+    emit(
+        &socket,
+        "round_state",
+        &serde_json::json!({
+            "tick": tick,
+            "phase": phase,
+            "time_left": time_left,
         }),
     );
 

@@ -3524,3 +3524,34 @@ Left for later: `leave_room` (§B9) has no client method; Exit closes the socket
        which the server already treats as leaving (`docs/40` §6). T14.06 owns the
        quit path and `connection.ts`. Also: `deathOverlay.ts` has a private
        `escapeHtml`; `results-math.ts` now exports one. Two escapers is §A24's shape.
+
+## T13.06.1 — No battle exists until players ask for one — DONE
+Files: crates/game-core/src/constants.rs, game-server/src/{app,main,room,round,replay,session,
+       config}.rs, src/bin/replay.rs, tests/{lobby,integration,replay,replay_run,bots,checksum,
+       join,rooms}.rs, client/src/{net/connection.ts,scenes/GameScene.ts},
+       scripts/checks/lobby-start.mjs, scripts/e2e.mjs
+Verified: `--test lobby` 11 passed; `e2e.mjs lobby-start` ok — rooms 0 on a fresh
+       server, arrives in a lobby with a map and tick 0->0, one human waits past
+       2x the countdown, "Start with bots" -> warmup, 4 players, panel clears.
+       Falsified: restoring the bootstrap room fails the first two assertions.
+Notes: A ROOM IS BORN IN LOBBY AND SEATS NO BOTS. `begin_round` is the one place
+       a round starts, so bots cannot be seated by a second path.
+       MY OWN ROUND.RS TESTS COULD NOT TELL HUMANS FROM SEATS — they pass
+       humans==connected, so falsifying `humans` to `connected` left all 23
+       green. The distinction only exists where bots hold seats, so the real
+       test is at the Room level: last human leaves a running round -> back to
+       Lobby, with 3 bots still seated. That one falsifies properly.
+       AND `test_config()` SETS bot_count 0, so every lobby test passed against
+       a build that seats bots at construction — the bug itself. Added
+       `a_lobby_room_has_no_bots` with bot_count 4; it goes red on that build.
+       THE LAG WARNING WENT PERMANENTLY WRONG: `expected` ticks came from task
+       start, so a room that waited 10 s in a lobby reported `lagging=608`
+       forever and poisoned `tick_overruns`. Re-based when the round starts.
+       A JOINING CLIENT WAS NEVER TOLD ITS PHASE: a Lobby room does not tick, so
+       it broadcasts no `round_state`, and the lobby panel never appeared. §A39
+       again — `seat()` now sends `round_state` like it sends `inventory`.
+Left for later: `join` now means quick match, so "room full" is a property of a
+       *specific* room; integration's capacity test joins by code instead.
+       Bots still fire while walking (T13.06.3). Touched outside Touch only:
+       main.rs and bin/replay.rs (compile breaks from the Command/Replay enums),
+       and 6 test files whose harness waited for a tick a lobby never produces.

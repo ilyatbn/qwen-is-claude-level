@@ -53,6 +53,8 @@ pub enum Command {
     VoteRestart(PlayerId, bool),
     ResyncMap(PlayerId),
     Leave(PlayerId),
+    /// "Start with bots" from the lobby (§C18) — the solo path.
+    StartWithBots(PlayerId),
     /// Who is in this room: total seats taken, and how many are bots.
     ///
     /// A separate command rather than an `Inspect`, because `bots` lives on the
@@ -80,6 +82,7 @@ impl std::fmt::Debug for Command {
             Command::VoteRestart(id, v) => write!(f, "VoteRestart({id}, {v})"),
             Command::ResyncMap(id) => write!(f, "ResyncMap({id})"),
             Command::Leave(id) => write!(f, "Leave({id})"),
+            Command::StartWithBots(id) => write!(f, "StartWithBots({id})"),
             Command::Status { .. } => f.write_str("Status"),
             Command::Inspect(_) => f.write_str("Inspect"),
         }
@@ -383,7 +386,7 @@ impl Room {
             bot_seq: 0,
             round: crate::round::RoundController::new(seed),
             replay: None,
-            last_recorded_phase: game_core::world::RoundPhase::Warmup,
+            last_recorded_phase: game_core::world::RoundPhase::Lobby,
             dropped_inputs: 0,
             seed,
             buried_secret,
@@ -392,7 +395,12 @@ impl Room {
         // and it was parsed and then dropped: the world used the constant, so a
         // shortened round never shortened.
         room.world.set_round_seconds(room.config.round_seconds);
-        room.seat_bots(seed);
+        // §C18: a room is born in `Lobby` and seats **no** bots. Bots were
+        // seated here, and a room was created at server startup, so every
+        // player who connected landed in a battle already in progress. Bots are
+        // seated when a round starts — `begin_round` — and nowhere else.
+        room.world.set_phase(game_core::world::RoundPhase::Lobby);
+        let _ = room.world.drain_events();
         // `docs/61` §3 row 1: the line a report of "the map was unplayable" maps
         // onto. Without `attempts` and `traversable_fraction` there is nothing to
         // look at but the seed.
@@ -648,6 +656,20 @@ impl Room {
                 self.seats.free_seat(id);
                 self.world.remove_player(id);
                 self.round.forget(id);
+                // §C18: a room that has lost its last human goes back to
+                // `Lobby` — not on to a fresh round — and is reaped by the
+                // registry after `ROOM_EMPTY_TTL`. Without this a room full of
+                // bots keeps playing a match nobody is in.
+                if self.human_count() == 0
+                    && self.world.phase != game_core::world::RoundPhase::Lobby
+                {
+                    tracing::info!(target: "game::round", "last human left; back to lobby");
+                    self.return_to_lobby();
+                }
+            }
+            Command::StartWithBots(id) => {
+                self.note(R::StartWithBots(id));
+                self.request_start();
             }
             // Not recorded: reading who is seated changes nothing.
             Command::Status { reply } => {
@@ -721,15 +743,74 @@ impl Room {
         self.seats.seats.iter().filter(|s| s.ready).count()
     }
 
+    /// Seats that are not bots.
+    ///
+    /// `seats.len()` counts bots, and using it as the start condition is what
+    /// let a room start itself with nobody in it (§C18).
+    pub fn human_count(&self) -> usize {
+        self.seats.seats.len().saturating_sub(self.bots.len())
+    }
+
+    /// Seat bots and enter `Warmup`. The one place a round begins.
+    fn begin_round(&mut self) {
+        self.seat_bots(self.seed);
+        self.world.set_phase(game_core::world::RoundPhase::Warmup);
+        tracing::info!(
+            target: "game::round",
+            humans = self.human_count(),
+            bots = self.bots.len(),
+            "round starting"
+        );
+    }
+
+    /// Return to `Lobby` and clear the bots.
+    ///
+    /// A `Lobby` room has no bots (§C18), so leaving them seated would give the
+    /// next `human_count()` the wrong answer and let an empty room restart
+    /// itself — the original bug, one layer along.
+    fn return_to_lobby(&mut self) {
+        for b in std::mem::take(&mut self.bots) {
+            self.seats.free_seat(b.player);
+            self.world.remove_player(b.player);
+        }
+        self.world.set_phase(game_core::world::RoundPhase::Lobby);
+    }
+
+    /// A player pressed "Start with bots".
+    pub fn request_start(&mut self) {
+        if self.world.phase == game_core::world::RoundPhase::Lobby {
+            self.round.request_start();
+        }
+    }
+
     /// One simulation step plus the bookkeeping around it.
     pub fn tick_once(&mut self, dt: f32) -> Vec<game_core::world::GameEvent> {
         self.seats.begin_tick();
-        self.drive_bots(dt);
-        self.world.step(dt);
 
+        // §C18: a `Lobby` room holds a map and a roster and does nothing else —
+        // no world step, no bots, no timers, no scoring, no item spawns, no
+        // weather. Only the start condition is evaluated.
+        let in_lobby = self.world.phase == game_core::world::RoundPhase::Lobby;
+        if !in_lobby {
+            self.drive_bots(dt);
+            self.world.step(dt);
+        }
+
+        let humans = self.human_count();
         let connected = self.seats.seats.len();
         let min = self.config.min_players_to_start;
-        let (mut events, outcome) = self.round.tick(&mut self.world, connected, min);
+        let (mut events, outcome) = self.round.tick(&mut self.world, humans, connected, min, dt);
+
+        if in_lobby {
+            // Nothing below this point applies to a lobby: no replay
+            // checkpoints (no ticks to check), no diagnostic event scan (no
+            // events), no phase-change flush beyond the one `begin_round` makes.
+            if outcome == crate::round::RoundOutcome::Start {
+                self.begin_round();
+                events.extend(self.world.drain_events());
+            }
+            return events;
+        }
 
         // `docs/61` §3, the rows that only the event stream can answer. These are
         // deliberate diagnostic lines, not verbosity: each one is the thing you
@@ -789,11 +870,13 @@ impl Room {
 
         match outcome {
             crate::round::RoundOutcome::Continue => {}
+            // Only reachable from `Lobby`, which returned above.
+            crate::round::RoundOutcome::Start => {}
             crate::round::RoundOutcome::Restart { seed } => {
                 events.extend(self.restart(seed));
             }
             crate::round::RoundOutcome::ToLobby => {
-                self.world.set_phase(game_core::world::RoundPhase::Lobby);
+                self.return_to_lobby();
             }
         }
         events
@@ -1120,7 +1203,13 @@ async fn run(
     // round run slow — round time stays true to wall-clock (`docs/41` §2).
     ticker.set_missed_tick_behavior(MissedTickBehavior::Burst);
 
-    let start = Instant::now();
+    // Wall-clock baseline for the lag check. §C18: it is **re-based when the
+    // round starts**, because a room now waits in `Lobby` without ticking — and
+    // measuring expected ticks from task start made every room that waited
+    // report a permanent overrun (`lagging=608` after a ten-second lobby),
+    // which would spam the log and make `tick_overruns` useless.
+    let mut start = Instant::now();
+    let mut was_lobby = true;
 
     loop {
         tokio::select! {
@@ -1144,6 +1233,11 @@ async fn run(
                 // anything a restart produced) come back from `tick_once` and are
                 // flushed with the world's, in that order.
                 let round_events = room.tick_once(SIM_DT);
+                let in_lobby = room.world.phase == game_core::world::RoundPhase::Lobby;
+                if was_lobby && !in_lobby {
+                    start = Instant::now();
+                }
+                was_lobby = in_lobby;
                 room.sweep_unready(READY_TIMEOUT);
 
                 let mut events = room.world.drain_events();
@@ -1297,6 +1391,10 @@ mod tests {
             ..Config::default()
         });
         let mut room = Room::new(cfg);
+        // §C18: bots are seated when a round starts, not at construction, so a
+        // test that wants bots has to start one.
+        room.request_start();
+        room.tick_once(game_core::constants::SIM_DT);
         room.world.set_phase(game_core::world::RoundPhase::Playing);
 
         // Arm both bots and stand them in a clear line, so the only thing under
@@ -1457,10 +1555,20 @@ mod tests {
         assert_eq!(room.world.players.len(), 0);
     }
 
-    /// Bots are seated at construction and hold real seats.
+    /// Bots are seated **when a round starts** (§C18) and hold real seats.
+    ///
+    /// They used to be seated at construction, which is how a room created at
+    /// server startup was already a battle before anyone connected.
     #[test]
     fn the_default_config_seats_bots_and_they_occupy_seats() {
-        let room = Room::new(cfg_with_bots());
+        let mut room = Room::new(cfg_with_bots());
+        assert_eq!(
+            room.bot_count(),
+            0,
+            "bots were seated before the round started"
+        );
+        room.request_start();
+        room.tick_once(game_core::constants::SIM_DT);
         let bots = room.bot_count();
         assert!(bots > 0, "BOT_COUNT defaults to 0, so §A5 is not in effect");
         assert_eq!(
@@ -1479,6 +1587,8 @@ mod tests {
             ..Config::default()
         });
         let mut room = Room::new(cfg);
+        room.request_start();
+        room.tick_once(game_core::constants::SIM_DT);
         assert_eq!(room.world.players.len(), 6);
         let (reply, _rx) = oneshot::channel();
         room.apply(Command::Join {

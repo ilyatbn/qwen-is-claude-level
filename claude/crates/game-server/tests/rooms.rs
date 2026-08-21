@@ -47,8 +47,11 @@ async fn spawn_server() -> Harness {
         let _ = axum::serve(listener, router).await;
     });
     // Wait for the default room to be ticking, rather than sleeping a guess.
+    // §C18: a room waits in `Lobby`, so there is no tick until a round starts.
+    // This presses "Start with bots" once, the way a player does.
+    let started = stack.start_default_room();
     for _ in 0..200 {
-        if stack.room.inspect(|w| w.tick).await.unwrap_or(0) > 0 {
+        if started.inspect(|w| w.tick).await.unwrap_or(0) > 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -443,7 +446,7 @@ async fn quick_match_puts_two_players_in_the_same_room() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn leaving_frees_the_room_for_reaping() {
     let h = spawn_server().await;
-    let (addr, reg, default_room) = (h.addr, h.stack.registry.clone(), h.stack.default_room);
+    let (addr, reg, default_room) = (h.addr, h.stack.registry.clone(), h.stack.default_room());
 
     let seated = tokio::task::spawn_blocking(move || {
         let inbox: Inbox = Arc::default();

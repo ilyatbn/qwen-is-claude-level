@@ -67,7 +67,7 @@ async fn spawn_server(config: Config) -> Server {
         .await
         .expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local addr");
-    let router = stack.router;
+    let router = stack.router.clone();
     tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
@@ -76,15 +76,18 @@ async fn spawn_server(config: Config) -> Server {
     // generates its map before entering the loop, and `join` is answered from
     // inside it. A sleep long enough on an idle box is not long enough on a busy
     // one, and the failure reads as a protocol bug.
+    // §C18: a room waits in `Lobby`, so there is no tick until a round starts.
+    // This presses "Start with bots" once, the way a player does.
+    let started = stack.start_default_room();
     for _ in 0..200 {
-        if stack.room.inspect(|w| w.tick).await.unwrap_or(0) > 0 {
+        if started.inspect(|w| w.tick).await.unwrap_or(0) > 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     Server {
         addr,
-        room: stack.room,
+        room: started.clone(),
         _shutdown: stack.shutdown,
     }
 }
@@ -162,6 +165,11 @@ fn got(inbox: &Inbox, ev: &str) -> Vec<serde_json::Value> {
         .get(ev)
         .cloned()
         .unwrap_or_default()
+}
+
+/// The first payload for `ev`, if any.
+fn got_value(inbox: &Inbox, ev: &str) -> Option<serde_json::Value> {
+    got(inbox, ev).into_iter().next()
 }
 
 /// Snapshot byte-lengths and `last_input_seq` values, as a client sees them.
@@ -258,6 +266,12 @@ fn join_and_ready(
 ///
 /// `tests/room.rs` asserts the cap on the `Room` directly. This asserts the
 /// client is *told*, which is a different claim and the one a player experiences.
+///
+/// It joins **by code**, not with a plain `join`. §C18 made a bare `join` mean
+/// quick match, and quick match creates a room when none has space (§B1) — so
+/// the seventh player is correctly given a room of their own rather than
+/// refused. "Full" is a property of *a specific room*, and joining one by its
+/// code is how a player asks for that room in particular.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seventh_client_is_told_the_room_is_full() {
     let cfg = Config {
@@ -269,18 +283,41 @@ async fn a_seventh_client_is_told_the_room_is_full() {
 
     let outcome = tokio::task::spawn_blocking(move || {
         let mut held = Vec::new();
-        for i in 0..3 {
+        // The first client makes the room and learns its code; everyone else
+        // asks for *that* room by name.
+        let (first, first_inbox, first_rx) =
+            connect(addr, &["welcome", "join_error", "room_created"]);
+        first
+            .emit(
+                "create_room",
+                serde_json::json!({ "name": "p0", "private": true }),
+            )
+            .expect("emit create");
+        wait_for(&first_rx, "room_created", 15);
+        wait_for(&first_rx, "welcome", 15);
+        let code = got_value(&first_inbox, "room_created")
+            .and_then(|v| v.get("code").and_then(|c| c.as_str().map(String::from)))
+            .expect("room_created carries a code");
+        held.push(first);
+
+        for i in 1..3 {
             let (c, _, rx) = connect(addr, &["welcome", "join_error"]);
-            c.emit("join", serde_json::json!({ "name": format!("p{i}") }))
-                .expect("emit join");
+            c.emit(
+                "join_room",
+                serde_json::json!({ "name": format!("p{i}"), "code": code }),
+            )
+            .expect("emit join_room");
             wait_for(&rx, "welcome", 15);
             held.push(c);
         }
 
-        // The one over the line.
+        // The one over the line, asking for the same room.
         let (c, inbox, rx) = connect(addr, &["welcome", "join_error"]);
-        c.emit("join", serde_json::json!({ "name": "spare" }))
-            .expect("emit join");
+        c.emit(
+            "join_room",
+            serde_json::json!({ "name": "spare", "code": code }),
+        )
+        .expect("emit join_room");
         wait_for(&rx, "join_error", 15);
         let errs = got(&inbox, "join_error");
         let welcomes = got(&inbox, "welcome");

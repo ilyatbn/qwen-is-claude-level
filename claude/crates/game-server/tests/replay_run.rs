@@ -130,6 +130,7 @@ fn resimulate(file: &replay::Replay, until: u32) -> Room {
                 ReplayCommand::ToggleFlashlight(id) => Command::ToggleFlashlight(*id),
                 ReplayCommand::VoteRestart(id, v) => Command::VoteRestart(*id, *v),
                 ReplayCommand::Leave(id) | ReplayCommand::DropUnready(id) => Command::Leave(*id),
+                ReplayCommand::StartWithBots(id) => Command::StartWithBots(*id),
             };
             room.apply_for_test(c);
         }
@@ -432,7 +433,7 @@ async fn a_signalled_shutdown_writes_the_footer_before_the_process_can_exit() {
         ..Config::default()
     };
     let stack = build_stack(AppState::new(config));
-    let room = stack.room.clone();
+    let room = stack.start_default_room();
 
     // Let the room tick a while, so there is a round to record.
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;

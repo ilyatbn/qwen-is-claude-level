@@ -83,6 +83,12 @@ pub enum ReplayCommand {
     /// elapsed time, which a replay has none of, so its effect has to be recorded
     /// or a replayed round keeps a seat the live round freed.
     DropUnready(PlayerId),
+    /// A player pressed "Start with bots" (§C18).
+    ///
+    /// It has to be recorded: it seats bots and begins the round, so a replay
+    /// that skipped it would sit in an empty lobby for four minutes and diverge
+    /// on the first tick.
+    StartWithBots(PlayerId),
 }
 
 impl ReplayCommand {
@@ -99,6 +105,7 @@ impl ReplayCommand {
             ReplayCommand::Leave(_) => 9,
             ReplayCommand::DropUnready(_) => 10,
             ReplayCommand::Checkpoint { .. } => 11,
+            ReplayCommand::StartWithBots(_) => 12,
         }
     }
 }
@@ -339,7 +346,8 @@ fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayErro
         | ReplayCommand::Fire(id)
         | ReplayCommand::ToggleFlashlight(id)
         | ReplayCommand::Leave(id)
-        | ReplayCommand::DropUnready(id) => w.write_all(&[*id])?,
+        | ReplayCommand::DropUnready(id)
+        | ReplayCommand::StartWithBots(id) => w.write_all(&[*id])?,
         ReplayCommand::Input(id, inputs) => {
             w.write_all(&[*id])?;
             let n = inputs.len().min(255);
@@ -556,6 +564,7 @@ fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
             hash.copy_from_slice(c.take(32)?);
             ReplayCommand::Checkpoint { tick, hash }
         }
+        12 => ReplayCommand::StartWithBots(c.u8()?),
         other => return Err(ReplayError::BadTag(other)),
     })
 }

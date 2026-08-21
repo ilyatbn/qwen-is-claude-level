@@ -337,6 +337,10 @@ fn to_command(c: &ReplayCommand) -> Command {
         // A sweep and a leave have the same effect on the world; the distinction
         // is only in why it happened, which the recorder keeps for the reader.
         ReplayCommand::Leave(id) | ReplayCommand::DropUnready(id) => Command::Leave(*id),
+        // §C18. Named rather than folded into a catch-all: a `_ =>` here would
+        // silently drop the command that *starts the round*, and the replay
+        // would sit in an empty lobby and diverge on tick one.
+        ReplayCommand::StartWithBots(id) => Command::StartWithBots(*id),
         // Unreachable: filtered out before this is called, because a checkpoint
         // is an observation rather than an input. Mapping it to a no-op command
         // would be a quiet lie about what the file contains.

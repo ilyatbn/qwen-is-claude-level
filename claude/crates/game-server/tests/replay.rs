@@ -384,6 +384,11 @@ fn bots_survive_the_unready_sweep_and_humans_who_never_ready_do_not() {
         round_seconds: 8.0,
         ..Config::default()
     }));
+    // §C18: bots are seated when a round starts, not at construction. Without
+    // this the sweep has no bots to spare and the test passes for the wrong
+    // reason — `left: 0, right: 3`.
+    room.request_start();
+    room.tick_once(game_core::constants::SIM_DT);
     // A human who joins and never sends `ready`.
     let ghost = seat(&mut room, "ghost");
 

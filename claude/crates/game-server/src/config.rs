@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(c.map_scale, DEFAULT_MAP_SCALE);
         assert_eq!(c.max_players, MAX_PLAYERS);
         assert_eq!(c.round_seconds, 240.0);
-        assert_eq!(c.min_players_to_start, 1);
+        assert_eq!(c.min_players_to_start, MIN_PLAYERS_TO_START);
         assert_eq!(c.fixed_seed, None);
         assert!(!c.record_replay);
         assert!(!c.debug_dump);

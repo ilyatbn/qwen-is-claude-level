@@ -39,19 +39,22 @@ async fn spawn_server() -> Server {
         .await
         .expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local addr");
-    let router = stack.router;
+    let router = stack.router.clone();
     tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
+    // §C18: a room waits in `Lobby`, so there is no tick until a round starts.
+    // This presses "Start with bots" once, the way a player does.
+    let started = stack.start_default_room();
     for _ in 0..200 {
-        if stack.room.inspect(|w| w.tick).await.unwrap_or(0) > 0 {
+        if started.inspect(|w| w.tick).await.unwrap_or(0) > 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     Server {
         addr,
-        room: stack.room,
+        room: started.clone(),
         _shutdown: stack.shutdown,
     }
 }

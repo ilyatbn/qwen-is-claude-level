@@ -39,12 +39,10 @@ async fn spawn_server() -> Harness {
     tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    for _ in 0..200 {
-        if stack.room.inspect(|w| w.tick).await.unwrap_or(0) > 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // §C18: there is no room at startup and a `Lobby` room does not tick, so
+    // there is no tick to wait for. Waiting for the listener is the whole
+    // readiness condition now — and a test that waited on a tick would hang
+    // forever, which is how this one found the change.
     Harness { addr, stack }
 }
 
@@ -104,15 +102,24 @@ fn first(inbox: &Inbox, ev: &str, field: &str) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
+/// Poll for `n` copies of `ev`.
+///
+/// The budget is 30 s and that is not padding for a flake. §C18 made a bare
+/// `join` **create the room**, and creating a room generates a map — §B2
+/// measured that at 0.6–1.1 s on an idle box, and it is several times that when
+/// the whole gate is compiling and running beside it. Before, the room already
+/// existed at server startup and `join` was a lookup, which is what the old
+/// 10 s budget was sized for. This test passed standalone and failed inside the
+/// gate for exactly that reason.
 fn wait_for(inbox: &Inbox, ev: &str, n: usize, label: &str) {
-    for _ in 0..200 {
+    for _ in 0..600 {
         if count(inbox, ev) >= n {
             return;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     panic!(
-        "{label}: waited 10 s for {n} `{ev}`, saw {}",
+        "{label}: waited 30 s for {n} `{ev}`, saw {}",
         count(inbox, ev)
     );
 }
@@ -287,7 +294,7 @@ async fn leaving_frees_the_seat_and_the_socket_can_join_again() {
     let h = spawn_server().await;
     let addr = h.addr;
     let reg = h.stack.registry.clone();
-    let default_room = h.stack.default_room;
+    let default_room = h.stack.default_room();
 
     let out = tokio::task::spawn_blocking(move || {
         let ia: Inbox = Arc::default();
@@ -376,4 +383,321 @@ async fn a_tombstone_skin_is_carried_and_echoed() {
     assert_eq!(echoed["stone"], 7, "{echoed}");
 
     h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+// ---------------------------------------------------------------------------
+// §C18 — no battle exists until players ask for one
+// ---------------------------------------------------------------------------
+
+/// The bug as reported: connecting used to drop you into a running battle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fresh_server_has_no_rooms_and_nothing_ticking() {
+    let h = spawn_server().await;
+    let reg = h.stack.registry.clone();
+
+    let ids = {
+        let r = reg.lock().expect("registry");
+        r.ids().to_vec()
+    };
+    assert!(
+        ids.is_empty(),
+        "a fresh server already had rooms: {ids:?} — a player connecting would \
+         land in whatever they are doing"
+    );
+
+    // And it stays that way: nothing creates one on a timer.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let ids = {
+        let r = reg.lock().expect("registry");
+        r.ids().to_vec()
+    };
+    assert!(ids.is_empty(), "a room appeared on its own: {ids:?}");
+
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// The control for the test above **and** the one below: a room does get made,
+/// and it does hold a map. Without this, "no rooms" also passes for a server
+/// that cannot create one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn joining_creates_a_room_that_holds_a_map_and_does_not_tick() {
+    let h = spawn_server().await;
+    let addr = h.addr;
+    let reg = h.stack.registry.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        a.emit("join", serde_json::json!({ "name": "ana" }))
+            .expect("emit");
+        wait_for(&ia, "welcome", 1, "ana");
+        std::thread::sleep(Duration::from_millis(600));
+        a
+    })
+    .await
+    .expect("client thread");
+
+    let id = {
+        let r = reg.lock().expect("registry");
+        *r.ids().first().expect("joining created a room")
+    };
+    let handle = {
+        let r = reg.lock().expect("registry");
+        r.get(id).expect("room").handle.clone()
+    };
+
+    let (tick, surface, phase) = handle
+        .inspect(|w| (w.tick, w.map.meta.surface_points.len(), w.phase))
+        .await
+        .expect("room alive");
+
+    assert!(
+        surface > 0,
+        "a lobby room has no map; players cannot see what they are about to play"
+    );
+    assert_eq!(
+        phase,
+        game_core::world::RoundPhase::Lobby,
+        "a room with one human is not in a lobby"
+    );
+    assert_eq!(
+        tick, 0,
+        "a lobby room is simulating — {tick} ticks with one human in it"
+    );
+
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// One human waits; "Start with bots" is what starts them (§C18's solo path).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_human_waits_until_they_ask_for_bots() {
+    let h = spawn_server().await;
+    let addr = h.addr;
+    let reg = h.stack.registry.clone();
+
+    let client = tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        a.emit("join", serde_json::json!({ "name": "ana" }))
+            .expect("emit");
+        wait_for(&ia, "welcome", 1, "ana");
+        a
+    })
+    .await
+    .expect("client thread");
+
+    let handle = {
+        let r = reg.lock().expect("registry");
+        let id = *r.ids().first().expect("room");
+        r.get(id).expect("room").handle.clone()
+    };
+
+    // Twice the countdown. If it were going to start on its own, it has.
+    tokio::time::sleep(Duration::from_secs_f32(
+        game_core::constants::LOBBY_COUNTDOWN * 2.0,
+    ))
+    .await;
+    let phase = handle.inspect(|w| w.phase).await.expect("alive");
+    assert_eq!(
+        phase,
+        game_core::world::RoundPhase::Lobby,
+        "one human alone started a battle"
+    );
+
+    // The control: asking does start it.
+    tokio::task::spawn_blocking(move || {
+        client
+            .emit("start_with_bots", serde_json::json!({}))
+            .expect("emit");
+        std::thread::sleep(Duration::from_millis(800));
+    })
+    .await
+    .expect("client thread");
+
+    let (phase, tick) = handle.inspect(|w| (w.phase, w.tick)).await.expect("alive");
+    assert_ne!(
+        phase,
+        game_core::world::RoundPhase::Lobby,
+        "start_with_bots did nothing"
+    );
+    assert!(tick > 0, "the round started but nothing is ticking");
+
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// Two humans start on their own, after the countdown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_humans_start_on_their_own() {
+    let h = spawn_server().await;
+    let addr = h.addr;
+    let reg = h.stack.registry.clone();
+
+    let clients = tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        a.emit(
+            "quick_match",
+            serde_json::json!({ "name": "ana", "scale": "small" }),
+        )
+        .expect("emit");
+        wait_for(&ia, "welcome", 1, "ana");
+        let ib: Inbox = Arc::default();
+        let b = connect(addr, ib.clone());
+        b.emit(
+            "quick_match",
+            serde_json::json!({ "name": "bo", "scale": "small" }),
+        )
+        .expect("emit");
+        wait_for(&ib, "welcome", 1, "bo");
+        (a, b)
+    })
+    .await
+    .expect("client thread");
+
+    let handle = {
+        let r = reg.lock().expect("registry");
+        let id = *r.ids().first().expect("room");
+        r.get(id).expect("room").handle.clone()
+    };
+
+    // Countdown plus slack for the socket round trips.
+    tokio::time::sleep(Duration::from_secs_f32(
+        game_core::constants::LOBBY_COUNTDOWN + 2.0,
+    ))
+    .await;
+    let (phase, tick) = handle.inspect(|w| (w.phase, w.tick)).await.expect("alive");
+    assert_ne!(
+        phase,
+        game_core::world::RoundPhase::Lobby,
+        "two humans did not start a round"
+    );
+    assert!(tick > 0, "the round started but nothing is ticking");
+
+    drop(clients);
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// The humans-vs-seats distinction, at the only layer where it is observable.
+///
+/// `round.rs`'s unit tests pass `humans == connected`, so they **cannot** tell
+/// the two apart — falsifying `humans` to `connected` there leaves them all
+/// green. Bots hold seats, so the distinction only exists once a round has
+/// started, which is here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_room_whose_last_human_leaves_goes_back_to_lobby_despite_its_bots() {
+    let mut cfg = test_config();
+    cfg.bot_count = 3;
+    let state = AppState::new(cfg);
+    let stack = app::build_stack(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let router = stack.router.clone();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let reg = stack.registry.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        a.emit("join", serde_json::json!({ "name": "ana" }))
+            .expect("emit");
+        wait_for(&ia, "welcome", 1, "ana");
+        a.emit("start_with_bots", serde_json::json!({}))
+            .expect("emit");
+        std::thread::sleep(Duration::from_millis(900));
+        // Leaving: an explicit disconnect, not a drop. `drop` does not close
+        // the socket promptly, so the server never sees the leave and the test
+        // reports "the room kept playing" for the wrong reason.
+        let _ = a.disconnect();
+        std::thread::sleep(Duration::from_millis(1200));
+    })
+    .await
+    .expect("client thread");
+
+    let handle = {
+        let r = reg.lock().expect("registry");
+        let id = *r.ids().first().expect("room");
+        r.get(id).expect("room").handle.clone()
+    };
+    let (phase, seats, bots) = {
+        let p = handle.inspect(|w| w.phase).await.expect("alive");
+        let (seats, bots) = handle.status().await.unwrap_or((99, 99));
+        (p, seats, bots)
+    };
+    assert_eq!(
+        phase,
+        game_core::world::RoundPhase::Lobby,
+        "a room with {seats} seats ({bots} of them bots) kept playing a match \
+         with no humans in it"
+    );
+    assert_eq!(bots, 0, "a lobby room still has {bots} bots seated");
+
+    stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// A `Lobby` room has **no bots**.
+///
+/// This needs `bot_count > 0` to mean anything: `test_config()` sets it to 0, so
+/// every other test here passes just as happily against a build that seats bots
+/// at construction — which is the bug §C18 exists to fix. Falsified by restoring
+/// `seat_bots` to `Room::new_async`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lobby_room_has_no_bots() {
+    let mut cfg = test_config();
+    cfg.bot_count = 4;
+    let state = AppState::new(cfg);
+    let stack = app::build_stack(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let router = stack.router.clone();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let reg = stack.registry.clone();
+
+    let client = tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        a.emit("join", serde_json::json!({ "name": "ana" }))
+            .expect("emit");
+        wait_for(&ia, "welcome", 1, "ana");
+        std::thread::sleep(Duration::from_millis(600));
+        a
+    })
+    .await
+    .expect("client thread");
+
+    let handle = {
+        let r = reg.lock().expect("registry");
+        let id = *r.ids().first().expect("room");
+        r.get(id).expect("room").handle.clone()
+    };
+    let phase = handle.inspect(|w| w.phase).await.expect("alive");
+    let (seats, bots) = handle.status().await.unwrap_or((99, 99));
+    assert_eq!(phase, game_core::world::RoundPhase::Lobby, "not a lobby");
+    assert_eq!(
+        bots, 0,
+        "a lobby room seated {bots} bots (of {seats} seats) before anyone asked \
+         for a battle"
+    );
+
+    // The control: they arrive when the round does, or "no bots" also passes
+    // for a build that never seats any.
+    tokio::task::spawn_blocking(move || {
+        client
+            .emit("start_with_bots", serde_json::json!({}))
+            .expect("emit");
+        std::thread::sleep(Duration::from_millis(900));
+    })
+    .await
+    .expect("client thread");
+    let (_, bots) = handle.status().await.unwrap_or((0, 0));
+    assert!(bots > 0, "starting the round seated no bots");
+
+    stack.shutdown_all(Duration::from_secs(2)).await;
 }

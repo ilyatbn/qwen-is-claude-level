@@ -224,6 +224,11 @@ export class Connection {
     this.emit('resync_map', {})
   }
 
+  /** §C18's solo path: seat bots and start the round from the lobby. */
+  sendStartWithBots(): void {
+    this.emit('start_with_bots', {})
+  }
+
   close(): void {
     this.socket?.close()
     this.socket = null

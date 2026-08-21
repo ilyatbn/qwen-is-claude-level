@@ -52,14 +52,64 @@ async fn metrics(State(state): State<AppState>) -> String {
 pub struct Stack {
     pub router: Router,
     pub io: SocketIo,
-    /// The default room, for tests that predate the registry and only ever want
-    /// one. New code should go through `registry`.
-    pub room: crate::room::RoomHandle,
-    pub sessions: std::sync::Arc<crate::session::SessionMap>,
     pub registry: std::sync::Arc<std::sync::Mutex<crate::registry::RoomRegistry>>,
-    pub default_room: crate::registry::RoomId,
+    config: std::sync::Arc<crate::config::Config>,
     /// Kept for API compatibility; rooms are stopped through the registry.
     pub shutdown: tokio::sync::oneshot::Sender<()>,
+}
+
+impl Stack {
+    /// The room a test wants when it only ever wants one, **created on first
+    /// call**.
+    ///
+    /// §C18 removed the room that used to be created at startup. Tests that
+    /// predate the registry still want "the room", so they get one here — and
+    /// because it is lazy, a test that never asks still sees a server with zero
+    /// rooms, which is the property the amendment is about.
+    pub fn default_room(&self) -> crate::registry::RoomId {
+        let mut r = match self.registry.lock() {
+            Ok(r) => r,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(id) = r.ids().first().copied() {
+            return id;
+        }
+        let (id, _) = r
+            .create(self.config.map_scale, false)
+            .expect("an empty registry is always under MAX_ROOMS");
+        id
+    }
+
+    pub fn room(&self) -> crate::room::RoomHandle {
+        let id = self.default_room();
+        let r = match self.registry.lock() {
+            Ok(r) => r,
+            Err(p) => p.into_inner(),
+        };
+        r.get(id).expect("just created").handle.clone()
+    }
+
+    /// Create the default room **and start its round**, the way a player does.
+    ///
+    /// §C18 means a room now waits in `Lobby`, so a harness that waits for the
+    /// first tick waits forever. This presses "Start with bots" for it. It is
+    /// the same command the socket handler sends — not a back door that skips
+    /// the path players take, which would let the lobby break without a test
+    /// noticing.
+    pub fn start_default_room(&self) -> crate::room::RoomHandle {
+        let h = self.room();
+        h.send(crate::room::Command::StartWithBots(0));
+        h
+    }
+
+    pub fn sessions(&self) -> std::sync::Arc<crate::session::SessionMap> {
+        let id = self.default_room();
+        let r = match self.registry.lock() {
+            Ok(r) => r,
+            Err(p) => p.into_inner(),
+        };
+        r.get(id).expect("just created").sessions.clone()
+    }
 }
 
 impl Stack {
@@ -89,9 +139,10 @@ pub fn build_stack(state: AppState) -> Stack {
     let rooms_gauge = state.rooms_gauge();
     let (router, io) = build(state);
 
-    // The registry owns every room, including this default one. A process with
-    // one room is the same code path as a process with eight — there is no
-    // "single room mode" to diverge (`docs/71` §B1).
+    // The registry owns every room. §C18: it starts **empty**. A room used to
+    // be created here, at server startup, with bots seated and ticking — so
+    // every player who connected landed in a battle already in progress.
+    // `/healthz` reporting `rooms 0, players 0` on a fresh server is correct.
     let registry = std::sync::Arc::new(std::sync::Mutex::new(
         crate::registry::RoomRegistry::new(
             io.clone(),
@@ -102,15 +153,6 @@ pub fn build_stack(state: AppState) -> Stack {
         )
         .with_gauge(rooms_gauge),
     ));
-
-    let (room, sessions, default_room) = {
-        let mut r = registry.lock().expect("fresh registry is never poisoned");
-        let (id, _) = r
-            .create(config.map_scale, false)
-            .expect("the first room is always under MAX_ROOMS");
-        let e = r.get(id).expect("just created");
-        (e.handle.clone(), e.sessions.clone(), id)
-    };
 
     // One signal that stops every room.
     //
@@ -142,14 +184,12 @@ pub fn build_stack(state: AppState) -> Stack {
         });
     }
 
-    crate::session::register(&io, registry.clone(), default_room, config);
+    crate::session::register(&io, registry.clone(), config.clone());
     Stack {
         router,
         io,
-        room,
-        sessions,
         registry,
-        default_room,
+        config,
         shutdown,
     }
 }

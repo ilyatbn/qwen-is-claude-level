@@ -67,6 +67,7 @@ export class GameScene extends Phaser.Scene {
   private hud!: HTMLDivElement
   /** The private room's join code, once the server has told us (§B9). */
   private joinCode: string | null = null
+  private lobbyPanel: HTMLDivElement | null = null
   private codeBanner: HTMLElement | null = null
   private feel!: FeelLayer
   private minimap: Minimap | null = null
@@ -218,6 +219,10 @@ export class GameScene extends Phaser.Scene {
       // The big code is for inviting someone, which is a warmup activity. Once
       // the round is live it belongs in the strip, not across the screen.
       if (this.phase !== 'lobby' && this.phase !== 'warmup') this.hideJoinCodeBanner()
+      // §C18: a lobby is a place you wait, so say what is being waited for.
+      // `time_left` is finite only while the countdown runs.
+      if (this.phase === 'lobby') this.showLobby(this.timeLeft)
+      else this.hideLobby()
     })
     // The payload is the point: `score` carries the whole table (`docs/40` §3),
     // and this handler used to discard it and merely re-render `this.scores` —
@@ -1082,6 +1087,55 @@ export class GameScene extends Phaser.Scene {
       `<b style="font-size:2rem;letter-spacing:.5rem;color:#ffd23f">${code}</b>`
     document.body.appendChild(el)
     this.codeBanner = el
+  }
+
+  /**
+   * The lobby overlay: who is here, the countdown, and "Start with bots".
+   *
+   * §C18. It lives in `GameScene` and not in a scene of its own because the
+   * player is already *in* the room — the socket is here, and the map is
+   * already loaded behind it, which is the point of generating it when the room
+   * is created. A second scene would be a second lobby to keep in step, which
+   * is the shape of defect this milestone exists to end (§C0).
+   *
+   * DOM, like every other screen-space element here (§A35): a Phaser object with
+   * `scrollFactor(0)` still has camera zoom applied and lands off-viewport.
+   */
+  private showLobby(countdown: number): void {
+    const humans = this.scores.size
+    const counting = Number.isFinite(countdown) && countdown > 0
+    const line = counting
+      ? `Starting in ${Math.ceil(countdown)}…`
+      : `Waiting for another player — or start now with bots.`
+
+    if (!this.lobbyPanel) {
+      const el = document.createElement('div')
+      el.id = 'lobby-panel'
+      el.style.cssText =
+        'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:14;' +
+        'font:16px/1.7 system-ui,sans-serif;color:#e8ecff;text-align:center;' +
+        'background:rgba(6,10,26,0.88);padding:22px 34px;border-radius:8px;' +
+        'min-width:320px;'
+      document.body.appendChild(el)
+      this.lobbyPanel = el
+    }
+    const el = this.lobbyPanel
+    // Rebuilt each update, so the button is re-bound with it.
+    el.innerHTML =
+      `<div style="font-size:1.4rem;font-weight:700;margin-bottom:6px">Lobby</div>` +
+      `<div id="lobby-roster" style="opacity:.85">${humans} player${humans === 1 ? '' : 's'} here</div>` +
+      `<div id="lobby-status" style="margin:10px 0 14px">${line}</div>` +
+      `<button id="lobby-start" style="font:15px system-ui;padding:8px 18px;` +
+      `border-radius:5px;border:0;background:#3d5afe;color:#fff;cursor:pointer">` +
+      `Start with bots</button>`
+    el.querySelector('#lobby-start')?.addEventListener('click', () => {
+      this.conn.sendStartWithBots()
+    })
+  }
+
+  private hideLobby(): void {
+    this.lobbyPanel?.remove()
+    this.lobbyPanel = null
   }
 
   private hideJoinCodeBanner(): void {

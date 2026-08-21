@@ -34,7 +34,9 @@ async fn main() -> ExitCode {
     let router = stack.router;
     // Held so the room is not shut down by the sender being dropped.
     let shutdown = stack.shutdown;
-    let room = stack.room.clone();
+    // §C18: there is no room at startup any more, and there may be many by the
+    // time the process stops. Shutdown waits on whatever the registry holds.
+    let registry = stack.registry.clone();
 
     let listener = match tokio::net::TcpListener::bind(bind).await {
         Ok(l) => l,
@@ -63,12 +65,22 @@ async fn main() -> ExitCode {
     // interrupted by `docker compose down` being exactly the one worth keeping
     // (`docs/41` §7).
     let _ = shutdown.send(());
-    if !room.wait_for_shutdown(SHUTDOWN_GRACE).await {
-        tracing::warn!(
-            target: "game::net",
-            "room did not stop within {}s; a replay may be missing its footer",
-            SHUTDOWN_GRACE.as_secs()
-        );
+    let handles = {
+        let r = match registry.lock() {
+            Ok(r) => r,
+            Err(p) => p.into_inner(),
+        };
+        r.handles()
+    };
+    for (id, h) in handles {
+        if !h.wait_for_shutdown(SHUTDOWN_GRACE).await {
+            tracing::warn!(
+                target: "game::net",
+                room = id,
+                "room did not stop within {}s; a replay may be missing its footer",
+                SHUTDOWN_GRACE.as_secs()
+            );
+        }
     }
 
     match served {
