@@ -520,3 +520,57 @@ stated that ~8 of 10 rounds have zero kills on a correct build — about a 1-in-
 failure rate by arithmetic. It had been passing because those five seeds happened to
 contain a lucky one. The damage floor it sits beside never moved, so lethality was
 never in question; only the coin landed differently.
+
+## B18 — A crate-scoped **Done when** cannot see a workspace break
+
+T11.01's Done-when is `cargo test -p game-core`. It passed. The commit left the
+**workspace unbuildable**: four new `GameEvent` variants never reached
+`scope_of`/`name_of`/`payload_of`, and three new `Delivery` variants never reached
+game-wasm's fire path. Verified independently in a clean worktree at that commit:
+two compile errors.
+
+The task's own gate was structurally incapable of seeing it, and the failure is
+exactly where this project's most common defect lives — a type grew in one crate
+and the crates that consume it did not.
+
+`CLAUDE.md` already says to run `./scripts/check.sh` before reporting done. That is
+now stated as the rule it always was:
+
+> A **Done when** command proves the task. `./scripts/check.sh` proves the
+> repository. A task is not done until **both** pass, and a crate-scoped Done-when
+> makes the second one load-bearing rather than ceremonial.
+
+## B19 — Three weapons that were built and could not be used
+
+All three from the same batch, none visible to a unit test:
+
+- **A knife deleted itself on its first swing.** `try_fire` consumed a stack for
+  anything that was not an energy weapon, and melee has `max_stack: 1`. §B7 says
+  melee is the floor of the arsenal; a weapon that vanishes when used is the most
+  complete way to be worthless. Fixed with `WeaponDef::spends_stack()` — **derived**,
+  not a fourth flag that can disagree with the other three (§B16).
+- **Mines were indestructible in a real round.** `destroy_in_blast` had **no
+  production caller** — only tests. §B6's "destructible by explosions, which is what
+  stops a map filling up with them" was tested and never enforced. The unit test
+  could not see it because *the test itself was the caller*.
+- **Bots could not switch weapons at all.** Selection is a command and nothing in
+  `Input` carries it, so the only thing that had ever changed a bot's selection was
+  the inventory auto-advancing on an empty stack — and an energy weapon's stack never
+  empties. Identical in shape to the bots that never fired (§A39 #5).
+
+The pattern is now ten instances deep and its diagnostic has not changed: **grep for
+the production callers of anything you build.** A test calling the function is not a
+caller.
+
+## B20 — The arsenal has no art, and the test that would catch it uses a fixture
+
+Thirteen new items reference sprite keys absent from `atlas-map.json`. They fall
+back to placeholders per `docs/50` §8 — nothing breaks, which is correct behaviour
+and is also why nobody noticed. **Every new weapon looks identical on the ground.**
+
+The check that should have caught it (`docs/51` §9: *"every atlas frame referenced
+by `skins.json` exists in that atlas's JSON"*) validates against a **fixture**
+rather than the live registry, so it cannot see a registry entry that has no art.
+
+> A test that validates data against a copy of that data validates nothing. Point it
+> at the registry the game actually loads.
