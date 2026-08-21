@@ -18,7 +18,20 @@ use crate::math::{Vec2, TAU};
 use crate::player::input::{button, Input};
 use crate::player::state::PlayerId;
 use crate::rng::substream;
+use crate::weapons::explode::DamageSource;
 use crate::world::World;
+
+/// A hazard a bot can see, and who lit it.
+///
+/// The lighter is carried because §B24's denial measure has to count only the
+/// hazards an *enemy* laid: a bot fleeing its own molotov has denied ground to
+/// nobody, and counting it would make a weapon look strongest exactly when it
+/// is hurting its user most — the mistake T11.09's first instrument made.
+#[derive(Debug, Clone, Copy)]
+struct Hazard {
+    pos: Vec2,
+    lit_by: Option<PlayerId>,
+}
 
 /// How far above the bot a target must be before it reaches for the jetpack.
 const JETPACK_RISE: f32 = 120.0;
@@ -76,6 +89,16 @@ pub struct BotStats {
     pub rej_blast_guard: u32,
     pub rej_range: u32,
     pub rej_los: u32,
+    /// Ticks spent walking out of a hazard **somebody else** lit.
+    ///
+    /// §B24: damage-per-second cannot see denied space, so a zone weapon that
+    /// works looks like one that does nothing. These two count the denial
+    /// directly — an enemy who is moving because of your fire is the effect the
+    /// weapon is for. Only *other* players' hazards count, or a bot fleeing its
+    /// own molotov would score as having denied ground to itself.
+    pub ticks_hazard_evaded: u32,
+    /// Ticks where a step toward the goal was refused because a hazard was ahead.
+    pub ticks_hazard_blocked: u32,
 }
 
 pub struct Bot {
@@ -209,11 +232,14 @@ impl Bot {
         // hazards that hurt bots most are the ones they are standing on.
         if let Some(h) = self.hazard_at(world, pos, HAZARD_CLEARANCE) {
             buttons &= !(button::LEFT | button::RIGHT);
-            buttons |= if pos.x >= h.x {
+            buttons |= if pos.x >= h.pos.x {
                 button::RIGHT
             } else {
                 button::LEFT
             };
+            if h.lit_by.is_some_and(|id| id != self.player) {
+                self.stats.ticks_hazard_evaded += 1;
+            }
         } else if buttons & (button::LEFT | button::RIGHT) != 0 {
             // Not in one yet — do not step into one. Probe one walk-second
             // ahead in the direction already chosen.
@@ -226,8 +252,11 @@ impl Bot {
                     },
                 pos.y,
             );
-            if self.hazard_at(world, ahead, 0.0).is_some() {
+            if let Some(h) = self.hazard_at(world, ahead, 0.0) {
                 buttons &= !(button::LEFT | button::RIGHT);
+                if h.lit_by.is_some_and(|id| id != self.player) {
+                    self.stats.ticks_hazard_blocked += 1;
+                }
             }
         }
 
@@ -357,32 +386,44 @@ impl Bot {
     ///
     /// Only hazards within `FOV_DAY` count. A bot reacting to fire it cannot see
     /// would be cheating (§A5); a human sees the fire they are standing in.
-    fn hazard_at(&self, world: &World, at: Vec2, margin: f32) -> Option<Vec2> {
-        let mut best: Option<(f32, Vec2)> = None;
+    fn hazard_at(&self, world: &World, at: Vec2, margin: f32) -> Option<Hazard> {
+        let mut best: Option<(f32, Hazard)> = None;
         for p in world.burn.patches() {
             let d = (p.pos - at).len();
             if d > FOV_DAY {
                 continue; // out of sight: not knowable, so not usable
             }
             if d <= p.radius + margin && best.is_none_or(|(bd, _)| d < bd) {
-                best = Some((d, p.pos));
+                let lit_by = match p.source {
+                    DamageSource::Player { id, .. } => Some(id),
+                    DamageSource::SelfInflicted { .. } => None,
+                    DamageSource::Weather(_) => None,
+                };
+                best = Some((d, Hazard { pos: p.pos, lit_by }));
             }
         }
-        best.map(|(_, pos)| pos)
+        best.map(|(_, h)| h)
     }
 
-    /// How close to close. Never inside the blast guard, or the bot arrives at a
-    /// range where it has forbidden itself to fire.
+    /// How close to close. Never inside the guard that stops us firing, or the
+    /// bot walks to a range where it has forbidden itself to shoot.
+    ///
+    /// **`blast_radius` alone is the wrong number**, and this is the second place
+    /// it was: it is 0 for exactly the `Burst::Zone` weapons — molotov, toxic —
+    /// so a bot closed to the 40 px floor and stood in the fire it had just
+    /// thrown. `zone_reach` already existed for the throw guard; the approach
+    /// used the old number, which is why molotov self-harm stayed the highest in
+    /// the arsenal after T11.14's first pass.
     fn stand_off(&self, world: &World) -> f32 {
-        let blast = self
+        let w = self
             .selected_weapon(world)
             .and_then(def)
             .and_then(|d| match d.kind {
                 ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
                 _ => None,
-            })
-            .map_or(0.0, |w| w.blast_radius);
-        (blast * 2.0).max(40.0)
+            });
+        let reach = w.map_or(0.0, |w| zone_reach(w).unwrap_or(w.blast_radius));
+        (reach * 2.0).max(40.0)
     }
 
     /// The selected weapon, **if it can actually be fired**.
@@ -698,6 +739,45 @@ mod tests {
             inp.buttons & button::RIGHT != 0 && inp.buttons & button::LEFT == 0,
             "with no hazard the bot should close on a target 300 px right"
         );
+    }
+
+    /// §B24's denial measure counts only hazards an **enemy** lit, and that
+    /// distinction is the whole point: a bot fleeing its own molotov has denied
+    /// ground to nobody, and counting it would score a weapon highest exactly
+    /// when it is hurting its user most — which is the mistake T11.09's first
+    /// instrument made when it folded self-damage into damage dealt.
+    #[test]
+    fn deflections_count_only_an_enemy_s_fire() {
+        fn deflect_ticks(lit_by: DamageSource) -> u32 {
+            let mut w = world_with(&[1, 2]);
+            let at = clear_line(&w);
+            if let Some(p) = w.player_mut(1) {
+                p.body.pos = at;
+            }
+            if let Some(p) = w.player_mut(2) {
+                p.body.pos = Vec2::new(at.x + 300.0, at.y);
+            }
+            w.burn.light(Vec2::new(at.x + 10.0, at.y), 0.0, lit_by);
+            let mut b = Bot::new(1, SEED, 0, 1.0);
+            b.think(&w, 0.0, SIM_DT);
+            b.stats().ticks_hazard_evaded + b.stats().ticks_hazard_blocked
+        }
+
+        let enemy = deflect_ticks(DamageSource::Player {
+            id: 2,
+            weapon: crate::items::registry::WeaponId(0),
+        });
+        let own = deflect_ticks(DamageSource::Player {
+            id: 1,
+            weapon: crate::items::registry::WeaponId(0),
+        });
+        // The control is the first assertion: without it, "own fire counts zero"
+        // passes for a counter that is never incremented at all.
+        assert_eq!(
+            enemy, 1,
+            "an enemy's fire moved the bot and was not counted"
+        );
+        assert_eq!(own, 0, "the bot's own fire was counted as denying ground");
     }
 
     /// Standing in fire beats reaching the target.
@@ -1034,6 +1114,8 @@ pub(crate) mod harness {
             rej_blast_guard: a.rej_blast_guard + b.rej_blast_guard,
             rej_range: a.rej_range + b.rej_range,
             rej_los: a.rej_los + b.rej_los,
+            ticks_hazard_evaded: a.ticks_hazard_evaded + b.ticks_hazard_evaded,
+            ticks_hazard_blocked: a.ticks_hazard_blocked + b.ticks_hazard_blocked,
         }
     }
 
