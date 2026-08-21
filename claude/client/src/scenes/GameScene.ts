@@ -859,6 +859,17 @@ export class GameScene extends Phaser.Scene {
     // than a stream of add/remove calls: a missed despawn self-corrects next
     // frame instead of leaving a rocket hanging in the air.
     this.world?.syncProjectiles(this.mirror.projectiles.values())
+    // Toxic rain is on while any recorded effect is in its active phase. The
+    // lifecycle is already tracked for the e2e; nothing consumed it visually,
+    // which is §B21 exactly — the number was right and never reached the screen.
+    if (this.world) {
+      let toxic = false
+      for (const e of this.observed.effects.values()) {
+        if (e.kind === 'ToxicRain' && e.phases.has('active') && !e.phases.has('end')) toxic = true
+      }
+      this.world.weather.setToxic(toxic)
+      this.world.weather.update(dt, [], C().MAX_FALL_SPEED)
+    }
     this.ordnance.update(dt)
     // Mine visibility is distance to the *player*, not to the camera centre —
     // the camera leads the aim, so those are not the same point.

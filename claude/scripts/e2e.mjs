@@ -78,6 +78,8 @@ const CHECKS = [
   { name: 'terrain-render', file: 'scripts/checks/terrain-render.mjs', url: '?sandbox=1&seed=4242' },
   // §C4: you must be able to see what you fired.
   { name: 'ordnance-visible', file: 'scripts/checks/ordnance-visible.mjs', url: '?sandbox=1&seed=12345' },
+  // §C6: the weather must reach the screen, not just the simulation.
+  { name: 'weather-visible', file: 'scripts/checks/weather-visible.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'sky', file: 'scripts/checks/sky.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'lightmap', file: 'scripts/checks/lightmap.mjs', url: '?sandbox=1&seed=4242' },

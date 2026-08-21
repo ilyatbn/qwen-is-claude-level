@@ -3442,3 +3442,27 @@ Context the next session needs:
     pattern). It caught the ordnance bug before any pixel was sampled.
   - Cross-scene layer parity is still only asserted for the sandbox: `?game=1`
     cannot build a world without a server. Worth a standalone check that runs one.
+
+## T13.04 — Weather you can see — DONE
+Files: client/src/render/{weather,weather-math}.ts + test, worldView.ts,
+       scenes/{GameScene,SandboxScene}.ts, scripts/checks/weather-visible.mjs
+Verified: `--run weather-math` 9 passed; `e2e.mjs weather-visible` ok — 260 drops
+       drawn, sky changed 42.0 against a 4.4 noise floor, lava 210 embers from
+       3 jetting vents. Gate: 905 rust, e2e 24/24, EXIT=0.
+Notes: §B21 AGAIN — the sim was right and nothing reached the screen. Puddles
+       were drawn as discs and the RAIN never was, so an 8 s downpour looked
+       like a few green circles.
+       EMITTERS, NOT ENTITIES: a fixed pool of drops that wrap, so a downpour
+       costs what a drizzle costs. Tested by running 10 s of rain and asserting
+       the pool size never changes.
+       THE FIRST VERSION MEASURED 36.6 AND THE DROPS WERE INVISIBLE. The
+       vignette was created second at the same depth, so it drew OVER the rain
+       and washed it out — the delta was real and it was entirely the green
+       cast. Only looking at the screenshot caught it; the number went 36.6 ->
+       42.2 while the picture changed completely.
+       The check derives its threshold from a measured NOISE FLOOR (two dry
+       frames, ~4.4) rather than a constant: the sky animates, so zero is wrong
+       and any fixed number is a guess.
+Left for later: meteors ride T13.03's projectile path (r=8, trail 14) and are
+       not separately asserted. The game passes [] for vents — lava embers are
+       exercised through the sandbox only.

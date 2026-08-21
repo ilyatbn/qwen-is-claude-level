@@ -582,6 +582,13 @@ export class SandboxScene extends Phaser.Scene {
           // silently different for four milestones and only one was ever asserted.
           projectilesLive: self.core.liveProjectiles().length,
           projectilesDrawn: self.world.drawnProjectiles,
+          // Weather at both ends: the sim's ramp, and how many drops are drawn.
+          toxicIntensity: self.world.weather.toxicIntensity,
+          rainDrops: self.world.weather.rainDrops,
+          embers: self.world.weather.emberCount,
+          // Jetting vents, so "the layer drew nothing" can be told apart from
+          // "the simulation never jetted" — different bugs, same silence.
+          vents: (self.lastWeather?.vents ?? []).filter((v) => v.jetting).length,
           trauma: self.world.rig.traumaLevel,
           fps: self.game.loop.actualFps,
           worldView: {
@@ -627,6 +634,16 @@ export class SandboxScene extends Phaser.Scene {
       },
       clearCues() {
         self.cueLog = []
+      },
+      /**
+       * Force a weather effect: 0 toxic, 1 meteor, 2 lava, 3 fog.
+       *
+       * Takes the scene's own weather clock rather than making the caller guess
+       * it — a check that passes the wrong `now` schedules an effect into the
+       * past and then reports the renderer as broken.
+       */
+      forceWeather(kind: 0 | 1 | 2 | 3) {
+        self.core.forceEffect(kind, self.weatherTime)
       },
       setMasterVolume(v: number) {
         self.audio.setMasterVolume(v)
@@ -884,6 +901,12 @@ export class SandboxScene extends Phaser.Scene {
     const weather = this.core.weatherStep(this.weatherTime, dt)
     this.lastWeather = weather
     this.drawHazards(weather)
+    // The rain, the spew and the green cast. The discs above say *where* the
+    // hazards are; this is what makes an 8-second downpour look like one.
+    this.world.weather.setToxic(
+      weather.active.some((a) => a.kind === 'toxic' && a.phase === 'active'),
+    )
+    this.world.weather.update(dt, weather.vents, C().MAX_FALL_SPEED)
     // Fog from the effect ramps; the Fog button is a separate manual override so
     // visibility can be inspected without waiting for a burst.
     const fogMult = this.fogActive
