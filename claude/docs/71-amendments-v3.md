@@ -412,3 +412,62 @@ The rule this comes from is general enough to state: **a screen that exists to s
 the game must not render it differently from the game.** A separate render path in
 the attract mode is a second thing to keep in sync, and the first time it drifts,
 the title screen will be advertising a game that no longer looks like that.
+
+## B13 — Every room played the same map
+
+With one room, a hardcoded seed is a harmless placeholder. With many, **every game
+on the server plays the same map, and the same map again after a restart** — the
+whole generator, 999-seed sweep and all, producing one level in practice.
+
+It was invisible until a second room existed, which is the point: multi-room did
+not create this bug, it revealed one that had been shipping since M6. A room's seed
+is now mixed from the room id, and the test builds two rooms and compares their
+**masks**.
+
+The first version of that test could not fail:
+
+> It tested `mix_seed` directly, so restoring the hardcoded seed left it green. It
+> exercised the function but never the **decision to call it**.
+
+That is §B11 again from a new angle — the unit was correct and unused, and testing
+the unit says nothing about whether anything reaches it.
+
+## B14 — `room_created` had no subscriber, and the Skins button had no scene
+
+Two more of §A39's five, now eight:
+
+- **Nothing subscribed to `room_created`.** The reducer case existed and was
+  unit-tested, `lobby.ts` decoded the event, and no client ever handled it — so
+  creating a private game never showed anyone the code, which is the only thing a
+  private game is *for*.
+- **`MenuScene` has called `scene.start('Skins')` since T10.04 and no such scene was
+  ever registered.** Clicking Skins did nothing at all.
+
+The second is the pattern **inverted**: not a mechanism with no consumer, but a
+consumer with no mechanism. Both halves were present and plausible in isolation.
+
+The diagnostic that catches it is the same one that keeps working here:
+
+> **Arrive the way a player arrives.** The skins check enters *through the button*
+> (`?menu=1`). One that navigated straight to `?skins=1` would have passed the whole
+> time — and would have been the obvious way to write it.
+
+## B15 — An assertion on a field that does not exist cannot fail
+
+Two of the M10 checkpoint's own assertions were wrong, and only measuring showed it:
+
+- It compared `debug().seed` between rooms to prove they differed. That field is the
+  client's own core placeholder and reads `1` in every room, so **it compared two
+  constants**.
+- It asserted `debug().tick` advanced. There is no such field, and
+  `undefined <= undefined` is `false` forever — so "three rounds are ticking" could
+  never fail.
+
+Both passed for a year of nothing. The rule:
+
+> Before trusting an assertion on a debug field, **print it once**. A typo'd or
+> absent field yields `undefined`, and every comparison against `undefined` is
+> quietly false — which reads exactly like a passing test.
+
+Room identity is the **mask checksum**; ticking is `lastServerTick`. Both are values
+the server actually produces.
