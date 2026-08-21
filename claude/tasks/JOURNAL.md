@@ -3089,3 +3089,65 @@ Notes: THE GAP WAS 18, NOT THE 13 §B20 ESTIMATED — measured against the live
        Falsified by deleting the whip painter: "expected [ 'whip -> weapon_whip' ]
        to deeply equal []" — it names the item, not just a count.
 Left for later: T11.09 (balance).
+
+## T11.09 — Balance the arsenal by measurement — DONE
+Files: crates/game-core/tests/balance.rs (new), src/constants.rs,
+       src/items/registry.rs, src/weapons/melee.rs, docs/71-amendments-v3.md,
+       scripts/e2e-two-clients.mjs, scripts/e2e.mjs
+Verified: `cargo test -p game-core --release --test balance -- --ignored
+       --nocapture` — 20 weapons x 8 seeds x 4 bots x 30 s = 960 bot-seconds each;
+       outliers 6 -> 1. Gate GATE_EXIT=0.
+Notes: MY INSTRUMENT WAS WRONG BEFORE THE ARSENAL WAS. Counting
+       `attacker.is_some()` folds in SELF-damage, so molotov (2.14) and toxic
+       (2.38) came top of the table. Corrected to `attacker != victim` they read
+       0.46 dealt / 1.68 self and 0.60 / 1.79 — three times more harm to their
+       user than to anyone else. It reported a liability as the game's strongest
+       weapon, in the one row a reader looks at first.
+       ONE CHANGE, WITH A CONTROL THAT WAS ALREADY IN THE DATA. Four melee
+       weapons sat under half the median; the whip did not. Same delivery kind,
+       same bots, same maps — reach is the only systematic difference and it
+       predicted hit rate almost exactly (26/28/30 -> 0.47/0.26/0.38 %, whip 58
+       -> 3.0 %). Reaches to 36/40/40/38, whip UNTOUCHED at 58. After: knife
+       0.47->0.80, axe 0.23->1.26, hammer 0.15->0.73, and WHIP 1.10 -> 1.10.
+       The unchanged control reading identically is what makes it a measurement
+       rather than a reshuffle.
+       A SECOND CHANGE MEASURED WORSE AND WAS REVERTED. Flamethrower range
+       150->200 gave 0.37->0.30 dealt with self-damage 0.28->0.44. Fire leaves
+       burning ground and its user walks into it — the same root cause as
+       molotov and toxic. The bot blast-guard checks a blast RADIUS and knows
+       nothing about a hazard that lingers, so more reach only spreads more fire
+       to stand in. A bot-AI gap, not a weapon-balance one; tuning the weapon
+       would have treated the symptom.
+       deagle 2.06 (2.0x) LEFT ALONE: dps cannot see capacity. 8 rounds = 360
+       damage per pickup vs pistol 560, machinegun 1320. Added a `dmg/pick`
+       column so the trade is visible instead of inferred. smoke excluded from
+       the median — §B7 says it has no damage, so judging it against a damage
+       median reports a correct weapon as the worst in the game.
+       Spawn floor 5/6/7 -> 8; every item now spawns at least once (was
+       `hammer: 0`).
+       THE E2E SCRIPTS WERE LEAKING VITE. `npm run dev` forks vite as a
+       GRANDCHILD and both scripts killed only the direct child — ten orphans
+       were accumulating, which IS the "loaded box" blamed for three flakes.
+       Now `detached: true` + `process.kill(-pid)`. Also replaced the fixed
+       1500 ms sleeps in two-clients with `settle()`, which waits for the masks
+       to stop changing: a fixed sleep over an accumulating buffer passes idle
+       and fails loaded, so waiting on the effect makes load irrelevant instead
+       of moving the threshold.
+THE GATE IS RED, AND IT IS NOT THIS TASK — CONTROLLED. `two-clients` fails
+       inside a full suite run and passes standalone (3/3) and through the suite
+       path alone. The previous three sightings blamed CPU contention; that is
+       WRONG. The repro is deterministic and cheap:
+       `node scripts/e2e.mjs m5-weather two-clients` fails every time,
+       `node scripts/e2e.mjs two-clients` passes. `ordnance` fails the same way
+       when placed straight after m5-weather. Symptom is EXACTLY 0.0 px moved and
+       0 px of terrain destroyed while the map decodes and items draw — the
+       client's fixed-timestep loop is not advancing, not running slowly.
+       Leading hypothesis: Chromium throttles rAF on non-foreground pages, and a
+       standalone spec opens contexts while the suite holds its own page open.
+       ATTRIBUTION CONTROLLED: `git stash` of this session's two script edits,
+       rerun, still fails. Written up as T11.12 with the repro and three
+       candidate fixes, rather than left as a fourth "flaky" sighting.
+Left for later: item DENSITY, not weights — ~12-15 spawns per round against 24
+       item types means a round shows you about half the arsenal. If "tons of
+       weapons" should be felt in a single round, INITIAL_ITEMS and
+       ITEM_SPAWN_INTERVAL are the levers, and both are outside this task.

@@ -1,6 +1,6 @@
 # Master task list
 
-130 tasks across 13 milestones.
+131 tasks across 13 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added. Counted, not assumed.) Work them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
@@ -252,7 +252,8 @@ Three weapons becomes twenty-two. Deathmatch is the point; variety is the game.
 - [x] [T11.06](M11/T11.06-flamethrower.md) — Flamethrower **(v3)**
 - [x] [T11.07](M11/T11.07-mines.md) — Proximity mines **(v3)**
 - [x] [T11.08](M11/T11.08-grenades.md) — Airburst, smoke, molotov, toxic **(v3)**
-- [ ] [T11.09](M11/T11.09-balance.md) — Balance the arsenal by measurement **(v3)**
+- [x] [T11.09](M11/T11.09-balance.md) — Balance the arsenal by measurement **(v3)**
+- [ ] [T11.12](M11/T11.12-suite-isolation.md) — One spec breaks the next one **(v3)**
 - [x] [T11.10](M11/T11.10-ordnance-render.md) — Draw the ordnance the server already sends **(v3)**
 - [x] [T11.11](M11/T11.11-arsenal-art.md) — Art for the arsenal **(v3)**
 

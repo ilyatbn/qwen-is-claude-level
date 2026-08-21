@@ -192,11 +192,13 @@ Existing three unchanged: `bazooka`, `grenade`, `smg`.
 
 | key | dmg | carve | reach | arc | cd | knockback |
 |---|---|---|---|---|---|---|
-| `knife` | 35 | 0 | 26 | 1.0 | 0.35 | 60 |
-| `bat` | 28 | 0 | 34 | 1.4 | 0.55 | 260 |
+| `knife` | 35 | 0 | 26 → **36** | 1.0 | 0.35 | 60 |
+| `bat` | 28 | 0 | 34 → **40** | 1.4 | 0.55 | 260 |
 | `whip` | 22 | 0 | 58 | 0.8 | 0.60 | 120 |
-| `axe` | 55 | 10 | 30 | 1.2 | 0.90 | 140 |
-| `hammer` | 70 | 16 | 28 | 1.1 | 1.20 | 340 |
+| `axe` | 55 | 10 | 30 → **40** | 1.2 | 0.90 | 140 |
+| `hammer` | 70 | 16 | 28 → **38** | 1.1 | 1.20 | 340 |
+
+The reaches were corrected by measurement — see **§B23**.
 
 ### Cone
 
@@ -619,3 +621,86 @@ and the TypeScript decoder but not game-server's own Rust decoder — seven code
 tests failing with `TrailingBytes`, one unread byte per player. Exactly §B18, made
 again by the session that had just been told about it. **The gate is the only thing
 that sees a cross-crate break**, and it is not optional.
+
+## B23 — The arsenal, as measured
+
+§B7 says of its own table that it is "a starting point, not a result". T11.09 is
+the result. Two instruments, because one metric cannot answer both questions:
+**in the hand** (every bot holding weapon X, ground swept, identical seeds — so
+exposure is identical and the round's damage is X's) and **in the pool** (natural
+rounds, joining `ItemSpawn` → `ItemPickup`, which answers whether it ever reaches
+a hand at all). Sample: 8 seeds × 4 bots × 30 s per weapon = 960 bot-seconds each.
+
+### The instrument was wrong first
+
+The first run reported molotov and toxic as the **strongest** weapons in the game
+at 2.14 and 2.38 damage per bot-second. They are the weakest. `GameEvent::Damage`
+carries an attacker, and counting `attacker.is_some()` folds in **self-damage** —
+so a bot setting itself on fire was scored as a weapon dealing damage. Corrected
+to `attacker != victim`, the same two weapons read **0.46 dealt against 1.68 self**
+and **0.60 against 1.79**: they do roughly three times more harm to their user
+than to anyone else.
+
+> An instrument that cannot tell *hit the enemy* from *hit myself* reports a
+> liability as a strength — and it reported it as the top of the table, which is
+> the one place a reader looks.
+
+### The one change, and its control
+
+Four melee weapons sat below half the median. The whip did not. Same delivery
+kind, same bots, same maps — the only systematic difference is **reach**, and it
+predicted the hit rate almost exactly:
+
+| weapon | reach | hit rate | dmg/bot-s |
+|---|---|---|---|
+| knife | 26 | 0.47 % | 0.47 |
+| hammer | 28 | 0.26 % | 0.15 |
+| axe | 30 | 0.38 % | 0.23 |
+| bat | 34 | 1.9 % | 0.96 |
+| **whip** | **58** | **3.0 %** | **1.10** |
+
+Reaches raised to knife **36**, bat **40**, axe **40**, hammer **38**. The whip
+stays at 58 — it keeps the reach crown, and it is the control:
+
+| weapon | before | after |
+|---|---|---|
+| knife | 0.47 | **0.80** |
+| bat | 0.96 | 0.88 |
+| **whip (unchanged)** | **1.10** | **1.10** |
+| axe | 0.23 | **1.26** |
+| hammer | 0.15 | **0.73** |
+
+The whip reading 1.10 both times is what makes this a measurement rather than a
+reshuffle. Outliers went from **6 to 1**. Damage, cooldown and knockback are
+untouched: a hammer still hits for 70 and swings slowest, and melee is still worse
+at range than every gun — the goal was "never worth picking up", not parity.
+
+### A second change, measured and reverted
+
+The flamethrower was the last weapon under half the median (0.37), so the same
+reasoning was applied: raise its range 150 → 200. **It measured worse** — 0.37 →
+0.30 dealt, with self-damage rising 0.28 → 0.44. Reverted.
+
+The cause is the same one behind molotov and toxic: fire leaves burning ground and
+its user walks into it. The bot blast-guard checks a *blast radius* and knows
+nothing about a hazard that lingers for seconds, so more reach only spreads more
+fire to stand in. **That is a bot-AI gap, not a weapon-balance problem**, and
+tuning the weapon would have been treating the symptom.
+
+### Spawn weights
+
+Floor raised to **8** (hammer and flamethrower were 5, deagle and laser_smg 6,
+mine 7). Minimum share is now 2.9 % of 278, and every item spawned at least once
+across the 8-round pool sample — it had been `hammer: 0`.
+
+### Deliberately not changed
+
+`deagle` reads 2.06 (2.0× median) and is left alone. dps does not see **capacity**:
+at 8 rounds it carries 360 total damage per pickup against the pistol's 560 and
+the machinegun's 1320. It is a burst weapon that runs dry, which is its design.
+The report now prints a `dmg/pick` column so that trade is visible rather than
+inferred.
+
+`smoke` reads 0.00 and is excluded from the median and the outlier check, because
+§B7 says it is "the only one with no damage at all". Judging it against a damage
+median reports a weapon working exactly as specified as the worst in the game.

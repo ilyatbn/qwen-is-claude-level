@@ -135,7 +135,13 @@ if (!selected.length) {
 const require = createRequire(join(root, 'client/package.json'))
 const { chromium } = require('playwright-core')
 
+// `detached` so this gets its own process group. `npm run dev` forks `vite` as a
+// grandchild, and killing npm leaves that grandchild running — ten orphaned vite
+// servers were found accumulating on this box, which is itself the "loaded
+// machine" that has been blamed for three separate flakes. Killing the group
+// kills the grandchild too.
 const vite = spawn('npm', ['--prefix', 'client', 'run', 'dev'], {
+  detached: true,
   cwd: root,
   env: { ...process.env, LD_LIBRARY_PATH: libDir },
 })
@@ -161,9 +167,14 @@ const portReady = new Promise((res, rej) => {
 
 const shutdown = () => {
   try {
-    vite.kill('SIGTERM')
+    // Negative pid = the whole group, which is where the real vite lives.
+    process.kill(-vite.pid, 'SIGTERM')
   } catch {
-    /* already gone */
+    try {
+      vite.kill('SIGTERM')
+    } catch {
+      /* already gone */
+    }
   }
 }
 process.on('exit', shutdown)

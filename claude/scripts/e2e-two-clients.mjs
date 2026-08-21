@@ -37,9 +37,15 @@ const kids = []
 const cleanup = () => {
   for (const k of kids) {
     try {
-      k.kill('SIGKILL')
+      // The whole group: `npx vite` and `cargo run` both fork the process that
+      // actually holds the port, and killing only the direct child orphans it.
+      process.kill(-k.pid, 'SIGKILL')
     } catch {
-      /* already gone */
+      try {
+        k.kill('SIGKILL')
+      } catch {
+        /* already gone */
+      }
     }
   }
 }
@@ -52,6 +58,7 @@ const fail = (msg) => {
 
 // --- the real server ------------------------------------------------------
 const server = spawn('cargo', ['run', '--quiet', '-p', 'game-server'], {
+  detached: true,
   cwd: root,
   env: {
     ...process.env,
@@ -84,6 +91,7 @@ if (!up) {
 
 // --- vite, as the same-origin proxy the browser needs ---------------------
 const vite = spawn('npx', ['vite', '--strictPort=false'], {
+  detached: true,
   cwd: join(root, 'client'),
   env: { ...process.env, VITE_SERVER_PORT: String(PORT) },
 })
@@ -135,24 +143,84 @@ if (da0.mapW !== db0.mapW || da0.mapH !== db0.mapH) {
 if (String(da0.seed) !== String(db0.seed)) fail(`seed differs: ${da0.seed} vs ${db0.seed}`)
 if (da0.maskChecksum !== db0.maskChecksum) fail('masks differ immediately after join')
 
-// Each sees two players.
-await new Promise((r) => setTimeout(r, 1500))
-const da1 = await dbg(a)
-const db1 = await dbg(b)
+// Each sees two players. Poll rather than sleep: on a loaded box the second
+// client's first snapshot can land well after any constant someone picks.
+const until = async (c, ok, what, deadlineMs = 20_000) => {
+  const started = Date.now()
+  let last
+  while (Date.now() - started < deadlineMs) {
+    last = await dbg(c)
+    if (ok(last)) return last
+    await new Promise((r) => setTimeout(r, 200))
+  }
+  fail(`${what} (gave up after ${deadlineMs} ms)`)
+  return last
+}
+const da1 = await until(a, (d) => d.playerCount >= 2, 'ana never saw two players')
+const db1 = await until(b, (d) => d.playerCount >= 2, 'bo never saw two players')
 if (da1.playerCount < 2) fail(`ana sees ${da1.playerCount} players, expected 2`)
 if (db1.playerCount < 2) fail(`bo sees ${db1.playerCount} players, expected 2`)
 
-// The remote one moves when the other holds a key.
-const remoteBefore = (await dbg(a)).players.length
+// The remote one moves when the other holds a key. Hold until bo has actually
+// moved rather than for a fixed 1200 ms: the client steps a fixed timestep off
+// requestAnimationFrame, so under load it simulates fewer ticks per wall-clock
+// second and a constant sleep measures the box rather than the game. This is
+// the failure recorded three times as "two-clients fails in the suite, passes
+// standalone" — most recently as `bo held D and moved only 0.0 px locally`.
+const bx0 = db1.player?.x ?? 0
 await b.page.keyboard.down('d')
+// Hold for the original fixed window *first*, then keep holding and poll. The
+// fixed part is what the check has always done and is known to work; the poll
+// only extends it when the box is too busy to have simulated enough ticks yet.
+// Polling from t=0 instead was tried and did not move the player at all, for a
+// reason I could not explain — so this keeps the behaviour that works and adds
+// headroom rather than replacing it with something I do not understand.
 await new Promise((r) => setTimeout(r, 1200))
+for (let i = 0; i < 60; i++) {
+  const d = await dbg(b)
+  if (Math.abs((d.player?.x ?? 0) - bx0) > 8) break
+  await new Promise((r) => setTimeout(r, 250))
+}
 await b.page.keyboard.up('d')
 await new Promise((r) => setTimeout(r, 400))
 const aAfter = await dbg(a)
 const bAfter = await dbg(b)
 const bMoved = Math.abs(bAfter.player.x - db1.player.x)
 if (bMoved < 5) fail(`bo held D and moved only ${bMoved.toFixed(1)} px locally`)
-if (remoteBefore < 1) fail('ana had no remote player to watch')
+// Control: ana must actually have a remote body to have been watching, or
+// "the remote moved" is satisfied by a client rendering nobody.
+if ((aAfter.players?.length ?? 0) < 1) fail('ana had no remote player to watch')
+
+/**
+ * Wait until every client's mask stops changing *and* nothing is left buffered,
+ * or give up after `deadlineMs`.
+ *
+ * The fixed `setTimeout` this replaces is a latent flake by construction: it
+ * reads an accumulating buffer at a wall-clock instant, so it passes on an idle
+ * box and reports mask divergence on a loaded one — which is how this check came
+ * to be recorded three times as "fails inside a loaded suite run, passes
+ * standalone". Waiting on the effect makes the load irrelevant instead of making
+ * the sleep longer, which only moves the threshold (§A28).
+ */
+async function settle(clients, deadlineMs = 20_000) {
+  const started = Date.now()
+  let last = null
+  let stableFor = 0
+  while (Date.now() - started < deadlineMs) {
+    const now = await Promise.all(clients.map((c) => dbg(c)))
+    const key = now.map((d) => `${d.solid}:${d.maskChecksum}:${d.pendingCarves}`).join('|')
+    const quiet = now.every((d) => d.pendingCarves === 0)
+    if (quiet && key === last) {
+      stableFor += 1
+      if (stableFor >= 3) return now
+    } else {
+      stableFor = 0
+    }
+    last = key
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  return await Promise.all(clients.map((c) => dbg(c)))
+}
 
 // A rocket fired by one craters the map in both.
 const solidBeforeA = (await dbg(a)).solid
@@ -161,10 +229,7 @@ for (let i = 0; i < 12; i++) {
   await a.page.evaluate('window.__game.fire()')
   await new Promise((r) => setTimeout(r, 250))
 }
-await new Promise((r) => setTimeout(r, 1500))
-
-const daF = await dbg(a)
-const dbF = await dbg(b)
+const [daF, dbF] = await settle([a, b])
 const removedA = solidBeforeA - daF.solid
 const removedB = solidBeforeB - dbF.solid
 
@@ -181,8 +246,7 @@ if (daF.pendingCarves !== 0 || dbF.pendingCarves !== 0) {
 
 // A late joiner gets the already-damaged map and agrees with it.
 const c = await openClient('cy')
-await new Promise((r) => setTimeout(r, 1500))
-const dc = await dbg(c)
+const [dc] = await settle([c])
 if (dc.maskChecksum !== daF.maskChecksum) {
   fail(`a late joiner disagrees with the round in progress:\n  late ${dc.maskChecksum}\n  ana  ${daF.maskChecksum}`)
 }

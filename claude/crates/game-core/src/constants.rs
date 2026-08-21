@@ -693,14 +693,19 @@ pub const MACHINEGUN_AMMO: u8 = 120;
 // and a hammer dig, a knife does not. §A3 is about ordnance, and §B18 restates it.
 pub const KNIFE_DAMAGE: f32 = 35.0;
 pub const KNIFE_CARVE: f32 = 0.0;
-pub const KNIFE_REACH: f32 = 26.0;
+/// Raised from 26 by T11.09's measurement. Melee reach is the axis that decides
+/// whether a swing ever connects: at identical bot skill on identical maps, the
+/// whip (58) hit 3.0 % of swings while the knife (26), axe (30) and hammer (28)
+/// hit 0.47 %, 0.38 % and 0.26 %. Same delivery kind, same bots — reach is the
+/// only thing that differs, and it predicts the result almost exactly.
+pub const KNIFE_REACH: f32 = 36.0;
 pub const KNIFE_ARC: f32 = 1.0;
 pub const KNIFE_COOLDOWN: f32 = 0.35;
 pub const KNIFE_KNOCKBACK: f32 = 60.0;
 
 pub const BAT_DAMAGE: f32 = 28.0;
 pub const BAT_CARVE: f32 = 0.0;
-pub const BAT_REACH: f32 = 34.0;
+pub const BAT_REACH: f32 = 40.0;
 pub const BAT_ARC: f32 = 1.4;
 pub const BAT_COOLDOWN: f32 = 0.55;
 pub const BAT_KNOCKBACK: f32 = 260.0;
@@ -715,14 +720,14 @@ pub const WHIP_KNOCKBACK: f32 = 120.0;
 
 pub const AXE_DAMAGE: f32 = 55.0;
 pub const AXE_CARVE: f32 = 10.0;
-pub const AXE_REACH: f32 = 30.0;
+pub const AXE_REACH: f32 = 40.0;
 pub const AXE_ARC: f32 = 1.2;
 pub const AXE_COOLDOWN: f32 = 0.90;
 pub const AXE_KNOCKBACK: f32 = 140.0;
 
 pub const HAMMER_DAMAGE: f32 = 70.0;
 pub const HAMMER_CARVE: f32 = 16.0;
-pub const HAMMER_REACH: f32 = 28.0;
+pub const HAMMER_REACH: f32 = 38.0;
 pub const HAMMER_ARC: f32 = 1.1;
 pub const HAMMER_COOLDOWN: f32 = 1.20;
 pub const HAMMER_KNOCKBACK: f32 = 340.0;
@@ -732,6 +737,13 @@ pub const HAMMER_KNOCKBACK: f32 = 340.0;
 // system. `damage` on the def mirrors the dps so the shared field means
 // something; the cone reads its dps from the delivery.
 pub const FLAMETHROWER_DPS: f32 = 14.0;
+/// T11.09 tried 200 here and **measured it worse**: 0.37 -> 0.30 dmg/bot-s with
+/// self-damage rising 0.28 -> 0.44. Range is not what holds the flamethrower
+/// back. It leaves burning ground (§B6) and its user walks into it — the same
+/// root cause as molotov and toxic, whose self-damage is 3x what they deal. The
+/// bot blast-guard checks a blast radius and knows nothing about a hazard that
+/// lingers for seconds, so a longer reach only spreads more fire to stand in.
+/// A weapon-side fix would be treating the fix as the balance problem.
 pub const FLAMETHROWER_RANGE: f32 = 150.0;
 pub const FLAMETHROWER_ARC: f32 = 0.55;
 pub const FLAMETHROWER_COOLDOWN: f32 = 0.05;

@@ -148,13 +148,23 @@ mod t1105 {
     use crate::weapons::defs::{self, Delivery};
     use crate::world::{give, RoundPhase, World};
 
-    /// `(key, dmg, carve, reach, arc, cd, knockback)` — §B7's melee table.
+    /// `(key, dmg, carve, reach, arc, cd, knockback)` — §B7's melee table as
+    /// **corrected by §B23**, which is T11.09's measured result. §B7 says of
+    /// itself that it is "a starting point, not a result", and the reaches are
+    /// the part measurement moved: 26/34/30/28 put four of the five below half
+    /// the arsenal median, and the whip at 58 — untouched — is the control that
+    /// showed reach was the cause.
+    ///
+    /// Literals here on purpose, and this is the one place §A19's "pin to the
+    /// constant, never a literal" does not apply: the job of this table is to
+    /// assert that the code agrees with a *document*, and pinning it to the
+    /// constants it is checking would make it compare each value to itself.
     const SPEC: &[(&str, f32, f32, f32, f32, f32, f32)] = &[
-        ("knife", 35.0, 0.0, 26.0, 1.0, 0.35, 60.0),
-        ("bat", 28.0, 0.0, 34.0, 1.4, 0.55, 260.0),
+        ("knife", 35.0, 0.0, 36.0, 1.0, 0.35, 60.0),
+        ("bat", 28.0, 0.0, 40.0, 1.4, 0.55, 260.0),
         ("whip", 22.0, 0.0, 58.0, 0.8, 0.60, 120.0),
-        ("axe", 55.0, 10.0, 30.0, 1.2, 0.90, 140.0),
-        ("hammer", 70.0, 16.0, 28.0, 1.1, 1.20, 340.0),
+        ("axe", 55.0, 10.0, 40.0, 1.2, 0.90, 140.0),
+        ("hammer", 70.0, 16.0, 38.0, 1.1, 1.20, 340.0),
     ];
 
     /// The table is the test, and the set must match — a melee weapon with no
