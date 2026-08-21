@@ -844,3 +844,53 @@ Three levers, and the right answer is probably a mix:
 The measurement to make first is **time-between-encounters** as a function of each
 lever, because the current numbers cannot distinguish "weapons are balanced" from
 "nobody met anybody".
+
+## B28 — The shipping configuration had never been measured
+
+The last task on the board found the largest gameplay defect in the project.
+
+"Five of eight seeds contain a fight" came from the balance harness, which hardcodes
+**Small scale, 4 bots**. The game shipped **Large scale, 3 bots**. Measured across
+8 seeds × 150 s at every combination:
+
+| scale | players | rounds that fought | first contact | near% | armed% |
+|---|---|---|---|---|---|
+| Small | 4 | 6/8 | 37 s | 40.0 | 42.1 |
+| Small | 6 | 7/8 | 8 s | 93.1 | 28.7 |
+| Medium | 4 | 2/8 | 107 s | 16.9 | 38.1 |
+| Medium | 6 | 4/8 | 24 s | 66.5 | 28.1 |
+| **Large** | **4** | **0/8** | 100 s | 8.6 | 42.5 |
+| Large | 6 | 3/8 | 89 s | 33.1 | 39.3 |
+
+**Zero of eight rounds on the shipping configuration contained a fight.** Every
+weapon number, every bot tuning, every balance decision in this project had been
+measured on a configuration nobody plays — and the game as configured was not a
+deathmatch.
+
+Two columns decided the fix, and they ruled out the obvious answer:
+
+- `near%` and `los%` **track each other at every setting**, so what keeps players
+  apart is **distance**, not terrain occlusion.
+- `armed%` is **flat at 28–43 % everywhere**, so it is *not* item scarcity — which is
+  exactly where the next tuning pass would have gone, especially with T11.13 having
+  just moved density.
+
+`DEFAULT_MAP_SCALE` Large → **Medium**, `BOT_COUNT_DEFAULT` 3 → **5**. Over a real
+240 s round: **7/8 fought, first contact 24 s**, against a control at the old
+settings of 1/8. Medium is still 4.8 × 4.3 screens at zoom 2, so §A1's "explore, do
+not survey" survives; Large remains available behind `MAP_SCALE=large`.
+
+> **Measure the configuration you ship.** A harness that pins its own scale and
+> player count is measuring a different game, and every number it produces is a
+> number about that other game.
+
+This is §A19 ("a threshold measured on one map at a scale the game does not ship")
+at the largest possible scope: not a constant, but the entire balance table and the
+question of whether the game works at all.
+
+Consequence, recorded rather than hidden: **every per-weapon number moved.** The
+median dropped 1.03 → 1.00, knife 0.80 → 0.61, bazooka 0.75 → 1.00, and **mine fell
+0.72 → 0.20** — a new low outlier, because mines need foot traffic and nothing about
+the mine changed, only the map it is measured on. `MAX_PLAYERS` is 6, so player count
+is now at its ceiling; raising it would move the snapshot size and is a real change
+rather than a constant edit.
