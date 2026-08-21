@@ -310,12 +310,60 @@ pub struct Room {
     buried_secret: u64,
 }
 
+/// One random base per process, so restarting the server does not replay the
+/// same maps. `game-server` is where impurity belongs — `game-core` never sees
+/// this, it receives a `u64` like any other seed.
+fn session_base() -> u64 {
+    use std::sync::OnceLock;
+    static BASE: OnceLock<u64> = OnceLock::new();
+    *BASE.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x5EED_1234_ABCD_0001)
+            // Nanos differ in their low bits and barely at all in their high
+            // ones; the finaliser spreads that across the whole word so two
+            // rooms created in the same millisecond do not get similar seeds.
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    })
+}
+
+/// Mix a base and a room id into a seed. Murmur3's finaliser: cheap, and it
+/// avoids the diagonal-symmetry class of collision §M1 already paid for.
+fn mix_seed(base: u64, room_id: u32) -> u64 {
+    let mut x = base ^ (u64::from(room_id).wrapping_mul(0xD6E8_FEB8_6659_FD93));
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xC4CE_B9FE_1A85_EC53);
+    x ^ (x >> 33)
+}
+
 impl Room {
     /// Generates the map inline. Use [`Room::new_async`] from a tokio context:
     /// map generation is hundreds of milliseconds of pure CPU and blocks whatever
     /// worker it lands on.
     pub fn new(config: Arc<Config>) -> Self {
-        let seed = config.fixed_seed.unwrap_or(0x5EED_1234_ABCD_0001);
+        Self::new_in_room(config, 0)
+    }
+
+    /// As [`Room::new`], but seeded for a specific room.
+    ///
+    /// Every room used to take the same hardcoded seed, so with more than one
+    /// room every game on the server was played on an identical map — and after
+    /// a restart, on that same map again. The 999-seed sweep was generating one
+    /// map in practice. Found by the M10 checkpoint, which asserted two rooms
+    /// differ and discovered they do not.
+    ///
+    /// `FIXED_SEED` still pins it exactly, because that is what it is for
+    /// (`docs/41` §5: "reproduce the bug"). Without it the seed mixes a
+    /// per-process base — so maps vary between rooms *and* between runs, while
+    /// staying reproducible within a run given the room id.
+    pub fn new_in_room(config: Arc<Config>, room_id: u32) -> Self {
+        let seed = match config.fixed_seed {
+            Some(s) => s,
+            None => mix_seed(session_base(), room_id),
+        };
         // Buried slots are derived behind a secret that never crosses the wire
         // (`docs/70-amendments-v2.md` §A31). `welcome` carries the seed and
         // `game-core` ships as WASM, so without this a modified client
@@ -448,15 +496,15 @@ impl Room {
     /// the symptom is not "the room is slow to start": it is a client whose
     /// handshake or join round-trip never completes, which looks like a protocol
     /// bug and is not one.
-    pub async fn new_async(config: Arc<Config>) -> Self {
+    pub async fn new_async(config: Arc<Config>, room_id: u32) -> Self {
         let c = config.clone();
-        match tokio::task::spawn_blocking(move || Room::new(c)).await {
+        match tokio::task::spawn_blocking(move || Room::new_in_room(c, room_id)).await {
             Ok(room) => room,
             // The only way this fails is a panic inside generation, which is a bug
             // worth surfacing rather than papering over with a retry.
             Err(e) => {
                 tracing::error!(target: "game::map", "map generation task failed: {e}");
-                Room::new(config)
+                Room::new_in_room(config, room_id)
             }
         }
     }
@@ -1036,7 +1084,7 @@ async fn run(
     metrics: Option<Arc<crate::metrics::Metrics>>,
     room_id: u32,
 ) {
-    let mut room = Room::new_async(config).await;
+    let mut room = Room::new_async(config, room_id).await;
     let dir = std::path::PathBuf::from(room.config.replay_dir.clone());
     room.start_recording(&dir, &stamp_for(room.seed));
     let mut ticker = interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
@@ -1156,6 +1204,62 @@ mod tests {
     /// well, and the request went nowhere. The fingerprint from outside is
     /// trigger pulls with **zero** cooldown rejections, because a shot that is
     /// never taken never starts a cooldown.
+    /// Every room used to take the same hardcoded seed, so with more than one
+    /// room every game on the server ran on an identical map. The M10 checkpoint
+    /// found it by asserting two rooms differ.
+    #[test]
+    fn each_room_gets_its_own_seed() {
+        let base = 0x1234_5678_9ABC_DEF0;
+        let seeds: Vec<u64> = (0..64).map(|id| mix_seed(base, id)).collect();
+        let unique: std::collections::HashSet<u64> = seeds.iter().copied().collect();
+        assert_eq!(unique.len(), seeds.len(), "two rooms share a seed");
+        // Adjacent ids must not give adjacent seeds: the generator's sub-streams
+        // are derived from this, and neighbouring seeds would make neighbouring
+        // rooms look alike even without colliding.
+        for w in seeds.windows(2) {
+            let d = w[0].abs_diff(w[1]);
+            assert!(
+                d > 1_000_000,
+                "rooms {:x} and {:x} are too close",
+                w[0],
+                w[1]
+            );
+        }
+    }
+
+    /// The live binding site: two rooms built the way `run` builds them, with no
+    /// `FIXED_SEED`, must produce different maps.
+    ///
+    /// Testing `mix_seed` alone does not do it — the first version of this test
+    /// passed with the old hardcoded seed restored, because it never exercised
+    /// the decision about whether to call `mix_seed` at all (§B11: ask what a
+    /// passing assertion rules out).
+    #[test]
+    fn two_rooms_with_no_fixed_seed_get_different_maps() {
+        let c = cfg();
+        let a = Room::new_in_room(c.clone(), 0);
+        let b = Room::new_in_room(c, 1);
+        assert_ne!(
+            a.world.map.mask.hash(),
+            b.world.map.mask.hash(),
+            "every room is playing the same map"
+        );
+    }
+
+    /// `FIXED_SEED` is how a bug gets reproduced (`docs/41` §5), so it has to
+    /// beat the per-room mixing entirely.
+    #[test]
+    fn fixed_seed_pins_every_room_to_the_same_map() {
+        let c = Arc::new(Config {
+            bot_count: 0,
+            fixed_seed: Some(4242),
+            ..Config::default()
+        });
+        let a = Room::new_in_room(c.clone(), 0);
+        let b = Room::new_in_room(c, 7);
+        assert_eq!(a.world.map.mask.hash(), b.world.map.mask.hash());
+    }
+
     #[test]
     fn the_room_turns_a_bot_s_fire_button_into_a_shot() {
         let cfg = Arc::new(Config {

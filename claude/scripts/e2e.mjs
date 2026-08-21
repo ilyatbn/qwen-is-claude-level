@@ -98,6 +98,11 @@ const CHECKS = [
   // The M6 checkpoint: two browser contexts, one server, one round. Standalone
   // because it needs a real game-server and two clients rather than the sandbox.
   { name: 'two-clients', file: 'scripts/e2e-two-clients.mjs', standalone: true },
+  // The M10 checkpoint: three browsers, two rooms, a code read off the screen.
+  // It found two real bugs on its first run — nothing subscribed to
+  // `room_created`, and every room shared one hardcoded seed — so it earns its
+  // place in the default suite rather than behind a flag.
+  { name: 'm10-checkpoint', file: 'scripts/checks/m10-checkpoint.mjs', standalone: true },
   // T9.06 — one *complete* round, ~3 minutes of wall clock. Opt-in rather than
   // in the default path: it is the slowest thing in the repo by an order of
   // magnitude, and a gate people skip because it takes four minutes is a gate

@@ -2672,3 +2672,35 @@ Notes: THE SKINS BUTTON WAS A CALLER WITH NO CALLEE — MenuScene has called
        it was `justify-content: center`, putting the scoreboard over the fight it
        exists to let you watch. Top-anchored now.
 Left for later: the M10 checkpoint, then M11.
+
+## M10 checkpoint — DONE
+Files: scripts/checks/m10-checkpoint.mjs (new), scripts/e2e.mjs,
+       crates/game-server/src/room.rs, client/src/scenes/GameScene.ts
+Verified: `node scripts/checks/m10-checkpoint.mjs` ok — host creates a private
+       room and reads the code OFF THE SCREEN, guest joins by it, a third
+       quick-matches into a different room, all three tick (582/585/54 ->
+       675/678/147), the host's 4264 px crater appears in the guest's mask with
+       an identical checksum, and the third room is untouched.
+Notes: TWO REAL BUGS ON THE FIRST RUN, both invisible to every unit test.
+       1. NOTHING SUBSCRIBED TO `room_created`. The reducer case existed and was
+          unit-tested, `net/lobby.ts` decoded the event, and no client code ever
+          handled it — so creating a private game never showed anyone the code,
+          which is the only thing a private game is for. §A39, eighth time.
+          GameScene now shows a banner during warmup and keeps the code in the
+          HUD strip after, and the check reads it from the DOM.
+       2. EVERY ROOM SHARED ONE HARDCODED SEED (`0x5EED_1234_ABCD_0001`). With
+          one room that was a placeholder; with many it means every game on the
+          server is played on an identical map, and the same map again after a
+          restart. The 999-seed sweep was generating one map in practice. Seeds
+          now mix a per-process base with the room id; FIXED_SEED still pins
+          everything, because that is what it is for (docs/41 §5).
+       MY FIRST UNIT TEST FOR THAT FIX COULD NOT FAIL: it tested `mix_seed`
+       directly, so restoring the hardcoded seed left it green — it never
+       exercised the decision about whether to CALL mix_seed. The live-binding
+       version builds two rooms and compares masks, and does go red.
+       MY FIRST TWO CHECKPOINT ASSERTIONS WERE ALSO WRONG, and measuring is what
+       showed it: `debug().seed` is the CLIENT's core placeholder (it reads 1 in
+       every room, so comparing it compared two constants), and `debug().tick`
+       does not exist, so `undefined <= undefined` is false forever. Room
+       identity is the mask checksum; ticking is `lastServerTick`.
+Left for later: M11 (the arsenal), M12 is done.

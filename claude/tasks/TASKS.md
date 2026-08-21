@@ -235,6 +235,8 @@ described but never built.
 
 **Checkpoint:** two browsers, one creates a private game and reads the code aloud,
 the other joins it. A third runs quick match. All three rounds run at once.
+`node scripts/checks/m10-checkpoint.mjs` — **done**, and it found two real bugs
+on its first run.
 
 ---
 

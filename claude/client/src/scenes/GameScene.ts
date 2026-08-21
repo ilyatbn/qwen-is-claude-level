@@ -61,6 +61,9 @@ export class GameScene extends Phaser.Scene {
   private localInput!: LocalInput
   private crosshair!: Crosshair
   private hud!: HTMLDivElement
+  /** The private room's join code, once the server has told us (§B9). */
+  private joinCode: string | null = null
+  private codeBanner: HTMLElement | null = null
   private feel!: FeelLayer
   private minimap: Minimap | null = null
   private debugHud!: DebugHud
@@ -180,6 +183,9 @@ export class GameScene extends Phaser.Scene {
       this.phase = String(p['phase'] ?? 'lobby') as Phase
       this.timeLeft = Number(p['time_left'] ?? 0)
       this.observed.phases.add(this.phase)
+      // The big code is for inviting someone, which is a warmup activity. Once
+      // the round is live it belongs in the strip, not across the screen.
+      if (this.phase !== 'lobby' && this.phase !== 'warmup') this.hideJoinCodeBanner()
     })
     // The payload is the point: `score` carries the whole table (`docs/40` §3),
     // and this handler used to discard it and merely re-render `this.scores` —
@@ -238,6 +244,13 @@ export class GameScene extends Phaser.Scene {
       }
     })
     this.conn.on('player_leave', (raw) => this.dropRemote(Number(asRecord(raw)['id'] ?? -1)))
+    // The join code for a private room. Nothing subscribed to this before, so
+    // creating a private game never showed anyone the code — which is the only
+    // thing a private game is for (§A39, and the M10 checkpoint found it).
+    this.conn.on('room_created', (raw) => {
+      const code = asRecord(raw)['code']
+      if (typeof code === 'string' && code.length > 0) this.showJoinCode(code)
+    })
     for (const ev of ['carve', 'carve_capsule', 'item_spawn', 'crate_spawn', 'item_pickup',
       'item_despawn', 'projectile_spawn', 'projectile_despawn', 'mask_checksum',
       // §B8. The mirror handles these; this list is what actually subscribes,
@@ -409,6 +422,7 @@ export class GameScene extends Phaser.Scene {
       this.audio.stopAll()
       this.items?.destroy()
       this.hud?.remove()
+      this.hideJoinCodeBanner()
       this.feel?.destroy()
       this.minimap?.destroy()
       this.debugHud?.destroy()
@@ -874,6 +888,35 @@ export class GameScene extends Phaser.Scene {
     if (this.hud) this.hud.dataset['status'] = text
   }
 
+  /**
+   * Show the host their join code.
+   *
+   * Displayed until the round leaves warmup, because that is when you would
+   * read it to someone; after that it moves into the HUD strip so it is
+   * recoverable without being in the way. It is DOM, like every other
+   * screen-space element here (§A35).
+   */
+  private showJoinCode(code: string): void {
+    this.joinCode = code
+    if (this.codeBanner) return
+    const el = document.createElement('div')
+    el.id = 'join-code'
+    el.style.cssText =
+      'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:11;' +
+      'font:14px/1.6 monospace;color:#e8ecff;text-align:center;pointer-events:none;' +
+      'background:rgba(6,10,26,0.72);padding:6px 14px;border-radius:4px;'
+    el.innerHTML =
+      `<div style="opacity:.7">Invite with this code</div>` +
+      `<b style="font-size:2rem;letter-spacing:.5rem;color:#ffd23f">${code}</b>`
+    document.body.appendChild(el)
+    this.codeBanner = el
+  }
+
+  private hideJoinCodeBanner(): void {
+    this.codeBanner?.remove()
+    this.codeBanner = null
+  }
+
   /** §A35: `worldView` and the canvas's CSS rect, never the camera transform. */
   private feelFrame(): FeelFrame {
     const cam = this.cameras.main
@@ -919,7 +962,10 @@ export class GameScene extends Phaser.Scene {
     // The always-visible strip: what you are holding and how much of it, so the
     // panel is only needed to change loadout (docs/30 §3).
     const held = this.slots[this.selectedSlot]
-    const strip = `HP ${Math.round(this.health)}   ${held ? `${held.key} x${held.count}` : '(empty)'}`
+    const strip =
+      `HP ${Math.round(this.health)}   ${held ? `${held.key} x${held.count}` : '(empty)'}` +
+      // Recoverable after the banner goes: someone joining late still needs it.
+      (this.joinCode ? `   code ${this.joinCode}` : '')
     const lines = [
       [status, banner ?? formatClock(this.timeLeft), strip].filter((p) => p !== '').join('   │   '),
     ]
@@ -953,6 +999,12 @@ export class GameScene extends Phaser.Scene {
               document.querySelector('.death-count')?.textContent ?? '',
             cause: document.querySelector('.death-cause')?.textContent ?? '',
           },
+          /** Read from the DOM: what the host can actually see, not what we sent. */
+          visibleCode:
+            document.querySelector('#join-code b')?.textContent?.trim() ??
+            (self.joinCode && self.hud?.textContent?.includes(self.joinCode)
+              ? self.joinCode
+              : ''),
           mapW: self.core.width,
           mapH: self.core.height,
           seed: self.core.meta.seed,
