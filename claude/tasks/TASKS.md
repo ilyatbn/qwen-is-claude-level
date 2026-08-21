@@ -284,7 +284,7 @@ the one nobody develops in. See `docs/72-amendments-v4.md` §C0 — including wh
 tests and 20 e2e specs missed all four.
 
 - [ ] [T13.01](M13/T13.01-one-render-path.md) — One render path, and the rebake nobody wired **(v4)**
-- [ ] [T13.02](M13/T13.02-pixel-acceptance.md) — Assert on rendered pixels **(v4)**
+- [x] [T13.02](M13/T13.02-pixel-acceptance.md) — Assert on rendered pixels **(v4)**
 - [ ] [T13.03](M13/T13.03-ordnance-visible.md) — Missiles, grenades and bullets you can see **(v4)**
 - [ ] [T13.04](M13/T13.04-weather-visible.md) — Weather you can see **(v4)**
 - [ ] [T13.05](M13/T13.05-crates.md) — Crates fall, land, and can be picked up **(v4)**

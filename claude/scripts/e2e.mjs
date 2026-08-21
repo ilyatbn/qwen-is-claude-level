@@ -70,6 +70,9 @@ const CHECKS = [
     url: '?menu=1',
     ready: '!!window.__menu',
   },
+  // The pixel harness self-test. It runs on a synthetic page — it is proving the
+  // *harness* can detect a change and, more importantly, can FAIL to detect one.
+  { name: 'pixels', file: 'scripts/checks/pixels.mjs', url: '', ready: '!!document.body' },
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'sky', file: 'scripts/checks/sky.mjs', url: '?sandbox=1&seed=4242' },

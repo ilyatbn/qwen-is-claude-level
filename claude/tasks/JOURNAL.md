@@ -3366,3 +3366,18 @@ Notes: TICKED ON §B24'S CRITERIA, NOT THE ORIGINAL ONE. "Self-damage below dama
        The mechanism landed in the previous session; what unblocked the box was
        T11.15 removing the residual cause, exactly as that session predicted.
 Left for later: nothing.
+
+## T13.02 — Assert on rendered pixels — DONE
+Files: scripts/checks/pixels.mjs (new), scripts/e2e.mjs
+Verified: `node scripts/e2e.mjs pixels` — ok. Gate: 905 rust, e2e 21/21, EXIT=0.
+Notes: DONE BEFORE T13.01, not after — T13.01's own Done-when is
+       `e2e.mjs terrain-render`, a pixel spec, so the task list inverts the
+       dependency. Building the harness first is the only order that works.
+       The self-test's value is the three NEGATIVE cases: assertChanged must
+       fail on an identical pair, fail when the control also moved, and refuse
+       a missing control outright. A harness that cannot report "no change" is
+       the §A15 failure it exists to prevent, so it proves it can.
+       Samples carry a digest as well as a mean: two arrangements with the same
+       mean (mirrored gradients) must not read as identical, and the test pins
+       that at lum 127.5 for both.
+Left for later: T13.01 uses this; further specs in T13.03-T13.06.
