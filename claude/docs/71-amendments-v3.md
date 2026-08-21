@@ -779,3 +779,68 @@ Also recorded from the same run: the harness arms each bot with **one weapon for
 whole round**, so a molotov-only bot that must hold >94 px and flees any fire has no
 follow-up. That is a property of the harness, not of the weapon, and any per-weapon
 number carries it.
+
+## B25 — Three more instruments broken before the code was
+
+- **A density measurement undercounted by the entire initial batch.** Initial item
+  placement runs inside `World::new`, before any event buffer exists, so counting
+  spawn *events* misses it — the same fact that made T9.03's initial items invisible
+  to clients. 10.2 distinct types became 12.2 once read from the world instead.
+- **A new `#[test]` silently disabled an existing one.** An inserted attribute stole
+  the one belonging to `a_bot_steps_out_of_fire`; `cargo test --lib bots` reported
+  *"19 passed"* while a falsification test had left the run entirely. Only clippy's
+  `never used` under `-D warnings` caught it.
+
+  > **A test count going up is not evidence that no test was removed.** Assert on
+  > names when a suite is the thing being changed.
+- **`blast_radius` was the wrong number in two places.** It doubles as the **carve**
+  radius, so an axe (10) and the smg (3) read as explosive when classifying "can hurt
+  its user". And `stand_off` used it — it is 0 for exactly the `Burst::Zone` weapons,
+  so a bot closed to the 40 px floor and stood in the fire it had just thrown.
+  Switching to `zone_reach` took molotov denial 6515 → 8507 and deflections
+  305 → 774.
+
+A field that means two things is a bug waiting for the first caller that wants only
+one of them.
+
+## B26 — A guard on the target cannot see where the projectile lands
+
+T11.14's throw guard tests distance to the **target**. A molotov is ballistic:
+thrown uphill or into terrain it falls short, onto the thrower, and **no
+target-distance guard can see that**. It is the residual cause of the only weapon
+still failing §B24 — molotov at 1.54 self-harm per bot-second against an arsenal
+class median of 0.68.
+
+The fix is impact prediction: simulate the arc against the mask and guard on **where
+it will land**. The client already draws a trajectory preview for arcing weapons
+(`22-aiming-crosshair.md` §6) using the same gravity and wind constants, so the
+maths exists and is tested; the bot needs to consult it.
+
+Also recorded, because it is a metric artefact and not a regression: molotov's
+self-harm per **bot-second** rose from 0.95 while its self-harm per **throw** stayed
+flat (0.0130 → 0.0139). Bots simply used it 50 % more once they stopped standing in
+it. **A per-time metric conflates "dangerous per use" with "used more"** — for a
+weapon whose usage rate is itself changing, per-use is the honest denominator.
+
+## B27 — Encounter rate is the ceiling on everything measured here
+
+Every per-weapon number in this project is measured with **4 bots, a 320 px sight
+radius, on maps up to 4096 × 2048** — and **five of eight seeds contain a fight at
+all**. That single fact is why the balance harness has to arm every bot with one
+weapon and sweep the ground flat, and why molotov's residual could not be isolated
+without a second measurement.
+
+It is also a gameplay problem, not only a measurement one: a player alone with bots
+on a large map spends most of a round not meeting anyone.
+
+Three levers, and the right answer is probably a mix:
+
+| lever | effect | risk |
+|---|---|---|
+| More bots per room | more encounters per unit time | tick cost — though §B2 measured 128 rooms at 0.12 % of half a budget, so there is room |
+| Smaller default scale | shorter distances | undoes the "explore a large map" goal of §A1 |
+| Denser spawns | items pull players to the same places | §B17 — weights are a budget, and T11.13 just moved density |
+
+The measurement to make first is **time-between-encounters** as a function of each
+lever, because the current numbers cannot distinguish "weapons are balanced" from
+"nobody met anybody".
