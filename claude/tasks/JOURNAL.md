@@ -2952,3 +2952,28 @@ Notes: MINES WERE INDESTRUCTIBLE IN A REAL ROUND. §B6 says a mine is destructib
        6 patches), toxic_grenade (BurnField with the new kind, and the mask must
        come out BYTE-IDENTICAL — no terrain damage, same assertion toxic rain
        carries).
+
+## NOT DONE, AND IT IS MINE — the ordnance the server sends has no client
+       T11.05-T11.07 landed the SIMULATION of melee, the flamethrower and mines
+       and their Done-when commands pass. Their client rendering did not land, so
+       `game-server` now emits four events NOTHING subscribes to: `melee`,
+       `cone`, `mine_placed`, `mine_ended`. Verified by grepping both ends.
+       That is §A39's shape, the tenth instance on this project, and this time I
+       created three of them with the pattern fully documented in front of me.
+       It matters because the design says so in as many words: §B6 — "a mine must
+       be VISIBLE at close range — invisible instant death is not fun; a trap you
+       could have spotted is" — and T11.05's notes, "a melee hit you cannot see
+       reads as damage from nowhere".
+       Written up as **T11.10** with the count-at-both-ends test whose absence let
+       it ship: client live-mine count 0 -> 1 -> 0 asserted against the server's.
+       The sandbox path is honest about it already (`melee_not_in_sandbox` etc.
+       rather than a silent no-op), so the gap shows there rather than looking
+       like a misfire.
+
+## FLAKE, NOT A REGRESSION — lobby::a_second_client_joins_a_private_room_by_its_code
+       Failed once inside `cargo test --workspace` and passes 3/3 standalone. At
+       that moment I had two workspace cargo runs AND a clippy sharing the box —
+       my own contention. Same signature the T10.07 entry records for socket
+       tests under real concurrent cargo builds (and the coordinator hit the vite
+       version of this too). Not investigated further; recorded so the next
+       session does not read it as new.
