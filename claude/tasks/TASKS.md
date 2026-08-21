@@ -1,12 +1,12 @@
 # Master task list
 
-135 tasks across 13 milestones.
+152 tasks across 16 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added. Counted, not assumed.) Work them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
 
-Tasks marked **(v2)** come from `docs/70-amendments-v2.md` and **(v3)** from
-`docs/71-amendments-v3.md`. Both override the earlier docs where they disagree.
+Tasks marked **(v2)** come from `docs/70-amendments-v2.md`, **(v3)** from
+`docs/71-amendments-v3.md` and **(v4)** from `docs/72-amendments-v4.md`. Both override the earlier docs where they disagree.
 Read v2 before M1 and v3 before M10.
 
 Tick a box only when the task's **Done when** command passes.
@@ -272,3 +272,49 @@ report has no weapon nobody picks up.
 
 **Checkpoint:** die three times in a round; three graves stand where you fell, and
 a player joining late sees all of them.
+
+---
+
+## M13 — What the player cannot see (6)
+
+Playtest bugs. Four of them are **one defect**: `GameScene` never calls
+`TerrainLayer.markDirty()`, because there are two render paths and the game scene is
+the one nobody develops in. See `docs/72-amendments-v4.md` §C0 — including why 905
+tests and 20 e2e specs missed all four.
+
+- [ ] [T13.01](M13/T13.01-one-render-path.md) — One render path, and the rebake nobody wired **(v4)**
+- [ ] [T13.02](M13/T13.02-pixel-acceptance.md) — Assert on rendered pixels **(v4)**
+- [ ] [T13.03](M13/T13.03-ordnance-visible.md) — Missiles, grenades and bullets you can see **(v4)**
+- [ ] [T13.04](M13/T13.04-weather-visible.md) — Weather you can see **(v4)**
+- [ ] [T13.05](M13/T13.05-crates.md) — Crates fall, land, and can be picked up **(v4)**
+- [ ] [T13.06](M13/T13.06-round-end.md) — The round ends **(v4)**
+
+**Checkpoint:** fire a rocket and watch the hole appear; stand in toxic rain and see
+it; play a round to the end and press Play again.
+
+---
+
+## M14 — HUD and UI (7)
+
+- [ ] [T14.01](M14/T14.01-timer-and-banner.md) — Round timer and event banner **(v4)**
+- [ ] [T14.02](M14/T14.02-bars.md) — Health, energy and jetpack bars **(v4)**
+- [ ] [T14.03](M14/T14.03-consumables.md) — Heals and batteries leave the inventory **(v4)**
+- [ ] [T14.04](M14/T14.04-quick-throw.md) — Quick-throw a grenade with E **(v4)**
+- [ ] [T14.05](M14/T14.05-inventory-ui.md) — Quick bar and backpack **(v4)**
+- [ ] [T14.06](M14/T14.06-escape-menu.md) — The escape menu **(v4)**
+- [ ] [T14.07](M14/T14.07-debug-mode.md) — Debug mode, and the aim line leaves production **(v4)**
+
+**Checkpoint:** play a round using only the HUD — no debug overlays — and never lose
+a fight to a menu.
+
+---
+
+## M15 — The world (4)
+
+- [ ] [T15.01](M15/T15.01-teleport-pads.md) — Teleport pads **(v4)**
+- [ ] [T15.02](M15/T15.02-void.md) — The floor can be dug through, and below it is death **(v4)**
+- [ ] [T15.03](M15/T15.03-living-sky.md) — Mountains and clouds **(v4)**
+- [ ] [T15.04](M15/T15.04-birds.md) — Birds **(v4)**
+
+**Checkpoint:** dig a hole through the floor, fall in and die; shoot a bird and heal
+with what it drops.
