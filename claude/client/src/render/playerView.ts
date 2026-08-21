@@ -122,6 +122,29 @@ export class PlayerView {
   /** Fallback anchor when no registry says otherwise. */
   private static readonly ANCHOR_Y = 0.9
 
+  /**
+   * Is this drawing real art, or the placeholder box?
+   *
+   * Exposed because §B12 was exactly this distinction being invisible: the
+   * attract bots were routed through this class and still drew rectangles,
+   * because the atlas was never loaded. A check that asserts on the picture
+   * needs to be able to ask.
+   */
+  get usesAtlas(): boolean {
+    return this.usingAtlas
+  }
+
+  /**
+   * The atlas frame on screen right now.
+   *
+   * For the same reason as `usesAtlas`: §B3 asks the skins preview to run the
+   * *walk* cycle, because a still frame hides skins that differ only by palette
+   * — and "is it animating" is not answerable from the outside without this.
+   */
+  get currentFrame(): string {
+    return String(this.body.frame?.name ?? '')
+  }
+
   private readonly scene: Phaser.Scene
 
   constructor(scene: Phaser.Scene, skinId: number) {

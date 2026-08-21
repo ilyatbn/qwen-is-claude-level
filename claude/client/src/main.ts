@@ -5,6 +5,7 @@ import { SandboxScene } from './scenes/SandboxScene'
 import { GameScene } from './scenes/GameScene'
 import { TitleScene } from './scenes/TitleScene'
 import { MenuScene } from './scenes/MenuScene'
+import { SkinsScene } from './scenes/SkinsScene'
 import { C, Core } from './core'
 
 // No constants are declared here. VIEWPORT_W/H used to be literals in this file —
@@ -20,9 +21,15 @@ function pickScene(): Phaser.Types.Scenes.SceneType[] {
   // two-client checks want — they were written before there was a front end and
   // should not have to click through it.
   if (q.get('game') === '1') return [GameScene]
+  // `?menu=1` starts at the menu rather than the title, so a check can arrive
+  // *through* the Skins button — the button was a caller with no callee (§A39)
+  // and a check that opened the picker by URL would have passed anyway.
+  if (q.get('menu') === '1') return [MenuScene, SkinsScene, GameScene]
+  // `?skins=1` opens the picker directly, for the same reason `?game=1` exists.
+  if (q.get('skins') === '1') return [SkinsScene, MenuScene]
   // Otherwise a player meets the title screen first (§B3). Every scene is
   // registered so `scene.start('Menu')` resolves.
-  return [TitleScene, MenuScene, GameScene]
+  return [TitleScene, MenuScene, SkinsScene, GameScene]
 }
 
 async function main(): Promise<Phaser.Game> {

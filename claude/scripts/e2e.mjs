@@ -62,6 +62,14 @@ const CHECKS = [
     url: '',
     ready: '!!window.__title',
   },
+  // Reached through the menu, not at `?skins=1`: the Skins button was a caller
+  // with no callee (§A39), and a check that types the URL would not have noticed.
+  {
+    name: 'skins',
+    file: 'scripts/checks/skins.mjs',
+    url: '?menu=1',
+    ready: '!!window.__menu',
+  },
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'sky', file: 'scripts/checks/sky.mjs', url: '?sandbox=1&seed=4242' },

@@ -12,6 +12,7 @@
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
 import { diffTombstones, tombstoneFrame, type TombstoneView } from './tombstones-math'
+import { ensureTombstoneTextures, tombstoneArt } from './tombstoneTextures'
 
 const ATLAS = 'items'
 /** `TOMBSTONE_W` × `TOMBSTONE_H` from the shared constants. */
@@ -34,6 +35,7 @@ export class TombstoneLayer {
     private readonly h: number,
   ) {
     this.scene = scene
+    ensureTombstoneTextures(scene.textures)
     // Behind world items and in front of decorations: a grave is scenery you
     // walk past, not something you pick up.
     this.container = scene.add.container(0, 0).setDepth(DEPTH.decorations + 1)
@@ -81,6 +83,15 @@ export class TombstoneLayer {
     const frame = tombstoneFrame(v.skinId, known)
     if (frame) {
       const img = this.scene.add.image(v.x, v.y, ATLAS, frame)
+      this.container.add(img)
+      return img
+    }
+    // No packed art — the normal case, since no Kenney pack has a grave marker.
+    // The procedural set (`tombstoneTextures.ts`) is the shipping path, not a
+    // degraded one, so this is checked before the placeholder rectangle.
+    const art = tombstoneArt(v.skinId)
+    if (this.scene.textures.exists(art.key)) {
+      const img = this.scene.add.image(v.x, v.y, art.key)
       this.container.add(img)
       return img
     }

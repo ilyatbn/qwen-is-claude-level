@@ -2636,3 +2636,39 @@ Notes: WIRED AT FOUR LEVELS BECAUSE UNIT TESTS CANNOT CATCH WIRING (§A39, now
        STARTING health is arranged; the kill is a real rocket resolved by the
        server with real attribution.
 Left for later: T10.05 skins menu, the M10 checkpoint.
+
+## T10.05 — Skins menu — DONE
+Files: client/src/ui/{skins,skins.test}.ts, scenes/SkinsScene.ts,
+       render/{tombstoneTextures,tombstoneTextures.test}.ts, render/tombstones.ts,
+       render/playerView.ts, main.ts, index.html, assets/skins.json,
+       scripts/checks/skins.mjs, scripts/e2e.mjs
+Verified: `--run skins` 16 passed; `--run tombstoneTextures` 6 passed;
+       `node scripts/e2e.mjs skins` ok (6 characters, 5 tombstones, preview
+       cycles 3 frames, weapons shown 3 and disabled, choice survives Esc).
+       Full client suite 448 passed / 32 files.
+Notes: THE SKINS BUTTON WAS A CALLER WITH NO CALLEE — MenuScene has called
+       `scene.start('Skins')` since T10.04 and no such scene was ever
+       registered, so clicking it did nothing. §A39 inverted, seventh time.
+       The check therefore arrives THROUGH the menu button (`?menu=1`), not at
+       `?skins=1`: a check that types the URL would have passed all along.
+       TOMBSTONE ART IS PROCEDURAL, like weapons. No Kenney pack ships a grave
+       marker, and picking a terrain tile by eye is the §A32 mistake that
+       verify-assets now rejects. Five markers differing in SILHOUETTE, not
+       palette — at 14x18 the outline is all a player can read, and a picker
+       whose options differ only by colour has one option.
+       skins.json and tombstoneTextures.ts are two files describing one thing
+       (§A24). Rather than plumb one through the other for five entries the
+       duplication is CHECKED — that is T10.05's "stops the registry and the art
+       drifting apart" test. Falsified: renaming a marker in the art alone fails it.
+       MY OWN TEST CAUGHT MY OWN BUG BEFORE IT SHIPPED: `Number('0x2')` is 2, so
+       a hand-edited `deepcut.skin` of "0x2" resolved to skin 2. readId now
+       requires `String(n) === raw`, making the round-trip the definition.
+       PREVIEW ANIMATION IS ASSERTED, NOT ASKED FOR: §B3 wants the walk cycle
+       because a still frame hides skins differing only by palette, and a stalled
+       animation looks identical to a running one from the caller. The check
+       samples the frame 8 times and requires >= 2 distinct. Falsified by setting
+       PREVIEW_VX to 0: "only ever showed character_player_idle".
+       Also fixed the death overlay covering mid-screen (flagged last session):
+       it was `justify-content: center`, putting the scoreboard over the fight it
+       exists to let you watch. Top-anchored now.
+Left for later: the M10 checkpoint, then M11.
