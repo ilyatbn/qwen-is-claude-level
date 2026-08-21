@@ -361,12 +361,17 @@ if (!hud.visible) fail('F3 did not show the debug HUD')
 // nine depths and the game builds twelve. Guessing a layer set and calling the
 // difference a regression is how a fixture reports working code as broken.
 //   -30,-29,-28 sky   0 terrain   10 decorations   11 tombstones
-//   20 world items    30 actors    39 weather vignette   40 particles
-//   45 ordnance fx    50 lightmap
+//   19 crate chutes/beacons   20 world items   30 actors   39 weather vignette
+//   40 particles   45 ordnance fx   50 lightmap
 // 38 is the sandbox's own hazard graphics and is deliberately absent here: it is
 // scene furniture, not a world layer, which is why the two lists differ by it.
+//
+// 19 is the parachute and beacon graphics T13.05 adds, drawn *behind* the items
+// at 20 so a falling crate hangs under its canopy. It appears in both scenes
+// because `WorldView` owns the item layer; when it was built in `GameScene`
+// alone this check caught the difference, which is exactly what it is for.
 {
-  const GAME_LAYERS = [-30, -29, -28, 0, 10, 11, 20, 30, 39, 40, 45, 50]
+  const GAME_LAYERS = [-30, -29, -28, 0, 10, 11, 19, 20, 30, 39, 40, 45, 50]
   const depths = await a.page.evaluate('window.__game.sceneDepths()')
   if (!Array.isArray(depths) || depths.length === 0) {
     fail('GameScene.sceneDepths() returned nothing — this assertion could not fail')

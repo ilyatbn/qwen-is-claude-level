@@ -25,6 +25,12 @@ export interface WorldItemView {
   x: number
   y: number
   source: string
+  /**
+   * Has it come to rest? Nothing tracked this before T13.05, which is why
+   * `isFallingCrate` sat here for three milestones taking an argument no caller
+   * could supply — and why crates were drawn hanging in the sky (§C7).
+   */
+  grounded: boolean
 }
 
 /** Bob amplitude in world px, and the period in seconds. */
@@ -48,6 +54,25 @@ export function bobOffset(id: number, t: number): number {
 /** Crates fall with a parachute and land as an ordinary pickup (`docs/32` §4). */
 export function isFallingCrate(item: WorldItemView, grounded: boolean): boolean {
   return item.source === 'Crate' && !grounded
+}
+
+/**
+ * A falling item does not bob. It is being carried by gravity, and adding a
+ * sine wave to that reads as the sprite being loose from the thing it draws.
+ */
+export function bobFor(item: WorldItemView, id: number, t: number): number {
+  return item.grounded ? bobOffset(id, t) : 0
+}
+
+/**
+ * Beacon brightness, 0..1, pulsing once a second.
+ *
+ * A constant glow is a decal; the pulse is what carries across a map (`docs/32`
+ * §4 — the crate is meant to *pull players together*, so it has to be findable
+ * from off screen).
+ */
+export function beaconPulse(t: number): number {
+  return 0.35 + 0.3 * (0.5 + 0.5 * Math.sin(t * Math.PI * 2))
 }
 
 export function frameFor(

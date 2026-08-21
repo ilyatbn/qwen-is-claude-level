@@ -183,6 +183,20 @@ pub enum GameEvent {
         y: f32,
         source: SpawnSource,
     },
+    /// Where a falling item is now, and whether it has come to rest.
+    ///
+    /// `ItemSpawn` carries the position an item was *created* at, which for a
+    /// crate is the sky. Nothing carried where it went, so every observer drew
+    /// crates hanging at `SKY_MARGIN / 2` for the rest of the round while the
+    /// real crate sat on the ground somewhere below, pickupable by anyone who
+    /// walked over the spot they could not see (§C7).
+    ItemMove {
+        tick: u32,
+        world_item_id: WorldItemId,
+        x: f32,
+        y: f32,
+        grounded: bool,
+    },
     ItemPickup {
         tick: u32,
         world_item_id: WorldItemId,
@@ -301,6 +315,7 @@ impl GameEvent {
             | GameEvent::MinePlaced { tick, .. }
             | GameEvent::MineEnded { tick, .. }
             | GameEvent::ItemSpawn { tick, .. }
+            | GameEvent::ItemMove { tick, .. }
             | GameEvent::ItemPickup { tick, .. }
             | GameEvent::ItemDespawn { tick, .. }
             | GameEvent::CrateSpawn { tick, .. }
@@ -707,7 +722,8 @@ impl World {
         self.step_placed(now, dt);
 
         // 6. world items and crates — and the graves, which fall the same way.
-        self.items.step(&self.map, dt);
+        let landed = self.items.step(&self.map, dt);
+        self.emit_item_motion(&landed);
         self.tombstones.step(&self.map, dt);
         if playing {
             self.step_item_spawns(now);
@@ -1403,6 +1419,38 @@ impl World {
                 });
             }
         }
+    }
+
+    /// Tell observers where the falling items are.
+    ///
+    /// Two rules, and the second is the one that matters:
+    ///
+    ///   * while airborne, at `SNAPSHOT_HZ` rather than every tick — a crate
+    ///     falls for seconds and 60 Hz of positions for a thing nobody is
+    ///     aiming at is bandwidth spent on nothing;
+    ///   * **on landing, always**, off the cadence. The resting position is the
+    ///     only one that lasts, and a periodic broadcast lands on it only by
+    ///     luck. Skip it and the crate is drawn a few pixels above the ground
+    ///     forever, which is the same bug in a smaller font.
+    fn emit_item_motion(&mut self, landed: &[WorldItemId]) {
+        let tick = self.tick;
+        let every = (crate::constants::SIM_HZ / crate::constants::SNAPSHOT_HZ).max(1);
+        let due = tick.is_multiple_of(every);
+        let mut out: Vec<GameEvent> = Vec::new();
+        for it in self.items.iter() {
+            // A landed item is no longer airborne, so these two never overlap.
+            if !(landed.contains(&it.id) || (due && !it.grounded)) {
+                continue;
+            }
+            out.push(GameEvent::ItemMove {
+                tick,
+                world_item_id: it.id,
+                x: it.pos.x,
+                y: it.pos.y,
+                grounded: it.grounded,
+            });
+        }
+        self.events.extend(out);
     }
 
     fn resolve_pickups(&mut self, now: f32) {
@@ -2109,5 +2157,250 @@ mod state_hash_coverage {
             pending: _,
             prev_input: _,
         } = w;
+    }
+}
+
+/// T13.05 — a crate that falls where anyone watching can see it fall.
+///
+/// The bug (§C7) was reported as two: crates appear in mid-air, and crates cannot
+/// be picked up. Sampling the simulation first showed it is **one**, and not in
+/// the simulation at all: the crate falls correctly and a player standing on it
+/// picks it up correctly. What never existed was any way for an observer to learn
+/// that the crate had moved since it was created, so every client drew it at
+/// `y = SKY_MARGIN / 2` for the rest of the round and "cannot pick it up" meant
+/// "cannot pick it up *there*".
+#[cfg(test)]
+mod crate_motion_tests {
+    use super::*;
+    use crate::constants::{MapScale, CRATE_H, SIM_DT};
+    use crate::items::registry::MEDKIT;
+
+    fn world() -> World {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w
+    }
+
+    /// Drop a crate from the sky, the way `tick_crates` does.
+    fn drop_crate(w: &mut World, x: f32) -> WorldItemId {
+        w.items.spawn(
+            MEDKIT,
+            1,
+            Vec2::new(x, (crate::constants::SKY_MARGIN / 2) as f32),
+            Vec2::ZERO,
+            SpawnSource::Crate,
+            0.0,
+        )
+    }
+
+    fn moves(evs: &[GameEvent], want: WorldItemId) -> Vec<(f32, f32, bool)> {
+        evs.iter()
+            .filter_map(|e| match e {
+                GameEvent::ItemMove {
+                    world_item_id,
+                    x,
+                    y,
+                    grounded,
+                    ..
+                } if *world_item_id == want => Some((*x, *y, *grounded)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_falling_crate_is_reported_moving_and_then_reported_landed() {
+        let mut w = world();
+        let id = drop_crate(&mut w, 300.0);
+
+        let mut evs = Vec::new();
+        for _ in 0..600 {
+            w.step(SIM_DT);
+            evs.extend(w.drain_events());
+        }
+
+        let m = moves(&evs, id);
+        assert!(
+            m.len() > 3,
+            "a crate fell the height of the map and produced {} position reports — \
+             an observer cannot draw a fall it is never told about",
+            m.len()
+        );
+        // It went down. Reported y must increase (screen coords) until it stops.
+        for pair in m.windows(2) {
+            assert!(
+                pair[1].1 >= pair[0].1,
+                "reported y went up: {} then {}",
+                pair[0].1,
+                pair[1].1
+            );
+        }
+        assert!(m[m.len() - 1].1 > m[0].1 + 20.0, "it barely moved");
+
+        // The landing is reported, and it is the LAST word.
+        let last = *m.last().expect("at least one");
+        assert!(
+            last.2,
+            "the crate landed and nobody was told it had stopped"
+        );
+        // Landing is reported twice, not once, and that is the truth rather
+        // than a bug: it comes to rest, the footprint probe finds no support for
+        // a single step, and it settles 0.39 px onto its final resting place.
+        // A settle, not a bounce — the second landing is *below* the first and
+        // within a pixel of it. `a_resting_crate_is_reported_once_and_then_
+        // never_again` is what pins that it does stop.
+        let landings: Vec<_> = m.iter().filter(|e| e.2).collect();
+        assert!(
+            landings.len() <= 3,
+            "reported landing {} times — that is a bounce, not a settle",
+            landings.len()
+        );
+        for pair in landings.windows(2) {
+            assert!(
+                pair[1].1 >= pair[0].1 && pair[1].1 - pair[0].1 < 1.0,
+                "settled from {} to {}, which is a bounce",
+                pair[0].1,
+                pair[1].1
+            );
+        }
+
+        // And the last reported position is where the crate actually is. This is
+        // the assertion the cadence alone cannot pass: emitting only every third
+        // tick lands on the resting position by luck, and missing it leaves every
+        // observer drawing the crate a few pixels above the ground forever.
+        let it = w.items.get(id).expect("still there");
+        assert!(
+            (last.0 - it.pos.x).abs() < 0.01 && (last.1 - it.pos.y).abs() < 0.01,
+            "last reported ({}, {}) but the crate is at {:?}",
+            last.0,
+            last.1,
+            it.pos
+        );
+    }
+
+    /// The control for the test above. A grounded item that nothing disturbs must
+    /// generate no traffic at all — otherwise "it reports while falling" would
+    /// pass for something that reports forever, and the cadence would be a lie.
+    #[test]
+    fn a_resting_crate_is_reported_once_and_then_never_again() {
+        let mut w = world();
+        let id = drop_crate(&mut w, 300.0);
+        for _ in 0..600 {
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+        }
+        assert!(w.items.get(id).expect("there").grounded, "never landed");
+
+        let mut evs = Vec::new();
+        for _ in 0..300 {
+            w.step(SIM_DT);
+            evs.extend(w.drain_events());
+        }
+        assert!(
+            moves(&evs, id).is_empty(),
+            "a crate that is not moving reported {} positions in 5 s",
+            moves(&evs, id).len()
+        );
+    }
+
+    #[test]
+    fn a_crate_whose_ground_is_carved_away_falls_again_and_says_so() {
+        let mut w = world();
+        let id = drop_crate(&mut w, 300.0);
+        for _ in 0..600 {
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+        }
+        let resting = w.items.get(id).expect("there").pos;
+        assert!(w.items.get(id).expect("there").grounded);
+
+        // Take the floor out from under it (`docs/32` §4).
+        w.map
+            .carve_circle(resting.x as i32, (resting.y + CRATE_H) as i32, 60);
+
+        let mut evs = Vec::new();
+        for _ in 0..600 {
+            w.step(SIM_DT);
+            evs.extend(w.drain_events());
+        }
+        let after = w.items.get(id).expect("there");
+        assert!(
+            after.pos.y > resting.y + 5.0,
+            "the crate hung over the crater at {:?} (was {resting:?})",
+            after.pos
+        );
+        let m = moves(&evs, id);
+        assert!(!m.is_empty(), "it fell again and nobody was told");
+        assert!(
+            m.last().expect("some").2,
+            "it came to rest again and nobody was told"
+        );
+    }
+
+    /// The pickup, end to end and at both ends (§A39): the item enters an
+    /// inventory **and** leaves the world. Asserting only the first would pass for
+    /// a crate that is picked up infinitely.
+    #[test]
+    fn a_player_standing_on_a_landed_crate_picks_it_up() {
+        let mut w = world();
+        let id = drop_crate(&mut w, 300.0);
+        for _ in 0..600 {
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+        }
+        let at = w.items.get(id).expect("there").pos;
+        assert!(w.items.get(id).expect("there").grounded, "never landed");
+
+        w.add_player(0, 0, "ana".into());
+        let before = w.player_mut(0).expect("added").inventory.count_of(MEDKIT);
+        // Standing where the crate is — which, before this task, is a place no
+        // player could know to stand.
+        w.player_mut(0).expect("added").body.pos = at;
+
+        let mut evs = Vec::new();
+        for _ in 0..10 {
+            w.step(SIM_DT);
+            evs.extend(w.drain_events());
+        }
+
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                GameEvent::ItemPickup { world_item_id, player_id, .. }
+                    if *world_item_id == id && *player_id == 0
+            )),
+            "no pickup event"
+        );
+        assert_eq!(
+            w.player_mut(0).expect("added").inventory.count_of(MEDKIT),
+            before + 1,
+            "the crate's contents never reached the inventory"
+        );
+        assert!(
+            w.items.get(id).is_none(),
+            "picked up and still lying in the world"
+        );
+    }
+
+    /// The control for the pickup: out of range, nothing happens. Without it,
+    /// "walking onto it picks it up" passes for an item that is picked up from
+    /// anywhere on the map.
+    #[test]
+    fn a_player_across_the_map_picks_up_nothing() {
+        let mut w = world();
+        let id = drop_crate(&mut w, 300.0);
+        for _ in 0..600 {
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+        }
+        let at = w.items.get(id).expect("there").pos;
+
+        w.add_player(0, 0, "ana".into());
+        w.player_mut(0).expect("added").body.pos = Vec2::new(at.x + 400.0, at.y);
+        for _ in 0..10 {
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+        }
+        assert!(w.items.get(id).is_some(), "picked up from 400 px away");
     }
 }

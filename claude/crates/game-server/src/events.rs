@@ -4,7 +4,7 @@
 //!
 //! | Scope | Events |
 //! |---|---|
-//! | Everyone | carve, explosion, projectile_*, hitscan, item_*, crate_spawn, death, respawn, score, effect_*, hazard_spawn, phase_change, round_state, round_end, player_join, player_leave, mask_checksum |
+//! | Everyone | carve, explosion, projectile_*, hitscan, item_* (including item_move), crate_spawn, death, respawn, score, effect_*, hazard_spawn, phase_change, round_state, round_end, player_join, player_leave, mask_checksum |
 //! | Owner only | `inventory` |
 //! | Victim and attacker only | `damage` |
 //!
@@ -55,6 +55,7 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         | GameEvent::ProjectileDespawn { .. }
         | GameEvent::Hitscan { .. }
         | GameEvent::ItemSpawn { .. }
+        | GameEvent::ItemMove { .. }
         | GameEvent::ItemPickup { .. }
         | GameEvent::ItemDespawn { .. }
         | GameEvent::CrateSpawn { .. }
@@ -88,6 +89,7 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::MinePlaced { .. } => "mine_placed",
         GameEvent::MineEnded { .. } => "mine_ended",
         GameEvent::ItemSpawn { .. } => "item_spawn",
+        GameEvent::ItemMove { .. } => "item_move",
         GameEvent::ItemPickup { .. } => "item_pickup",
         GameEvent::ItemDespawn { .. } => "item_despawn",
         GameEvent::CrateSpawn { .. } => "crate_spawn",
@@ -219,6 +221,16 @@ pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
         } => json!({
             "tick": tick, "world_item_id": world_item_id, "item_id": item_id,
             "count": count, "x": x, "y": y, "source": format!("{source:?}")
+        }),
+        GameEvent::ItemMove {
+            world_item_id,
+            x,
+            y,
+            grounded,
+            ..
+        } => json!({
+            "tick": tick, "world_item_id": world_item_id,
+            "x": x, "y": y, "grounded": grounded
         }),
         GameEvent::ItemPickup {
             world_item_id,

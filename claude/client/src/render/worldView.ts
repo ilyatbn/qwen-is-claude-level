@@ -27,6 +27,7 @@ import { resolveTheme } from '../render/themes-math'
 import { makeBackTexture, makeEdgeTexture, makeFillTexture } from './procTextures'
 import { DecorationLayer } from './decorations'
 import { fromMeta } from './decorations-math'
+import { ItemLayer } from './itemSprites'
 import { OrdnanceLayer } from './ordnance'
 import { WeatherLayer, type VentView } from './weather'
 import { KIND_BY_WEAPON_KEY, WEAPON_KEYS, type ProjectileKind } from './ordnance-state'
@@ -49,6 +50,17 @@ export class WorldView {
   readonly ordnance: OrdnanceLayer
   /** Rain, embers and burning ground. Shared, so both scenes show the weather. */
   readonly weather: WeatherLayer
+  /**
+   * Pickups, crates, parachutes and beacons.
+   *
+   * Owned here for the reason the layer-parity check caught: `ItemLayer` builds a
+   * second Graphics for the parachutes at `worldItems - 1`, and while the layer
+   * lived in `GameScene` alone that depth existed in one scene and not the shared
+   * stack — §C0 starting again, in the very milestone that exists to end it. A
+   * scene that has a world gets items in it without opting in, even if its world
+   * never spawns one.
+   */
+  readonly items: ItemLayer
   readonly timings: WorldViewTimings = { buildAllMs: 0, lastRebakeMs: 0 }
 
   private readonly backdrop: Backdrop
@@ -107,6 +119,7 @@ export class WorldView {
 
     this.ordnance = new OrdnanceLayer(scene)
     this.weather = new WeatherLayer(scene)
+    this.items = new ItemLayer(scene)
     this.weaponKeys = weaponKeys
   }
 
@@ -246,6 +259,7 @@ export class WorldView {
 
   destroy(): void {
     this.tracked.clear()
+    this.items.destroy()
     this.weather.destroy()
     this.ordnance.destroy()
     this.decorations.destroy()

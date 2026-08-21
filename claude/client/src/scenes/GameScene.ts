@@ -29,7 +29,6 @@ import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceLayer } from '../render/ordnance'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
 import { hazardKind } from '../render/ordnanceFx-math'
-import { ItemLayer } from '../render/itemSprites'
 import { cycleU, darknessAt } from '../render/sky-math'
 import { formatClock, phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
 import { FLAG, flag } from '../net/codec'
@@ -58,7 +57,8 @@ export class GameScene extends Phaser.Scene {
   private lightmap!: Lightmap
   private ordnance!: OrdnanceLayer
   private fx!: OrdnanceFxLayer
-  private items!: ItemLayer
+  /** e2e only: point the camera here instead of at the player. */
+  private watchPoint: { x: number; y: number } | null = null
   private localView: PlayerView | null = null
   private remotes = new Map<number, RemoteView>()
   private localInput!: LocalInput
@@ -172,9 +172,7 @@ export class GameScene extends Phaser.Scene {
     // §A39 #10: the server has narrated melee, cones, mines and hazards since
     // T11.05 and nothing subscribed. This is the other half.
     this.fx = new OrdnanceFxLayer(this, C().MINE_ARM_TIME)
-    this.items = new ItemLayer(this)
     this.tombstones = new TombstoneLayer(this, C().TOMBSTONE_W, C().TOMBSTONE_H)
-    this.items.setRegistry(this.core.itemRegistryJson())
     this.localInput = new LocalInput(this)
     this.crosshair = new Crosshair(this, DEPTH.hud)
     this.buildHud()
@@ -265,6 +263,10 @@ export class GameScene extends Phaser.Scene {
       if (typeof code === 'string' && code.length > 0) this.showJoinCode(code)
     })
     for (const ev of ['carve', 'carve_capsule', 'item_spawn', 'crate_spawn', 'item_pickup',
+      // `item_move` is where a falling crate goes (§C7). Written into the mirror
+      // and left out of this list, it did exactly what the comment below warns
+      // about — the crate hung in the sky and every unit test stayed green.
+      'item_move',
       'item_despawn', 'projectile_spawn', 'projectile_despawn', 'mask_checksum',
       // §B8. The mirror handles these; this list is what actually subscribes,
       // and a handler with no subscription is the §A39 shape one layer down.
@@ -508,7 +510,6 @@ export class GameScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.conn.close()
       this.audio.stopAll()
-      this.items?.destroy()
       this.hud?.remove()
       this.hideJoinCodeBanner()
       this.feel?.destroy()
@@ -564,6 +565,9 @@ export class GameScene extends Phaser.Scene {
 
     this.world?.destroy()
     this.world = new WorldView(this, this.core)
+    // The item layer lives in the shared stack (§C0), so its registry is set
+    // here rather than in `create` — there is no layer before there is a world.
+    this.world.items.setRegistry(this.core.itemRegistryJson())
 
     // Seat the local body so prediction has something to move. The server owns
     // the real position and the first snapshot corrects it; this only avoids a
@@ -835,7 +839,13 @@ export class GameScene extends Phaser.Scene {
         iframes: false,
       })
       this.crosshair.update(rp.x, rp.y, aim)
-      this.world.rig.follow({ x: rp.x, y: rp.y })
+      // `watchPoint` is an e2e affordance, and only that (§C2). A supply crate
+      // lands wherever the schedule puts it, which is usually several hundred px
+      // off camera — so a screenshot named `crate-falling.png` reliably contained
+      // no crate, and a check that cannot photograph its subject cannot tell a
+      // parachute that draws from one that does not. Rendering is world-space, so
+      // what this frames is exactly what a player standing there would see.
+      this.world.rig.follow(this.watchPoint ?? { x: rp.x, y: rp.y })
       this.movementCues(dt, body)
     }
     this.world.rig.update(dt)
@@ -876,7 +886,7 @@ export class GameScene extends Phaser.Scene {
     this.fx.update(dt, this.ear(), performance.now())
     // World items were tracked from T6.08 and drawn by nothing: a medkit on the
     // ground was invisible in the real game.
-    this.items.update(dt, [...this.mirror.items.values()], this.ear())
+    this.world?.items.update(dt, [...this.mirror.items.values()], this.ear())
     this.tombstones.update([...this.mirror.tombstones.values()])
     this.feel.update(dt, this.feelFrame())
 
@@ -1121,6 +1131,29 @@ export class GameScene extends Phaser.Scene {
         }
         return [...seen].sort((a, b) => a - b)
       },
+      /**
+       * e2e only: stop the scene so a position read and a screenshot describe
+       * the same instant.
+       *
+       * A crate falls at several hundred px/s and the camera is at zoom 2, so
+       * the ~100 ms between "where is it" and "take the picture" moves it a
+       * couple of hundred pixels on screen. A patch computed from the first
+       * number and sampled from the second measured the parachute on one run
+       * (117) and empty sky on the next (15) — the same code, the same seed.
+       */
+      freeze(on: boolean) {
+        if (on) self.scene.pause()
+        else self.scene.resume()
+      },
+      /** e2e only (§C2): frame a world point so a check can photograph it. */
+      watch(x: number | null, y = 0) {
+        self.watchPoint = x === null ? null : { x, y }
+        // Snap, do not lerp. A crate falls faster than the rig follows, so a
+        // lerped move left the crate off the bottom of the frame by the time
+        // the camera arrived — the check then reported "never framed in flight"
+        // for a crate that was on screen a moment earlier.
+        if (self.watchPoint) self.world?.rig.snapTo(self.watchPoint)
+      },
       debug() {
         const body = self.core.playerState(self.me)
         return {
@@ -1149,7 +1182,19 @@ export class GameScene extends Phaser.Scene {
           // numbers rather than one, because they were silently different for
           // three milestones: the mirror tracked them and nothing drew them.
           worldItems: self.mirror.items.size,
-          itemsDrawn: self.items?.count ?? 0,
+          itemsDrawn: self.world?.items.count ?? 0,
+          // Where they are drawn, read back off the sprites — §C7 was a bug in
+          // which every position the client held was wrong, so a check needs the
+          // drawn positions and the server's, not one number twice.
+          drawnItems: self.world?.items.drawn ?? [],
+          chutesDrawn: self.world?.items.chutesDrawn ?? 0,
+          mirrorItems: [...self.mirror.items.values()].map((i) => ({
+            id: i.id,
+            x: i.x,
+            y: i.y,
+            source: i.source,
+            grounded: i.grounded,
+          })),
           // Two numbers, not one (§A39): the server's graveyard against the
           // graves actually on screen.
           tombstones: self.mirror.tombstones.size,
@@ -1172,6 +1217,17 @@ export class GameScene extends Phaser.Scene {
           })),
           camera: { x: self.cameras.main.scrollX, y: self.cameras.main.scrollY },
           zoom: self.cameras.main.zoom,
+          // The camera's top-left in world coordinates, exactly as the sandbox
+          // reports it. Absent until T13.05, which meant a check converting a
+          // world position to a screen one here read `undefined` and silently
+          // concluded the subject was off camera — an assertion that could not
+          // succeed rather than one that could not fail (§B15).
+          worldView: {
+            x: self.cameras.main.worldView.x,
+            y: self.cameras.main.worldView.y,
+            width: self.cameras.main.worldView.width,
+            height: self.cameras.main.worldView.height,
+          },
           hazardsDrawn: self.fx?.hazardCount ?? 0,
           // The snapshot roster includes the local player, so this is the
           // total — not remotes plus one.

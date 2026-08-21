@@ -96,6 +96,10 @@ const CHECKS = [
   { name: 'decorations', file: 'scripts/checks/decorations.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'm9-checkpoint', file: 'scripts/checks/m9-checkpoint.mjs', url: '?sandbox=1&seed=1' },
   { name: 'perf', file: 'scripts/checks/perf.mjs', url: '?sandbox=1&seed=4242' },
+  // §C7: a supply crate falls where you can see it fall. Standalone — it needs a
+  // real server, because crates come from the server's spawn schedule and there
+  // is no sandbox path to one.
+  { name: 'crates', file: 'scripts/checks/crates.mjs', standalone: true },
   // Standalone: it launches its own vite and browser and calls `process.exit`.
   // Imported into this process it would terminate the suite mid-run — and exit 0
   // while doing it, hiding every earlier failure. Run as a subprocess instead.

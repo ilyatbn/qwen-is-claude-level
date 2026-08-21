@@ -103,7 +103,15 @@ impl WorldItems {
     /// Gravity and terrain collision, through the **same** sub-stepped resolver
     /// players use. A second collision path would eventually let an item fall
     /// through terrain a player cannot walk through.
-    pub fn step(&mut self, map: &Map, dt: f32) {
+    ///
+    /// Returns the items that **landed on this step**. The caller needs that to
+    /// tell anyone watching where the thing came to rest: a crate falls for
+    /// several seconds and the landing tick is the only one whose position is
+    /// final, so a periodic broadcast that happens to miss it leaves every
+    /// observer holding a position the crate has already left. That is exactly
+    /// how a crate ends up drawn in mid-air (§C7).
+    pub fn step(&mut self, map: &Map, dt: f32) -> Vec<WorldItemId> {
+        let mut landed = Vec::new();
         for it in self.items.iter_mut() {
             // Idle items cost nothing — but only while the ground is still there.
             //
@@ -129,8 +137,21 @@ impl WorldItems {
             integrate(map, &mut body, 1.0, dt);
             it.pos = body.pos;
             it.vel = body.vel;
+            // Anything reaching here was airborne at the top of the loop — the
+            // grounded-and-still-supported case `continue`d — so `body.grounded`
+            // is precisely "it landed on this step".
             it.grounded = body.grounded;
+            if it.grounded {
+                landed.push(it.id);
+            }
         }
+        landed
+    }
+
+    /// Items still falling. They are the only ones whose position changes, so
+    /// they are the only ones worth telling anyone about.
+    pub fn airborne(&self) -> impl Iterator<Item = &WorldItem> {
+        self.items.iter().filter(|it| !it.grounded)
     }
 
     /// Is there still solid ground directly under this item's footprint?

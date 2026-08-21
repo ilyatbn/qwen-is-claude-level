@@ -35,6 +35,12 @@ export interface WorldItemView {
   x: number
   y: number
   source: string
+  /**
+   * Has it come to rest? Nothing tracked this before T13.05, which is why
+   * `isFallingCrate` sat here for three milestones taking an argument no caller
+   * could supply — and why crates were drawn hanging in the sky (§C7).
+   */
+  grounded: boolean
 }
 
 export interface ProjectileView {
@@ -254,7 +260,22 @@ export class WorldMirror {
           x: n(p['x']),
           y: n(p['y']),
           source: String(p['source'] ?? (name === 'crate_spawn' ? 'Crate' : 'Initial')),
+          // The join snapshot knows; a spawn event is by definition mid-air.
+          grounded: p['grounded'] === true,
         })
+        break
+      }
+      case 'item_move': {
+        // Where it actually is. `item_spawn` gives the position an item was
+        // *created* at, which for a crate is the sky — and until this arm
+        // existed that was the only position the client ever heard, so a crate
+        // hung at y=48 for the rest of the round while the real one lay on the
+        // ground being picked up by people who walked over it by accident.
+        const it = this.items.get(n(p['world_item_id']))
+        if (!it) break
+        it.x = n(p['x'])
+        it.y = n(p['y'])
+        it.grounded = p['grounded'] === true
         break
       }
       case 'tombstone_spawn': {

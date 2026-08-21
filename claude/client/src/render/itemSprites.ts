@@ -13,9 +13,11 @@ import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
 import { ensureItemTextures } from './itemTextures'
 import {
-  bobOffset,
+  beaconPulse,
+  bobFor,
   diffItems,
   frameFor,
+  isFallingCrate,
   labelFor,
   parseRegistry,
   withinLabelRange,
@@ -37,6 +39,14 @@ export class ItemLayer {
   private readonly scene: Phaser.Scene
   private readonly container: Phaser.GameObjects.Container
   private readonly entries = new Map<number, Entry>()
+  /**
+   * One Graphics for every parachute and beacon on screen, redrawn each frame.
+   *
+   * Per-item objects would be the obvious shape and are the wrong one here:
+   * there are at most a handful of crates, and a single cleared-and-redrawn
+   * canvas cannot leave a parachute behind on an item that has landed.
+   */
+  private readonly chutes: Phaser.GameObjects.Graphics
   private defs: Map<number, ItemDefView> = new Map()
   private warned = new Set<string>()
   private t = 0
@@ -45,6 +55,11 @@ export class ItemLayer {
     ensureItemTextures(scene.textures)
     this.scene = scene
     this.container = scene.add.container(0, 0).setDepth(DEPTH.worldItems)
+    // Behind the item itself: a crate hangs *under* its canopy.
+    this.chutes = scene.add.graphics().setDepth(DEPTH.worldItems - 1)
+    // ADD, so the beam brightens whatever is behind it instead of laying a
+    // translucent wash over it — over a bright sky a wash is invisible.
+    this.chutes.setBlendMode(Phaser.BlendModes.ADD)
   }
 
   /** From `Core.itemRegistryJson()`. Safe to call before any item exists. */
@@ -60,6 +75,32 @@ export class ItemLayer {
   get ids(): number[] {
     return [...this.entries.keys()]
   }
+
+  /**
+   * Where each item is **actually drawn**, read back off the live display
+   * objects.
+   *
+   * Not the positions handed to `update` — those are what the caller intended,
+   * and the whole of §C7 is a case where the intended position and the drawn one
+   * were the same number and both were wrong. Reading the sprite back means a
+   * check comparing this against the server's item list is comparing two ends
+   * that were arrived at independently.
+   */
+  get drawn(): Array<{ id: number; x: number; y: number; source: string; grounded: boolean }> {
+    return [...this.entries.entries()].map(([id, e]) => ({
+      id,
+      x: e.sprite.x,
+      y: e.sprite.y,
+      source: e.item.source,
+      grounded: e.item.grounded,
+    }))
+  }
+
+  /** Parachutes drawn on the last frame. */
+  get chutesDrawn(): number {
+    return this.chutes_
+  }
+  private chutes_ = 0
 
   /**
    * Sync to the live set and animate.
@@ -87,7 +128,7 @@ export class ItemLayer {
       const item = byId.get(id)
       if (!item) continue
       e.item = item
-      e.sprite.setPosition(item.x, item.y + bobOffset(id, this.t))
+      e.sprite.setPosition(item.x, item.y + bobFor(item, id, this.t))
 
       // A label at every item turns the map into a wall of text; close range
       // only, per `docs/30` §5.
@@ -107,8 +148,57 @@ export class ItemLayer {
         e.label.destroy()
         e.label = null
       }
-      e.label?.setPosition(item.x, item.y - 16 + bobOffset(id, this.t))
+      e.label?.setPosition(item.x, item.y - 16 + bobFor(item, id, this.t))
     }
+
+    this.drawCrateMarkers(live)
+  }
+
+  /** Parachutes on the crates still falling, beacons on all of them (`docs/32` §4). */
+  private drawCrateMarkers(live: WorldItemView[]): void {
+    const g = this.chutes
+    g.clear()
+    let chutes = 0
+    for (const item of live) {
+      if (item.source !== 'Crate') continue
+
+      // The beacon stays after landing. The doc asks for a crate that pulls
+      // players together, and one that stops advertising itself the instant it
+      // lands does the opposite — it is loudest while nobody can reach it yet.
+      const a = beaconPulse(this.t)
+      // A column of light going up, wider at the top the way a beam spreads.
+      //
+      // The first version drew this at `0.1 * a` — a measured alpha of about
+      // 0.05 over a bright sky — and a screenshot showed nothing at all where
+      // the beacon was. `chutesDrawn` said 1, every assertion passed, and the
+      // beacon did not exist as far as a player was concerned. That is the same
+      // failure as the toxic rain in T13.04: the count reports that drawing
+      // happened, not that anything became visible.
+      g.fillStyle(0xffe27a, 0.28 * a)
+      g.fillTriangle(item.x - 4, item.y, item.x + 4, item.y, item.x + 26, item.y - 300)
+      g.fillTriangle(item.x - 4, item.y, item.x + 4, item.y, item.x - 26, item.y - 300)
+      g.fillStyle(0xfff3c0, 0.85 * a)
+      g.fillCircle(item.x, item.y, 9 + 4 * a)
+      g.fillStyle(0xffd34d, 0.35 * a)
+      g.fillCircle(item.x, item.y, 20 + 8 * a)
+
+      if (!isFallingCrate(item, item.grounded)) continue
+      chutes++
+
+      // Canopy: an arc above, with two rigging lines down to the crate's top
+      // corners. Drawn from the crate's position, so it tracks the fall exactly
+      // rather than being animated separately and drifting off it.
+      const cy = item.y - 34
+      g.lineStyle(2, 0xf2f5ff, 0.85)
+      g.beginPath()
+      g.arc(item.x, cy, 20, Math.PI, Math.PI * 2)
+      g.strokePath()
+      g.lineBetween(item.x - 20, cy, item.x - 9, item.y - 11)
+      g.lineBetween(item.x + 20, cy, item.x + 9, item.y - 11)
+      g.fillStyle(0xd94f4f, 0.65)
+      g.fillEllipse(item.x, cy + 2, 40, 12)
+    }
+    this.chutes_ = chutes
   }
 
   private spawn(item: WorldItemView): void {
@@ -151,6 +241,7 @@ export class ItemLayer {
 
   destroy(): void {
     this.clear()
+    this.chutes.destroy()
     this.container.destroy()
   }
 }

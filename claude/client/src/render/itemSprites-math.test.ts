@@ -22,7 +22,7 @@ const defs: Map<number, ItemDefView> = parseRegistry(REGISTRY_JSON)
 const all = () => true
 
 function item(over: Partial<WorldItemView> = {}): WorldItemView {
-  return { id: 1, item: 0, count: 1, x: 100, y: 200, source: 'Initial', ...over }
+  return { id: 1, item: 0, count: 1, x: 100, y: 200, source: 'Initial', grounded: true, ...over }
 }
 
 describe('parseRegistry', () => {

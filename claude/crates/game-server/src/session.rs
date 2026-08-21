@@ -879,6 +879,9 @@ async fn seat(
                         "x": it.pos.x.round() as i32,
                         "y": it.pos.y.round() as i32,
                         "source": format!("{:?}", it.source),
+                        // A joiner sees the world as it is now, so an item that
+                        // has already landed must not arrive wearing a parachute.
+                        "grounded": it.grounded,
                     })
                 })
                 .collect::<Vec<_>>()

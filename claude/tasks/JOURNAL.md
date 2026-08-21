@@ -3466,3 +3466,30 @@ Notes: §B21 AGAIN — the sim was right and nothing reached the screen. Puddles
 Left for later: meteors ride T13.03's projectile path (r=8, trail 14) and are
        not separately asserted. The game passes [] for vents — lava embers are
        exercised through the sandbox only.
+
+## T13.05 — Crates fall, land, and can be picked up — DONE
+Files: crates/game-core/src/{items/world.rs,world/mod.rs}, game-server/src/{events,session}.rs,
+       client/src/{net/worldMirror.ts,render/itemSprites{,-math}.ts,render/worldView.ts,
+       scenes/GameScene.ts}, scripts/checks/crates.mjs, e2e.mjs, e2e-two-clients.mjs,
+       scripts/checks/terrain-render.mjs
+Verified: `--lib crate` 15 passed; `e2e.mjs crates` ok — fell 558 px over 53 samples,
+       drawn position agrees with the server, canopy 90.7/80.1 vs sky (floor 45.0,
+       control 10.9), picked up and undrawn at both ends. Gate: 910 rust, e2e 25/25.
+Notes: TWO REPORTED BUGS, ONE CAUSE, AND NOT IN THE SIMULATION. Sampling first
+       showed crates already fell correctly and were already pickupable. What did
+       not exist was any way to learn a crate had MOVED since it was created:
+       `ItemSpawn` carries the creation position, which for a crate is the sky. So
+       every client drew it at y=48 forever and "cannot pick it up" meant "cannot
+       pick it up THERE". New `ItemMove` event — at SNAPSHOT_HZ while airborne, and
+       ALWAYS on landing, off the cadence, because the resting position is the only
+       one that lasts and a periodic emit hits it only by luck.
+       THE LAYER-PARITY CHECK EARNED ITS KEEP. `ItemLayer` was built in GameScene
+       alone, so its parachute Graphics at depth 19 existed in one scene and not
+       the shared stack — §C0 restarting inside the milestone that exists to end
+       it. WorldView owns the item layer now; the sandbox gets an empty one, which
+       is the correct outcome. Falsified by moving the depth to 18: both checks go
+       red naming the difference.
+Left for later: TWO OrdnanceLayer instances live in GameScene (its own for tracers
+       and impacts, WorldView's for projectiles). Same depth, so the depth-set
+       parity check cannot see it. Not touched — out of scope for a crates task and
+       T13.03's verified behaviour rides on it.
