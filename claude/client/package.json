@@ -9,10 +9,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "preview": "vite preview",
-    "predev": "wasm-pack build ../crates/game-wasm --target web --out-dir ../../client/src/core/pkg || (echo \"wasm-pack is required: cargo install wasm-pack\" && exit 1)",
-    "prebuild": "wasm-pack build ../crates/game-wasm --target web --out-dir ../../client/src/core/pkg --release || (echo \"wasm-pack is required: cargo install wasm-pack\" && exit 1)",
-    "pretest": "wasm-pack build ../crates/game-wasm --target web --out-dir ../../client/src/core/pkg || (echo \"wasm-pack is required: cargo install wasm-pack\" && exit 1)",
-    "pretypecheck": "wasm-pack build ../crates/game-wasm --target web --out-dir ../../client/src/core/pkg || (echo \"wasm-pack is required: cargo install wasm-pack\" && exit 1)"
+    "predev": "node ../scripts/wasm-build.mjs",
+    "prebuild": "node ../scripts/wasm-build.mjs --release",
+    "pretest": "node ../scripts/wasm-build.mjs",
+    "pretypecheck": "node ../scripts/wasm-build.mjs"
   },
   "dependencies": {
     "phaser": "3.90.0",

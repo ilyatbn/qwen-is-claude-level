@@ -19,7 +19,24 @@ WORKDIR /app
 COPY client/package.json client/package-lock.json ./client/
 RUN npm --prefix client ci
 COPY client client
+COPY scripts/wasm-build.mjs scripts/wasm-build.mjs
+# `client/vite.config.ts` sets `publicDir: '../assets'` — the art lives at the
+# project root because it is shared with the atlas and audio build scripts. Vite
+# emits **nothing** and does not fail when publicDir is absent, so without this
+# the image builds and serves a game whose every texture falls back to a
+# placeholder (docs/50-sprites-skins.md §8 makes that survivable, which is
+# exactly why it is silent). `assets/vendor/` is excluded in .dockerignore: it
+# is the raw downloaded packs, an input to scripts/build-atlas.mjs, and 34 MB
+# that nothing at runtime reads.
+COPY assets assets
 COPY --from=wasm /wasm-pkg ./client/src/core/pkg
+# The npm pre* hooks rebuild the wasm so the client can never run against a
+# stale package (docs/70-amendments-v2.md §A22). Here the `wasm` stage above has
+# already built it from this same source tree, and this image has no Rust
+# toolchain by design — that separation is the whole point of the stage. The
+# flag makes the hook verify the package is present instead of rebuilding it;
+# it fails loudly if the COPY above ever stops landing.
+ENV SKIP_WASM_BUILD=1
 RUN npm --prefix client run build
 
 # ---- runtime -------------------------------------------------------------
