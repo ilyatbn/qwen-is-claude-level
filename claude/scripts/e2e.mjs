@@ -95,6 +95,11 @@ const CHECKS = [
   // visibility follows the **snapshot's** alive flag (§B4) and no sandbox or
   // synthetic event can raise it — which is the property worth having.
   { name: 'death', file: 'scripts/checks/death.mjs', standalone: true },
+  // T11.10 — melee, cones, mines and hazards are drawn, not merely narrated.
+  // The mine assertion counts the client's live mines against the server's own
+  // narration (placed − ended); one number would have passed for the whole
+  // period the bug existed (§A39).
+  { name: 'ordnance', file: 'scripts/checks/ordnance.mjs', standalone: true },
   // The M6 checkpoint: two browser contexts, one server, one round. Standalone
   // because it needs a real game-server and two clients rather than the sandbox.
   { name: 'two-clients', file: 'scripts/e2e-two-clients.mjs', standalone: true },

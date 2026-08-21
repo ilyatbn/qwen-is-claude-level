@@ -3031,3 +3031,36 @@ Notes: `Burst` IS A FIELD ON THE DEF, NOT FOUR DELIVERY VARIANTS. All four fly
        looked at damage.
 Left for later: T11.10 (the four hazard kinds are counted by GameScene and DRAWN BY
        NOTHING — task file updated to cover them), T11.11, T11.09.
+
+## T11.10 — Draw the ordnance the server already sends — DONE
+Files: client/src/render/{ordnanceFx,ordnanceFx-math,ordnanceFx-math.test}.ts,
+       scenes/GameScene.ts, crates/game-wasm/src/lib.rs, client/src/core/index.ts,
+       crates/game-server/src/room.rs, scripts/checks/ordnance.mjs, scripts/e2e.mjs
+Verified: `--run ordnanceFx-math` 16 passed; `node scripts/e2e.mjs ordnance` ok on
+       3 consecutive runs; gate GATE_EXIT=0, 896 rust tests, e2e 20/20.
+Notes: THE COUNT-AT-BOTH-ENDS ASSERTION IS THE TASK. Client live mines vs the
+       server's own narration (placed − ended). Falsified by deleting only the
+       DRAW half and keeping the counters: "server 1−0=1, client draws 0". One
+       number — "the server placed a mine" — passes for the whole period the bug
+       existed.
+       MY CHECK WAS FLAKY AT ~1-IN-3 AND THE CAUSE WAS A DESIGN FEATURE:
+       `fire_ready_at` is per PLAYER, not per weapon (deliberate, so swapping
+       cannot bypass a cooldown), so firing right after another weapon is
+       rejected silently. Fixed with `fireUntil`, which retries on the EFFECT
+       rather than the attempt. §A28 — a gate that fails on a coin flip gates
+       nothing, so this was fixed rather than accepted.
+       I THEN MADE THE CHECK DO PLATFORMING AND IT WALKED INTO A WALL (x=16) AND
+       OFF A LEDGE (mine 200 px overhead). None of it was needed: the fx layer is
+       at DEPTH.particles, above DEPTH.actors, so a mine at your feet already
+       draws over your own sprite. Deleted all the walking.
+       ORDER MATTERS BETWEEN SECTIONS: rocketing your own feet to destroy the
+       mine costs health and craters the ground, so it must come last. Placing a
+       mine costs nothing, so place-and-photograph goes early, before the molotov
+       fire that otherwise fills the frame (§A22).
+       §B15 IN MY OWN LOG LINE: printed `burnt.hazards` (top-level) where the
+       counter is `observed.hazards`, and it rendered "server announced
+       undefined". Now asserted, with a guard that a non-number is a failure.
+       Mine marker is drawn bold and outlined because it sits at the BODY CENTRE
+       of whoever placed it — a marker the placer cannot see is §B6's "visible at
+       close range" failing in the one frame where it matters.
+Left for later: T11.11 (arsenal art), T11.09 (balance).

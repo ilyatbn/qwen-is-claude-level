@@ -471,6 +471,20 @@ impl Room {
         // the slot order stays bazooka / smg / bazooka and nothing that already
         // presses a hotkey has to change.
         game_core::world::give(&mut self.world, id, game_core::items::registry::BAZOOKA, 4);
+        // Appended, never inserted: existing checks press Digit1/2/3 for the
+        // rocket and smg stacks, so the first three slots must not move (§B16 —
+        // an implicit invariant is a trap the first time someone edits the data).
+        // These four give T11.10 a mine to place, a swing to see, a jet to spray
+        // and a hazard to stand in.
+        game_core::world::give(&mut self.world, id, game_core::items::registry::MINE, 2);
+        game_core::world::give(&mut self.world, id, game_core::items::registry::AXE, 1);
+        game_core::world::give(
+            &mut self.world,
+            id,
+            game_core::items::registry::FLAMETHROWER,
+            200,
+        );
+        game_core::world::give(&mut self.world, id, game_core::items::registry::MOLOTOV, 2);
     }
 
     /// Free a seat for a human by removing the newest bot.

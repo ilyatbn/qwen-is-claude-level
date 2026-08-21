@@ -27,6 +27,8 @@ import { Crosshair, LocalInput } from '../input/localInput'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceLayer } from '../render/ordnance'
+import { OrdnanceFxLayer } from '../render/ordnanceFx'
+import { hazardKind } from '../render/ordnanceFx-math'
 import { ItemLayer } from '../render/itemSprites'
 import { cycleU, darknessAt } from '../render/sky-math'
 import { formatClock, phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
@@ -55,6 +57,7 @@ export class GameScene extends Phaser.Scene {
   private sky!: SkyLayer
   private lightmap!: Lightmap
   private ordnance!: OrdnanceLayer
+  private fx!: OrdnanceFxLayer
   private items!: ItemLayer
   private localView: PlayerView | null = null
   private remotes = new Map<number, RemoteView>()
@@ -119,6 +122,11 @@ export class GameScene extends Phaser.Scene {
     /** effect id -> the lifecycle phases seen for it, so "ran start to finish" is checkable. */
     effects: new Map<number, { kind: string; phases: Set<string> }>(),
     hazards: 0,
+    /** What the *server* said about mines, to assert against what is drawn. */
+    minesPlaced: 0,
+    minesEnded: 0,
+    swings: 0,
+    jets: 0,
     /** Where the most recent hazard landed, so a screenshot can frame one. */
     lastHazard: null as { x: number; y: number } | null,
     deaths: [] as Array<{ victim: number; attacker: number | null; cause: string }>,
@@ -161,6 +169,9 @@ export class GameScene extends Phaser.Scene {
     this.sky = new SkyLayer(this)
     this.lightmap = new Lightmap(this)
     this.ordnance = new OrdnanceLayer(this)
+    // §A39 #10: the server has narrated melee, cones, mines and hazards since
+    // T11.05 and nothing subscribed. This is the other half.
+    this.fx = new OrdnanceFxLayer(this, C().MINE_ARM_TIME)
     this.items = new ItemLayer(this)
     this.tombstones = new TombstoneLayer(this, C().TOMBSTONE_W, C().TOMBSTONE_H)
     this.items.setRegistry(this.core.itemRegistryJson())
@@ -293,6 +304,61 @@ export class GameScene extends Phaser.Scene {
       // know whether any of it is actually in frame (§A22).
       const p = asRecord(raw)
       this.observed.lastHazard = { x: Number(p['x'] ?? 0), y: Number(p['y'] ?? 0) }
+      this.fx.addHazard(
+        Number(p['id'] ?? -1),
+        hazardKind(String(p['kind'] ?? '')),
+        Number(p['x'] ?? 0),
+        Number(p['y'] ?? 0),
+        Number(p['r'] ?? 0),
+        Number(p['duration'] ?? 0),
+      )
+    })
+    this.conn.on('hazard_ended', (raw) => {
+      this.fx.removeHazard(Number(asRecord(raw)['id'] ?? -1))
+    })
+    // The four §B6 events. Each was emitted by the server and consumed by
+    // nothing; a swing you cannot see reads as damage from nowhere.
+    this.conn.on('melee', (raw) => {
+      const p = asRecord(raw)
+      const x = Number(p['x'] ?? 0)
+      const y = Number(p['y'] ?? 0)
+      this.observed.swings++
+      this.fx.addSwing(
+        x,
+        y,
+        Number(p['aim'] ?? 0),
+        Number(p['reach'] ?? 0),
+        Number(p['arc'] ?? 0),
+        Number(p['hits'] ?? 0),
+      )
+      this.audio.spatial(Number(p['hits'] ?? 0) > 0 ? 'hit' : 'fire_smg', x, y, this.ear(), 0.6)
+    })
+    this.conn.on('cone', (raw) => {
+      const p = asRecord(raw)
+      this.observed.jets++
+      this.fx.addJet(
+        Number(p['x'] ?? 0),
+        Number(p['y'] ?? 0),
+        Number(p['aim'] ?? 0),
+        Number(p['range'] ?? 0),
+        Number(p['arc'] ?? 0),
+      )
+    })
+    this.conn.on('mine_placed', (raw) => {
+      const p = asRecord(raw)
+      this.observed.minesPlaced++
+      this.fx.addMine(
+        Number(p['id'] ?? -1),
+        Number(p['owner'] ?? -1),
+        Number(p['x'] ?? 0),
+        Number(p['y'] ?? 0),
+      )
+    })
+    this.conn.on('mine_ended', (raw) => {
+      this.observed.minesEnded++
+      // An id we never saw placed is a no-op: a mid-round joiner has exactly
+      // that history, and throwing here would kill the scene.
+      this.fx.removeMine(Number(asRecord(raw)['id'] ?? -1))
     })
     this.conn.on('phase_change', (raw) => {
       const p = asRecord(raw)
@@ -432,6 +498,7 @@ export class GameScene extends Phaser.Scene {
       this.lightmap.destroy()
       this.sky.destroy()
       this.ordnance.destroy()
+      this.fx?.destroy()
       for (const r of this.remotes.values()) r.view.destroy()
     })
 
@@ -768,6 +835,9 @@ export class GameScene extends Phaser.Scene {
       [...this.scores.values()].map((v) => ({ name: v.name, score: v.score })),
     )
     this.ordnance.update(dt)
+    // Mine visibility is distance to the *player*, not to the camera centre —
+    // the camera leads the aim, so those are not the same point.
+    this.fx.update(dt, this.ear(), performance.now())
     // World items were tracked from T6.08 and drawn by nothing: a medkit on the
     // ground was invisible in the real game.
     this.items.update(dt, [...this.mirror.items.values()], this.ear())
@@ -796,6 +866,12 @@ export class GameScene extends Phaser.Scene {
       // The player's own field of view is a light like any other.
       { x: rp.x, y: rp.y, radius: fov, kind: 'radial', intensity: 1 },
       ...this.ordnance
+        .lights()
+        .map((l) => ({ x: l.x, y: l.y, radius: l.r, kind: 'radial' as const, intensity: l.a })),
+      // Fire and flame jets emit like every other emitter (§A3). Smoke and
+      // mines deliberately do not: a mine that lit itself up at night would
+      // defeat the point of hiding it.
+      ...this.fx
         .lights()
         .map((l) => ({ x: l.x, y: l.y, radius: l.r, kind: 'radial' as const, intensity: l.a })),
     ]
@@ -1025,6 +1101,25 @@ export class GameScene extends Phaser.Scene {
           // graves actually on screen.
           tombstones: self.mirror.tombstones.size,
           tombstonesDrawn: self.tombstones?.count ?? 0,
+          // Count at both ends (§A39). These two numbers were silently
+          // different for world items for three milestones; asserting only
+          // that the server placed a mine would have passed the whole time.
+          minesPlaced: self.observed.minesPlaced,
+          minesEnded: self.observed.minesEnded,
+          swings: self.observed.swings,
+          jets: self.observed.jets,
+          minesDrawn: self.fx?.mineCount ?? 0,
+          // Positions too, so a check can aim at a mine rather than guess a
+          // screen point. A hardcoded screen coordinate is a test that expires
+          // the moment the camera, the zoom or the spawn moves.
+          mines: [...(self.fx?.state.mines.values() ?? [])].map((m) => ({
+            id: m.id,
+            x: m.x,
+            y: m.y,
+          })),
+          camera: { x: self.cameras.main.scrollX, y: self.cameras.main.scrollY },
+          zoom: self.cameras.main.zoom,
+          hazardsDrawn: self.fx?.hazardCount ?? 0,
           // The snapshot roster includes the local player, so this is the
           // total — not remotes plus one.
           playerCount: self.mirror.players.size,

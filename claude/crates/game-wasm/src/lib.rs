@@ -624,6 +624,10 @@ pub fn constants_json() -> String {
         };
     }
     put! {
+        // The mine's arming tell is drawn client-side (§B6: "visible at close
+        // range and subtle at distance"), so the client needs the same number
+        // the sim arms on rather than a second copy of it.
+        MINE_ARM_TIME => c::MINE_ARM_TIME,
         TOMBSTONE_W => c::TOMBSTONE_W,
         TOMBSTONE_H => c::TOMBSTONE_H,
         MAX_TOMBSTONES => c::MAX_TOMBSTONES,

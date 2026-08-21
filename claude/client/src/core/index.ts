@@ -113,6 +113,7 @@ export interface PlayerState {
  * prevent — see `docs/01-architecture.md`.
  */
 export interface Constants {
+  MINE_ARM_TIME: number
   TOMBSTONE_W: number
   TOMBSTONE_H: number
   MAX_TOMBSTONES: number
