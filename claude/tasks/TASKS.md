@@ -289,7 +289,7 @@ tests and 20 e2e specs missed all four.
 - [x] [T13.04](M13/T13.04-weather-visible.md) — Weather you can see **(v4)**
 - [x] [T13.05](M13/T13.05-crates.md) — Crates fall, land, and can be picked up **(v4)**
 - [x] [T13.06](M13/T13.06-round-end.md) — The round ends **(v4)**
-- [x] [T13.06.1](M13/T13.06.1-rooms-on-demand.md) — No battle exists until players ask for one **(v4)**
+- [ ] [T13.06.1](M13/T13.06.1-rooms-on-demand.md) — No battle exists until players ask for one **(v4)** ← reopened: broke 5 browser checks
 - [ ] [T13.06.2](M13/T13.06.2-melee-reach.md) — Melee hits what is in front of you **(v4)** ← **next**
 - [ ] [T13.06.3](M13/T13.06.3-no-fire-while-moving.md) — You cannot fire while moving **(v4)**
 - [ ] [T13.06.4](M13/T13.06.4-toxic-rain-falls.md) — Toxic rain falls from the sky **(v4)**
