@@ -131,6 +131,47 @@ pub enum GameEvent {
         y1: f32,
         hit: bool,
     },
+    /// A melee swing (§B6). Cosmetic on the client — the damage is already in
+    /// the damage events — but it is what makes a hit visible: a swing you
+    /// cannot see reads as damage from nowhere.
+    Melee {
+        tick: u32,
+        owner: PlayerId,
+        weapon: WeaponId,
+        x: f32,
+        y: f32,
+        aim: f32,
+        reach: f32,
+        arc: f32,
+        hits: u8,
+    },
+    /// One tick of cone spray (§B6).
+    Cone {
+        tick: u32,
+        owner: PlayerId,
+        weapon: WeaponId,
+        x: f32,
+        y: f32,
+        aim: f32,
+        range: f32,
+        arc: f32,
+    },
+    /// A mine was placed (§B6). It must be *visible* at close range — invisible
+    /// instant death is not fun; a trap you could have spotted is.
+    MinePlaced {
+        tick: u32,
+        id: crate::weapons::placed::MineId,
+        owner: PlayerId,
+        weapon: WeaponId,
+        x: f32,
+        y: f32,
+    },
+    /// A mine left the world: detonated, timed out, or destroyed by a blast.
+    MineEnded {
+        tick: u32,
+        id: crate::weapons::placed::MineId,
+        reason: crate::weapons::placed::MineEnd,
+    },
     ItemSpawn {
         tick: u32,
         world_item_id: WorldItemId,
@@ -247,6 +288,10 @@ impl GameEvent {
             | GameEvent::ProjectileSpawn { tick, .. }
             | GameEvent::ProjectileDespawn { tick, .. }
             | GameEvent::Hitscan { tick, .. }
+            | GameEvent::Melee { tick, .. }
+            | GameEvent::Cone { tick, .. }
+            | GameEvent::MinePlaced { tick, .. }
+            | GameEvent::MineEnded { tick, .. }
             | GameEvent::ItemSpawn { tick, .. }
             | GameEvent::ItemPickup { tick, .. }
             | GameEvent::ItemDespawn { tick, .. }
@@ -374,6 +419,10 @@ pub struct World {
     pub players: Vec<PlayerState>,
     pub items: WorldItems,
     pub projectiles: Projectiles,
+    /// Ground fire, shared by the flamethrower, molotovs and lava (§B6).
+    pub burn: crate::weapons::burn::BurnField,
+    /// Placed mines (§B6).
+    pub mines: crate::weapons::placed::Mines,
     pub tombstones: Tombstones,
     pub spawn_schedule: SpawnSchedule,
     pub effects: EffectScheduler,
@@ -420,6 +469,8 @@ impl World {
         let initial_draws = place_initial(&mut items, &map, seed, 0.0);
 
         World {
+            burn: Default::default(),
+            mines: Default::default(),
             map,
             players: Vec::new(),
             items,
@@ -627,6 +678,13 @@ impl World {
         if playing {
             self.step_weather(now, dt);
         }
+
+        // 5b. placed mines and ground fire (§B6). Ordered with the hazards
+        // because that is what they are: a mine is a hazard someone chose the
+        // position of, and burning ground is the lava afterburn under another
+        // name. A handler with no caller is the §A39 shape, so this line and
+        // the `fire` arms that create them belong in the same commit.
+        self.step_placed(now, dt);
 
         // 6. world items and crates — and the graves, which fall the same way.
         self.items.step(&self.map, dt);
@@ -908,6 +966,42 @@ impl World {
                 amount,
                 cause,
             });
+        }
+    }
+
+    /// Mines fall, arm, trigger; ground fire burns and goes out.
+    fn step_placed(&mut self, now: f32, dt: f32) {
+        let tick = self.tick;
+        let log: DamageLog = Default::default();
+        let ended = {
+            let (mut closures, meta) = hit_targets(&self.players, &log, now);
+            let mut t = targets(&mut self.players, &mut closures, &meta);
+            let ended = self.mines.step(&mut self.map, &mut t, now, dt);
+            self.burn.tick(&mut t, now, dt);
+            ended
+        };
+        self.apply_damage_log(&log, now);
+
+        for out in ended {
+            self.events.push(GameEvent::MineEnded {
+                tick,
+                id: out.id,
+                reason: out.reason,
+            });
+            let Some(r) = out.explosion else { continue };
+            // A detonation carves like any other blast, and its carve is as
+            // authoritative as a rocket's: one event, in emission order.
+            self.carve_seq += 1;
+            let seq = self.carve_seq;
+            self.events.push(GameEvent::Carve {
+                tick,
+                seq,
+                x: out.at.x.round() as i32,
+                y: out.at.y.round() as i32,
+                r: out.blast_radius.round() as i32,
+                kind: CarveKind::Weapon,
+            });
+            self.reveal(&r.carve.revealed, now);
         }
     }
 
@@ -1264,6 +1358,110 @@ impl World {
                     });
                 }
             }
+            // Melee: an arc, no ammo, and it carves if the weapon has a radius
+            // (§B6). Routed through the same damage log as everything else, so
+            // shields, i-frames and attribution behave identically.
+            Delivery::Melee {
+                reach,
+                arc,
+                knockback,
+            } => {
+                let log: DamageLog = Default::default();
+                let result = {
+                    let (mut closures, meta) = hit_targets(&self.players, &log, now);
+                    let mut t = targets(&mut self.players, &mut closures, &meta);
+                    crate::weapons::melee::swing(
+                        &mut self.map,
+                        &mut t,
+                        centre,
+                        aim,
+                        w,
+                        reach,
+                        arc,
+                        knockback,
+                        BlastSource::Fired { owner: id, weapon },
+                    )
+                };
+                self.apply_damage_log(&log, now);
+                self.events.push(GameEvent::Melee {
+                    tick,
+                    owner: id,
+                    weapon,
+                    x: centre.x,
+                    y: centre.y,
+                    aim,
+                    reach,
+                    arc,
+                    hits: result.hits.len() as u8,
+                });
+                if let Some(c) = result.carve {
+                    let tip = centre + Vec2::new(aim.cos(), aim.sin()) * reach;
+                    self.carve_seq += 1;
+                    let seq = self.carve_seq;
+                    self.events.push(GameEvent::Carve {
+                        tick,
+                        seq,
+                        x: tip.x.round() as i32,
+                        y: tip.y.round() as i32,
+                        r: w.blast_radius.round() as i32,
+                        kind: CarveKind::Weapon,
+                    });
+                    self.reveal(&c.revealed, now);
+                }
+            }
+            // Cone: one tick of spray. It carves nothing — fire does not dig.
+            Delivery::Cone {
+                range, arc, dps, ..
+            } => {
+                let log: DamageLog = Default::default();
+                {
+                    let (mut closures, meta) = hit_targets(&self.players, &log, now);
+                    let mut t = targets(&mut self.players, &mut closures, &meta);
+                    crate::weapons::cone::spray(
+                        &self.map,
+                        &mut t,
+                        &mut self.burn,
+                        centre,
+                        aim,
+                        w,
+                        range,
+                        arc,
+                        dps,
+                        now,
+                        crate::constants::SIM_DT,
+                        BlastSource::Fired { owner: id, weapon },
+                    );
+                }
+                self.apply_damage_log(&log, now);
+                self.events.push(GameEvent::Cone {
+                    tick,
+                    owner: id,
+                    weapon,
+                    x: centre.x,
+                    y: centre.y,
+                    aim,
+                    range,
+                    arc,
+                });
+            }
+            // Placed: drop it at your feet, armed shortly.
+            Delivery::Placed {
+                arm_time,
+                trigger_radius,
+                lifetime,
+            } => {
+                let mine = self
+                    .mines
+                    .place(id, w, centre, arm_time, trigger_radius, lifetime, now);
+                self.events.push(GameEvent::MinePlaced {
+                    tick,
+                    id: mine,
+                    owner: id,
+                    weapon,
+                    x: centre.x,
+                    y: centre.y,
+                });
+            }
             Delivery::Hitscan { .. } => {
                 let log: DamageLog = Default::default();
                 let shots = {
@@ -1447,6 +1645,9 @@ impl World {
             h.update(&it.vel.x.to_le_bytes());
             h.update(&it.vel.y.to_le_bytes());
         }
+
+        self.mines.hash_into(&mut h);
+        self.burn.hash_into(&mut h);
 
         h.update(&(self.projectiles.len() as u32).to_le_bytes());
         for p in self.projectiles.iter() {
@@ -1637,6 +1838,8 @@ mod state_hash_coverage {
             items: _,
             projectiles: _,
             tombstones: _,
+            mines: _,
+            burn: _,
             spawn_schedule: _,
             effects: _,
             buried_items: _,

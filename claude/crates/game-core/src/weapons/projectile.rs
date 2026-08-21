@@ -198,6 +198,15 @@ impl Projectiles {
                         } => {
                             outcome = ProjectileOutcome::Exploded { at: next };
                         }
+                        // Melee, Cone and Placed never become projectiles, so
+                        // nothing here can be reached by them. Named rather than
+                        // caught by `_` so adding a delivery is a compile error
+                        // at every site that decides what a weapon does.
+                        Delivery::Melee { .. }
+                        | Delivery::Cone { .. }
+                        | Delivery::Placed { .. } => {
+                            outcome = ProjectileOutcome::Exploded { at: next };
+                        }
                         Delivery::Projectile {
                             restitution,
                             friction,

@@ -74,7 +74,7 @@ pub enum BlastSource {
 }
 
 impl BlastSource {
-    fn for_victim(self, victim: PlayerId) -> DamageSource {
+    pub(crate) fn for_victim(self, victim: PlayerId) -> DamageSource {
         match self {
             BlastSource::Fired { owner, weapon } if owner == victim => {
                 DamageSource::SelfInflicted { weapon }

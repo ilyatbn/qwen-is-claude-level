@@ -2704,3 +2704,38 @@ Notes: TWO REAL BUGS ON THE FIRST RUN, both invisible to every unit test.
        does not exist, so `undefined <= undefined` is false forever. Room
        identity is the mask checksum; ticking is `lastServerTick`.
 Left for later: M11 (the arsenal), M12 is done.
+
+## T11.01 — Melee, cone and placed delivery — DONE
+Files: crates/game-core/src/weapons/{melee,cone,placed,burn,defs,mod,projectile}.rs,
+       world/mod.rs, crates/game-core/tests/delivery.rs
+Verified: `cargo test -p game-core --test delivery` — 17 passed; full crate 661
+       passed / 5 ignored, golden table unchanged.
+Notes: THE COMPILER FOUND THE WIRING FOR ME. Adding three Delivery variants made
+       two matches non-exhaustive — `world::fire` and `projectile::step` — which
+       is every place that decides what a weapon does. Named both rather than
+       adding `_ =>`: a catch-all would have compiled and silently made melee do
+       nothing, which is §A39's shape and the reason five mechanisms here were
+       built and never wired.
+       ONE FIRE SYSTEM, NOT THREE. `weapons/burn.rs` is a shared BurnField using
+       the LAVA_BURN_* numbers; the flamethrower's trail, molotov patches and
+       lava's afterburn are the same disc-that-damages. Writing a second per
+       weapon is the §A24 mistake.
+       I ALMOST ADDED A SECOND `for_victim`. melee.rs originally carried its own
+       `to_damage_source` with identical logic to explode.rs's private
+       `for_victim`. Made that pub(crate) instead — two copies of attribution is
+       how a self-kill starts reporting "weather" again.
+       §A24 APPLIED BEFORE THE BUG: `Mines::step` removes a mine and then needs
+       to report the carve its blast caused, so it returns MineOutcome carrying
+       pos and radius rather than an id to something already freed — the exact
+       trap projectiles hit in M5.
+       THE state_hash TRIPWIRE FIRED, as designed: `E0027: pattern does not
+       mention fields burn, mines`. Both are simulation state (an armed mine
+       changes who dies), so both hash themselves via hash_into next to their
+       own fields per §A34, including Mines' next_id — two worlds with identical
+       mines about to allocate different ids are not the same state.
+       Falsified four ways at the live binding site: dropping melee's LOS check,
+       ignoring arm_time, letting a mine trigger on its owner (each fails only
+       the test that names it), and making the cone's map `&mut` — that last one
+       is a COMPILE error, which is stronger than a red test: `&Map` makes fire
+       structurally unable to dig.
+Left for later: T11.02 battery, then T11.03-T11.09.

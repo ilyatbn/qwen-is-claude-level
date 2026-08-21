@@ -31,6 +31,29 @@ pub enum Delivery {
         shots: u8,
         spread: f32,
     },
+    /// An arc swept around the aim angle (§B6). No ammo — a cooldown instead,
+    /// which is what makes melee the floor of the arsenal rather than a novelty.
+    Melee {
+        reach: f32,
+        arc: f32,
+        knockback: f32,
+    },
+    /// A sustained cone that damages per tick and leaves burning ground (§B6).
+    /// It carves nothing: fire does not dig, and that is what stops it being
+    /// strictly better than everything it competes with.
+    Cone {
+        range: f32,
+        arc: f32,
+        dps: f32,
+        particle_life: f32,
+    },
+    /// Placed, armed, then triggered by proximity (§B6). Destructible by
+    /// explosions, which is what stops a map filling up with them.
+    Placed {
+        arm_time: f32,
+        trigger_radius: f32,
+        lifetime: f32,
+    },
 }
 
 #[derive(Debug)]
