@@ -572,3 +572,50 @@ against the spec while you are there**: `JETPACK_DRAIN` 1.0/s while thrusting,
 `JETPACK_REFILL_DELAY` 0.5 s of no thrust, then `JETPACK_REFILL` 0.5/s — so a full
 5 s burn takes 10 s to recover. If the observed curve disagrees with those constants,
 that is a bug; report the measured numbers.
+
+### C18 — clarified: `tick` is a clock, `round_time` is the round
+
+§C18 said a `Lobby` room "does not tick", and that phrasing caused a real regression:
+`world.tick` is incremented inside `step()`, a lobby does not step, so the tick froze
+— and **every replay loop is `while tick < until`, so any recording containing a
+lobby spins forever at 100 % CPU.** Two orphaned `replay` processes burned a core for
+35 minutes on a player's machine before anyone noticed.
+
+The distinction the wording missed:
+
+| | advances in `Lobby` | what it is for |
+|---|---|---|
+| `world.tick` | **yes** | a monotonic clock — event ordering, snapshot headers, replay indexing, log fields |
+| `world.round_time` | **no** | the round's own clock — timers, scoring, weather, the day/night cycle |
+
+So a lobby **does not simulate**, and its clock still runs. `World::tick_idle()`
+advances the clock without stepping the world, and the `does_not_tick` test asserts
+`round_time == 0.0` — which is **stricter** than asserting on `tick`, because
+`round_time` advances only inside `step()` while `tick` advances in both paths.
+
+Two rules fall out, and both are cheap:
+
+> **A loop waiting on a counter needs a stall guard.** `while tick < until` with no
+> progress check turns any future freeze into a hang rather than an error, and a
+> determinism tool that hangs is worse than one that fails: it burns a core silently
+> and reports nothing.
+
+> **"Does not tick" is not a specification.** Say which clock, and say what stops —
+> simulating, scoring, spawning — rather than naming a field whose meaning the reader
+> has to infer.
+
+## C27 — The determinism test could not tell a round from an empty lobby
+
+While fixing the above, a falsification passed. Then the falsification of the *other*
+axis passed too. Both passing means `a_recorded_round_replays_to_the_same_state_hash`
+— which `docs/60` §4 calls the best regression test in the project — **would have
+passed against any build**: it could not distinguish a real 1400-tick round from 1400
+idle lobby ticks.
+
+It now carries a non-vacuity assertion, and with both changes reverted it names the
+reason in **1.34 s** instead of hanging.
+
+This is §A34 recurring one layer up. There the hash covered almost nothing; here the
+*recording* covered almost nothing, and the hash agreed with itself about an empty
+round. **A determinism guarantee is only as strong as the thing it hashes having
+happened.**
