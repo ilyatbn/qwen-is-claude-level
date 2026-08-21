@@ -311,49 +311,78 @@ async fn a_carve_stream_applied_out_of_order_diverges() {
     // The falsification for the test above: if order did not matter, the whole
     // `seq` discipline in `WorldMirror` would be dead weight.
     let s = spawn_server().await;
-    // Find real rock rather than assuming a coordinate is solid. The hardcoded
-    // (300, 700) this used worked only on the map scale that happened to be the
-    // default: on another it is open sky, both carves remove nothing, and the
-    // two hashes match — the test then fails claiming the mask hash is
-    // insensitive, when what actually happened is that nothing was carved. The
-    // T11.10 journal entry records the identical trap at (300, 300).
-    let rock = s
+
+    // Find a spot where a one-pixel radius increase provably bites fresh rock,
+    // by carving both radii and comparing `pixels_removed` — do not assume any
+    // coordinate is solid.
+    //
+    // Two earlier versions of this test assumed. A hardcoded (300, 700) was open
+    // sky once `DEFAULT_MAP_SCALE` moved, and (300, 300) before that (T11.10).
+    // The version after those nested the small circle *inside* a 40 px crater,
+    // so the entire difference rode on a 1 px crescent at radius 40..41 being
+    // solid — true on most maps and false on some, which became a **1-in-6 gate
+    // failure** once §B13 gave every room its own seed. Before §B13 every room
+    // shared one hardcoded seed, so the geometry was stable and the assumption
+    // held by luck.
+    //
+    // The failure message made it worse: it announced that the mask hash is
+    // insensitive to a single-pixel difference, when what had actually happened
+    // is that no pixel differed. A control that misreports its own precondition
+    // as a failure of the thing it is controlling for is worse than no control.
+    let found = s
         .room
         .inspect(|w| {
-            let m = &w.map.meta;
-            let p = m.surface_points[m.surface_points.len() / 2];
-            // A little below the surface, so a 40 px circle is biting rock.
-            (p.x, p.y + 30)
+            let pts = &w.map.meta.surface_points;
+            // Depths, not one guess: a surface point may sit on a thin ledge.
+            for depth in [60, 100, 160, 220] {
+                for p in pts.iter() {
+                    let (x, y) = (p.x, p.y + depth);
+                    let small = w.map.clone().carve_circle(x, y, 20).pixels_removed;
+                    let big = w.map.clone().carve_circle(x, y, 21).pixels_removed;
+                    if big > small {
+                        return Some((x, y, small, big));
+                    }
+                }
+            }
+            None
         })
         .await
         .expect("room alive");
 
-    let hash_in_order = s
+    let (x, y, small_px, big_px) = found.expect(
+        "no point on this map has solid rock in the ring between r=20 and r=21 — \
+         the fixture cannot exercise a single-pixel difference, so nothing about \
+         the mask hash has been tested",
+    );
+    assert!(
+        big_px > small_px,
+        "precondition: r=21 must remove more than r=20 ({big_px} vs {small_px})"
+    );
+
+    let hash_small = s
         .room
         .inspect(move |w| {
             let mut m = w.map.clone();
-            m.carve_circle(rock.0, rock.1, 40);
-            m.carve_circle(rock.0 + 20, rock.1, 20);
+            m.carve_circle(x, y, 20);
             m.mask.hash_hex()
         })
         .await
         .expect("room alive");
-
-    let hash_different_set = s
+    let hash_big = s
         .room
         .inspect(move |w| {
             let mut m = w.map.clone();
-            m.carve_circle(rock.0, rock.1, 40);
-            m.carve_circle(rock.0 + 20, rock.1, 21); // one pixel wider
+            m.carve_circle(x, y, 21); // one pixel wider, nothing else changed
             m.mask.hash_hex()
         })
         .await
         .expect("room alive");
 
     assert_ne!(
-        hash_in_order, hash_different_set,
-        "the mask hash must be sensitive to a single-pixel difference, or the \
-         agreement test above proves nothing"
+        hash_small, hash_big,
+        "the mask hash must be sensitive to a single-pixel difference \
+         ({big_px} px removed at r=21 vs {small_px} at r=20, so the masks really \
+         do differ) — or the agreement test above proves nothing"
     );
 }
 
