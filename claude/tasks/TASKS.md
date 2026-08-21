@@ -1,12 +1,13 @@
 # Master task list
 
-152 tasks across 16 milestones.
+157 tasks across 17 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added. Counted, not assumed.) Work them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
 
 Tasks marked **(v2)** come from `docs/70-amendments-v2.md`, **(v3)** from
-`docs/71-amendments-v3.md` and **(v4)** from `docs/72-amendments-v4.md`. Both override the earlier docs where they disagree.
+`docs/71-amendments-v3.md`, **(v4)** from `docs/72-amendments-v4.md` and **(v5)**
+from `docs/73-amendments-v5.md`. Both override the earlier docs where they disagree.
 Read v2 before M1 and v3 before M10.
 
 Tick a box only when the task's **Done when** command passes.
@@ -318,3 +319,22 @@ a fight to a menu.
 
 **Checkpoint:** dig a hole through the floor, fall in and die; shoot a bird and heal
 with what it drops.
+
+---
+
+## M16 — Destructible scenery (5)
+
+Turn any PNG into terrain. `docs/73-amendments-v5.md` §D1 is the whole idea: threshold
+the sprite's alpha into the 1-bit mask and it *is* terrain — destructible, collidable
+and carved by the same `carve_circle` as rock, with no new entity and nothing on the
+wire. Then bake the art clipped by that same mask, so blowing half a tree away removes
+half the tree.
+
+- [ ] [T16.01](M16/T16.01-object-mask-pipeline.md) — PNG to terrain mask: the build pipeline **(v5)**
+- [ ] [T16.02](M16/T16.02-stamp-objects.md) — Stamp objects into the map **(v5)**
+- [ ] [T16.03](M16/T16.03-render-objects.md) — Draw objects, clipped by the mask **(v5)**
+- [ ] [T16.04](M16/T16.04-clouds-to-sky.md) — The clouds pack belongs in the sky **(v5)**
+- [ ] [T16.05](M16/T16.05-provenance.md) — Record where the art came from **(v5)**
+
+**Checkpoint:** generate a map with trees and boulders on it, fire a rocket into one,
+and watch the half you hit disappear — art and collision together.
