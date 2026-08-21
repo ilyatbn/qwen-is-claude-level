@@ -645,6 +645,37 @@ pub const LASER_BATTERY_DRAIN: f32 = 8.0;
 
 // --- B7: the arsenal ---
 
+// Ballistic hitscan (§B7). Every one carves — §A3: nothing hits a wall without
+// marking it — and the carve radius is part of what distinguishes them: a deagle
+// opens a hole a pistol does not.
+pub const PISTOL_DAMAGE: f32 = 14.0;
+pub const PISTOL_BLAST_RADIUS: f32 = 3.0;
+pub const PISTOL_RANGE: f32 = 520.0;
+pub const PISTOL_COOLDOWN: f32 = 0.28;
+pub const PISTOL_SPREAD: f32 = 0.020;
+pub const PISTOL_AMMO: u8 = 40;
+
+pub const REVOLVER_DAMAGE: f32 = 32.0;
+pub const REVOLVER_BLAST_RADIUS: f32 = 5.0;
+pub const REVOLVER_RANGE: f32 = 700.0;
+pub const REVOLVER_COOLDOWN: f32 = 0.70;
+pub const REVOLVER_SPREAD: f32 = 0.010;
+pub const REVOLVER_AMMO: u8 = 12;
+
+pub const DEAGLE_DAMAGE: f32 = 45.0;
+pub const DEAGLE_BLAST_RADIUS: f32 = 6.0;
+pub const DEAGLE_RANGE: f32 = 760.0;
+pub const DEAGLE_COOLDOWN: f32 = 0.85;
+pub const DEAGLE_SPREAD: f32 = 0.015;
+pub const DEAGLE_AMMO: u8 = 8;
+
+pub const MACHINEGUN_DAMAGE: f32 = 11.0;
+pub const MACHINEGUN_BLAST_RADIUS: f32 = 3.0;
+pub const MACHINEGUN_RANGE: f32 = 900.0;
+pub const MACHINEGUN_COOLDOWN: f32 = 0.09;
+pub const MACHINEGUN_SPREAD: f32 = 0.045;
+pub const MACHINEGUN_AMMO: u8 = 120;
+
 pub const AIRBURST_PELLETS: u32 = 9;
 /// Radians, downward.
 pub const AIRBURST_FAN: f32 = 0.9;

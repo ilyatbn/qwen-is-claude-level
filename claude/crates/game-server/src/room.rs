@@ -977,6 +977,7 @@ impl Room {
         }
         let now = self.world.round_time;
         let mut uses: Vec<(PlayerId, u8)> = Vec::new();
+        let mut selects: Vec<(PlayerId, u8)> = Vec::new();
         let mut fires: Vec<PlayerId> = Vec::new();
         // Split the borrow: `think` reads the world, so it cannot run while the
         // world is mutably borrowed for `queue_input`.
@@ -986,6 +987,14 @@ impl Room {
             let input = bot.think(&self.world, now, dt);
             if let Some(slot) = bot.wants_use() {
                 uses.push((bot.player, slot));
+            }
+            // Selection is a command too (`docs/30` §4), for the same reason
+            // firing is: nothing in `Input` carries it. Without this the only
+            // thing that ever changed a bot's selection was the inventory
+            // auto-advancing on an empty stack, so a bot could not switch to a
+            // better weapon or away from an uncharged energy one.
+            if let Some(slot) = bot.wants_select() {
+                selects.push((bot.player, slot));
             }
             // Firing is a *command*, not a button the sim reads: a human's
             // client sends `fire` alongside its input (`docs/30` §4), and
@@ -1005,6 +1014,11 @@ impl Room {
         }
         for (id, input) in inputs {
             self.world.queue_input(id, input);
+        }
+        // Select before use and before fire: a bot that just picked up a better
+        // weapon should fire *that* one this tick, not next tick.
+        for (id, slot) in selects {
+            self.world.select_slot(id, slot);
         }
         for (id, slot) in uses {
             let _ = self.world.use_item(id, slot, now);

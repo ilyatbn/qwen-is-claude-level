@@ -2779,3 +2779,28 @@ Notes: ONE FIELD, THREE BEHAVIOURS. `WeaponDef.energy_cost` is the ammo an
        spawn stream. Damage stayed above the floor throughout, so lethality never
        changed; only the coin landed differently (§A28).
 Left for later: T11.03 ballistics, then T11.04-T11.09.
+
+## T11.03 — Handguns and automatics — DONE
+Files: crates/game-core/src/{constants.rs, items/registry.rs, weapons/defs.rs},
+       crates/game-server/src/events.rs, crates/game-wasm/src/lib.rs
+Verified: `cargo test -p game-core --lib ballistics` — 5 passed; full crate
+       EXIT=0, golden table unchanged.
+Notes: T11.01 LEFT THE WORKSPACE UNBUILDABLE AND NOBODY NOTICED. Its Done-when is
+       `cargo test -p game-core` — crate-scoped — so the four new GameEvent
+       variants never reaching `scope_of`/`name_of`/`payload_of`, and the three
+       new Delivery variants never reaching game-wasm's fire path, went unseen:
+       4 compile errors at HEAD, confirmed by `git stash`. A crate-scoped
+       Done-when cannot see a workspace break; only ./scripts/check.sh can.
+       Fixed by naming every arm — and game-wasm's sandbox fire path returns an
+       explicit `melee_not_in_sandbox` rejection rather than a `_ => {}`, because
+       a catch-all compiles and makes the weapon silently do nothing (§A39).
+       THE SPEC TABLE IS THE TEST. `SPEC` transcribes §B7 and the test asserts
+       the set of ballistic weapons EQUALS the set the table covers, so adding a
+       weapon without numbers fails rather than being silently uncovered.
+       Falsified three ways at the live binding site: machinegun spread -> 0 fails
+       the "spread is not being applied" count (a bound test alone passes for a
+       weapon whose spread became zero); deagle carve 6 -> 3 fails BOTH the table
+       and the behavioural breach-comparison; dropping pistol from SPEC fails the
+       exhaustiveness assertion by name.
+       Weights are provisional per §B17 and T11.09 rebalances the whole table.
+Left for later: T11.04 energy (bot weapon selection is written, not yet tested).

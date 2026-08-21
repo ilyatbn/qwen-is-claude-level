@@ -361,6 +361,25 @@ impl GameCore {
                 })
                 .to_string()
             }
+            // §B6's three kinds are simulated by the *server*; the sandbox's
+            // local fire path does not carry them yet, and each is wired by the
+            // task that owns its client rendering (T11.05 melee, T11.06 cone,
+            // T11.07 placed).
+            //
+            // This is an explicit rejection rather than a `_ => {}` arm on
+            // purpose: a catch-all compiles and makes the weapon silently do
+            // nothing, which is exactly how five mechanisms in this project were
+            // built and never wired. A named rejection shows up in the sandbox
+            // instead of looking like a weapon that misfired.
+            defs::Delivery::Melee { .. } => {
+                serde_json::json!({"rejected": "melee_not_in_sandbox", "weapon": wid.0}).to_string()
+            }
+            defs::Delivery::Cone { .. } => {
+                serde_json::json!({"rejected": "cone_not_in_sandbox", "weapon": wid.0}).to_string()
+            }
+            defs::Delivery::Placed { .. } => {
+                serde_json::json!({"rejected": "placed_not_in_sandbox", "weapon": wid.0}).to_string()
+            }
         }
     }
 

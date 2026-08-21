@@ -86,6 +86,7 @@ pub struct Bot {
     last_x: f32,
     still_for: f32,
     want_use: Option<u8>,
+    want_select: Option<u8>,
     stats: BotStats,
 }
 
@@ -106,6 +107,7 @@ impl Bot {
             last_x: 0.0,
             still_for: 0.0,
             want_use: None,
+            want_select: None,
             stats: BotStats::default(),
         }
     }
@@ -121,6 +123,18 @@ impl Bot {
         self.want_use
     }
 
+    /// The slot the bot wants selected, when that is not the one it holds.
+    ///
+    /// Selection is a command for exactly the same reason firing is: a human's
+    /// client sends `select_slot` (`docs/30` §4), and nothing in `Input` carries
+    /// it. Before this the only thing that ever changed a bot's selection was the
+    /// inventory auto-advancing when a stack ran out — so a bot could neither
+    /// switch **to** a better weapon nor **away** from an uncharged energy one,
+    /// which is why the lasers shipped with every spawn weight at zero.
+    pub fn wants_select(&self) -> Option<u8> {
+        self.want_select
+    }
+
     /// This tick's input. Reads the world, never mutates it.
     pub fn think(&mut self, world: &World, now: f32, dt: f32) -> Input {
         let Some(me) = world.player(self.player) else {
@@ -129,6 +143,7 @@ impl Bot {
         if !me.alive {
             self.believed = None;
             self.want_use = None;
+            self.want_select = None;
             return Input::default();
         }
         let pos = me.body.pos;
@@ -221,6 +236,7 @@ impl Bot {
 
         // --- items ------------------------------------------------------
         self.want_use = self.choose_item(world, me, pos);
+        self.want_select = self.choose_weapon(me, aim_at, pos);
 
         Input {
             seq: 0, // the room owns sequencing; a bot has no packets to order
@@ -391,6 +407,56 @@ impl Bot {
             }
         }
         true
+    }
+
+    /// Pick the best **firable** weapon slot, or `None` to keep the current one.
+    ///
+    /// "Firable" is the same rule `selected_weapon` uses, so an energy weapon with
+    /// a flat battery scores nothing and the bot moves off it — which is the half
+    /// that was missing. A weapon out of range still scores, just lower: walking
+    /// closer with a bazooka beats standing still with nothing.
+    fn choose_weapon(
+        &self,
+        me: &crate::player::state::PlayerState,
+        target: Vec2,
+        pos: Vec2,
+    ) -> Option<u8> {
+        let dist = (target - pos).len();
+        let mut best: Option<(f32, u8)> = None;
+        for slot in 0..INVENTORY_SLOTS as u8 {
+            let Some(stack) = me.inventory.slot(slot) else {
+                continue;
+            };
+            let Some(d) = def(stack.item) else { continue };
+            let ItemKind::Weapon(wid) = d.kind else {
+                continue;
+            };
+            let Some(w) = crate::weapons::defs::def(wid) else {
+                continue;
+            };
+            // Can it be fired *right now*? Energy needs charge; everything else
+            // needs a stack, which the inventory guarantees by holding it.
+            if w.energy_cost > 0.0 && me.battery < w.energy_cost {
+                continue;
+            }
+            // Damage per second is the axis that matters; a weapon that cannot
+            // reach the target, or whose blast would catch us, is heavily
+            // penalised but not disqualified — it is still better than nothing.
+            let dps = w.damage / w.cooldown.max(0.01);
+            let mut score = dps;
+            if w.range > 0.0 && dist > w.range {
+                score *= 0.25;
+            }
+            if w.blast_radius > 0.0 && dist < w.blast_radius * 1.5 {
+                score *= 0.1;
+            }
+            if best.is_none_or(|(bs, _)| score > bs) {
+                best = Some((score, slot));
+            }
+        }
+        // Only ask for a change: `select_slot` on the slot already held is a
+        // no-op, but reporting it every tick makes the intent unreadable.
+        best.and_then(|(_, slot)| (slot != me.inventory.selected()).then_some(slot))
     }
 
     fn choose_item(

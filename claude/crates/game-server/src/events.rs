@@ -45,6 +45,10 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         } => Scope::Pair(*victim, attacker.filter(|a| a != victim)),
 
         GameEvent::Carve { .. }
+        | GameEvent::Melee { .. }
+        | GameEvent::Cone { .. }
+        | GameEvent::MinePlaced { .. }
+        | GameEvent::MineEnded { .. }
         | GameEvent::CarveCapsule { .. }
         | GameEvent::Explosion { .. }
         | GameEvent::ProjectileSpawn { .. }
@@ -78,6 +82,10 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::ProjectileSpawn { .. } => "projectile_spawn",
         GameEvent::ProjectileDespawn { .. } => "projectile_despawn",
         GameEvent::Hitscan { .. } => "hitscan",
+        GameEvent::Melee { .. } => "melee",
+        GameEvent::Cone { .. } => "cone",
+        GameEvent::MinePlaced { .. } => "mine_placed",
+        GameEvent::MineEnded { .. } => "mine_ended",
         GameEvent::ItemSpawn { .. } => "item_spawn",
         GameEvent::ItemPickup { .. } => "item_pickup",
         GameEvent::ItemDespawn { .. } => "item_despawn",
@@ -132,6 +140,44 @@ pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
         } => json!({"tick": tick, "seq": seq, "x0": x0, "y0": y0, "x1": x1, "y1": y1, "r": r}),
         GameEvent::Explosion { x, y, r, kind, .. } => {
             json!({"tick": tick, "x": x, "y": y, "r": r, "kind": format!("{kind:?}")})
+        }
+        // §B6 ordnance. All cosmetic on the client — the damage is already in the
+        // damage events — but a swing or a jet you cannot see reads as damage
+        // from nowhere, and a mine nobody can spot is not a trap, it is a bug
+        // that looks like one.
+        GameEvent::Melee {
+            owner,
+            weapon,
+            x,
+            y,
+            aim,
+            reach,
+            arc,
+            hits,
+            ..
+        } => json!({"tick": tick, "owner": owner, "weapon": weapon.0, "x": x, "y": y,
+                    "aim": aim, "reach": reach, "arc": arc, "hits": hits}),
+        GameEvent::Cone {
+            owner,
+            weapon,
+            x,
+            y,
+            aim,
+            range,
+            arc,
+            ..
+        } => json!({"tick": tick, "owner": owner, "weapon": weapon.0, "x": x, "y": y,
+                    "aim": aim, "range": range, "arc": arc}),
+        GameEvent::MinePlaced {
+            id,
+            owner,
+            weapon,
+            x,
+            y,
+            ..
+        } => json!({"tick": tick, "id": id, "owner": owner, "weapon": weapon.0, "x": x, "y": y}),
+        GameEvent::MineEnded { id, reason, .. } => {
+            json!({"tick": tick, "id": id, "reason": format!("{reason:?}")})
         }
         GameEvent::ProjectileSpawn {
             id,

@@ -7,7 +7,8 @@
 //! See `docs/30-items-inventory.md` §1.
 
 use crate::constants::{
-    BATTERY_PACK_AMOUNT, BAZOOKA_AMMO, GRENADE_AMMO, MEDKIT_HEAL, SHIELD_DURATION, SMG_AMMO,
+    BATTERY_PACK_AMOUNT, BAZOOKA_AMMO, DEAGLE_AMMO, GRENADE_AMMO, MACHINEGUN_AMMO, MEDKIT_HEAL,
+    PISTOL_AMMO, REVOLVER_AMMO, SHIELD_DURATION, SMG_AMMO,
 };
 
 pub type ItemId = u16;
@@ -31,6 +32,12 @@ pub const WEAPON_METEOR: WeaponId = WeaponId(3);
 pub const WEAPON_METEOR_FRAG: WeaponId = WeaponId(4);
 pub const WEAPON_LASER_PISTOL: WeaponId = WeaponId(5);
 pub const WEAPON_LASER_SMG: WeaponId = WeaponId(6);
+/// Ballistic hitscan (§B7). **Appended, never inserted** — `defs::def` indexes by
+/// array position, so a new id in the middle remaps every weapon after it.
+pub const WEAPON_PISTOL: WeaponId = WeaponId(7);
+pub const WEAPON_REVOLVER: WeaponId = WeaponId(8);
+pub const WEAPON_DEAGLE: WeaponId = WeaponId(9);
+pub const WEAPON_MACHINEGUN: WeaponId = WeaponId(10);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UtilityId {
@@ -75,6 +82,10 @@ pub const FLASHLIGHT: ItemId = 2;
 pub const BATTERY_PACK: ItemId = 6;
 pub const LASER_PISTOL: ItemId = 7;
 pub const LASER_SMG: ItemId = 8;
+pub const PISTOL: ItemId = 9;
+pub const REVOLVER: ItemId = 10;
+pub const DEAGLE: ItemId = 11;
+pub const MACHINEGUN: ItemId = 12;
 pub const BAZOOKA: ItemId = 3;
 pub const GRENADE: ItemId = 4;
 pub const SMG: ItemId = 5;
@@ -207,6 +218,64 @@ pub static ITEMS: &[ItemDef] = &[
         spawn_weight: 0,
         crate_weight: 0,
         buried_weight: 0,
+    },
+    // Ballistic sidearms and automatics (§B7). Bots already handle stack-ammo
+    // hitscan — it is what the smg is — so unlike the lasers these spawn from
+    // the day they land.
+    //
+    // These weights are **provisional and will move**: §B17 says the pool is a
+    // budget, not a list, and adding four items to a table summing to ~114
+    // dilutes every existing entry by roughly a quarter without any existing
+    // weight changing. T11.09 rebalances the whole table from measured pick
+    // rates. They are deliberately modest so the dilution is small until then.
+    ItemDef {
+        id: PISTOL,
+        key: "pistol",
+        name: "Pistol",
+        kind: ItemKind::Weapon(WEAPON_PISTOL),
+        max_stack: PISTOL_AMMO,
+        sprite: "weapon_pistol",
+        // The commonest gun on the map: it is the thing you find when you find
+        // nothing else, which is what makes running dry a state you can leave.
+        spawn_weight: 18,
+        crate_weight: 8,
+        buried_weight: 10,
+    },
+    ItemDef {
+        id: REVOLVER,
+        key: "revolver",
+        name: "Revolver",
+        kind: ItemKind::Weapon(WEAPON_REVOLVER),
+        max_stack: REVOLVER_AMMO,
+        sprite: "weapon_revolver",
+        spawn_weight: 10,
+        crate_weight: 12,
+        buried_weight: 10,
+    },
+    ItemDef {
+        id: DEAGLE,
+        key: "deagle",
+        name: "Desert Eagle",
+        kind: ItemKind::Weapon(WEAPON_DEAGLE),
+        max_stack: DEAGLE_AMMO,
+        sprite: "weapon_deagle",
+        // Eight shots at 45 damage is two kills if every one lands. Rare on the
+        // ground, likelier in a crate — a crate is contested, and this is worth
+        // contesting.
+        spawn_weight: 6,
+        crate_weight: 14,
+        buried_weight: 8,
+    },
+    ItemDef {
+        id: MACHINEGUN,
+        key: "machinegun",
+        name: "Machine Gun",
+        kind: ItemKind::Weapon(WEAPON_MACHINEGUN),
+        max_stack: MACHINEGUN_AMMO,
+        sprite: "weapon_machinegun",
+        spawn_weight: 8,
+        crate_weight: 12,
+        buried_weight: 8,
     },
 ];
 

@@ -246,7 +246,7 @@ Three weapons becomes twenty-two. Deathmatch is the point; variety is the game.
 
 - [x] [T11.01](M11/T11.01-delivery-kinds.md) — Melee, cone and placed delivery **(v3)**
 - [x] [T11.02](M11/T11.02-battery.md) — The battery, shields and shield-piercing **(v3)**
-- [ ] [T11.03](M11/T11.03-ballistics.md) — Pistol, revolver, deagle, machinegun **(v3)**
+- [x] [T11.03](M11/T11.03-ballistics.md) — Pistol, revolver, deagle, machinegun **(v3)**
 - [ ] [T11.04](M11/T11.04-energy.md) — Laser pistol and laser SMG **(v3)**
 - [ ] [T11.05](M11/T11.05-melee.md) — Knife, bat, whip, axe, hammer **(v3)**
 - [ ] [T11.06](M11/T11.06-flamethrower.md) — Flamethrower **(v3)**
