@@ -31,6 +31,7 @@ import { OrdnanceFxLayer } from '../render/ordnanceFx'
 import { hazardKind } from '../render/ordnanceFx-math'
 import { cycleU, darknessAt } from '../render/sky-math'
 import { formatClock, phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
+import { ResultsScreen } from '../ui/results'
 import { FLAG, flag } from '../net/codec'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { Minimap } from '../ui/minimap'
@@ -95,6 +96,14 @@ export class GameScene extends Phaser.Scene {
   private roundTime = 0
   private readonly death = new DeathOverlay()
   private tombstones!: TombstoneLayer
+  private results!: ResultsScreen
+  /**
+   * Input packets actually put on the wire. Counted at the send site, not at the
+   * sample site: the point is what leaves, and a counter incremented where the
+   * input is *built* would keep rising while the send was suppressed — reporting
+   * intent rather than effect (§A15).
+   */
+  private inputsSent = 0
   /** The server's word on whether the local player is alive. */
   private meAlive = true
   private phase: Phase = 'lobby'
@@ -173,6 +182,18 @@ export class GameScene extends Phaser.Scene {
     // T11.05 and nothing subscribed. This is the other half.
     this.fx = new OrdnanceFxLayer(this, C().MINE_ARM_TIME)
     this.tombstones = new TombstoneLayer(this, C().TOMBSTONE_W, C().TOMBSTONE_H)
+    this.results = new ResultsScreen({
+      onPlayAgain: () => this.conn.sendVoteRestart(true),
+      // Close the socket, do not merely change scene: the seat stays occupied
+      // otherwise and the room never reaps (§B14's shape — quitting that does
+      // not quit). A disconnect is how the server already frees a seat
+      // (`docs/40` §6); the explicit `leave_room` of §B9 has no client method
+      // yet and belongs with T14.06, which owns the quit path and `connection.ts`.
+      onExit: () => {
+        this.conn.close()
+        this.scene.start('Title')
+      },
+    })
     this.localInput = new LocalInput(this)
     this.crosshair = new Crosshair(this, DEPTH.hud)
     this.buildHud()
@@ -510,6 +531,7 @@ export class GameScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.conn.close()
       this.audio.stopAll()
+      this.results?.destroy()
       this.hud?.remove()
       this.hideJoinCodeBanner()
       this.feel?.destroy()
@@ -809,8 +831,15 @@ export class GameScene extends Phaser.Scene {
     }
     // Redundant sends: the last few inputs go with every packet, so a dropped
     // one costs nothing (`docs/40` §2).
-    if (batch.length) {
+    //
+    // Not while the results screen is up. The server freezes the simulation in
+    // `Ended` (`docs/41` §3) but keeps accepting input, so a client that carries
+    // on sending queues a burst that is applied the moment the next round starts
+    // — you would spawn already walking, holding a direction you pressed while
+    // reading a scoreboard.
+    if (batch.length && !this.results.isUp) {
       this.conn.sendInput(batch.slice(-C().INPUT_REDUNDANCY))
+      this.inputsSent++
       this.debugHud?.noteInputs(performance.now(), batch.length)
     }
 
@@ -889,6 +918,21 @@ export class GameScene extends Phaser.Scene {
     this.world?.items.update(dt, [...this.mirror.items.values()], this.ear())
     this.tombstones.update([...this.mirror.tombstones.values()])
     this.feel.update(dt, this.feelFrame())
+    // §C3. Phase-driven, not clock-driven: the server owns which phase the round
+    // is in, and a client deciding locally would take the controls away a beat
+    // early from a player who could still act.
+    this.results.update(
+      this.phase,
+      this.timeLeft,
+      [...this.scores.entries()].map(([id, s], i) => ({
+        id,
+        name: s.name,
+        score: s.score,
+        deaths: s.deaths,
+        joinOrder: i,
+        isLocal: id === this.me,
+      })),
+    )
 
     const fov = fovRadius({
       darkness,
@@ -1234,6 +1278,7 @@ export class GameScene extends Phaser.Scene {
           playerCount: self.mirror.players.size,
           player: body,
           renderPos: self.predictor?.renderPos ?? null,
+          inputsSent: self.inputsSent,
           pendingInputs: self.predictor?.stats.pending ?? 0,
           corrections: self.predictor?.stats.corrections ?? 0,
           lastServerTick: self.lastServerTick,

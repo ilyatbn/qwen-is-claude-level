@@ -3493,3 +3493,34 @@ Left for later: TWO OrdnanceLayer instances live in GameScene (its own for trace
        and impacts, WorldView's for projectiles). Same depth, so the depth-set
        parity check cannot see it. Not touched — out of scope for a crates task and
        T13.03's verified behaviour rides on it.
+
+## T13.06 — The round ends — DONE
+Files: client/src/ui/{results-math,results-math.test,results}.ts, scenes/GameScene.ts,
+       client/index.html (styles), scripts/checks/round-end.mjs, scripts/e2e.mjs
+Verified: `--run results` 10 passed; `e2e.mjs round-end` ok — control (absent while
+       playing), screen up at `ended`, all 3 players listed, input stopped
+       1702 -> 1702 while holding a key, both buttons, voting registers.
+Notes: THE FIRST VERSION PASSED EVERY ASSERTION AND WAS INVISIBLE. `.results-screen`
+       existed in the DOM, both buttons existed, voting registered — and no CSS for
+       it existed, so the screenshot showed the field and nothing else. The check now
+       asserts VISIBILITY (laid-out box, not display:none/hidden, opacity > 0.1), not
+       presence. §C2's "a hidden element is not a HUD", learned again.
+       MY FALSIFICATION WAS ALSO A NO-OP FIRST: I injected `display: none` at the
+       START of the rule, where the rule's own later `display: flex` overrides it.
+       The check stayed green and I nearly concluded it could not fail. Appending
+       `display: none !important` after the rule fails it properly.
+       TWO SPEC/IMPL DEFECTS FOUND, NEITHER FIXED (both outside Touch only):
+       (1) `round_state` carries phase/time_left/seed and NO vote data, so a client
+       cannot show a tally. My first draft rendered `${votesFor}/${connected}` from a
+       `votes_for` field that does not exist — `Number(undefined ?? 0)` is 0, so it
+       would have shown a confident `0/4` forever and never failed (§B15). The line
+       states the rule instead.
+       (2) `round.rs::restart_wins` takes `connected`, does `let _ = connected;` and
+       returns `yes * 2 > cast` — a majority of those who VOTED. Its own doc comment
+       says "Majority of connected players", and `docs/41` §3 says both "majority of
+       connected" AND "non-voters abstain", which cannot both hold — the same shape
+       as §A23's "never repeat / re-roll once". The code picked the sane reading.
+Left for later: `leave_room` (§B9) has no client method; Exit closes the socket,
+       which the server already treats as leaving (`docs/40` §6). T14.06 owns the
+       quit path and `connection.ts`. Also: `deathOverlay.ts` has a private
+       `escapeHtml`; `results-math.ts` now exports one. Two escapers is §A24's shape.

@@ -100,6 +100,9 @@ const CHECKS = [
   // real server, because crates come from the server's spawn schedule and there
   // is no sandbox path to one.
   { name: 'crates', file: 'scripts/checks/crates.mjs', standalone: true },
+  // §C3: the round ends and you are told. Standalone — it drives a real phase
+  // machine on a shortened ROUND_SECONDS, and there is no sandbox path to `Ended`.
+  { name: 'round-end', file: 'scripts/checks/round-end.mjs', standalone: true },
   // Standalone: it launches its own vite and browser and calls `process.exit`.
   // Imported into this process it would terminate the suite mid-run — and exit 0
   // while doing it, hiding every earlier failure. Run as a subprocess instead.

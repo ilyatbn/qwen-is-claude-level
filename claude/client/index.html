@@ -73,6 +73,40 @@
       }
       .death-scores li { display: flex; justify-content: space-between; opacity: 0.85; }
 
+      /* Results (§C3). Unlike the death overlay this one takes the controls:
+         the round is over, so it covers the field and its buttons accept clicks.
+         `pointer-events: auto` is load-bearing — the death overlay sets `none`
+         so you can keep playing under it, and inheriting that here would give a
+         screen whose buttons look real and cannot be pressed. */
+      .results-screen {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 0.5rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #e8ecff; background: rgba(6, 10, 26, 0.82);
+        pointer-events: auto; text-shadow: 0 2px 8px rgba(0,0,0,0.9);
+      }
+      .results-screen h2 { margin: 0 0 0.4rem; font-size: 2.6rem; letter-spacing: 0.25rem; }
+      .results-head, .results-rows {
+        list-style: none; margin: 0; padding: 0; min-width: 26rem;
+      }
+      .results-head li, .results-rows li {
+        display: grid; grid-template-columns: 3rem 1fr 5rem 5rem;
+        padding: 0.25rem 0.9rem; gap: 0.5rem;
+      }
+      .results-head li { opacity: 0.55; font-size: 0.8rem; letter-spacing: 0.08rem; }
+      .results-rows li { background: rgba(20, 28, 54, 0.7); border-radius: 3px; margin-bottom: 2px; }
+      .results-rows li.me { background: rgba(60, 84, 150, 0.85); }
+      .results-rows .deaths, .results-rows .score, .results-head .deaths, .results-head .score { text-align: right; }
+      .results-rows .rank { opacity: 0.7; }
+      .results-vote { margin: 0.6rem 0 0; opacity: 0.8; font-size: 0.9rem; }
+      .results-count { margin: 0.1rem 0 0.4rem; font-size: 1.8rem; color: #ffd23f; }
+      .results-buttons { display: flex; gap: 0.8rem; }
+      .results-buttons button {
+        font: inherit; padding: 0.5rem 1.2rem; border-radius: 4px; cursor: pointer;
+        color: #e8ecff; background: #2c3e78; border: 1px solid #4a5fa8;
+      }
+      .results-buttons button:disabled { opacity: 0.5; cursor: default; }
+
       /* Skins: the chooser is DOM, the previews are on the canvas behind it, so
          the panel sits to one side and leaves the middle of the screen clear. */
       .skins-screen {
