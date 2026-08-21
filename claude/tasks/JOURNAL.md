@@ -3151,3 +3151,42 @@ Left for later: item DENSITY, not weights — ~12-15 spawns per round against 24
        item types means a round shows you about half the arsenal. If "tons of
        weapons" should be felt in a single round, INITIAL_ITEMS and
        ITEM_SPAWN_INTERVAL are the levers, and both are outside this task.
+
+## T11.12 — One spec breaks the next one — DONE
+Files: scripts/proc-group.mjs (new), scripts/e2e.mjs, scripts/e2e-two-clients.mjs,
+       scripts/checks/{m5-weather,ordnance,death,full-round,m10-checkpoint}.mjs,
+       scripts/{shot,drive,net-smoke}.mjs
+Verified: `node scripts/e2e.mjs m5-weather ordnance two-clients death` — 4/4, no
+       leaks. LOAD CONTROL: two-clients under 14 busy loops FAILED at load 9.91
+       before the fix (`selecting slot 2 changed nothing`), PASSED at load 28.18
+       after it — nearly 3x heavier than the load that broke it.
+Notes: THE TASK FILE'S HYPOTHESIS WAS WRONG AND I DISPROVED IT FIRST. Two
+       concurrent browsers, both pages visible, both hasFocus true, both rAF
+       advancing (314 and 180 frames), BOTH moved 221.4 px. Not rAF throttling,
+       not backgrounding. The "deterministic repro" then PASSED on a clean box —
+       the only thing I changed was killing 4 orphaned vite and 2 chrome first.
+       THE PREVIOUS SESSION'S ATTRIBUTION CONTROL WAS INVALID: `git stash` of its
+       own edits does not kill orphans already running, so it measured a loaded
+       box and concluded its leak fix had not worked. The three earlier
+       "contention" sightings were right about the cause; the load was
+       self-inflicted and accumulating.
+       MECHANISM: leaked processes -> loaded box -> the client steps fewer fixed
+       timestep ticks per wall-clock second -> every assertion that measures over
+       a WALL-CLOCK WINDOW becomes a coin flip. The movement check survived (it
+       polls); the slot-select check did not (fixed 250 ms). Load is the
+       mechanism; fixed-duration waits are the vulnerability.
+       FIVE scripts hand-wrote `child.kill()` over a grandchild. `npx vite`,
+       `npm run dev` and `cargo run` all fork the process holding the port, so
+       the wrapper is reaped and the server orphaned. One shared
+       `scripts/proc-group.mjs` now, so it cannot be written a sixth time.
+       THE GUARD: e2e.mjs samples stray pids before and after and fails on any it
+       created (§A39, count at both ends). It found MY OWN false positive twice —
+       it counted the suite's own vite (killed by the exit handler that runs
+       after) and a chromium still winding down from browser.close(). Fixed by
+       shutting down first and re-sampling after a grace window: a process that
+       exits on its own was never leaked.
+       I ALSO MADE THE BUG I WAS SENT TO FIX. My load generators were
+       `timeout 240 bash -c 'while :; done'`; killing the `timeout` parents
+       orphaned 32 busy loops permanently and pushed the box to load 31.5, which
+       then contaminated the very next measurement.
+Left for later: T11.14, T11.13 — not started.

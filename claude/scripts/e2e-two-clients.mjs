@@ -156,6 +156,28 @@ const until = async (c, ok, what, deadlineMs = 20_000) => {
   fail(`${what} (gave up after ${deadlineMs} ms)`)
   return last
 }
+/**
+ * Poll an arbitrary probe until it satisfies `ok`, then return its value.
+ *
+ * The debug-state `until` above only works for `__game.debug()`. This is the
+ * same idea for anything else — DOM text, a HUD handle — and it exists because
+ * a fixed `setTimeout` after a keypress measures the box, not the game. Under a
+ * deliberate 14-core load the movement check (which polls) survived at 17.7 px
+ * while the slot-select check (which slept 250 ms) failed outright. Waiting on
+ * the effect makes load irrelevant instead of moving a threshold (§A28).
+ */
+const untilValue = async (probe, ok, what, deadlineMs = 15_000) => {
+  const started = Date.now()
+  let last
+  while (Date.now() - started < deadlineMs) {
+    last = await probe()
+    if (ok(last)) return last
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  fail(`${what} (gave up after ${deadlineMs} ms)`)
+  return last
+}
+
 const da1 = await until(a, (d) => d.playerCount >= 2, 'ana never saw two players')
 const db1 = await until(b, (d) => d.playerCount >= 2, 'bo never saw two players')
 if (da1.playerCount < 2) fail(`ana sees ${da1.playerCount} players, expected 2`)
@@ -260,12 +282,18 @@ if (dc.maskChecksum !== daF.maskChecksum) {
   const hudText = () => a.page.evaluate('document.querySelector("[data-hud]")?.textContent ?? ""')
   const before = await hudText()
   await a.page.keyboard.press('Digit2')
-  await new Promise((r) => setTimeout(r, 250))
-  const afterSelect = await hudText()
+  const afterSelect = await untilValue(
+    hudText,
+    (t) => t !== before,
+    `selecting slot 2 changed nothing in the HUD:\n${before}`,
+  )
   if (afterSelect === before) fail(`selecting slot 2 changed nothing in the HUD:\n${before}`)
   await a.page.mouse.click(640, 360, { button: 'right' })
-  await new Promise((r) => setTimeout(r, 250))
-  const withPanel = await hudText()
+  const withPanel = await untilValue(
+    hudText,
+    (t) => t.includes('\n'),
+    'right-click did not open the inventory panel',
+  )
   if (!withPanel.includes('\n')) fail(`right-click did not open the inventory panel:\n${withPanel}`)
   await a.page.mouse.click(640, 360, { button: 'right' })
   console.log('  inventory: slot select and right-click panel both respond')
@@ -292,8 +320,11 @@ if (itemsA.itemsDrawn > itemsA.worldItems) {
 console.log(`  items: ${itemsA.itemsDrawn} drawn of ${itemsA.worldItems} tracked`)
 
 await a.page.keyboard.press('F3')
-await new Promise((r) => setTimeout(r, 700))
-const hud = await a.page.evaluate('window.__game.debugHud()')
+const hud = await untilValue(
+  () => a.page.evaluate('window.__game.debugHud()'),
+  (h) => h.visible,
+  'F3 did not show the debug HUD',
+)
 if (!hud.visible) fail('F3 did not show the debug HUD')
 {
   const text = hud.text

@@ -35,6 +35,7 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { matchVitePort } from '../vite-url.mjs'
+import { killGroup } from '../proc-group.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const shots = join(root, 'shots')
@@ -66,7 +67,7 @@ const kids = []
 const cleanup = () => {
   for (const k of kids) {
     try {
-      k.kill('SIGKILL')
+      killGroup(k)
     } catch {
       /* already gone */
     }
@@ -83,6 +84,7 @@ const ok = (msg) => console.log(`  ok   ${msg}`)
 
 // --- the real server, with bots to supply the pressure --------------------
 const server = spawn('cargo', ['run', '--quiet', '--release', '-p', 'game-server'], {
+  detached: true,
   cwd: root,
   env: {
     ...process.env,
@@ -119,6 +121,7 @@ if (!up) {
 
 // --- vite, as the same-origin proxy the browser needs ---------------------
 const vite = spawn('npx', ['vite', '--strictPort=false'], {
+  detached: true,
   cwd: join(root, 'client'),
   env: { ...process.env, VITE_SERVER_PORT: String(PORT) },
 })

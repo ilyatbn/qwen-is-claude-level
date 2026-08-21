@@ -18,6 +18,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
 import { matchVitePort } from './vite-url.mjs'
+import { killGroup } from './proc-group.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const shotsDir = join(root, 'shots')
@@ -40,6 +41,7 @@ const require = createRequire(join(root, 'client/package.json'))
 const { chromium } = require('playwright-core')
 
 const vite = spawn('npm', ['--prefix', 'client', 'run', 'dev'], {
+  detached: true,
   cwd: root,
   env: { ...process.env, LD_LIBRARY_PATH: libDir },
 })
@@ -61,7 +63,7 @@ const portReady = new Promise((res, rej) => {
 
 const shutdown = () => {
   try {
-    vite.kill('SIGTERM')
+    killGroup(vite)
   } catch {
     /* already gone */
   }

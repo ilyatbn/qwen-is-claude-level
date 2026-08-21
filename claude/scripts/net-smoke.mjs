@@ -25,6 +25,7 @@ import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { killGroup } from './proc-group.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(join(root, 'client/package.json'))
@@ -34,13 +35,14 @@ const N = Number(process.argv[2] ?? 25)
 const PORT = 3111 // not 3000, so a dev server left running does not get joined instead
 
 const server = spawn('cargo', ['run', '--quiet', '-p', 'game-server'], {
+  detached: true,
   cwd: root,
   env: { ...process.env, BIND_ADDR: `127.0.0.1:${PORT}`, MAP_SCALE: 'small', GAME_LOG: 'warn' },
   stdio: ['ignore', 'inherit', 'inherit'],
 })
 const stop = () => {
   try {
-    server.kill('SIGTERM')
+    killGroup(server)
   } catch {
     /* already gone */
   }

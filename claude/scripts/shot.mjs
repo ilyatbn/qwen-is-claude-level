@@ -20,6 +20,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { matchVitePort } from './vite-url.mjs'
+import { killGroup } from './proc-group.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const shotsDir = join(root, 'shots')
@@ -43,6 +44,7 @@ if (!existsSync(chromePath)) {
 function startVite() {
   return new Promise((resolvePort, reject) => {
     const proc = spawn('npx', ['vite', '--strictPort=false'], {
+      detached: true,
       cwd: join(root, 'client'),
       env: { ...process.env },
     })
@@ -135,7 +137,7 @@ try {
   }
 } finally {
   await browser.close()
-  vite.kill('SIGTERM')
+  killGroup(vite)
 }
 
 process.exit(failed ? 1 : 0)

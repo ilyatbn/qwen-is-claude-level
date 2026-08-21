@@ -32,6 +32,7 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { matchVitePort } from '../vite-url.mjs'
+import { killGroup } from '../proc-group.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const shots = join(root, 'shots')
@@ -51,7 +52,7 @@ const kids = []
 process.on('exit', () => {
   for (const k of kids) {
     try {
-      k.kill('SIGKILL')
+      killGroup(k)
     } catch {
       /* already gone */
     }
@@ -68,6 +69,7 @@ const ok = (m) => console.log(`  ok   ${m}`)
 // No bots: this check is about one player's death, and a bot landing the killing
 // blow would change the attribution the cause line is asserted against.
 const server = spawn('cargo', ['run', '--quiet', '--release', '-p', 'game-server'], {
+  detached: true,
   cwd: root,
   env: {
     ...process.env,
@@ -104,6 +106,7 @@ if (!up) {
 }
 
 const vite = spawn('npx', ['vite', '--strictPort=false'], {
+  detached: true,
   cwd: join(root, 'client'),
   env: { ...process.env, VITE_SERVER_PORT: String(PORT) },
 })
@@ -183,7 +186,7 @@ let switched = false
 // The loop runs to a deadline rather than a fixed count: at 8 rockets and
 // variable terrain, a fixed 14 made this a coin flip, and a gate that fails on a
 // coin flip gates nothing (§A28).
-const killDeadline = Date.now() + 60_000
+const killDeadline = Date.now() + 90_000
 for (let i = 0; Date.now() < killDeadline; i++) {
   const d = await dbg()
   if (!d.player || d.health <= 0 || d.death.visible) break
@@ -206,8 +209,19 @@ for (let i = 0; Date.now() < killDeadline; i++) {
   // The camera follows the player, so a point below mid-screen is below the body
   // in world space whatever the camera has done.
   await page.mouse.move(640, 700)
+  const hpBefore = (await dbg()).health ?? 0
   await page.evaluate('window.__game.fire()')
-  await new Promise((r) => setTimeout(r, 900))
+  // Wait for the rocket to *land*, not for 900 ms. The client steps a fixed
+  // timestep off requestAnimationFrame, so a busy box simulates fewer ticks per
+  // wall-clock second and a flat sleep lands fewer rockets inside the same
+  // deadline — which is how this check failed in the suite while passing
+  // standalone. Waiting on the effect makes load irrelevant instead of moving a
+  // threshold (§A28); the cap is only so a dud shot cannot stall the loop.
+  for (let w = 0; w < 24; w++) {
+    const now = await dbg()
+    if ((now.health ?? 0) < hpBefore || now.death?.visible) break
+    await new Promise((r) => setTimeout(r, 100))
+  }
 }
 
 const dead = await until((d) => d.death.visible, 12_000, 'the death overlay to appear')

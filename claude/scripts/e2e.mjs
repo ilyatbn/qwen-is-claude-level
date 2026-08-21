@@ -29,7 +29,7 @@
  * Chromium **once** for all of them, instead of once per check, is what makes
  * putting it in the gate affordable.
  */
-import { spawn } from 'node:child_process'
+import { spawn, execSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -179,6 +179,44 @@ const shutdown = () => {
 }
 process.on('exit', shutdown)
 
+/**
+ * Processes the suite is responsible for, sampled before and after.
+ *
+ * `npx vite`, `npm run dev` and `cargo run` each fork the process that actually
+ * holds the port, so a naive `child.kill()` reaps the wrapper and orphans the
+ * server. Five scripts wrote that naive version and all five leaked. The load
+ * accumulated silently and three sessions recorded the result as "two-clients is
+ * flaky under contention" — the contention was self-inflicted, and the box got
+ * slower every time the suite ran.
+ *
+ * Counting at both ends turns that from an invisible drift into a loud failure
+ * (§A39). Only pids that are NEW since the suite started are reported, so a dev
+ * server someone already had running is not blamed on the suite.
+ */
+const STRAY_PATTERNS = [
+  ['vite', /node .*\.bin\/vite/],
+  ['chromium', /chrome-linux64\/chrome/],
+  ['game-server', /target\/(debug|release)\/game-server/],
+]
+const strayPids = () => {
+  const out = new Map()
+  let ps = ''
+  try {
+    ps = execSync('ps -eo pid=,args=', { encoding: 'utf8' })
+  } catch {
+    return out // ps unavailable: the guard simply does not run
+  }
+  for (const line of ps.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(.*)$/)
+    if (!m) continue
+    for (const [name, re] of STRAY_PATTERNS) {
+      if (re.test(m[2])) out.set(Number(m[1]), name)
+    }
+  }
+  return out
+}
+const straysBefore = strayPids()
+
 const results = []
 let browser
 
@@ -281,4 +319,43 @@ for (const r of results) {
 console.log(`  ${results.length - failed.length}/${results.length} passed`)
 for (const f of failed) console.log(`\n  ${f.name}: ${f.err}`)
 
-process.exit(failed.length ? 1 : 0)
+// Did the suite leave anything running? See STRAY_PATTERNS above.
+// Stop our own vite FIRST: it is still alive at this point and the `exit`
+// handler only reaps it after this code runs, so sampling before shutting down
+// counts the suite's own server as a leak. That false positive is the same
+// shape as the bugs this guard exists to catch — an assertion that includes
+// something it did not mean to.
+shutdown()
+// Sample twice with a grace window between. A process still winding down from
+// `browser.close()` has not leaked — it is exiting — and reporting it would make
+// this guard fail on teardown timing rather than on the thing it exists to catch.
+// Only pids that survive the grace period count.
+let leaked = []
+for (let attempt = 0; attempt < 2; attempt++) {
+  await new Promise((r) => setTimeout(r, 2000))
+  leaked = [...strayPids()].filter(([pid]) => !straysBefore.has(pid))
+  if (!leaked.length) break
+}
+if (leaked.length) {
+  const byKind = {}
+  for (const [, kind] of leaked) byKind[kind] = (byKind[kind] ?? 0) + 1
+  console.log(
+    `\n  \x1b[1;31mLEAKED\x1b[0m ${leaked.length} process(es): ` +
+      Object.entries(byKind).map(([k, n]) => `${n} ${k}`).join(', '),
+  )
+  console.log('  These accumulate across runs and slow every later run. See scripts/proc-group.mjs.')
+  for (const [pid, kind] of leaked) {
+    try {
+      process.kill(-pid, 'SIGKILL')
+    } catch {
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        /* already gone */
+      }
+    }
+    console.log(`    killed ${kind} ${pid}`)
+  }
+}
+
+process.exit(failed.length || leaked.length ? 1 : 0)

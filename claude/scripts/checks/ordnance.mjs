@@ -31,6 +31,7 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { matchVitePort } from '../vite-url.mjs'
+import { killGroup } from '../proc-group.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const shots = join(root, 'shots')
@@ -50,7 +51,7 @@ const kids = []
 process.on('exit', () => {
   for (const k of kids) {
     try {
-      k.kill('SIGKILL')
+      killGroup(k)
     } catch {
       /* already gone */
     }
@@ -67,6 +68,7 @@ const ok = (m) => console.log(`  ok   ${m}`)
 // No bots: a bot swinging or placing its own mine would make the counts
 // ambiguous about whose ordnance is being asserted.
 const server = spawn('cargo', ['run', '--quiet', '--release', '-p', 'game-server'], {
+  detached: true,
   cwd: root,
   env: {
     ...process.env,
@@ -96,6 +98,7 @@ if (!up) {
 }
 
 const vite = spawn('npx', ['vite', '--strictPort=false'], {
+  detached: true,
   cwd: join(root, 'client'),
   env: { ...process.env, VITE_SERVER_PORT: String(PORT) },
 })
@@ -276,10 +279,15 @@ if (placed) {
   // straight down certainly puts the 42 px blast over it.
   await page.keyboard.press('Digit1')
   await settle(300)
-  await fireUntil(640, 700, (d) => d.minesEnded > 0, 25_000, 'the rocket to end the mine')
+  // Deadlines with headroom, not fixed sleeps. `fireUntil` and `until` already
+  // wait on the *effect*; the deadline only bounds how long a genuinely stuck
+  // run may hang. Under a loaded box the client steps fewer fixed-timestep ticks
+  // per wall-clock second, so 25 s was enough standalone and not enough after
+  // three other specs — which is how this read as flaky rather than as slow.
+  await fireUntil(640, 700, (d) => d.minesEnded > 0, 60_000, 'the rocket to end the mine')
   const gone = await until(
     (d) => d.minesDrawn === d.minesPlaced - d.minesEnded && d.minesEnded > 0,
-    10_000,
+    20_000,
     'the mine to leave the layer',
   )
   if (gone) {
