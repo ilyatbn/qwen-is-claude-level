@@ -1,6 +1,6 @@
 # Master task list
 
-158 tasks across 17 milestones.
+167 tasks across 17 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added. Counted, not assumed.) Work them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
@@ -289,9 +289,20 @@ tests and 20 e2e specs missed all four.
 - [x] [T13.04](M13/T13.04-weather-visible.md) — Weather you can see **(v4)**
 - [x] [T13.05](M13/T13.05-crates.md) — Crates fall, land, and can be picked up **(v4)**
 - [x] [T13.06](M13/T13.06-round-end.md) — The round ends **(v4)**
+- [ ] [T13.06.1](M13/T13.06.1-rooms-on-demand.md) — No battle exists until players ask for one **(v4)** ← **next**
+- [ ] [T13.06.2](M13/T13.06.2-melee-reach.md) — Melee hits what is in front of you **(v4)**
+- [ ] [T13.06.3](M13/T13.06.3-no-fire-while-moving.md) — You cannot fire while moving **(v4)**
+- [ ] [T13.06.4](M13/T13.06.4-toxic-rain-falls.md) — Toxic rain falls from the sky **(v4)**
+- [ ] [T13.06.5](M13/T13.06.5-meteors-visible.md) — Meteors you can see and dodge **(v4)**
+- [ ] [T13.06.6](M13/T13.06.6-gun-projectiles.md) — Gun projectiles are still invisible **(v4)**
+- [ ] [T13.06.7](M13/T13.06.7-one-slot-per-weapon.md) — A weapon occupies one slot, ever **(v4)**
+- [ ] [T13.06.8](M13/T13.06.8-results-countdown.md) — The results countdown counts down **(v4)**
+- [ ] [T13.06.9](M13/T13.06.9-jetpack-readout.md) — Show the jetpack number **(v4)**
 
-**Checkpoint:** fire a rocket and watch the hole appear; stand in toxic rain and see
-it; play a round to the end and press Play again.
+**Checkpoint:** connect and land in a *lobby*, not a battle. Then fire a rocket and
+watch the hole appear, stand in toxic rain and see it, and play a round to the end.
+
+**M14 does not start until every T13.06.x box is ticked.**
 
 ---
 

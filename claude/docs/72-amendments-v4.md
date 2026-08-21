@@ -407,3 +407,168 @@ a build where the eliminator did not run.
 are **server environment variables**. A client cannot set them, they default off,
 and they stay exactly as they are. The distinction worth keeping: a dev flag the
 *server* owns is fine; a dev flag the *client* can name is not.
+
+## C18 — No battle exists until players ask for one
+
+**This corrects §B10 and `MIN_PLAYERS_TO_START`, and it is a design error of mine.**
+
+`app.rs:109` creates a room at **server startup**, unconditionally. It seats
+`BOT_COUNT_DEFAULT` (5) bots and begins ticking — generating a map, running timers,
+spawning items, scoring. So a player who connects always lands in a battle already
+in progress, which is exactly what was reported.
+
+§B10 made it worse by reasoning that *"nobody ever waits"* was the goal. Nobody
+waiting is only good if there is something to wait **for**. A room that is already
+mid-round when you arrive is not a game you joined; it is a game you interrupted.
+
+### The rule
+
+> A room is created **on demand** — by `create_room` or by quick match — and it does
+> **nothing** until a battle starts. No timers, no scoring, no item spawns, no
+> weather, no bots.
+>
+> The map is generated when the room is created, so players in the lobby can see
+> what they are about to play. Generating it is the *only* work a `Lobby` room does.
+
+### Phases
+
+`Lobby` gains real behaviour rather than being a state the server passes through:
+
+| phase | ticking | what exists |
+|---|---|---|
+| `Lobby` | **no sim** | the map, the roster, the join code |
+| `Warmup` | yes | players spawned, no damage (`docs/41` §3, unchanged) |
+| `Playing` | yes | everything |
+| `Ended` | frozen | the results screen (§C3) |
+
+A room drops back to `Lobby` — not to a fresh round — when it empties of humans, and
+is reaped after `ROOM_EMPTY_TTL` as §B1 already says.
+
+### Starting
+
+`MIN_PLAYERS_TO_START` becomes **2**, and it counts **humans**.
+
+That alone would kill solo play, which §A5 exists to make possible. So the lobby also
+offers **"Start with bots"**, which any player in the room may press:
+
+- **2+ humans present** → the round starts automatically after a short
+  `LOBBY_COUNTDOWN` (5 s), visible to everyone, so nobody is dropped in mid-sentence.
+- **1 human who presses "Start with bots"** → bots are seated to fill the room and the
+  round starts. This is the solo path, and it is now a **choice** rather than the
+  default that produced the bug.
+
+Bots are seated **when a round starts**, never before, and never in a `Lobby` room.
+
+| Name | Value |
+|---|---|
+| `MIN_PLAYERS_TO_START` | 2 (was 1; now counts humans only) |
+| `LOBBY_COUNTDOWN` | 5.0 |
+
+**No bootstrap room.** The server starts with an empty registry, and `/healthz`
+reporting `rooms 0, players 0` on a fresh server is correct, not a fault.
+
+## C19 — Melee hits what is in front of you
+
+Melee reach is measured from the player **centre**, so `axe` at 40 reaches 2.5
+player-widths — it connects with someone who is visibly not adjacent.
+
+T11.09 raised these reaches (knife 26→36, axe 30→40, hammer 28→38) because melee was
+below half the arsenal's median damage, and hit rate tracked reach almost exactly.
+So this is a real trade and the numbers must be re-measured, not just lowered:
+
+> Reach becomes **`PLAYER_W / 2 + weapon_reach`** — measured from the body edge, not
+> the centre, so the number in the table means "how far in front of me".
+
+New values, all "immediate proximity": `knife` 12, `bat` 16, `whip` 44 (the whip is
+*supposed* to reach), `axe` 16, `hammer` 14.
+
+Compensate with **arc and cooldown, not reach** — a wider sweep and a faster swing
+keep melee viable without letting it connect at a distance. Then **re-run T11.09's
+balance harness and report** what it did to melee's damage share; if melee falls back
+below half the median, say so with the numbers rather than quietly restoring reach.
+
+## C20 — You cannot fire while moving
+
+Firing, throwing and swinging are all refused while the player is moving under their
+own power. Standing still to shoot is the Worms convention and it makes positioning a
+decision rather than a formality.
+
+- Refused when `|vel.x| > FIRE_MOVE_MAX_SPEED` **or** a movement key is held this
+  tick — the key check matters, or you can fire during the single tick between
+  releasing a key and friction taking effect.
+- Being *knocked* around does not stop you firing: this is about your own movement.
+  Check the input, not just the velocity.
+- **It applies to bots too.** They currently fire while walking; they must stop, or
+  they become strictly worse than a human at the same skill and every balance number
+  in §B7 shifts. Re-run the balance harness.
+
+| Name | Value |
+|---|---|
+| `FIRE_MOVE_MAX_SPEED` | 8.0 |
+
+## C21 — Toxic rain falls from the sky
+
+Puddles currently spawn directly on surface points, which means they appear
+**underground inside caves** — rain that fell through a roof.
+
+> A toxic drop is a **projectile**, spawned from a cloud at `y = SKY_MARGIN`, falling
+> under gravity, forming its puddle **where it lands**. Whatever it lands on is the
+> only place a puddle can be.
+
+That fixes the underground bug by construction — a drop cannot reach a cave floor
+without an opening — and it makes the rain visible, because drops are drawn by the
+same layer as every other projectile (§C4).
+
+Twenty drops over `TOXIC_DURATION` at `TOXIC_PUDDLE_EVERY` is not a load concern. The
+telegraph is the cloud arriving.
+
+## C22 — Meteors are visible for long enough to dodge
+
+`docs/13` §4 already says meteors *are* ordinary projectiles, and only their
+explosions are visible. That is the §C4 render gap again, not a simulation change.
+
+They must be visible **and dodgeable**: spawned at `y = -32` with `METEOR_SPEED` 700,
+a meteor crosses a 1536 px map in about two seconds. The telegraph shadows
+(`docs/13` §4) mark where the first ones land, and the falling star itself must be
+drawn from spawn, not from impact.
+
+## C23 — Gun projectiles are still invisible
+
+T13.03 shipped visible ordnance with a passing pixel test, and guns are still not
+visible in play. **Find out which class is missing before changing anything** — a
+bazooka rocket is a projectile, a pistol shot is a hitscan tracer, and they take
+different paths. One of:
+
+- the tracer path never reaches `GameScene` (the §C0 shape a third time);
+- tracers are drawn but are too brief to see at 0.09 s;
+- the projectile path covers weapon fire and not server-spawned projectiles.
+
+The T13.03 pixel test passing while the player cannot see them means **the test is
+sampling something the player is not looking at**. Fix the test as well as the bug.
+
+## C24 — A weapon occupies one slot, ever
+
+Picking up a weapon you already carry currently takes a second slot once the first
+stack is full. It should **refill** instead.
+
+> A given weapon id appears **at most once** in the inventory. A pickup of a weapon
+> already held tops its ammo up to `max_stack`; if it is already full, the pickup is
+> refused and the item stays on the ground (`docs/30` §2's rule for a full
+> inventory).
+
+With 20 weapons and 24 slots this is the difference between a loadout and a hoard.
+
+## C25 — The results countdown counts down
+
+The `ENDED_SECONDS` countdown on the results screen is static. It must tick, driven
+by the server's round time like every other timer (§B4) — a local stopwatch drifts,
+and this one has a vote deadline attached to it.
+
+## C26 — Show the jetpack number
+
+Fuel refill behaviour is hard to judge from a bar alone. Add a numeric readout beside
+the jetpack bar (§C8) showing current fuel to one decimal, and **verify the refill
+against the spec while you are there**: `JETPACK_DRAIN` 1.0/s while thrusting,
+`JETPACK_REFILL_DELAY` 0.5 s of no thrust, then `JETPACK_REFILL` 0.5/s — so a full
+5 s burn takes 10 s to recover. If the observed curve disagrees with those constants,
+that is a bug; report the measured numbers.
