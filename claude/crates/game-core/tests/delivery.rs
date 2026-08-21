@@ -649,7 +649,11 @@ fn an_explosion_destroys_a_mine_without_detonating_it() {
     let def = mine_def();
     let mut mines = Mines::default();
     let id = mines.place(0, &def, Vec2::new(500.0, 396.0), 1.0, 36.0, 90.0, 0.0);
-    let gone = mines.destroy_in_blast(Vec2::new(520.0, 396.0), 42.0);
+    let gone: Vec<_> = mines
+        .destroy_in_blast(Vec2::new(520.0, 396.0), 42.0)
+        .into_iter()
+        .map(|o| o.id)
+        .collect();
     assert_eq!(gone, vec![id]);
     assert!(mines.is_empty());
 
@@ -658,6 +662,9 @@ fn an_explosion_destroys_a_mine_without_detonating_it() {
     mines.place(0, &def, Vec2::new(500.0, 396.0), 1.0, 36.0, 90.0, 0.0);
     assert!(mines
         .destroy_in_blast(Vec2::new(600.0, 396.0), 42.0)
+        .into_iter()
+        .map(|o| o.id)
+        .collect::<Vec<_>>()
         .is_empty());
     assert_eq!(mines.len(), 1);
 }

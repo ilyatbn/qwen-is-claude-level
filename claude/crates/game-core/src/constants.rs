@@ -676,12 +676,73 @@ pub const MACHINEGUN_COOLDOWN: f32 = 0.09;
 pub const MACHINEGUN_SPREAD: f32 = 0.045;
 pub const MACHINEGUN_AMMO: u8 = 120;
 
+// Melee (§B7). No ammo — a cooldown instead — which is what makes melee the
+// floor of the arsenal rather than a novelty: it is what you still have when you
+// have nothing. Knockback is the axis that separates them, because a bat that
+// launches someone off a ledge into a crater is a kill the damage number does not
+// explain.
+//
+// Carve is 0 for the blade and blunt weapons and non-zero for the tools: an axe
+// and a hammer dig, a knife does not. §A3 is about ordnance, and §B18 restates it.
+pub const KNIFE_DAMAGE: f32 = 35.0;
+pub const KNIFE_CARVE: f32 = 0.0;
+pub const KNIFE_REACH: f32 = 26.0;
+pub const KNIFE_ARC: f32 = 1.0;
+pub const KNIFE_COOLDOWN: f32 = 0.35;
+pub const KNIFE_KNOCKBACK: f32 = 60.0;
+
+pub const BAT_DAMAGE: f32 = 28.0;
+pub const BAT_CARVE: f32 = 0.0;
+pub const BAT_REACH: f32 = 34.0;
+pub const BAT_ARC: f32 = 1.4;
+pub const BAT_COOLDOWN: f32 = 0.55;
+pub const BAT_KNOCKBACK: f32 = 260.0;
+
+pub const WHIP_DAMAGE: f32 = 22.0;
+pub const WHIP_CARVE: f32 = 0.0;
+/// The longest reach in the melee table — that is the whip's whole identity.
+pub const WHIP_REACH: f32 = 58.0;
+pub const WHIP_ARC: f32 = 0.8;
+pub const WHIP_COOLDOWN: f32 = 0.60;
+pub const WHIP_KNOCKBACK: f32 = 120.0;
+
+pub const AXE_DAMAGE: f32 = 55.0;
+pub const AXE_CARVE: f32 = 10.0;
+pub const AXE_REACH: f32 = 30.0;
+pub const AXE_ARC: f32 = 1.2;
+pub const AXE_COOLDOWN: f32 = 0.90;
+pub const AXE_KNOCKBACK: f32 = 140.0;
+
+pub const HAMMER_DAMAGE: f32 = 70.0;
+pub const HAMMER_CARVE: f32 = 16.0;
+pub const HAMMER_REACH: f32 = 28.0;
+pub const HAMMER_ARC: f32 = 1.1;
+pub const HAMMER_COOLDOWN: f32 = 1.20;
+pub const HAMMER_KNOCKBACK: f32 = 340.0;
+
+// Cone (§B7). Area denial: it carves nothing — fire does not dig (§B6) — and
+// what it leaves behind is the *existing* LAVA_BURN_* hazard, not a second fire
+// system. `damage` on the def mirrors the dps so the shared field means
+// something; the cone reads its dps from the delivery.
+pub const FLAMETHROWER_DPS: f32 = 14.0;
+pub const FLAMETHROWER_RANGE: f32 = 150.0;
+pub const FLAMETHROWER_ARC: f32 = 0.55;
+pub const FLAMETHROWER_COOLDOWN: f32 = 0.05;
+/// Fuel, spent per trigger tick — 200 at 0.05 s is 10 s of continuous fire.
+pub const FLAMETHROWER_AMMO: u8 = 200;
+/// How long one spray particle lives, for the client and for the burn trail.
+pub const FLAMETHROWER_PARTICLE_LIFE: f32 = 0.35;
+
 pub const AIRBURST_PELLETS: u32 = 9;
 /// Radians, downward.
 pub const AIRBURST_FAN: f32 = 0.9;
 pub const FOV_SMOKE_MULT: f32 = 0.35;
 pub const SMOKE_RADIUS: f32 = 110.0;
 pub const SMOKE_DURATION: f32 = 8.0;
+pub const MINE_DAMAGE: f32 = 60.0;
+pub const MINE_BLAST_RADIUS: f32 = 48.0;
+/// Two per pickup: a mine is a commitment, not a spray.
+pub const MINE_AMMO: u8 = 2;
 pub const MINE_ARM_TIME: f32 = 1.0;
 pub const MINE_TRIGGER_RADIUS: f32 = 36.0;
 pub const MINE_LIFETIME: f32 = 90.0;

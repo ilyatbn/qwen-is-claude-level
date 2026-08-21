@@ -333,9 +333,11 @@ impl PlayerState {
         }
         let cooldown = wdef.map_or(crate::constants::FIRE_COOLDOWN_DEFAULT, |w| w.cooldown);
         self.fire_ready_at = now + cooldown;
-        // The stack is the weapon itself for an energy weapon, so it is not
-        // consumed — otherwise picking one up would give you six shots of it.
-        if cost <= 0.0 {
+        // Not every weapon spends a stack: an energy weapon's stack *is* the
+        // weapon (charge is its ammo, §B5) and melee has no ammo at all (§B7).
+        // `spends_stack` derives that from the def, so the rule cannot disagree
+        // with the delivery kind.
+        if wdef.is_none_or(|w| w.spends_stack()) {
             self.inventory.consume(slot, 1);
         }
         Ok(wid)

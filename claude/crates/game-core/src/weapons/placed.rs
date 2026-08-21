@@ -217,16 +217,129 @@ impl Mines {
     /// `docs/31` §5: explosions do not chain. A grenade caught in a blast is
     /// destroyed silently, and a mine is no different — chaining is fun and makes
     /// the tick non-terminating in the worst case.
-    pub fn destroy_in_blast(&mut self, at: Vec2, radius: f32) -> Vec<MineId> {
+    pub fn destroy_in_blast(&mut self, at: Vec2, radius: f32) -> Vec<MineOutcome> {
         let mut gone = Vec::new();
         self.mines.retain(|m| {
             if (m.pos() - at).len() <= radius {
-                gone.push(m.id);
+                // A destroyed mine does **not** detonate: chaining would make one
+                // rocket into a cascade, and `docs/31` §5 already rules that out
+                // for grenades for the same reason. `explosion: None` is what
+                // says so.
+                gone.push(MineOutcome {
+                    id: m.id,
+                    reason: MineEnd::Destroyed,
+                    at: m.pos(),
+                    blast_radius: m.blast_radius,
+                    explosion: None,
+                });
                 false
             } else {
                 true
             }
         });
         gone
+    }
+}
+
+/// T11.07 — proximity mines, wired end to end (§B7).
+#[cfg(test)]
+mod t1107 {
+    use crate::constants::{
+        INVENTORY_SLOTS, MINE_ARM_TIME, MINE_LIFETIME, MINE_TRIGGER_RADIUS, SIM_DT,
+    };
+    use crate::items::registry::{self, ItemKind, MINE, WEAPON_BAZOOKA};
+    use crate::weapons::defs::{self, Delivery};
+    use crate::world::{give, GameEvent, RoundPhase, World};
+
+    fn hold(w: &mut World, id: u8, item: u16) -> u8 {
+        let slot = (0..INVENTORY_SLOTS as u8)
+            .find(|s| {
+                w.player(id)
+                    .and_then(|p| p.inventory.slot(*s))
+                    .is_some_and(|st| st.item == item)
+            })
+            .expect("slot");
+        w.select_slot(id, slot);
+        slot
+    }
+
+    #[test]
+    fn it_matches_the_spec() {
+        let w = defs::by_key("mine").expect("mine");
+        match w.delivery {
+            Delivery::Placed {
+                arm_time,
+                trigger_radius,
+                lifetime,
+            } => {
+                assert_eq!(arm_time, MINE_ARM_TIME);
+                assert_eq!(trigger_radius, MINE_TRIGGER_RADIUS);
+                assert_eq!(lifetime, MINE_LIFETIME);
+            }
+            other => panic!("the mine must be placed: {other:?}"),
+        }
+        let d = registry::by_key("mine").expect("item");
+        assert_eq!(d.kind, ItemKind::Weapon(w.id));
+        assert!(d.spawn_weight > 0 || d.crate_weight > 0 || d.buried_weight > 0);
+    }
+
+    /// **§B6's destructibility, through a real explosion.**
+    ///
+    /// `destroy_in_blast` existed from T11.01 with no production caller — only
+    /// tests — so a mine was in fact indestructible in a real round and
+    /// `MineEnd::Destroyed` was a variant nothing ever constructed. A unit test
+    /// on `Mines` could not see that, because it called the function itself
+    /// (§A39: count at both ends). This one goes through `World`.
+    #[test]
+    fn a_real_explosion_destroys_a_mine_and_says_so() {
+        let mut w = World::new(4242, crate::constants::MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "p".into());
+        give(&mut w, 0, MINE, 2);
+        hold(&mut w, 0, MINE);
+        let _ = w.fire(0, 1.0);
+        w.step(SIM_DT);
+        assert_eq!(w.mines.len(), 1, "the mine was never placed");
+        let _ = w.drain_events();
+
+        // A rocket at the mine's feet. Same world, same blast path everything
+        // else uses.
+        let at = w.mines.iter().next().expect("mine").pos();
+        w.explode_for_test(at, WEAPON_BAZOOKA, 0, 2.0);
+        w.step(SIM_DT);
+
+        assert_eq!(w.mines.len(), 0, "an explosion did not destroy the mine");
+        let ended: Vec<_> = w
+            .drain_events()
+            .into_iter()
+            .filter_map(|e| match e {
+                GameEvent::MineEnded { reason, .. } => Some(reason),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ended,
+            vec![super::MineEnd::Destroyed],
+            "no MineEnded{{Destroyed}} was emitted — the variant is unreachable"
+        );
+    }
+
+    /// Control for the above: a blast that misses leaves the mine alone. Without
+    /// it, "the explosion destroyed the mine" also passes for a build where mines
+    /// vanish on their own.
+    #[test]
+    fn a_blast_that_misses_leaves_the_mine_alone() {
+        let mut w = World::new(4242, crate::constants::MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "p".into());
+        give(&mut w, 0, MINE, 2);
+        hold(&mut w, 0, MINE);
+        let _ = w.fire(0, 1.0);
+        w.step(SIM_DT);
+        let at = w.mines.iter().next().expect("mine").pos();
+        let far = crate::math::Vec2::new(at.x + 400.0, at.y);
+        w.explode_for_test(far, WEAPON_BAZOOKA, 0, 2.0);
+        w.step(SIM_DT);
+        assert_eq!(w.mines.len(), 1, "a distant blast destroyed the mine");
     }
 }

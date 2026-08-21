@@ -139,3 +139,177 @@ pub fn swing(
 
     out
 }
+
+/// T11.05 — the five melee weapons (§B7).
+#[cfg(test)]
+mod t1105 {
+    use crate::constants::INVENTORY_SLOTS;
+    use crate::items::registry::{self, ItemKind, AXE, BAT, HAMMER, KNIFE, WHIP};
+    use crate::weapons::defs::{self, Delivery};
+    use crate::world::{give, RoundPhase, World};
+
+    /// `(key, dmg, carve, reach, arc, cd, knockback)` — §B7's melee table.
+    const SPEC: &[(&str, f32, f32, f32, f32, f32, f32)] = &[
+        ("knife", 35.0, 0.0, 26.0, 1.0, 0.35, 60.0),
+        ("bat", 28.0, 0.0, 34.0, 1.4, 0.55, 260.0),
+        ("whip", 22.0, 0.0, 58.0, 0.8, 0.60, 120.0),
+        ("axe", 55.0, 10.0, 30.0, 1.2, 0.90, 140.0),
+        ("hammer", 70.0, 16.0, 28.0, 1.1, 1.20, 340.0),
+    ];
+
+    /// The table is the test, and the set must match — a melee weapon with no
+    /// numbers here fails rather than going silently uncovered.
+    #[test]
+    fn every_melee_weapon_matches_the_spec_table() {
+        for &(key, dmg, carve, reach, arc, cd, kb) in SPEC {
+            let w = defs::by_key(key).unwrap_or_else(|| panic!("{key} is not a weapon"));
+            assert_eq!(w.damage, dmg, "{key} damage");
+            assert_eq!(w.blast_radius, carve, "{key} carve");
+            assert_eq!(w.cooldown, cd, "{key} cooldown");
+            match w.delivery {
+                Delivery::Melee {
+                    reach: r,
+                    arc: a,
+                    knockback: k,
+                } => {
+                    assert_eq!(r, reach, "{key} reach");
+                    assert_eq!(a, arc, "{key} arc");
+                    assert_eq!(k, kb, "{key} knockback");
+                }
+                other => panic!("{key} is not melee: {other:?}"),
+            }
+        }
+        let mut have: Vec<&str> = defs::WEAPONS
+            .iter()
+            .filter(|w| matches!(w.delivery, Delivery::Melee { .. }))
+            .map(|w| w.key)
+            .collect();
+        let mut want: Vec<&str> = SPEC.iter().map(|&(k, ..)| k).collect();
+        have.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(have, want, "a melee weapon exists with no numbers in §B7");
+    }
+
+    /// **Melee never runs out.** It is the floor of the arsenal (§B7), and it is
+    /// worthless the moment a swing costs you the weapon.
+    ///
+    /// This is not hypothetical: `try_fire` consumed a stack for everything that
+    /// was not an energy weapon, so a knife (`max_stack: 1`) deleted itself on its
+    /// first swing. Measured before the fix: `count after one swing = None`.
+    #[test]
+    fn a_melee_weapon_is_never_consumed_by_using_it() {
+        for &(key, ..) in SPEC {
+            let item = registry::by_key(key).expect("item").id;
+            let mut w = World::new(4242, crate::constants::MapScale::Small);
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(0, 0, "p".into());
+            give(&mut w, 0, item, 1);
+            let slot = (0..INVENTORY_SLOTS as u8)
+                .find(|s| {
+                    w.player(0)
+                        .and_then(|p| p.inventory.slot(*s))
+                        .is_some_and(|st| st.item == item)
+                })
+                .expect("slot");
+            w.select_slot(0, slot);
+            let mut t = 1.0f32;
+            for _ in 0..20 {
+                let _ = w.fire(0, t);
+                t += 2.0; // past any cooldown in the table
+            }
+            let left = w
+                .player(0)
+                .and_then(|p| p.inventory.slot(slot))
+                .map(|s| s.count);
+            assert_eq!(left, Some(1), "{key} was consumed by swinging it 20 times");
+        }
+    }
+
+    /// Control for the above: a *ballistic* weapon in the same harness must run
+    /// dry. Without it, "melee is never consumed" also passes for a build where
+    /// nothing is ever consumed.
+    #[test]
+    fn a_ballistic_weapon_in_the_same_harness_does_run_dry() {
+        let item = registry::by_key("pistol").expect("pistol").id;
+        let mut w = World::new(4242, crate::constants::MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "p".into());
+        give(&mut w, 0, item, 3);
+        let slot = (0..INVENTORY_SLOTS as u8)
+            .find(|s| {
+                w.player(0)
+                    .and_then(|p| p.inventory.slot(*s))
+                    .is_some_and(|st| st.item == item)
+            })
+            .expect("slot");
+        w.select_slot(0, slot);
+        let mut t = 1.0f32;
+        for _ in 0..10 {
+            let _ = w.fire(0, t);
+            t += 2.0;
+        }
+        let left = w
+            .player(0)
+            .and_then(|p| p.inventory.slot(slot))
+            .map(|s| s.count);
+        assert!(
+            left.is_none() || left == Some(0),
+            "a pistol with 3 rounds survived 10 shots: {left:?}"
+        );
+    }
+
+    /// Reach and knockback are what separate these five; the whip reaches
+    /// furthest and the hammer throws hardest, and that ordering is the design.
+    #[test]
+    fn reach_and_knockback_are_the_axes_that_separate_them() {
+        let reach = |k: &str| match defs::by_key(k).expect("w").delivery {
+            Delivery::Melee { reach, .. } => reach,
+            _ => unreachable!(),
+        };
+        let kb = |k: &str| match defs::by_key(k).expect("w").delivery {
+            Delivery::Melee { knockback, .. } => knockback,
+            _ => unreachable!(),
+        };
+        assert!(
+            reach("whip") > reach("bat") && reach("bat") > reach("knife"),
+            "the whip must out-reach the bat, and the bat the knife"
+        );
+        assert!(
+            kb("hammer") > kb("bat") && kb("bat") > kb("knife"),
+            "the hammer must throw harder than the bat, and the bat than the knife"
+        );
+        // The tools dig and the blades do not — that is what makes melee a
+        // tunnelling option rather than only a last resort.
+        for k in ["axe", "hammer"] {
+            assert!(
+                defs::by_key(k).expect("w").blast_radius > 0.0,
+                "{k} must dig"
+            );
+        }
+        for k in ["knife", "bat", "whip"] {
+            assert_eq!(
+                defs::by_key(k).expect("w").blast_radius,
+                0.0,
+                "{k} must not dig"
+            );
+        }
+    }
+
+    #[test]
+    fn every_melee_weapon_is_an_item_you_can_find() {
+        for &(key, ..) in SPEC {
+            let w = defs::by_key(key).expect("weapon");
+            let d = registry::by_key(key).unwrap_or_else(|| panic!("{key} is not an item"));
+            assert_eq!(d.kind, ItemKind::Weapon(w.id), "{key} points elsewhere");
+            assert!(
+                d.spawn_weight > 0 || d.crate_weight > 0 || d.buried_weight > 0,
+                "{key} can never be obtained"
+            );
+            assert_eq!(d.max_stack, 1, "{key} has no ammo, so it does not stack");
+        }
+        // Ids appended, never inserted (§B16).
+        for id in [KNIFE, BAT, WHIP, AXE, HAMMER] {
+            assert!(registry::def(id).is_some(), "item {id} does not resolve");
+        }
+    }
+}

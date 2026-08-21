@@ -136,3 +136,139 @@ pub fn spray(
     let _ = def;
     out
 }
+
+/// T11.06 — the flamethrower (§B7).
+#[cfg(test)]
+mod t1106 {
+    use crate::constants::{FLAMETHROWER_ARC, FLAMETHROWER_DPS, FLAMETHROWER_RANGE, SIM_DT};
+    use crate::items::registry::{self, ItemKind, FLAMETHROWER};
+    use crate::weapons::defs::{self, Delivery};
+    use crate::world::{give, RoundPhase, World};
+
+    fn armed_world() -> (World, u8) {
+        let mut w = World::new(4242, crate::constants::MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "p".into());
+        give(&mut w, 0, FLAMETHROWER, 200);
+        let slot = (0..crate::constants::INVENTORY_SLOTS as u8)
+            .find(|s| {
+                w.player(0)
+                    .and_then(|p| p.inventory.slot(*s))
+                    .is_some_and(|st| st.item == FLAMETHROWER)
+            })
+            .expect("slot");
+        w.select_slot(0, slot);
+        (w, slot)
+    }
+
+    #[test]
+    fn it_matches_the_spec_and_does_not_dig() {
+        let w = defs::by_key("flamethrower").expect("flamethrower");
+        match w.delivery {
+            Delivery::Cone {
+                range, arc, dps, ..
+            } => {
+                assert_eq!(range, FLAMETHROWER_RANGE);
+                assert_eq!(arc, FLAMETHROWER_ARC);
+                assert_eq!(dps, FLAMETHROWER_DPS);
+            }
+            other => panic!("the flamethrower must be a cone: {other:?}"),
+        }
+        // §B6: fire does not dig. This is the constraint that stops it being
+        // strictly better than the arsenal it competes with, so it is asserted
+        // rather than left to the table.
+        assert_eq!(w.blast_radius, 0.0, "fire must not carve");
+    }
+
+    /// Firing does not change the mask at all.
+    ///
+    /// **What this actually witnesses is the type signature, not the weapon
+    /// def.** `spray` takes `&Map`, so the cone is *structurally* unable to dig;
+    /// giving the flamethrower a `blast_radius` of 8 leaves this test green
+    /// (measured). That is a stronger guarantee than a test — a compile error
+    /// beats a red run — but it means the assertion that actually guards the
+    /// radius is `it_matches_the_spec_and_does_not_dig`, which does go red.
+    ///
+    /// Kept because it pins the *end-to-end* claim through `world::fire`: if
+    /// someone ever routes the cone through a mutable map, this is what notices
+    /// (§B11 — ask what a passing assertion rules out).
+    #[test]
+    fn spraying_leaves_the_terrain_byte_identical() {
+        let (mut w, _) = armed_world();
+        let before = w.map.mask.count_solid();
+        let mut t = 1.0f32;
+        for _ in 0..120 {
+            let _ = w.fire(0, t);
+            w.step(SIM_DT);
+            t += SIM_DT;
+        }
+        assert_eq!(
+            w.map.mask.count_solid(),
+            before,
+            "the flamethrower carved terrain"
+        );
+    }
+
+    /// It burns fuel, and it runs out — a cone that never empties would be
+    /// strictly better than every weapon that does.
+    #[test]
+    fn it_spends_fuel_and_eventually_runs_dry() {
+        let (mut w, slot) = armed_world();
+        let start = w
+            .player(0)
+            .and_then(|p| p.inventory.slot(slot))
+            .map(|s| s.count)
+            .expect("fuel");
+        let mut t = 1.0f32;
+        for _ in 0..40 {
+            let _ = w.fire(0, t);
+            t += 0.2; // past the 0.05 s cooldown
+        }
+        let left = w
+            .player(0)
+            .and_then(|p| p.inventory.slot(slot))
+            .map(|s| s.count)
+            .unwrap_or(0);
+        assert!(
+            left < start,
+            "40 trigger pulls spent no fuel ({start} -> {left})"
+        );
+    }
+
+    /// One fire system, not two (§A24): the trail is the shared `LAVA_BURN_*`
+    /// hazard, so a burning patch the flamethrower leaves damages exactly as
+    /// lava's afterburn does.
+    ///
+    /// (An earlier version of this asserted `LAVA_BURN_DPS > 0.0`, which clippy
+    /// correctly rejected as a constant assertion — a tautology dressed as a
+    /// test. It now sprays into a real world and asserts the field is populated.)
+    #[test]
+    fn spraying_leaves_burning_ground_behind() {
+        let (mut w, _) = armed_world();
+        assert!(w.burn.is_empty(), "the world started on fire");
+        let mut t = 1.0f32;
+        for _ in 0..30 {
+            let _ = w.fire(0, t);
+            w.step(SIM_DT);
+            t += SIM_DT;
+        }
+        assert!(
+            !w.burn.is_empty(),
+            "30 ticks of flame left no burning ground — the trail is not wired \
+             to the shared burn hazard"
+        );
+    }
+
+    #[test]
+    fn it_is_an_item_you_can_find() {
+        let d = registry::by_key("flamethrower").expect("item");
+        assert_eq!(
+            d.kind,
+            ItemKind::Weapon(defs::by_key("flamethrower").expect("w").id)
+        );
+        assert!(
+            d.spawn_weight > 0 || d.crate_weight > 0 || d.buried_weight > 0,
+            "the flamethrower can never be obtained"
+        );
+    }
+}

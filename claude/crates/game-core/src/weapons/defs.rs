@@ -6,6 +6,13 @@
 //! (`docs/31-weapons-combat.md` §1, §8).
 
 use crate::constants::{
+    AXE_ARC, AXE_CARVE, AXE_COOLDOWN, AXE_DAMAGE, AXE_KNOCKBACK, AXE_REACH, BAT_ARC, BAT_CARVE,
+    BAT_COOLDOWN, BAT_DAMAGE, BAT_KNOCKBACK, BAT_REACH, HAMMER_ARC, HAMMER_CARVE, HAMMER_COOLDOWN,
+    HAMMER_DAMAGE, HAMMER_KNOCKBACK, HAMMER_REACH, KNIFE_ARC, KNIFE_CARVE, KNIFE_COOLDOWN,
+    KNIFE_DAMAGE, KNIFE_KNOCKBACK, KNIFE_REACH, WHIP_ARC, WHIP_CARVE, WHIP_COOLDOWN, WHIP_DAMAGE,
+    WHIP_KNOCKBACK, WHIP_REACH,
+};
+use crate::constants::{
     BAZOOKA_AMMO, BAZOOKA_BLAST_RADIUS, BAZOOKA_COOLDOWN, BAZOOKA_DAMAGE, BAZOOKA_GRAVITY_SCALE,
     BAZOOKA_MUZZLE_SPEED, BAZOOKA_WIND_SCALE, GRENADE_AMMO, GRENADE_BLAST_RADIUS, GRENADE_COOLDOWN,
     GRENADE_DAMAGE, GRENADE_FRICTION, GRENADE_FUSE, GRENADE_GRAVITY_SCALE, GRENADE_MUZZLE_SPEED,
@@ -20,6 +27,10 @@ use crate::constants::{
     REVOLVER_COOLDOWN, REVOLVER_DAMAGE, REVOLVER_RANGE, REVOLVER_SPREAD,
 };
 use crate::constants::{
+    FLAMETHROWER_AMMO, FLAMETHROWER_ARC, FLAMETHROWER_COOLDOWN, FLAMETHROWER_DPS,
+    FLAMETHROWER_PARTICLE_LIFE, FLAMETHROWER_RANGE,
+};
+use crate::constants::{
     LASER_PISTOL_BLAST_RADIUS, LASER_PISTOL_COOLDOWN, LASER_PISTOL_DAMAGE, LASER_PISTOL_ENERGY,
     LASER_PISTOL_RANGE, LASER_PISTOL_SPREAD, LASER_SMG_BLAST_RADIUS, LASER_SMG_COOLDOWN,
     LASER_SMG_DAMAGE, LASER_SMG_ENERGY, LASER_SMG_RANGE, LASER_SMG_SPREAD,
@@ -27,10 +38,14 @@ use crate::constants::{
 use crate::constants::{
     METEOR_CARVE_R, METEOR_DAMAGE, METEOR_FRAG_CARVE_R, METEOR_FRAG_DAMAGE, METEOR_SPEED,
 };
+use crate::constants::{
+    MINE_AMMO, MINE_ARM_TIME, MINE_BLAST_RADIUS, MINE_DAMAGE, MINE_LIFETIME, MINE_TRIGGER_RADIUS,
+};
 use crate::items::registry::{
-    WeaponId, WEAPON_BAZOOKA, WEAPON_DEAGLE, WEAPON_GRENADE, WEAPON_LASER_PISTOL, WEAPON_LASER_SMG,
-    WEAPON_MACHINEGUN, WEAPON_METEOR, WEAPON_METEOR_FRAG, WEAPON_PISTOL, WEAPON_REVOLVER,
-    WEAPON_SMG,
+    WeaponId, WEAPON_AXE, WEAPON_BAT, WEAPON_BAZOOKA, WEAPON_DEAGLE, WEAPON_FLAMETHROWER,
+    WEAPON_GRENADE, WEAPON_HAMMER, WEAPON_KNIFE, WEAPON_LASER_PISTOL, WEAPON_LASER_SMG,
+    WEAPON_MACHINEGUN, WEAPON_METEOR, WEAPON_METEOR_FRAG, WEAPON_MINE, WEAPON_PISTOL,
+    WEAPON_REVOLVER, WEAPON_SMG, WEAPON_WHIP,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -98,6 +113,21 @@ impl WeaponDef {
     /// Energy weapons pierce shields and drain the victim's battery (§B5).
     pub fn is_energy(&self) -> bool {
         self.energy_cost > 0.0
+    }
+
+    /// Does firing spend a count from the inventory stack?
+    ///
+    /// Three kinds of ammo, one question. A ballistic weapon spends a round; an
+    /// energy weapon spends **battery** (§B5), so its stack *is* the weapon; and
+    /// melee spends nothing but time (§B7) — no ammo is the whole reason melee is
+    /// the floor of the arsenal rather than a novelty.
+    ///
+    /// Derived rather than stored, for the reason `energy_cost` is a cost rather
+    /// than an `is_energy` flag: a separate `consumes_ammo` field could disagree
+    /// with the delivery kind, and this cannot. Without it a knife deleted itself
+    /// on its first swing — `max_stack: 1`, consumed, gone.
+    pub fn spends_stack(&self) -> bool {
+        !self.is_energy() && !matches!(self.delivery, Delivery::Melee { .. })
     }
 }
 
@@ -298,6 +328,137 @@ pub static WEAPONS: &[WeaponDef] = &[
         wind_scale: 0.0,
         energy_cost: 0.0,
     },
+    // --- melee (§B7) ---
+    //
+    // No ammo, cooldown only. `blast_radius` is the carve, so an axe and a
+    // hammer dig and a knife does not — the same field, doing the same job it
+    // does for a rocket.
+    WeaponDef {
+        id: WEAPON_KNIFE,
+        key: "knife",
+        delivery: Delivery::Melee {
+            reach: KNIFE_REACH,
+            arc: KNIFE_ARC,
+            knockback: KNIFE_KNOCKBACK,
+        },
+        damage: KNIFE_DAMAGE,
+        blast_radius: KNIFE_CARVE,
+        range: 0.0,
+        cooldown: KNIFE_COOLDOWN,
+        muzzle_speed: 0.0,
+        gravity_scale: 0.0,
+        wind_scale: 0.0,
+        energy_cost: 0.0,
+    },
+    WeaponDef {
+        id: WEAPON_BAT,
+        key: "bat",
+        delivery: Delivery::Melee {
+            reach: BAT_REACH,
+            arc: BAT_ARC,
+            knockback: BAT_KNOCKBACK,
+        },
+        damage: BAT_DAMAGE,
+        blast_radius: BAT_CARVE,
+        range: 0.0,
+        cooldown: BAT_COOLDOWN,
+        muzzle_speed: 0.0,
+        gravity_scale: 0.0,
+        wind_scale: 0.0,
+        energy_cost: 0.0,
+    },
+    WeaponDef {
+        id: WEAPON_WHIP,
+        key: "whip",
+        delivery: Delivery::Melee {
+            reach: WHIP_REACH,
+            arc: WHIP_ARC,
+            knockback: WHIP_KNOCKBACK,
+        },
+        damage: WHIP_DAMAGE,
+        blast_radius: WHIP_CARVE,
+        range: 0.0,
+        cooldown: WHIP_COOLDOWN,
+        muzzle_speed: 0.0,
+        gravity_scale: 0.0,
+        wind_scale: 0.0,
+        energy_cost: 0.0,
+    },
+    WeaponDef {
+        id: WEAPON_AXE,
+        key: "axe",
+        delivery: Delivery::Melee {
+            reach: AXE_REACH,
+            arc: AXE_ARC,
+            knockback: AXE_KNOCKBACK,
+        },
+        damage: AXE_DAMAGE,
+        blast_radius: AXE_CARVE,
+        range: 0.0,
+        cooldown: AXE_COOLDOWN,
+        muzzle_speed: 0.0,
+        gravity_scale: 0.0,
+        wind_scale: 0.0,
+        energy_cost: 0.0,
+    },
+    WeaponDef {
+        id: WEAPON_HAMMER,
+        key: "hammer",
+        delivery: Delivery::Melee {
+            reach: HAMMER_REACH,
+            arc: HAMMER_ARC,
+            knockback: HAMMER_KNOCKBACK,
+        },
+        damage: HAMMER_DAMAGE,
+        blast_radius: HAMMER_CARVE,
+        range: 0.0,
+        cooldown: HAMMER_COOLDOWN,
+        muzzle_speed: 0.0,
+        gravity_scale: 0.0,
+        wind_scale: 0.0,
+        energy_cost: 0.0,
+    },
+    // --- cone (§B7) ---
+    //
+    // `blast_radius` is 0: fire does not dig (§B6), and that is what stops the
+    // flamethrower being strictly better than what it competes with. `damage`
+    // mirrors the dps so the shared field is meaningful; the cone reads its own.
+    WeaponDef {
+        id: WEAPON_FLAMETHROWER,
+        key: "flamethrower",
+        delivery: Delivery::Cone {
+            range: FLAMETHROWER_RANGE,
+            arc: FLAMETHROWER_ARC,
+            dps: FLAMETHROWER_DPS,
+            particle_life: FLAMETHROWER_PARTICLE_LIFE,
+        },
+        damage: FLAMETHROWER_DPS,
+        blast_radius: 0.0,
+        range: FLAMETHROWER_RANGE,
+        cooldown: FLAMETHROWER_COOLDOWN,
+        muzzle_speed: 0.0,
+        gravity_scale: 0.0,
+        wind_scale: 0.0,
+        energy_cost: 0.0,
+    },
+    // --- placed (§B7) ---
+    WeaponDef {
+        id: WEAPON_MINE,
+        key: "mine",
+        delivery: Delivery::Placed {
+            arm_time: MINE_ARM_TIME,
+            trigger_radius: MINE_TRIGGER_RADIUS,
+            lifetime: MINE_LIFETIME,
+        },
+        damage: MINE_DAMAGE,
+        blast_radius: MINE_BLAST_RADIUS,
+        range: 0.0,
+        cooldown: 0.5,
+        muzzle_speed: 0.0,
+        gravity_scale: 0.0,
+        wind_scale: 0.0,
+        energy_cost: 0.0,
+    },
 ];
 
 /// Look a weapon up by id.
@@ -326,6 +487,8 @@ pub fn ammo_per_pickup(id: WeaponId) -> u8 {
         WEAPON_REVOLVER => REVOLVER_AMMO,
         WEAPON_DEAGLE => DEAGLE_AMMO,
         WEAPON_MACHINEGUN => MACHINEGUN_AMMO,
+        WEAPON_FLAMETHROWER => FLAMETHROWER_AMMO,
+        WEAPON_MINE => MINE_AMMO,
         // Energy weapons and weather ordnance: the stack is the weapon, and
         // charge is the ammo (§B5).
         _ => 1,
@@ -367,9 +530,41 @@ mod tests {
 
     #[test]
     fn every_weapon_digs() {
-        // §A3: nothing in this game hits a wall without marking it.
+        // §A3 restated for the delivery kinds §B6 added (see §B18).
+        //
+        // §A3's claim is about **ordnance**: nothing you *shoot* hits a wall
+        // without marking it. Two kinds are exempt by design, and the exemptions
+        // are listed by name here so a new weapon cannot silently join them:
+        //
+        //   - `Melee` — an axe and a hammer dig (that is what makes melee a
+        //     tunnelling tool as well as a last resort), a knife and a bat do not.
+        //   - `Cone`  — fire does not dig (§B6), which is what stops the
+        //     flamethrower being strictly better than what it competes with.
+        //
+        // This is stricter than the rule it replaces, not looser: the old version
+        // passed a weapon that carved and did no damage at all.
+        const MAY_NOT_CARVE: &[&str] = &["knife", "bat", "whip"];
         for w in WEAPONS {
-            assert!(w.blast_radius > 0.0, "{} does not carve", w.key);
+            assert!(w.damage > 0.0, "{} does no damage at all", w.key);
+            let exempt =
+                matches!(w.delivery, Delivery::Cone { .. }) || MAY_NOT_CARVE.contains(&w.key);
+            if !exempt {
+                assert!(
+                    w.blast_radius > 0.0,
+                    "{} does not carve, and is not one of the named exemptions",
+                    w.key
+                );
+            }
+        }
+        // The exemption list must not outlive its members: a name here that is
+        // not a real weapon means someone renamed one and the exemption silently
+        // widened to cover nothing.
+        for key in MAY_NOT_CARVE {
+            let w = by_key(key).unwrap_or_else(|| panic!("{key} is exempt but does not exist"));
+            assert!(
+                matches!(w.delivery, Delivery::Melee { .. }),
+                "{key} is exempt from carving but is not melee"
+            );
         }
     }
 

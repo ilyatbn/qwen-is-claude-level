@@ -378,7 +378,8 @@ impl GameCore {
                 serde_json::json!({"rejected": "cone_not_in_sandbox", "weapon": wid.0}).to_string()
             }
             defs::Delivery::Placed { .. } => {
-                serde_json::json!({"rejected": "placed_not_in_sandbox", "weapon": wid.0}).to_string()
+                serde_json::json!({"rejected": "placed_not_in_sandbox", "weapon": wid.0})
+                    .to_string()
             }
         }
     }

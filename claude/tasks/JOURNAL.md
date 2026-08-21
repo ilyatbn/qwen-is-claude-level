@@ -2804,3 +2804,151 @@ Notes: T11.01 LEFT THE WORKSPACE UNBUILDABLE AND NOBODY NOTICED. Its Done-when i
        exhaustiveness assertion by name.
        Weights are provisional per §B17 and T11.09 rebalances the whole table.
 Left for later: T11.04 energy (bot weapon selection is written, not yet tested).
+
+## T11.04 — Energy weapons — DONE
+Files: crates/game-core/src/{bots/mod.rs, items/registry.rs},
+       crates/game-server/src/room.rs
+Verified: `cargo test -p game-core --lib energy` — 5 passed.
+Notes: THE BLOCKER WAS SELECTION, AND IT IS A COMMAND. Nothing in `Input` carries
+       a slot change (`docs/30` §4), so the only thing that had EVER changed a
+       bot's selection was the inventory auto-advancing on an empty stack — and
+       an energy weapon's stack never empties. Added `Bot::wants_select`, applied
+       by room.rs AND by the test harness. The harness mattering is the point:
+       it already carried a comment saying a harness that skips `fire` "measures
+       a game nobody plays", and it was skipping selection for the same reason.
+       MY FIRST TEST DID NOT DISCRIMINATE AND THE FALSIFICATION IS HOW I KNEW.
+       "Run a round with lasers in the pool and assert bots engage" passed with
+       `wants_select` disabled: at spawn weight 10 in a fourteen-item pool, most
+       bots never pick one up inside 60 s, so the assertion was about the spawn
+       table rather than about selection (§B11 — ask what a pass rules out).
+       Replaced with `run_round_holding`, which puts a FLAT laser in every bot's
+       selected slot and a loaded pistol in the bag. Falsified: disabling
+       selection gives "four bots holding an unusable weapon dealt no damage in
+       60 s (fires 8, rej_unarmed 0)", restored gives damage > 0.
+       Laser weights are now non-zero (10/14/12 and 6/10/8) — below their
+       ballistic counterparts, because a laser found without charge is worth less
+       than a pistol found with ammo and the weights should say so.
+Left for later: T11.05 melee weapons.
+
+## T11.05 — Knife, bat, whip, axe, hammer — DONE
+Files: crates/game-core/src/{constants.rs, items/registry.rs,
+       weapons/{defs,melee}.rs, player/state.rs}
+Verified: `cargo test -p game-core --lib t1105` — 5 passed; `--lib weapons::defs`
+       — 11 passed.
+Notes: A KNIFE DELETED ITSELF ON ITS FIRST SWING, and I found it by asking what
+       `try_fire` does before writing the test. It consumed a stack for anything
+       that was not an energy weapon; melee has `max_stack: 1`; measured probe:
+       `knife count after one swing = None`. §B7 says melee never runs out and is
+       the floor of the arsenal — a weapon that vanishes when used is the most
+       complete way to be worthless. Fixed with `WeaponDef::spends_stack()`,
+       DERIVED from the def rather than a third flag, for the same reason
+       `energy_cost` is a cost rather than an `is_energy` flag: a stored
+       `consumes_ammo` could disagree with the delivery kind and this cannot.
+       Falsified by restoring the old rule: "knife was consumed by swinging it 20
+       times".
+       ITS CONTROL IS A PISTOL IN THE SAME HARNESS. "Melee is never consumed"
+       also passes for a build where nothing is ever consumed, so the sibling test
+       asserts a 3-round pistol runs dry over 10 shots.
+       §A3 RESTATED, NOT WEAKENED (see §B18 request below). `every_weapon_digs`
+       asserted every weapon carves, and §B7 gives knife/bat/whip carve 0 while
+       §B6 says fire does not dig. It now asserts every weapon does DAMAGE, and
+       every non-exempt weapon carves, with the exemptions listed BY NAME and a
+       second assertion that each named exemption is a real melee weapon — so a
+       rename cannot silently widen the exemption to cover nothing. Stricter than
+       the rule it replaces, which passed a weapon that carved and did no damage.
+Left for later: T11.06 flamethrower, T11.07 mines, T11.08 grenades, T11.09 balance.
+
+## T11.06 — Flamethrower — DONE
+Files: crates/game-core/src/{constants.rs, items/registry.rs,
+       weapons/{defs,cone}.rs}
+Verified: `cargo test -p game-core --lib t1106` — 4 passed.
+Notes: THE CONE PLUMBING ALREADY EXISTED (T11.01), so this is defs + item + the
+       tests that pin §B7. One fire system, not two: the trail is the shared
+       LAVA_BURN_* hazard (§A24).
+       A TEST OF MINE PASSED FOR THE WRONG REASON AND I KEPT IT ANYWAY, RELABELLED.
+       `spraying_leaves_the_terrain_byte_identical` stays green when the
+       flamethrower is given blast_radius 8.0 — because `spray` takes `&Map` and
+       is STRUCTURALLY unable to dig, exactly as T11.01 intended. So what it
+       witnesses is the type signature, not the weapon def. That is a stronger
+       guarantee than a test (a compile error beats a red run), but the comment
+       now says so, and the assertion that actually guards the radius is
+       `it_matches_the_spec_and_does_not_dig`, which does go red. §B11: ask what
+       a passing assertion rules out — and when the answer is "the framework
+       provides it", say that rather than deleting the test.
+       THE AMMO INVARIANT NEEDED ITS THIRD RESTATEMENT. Melee has NEITHER a stack
+       nor a battery, so `weapons_carry_ammo_and_consumables_do_not` failed on the
+       whole melee row. It now asks `WeaponDef::spends_stack()` — the same
+       predicate `try_fire` uses — instead of growing a third special case, so
+       the registry's idea of ammo and the sim's cannot drift. Falsified by giving
+       the knife max_stack 4.
+Left for later: T11.07 mines, T11.08 grenades, T11.09 balance.
+
+## T11.07 — Proximity mines — DONE
+Files: crates/game-core/src/{constants.rs, items/registry.rs,
+       weapons/{defs,placed}.rs, world/mod.rs}, tests/delivery.rs
+Verified: `cargo test -p game-core --lib t1107` — 3 passed.
+Notes: MINES WERE INDESTRUCTIBLE IN A REAL ROUND. §B6 says a mine is destructible
+       by explosions — "which is what stops a map filling up with them" — and
+       `destroy_in_blast` had NO PRODUCTION CALLER: only tests. So the rule was
+       tested and never enforced, and `MineEnd::Destroyed` was a variant nothing
+       ever constructed. Ninth instance of §A39, and the unit test could not see
+       it because it CALLED THE FUNCTION ITSELF. Wired into `emit_blast`, which
+       is the single choke point every blast already goes through, and
+       `destroy_in_blast` now returns `MineOutcome` so the reason travels with it.
+       A destroyed mine does not detonate (`explosion: None`) — chaining would
+       turn one rocket into a cascade, which `docs/31` §5 already forbids.
+       ADDED `World::explode_for_test` rather than let the test reach past
+       `detonate`. A test that drives a different path than the game runs is how
+       `destroy_in_blast` sat uncalled while its unit test stayed green.
+       Falsified by disabling the new call: "an explosion did not destroy the
+       mine". Control: a blast 400 px away leaves it standing.
+
+## §B17 IN THE WILD — bots_actually_hurt_each_other_over_a_round
+       Adding eleven items across T11.03–T11.06 reshuffled the seeded spawn
+       stream and turned SEED 99 into a round where four bots never meet
+       (`engaged 0, fires 0, damage 0`, but `pickups 8` — they shopped, they just
+       never found each other). Measured across eight seeds: damage
+       191/0/644/0/401/31/210/0 — five of eight fight.
+       The test asserted a POPULATION claim from a SINGLE draw, which is exactly
+       how `a_round_of_bots_is_a_fight` became a coin flip before it was removed.
+       It now aggregates over eight seeds and requires damage > 0 overall, a
+       trigger pulled in half the rounds, and blood drawn in at least three —
+       stricter than one lucky seed, and immune to a spawn reshuffle. Falsified
+       by disabling the harness's fire call.
+       STILL OPEN, not mine to fix here: bots meet rarely on a 2048x1024 map with
+       a 320 px sight radius. That is the encounter-rate item an earlier session
+       flagged, and it is a design call (fewer/closer spawns, more bots, or a
+       smaller default map), not a bot bug.
+
+## NOTED, NOT FIXED — the new arsenal has no art
+       T11.02–T11.07 added thirteen items whose `sprite` keys do not exist in
+       `assets/atlas-map.json`, which holds only the original six
+       (item_medkit/shield/flashlight, weapon_bazooka/grenade/smg). Per
+       `docs/50` §8 each falls back to a placeholder and logs once, so nothing
+       breaks — but every new weapon looks identical on the ground, in a game
+       whose whole loop is finding weapons. The client test that would catch it
+       uses a fixture rather than the live registry (`itemSprites-math.test.ts`),
+       so it stays green: §A39's shape again, in the test rather than the code.
+       This is art work, not core work — it belongs with T7.02's atlas builder,
+       and it needs its own task. Listed here so it is not discovered by a player.
+
+## T11.08 GROUNDWORK — read this before starting it
+       `BurnField` is ALREADY the right abstraction for the toxic grenade's
+       zone. `light_for(pos, radius, dps, duration, source)` is a general
+       "damaging ground zone": per-patch radius, rate, life and attribution, one
+       tick loop, one hash, overlapping patches stacking. A toxic zone is that
+       with different numbers, and the ONLY real difference is how the client
+       draws it (green, not orange).
+       So T11.08 should add a `kind` to `BurnPatch` (Fire | Toxic) rather than a
+       second field with a second damage loop — §A24, and the same call T11.06
+       already made when the flamethrower reused the lava burn instead of writing
+       its own fire. `effects/toxic.rs`'s `ToxicRain` is NOT reusable for this:
+       it is a scheduler with its own cadence and RNG stream, not a zone
+       container.
+       Remaining in T11.08: airburst (bursts at apex or 1.2 s into AIRBURST_PELLETS
+       energy pellets — they interact with shields per §B5), smoke (no damage at
+       all, and its FOV_SMOKE_MULT crosses into the client's FoV formula, which
+       has a Rust/TS cross-check that will need extending), molotov (BurnField,
+       6 patches), toxic_grenade (BurnField with the new kind, and the mask must
+       come out BYTE-IDENTICAL — no terrain damage, same assertion toxic rain
+       carries).

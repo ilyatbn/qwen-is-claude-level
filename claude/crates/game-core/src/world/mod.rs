@@ -829,6 +829,16 @@ impl World {
         }
     }
 
+    /// Test seam: set off a blast at a point, as a projectile of `weapon` would.
+    ///
+    /// A test that reaches past `detonate` is testing a different code path than
+    /// the game runs — which is how `destroy_in_blast` sat with no production
+    /// caller while its unit test passed.
+    #[doc(hidden)]
+    pub fn explode_for_test(&mut self, at: Vec2, weapon: WeaponId, owner: PlayerId, now: f32) {
+        self.detonate(u32::MAX, weapon, owner, at, now);
+    }
+
     /// Resolve one projectile going off, whatever it was.
     fn detonate(
         &mut self,
@@ -889,6 +899,19 @@ impl World {
     /// the carve exposed — all from one blast, in that order.
     fn emit_blast(&mut self, at: Vec2, r: f32, kind: CarveKind, carve: &CarveResult, now: f32) {
         let tick = self.tick;
+        // §B6: a mine is destructible by explosions, which is what stops a map
+        // filling up with them. `destroy_in_blast` existed from T11.01 with
+        // **no production caller** — only tests — so mines were in fact
+        // indestructible in a real round, and `MineEnd::Destroyed` was a variant
+        // nothing ever constructed. This is the choke point every blast goes
+        // through, so it is the one place that can be right.
+        for gone in self.mines.destroy_in_blast(at, r) {
+            self.events.push(GameEvent::MineEnded {
+                tick,
+                id: gone.id,
+                reason: gone.reason,
+            });
+        }
         self.events.push(GameEvent::Explosion {
             tick,
             x: at.x,

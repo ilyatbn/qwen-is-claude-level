@@ -670,16 +670,47 @@ mod tests {
     /// broken.
     #[test]
     fn bots_actually_hurt_each_other_over_a_round() {
-        let r = harness::run_round(99, 4, 0.85, 150.0);
+        // **A spread of seeds, not one.** This asserted on seed 99 alone, and
+        // T11.03–T11.06 added eleven items — which reshuffled the seeded spawn
+        // stream and turned that particular round into one where four bots never
+        // meet (§B17: the pool is a budget, and changing it moves everything).
+        //
+        // Measured across eight seeds after the arsenal landed:
+        //   damage 191 / 0 / 644 / 0 / 401 / 31 / 210 / 0
+        // Five of eight fight. Seed 99 draws a round where nobody finds anyone,
+        // which is a real property of a 2048×1024 map with a 320 px sight radius
+        // — not a broken bot. Pinning to one sample made a population claim from
+        // a single draw, which is how `a_round_of_bots_is_a_fight` became a
+        // coin flip before it was removed (§A28).
+        //
+        // Asserting on the population is *stricter* than one lucky seed: it
+        // cannot be flipped by a spawn reshuffle, and it fails for real if bots
+        // stop fighting.
+        const SEEDS: [u64; 8] = [1, 7, 42, 99, 4242, 31337, 5, 11];
+        let rounds: Vec<_> = SEEDS
+            .iter()
+            .map(|s| harness::run_round(*s, 4, 0.85, 150.0))
+            .collect();
+
+        let damage: f32 = rounds.iter().map(|r| r.damage_dealt).sum();
+        let fired = rounds.iter().filter(|r| r.stats.fires > 0).count();
+        let bled = rounds.iter().filter(|r| r.damage_dealt > 0.0).count();
+
         assert!(
-            r.damage_dealt > 0.0,
-            "four bots, 150 s, and nobody took a scratch: {:?}",
-            r.stats
+            damage > 0.0,
+            "four bots over {} rounds of 150 s and nobody took a scratch",
+            SEEDS.len()
         );
         assert!(
-            r.stats.fires > 0,
-            "no trigger was pulled at all: {:?}",
-            r.stats
+            fired >= SEEDS.len() / 2,
+            "a trigger was pulled in only {fired} of {} rounds",
+            SEEDS.len()
+        );
+        assert!(
+            bled >= 3,
+            "only {bled} of {} rounds drew blood (total damage {damage:.0}) — \
+             bots are not fighting",
+            SEEDS.len()
         );
     }
 
@@ -815,12 +846,58 @@ pub(crate) mod harness {
     }
 
     pub fn run_round(seed: u64, n_bots: usize, skill: f32, seconds: f32) -> RoundResult {
+        run_round_inner(seed, n_bots, skill, seconds, None)
+    }
+
+    /// A round where every bot starts **holding** `selected` (selected, and with
+    /// its battery flat if it is an energy weapon) and carrying `spare`.
+    ///
+    /// This exists because measuring the spawn pool does not discriminate: a
+    /// weapon at spawn weight 10 in a fourteen-item pool is rarely in anyone's
+    /// hands inside a minute, so a round-level assertion passes whether or not
+    /// the weapon is usable at all.
+    pub fn run_round_holding(
+        seed: u64,
+        n_bots: usize,
+        skill: f32,
+        seconds: f32,
+        selected: crate::items::registry::ItemId,
+        spare: crate::items::registry::ItemId,
+    ) -> RoundResult {
+        run_round_inner(seed, n_bots, skill, seconds, Some((selected, spare)))
+    }
+
+    fn run_round_inner(
+        seed: u64,
+        n_bots: usize,
+        skill: f32,
+        seconds: f32,
+        loadout: Option<(
+            crate::items::registry::ItemId,
+            crate::items::registry::ItemId,
+        )>,
+    ) -> RoundResult {
         let mut w = World::new(seed, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         let mut bots = Vec::new();
         for i in 0..n_bots {
             let id = i as PlayerId;
             w.add_player(id, 0, format!("Bot {i}"));
+            if let Some((sel, spare)) = loadout {
+                crate::world::give(&mut w, id, sel, 1);
+                crate::world::give(&mut w, id, spare, 20);
+                let slot = (0..crate::constants::INVENTORY_SLOTS as u8).find(|s| {
+                    w.player(id)
+                        .and_then(|p| p.inventory.slot(*s))
+                        .is_some_and(|st| st.item == sel)
+                });
+                if let Some(slot) = slot {
+                    w.select_slot(id, slot);
+                }
+                if let Some(p) = w.player_mut(id) {
+                    p.battery = 0.0;
+                }
+            }
             bots.push(Bot::new(id, seed, i as u32, skill));
         }
         let _ = w.drain_events();
@@ -832,6 +909,13 @@ pub(crate) mod harness {
             for b in bots.iter_mut() {
                 let inp = b.think(&w, now, SIM_DT);
                 w.queue_input(b.player, inp);
+                // Selection is a command too (`docs/30` §4), and a harness that
+                // skips it has the same defect as one that skips firing: it
+                // measures a bot that can never change weapons. Before `fire`,
+                // so a bot that just picked up something better uses it now.
+                if let Some(slot) = b.wants_select() {
+                    w.select_slot(b.player, slot);
+                }
                 // Firing is a *command*, not a button the sim reads: a human's
                 // client sends `fire` alongside its input (`docs/30` §4). A bot
                 // has no client, so whatever drives it has to do the same — and
@@ -974,5 +1058,113 @@ mod lethality {
         harness::report("high skill", 0.85, &SEEDS);
         harness::report("skill 0", 0.0, &SEEDS);
         harness::report("skill 1", 1.0, &SEEDS);
+    }
+}
+
+/// T11.04 — energy weapons, and the bot selection that makes them usable (§B5).
+#[cfg(test)]
+mod energy {
+    use super::*;
+    use crate::items::registry::{self, ItemKind, LASER_PISTOL, PISTOL};
+    use crate::world::{give, RoundPhase, World};
+
+    /// Two bots, each **holding a flat laser** with a loaded pistol in the bag.
+    ///
+    /// The obvious version of this test — "run a round with lasers in the spawn
+    /// pool and assert bots engage" — **does not discriminate**: at a spawn
+    /// weight of 10 in a pool of fourteen items, most bots never pick a laser up
+    /// in 60 s, so it passes whether or not they can use one. Disabling
+    /// `wants_select` left it green, which is how I found out (§B11: ask what a
+    /// passing assertion rules out).
+    ///
+    /// This puts the paperweight in their hands instead. Without selection a bot
+    /// is stuck on a weapon it cannot fire for the whole round — T11.02's
+    /// measured `ticks_engaged: 0` — and with it, it switches and fights.
+    #[test]
+    fn a_bot_stuck_on_a_flat_laser_still_fights() {
+        let armed = harness::run_round_holding(4242, 4, 0.85, 60.0, LASER_PISTOL, PISTOL);
+        assert!(
+            armed.damage_dealt > 0.0,
+            "four bots holding an unusable weapon dealt no damage in 60 s — \
+             they never switched to the loaded gun in their own inventory \
+             (fires {}, rej_unarmed {})",
+            armed.stats.fires,
+            armed.stats.rej_unarmed
+        );
+    }
+
+    /// The half that was missing: a bot must be able to move **off** a weapon it
+    /// cannot fire. An uncharged laser is a paperweight (§B5), and before
+    /// `wants_select` the only thing that changed a selection was a stack running
+    /// out — which an energy weapon's stack never does.
+    #[test]
+    fn a_bot_holding_a_flat_laser_switches_to_a_loaded_gun() {
+        let mut w = World::new(4242, crate::constants::MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "bot".into());
+        give(&mut w, 0, LASER_PISTOL, 1);
+        give(&mut w, 0, PISTOL, 10);
+        // Select the laser, then flatten the battery.
+        let laser_slot = (0..crate::constants::INVENTORY_SLOTS as u8)
+            .find(|s| {
+                w.player(0)
+                    .and_then(|p| p.inventory.slot(*s))
+                    .is_some_and(|st| st.item == LASER_PISTOL)
+            })
+            .expect("laser slot");
+        w.select_slot(0, laser_slot);
+        if let Some(p) = w.player_mut(0) {
+            p.battery = 0.0;
+        }
+
+        let mut bot = Bot::new(0, 4242, 0, 0.85);
+        let _ = bot.think(&w, 1.0, crate::constants::SIM_DT);
+        let want = bot.wants_select().expect("a flat laser must not be kept");
+        let held = w
+            .player(0)
+            .and_then(|p| p.inventory.slot(want))
+            .expect("chosen slot is empty");
+        assert_eq!(
+            held.item, PISTOL,
+            "the bot stayed on a weapon it cannot fire"
+        );
+
+        // Control: charge the battery and the laser becomes a candidate again —
+        // otherwise this passes for a bot that simply always avoids lasers.
+        if let Some(p) = w.player_mut(0) {
+            p.battery = crate::constants::BATTERY_MAX;
+        }
+        let mut bot2 = Bot::new(0, 4242, 0, 0.85);
+        let _ = bot2.think(&w, 1.0, crate::constants::SIM_DT);
+        let choice = bot2.wants_select().unwrap_or(laser_slot);
+        let item = w
+            .player(0)
+            .and_then(|p| p.inventory.slot(choice))
+            .map(|s| s.item);
+        assert!(
+            item == Some(LASER_PISTOL) || item == Some(PISTOL),
+            "a charged bot chose neither of the two weapons it holds: {item:?}"
+        );
+    }
+
+    /// §B5 exists only if the items can be found. T11.02 shipped the defs with
+    /// every weight at zero because bots could not use them; that is now closed.
+    #[test]
+    fn the_energy_weapons_are_obtainable() {
+        for key in ["laser_pistol", "laser_smg"] {
+            let d = registry::by_key(key).unwrap_or_else(|| panic!("{key} is not an item"));
+            assert!(
+                d.spawn_weight > 0 || d.crate_weight > 0 || d.buried_weight > 0,
+                "{key} can never be obtained — §B5's whole branch is dead weight"
+            );
+            let ItemKind::Weapon(wid) = d.kind else {
+                panic!("{key} is not a weapon")
+            };
+            let w = crate::weapons::defs::def(wid).expect("weapon def");
+            assert!(w.is_energy(), "{key} does not cost battery");
+        }
+        // The battery must be findable too, or the weapons that need it are not.
+        let b = registry::by_key("battery_pack").expect("battery pack");
+        assert!(b.spawn_weight > 0, "no charge on the ground");
     }
 }

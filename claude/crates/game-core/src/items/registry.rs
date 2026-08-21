@@ -7,8 +7,8 @@
 //! See `docs/30-items-inventory.md` §1.
 
 use crate::constants::{
-    BATTERY_PACK_AMOUNT, BAZOOKA_AMMO, DEAGLE_AMMO, GRENADE_AMMO, MACHINEGUN_AMMO, MEDKIT_HEAL,
-    PISTOL_AMMO, REVOLVER_AMMO, SHIELD_DURATION, SMG_AMMO,
+    BATTERY_PACK_AMOUNT, BAZOOKA_AMMO, DEAGLE_AMMO, FLAMETHROWER_AMMO, GRENADE_AMMO,
+    MACHINEGUN_AMMO, MEDKIT_HEAL, MINE_AMMO, PISTOL_AMMO, REVOLVER_AMMO, SHIELD_DURATION, SMG_AMMO,
 };
 
 pub type ItemId = u16;
@@ -38,6 +38,14 @@ pub const WEAPON_PISTOL: WeaponId = WeaponId(7);
 pub const WEAPON_REVOLVER: WeaponId = WeaponId(8);
 pub const WEAPON_DEAGLE: WeaponId = WeaponId(9);
 pub const WEAPON_MACHINEGUN: WeaponId = WeaponId(10);
+/// Melee (§B7). Appended, never inserted (§B16).
+pub const WEAPON_KNIFE: WeaponId = WeaponId(11);
+pub const WEAPON_BAT: WeaponId = WeaponId(12);
+pub const WEAPON_WHIP: WeaponId = WeaponId(13);
+pub const WEAPON_AXE: WeaponId = WeaponId(14);
+pub const WEAPON_HAMMER: WeaponId = WeaponId(15);
+pub const WEAPON_FLAMETHROWER: WeaponId = WeaponId(16);
+pub const WEAPON_MINE: WeaponId = WeaponId(17);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UtilityId {
@@ -86,6 +94,13 @@ pub const PISTOL: ItemId = 9;
 pub const REVOLVER: ItemId = 10;
 pub const DEAGLE: ItemId = 11;
 pub const MACHINEGUN: ItemId = 12;
+pub const KNIFE: ItemId = 13;
+pub const BAT: ItemId = 14;
+pub const WHIP: ItemId = 15;
+pub const AXE: ItemId = 16;
+pub const HAMMER: ItemId = 17;
+pub const FLAMETHROWER: ItemId = 18;
+pub const MINE: ItemId = 19;
 pub const BAZOOKA: ItemId = 3;
 pub const GRENADE: ItemId = 4;
 pub const SMG: ItemId = 5;
@@ -185,16 +200,17 @@ pub static ITEMS: &[ItemDef] = &[
     },
     // The energy weapons the battery exists for (§B5).
     //
-    // **Every weight is 0: they do not spawn yet, and T11.04 turns them on.**
-    // Not a placeholder — a measured decision. Bots choose a weapon only when a
-    // stack empties, so they can neither switch *to* a laser nor away from an
-    // uncharged one; with these in the pool a bot ends up permanently holding a
-    // paperweight, permanently "unarmed", and permanently shopping. Measured:
-    // lasers in the pool give `ticks_engaged: 0` over 36,000 ticks, and the same
-    // run with only the battery pack added fights normally. Shipping them now
-    // would mean shipping an item class the AI cannot use, so the defs (which is
-    // what §B5 needs to be testable) land here and the *items* wait for T11.04
-    // to give bots weapon selection.
+    // These shipped in T11.02 with every weight at **zero**, and that was a
+    // measured decision rather than a placeholder: bots chose a weapon only when
+    // a stack ran out, and an energy weapon's stack never does — so a bot that
+    // picked one up held a paperweight for the rest of the round and read
+    // `ticks_engaged: 0` over 36,000 ticks. T11.04 gave bots `wants_select`,
+    // which is what lets them move *off* an uncharged laser, so the items are
+    // now live.
+    //
+    // Weighted below their ballistic counterparts because they cost a resource
+    // that also buys shields: a laser found without charge is worth less than a
+    // pistol found with ammo, and the weights should say so.
     //
     // `max_stack` is 1 because the stack is the weapon itself: ammo is charge.
     ItemDef {
@@ -204,9 +220,9 @@ pub static ITEMS: &[ItemDef] = &[
         kind: ItemKind::Weapon(WEAPON_LASER_PISTOL),
         max_stack: 1,
         sprite: "weapon_laser_pistol",
-        spawn_weight: 0,
-        crate_weight: 0,
-        buried_weight: 0,
+        spawn_weight: 10,
+        crate_weight: 14,
+        buried_weight: 12,
     },
     ItemDef {
         id: LASER_SMG,
@@ -215,9 +231,9 @@ pub static ITEMS: &[ItemDef] = &[
         kind: ItemKind::Weapon(WEAPON_LASER_SMG),
         max_stack: 1,
         sprite: "weapon_laser_smg",
-        spawn_weight: 0,
-        crate_weight: 0,
-        buried_weight: 0,
+        spawn_weight: 6,
+        crate_weight: 10,
+        buried_weight: 8,
     },
     // Ballistic sidearms and automatics (§B7). Bots already handle stack-ammo
     // hitscan — it is what the smg is — so unlike the lasers these spawn from
@@ -276,6 +292,98 @@ pub static ITEMS: &[ItemDef] = &[
         spawn_weight: 8,
         crate_weight: 12,
         buried_weight: 8,
+    },
+    // Melee (§B7). **No ammo** — `max_stack` is 1 and it is never spent, because
+    // a weapon with a cooldown and no magazine is the floor of the arsenal: it is
+    // what you still have when you have nothing, and it must never be worthless.
+    //
+    // Weighted high on the ground and low in crates: finding a knife should be
+    // common and unexciting, while a crate should hold something you crossed the
+    // map for.
+    ItemDef {
+        id: KNIFE,
+        key: "knife",
+        name: "Knife",
+        kind: ItemKind::Weapon(WEAPON_KNIFE),
+        max_stack: 1,
+        sprite: "weapon_knife",
+        spawn_weight: 16,
+        crate_weight: 4,
+        buried_weight: 10,
+    },
+    ItemDef {
+        id: BAT,
+        key: "bat",
+        name: "Baseball Bat",
+        kind: ItemKind::Weapon(WEAPON_BAT),
+        max_stack: 1,
+        sprite: "weapon_bat",
+        spawn_weight: 12,
+        crate_weight: 4,
+        buried_weight: 8,
+    },
+    ItemDef {
+        id: WHIP,
+        key: "whip",
+        name: "Whip",
+        kind: ItemKind::Weapon(WEAPON_WHIP),
+        max_stack: 1,
+        sprite: "weapon_whip",
+        spawn_weight: 8,
+        crate_weight: 6,
+        buried_weight: 8,
+    },
+    ItemDef {
+        id: AXE,
+        key: "axe",
+        name: "Axe",
+        kind: ItemKind::Weapon(WEAPON_AXE),
+        max_stack: 1,
+        sprite: "weapon_axe",
+        // Digs 10 px a swing, so it is a tunnelling tool as well as a weapon —
+        // which is why it is worth burying.
+        spawn_weight: 8,
+        crate_weight: 8,
+        buried_weight: 14,
+    },
+    ItemDef {
+        id: HAMMER,
+        key: "hammer",
+        name: "Sledgehammer",
+        kind: ItemKind::Weapon(WEAPON_HAMMER),
+        max_stack: 1,
+        sprite: "weapon_hammer",
+        spawn_weight: 5,
+        crate_weight: 8,
+        buried_weight: 12,
+    },
+    // Area denial (§B7). Rare on the ground and likelier in a crate: burning
+    // ground shapes where people can walk for seconds afterwards, which is worth
+    // contesting a crate for.
+    ItemDef {
+        id: FLAMETHROWER,
+        key: "flamethrower",
+        name: "Flamethrower",
+        kind: ItemKind::Weapon(WEAPON_FLAMETHROWER),
+        max_stack: FLAMETHROWER_AMMO,
+        sprite: "weapon_flamethrower",
+        spawn_weight: 5,
+        crate_weight: 12,
+        buried_weight: 6,
+    },
+    // A trap, not a spray (§B7). Two per pickup, and it must be *visible* at
+    // close range — invisible instant death is not fun; a trap you could have
+    // spotted is.
+    ItemDef {
+        id: MINE,
+        key: "mine",
+        name: "Proximity Mine",
+        kind: ItemKind::Weapon(WEAPON_MINE),
+        max_stack: MINE_AMMO,
+        sprite: "weapon_mine",
+        spawn_weight: 7,
+        crate_weight: 10,
+        buried_weight: 6,
     },
 ];
 
@@ -429,23 +537,34 @@ mod tests {
     fn weapons_carry_ammo_and_consumables_do_not() {
         for d in ITEMS {
             match d.kind {
-                // A weapon must have *ammo*, and since §B5 there are two kinds:
-                // a stack you spend, or a battery you spend. The rule is now
-                // "one of the two", which is stricter than the old
-                // `max_stack > 1` — that would pass a weapon with neither, and
-                // an energy weapon legitimately has a stack of exactly 1 because
-                // the stack *is* the weapon and the ammo is charge.
+                // What a weapon spends, in one rule that cannot disagree with
+                // the game.
+                //
+                // This invariant has now been restated twice, because each new
+                // delivery kind added a way to pay for a shot:
+                //   - ballistic — a **stack** you spend, so `max_stack > 1`;
+                //   - energy    — a **battery** (§B5), so the stack *is* the
+                //                 weapon and `max_stack == 1`;
+                //   - melee     — **nothing but time** (§B7), no ammo at all.
+                //
+                // The original was `max_stack > 1`, which passed a weapon with
+                // neither. Rather than grow a third special case here, this asks
+                // `WeaponDef::spends_stack()` — the same predicate `try_fire`
+                // uses to decide whether to consume — so the registry's idea of
+                // ammo and the sim's cannot drift apart.
                 ItemKind::Weapon(wid) => {
-                    let energy = crate::weapons::defs::def(wid).is_some_and(|w| w.is_energy());
-                    assert!(
-                        d.max_stack > 1 || energy,
-                        "{} is a weapon with neither ammo depth nor an energy cost",
-                        d.key
-                    );
-                    if energy {
+                    let w = crate::weapons::defs::def(wid);
+                    let spends_stack = w.is_none_or(|w| w.spends_stack());
+                    if spends_stack {
+                        assert!(
+                            d.max_stack > 1,
+                            "{} spends a stack per shot but carries only one",
+                            d.key
+                        );
+                    } else {
                         assert_eq!(
                             d.max_stack, 1,
-                            "{} spends charge, so its stack is the weapon itself",
+                            "{} does not spend a stack, so its stack is the weapon itself",
                             d.key
                         );
                     }
