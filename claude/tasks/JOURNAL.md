@@ -3425,3 +3425,20 @@ Notes: THIRTEENTH §A39. `OrdnanceLayer.addProjectile` existed, the mirror had
        The both-ends count is what catches the original bug: falsifying the
        sync gives "1 alive and 0 drawn" before any pixel is examined.
 Left for later: T13.04 weather, T13.05 crates, T13.06 round end.
+
+## M13 — IN PROGRESS (3 of 6) — handoff
+Done: T13.02 (pixel harness), T13.01 (one render path + the rebake), T13.03
+       (visible ordnance). Tree clean, gate green: 905 rust, e2e 23/23.
+Remaining: T13.04 weather-visible, T13.05 crates, T13.06 round-end.
+Context the next session needs:
+  - `scripts/checks/pixels.mjs` is the harness: samplePatch / assertChanged.
+    assertChanged REFUSES to run without a control, so pass one.
+  - Frame the subject by reading its real position from `__game`, then converting
+    with `debug().worldView` + `.zoom`. Offsetting by a guess put a carve in open
+    air and a control inside a blast, twice, in one session.
+  - Set a pixel threshold by FALSIFYING first. Mine was 10 and the falsified build
+    still scored 15.5, so it would have passed against the bug. Real 96.9.
+  - Add both-ends counters to the debug handle (`projectilesLive/Drawn` is the
+    pattern). It caught the ordnance bug before any pixel was sampled.
+  - Cross-scene layer parity is still only asserted for the sandbox: `?game=1`
+    cannot build a world without a server. Worth a standalone check that runs one.
