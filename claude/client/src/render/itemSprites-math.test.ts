@@ -10,6 +10,8 @@ import {
   type ItemDefView,
   type WorldItemView,
 } from './itemSprites-math'
+import { proceduralItemKeys } from './itemTextures'
+import { itemRegistryJson, packedFrameKeys } from './__liveRegistry'
 
 const REGISTRY_JSON = JSON.stringify([
   { id: 0, key: 'medkit', name: 'Medkit', sprite: 'item_medkit', max_stack: 3 },
@@ -125,5 +127,44 @@ describe('diffItems', () => {
 
   it('removes a picked-up item exactly when the server drops it', () => {
     expect(diffItems([7], [])).toEqual({ add: [], remove: [7] })
+  })
+})
+
+/**
+ * §B20 — every item in the **live** registry resolves to art.
+ *
+ * The suite above runs against a two-entry fixture, and that is precisely why
+ * eighteen v3 items shipped with sprite keys that existed nowhere: a test which
+ * validates data against a copy of that data validates nothing. These read the
+ * registry the game actually loads and the art it actually has.
+ */
+describe('the live registry has art for everything', () => {
+  const registry: ItemDefView[] = JSON.parse(itemRegistryJson())
+  const packed = packedFrameKeys()
+  const procedural = new Set(proceduralItemKeys())
+  const has = (f: string) => packed.has(f) || procedural.has(f)
+
+  it('is not vacuous — the registry is actually populated', () => {
+    // Without this, every assertion below passes for an empty registry.
+    expect(registry.length).toBeGreaterThan(15)
+  })
+
+  it('resolves every ItemDef.sprite, naming any that do not', () => {
+    const missing = registry.filter((d) => !has(d.sprite)).map((d) => `${d.key} -> ${d.sprite}`)
+    expect(missing).toEqual([])
+  })
+
+  it('gives no two items the same frame', () => {
+    // Distinct art that is distinct in name only is the §A32 mistake: it passes
+    // every structural check and fails the actual requirement, which is that a
+    // player can tell two pickups apart.
+    const seen = new Map<string, string>()
+    const clashes: string[] = []
+    for (const d of registry) {
+      const prev = seen.get(d.sprite)
+      if (prev) clashes.push(`${prev} and ${d.key} both use ${d.sprite}`)
+      else seen.set(d.sprite, d.key)
+    }
+    expect(clashes).toEqual([])
   })
 })

@@ -3064,3 +3064,28 @@ Notes: THE COUNT-AT-BOTH-ENDS ASSERTION IS THE TASK. Client live mines vs the
        of whoever placed it — a marker the placer cannot see is §B6's "visible at
        close range" failing in the one frame where it matters.
 Left for later: T11.11 (arsenal art), T11.09 (balance).
+
+## T11.11 — Art for the arsenal — DONE
+Files: client/src/render/{itemTextures,itemSprites,itemSprites-math.test,__liveRegistry}.ts
+Verified: `--run itemSprites-math` 19 passed; gate GATE_EXIT=0, 896 rust tests,
+       e2e 20/20; two-clients "items: 8 drawn of 8 tracked".
+Notes: THE GAP WAS 18, NOT THE 13 §B20 ESTIMATED — measured against the live
+       registry rather than counted by hand. battery_pack, four ballistic, two
+       energy, five melee, flamethrower, mine and four thrown.
+       THE OLD TEST USED A TWO-ENTRY FIXTURE. That is the whole of §B20: a test
+       validating data against a copy of that data validates nothing. The new
+       block reads `registry.rs` and `atlas-map.json` — the same two files the
+       game reads — and its first assertion is that the registry is populated,
+       or every check below it passes for an empty list.
+       DISTINCT BY SILHOUETTE, NOT PALETTE: a revolver has a cylinder, a whip is
+       the only curve, a mine is a squat dome, a molotov is the only thing with a
+       neck. At 16 px on the ground the outline is all a player can read — the
+       same conclusion T10.05 reached for tombstones, and the §A32 mistake in
+       reverse (differently-named, near-identical art passes every structural
+       check and fails the actual requirement).
+       `itemSprites.spawn` only ever looked in the ATLAS, so a procedural texture
+       could not be found however well it was drawn. Packed art still wins;
+       procedural is the `docs/51` §5 fallback, not a competitor.
+       Falsified by deleting the whip painter: "expected [ 'whip -> weapon_whip' ]
+       to deeply equal []" — it names the item, not just a count.
+Left for later: T11.09 (balance).

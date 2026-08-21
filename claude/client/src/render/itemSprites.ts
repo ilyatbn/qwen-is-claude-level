@@ -11,6 +11,7 @@
 
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
+import { ensureItemTextures } from './itemTextures'
 import {
   bobOffset,
   diffItems,
@@ -41,6 +42,7 @@ export class ItemLayer {
   private t = 0
 
   constructor(scene: Phaser.Scene) {
+    ensureItemTextures(scene.textures)
     this.scene = scene
     this.container = scene.add.container(0, 0).setDepth(DEPTH.worldItems)
   }
@@ -113,10 +115,18 @@ export class ItemLayer {
     const hasAtlas = this.scene.textures.exists(ATLAS)
     const texture = hasAtlas ? this.scene.textures.get(ATLAS) : null
     const frame = texture ? frameFor(item, this.defs, (f) => texture.has(f)) : null
+    // Packed art wins; a procedural icon is the fallback `docs/51` §5 describes,
+    // not a competitor. Eighteen v3 items have no packed frame (§B20), and
+    // without this every one of them was an identical coloured box.
+    const proc = frame
+      ? null
+      : frameFor(item, this.defs, (f) => this.scene.textures.exists(f))
 
     let sprite: Phaser.GameObjects.Image | Phaser.GameObjects.Rectangle
     if (frame) {
       sprite = this.scene.add.image(item.x, item.y, ATLAS, frame).setOrigin(0.5, 0.5)
+    } else if (proc) {
+      sprite = this.scene.add.image(item.x, item.y, proc).setOrigin(0.5, 0.5)
     } else {
       // docs/50 §8: the game starts with no art, and every fallback logs once.
       const key = `item:${item.item}`
