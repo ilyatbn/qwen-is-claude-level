@@ -11,7 +11,7 @@
 SHELL := bash
 .ONESHELL:
 .DEFAULT_GOAL := help
-.PHONY: help build start stop restart clean distclean test test-fast e2e status logs docker-up docker-down
+.PHONY: help build start stop restart clean distclean test test-fast e2e status logs docker-up docker-down play probe
 
 RUN_DIR   := .run
 SERVER_PG := $(RUN_DIR)/server.pgid
@@ -30,6 +30,8 @@ help:
 	@echo "  make restart    stop, then start"
 	@echo "  make status     what is running, and the client URL"
 	@echo "  make logs       tail both logs"
+	@echo "  make play       open the game in a headed Chrome with CDP (WSLg)"
+	@echo "  make probe      read that window's state + screenshot, without closing it"
 	@echo "  make test       the full gate: fmt, clippy, rust, client, e2e"
 	@echo "  make test-fast  the gate without the browser suite"
 	@echo "  make e2e        the browser suite only"
@@ -138,6 +140,17 @@ logs:
 	@mkdir -p $(RUN_DIR); touch $(SERVER_LOG) $(CLIENT_LOG)
 	tail -f $(SERVER_LOG) $(CLIENT_LOG)
 
+# ---------------------------------------------------------------- interactive
+# This box has WSLg, so a real window appears. Headless is for the gate; a
+# person debugging gets a window they can take the controls in, and an agent
+# attaches to that same window over CDP rather than opening a second one.
+
+play:
+	@node scripts/play.mjs $(URL)
+
+probe:
+	@node scripts/probe.mjs $(ARGS)
+
 # ---------------------------------------------------------------- test
 
 # The gate. Do not run it while `make start` is up — a loaded box makes every
@@ -169,7 +182,7 @@ distclean: clean
 
 docker-up:
 	@[ -f .env ] || cp .env.example .env
-	docker compose -f docker/docker-compose.yml up --build
+	docker compose -f docker/docker-compose.yml up --build -d
 
 docker-down:
 	@docker compose -f docker/docker-compose.yml down
