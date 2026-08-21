@@ -6,12 +6,16 @@
  * sandbox is the tool everything after M3 is debugged with, so the moment it
  * renders differently it starts lying.
  *
- * **That is the intent, and it is not yet true.** `GameScene` uses this class;
- * `SandboxScene` still builds the same stack inline, as it did before this class
- * existed. So every addition here has to be made twice, which is precisely the
- * drift the extraction was meant to end — T9.02's decoration layer is the second
- * feature to pay that cost. Migrating the sandbox is worth its own task; until
- * then this comment says what is, not what was intended.
+ * Both scenes now build through this class. They did not until T13.01, and the
+ * cost of that was four shipped bugs: `GameScene` applied carves to the mask and
+ * never told the renderer, so collision changed, the minimap changed, and the
+ * terrain art did not. You walked through a hole you could not see.
+ *
+ * The fix is not "call `markDirty` from the game scene too" — that is a third
+ * caller who can forget, and the bug was a caller forgetting. **`update()` drains
+ * the core's dirty set every frame**, so it does not matter who carved, or how, or
+ * whether they remembered: the core records what changed and the render stack
+ * bakes it. Forgetting is no longer reachable.
  */
 
 import Phaser from 'phaser'
@@ -37,6 +41,7 @@ export class WorldView {
 
   private readonly backdrop: Backdrop
   private readonly container: Phaser.GameObjects.Container
+  private readonly core: Core
 
   /**
    * Building tears nothing down: the caller owns the lifetime. Phaser's texture
@@ -45,6 +50,7 @@ export class WorldView {
    */
   constructor(scene: Phaser.Scene, core: Core) {
     const { width: mapW, height: mapH } = core
+    this.core = core
 
     this.backdrop = new Backdrop(scene, DEFAULT_THEME, mapW, mapH)
     this.container = scene.add.container(0, 0).setDepth(DEPTH.terrain)
@@ -71,6 +77,11 @@ export class WorldView {
     this.terrain.buildAll()
     this.timings.buildAllMs = performance.now() - t0
 
+    // Generation marks every touched chunk dirty. `buildAll` has just baked all
+    // of them, so drain and discard — otherwise the first `update()` re-bakes a
+    // map that is already correct, which reads as a stutter on the first frame.
+    this.core.takeDirtyChunks()
+
     this.rig = new CameraRig(scene.cameras.main, mapW, mapH)
 
     // Props last, so they are placed against the mask the chunks were baked
@@ -82,15 +93,58 @@ export class WorldView {
   }
 
   /**
-   * A carve landed. Re-bakes are the terrain's business; this removes the props
-   * that were standing on what just left.
+   * Carve the mask **and** show it. One call, so a caller cannot do half of it.
+   *
+   * Returns the number of props removed. Callers that carve through some other
+   * path are still covered — `update()` drains the core's dirty set regardless —
+   * but they lose the decoration removal, which needs the carve's position.
+   */
+  applyCarve(x: number, y: number, r: number): number {
+    this.core.carve(x, y, r)
+    this.drainDirty()
+    return this.decorations.onCarve(x, y, r)
+  }
+
+  /**
+   * The swept-circle carve (lava channels). Distinct from `applyCarve` for the
+   * same reason `Core.carveCapsule` is distinct from `Core.carve`: replaying a
+   * capsule as a circle produces a different mask, and a client whose mask differs
+   * from the server's gets shot through walls it can still see.
+   */
+  applyCarveCapsule(x0: number, y0: number, x1: number, y1: number, r: number): number {
+    this.core.carveCapsule(x0, y0, x1, y1, r)
+    this.drainDirty()
+    // The swept region, approximated by its midpoint and half-length, is enough
+    // for props: they are cosmetic, and over-removing one is invisible where
+    // leaving one floating over a channel is not.
+    const mx = (x0 + x1) / 2
+    const my = (y0 + y1) / 2
+    const reach = Math.hypot(x1 - x0, y1 - y0) / 2 + r
+    return this.decorations.onCarve(mx, my, reach)
+  }
+
+  /**
+   * A carve landed somewhere else. Re-bakes are handled by `update()`; this
+   * removes the props that were standing on what just left.
    */
   onCarve(x: number, y: number, r: number): number {
     return this.decorations.onCarve(x, y, r)
   }
 
+  /**
+   * Move the core's dirty set into the render queue.
+   *
+   * `take_dirty_chunks` is a *drain*: the core accumulates, someone empties it.
+   * Nobody emptied it in the game scene, which is the whole of §C0. Doing it here,
+   * every frame, means the guarantee does not depend on any caller remembering.
+   */
+  private drainDirty(): void {
+    this.terrain.markDirty(this.core.takeDirtyChunks())
+  }
+
   /** Re-bake the chunks a carve dirtied, within the per-frame budget. */
   update(near: { x: number; y: number }): void {
+    this.drainDirty()
     const pendingBefore = this.terrain.stats.pending
     const t0 = performance.now()
     this.terrain.update(near)
@@ -100,6 +154,7 @@ export class WorldView {
   /** Bake everything now — used after a full mask load, where a budgeted
    *  drip would show the map filling in chunk by chunk. */
   flush(near: { x: number; y: number }): void {
+    this.drainDirty()
     let guard = 0
     while (this.terrain.stats.pending > 0 && guard++ < 4096) this.terrain.update(near)
   }

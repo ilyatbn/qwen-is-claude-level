@@ -272,7 +272,27 @@ export class GameScene extends Phaser.Scene {
       this.conn.on(ev, (raw) => {
         const p = asRecord(raw)
         this.mirror.applyEvent(ev, p, performance.now())
-        if (ev === 'carve' || ev === 'carve_capsule') this.minimap?.setTerrainDirty()
+        if (ev === 'carve' || ev === 'carve_capsule') {
+          this.minimap?.setTerrainDirty()
+          // The terrain re-bake needs nothing here: `WorldView.update()` drains
+          // the core's dirty set every frame, so it does not matter who carved.
+          // Props do need the position, because "which decorations were standing
+          // on that" is not recoverable from a chunk id.
+          if (ev === 'carve') {
+            this.world?.onCarve(Number(p['x'] ?? 0), Number(p['y'] ?? 0), Number(p['r'] ?? 0))
+          } else {
+            const x0 = Number(p['x0'] ?? 0)
+            const y0 = Number(p['y0'] ?? 0)
+            const x1 = Number(p['x1'] ?? 0)
+            const y1 = Number(p['y1'] ?? 0)
+            const r = Number(p['r'] ?? 0)
+            this.world?.onCarve(
+              (x0 + x1) / 2,
+              (y0 + y1) / 2,
+              Math.hypot(x1 - x0, y1 - y0) / 2 + r,
+            )
+          }
+        }
         this.cueFor(ev, p)
       })
     }
@@ -1068,6 +1088,23 @@ export class GameScene extends Phaser.Scene {
   private exposeDebugHandle(): void {
     const self = this
     ;(window as unknown as { __game: unknown }).__game = {
+      /**
+       * The depths the shared world stack actually produced, deduped and sorted.
+       *
+       * Asserted between the two scenes (§C1). Not "both call WorldView" — a scene
+       * that adds a world layer inline still shows up here, which is the drift the
+       * whole task exists to end.
+       */
+      sceneDepths() {
+        const seen = new Set<number>()
+        for (const o of self.children.list) {
+          const d = (o as unknown as { depth?: number }).depth
+          // World layers only: the sandbox panel and the HUD are DOM or per-scene
+          // furniture, and comparing them would report a difference that is not one.
+          if (typeof d === 'number' && d <= DEPTH.lightmap) seen.add(d)
+        }
+        return [...seen].sort((a, b) => a - b)
+      },
       debug() {
         const body = self.core.playerState(self.me)
         return {

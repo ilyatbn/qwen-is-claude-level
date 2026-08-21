@@ -3381,3 +3381,27 @@ Notes: DONE BEFORE T13.01, not after — T13.01's own Done-when is
        mean (mirrored gradients) must not read as identical, and the test pins
        that at lum 127.5 for both.
 Left for later: T13.01 uses this; further specs in T13.03-T13.06.
+
+## T13.01 — One render path, and the rebake nobody wired — DONE
+Files: client/src/render/worldView.ts, scenes/{SandboxScene,GameScene}.ts,
+       client/src/render/worldView-math.test.ts, scripts/checks/terrain-render.mjs
+Verified: `npm test -- --run worldView` 4 passed; `e2e.mjs terrain-render` ok —
+       crater changed 96.9, control held 3.0. Full e2e 22/22, rust 905.
+Notes: THE FIX IS A DRAIN, NOT A CALL. `update()` now empties the core's dirty
+       set every frame, so it does not matter who carved or whether they
+       remembered — GameScene needed NO change to start rebaking. Adding
+       `markDirty` to the game scene would have been a third caller who can
+       forget, and forgetting was the bug.
+       SandboxScene migrated onto WorldView: ~50 lines of inline stack deleted.
+       MY OWN TEST WOULD HAVE PASSED AGAINST THE BUG. Falsifying the drain left
+       the crater region moving 15.5 — decorations are removed by a different
+       path and their disappearance alone cleared my minDelta of 10. Raised to
+       40 (real: 96.9, falsified: 16.4) and re-falsified both ways.
+       THE SECOND-CARVE TARGET WAS IN OPEN AIR at first: `target.x + 140`
+       carved nothing, and the failure read as "the renderer dropped a carve".
+       It locates solid rock now — the T11.10/checksum.rs trap, third time.
+       The layer-parity control had to be derived from both crater positions;
+       a control chosen before you know where the subject is, is not a control.
+Left for later: cross-scene layer parity asserts the sandbox set only — `?game=1`
+       cannot build a world without a server, so the two-scene comparison belongs
+       in a check that runs one. Deferred to the M13 milestone verification.

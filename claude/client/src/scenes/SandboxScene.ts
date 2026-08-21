@@ -10,19 +10,14 @@
 
 import Phaser from 'phaser'
 import { C, Core, MapScale, type WeatherState } from '../core'
-import { TerrainRenderer } from '../render/terrain'
-import { CameraRig } from '../render/cameraRig'
-import { Backdrop, DEFAULT_THEME, DEPTH } from '../render/backdrop'
-import { resolveTheme } from '../render/themes-math'
-import { makeBackTexture, makeEdgeTexture, makeFillTexture } from '../render/procTextures'
+import { DEPTH } from '../render/backdrop'
+import { WorldView } from '../render/worldView'
 import { PlayerView } from '../render/playerView'
 import { loadAssetManifest, runLoader } from '../render/assets'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { Minimap } from '../ui/minimap'
 import { traumaFromExplosion } from '../render/cameraRig-math'
-import { DecorationLayer } from '../render/decorations'
-import { fromMeta } from '../render/decorations-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { SkyLayer } from '../render/sky'
@@ -45,10 +40,13 @@ const PAN_SPEED = 900
 
 export class SandboxScene extends Phaser.Scene {
   private core!: Core
-  private terrain!: TerrainRenderer
-  private rig!: CameraRig
-  private backdrop!: Backdrop
-  private container!: Phaser.GameObjects.Container
+  /**
+   * The shared render stack. The sandbox used to build its own copy of this,
+   * which is how the game scene ended up without a working carve→rebake path:
+   * every feature had to be added twice and one of them was not (§C0/§C1).
+   * Sandbox-only controls are a panel *over* this world, not a second world.
+   */
+  private world!: WorldView
 
   private seed = 0n
   private mapScale: MapScale = MapScale.Medium
@@ -77,7 +75,6 @@ export class SandboxScene extends Phaser.Scene {
   private feelEnabled = true
   private minimap: Minimap | null = null
   /** Silent until audio.json loads; `docs/50` §8 — no assets is supported. */
-  private decor: DecorationLayer | null = null
   private audio = new Mixer()
   private audioSink: { unlock(): void; sampleCount: number; liveVoices: number; isUnlocked: boolean } | null = null
   private stepAcc = 0
@@ -166,7 +163,7 @@ export class SandboxScene extends Phaser.Scene {
       this.feel?.destroy()
       this.minimap?.destroy()
       this.ordnance.destroy()
-      this.terrain.destroy()
+      this.world.destroy()
       this.lightmap.destroy()
       this.overlay.destroy()
       this.sky.destroy()
@@ -236,7 +233,7 @@ export class SandboxScene extends Phaser.Scene {
    */
   private cue(name: Parameters<Mixer['play']>[0], x?: number, y?: number, volume = 1): void {
     const body = this.core.playerState(0)
-    const ear = body ? { x: body.x, y: body.y } : this.rig.center
+    const ear = body ? { x: body.x, y: body.y } : this.world.rig.center
     const gain =
       x === undefined || y === undefined
         ? this.audio.play(name, { volume })
@@ -280,51 +277,24 @@ export class SandboxScene extends Phaser.Scene {
     // Tear the old map down *first*. Phaser's texture manager is global, so a
     // reused key keeps the old pixels and the new map comes out looking subtly
     // like the previous one — a genuinely confusing symptom to chase (T3.05).
-    this.terrain?.destroy()
-    this.backdrop?.destroy()
-    this.container?.destroy()
+    this.world?.destroy()
 
     const t0 = performance.now()
     this.core.generate(this.seed, this.mapScale)
     this.timings.generateMs = performance.now() - t0
 
     const { width: mapW, height: mapH } = this.core
-    this.backdrop = new Backdrop(this, DEFAULT_THEME, mapW, mapH)
-    this.container = this.add.container(0, 0).setDepth(DEPTH.terrain)
-
-    const theme = resolveTheme(this.core.meta.theme)
-    this.terrain = new TerrainRenderer(
-      this.textures,
-      {
-        add: (x, y, key) => {
-          const img = this.add.image(x, y, key)
-          this.container.add(img)
-          return img
-        },
-      },
-      this.core,
-      makeFillTexture(256, theme),
-      makeEdgeTexture(256, theme),
-      undefined,
-      makeBackTexture(256, theme),
-    )
-
-    const t1 = performance.now()
-    this.terrain.buildAll()
-    this.timings.buildAllMs = performance.now() - t1
-
-    // Props, against the same mask the chunks were baked from.
-    this.decor?.destroy()
-    this.decor = new DecorationLayer(this)
-    this.decor.build(fromMeta(this.core.meta.decorations), (x, y) => this.core.solidAt(x, y))
+    // One stack, built the same way the game builds it. Backdrop, chunks,
+    // camera and props all live in here now.
+    this.world = new WorldView(this, this.core)
+    this.timings.buildAllMs = this.world.timings.buildAllMs
 
     const spawn = this.core.meta.spawn_points[0] ?? { x: mapW / 2, y: mapH / 2 }
     // Spawn points are feet positions; the body is positioned by its centre.
     this.core.removePlayer(0)
     this.core.addPlayer(0, spawn.x, spawn.y - C().PLAYER_H / 2)
-    this.rig = new CameraRig(this.cameras.main, mapW, mapH)
-    this.rig.follow(spawn)
-    this.rig.snapTo(spawn)
+    this.world.rig.follow(spawn)
+    this.world.rig.snapTo(spawn)
 
     // A new map is a new world: the explored set does not survive it.
     this.minimap?.destroy()
@@ -347,14 +317,11 @@ export class SandboxScene extends Phaser.Scene {
   }
 
   private carveAt(x: number, y: number): void {
-    this.core.carve(x, y, this.carveRadius)
-    this.decor?.onCarve(x, y, this.carveRadius)
-    const dirty = this.core.takeDirtyChunks()
     const t0 = performance.now()
-    this.terrain.markDirty(dirty)
+    this.world.applyCarve(x, y, this.carveRadius)
     // Force the whole pending set through, so the measured cost is the real cost
     // of this carve rather than one frame's slice of it.
-    while (this.terrain.stats.pending > 0) this.terrain.update({ x, y })
+    this.world.flush({ x, y })
     this.timings.lastRebakeMs = performance.now() - t0
     this.refreshReadout()
   }
@@ -565,10 +532,10 @@ export class SandboxScene extends Phaser.Scene {
       `seed ${m.seed}  scale ${m.scale}  theme ${m.theme}\n` +
       `attempts ${m.attempts}  safe_preset ${m.used_safe_preset}\n` +
       `traversable ${m.traversable_fraction.toFixed(3)}  surface ${m.surface_points.length}\n` +
-      `${this.core.width}x${this.core.height}  chunks ${this.terrain.stats.chunkCount}\n` +
+      `${this.core.width}x${this.core.height}  chunks ${this.world.terrain.stats.chunkCount}\n` +
       `generate ${t.generateMs.toFixed(0)} ms  bakeAll ${t.buildAllMs.toFixed(0)} ms\n` +
       `last carve rebake ${t.lastRebakeMs.toFixed(1)} ms  bakes/frame ${this.frameBakes}\n` +
-      `fps ${Math.round(this.game.loop.actualFps)}  pending ${this.terrain.stats.pending}  ` +
+      `fps ${Math.round(this.game.loop.actualFps)}  pending ${this.world.terrain.stats.pending}  ` +
       `lightmap ${this.lightmap?.stats.filled ? 'on' : 'off'} draws ${this.lightmap?.stats.drawsLastFrame ?? 0}`
   }
 
@@ -585,20 +552,20 @@ export class SandboxScene extends Phaser.Scene {
           traversable: self.core.meta.traversable_fraction,
           mapW: self.core.width,
           mapH: self.core.height,
-          chunkCount: self.terrain.stats.chunkCount,
+          chunkCount: self.world.terrain.stats.chunkCount,
           // The buildAll split (T9.07): mask-only backdrop vs the canvas loop.
-          backdropMs: self.terrain.stats.backdropMs,
-          chunkBakeMs: self.terrain.stats.chunkBakeMs,
-          pending: self.terrain.stats.pending,
+          backdropMs: self.world.terrain.stats.backdropMs,
+          chunkBakeMs: self.world.terrain.stats.chunkBakeMs,
+          pending: self.world.terrain.stats.pending,
           // Phaser's texture manager is global. A missing destroy() shows up here
           // as an unbounded key count long before the browser reports memory
           // pressure, which makes the leak testable rather than eyeballed.
           liveTerrainTextures: Object.keys(self.textures.list).filter((k) =>
             k.startsWith('terrain_'),
           ).length,
-          visible: self.rig.visible,
+          visible: self.world.rig.visible,
           zoom: self.cameras.main.zoom,
-          camera: self.rig.center,
+          camera: self.world.rig.center,
           player: self.core.playerState(0),
           aim: self.localInput?.aimAngle ?? 0,
           animState: self.player?.state ?? 'idle',
@@ -615,7 +582,7 @@ export class SandboxScene extends Phaser.Scene {
             flashlightOn: false,
           }),
           overlays: self.overlay?.enabled ?? false,
-          trauma: self.rig.traumaLevel,
+          trauma: self.world.rig.traumaLevel,
           fps: self.game.loop.actualFps,
           worldView: {
             x: self.cameras.main.worldView.x,
@@ -629,8 +596,25 @@ export class SandboxScene extends Phaser.Scene {
        * Audio state for the e2e check. `voices` and `gains` are effects — a
        * voice actually started with a real gain — not a count of play() calls.
        */
+      /**
+       * The depths the shared world stack actually produced, deduped and sorted.
+       *
+       * Asserted between the two scenes (§C1). Not "both call WorldView" — a scene
+       * that adds a world layer inline still shows up here, which is the drift the
+       * whole task exists to end.
+       */
+      sceneDepths() {
+        const seen = new Set<number>()
+        for (const o of self.children.list) {
+          const d = (o as unknown as { depth?: number }).depth
+          // World layers only: the sandbox panel and the HUD are DOM or per-scene
+          // furniture, and comparing them would report a difference that is not one.
+          if (typeof d === 'number' && d <= DEPTH.lightmap) seen.add(d)
+        }
+        return [...seen].sort((a, b) => a - b)
+      },
       decorations() {
-        return { count: self.decor?.count ?? 0, total: self.core.meta.decorations.length }
+        return { count: self.world.decorations.count, total: self.core.meta.decorations.length }
       },
       audio() {
         return {
@@ -655,7 +639,8 @@ export class SandboxScene extends Phaser.Scene {
           for (const s of ev.hitscan) self.ordnance.addTracer(s.x0, s.y0, s.x1, s.y1)
           const first = ev.hitscan[0]
           if (first) self.cue('fire_smg', first.x0, first.y0)
-          self.terrain.markDirty(self.core.takeDirtyChunks())
+          // The carve already happened in the core; drain it into the renderer.
+          self.world.update(self.world.rig.center)
         } else if (ev.projectile !== undefined && sel) {
           // A launch cue only when a projectile actually left the tube: firing
           // an empty slot or inside a cooldown is rejected server-side and must
@@ -798,8 +783,8 @@ export class SandboxScene extends Phaser.Scene {
       if (c.up.isDown) dy -= PAN_SPEED * dt / z
       if (c.down.isDown) dy += PAN_SPEED * dt / z
       if (dx !== 0 || dy !== 0) {
-        const p = this.rig.center
-        this.rig.follow({ x: p.x + dx, y: p.y + dy })
+        const p = this.world.rig.center
+        this.world.rig.follow({ x: p.x + dx, y: p.y + dy })
       }
     }
 
@@ -810,7 +795,7 @@ export class SandboxScene extends Phaser.Scene {
     this.acc = Math.min(this.acc + dt, 0.25)
     let body = this.core.playerState(0)
     while (this.acc >= step) {
-      const centre = body ? { x: body.x, y: body.y } : this.rig.center
+      const centre = body ? { x: body.x, y: body.y } : this.world.rig.center
       const inp = this.localInput.sample(++this.seq, centre, this.cameras.main)
       this.core.applyInput(0, inp.seq, inp.buttons, inp.aim, step)
       this.acc -= step
@@ -829,8 +814,8 @@ export class SandboxScene extends Phaser.Scene {
         iframes: false,
       })
       this.crosshair.update(body.x, body.y, aim)
-      this.rig.follow({ x: body.x, y: body.y })
-      this.rig.setAim(aim)
+      this.world.rig.follow({ x: body.x, y: body.y })
+      this.world.rig.setAim(aim)
       this.movementCues(dt, body)
     }
 
@@ -843,14 +828,13 @@ export class SandboxScene extends Phaser.Scene {
       this.ordnance.removeProjectile(e.id)
       this.ordnance.addImpact(e.x, e.y, e.r)
       this.cue('explode', e.x, e.y)
-      this.decor?.onCarve(e.x, e.y, e.r)
-      this.terrain.markDirty(this.core.takeDirtyChunks())
+            this.world.onCarve(e.x, e.y, e.r)
     this.minimap?.setTerrainDirty()
       // Trauma scaled by distance and blast size, from the layer that owns it
       // (§A24 — this file briefly had a second Trauma of its own).
       const me = this.core.playerState(0)
       const dist = me ? Math.hypot(me.x - e.x, me.y - e.y) : 0
-      this.rig.shake(traumaFromExplosion(dist, e.r))
+      this.world.rig.shake(traumaFromExplosion(dist, e.r))
       for (const h of e.hits) {
         const lethal = h.health_after <= 0
         if (h.id === 0) this.feel.damageTaken(e.x, e.y, h.damage)
@@ -883,10 +867,10 @@ export class SandboxScene extends Phaser.Scene {
     // the sandbox shows what a real round will.
     this.sky.update(this.roundTime, darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS), C().NIGHT_DARKNESS)
 
-    this.rig.update(dt)
+    this.world.rig.update(dt)
     if (this.feelEnabled) this.feel.update(dt, this.feelFrame())
-    this.terrain.update(this.rig.center)
-    this.frameBakes = this.terrain.stats.bakesThisFrame
+    this.world.update(this.world.rig.center)
+    this.frameBakes = this.world.terrain.stats.bakesThisFrame
 
     // The readout used to refresh only on regenerate/carve, so it displayed
     // live-looking numbers (fps, pending, lightmap) that never changed.
