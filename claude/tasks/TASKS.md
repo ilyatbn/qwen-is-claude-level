@@ -255,9 +255,9 @@ Three weapons becomes twenty-two. Deathmatch is the point; variety is the game.
 - [x] [T11.09](M11/T11.09-balance.md) — Balance the arsenal by measurement **(v3)**
 - [x] [T11.12](M11/T11.12-suite-isolation.md) — One spec breaks the next one **(v3)**
 - [x] [T11.13](M11/T11.13-item-density.md) — Make "tons of weapons" true of a round **(v3)**
-- [ ] [T11.14](M11/T11.14-bot-hazard-guard.md) — Bots walk into their own fire **(v3)**
-- [ ] [T11.15](M11/T11.15-impact-prediction.md) — Bots aim thrown weapons at where they land **(v3)**
-- [ ] [T11.16](M11/T11.16-encounter-rate.md) — Make players meet **(v3)**
+- [x] [T11.14](M11/T11.14-bot-hazard-guard.md) — Bots walk into their own fire **(v3)**
+- [x] [T11.15](M11/T11.15-impact-prediction.md) — Bots aim thrown weapons at where they land **(v3)**
+- [x] [T11.16](M11/T11.16-encounter-rate.md) — Make players meet **(v3)**
 - [x] [T11.10](M11/T11.10-ordnance-render.md) — Draw the ordnance the server already sends **(v3)**
 - [x] [T11.11](M11/T11.11-arsenal-art.md) — Art for the arsenal **(v3)**
 

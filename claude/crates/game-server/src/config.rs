@@ -307,15 +307,18 @@ mod tests {
         let c = Config::from_source(empty).expect("defaults must parse");
         assert_eq!(c.bind_addr.to_string(), "0.0.0.0:3000");
         assert_eq!(c.game_log, "info");
-        // v2: the default scale is Large, not Medium.
-        assert_eq!(c.map_scale, MapScale::Large);
-        assert_eq!(c.max_players, 6);
+        // Pinned to the constants, not to a literal (§A19, §B22): these read
+        // "the documented defaults", and a literal here documents whatever it
+        // was written against — it went stale the moment T11.16 moved the
+        // scale, and reported a deliberate change as a failure.
+        assert_eq!(c.map_scale, DEFAULT_MAP_SCALE);
+        assert_eq!(c.max_players, MAX_PLAYERS);
         assert_eq!(c.round_seconds, 240.0);
         assert_eq!(c.min_players_to_start, 1);
         assert_eq!(c.fixed_seed, None);
         assert!(!c.record_replay);
         assert!(!c.debug_dump);
-        assert_eq!(c.bot_count, 3);
+        assert_eq!(c.bot_count, BOT_COUNT_DEFAULT);
     }
 
     #[test]
@@ -399,7 +402,7 @@ mod tests {
     fn summary_is_one_line_of_key_values() {
         let s = Config::from_source(empty).expect("ok").summary();
         assert!(!s.contains('\n'));
-        assert!(s.contains("scale=large"));
+        assert!(s.contains(&format!("scale={}", DEFAULT_MAP_SCALE.as_str())));
         assert!(s.contains("fixed_seed=random"));
     }
 }

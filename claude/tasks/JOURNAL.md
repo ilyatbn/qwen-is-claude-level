@@ -3289,3 +3289,80 @@ Notes: MEASURED AT EVERY SCALE (§A19), and the shipping one was not the problem
        Falsified by restoring both constants: fails with "Small: a round shows
        12.2 of 24 item types, below the 12.5 this task raised it to".
 Left for later: nothing in T11.13.
+
+## T11.16 — Make players meet — DONE
+Files: crates/game-core/src/constants.rs, crates/game-core/tests/balance.rs,
+       crates/game-server/src/config.rs, scripts/checks/death.mjs,
+       crates/game-server/tests/checksum.rs
+Verified: `cargo test -p game-core --release --test balance -- --ignored` — 4 passed.
+       Shipping config over a real 240 s round: fought 7/8, 1st contact 24s,
+       seen 8/8. Control (the old Large + 4): fought 1/8.
+Notes: THE SHIPPING CONFIG HAD NEVER BEEN MEASURED. The "5 of 8 seeds contain a
+       fight" figure came from the balance harness, which hardcodes Small + 4
+       bots. The game shipped Large with BOT_COUNT_DEFAULT 3 — where the survey
+       reads 0/8 fought, 8.6% of ticks with anyone in sight.
+       THE DECOMPOSITION DECIDED THE LEVER. `near%` and `los%` track each other
+       everywhere (8.6/8.5, 66.5/64.6), so terrain is NOT what keeps players
+       apart — distance is; and `armed%` is flat at 28-43% across every config,
+       so it is not item scarcity either. Damage tracks near% directly. Without
+       those two columns the obvious move would have been item density, which
+       T11.13 had just moved and which the data says is not the constraint.
+       DEFAULT_MAP_SCALE Large -> Medium and BOT_COUNT_DEFAULT 3 -> 5, both with
+       the table in their doc comments. Medium is still 4.8 x 4.3 screens at
+       CAMERA_ZOOM 2, so §A1's "explore, don't survey" survives; Large stays
+       behind MAP_SCALE=large. Falsified by restoring both: fought 1/8, 1st
+       contact 142s, seen 5/8 — FAILED.
+       THE BALANCE HARNESS NOW USES THE SHIPPING CONFIG TOO (BOT_COUNT_DEFAULT+1
+       seats, DEFAULT_MAP_SCALE). Every per-weapon number moved: median dmg/bot-s
+       1.03 -> 1.00, knife 0.80 -> 0.61, bazooka 0.75 -> 1.00. A table measured
+       at a player count the game does not ship is a table about another game.
+       TWO TESTS PINNED TO THE OLD DEFAULTS AS LITERALS (§B22): config's
+       "documented defaults" test asserted MapScale::Large and bot_count 3, and
+       reported a deliberate change as a failure. Both read the constants now.
+       AND ONE HARDCODED CARVE COORDINATE: checksum.rs carved at (300,700),
+       which is open sky on Medium — both hashes then matched and the test failed
+       claiming the mask hash is insensitive, when nothing had been carved. The
+       T11.10 entry records the identical trap at (300,300). It locates rock now.
+Left for later: `mine` is a new low outlier at 0.20 = 0.20x median. Mines need
+       traffic and the shipping map has less of it than the old harness implied.
+
+## T11.15 — Bots aim thrown weapons at where they land — DONE
+Files: crates/game-core/src/weapons/projectile.rs, crates/game-core/src/bots/mod.rs,
+       crates/game-core/tests/thrown.rs
+Verified: `cargo test -p game-core --lib bots` — 20 passed.
+       molotov self/bot-s 1.32 -> 0.23, toxic 0.63 -> 0.34, class median 0.34.
+Notes: `docs/22` §6's client trajectory preview WAS NEVER BUILT, so there was no
+       shared implementation to reuse. What is shared instead is everything that
+       decides where a projectile goes: a real `Projectile`, M2's `substeps`, the
+       same `bounce`, the same resting rule, the same fuse and apex checks in the
+       same order. `prediction_agrees_with_the_simulation` is the contract — a
+       predictor that disagrees is worse than none, because the bot refuses safe
+       throws and takes unsafe ones with equal confidence.
+       MY FIRST PREDICTOR IGNORED BOUNCING and the agreement test caught it in
+       under a minute: smoke predicted 44.4 px from where it landed. Smoke and
+       toxic have fuses and bounce; first contact is not the impact.
+       THEN THE TEST ITSELF WAS CONTAMINATED. It stood the thrower at the throw
+       origin, and a toxic grenade arced up, bounced, fell back and was removed
+       by hitting THEM — 42 px from where the arc ends. That is the scenario the
+       feature exists to prevent, but it is not what the predictor claims: it
+       models terrain only, because a body in the way can only make the hazard
+       land sooner, which is the safe direction to be wrong in.
+       Falsified twice at the live binding site: ignoring bounces -> 44.4 px vs a
+       15.8 px tolerance; removing the guard from `should_fire` -> the wall test
+       fails. That test asserts `rej_impact_guard > 0` rather than just "did not
+       throw", because the old distance guard could produce the same silence.
+Left for later: nothing in T11.15.
+
+## T11.14 — Bots walk into their own fire — DONE (criterion met)
+Files: crates/game-core/tests/balance.rs (numbers only)
+Verified: `cargo test -p game-core --release --test balance -- --ignored` — 4 passed.
+Notes: TICKED ON §B24'S CRITERIA, NOT THE ORIGINAL ONE. "Self-damage below damage
+       dealt" was withdrawn because both sides now avoid the fire and a zone
+       weapon that denies space successfully damages nobody. On the replacement
+       measures, all three zone weapons pass: self-harm at or below the 0.34
+       class median (molotov 0.23, toxic 0.34, flamethrower 0.14), denial
+       materially non-zero (7151 / 18511 / 1997 px-s of walkable ground), and
+       deflections real (968 / 772 / 1708).
+       The mechanism landed in the previous session; what unblocked the box was
+       T11.15 removing the residual cause, exactly as that session predicted.
+Left for later: nothing.

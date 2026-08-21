@@ -311,12 +311,29 @@ async fn a_carve_stream_applied_out_of_order_diverges() {
     // The falsification for the test above: if order did not matter, the whole
     // `seq` discipline in `WorldMirror` would be dead weight.
     let s = spawn_server().await;
-    let hash_in_order = s
+    // Find real rock rather than assuming a coordinate is solid. The hardcoded
+    // (300, 700) this used worked only on the map scale that happened to be the
+    // default: on another it is open sky, both carves remove nothing, and the
+    // two hashes match — the test then fails claiming the mask hash is
+    // insensitive, when what actually happened is that nothing was carved. The
+    // T11.10 journal entry records the identical trap at (300, 300).
+    let rock = s
         .room
         .inspect(|w| {
+            let m = &w.map.meta;
+            let p = m.surface_points[m.surface_points.len() / 2];
+            // A little below the surface, so a 40 px circle is biting rock.
+            (p.x, p.y + 30)
+        })
+        .await
+        .expect("room alive");
+
+    let hash_in_order = s
+        .room
+        .inspect(move |w| {
             let mut m = w.map.clone();
-            m.carve_circle(300, 700, 40);
-            m.carve_circle(320, 700, 20);
+            m.carve_circle(rock.0, rock.1, 40);
+            m.carve_circle(rock.0 + 20, rock.1, 20);
             m.mask.hash_hex()
         })
         .await
@@ -324,10 +341,10 @@ async fn a_carve_stream_applied_out_of_order_diverges() {
 
     let hash_different_set = s
         .room
-        .inspect(|w| {
+        .inspect(move |w| {
             let mut m = w.map.clone();
-            m.carve_circle(300, 700, 40);
-            m.carve_circle(320, 700, 21); // one pixel wider
+            m.carve_circle(rock.0, rock.1, 40);
+            m.carve_circle(rock.0 + 20, rock.1, 21); // one pixel wider
             m.mask.hash_hex()
         })
         .await

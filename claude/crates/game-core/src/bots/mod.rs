@@ -57,6 +57,11 @@ const SHIELD_WITHIN: f32 = 200.0;
 const HAZARD_CLEARANCE: f32 = 20.0;
 /// How far ahead a bot looks before stepping into fire — about a walk-second.
 const HAZARD_LOOKAHEAD: f32 = 48.0;
+/// How far ahead the throw predictor flies the arc, in ticks. Two seconds is
+/// past every fuse in the arsenal, and capping it matters: running to
+/// `PROJECTILE_MAX_LIFETIME` for every bot every tick is a tick-budget problem,
+/// not a safety improvement.
+const PREDICT_TICKS: u32 = 120;
 
 const STUCK_PX: f32 = 6.0;
 const STUCK_WINDOW: f32 = 0.5;
@@ -99,6 +104,10 @@ pub struct BotStats {
     pub ticks_hazard_evaded: u32,
     /// Ticks where a step toward the goal was refused because a hazard was ahead.
     pub ticks_hazard_blocked: u32,
+    /// Throws refused because the arc lands on us (T11.15), as distinct from
+    /// `rej_blast_guard`, which refuses on the target's distance. Separate
+    /// counters because they answer different questions.
+    pub rej_impact_guard: u32,
 }
 
 pub struct Bot {
@@ -483,6 +492,34 @@ impl Bot {
                 self.stats.rej_blast_guard += 1;
                 return false;
             }
+            // T11.15, §B26. The check above asks how far away the *target* is,
+            // and a molotov is ballistic: thrown uphill or into a rise it falls
+            // short, onto the thrower, and no target-distance guard can see
+            // that. Walk the arc and ask where the hazard actually lands.
+            //
+            // `None` is "still flying after the cap", which is also a refusal:
+            // not knowing where it lands is not a reason to throw it.
+            let aim_at = (target - pos).angle();
+            let landing = crate::weapons::projectile::predict_impact(
+                &world.map,
+                wid,
+                pos,
+                aim_at,
+                world.wind,
+                PREDICT_TICKS,
+                crate::constants::SIM_DT,
+            );
+            match landing {
+                Some(at) if (at - pos).len() < reach + HAZARD_CLEARANCE => {
+                    self.stats.rej_impact_guard += 1;
+                    return false;
+                }
+                None => {
+                    self.stats.rej_impact_guard += 1;
+                    return false;
+                }
+                Some(_) => {}
+            }
         }
         // Never fire at something inside our own blast radius: a bot that
         // rockets its own feet is not a difficulty setting, it is a bug that
@@ -838,6 +875,53 @@ mod tests {
         );
     }
 
+    /// T11.15, §B26 — the guard the distance test cannot express.
+    ///
+    /// The target is 260 px away, which the distance guard is happy with (the
+    /// control below is the same geometry and it throws). A wall sits 40 px in
+    /// front of the thrower, so the arc lands almost immediately, on them.
+    ///
+    /// The assertion that matters is not "did not throw" — the old guard could
+    /// produce that for the wrong reason. It is that **`rej_impact_guard`**
+    /// fired: the refusal came from walking the arc, not from measuring the
+    /// target.
+    #[test]
+    fn a_bot_does_not_throw_a_molotov_into_a_wall_in_front_of_it() {
+        let mut w = world_with(&[1, 2]);
+        give(&mut w, 1, MOLOTOV, 2);
+        let at = clear_line(&w);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = at;
+        }
+        if let Some(p) = w.player_mut(2) {
+            p.body.pos = Vec2::new(at.x + 260.0, at.y);
+        }
+        // A pillar just ahead: high enough that any throw at the target clips it.
+        for dx in 40..52 {
+            for dy in -90..40 {
+                w.map.fill_circle(at.x as i32 + dx, at.y as i32 + dy, 1);
+            }
+        }
+        let mut b = Bot::new(1, SEED, 0, 1.0);
+        let mut fired = false;
+        for t in 0..120 {
+            if b.think(&w, t as f32 * SIM_DT, SIM_DT).buttons & button::FIRE != 0 {
+                fired = true;
+                break;
+            }
+        }
+        assert!(
+            !fired,
+            "threw a molotov into a wall 40 px away: {:?}",
+            b.stats()
+        );
+        assert!(
+            b.stats().rej_impact_guard > 0,
+            "it refused, but not because of the arc — impact guard never fired: {:?}",
+            b.stats()
+        );
+    }
+
     /// The presence beside that absence: far enough away, it does throw.
     #[test]
     fn a_bot_does_throw_a_molotov_from_a_safe_distance() {
@@ -1116,6 +1200,7 @@ pub(crate) mod harness {
             rej_los: a.rej_los + b.rej_los,
             ticks_hazard_evaded: a.ticks_hazard_evaded + b.ticks_hazard_evaded,
             ticks_hazard_blocked: a.ticks_hazard_blocked + b.ticks_hazard_blocked,
+            rej_impact_guard: a.rej_impact_guard + b.rej_impact_guard,
         }
     }
 

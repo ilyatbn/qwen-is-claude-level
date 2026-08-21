@@ -273,8 +273,14 @@ if (dead) {
   const cleared = await until((d) => !d.death.visible, 12_000, 'the overlay to clear on respawn')
   if (cleared) {
     ok('the overlay cleared on respawn')
-    if (cleared.health > 0) ok(`respawned with ${cleared.health} health`)
-    else fail(`respawned with ${cleared.health} health`)
+    // Wait on the effect being asserted, not on a neighbouring one. The overlay
+    // clears on the snapshot's `alive` flag and health arrives in the snapshot
+    // body; reading health out of the sample that reported the clear assumes
+    // both land together. They usually do, which is why this passed for months
+    // and failed once under a loaded suite run.
+    const healed = await until((d) => (d.health ?? 0) > 0, 5_000, 'respawn health to arrive')
+    if (healed) ok(`respawned with ${healed.health} health`)
+    else fail(`respawned with ${(await dbg()).health} health`)
   }
 } else {
   const d = await dbg()

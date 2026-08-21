@@ -25,7 +25,10 @@
 use std::collections::BTreeMap;
 
 use game_core::bots::Bot;
-use game_core::constants::{MapScale, BATTERY_MAX, INVENTORY_SLOTS, SIM_DT, SURFACE_SAMPLE_STEP};
+use game_core::constants::{
+    MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, DEFAULT_MAP_SCALE, FOV_DAY, INVENTORY_SLOTS,
+    ROUND_SECONDS, SIM_DT, SURFACE_SAMPLE_STEP,
+};
 use game_core::items::registry::{ItemDef, ItemId, ItemKind, ITEMS, PISTOL};
 use game_core::math::Vec2;
 use game_core::player::input::button;
@@ -38,7 +41,11 @@ use game_core::world::{give, GameEvent, RoundPhase, World};
 /// ones as a balance finding.
 const SEEDS: [u64; 8] = [1, 7, 42, 99, 4242, 12345, 31337, 8675309];
 
-const BOTS: usize = 4;
+/// The shipping seat count — `BOT_COUNT_DEFAULT` bots plus one human — not an
+/// arbitrary four. T11.16 measured every per-weapon number as tracking encounter
+/// rate, so a table measured at a player count the game does not ship is a table
+/// about a different game (§A19, applied to seats rather than to scale).
+const BOTS: usize = BOT_COUNT_DEFAULT + 1;
 const SKILL: f32 = 0.85;
 /// Long enough for several engagements, short enough that 20 weapons × 8 seeds
 /// finishes in minutes. The absolute number does not matter — every weapon gets
@@ -84,7 +91,10 @@ struct Round {
 /// does so identically for every weapon, and leaving them in would let a bot
 /// switch to whatever it walked over halfway through the measurement.
 fn run(seed: u64, hold: Option<ItemId>, seconds: f32) -> Round {
-    let mut w = World::new(seed, MapScale::Small);
+    // `DEFAULT_MAP_SCALE`, for the same reason as `BOTS`: on Large, 0 of 8 rounds
+    // contained a fight at all, so a weapon table measured there is measuring
+    // silence.
+    let mut w = World::new(seed, DEFAULT_MAP_SCALE);
     w.set_phase(RoundPhase::Playing);
 
     let mut bots = Vec::new();
@@ -597,5 +607,250 @@ fn density_report() {
             mean_spawn > 10.0,
             "{scale:?}: only {mean_spawn:.1} spawns — the measurement proves nothing"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T11.16 — encounter rate (§B27)
+// ---------------------------------------------------------------------------
+
+/// One round's encounter record.
+///
+/// Two measures, not one, and the gap between them is the point: `near` counts
+/// ticks where a pair is within sight *range*, `los` counts ticks where the line
+/// between them is also clear. If `near` is high and `los` is low, terrain is
+/// what keeps players apart; if both are low, distance is. Tuning the wrong one
+/// of those does nothing, which is why the decomposition comes before the lever.
+#[derive(Debug, Default, Clone)]
+struct Encounters {
+    first_s: Option<f32>,
+    /// Rising edges of "at least one pair in sight with a clear line", not
+    /// ticks — a pair standing together for ten seconds is one encounter, and
+    /// counting ticks would score a stalemate as the healthiest round measured.
+    starts: u32,
+    near_ticks: u32,
+    los_ticks: u32,
+    ticks: u32,
+    damage: f32,
+    /// The links after "can see each other". A high `near` with zero `damage`
+    /// is a different problem from never meeting, and only these tell them
+    /// apart.
+    fires: u32,
+    ticks_armed: u32,
+}
+
+fn clear_line(w: &World, a: Vec2, b: Vec2) -> bool {
+    let dist = (b - a).len();
+    let steps = (dist / 8.0).ceil() as u32;
+    let mut blocked = 0u32;
+    for i in 1..steps {
+        let t = i as f32 / steps as f32;
+        let p = a + (b - a) * t;
+        if game_core::physics::collide::solid_at(&w.map, p.x as i32, p.y as i32) {
+            blocked += 1;
+            // Same tolerance the bot's own firing check uses. A weapon that
+            // carves treats a thin rise as cover to remove, so a couple of
+            // samples of rock is not "cannot see each other".
+            if blocked > 24 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// A normal round: real item spawns, no forced loadout, no ground sweep. The
+/// balance harness sweeps and arms because it is isolating one weapon; this is
+/// measuring the game as it ships, so it must not.
+fn encounters(seed: u64, scale: MapScale, bot_count: usize, seconds: f32) -> Encounters {
+    let mut w = World::new(seed, scale);
+    w.set_phase(RoundPhase::Playing);
+    let mut bots = Vec::new();
+    for i in 0..bot_count {
+        let id = i as u8;
+        w.add_player(id, 0, format!("Bot {i}"));
+        bots.push(Bot::new(id, seed, i as u32, SKILL));
+    }
+    let _ = w.drain_events();
+
+    let mut r = Encounters::default();
+    let mut engaged = false;
+    r.ticks = (seconds / SIM_DT) as u32;
+    for t in 0..r.ticks {
+        let now = t as f32 * SIM_DT;
+        for b in bots.iter_mut() {
+            let inp = b.think(&w, now, SIM_DT);
+            w.queue_input(b.player, inp);
+            if let Some(slot) = b.wants_select() {
+                w.select_slot(b.player, slot);
+            }
+            if inp.buttons & button::FIRE != 0 {
+                let _ = w.fire(b.player, now);
+            }
+            if let Some(slot) = b.wants_use() {
+                let _ = w.use_item(b.player, slot, now);
+            }
+        }
+        w.step(SIM_DT);
+
+        let live: Vec<Vec2> = bots
+            .iter()
+            .filter_map(|b| w.player(b.player).filter(|p| p.alive).map(|p| p.body.pos))
+            .collect();
+        let mut near = false;
+        let mut los = false;
+        for i in 0..live.len() {
+            for j in (i + 1)..live.len() {
+                if (live[i] - live[j]).len() <= FOV_DAY {
+                    near = true;
+                    if clear_line(&w, live[i], live[j]) {
+                        los = true;
+                    }
+                }
+            }
+        }
+        if near {
+            r.near_ticks += 1;
+        }
+        if los {
+            r.los_ticks += 1;
+            if !engaged {
+                r.starts += 1;
+                engaged = true;
+                r.first_s.get_or_insert(now);
+            }
+        } else {
+            engaged = false;
+        }
+
+        for e in w.drain_events() {
+            if let GameEvent::Damage {
+                amount,
+                attacker: Some(a),
+                victim,
+                ..
+            } = e
+            {
+                if a != victim {
+                    r.damage += amount;
+                }
+            }
+        }
+    }
+    for b in &bots {
+        let st = b.stats();
+        r.fires += st.fires;
+        r.ticks_armed += st.ticks_armed;
+    }
+    r
+}
+
+/// The acceptance test for T11.16, and it measures the configuration the game
+/// actually ships over the round length it actually runs — `ROUND_SECONDS`, not
+/// the 150 s the survey uses, because a player experiences the whole round.
+///
+/// The floors carry a **control**: the pre-fix configuration (Large, 4 players)
+/// must *fail* them. Without it these pass for any configuration at all, which
+/// is exactly how §B15's assertions passed against nothing.
+#[test]
+#[ignore = "measurement: minutes in release"]
+fn the_shipping_configuration_produces_a_fight() {
+    let plrs = BOT_COUNT_DEFAULT + 1;
+    let ship: Vec<_> = SEEDS
+        .iter()
+        .map(|s| encounters(*s, DEFAULT_MAP_SCALE, plrs, ROUND_SECONDS))
+        .collect();
+    let fought = ship.iter().filter(|r| r.damage > 0.0).count();
+    let firsts: Vec<f32> = ship.iter().filter_map(|r| r.first_s).collect();
+    let first = firsts.iter().sum::<f32>() / firsts.len().max(1) as f32;
+    println!(
+        "\n== SHIPPING — {DEFAULT_MAP_SCALE:?}, {plrs} players, {} seeds x {ROUND_SECONDS}s ==\n\
+            fought {fought}/{}  1st contact {first:.0}s  seen {}/{}",
+        SEEDS.len(),
+        ship.len(),
+        firsts.len(),
+        ship.len(),
+    );
+
+    // The control. Large with 4 players is what shipped before this task, and it
+    // produced zero fights in eight rounds. If it clears these floors, the
+    // floors are measuring nothing.
+    let before: Vec<_> = SEEDS
+        .iter()
+        .map(|s| encounters(*s, MapScale::Large, 4, ROUND_SECONDS))
+        .collect();
+    let before_fought = before.iter().filter(|r| r.damage > 0.0).count();
+    println!(
+        "   control (Large, 4 players): fought {before_fought}/{}",
+        before.len()
+    );
+
+    assert!(
+        fought >= 6,
+        "{DEFAULT_MAP_SCALE:?} with {plrs} players: only {fought}/{} rounds contained a fight",
+        ship.len()
+    );
+    assert!(
+        firsts.len() == ship.len() && first < 45.0,
+        "first contact averages {first:.0}s across {}/{} rounds that had one",
+        firsts.len(),
+        ship.len()
+    );
+    assert!(
+        before_fought < fought,
+        "the control ({before_fought}/{}) matched the shipping configuration \
+         ({fought}/{}) — these floors do not measure the change",
+        before.len(),
+        ship.len()
+    );
+}
+
+#[test]
+#[ignore = "measurement: minutes in release"]
+fn encounter_report() {
+    println!(
+        "\n== ENCOUNTERS — {} seeds x {POOL_SECONDS}s, sight {FOV_DAY:.0}px ==",
+        SEEDS.len()
+    );
+    println!("   shipping config is {DEFAULT_MAP_SCALE:?} with {BOT_COUNT_DEFAULT} bots + 1 human");
+    println!(
+        "\n   {:<8} {:>5}  {:>6}  {:>7}  {:>7}  {:>7}  {:>6}  {:>6}  {:>6}  {:>7}",
+        "scale", "plrs", "fought", "1st", "gap", "near%", "los%", "armed%", "fires", "dmg"
+    );
+
+    for scale in [MapScale::Small, MapScale::Medium, MapScale::Large] {
+        for plrs in [4usize, 6] {
+            let rs: Vec<_> = SEEDS
+                .iter()
+                .map(|s| encounters(*s, scale, plrs, POOL_SECONDS))
+                .collect();
+            let fought = rs.iter().filter(|r| r.damage > 0.0).count();
+            let firsts: Vec<f32> = rs.iter().filter_map(|r| r.first_s).collect();
+            let first = if firsts.is_empty() {
+                f32::NAN
+            } else {
+                firsts.iter().sum::<f32>() / firsts.len() as f32
+            };
+            let starts: u32 = rs.iter().map(|r| r.starts).sum();
+            let secs = POOL_SECONDS * rs.len() as f32;
+            let gap = if starts == 0 {
+                f32::INFINITY
+            } else {
+                secs / starts as f32
+            };
+            let ticks: u32 = rs.iter().map(|r| r.ticks).sum();
+            let near = 100.0 * rs.iter().map(|r| r.near_ticks).sum::<u32>() as f32 / ticks as f32;
+            let los = 100.0 * rs.iter().map(|r| r.los_ticks).sum::<u32>() as f32 / ticks as f32;
+            let armed = 100.0 * rs.iter().map(|r| r.ticks_armed).sum::<u32>() as f32
+                / (ticks * plrs as u32) as f32;
+            let fires = rs.iter().map(|r| r.fires).sum::<u32>() as f32 / rs.len() as f32;
+            let dmg = rs.iter().map(|r| r.damage).sum::<f32>() / rs.len() as f32;
+            println!(
+                "   {:<8} {plrs:>5}  {fought:>3}/{}  {first:>6.0}s  {gap:>6.1}s  {near:>6.1}%  \
+                 {los:>5.1}%  {armed:>5.1}%  {fires:>6.0}  {dmg:>6.0}",
+                format!("{scale:?}"),
+                rs.len(),
+            );
+        }
     }
 }

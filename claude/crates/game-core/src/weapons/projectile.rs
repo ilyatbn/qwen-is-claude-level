@@ -359,3 +359,117 @@ pub fn surface_normal(map: &Map, at: Vec2) -> Vec2 {
         acc / l
     }
 }
+
+/// Where a thrown weapon will actually land — T11.15, §B26.
+///
+/// The bot's throw guard used to test the distance to its *target*. A molotov is
+/// ballistic: thrown uphill, or into a rise, it falls short **onto the thrower**,
+/// and no target-distance guard can see that. This walks the arc instead.
+///
+/// `docs/22-aiming-crosshair.md` §6 describes a client-side trajectory preview on
+/// the same constants — it was never built, so there was no existing
+/// implementation to share. What is shared instead is everything that decides
+/// where a projectile goes: a real `Projectile`, M2's `substeps`, the same
+/// `bounce`, the same resting rule, and the same fuse and apex checks in the same
+/// order `step` applies them. The first version of this ignored bouncing and was
+/// **44 px out on smoke within a minute**, which is why
+/// `prediction_agrees_with_the_simulation` exists — a predictor that disagrees
+/// with the simulation is worse than none, because the bot refuses safe throws
+/// and takes unsafe ones with equal confidence.
+///
+/// Players are deliberately not modelled: the guard asks "where does the hazard
+/// land", and a body in the way only ever makes it land *sooner*, which is the
+/// safe direction to be wrong in.
+///
+/// `None` means it was still flying after `max_ticks`. A caller should read that
+/// as "do not throw" — it does not know where the hazard ends up.
+pub fn predict_impact(
+    map: &Map,
+    weapon: WeaponId,
+    from: Vec2,
+    aim: f32,
+    wind: f32,
+    max_ticks: u32,
+    dt: f32,
+) -> Option<Vec2> {
+    let w = def(weapon)?;
+    let dir = Vec2::new(aim.cos(), aim.sin());
+    let fuse = match w.delivery {
+        Delivery::Projectile { fuse, .. } => fuse,
+        _ => None,
+    };
+    let mut p = Projectile {
+        id: 0,
+        weapon,
+        owner: 0,
+        pos: from + dir * MUZZLE_OFFSET,
+        vel: dir * w.muzzle_speed,
+        spawned_at: 0.0,
+        fuse_at: fuse,
+        age_ticks: 0,
+        resting: false,
+        rose: false,
+    };
+
+    for t in 0..max_ticks {
+        // `step` advances the clock before it looks at the projectile, so the
+        // comparison is against the tick that has just begun.
+        let now = (t + 1) as f32 * dt;
+        if now >= PROJECTILE_MAX_LIFETIME {
+            return Some(p.pos);
+        }
+        if let Some(f) = p.fuse_at {
+            if now >= f {
+                return Some(p.pos);
+            }
+        }
+        if p.resting {
+            continue;
+        }
+        p.age_ticks += 1;
+        p.rose |= p.vel.y < 0.0;
+        p.vel.y += GRAVITY * w.gravity_scale * dt;
+        if matches!(w.burst, Burst::Pellets { .. }) && p.rose && p.vel.y >= 0.0 {
+            return Some(p.pos);
+        }
+        p.vel.x += wind * w.wind_scale * dt;
+
+        let (steps, step) = substeps(p.vel * dt);
+        for _ in 0..steps {
+            let next = p.pos + step;
+            if solid_at(map, next.x.round() as i32, next.y.round() as i32) {
+                match w.delivery {
+                    Delivery::Projectile {
+                        explode_on_contact: true,
+                        ..
+                    } => return Some(next),
+                    Delivery::Projectile {
+                        restitution,
+                        friction,
+                        ..
+                    } => {
+                        bounce(map, &mut p, next, restitution, friction);
+                    }
+                    // Melee, Cone, Placed and Hitscan never fly. Named rather
+                    // than caught by `_` so a new delivery is a compile error
+                    // here too.
+                    Delivery::Melee { .. }
+                    | Delivery::Cone { .. }
+                    | Delivery::Placed { .. }
+                    | Delivery::Hitscan { .. } => return Some(next),
+                }
+                break;
+            }
+            p.pos = next;
+        }
+
+        if p.fuse_at.is_some()
+            && p.vel.len() < GRENADE_REST_SPEED
+            && solid_at(map, p.pos.x.round() as i32, (p.pos.y + 2.0).round() as i32)
+        {
+            p.resting = true;
+            p.vel = Vec2::ZERO;
+        }
+    }
+    None
+}

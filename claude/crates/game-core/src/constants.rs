@@ -456,7 +456,29 @@ pub const CAMERA_LERP: f32 = 0.12;
 // --- A1: a bigger world, a closer camera ---
 
 /// The map you get unless `MAP_SCALE` says otherwise.
-pub const DEFAULT_MAP_SCALE: MapScale = MapScale::Large;
+///
+/// **Medium, not Large — T11.16, §B27.** §A1 chose Large so the map is something
+/// you explore rather than survey, and that intent stands: at `CAMERA_ZOOM` 2.0
+/// Medium is still 4.8 x 4.3 screens of world, so nothing about discovery, the
+/// minimap or the cave system changes.
+///
+/// What changed is measured. At the shipping player count, 8 seeds x 150 s:
+///
+/// | scale | plrs | fought | 1st contact | in sight |
+/// |---|---|---|---|---|
+/// | Large  | 4 | **0/8** | 100 s | 8.6 % |
+/// | Large  | 6 | 3/8 | 89 s | 33.1 % |
+/// | Medium | 6 | 4/8 | 24 s | 66.5 % |
+///
+/// Zero of eight rounds on Large contained a fight at all. `near%` and `los%`
+/// track each other everywhere (8.6 vs 8.5, 66.5 vs 64.6), so terrain is not
+/// what keeps players apart — distance is — and `armed%` is flat at 28-43 %
+/// across every configuration, so it is not item scarcity either.
+///
+/// Large is still there behind `MAP_SCALE=large` for the exploratory game §A1
+/// describes. It is not the default because at four players it produces rounds
+/// with no fighting in them.
+pub const DEFAULT_MAP_SCALE: MapScale = MapScale::Medium;
 /// Phaser camera zoom. Visible world = VIEWPORT / this.
 pub const CAMERA_ZOOM: f32 = 2.0;
 /// The camera does not move while the player is inside this box.
@@ -602,7 +624,17 @@ pub const STAR_FADE_START: f32 = 0.58;
 
 // --- A5: bots ---
 
-pub const BOT_COUNT_DEFAULT: usize = 3;
+/// Five, so a lone human sits in a full six-player room — T11.16, §B27.
+///
+/// Player count is the second lever on encounter rate and it is nearly free:
+/// §B2 measured 128 concurrent rooms at 0.12 % of half a tick budget. Going 4 -> 6
+/// players took time-to-first-contact from 107 s to 24 s on Medium and from
+/// 100 s to 89 s on Large.
+///
+/// It costs a human nothing: T6.15 kicks the newest bot when a person joins a
+/// full room, so five bots means five opponents alone and four once a friend
+/// arrives.
+pub const BOT_COUNT_DEFAULT: usize = 5;
 pub const BOT_SKILL_DEFAULT: f32 = 0.6;
 
 // --- A6: minimap ---

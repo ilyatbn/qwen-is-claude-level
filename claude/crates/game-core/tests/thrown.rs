@@ -451,3 +451,82 @@ fn none_of_the_four_chain_detonates_another() {
         w.projectiles.remove(live);
     }
 }
+
+// ---------------------------------------------------------------------------
+// T11.15 — the predictor must agree with the simulation (§B26)
+// ---------------------------------------------------------------------------
+
+/// The contract for `predict_impact`, and the reason it exists as a test rather
+/// than as a comment.
+///
+/// `docs/22-aiming-crosshair.md` §6 describes a client trajectory preview built
+/// on the same constants; it was never implemented, so there is no shared
+/// implementation to point at and claim agreement from. This asserts it instead:
+/// throw the real thing, let `World::step` fly it, and require the prediction to
+/// name the same place.
+///
+/// A predictor that disagrees with the simulation is worse than none — the bot
+/// would refuse safe throws and take unsafe ones with equal confidence.
+#[test]
+fn prediction_agrees_with_the_simulation() {
+    let mut checked = 0;
+    for aim_deg in [-70.0_f32, -45.0, -20.0, 0.0, 20.0] {
+        for weapon in [WEAPON_MOLOTOV, WEAPON_SMOKE, WEAPON_TOXIC_GRENADE] {
+            let mut w = playing();
+            let from = ground_point(&w) + Vec2::new(0.0, -40.0);
+            let aim = aim_deg.to_radians();
+
+            let predicted = game_core::weapons::projectile::predict_impact(
+                &w.map,
+                weapon,
+                from,
+                aim,
+                w.map.meta.wind,
+                (PROJECTILE_MAX_LIFETIME / SIM_DT) as u32,
+                SIM_DT,
+            );
+
+            // The same throw, flown by the real simulation — and deliberately
+            // with **no player in the world**. The first version stood the
+            // thrower at the throw origin, and a toxic grenade arced up, bounced,
+            // fell back and was removed by hitting them, 42 px from where the
+            // arc ends. That is the very scenario this feature exists to prevent,
+            // and it is not what the predictor claims: it models terrain only,
+            // because a body in the way can only make the hazard land *sooner*,
+            // which is the safe direction to be wrong in.
+            let id = w.projectiles.spawn(weapon, 0, from, aim, w.round_time);
+            let mut actual = None;
+            for _ in 0..(PROJECTILE_MAX_LIFETIME / SIM_DT) as u32 {
+                let before: Vec<_> = w.projectiles.iter().map(|p| (p.id, p.pos)).collect();
+                w.step(SIM_DT);
+                if !w.projectiles.iter().any(|p| p.id == id) {
+                    actual = before.iter().find(|(i, _)| *i == id).map(|(_, p)| *p);
+                    break;
+                }
+            }
+
+            let (Some(pred), Some(act)) = (predicted, actual) else {
+                continue; // never landed inside the lifetime: nothing to compare
+            };
+            // One tick of travel at muzzle speed is the honest tolerance — the
+            // simulation reports the position *before* the step that removed the
+            // projectile, so the two are at most a tick apart by construction.
+            let tol = def(weapon).map_or(0.0, |d| d.muzzle_speed) * SIM_DT + 8.0;
+            assert!(
+                (pred - act).len() <= tol,
+                "{:?}: predicted {:?} but it landed at {:?} — {:.1} px apart, tolerance {tol:.1}",
+                def(weapon).map(|d| d.key),
+                pred,
+                act,
+                (pred - act).len(),
+            );
+            checked += 1;
+        }
+    }
+    // Control: without this the loop passing proves nothing, because every case
+    // could have hit the `continue`.
+    assert!(
+        checked >= 10,
+        "only {checked} throws actually landed — the comparison proved nothing"
+    );
+}
