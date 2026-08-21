@@ -1,6 +1,6 @@
 # Master task list
 
-168 tasks across 17 milestones.
+169 tasks across 17 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added. Counted, not assumed.) Work them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
@@ -299,6 +299,7 @@ tests and 20 e2e specs missed all four.
 - [ ] [T13.06.8](M13/T13.06.8-results-countdown.md) — The results countdown counts down **(v4)**
 - [ ] [T13.06.9](M13/T13.06.9-jetpack-readout.md) — Show the jetpack number **(v4)**
 - [ ] [T13.06.10](M13/T13.06.10-gate-selfload.md) — The gate breaks its own wall-clock assertions **(v4)**
+- [ ] [T13.06.11](M13/T13.06.11-reaper-has-no-caller.md) — The room reaper has no caller **(v4)**
 
 **Checkpoint:** connect and land in a *lobby*, not a battle. Then fire a rocket and
 watch the hole appear, stand in toxic rain and see it, and play a round to the end.

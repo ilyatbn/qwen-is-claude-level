@@ -3550,8 +3550,18 @@ Notes: A ROOM IS BORN IN LOBBY AND SEATS NO BOTS. `begin_round` is the one place
        A JOINING CLIENT WAS NEVER TOLD ITS PHASE: a Lobby room does not tick, so
        it broadcasts no `round_state`, and the lobby panel never appeared. §A39
        again — `seat()` now sends `round_state` like it sends `inventory`.
+       THE 10 s HANDSHAKE BUDGET EXPIRED WITH THIS CHANGE. `join` now CREATES
+       the room, and creating one generates a map (§B2: 0.6-1.1 s idle). The
+       old budget was sized for a world where the room already existed. Raised
+       to 30 s, and both halves of the control measured: at load 16 the 10 s
+       budget fails 3-4 of 11; at load 43 the 30 s budget passes 11/11. My
+       first control ran at load 9 and PASSED, so the hypothesis was unproven
+       until the load was raised — reported as unproven until it was not.
 Left for later: `join` now means quick match, so "room full" is a property of a
        *specific* room; integration's capacity test joins by code instead.
+       `record_tick` still runs for a Lobby room, recording ~0 us ticks that
+       flatter the p50/p99; the loop really is running, so it is arguable, but
+       it is worth a deliberate decision.
        Bots still fire while walking (T13.06.3). Touched outside Touch only:
        main.rs and bin/replay.rs (compile breaks from the Command/Replay enums),
        and 6 test files whose harness waited for a tick a lobby never produces.
