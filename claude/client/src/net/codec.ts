@@ -39,6 +39,8 @@ export interface SnapshotPlayer {
   health: number
   flags: number
   jetpackFuel: number
+  /** This player's own FoV multiplier: fog times the smoke they stand in. */
+  vision: number
   /** `null` when the player is holding nothing. */
   selectedItem: number | null
 }
@@ -167,6 +169,7 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
     const flags = r.u8()
     const jetpackFuel = (r.u8() / 255) * C().JETPACK_MAX_FUEL
     const item = r.u8()
+    const vision = r.u8() / 255
     players.push({
       id,
       x,
@@ -177,6 +180,7 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
       health,
       flags,
       jetpackFuel,
+      vision,
       selectedItem: item === 255 ? null : item,
     })
   }

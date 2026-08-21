@@ -391,10 +391,17 @@ pub const MASK_CHECKSUM_INTERVAL: f32 = 5.0;
 /// — velocities are required for extrapolation through a dropped snapshot
 /// (`docs/42` §4), and aim is fixed at `u16` by `docs/22` §2.
 ///
-/// A snapshot is therefore `8 + 15n + 4`: **102 bytes for six players**, against
-/// the doc's 97. At 20 Hz that is 2.0 KB/s down rather than 1.9 — well inside the
+/// A snapshot is therefore `8 + 16n + 4`: **108 bytes for six players**, against
+/// the doc's 97. At 20 Hz that is 2.2 KB/s down rather than 1.9 — well inside the
 /// budget in `docs/40` §4.
-pub const SNAPSHOT_PLAYER_BYTES: usize = 15;
+///
+/// The sixteenth byte is **vision** (T11.08): the player's own FoV multiplier,
+/// fog times smoke, quantised. It is authoritative because smoke is *positional* —
+/// what you can see depends on which cloud you are standing in, so the client
+/// cannot derive it from a global effect flag. Before it existed, `GameScene`
+/// hardcoded `fogMult: 1` and `World::fog_multiplier` had **no caller at all**:
+/// heavy fog was simulated every round and changed nothing anyone could see.
+pub const SNAPSHOT_PLAYER_BYTES: usize = 16;
 /// Header bytes before the player array: tick, round_time_ds, darkness, count.
 pub const SNAPSHOT_HEADER_BYTES: usize = 8;
 /// Trailing `last_input_seq`.
@@ -733,12 +740,53 @@ pub const FLAMETHROWER_AMMO: u8 = 200;
 /// How long one spray particle lives, for the client and for the burn trail.
 pub const FLAMETHROWER_PARTICLE_LIFE: f32 = 0.35;
 
+// Thrown ordnance (§B7). Four grenades that are not the grenade: one bursts
+// above you, one blinds, one burns, one poisons. Three of the four leave the
+// terrain untouched — what they deny is space, not rock.
 pub const AIRBURST_PELLETS: u32 = 9;
 /// Radians, downward.
 pub const AIRBURST_FAN: f32 = 0.9;
+/// Bursts at apex, or here if it is still climbing — an airburst that lands is a
+/// dud, and a dud is a wasted pickup.
+pub const AIRBURST_FUSE: f32 = 1.2;
+pub const AIRBURST_MUZZLE_SPEED: f32 = 520.0;
+pub const AIRBURST_AMMO: u8 = 2;
+pub const AIRBURST_PELLET_DAMAGE: f32 = 12.0;
+pub const AIRBURST_PELLET_CARVE: f32 = 4.0;
+pub const AIRBURST_PELLET_RANGE: f32 = 460.0;
+/// Pellets are energy (§B7): they pierce shields and drain the victim's charge,
+/// which is what makes the airburst the *other* answer to someone turtling.
+///
+/// It is a real cost and **nobody ever pays it**. `energy_cost` drives three
+/// things (§B16) and a pellet needs two of them: pierce yes, charge no. That
+/// works because pellets are fired by `burst_pellets`, not by `try_fire` — the
+/// only place battery is ever spent. `an_airburst_costs_the_thrower_no_battery`
+/// guards the day someone routes them through the normal firing path.
+pub const AIRBURST_PELLET_ENERGY: f32 = 4.0;
+
 pub const FOV_SMOKE_MULT: f32 = 0.35;
 pub const SMOKE_RADIUS: f32 = 110.0;
 pub const SMOKE_DURATION: f32 = 8.0;
+pub const SMOKE_FUSE: f32 = 1.5;
+pub const SMOKE_MUZZLE_SPEED: f32 = 470.0;
+pub const SMOKE_AMMO: u8 = 2;
+
+/// Six patches, scattered — a molotov denies an area, not a point.
+pub const MOLOTOV_PATCHES: u32 = 6;
+/// **Must stay below `LAVA_BURN_RADIUS` (28).** The patches sit on a ring of this
+/// radius, so a scatter wider than one patch leaves the impact point itself
+/// unburnt — a molotov that lands on you and does nothing. It was 46, and the
+/// control half of `smoke_deals_no_damage_...` caught it: fire that could not burn.
+pub const MOLOTOV_SCATTER: f32 = 24.0;
+pub const MOLOTOV_BURN_DURATION: f32 = 5.0;
+pub const MOLOTOV_MUZZLE_SPEED: f32 = 470.0;
+pub const MOLOTOV_AMMO: u8 = 2;
+
+pub const TOXIC_GRENADE_RADIUS: f32 = 90.0;
+pub const TOXIC_GRENADE_DURATION: f32 = 8.0;
+pub const TOXIC_GRENADE_FUSE: f32 = 2.0;
+pub const TOXIC_GRENADE_MUZZLE_SPEED: f32 = 480.0;
+pub const TOXIC_GRENADE_AMMO: u8 = 2;
 pub const MINE_DAMAGE: f32 = 60.0;
 pub const MINE_BLAST_RADIUS: f32 = 48.0;
 /// Two per pickup: a mine is a commitment, not a spray.

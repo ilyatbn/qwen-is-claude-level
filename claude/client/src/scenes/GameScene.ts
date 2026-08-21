@@ -85,6 +85,8 @@ export class GameScene extends Phaser.Scene {
   private rttAcc = 0
 
   private me = -1
+  /** FoV multiplier from the server: fog times the smoke I am standing in. */
+  private vision = 1
   private seq = 0
   private acc = 0
   private roundTime = 0
@@ -541,6 +543,10 @@ export class GameScene extends Phaser.Scene {
     if (mine) {
       this.serverPos = { x: mine.x, y: mine.y }
       this.health = mine.health
+      // Authoritative, because smoke is positional: what you can see depends on
+      // which cloud you are standing in. This replaced a hardcoded 1, which is
+      // why heavy fog changed nothing in the real game for four milestones.
+      this.vision = mine.vision
     }
     if (mine && this.predictor) {
       this.predictor.reconcile({
@@ -770,7 +776,7 @@ export class GameScene extends Phaser.Scene {
 
     const fov = fovRadius({
       darkness,
-      fogMult: 1,
+      fogMult: this.vision,
       health: C().BASE_HEALTH,
       flashlightOn: false,
     })
@@ -831,7 +837,7 @@ export class GameScene extends Phaser.Scene {
     const darkness = this.serverDarkness || darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS)
     const fov = fovRadius({
       darkness,
-      fogMult: 1,
+      fogMult: this.vision,
       health: C().BASE_HEALTH,
       flashlightOn: false,
     })

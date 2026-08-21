@@ -5,6 +5,14 @@
 //! drills all become new variants without changing the firing code's shape
 //! (`docs/31-weapons-combat.md` §1, §8).
 
+use crate::constants::{AIRBURST_AMMO, MOLOTOV_AMMO, SMOKE_AMMO, TOXIC_GRENADE_AMMO};
+use crate::constants::{
+    AIRBURST_FAN, AIRBURST_FUSE, AIRBURST_MUZZLE_SPEED, AIRBURST_PELLETS, AIRBURST_PELLET_CARVE,
+    AIRBURST_PELLET_DAMAGE, AIRBURST_PELLET_ENERGY, AIRBURST_PELLET_RANGE, LAVA_BURN_DPS,
+    LAVA_BURN_RADIUS, MOLOTOV_BURN_DURATION, MOLOTOV_MUZZLE_SPEED, MOLOTOV_PATCHES,
+    MOLOTOV_SCATTER, SMOKE_DURATION, SMOKE_FUSE, SMOKE_MUZZLE_SPEED, SMOKE_RADIUS, TOXIC_DPS,
+    TOXIC_GRENADE_DURATION, TOXIC_GRENADE_FUSE, TOXIC_GRENADE_MUZZLE_SPEED, TOXIC_GRENADE_RADIUS,
+};
 use crate::constants::{
     AXE_ARC, AXE_CARVE, AXE_COOLDOWN, AXE_DAMAGE, AXE_KNOCKBACK, AXE_REACH, BAT_ARC, BAT_CARVE,
     BAT_COOLDOWN, BAT_DAMAGE, BAT_KNOCKBACK, BAT_REACH, HAMMER_ARC, HAMMER_CARVE, HAMMER_COOLDOWN,
@@ -42,10 +50,11 @@ use crate::constants::{
     MINE_AMMO, MINE_ARM_TIME, MINE_BLAST_RADIUS, MINE_DAMAGE, MINE_LIFETIME, MINE_TRIGGER_RADIUS,
 };
 use crate::items::registry::{
-    WeaponId, WEAPON_AXE, WEAPON_BAT, WEAPON_BAZOOKA, WEAPON_DEAGLE, WEAPON_FLAMETHROWER,
-    WEAPON_GRENADE, WEAPON_HAMMER, WEAPON_KNIFE, WEAPON_LASER_PISTOL, WEAPON_LASER_SMG,
-    WEAPON_MACHINEGUN, WEAPON_METEOR, WEAPON_METEOR_FRAG, WEAPON_MINE, WEAPON_PISTOL,
-    WEAPON_REVOLVER, WEAPON_SMG, WEAPON_WHIP,
+    WeaponId, WEAPON_AIRBURST, WEAPON_AIRBURST_PELLET, WEAPON_AXE, WEAPON_BAT, WEAPON_BAZOOKA,
+    WEAPON_DEAGLE, WEAPON_FLAMETHROWER, WEAPON_GRENADE, WEAPON_HAMMER, WEAPON_KNIFE,
+    WEAPON_LASER_PISTOL, WEAPON_LASER_SMG, WEAPON_MACHINEGUN, WEAPON_METEOR, WEAPON_METEOR_FRAG,
+    WEAPON_MINE, WEAPON_MOLOTOV, WEAPON_PISTOL, WEAPON_REVOLVER, WEAPON_SMG, WEAPON_SMOKE,
+    WEAPON_TOXIC_GRENADE, WEAPON_WHIP,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -85,6 +94,51 @@ pub enum Delivery {
     },
 }
 
+/// What a projectile *does* when it stops (§B7).
+///
+/// The four thrown weapons in §B7 all fly identically — the same gravity, the
+/// same sub-stepped terrain collision, the same fuse — and differ only in what
+/// happens at the end. Encoding that as a field rather than four `Delivery`
+/// variants keeps one flight path: a smoke grenade that fell differently from a
+/// molotov would be a second projectile simulation to keep in step.
+///
+/// **`Blast` is not a default anyone can forget.** Every existing weapon names
+/// it, and `detonate` matches exhaustively, so a new burst kind is a compile
+/// error at the one place that decides what going off means.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Burst {
+    /// Carve and damage in a radius — bazooka, grenade, mine, meteor.
+    Blast,
+    /// Fire `count` hitscan rays in a downward fan (§B7). The pellets are energy,
+    /// so they pierce shields; the grenade was the ammo, so they cost no battery.
+    Pellets {
+        count: u32,
+        fan: f32,
+        pellet: WeaponId,
+    },
+    /// Leave a damaging ground zone and **touch no terrain**. `patches` scatter
+    /// around the impact so a molotov denies an area rather than a point.
+    Zone {
+        kind: BurnZone,
+        radius: f32,
+        dps: f32,
+        duration: f32,
+        patches: u32,
+        scatter: f32,
+    },
+    /// A cloud that blocks vision and does nothing else — the only weapon in the
+    /// game with no damage at all.
+    Smoke { radius: f32, duration: f32 },
+}
+
+/// Mirrors `burn::BurnKind` without `weapons::defs` depending on the burn field's
+/// internals; `detonate` maps one to the other.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BurnZone {
+    Fire,
+    Toxic,
+}
+
 #[derive(Debug)]
 pub struct WeaponDef {
     /// Stable — it goes on the wire in `projectile_spawn`.
@@ -107,6 +161,8 @@ pub struct WeaponDef {
     /// `try_fire` makes instead of a stack count, and the thing that makes a hit
     /// pierce a shield. Three separate flags could disagree; a cost cannot.
     pub energy_cost: f32,
+    /// What happens when this weapon's projectile stops (§B7).
+    pub burst: Burst,
 }
 
 impl WeaponDef {
@@ -149,6 +205,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: BAZOOKA_GRAVITY_SCALE,
         wind_scale: BAZOOKA_WIND_SCALE,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     WeaponDef {
         id: WEAPON_GRENADE,
@@ -167,6 +224,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: GRENADE_GRAVITY_SCALE,
         wind_scale: GRENADE_WIND_SCALE,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     WeaponDef {
         id: WEAPON_SMG,
@@ -183,6 +241,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: SMG_GRAVITY_SCALE,
         wind_scale: SMG_WIND_SCALE,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     // --- weather ordnance (M5) ---
     //
@@ -206,6 +265,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 1.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     WeaponDef {
         id: WEAPON_METEOR_FRAG,
@@ -224,6 +284,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 1.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     // Energy weapons (§B5). No ammo count: `energy_cost` is what they spend, and
     // a laser with no charge is a paperweight.
@@ -242,6 +303,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: LASER_PISTOL_ENERGY,
+        burst: Burst::Blast,
     },
     WeaponDef {
         id: WEAPON_LASER_SMG,
@@ -258,6 +320,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: LASER_SMG_ENERGY,
+        burst: Burst::Blast,
     },
     // --- ballistic hitscan (§B7) ---
     //
@@ -279,6 +342,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     WeaponDef {
         id: WEAPON_REVOLVER,
@@ -295,6 +359,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     WeaponDef {
         id: WEAPON_DEAGLE,
@@ -311,6 +376,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     WeaponDef {
         id: WEAPON_MACHINEGUN,
@@ -327,6 +393,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     // --- melee (§B7) ---
     //
@@ -349,6 +416,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     WeaponDef {
         id: WEAPON_BAT,
@@ -366,6 +434,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     WeaponDef {
         id: WEAPON_WHIP,
@@ -383,6 +452,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     WeaponDef {
         id: WEAPON_AXE,
@@ -400,6 +470,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     WeaponDef {
         id: WEAPON_HAMMER,
@@ -417,6 +488,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     // --- cone (§B7) ---
     //
@@ -440,6 +512,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: Burst::Blast,
     },
     // --- placed (§B7) ---
     WeaponDef {
@@ -458,6 +531,134 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: Burst::Blast,
+    },
+    // --- thrown ordnance (§B7) ---
+    //
+    // Four grenades that are not the grenade. They share one flight path and
+    // differ only in `burst`, which is the whole reason `Burst` is a field: a
+    // smoke that fell differently from a molotov would be a second projectile
+    // simulation to keep in step.
+    //
+    // Three of the four leave the terrain **byte-identical**. What they deny is
+    // space, not rock — and `Burst::Zone`/`Burst::Smoke` never reach `explode`,
+    // so that is structural rather than a radius someone has to remember to zero.
+    WeaponDef {
+        id: WEAPON_AIRBURST,
+        key: "airburst",
+        delivery: Delivery::Projectile {
+            fuse: Some(AIRBURST_FUSE),
+            restitution: 0.0,
+            friction: 0.0,
+            explode_on_contact: false,
+        },
+        damage: 0.0,
+        blast_radius: 0.0,
+        range: 0.0,
+        cooldown: GRENADE_COOLDOWN,
+        muzzle_speed: AIRBURST_MUZZLE_SPEED,
+        gravity_scale: 1.0,
+        wind_scale: 0.5,
+        energy_cost: 0.0,
+        burst: Burst::Pellets {
+            count: AIRBURST_PELLETS,
+            fan: AIRBURST_FAN,
+            pellet: WEAPON_AIRBURST_PELLET,
+        },
+    },
+    WeaponDef {
+        id: WEAPON_SMOKE,
+        key: "smoke",
+        delivery: Delivery::Projectile {
+            fuse: Some(SMOKE_FUSE),
+            restitution: 0.35,
+            friction: 0.8,
+            explode_on_contact: false,
+        },
+        damage: 0.0,
+        blast_radius: 0.0,
+        range: 0.0,
+        cooldown: GRENADE_COOLDOWN,
+        muzzle_speed: SMOKE_MUZZLE_SPEED,
+        gravity_scale: 1.0,
+        wind_scale: 0.5,
+        energy_cost: 0.0,
+        burst: Burst::Smoke {
+            radius: SMOKE_RADIUS,
+            duration: SMOKE_DURATION,
+        },
+    },
+    WeaponDef {
+        id: WEAPON_MOLOTOV,
+        key: "molotov",
+        delivery: Delivery::Projectile {
+            fuse: None,
+            restitution: 0.0,
+            friction: 0.0,
+            explode_on_contact: true,
+        },
+        damage: 0.0,
+        blast_radius: 0.0,
+        range: 0.0,
+        cooldown: GRENADE_COOLDOWN,
+        muzzle_speed: MOLOTOV_MUZZLE_SPEED,
+        gravity_scale: 1.0,
+        wind_scale: 0.5,
+        energy_cost: 0.0,
+        burst: Burst::Zone {
+            kind: BurnZone::Fire,
+            radius: LAVA_BURN_RADIUS,
+            dps: LAVA_BURN_DPS,
+            duration: MOLOTOV_BURN_DURATION,
+            patches: MOLOTOV_PATCHES,
+            scatter: MOLOTOV_SCATTER,
+        },
+    },
+    WeaponDef {
+        id: WEAPON_TOXIC_GRENADE,
+        key: "toxic_grenade",
+        delivery: Delivery::Projectile {
+            fuse: Some(TOXIC_GRENADE_FUSE),
+            restitution: 0.4,
+            friction: 0.75,
+            explode_on_contact: false,
+        },
+        damage: 0.0,
+        blast_radius: 0.0,
+        range: 0.0,
+        cooldown: GRENADE_COOLDOWN,
+        muzzle_speed: TOXIC_GRENADE_MUZZLE_SPEED,
+        gravity_scale: 1.0,
+        wind_scale: 0.5,
+        energy_cost: 0.0,
+        burst: Burst::Zone {
+            kind: BurnZone::Toxic,
+            radius: TOXIC_GRENADE_RADIUS,
+            dps: TOXIC_DPS,
+            duration: TOXIC_GRENADE_DURATION,
+            patches: 1,
+            scatter: 0.0,
+        },
+    },
+    // An airburst's pellet. Energy, so it pierces shields (§B5) — but its cost is
+    // zero: the grenade was the ammo, and charging the thrower battery it never
+    // asked for would make an airburst secretly cost two resources.
+    WeaponDef {
+        id: WEAPON_AIRBURST_PELLET,
+        key: "airburst_pellet",
+        delivery: Delivery::Hitscan {
+            shots: 1,
+            spread: 0.0,
+        },
+        damage: AIRBURST_PELLET_DAMAGE,
+        blast_radius: AIRBURST_PELLET_CARVE,
+        range: AIRBURST_PELLET_RANGE,
+        cooldown: 0.0,
+        muzzle_speed: 0.0,
+        gravity_scale: 0.0,
+        wind_scale: 0.0,
+        energy_cost: AIRBURST_PELLET_ENERGY,
+        burst: Burst::Blast,
     },
 ];
 
@@ -489,6 +690,10 @@ pub fn ammo_per_pickup(id: WeaponId) -> u8 {
         WEAPON_MACHINEGUN => MACHINEGUN_AMMO,
         WEAPON_FLAMETHROWER => FLAMETHROWER_AMMO,
         WEAPON_MINE => MINE_AMMO,
+        WEAPON_AIRBURST => AIRBURST_AMMO,
+        WEAPON_SMOKE => SMOKE_AMMO,
+        WEAPON_MOLOTOV => MOLOTOV_AMMO,
+        WEAPON_TOXIC_GRENADE => TOXIC_GRENADE_AMMO,
         // Energy weapons and weather ordnance: the stack is the weapon, and
         // charge is the ammo (§B5).
         _ => 1,
@@ -545,6 +750,15 @@ mod tests {
         // passed a weapon that carved and did no damage at all.
         const MAY_NOT_CARVE: &[&str] = &["knife", "bat", "whip"];
         for w in WEAPONS {
+            // A weapon whose whole effect is what it *leaves behind* carries its
+            // numbers on the burst, not on the def: a smoke grenade with damage
+            // and a blast radius would be a grenade. So the rule is "every weapon
+            // does something", and `Burst` says what — which is still stricter
+            // than the original, because that one passed a weapon with neither
+            // damage nor a carve.
+            if !matches!(w.burst, Burst::Blast) {
+                continue;
+            }
             assert!(w.damage > 0.0, "{} does no damage at all", w.key);
             let exempt =
                 matches!(w.delivery, Delivery::Cone { .. }) || MAY_NOT_CARVE.contains(&w.key);
@@ -554,6 +768,32 @@ mod tests {
                     "{} does not carve, and is not one of the named exemptions",
                     w.key
                 );
+            }
+        }
+        // The other half of the rule: a weapon that opted out above must have a
+        // burst that actually does something. Without this, `Burst::Zone` with a
+        // dps of zero and no patches would pass as "not a blast".
+        for w in WEAPONS {
+            match w.burst {
+                Burst::Blast => {}
+                Burst::Pellets { count, .. } => {
+                    assert!(count > 0, "{} bursts into nothing", w.key)
+                }
+                Burst::Zone {
+                    dps,
+                    radius,
+                    patches,
+                    ..
+                } => assert!(
+                    dps > 0.0 && radius > 0.0 && patches > 0,
+                    "{} leaves a zone that does nothing",
+                    w.key
+                ),
+                Burst::Smoke { radius, duration } => assert!(
+                    radius > 0.0 && duration > 0.0,
+                    "{} makes a cloud that is not there",
+                    w.key
+                ),
             }
         }
         // The exemption list must not outlive its members: a name here that is

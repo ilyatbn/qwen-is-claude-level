@@ -28,11 +28,13 @@ use crate::player::state::{
     choose_respawn, surface_to_centre, DeathCause, PlayerId, PlayerState, UseError,
 };
 use crate::rng::{range_f32, substream, ChaCha8Rng};
-use crate::weapons::defs::{self, Delivery};
+use crate::weapons::burn::BurnKind;
+use crate::weapons::defs::{self, BurnZone, Burst, Delivery};
 use crate::weapons::explode::{
     explode, fire_hitscan, BlastSource, DamageSource, EffectKind, PlayerHitTarget,
 };
 use crate::weapons::projectile::{ProjectileId, ProjectileOutcome, Projectiles};
+use crate::weapons::smoke::SmokeField;
 
 use crate::effects::fog::HeavyFog;
 use crate::effects::lava::LavaBurst;
@@ -254,6 +256,12 @@ pub enum GameEvent {
         tick: u32,
         id: u32,
     },
+    /// A hazard that ran out. Only smoke uses it today — burn patches expire
+    /// on the client's own clock from the duration they were spawned with.
+    HazardEnded {
+        tick: u32,
+        id: u32,
+    },
     HazardSpawn {
         tick: u32,
         id: u32,
@@ -306,6 +314,7 @@ impl GameEvent {
             | GameEvent::EffectStart { tick, .. }
             | GameEvent::EffectPhaseChanged { tick, .. }
             | GameEvent::EffectEnd { tick, .. }
+            | GameEvent::HazardEnded { tick, .. }
             | GameEvent::HazardSpawn { tick, .. }
             | GameEvent::PhaseChange { tick, .. }
             | GameEvent::RoundState { tick, .. }
@@ -334,6 +343,10 @@ pub enum HazardKind {
     Puddle,
     Meteor,
     LavaVent,
+    /// Thrown ordnance (§B7). `Smoke` does no damage at all.
+    Fire,
+    Toxic,
+    Smoke,
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +436,11 @@ pub struct World {
     pub burn: crate::weapons::burn::BurnField,
     /// Placed mines (§B6).
     pub mines: crate::weapons::placed::Mines,
+    /// Smoke clouds (§B7). Vision denial only — no damage path touches this.
+    pub smoke: SmokeField,
+    /// One id space for every hazard a *weapon* spawns, so a cloud and a fire
+    /// can never claim the same id and cancel each other on the client.
+    hazard_seq: u32,
     pub tombstones: Tombstones,
     pub spawn_schedule: SpawnSchedule,
     pub effects: EffectScheduler,
@@ -471,6 +489,8 @@ impl World {
         World {
             burn: Default::default(),
             mines: Default::default(),
+            smoke: Default::default(),
+            hazard_seq: 0,
             map,
             players: Vec::new(),
             items,
@@ -885,14 +905,189 @@ impl World {
         } else {
             BlastSource::Fired { owner, weapon }
         };
+
+        // The one place that decides what going off means. Matched exhaustively:
+        // a new `Burst` is a compile error here rather than a weapon that silently
+        // does nothing, which is how melee shipped unable to swing.
+        match w.burst {
+            Burst::Blast => {
+                let log: DamageLog = Default::default();
+                let (mut closures, meta) = hit_targets(&self.players, &log, now);
+                let result = {
+                    let mut t = targets(&mut self.players, &mut closures, &meta);
+                    explode(&mut self.map, &mut t, at, w.blast_radius, w.damage, source)
+                };
+                self.emit_blast(at, w.blast_radius, CarveKind::Weapon, &result.carve, now);
+                self.apply_damage_log(&log, now);
+            }
+            Burst::Pellets { count, fan, pellet } => {
+                self.burst_pellets(at, count, fan, pellet, owner, now)
+            }
+            Burst::Zone {
+                kind,
+                radius,
+                dps,
+                duration,
+                patches,
+                scatter,
+            } => self.burst_zone(
+                at, kind, radius, dps, duration, patches, scatter, source, now,
+            ),
+            Burst::Smoke { radius, duration } => self.burst_smoke(at, radius, duration, now),
+        }
+    }
+
+    /// An airburst opens downward into a fan of energy pellets (§B7).
+    ///
+    /// Hitscan, not nine more projectiles: they read as laser bullets, they resolve
+    /// on the tick they are fired, and nine grenades' worth of airbursts would
+    /// otherwise put dozens of bodies in flight at once.
+    fn burst_pellets(
+        &mut self,
+        at: Vec2,
+        count: u32,
+        fan: f32,
+        pellet: WeaponId,
+        owner: PlayerId,
+        now: f32,
+    ) {
+        let Some(pw) = defs::def(pellet) else { return };
+        let tick = self.tick;
         let log: DamageLog = Default::default();
-        let (mut closures, meta) = hit_targets(&self.players, &log, now);
-        let result = {
+        let mut shots = Vec::new();
+        {
+            let (mut closures, meta) = hit_targets(&self.players, &log, now);
             let mut t = targets(&mut self.players, &mut closures, &meta);
-            explode(&mut self.map, &mut t, at, w.blast_radius, w.damage, source)
-        };
-        self.emit_blast(at, w.blast_radius, CarveKind::Weapon, &result.carve, now);
+            for i in 0..count {
+                // Spread evenly across the fan, centred on straight down. A random
+                // fan would make the same throw behave differently twice and would
+                // draw from the world RNG on a path a replay has to reproduce.
+                let f = if count > 1 {
+                    i as f32 / (count - 1) as f32 - 0.5
+                } else {
+                    0.0
+                };
+                let aim = std::f32::consts::FRAC_PI_2 + f * fan;
+                shots.extend(fire_hitscan(
+                    &mut self.map,
+                    &mut t,
+                    pw,
+                    owner,
+                    at,
+                    aim,
+                    &mut self.rng,
+                    now,
+                ));
+            }
+        }
         self.apply_damage_log(&log, now);
+
+        self.events.push(GameEvent::Explosion {
+            tick,
+            x: at.x,
+            y: at.y,
+            r: 0.0,
+            kind: CarveKind::Weapon,
+        });
+        for s in shots {
+            self.events.push(GameEvent::Hitscan {
+                tick,
+                owner,
+                x0: s.from.x,
+                y0: s.from.y,
+                x1: s.to.x,
+                y1: s.to.y,
+                hit: s.hit.is_some(),
+            });
+            if let Some(c) = s.carve {
+                self.carve_seq += 1;
+                self.events.push(GameEvent::Carve {
+                    tick,
+                    seq: self.carve_seq,
+                    x: s.to.x.round() as i32,
+                    y: s.to.y.round() as i32,
+                    r: pw.blast_radius.round() as i32,
+                    kind: CarveKind::Weapon,
+                });
+                self.reveal(&c.revealed, now);
+            }
+        }
+    }
+
+    /// Molotov and toxic: a damaging ground zone, and **no terrain damage at all**.
+    ///
+    /// It never reaches `explode`, so leaving the mask byte-identical is structural
+    /// rather than a blast radius someone has to remember to keep at zero.
+    #[allow(clippy::too_many_arguments)]
+    fn burst_zone(
+        &mut self,
+        at: Vec2,
+        kind: BurnZone,
+        radius: f32,
+        dps: f32,
+        duration: f32,
+        patches: u32,
+        scatter: f32,
+        source: BlastSource,
+        now: f32,
+    ) {
+        let bk = match kind {
+            BurnZone::Fire => BurnKind::Fire,
+            BurnZone::Toxic => BurnKind::Toxic,
+        };
+        let hazard = match kind {
+            BurnZone::Fire => HazardKind::Fire,
+            BurnZone::Toxic => HazardKind::Toxic,
+        };
+        let tick = self.tick;
+        for i in 0..patches.max(1) {
+            // Deterministic ring rather than an RNG draw: the same throw makes the
+            // same fire in a replay, and it spreads evenly instead of clumping.
+            let pos = if patches <= 1 || scatter <= 0.0 {
+                at
+            } else {
+                let a = i as f32 / patches as f32 * std::f32::consts::TAU;
+                at + Vec2::new(a.cos(), a.sin()) * scatter
+            };
+            self.burn.light_zone(
+                crate::weapons::burn::Zone {
+                    kind: bk,
+                    pos,
+                    radius,
+                    dps,
+                    duration,
+                },
+                now,
+                source.for_victim(0),
+            );
+            self.events.push(GameEvent::HazardSpawn {
+                tick,
+                id: self.hazard_seq,
+                kind: hazard,
+                x: pos.x,
+                y: pos.y,
+                r: radius,
+                duration,
+            });
+            self.hazard_seq += 1;
+        }
+    }
+
+    /// A smoke cloud: vision denial, no damage, no terrain change.
+    fn burst_smoke(&mut self, at: Vec2, radius: f32, duration: f32, now: f32) {
+        let id = self.hazard_seq;
+        self.hazard_seq += 1;
+        self.smoke.add(id, at, radius, duration, now);
+        let tick = self.tick;
+        self.events.push(GameEvent::HazardSpawn {
+            tick,
+            id,
+            kind: HazardKind::Smoke,
+            x: at.x,
+            y: at.y,
+            r: radius,
+            duration,
+        });
     }
 
     /// Emit the cosmetic explosion, the authoritative carve, and any buried items
@@ -1004,6 +1199,12 @@ impl World {
             ended
         };
         self.apply_damage_log(&log, now);
+
+        // A cloud that vanishes server-side and lingers on screen is worse than
+        // one that never appeared, because you will trust it.
+        for id in self.smoke.expire(now) {
+            self.events.push(GameEvent::HazardEnded { tick, id });
+        }
 
         for out in ended {
             self.events.push(GameEvent::MineEnded {
@@ -1603,6 +1804,16 @@ impl World {
             .map_or(1.0, |(_, f)| f.fov_multiplier(self.round_time))
     }
 
+    /// One player's field-of-view multiplier: fog times the smoke they are in.
+    ///
+    /// Multiplicative like every other FoV modifier (`docs/14` §3), so a smoke
+    /// cloud in heavy fog at night composes without a special case — and it is the
+    /// value `fov_radius` already takes as `fog_mult`, so no signature and no
+    /// cross-language check has to change.
+    pub fn vision_multiplier(&self, p: &PlayerState) -> f32 {
+        self.fog_multiplier() * self.smoke.multiplier_at(p.body.pos, self.round_time)
+    }
+
     /// blake3 over every piece of mutable simulation state.
     ///
     /// The footer of a replay file (T8.01) and the fastest way to locate a
@@ -1671,6 +1882,8 @@ impl World {
 
         self.mines.hash_into(&mut h);
         self.burn.hash_into(&mut h);
+        self.smoke.hash_into(&mut h);
+        h.update(&self.hazard_seq.to_le_bytes());
 
         h.update(&(self.projectiles.len() as u32).to_le_bytes());
         for p in self.projectiles.iter() {
@@ -1863,6 +2076,8 @@ mod state_hash_coverage {
             tombstones: _,
             mines: _,
             burn: _,
+            smoke: _,
+            hazard_seq: _,
             spawn_schedule: _,
             effects: _,
             buried_items: _,

@@ -21,7 +21,7 @@ function p(id: number, x: number, y: number, aimDeg = 0, vx = 0, vy = 0): Snapsh
     aim: Math.round(((((aimDeg * Math.PI) / 180) % TAU) / TAU) * 65536) & 0xffff,
     health: 100,
     flags: 1,
-    jetpackFuel: 255,
+    jetpackFuel: 255, vision: 1,
     selectedItem: null,
   }
 }

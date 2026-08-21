@@ -67,8 +67,12 @@ function mapInitFixture(opts: Partial<{
 }
 
 function snapshotFixture(n: number, trailing = 0): ArrayBuffer {
-  const per = 15
-  const b = new ArrayBuffer(8 + n * per + 4 + trailing)
+  // Pinned to the constant, never a literal (§A19). This was `15`, and T11.08's
+  // sixteenth byte turned six passing tests red for the right reason — but a
+  // fixture that hardcodes the wire layout can also stay *green* against a
+  // decoder that has drifted, which is the failure worth preventing.
+  const per = C().SNAPSHOT_PLAYER_BYTES
+  const b = new ArrayBuffer(C().SNAPSHOT_HEADER_BYTES + n * per + C().SNAPSHOT_FOOTER_BYTES + trailing)
   const v = new DataView(b)
   let at = 0
   v.setUint32(at, 1234, true); at += 4
@@ -86,6 +90,7 @@ function snapshotFixture(n: number, trailing = 0): ArrayBuffer {
     v.setUint8(at++, FLAG.alive | FLAG.flashlight)
     v.setUint8(at++, 128)
     v.setUint8(at++, i === 0 ? 255 : 3)
+    v.setUint8(at++, 204) // vision: 0.8 of clear
   }
   v.setUint32(at, 9999, true)
   return b
@@ -181,6 +186,7 @@ describe('snapshot', () => {
     expect(p.vy).toBe(-44)
     expect(p.aim).toBe(40000)
     expect(p.health).toBe(137)
+    expect(p.vision).toBeCloseTo(204 / 255, 5)
   })
 
   it('decodes flags to the right booleans', () => {

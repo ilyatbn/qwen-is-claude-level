@@ -251,7 +251,7 @@ Three weapons becomes twenty-two. Deathmatch is the point; variety is the game.
 - [x] [T11.05](M11/T11.05-melee.md) — Knife, bat, whip, axe, hammer **(v3)**
 - [x] [T11.06](M11/T11.06-flamethrower.md) — Flamethrower **(v3)**
 - [x] [T11.07](M11/T11.07-mines.md) — Proximity mines **(v3)**
-- [ ] [T11.08](M11/T11.08-grenades.md) — Airburst, smoke, molotov, toxic **(v3)**
+- [x] [T11.08](M11/T11.08-grenades.md) — Airburst, smoke, molotov, toxic **(v3)**
 - [ ] [T11.09](M11/T11.09-balance.md) — Balance the arsenal by measurement **(v3)**
 - [ ] [T11.10](M11/T11.10-ordnance-render.md) — Draw the ordnance the server already sends **(v3)**
 - [ ] [T11.11](M11/T11.11-arsenal-art.md) — Art for the arsenal **(v3)**

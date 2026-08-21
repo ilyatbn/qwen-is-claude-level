@@ -7,3 +7,4 @@ pub mod explode;
 pub mod melee;
 pub mod placed;
 pub mod projectile;
+pub mod smoke;

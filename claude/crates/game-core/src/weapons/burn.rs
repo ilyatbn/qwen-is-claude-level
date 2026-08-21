@@ -11,8 +11,29 @@ use crate::math::Vec2;
 use crate::weapons::explode::DamageSource;
 use crate::weapons::explode::PlayerHitTarget;
 
+/// What a patch *is*, for the client to draw. Both kinds damage identically —
+/// this is the only difference, which is why it is a field on the existing patch
+/// and not a second field with a second tick loop (§A24). A toxic zone is
+/// burning ground with different numbers and a different colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BurnKind {
+    Fire,
+    Toxic,
+}
+
+/// One patch's numbers, kept together so they cannot be swapped at a call site.
+#[derive(Debug, Clone, Copy)]
+pub struct Zone {
+    pub kind: BurnKind,
+    pub pos: Vec2,
+    pub radius: f32,
+    pub dps: f32,
+    pub duration: f32,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct BurnPatch {
+    pub kind: BurnKind,
     pub pos: Vec2,
     pub radius: f32,
     pub dps: f32,
@@ -52,6 +73,22 @@ impl BurnField {
         );
     }
 
+    /// A zone of a stated kind — a molotov's fire, a toxic grenade's fallout.
+    ///
+    /// The numbers travel together as a `Zone` because they *are* one thing: a
+    /// weapon's `Burst::Zone` is exactly this, and passing them as seven loose
+    /// arguments is how a radius ends up where a dps should be.
+    pub fn light_zone(&mut self, z: Zone, now: f32, source: DamageSource) {
+        self.patches.push(BurnPatch {
+            kind: z.kind,
+            pos: z.pos,
+            radius: z.radius,
+            dps: z.dps,
+            until: now + z.duration,
+            source,
+        });
+    }
+
     /// Light a patch with its own radius, rate and life — a flamethrower's trail
     /// is smaller and shorter-lived than a molotov's.
     pub fn light_for(
@@ -64,6 +101,7 @@ impl BurnField {
         source: DamageSource,
     ) {
         self.patches.push(BurnPatch {
+            kind: BurnKind::Fire,
             pos,
             radius,
             dps,
@@ -77,6 +115,7 @@ impl BurnField {
     pub fn hash_into(&self, h: &mut blake3::Hasher) {
         h.update(&(self.patches.len() as u32).to_le_bytes());
         for p in &self.patches {
+            h.update(&[p.kind as u8]);
             h.update(&p.pos.x.to_le_bytes());
             h.update(&p.pos.y.to_le_bytes());
             h.update(&p.radius.to_le_bytes());

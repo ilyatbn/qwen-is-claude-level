@@ -2977,3 +2977,57 @@ Notes: MINES WERE INDESTRUCTIBLE IN A REAL ROUND. §B6 says a mine is destructib
        tests under real concurrent cargo builds (and the coordinator hit the vite
        version of this too). Not investigated further; recorded so the next
        session does not read it as new.
+
+## T11.08 — Airburst, smoke, molotov, toxic — DONE
+Files: weapons/{smoke,burn,defs,projectile}.rs, world/mod.rs, items/registry.rs,
+       constants.rs, game-server/{codec,events}.rs, client/{net/codec,scenes/GameScene}.ts,
+       tests/thrown.rs
+Verified: `cargo test -p game-core --test thrown` — 14 passed; game-core lib 598;
+       clippy -D warnings clean; client codec 20 passed.
+Notes: `Burst` IS A FIELD ON THE DEF, NOT FOUR DELIVERY VARIANTS. All four fly
+       identically and differ only in what happens when they stop; a smoke that
+       fell differently from a molotov would be a second projectile simulation to
+       keep in step. `detonate` matches it exhaustively, so a new burst kind is a
+       compile error at the one place that decides what going off means.
+       SMOKE IS ITS OWN FIELD, NOT A BurnField WITH dps 0. The journal's guidance
+       to add a `kind` to BurnPatch was right for TOXIC (done: BurnKind::Fire |
+       Toxic, one tick loop, one hash). Smoke is different in kind: it is read by
+       the FoV formula and never by the damage path, so folding it in would mean a
+       damage loop iterating clouds forever to apply nothing.
+       THREE BUGS THE TESTS FOUND, TWO OF THEM REAL:
+       1. MOLOTOV_SCATTER was 46 against LAVA_BURN_RADIUS 28, so the six patches
+          sat on a ring with an UNBURNT HOLE AT THE IMPACT POINT — a molotov that
+          lands on you does nothing. Found by the control half of the smoke test
+          ("fire should burn", 100 -> 100). Scatter is now 24, below the radius,
+          and the constant's doc says why it must stay there.
+       2. THE APEX BURST MISSED A CEILING. Detecting the vel.y sign change never
+          fires when the grenade clips rock on the way up, because the bounce sets
+          velocity to ZERO rather than crossing through it — so it fell and landed
+          as a dud, the exact failure §B7 names. Now `Projectile::rose` plus
+          "first tick not rising", which covers apex and ceiling alike.
+       3. A test point inside rock produced zero-length pellet rays. Mine, not the
+          code's.
+       §A39 CAUGHT BEFORE IT SHIPPED, NOT AFTER: `GameScene` hardcoded `fogMult: 1`
+       and `World::fog_multiplier` had NO CALLER AT ALL — heavy fog has been
+       simulated every round since M5 and changed nothing anyone could see. Smoke
+       would have been the same bug one milestone later, since it uses that
+       channel. Fixed by a sixteenth snapshot byte, `vision` = fog x smoke,
+       computed per player because smoke is POSITIONAL: what you can see depends
+       on which cloud you stand in, so a global effect flag cannot express it.
+       SNAPSHOT_PLAYER_BYTES 15 -> 16, 108 bytes for six players.
+       THE PELLET NEEDED TWO OF energy_cost's THREE BEHAVIOURS (§B16): pierce yes,
+       charge no. It works because pellets are fired by `burst_pellets`, never by
+       `try_fire`, which is the only place battery is spent — and
+       `an_airburst_costs_the_thrower_no_battery` guards the day someone routes
+       them through the normal path. Its control asserts the pellet really is
+       energy, or the claim is vacuous.
+       `codec.test.ts` hardcoded `const per = 15`. Now pinned to the constant
+       (§A19) — a fixture that hardcodes the wire layout can stay GREEN against a
+       drifted decoder, which is the failure worth preventing.
+       every_weapon_digs RESTATED, NOT WEAKENED: a weapon whose whole effect is
+       what it leaves behind carries its numbers on the burst, so the rule is now
+       "a Blast weapon damages and carves, and every other burst must actually do
+       something" — which rejects a Zone with dps 0, where the old rule only ever
+       looked at damage.
+Left for later: T11.10 (the four hazard kinds are counted by GameScene and DRAWN BY
+       NOTHING — task file updated to cover them), T11.11, T11.09.

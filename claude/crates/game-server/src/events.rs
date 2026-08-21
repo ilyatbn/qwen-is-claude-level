@@ -67,6 +67,7 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         | GameEvent::EffectPhaseChanged { .. }
         | GameEvent::EffectEnd { .. }
         | GameEvent::HazardSpawn { .. }
+        | GameEvent::HazardEnded { .. }
         | GameEvent::PhaseChange { .. }
         | GameEvent::RoundState { .. }
         | GameEvent::RoundEnd { .. } => Scope::Everyone,
@@ -101,6 +102,7 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::EffectPhaseChanged { .. } => "effect_phase",
         GameEvent::EffectEnd { .. } => "effect_end",
         GameEvent::HazardSpawn { .. } => "hazard_spawn",
+        GameEvent::HazardEnded { .. } => "hazard_ended",
         GameEvent::PhaseChange { .. } => "phase_change",
         GameEvent::RoundState { .. } => "round_state",
         GameEvent::RoundEnd { .. } => "round_end",
@@ -312,6 +314,7 @@ pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
             json!({"tick": tick, "id": id, "phase": effect_phase_name(*phase)})
         }
         GameEvent::EffectEnd { id, .. } => json!({"tick": tick, "id": id}),
+        GameEvent::HazardEnded { id, .. } => json!({"tick": tick, "id": id}),
         GameEvent::HazardSpawn {
             id,
             kind,

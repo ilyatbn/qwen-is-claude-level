@@ -11,7 +11,7 @@ use crate::map::Map;
 use crate::math::{Aabb, Vec2};
 use crate::physics::collide::solid_at;
 use crate::physics::resolve::substeps;
-use crate::weapons::defs::{def, Delivery};
+use crate::weapons::defs::{def, Burst, Delivery};
 
 pub type ProjectileId = u32;
 pub type PlayerId = u8;
@@ -28,6 +28,13 @@ pub struct Projectile {
     pub age_ticks: u32,
     /// A grenade that has stopped moving sits until its fuse expires.
     pub resting: bool,
+    /// Has this ever been travelling upward?
+    ///
+    /// An airburst bursts the first tick it stops rising, and "stops rising" is
+    /// not the same as "crossed zero under gravity": clipping a ceiling zeroes the
+    /// velocity outright, and a sign-change test misses it. That case lands the
+    /// grenade as a dud, which §B7 says must not happen.
+    pub rose: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -96,6 +103,7 @@ impl Projectiles {
             fuse_at: fuse.map(|f| now + f),
             age_ticks: 0,
             resting: false,
+            rose: false,
         });
         id
     }
@@ -125,6 +133,7 @@ impl Projectiles {
             fuse_at: fuse.map(|f| now + f),
             age_ticks: 0,
             resting: false,
+            rose: false,
         });
         id
     }
@@ -174,7 +183,24 @@ impl Projectiles {
                 continue;
             }
 
+            p.rose |= p.vel.y < 0.0;
             p.vel.y += GRAVITY * w.gravity_scale * dt;
+
+            // An airburst goes off the first tick it stops climbing (§B7) —
+            // whether that is the top of its arc or a ceiling it just clipped.
+            // Detecting the *sign change* instead misses the ceiling, because the
+            // bounce sets the velocity to zero rather than crossing through it, and
+            // the grenade then falls and lands as a dud.
+            if matches!(w.burst, Burst::Pellets { .. }) && p.rose && p.vel.y >= 0.0 {
+                out.push(Impact {
+                    id: p.id,
+                    weapon: p.weapon,
+                    owner: p.owner,
+                    outcome: ProjectileOutcome::Exploded { at: p.pos },
+                });
+                continue;
+            }
+
             p.vel.x += wind * w.wind_scale * dt;
 
             // `substeps` is M2's, and it is shared for exactly one reason: when the

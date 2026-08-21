@@ -7,8 +7,9 @@
 //! See `docs/30-items-inventory.md` §1.
 
 use crate::constants::{
-    BATTERY_PACK_AMOUNT, BAZOOKA_AMMO, DEAGLE_AMMO, FLAMETHROWER_AMMO, GRENADE_AMMO,
-    MACHINEGUN_AMMO, MEDKIT_HEAL, MINE_AMMO, PISTOL_AMMO, REVOLVER_AMMO, SHIELD_DURATION, SMG_AMMO,
+    AIRBURST_AMMO, BATTERY_PACK_AMOUNT, BAZOOKA_AMMO, DEAGLE_AMMO, FLAMETHROWER_AMMO, GRENADE_AMMO,
+    MACHINEGUN_AMMO, MEDKIT_HEAL, MINE_AMMO, MOLOTOV_AMMO, PISTOL_AMMO, REVOLVER_AMMO,
+    SHIELD_DURATION, SMG_AMMO, SMOKE_AMMO, TOXIC_GRENADE_AMMO,
 };
 
 pub type ItemId = u16;
@@ -46,6 +47,15 @@ pub const WEAPON_AXE: WeaponId = WeaponId(14);
 pub const WEAPON_HAMMER: WeaponId = WeaponId(15);
 pub const WEAPON_FLAMETHROWER: WeaponId = WeaponId(16);
 pub const WEAPON_MINE: WeaponId = WeaponId(17);
+/// Thrown ordnance (§B7). Appended, never inserted (§B16).
+pub const WEAPON_AIRBURST: WeaponId = WeaponId(18);
+pub const WEAPON_SMOKE: WeaponId = WeaponId(19);
+pub const WEAPON_MOLOTOV: WeaponId = WeaponId(20);
+pub const WEAPON_TOXIC_GRENADE: WeaponId = WeaponId(21);
+/// An airburst's pellet. Not carryable and never in the item registry — the same
+/// arrangement meteors have: it exists so pellets reuse the hitscan resolution
+/// rather than growing a parallel one that drifts.
+pub const WEAPON_AIRBURST_PELLET: WeaponId = WeaponId(22);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UtilityId {
@@ -101,6 +111,10 @@ pub const AXE: ItemId = 16;
 pub const HAMMER: ItemId = 17;
 pub const FLAMETHROWER: ItemId = 18;
 pub const MINE: ItemId = 19;
+pub const AIRBURST: ItemId = 20;
+pub const SMOKE: ItemId = 21;
+pub const MOLOTOV: ItemId = 22;
+pub const TOXIC_GRENADE: ItemId = 23;
 pub const BAZOOKA: ItemId = 3;
 pub const GRENADE: ItemId = 4;
 pub const SMG: ItemId = 5;
@@ -384,6 +398,53 @@ pub static ITEMS: &[ItemDef] = &[
         spawn_weight: 7,
         crate_weight: 10,
         buried_weight: 6,
+    },
+    // Thrown ordnance (§B7). Three of the four do no terrain damage at all —
+    // they deny space rather than reshaping the map, which is what makes them
+    // different from the grenade rather than variants of it.
+    ItemDef {
+        id: AIRBURST,
+        key: "airburst",
+        name: "Airburst Grenade",
+        kind: ItemKind::Weapon(WEAPON_AIRBURST),
+        max_stack: AIRBURST_AMMO,
+        sprite: "weapon_airburst",
+        spawn_weight: 8,
+        crate_weight: 11,
+        buried_weight: 7,
+    },
+    ItemDef {
+        id: SMOKE,
+        key: "smoke",
+        name: "Smoke Grenade",
+        kind: ItemKind::Weapon(WEAPON_SMOKE),
+        max_stack: SMOKE_AMMO,
+        sprite: "weapon_smoke",
+        spawn_weight: 9,
+        crate_weight: 9,
+        buried_weight: 7,
+    },
+    ItemDef {
+        id: MOLOTOV,
+        key: "molotov",
+        name: "Molotov",
+        kind: ItemKind::Weapon(WEAPON_MOLOTOV),
+        max_stack: MOLOTOV_AMMO,
+        sprite: "weapon_molotov",
+        spawn_weight: 9,
+        crate_weight: 10,
+        buried_weight: 7,
+    },
+    ItemDef {
+        id: TOXIC_GRENADE,
+        key: "toxic_grenade",
+        name: "Toxic Grenade",
+        kind: ItemKind::Weapon(WEAPON_TOXIC_GRENADE),
+        max_stack: TOXIC_GRENADE_AMMO,
+        sprite: "weapon_toxic",
+        spawn_weight: 8,
+        crate_weight: 10,
+        buried_weight: 7,
     },
 ];
 

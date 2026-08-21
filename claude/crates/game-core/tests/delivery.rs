@@ -79,6 +79,7 @@ fn melee_def(damage: f32, carve: f32) -> WeaponDef {
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: game_core::weapons::defs::Burst::Blast,
     }
 }
 
@@ -100,6 +101,7 @@ fn cone_def() -> WeaponDef {
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: game_core::weapons::defs::Burst::Blast,
     }
 }
 
@@ -120,6 +122,7 @@ fn mine_def() -> WeaponDef {
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
+        burst: game_core::weapons::defs::Burst::Blast,
     }
 }
 

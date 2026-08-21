@@ -201,6 +201,14 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
             Some(s) => (s.item & 0xFF) as u8,
             None => 255,
         });
+        // Vision: this player's own FoV multiplier, fog times smoke (T11.08).
+        //
+        // Authoritative because smoke is **positional** — what you can see depends
+        // on which cloud you are standing in, so the client cannot derive it from a
+        // global effect flag. Before this byte existed `GameScene` hardcoded
+        // `fogMult: 1` and `World::fog_multiplier` had no caller at all: heavy fog
+        // was simulated every round and changed nothing anyone could see.
+        b.push((world.vision_multiplier(p) * 255.0).clamp(0.0, 255.0) as u8);
     }
 
     b.extend_from_slice(&last_input_seq.to_le_bytes());
