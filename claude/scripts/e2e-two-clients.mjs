@@ -11,128 +11,51 @@
  * fired by one craters the map in *both*, and their mask checksums match.
  *
  * Screenshots from both contexts land in `shots/` and are meant to be looked at.
+ *
+ * The stack and the route into a battle are `harness.mjs` (§C18). Two humans
+ * satisfy `MIN_PLAYERS_TO_START`, so this one *would* start on the lobby
+ * countdown — but waiting on a countdown that another task may retune is a test
+ * that expires (§A32), and `enterBattle` is where that decision lives now.
  */
-import { spawn } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { matchVitePort } from './vite-url.mjs'
-
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const shots = join(root, 'shots')
-mkdirSync(shots, { recursive: true })
-
-const require = createRequire(join(root, 'client/package.json'))
-const { chromium } = require('playwright-core')
+import { join } from 'node:path'
+import { startStack, enterBattle, sleep, shotsDir } from './checks/harness.mjs'
 
 const PORT = 3112
-const libDir = join(process.env.HOME ?? '', '.cache/pwlibs/root/usr/lib/x86_64-linux-gnu')
-const chromePath = join(
-  process.env.HOME ?? '',
-  '.cache/ms-playwright/chromium-1234/chrome-linux64/chrome',
-)
-
-const kids = []
-const cleanup = () => {
-  for (const k of kids) {
-    try {
-      // The whole group: `npx vite` and `cargo run` both fork the process that
-      // actually holds the port, and killing only the direct child orphans it.
-      process.kill(-k.pid, 'SIGKILL')
-    } catch {
-      try {
-        k.kill('SIGKILL')
-      } catch {
-        /* already gone */
-      }
-    }
-  }
-}
-process.on('exit', cleanup)
+const shots = shotsDir
 
 const fail = (msg) => {
   console.error(`FAIL: ${msg}`)
   process.exitCode = 1
 }
 
-// --- the real server ------------------------------------------------------
-const server = spawn('cargo', ['run', '--quiet', '-p', 'game-server'], {
-  detached: true,
-  cwd: root,
+const stack = await startStack({
+  port: PORT,
+  label: 'two-clients',
   env: {
-    ...process.env,
-    BIND_ADDR: `127.0.0.1:${PORT}`,
-    MAP_SCALE: 'small',
-    GAME_LOG: 'warn',
     // No bots: this test counts players, and a bot is a player (§A5).
     BOT_COUNT: '0',
     // Arm the players: the checkpoint has to fire a rocket, and finding one
     // first is the game's design, not this test's job.
     DEV_LOADOUT: '1',
   },
-  stdio: ['ignore', 'inherit', 'inherit'],
-})
-kids.push(server)
-
-let up = false
-for (let i = 0; i < 600 && !up; i++) {
-  try {
-    up = (await fetch(`http://127.0.0.1:${PORT}/healthz`)).ok
-  } catch {
-    /* not listening yet */
-  }
-  if (!up) await new Promise((r) => setTimeout(r, 250))
-}
-if (!up) {
-  console.error('server never became healthy')
-  process.exit(1)
-}
-
-// --- vite, as the same-origin proxy the browser needs ---------------------
-const vite = spawn('npx', ['vite', '--strictPort=false'], {
-  detached: true,
-  cwd: join(root, 'client'),
-  env: { ...process.env, VITE_SERVER_PORT: String(PORT) },
-})
-kids.push(vite)
-const viteUrl = await new Promise((res, rej) => {
-  // Shared parse: vite puts an ANSI bold escape between `localhost:` and the
-  // port, so a bare regex here silently never matches (scripts/vite-url.mjs).
-  const on = (b) => {
-    const port = matchVitePort(b)
-    if (port) res(`http://localhost:${port}`)
-  }
-  vite.stdout.on('data', on)
-  vite.stderr.on('data', on)
-  setTimeout(() => rej(new Error('vite never started')), 120_000)
-})
-console.log(`server :${PORT}  vite ${viteUrl}`)
-
-// --- two independent browser contexts ------------------------------------
-const browser = await chromium.launch({
-  executablePath: chromePath,
-  env: { ...process.env, LD_LIBRARY_PATH: libDir },
 })
 
 async function openClient(name) {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } })
-  const page = await ctx.newPage()
-  const errors = []
-  page.on('pageerror', (e) => errors.push(String(e)))
-  // `game=1` skips the title screen: these checks predate the front end and
-  // exist to drive a round, not to click through a menu (§B3).
-  await page.goto(`${viteUrl}/?e2e=1&game=1&name=${name}`)
-  await page.waitForFunction('window.__game && window.__game.debug().ready === true', null, {
-    timeout: 90_000,
-  })
-  return { page, errors, name }
+  const c = await stack.openClient({ name })
+  return { page: c.page, errors: c.pageErrors, name: c.name }
 }
 
 const dbg = (c) => c.page.evaluate('window.__game.debug()')
 
+
 const a = await openClient('ana')
 const b = await openClient('bo')
+
+// Into a running round. Ana asks; bo is already in the room and simply follows
+// it out of the lobby, which is also the assertion that a second client sees
+// the same start (`press: false` is not a shortcut — it is the other half).
+await enterBattle(a.page, { label: 'two-clients/ana' })
+await enterBattle(b.page, { press: false, label: 'two-clients/bo' })
 
 // Both joined and decoded the same map.
 const da0 = await dbg(a)
@@ -151,7 +74,7 @@ const until = async (c, ok, what, deadlineMs = 20_000) => {
   while (Date.now() - started < deadlineMs) {
     last = await dbg(c)
     if (ok(last)) return last
-    await new Promise((r) => setTimeout(r, 200))
+    await sleep(200)
   }
   fail(`${what} (gave up after ${deadlineMs} ms)`)
   return last
@@ -172,7 +95,7 @@ const untilValue = async (probe, ok, what, deadlineMs = 15_000) => {
   while (Date.now() - started < deadlineMs) {
     last = await probe()
     if (ok(last)) return last
-    await new Promise((r) => setTimeout(r, 100))
+    await sleep(100)
   }
   fail(`${what} (gave up after ${deadlineMs} ms)`)
   return last
@@ -197,14 +120,14 @@ await b.page.keyboard.down('d')
 // Polling from t=0 instead was tried and did not move the player at all, for a
 // reason I could not explain — so this keeps the behaviour that works and adds
 // headroom rather than replacing it with something I do not understand.
-await new Promise((r) => setTimeout(r, 1200))
+await sleep(1200)
 for (let i = 0; i < 60; i++) {
   const d = await dbg(b)
   if (Math.abs((d.player?.x ?? 0) - bx0) > 8) break
-  await new Promise((r) => setTimeout(r, 250))
+  await sleep(250)
 }
 await b.page.keyboard.up('d')
-await new Promise((r) => setTimeout(r, 400))
+await sleep(400)
 const aAfter = await dbg(a)
 const bAfter = await dbg(b)
 const bMoved = Math.abs(bAfter.player.x - db1.player.x)
@@ -239,7 +162,7 @@ async function settle(clients, deadlineMs = 20_000) {
       stableFor = 0
     }
     last = key
-    await new Promise((r) => setTimeout(r, 250))
+    await sleep(250)
   }
   return await Promise.all(clients.map((c) => dbg(c)))
 }
@@ -249,7 +172,7 @@ const solidBeforeA = (await dbg(a)).solid
 const solidBeforeB = (await dbg(b)).solid
 for (let i = 0; i < 12; i++) {
   await a.page.evaluate('window.__game.fire()')
-  await new Promise((r) => setTimeout(r, 250))
+  await sleep(250)
 }
 const [daF, dbF] = await settle([a, b])
 const removedA = solidBeforeA - daF.solid
@@ -415,8 +338,7 @@ console.log(
   ),
 )
 
-await browser.close()
-cleanup()
+await stack.close()
 if (process.exitCode) console.error('\ne2e-two-clients FAILED')
 else console.log('\ne2e-two-clients: two clients, one round, one map')
 // Explicit: vite and cargo leave handles open that would keep node alive well

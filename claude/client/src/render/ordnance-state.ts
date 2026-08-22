@@ -32,6 +32,7 @@ export type ProjectileKind =
   | 'smoke'
   | 'molotov'
   | 'toxic'
+  | 'drop'
 
 /**
  * How each projectile looks (§C4). Deliberately placeholder art — coloured dots
@@ -59,6 +60,9 @@ export const LOOK: Record<ProjectileKind, ProjectileLook> = {
   smoke: { r: 5, colour: 0xb9bec6, trail: 0 },
   molotov: { r: 5, colour: 0xff5a2b, trail: 10 },
   toxic: { r: 5, colour: 0x7cd44a, trail: 10 },
+  // A falling drop of rain (§C21): small, bright green, with a streak behind it
+  // so it reads as rain rather than as a bullet.
+  drop: { r: 3, colour: 0x9bf05a, trail: 8 },
   meteor: { r: 8, colour: 0xff4433, trail: 14 },
   fragment: { r: 3, colour: 0xff7755, trail: 5 },
 }
@@ -104,9 +108,14 @@ export const WEAPON_KEYS: string[] = [
   'molotov',
   'toxic_grenade',
   'airburst_pellet',
+  // §C21. A drop of toxic rain is a projectile so that it falls — and being a
+  // projectile is also what makes it visible, because this is the layer that
+  // draws them.
+  'toxic_drop',
 ]
 
 export const KIND_BY_WEAPON_KEY: Record<string, ProjectileKind> = {
+  toxic_drop: 'drop',
   bazooka: 'bazooka',
   grenade: 'grenade',
   meteor: 'meteor',
@@ -161,6 +170,10 @@ const GLOW: Record<ProjectileKind, { r: number; a: number }> = {
   smoke: { r: 20, a: 0.15 },
   molotov: { r: 80, a: 0.8 },
   toxic: { r: 70, a: 0.6 },
+  // Rain, not ordnance: enough to catch the eye falling through a dark sky and
+  // no more. A drop that lit the ground like a rocket would make a toxic storm
+  // brighter than daylight — twenty of them are in the air at once.
+  drop: { r: 24, a: 0.35 },
 }
 
 export class OrdnanceState {

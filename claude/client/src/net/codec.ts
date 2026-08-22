@@ -38,6 +38,7 @@ export interface SnapshotPlayer {
   aim: number
   health: number
   flags: number
+  /** Fuel units, 0..`JETPACK_MAX_FUEL` — already dequantised from the wire byte. */
   jetpackFuel: number
   /** This player's own FoV multiplier: fog times the smoke they stand in. */
   vision: number
@@ -167,6 +168,10 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
     const aim = r.u16()
     const health = r.u8()
     const flags = r.u8()
+    // Dequantised HERE and nowhere else. `SnapshotPlayer.jetpackFuel` is in fuel
+    // units (0..JETPACK_MAX_FUEL), not the raw byte — two call sites in
+    // `GameScene` divided by 255 a second time and one of them fed the result to
+    // the predictor's core (§A24).
     const jetpackFuel = (r.u8() / 255) * C().JETPACK_MAX_FUEL
     const item = r.u8()
     const vision = r.u8() / 255

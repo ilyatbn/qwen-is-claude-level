@@ -32,6 +32,8 @@ import { hazardKind } from '../render/ordnanceFx-math'
 import { cycleU, darknessAt } from '../render/sky-math'
 import { formatClock, phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
 import { ResultsScreen } from '../ui/results'
+import { phaseDeadline, secondsUntil } from '../ui/results-math'
+import { fuelText, fuelTrend } from '../ui/jetpackReadout-math'
 import { FLAG, flag } from '../net/codec'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { Minimap } from '../ui/minimap'
@@ -65,6 +67,7 @@ export class GameScene extends Phaser.Scene {
   private localInput!: LocalInput
   private crosshair!: Crosshair
   private hud!: HTMLDivElement
+  private jetReadout: HTMLDivElement | null = null
   /** The private room's join code, once the server has told us (§B9). */
   private joinCode: string | null = null
   private lobbyPanel: HTMLDivElement | null = null
@@ -95,6 +98,17 @@ export class GameScene extends Phaser.Scene {
   private seq = 0
   private acc = 0
   private roundTime = 0
+  /**
+   * The last round time the **server** sent, never advanced locally.
+   *
+   * `roundTime` above is extrapolated every frame (`this.roundTime += dt`) so
+   * the sky and the HUD move smoothly between 20 Hz snapshots. That makes it
+   * useless as an answer to "is the server simulating": in a `Lobby`, where the
+   * server's round time is frozen at 0 by design (§C18), it still drifts up by
+   * one frame between snapshots. A browser check reading it concluded the lobby
+   * was simulating, on the strength of 16 ms of client-side interpolation.
+   */
+  private serverRoundTime = 0
   private readonly death = new DeathOverlay()
   private tombstones!: TombstoneLayer
   private results!: ResultsScreen
@@ -109,6 +123,31 @@ export class GameScene extends Phaser.Scene {
   private meAlive = true
   private phase: Phase = 'lobby'
   private timeLeft = 0
+  /**
+   * Jetpack fuel, straight from the snapshot (§C26).
+   *
+   * The **server's** number, not the predictor's: the readout exists so the
+   * refill curve can be read off the screen and checked against
+   * `JETPACK_DRAIN`/`JETPACK_REFILL_DELAY`/`JETPACK_REFILL`, and a locally
+   * predicted value would be showing the client's opinion of those constants
+   * rather than the simulation's.
+   */
+  private fuel = 0
+  /** Last fuel value rendered, so the trend arrow can be derived from two samples. */
+  private fuelShown = 0
+  /**
+   * Round time at which the current phase ends (§C25).
+   *
+   * A **deadline**, not a remaining time, for the reason §B4 gives and T10.06
+   * already applied to the death countdown: `round_state` is not broadcast at
+   * all during `Ended` or `Warmup`, so a client that stores `time_left` renders
+   * the same number for the whole of either. Recomputed against the server's
+   * clock on every frame instead, so it falls without a local stopwatch.
+   *
+   * `timeLeft` below is kept because the lobby countdown genuinely *is*
+   * re-broadcast on every displayed second, and `Playing` once a second.
+   */
+  private phaseEndsAt = 0
   private scores = new Map<number, { name: string; score: number; deaths: number }>()
   private ready = false
   private lastServerTick = 0
@@ -215,6 +254,26 @@ export class GameScene extends Phaser.Scene {
       const p = asRecord(raw)
       this.phase = String(p['phase'] ?? 'lobby') as Phase
       this.timeLeft = Number(p['time_left'] ?? 0)
+      const stateTick = Number(p['tick'] ?? this.lastServerTick)
+      // A restart hands us a brand-new `World`, so the server's tick and round
+      // time both go back to 0 (`Room::restart`). Every clock the client holds
+      // is now an anchor to a world that is gone; the next snapshot re-anchors
+      // them, but the deadline below is computed *before* it arrives.
+      if (stateTick < this.lastServerTick) {
+        this.lastServerTick = stateTick
+        this.roundTime = 0
+        this.serverRoundTime = 0
+      }
+      // §C25. Converted to a deadline on the server's own clock the moment the
+      // phase is announced, because no further `round_state` is coming: the
+      // `Ended` branch of `round.rs` emits none.
+      this.phaseEndsAt = phaseDeadline(
+        this.serverRoundTime,
+        this.lastServerTick,
+        stateTick,
+        this.timeLeft,
+        C().SIM_DT,
+      )
       this.observed.phases.add(this.phase)
       // The big code is for inviting someone, which is a warmup activity. Once
       // the round is live it belongs in the strip, not across the screen.
@@ -293,7 +352,14 @@ export class GameScene extends Phaser.Scene {
       // and left out of this list, it did exactly what the comment below warns
       // about — the crate hung in the sky and every unit test stayed green.
       'item_move',
-      'item_despawn', 'projectile_spawn', 'projectile_despawn', 'mask_checksum',
+      'item_despawn', 'projectile_spawn',
+      // §C22/§C23. `projectile_spawn` carries where a projectile was created and
+      // nothing carried where it went, so every rocket, grenade and meteor was
+      // drawn frozen at its muzzle. Written into the mirror and left out of this
+      // list it would do exactly what `item_move` did before it was added here:
+      // nothing, with every unit test green.
+      'projectile_move',
+      'projectile_despawn', 'mask_checksum',
       // §B8. The mirror handles these; this list is what actually subscribes,
       // and a handler with no subscription is the §A39 shape one layer down.
       'tombstone_spawn', 'tombstone_despawn']) {
@@ -538,6 +604,8 @@ export class GameScene extends Phaser.Scene {
       this.audio.stopAll()
       this.results?.destroy()
       this.hud?.remove()
+      this.jetReadout?.remove()
+      this.jetReadout = null
       this.hideJoinCodeBanner()
       this.feel?.destroy()
       this.minimap?.destroy()
@@ -574,6 +642,7 @@ export class GameScene extends Phaser.Scene {
   private onWelcome(w: Welcome): void {
     this.me = w.playerId
     this.roundTime = w.roundTime
+    this.serverRoundTime = w.roundTime
     this.phase = w.phase as Phase
     // `welcome` is the only place a client learns the phase it *joined* in:
     // `round_state` is broadcast on transitions and once a second during
@@ -642,6 +711,7 @@ export class GameScene extends Phaser.Scene {
     this.lastServerTick = s.tick
     this.debugHud?.noteSnapshot(now, s.tick)
     this.roundTime = s.roundTime
+    this.serverRoundTime = s.roundTime
     // The overlay's visibility follows the **server's** alive flag rather than
     // the countdown reaching zero, so a respawn that lands early or late is
     // still what closes it (§B4).
@@ -661,6 +731,11 @@ export class GameScene extends Phaser.Scene {
     if (mine) {
       this.serverPos = { x: mine.x, y: mine.y }
       this.health = mine.health
+      // §C26. **Already in fuel units.** `codec.ts` dequantises the wire byte
+      // when it decodes the snapshot, so `jetpackFuel` is 0..JETPACK_MAX_FUEL
+      // here and dividing by 255 again would be the second half of a conversion
+      // that has already happened.
+      this.fuel = mine.jetpackFuel
       // Authoritative, because smoke is positional: what you can see depends on
       // which cloud you are standing in. This replaced a hardcoded 1, which is
       // why heavy fog changed nothing in the real game for four milestones.
@@ -675,7 +750,14 @@ export class GameScene extends Phaser.Scene {
           vx: mine.vx,
           vy: mine.vy,
           grounded: flag(mine.flags, FLAG.grounded),
-          fuel: (mine.jetpackFuel / 255) * C().JETPACK_MAX_FUEL,
+          // Dequantised once, in `codec.ts`. This divided by 255 a second time,
+          // so the predictor was told a full 5.0 tank held 0.098 — its local
+          // body then ran "out of fuel" immediately and stopped predicting
+          // thrust while the server kept flying, which is a mispredicted
+          // position for the whole of every jetpack burn. §A24: the same wrong
+          // expression written in two places, and the second copy is the one
+          // that was never looked at.
+          fuel: mine.jetpackFuel,
           moveState: 0,
         },
       })
@@ -928,7 +1010,9 @@ export class GameScene extends Phaser.Scene {
     // early from a player who could still act.
     this.results.update(
       this.phase,
-      this.timeLeft,
+      // Recomputed every frame against the server's clock — `roundTime` is
+      // resynced by every snapshot, so this cannot drift (§B4).
+      secondsUntil(this.phaseEndsAt, this.roundTime),
       [...this.scores.entries()].map(([id, s], i) => ({
         id,
         name: s.name,
@@ -1059,6 +1143,25 @@ export class GameScene extends Phaser.Scene {
       // newlines are in `textContent` and HTML simply does not honour them.
       'white-space:pre'
     document.body.appendChild(this.hud)
+
+    // §C26: the jetpack number, in the bottom-left cluster §C8 puts the bars in.
+    //
+    // Its **own element**, not a field in the HUD's status line, for two
+    // reasons: `this.hud.textContent = …` replaces the whole node every frame,
+    // and T14.02 builds the bars this is meant to sit beside — it can position
+    // this next to the yellow bar without unpicking a string.
+    const jet = document.createElement('div')
+    jet.id = 'jetpack-readout'
+    // Clear of `#game-hud`, which is a full-width strip pinned to `bottom:0`
+    // with 6 px of padding around a 12px/1.5 line — about 30 px tall. At
+    // `bottom:12px` this landed **on top of** the round clock; the screenshot
+    // showed "JET 2.2" overprinting "2:53" (§C2: look at the picture).
+    jet.style.cssText =
+      'position:fixed;left:10px;bottom:36px;z-index:12;' +
+      'font:600 15px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;' +
+      'color:#ffd23f;text-shadow:0 1px 2px rgba(0,0,0,.9);pointer-events:none;'
+    document.body.appendChild(jet)
+    this.jetReadout = jet
   }
 
   private setStatus(text: string): void {
@@ -1172,7 +1275,12 @@ export class GameScene extends Phaser.Scene {
         isLocal: id === this.me,
       })),
     )
-    const banner = phaseBanner(this.phase, this.timeLeft)
+    // §C25: the same deadline the results screen uses. `Warmup` and `Ended` get
+    // no periodic `round_state`, so a banner built from `timeLeft` showed
+    // "Warmup — 0:10" for the whole warmup and "Round over — 0:20" for the whole
+    // vote window. `phaseBanner` ignores the number for `lobby` and returns null
+    // for `playing`, so this only changes the two that were frozen.
+    const banner = phaseBanner(this.phase, secondsUntil(this.phaseEndsAt, this.roundTime))
     // Readability matters here: the previous format rendered as
     // "3:56 1= p0 0 1= p1 0 1= cy 0", where the trailing "=" reads as an equals
     // sign and nothing separates a name from a score. Ties now lead with "=",
@@ -1207,6 +1315,17 @@ export class GameScene extends Phaser.Scene {
     }
     if (this.scoreboardOpen) lines.push(board)
     this.hud.textContent = lines.join('\n')
+
+    // §C26. One decimal, from the snapshot's fuel — see `jetpackReadout-math`
+    // for the measured curve this exists to make legible.
+    if (this.jetReadout) {
+      const trend = fuelTrend(this.fuelShown, this.fuel, C().JETPACK_REFILL, C().SIM_DT)
+      this.fuelShown = this.fuel
+      const mark = trend === 'draining' ? '▼' : trend === 'refilling' ? '▲' : '·'
+      this.jetReadout.dataset['fuel'] = fuelText(this.fuel, C().JETPACK_MAX_FUEL)
+      this.jetReadout.dataset['trend'] = trend
+      this.jetReadout.textContent = `JET ${fuelText(this.fuel, C().JETPACK_MAX_FUEL)} ${mark}`
+    }
   }
 
   private exposeDebugHandle(): void {
@@ -1300,6 +1419,20 @@ export class GameScene extends Phaser.Scene {
           // Count at both ends (§A39). These two numbers were silently
           // different for world items for three milestones; asserting only
           // that the server placed a mine would have passed the whole time.
+          // The inventory as the player sees it, so a check can select a weapon
+          // by NAME instead of by a hotkey number it worked out once.
+          //
+          // §C24 collapsed the dev loadout's duplicate bazooka into one slot and
+          // every index after the smg shifted by one. `ordnance` pressed Digit5
+          // for the axe and got the flamethrower: the melee assertion timed out
+          // "waiting for a swing", the cone assertion passed on the jet that
+          // stray press produced, and nothing said the word "slot" anywhere.
+          slots: self.slots.map((sl, i) => ({
+            slot: i,
+            key: sl?.key ?? null,
+            count: sl?.count ?? 0,
+            selected: i === self.selectedSlot,
+          })),
           minesPlaced: self.observed.minesPlaced,
           minesEnded: self.observed.minesEnded,
           swings: self.observed.swings,
@@ -1344,9 +1477,47 @@ export class GameScene extends Phaser.Scene {
           carvesApplied: self.mirror.stats.carvesApplied,
           resyncs: self.mirror.stats.resyncs,
           interp: self.interp.stats,
+          // §C25. The results countdown as the **player sees it** (the DOM text)
+          // beside the number it was computed from, so a check can assert the
+          // rendered thing rather than an internal field — §C2, and the reason
+          // the death overlay reports `.death-count` the same way.
+          //
+          // `timeLeft` below is deliberately still the raw `round_state` value:
+          // it is the thing that was frozen, so a check comparing the two can
+          // tell a live countdown from the bug.
+          results: {
+            visible: self.results.isUp,
+            text: document.querySelector('.results-count')?.textContent ?? '',
+            secondsLeft: secondsUntil(self.phaseEndsAt, self.roundTime),
+          },
+          banner: self.hud?.textContent?.includes('Round over')
+            ? (/Round over — ([0-9:]+)/.exec(self.hud.textContent)?.[1] ?? '')
+            : '',
+          // §C26. The readout as the player sees it (the DOM text) beside the
+          // snapshot value it was built from, so a check can assert the two
+          // against each other — one number alone would pass for a readout
+          // wired to nothing (§A39).
+          jetpack: {
+            text: document.querySelector('#jetpack-readout')?.textContent ?? '',
+            shown: Number(
+              (document.querySelector('#jetpack-readout') as HTMLElement | null)?.dataset[
+                'fuel'
+              ] ?? NaN,
+            ),
+            trend:
+              (document.querySelector('#jetpack-readout') as HTMLElement | null)?.dataset[
+                'trend'
+              ] ?? '',
+            fuel: self.fuel,
+          },
           // Round state, for a check that has to watch a whole round rather
           // than a moment of one.
           roundTime: self.roundTime,
+          // The server's own number, unextrapolated — see `serverRoundTime`.
+          // "Is anything being stepped" has to be asked of the server, and
+          // `lastServerTick` cannot answer it since `World::tick_idle` made the
+          // clock run in a lobby too.
+          serverRoundTime: self.serverRoundTime,
           timeLeft: self.timeLeft,
           darkness: self.serverDarkness,
           health: self.health,
@@ -1402,6 +1573,17 @@ export class GameScene extends Phaser.Scene {
       },
       debugRespawn() {
         self.conn.emitLocal?.('respawn', { id: self.me })
+      },
+      /**
+       * The simulation's own tunables, as the client already has them.
+       *
+       * e2e only. A browser check that carries its own copy of a number stays
+       * green against a drifted implementation (§A19) — `crates` asserted
+       * against a hardcoded `PICKUP_RADIUS` of 20 in a comment for two
+       * milestones.
+       */
+      constants() {
+        return C()
       },
       debugHud() {
         return self.debugHud.stats()

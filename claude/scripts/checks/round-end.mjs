@@ -24,110 +24,36 @@
  * **absent** during `Playing`. Asserting only that it appears at the end passes
  * for a screen that is up from the first frame, which would be a worse bug than
  * the one being fixed.
+ *
+ * The stack and the route into a battle are `harness.mjs` (§C18). This check
+ * used to set `MIN_PLAYERS_TO_START=1` to skip the lobby; three checks did and
+ * five did not, which is how one lobby change turned into five red checks.
  */
-import { spawn } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { matchVitePort } from '../vite-url.mjs'
-import { killGroup } from '../proc-group.mjs'
+import { join } from 'node:path'
+import { startStack, enterBattle, tally, sleep, shotsDir } from './harness.mjs'
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const shots = join(root, 'shots')
-mkdirSync(shots, { recursive: true })
-
-const require = createRequire(join(root, 'client/package.json'))
-const { chromium } = require('playwright-core')
-
-const PORT = 3117
-const libDir = join(process.env.HOME ?? '', '.cache/pwlibs/root/usr/lib/x86_64-linux-gnu')
-const chromePath = join(
-  process.env.HOME ?? '',
-  '.cache/ms-playwright/chromium-1234/chrome-linux64/chrome',
-)
+const PORT = 3118
 
 /** Warmup is 10 s and is not shortened, so this is the playing half only. */
 const ROUND_SECONDS = 20
 
-const kids = []
+const t = tally('round-end')
+const ok = t.ok
 let failed = false
 const fail = (m) => {
-  console.error(`FAIL: ${m}`)
+  t.fail(m)
   failed = true
 }
-const ok = (m) => console.log(`  ok   ${m}`)
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-process.on('exit', () => kids.forEach(killGroup))
-
-const server = spawn('cargo', ['run', '-q', '-p', 'game-server', '--release'], {
-  detached: true,
-  cwd: root,
-  env: {
-    ...process.env,
-    BIND_ADDR: `127.0.0.1:${PORT}`,
-    ROUND_SECONDS: String(ROUND_SECONDS),
-    MAP_SCALE: 'small',
-    BOT_COUNT: '2',
-    MIN_PLAYERS_TO_START: '1',
-    GAME_LOG: 'warn',
-  },
-  stdio: ['ignore', 'inherit', 'inherit'],
+const stack = await startStack({
+  port: PORT,
+  label: 'round-end',
+  env: { ROUND_SECONDS: String(ROUND_SECONDS), BOT_COUNT: '2' },
 })
-kids.push(server)
+const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
+await enterBattle(page, { label: 'round-end' })
+console.log(`  round ${ROUND_SECONDS}s + warmup`)
 
-let up = false
-for (let i = 0; i < 900 && !up; i++) {
-  try {
-    up = (await fetch(`http://127.0.0.1:${PORT}/healthz`)).ok
-  } catch {
-    /* not listening yet */
-  }
-  if (!up) await sleep(250)
-}
-if (!up) {
-  console.error('server never became healthy')
-  process.exit(1)
-}
-
-const vite = spawn('npx', ['vite', '--strictPort=false'], {
-  detached: true,
-  cwd: join(root, 'client'),
-  env: { ...process.env, VITE_SERVER_PORT: String(PORT) },
-})
-kids.push(vite)
-const viteUrl = await new Promise((res, rej) => {
-  const on = (b) => {
-    const port = matchVitePort(b)
-    if (port) res(`http://localhost:${port}`)
-  }
-  vite.stdout.on('data', on)
-  vite.stderr.on('data', on)
-  setTimeout(() => rej(new Error('vite never started')), 120_000)
-})
-console.log(`server :${PORT}  vite ${viteUrl}  round ${ROUND_SECONDS}s + warmup`)
-
-const browser = await chromium.launch({
-  executablePath: chromePath,
-  env: { ...process.env, LD_LIBRARY_PATH: libDir },
-  args: ['--no-sandbox', '--use-gl=swiftshader', '--enable-unsafe-swiftshader'],
-})
-const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } })
-const page = await ctx.newPage()
-const pageErrors = []
-page.on('pageerror', (e) => pageErrors.push(String(e)))
-await page.goto(`${viteUrl}/?e2e=1&game=1&name=ana`)
-await page.waitForFunction('window.__game && window.__game.debug().ready === true', null, {
-  timeout: 90_000,
-})
-console.log('  client joined')
-
-const dbg = () => page.evaluate('window.__game.debug()')
-const shot = async (name) => {
-  await page.screenshot({ path: join(shots, `${name}.png`) })
-  console.log(`  shot: shots/${name}.png`)
-}
 /**
  * Is the results screen **visible**? Not "is it in the DOM".
  *
@@ -176,6 +102,16 @@ if (!sawPlaying) fail('the round never reached `playing` — nothing below is me
 else if (await screenUp()) fail('the results screen is up during `playing`')
 else ok('not shown during the round (the control)')
 
+// §C25's control, on a **non-`Ended`** phase: the countdown element is not on
+// screen at all. Asserted on the element's existence rather than by comparing
+// its text to itself — `'' === ''` holds forever and would be an assertion that
+// cannot fail (§B15).
+if (await page.evaluate(() => !!document.querySelector('.results-count'))) {
+  fail('the results countdown is in the DOM during `playing`')
+} else {
+  ok('no countdown on screen outside `ended` (the control)')
+}
+
 await shot('round-end-playing')
 
 // --- the subject: up at `ended` -------------------------------------------
@@ -212,6 +148,106 @@ if (sawEnded) {
   }
   if (rows.some((r) => Number.isNaN(r.score))) fail('a score rendered as non-numeric')
   else ok(`scores render: ${rows.map((r) => `${r.name}:${r.score}`).join(' ')}`)
+}
+
+// --- §C25: the countdown counts down --------------------------------------
+//
+// The bug: `round_state` is broadcast on every transition and then once a second
+// *while `Playing`* — `round.rs` has no periodic branch for `Ended`. So a client
+// that stores `time_left` receives exactly one value for the whole twenty-second
+// window and renders it, unmoving, until the phase changes.
+//
+// Read off the **DOM**, not off a field (§C2): the number the player sees is the
+// thing that was wrong, and every internal value was already correct.
+if (sawEnded) {
+  const countdown = async () => {
+    const d = await dbg()
+    return {
+      // `.results-count` reads "12s"; the digits are what is asserted.
+      text: String(d.results?.text ?? ''),
+      secs: Number(String(d.results?.text ?? '').replace(/[^0-9.]/g, '')),
+      server: Number(d.serverRoundTime ?? NaN),
+      phase: d.phase,
+    }
+  }
+
+  const first = await countdown()
+  if (!Number.isFinite(first.secs) || first.text === '') {
+    fail(`the results countdown renders nothing: ${JSON.stringify(first.text)}`)
+  } else {
+    ok(`countdown renders "${first.text}"`)
+  }
+
+  // Several points, not two. A single pair a second apart is satisfied by a
+  // number that moves once; the invariant below needs a series to be worth
+  // anything.
+  const samples = [first]
+  for (let i = 0; i < 6; i++) {
+    await sleep(1100)
+    samples.push(await countdown())
+  }
+  const live = samples.filter((x) => x.phase === 'ended' && Number.isFinite(x.secs))
+
+  // Rendered: two frames a second apart differ.
+  const moved = live.some((x, i) => i > 0 && x.secs !== live[i - 1].secs)
+  if (!moved) {
+    fail(
+      `the rendered countdown never changed across ${live.length} samples a second ` +
+        `apart: ${live.map((x) => x.text).join(' ')} — this is the bug`,
+    )
+  } else {
+    ok(`the rendered countdown fell: ${live.map((x) => x.text).join(' -> ')}`)
+  }
+
+  // Both ends (§A39): the number **on screen** against the **server's** clock.
+  //
+  // `rendered + serverRoundTime` is the deadline, so it is constant while the
+  // countdown tracks the server — within 1 s, which is the width of the `ceil`
+  // the display applies. A static countdown makes this sum climb by the whole
+  // length of the window, so the two cases are nowhere near each other. Nothing
+  // circular here: the digits come from the DOM and the clock from the snapshot
+  // header.
+  if (live.length >= 3) {
+    const deadlines = live.map((x) => x.secs + x.server)
+    const spread = Math.max(...deadlines) - Math.min(...deadlines)
+    if (spread > 1.5) {
+      fail(
+        `rendered seconds + server round time drifted by ${spread.toFixed(2)} s over ` +
+          `${live.length} samples (${deadlines.map((d) => d.toFixed(1)).join(', ')}) — the ` +
+          'countdown is not tracking the server clock',
+      )
+    } else {
+      ok(
+        `countdown tracks the server clock (deadline steady within ${spread.toFixed(2)} s ` +
+          `over ${live.length} samples)`,
+      )
+    }
+  } else {
+    fail(`only ${live.length} usable samples inside \`ended\` — the series did not run`)
+  }
+
+  // The control for "it moves": freeze the scene and the rendered number must
+  // **stop**. §C25's named risk is "a local stopwatch" — a `setInterval` keeps
+  // firing while the scene is paused, so a countdown that carries on ticking
+  // here is running on a timer of its own rather than being recomputed in the
+  // update loop from the server's clock. It does not discriminate against every
+  // wrong implementation; it discriminates against that one.
+  const beforeFreeze = await countdown()
+  await page.evaluate(() => window.__game.freeze(true))
+  await sleep(1400)
+  const whileFrozen = await countdown()
+  await page.evaluate(() => window.__game.freeze(false))
+  if (whileFrozen.phase === 'ended' && beforeFreeze.phase === 'ended') {
+    if (whileFrozen.secs !== beforeFreeze.secs) {
+      fail(
+        `the countdown moved ${beforeFreeze.text} -> ${whileFrozen.text} with the scene ` +
+          'paused — it is running on an interval of its own rather than being ' +
+          'recomputed against the server clock',
+      )
+    } else {
+      ok(`paused, it holds at ${whileFrozen.text} (the control)`)
+    }
+  }
 }
 
 await shot('round-end-results')
@@ -261,6 +297,6 @@ if (sawEnded) {
 
 if (pageErrors.length) fail(`page errors: ${pageErrors.slice(0, 3).join(' | ')}`)
 
-await browser.close()
+await stack.close()
 console.log(failed ? '\nround-end: FAILED' : '\nround-end: ok')
 process.exit(failed ? 1 : 0)

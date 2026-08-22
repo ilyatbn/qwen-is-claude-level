@@ -40,6 +40,11 @@ pub enum UseError {
     WrongKind,
     OnCooldown,
     NoAmmo,
+    /// §C20 — you were moving under your own power. Silent and normal, like
+    /// every other fire rejection (`docs/30` §4); `docs/61` §3 row 6 is why it
+    /// is a distinct variant rather than a bare `false`: "my rocket did nothing"
+    /// has answers, and the server knows which one this was.
+    Moving,
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +64,13 @@ pub struct PlayerState {
     pub alive: bool,
     pub respawn_at: f32,
     pub iframes_until: f32,
+    /// Until when this player counts as **thrown** rather than walking (§C20).
+    ///
+    /// Stamped wherever an impulse is applied to them — `explode` and
+    /// `melee::swing` report who they threw, and `World` writes the stamp. The
+    /// fire gate reads it so knockback does not become a stun. Server-side only:
+    /// it is not on the wire and the client does not predict firing.
+    pub knocked_until: f32,
     /// Signed, and it may go negative: a player who only dies ends below zero.
     pub score: i16,
     pub deaths: u16,
@@ -86,6 +98,7 @@ impl PlayerState {
             alive: true,
             respawn_at: 0.0,
             iframes_until: 0.0,
+            knocked_until: 0.0,
             tombstone_skin_id: 0,
             score: 0,
             deaths: 0,
@@ -132,6 +145,11 @@ impl PlayerState {
             1.0,
             (self.health / BASE_HEALTH).clamp(0.0, 1.0),
         )
+    }
+
+    /// Were they thrown by something recently? See `knocked_until`.
+    pub fn was_knocked(&self, now: f32) -> bool {
+        now < self.knocked_until
     }
 
     pub fn invulnerable(&self, now: f32) -> bool {

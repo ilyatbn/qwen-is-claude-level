@@ -28,52 +28,20 @@
  * `GameScene.observed` accumulates them as they arrive and this script reads the
  * accumulation at the end. Polling is only used for the screenshots, where the
  * question genuinely is "what did it look like at this moment".
+ *
+ * The stack and the route into a battle are `harness.mjs` (§C18).
  */
-import { spawn } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { matchVitePort } from '../vite-url.mjs'
-import { killGroup } from '../proc-group.mjs'
+import { join } from 'node:path'
+import { startStack, enterBattle, sleep, shotsDir } from './harness.mjs'
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const shots = join(root, 'shots')
-mkdirSync(shots, { recursive: true })
-
-const require = createRequire(join(root, 'client/package.json'))
-const { chromium } = require('playwright-core')
-
-const PORT = 3114
-const libDir = join(process.env.HOME ?? '', '.cache/pwlibs/root/usr/lib/x86_64-linux-gnu')
-const chromePath = join(
-  process.env.HOME ?? '',
-  '.cache/ms-playwright/chromium-1234/chrome-linux64/chrome',
-)
+const shots = shotsDir
+const PORT = 3113
 
 /**
- * 150 s of `Playing`, on top of a 10 s warmup.
- *
- * Not shortened further, and this is the one number in the file that must not
- * be: the day/night cycle is 120 s (`DAY_DURATION + NIGHT_DURATION`), so a round
- * shorter than that never crosses into night and the interaction most worth
- * testing never happens. 150 s puts dusk at ~60 s, full night at ~74 s and dawn
- * complete at ~120 s, all inside `Playing`, and leaves room for the effect
- * scheduler (`EFFECT_INTERVAL_MIN` 30 s) to fire more than once.
+ * A full round, shortened only as far as `docs/41` §5 allows. Warmup is 10 s on
+ * top of this and is not shortened.
  */
 const ROUND_SECONDS = 150
-
-const kids = []
-const cleanup = () => {
-  for (const k of kids) {
-    try {
-      killGroup(k)
-    } catch {
-      /* already gone */
-    }
-  }
-}
-process.on('exit', cleanup)
 
 const failures = []
 const fail = (msg) => {
@@ -83,14 +51,10 @@ const fail = (msg) => {
 const ok = (msg) => console.log(`  ok   ${msg}`)
 
 // --- the real server, with bots to supply the pressure --------------------
-const server = spawn('cargo', ['run', '--quiet', '--release', '-p', 'game-server'], {
-  detached: true,
-  cwd: root,
+const stack = await startStack({
+  port: PORT,
+  label: 'full-round',
   env: {
-    ...process.env,
-    BIND_ADDR: `127.0.0.1:${PORT}`,
-    MAP_SCALE: 'small',
-    GAME_LOG: 'warn',
     ROUND_SECONDS: String(ROUND_SECONDS),
     // Bots are ordinary players (§A5) and they are what makes anything happen in
     // 150 s. Skill is raised so they actually land shots rather than wander.
@@ -101,67 +65,22 @@ const server = spawn('cargo', ['run', '--quiet', '--release', '-p', 'game-server
     // no deaths to assert on.
     DEV_LOADOUT: '1',
   },
-  stdio: ['ignore', 'inherit', 'inherit'],
 })
-kids.push(server)
-
-let up = false
-for (let i = 0; i < 900 && !up; i++) {
-  try {
-    up = (await fetch(`http://127.0.0.1:${PORT}/healthz`)).ok
-  } catch {
-    /* not listening yet */
-  }
-  if (!up) await new Promise((r) => setTimeout(r, 250))
-}
-if (!up) {
-  console.error('server never became healthy')
-  process.exit(1)
-}
-
-// --- vite, as the same-origin proxy the browser needs ---------------------
-const vite = spawn('npx', ['vite', '--strictPort=false'], {
-  detached: true,
-  cwd: join(root, 'client'),
-  env: { ...process.env, VITE_SERVER_PORT: String(PORT) },
-})
-kids.push(vite)
-const viteUrl = await new Promise((res, rej) => {
-  const on = (b) => {
-    const port = matchVitePort(b)
-    if (port) res(`http://localhost:${port}`)
-  }
-  vite.stdout.on('data', on)
-  vite.stderr.on('data', on)
-  setTimeout(() => rej(new Error('vite never started')), 120_000)
-})
-console.log(`server :${PORT}  vite ${viteUrl}  round ${ROUND_SECONDS}s + warmup`)
-
-const browser = await chromium.launch({
-  executablePath: chromePath,
-  env: { ...process.env, LD_LIBRARY_PATH: libDir },
-  args: ['--no-sandbox', '--use-gl=swiftshader', '--enable-unsafe-swiftshader'],
-})
+console.log(`  round ${ROUND_SECONDS}s + warmup`)
 
 async function openClient(name) {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } })
-  const page = await ctx.newPage()
-  const errors = []
-  page.on('pageerror', (e) => errors.push(String(e)))
-  // `game=1` skips the title screen: these checks predate the front end and
-  // exist to drive a round, not to click through a menu (§B3).
-  await page.goto(`${viteUrl}/?e2e=1&game=1&name=${name}`)
-  await page.waitForFunction('window.__game && window.__game.debug().ready === true', null, {
-    timeout: 90_000,
-  })
-  return { page, errors, name }
+  const c = await stack.openClient({ name })
+  return { page: c.page, errors: c.pageErrors, name: c.name }
 }
 
 const dbg = (c) => c.page.evaluate('window.__game.debug()')
 
+
 const a = await openClient('ana')
 const b = await openClient('bo')
 console.log('  two clients joined')
+await enterBattle(a.page, { label: 'full-round/ana' })
+await enterBattle(b.page, { press: false, label: 'full-round/bo' })
 
 // --- play the round -------------------------------------------------------
 //
@@ -173,21 +92,21 @@ let pauseA = false
 const drive = async (c, dir) => {
   while (driving) {
     if (c.name === 'ana' && pauseA) {
-      await new Promise((r) => setTimeout(r, 200))
+      await sleep(200)
       continue
     }
     try {
       await c.page.keyboard.down(dir)
-      await new Promise((r) => setTimeout(r, 900))
+      await sleep(900)
       await c.page.keyboard.up(dir)
       await c.page.keyboard.press('Space')
       await c.page.evaluate('window.__game.fire()')
-      await new Promise((r) => setTimeout(r, 700))
+      await sleep(700)
       await c.page.keyboard.down(dir === 'd' ? 'a' : 'd')
-      await new Promise((r) => setTimeout(r, 900))
+      await sleep(900)
       await c.page.keyboard.up(dir === 'd' ? 'a' : 'd')
       await c.page.evaluate('window.__game.fire()')
-      await new Promise((r) => setTimeout(r, 700))
+      await sleep(700)
     } catch {
       // The page can be mid-navigation or closed while shutting down; a driver
       // that throws here would mask the real result.
@@ -205,7 +124,7 @@ const drive = async (c, dir) => {
 // and the rockets stay for the one shot that has to.
 for (const c of [a, b]) {
   await c.page.keyboard.press('Digit2')
-  await new Promise((r) => setTimeout(r, 200))
+  await sleep(200)
 }
 const drivers = [drive(a, 'd'), drive(b, 'a')]
 
@@ -216,7 +135,7 @@ async function until(client, pred, deadlineMs, what) {
     const d = await dbg(client)
     if (pred(d)) return d
     if (Date.now() - started > deadlineMs) return null
-    await new Promise((r) => setTimeout(r, 1000))
+    await sleep(1000)
   }
 }
 
@@ -282,9 +201,9 @@ let effectShot = false
  */
 async function selfKill(c) {
   pauseA = true
-  await new Promise((r) => setTimeout(r, 400))
+  await sleep(400)
   await c.page.keyboard.press('Digit1') // the first rocket stack
-  await new Promise((r) => setTimeout(r, 300))
+  await sleep(300)
   const before = (await dbg(c)).health
   let switched = false
   // Aim down: the camera follows the player, so a point below mid-screen is
@@ -299,7 +218,7 @@ async function selfKill(c) {
     if (!switched && i >= 4) {
       switched = true
       await c.page.keyboard.press('Digit3')
-      await new Promise((r) => setTimeout(r, 300))
+      await sleep(300)
     }
     // Step onto fresh ground, then fire from it.
     //
@@ -310,14 +229,14 @@ async function selfKill(c) {
     // detonates further below you. Standing still gave ~12 damage a shot against
     // ~25 for the first. Stepping sideways onto undamaged ground restores it.
     await c.page.keyboard.down('d')
-    await new Promise((r) => setTimeout(r, 260))
+    await sleep(260)
     await c.page.keyboard.up('d')
     for (let w = 0; w < 20 && !(await dbg(c)).player?.grounded; w++) {
-      await new Promise((r) => setTimeout(r, 200))
+      await sleep(200)
     }
     await c.page.mouse.move(640, 700)
     await c.page.evaluate('window.__game.fire()')
-    await new Promise((r) => setTimeout(r, 1000))
+    await sleep(1000)
   }
   const after = await dbg(c)
   console.log(`  self-damage: health ${before} → ${after.health}`)
@@ -377,17 +296,17 @@ for (;;) {
   // 1 s, not 2: hazards are transient (a toxic puddle lives 3 s, a meteor
   // impact is instantaneous), so a slow poll misses the only frames worth
   // photographing.
-  await new Promise((r) => setTimeout(r, 1000))
+  await sleep(1000)
 }
 
 driving = false
 await Promise.all(drivers)
-await new Promise((r) => setTimeout(r, 1500))
+await sleep(1500)
 // Hold Tab so the frame named "scoreboard" contains one (§A22). The first
 // version of this shot was captured without it and showed only the round-over
 // banner — a screenshot that does not contain its subject is not evidence.
 await a.page.keyboard.down('Tab')
-await new Promise((r) => setTimeout(r, 500))
+await sleep(500)
 await shot(a, 'round-5-scoreboard')
 const boardText = await a.page.evaluate(
   'document.querySelector("[data-hud]")?.textContent ?? ""',
@@ -528,8 +447,7 @@ console.log(
     ),
 )
 
-await browser.close()
-cleanup()
+await stack.close()
 if (failures.length) {
   console.error(`\nfull-round FAILED (${failures.length})`)
   process.exit(1)

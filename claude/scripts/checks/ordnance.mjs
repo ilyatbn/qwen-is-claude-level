@@ -23,110 +23,35 @@
  * minus ended). One number — "the server placed a mine" — passes for the whole
  * period the bug existed. Those two were silently different for world items for
  * three milestones (§A39).
+ *
+ * The stack and the route into a battle are `harness.mjs` (§C18) — a room is a
+ * lobby until someone asks for a round, and every wait below is meaningless
+ * until one is running.
  */
+import { join } from 'node:path'
+import {
+  startStack,
+  enterBattle,
+  standStill,
+  selectWeapon,
+  tally,
+  sleep,
+  shotsDir,
+} from './harness.mjs'
 
-import { spawn } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { matchVitePort } from '../vite-url.mjs'
-import { killGroup } from '../proc-group.mjs'
-
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const shots = join(root, 'shots')
-mkdirSync(shots, { recursive: true })
-
-const require = createRequire(join(root, 'client/package.json'))
-const { chromium } = require('playwright-core')
-
-const PORT = 3121
-const libDir = join(process.env.HOME ?? '', '.cache/pwlibs/root/usr/lib/x86_64-linux-gnu')
-const chromePath = join(
-  process.env.HOME ?? '',
-  '.cache/ms-playwright/chromium-1234/chrome-linux64/chrome',
-)
-
-const kids = []
-process.on('exit', () => {
-  for (const k of kids) {
-    try {
-      killGroup(k)
-    } catch {
-      /* already gone */
-    }
-  }
-})
-
-const failures = []
-const fail = (m) => {
-  console.error(`  FAIL: ${m}`)
-  failures.push(m)
-}
-const ok = (m) => console.log(`  ok   ${m}`)
+const PORT = 3122
+const { fail, ok, failures } = tally('ordnance')
 
 // No bots: a bot swinging or placing its own mine would make the counts
 // ambiguous about whose ordnance is being asserted.
-const server = spawn('cargo', ['run', '--quiet', '--release', '-p', 'game-server'], {
-  detached: true,
-  cwd: root,
-  env: {
-    ...process.env,
-    BIND_ADDR: `127.0.0.1:${PORT}`,
-    MAP_SCALE: 'small',
-    GAME_LOG: 'warn',
-    ROUND_SECONDS: '180',
-    BOT_COUNT: '0',
-    DEV_LOADOUT: '1',
-  },
-  stdio: ['ignore', 'inherit', 'inherit'],
+const stack = await startStack({
+  port: PORT,
+  label: 'ordnance',
+  env: { ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1' },
 })
-kids.push(server)
+const { page, dbg, pageErrors } = await stack.openClient({ name: 'ana' })
+await enterBattle(page, { waitPlaying: true, label: 'ordnance' })
 
-let up = false
-for (let i = 0; i < 900 && !up; i++) {
-  try {
-    up = (await fetch(`http://127.0.0.1:${PORT}/healthz`)).ok
-  } catch {
-    /* not listening yet */
-  }
-  if (!up) await new Promise((r) => setTimeout(r, 250))
-}
-if (!up) {
-  console.error('server never became healthy')
-  process.exit(1)
-}
-
-const vite = spawn('npx', ['vite', '--strictPort=false'], {
-  detached: true,
-  cwd: join(root, 'client'),
-  env: { ...process.env, VITE_SERVER_PORT: String(PORT) },
-})
-kids.push(vite)
-const viteUrl = await new Promise((res, rej) => {
-  const on = (b) => {
-    const port = matchVitePort(b)
-    if (port) res(`http://localhost:${port}`)
-  }
-  vite.stdout.on('data', on)
-  vite.stderr.on('data', on)
-  setTimeout(() => rej(new Error('vite never started')), 120_000)
-})
-
-const browser = await chromium.launch({
-  executablePath: chromePath,
-  env: { ...process.env, LD_LIBRARY_PATH: libDir },
-  args: ['--no-sandbox', '--use-gl=swiftshader', '--enable-unsafe-swiftshader'],
-})
-const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } })
-const page = await ctx.newPage()
-const pageErrors = []
-page.on('pageerror', (e) => pageErrors.push(String(e)))
-await page.goto(`${viteUrl}/?e2e=1&game=1&name=ana`)
-await page.waitForFunction('window.__game && window.__game.debug().ready === true', null, {
-  timeout: 90_000,
-})
-const dbg = () => page.evaluate('window.__game.debug()')
 
 async function until(pred, deadlineMs, what) {
   const started = Date.now()
@@ -137,13 +62,18 @@ async function until(pred, deadlineMs, what) {
       fail(`timed out waiting for ${what}`)
       return null
     }
-    await new Promise((r) => setTimeout(r, 200))
+    await sleep(200)
   }
 }
 
-const settle = (ms) => new Promise((r) => setTimeout(r, ms))
+const settle = sleep
 /** Fire whatever is selected, aiming at a screen point. */
 async function fireAt(sx, sy) {
+  // §C20: a shot from a moving player is refused, silently and by design. This
+  // check walks between assertions, and without stopping first every one of
+  // them timed out on its own effect — "waiting for a melee swing to arrive",
+  // which reads as a missing subscription rather than a refused swing.
+  await standStill(page)
   await page.mouse.move(sx, sy)
   // The aim is sampled from the pointer in the update loop, so a fire issued in
   // the same turn as the move can use the previous angle.
@@ -172,8 +102,6 @@ async function fireUntil(sx, sy, pred, deadlineMs, what) {
   }
 }
 
-await until((d) => d.phase === 'playing', 60_000, 'phase playing')
-
 // --- the control ----------------------------------------------------------
 //
 // Nothing has been fired yet, so nothing should be drawn. Without this,
@@ -190,18 +118,18 @@ if (before.minesDrawn === 0 && before.swings === 0 && before.jets === 0) {
 
 // --- melee: a swing you can see -------------------------------------------
 //
-// The axe is slot 5 (bazooka / smg / bazooka / mine / axe / flamethrower /
-// molotov — appended, never inserted, so the hotkeys other checks press stay put).
-await page.keyboard.press('Digit5')
-await settle(300)
+// By name. The loadout order used to be bazooka / smg / bazooka / mine / axe /
+// flamethrower / molotov and this pressed Digit5; §C24 merged the two bazooka
+// stacks and every index after the smg moved, so Digit5 became the flamethrower
+// and this assertion timed out on a swing that was never asked for.
+await selectWeapon(page, 'axe')
 await fireAt(900, 400)
 await settle(400)
 const swung = await until((d) => d.swings > 0, 8000, 'a melee swing to arrive')
 if (swung) ok(`melee: ${swung.swings} swing(s) received and drawn`)
 
 // --- flamethrower: a jet, and a light ---------------------------------------
-await page.keyboard.press('Digit6')
-await settle(300)
+await selectWeapon(page, 'flamethrower')
 for (let i = 0; i < 6; i++) {
   await fireAt(900, 420)
   await settle(120)
@@ -220,8 +148,7 @@ if (sprayed) ok(`cone: ${sprayed.jets} jet(s) received and drawn`)
 // (mine 200 px overhead). None of it was needed: the fx layer draws at
 // DEPTH.particles, above DEPTH.actors, so a mine at your feet is drawn over your
 // own sprite and is visible without moving at all.
-await page.keyboard.press('Digit4')
-await settle(300)
+await selectWeapon(page, 'mine')
 await fireUntil(640, 700, (d) => d.minesPlaced > 0, 20_000, 'a mine to be placed')
 const placed = (await dbg()).minesPlaced > 0 ? await dbg() : null
 if (placed) {
@@ -235,7 +162,7 @@ if (placed) {
       `mine count disagrees: server ${placed.minesPlaced}-${placed.minesEnded}=${expect}, client draws ${placed.minesDrawn}`,
     )
   }
-  await page.screenshot({ path: join(shots, 'ordnance-mine.png') })
+  await page.screenshot({ path: join(shotsDir, 'ordnance-mine.png') })
 }
 
 // --- a hazard on the ground -------------------------------------------------
@@ -243,8 +170,7 @@ if (placed) {
 // A molotov leaves fire, which is a hazard the server narrates and (until now)
 // nothing drew. Assert on hazards *drawn*, not on `hazard_spawn` being counted —
 // counting was already happening and was exactly the bug.
-await page.keyboard.press('Digit7')
-await settle(300)
+await selectWeapon(page, 'molotov')
 await fireAt(900, 500)
 await settle(1200)
 const burnt = await until((d) => d.hazardsDrawn > 0, 10_000, 'a hazard to be drawn')
@@ -264,7 +190,7 @@ if (burnt) {
   }
 }
 
-await page.screenshot({ path: join(shots, 'ordnance-hazard.png') })
+await page.screenshot({ path: join(shotsDir, 'ordnance-hazard.png') })
 
 
 // --- and the mine must go away again ---------------------------------------
@@ -277,8 +203,7 @@ await page.screenshot({ path: join(shots, 'ordnance-hazard.png') })
 if (placed) {
   // Mines ignore their owner (§B6), so standing on one is safe, and a rocket
   // straight down certainly puts the 42 px blast over it.
-  await page.keyboard.press('Digit1')
-  await settle(300)
+  await selectWeapon(page, 'bazooka')
   // Deadlines with headroom, not fixed sleeps. `fireUntil` and `until` already
   // wait on the *effect*; the deadline only bounds how long a genuinely stuck
   // run may hang. Under a loaded box the client steps fewer fixed-timestep ticks
@@ -299,6 +224,6 @@ if (placed) {
 if (pageErrors.length) fail(`page errors: ${pageErrors.join(' | ')}`)
 else ok('no page errors')
 
-await browser.close()
+await stack.close()
 console.log(failures.length ? `\nordnance: ${failures.length} FAILED` : '\nordnance: ok')
 process.exit(failures.length ? 1 : 0)

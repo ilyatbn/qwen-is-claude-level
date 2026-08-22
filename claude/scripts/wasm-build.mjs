@@ -19,7 +19,7 @@
  * trusting the flag, because a skip that silently produces nothing is how §A22
  * happened in the first place.
  */
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -46,20 +46,53 @@ if (process.env.SKIP_WASM_BUILD === '1') {
   process.exit(0)
 }
 
+// **Absolute.** `wasm-pack` resolves a relative `--out-dir` against the CRATE
+// directory, not against `cwd` — so `client/src/core/pkg` here meant
+// `crates/game-wasm/client/src/core/pkg`, and every build since silently wrote
+// there while the client kept importing a package that had stopped changing.
+//
+// It fails in the worst available way: the build prints a cheerful "Your wasm
+// pkg is ready", `pkgDir` still holds a valid older package so nothing errors,
+// and the only symptom is that constants added to `constants_json()` read
+// `undefined` in the browser and freshly changed `game-core` behaviour is simply
+// absent from the client. That is §A22 for the third time — the two earlier
+// rounds cost two milestones of stale test runs and a round of threshold tuning
+// — which is what the verification below is for.
 const args = [
   'build',
   'crates/game-wasm',
   '--target',
   'web',
   '--out-dir',
-  'client/src/core/pkg',
+  pkgDir,
   ...(release ? ['--release'] : []),
 ]
 
+const startedAt = Date.now()
 const r = spawnSync('wasm-pack', args, { cwd: root, stdio: 'inherit' })
 
 if (r.error?.code === 'ENOENT') {
   console.error('wasm-pack is required: cargo install wasm-pack')
   process.exit(1)
 }
-process.exit(r.status ?? 1)
+if (r.status !== 0) process.exit(r.status ?? 1)
+
+// Did the build land where the client imports from? A wasm-pack that reports
+// success while writing somewhere else is exactly the failure above, and it is
+// invisible without this. Checked by **mtime**, not by existence: a stale
+// package from a previous run exists too, which is the whole problem.
+const stale = required.filter((f) => {
+  const path = join(pkgDir, f)
+  if (!existsSync(path)) return true
+  // A second of slack for clock granularity on the filesystem.
+  return statSync(path).mtimeMs < startedAt - 1000
+})
+if (stale.length) {
+  console.error(
+    `wasm-pack reported success but ${pkgDir} was not updated: ${stale.join(', ')}.\n` +
+      'The client imports from there, so it would silently keep running the old ' +
+      'package. Check --out-dir: wasm-pack resolves a relative one against the ' +
+      'crate directory, not the working directory.',
+  )
+  process.exit(1)
+}

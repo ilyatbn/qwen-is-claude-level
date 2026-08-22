@@ -403,7 +403,22 @@ impl GameCore {
                 ProjectileOutcome::Exploded { at } => (at, None),
                 ProjectileOutcome::HitPlayer { at, victim } => (at, Some(victim)),
             };
-            // Every projectile explodes: contact, fuse or lifetime.
+            // §C21: a drop of toxic rain does **not** explode. It lands and
+            // becomes a puddle, and toxic rain leaves the mask byte-identical
+            // (`docs/13` §3). Without this the sandbox detonates it as a bazooka
+            // — see the fallback below, which treats every projectile as one —
+            // so rain would dig craters here while digging nothing in a real
+            // game, and `weather-visible` samples the sandbox.
+            if game_core::effects::toxic::owns(im.weapon) {
+                if let Some(t) = self.weather.toxic.as_mut() {
+                    let p = t.land(at, now);
+                    events.push(serde_json::json!({
+                        "puddle": { "id": p.id, "x": p.pos.x, "y": p.pos.y, "r": p.radius }
+                    }));
+                }
+                continue;
+            }
+            // Every other projectile explodes: contact, fuse or lifetime.
             let (radius, damage, weapon) = (
                 game_core::constants::BAZOOKA_BLAST_RADIUS,
                 game_core::constants::BAZOOKA_DAMAGE,
@@ -561,7 +576,14 @@ impl GameCore {
             let hits: HitLog = Default::default();
             {
                 let mut targets = build_targets(&mut self.players, &hits);
-                t.tick(&self.map, &mut targets, toxic_on, now, dt);
+                t.tick(
+                    &mut self.projectiles,
+                    &self.map,
+                    &mut targets,
+                    toxic_on,
+                    now,
+                    dt,
+                );
             }
             apply_hits(&mut self.players, &hits.borrow(), now);
             for p in t.puddles() {
@@ -668,6 +690,13 @@ pub fn constants_json() -> String {
         SIM_HZ => c::SIM_HZ,
         AIM_RADIUS => c::AIM_RADIUS,
         JETPACK_MAX_FUEL => c::JETPACK_MAX_FUEL,
+        // §C26's three numbers. The readout exists so the refill curve can be
+        // read off the screen, and the check that asserts the curve has to pin
+        // to these rather than carry its own copies (§A19) — a fixture holding
+        // 0.5 stays green against an implementation that has drifted to 0.4.
+        JETPACK_DRAIN => c::JETPACK_DRAIN,
+        JETPACK_REFILL => c::JETPACK_REFILL,
+        JETPACK_REFILL_DELAY => c::JETPACK_REFILL_DELAY,
         MINIMAP_W => c::MINIMAP_W,
         MINIMAP_H => c::MINIMAP_H,
         MINIMAP_ALPHA => c::MINIMAP_ALPHA,
@@ -690,6 +719,18 @@ pub fn constants_json() -> String {
         FLASHLIGHT_AMBIENT_MULT => c::FLASHLIGHT_AMBIENT_MULT,
         BASE_HEALTH => c::BASE_HEALTH,
         RESPAWN_DELAY => c::RESPAWN_DELAY,
+        // How close you have to be to take something off the ground. The
+        // browser check that walks a player at a crate asserts against it, and
+        // a check that hardcodes 20 stays green against a drifted sim (§A19).
+        PICKUP_RADIUS => c::PICKUP_RADIUS,
+        // §C20's threshold. A browser check that walks and then fires has to
+        // know when it has actually stopped, and one carrying its own copy of
+        // this number would stay green against a drifted sim (§A19).
+        FIRE_MOVE_MAX_SPEED => c::FIRE_MOVE_MAX_SPEED,
+        // The fastest a body moves under its own power. A browser check that
+        // samples a position on a timer needs it to know how far the subject
+        // could have travelled between two samples.
+        JETPACK_MAX_SPEED => c::JETPACK_MAX_SPEED,
         LAVA_BURN_RADIUS => c::LAVA_BURN_RADIUS,
         TOXIC_PUDDLE_RADIUS => c::TOXIC_PUDDLE_RADIUS,
         HEALTH_CAP => c::HEALTH_CAP,

@@ -55,6 +55,15 @@ pub struct ExplosionResult {
     pub carve: CarveResult,
     /// victim, damage dealt, impulse applied
     pub hits: Vec<(PlayerId, f32, Vec2)>,
+    /// Everyone this blast **threw**, whether or not it hurt them.
+    ///
+    /// Not the same set as `hits`: knockback lands even when the damage is
+    /// refused by a shield or i-frames (`docs/21` §5), so `hits` is a subset.
+    /// The caller needs this one to know who was moved by something other than
+    /// their own legs — §C20 refuses a shot from a player who is moving under
+    /// their own power, and being thrown must not count as that (CLAUDE.md:
+    /// "return what the caller needs").
+    pub knocked: Vec<PlayerId>,
 }
 
 /// How this blast should be attributed, before knowing who it hit.
@@ -105,6 +114,8 @@ pub fn explode(
     );
 
     let mut hits = Vec::new();
+
+    let mut knocked: Vec<PlayerId> = Vec::new();
     for p in players.iter_mut() {
         if !p.alive {
             continue;
@@ -140,6 +151,9 @@ pub fn explode(
         };
         let impulse = dir * (KNOCKBACK_MAX * t);
         *p.vel += impulse;
+        if impulse.len() > 0.0 {
+            knocked.push(p.id);
+        }
 
         // A victim exactly at `d == radius` takes zero and is pushed by zero.
         // Recording that is a wire event describing nothing happening.
@@ -148,7 +162,11 @@ pub fn explode(
         }
     }
 
-    ExplosionResult { carve, hits }
+    ExplosionResult {
+        carve,
+        hits,
+        knocked,
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

@@ -3595,3 +3595,187 @@ Left for later: the browser suite is still 22/27 (T13.06.1's reopen); T13.06.11
        reaper; T13.06.2-.9. The 5 e2e failures are NOT all lobby-entry — `crates`
        walks at a crate 300 px above it on a ledge, and `death` shows the alive
        flag going false with the overlay never appearing.
+
+## T13.06.1 (reopened) — one `enterBattle`, and five checks that were not all lobby bugs — DONE
+Files: scripts/checks/harness.mjs (new), scripts/checks/{crates,death,ordnance,round-end,
+       full-round,m10-checkpoint,lobby-start}.mjs, scripts/e2e-two-clients.mjs
+Verified: see the e2e tally at the end of this entry.
+Notes: 731 lines deleted, 193 added. Eight checks each hand-wrote the same ninety
+       lines of stack setup; five broke on one lobby change. `startStack` +
+       `enterBattle(page, {press, waitPlaying})`. No check sets
+       MIN_PLAYERS_TO_START any more — that was the split (3 did, 5 did not).
+       ONLY TWO OF THE FIVE WERE LOBBY-ENTRY. `death` reported "health 40->40,
+       overlay never appeared" — the round had simply never started. `crates` was
+       a real fixture failure: the crate landed 300 px up a ledge, so the walker
+       now FLIES (every player has a jetpack; tuning the seed would have been
+       tuning the symptom).
+Left for later: T13.06.6's tracer half, T13.06.10.
+
+## T13.06.11 — the room reaper has a caller — DONE
+Files: game-server/src/{app,registry,config}.rs, game-core/src/constants.rs,
+       game-server/tests/rooms.rs
+Verified: `cargo test -p game-server --test rooms` 9 passed; `e2e lobby-start` ok.
+Notes: A sweep on ROOM_REAP_INTERVAL (2 s) holding a **Weak** registry ref, so a
+       test's Stack dropping ends the loop instead of leaking one per server.
+       FALSIFIED: with the reap call removed the end-to-end test names the reason
+       — "room 1 outlived its TTL: nothing in the running server calls reap()".
+       Neither test calls `reap`; a test that calls the function is not a caller.
+SPEC GAP (report, not fix): `ROOM_EMPTY_TTL` is now a server env var — needed so
+       the end-to-end test observes a real reap instead of sleeping 30 s — and
+       `docs/41` §5's environment table does not list it.
+
+## T13.06.2 — melee reach from the body edge, and the measurement it owes — DONE
+Files: game-core/src/{constants.rs, weapons/melee.rs, world/mod.rs}
+Verified: `cargo test -p game-core --lib melee` 9 passed; balance harness below.
+Notes: `melee::effective_reach()` = PLAYER_W/2 + table reach, applied ONCE in
+       `world/mod.rs`. The first version added it inside `swing`, which left the
+       broadcast `Carve` and the drawn arc measuring from the centre: the server
+       dug 8 px from where it said it dug, so EVERY axe swing diverged every
+       client's mask and forced a full resync. `two-clients` could not see it —
+       both clients agreed with each other while both disagreed with the server.
+BALANCE, 8 seeds x 6 bots x 30 s, dmg/bot-s:
+                    knife  bat  whip   axe  hammer  median
+  T11.09 baseline    0.80 0.88  1.10  1.26   0.73   ~1.00
+  fire gate only     0.41 0.80  0.73  0.57   0.58    0.77
+  gate + C19 reach   0.36 0.21  0.69  0.19   0.10    0.69
+       So §C19's reach cut puts **bat, axe and hammer back below half the
+       median** — the exact shortfall T11.09 measured and fixed. The whip, whose
+       reach moved least, is the control (0.73 -> 0.69).
+       §C19's prescribed compensation (wider arc, faster swing) WAS TRIED and
+       MEASURED WORSE — knife 0.36 -> 0.15 on *more* swings, which nothing about
+       a wider arc explains — so it is reverted and recorded in `constants.rs`.
+       Reported rather than tuned away, as the task asks.
+
+## T13.06.3 — you cannot fire while moving — DONE
+Files: game-core/src/{constants.rs, world/mod.rs, player/state.rs, bots/mod.rs,
+       weapons/{explode,melee}.rs}
+Verified: `cargo test -p game-core --lib fire_gate` 8 passed.
+Notes: §C20 CONTRADICTS ITSELF — refuse above FIRE_MOVE_MAX_SPEED, *and*
+       knockback must not stop you firing, when knockback IS velocity. First
+       resolution used `grounded`, and it made the gate COSMETIC: hold D to
+       WALK_SPEED, jump, release D, fire at 150 px/s — and bots are airborne
+       40-90 % of ticks. Worse, the test written to validate it hand-set
+       `vel.x = KNOCKBACK_MAX; grounded = false`, which is byte-identical to
+       jump-and-shoot, so it could not have failed.
+       Now provenance: `PlayerState::knocked_until`, KNOCKBACK_FIRE_GRACE 0.6,
+       stamped by ONE `World::note_knocked` from a new `knocked` list on
+       ExplosionResult/MeleeResult (four impulse paths, one guard). The key term
+       is checked FIRST, so a blast does not buy 0.6 s of run-and-gun.
+       `knocked_until` IS IN `state_hash` — it decides whether a projectile
+       spawns, and §A34 is exactly about unhashed timers.
+       Bots mirror it and now drop JUMP/UP so they actually land. Measured:
+       refusals 910/1063 -> 454, and `button::DOWN` was inert (its only consumer
+       needs JUMP held) so it was removed rather than left looking load-bearing.
+       `the_measurement_is_reproducible` went red at its 10 s window because the
+       first shot now lands at t~13 s; widened to 25 s, control kept.
+SPEC GAP (report, not fix): §C20's two bullets cannot both hold literally. The
+       `knocked_until` exemption is a reading, not a doc edit.
+
+## T13.06.4 / T13.06.5 / half of T13.06.6 — one defect, three symptoms — DONE
+Files: game-core/src/{world/mod.rs, effects/{toxic,meteor}.rs, weapons/{defs,explode}.rs,
+       items/registry.rs, constants.rs}, game-server/src/events.rs,
+       game-wasm/src/lib.rs, client/src/{net/worldMirror.ts, scenes/GameScene.ts,
+       render/ordnance-state.ts}
+Verified: `cargo test -p game-core --lib toxic` and `--lib meteor` pass; workspace 639.
+Notes: NOTHING EVER ADVANCED A PROJECTILE'S POSITION ON THE CLIENT. `worldMirror`
+       stored x,y at `projectile_spawn`; there was no `projectile_move`,
+       projectiles are absent from snapshots, and nothing integrated vx/vy — so
+       `syncProjectiles` redrew every projectile at its muzzle for its whole
+       life. Meteors spawn at y=-32, above the map, hence "only the explosion is
+       visible". This is §C7's crate bug one layer over: `item_move` was added
+       for items and nothing equivalent existed for projectiles.
+       AND IT IS WHY T13.03's PIXEL TEST PASSED: `SandboxScene` reads live
+       positions from the core each frame, so the sandbox does not have the bug.
+       The test samples a different, working source (§C23 candidate 3).
+       Falsified by disabling the emit: "meteor 0 was announced at y=-32 and its
+       position was broadcast 0 time(s)".
+       Two more, both pre-existing: weather effects anchored their cadence at the
+       TELEGRAPH and dumped a 3 s catch-up burst on their first active tick (28
+       drops, not 20); and meteor impact fragments have never been announced to
+       any client since M5.
+SPEC DEFECT (report, not fix): T13.06.5's ">=1.5 s dodge window" comes from
+       §C22's "700 px/s crosses 1536 px in about two seconds", which assumes
+       CONSTANT SPEED — `docs/13` §4 says meteors fall under gravity in the same
+       paragraph. Measured, seed 4242, medium, 20 flights: min 0.38, median 0.55,
+       max 1.02 s. Unreachable without changing METEOR_SPEED, GRAVITY or the
+       spawn height, all fixed by `docs/13`.
+
+## T13.06.7 / T13.06.8 / T13.06.9 — DONE
+Files: game-core/src/items/{inventory,registry,world}.rs, game-core/tests/combat.rs,
+       client/src/ui/results-math.ts, client/src/scenes/GameScene.ts,
+       client/src/net/codec.ts, scripts/checks/{round-end,hud-bars}.mjs,
+       scripts/wasm-build.mjs
+Verified: `--lib inventory` 20 passed; `npm test -- --run results` 15 passed;
+       `--lib jetpack` 27 passed; e2e round-end and hud-bars ok.
+Notes: .7 — the one-slot rule lives in `Inventory::add`, the only route into a
+       slot. Six tests were asserting the multi-slot rule THROUGH `GRENADE`,
+       which is a weapon and therefore the class §C24 exempts; re-based onto
+       consumables so `docs/30` §2 stays covered and becomes the control.
+       `tests/combat.rs` also encoded the old rule and was missed by the
+       crate-scoped Done-when.
+       .8 — `round.rs` emits `round_state` from four places and the `Ended`
+       branch is not one of them, so the client rendered one number for the whole
+       window. Now a DEADLINE recomputed against the server clock (§B4/T10.06).
+       The same frozen field also drove the Warmup banner. AND: `Room::restart`
+       assigns a fresh World, so tick and round_time both reset — the client
+       corrected against the dead round's anchor and showed "Warmup — 0:00" for
+       the whole of round two. No check drives a second round; unit-tested now.
+       .9 — MEASURED FIRST, and the sim is correct: burn 5.0->0.0 in exactly
+       300 ticks, refill starts at 0.5167 s (one tick late, `>` not `>=`), slope
+       0.5000/s, full at 10.5 s, no landing gate. So the readout is the fix and
+       the feel is a tuning question about the three constants.
+THREE BUGS FOUND ON THE WAY, all pre-existing:
+       `wasm-build.mjs` had `--out-dir` relative, which `wasm-pack` resolves
+       against the CRATE dir — builds landed in `crates/game-wasm/client/...`
+       while the client imported a package last written **Aug 21**. It fails
+       silently: a valid older package is still there. THE BROWSER SUITE HAD BEEN
+       RUNNING ON PRE-SESSION WASM. Fixed, plus a post-build mtime check that
+       exits non-zero.
+       Jetpack fuel was DEQUANTISED TWICE — `codec.ts` converts, and GameScene
+       divided by 255 again at the readout *and* at `predictor.reconcile`, so the
+       predicted body ran dry instantly and mispredicted position for the whole
+       of every burn.
+       `npm run typecheck` was red while `vitest --run` passed: consts declared
+       in one `describe` and used from another transpile fine and do not typecheck.
+
+## T13.06.1 (finishing) — what the suite caught that no unit test could
+Files: scripts/checks/{harness,crates,death,ordnance}.mjs, client/src/scenes/GameScene.ts,
+       crates/game-wasm/src/lib.rs, client/src/core/index.ts, game-server/src/room.rs
+Notes: THREE OF THIS SESSION'S OWN CHANGES BROKE BROWSER CHECKS IN WAYS THAT READ
+       AS UNRELATED BUGS. All three are now fixed at the shared layer.
+       1. §C20 refuses a shot from a moving player, and three checks walk then
+          fire. `ordnance` reported "timed out waiting for a melee swing to
+          arrive" (reads as a missing subscription) and `death` took 103 s
+          instead of 30 — long enough for the weather to kill first, so it
+          reported `cause "Killed by weather"` (reads as an attribution bug).
+          Fixed with ONE `harness.mjs::standStill`, which waits on the body's own
+          velocity against FIRE_MOVE_MAX_SPEED rather than sleeping.
+          `death` also drops to DEV_START_HEALTH 20 so one rocket kills inside
+          the 30 s before EFFECT_INTERVAL_MIN — there is no way to turn weather
+          off, and the fixture had to fit inside it.
+       2. §C24 COLLAPSED THE DEV LOADOUT. The second bazooka grant is now a
+          silent no-op (the first stack is already at max_stack), so every slot
+          after the smg moved by one: `ordnance` pressed Digit5 for the axe and
+          got the flamethrower. Its own comment promised "appended, never
+          inserted, so the hotkeys stay put" — §B16, an implicit invariant that
+          was true until it was not. `debug()` now reports `slots`, and
+          `harness.mjs::selectWeapon(page, 'axe')` selects BY NAME and fails
+          loudly if the weapon is not held. The no-op grant is removed and the
+          consequence recorded: **DEV_LOADOUT now arms 4 rockets, not 8.**
+       3. `crates`' pixel control was wrong THREE WAYS, and its own guard caught
+          each one rather than reporting a canopy: ±200 px hardcoded is rock when
+          the crate falls down a shaft (delta 186); mask-probed offsets are empty
+          but unequally lit, because the lightmap is radial about the PLAYER
+          (112); equal-radius offsets are equally lit but land 1000 px apart in a
+          vertically graded sky (236). Replaced with a TEMPORAL control — the
+          same rect, the same pinned camera, half a second later once the crate
+          has fallen out of it, plus a quiet rect sampled in both frames as the
+          noise term. Canopy 80.2 against a drift of 2.8, which is the same 80-91
+          band the original falsification (every parachute draw call deleted:
+          16-27) established.
+       `crates` also could not tell a pickup from an EXPIRY — it broke out of its
+       loop on "no longer in mirrorItems", which a timed-out crate satisfies
+       exactly as well — and read "stops being drawn" in the same frame the
+       mirror dropped it, which a correct client fails by one frame. Both fixed;
+       the pickup tolerance is now derived from the poll interval and
+       JETPACK_MAX_SPEED rather than being a number read off one run.

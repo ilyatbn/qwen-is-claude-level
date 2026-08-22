@@ -721,3 +721,157 @@ async fn a_lobby_room_has_no_bots() {
 
     stack.shutdown_all(Duration::from_secs(2)).await;
 }
+
+/// The bots you are about to fight are **announced**, not just simulated.
+///
+/// A socket learns the roster from its own `welcome` and thereafter from
+/// `player_join` (`docs/40` §3). Bots used to be seated when the room was
+/// constructed, so a human's `welcome` already listed them. §C18 moved seating
+/// into `begin_round`, which happens with the human already connected — and
+/// nothing announced them. Snapshots carried three players while the scoreboard
+/// held one, so the results screen at the end of a round against bots named
+/// nobody but you. `round-end` caught it as "the screen lists 1 players, the
+/// server has 3".
+///
+/// The control is the second half: **no** `player_join` arrives while the room
+/// is still a lobby. Without it this passes for a server that announces three
+/// bots the moment anybody connects, which is the §C18 bug wearing a hat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn starting_a_round_announces_the_bots_it_seats() {
+    let mut cfg = test_config();
+    cfg.bot_count = 3;
+    let state = AppState::new(cfg);
+    let stack = app::build_stack(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let router = stack.router.clone();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    let (in_lobby, after_start) = tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        a.emit("join", serde_json::json!({ "name": "ana" }))
+            .expect("emit");
+        wait_for(&ia, "welcome", 1, "ana");
+        // Long enough for LOBBY_COUNTDOWN to have elapsed twice over had one
+        // been running: the control is that nothing was announced *because*
+        // nothing was seated, not because we looked too early.
+        std::thread::sleep(Duration::from_millis(1200));
+        let in_lobby = count(&ia, "player_join");
+
+        a.emit("start_with_bots", serde_json::json!({}))
+            .expect("emit");
+        std::thread::sleep(Duration::from_millis(1200));
+        let names: Vec<String> = ia
+            .lock()
+            .ok()
+            .and_then(|g| g.get("player_join").cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string))
+            .collect();
+        let _ = a.disconnect();
+        (in_lobby, names)
+    })
+    .await
+    .expect("client thread");
+
+    assert_eq!(
+        in_lobby, 0,
+        "the lobby announced {in_lobby} player(s) before the round started — a Lobby room \
+         has no bots (§C18)"
+    );
+    assert_eq!(
+        after_start.len(),
+        3,
+        "BOT_COUNT is 3 and the client was told about {}: {after_start:?}",
+        after_start.len()
+    );
+    // Named, not anonymous. `World::add_player` drops the name it is given and
+    // the `welcome` roster carries none, so an announcement without one leaves
+    // the scoreboard printing `p1`, `p2`, `p3`.
+    for n in &after_start {
+        assert!(
+            n.starts_with("Bot "),
+            "a bot was announced as {n:?} — the scoreboard will show an id, not a name"
+        );
+    }
+
+    stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// `welcome` tells you what everybody is called — **including you**.
+///
+/// `World::add_player` takes a name and drops it, and nothing else retained one,
+/// so the roster in `welcome` carried ids, skins and scores and no names. The
+/// only place a name ever appeared was the `player_join` broadcast, which
+/// `broadcast_except` sends to everyone *but* the player who joined. Two
+/// player-visible consequences, both of them permanent for the round: your own
+/// scoreboard row read `p0`, and a client joining a room already in progress saw
+/// every player already in it as `p1`, `p2`… forever.
+///
+/// The second client is the control. Without it, "the roster has names" also
+/// passes for a server that only ever names the one player it is talking to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn welcome_names_everyone_in_the_room_including_yourself() {
+    let h = spawn_server().await;
+    let addr = h.addr;
+
+    let (a_names, b_names) = tokio::task::spawn_blocking(move || {
+        let names_in = |inbox: &Inbox| -> Vec<String> {
+            inbox
+                .lock()
+                .ok()
+                .and_then(|g| g.get("welcome").and_then(|v| v.first().cloned()))
+                .and_then(|w| w.get("players").cloned())
+                .and_then(|p| p.as_array().cloned())
+                .unwrap_or_default()
+                .iter()
+                .map(|p| {
+                    p.get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("<no name>")
+                        .to_string()
+                })
+                .collect()
+        };
+
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        a.emit("join", serde_json::json!({ "name": "ana" }))
+            .expect("emit");
+        wait_for(&ia, "welcome", 1, "ana");
+
+        let ib: Inbox = Arc::default();
+        let b = connect(addr, ib.clone());
+        b.emit("join", serde_json::json!({ "name": "bo" }))
+            .expect("emit");
+        wait_for(&ib, "welcome", 1, "bo");
+
+        let out = (names_in(&ia), names_in(&ib));
+        let _ = a.disconnect();
+        let _ = b.disconnect();
+        out
+    })
+    .await
+    .expect("client thread");
+
+    assert_eq!(
+        a_names,
+        vec!["ana".to_string()],
+        "the first player was not told their own name"
+    );
+    let mut got = b_names.clone();
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["ana".to_string(), "bo".to_string()],
+        "a client joining a room in progress was not told who was already in it: {b_names:?}"
+    );
+
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}

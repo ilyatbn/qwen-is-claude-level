@@ -309,6 +309,23 @@ export class WorldMirror {
         })
         break
       }
+      // Where it has got to. Without this the map below holds the position a
+      // projectile was *created* at for the whole of its life, and everything
+      // downstream draws it there — a rocket as a dot on the muzzle, a meteor
+      // above the top of the map. Exactly what `item_move` fixed for crates
+      // (§C7); this is the same defect one layer over, and it is the single
+      // cause behind both §C22 and §C23.
+      case 'projectile_move': {
+        const live = this.projectiles.get(n(p['id']))
+        // Only for one we already know about: a `move` that arrived after its
+        // `despawn` (or before its `spawn`, on a reconnect) must not resurrect a
+        // projectile with no weapon, which would draw as a fragment forever.
+        if (live) {
+          live.x = n(p['x'], live.x)
+          live.y = n(p['y'], live.y)
+        }
+        break
+      }
       case 'projectile_despawn':
         this.projectiles.delete(n(p['id']))
         break

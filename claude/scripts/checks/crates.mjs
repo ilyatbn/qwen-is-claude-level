@@ -31,137 +31,56 @@
  * Crates arrive on `CRATE_INTERVAL` (35 s) during `Playing`, from the server's
  * spawn schedule. There is no sandbox path to one, and inventing a client-side
  * crate would test a code path no player ever runs.
+ *
+ * ## Reaching it
+ *
+ * The walker **flies**. Walking was enough until the room-on-demand change moved
+ * the spawn draw: the crate landed on a shelf 300 px above the player, who spent
+ * 70 s bunny-hopping at a wall and got no closer than 91 px against a
+ * `PICKUP_RADIUS` of 20. Terrain between two random points is not a thing to
+ * tune a fixture against — every player has a jetpack (`JETPACK_MAX_SPEED` 260
+ * for `JETPACK_MAX_FUEL` 5 s is over a thousand pixels of climb), so the check
+ * uses the same mechanism a player would.
  */
-import { spawn } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { matchVitePort } from '../vite-url.mjs'
-import { samplePatch, assertChanged } from './pixels.mjs'
-import { killGroup } from '../proc-group.mjs'
-
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const shots = join(root, 'shots')
-mkdirSync(shots, { recursive: true })
-
-const require = createRequire(join(root, 'client/package.json'))
-const { chromium } = require('playwright-core')
+import { join } from 'node:path'
+import { samplePatch } from './pixels.mjs'
+import { startStack, enterBattle, tally, sleep, shotsDir } from './harness.mjs'
 
 const PORT = 3116
-const libDir = join(process.env.HOME ?? '', '.cache/pwlibs/root/usr/lib/x86_64-linux-gnu')
-const chromePath = join(
-  process.env.HOME ?? '',
-  '.cache/ms-playwright/chromium-1234/chrome-linux64/chrome',
-)
+const { fail, ok, failures } = tally('crates')
 
 /**
- * Long enough for a crate (35 s) plus enough round left afterwards to walk to it
+ * Long enough for a crate (35 s) plus enough round left afterwards to fly to it
  * from wherever the spawn put us. A shorter round makes the pickup assertion a
  * race against the clock, which is a coin-flip gate rather than a gate.
  */
 const ROUND_SECONDS = 140
 
-const kids = []
-const cleanup = () => {
-  for (const k of kids) {
-    try {
-      killGroup(k)
-    } catch {
-      /* already gone */
-    }
-  }
-}
-process.on('exit', cleanup)
+/** How often the approach loop samples. The pickup tolerance is derived from it. */
+const APPROACH_POLL_MS = 160
 
-const failures = []
-const fail = (msg) => {
-  console.error(`  FAIL: ${msg}`)
-  failures.push(msg)
-}
-const ok = (msg) => console.log(`  ok   ${msg}`)
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
-const server = spawn('cargo', ['run', '--quiet', '--release', '-p', 'game-server'], {
-  detached: true,
-  cwd: root,
+const stack = await startStack({
+  port: PORT,
+  label: 'crates',
   env: {
-    ...process.env,
-    BIND_ADDR: `127.0.0.1:${PORT}`,
-    MAP_SCALE: 'small',
-    GAME_LOG: 'warn',
     ROUND_SECONDS: String(ROUND_SECONDS),
-    // A fixed map, so where the crate lands and how far our client has to walk
+    // A fixed map, so where the crate lands and how far our client has to travel
     // to reach it are the same every run. Without it this check is a different
     // fixture each time and "the player could not reach it" becomes a coin flip
     // rather than a result — the mistake `terrain-render` already made once.
     FIXED_SEED: '4242',
-    // Bots, because the pickup has to happen and our own client cannot be relied
-    // on to get there. Measured on this seed: the crate lands on a shelf at
-    // (1144, 627), our player falls into the cave below it and sits at (1200,
-    // 922) for the whole round however hard the walker jumps. That is not a bug
-    // in the game — it is a map with a hole in it — but a gate that depends on
-    // the terrain between a random spawn and a random crate is a coin flip.
-    // Bots path to items and there are three of them.
-    BOT_COUNT: '3',
-    BOT_SKILL: '0.85',
-    MIN_PLAYERS_TO_START: '1',
+    // **No bots.** They used to be here to do the walking, because our client
+    // could not reach the crate. It can now (it flies), and with bots in the
+    // room "the crate stopped existing" is satisfied by a bot taking it 190 px
+    // away from us — which is what the first run of this rewrite actually
+    // recorded, while the failure message still said "our client flew at it".
+    // One taker means the pickup asserted is the one performed.
+    BOT_COUNT: '0',
   },
-  stdio: ['ignore', 'inherit', 'inherit'],
 })
-kids.push(server)
-
-let up = false
-for (let i = 0; i < 900 && !up; i++) {
-  try {
-    up = (await fetch(`http://127.0.0.1:${PORT}/healthz`)).ok
-  } catch {
-    /* not listening yet */
-  }
-  if (!up) await sleep(250)
-}
-if (!up) {
-  console.error('server never became healthy')
-  process.exit(1)
-}
-
-const vite = spawn('npx', ['vite', '--strictPort=false'], {
-  detached: true,
-  cwd: join(root, 'client'),
-  env: { ...process.env, VITE_SERVER_PORT: String(PORT) },
-})
-kids.push(vite)
-const viteUrl = await new Promise((res, rej) => {
-  const on = (b) => {
-    const port = matchVitePort(b)
-    if (port) res(`http://localhost:${port}`)
-  }
-  vite.stdout.on('data', on)
-  vite.stderr.on('data', on)
-  setTimeout(() => rej(new Error('vite never started')), 120_000)
-})
-console.log(`server :${PORT}  vite ${viteUrl}  round ${ROUND_SECONDS}s`)
-
-const browser = await chromium.launch({
-  executablePath: chromePath,
-  env: { ...process.env, LD_LIBRARY_PATH: libDir },
-  args: ['--no-sandbox', '--use-gl=swiftshader', '--enable-unsafe-swiftshader'],
-})
-const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } })
-const page = await ctx.newPage()
-const pageErrors = []
-page.on('pageerror', (e) => pageErrors.push(String(e)))
-await page.goto(`${viteUrl}/?e2e=1&game=1&name=ana`)
-await page.waitForFunction('window.__game && window.__game.debug().ready === true', null, {
-  timeout: 90_000,
-})
-console.log('  client joined')
-
-const dbg = () => page.evaluate('window.__game.debug()')
-const shot = async (name) => {
-  await page.screenshot({ path: join(shots, `${name}.png`) })
-  console.log(`  shot: shots/${name}.png`)
-}
+const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
+await enterBattle(page, { waitPlaying: true, label: 'crates' })
+console.log(`  round ${ROUND_SECONDS}s`)
 
 /**
  * Where a world point is on screen, or null if it is not.
@@ -212,6 +131,8 @@ let canopyRect = null
 let canopy = null
 let skyL = null
 let skyR = null
+/** How much a rect with nothing in it moved between the two frames. */
+let quietDriftValue = 0
 for (let i = 0; i < 260 && !seen; i++) {
   const c = await crateNow()
   if (c.mirror) seen = c
@@ -321,9 +242,74 @@ if (!seen) {
         // came out at 6.5 on one run and 60.2 on the next, and a threshold built
         // on it failed a build for having a slow sky. Two patches from one frame
         // cannot drift relative to each other.
-        skyL = await samplePatch(page, { ...canopyRect, x: canopyRect.x - 200 })
-        skyR = await samplePatch(page, { ...canopyRect, x: canopyRect.x + 200 })
-        framedInFlight = true
+        //
+        // The control is **the same rect, the same camera, half a second
+        // later** — once the crate has fallen out of it.
+        //
+        // Three spatial controls were tried and all three were wrong, each for
+        // its own reason, and each failure was reported honestly by this
+        // fixture's own "the controls are not both plain sky" guard rather than
+        // being mistaken for a canopy:
+        //
+        //   ±200 px hardcoded  — only sky if the crate happens to be falling
+        //                        through open air; down a shaft both are rock
+        //                        (differed by 186).
+        //   ±N px, mask-probed — empty, but the lightmap is radial about the
+        //                        PLAYER (§A3), so with them 184 px off to one
+        //                        side the far patch is darker (differed by 112).
+        //   equal radius       — equal light, but the two land a thousand pixels
+        //                        apart in a vertically graded sky (236).
+        //
+        // Time removes all three: the camera is pinned to the same world point,
+        // the player has not moved, the sun has not moved, and the only thing
+        // that changed in that rect is that the parachute left it. The reason
+        // the original version compared across time and failed was that it
+        // compared across *thirty seconds*, after the crate had landed — long
+        // enough for the sky to animate. Half a second is not.
+        canopyRect = { x: Math.round(sp.sx - 44), y: Math.round(sp.sy - 100), w: 26, h: 42 }
+        canopy = await samplePatch(page, canopyRect)
+        // A second rect, sampled in both frames, as the noise term: whatever it
+        // moves by is what this scene does on its own in that half second.
+        const quietRect = { ...canopyRect, x: canopyRect.x - 120 }
+        const quietBefore = await samplePatch(page, quietRect)
+        await shot('crate-falling')
+
+        // Let the crate fall clear of the rect, then re-pin the SAME point.
+        await page.evaluate(() => window.__game.freeze(false))
+        const fellBy = 140
+        let cleared = false
+        for (let w = 0; w < 60 && !cleared; w++) {
+          const c2 = await crateNow()
+          if (!c2.mirror) break // taken or landed already
+          cleared = c2.mirror.y > cur.mirror.y + fellBy
+          if (!cleared) await sleep(50)
+        }
+        if (!cleared) {
+          fail(
+            `the crate never fell a further ${fellBy} px while framed, so there is no ` +
+              '"after" frame to compare the canopy against',
+          )
+        } else {
+          await page.evaluate(([x, y]) => window.__game.watch(x, y), [flightPos.x, flightPos.y])
+          await sleep(160)
+          await page.evaluate(() => window.__game.freeze(true))
+          skyL = await samplePatch(page, canopyRect)
+          skyR = await samplePatch(page, quietRect)
+          // `skyL` is the canopy's own rect with the canopy gone; `skyR` is the
+          // quiet rect, whose change between the two frames is the noise floor.
+          // Named for the shape the assertion below already had.
+          quietDriftValue = Math.hypot(
+            quietBefore.r - skyR.r,
+            quietBefore.g - skyR.g,
+            quietBefore.b - skyR.b,
+          )
+          const drift = quietDriftValue
+          console.log(
+            `    control: the same rect after the crate fell ${fellBy} px; ` +
+              `a quiet rect beside it drifted ${drift.toFixed(1)} in the same window`,
+          )
+          framedInFlight = true
+        }
       }
       await shot('crate-falling')
       await page.evaluate(() => window.__game.freeze(false))
@@ -428,30 +414,34 @@ if (!seen) {
     // deleted.
     if (canopy && skyL && skyR) {
       const d = (a, b) => Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b)
-      const noise = d(skyL, skyR)
-      const dL = d(skyL, canopy)
-      const dR = d(skyR, canopy)
+      // `skyL` is the canopy's own rect once the crate has fallen out of it;
+      // `skyR` is the quiet rect beside it in that same later frame, and
+      // `quietDrift` is how much that quiet rect moved between the two frames —
+      // i.e. everything about the scene that is not the parachute.
+      const canopyDelta = d(canopy, skyL)
+      const quietDrift = quietDriftValue
       // 45 is set by falsification, not by taste. With the parachute drawn this
       // strip moves 80-91; with every parachute draw call deleted it moves
       // 16-27, which is the beacon's spill and the crate's glow reaching the
       // bottom of the strip. Anything between those two bands separates them;
-      // 45 sits in the middle of the gap. The noise term is the second floor,
-      // for the case where the sky itself is doing something.
-      const floor = Math.max(45, noise * 3)
-      if (noise > 40) {
+      // 45 sits in the middle of the gap. The drift term is the second floor,
+      // for the case where the scene itself is doing something in that window.
+      const floor = Math.max(45, quietDrift * 3)
+      if (quietDrift > 20) {
         fail(
-          `the two control patches differ by ${noise.toFixed(1)} — they are not both plain ` +
-            'sky, so this fixture cannot tell a canopy from its background',
+          `a rect with nothing in it moved by ${quietDrift.toFixed(1)} between the two ` +
+            'frames — something other than the parachute changed, so this fixture cannot ' +
+            'attribute the difference to a canopy',
         )
-      } else if (dL > floor && dR > floor) {
+      } else if (canopyDelta > floor) {
         ok(
-          `the canopy stands out ${dL.toFixed(1)}/${dR.toFixed(1)} against sky either side ` +
-            `(floor ${floor.toFixed(1)}, control ${noise.toFixed(1)})`,
+          `the canopy's own rect moved ${canopyDelta.toFixed(1)} when the crate fell out of ` +
+            `it (floor ${floor.toFixed(1)}, quiet rect drifted ${quietDrift.toFixed(1)})`,
         )
       } else {
         fail(
-          `the parachute canopy moved its patch by only ${dL.toFixed(1)}/${dR.toFixed(1)} ` +
-            `against a floor of ${floor.toFixed(1)} — nothing is being drawn there`,
+          `the canopy's rect moved only ${canopyDelta.toFixed(1)} when the parachute left ` +
+            `it, against a floor of ${floor.toFixed(1)} — nothing is being drawn there`,
         )
       }
     } else {
@@ -481,18 +471,46 @@ if (!seen) {
   let framedAtRest = false
   let last = null
   let stuckFor = 0
+  let jetting = false
+  let lastGap = Infinity
+  const pickupsBefore = (await dbg()).observed?.itemPickups ?? 0
   const deadline = Date.now() + 70_000
   for (let i = 0; Date.now() < deadline && !gone; i++) {
     const c = await crateNow()
     const stillThere = (c.d.mirrorItems ?? []).find((it) => it.id === id)
     if (!stillThere) {
-      gone = { stillDrawn: (c.d.drawnItems ?? []).some((it) => it.id === id) }
+      // "Stops being drawn" is a **convergence**, not a same-frame read. The
+      // mirror drops the item the instant the `item_pickup` event lands, and the
+      // sprite goes on the next `update()` — so sampling both from one
+      // `debug()` call reports a lingering sprite for a client that is behaving
+      // correctly, one frame later. What the bug being guarded against looks
+      // like is a sprite that NEVER goes, so this waits a bounded moment and
+      // asserts on that.
+      let drawnAfter = true
+      for (let w = 0; w < 30 && drawnAfter; w++) {
+        await sleep(100)
+        drawnAfter = ((await dbg()).drawnItems ?? []).some((it) => it.id === id)
+      }
+      gone = {
+        stillDrawn: drawnAfter,
+        // How far our own player was from it on the last frame it existed. The
+        // pickup is only ours if we were inside PICKUP_RADIUS when it went.
+        tookItFrom: lastGap,
+        // **Picked up, not merely absent.** The loop breaks on "no longer in
+        // `mirrorItems`", and an item that timed out on the ground satisfies
+        // that exactly as well as one somebody took — so without this the
+        // check reports a successful pickup for a crate nobody ever reached.
+        // With bots in the room it was worse still: a bot took it 190 px away
+        // and the failure message said "our client flew at the crate".
+        pickups: (c.d.observed?.itemPickups ?? 0) - pickupsBefore,
+      }
       break
     }
     const me = c.d.player
     if (me) {
       const dx = stillThere.x - me.x
-      closest = Math.min(closest, Math.hypot(dx, stillThere.y - me.y))
+      lastGap = Math.hypot(dx, stillThere.y - me.y)
+      closest = Math.min(closest, lastGap)
       // Hold the key down rather than tapping it: a 400 ms tap with a gap after
       // it walks at about half speed, and the round is not long enough for that.
       const want = dx > 0 ? 'd' : 'a'
@@ -502,29 +520,30 @@ if (!seen) {
         held = want
       }
       // Terrain is not flat, and "hold left" walks into the first ledge and
-      // stays there for the rest of the round. Measured on seed 4242: the
-      // player ended in a pit at (1194, 717) with the crate on a shelf at
-      // (1144, 627) and did not move again for 70 s.
+      // stays there for the rest of the round. Measured on seed 4242 after the
+      // room-on-demand change: the crate on a shelf at (1144, 627), the player
+      // in the pit below it at (1194, 922), closest approach 91 px in 70 s
+      // against a PICKUP_RADIUS of 20 — and every hop landing back in the pit.
       //
-      // So: jump whenever we are not making progress, and if that does not work
-      // either, back off in the other direction for a moment and try again —
-      // a run-up is what gets a body onto a ledge it cannot step onto.
+      // So fly. Hold jump while the crate is above us: past JETPACK_HOLD_DELAY
+      // (0.18 s) that is the jetpack, and JETPACK_MAX_SPEED (260) for
+      // JETPACK_MAX_FUEL (5 s) is more climb than this map is tall. Released
+      // once level with the crate, so the fuel refills for the next lift rather
+      // than being spent overshooting into the sky.
+      const above = me.y - stillThere.y // >0: the crate is higher than we are
+      const wantJet = above > 24
+      if (wantJet !== jetting) {
+        if (wantJet) await page.keyboard.down('Space')
+        else await page.keyboard.up('Space')
+        jetting = wantJet
+      }
+      // Being stuck at ground level is still possible — out of fuel under a
+      // ledge — so keep the hop as the fallback for a body that is not moving.
       const moved = last === null || Math.abs(me.x - last) > 1.5
       last = me.x
       if (moved) stuckFor = 0
       else stuckFor++
-      if (stuckFor > 0) await page.keyboard.press('Space')
-      if (stuckFor > 8) {
-        if (held) await page.keyboard.up(held)
-        const back = want === 'd' ? 'a' : 'd'
-        await page.keyboard.down(back)
-        await sleep(320)
-        await page.keyboard.press('Space')
-        await sleep(160)
-        await page.keyboard.up(back)
-        held = null
-        stuckFor = 0
-      }
+      if (!jetting && stuckFor > 0) await page.keyboard.press('Space')
       if (i % 12 === 0) {
         console.log(
           `    approach: me (${me.x.toFixed(0)}, ${me.y.toFixed(0)}) ` +
@@ -538,26 +557,57 @@ if (!seen) {
         framedAtRest = true
       }
     }
-    await sleep(160)
+    await sleep(APPROACH_POLL_MS)
   }
   if (held) await page.keyboard.up(held)
+  if (jetting) await page.keyboard.up('Space')
   if (!gone) {
     fail(
-      `our client walked at the crate for 70 s and never picked it up — closest ` +
+      `our client flew at the crate for 70 s and never picked it up — closest ` +
         `approach ${closest.toFixed(0)} px, PICKUP_RADIUS is 20`,
+    )
+  } else if (!(gone.pickups > 0)) {
+    fail(
+      `the crate stopped existing without anybody picking it up (itemPickups did not ` +
+        `move) — it expired on the ground, and the pickup was never exercised`,
     )
   } else if (gone.stillDrawn) {
     fail('the crate was picked up and the client is still drawing it')
   } else {
-    ok('the crate was picked up and stopped being drawn — both ends')
+    // Pinned to the sim's own constant, not to the 20 this comment used to say
+    // in prose: a check carrying its own copy of a tunable stays green against a
+    // drifted implementation (§A19).
+    const k = await page.evaluate(() => window.__game.constants())
+    // The tolerance is **derived**, not picked. `tookItFrom` is the last
+    // distance sampled before the crate vanished, and the approach loop samples
+    // every APPROACH_POLL_MS — so between that sample and the pickup the player
+    // could have closed by a whole poll interval at full speed. A bound of
+    // `2 * PICKUP_RADIUS` failed at 44 px for a pickup that was certainly ours
+    // (no bots in the room, and `itemPickups` moved), which is a threshold read
+    // off one run rather than off the fixture.
+    const radius = k.PICKUP_RADIUS
+    const reachable = radius + k.JETPACK_MAX_SPEED * (APPROACH_POLL_MS / 1000)
+    if (!(gone.tookItFrom <= reachable)) {
+      fail(
+        `the crate vanished while our player was ${gone.tookItFrom.toFixed(0)} px away ` +
+          `(PICKUP_RADIUS ${radius}, reachable in one ${APPROACH_POLL_MS} ms poll is ` +
+          `${reachable.toFixed(0)}) — somebody else took it, so this proved nothing ` +
+          'about walking to a crate',
+      )
+    } else {
+      ok(
+        `our client took it from ${gone.tookItFrom.toFixed(0)} px (radius ${radius}, ` +
+          `bound ${reachable.toFixed(0)}) ` +
+          'and it stopped being drawn — both ends',
+      )
+    }
   }
   await shot('crate-taken')
 }
 
 if (pageErrors.length) fail(`page errors: ${pageErrors.join(' | ')}`)
 
-await browser.close()
-cleanup()
+await stack.close()
 
 if (failures.length) {
   console.error(`\ncrates: ${failures.length} failure(s)`)

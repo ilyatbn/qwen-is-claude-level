@@ -17,39 +17,18 @@
  * private room must crater it in *both* of its clients and leave the
  * quick-match room's terrain untouched. Rooms that leak into each other is the
  * multi-room form of the inventory leak in `docs/30` §6.
+ *
+ * These clients start at the **menu**, not at `?game=1`, so they keep their own
+ * opener — but they reach a running round through `harness.mjs`'s `enterBattle`
+ * like every other check (§C18). The quick-match player is alone in their room:
+ * before that shared helper existed, "all three rounds are ticking" was a
+ * one-player room that had no round at all.
  */
-import { spawn } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { matchVitePort } from '../vite-url.mjs'
-import { killGroup } from '../proc-group.mjs'
-
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const shots = join(root, 'shots')
-mkdirSync(shots, { recursive: true })
-
-const require = createRequire(join(root, 'client/package.json'))
-const { chromium } = require('playwright-core')
+import { join } from 'node:path'
+import { startStack, enterBattle, sleep, shotsDir } from './harness.mjs'
 
 const PORT = 3114
-const libDir = join(process.env.HOME ?? '', '.cache/pwlibs/root/usr/lib/x86_64-linux-gnu')
-const chromePath = join(
-  process.env.HOME ?? '',
-  '.cache/ms-playwright/chromium-1234/chrome-linux64/chrome',
-)
-
-const kids = []
-process.on('exit', () => {
-  for (const k of kids) {
-    try {
-      killGroup(k)
-    } catch {
-      /* already gone */
-    }
-  }
-})
+const shots = shotsDir
 
 const log = (m) => console.log(`  ${m}`)
 const die = (m) => {
@@ -57,56 +36,16 @@ const die = (m) => {
   process.exit(1)
 }
 
-// --- server ---------------------------------------------------------------
-const server = spawn('cargo', ['run', '--quiet', '-p', 'game-server'], {
-  detached: true,
-  cwd: root,
+const stack = await startStack({
+  port: PORT,
+  label: 'm10-checkpoint',
   env: {
-    ...process.env,
-    BIND_ADDR: `127.0.0.1:${PORT}`,
-    MAP_SCALE: 'small',
-    GAME_LOG: 'warn',
     // No bots: this counts players, and a bot is a player (§A5).
     BOT_COUNT: '0',
     DEV_LOADOUT: '1',
   },
-  stdio: ['ignore', 'inherit', 'inherit'],
 })
-kids.push(server)
-
-let up = false
-for (let i = 0; i < 600 && !up; i++) {
-  try {
-    up = (await fetch(`http://127.0.0.1:${PORT}/healthz`)).ok
-  } catch {
-    /* not listening yet */
-  }
-  if (!up) await new Promise((r) => setTimeout(r, 250))
-}
-if (!up) die('server never became healthy')
-
-// --- vite -----------------------------------------------------------------
-const vite = spawn('npx', ['vite', '--strictPort=false'], {
-  detached: true,
-  cwd: join(root, 'client'),
-  env: { ...process.env, VITE_SERVER_PORT: String(PORT) },
-})
-kids.push(vite)
-const viteUrl = await new Promise((res, rej) => {
-  const on = (b) => {
-    const port = matchVitePort(b)
-    if (port) res(`http://localhost:${port}`)
-  }
-  vite.stdout.on('data', on)
-  vite.stderr.on('data', on)
-  setTimeout(() => rej(new Error('vite never started')), 120_000)
-})
-log(`server :${PORT}  vite ${viteUrl}`)
-
-const browser = await chromium.launch({
-  executablePath: chromePath,
-  env: { ...process.env, LD_LIBRARY_PATH: libDir },
-})
+const { browser, viteUrl } = stack
 
 /** A browser that starts at the menu, as a player does. */
 async function openAtMenu(name) {
@@ -130,6 +69,13 @@ const dbg = (c) => c.page.evaluate('window.__game.debug()')
 const host = await openAtMenu('ana')
 await host.page.evaluate(() => document.querySelector('#create')?.click())
 await inGame(host)
+// The host asks for a round straight away rather than waiting for the guest to
+// arrive and the lobby countdown to run. That is a deliberate loss of coverage:
+// two humans reaching the countdown together is `lobby-start`'s subject, and
+// making it this check's as well would put a five-second wall-clock wait in
+// front of every assertion below it. What this check is for is three rooms
+// running at once and not leaking into each other.
+await enterBattle(host.page, { label: 'm10/host' })
 
 // Read the six characters the way a person would: off the screen.
 await host.page.waitForFunction(
@@ -151,11 +97,15 @@ await guest.page.evaluate((c) => {
   document.querySelector('#go')?.click()
 }, code)
 await inGame(guest)
+await enterBattle(guest.page, { press: false, waitPlaying: true, label: 'm10/guest' })
+await enterBattle(host.page, { press: false, waitPlaying: true, label: 'm10/host-playing' })
 
 // --- a third player quick-matches into a different room -------------------
 const solo = await openAtMenu('cy')
 await solo.page.evaluate(() => document.querySelector('#quick')?.click())
 await inGame(solo)
+// Alone in a room of their own: nobody else is coming, so this one asks.
+await enterBattle(solo.page, { waitPlaying: true, label: 'm10/solo' })
 
 /** Wait for the roster rather than sampling once: the count arrives with the
  *  first snapshot, so reading it immediately after `ready` races it. */
@@ -194,7 +144,7 @@ const before = [dh, dg, ds].map(tickOf)
 for (const [i, name] of ['ana', 'bo', 'cy'].entries()) {
   if (!Number.isFinite(before[i])) die(`${name} reports no server tick at all`)
 }
-await new Promise((r) => setTimeout(r, 1500))
+await sleep(1500)
 const after = [await dbg(host), await dbg(guest), await dbg(solo)].map(tickOf)
 for (const [i, name] of ['ana', 'bo', 'cy'].entries()) {
   if (after[i] <= before[i]) die(`${name}'s room is not ticking (${before[i]} → ${after[i]})`)
@@ -207,15 +157,15 @@ const soloSolidBefore = (await dbg(solo)).solid
 // (the camera follows the player, so that is below the body in world space
 // whatever the camera has done) and shoot.
 await host.page.keyboard.press('Digit1')
-await new Promise((r) => setTimeout(r, 300))
+await sleep(300)
 await host.page.mouse.move(640, 700)
 for (let i = 0; i < 4; i++) {
   await host.page.mouse.down()
-  await new Promise((r) => setTimeout(r, 80))
+  await sleep(80)
   await host.page.mouse.up()
-  await new Promise((r) => setTimeout(r, 500))
+  await sleep(500)
 }
-await new Promise((r) => setTimeout(r, 1500))
+await sleep(1500)
 
 const [ah, ag, as_] = [await dbg(host), await dbg(guest), await dbg(solo)]
 if (ah.solid >= dh.solid) die('the host fired and its own terrain did not change')
@@ -235,6 +185,6 @@ for (const c of [host, guest, solo]) {
 }
 log('shots: shots/m10-ana.png, m10-bo.png, m10-cy.png')
 
-await browser.close()
+await stack.close()
 console.log('  ok')
 process.exit(0)

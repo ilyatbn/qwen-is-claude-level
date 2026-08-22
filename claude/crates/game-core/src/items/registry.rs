@@ -56,6 +56,16 @@ pub const WEAPON_TOXIC_GRENADE: WeaponId = WeaponId(21);
 /// arrangement meteors have: it exists so pellets reuse the hitscan resolution
 /// rather than growing a parallel one that drifts.
 pub const WEAPON_AIRBURST_PELLET: WeaponId = WeaponId(22);
+/// A falling drop of toxic rain (§C21). Not carryable and never in the item
+/// registry, for the same reason as the meteor: puddles used to be placed
+/// straight onto a surface point, which put them **inside caves** — rain that
+/// fell through a roof. A drop that has to fall there cannot reach a cave floor
+/// without an opening, so the bug is fixed by construction. Reusing the
+/// projectile simulation is what makes that free, and it is what makes the rain
+/// visible (§C4).
+///
+/// **Appended, never inserted** (§B16): `defs::def` indexes by array position.
+pub const WEAPON_TOXIC_DROP: WeaponId = WeaponId(23);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UtilityId {
@@ -466,6 +476,17 @@ pub fn by_key(key: &str) -> Option<&'static ItemDef> {
 
 pub fn max_stack(id: ItemId) -> u8 {
     def(id).map_or(1, |d| d.max_stack)
+}
+
+/// Is this item a weapon?
+///
+/// §C24 makes weapons the one item class that occupies **one slot, ever**: a
+/// pickup of a weapon already held refills it rather than opening a second
+/// stack. Consumables are counters and keep the generic merge rule of
+/// `docs/30` §2, so the two need telling apart at the one place that decides —
+/// `Inventory::add`.
+pub fn is_weapon(id: ItemId) -> bool {
+    matches!(def(id), Some(d) if matches!(d.kind, ItemKind::Weapon(_)))
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

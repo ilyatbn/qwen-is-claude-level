@@ -52,6 +52,7 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         | GameEvent::CarveCapsule { .. }
         | GameEvent::Explosion { .. }
         | GameEvent::ProjectileSpawn { .. }
+        | GameEvent::ProjectileMove { .. }
         | GameEvent::ProjectileDespawn { .. }
         | GameEvent::Hitscan { .. }
         | GameEvent::ItemSpawn { .. }
@@ -82,6 +83,7 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::CarveCapsule { .. } => "carve_capsule",
         GameEvent::Explosion { .. } => "explosion",
         GameEvent::ProjectileSpawn { .. } => "projectile_spawn",
+        GameEvent::ProjectileMove { .. } => "projectile_move",
         GameEvent::ProjectileDespawn { .. } => "projectile_despawn",
         GameEvent::Hitscan { .. } => "hitscan",
         GameEvent::Melee { .. } => "melee",
@@ -222,6 +224,9 @@ pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
             "tick": tick, "world_item_id": world_item_id, "item_id": item_id,
             "count": count, "x": x, "y": y, "source": format!("{source:?}")
         }),
+        GameEvent::ProjectileMove { id, x, y, .. } => {
+            json!({"tick": tick, "id": id, "x": x, "y": y})
+        }
         GameEvent::ItemMove {
             world_item_id,
             x,
@@ -511,6 +516,40 @@ pub fn emit_mask_checksum(io: &SocketIo, sessions: &SessionMap, tick: u32, hash:
     for sid in sessions.sids() {
         if let Some(s) = io.get_socket(sid) {
             let _ = s.emit("mask_checksum", &payload);
+        }
+    }
+}
+
+/// Announce a player who was seated **after** the clients were already here.
+///
+/// A socket learns the roster from its own `welcome` and then from
+/// `player_join` (`docs/40` §3). Bots used to be seated when the room was
+/// constructed, so every human's `welcome` already listed them and no
+/// announcement was needed. §C18 moved seating to `begin_round` — which happens
+/// while humans are connected and watching — and nothing was added to tell
+/// them. The result: snapshots carried three players and the scoreboard listed
+/// one, so the results screen at the end of a round against bots named nobody
+/// but you. §A39 in its quietest form — the *consumer* existed and the producer
+/// stopped calling it.
+pub fn emit_player_join(
+    io: &SocketIo,
+    sessions: &SessionMap,
+    tick: u32,
+    id: game_core::player::state::PlayerId,
+    name: &str,
+    skin_id: u16,
+    tombstone_skin_id: u16,
+) {
+    let payload = serde_json::json!({
+        "tick": tick,
+        "id": id,
+        "name": name,
+        "skin_id": skin_id,
+        "tombstone_skin_id": tombstone_skin_id,
+    });
+    for sid in sessions.sids() {
+        if let Some(s) = io.get_socket(sid) {
+            let _ = s.emit("player_join", &payload);
         }
     }
 }

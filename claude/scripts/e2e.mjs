@@ -104,6 +104,11 @@ const CHECKS = [
   // machine on a shortened ROUND_SECONDS, and there is no sandbox path to `Ended`.
   { name: 'round-end', file: 'scripts/checks/round-end.mjs', standalone: true },
   { name: 'lobby-start', file: 'scripts/checks/lobby-start.mjs', standalone: true },
+  // §C26 — the jetpack number reaches the screen. Standalone: fuel comes from
+  // the snapshot, so it needs a real server rather than the sandbox. Named
+  // `hud-bars` because T14.02's Done-when names the same check for §C8's bars,
+  // which it will add here.
+  { name: 'hud-bars', file: 'scripts/checks/hud-bars.mjs', standalone: true },
   // Standalone: it launches its own vite and browser and calls `process.exit`.
   // Imported into this process it would terminate the suite mid-run — and exit 0
   // while doing it, hiding every earlier failure. Run as a subprocess instead.

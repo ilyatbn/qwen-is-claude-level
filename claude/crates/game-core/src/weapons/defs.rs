@@ -5,7 +5,9 @@
 //! drills all become new variants without changing the firing code's shape
 //! (`docs/31-weapons-combat.md` §1, §8).
 
-use crate::constants::{AIRBURST_AMMO, MOLOTOV_AMMO, SMOKE_AMMO, TOXIC_GRENADE_AMMO};
+use crate::constants::{
+    AIRBURST_AMMO, MOLOTOV_AMMO, SMOKE_AMMO, TOXIC_DROP_SPEED, TOXIC_GRENADE_AMMO,
+};
 use crate::constants::{
     AIRBURST_FAN, AIRBURST_FUSE, AIRBURST_MUZZLE_SPEED, AIRBURST_PELLETS, AIRBURST_PELLET_CARVE,
     AIRBURST_PELLET_DAMAGE, AIRBURST_PELLET_ENERGY, AIRBURST_PELLET_RANGE, LAVA_BURN_DPS,
@@ -54,7 +56,7 @@ use crate::items::registry::{
     WEAPON_DEAGLE, WEAPON_FLAMETHROWER, WEAPON_GRENADE, WEAPON_HAMMER, WEAPON_KNIFE,
     WEAPON_LASER_PISTOL, WEAPON_LASER_SMG, WEAPON_MACHINEGUN, WEAPON_METEOR, WEAPON_METEOR_FRAG,
     WEAPON_MINE, WEAPON_MOLOTOV, WEAPON_PISTOL, WEAPON_REVOLVER, WEAPON_SMG, WEAPON_SMOKE,
-    WEAPON_TOXIC_GRENADE, WEAPON_WHIP,
+    WEAPON_TOXIC_DROP, WEAPON_TOXIC_GRENADE, WEAPON_WHIP,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -660,6 +662,35 @@ pub static WEAPONS: &[WeaponDef] = &[
         energy_cost: AIRBURST_PELLET_ENERGY,
         burst: Burst::Blast,
     },
+    // A drop of toxic rain (§C21). It falls and it lands; it does **not** go
+    // off. Zero damage and zero blast radius are not "a very small explosion" —
+    // `World::detonate` intercepts this weapon before the blast entirely and
+    // hands the landing point to `ToxicRain`, which is what turns it into a
+    // puddle. Toxic rain leaves the mask byte-identical (`docs/13` §3: it denies
+    // space, it does not dig), and routing it through `explode` with a radius of
+    // zero would be one refactor away from digging.
+    //
+    // `wind_scale` 1.0: rain drifts, and it is the one weather projectile where
+    // drift is a feature rather than an aiming error.
+    WeaponDef {
+        id: WEAPON_TOXIC_DROP,
+        key: "toxic_drop",
+        delivery: Delivery::Projectile {
+            fuse: None,
+            restitution: 0.0,
+            friction: 0.0,
+            explode_on_contact: true,
+        },
+        damage: 0.0,
+        blast_radius: 0.0,
+        range: 0.0,
+        cooldown: 0.0,
+        muzzle_speed: TOXIC_DROP_SPEED,
+        gravity_scale: 1.0,
+        wind_scale: 1.0,
+        energy_cost: 0.0,
+        burst: Burst::Blast,
+    },
 ];
 
 /// Look a weapon up by id.
@@ -733,6 +764,29 @@ mod tests {
         }
     }
 
+    /// The exemption above is only sound while something really does intercept
+    /// these before they explode. Assert that, or `every_weapon_digs` becomes a
+    /// list of weapons nobody checks.
+    #[test]
+    fn a_landing_weapon_is_actually_intercepted_before_it_can_explode() {
+        // Every name on the exemption list is recognised by the effect that
+        // lands it. A weapon that reached `explode` with zero damage and zero
+        // radius would carve nothing today and carve as soon as anyone changed
+        // the radius — which is the failure the exemption is pretending cannot
+        // happen.
+        let drop = by_key("toxic_drop").expect("toxic_drop is a weapon");
+        assert!(
+            crate::effects::toxic::owns(drop.id),
+            "toxic_drop is exempted from doing damage but nothing intercepts it, \
+             so it will be detonated as an ordinary projectile"
+        );
+        assert_eq!(
+            drop.damage, 0.0,
+            "a drop of rain should not hurt on contact"
+        );
+        assert_eq!(drop.blast_radius, 0.0, "a drop of rain must not carve");
+    }
+
     #[test]
     fn every_weapon_digs() {
         // §A3 restated for the delivery kinds §B6 added (see §B18).
@@ -749,7 +803,22 @@ mod tests {
         // This is stricter than the rule it replaces, not looser: the old version
         // passed a weapon that carved and did no damage at all.
         const MAY_NOT_CARVE: &[&str] = &["knife", "bat", "whip"];
+        // Weather ordnance that **lands** rather than going off. A toxic drop is
+        // a projectile only so that it falls (§C21); `World::detonate` intercepts
+        // it before any blast and turns it into a puddle, so damage and a carve
+        // radius on its def would describe an explosion that never happens — and
+        // toxic rain leaving the mask byte-identical is a stated invariant of it
+        // (`docs/13` §3).
+        //
+        // Named here rather than skipped by a property, so it cannot be joined
+        // silently; and `a_landing_weapon_is_actually_intercepted` below asserts
+        // the interception that earns the exemption, so removing that code makes
+        // this list wrong and a test red.
+        const LANDS_INSTEAD_OF_EXPLODING: &[&str] = &["toxic_drop"];
         for w in WEAPONS {
+            if LANDS_INSTEAD_OF_EXPLODING.contains(&w.key) {
+                continue;
+            }
             // A weapon whose whole effect is what it *leaves behind* carries its
             // numbers on the burst, not on the def: a smoke grenade with damage
             // and a blast radius would be a grenade. So the rule is "every weapon

@@ -119,6 +119,23 @@ pub enum GameEvent {
         vx: f32,
         vy: f32,
     },
+    /// Where a live projectile is **now**.
+    ///
+    /// `ProjectileSpawn` carries the position a projectile was *created* at and
+    /// nothing carried where it went, so every client drew every rocket, grenade
+    /// and meteor frozen at its muzzle for the whole of its flight. That is
+    /// §C7's crate bug one layer over — `ItemMove` is the same event for items,
+    /// added for the same reason — and it is the single cause behind both §C22
+    /// ("only meteor explosions are visible": a meteor spawns at `y = -32`, so
+    /// it is drawn above the top of the map for its entire life) and §C23
+    /// ("gun projectiles are still invisible": a rocket is drawn as a dot on the
+    /// muzzle). One defect, three symptoms.
+    ProjectileMove {
+        tick: u32,
+        id: ProjectileId,
+        x: f32,
+        y: f32,
+    },
     ProjectileDespawn {
         tick: u32,
         id: ProjectileId,
@@ -308,6 +325,7 @@ impl GameEvent {
             | GameEvent::CarveCapsule { tick, .. }
             | GameEvent::Explosion { tick, .. }
             | GameEvent::ProjectileSpawn { tick, .. }
+            | GameEvent::ProjectileMove { tick, .. }
             | GameEvent::ProjectileDespawn { tick, .. }
             | GameEvent::Hitscan { tick, .. }
             | GameEvent::Melee { tick, .. }
@@ -859,6 +877,35 @@ impl World {
         }
     }
 
+    /// Tell everyone a projectile now exists.
+    ///
+    /// One function, because four things create projectiles — a fired weapon,
+    /// the meteor shower's cadence, a meteor **impact's** fragments, and toxic
+    /// rain's drops — and a client that is not told about one can never draw it.
+    /// The fragments were exactly that: `MeteorShower::on_impact` spawned six per
+    /// impact straight into the pool and only the shower's *cadence* spawns were
+    /// announced, so `METEOR_FRAGMENTS` has been invisible since M5 (§A39).
+    fn announce_projectiles(&mut self, ids: &[ProjectileId]) {
+        let tick = self.tick;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(p) = self.projectiles.get(*id) else {
+                continue;
+            };
+            out.push(GameEvent::ProjectileSpawn {
+                tick,
+                id: *id,
+                weapon: p.weapon,
+                owner: p.owner,
+                x: p.pos.x,
+                y: p.pos.y,
+                vx: p.vel.x,
+                vy: p.vel.y,
+            });
+        }
+        self.events.extend(out);
+    }
+
     fn step_projectiles(&mut self, now: f32, dt: f32) {
         let boxes: Vec<(PlayerId, Aabb)> = self
             .players
@@ -869,6 +916,27 @@ impl World {
         // `weapon` and `owner` arrive with the outcome: `step` has already removed
         // the projectile, so there is nothing left to look up (see `Impact`).
         let impacts = self.projectiles.step(&self.map, &boxes, self.wind, now, dt);
+
+        // Where everything still in flight has got to. At `SNAPSHOT_HZ`, for the
+        // same reason `emit_item_motion` uses it: a rocket flies for a second or
+        // two and 60 Hz of positions is bandwidth spent on nothing. There is no
+        // "on landing, always" case here — a projectile that lands is destroyed,
+        // and `ProjectileDespawn` plus the blast is what the client needs then.
+        let every = (crate::constants::SIM_HZ / crate::constants::SNAPSHOT_HZ).max(1);
+        if self.tick.is_multiple_of(every) {
+            let tick = self.tick;
+            let moves: Vec<GameEvent> = self
+                .projectiles
+                .iter()
+                .map(|p| GameEvent::ProjectileMove {
+                    tick,
+                    id: p.id,
+                    x: p.pos.x,
+                    y: p.pos.y,
+                })
+                .collect();
+            self.events.extend(moves);
+        }
 
         for im in impacts {
             let at = match im.outcome {
@@ -909,11 +977,33 @@ impl World {
         // outcome rather than looked up here. Reading them afterwards is exactly
         // how a fragment gets mistaken for a meteor and spawns six more.
 
+        // §C21: a drop of rain lands, it does not go off. Intercepted here —
+        // before `defs::def` and before any blast — because toxic rain must
+        // leave the mask byte-identical, and the way to guarantee that is for
+        // the code that carves never to be reached at all.
+        if crate::effects::toxic::owns(weapon) {
+            if let Some((eid, mut t)) = self.toxic.take() {
+                let p = t.land(at, now);
+                self.toxic = Some((eid, t));
+                let tick = self.tick;
+                self.events.push(GameEvent::HazardSpawn {
+                    tick,
+                    id: p.id,
+                    kind: HazardKind::Puddle,
+                    x: p.pos.x,
+                    y: p.pos.y,
+                    r: p.radius,
+                    duration: crate::constants::TOXIC_PUDDLE_LIFE,
+                });
+            }
+            return;
+        }
+
         if MeteorShower::owns(weapon) {
             let is_frag = MeteorShower::is_fragment(weapon);
             let log: DamageLog = Default::default();
             let (mut closures, meta) = hit_targets(&self.players, &log, now);
-            let result = {
+            let (result, fragments) = {
                 let mut t = targets(&mut self.players, &mut closures, &meta);
                 MeteorShower::on_impact(
                     &mut self.projectiles,
@@ -925,11 +1015,13 @@ impl World {
                     now,
                 )
             };
+            self.announce_projectiles(&fragments);
             let r = if is_frag {
                 crate::constants::METEOR_FRAG_CARVE_R
             } else {
                 crate::constants::METEOR_CARVE_R
             };
+            self.note_knocked(&result.knocked, now);
             self.emit_blast(at, r, CarveKind::Meteor, &result.carve, now);
             self.apply_damage_log(&log, now);
             return;
@@ -953,6 +1045,7 @@ impl World {
                     let mut t = targets(&mut self.players, &mut closures, &meta);
                     explode(&mut self.map, &mut t, at, w.blast_radius, w.damage, source)
                 };
+                self.note_knocked(&result.knocked, now);
                 self.emit_blast(at, w.blast_radius, CarveKind::Weapon, &result.carve, now);
                 self.apply_damage_log(&log, now);
             }
@@ -1128,6 +1221,53 @@ impl World {
 
     /// Emit the cosmetic explosion, the authoritative carve, and any buried items
     /// the carve exposed — all from one blast, in that order.
+    /// Detonate a blast at `at`, for tests that need a player genuinely thrown.
+    ///
+    /// It goes through `explode` and `note_knocked` exactly as a rocket does, so
+    /// a test using it cannot accidentally reproduce the *state* of knockback
+    /// without its provenance — which is what made the first §C20 knockback test
+    /// vacuous.
+    #[cfg(test)]
+    pub(crate) fn blast_for_test(&mut self, at: Vec2, now: f32) {
+        let log: DamageLog = Default::default();
+        let (mut closures, meta) = hit_targets(&self.players, &log, now);
+        let result = {
+            let mut t = targets(&mut self.players, &mut closures, &meta);
+            crate::weapons::explode::explode(
+                &mut self.map,
+                &mut t,
+                at,
+                crate::constants::BAZOOKA_BLAST_RADIUS,
+                crate::constants::BAZOOKA_DAMAGE,
+                crate::weapons::explode::BlastSource::Weather(
+                    crate::weapons::explode::EffectKind::MeteorShower,
+                ),
+            )
+        };
+        self.note_knocked(&result.knocked, now);
+    }
+
+    /// Stamp everyone a blast or a swing **threw** as recently knocked (§C20).
+    ///
+    /// One function and one caller-visible rule, because four paths throw
+    /// players — a rocket, a shotgun's pellets by way of its blast, a mine and a
+    /// melee swing — and a gate that four call sites each remember to apply is a
+    /// gate three of them will eventually forget (CLAUDE.md: "share the guard,
+    /// or share the function").
+    fn note_knocked(&mut self, ids: &[PlayerId], now: f32) {
+        if ids.is_empty() {
+            return;
+        }
+        let until = now + crate::constants::KNOCKBACK_FIRE_GRACE;
+        for p in self.players.iter_mut() {
+            if ids.contains(&p.id) {
+                // Never shortened: two blasts in a row must not leave you
+                // pinned by the earlier one's expiry.
+                p.knocked_until = p.knocked_until.max(until);
+            }
+        }
+    }
+
     fn emit_blast(&mut self, at: Vec2, r: f32, kind: CarveKind, carve: &CarveResult, now: f32) {
         let tick = self.tick;
         // §B6: a mine is destructible by explosions, which is what stops a map
@@ -1249,6 +1389,7 @@ impl World {
                 reason: out.reason,
             });
             let Some(r) = out.explosion else { continue };
+            self.note_knocked(&r.knocked, now);
             // A detonation carves like any other blast, and its carve is as
             // authoritative as a rocket's: one event, in emission order.
             self.carve_seq += 1;
@@ -1265,6 +1406,36 @@ impl World {
         }
     }
 
+    /// Construct the state an effect needs, and hang it on the world.
+    ///
+    /// Split out of `step_weather` so the test seam below can share it. The
+    /// scheduler's `force()` pushes an effect straight onto its active list and
+    /// emits **no** `Started` event, so a test that called it got an effect the
+    /// scheduler agreed was running and a world that had never built one — the
+    /// rain fell nowhere and every assertion about it was vacuous.
+    fn install_effect(&mut self, id: u32, kind: EffectKind, seed: u64, now: f32) {
+        match kind {
+            EffectKind::ToxicRain => self.toxic = Some((id, ToxicRain::new(seed, now))),
+            EffectKind::MeteorShower => self.meteor = Some((id, MeteorShower::new(seed, now))),
+            // Vents are chosen during the telegraph so the client can crack the
+            // ground at exactly the points that will open.
+            EffectKind::LavaBurst => self.lava = Some((id, LavaBurst::new(seed, &self.map, now))),
+            EffectKind::HeavyFog => self.fog = Some((id, HeavyFog::new(now))),
+        }
+    }
+
+    /// Test seam: start `kind` now, through the same install the scheduler uses.
+    ///
+    /// The sandbox's weather controls and the effect tests both need to say
+    /// "rain, now" without waiting out `EFFECT_INTERVAL_MIN`.
+    #[doc(hidden)]
+    pub fn force_effect(&mut self, kind: EffectKind, now: f32) -> u32 {
+        let id = self.effects.force(kind, now);
+        let seed = self.seed ^ (id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.install_effect(id, kind, seed, now);
+        id
+    }
+
     fn step_weather(&mut self, now: f32, dt: f32) {
         let ends = self.round_ends_at();
         for ev in self.effects.tick(now, ends) {
@@ -1276,18 +1447,7 @@ impl World {
                     seed,
                     duration,
                 } => {
-                    match kind {
-                        EffectKind::ToxicRain => self.toxic = Some((id, ToxicRain::new(seed, now))),
-                        EffectKind::MeteorShower => {
-                            self.meteor = Some((id, MeteorShower::new(seed, now)))
-                        }
-                        // Vents are chosen during the telegraph so the client can
-                        // crack the ground at exactly the points that will open.
-                        EffectKind::LavaBurst => {
-                            self.lava = Some((id, LavaBurst::new(seed, &self.map, now)))
-                        }
-                        EffectKind::HeavyFog => self.fog = Some((id, HeavyFog::new(now))),
-                    }
+                    self.install_effect(id, kind, seed, now);
                     self.events.push(GameEvent::EffectStart {
                         tick,
                         id,
@@ -1324,47 +1484,23 @@ impl World {
 
         if let Some((eid, mut t)) = self.toxic.take() {
             let log: DamageLog = Default::default();
-            let spawned = {
+            // §C21: what comes back is **drops**, not puddles. A puddle appears
+            // in `detonate`, when a drop has finished falling — which is what
+            // makes it impossible for one to form under a roof.
+            let released = {
                 let (mut closures, meta) = hit_targets(&self.players, &log, now);
                 let mut tg = targets(&mut self.players, &mut closures, &meta);
-                t.tick(&self.map, &mut tg, toxic_on, now, dt)
+                t.tick(&mut self.projectiles, &self.map, &mut tg, toxic_on, now, dt)
             };
             self.apply_damage_log(&log, now);
-            for p in spawned {
-                let tick = self.tick;
-                self.events.push(GameEvent::HazardSpawn {
-                    tick,
-                    id: p.id,
-                    kind: HazardKind::Puddle,
-                    x: p.pos.x,
-                    y: p.pos.y,
-                    r: p.radius,
-                    duration: crate::constants::TOXIC_PUDDLE_LIFE,
-                });
-            }
             self.toxic = Some((eid, t));
+            self.announce_projectiles(&released);
         }
 
         if let Some((eid, mut m)) = self.meteor.take() {
             let ids = m.tick(&mut self.projectiles, &self.map, meteor_on, now);
-            for id in ids {
-                if let Some(p) = self.projectiles.get(id) {
-                    let (x, y, vx, vy, weapon, owner) =
-                        (p.pos.x, p.pos.y, p.vel.x, p.vel.y, p.weapon, p.owner);
-                    let tick = self.tick;
-                    self.events.push(GameEvent::ProjectileSpawn {
-                        tick,
-                        id,
-                        weapon,
-                        owner,
-                        x,
-                        y,
-                        vx,
-                        vy,
-                    });
-                }
-            }
             self.meteor = Some((eid, m));
+            self.announce_projectiles(&ids);
         }
 
         if let Some((eid, mut l)) = self.lava.take() {
@@ -1616,11 +1752,88 @@ impl World {
 
     // ------------------------------------------------------------ player acts
 
+    /// The input that governs **this** tick for `id`.
+    ///
+    /// Fire arrives as a command before `step` runs (`docs/30` §4), so the input
+    /// the player sent alongside it is still sitting in `pending`. This picks the
+    /// same one `apply_inputs` will: the lowest unconsumed `seq`, falling back to
+    /// the last input actually applied when the client sent nothing new — held
+    /// state persists, so the last packet is still the truth (`docs/40` §2).
+    ///
+    /// Shared rather than restated, so the gate below and the movement it gates
+    /// can never read different inputs.
+    fn input_for_tick(&self, id: PlayerId) -> Input {
+        self.pending
+            .iter()
+            .filter(|(i, _)| *i == id)
+            .min_by_key(|(_, inp)| inp.seq)
+            .map(|(_, inp)| *inp)
+            .or_else(|| {
+                self.prev_input
+                    .iter()
+                    .find(|(i, _)| *i == id)
+                    .map(|(_, inp)| *inp)
+            })
+            .unwrap_or_default()
+    }
+
+    /// §C20 — is this player moving under their own power?
+    ///
+    /// Two terms, and the second one is the reason this is not just a velocity
+    /// check:
+    ///
+    ///  - **a movement key held this tick.** Without it you can fire in the one
+    ///    tick between releasing a key and friction taking effect — and it is
+    ///    also the only term that catches walking into a wall, where the intent
+    ///    is full speed and `vel.x` is zero.
+    ///  - **still sliding.** `GROUND_FRICTION` takes about five ticks to bring a
+    ///    `WALK_SPEED` walk to rest, so the key check alone leaves four ticks of
+    ///    firing while gliding.
+    ///
+    /// §C20 is explicit that "being knocked around does not stop you firing —
+    /// this is about your own movement", and knockback IS velocity, so the two
+    /// rules cannot both be read off `vel.x`. The exemption therefore comes from
+    /// **provenance**: `knocked_until`, stamped where the impulse is applied.
+    ///
+    /// The first version used `grounded` instead, reasoning that a blast which
+    /// throws you also puts you in the air. That made the whole gate cosmetic:
+    /// hold D to `WALK_SPEED`, jump, release D, fire — no key held, not grounded,
+    /// shot allowed at 150 px/s. Stepping off a ledge did it without even
+    /// jumping, and bots, which are airborne constantly, were exempt most of the
+    /// time. `grounded` is a *consequence* of being thrown; it is equally a
+    /// consequence of jumping, and it cannot tell the two apart.
+    fn moving_under_own_power(&self, now: f32, idx: usize) -> bool {
+        let p = &self.players[idx];
+        // The key term comes FIRST, and knockback does not excuse it. §C20 says
+        // "check the input, not just the velocity", and the exemption it grants
+        // is for being *thrown* — which is a velocity, not an intention. Held
+        // the other way round, any blast in a firefight bought 0.6 s in which
+        // you could hold a direction, run at full speed and shoot; blasts are
+        // constant in a fight, so that is a recurring run-and-gun window rather
+        // than an edge case.
+        if self.input_for_tick(p.id).move_dir() != 0.0 {
+            return true;
+        }
+        // Being thrown is not your own movement — and this is the ONLY thing the
+        // velocity term exempts.
+        if p.was_knocked(now) {
+            return false;
+        }
+        p.body.vel.x.abs() > crate::constants::FIRE_MOVE_MAX_SPEED
+    }
+
     /// Fire the selected weapon. Validation lives in `PlayerState::try_fire`.
     pub fn fire(&mut self, id: PlayerId, now: f32) -> Result<(), UseError> {
         let Some(idx) = self.players.iter().position(|p| p.id == id) else {
             return Err(UseError::Dead);
         };
+        // §C20, before `try_fire`: a refused shot must cost neither ammo nor
+        // cooldown, or standing still to shoot becomes a punishment for having
+        // tried. Guarded on `alive` so a corpse still reports `Dead`, which is
+        // the answer `docs/61` §3 expects.
+        if self.players[idx].alive && self.moving_under_own_power(now, idx) {
+            return Err(UseError::Moving);
+        }
         let weapon = self.players[idx].try_fire(now)?;
         let aim = crate::player::input::Input::new(0, 0, self.players[idx].aim).aim_angle();
         let centre = self.players[idx].body.pos;
@@ -1658,6 +1871,12 @@ impl World {
                 arc,
                 knockback,
             } => {
+                // §C19: the table's number is measured from the body edge.
+                // Converted **once**, here, and then used by all three of the
+                // hit test, the broadcast carve and the arc the client draws —
+                // see `melee::effective_reach` for what happened when only the
+                // hit test knew about it.
+                let reach = crate::weapons::melee::effective_reach(reach);
                 let log: DamageLog = Default::default();
                 let result = {
                     let (mut closures, meta) = hit_targets(&self.players, &log, now);
@@ -1674,6 +1893,7 @@ impl World {
                         BlastSource::Fired { owner: id, weapon },
                     )
                 };
+                self.note_knocked(&result.knocked, now);
                 self.apply_damage_log(&log, now);
                 self.events.push(GameEvent::Melee {
                     tick,
@@ -1934,6 +2154,12 @@ impl World {
             h.update(&p.respawn_at.to_le_bytes());
             h.update(&p.iframes_until.to_le_bytes());
             h.update(&p.fire_ready_at.to_le_bytes());
+            // §A34, and it is load-bearing: this timer decides whether a
+            // projectile spawns (§C20's knockback exemption). Leaving a
+            // fire-gating timer out of the hash is the exact shape §A34 was
+            // written for — every timer was once unhashed and a deliberately
+            // nondeterministic build verified green.
+            h.update(&p.knocked_until.to_le_bytes());
             p.inventory.hash_into(&mut h);
         }
 
@@ -2057,6 +2283,10 @@ mod state_hash_tests {
         let mut w = world();
         w.players[0].fire_ready_at = 9.0;
         changed.push(("cooldown", w.state_hash()));
+
+        let mut w = world();
+        w.players[0].knocked_until = 9.0;
+        changed.push(("knockback grace", w.state_hash()));
 
         let mut w = world();
         w.players[0].flashlight_on = true;
@@ -2422,5 +2652,880 @@ mod crate_motion_tests {
             let _ = w.drain_events();
         }
         assert!(w.items.get(id).is_some(), "picked up from 400 px away");
+    }
+}
+
+/// T13.06.3 / §C20 — you cannot fire while moving under your own power.
+#[cfg(test)]
+mod fire_gate {
+    use super::*;
+    use crate::constants::{MapScale, FIRE_MOVE_MAX_SPEED, GROUND_FRICTION, SIM_DT, WALK_SPEED};
+    use crate::items::registry::BAZOOKA;
+    use crate::player::input::button;
+
+    /// One armed player, standing on the ground, in `Playing`.
+    fn armed_world() -> World {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        give(
+            &mut w,
+            0,
+            BAZOOKA,
+            crate::items::registry::max_stack(BAZOOKA),
+        );
+        // Settle onto the ground: the gate reads `grounded`, and a player still
+        // falling from their spawn is airborne, which is a different case.
+        for _ in 0..120 {
+            w.queue_input(0, Input::new(0, 0, 0));
+            w.step(SIM_DT);
+        }
+        assert!(
+            w.player(0).expect("ana").body.grounded,
+            "the fixture never landed, so nothing below is testing the grounded rule"
+        );
+        w
+    }
+
+    fn walk_for(w: &mut World, ticks: u32) {
+        for _ in 0..ticks {
+            w.queue_input(0, Input::new(0, button::RIGHT, 0));
+            w.step(SIM_DT);
+        }
+    }
+
+    /// The subject: a walking player fires nothing.
+    ///
+    /// Asserted on the **effect** — the projectile count — not on the returned
+    /// error. A gate that returns `Moving` and spawns the rocket anyway would
+    /// pass an assertion on the `Result` alone.
+    #[test]
+    fn firing_while_walking_is_refused_and_spawns_nothing() {
+        let mut w = armed_world();
+        walk_for(&mut w, 20);
+        let speed = w.player(0).expect("ana").body.vel.x.abs();
+        assert!(
+            speed > FIRE_MOVE_MAX_SPEED,
+            "the fixture is not actually walking: vel.x {speed}"
+        );
+
+        // The key is still held on the tick the fire arrives, exactly as a
+        // client sends it (`docs/30` §4).
+        w.queue_input(0, Input::new(1, button::RIGHT, 0));
+        let before = w.projectiles.len();
+        assert_eq!(w.fire(0, 1.0), Err(UseError::Moving));
+        assert_eq!(
+            w.projectiles.len(),
+            before,
+            "a refused shot still spawned a projectile"
+        );
+        // And it cost nothing: ammo and cooldown are untouched, or standing
+        // still to shoot would punish having tried.
+        assert_eq!(
+            w.player(0).expect("ana").inventory.count_of(BAZOOKA),
+            crate::items::registry::max_stack(BAZOOKA) as u32
+        );
+        assert_eq!(w.player(0).expect("ana").fire_ready_at, 0.0);
+    }
+
+    /// The control. Without it, every assertion here is satisfied by a build
+    /// that can never fire at all.
+    #[test]
+    fn firing_while_standing_still_succeeds() {
+        let mut w = armed_world();
+        w.queue_input(0, Input::new(1, 0, 0));
+        let before = w.projectiles.len();
+        assert_eq!(w.fire(0, 1.0), Ok(()));
+        assert!(
+            w.projectiles.len() > before,
+            "a standing player fired and no projectile appeared"
+        );
+    }
+
+    /// The single tick between releasing a key and friction taking effect —
+    /// the case §C20 says the velocity term exists for.
+    #[test]
+    fn firing_one_tick_after_releasing_the_key_is_still_refused() {
+        let mut w = armed_world();
+        walk_for(&mut w, 20);
+        // One tick with nothing held. `GROUND_FRICTION` removes
+        // GROUND_FRICTION * SIM_DT px/s per tick, so a WALK_SPEED walk needs
+        // several ticks to stop — pinned to the constants rather than to a
+        // number read off one run.
+        let ticks_to_stop = (WALK_SPEED / (GROUND_FRICTION * SIM_DT)) as u32;
+        assert!(
+            ticks_to_stop > 1,
+            "friction stops a walk within one tick, so this test has no window to guard"
+        );
+        w.queue_input(0, Input::new(1, 0, 0));
+        w.step(SIM_DT);
+
+        let p = w.player(0).expect("ana");
+        assert!(
+            p.body.vel.x.abs() > FIRE_MOVE_MAX_SPEED,
+            "the player had already stopped, so the release window is not being tested"
+        );
+
+        w.queue_input(0, Input::new(2, 0, 0));
+        let before = w.projectiles.len();
+        assert_eq!(w.fire(0, 1.0), Err(UseError::Moving));
+        assert_eq!(w.projectiles.len(), before);
+
+        // ...and once friction has actually stopped them, the same player can
+        // shoot. The control for the control: otherwise "still refused" would
+        // pass for a player permanently locked out after one walk.
+        for seq in 3..3 + ticks_to_stop + 2 {
+            w.queue_input(0, Input::new(seq, 0, 0));
+            w.step(SIM_DT);
+        }
+        w.queue_input(0, Input::new(99, 0, 0));
+        assert_eq!(w.fire(0, 2.0), Ok(()));
+    }
+
+    /// Walking into a wall: full intent, no velocity.
+    ///
+    /// This is the case the velocity term cannot see and the key term exists
+    /// for. Driven by holding a direction with the body pinned, so it is the
+    /// held key alone that refuses the shot.
+    #[test]
+    fn holding_a_direction_refuses_even_at_zero_velocity() {
+        let mut w = armed_world();
+        if let Some(p) = w.player_mut(0) {
+            p.body.vel.x = 0.0;
+        }
+        w.queue_input(0, Input::new(1, button::RIGHT, 0));
+        assert_eq!(
+            w.player(0).expect("ana").body.vel.x.abs(),
+            0.0,
+            "the fixture has velocity, so this is not testing the key term"
+        );
+        let before = w.projectiles.len();
+        assert_eq!(w.fire(0, 1.0), Err(UseError::Moving));
+        assert_eq!(w.projectiles.len(), before);
+    }
+
+    /// Being knocked around does not stop you firing (§C20).
+    ///
+    /// The player is thrown by a **real blast**, not by hand-setting velocity.
+    /// The first version of this test wrote `vel.x = KNOCKBACK_MAX; grounded =
+    /// false` directly, and the gate it was validating exempted airborne
+    /// players — so the fixture was byte-identical to jump-and-shoot and the
+    /// test passed against a build where the gate did nothing for anyone in the
+    /// air. What separates the two cases is *provenance*, so the test has to
+    /// produce the provenance.
+    #[test]
+    fn firing_while_knocked_back_succeeds() {
+        let mut w = armed_world();
+        let at = w.player(0).expect("ana").body.pos;
+        // Detonate on top of them, through the same path a rocket takes.
+        w.blast_for_test(at, 1.0);
+
+        let p = w.player(0).expect("ana");
+        assert!(
+            p.was_knocked(1.0),
+            "the blast did not mark the player as thrown, so this proves nothing"
+        );
+
+        let before = w.projectiles.len();
+        assert_eq!(
+            w.fire(0, 1.0),
+            Ok(()),
+            "knockback became a stun: a thrown player could not shoot"
+        );
+        assert!(w.projectiles.len() > before);
+    }
+
+    /// The discriminator: **jumping is not being thrown.**
+    ///
+    /// This is the test the `grounded`-based gate could not pass, and the reason
+    /// that gate was wrong. Walk up to speed, leave the ground, release the key:
+    /// no key is held and `grounded` is false, which is exactly the state a
+    /// blast leaves you in. Under §C20 the shot must still be refused, or the
+    /// gate is cosmetic — every player in this game is airborne constantly, and
+    /// rocket-jumping is a documented mechanic.
+    #[test]
+    fn jumping_is_not_being_thrown_and_still_refuses_the_shot() {
+        let mut w = armed_world();
+        if let Some(p) = w.player_mut(0) {
+            p.body.vel.x = crate::constants::WALK_SPEED;
+            p.body.vel.y = -crate::constants::JUMP_VELOCITY;
+            p.body.grounded = false;
+        }
+        let p = w.player(0).expect("ana");
+        assert!(
+            !p.was_knocked(1.0),
+            "nothing threw this player, so the fixture is not a jump"
+        );
+        assert!(
+            p.body.vel.x.abs() > FIRE_MOVE_MAX_SPEED && !p.body.grounded,
+            "the fixture is not airborne at speed, so it cannot tell the two apart"
+        );
+
+        // No key held: the velocity term is the only thing that can refuse this.
+        w.queue_input(0, Input::new(1, 0, 0));
+        let before = w.projectiles.len();
+        assert_eq!(
+            w.fire(0, 1.0),
+            Err(UseError::Moving),
+            "a jumping player fired at walking speed — the gate is cosmetic"
+        );
+        assert_eq!(w.projectiles.len(), before);
+    }
+
+    /// And the exemption **expires**. A single rocket-jump must not license a
+    /// whole traverse of firing on the move.
+    #[test]
+    fn the_knockback_exemption_expires() {
+        let mut w = armed_world();
+        let at = w.player(0).expect("ana").body.pos;
+        w.blast_for_test(at, 1.0);
+        if let Some(p) = w.player_mut(0) {
+            p.body.vel.x = crate::constants::WALK_SPEED;
+            p.body.grounded = false;
+        }
+        let after = 1.0 + crate::constants::KNOCKBACK_FIRE_GRACE + 0.01;
+        assert!(
+            !w.player(0).expect("ana").was_knocked(after),
+            "KNOCKBACK_FIRE_GRACE never expires"
+        );
+        w.queue_input(0, Input::new(1, 0, 0));
+        assert_eq!(
+            w.fire(0, after),
+            Err(UseError::Moving),
+            "the exemption outlived KNOCKBACK_FIRE_GRACE"
+        );
+    }
+
+    /// Bots respect it — and, crucially, still manage to shoot.
+    ///
+    /// A bot that walks into a refused trigger pull forever is worse than the
+    /// behaviour being fixed, so the assertion is two-sided: no fire is issued
+    /// while it is moving, and it does eventually fire once planted.
+    #[test]
+    fn a_bot_stands_still_to_shoot() {
+        use crate::bots::Bot;
+
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "bot".into());
+        w.add_player(1, 0, "prey".into());
+        give(
+            &mut w,
+            0,
+            BAZOOKA,
+            crate::items::registry::max_stack(BAZOOKA),
+        );
+
+        // Put the prey in sight but out of the blast guard.
+        let bot_pos = w.player(0).expect("bot").body.pos;
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = Vec2::new(bot_pos.x + 200.0, bot_pos.y);
+        }
+
+        let mut bot = Bot::new(0, 4242, 0, 1.0);
+        let mut fired = 0u32;
+        let mut fired_while_moving = 0u32;
+        for t in 0..600 {
+            let now = t as f32 * SIM_DT;
+            let inp = bot.think(&w, now, SIM_DT);
+            w.queue_input(0, inp);
+            if inp.buttons & button::FIRE != 0 {
+                let me = w.player(0).expect("bot");
+                // The bot's own view of the gate, checked against the world's.
+                if inp.move_dir() != 0.0
+                    || (me.body.grounded && me.body.vel.x.abs() > FIRE_MOVE_MAX_SPEED)
+                {
+                    fired_while_moving += 1;
+                }
+                if w.fire(0, now).is_ok() {
+                    fired += 1;
+                }
+            }
+            w.step(SIM_DT);
+        }
+
+        assert_eq!(
+            fired_while_moving, 0,
+            "the bot pulled the trigger {fired_while_moving} times while moving"
+        );
+        assert!(
+            fired > 0,
+            "the bot never fired at all in 10 s — §C20 turned it into a spectator"
+        );
+    }
+}
+
+/// T13.06.4 / §C21 — toxic rain falls, so it cannot land under a roof.
+#[cfg(test)]
+mod toxic_rain_falls {
+    use super::*;
+    use crate::constants::{MapScale, SKY_MARGIN, TOXIC_DURATION, TOXIC_PUDDLE_EVERY};
+    use crate::map::{CoarseGrid, Mask};
+    use crate::weapons::explode::EffectKind;
+
+    // Multiples of CHUNK_SIZE: `Mask::new_empty` requires it.
+    const W: u32 = 512;
+    const H: u32 = 512;
+    /// Ground level, well below `SKY_MARGIN` (96) so drops have room to fall.
+    const GROUND: u32 = 400;
+    /// The roof over the cave, and the cave floor under it.
+    const ROOF: u32 = 250;
+    const CAVE_FLOOR: u32 = 340;
+    /// The cave's x range, and an open column beside it.
+    const CAVE_X0: u32 = 80;
+    const CAVE_X1: u32 = 180;
+    const OPEN_X0: u32 = 300;
+    const OPEN_X1: u32 = 400;
+
+    /// A map with a **roofed cave** on the left and open ground on the right.
+    ///
+    /// Hand-built, not generated: this test needs a known roof at a known height,
+    /// and `generate()` gives a realistic map rather than a legible one. The two
+    /// halves are the test and its control, on one map, so nothing about the
+    /// terrain differs between them except the roof.
+    fn map_with_a_cave() -> Map {
+        let mut mask = Mask::new_empty(W, H);
+        // Solid from GROUND down: the floor of the world.
+        for y in GROUND..H {
+            for x in 0..W {
+                mask.set(x as i32, y as i32);
+            }
+        }
+        // The cave: a roof slab, and a floor for a puddle to sit on under it.
+        for x in CAVE_X0..CAVE_X1 {
+            for y in ROOF..(ROOF + 12) {
+                mask.set(x as i32, y as i32);
+            }
+            for y in CAVE_FLOOR..GROUND {
+                mask.set(x as i32, y as i32);
+            }
+        }
+        let coarse = CoarseGrid::build(&mask);
+        let mut meta = crate::map::MapMeta {
+            seed: 1,
+            requested_seed: 1,
+            attempts: 1,
+            used_safe_preset: false,
+            scale: MapScale::Small,
+            theme: 0,
+            spawn_points: Vec::new(),
+            surface_points: Vec::new(),
+            buried_slots: Vec::new(),
+            decorations: Vec::new(),
+            wind: 0.0,
+            traversable_fraction: 1.0,
+            largest_component: Vec::new(),
+        };
+        // The surface points the old code placed puddles on directly. Under the
+        // cave the "surface" is the CAVE FLOOR — under a roof — which is exactly
+        // how a puddle ended up indoors. They are still what chooses the column
+        // to rain over, so both halves of the map get rained on.
+        for x in (CAVE_X0..CAVE_X1).step_by(4) {
+            meta.surface_points.push(crate::math::Point {
+                x: x as i32,
+                y: CAVE_FLOOR as i32,
+            });
+        }
+        for x in (OPEN_X0..OPEN_X1).step_by(4) {
+            meta.surface_points.push(crate::math::Point {
+                x: x as i32,
+                y: GROUND as i32,
+            });
+        }
+        Map::from_parts(mask, coarse, meta)
+    }
+
+    /// Is `(x, y)` under solid rock — i.e. is there a roof between it and the sky?
+    fn has_a_roof_over_it(map: &Map, x: f32, y: f32) -> bool {
+        let xi = x.round() as i64;
+        if xi < 0 || xi >= W as i64 {
+            return false;
+        }
+        let top = y.round() as i64;
+        (0..top).any(|py| map.mask.get(xi as i32, py as i32))
+    }
+
+    /// Rain on the cave map for a full active window and collect every puddle.
+    fn rain(seed: u64) -> (World, Vec<(f32, f32)>) {
+        let mut w = World::new(seed, MapScale::Small);
+        w.map = map_with_a_cave();
+        w.set_phase(RoundPhase::Playing);
+        // One player, in the middle, so the half-of-the-map bias does not send
+        // every drop to one side and starve the other of samples.
+        w.add_player(0, 0, "ana".into());
+        if let Some(p) = w.player_mut(0) {
+            p.body.pos = Vec2::new(W as f32 / 2.0, GROUND as f32 - 20.0);
+        }
+        w.force_effect(EffectKind::ToxicRain, w.round_time);
+
+        let mut puddles = Vec::new();
+        // The active window, plus time for the last drop to fall the height of
+        // the map and land.
+        let ticks = ((TOXIC_DURATION + 12.0) / crate::constants::SIM_DT) as u32;
+        for _ in 0..ticks {
+            w.step(crate::constants::SIM_DT);
+            for e in w.drain_events() {
+                if let GameEvent::HazardSpawn { kind, x, y, .. } = e {
+                    if kind == HazardKind::Puddle {
+                        puddles.push((x, y));
+                    }
+                }
+            }
+        }
+        (w, puddles)
+    }
+
+    /// The subject, and its control, on one map.
+    ///
+    /// Aggregated over several seeds: where the rain falls is a draw, and one
+    /// seed that happens to rain only on the open half would pass this without
+    /// saying anything about the cave (§A27 — a population claim needs more than
+    /// one draw).
+    #[test]
+    fn no_puddle_forms_under_a_roof_and_puddles_do_form_in_the_open() {
+        let mut indoors = 0;
+        let mut outdoors = 0;
+        for seed in [1u64, 7, 42, 99, 4242, 12345] {
+            let (w, puddles) = rain(seed);
+            assert!(
+                !puddles.is_empty(),
+                "seed {seed}: no puddles at all — nothing here is tested"
+            );
+            for (x, y) in puddles {
+                if has_a_roof_over_it(&w.map, x, y) {
+                    indoors += 1;
+                } else {
+                    outdoors += 1;
+                }
+            }
+        }
+        // The control first: if nothing landed in the open, "nothing landed
+        // indoors" would be satisfied by rain that never lands at all.
+        assert!(
+            outdoors > 0,
+            "no puddle formed in the open, so the absence below proves nothing"
+        );
+        assert_eq!(
+            indoors, 0,
+            "{indoors} puddle(s) formed under a roof — rain fell through solid rock"
+        );
+    }
+
+    /// The falsification for the test above, as a test.
+    ///
+    /// The **old** rule was "put the puddle on the surface point". This asserts
+    /// that doing so on this map really would land puddles indoors — otherwise
+    /// the fixture has no cave in it and the test above is green for free.
+    #[test]
+    fn the_old_surface_point_rule_would_have_landed_puddles_indoors() {
+        let map = map_with_a_cave();
+        let indoors = map
+            .meta
+            .surface_points
+            .iter()
+            .filter(|p| has_a_roof_over_it(&map, p.x as f32, p.y as f32))
+            .count();
+        assert!(
+            indoors > 0,
+            "the fixture has no roofed surface point, so the cave test cannot fail"
+        );
+    }
+
+    /// Drop count is unchanged by making them fall.
+    #[test]
+    fn the_number_of_drops_still_matches_duration_over_cadence() {
+        let mut w = World::new(4242, MapScale::Small);
+        w.map = map_with_a_cave();
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        let forced = w.force_effect(EffectKind::ToxicRain, w.round_time);
+
+        // Counted for **one** active window only. The world keeps scheduling
+        // weather, so a fixed 20 s run picks up the next toxic rain the
+        // scheduler starts on its own and reports 28 — which looks like a broken
+        // cadence and is actually two correct ones.
+        let mut released = 0;
+        let mut ended = false;
+        let ticks = ((TOXIC_DURATION + 12.0) / crate::constants::SIM_DT) as u32;
+        for _ in 0..ticks {
+            w.step(crate::constants::SIM_DT);
+            for e in w.drain_events() {
+                match e {
+                    GameEvent::ProjectileSpawn { weapon, .. }
+                        if crate::effects::toxic::owns(weapon) && !ended =>
+                    {
+                        released += 1;
+                    }
+                    // By id, not by kind: `EffectEnd` carries only the id, and
+                    // the one that matters is the effect this test started.
+                    GameEvent::EffectEnd { id, .. } if id == forced => ended = true,
+                    _ => {}
+                }
+            }
+            if ended {
+                break;
+            }
+        }
+        assert!(
+            ended,
+            "the forced rain never finished, so the count is partial"
+        );
+        assert_eq!(
+            released,
+            (TOXIC_DURATION / TOXIC_PUDDLE_EVERY) as usize,
+            "{released} drops"
+        );
+    }
+
+    /// It still denies space rather than reshaping the map.
+    ///
+    /// The property most at risk from this change: a drop is now a projectile,
+    /// and every other projectile in the game carves when it lands.
+    #[test]
+    fn a_full_toxic_rain_leaves_the_mask_byte_identical() {
+        let mut w = World::new(4242, MapScale::Small);
+        w.map = map_with_a_cave();
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        let before = w.map.mask.count_solid();
+        let hash_before = w.map.mask.hash();
+        w.force_effect(EffectKind::ToxicRain, w.round_time);
+
+        let ticks = ((TOXIC_DURATION + 12.0) / crate::constants::SIM_DT) as u32;
+        for _ in 0..ticks {
+            w.step(crate::constants::SIM_DT);
+            w.drain_events();
+        }
+        assert_eq!(w.map.mask.count_solid(), before, "toxic rain dug");
+        assert_eq!(w.map.mask.hash(), hash_before, "the mask changed");
+    }
+
+    /// A drop is visible on its way down: it is released in open sky and the
+    /// world broadcasts where it has got to.
+    ///
+    /// This is the simulation half of §C2's rendered assertion — the browser
+    /// check samples pixels, and this makes sure there is something to sample.
+    #[test]
+    fn a_falling_drop_is_broadcast_moving_downward() {
+        let mut w = World::new(4242, MapScale::Small);
+        w.map = map_with_a_cave();
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        w.force_effect(EffectKind::ToxicRain, w.round_time);
+
+        let mut first: Option<(u32, f32)> = None;
+        let mut ys: Vec<f32> = Vec::new();
+        let ticks = ((TOXIC_DURATION + 12.0) / crate::constants::SIM_DT) as u32;
+        for _ in 0..ticks {
+            w.step(crate::constants::SIM_DT);
+            for e in w.drain_events() {
+                match e {
+                    GameEvent::ProjectileSpawn { id, weapon, y, .. }
+                        if crate::effects::toxic::owns(weapon) && first.is_none() =>
+                    {
+                        assert_eq!(y, SKY_MARGIN as f32, "a drop did not start at the cloud");
+                        first = Some((id, y));
+                    }
+                    GameEvent::ProjectileMove { id, y, .. }
+                        if first.is_some_and(|(fid, _)| fid == id) =>
+                    {
+                        ys.push(y);
+                    }
+                    _ => {}
+                }
+            }
+            if ys.len() >= 3 {
+                break;
+            }
+        }
+        let (_, y0) = first.expect("no drop was ever announced");
+        assert!(
+            ys.len() >= 3,
+            "a drop's position was broadcast {} time(s) during its fall — the client \
+             would draw it frozen at the cloud",
+            ys.len()
+        );
+        assert!(
+            ys.windows(2).all(|p| p[1] >= p[0]),
+            "a drop moved upward: {ys:?}"
+        );
+        assert!(
+            ys[ys.len() - 1] > y0 + 8.0,
+            "a drop was announced but had not moved: {y0} -> {:?}",
+            ys.last()
+        );
+    }
+}
+
+/// T13.06.5 / §C22 — a meteor you can see and dodge.
+#[cfg(test)]
+mod meteors_are_visible {
+    use super::*;
+    use crate::constants::{MapScale, METEOR_FRAGMENTS};
+    use crate::effects::meteor::MeteorShower;
+    use crate::weapons::explode::EffectKind;
+
+    /// Run a shower on a real medium map, collecting the projectile traffic a
+    /// client would receive.
+    struct Traffic {
+        /// meteor id -> (spawn round_time, spawn y)
+        spawned: std::collections::BTreeMap<u32, (f32, f32)>,
+        /// meteor id -> positions broadcast during flight
+        moves: std::collections::BTreeMap<u32, Vec<(f32, f32)>>,
+        /// meteor id -> round_time it despawned
+        despawned: std::collections::BTreeMap<u32, f32>,
+        /// which of those were fragments
+        fragments: std::collections::BTreeSet<u32>,
+        /// peak live projectiles the world held
+        peak_live: usize,
+    }
+
+    fn run_shower(seed: u64, seconds: f32) -> Traffic {
+        let mut w = World::new(seed, MapScale::Medium);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        let forced = w.force_effect(EffectKind::MeteorShower, w.round_time);
+
+        let mut t = Traffic {
+            spawned: Default::default(),
+            moves: Default::default(),
+            despawned: Default::default(),
+            fragments: Default::default(),
+            peak_live: 0,
+        };
+        let mut ended = false;
+        let ticks = (seconds / crate::constants::SIM_DT) as u32;
+        for _ in 0..ticks {
+            w.step(crate::constants::SIM_DT);
+            t.peak_live = t.peak_live.max(w.projectiles.len());
+            for e in w.drain_events() {
+                match e {
+                    GameEvent::ProjectileSpawn { id, weapon, y, .. }
+                        if MeteorShower::owns(weapon) =>
+                    {
+                        t.spawned.insert(id, (w.round_time, y));
+                        if MeteorShower::is_fragment(weapon) {
+                            t.fragments.insert(id);
+                        }
+                    }
+                    GameEvent::ProjectileMove { id, x, y, .. } => {
+                        if t.spawned.contains_key(&id) {
+                            t.moves.entry(id).or_default().push((x, y));
+                        }
+                    }
+                    GameEvent::ProjectileDespawn { id, .. } => {
+                        if t.spawned.contains_key(&id) {
+                            t.despawned.insert(id, w.round_time);
+                        }
+                    }
+                    GameEvent::EffectEnd { id, .. } if id == forced => ended = true,
+                    _ => {}
+                }
+            }
+            if ended && w.projectiles.is_empty() {
+                break;
+            }
+        }
+        t
+    }
+
+    /// The flight is exactly as long as the constants say it should be.
+    ///
+    /// **This is not the assertion the task asked for, and the difference is a
+    /// spec defect, reported not absorbed.** T13.06.5 asks for "time from spawn
+    /// to impact is >= 1.5 s on a medium map", from §C22's "at `METEOR_SPEED`
+    /// 700 it crosses a 1536 px map in about two seconds". That figure is
+    /// `1536 / 700 = 2.19`, which assumes **constant speed** — but `docs/13` §4
+    /// says in the same paragraph that meteors "fall under gravity". Under
+    /// `GRAVITY` 1400 from an initial 700 px/s, a full 1536 px fall takes
+    /// **1.06 s**, and no meteor falls the full height: it stops at the terrain.
+    ///
+    /// Measured on seed 4242, medium, 20 completed flights:
+    /// min 0.38 s, p25 0.45 s, median 0.55 s, max 1.02 s.
+    ///
+    /// So >= 1.5 s is unreachable without changing `METEOR_SPEED`, `GRAVITY` or
+    /// the spawn height, all of which are fixed by `docs/13` §4. Asserting it
+    /// would be a permanently red gate; asserting a threshold picked to match
+    /// what happens to be true today would be a number nobody chose (§A19).
+    ///
+    /// What IS worth gating is that a meteor falls the way the constants say —
+    /// which catches a wrong spawn height, a wrong speed, gravity not being
+    /// applied, or the sub-stepped collision letting one through the ground.
+    #[test]
+    fn a_meteor_falls_exactly_as_fast_as_gravity_and_its_speed_imply() {
+        let t = run_shower(4242, 30.0);
+        let mut checked = 0;
+        for (id, gone) in &t.despawned {
+            if t.fragments.contains(id) {
+                continue;
+            }
+            let Some((born, spawn_y)) = t.spawned.get(id).copied() else {
+                continue;
+            };
+            let Some(ms) = t.moves.get(id) else { continue };
+            let Some(&(_, last_y)) = ms.last() else {
+                continue;
+            };
+            // Where it was last seen, which is within one broadcast period of
+            // the impact — so the expected time is a lower bound on the real one.
+            let fell = last_y - spawn_y;
+            if fell <= 0.0 {
+                continue;
+            }
+            let g = crate::constants::GRAVITY;
+            let v0 = crate::constants::METEOR_SPEED;
+            let expected = (-v0 + (v0 * v0 + 2.0 * g * fell).sqrt()) / g;
+            let observed = gone - born;
+            assert!(
+                observed >= expected - 0.05,
+                "meteor {id} fell {fell:.0} px in {observed:.2} s; gravity says that \
+                 takes at least {expected:.2} s — it is not falling under gravity"
+            );
+            // One broadcast period of slack on the other side, plus a tick.
+            let slack = 1.0 / crate::constants::SNAPSHOT_HZ as f32 + crate::constants::SIM_DT;
+            assert!(
+                observed <= expected + slack + 0.05,
+                "meteor {id} took {observed:.2} s to fall {fell:.0} px; gravity says \
+                 {expected:.2} s — it is being slowed by something"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 5,
+            "only {checked} meteors completed a measurable flight"
+        );
+    }
+
+    /// It is on screen long enough to react to.
+    ///
+    /// The property §C22 is actually about, asserted as **visible descent**
+    /// rather than as a wall-clock threshold the constants cannot produce: a
+    /// meteor's position is broadcast repeatedly while it is inside the map, so
+    /// there is a falling star to see and dodge rather than an explosion out of
+    /// nowhere. The number of broadcasts is `SNAPSHOT_HZ`-derived, so this says
+    /// "for a real fraction of a second", pinned to the constants.
+    #[test]
+    fn a_meteor_is_broadcast_inside_the_map_for_long_enough_to_react_to() {
+        let t = run_shower(4242, 30.0);
+        let per_second = crate::constants::SNAPSHOT_HZ as usize;
+        let mut worst = usize::MAX;
+        let mut checked = 0;
+        for (id, ms) in &t.moves {
+            if t.fragments.contains(id) {
+                continue;
+            }
+            let inside = ms.iter().filter(|(_, y)| *y > 0.0).count();
+            worst = worst.min(inside);
+            checked += 1;
+        }
+        assert!(checked >= 5, "only {checked} meteors to measure");
+        // A third of a second of visible descent inside the map, at minimum.
+        let floor = per_second / 3;
+        assert!(
+            worst >= floor,
+            "the least visible meteor was broadcast inside the map only {worst} time(s) \
+             at {per_second} Hz, i.e. under {:.2} s of visible fall",
+            worst as f32 / per_second as f32
+        );
+    }
+
+    /// Both ends: every meteor the world has alive is one the client was told
+    /// about, and it is told **where it is** all the way down.
+    ///
+    /// This is the assertion that fails against the shipped build. Meteors spawn
+    /// at `y = -32`, above the top of the map, and `projectile_spawn` was the
+    /// only position ever sent — so the client drew every meteor off-screen for
+    /// its whole flight and only the explosion was ever visible, which is §C22
+    /// as reported.
+    #[test]
+    fn every_meteor_is_announced_and_then_tracked_all_the_way_down() {
+        let t = run_shower(4242, 30.0);
+        assert!(!t.spawned.is_empty(), "no meteors at all");
+
+        let meteors: Vec<u32> = t
+            .spawned
+            .keys()
+            .cloned()
+            .filter(|id| !t.fragments.contains(id))
+            .collect();
+        assert!(meteors.len() >= 5, "only {} meteors", meteors.len());
+
+        for id in &meteors {
+            let (_, spawn_y) = t.spawned[id];
+            let moves = t.moves.get(id).cloned().unwrap_or_default();
+            assert!(
+                moves.len() >= 3,
+                "meteor {id} was announced at y={spawn_y} and its position was broadcast \
+                 {} time(s) — a client can only draw it where it was born, which is above \
+                 the top of the map",
+                moves.len()
+            );
+            // It is tracked all the way into the ground, not just for a frame.
+            let last_y = moves.last().expect("checked non-empty").1;
+            assert!(
+                last_y > spawn_y,
+                "meteor {id} never moved: {spawn_y} -> {last_y}"
+            );
+            assert!(
+                moves.windows(2).all(|p| p[1].1 >= p[0].1 - 0.5),
+                "meteor {id} was reported moving upward"
+            );
+        }
+
+        // And it is visible INSIDE the map, not only above it. A meteor tracked
+        // only while at y<0 is still one nobody can see.
+        let seen_in_map = meteors.iter().any(|id| {
+            t.moves
+                .get(id)
+                .map(|ms| ms.iter().any(|(_, y)| *y > 0.0))
+                .unwrap_or(false)
+        });
+        assert!(
+            seen_in_map,
+            "no meteor was ever broadcast at a position inside the map"
+        );
+    }
+
+    /// Fragments are announced too.
+    ///
+    /// `METEOR_FRAGMENTS` (6) per impact were spawned straight into the shared
+    /// pool by `on_impact` and never broadcast — only the shower's cadence
+    /// spawns were. Six glowing embers per impact that no client has ever been
+    /// told exist (§A39).
+    #[test]
+    fn impact_fragments_are_announced_to_clients() {
+        let t = run_shower(4242, 30.0);
+        let impacts = t
+            .despawned
+            .keys()
+            .filter(|id| !t.fragments.contains(id))
+            .count();
+        assert!(impacts > 0, "no meteor ever landed");
+        assert!(
+            !t.fragments.is_empty(),
+            "{impacts} meteor(s) landed and not one fragment was announced"
+        );
+        // Roughly METEOR_FRAGMENTS per impact. Not exactly: the run is cut off
+        // when the shower ends, so the last impacts' fragments may be clipped.
+        assert!(
+            t.fragments.len() >= METEOR_FRAGMENTS as usize,
+            "only {} fragments from {impacts} impacts, expected ~{} each",
+            t.fragments.len(),
+            METEOR_FRAGMENTS
+        );
+    }
+
+    /// Fragments do not spawn fragments.
+    ///
+    /// The recursion guard is the only thing between six fragments and 36, then
+    /// 216. The run's peak live count is the effect being asserted, not the flag.
+    #[test]
+    fn fragments_do_not_recurse() {
+        let t = run_shower(4242, 30.0);
+        assert!(
+            t.peak_live < 200,
+            "{} projectiles alive at once — fragments are spawning fragments",
+            t.peak_live
+        );
     }
 }

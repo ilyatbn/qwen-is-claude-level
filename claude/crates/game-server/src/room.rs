@@ -60,6 +60,10 @@ pub enum Command {
     /// A separate command rather than an `Inspect`, because `bots` lives on the
     /// `Room` and not on the `World` — the sim has no concept of a bot, which is
     /// the point (§A5: a bug in bots is a bug in the game).
+    /// The roster with names, for `welcome`. A read: not recorded.
+    Roster {
+        reply: oneshot::Sender<Vec<RosterRow>>,
+    },
     Status {
         reply: oneshot::Sender<(usize, usize)>,
     },
@@ -83,6 +87,7 @@ impl std::fmt::Debug for Command {
             Command::ResyncMap(id) => write!(f, "ResyncMap({id})"),
             Command::Leave(id) => write!(f, "Leave({id})"),
             Command::StartWithBots(id) => write!(f, "StartWithBots({id})"),
+            Command::Roster { .. } => f.write_str("Roster"),
             Command::Status { .. } => f.write_str("Status"),
             Command::Inspect(_) => f.write_str("Inspect"),
         }
@@ -137,6 +142,13 @@ impl RoomHandle {
     }
 
     /// Seats taken and how many are bots, for the lobby (§B10).
+    /// The roster with names, as `welcome` needs it.
+    pub async fn roster(&self) -> Option<Vec<RosterRow>> {
+        let (tx, rx) = oneshot::channel();
+        self.tx.send(Command::Roster { reply: tx }).await.ok()?;
+        rx.await.ok()
+    }
+
     pub async fn status(&self) -> Option<(usize, usize)> {
         let (tx, rx) = oneshot::channel();
         self.tx.try_send(Command::Status { reply: tx }).ok()?;
@@ -195,6 +207,25 @@ impl RoomHandle {
     }
 }
 
+/// One row of the roster a client needs to render other players:
+/// `(id, name, skin, tombstone skin, score)`.
+///
+/// Named because it crosses three layers — the room, the command channel and
+/// the `welcome` payload — and a bare tuple at each of them is three places to
+/// get the order wrong.
+pub type RosterRow = (PlayerId, String, u16, u16, i16);
+
+/// The display name of the `index`-th bot seated in a room.
+///
+/// One function, because two places need the same answer and they used to
+/// disagree by construction: `seat_bots` formatted it and `seated_bots` — which
+/// announces them to the clients — had nowhere to read it back from. `World`
+/// takes a name in `add_player` and drops it, and the `welcome` roster carries
+/// no name either, so `player_join` is a client's only source for one.
+fn bot_name(index: usize) -> String {
+    format!("Bot {}", index + 1)
+}
+
 /// Per-player input sequencing, kept beside the world rather than in it —
 /// `game-core` has no idea a network exists.
 #[derive(Default)]
@@ -208,6 +239,17 @@ struct Seats {
 
 struct Seat {
     id: PlayerId,
+    /// The display name this player joined under.
+    ///
+    /// Kept here because `World::add_player` takes a name and **drops it**
+    /// (`_name`) — `game-core` has no use for one. Nothing else retained it
+    /// either, so the only place a name ever appeared was the `player_join`
+    /// broadcast, which goes to everyone *except* the player who joined. The
+    /// consequences were both visible: your own row on the scoreboard read
+    /// `p0`, and anyone who joined a room already in progress saw every player
+    /// already in it as `p1`, `p2`, `p3` forever, because `welcome`'s roster
+    /// carried ids and skins and no names.
+    name: String,
     ready: bool,
     joined_at: Instant,
     last_seq: u32,
@@ -216,6 +258,21 @@ struct Seat {
 }
 
 impl Seats {
+    /// The name a seat joined under, if it is still seated.
+    fn name_of(&self, id: PlayerId) -> Option<String> {
+        self.seats
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.name.clone())
+    }
+
+    /// Record the display name a seat joined under.
+    fn set_name(&mut self, id: PlayerId, name: &str) {
+        if let Some(s) = self.seats.iter_mut().find(|s| s.id == id) {
+            s.name = name.to_string();
+        }
+    }
+
     /// Mark a seat as in-simulation. Used by the join flow when `ready` arrives,
     /// and by bot seating, which has no handshake to wait for.
     fn mark_ready(&mut self, id: PlayerId) {
@@ -241,6 +298,10 @@ impl Seats {
         };
         self.seats.push(Seat {
             id,
+            // Filled by `set_name` the moment the caller knows it: `alloc` is
+            // reached from the bot path and the join path alike, and only the
+            // latter has a name to give.
+            name: String::new(),
             ready: false,
             joined_at: Instant::now(),
             last_seq: 0,
@@ -422,6 +483,7 @@ impl Room {
     }
 
     /// Seat `BOT_COUNT` bots, up to the room's capacity.
+    ///
     fn seat_bots(&mut self, seed: u64) {
         let want = self.config.bot_count.min(self.config.max_players);
         for _ in 0..want {
@@ -430,7 +492,9 @@ impl Room {
             };
             let index = self.bot_seq;
             self.bot_seq += 1;
-            self.world.add_player(id, 0, format!("Bot {}", index + 1));
+            let name = bot_name(index as usize);
+            self.seats.set_name(id, &name);
+            self.world.add_player(id, 0, name);
             // A bot is ready the moment it is seated. `ready` means "in the
             // simulation", and the handshake it normally gates on — download the
             // map, decode it, render it — does not exist for something with no
@@ -471,17 +535,26 @@ impl Room {
         }
         game_core::world::give(&mut self.world, id, game_core::items::registry::BAZOOKA, 4);
         game_core::world::give(&mut self.world, id, game_core::items::registry::SMG, 60);
-        // A second rocket stack, in the slot after the smg.
+        // There used to be a **second** bazooka stack here, because `MAX_STACK`
+        // for a bazooka is 4 and four rockets is not enough to be "armed" for
+        // anything longer than a few seconds — T9.06's full round burns them in
+        // the first minute.
         //
-        // `MAX_STACK` for a bazooka is 4, and 4 rockets is not enough to be
-        // "armed" for anything that runs longer than a few seconds — T9.06's
-        // full round burns them in the first minute. Granted *after* the smg so
-        // the slot order stays bazooka / smg / bazooka and nothing that already
-        // presses a hotkey has to change.
-        game_core::world::give(&mut self.world, id, game_core::items::registry::BAZOOKA, 4);
-        // Appended, never inserted: existing checks press Digit1/2/3 for the
-        // rocket and smg stacks, so the first three slots must not move (§B16 —
-        // an implicit invariant is a trap the first time someone edits the data).
+        // §C24 ended that: a weapon occupies one slot ever, and a pickup of a
+        // weapon already held at full ammo is *refused*. The second grant became
+        // a silent no-op, and removing it is the honest version — but the
+        // consequence is real and is not a fixture detail: **`DEV_LOADOUT` now
+        // arms a player with 4 rockets, not 8.** Anything that assumed eight is
+        // now measuring a shorter fight.
+        //
+        // It also moved every slot after the smg by one, which is §B16 — the
+        // comment that used to sit here promised "appended, never inserted, so
+        // the hotkeys other checks press stay put", and that invariant was true
+        // right up until it was not. `ordnance` pressed Digit5 for the axe, got
+        // the flamethrower, and reported a missing melee *render*. Browser
+        // checks now select by weapon name (`harness.mjs::selectWeapon`), so the
+        // order here is free to change again.
+        //
         // These four give T11.10 a mine to place, a swing to see, a jet to spray
         // and a hazard to stand in.
         game_core::world::give(&mut self.world, id, game_core::items::registry::MINE, 2);
@@ -572,6 +645,7 @@ impl Room {
                         name: name.clone(),
                         skin_id,
                     });
+                    self.seats.set_name(id, &name);
                     self.world.add_player(id, skin_id, name);
                     // §B8. Parsed from `join` and, until now, dropped on the
                     // floor — the §A39 shape again, in the join path itself.
@@ -672,6 +746,9 @@ impl Room {
                 self.request_start();
             }
             // Not recorded: reading who is seated changes nothing.
+            Command::Roster { reply } => {
+                let _ = reply.send(self.roster());
+            }
             Command::Status { reply } => {
                 let _ = reply.send((self.world.players.len(), self.bots.len()));
             }
@@ -774,6 +851,59 @@ impl Room {
             self.world.remove_player(b.player);
         }
         self.world.set_phase(game_core::world::RoundPhase::Lobby);
+    }
+
+    /// The bots currently seated, as `(id, name, skin, tombstone skin)`.
+    ///
+    /// For the announcement the room task makes when a round begins — see
+    /// `events::emit_player_join`. It returns what the caller needs rather than
+    /// exposing `bots` and making every caller reach into the world for the
+    /// name (CLAUDE.md: "return what the caller needs").
+    pub fn seated_bots(&self) -> Vec<(PlayerId, String, u16, u16)> {
+        self.bots
+            .iter()
+            .filter_map(|b| {
+                // Read back off the seat, not recomputed. Two functions
+                // formatting the same name independently is the shape that
+                // drifts the moment either changes (CLAUDE.md: "share the
+                // guard, or share the function").
+                // The same fallback `roster` uses, not `?`. Dropping a nameless
+                // bot here would silently announce fewer players than the
+                // snapshot carries — two paths answering one question two ways
+                // is the drift `bot_name` was introduced to end.
+                let name = self
+                    .seats
+                    .name_of(b.player)
+                    .unwrap_or_else(|| format!("p{}", b.player));
+                self.world
+                    .player(b.player)
+                    .map(|p| (b.player, name, p.skin_id, p.tombstone_skin_id))
+            })
+            .collect()
+    }
+
+    /// The whole roster as the clients need to render it: id, name, skin,
+    /// tombstone skin, score.
+    ///
+    /// `welcome` used to build this straight off `World::players`, which knows
+    /// no names — so a joining client was told who was there but not what any
+    /// of them were called, including itself.
+    pub fn roster(&self) -> Vec<RosterRow> {
+        self.world
+            .players
+            .iter()
+            .map(|p| {
+                (
+                    p.id,
+                    self.seats
+                        .name_of(p.id)
+                        .unwrap_or_else(|| format!("p{}", p.id)),
+                    p.skin_id,
+                    p.tombstone_skin_id,
+                    p.score,
+                )
+            })
+            .collect()
     }
 
     /// A player pressed "Start with bots".
@@ -1239,6 +1369,21 @@ async fn run(
                 let in_lobby = room.world.phase == game_core::world::RoundPhase::Lobby;
                 if was_lobby && !in_lobby {
                     start = Instant::now();
+                    // The round just began, which is when `begin_round` seats
+                    // the bots — with humans already connected. Their `welcome`
+                    // was sent to an empty lobby, so this is the only thing that
+                    // ever tells them who they are playing against.
+                    for (id, name, skin, grave) in room.seated_bots() {
+                        crate::events::emit_player_join(
+                            &io,
+                            &sessions,
+                            room.world.tick,
+                            id,
+                            &name,
+                            skin,
+                            grave,
+                        );
+                    }
                 }
                 was_lobby = in_lobby;
                 room.sweep_unready(READY_TIMEOUT);

@@ -492,28 +492,90 @@ mod tests {
         assert_eq!(w.len(), 1, "the item must stay in the world");
     }
 
+    /// §C24, at the layer the player meets: a weapon you already carry **at full
+    /// ammo** is refused and stays on the ground.
+    ///
+    /// `inventory.rs` asserts this as an `AddResult::Full`, which is the enum and
+    /// not the outcome. The case that matters here is the new one — a full stack
+    /// with **seven free slots** — because under the old rule it would have taken
+    /// one of them, and under the new rule the world item must survive. The
+    /// existing full-inventory test cannot cover it: there, every slot is
+    /// occupied, so a build with no one-slot rule at all passes.
+    ///
+    /// The control is the second half: a *different* weapon on the same ground,
+    /// with the same seven free slots, is taken. Without it "the item stayed"
+    /// also passes for a player who can no longer pick anything up.
+    #[test]
+    fn a_held_weapon_at_full_ammo_is_refused_and_stays_on_the_ground() {
+        let mut w = WorldItems::new();
+        let pos = Vec2::new(256.0, 380.0);
+        let full = crate::items::registry::max_stack(BAZOOKA);
+        w.spawn(BAZOOKA, full, pos, Vec2::ZERO, SpawnSource::Initial, 0.0);
+
+        let mut inv = Inventory::new();
+        inv.add(BAZOOKA, full);
+        assert_eq!(
+            inv.count_of(BAZOOKA),
+            u32::from(full),
+            "the fixture is not full"
+        );
+        assert!(
+            inv.iter().count() < crate::constants::INVENTORY_SLOTS,
+            "with no free slots this passes for the old rule too"
+        );
+
+        let mut players = [(0u8, pos, &mut inv)];
+        assert!(
+            w.resolve_pickups(&mut players, 1.0).is_empty(),
+            "a full weapon was picked up again"
+        );
+        assert_eq!(w.len(), 1, "the refused weapon must stay in the world");
+        assert_eq!(
+            inv.count_of(BAZOOKA),
+            u32::from(full),
+            "the refused pickup changed the stack it was refused for"
+        );
+
+        // The control: a different weapon on the same ground is accepted.
+        let other = crate::items::registry::GRENADE;
+        w.spawn(other, 1, pos, Vec2::ZERO, SpawnSource::Initial, 0.0);
+        let mut players = [(0u8, pos, &mut inv)];
+        assert_eq!(
+            w.resolve_pickups(&mut players, 2.0).len(),
+            1,
+            "a weapon we do not hold was refused too — this player cannot pick anything up"
+        );
+        assert_eq!(inv.count_of(other), 1);
+    }
+
     #[test]
     fn a_partial_pickup_reduces_the_stack_and_leaves_the_rest() {
         let mut w = WorldItems::new();
         let pos = Vec2::new(256.0, 380.0);
-        // Grenades cap at 3 per slot; 7 free slots hold 21, so ask for more.
-        w.spawn(
-            crate::items::registry::GRENADE,
-            9,
-            pos,
-            Vec2::ZERO,
-            SpawnSource::Initial,
-            0.0,
-        );
+        // A **consumable**, deliberately: §C24 exempts weapons from spilling
+        // into a second slot, so asserting the spill rule through a grenade
+        // (which is a weapon) would assert the one-slot break instead — the same
+        // numbers arrived at by a different mechanism, with the comment below
+        // describing neither. Medkits cap at 3 per slot like grenades do.
+        w.spawn(MEDKIT, 9, pos, Vec2::ZERO, SpawnSource::Initial, 0.0);
         let mut inv = Inventory::new();
-        for _ in 0..7 {
+        for _ in 0..(crate::constants::INVENTORY_SLOTS - 1) {
             inv.add(FLASHLIGHT, 1);
         }
         let mut players = [(0u8, pos, &mut inv)];
         w.resolve_pickups(&mut players, 1.0);
-        assert_eq!(inv.count_of(crate::items::registry::GRENADE), 3);
+        let stack = crate::items::registry::max_stack(MEDKIT);
+        assert_eq!(
+            inv.count_of(MEDKIT),
+            u32::from(stack),
+            "one slot's worth was taken"
+        );
         assert_eq!(w.len(), 1);
-        assert_eq!(w.iter().next().expect("there").count, 6, "the rest stays");
+        assert_eq!(
+            w.iter().next().expect("there").count,
+            9 - stack,
+            "the rest stays"
+        );
     }
 
     #[test]

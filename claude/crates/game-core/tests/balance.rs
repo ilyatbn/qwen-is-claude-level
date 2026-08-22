@@ -268,10 +268,20 @@ fn every_weapon_can_be_obtained() {
 #[test]
 fn the_measurement_is_reproducible() {
     // Held, not natural: a bot starts empty and takes longer than this to find
-    // a weapon, so a pool round of ten seconds fires nothing and the comparison
-    // would be between two empty rounds. The control below caught exactly that.
-    let a = run(SEEDS[0], Some(PISTOL), 10.0);
-    let b = run(SEEDS[0], Some(PISTOL), 10.0);
+    // a weapon, so a pool round of a few seconds fires nothing and the
+    // comparison would be between two empty rounds. The control below caught
+    // exactly that.
+    //
+    // The window was 10 s until §C20. Standing still to shoot means a bot has to
+    // reach its enemy, land and settle before the first trigger pull lands, and
+    // measured on this seed the first shot now arrives at **t≈13 s** (0 by 10 s,
+    // 2 by 15 s, 17 by 20 s). The control below went red at 10 s, correctly: it
+    // was comparing two rounds in which nothing happened. Lengthened to cover
+    // the delay the gate introduces rather than removed — a determinism test
+    // needs a window in which something is determined.
+    const WINDOW: f32 = 25.0;
+    let a = run(SEEDS[0], Some(PISTOL), WINDOW);
+    let b = run(SEEDS[0], Some(PISTOL), WINDOW);
     assert_eq!(a.damage.to_bits(), b.damage.to_bits(), "damage drifted");
     assert_eq!(a.combat_deaths, b.combat_deaths);
     assert_eq!(a.picks, b.picks);

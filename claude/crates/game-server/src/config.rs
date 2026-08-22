@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use game_core::constants::MapScale;
 use game_core::constants::{
     BOT_COUNT_DEFAULT, BOT_SKILL_DEFAULT, DEFAULT_MAP_SCALE, MAX_PLAYERS, MIN_PLAYERS_TO_START,
-    ROUND_SECONDS,
+    ROOM_EMPTY_TTL, ROUND_SECONDS,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,6 +23,12 @@ pub struct Config {
     pub map_scale: MapScale,
     pub max_players: usize,
     pub round_seconds: f32,
+    /// Seconds after the last human leaves before the room is dropped (§B1).
+    ///
+    /// Configurable for the same reason `round_seconds` is: the end-to-end test
+    /// that proves the sweep runs has to observe a room actually disappear, and
+    /// a test that sleeps for the 30 s default is a test nobody runs.
+    pub room_empty_ttl: f32,
     pub min_players_to_start: usize,
     pub fixed_seed: Option<u64>,
     pub record_replay: bool,
@@ -84,6 +90,7 @@ impl Default for Config {
             map_scale: DEFAULT_MAP_SCALE,
             max_players: MAX_PLAYERS,
             round_seconds: ROUND_SECONDS,
+            room_empty_ttl: ROOM_EMPTY_TTL,
             min_players_to_start: MIN_PLAYERS_TO_START,
             fixed_seed: None,
             record_replay: false,
@@ -156,6 +163,25 @@ impl Config {
             None => d.round_seconds,
         };
 
+        let room_empty_ttl = match get("ROOM_EMPTY_TTL") {
+            Some(v) => {
+                let n = v.parse::<f32>().map_err(|_| ConfigError {
+                    var: "ROOM_EMPTY_TTL",
+                    value: v.clone(),
+                    expected: "a positive number of seconds".to_string(),
+                })?;
+                if !(n.is_finite() && n > 0.0) {
+                    return Err(ConfigError {
+                        var: "ROOM_EMPTY_TTL",
+                        value: v,
+                        expected: "a positive number of seconds".to_string(),
+                    });
+                }
+                n
+            }
+            None => d.room_empty_ttl,
+        };
+
         let fixed_seed = match get("FIXED_SEED") {
             // An empty value means "unset" — compose writes `FIXED_SEED=` when the
             // .env variable is blank, and that must not be a parse error.
@@ -198,6 +224,7 @@ impl Config {
             map_scale,
             max_players,
             round_seconds,
+            room_empty_ttl,
             min_players_to_start,
             fixed_seed,
             record_replay,
@@ -217,12 +244,14 @@ impl Config {
     pub fn summary(&self) -> String {
         format!(
             "bind={} scale={} max_players={} round_seconds={} min_players={} \
-             fixed_seed={} record_replay={} debug_dump={} bots={} bot_skill={}",
+             room_empty_ttl={} fixed_seed={} record_replay={} debug_dump={} bots={} \
+             bot_skill={}",
             self.bind_addr,
             self.map_scale.as_str(),
             self.max_players,
             self.round_seconds,
             self.min_players_to_start,
+            self.room_empty_ttl,
             self.fixed_seed
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "random".to_string()),

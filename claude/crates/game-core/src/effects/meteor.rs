@@ -23,16 +23,21 @@ const LATERAL_MAX: f32 = 60.0;
 
 pub struct MeteorShower {
     rng: ChaCha8Rng,
-    next_spawn_at: f32,
+    /// `None` until the first **active** tick. See `tick`.
+    next_spawn_at: Option<f32>,
 }
 
 impl MeteorShower {
-    pub fn new(seed: u64, now: f32) -> Self {
+    pub fn new(seed: u64, _now: f32) -> Self {
         Self {
             rng: substream(seed, "meteor"),
-            // First meteor on the first active tick, as with toxic rain: it puts
-            // exactly duration/cadence impacts inside the active window.
-            next_spawn_at: now,
+            // Set on the first ACTIVE tick, not here — the shower is constructed
+            // when its TELEGRAPH starts and drops nothing for `EFFECT_TELEGRAPH`
+            // (3 s) afterwards. Anchoring the cadence here meant the first active
+            // tick released six meteors at once to catch up on cadence it had
+            // "missed" while telegraphing. Same defect as toxic rain's, same
+            // cause, found by the same test.
+            next_spawn_at: None,
         }
     }
 
@@ -48,7 +53,8 @@ impl MeteorShower {
         if !active {
             return out;
         }
-        while now >= self.next_spawn_at {
+        let mut next = self.next_spawn_at.unwrap_or(now);
+        while now >= next {
             let x = range_f32(
                 &mut self.rng,
                 (WALL_W as f32) + 32.0,
@@ -64,8 +70,9 @@ impl MeteorShower {
                 Vec2::new(vx, METEOR_SPEED),
                 now,
             ));
-            self.next_spawn_at += METEOR_EVERY;
+            next += METEOR_EVERY;
         }
+        self.next_spawn_at = Some(next);
         out
     }
 
@@ -74,6 +81,10 @@ impl MeteorShower {
     ///
     /// `is_fragment` is the entire recursion guard. Six fragments each spawning
     /// six is 36, then 216: the tick stops terminating in about four generations.
+    /// Returns the blast **and the fragment ids it threw**, because the caller
+    /// has to announce them: a projectile nobody was told about cannot be drawn,
+    /// and these six per impact were spawned straight into the pool and never
+    /// broadcast (§A39).
     pub fn on_impact(
         projectiles: &mut Projectiles,
         map: &mut Map,
@@ -82,7 +93,7 @@ impl MeteorShower {
         is_fragment: bool,
         seed: u64,
         now: f32,
-    ) -> ExplosionResult {
+    ) -> (ExplosionResult, Vec<ProjectileId>) {
         let (radius, damage) = if is_fragment {
             (METEOR_FRAG_CARVE_R, METEOR_FRAG_DAMAGE)
         } else {
@@ -98,6 +109,7 @@ impl MeteorShower {
             BlastSource::Weather(EffectKind::MeteorShower),
         );
 
+        let mut fragments = Vec::new();
         if !is_fragment {
             // Seeded from the impact so a replay reproduces the spread, and so two
             // clients rendering the same impact agree.
@@ -109,17 +121,17 @@ impl MeteorShower {
                 let a = -std::f32::consts::PI * (i as f32 + 0.5) / METEOR_FRAGMENTS as f32
                     + range_f32(&mut rng, -0.2, 0.2);
                 let speed = range_f32(&mut rng, METEOR_FRAG_SPEED_MIN, METEOR_FRAG_SPEED_MAX);
-                projectiles.spawn_raw(
+                fragments.push(projectiles.spawn_raw(
                     WEAPON_METEOR_FRAG,
                     u8::MAX,
                     at,
                     Vec2::new(a.cos() * speed, a.sin() * speed),
                     now,
-                );
+                ));
             }
         }
 
-        result
+        (result, fragments)
     }
 
     /// True when this projectile is weather ordnance the shower owns.
@@ -285,7 +297,7 @@ mod tests {
             (removed as f32 - expected).abs() / expected < 0.05,
             "carved {removed}, expected about {expected}"
         );
-        assert!(res.carve.pixels_removed > 0);
+        assert!(res.0.carve.pixels_removed > 0);
         assert_eq!(pr.len(), METEOR_FRAGMENTS as usize);
     }
 
@@ -431,7 +443,7 @@ mod tests {
             1,
             0.0,
         );
-        assert_eq!(res.carve.revealed, vec![0], "the slot it landed on");
+        assert_eq!(res.0.carve.revealed, vec![0], "the slot it landed on");
 
         // And one that misses does not: the boundary, not just the happy path.
         let mut map = map_with_slot(at);
@@ -444,7 +456,7 @@ mod tests {
             1,
             0.0,
         );
-        assert!(res.carve.revealed.is_empty(), "revealed a slot it missed");
+        assert!(res.0.carve.revealed.is_empty(), "revealed a slot it missed");
     }
 
     #[test]

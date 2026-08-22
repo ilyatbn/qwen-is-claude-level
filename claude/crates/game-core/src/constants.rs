@@ -117,6 +117,22 @@ pub const SPAWN_MIN_ENEMY_DIST: f32 = 384.0;
 pub const HEALTH_SPEED_MIN: f32 = 0.75;
 /// Impulse (px/s) at an explosion epicentre.
 pub const KNOCKBACK_MAX: f32 = 320.0;
+/// How long after being thrown a player may still fire, despite moving (§C20).
+///
+/// §C20 refuses a shot while you are moving under your **own** power and says
+/// plainly that "being knocked around does not stop you firing — a player thrown
+/// by a blast must still be able to shoot, or knockback becomes a stun". Those
+/// two cannot both be read off velocity alone, because knockback *is* velocity.
+///
+/// So the exemption is stamped where the impulse is applied and expires on this
+/// clock. It is deliberately short: long enough to cover the arc of a
+/// rocket-jump, far too short to be worth chaining shots off.
+///
+/// It is **not** `grounded`. That was tried, and it made the whole gate
+/// cosmetic: jump, release the key, and you fire at full walking speed — as does
+/// anyone who steps off a ledge. `grounded` is a *consequence* of being thrown,
+/// not evidence of it, and it is equally a consequence of jumping.
+pub const KNOCKBACK_FIRE_GRACE: f32 = 0.6;
 
 // ---------------------------------------------------------------------------
 // Field of view and light
@@ -368,6 +384,12 @@ pub const EFFECT_TELEGRAPH: f32 = 3.0;
 
 pub const TOXIC_DURATION: f32 = 8.0;
 pub const TOXIC_PUDDLE_EVERY: f32 = 0.4;
+/// Downward speed a toxic drop leaves its cloud at (§C21).
+///
+/// Slow enough that the fall reads as rain rather than as artillery: from
+/// `SKY_MARGIN` this gives roughly a second of visible descent on a medium map,
+/// which is the point — §C21 makes the rain visible by making it fall.
+pub const TOXIC_DROP_SPEED: f32 = 180.0;
 pub const TOXIC_PUDDLE_RADIUS: f32 = 40.0;
 pub const TOXIC_PUDDLE_LIFE: f32 = 3.0;
 pub const TOXIC_DPS: f32 = 6.0;
@@ -692,7 +714,27 @@ pub const MINIMAP_REVEAL_R: f32 = 260.0;
 pub const MAX_ROOMS: usize = 32;
 /// Seconds after the last **human** leaves before the room is dropped. Bots do
 /// not keep a room alive.
+/// §C20 — you cannot fire while moving under your own power.
+///
+/// Above this horizontal speed a **grounded** player is still walking (or still
+/// coasting off a walk through `GROUND_FRICTION`) and every fire is refused.
+/// Airborne speed does not count: being thrown by a blast must not stop you
+/// shooting, or knockback becomes a stun.
+///
+/// 8 px/s against a `WALK_SPEED` of 150 is "stopped, give or take the last
+/// pixel of friction" — small enough that a player who has let go and settled
+/// can shoot, large enough that a float that never quite reaches zero does not
+/// lock them out.
+pub const FIRE_MOVE_MAX_SPEED: f32 = 8.0;
+
 pub const ROOM_EMPTY_TTL: f32 = 30.0;
+/// How often the process-level sweep asks the registry what has expired.
+///
+/// `ROOM_EMPTY_TTL` is the deadline; this is only the resolution at which it is
+/// noticed, so a room lives for at most `ROOM_EMPTY_TTL + ROOM_REAP_INTERVAL`.
+/// Sweeping every tick would take the registry lock 60 times a second to learn
+/// nothing.
+pub const ROOM_REAP_INTERVAL: f32 = 2.0;
 pub const JOIN_CODE_LEN: usize = 6;
 /// No `I`, `1`, `O` or `0` — people read these aloud. It **does** contain `L`,
 /// which is why nothing folds `L` to `1`: doing so made roughly one code in six
@@ -764,41 +806,64 @@ pub const MACHINEGUN_AMMO: u8 = 120;
 // and a hammer dig, a knife does not. §A3 is about ordnance, and §B18 restates it.
 pub const KNIFE_DAMAGE: f32 = 35.0;
 pub const KNIFE_CARVE: f32 = 0.0;
-/// Raised from 26 by T11.09's measurement. Melee reach is the axis that decides
-/// whether a swing ever connects: at identical bot skill on identical maps, the
-/// whip (58) hit 3.0 % of swings while the knife (26), axe (30) and hammer (28)
-/// hit 0.47 %, 0.38 % and 0.26 %. Same delivery kind, same bots — reach is the
-/// only thing that differs, and it predicts the result almost exactly.
-pub const KNIFE_REACH: f32 = 36.0;
+/// §C19: every melee reach below is measured **from the body edge**, not from
+/// the player's centre — `melee::swing` adds `PLAYER_W / 2`. So the number here
+/// means "how far in front of me", which is what a player judges by eye.
+///
+/// T11.09 had raised these from the centre-measured 26/34/30/28, because reach
+/// is the axis that decides whether a swing ever connects: at identical bot
+/// skill on identical maps the whip (58) hit 3.0 % of swings while the knife
+/// (26), axe (30) and hammer (28) hit 0.47 %, 0.38 % and 0.26 %. Reach was the
+/// only thing that differed and predicted the result almost exactly.
+///
+/// The centre-based numbers were also why `axe` at 40 connected with someone two
+/// and a half player-widths away. Re-expressed from the edge these become
+/// immediate proximity; the lost hit rate is bought back with **arc and
+/// cooldown**, which widen and quicken the swing without letting it connect at a
+/// distance (§C19).
+pub const KNIFE_REACH: f32 = 12.0;
+/// §C19 says to buy melee's lost hit rate back with "a wider sweep and a faster
+/// swing". **It was tried, measured, and reverted** — the numbers are in
+/// `tasks/JOURNAL.md` under T13.06.2. Widening every melee arc by ~50 % and
+/// cutting the cooldowns (knife 1.0→1.5 / 0.35→0.30, bat 1.4→2.0 / 0.55→0.45,
+/// axe 1.2→1.8 / 0.90→0.70, hammer 1.1→1.7 / 1.20→0.95) did not recover the
+/// damage share, and it made the knife markedly WORSE — 0.36 → 0.15 dmg/bot-s
+/// on more swings, which nothing in a wider arc explains. `docs/71` §B23 records
+/// the same outcome for the flamethrower's range: measured worse, reverted.
+///
+/// So these are §B7/§B23's values, unchanged, and the shortfall is reported
+/// rather than tuned away.
 pub const KNIFE_ARC: f32 = 1.0;
 pub const KNIFE_COOLDOWN: f32 = 0.35;
 pub const KNIFE_KNOCKBACK: f32 = 60.0;
 
 pub const BAT_DAMAGE: f32 = 28.0;
 pub const BAT_CARVE: f32 = 0.0;
-pub const BAT_REACH: f32 = 40.0;
+pub const BAT_REACH: f32 = 16.0;
 pub const BAT_ARC: f32 = 1.4;
 pub const BAT_COOLDOWN: f32 = 0.55;
 pub const BAT_KNOCKBACK: f32 = 260.0;
 
 pub const WHIP_DAMAGE: f32 = 22.0;
 pub const WHIP_CARVE: f32 = 0.0;
-/// The longest reach in the melee table — that is the whip's whole identity.
-pub const WHIP_REACH: f32 = 58.0;
+/// The longest reach in the melee table — that is the whip's whole identity, and
+/// §C19 keeps it that way: 44 px in front of the body is still most of a body
+/// length further than anything else swings.
+pub const WHIP_REACH: f32 = 44.0;
 pub const WHIP_ARC: f32 = 0.8;
 pub const WHIP_COOLDOWN: f32 = 0.60;
 pub const WHIP_KNOCKBACK: f32 = 120.0;
 
 pub const AXE_DAMAGE: f32 = 55.0;
 pub const AXE_CARVE: f32 = 10.0;
-pub const AXE_REACH: f32 = 40.0;
+pub const AXE_REACH: f32 = 16.0;
 pub const AXE_ARC: f32 = 1.2;
 pub const AXE_COOLDOWN: f32 = 0.90;
 pub const AXE_KNOCKBACK: f32 = 140.0;
 
 pub const HAMMER_DAMAGE: f32 = 70.0;
 pub const HAMMER_CARVE: f32 = 16.0;
-pub const HAMMER_REACH: f32 = 38.0;
+pub const HAMMER_REACH: f32 = 14.0;
 pub const HAMMER_ARC: f32 = 1.1;
 pub const HAMMER_COOLDOWN: f32 = 1.20;
 pub const HAMMER_KNOCKBACK: f32 = 340.0;

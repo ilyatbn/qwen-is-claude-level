@@ -694,11 +694,43 @@ fn the_assist_window_credits_at_four_point_nine_and_not_at_five_point_one() {
 #[test]
 fn death_drops_every_stack_and_respawn_clears_the_inventory() {
     let mut p = PlayerState::new(0, Vec2::ZERO, 0);
+    // Four grenades against a `max_stack` of 3. §C24: a grenade is a **weapon**,
+    // so it occupies one slot ever — the stack tops out at 3 and the fourth is
+    // refused. This asserted `3` dropped stacks (two grenade slots plus the
+    // medkit) under the pre-§C24 rule, which is the rule §C24 removed.
     p.inventory.add(registry::GRENADE, 4);
-    p.inventory.add(registry::MEDKIT, 1);
+    // The control, in the same fixture: a **consumable** still spills into a
+    // second slot, so "one stack per item" is not what is being asserted above.
+    // Without it, `dropped.len()` falling to 2 would also be satisfied by a
+    // build that had capped every item at one slot.
+    let medkit_stack = registry::max_stack(registry::MEDKIT);
+    p.inventory.add(registry::MEDKIT, medkit_stack + 1);
     p.flashlight_on = true;
+
+    assert_eq!(
+        p.inventory.count_of(registry::GRENADE),
+        u32::from(registry::max_stack(registry::GRENADE)),
+        "the held weapon did not top up to max_stack"
+    );
+
     let dropped = p.die(DeathCause::Weather, 0.0);
-    assert_eq!(dropped.len(), 3, "two grenade stacks and a medkit");
+    assert_eq!(
+        dropped
+            .iter()
+            .filter(|s| s.item == registry::GRENADE)
+            .count(),
+        1,
+        "death dropped more than one stack of a weapon (§C24)"
+    );
+    assert_eq!(
+        dropped
+            .iter()
+            .filter(|s| s.item == registry::MEDKIT)
+            .count(),
+        2,
+        "the consumable stopped spilling, so the weapon assertion above proves nothing"
+    );
+    assert_eq!(dropped.len(), 3, "one grenade stack and two medkit stacks");
     assert!(p.inventory.is_empty());
     assert!(!p.flashlight_on, "the light dies with the item");
 }

@@ -149,6 +149,9 @@ export interface Constants {
   SIM_HZ: number
   AIM_RADIUS: number
   JETPACK_MAX_FUEL: number
+  JETPACK_DRAIN: number
+  JETPACK_REFILL: number
+  JETPACK_REFILL_DELAY: number
   MINIMAP_W: number
   MINIMAP_H: number
   MINIMAP_ALPHA: number
@@ -181,6 +184,9 @@ export interface Constants {
   FLASHLIGHT_AMBIENT_MULT: number
   BASE_HEALTH: number
   RESPAWN_DELAY: number
+  PICKUP_RADIUS: number
+  FIRE_MOVE_MAX_SPEED: number
+  JETPACK_MAX_SPEED: number
   LAVA_BURN_RADIUS: number
   TOXIC_PUDDLE_RADIUS: number
   HEALTH_CAP: number

@@ -1,0 +1,248 @@
+#!/usr/bin/env node
+/**
+ * T13.06.9 / §C26 — the jetpack number is on screen, and it agrees with the sim.
+ *
+ *   node scripts/checks/hud-bars.mjs
+ *   node scripts/e2e.mjs hud-bars
+ *
+ * ## What was measured first
+ *
+ * The symptom reported was "the jetpack refills weirdly", which is an
+ * observation, not a diagnosis. The curve was measured before anything changed —
+ * burn to empty, then sample fuel every tick for twelve seconds:
+ *
+ * ```
+ * burn      5.0 -> 0.0 in exactly 300 ticks = 5.0000 s   (JETPACK_DRAIN 1.0/s)
+ * refill    first rise at tick 31 = 0.5167 s             (JETPACK_REFILL_DELAY 0.5 s)
+ *           slope 0.5000 /s                              (JETPACK_REFILL 0.5/s)
+ *           full at tick 630 = 10.5000 s = 0.5 + 10.0
+ * grounded  identical to airborne — no landing gate
+ * ```
+ *
+ * The simulation agrees with the constants. What is odd is the shape — recovery
+ * at half the drain rate, behind a flat half-second — and a bar cannot show the
+ * difference between waiting and climbing slowly. Hence the number.
+ *
+ * ## What this asserts
+ *
+ * Both ends (§A39): the digits **on screen** against the fuel in the snapshot.
+ * One number alone passes for a readout wired to nothing, which is the shape
+ * that has caught this project twelve times.
+ *
+ * ## Scope
+ *
+ * §C8's bottom-left cluster — health, energy and jetpack **bars** — is
+ * T14.02's, and it has not been built. This check is named `hud-bars` because
+ * both tasks' Done-when names it; T14.02 extends it with the bars and their
+ * pixels. See the report for the ordering defect.
+ */
+import { startStack, enterBattle, tally, sleep } from './harness.mjs'
+
+const PORT = 3119
+const { fail, ok, failures } = tally('hud-bars')
+
+// No bots: nothing here needs an opponent, and a bot landing a hit would move
+// the health number this check also reads.
+const stack = await startStack({
+  port: PORT,
+  label: 'hud-bars',
+  env: { ROUND_SECONDS: '180', BOT_COUNT: '0' },
+})
+const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
+await enterBattle(page, { waitPlaying: true, label: 'hud-bars' })
+
+// Pinned to the simulation's own constants (§A19): a fixture carrying its own
+// 5.0 and 0.5 stays green against an implementation that has drifted.
+const C = await page.evaluate(() => {
+  const c = window.__game.constants()
+  return {
+    max: c.JETPACK_MAX_FUEL,
+    drain: c.JETPACK_DRAIN,
+    refill: c.JETPACK_REFILL,
+    delay: c.JETPACK_REFILL_DELAY,
+  }
+})
+console.log(
+  `  constants: max ${C.max}, drain ${C.drain}/s, refill ${C.refill}/s after ${C.delay}s`,
+)
+// Every threshold below is built from these. An `undefined` here turns each of
+// them into a comparison against NaN, which is `false` — so the assertions do
+// not fail, they become **incapable** of failing (§B15). That is not
+// hypothetical: this check first ran green while printing "refill undefined/s",
+// because `wasm-build.mjs` had been writing the package to the wrong directory
+// and every constant added since was missing from the browser.
+for (const [k, v] of Object.entries(C)) {
+  if (!Number.isFinite(v)) {
+    fail(`constant ${k} is ${v} — every threshold here would compare against NaN and pass`)
+  }
+}
+
+const jet = async () => (await dbg()).jetpack
+
+// --- it is on screen at all -----------------------------------------------
+const visible = await page.evaluate(() => {
+  const el = document.querySelector('#jetpack-readout')
+  if (!el) return null
+  const r = el.getBoundingClientRect()
+  const st = getComputedStyle(el)
+  return {
+    w: r.width,
+    h: r.height,
+    display: st.display,
+    visibility: st.visibility,
+    opacity: Number(st.opacity),
+  }
+})
+if (!visible) {
+  fail('there is no #jetpack-readout in the DOM — the number was never added')
+} else if (
+  !(visible.w > 0 && visible.h > 0) ||
+  visible.display === 'none' ||
+  visible.visibility === 'hidden' ||
+  visible.opacity <= 0.1
+) {
+  // A hidden element is not a HUD (§C2). `round-end` shipped every assertion
+  // green against a results screen with no CSS at all.
+  fail(`the readout is in the DOM but not on screen: ${JSON.stringify(visible)}`)
+} else {
+  ok(`the readout is laid out and visible (${visible.w.toFixed(0)}x${visible.h.toFixed(0)} px)`)
+}
+
+// --- both ends: the digits against the snapshot ---------------------------
+{
+  const j = await jet()
+  if (!Number.isFinite(j?.shown)) {
+    fail(`the readout shows no parsable number: ${JSON.stringify(j?.text)}`)
+  } else if (Math.abs(j.shown - j.fuel) > 0.05) {
+    fail(
+      `the screen says ${j.shown} and the snapshot says ${j.fuel.toFixed(3)} — the readout ` +
+        'is not showing the simulation',
+    )
+  } else {
+    ok(`screen ${j.shown} agrees with the snapshot ${j.fuel.toFixed(2)}`)
+  }
+  // The third reference, and the one that matters: **the constant**.
+  //
+  // "Both ends agree" is not enough when both ends come from the same source. It
+  // did agree, at 0.1 on a full tank, because the value was dequantised twice —
+  // once in `codec.ts` and again in `GameScene` — so the screen and the field it
+  // was read from were equally wrong. An untouched jetpack at the start of a
+  // round holds JETPACK_MAX_FUEL, and nothing but the constant can say so.
+  if (Math.abs(j.fuel - C.max) > 0.05) {
+    fail(
+      `an untouched jetpack reads ${j.fuel.toFixed(3)} against a JETPACK_MAX_FUEL of ` +
+        `${C.max} — the fuel reaching the client is not the fuel the sim has`,
+    )
+  } else {
+    ok(`a full tank reads ${j.fuel.toFixed(2)} = JETPACK_MAX_FUEL (${C.max})`)
+  }
+  // One decimal, which is the whole point of §C26.
+  if (!/^JET \d+\.\d /.test(String(j?.text ?? ''))) {
+    fail(`the readout is not showing one decimal: ${JSON.stringify(j?.text)}`)
+  } else {
+    ok(`one decimal: "${j.text}"`)
+  }
+}
+
+// --- the control: it holds still when nothing is happening -----------------
+//
+// Before draining. Without this, "the number changed while draining" also
+// passes for a number that changes constantly for any reason at all.
+{
+  const before = await jet()
+  await sleep(1500)
+  const after = await jet()
+  if (before.shown !== after.shown) {
+    fail(
+      `the readout moved ${before.shown} -> ${after.shown} with the jetpack untouched ` +
+        '— it is not tracking fuel',
+    )
+  } else {
+    ok(`control: holds at ${after.shown} while standing still`)
+  }
+}
+
+// --- rendered: the number changes while draining --------------------------
+//
+// Held down, and sampled while held. The jetpack engages a fixed delay after a
+// grounded jump consumes the first press (JETPACK_HOLD_DELAY), so this holds
+// Space rather than tapping it.
+await page.keyboard.down('Space')
+const drain = []
+for (let i = 0; i < 12; i++) {
+  await sleep(250)
+  drain.push(await jet())
+}
+await page.keyboard.up('Space')
+await shot('hud-bars-draining')
+
+const fell = drain.some((d, i) => i > 0 && d.shown < drain[i - 1].shown)
+if (!fell) {
+  fail(
+    `the rendered number never fell while thrusting: ${drain.map((d) => d.shown).join(' ')} ` +
+      '— nothing carries the fuel to the screen',
+  )
+} else {
+  ok(`the rendered number fell while thrusting: ${drain.map((d) => d.shown).join(' -> ')}`)
+}
+
+// It must agree with the snapshot throughout, not only at rest — a readout that
+// latches its first value would pass the assertion above if the tank refilled.
+const disagreed = drain.filter((d) => Math.abs(d.shown - d.fuel) > 0.11)
+if (disagreed.length) {
+  fail(
+    `${disagreed.length}/${drain.length} samples disagreed with the snapshot, worst ` +
+      `${Math.max(...disagreed.map((d) => Math.abs(d.shown - d.fuel))).toFixed(2)}`,
+  )
+} else {
+  ok(`all ${drain.length} draining samples agree with the snapshot`)
+}
+
+// The drain rate, against the constant rather than a guess. Measured across the
+// samples where the tank was actually falling, so the hold delay at the start
+// does not drag the average down.
+const falling = drain.filter((d, i) => i > 0 && d.shown < drain[i - 1].shown)
+if (falling.length >= 2) {
+  const lowest = Math.min(...drain.map((d) => d.fuel))
+  if (lowest >= C.max - 0.05) {
+    fail(`the tank never drained: lowest reading ${lowest.toFixed(2)} of ${C.max}`)
+  } else {
+    ok(`drained to ${lowest.toFixed(2)} of ${C.max}`)
+  }
+}
+
+// --- the refill, which is what was reported --------------------------------
+//
+// The measured shape: a flat REFILL_DELAY, then a climb at REFILL/s. Sampled
+// long enough to see both, and asserted as "it climbed" rather than to a
+// tolerance on the slope — the browser samples on wall clock and the server on
+// ticks, and pinning a rate across that boundary is a coin flip (§A28).
+{
+  const start = await jet()
+  await sleep(3000)
+  const end = await jet()
+  if (!(end.shown > start.shown)) {
+    fail(`the tank did not refill after releasing: ${start.shown} -> ${end.shown}`)
+  } else {
+    const climbed = end.shown - start.shown
+    ok(`refilled ${start.shown} -> ${end.shown} (+${climbed.toFixed(1)} in 3 s)`)
+    // Bounded above by the constant: refilling faster than JETPACK_REFILL would
+    // mean the readout is showing the predictor's guess rather than the server.
+    if (climbed > C.refill * 3 + 0.35) {
+      fail(
+        `refilled ${climbed.toFixed(2)} in 3 s against a JETPACK_REFILL of ${C.refill}/s ` +
+          '— that is faster than the simulation allows',
+      )
+    } else {
+      ok(`the climb is within JETPACK_REFILL (${C.refill}/s)`)
+    }
+  }
+}
+await shot('hud-bars-refilled')
+
+if (pageErrors.length) fail(`page errors: ${pageErrors.slice(0, 3).join(' | ')}`)
+else ok('no page errors')
+
+await stack.close()
+console.log(failures.length ? `\nhud-bars: ${failures.length} FAILED` : '\nhud-bars: ok')
+process.exit(failures.length ? 1 : 0)

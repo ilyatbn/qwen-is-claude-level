@@ -137,13 +137,26 @@ if (d.phase !== 'lobby') {
 if (!(d.mapW > 0)) fail('the lobby has no map; there is nothing to look at while waiting')
 else ok(`the map is there behind it (${d.mapW}x${d.mapH})`)
 
-// Nothing is simulating. Sampled twice, because "tick 0" on the first frame
+// Nothing is **simulating**. Sampled twice, because "0 on the first frame"
 // also holds for a room that is about to start.
-const t0 = (await dbg()).lastServerTick ?? 0
+//
+// `serverRoundTime`, not `lastServerTick` and not `roundTime`. §C18 says a lobby does not *simulate*;
+// `tick` is a clock and it advances in a lobby too (`World::tick_idle`) — it
+// has to, because every replay loop is `while tick < until` and a frozen clock
+// spun a core for thirty-five minutes. `round_time` only ever advances inside
+// `step()`, so it is the stricter question and the one actually being asked.
+const r0 = (await dbg()).serverRoundTime ?? -1
+const c0 = (await dbg()).lastServerTick ?? 0
 await sleep(2500)
-const t1 = (await dbg()).lastServerTick ?? 0
-if (t1 > t0) fail(`the lobby is simulating: server tick ${t0} -> ${t1}`)
-else ok(`nothing ticking while waiting (tick ${t0} -> ${t1})`)
+const r1 = (await dbg()).serverRoundTime ?? -1
+const c1 = (await dbg()).lastServerTick ?? 0
+if (r1 > r0) fail(`the lobby is simulating: server round time ${r0} -> ${r1}`)
+else ok(`nothing simulating while waiting (server round time ${r0} -> ${r1})`)
+// The control for that absence: the clock itself must still be running, or
+// "round time did not move" is also satisfied by a server that has stopped
+// dead — which is the regression `tick_idle` exists to prevent.
+if (!(c1 > c0)) fail(`the lobby's clock is frozen at ${c0} — a replay of this would spin`)
+else ok(`the clock still runs (tick ${c0} -> ${c1})`)
 
 // One human alone must not start a round — past the countdown, twice over.
 await sleep(7000)

@@ -28,9 +28,7 @@ use socketioxide::socket::Sid;
 use socketioxide::SocketIo;
 use tokio::sync::oneshot;
 
-use game_core::constants::{
-    MapScale, JOIN_CODE_ALPHABET, JOIN_CODE_LEN, MAX_ROOMS, ROOM_EMPTY_TTL,
-};
+use game_core::constants::{MapScale, JOIN_CODE_ALPHABET, JOIN_CODE_LEN, MAX_ROOMS};
 
 use crate::config::Config;
 use crate::room::RoomHandle;
@@ -335,7 +333,8 @@ impl RoomRegistry {
                 e.empty_since = Some(Instant::now());
                 tracing::info!(
                     target: "game::round", room,
-                    ttl_s = ROOM_EMPTY_TTL, "last human left; room is on the clock"
+                    ttl_s = self.base_config.room_empty_ttl,
+                    "last human left; room is on the clock"
                 );
             }
         }
@@ -370,8 +369,12 @@ impl RoomRegistry {
     }
 
     /// Drop rooms whose TTL has expired. Returns what was reaped.
+    ///
+    /// The TTL comes from the config (defaulting to `ROOM_EMPTY_TTL`) so the
+    /// end-to-end test that proves this is *called* can watch a room actually
+    /// disappear instead of sleeping for thirty seconds.
     pub fn reap(&mut self, now: Instant) -> Vec<RoomId> {
-        let ttl = Duration::from_secs_f32(ROOM_EMPTY_TTL);
+        let ttl = Duration::from_secs_f32(self.base_config.room_empty_ttl);
         // Collected from `order`, not from the map, so the reap sequence is
         // deterministic (§A11).
         let due: Vec<RoomId> = self

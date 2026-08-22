@@ -798,16 +798,6 @@ async fn seat(
                 w.phase_time_left(),
                 w.seed,
                 w.map.meta.scale,
-                w.players
-                    .iter()
-                    .map(|p| {
-                        serde_json::json!({
-                            "id": p.id,
-                            "skin_id": p.skin_id,
-                            "score": p.score,
-                        })
-                    })
-                    .collect::<Vec<_>>(),
                 encode_map_init_at(&w.map, w.carve_seq()),
             )
         })
@@ -815,7 +805,30 @@ async fn seat(
     else {
         return;
     };
-    let (tick, round_time, phase, time_left, seed, scale, players, map_bytes) = w;
+    let (tick, round_time, phase, time_left, seed, scale, map_bytes) = w;
+
+    // The roster **with names**, which the world cannot supply: `add_player`
+    // takes a name and drops it. Without this the joining client is told who is
+    // in the room and not what any of them are called — including itself — so
+    // its own scoreboard row read `p0`, and anyone joining a round in progress
+    // saw every player already in it as `p1`, `p2`, `p3` for the rest of it.
+    // `player_join` is broadcast to everyone *except* the joiner, so it can
+    // never be the fix.
+    let players: Vec<serde_json::Value> = room
+        .roster()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(pid, name, skin_id, tombstone_skin_id, score)| {
+            serde_json::json!({
+                "id": pid,
+                "name": name,
+                "skin_id": skin_id,
+                "tombstone_skin_id": tombstone_skin_id,
+                "score": score,
+            })
+        })
+        .collect();
 
     emit(
         &socket,

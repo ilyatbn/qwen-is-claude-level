@@ -25,116 +25,53 @@
  *
  * So this kills the player for real, with their own rocket, and asserts on what
  * the player can see.
+ *
+ * The stack and the route into a battle are `harness.mjs` (§C18): this check
+ * spent a session reporting "health 40 -> 40, the overlay never appeared" when
+ * what had happened was that the round never started, because a room is a lobby
+ * until someone asks.
  */
-import { spawn } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { matchVitePort } from '../vite-url.mjs'
-import { killGroup } from '../proc-group.mjs'
-
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const shots = join(root, 'shots')
-mkdirSync(shots, { recursive: true })
-
-const require = createRequire(join(root, 'client/package.json'))
-const { chromium } = require('playwright-core')
+import {
+  startStack,
+  enterBattle,
+  standStill,
+  selectWeapon,
+  tally,
+  sleep,
+  shotsDir,
+} from './harness.mjs'
+import { join } from 'node:path'
 
 const PORT = 3117
-const libDir = join(process.env.HOME ?? '', '.cache/pwlibs/root/usr/lib/x86_64-linux-gnu')
-const chromePath = join(
-  process.env.HOME ?? '',
-  '.cache/ms-playwright/chromium-1234/chrome-linux64/chrome',
-)
-
-const kids = []
-process.on('exit', () => {
-  for (const k of kids) {
-    try {
-      killGroup(k)
-    } catch {
-      /* already gone */
-    }
-  }
-})
-
-const failures = []
-const fail = (m) => {
-  console.error(`  FAIL: ${m}`)
-  failures.push(m)
-}
-const ok = (m) => console.log(`  ok   ${m}`)
+const { fail, ok, failures } = tally('death')
 
 // No bots: this check is about one player's death, and a bot landing the killing
 // blow would change the attribution the cause line is asserted against.
-const server = spawn('cargo', ['run', '--quiet', '--release', '-p', 'game-server'], {
-  detached: true,
-  cwd: root,
+const stack = await startStack({
+  port: PORT,
+  label: 'death',
   env: {
-    ...process.env,
-    BIND_ADDR: `127.0.0.1:${PORT}`,
-    MAP_SCALE: 'small',
-    GAME_LOG: 'warn',
     ROUND_SECONDS: '120',
     BOT_COUNT: '0',
     DEV_LOADOUT: '1',
-    // 40 health, so two clean rockets kill. The death is still entirely real —
-    // fired, resolved by the server, attributed to the player. Only the starting
-    // health is arranged, exactly as `world_step`'s unit test arranges 20 before
-    // firing once. Without it this check is a coin flip: each blast deepens the
-    // crater so the next detonates further below you, and eight rockets against
-    // 100 health killed on some runs and left 22 on others.
-    DEV_START_HEALTH: '40',
+    // 20 health, so ONE clean rocket kills — exactly as `world_step`'s unit test
+    // arranges 20 before firing once. The death is still entirely real: fired,
+    // resolved by the server, attributed to the player. Only the starting health
+    // is arranged. Without it this check is a coin flip, because each blast
+    // deepens the crater so the next detonates further below you — eight rockets
+    // against 100 health killed on some runs and left 22 on others.
+    //
+    // It was 40 (two rockets) until §C20 made standing still a precondition of
+    // firing. Stopping between shots pushed the kill past 50 s, and the weather
+    // schedule starts at EFFECT_INTERVAL_MIN (30 s) with no way to turn it off —
+    // so the round killed the player before the rockets did and this check
+    // reported `cause "Killed by weather"`, which reads as an attribution bug
+    // rather than a slow fixture. One rocket lands inside the first 30 s.
+    DEV_START_HEALTH: '20',
   },
-  stdio: ['ignore', 'inherit', 'inherit'],
 })
-kids.push(server)
-
-let up = false
-for (let i = 0; i < 900 && !up; i++) {
-  try {
-    up = (await fetch(`http://127.0.0.1:${PORT}/healthz`)).ok
-  } catch {
-    /* not listening yet */
-  }
-  if (!up) await new Promise((r) => setTimeout(r, 250))
-}
-if (!up) {
-  console.error('server never became healthy')
-  process.exit(1)
-}
-
-const vite = spawn('npx', ['vite', '--strictPort=false'], {
-  detached: true,
-  cwd: join(root, 'client'),
-  env: { ...process.env, VITE_SERVER_PORT: String(PORT) },
-})
-kids.push(vite)
-const viteUrl = await new Promise((res, rej) => {
-  const on = (b) => {
-    const port = matchVitePort(b)
-    if (port) res(`http://localhost:${port}`)
-  }
-  vite.stdout.on('data', on)
-  vite.stderr.on('data', on)
-  setTimeout(() => rej(new Error('vite never started')), 120_000)
-})
-
-const browser = await chromium.launch({
-  executablePath: chromePath,
-  env: { ...process.env, LD_LIBRARY_PATH: libDir },
-  args: ['--no-sandbox', '--use-gl=swiftshader', '--enable-unsafe-swiftshader'],
-})
-const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } })
-const page = await ctx.newPage()
-const pageErrors = []
-page.on('pageerror', (e) => pageErrors.push(String(e)))
-await page.goto(`${viteUrl}/?e2e=1&game=1&name=ana`)
-await page.waitForFunction('window.__game && window.__game.debug().ready === true', null, {
-  timeout: 90_000,
-})
-const dbg = () => page.evaluate('window.__game.debug()')
+const { page, dbg, pageErrors } = await stack.openClient({ name: 'ana' })
+await enterBattle(page, { waitPlaying: true, label: 'death' })
 
 /** Poll until `pred(debug())` or the deadline. */
 async function until(pred, deadlineMs, what) {
@@ -146,7 +83,7 @@ async function until(pred, deadlineMs, what) {
       fail(`timed out waiting for ${what}`)
       return null
     }
-    await new Promise((r) => setTimeout(r, 200))
+    await sleep(200)
   }
 }
 
@@ -155,7 +92,6 @@ async function until(pred, deadlineMs, what) {
 // Before killing anyone: the overlay must be **down** while alive. Without this,
 // "the overlay is up after death" also passes for an overlay that is up always
 // (§A26 — a test asserting a presence needs the absence, and vice versa).
-await until((d) => d.phase === 'playing', 60_000, 'phase playing')
 const alive = await dbg()
 if (alive.death.visible) fail('the overlay is up while the player is alive')
 else ok('control: overlay is down while alive')
@@ -171,8 +107,7 @@ else ok('control: overlay is down while alive')
 // work) and a rocket fired airborne flies off instead of landing; and each blast
 // deepens the crater so the next detonates further below you. Stepping sideways
 // onto fresh ground before each shot restores the damage.
-await page.keyboard.press('Digit1') // the rocket stack
-await new Promise((r) => setTimeout(r, 300))
+await selectWeapon(page, 'bazooka')
 const startHealth = (await dbg()).health
 if (startHealth > 60) fail(`DEV_START_HEALTH did not apply: ${startHealth}`)
 else ok(`starting on ${startHealth} health`)
@@ -190,22 +125,34 @@ const killDeadline = Date.now() + 90_000
 for (let i = 0; Date.now() < killDeadline; i++) {
   const d = await dbg()
   if (!d.player || d.health <= 0 || d.death.visible) break
-  // When the first stack empties, selection moves to the smg — and hitscan
-  // excludes its owner (`docs/31` §4), so it cannot self-damage. Take the
-  // second rocket stack.
+  // When the stack empties, selection moves to the smg — and hitscan excludes
+  // its owner (`docs/31` §4), so it cannot self-damage. Re-select the rockets
+  // by name rather than by a hotkey: there used to be a *second* bazooka stack
+  // at Digit3, and §C24 merged it into the first, so that press now selects the
+  // mine. It went unnoticed because one rocket at 20 health ends the loop
+  // before this line is reached.
   if (!switched && i >= 3) {
     switched = true
-    await page.keyboard.press('Digit3')
-    await new Promise((r) => setTimeout(r, 300))
+    await selectWeapon(page, 'bazooka')
   }
-  // Alternate direction so a wall does not trap the walk on one side.
-  const dir = i % 2 === 0 ? 'd' : 'a'
-  await page.keyboard.down(dir)
-  await new Promise((r) => setTimeout(r, 700))
-  await page.keyboard.up(dir)
+  // Alternate direction so a wall does not trap the walk on one side. Skipped
+  // for the first shot: the crater that makes walking necessary does not exist
+  // yet, and the clock matters now (see DEV_START_HEALTH above).
+  if (i > 0) {
+    const dir = i % 2 === 0 ? 'd' : 'a'
+    await page.keyboard.down(dir)
+    await sleep(700)
+    await page.keyboard.up(dir)
+  }
   for (let w = 0; w < 20 && !(await dbg()).player?.grounded; w++) {
-    await new Promise((r) => setTimeout(r, 200))
+    await sleep(200)
   }
+  // §C20: standing still is now a precondition of firing, so stop before every
+  // shot exactly as a player must. Without it the walk above refuses the rocket
+  // it was setting up, the kill takes 100 s instead of 30, and the weather gets
+  // there first — this check reported the cause line as "Killed by weather" and
+  // read as an attribution bug.
+  await standStill(page)
   // The camera follows the player, so a point below mid-screen is below the body
   // in world space whatever the camera has done.
   await page.mouse.move(640, 700)
@@ -220,7 +167,7 @@ for (let i = 0; Date.now() < killDeadline; i++) {
   for (let w = 0; w < 24; w++) {
     const now = await dbg()
     if ((now.health ?? 0) < hpBefore || now.death?.visible) break
-    await new Promise((r) => setTimeout(r, 100))
+    await sleep(100)
   }
 }
 
@@ -241,7 +188,7 @@ if (dead) {
   if (/killed yourself/i.test(dead.death.cause)) ok(`cause: "${dead.death.cause}"`)
   else fail(`cause reads "${dead.death.cause}", expected the self-kill wording`)
 
-  await page.screenshot({ path: join(shots, 'death-overlay.png') })
+  await page.screenshot({ path: join(shotsDir, 'death-overlay.png') })
 
   // §B8 — a grave where you fell, and one that is actually drawn.
   //
@@ -259,7 +206,7 @@ if (dead) {
 
   // It is an overlay, not a pause: the world behind it must still be running.
   const t0 = (await dbg()).roundTime
-  await new Promise((r) => setTimeout(r, 1200))
+  await sleep(1200)
   const t1 = (await dbg()).roundTime
   if (t1 > t0 + 0.5) ok(`the round kept running behind it (${t0.toFixed(1)}s → ${t1.toFixed(1)}s)`)
   else fail(`round time did not advance behind the overlay: ${t0} → ${t1}`)
@@ -285,12 +232,12 @@ if (dead) {
 } else {
   const d = await dbg()
   console.error(`  health ${startHealth} → ${d.health}, alive-flag dead=${!d.death.visible}`)
-  await page.screenshot({ path: join(shots, 'FAILED-death.png') })
+  await page.screenshot({ path: join(shotsDir, 'FAILED-death.png') })
 }
 
 if (pageErrors.length) fail(`page errors: ${pageErrors.join(' | ')}`)
 else ok('no page errors')
 
-await browser.close()
+await stack.close()
 console.log(failures.length ? `\ndeath: ${failures.length} FAILED` : '\ndeath: ok')
 process.exit(failures.length ? 1 : 0)

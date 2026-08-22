@@ -184,6 +184,55 @@ pub fn build_stack(state: AppState) -> Stack {
         });
     }
 
+    // --- the room reaper ----------------------------------------------------
+    //
+    // `RoomRegistry::reap()` has existed since T10.01 with **every one of its
+    // callers in its own `#[cfg(test)]` module** (§A39, sixteenth instance). A
+    // live server with zero players held `rooms: 2` steady for forty seconds:
+    // both rooms logged "last human left; room is on the clock" and then nothing
+    // ever removed them. Rooms accumulate for the life of the process, each
+    // holding a generated map, and at `MAX_ROOMS` the registry refuses to make
+    // another — the symptom a player sees is "create game does nothing".
+    //
+    // It lives here because a room cannot reap itself: the thing being dropped
+    // is the task that would have to do the dropping. `reap()` calls
+    // `drop_room`, which sends each room's own shutdown, so the tick stops
+    // rather than outliving its registry entry.
+    //
+    // The task holds a **Weak** reference: when the last owner of the registry
+    // goes (a test's `Stack` being dropped), this loop ends with it instead of
+    // sweeping a registry nobody can reach for the life of the runtime.
+    {
+        let registry = std::sync::Arc::downgrade(&registry);
+        let period = std::time::Duration::from_secs_f32(game_core::constants::ROOM_REAP_INTERVAL);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(period);
+            // The first tick fires immediately; skipping it is not important,
+            // but missed ticks must not burst — a stalled runtime would
+            // otherwise sweep several times in a row on the way back.
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                let Some(reg) = registry.upgrade() else { break };
+                let reaped = {
+                    let mut r = match reg.lock() {
+                        Ok(r) => r,
+                        Err(p) => p.into_inner(),
+                    };
+                    r.reap(std::time::Instant::now())
+                };
+                if !reaped.is_empty() {
+                    tracing::info!(
+                        target: "game::round",
+                        rooms = ?reaped,
+                        "reaped {} empty room(s)",
+                        reaped.len()
+                    );
+                }
+            }
+        });
+    }
+
     crate::session::register(&io, registry.clone(), config.clone());
     Stack {
         router,

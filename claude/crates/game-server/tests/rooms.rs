@@ -493,3 +493,200 @@ async fn leaving_frees_the_room_for_reaping() {
 
     h.stack.shutdown_all(Duration::from_secs(2)).await;
 }
+
+// ---------------------------------------------------------------------------
+// T13.06.11 — the reaper has a caller
+// ---------------------------------------------------------------------------
+
+/// Build a server on a custom config, without starting a round in it.
+///
+/// `spawn_server` presses "Start with bots" and waits for a tick, which is the
+/// wrong shape here: these tests are about a room's *life*, not its round, and
+/// a `Lobby` room is the state the reaper actually meets in production.
+async fn spawn_server_with(config: Config) -> Harness {
+    let state = AppState::new(config);
+    let stack = app::build_stack(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    let router = stack.router.clone();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    Harness { addr, stack }
+}
+
+async fn healthz_rooms(addr: SocketAddr) -> u64 {
+    let body = reqwest_get(addr, "/healthz").await;
+    serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("rooms").and_then(|r| r.as_u64()))
+        .unwrap_or(u64::MAX)
+}
+
+/// The test that would have caught it.
+///
+/// `RoomRegistry::reap()` was correct, tested five ways, and **called by nothing
+/// outside its own `#[cfg(test)]` module** — so a live server with zero players
+/// held `rooms: 2` steady for forty seconds, and a long-running one eventually
+/// hits `MAX_ROOMS` and cannot start a game at all. §A39, sixteenth instance.
+///
+/// So nothing here calls `reap`. A real client joins over a real socket and
+/// leaves, and the assertion is what `/healthz` says afterwards — **a test that
+/// calls the function is not a caller**, which is exactly how this shipped.
+///
+/// Two further things it insists on, both of which a weaker version would miss:
+///
+///  - `bot_count = 3`, so the room the reaper meets is full of bots. Bots do not
+///    keep a room alive (§B1), and with `bot_count = 0` this passes against a
+///    build that only reaps rooms nobody ever sat in.
+///  - the room's **task** is gone, not just its registry entry. Dropping the
+///    handle and leaving the 60 Hz task running is the same leak one layer down,
+///    and `/healthz` cannot see it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_room_whose_last_human_left_is_reaped_by_the_running_server() {
+    let mut cfg = test_config();
+    // Bots, because "bots do not keep a room alive" is half of §B1 and the
+    // other half is untestable without them.
+    cfg.bot_count = 3;
+    // The TTL is the deadline the sweep watches, not the thing under test. At
+    // its 30 s default this test would sleep for half a minute to learn the
+    // same fact; `docs/41` §5 is why it is configurable at all.
+    cfg.room_empty_ttl = 1.0;
+    let h = spawn_server_with(cfg).await;
+    let addr = h.addr;
+
+    tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        a.emit("join", serde_json::json!({ "name": "ana" }))
+            .expect("emit");
+        wait_for(&ia, "welcome", 1, "ana");
+        a.emit("start_with_bots", serde_json::json!({}))
+            .expect("emit");
+        std::thread::sleep(Duration::from_millis(600));
+        // An explicit disconnect, not a drop: `drop` does not close the socket
+        // promptly, so the server never sees the leave and this test would
+        // report "the room was never reaped" for the wrong reason.
+        let _ = a.disconnect();
+    })
+    .await
+    .expect("client thread");
+
+    // The control, and the handle, both taken while the room is still there.
+    // Without the control, "rooms went to 0" also passes for a server that
+    // never made one.
+    let (room, handle) = {
+        let r = h.stack.registry.lock().expect("registry");
+        let id = *r.ids().first().expect("the join created a room");
+        (id, r.get(id).expect("room").handle.clone())
+    };
+    assert_eq!(healthz_rooms(addr).await, 1, "control: the room is there");
+    assert!(
+        handle.inspect(|w| w.tick).await.is_some(),
+        "control: the room task answers before the reap"
+    );
+
+    // The TTL plus a generous number of sweep intervals. Waited on the effect
+    // rather than slept: under a loaded gate a fixed sleep measures the box
+    // (§A28).
+    let mut rooms = u64::MAX;
+    for _ in 0..200 {
+        rooms = healthz_rooms(addr).await;
+        if rooms == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        rooms, 0,
+        "room {room} outlived its TTL: nothing in the running server calls reap()"
+    );
+
+    // And the task is gone with it. `inspect` returns `None` once the room's
+    // command channel is closed, which happens when the task ends.
+    //
+    // Polled, not asserted on the next line: `publish_count()` updates the gauge
+    // synchronously inside `drop_room`, before the room task has been scheduled
+    // to notice its shutdown. Asserting immediately makes this a race that
+    // passes on an idle box and fails under `cargo test --workspace` — which is
+    // T13.06.10's finding, and there is no reason to add a sixteenth instance.
+    let mut stopped = false;
+    for _ in 0..100 {
+        if handle.inspect(|w| w.tick).await.is_none() {
+            stopped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        stopped,
+        "the registry forgot room {room} but its 60 Hz task is still running"
+    );
+
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// The other half: a room somebody is **in** is never reaped.
+///
+/// Without this, "empty rooms disappear" is also satisfied by a sweep that drops
+/// every room every two seconds, which would end a game in progress.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_room_with_a_human_in_it_is_never_reaped() {
+    let mut cfg = test_config();
+    cfg.bot_count = 3;
+    cfg.room_empty_ttl = 0.5;
+    let h = spawn_server_with(cfg).await;
+    let addr = h.addr;
+
+    // The client stays connected for the whole window. It runs on a blocking
+    // thread and reports back only when the watch below has finished.
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let client = tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        a.emit("join", serde_json::json!({ "name": "ana" }))
+            .expect("emit");
+        wait_for(&ia, "welcome", 1, "ana");
+        let _ = done_rx.recv_timeout(Duration::from_secs(30));
+        let _ = a.disconnect();
+    });
+
+    // Wait for the join to land BEFORE watching. The first version started its
+    // minimum at the same instant it spawned the client, so it sampled the
+    // server during the socket.io handshake, recorded `rooms: 0` and reported
+    // that the sweep had dropped an occupied room. The room has to exist before
+    // "it was never reaped" means anything.
+    let mut seated = false;
+    for _ in 0..200 {
+        if healthz_rooms(addr).await >= 1 {
+            seated = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        seated,
+        "the client never joined, so nothing here is a control"
+    );
+
+    // Long enough for several TTLs and several sweeps: the point is that no
+    // number of sweeps removes an occupied room.
+    let watched = Duration::from_secs(4);
+    let started = std::time::Instant::now();
+    let mut lowest = u64::MAX;
+    while started.elapsed() < watched {
+        lowest = lowest.min(healthz_rooms(addr).await);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    let _ = done_tx.send(());
+    client.await.expect("client thread");
+
+    assert_eq!(
+        lowest, 1,
+        "the sweep dropped a room with a player in it (lowest room count seen: {lowest})"
+    );
+
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}

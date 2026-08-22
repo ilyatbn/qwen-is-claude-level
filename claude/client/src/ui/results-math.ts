@@ -36,13 +36,74 @@ export function shouldShowResults(phase: string): boolean {
 /**
  * Seconds left in the vote window, floored at 0.
  *
- * `time_left` comes from `round_state`, which is broadcast on every transition
- * and once a second while playing. Between those it is stale by up to a second,
- * so this is display only — nothing is decided by it here, and the server closes
- * the window on its own clock.
+ * Display only — nothing is decided by it here, and the server closes the window
+ * on its own clock.
  */
 export function voteSecondsLeft(timeLeft: number): number {
   return Math.max(0, Math.ceil(timeLeft))
+}
+
+/**
+ * The round time at which the current phase ends.
+ *
+ * §C25: the countdown was **static**. `round_state` is broadcast on every phase
+ * transition and then once a second *while `Playing`* — `round.rs`'s `Ended` and
+ * `Warmup` branches emit none at all. So a client received exactly one
+ * `round_state` saying `ended, ENDED_SECONDS`, wrote it into a field, and
+ * rendered that same number for the whole twenty-second window. The HUD's
+ * "Round over — 0:20" and "Warmup — 0:10" banners read the same field and were
+ * frozen for the same reason, which is why this is a deadline for **any** phase
+ * rather than one for the vote.
+ *
+ * The fix is T10.06's, which §B4 states as a rule: hold the **deadline** and
+ * recompute against the server's clock on every snapshot, rather than holding a
+ * remaining time. A local stopwatch drifts, and this one has a vote deadline
+ * attached to it.
+ *
+ * The deadline is computed in the server's own frame rather than the client's,
+ * so it carries no latency term. `round_state` and every snapshot both carry a
+ * `tick`, and during a round `tick` and `round_time` advance together at
+ * `SIM_DT`, so the round time at `stateTick` is the last snapshot's round time
+ * walked back by the tick difference. The result equals the server's
+ * `phase_started_at + ENDED_SECONDS` exactly.
+ *
+ * `serverTick <= 0` means no snapshot has landed yet — the `round_state` a
+ * client is sent as part of its own join arrives before the first one. There is
+ * nothing to correct against then, and the `welcome` that precedes it was built
+ * from the same instant, so the correction is skipped rather than applied
+ * against a zero.
+ *
+ * `stateTick < serverTick` means the server's clock went **backwards**, and
+ * there is exactly one way that happens: `Room::restart` assigns a whole new
+ * `World`, so `tick` and `round_time` both reset to 0 for the second and every
+ * later round. Correcting against the previous round's anchor gave
+ * `(1 - 15000) * SIM_DT = -250 s`, a deadline of 0.02, and therefore
+ * "Warmup — 0:00" for the entire warmup of every round after the first, plus a
+ * dead results countdown at the end of it. The anchor is stale, not merely
+ * imprecise, so it is discarded: a fresh world's round time is 0, which makes
+ * `timeLeft` the deadline outright.
+ */
+export function phaseDeadline(
+  serverRoundTime: number,
+  serverTick: number,
+  stateTick: number,
+  timeLeft: number,
+  simDt: number,
+): number {
+  // A restarted round: the anchor belongs to a world that no longer exists.
+  if (stateTick < serverTick) return timeLeft
+  const correction = serverTick > 0 ? (stateTick - serverTick) * simDt : 0
+  return serverRoundTime + correction + timeLeft
+}
+
+/**
+ * Seconds until `deadline`, on the server's clock. May be negative.
+ *
+ * Kept separate from `voteSecondsLeft` so the raw number can be asserted against
+ * the server's `time_left` without a rounding rule in the way.
+ */
+export function secondsUntil(deadline: number, roundTime: number): number {
+  return deadline - roundTime
 }
 
 export function resultsView(
