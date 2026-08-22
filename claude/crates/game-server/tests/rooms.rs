@@ -116,16 +116,129 @@ fn count(inbox: &Inbox, ev: &str) -> usize {
 /// client here owns its own runtime and every use of it must be on a blocking
 /// thread — dropping a runtime inside an async context panics.
 fn wait_for(inbox: &Inbox, ev: &str, n: usize, label: &str) {
-    for _ in 0..200 {
+    let budget = Duration::from_millis(BUDGET_MS);
+    let started = std::time::Instant::now();
+    loop {
         if count(inbox, ev) >= n {
+            // T13.06.10: report the MARGIN, not just success. A pass/fail rate
+            // samples a coin flip; the fraction of the budget actually consumed
+            // says how close to one the gate is. `WAIT_MARGIN=1` prints it.
+            if std::env::var("WAIT_MARGIN").is_ok() {
+                eprintln!(
+                    "WAIT_MARGIN {label}/{ev} {:.2}s of {:.0}s ({:.0}%)",
+                    started.elapsed().as_secs_f32(),
+                    budget.as_secs_f32(),
+                    100.0 * started.elapsed().as_secs_f32() / budget.as_secs_f32(),
+                );
+            }
             return;
+        }
+        // A wall-clock deadline, not a loop count. `for _ in 0..200 { sleep(50) }`
+        // counts ITERATIONS: under load each takes longer than 50 ms, so the real
+        // budget silently stretched — which is part of why this usually passed
+        // and why, when it did not, the number in the message was a fiction.
+        if started.elapsed() >= budget {
+            break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     panic!(
-        "{label}: waited 10 s for {n} `{ev}`, saw {}",
-        count(inbox, ev)
+        "{label}: waited {:.0} s for {n} `{ev}`, saw {} (inbox: {})",
+        budget.as_secs_f32(),
+        count(inbox, ev),
+        inbox_summary(inbox)
     );
+}
+
+/// The wall-clock budget every wait in this file gets.
+const BUDGET_MS: u64 = 10_000;
+
+/// Emit `ev` and **keep emitting** until `expect` comes back.
+///
+/// T13.06.10. Measured, over ten `cargo test -p game-server` runs: **1 in 10
+/// failed**, and the failure is always the same shape — `waited 30 s for 1
+/// `welcome`, saw 0 (inbox: empty)`. Not one event of any kind, on a socket
+/// whose `open` callback had already fired. Thirty seconds of silence is not a
+/// busy box; the emit was never delivered.
+///
+/// §A28 records the mechanism: `rust_socketio`'s `connect()` returns while the
+/// socket.io namespace CONNECT is still in flight, so an emit on the next line
+/// is dropped **with no error**. Waiting for `open` — which is what that session
+/// added — narrows the window without closing it.
+///
+/// So this is the task's third option, waiting on the effect with an adaptive
+/// bound, and not its first. Raising the budget would be treating the symptom
+/// twice over: it is already five times the observed need (the worst real wait
+/// across a full workspace run used 24 % of it), and no budget fixes a message
+/// that was never sent.
+///
+/// Re-emitting is safe because the server defines it so: "a second join on one
+/// socket is ignored, not a second player: a client that retries must not
+/// consume two seats" (`session.rs`). **Only for emits with that guarantee** —
+/// `create_room` has none, and retrying it would create a second room.
+fn emit_until(
+    client: &rust_socketio::client::Client,
+    inbox: &Inbox,
+    ev: &str,
+    payload: serde_json::Value,
+    expect: &str,
+    label: &str,
+) {
+    let budget = Duration::from_millis(BUDGET_MS);
+    // Well above the normal latency, or the retry IS the bug. Measured on this
+    // box, a healthy `welcome` takes 1.7-1.9 s (worst observed 2.4 s), and a
+    // first cut of this retried every 1.5 s — under the normal wait, so every
+    // healthy run double-joined and the failure rate went from **1/10 to 10/10**.
+    // The server's duplicate guard is `sessions.player_of(sid).is_some()`, which
+    // is only set once `room.join()` has completed, so a second join inside that
+    // window is not deduplicated at all.
+    //
+    // A third of the budget, floored at 5 s: it never fires in a healthy run and
+    // fires two or three times in a genuinely silent one.
+    let retry_every = Duration::from_millis((BUDGET_MS / 3).max(5_000));
+    let started = std::time::Instant::now();
+    let mut sent = 0;
+    while started.elapsed() < budget {
+        client.emit(ev, payload.clone()).expect("emit");
+        sent += 1;
+        let until = std::time::Instant::now() + retry_every;
+        while std::time::Instant::now() < until {
+            if count(inbox, expect) >= 1 {
+                if sent > 1 {
+                    eprintln!("EMIT_RETRY {label}/{ev}: delivered on attempt {sent}");
+                }
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    panic!(
+        "{label}: emitted `{ev}` {sent} time(s) over {:.0} s and never saw `{expect}` (inbox: {})",
+        budget.as_secs_f32(),
+        inbox_summary(inbox)
+    );
+}
+
+/// What actually arrived. "saw 0" alone reads as a broken handshake; knowing
+/// whether a `join_error` came back or nothing at all separates a server that
+/// refused from a message that was never delivered (§B23 — a false failure is
+/// the expensive kind).
+fn inbox_summary(inbox: &Inbox) -> String {
+    inbox
+        .lock()
+        .map(|g| {
+            let mut v: Vec<String> = g
+                .iter()
+                .map(|(k, xs)| format!("{k}x{}", xs.len()))
+                .collect();
+            v.sort();
+            if v.is_empty() {
+                "empty".to_string()
+            } else {
+                v.join(" ")
+            }
+        })
+        .unwrap_or_else(|_| "poisoned".to_string())
 }
 
 fn first(inbox: &Inbox, ev: &str, field: &str) -> serde_json::Value {
@@ -189,9 +302,14 @@ async fn two_rooms_run_side_by_side_and_neither_hears_the_other() {
         // A joins the default room.
         let inbox_a: Inbox = Arc::default();
         let a = connect(addr, inbox_a.clone());
-        a.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit join");
-        wait_for(&inbox_a, "welcome", 1, "ana");
+        emit_until(
+            &a,
+            &inbox_a,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
 
         // B connects, is moved into room_b, then joins.
         let before = live_sids(&io);
@@ -201,9 +319,14 @@ async fn two_rooms_run_side_by_side_and_neither_hears_the_other() {
             attach_new_socket(&io, &reg, &before, room_b),
             "bo's socket never appeared"
         );
-        b.emit("join", serde_json::json!({ "name": "bo" }))
-            .expect("emit join");
-        wait_for(&inbox_b, "welcome", 1, "bo");
+        emit_until(
+            &b,
+            &inbox_b,
+            "join",
+            serde_json::json!({ "name": "bo" }),
+            "welcome",
+            "bo",
+        );
 
         // Give any cross-room leak time to arrive. Asserting a negative
         // immediately would pass simply because nothing had been delivered yet.
@@ -265,15 +388,25 @@ async fn two_clients_in_one_room_do_hear_each_other() {
     let joins = tokio::task::spawn_blocking(move || {
         let inbox_a: Inbox = Arc::default();
         let a = connect(addr, inbox_a.clone());
-        a.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit join");
-        wait_for(&inbox_a, "welcome", 1, "ana");
+        emit_until(
+            &a,
+            &inbox_a,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
 
         let inbox_b: Inbox = Arc::default();
         let b = connect(addr, inbox_b.clone());
-        b.emit("join", serde_json::json!({ "name": "bo" }))
-            .expect("emit join");
-        wait_for(&inbox_b, "welcome", 1, "bo");
+        emit_until(
+            &b,
+            &inbox_b,
+            "join",
+            serde_json::json!({ "name": "bo" }),
+            "welcome",
+            "bo",
+        );
 
         // ana was already seated, so ana hears bo arrive.
         wait_for(&inbox_a, "player_join", 1, "ana hears bo");
@@ -451,9 +584,14 @@ async fn leaving_frees_the_room_for_reaping() {
     let seated = tokio::task::spawn_blocking(move || {
         let inbox: Inbox = Arc::default();
         let a = connect(addr, inbox.clone());
-        a.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit join");
-        wait_for(&inbox, "welcome", 1, "ana");
+        emit_until(
+            &a,
+            &inbox,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
         let seated = reg
             .lock()
             .expect("registry")
@@ -560,9 +698,14 @@ async fn a_room_whose_last_human_left_is_reaped_by_the_running_server() {
     tokio::task::spawn_blocking(move || {
         let ia: Inbox = Arc::default();
         let a = connect(addr, ia.clone());
-        a.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit");
-        wait_for(&ia, "welcome", 1, "ana");
+        emit_until(
+            &a,
+            &ia,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
         a.emit("start_with_bots", serde_json::json!({}))
             .expect("emit");
         std::thread::sleep(Duration::from_millis(600));
@@ -646,9 +789,14 @@ async fn a_room_with_a_human_in_it_is_never_reaped() {
     let client = tokio::task::spawn_blocking(move || {
         let ia: Inbox = Arc::default();
         let a = connect(addr, ia.clone());
-        a.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit");
-        wait_for(&ia, "welcome", 1, "ana");
+        emit_until(
+            &a,
+            &ia,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
         let _ = done_rx.recv_timeout(Duration::from_secs(30));
         let _ = a.disconnect();
     });

@@ -26,7 +26,6 @@ import { PlayerView } from '../render/playerView'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
-import { OrdnanceLayer } from '../render/ordnance'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
 import { hazardKind } from '../render/ordnanceFx-math'
 import { cycleU, darknessAt } from '../render/sky-math'
@@ -58,7 +57,6 @@ export class GameScene extends Phaser.Scene {
   private world: WorldView | null = null
   private sky!: SkyLayer
   private lightmap!: Lightmap
-  private ordnance!: OrdnanceLayer
   private fx!: OrdnanceFxLayer
   /** e2e only: point the camera here instead of at the player. */
   private watchPoint: { x: number; y: number } | null = null
@@ -176,6 +174,15 @@ export class GameScene extends Phaser.Scene {
     minesEnded: 0,
     swings: 0,
     jets: 0,
+    /**
+     * `hitscan` events received — what the SERVER said about gunfire.
+     *
+     * There was no counter for this at all, at either end, which is the reason
+     * §C23 could not be answered by reading the debug handle: `ordnance-visible`
+     * fired a bazooka and never once fired a gun, so "you must be able to see
+     * what you fired" was tested for one of the two delivery kinds.
+     */
+    hitscans: 0,
     /** Where the most recent hazard landed, so a screenshot can frame one. */
     lastHazard: null as { x: number; y: number } | null,
     deaths: [] as Array<{ victim: number; attacker: number | null; cause: string }>,
@@ -217,7 +224,6 @@ export class GameScene extends Phaser.Scene {
 
     this.sky = new SkyLayer(this)
     this.lightmap = new Lightmap(this)
-    this.ordnance = new OrdnanceLayer(this)
     // §A39 #10: the server has narrated melee, cones, mines and hazards since
     // T11.05 and nothing subscribed. This is the other half.
     this.fx = new OrdnanceFxLayer(this, C().MINE_ARM_TIME)
@@ -492,7 +498,7 @@ export class GameScene extends Phaser.Scene {
       const x = Number(p['x'] ?? 0)
       const y = Number(p['y'] ?? 0)
       const r = Number(p['r'] ?? 0)
-      this.ordnance.addImpact(x, y, r, 'blast')
+      this.world?.ordnance.addImpact(x, y, r, 'blast')
       // A meteor is a different, heavier sound from a rocket: the kind is on the
       // event already (`docs/40` §3), so nothing new has to be sent for it.
       const kind = String(p['kind'] ?? '')
@@ -555,9 +561,10 @@ export class GameScene extends Phaser.Scene {
     })
     this.conn.on('hitscan', (raw) => {
       const p = asRecord(raw)
+      this.observed.hitscans += 1
       const x0 = Number(p['x0'] ?? 0)
       const y0 = Number(p['y0'] ?? 0)
-      this.ordnance.addTracer(x0, y0, Number(p['x1'] ?? 0), Number(p['y1'] ?? 0))
+      this.world?.ordnance.addTracer(x0, y0, Number(p['x1'] ?? 0), Number(p['y1'] ?? 0))
       this.audio.spatial('fire_smg', x0, y0, this.ear())
     })
 
@@ -613,7 +620,6 @@ export class GameScene extends Phaser.Scene {
       this.world?.destroy()
       this.lightmap.destroy()
       this.sky.destroy()
-      this.ordnance.destroy()
       this.fx?.destroy()
       for (const r of this.remotes.values()) r.view.destroy()
     })
@@ -965,7 +971,6 @@ export class GameScene extends Phaser.Scene {
       this.movementCues(dt, body)
     }
     this.world.rig.update(dt)
-    this.world.update(this.world.rig.center)
 
     this.renderRemotes(performance.now())
 
@@ -993,10 +998,27 @@ export class GameScene extends Phaser.Scene {
       for (const e of this.observed.effects.values()) {
         if (e.kind === 'ToxicRain' && e.phases.has('active') && !e.phases.has('end')) toxic = true
       }
-      this.world.weather.setToxic(toxic)
-      this.world.weather.update(dt, [], C().MAX_FALL_SPEED)
+      // **With `dt`.** `WorldView.update(near, dt = 0, weather?)` gates its
+      // ordnance and weather work on `dt > 0`, and this scene called it with the
+      // camera centre alone — so `WorldView.ordnance.update()` never ran in a
+      // real round. That layer is where `syncProjectiles` puts every projectile,
+      // and its `Graphics` is only ever drawn inside `update()`, so **no rocket,
+      // grenade or meteor has ever been drawn in an actual game** (§C23, and the
+      // §C0 shape a third time).
+      //
+      // `SandboxScene` calls `this.world.ordnance.update(dt)` itself, which is
+      // exactly why T13.03's pixel test passed while a player saw nothing: it
+      // samples the one scene that does not have the bug.
+      //
+      // The weather arguments move in here too. Passing them separately was the
+      // same workaround one step earlier — this scene reaching past the shared
+      // update to poke a sub-layer it could not reach through it.
+      this.world.update(this.world.rig.center, dt, {
+        toxicActive: toxic,
+        vents: [],
+        fallScale: C().MAX_FALL_SPEED,
+      })
     }
-    this.ordnance.update(dt)
     // Mine visibility is distance to the *player*, not to the camera centre —
     // the camera leads the aim, so those are not the same point.
     this.fx.update(dt, this.ear(), performance.now())
@@ -1044,9 +1066,10 @@ export class GameScene extends Phaser.Scene {
     const lights: LightSource[] = [
       // The player's own field of view is a light like any other.
       { x: rp.x, y: rp.y, radius: fov, kind: 'radial', intensity: 1 },
-      ...this.ordnance
+      ...(this.world?.ordnance
         .lights()
-        .map((l) => ({ x: l.x, y: l.y, radius: l.r, kind: 'radial' as const, intensity: l.a })),
+        .map((l) => ({ x: l.x, y: l.y, radius: l.r, kind: 'radial' as const, intensity: l.a })) ??
+        []),
       // Fire and flame jets emit like every other emitter (§A3). Smoke and
       // mines deliberately do not: a mine that lit itself up at night would
       // defeat the point of hiding it.
@@ -1460,6 +1483,48 @@ export class GameScene extends Phaser.Scene {
             height: self.cameras.main.worldView.height,
           },
           hazardsDrawn: self.fx?.hazardCount ?? 0,
+          // Both ends, per delivery kind (§A39/§C23). A gun and a rocket take
+          // different paths and only one of them was ever counted.
+          //
+          // `projectilesLive` is the mirror — what the server says is in the
+          // air; `projectilesDrawn` is the layer's own map, asked of the layer
+          // rather than of the set this scene fills, so it reports effect and
+          // not intent (§A15).
+          projectilesLive: self.mirror.projectiles.size,
+          // Positions too, so a check can aim a patch at a projectile rather
+          // than guess a screen point — a hardcoded coordinate is a test that
+          // expires the moment the camera, the zoom or the spawn moves.
+          mirrorProjectiles: [...self.mirror.projectiles.values()].map((p) => ({
+            id: p.id,
+            x: p.x,
+            y: p.y,
+          })),
+          projectilesDrawn: self.world?.drawnProjectiles ?? 0,
+          // How many times the ordnance layer has actually redrawn, and what
+          // the LAST redraw put on the canvas. `projectilesDrawn` above counts
+          // the state map — the counter that read 1 live / 1 drawn throughout
+          // the period when no rocket had ever been drawn in a real game. A
+          // check that freezes the scene to photograph a projectile needs to
+          // know the frame on screen was rendered after the projectile arrived,
+          // and nothing else can tell it that.
+          ordnanceRedraws: self.world?.ordnance.redraws ?? 0,
+          // Where the layer is DRAWING them, read back off its own state —
+          // §C7's lesson for projectiles. The mirror's position and the drawn
+          // position are not the same number: `projectile_move` arrives at
+          // SNAPSHOT_HZ and the layer tracks between those, so at
+          // `BAZOOKA_SPEED` the two are tens of pixels apart. A check that
+          // aimed a 70 px patch at the mirror's position photographed empty sky
+          // and read 1.2 against a floor of 4.0 — identical on every run,
+          // because it is not noise, it is the wrong place.
+          drawnProjectiles: [...(self.world?.ordnance.state.projectiles.values() ?? [])].map(
+            (p) => ({ id: p.id, kind: p.kind, x: p.x, y: p.y }),
+          ),
+          projectilesLastFrame: self.world?.ordnance.drawnProjectilesLastFrame ?? 0,
+          // Tracers are not "live" in the same sense — a hitscan shot is an
+          // instant, and the tracer is a decaying record of it — so this is how
+          // many the layer is currently drawing, against `observed.hitscans`
+          // for how many the server has narrated.
+          tracersDrawn: self.world?.ordnance.state.tracers.length ?? 0,
           // The snapshot roster includes the local player, so this is the
           // total — not remotes plus one.
           playerCount: self.mirror.players.size,
@@ -1543,6 +1608,7 @@ export class GameScene extends Phaser.Scene {
             respawns: self.observed.respawns,
             itemSpawns: self.observed.itemSpawns,
             itemPickups: self.observed.itemPickups,
+            hitscans: self.observed.hitscans,
             darknessMin: self.observed.darknessMin,
             darknessMax: self.observed.darknessMax,
             maxTickLag: self.observed.maxTickLag,

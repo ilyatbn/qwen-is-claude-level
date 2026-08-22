@@ -76,8 +76,13 @@ const CHECKS = [
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
   // §C0's gate: destroying terrain must change the picture, not just the mask.
   { name: 'terrain-render', file: 'scripts/checks/terrain-render.mjs', url: '?sandbox=1&seed=4242' },
-  // §C4: you must be able to see what you fired.
-  { name: 'ordnance-visible', file: 'scripts/checks/ordnance-visible.mjs', url: '?sandbox=1&seed=12345' },
+  // §C4/§C23: you must be able to see what you fired — in the GAME, and for both
+  // delivery kinds. Standalone and on a real server since T13.06.6: it ran on
+  // `?sandbox=1`, and the sandbox is the one scene that calls
+  // `world.ordnance.update(dt)` itself, so it drew projectiles perfectly while
+  // `GameScene` drew none at all. A check that passes only where the bug is
+  // absent is worse than no check.
+  { name: 'ordnance-visible', file: 'scripts/checks/ordnance-visible.mjs', standalone: true },
   // §C6: the weather must reach the screen, not just the simulation.
   { name: 'weather-visible', file: 'scripts/checks/weather-visible.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242' },
@@ -247,7 +252,17 @@ try {
   browser = await chromium.launch({
     executablePath: chromePath,
     env: { ...process.env, LD_LIBRARY_PATH: libDir },
-    args: ['--no-sandbox', '--use-gl=swiftshader', '--enable-unsafe-swiftshader'],
+    args: [
+      '--no-sandbox',
+      '--use-gl=swiftshader',
+      '--enable-unsafe-swiftshader',
+      // rAF is throttled in a backgrounded page and the client steps off rAF,
+      // so a check whose page is not foreground barely simulates. See the same
+      // flags in `scripts/checks/harness.mjs` for what that cost.
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+    ],
   })
 
   for (const check of selected) {

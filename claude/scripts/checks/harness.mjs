@@ -153,7 +153,28 @@ export async function startStack({ port, env = {}, label = 'check' } = {}) {
   browser = await chromium.launch({
     executablePath: chromePath,
     env: { ...process.env, LD_LIBRARY_PATH: libDir },
-    args: ['--no-sandbox', '--use-gl=swiftshader', '--enable-unsafe-swiftshader'],
+    args: [
+      '--no-sandbox',
+      '--use-gl=swiftshader',
+      '--enable-unsafe-swiftshader',
+      // The client steps its fixed timestep off `requestAnimationFrame`, and
+      // Chromium throttles rAF in any page that is not the foreground one — to
+      // roughly one frame a second, or none at all. With two or three contexts
+      // open only one of them is foreground, so every other client barely
+      // simulates.
+      //
+      // That is the whole of `two-clients`' long-running mystery. Its own
+      // comment records "polling from t=0 was tried and did not move the player
+      // at all, for a reason I could not explain", and the numbers are exactly
+      // this shape: holding D for the same wall-clock window moved bo 144.8 px
+      // on one standalone run, 15.7 px on the next, and **0.0 px** inside the
+      // suite. Three sessions recorded it as "fails under load, passes
+      // standalone" and reached for longer sleeps, which only moves the
+      // threshold (§A28) — the box was never the problem, backgrounding was.
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+    ],
   })
   console.log(`  stack: server :${port}  vite ${viteUrl}`)
 
@@ -364,12 +385,30 @@ export async function selectWeapon(page, key) {
       `selectWeapon: "${key}" is not in the inventory. Held: ${held.join(' ') || '(nothing)'}`,
     )
   }
-  await page.keyboard.press(`Digit${found.slot + 1}`)
-  await sleep(250)
-  const now = await page.evaluate('window.__game.debug().slots')
-  const sel = Array.isArray(now) ? now.find((s) => s.selected) : null
-  if (!sel || sel.key !== key) {
-    throw new Error(`selectWeapon: pressed Digit${found.slot + 1} for "${key}", selected "${sel?.key}"`)
+  // Waited on, not slept. The selection is confirmed by the server's own
+  // `inventory` event, so a fixed 250 ms is a bet on latency: under suite load
+  // this read the slot list *between* the keypress and the update and reported
+  // `selected "null"` — an empty slot — for an inventory that was about to be
+  // correct. Re-read each time, because a slot index is only valid for the
+  // inventory it was read from: an emptied stack frees its slot and everything
+  // after it shifts.
+  const deadline = Date.now() + 5000
+  let last = null
+  while (Date.now() < deadline) {
+    const now = await page.evaluate('window.__game.debug().slots')
+    if (Array.isArray(now)) {
+      last = now
+      const sel = now.find((s) => s.selected)
+      if (sel && sel.key === key) return sel.slot
+      const want = now.find((s) => s.key === key)
+      if (want) await page.keyboard.press(`Digit${want.slot + 1}`)
+    }
+    await sleep(120)
   }
-  return found.slot
+  const held = (last ?? []).filter((s) => s.key).map((s) => `${s.slot + 1}:${s.key}x${s.count}`)
+  throw new Error(
+    `selectWeapon: "${key}" never became the selected slot within 5 s. ` +
+      `Held: ${held.join(' ') || '(nothing)'}; selected: ` +
+      `"${(last ?? []).find((s) => s.selected)?.key ?? 'none'}"`,
+  )
 }

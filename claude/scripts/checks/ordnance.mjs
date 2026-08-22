@@ -89,7 +89,16 @@ async function fireAt(sx, sy) {
  * weapon is therefore rejected silently, which is what made the first version of
  * this flaky at roughly one run in three. Retry on the *effect*, not the attempt.
  */
-async function fireUntil(sx, sy, pred, deadlineMs, what) {
+/**
+ * `aim` is either a fixed `{sx, sy}` or a function returning one — **recompute
+ * it per shot when the target is a world object.**
+ *
+ * A rocket at your own feet throws you (`docs/21` §5, and it is what makes
+ * rocket-jumping work), the camera follows, and a screen point worked out
+ * before the first shot points somewhere else entirely by the second. That is
+ * how four rockets aimed "at the mine" all missed it: only the first one was.
+ */
+async function fireUntil(aim, pred, deadlineMs, what, weapon) {
   const started = Date.now()
   for (;;) {
     if (pred(await dbg())) return true
@@ -97,6 +106,23 @@ async function fireUntil(sx, sy, pred, deadlineMs, what) {
       fail(`timed out waiting for ${what}`)
       return false
     }
+    const at = typeof aim === 'function' ? await aim() : aim
+    if (!at) {
+      fail(`${what}: the target is not on screen, so nothing can be aimed at it`)
+      return false
+    }
+    const [sx, sy] = [at.sx, at.sy]
+    // Re-select before every shot, when the caller names a weapon.
+    //
+    // A stack that empties does not leave the trigger idle — selection moves on,
+    // and the next pull fires whatever is now under it. That is how this loop,
+    // asked to rocket a mine, silently **placed a second mine**: `DEV_LOADOUT`
+    // grants 4 rockets since §C24 collapsed its two bazooka stacks into one
+    // (it used to grant 8), the loop ran dry, and the check reported "timed out
+    // waiting for the rocket to end the mine" while cheerfully rearming the
+    // field. `selectWeapon` throws a named error once the weapon is gone, so
+    // running out now says so instead of testing a different weapon.
+    if (weapon) await selectWeapon(page, weapon)
     await fireAt(sx, sy)
     await settle(400)
   }
@@ -149,7 +175,7 @@ if (sprayed) ok(`cone: ${sprayed.jets} jet(s) received and drawn`)
 // DEPTH.particles, above DEPTH.actors, so a mine at your feet is drawn over your
 // own sprite and is visible without moving at all.
 await selectWeapon(page, 'mine')
-await fireUntil(640, 700, (d) => d.minesPlaced > 0, 20_000, 'a mine to be placed')
+await fireUntil({ sx: 640, sy: 700 }, (d) => d.minesPlaced > 0, 20_000, 'a mine to be placed', 'mine')
 const placed = (await dbg()).minesPlaced > 0 ? await dbg() : null
 if (placed) {
   const expect = placed.minesPlaced - placed.minesEnded
@@ -203,13 +229,30 @@ await page.screenshot({ path: join(shotsDir, 'ordnance-hazard.png') })
 if (placed) {
   // Mines ignore their owner (§B6), so standing on one is safe, and a rocket
   // straight down certainly puts the 42 px blast over it.
-  await selectWeapon(page, 'bazooka')
   // Deadlines with headroom, not fixed sleeps. `fireUntil` and `until` already
   // wait on the *effect*; the deadline only bounds how long a genuinely stuck
   // run may hang. Under a loaded box the client steps fewer fixed-timestep ticks
   // per wall-clock second, so 25 s was enough standalone and not enough after
   // three other specs — which is how this read as flaky rather than as slow.
-  await fireUntil(640, 700, (d) => d.minesEnded > 0, 60_000, 'the rocket to end the mine')
+  // Aimed at the mine itself, converted from its world position, not at a fixed
+  // screen point below the player.
+  //
+  // `DEV_LOADOUT` grants **4 rockets** since §C24 collapsed its two bazooka
+  // stacks into one — 4 is `BAZOOKA`'s `max_stack`, so it is now the most a
+  // player can hold, and the old 8 was only reachable through the second-slot
+  // bug §C24 fixes. Spraying at (640, 700) and hoping burned the stack, and
+  // `selectWeapon` then correctly refused to carry on: `"bazooka" is not in the
+  // inventory. Held: 2:smg 3:mine ...`. Four rockets are plenty when each one
+  // is aimed at the thing it has to hit.
+  const aimAtMine = async () => {
+    const d = await dbg()
+    const m = (d.mines ?? [])[0]
+    if (!m || !d.worldView) return null
+    const sx = (m.x - d.worldView.x) * d.zoom
+    const sy = (m.y - d.worldView.y) * d.zoom
+    return sx > 0 && sx < 1280 && sy > 0 && sy < 720 ? { sx, sy } : null
+  }
+  await fireUntil(aimAtMine, (d) => d.minesEnded > 0, 60_000, 'the rocket to end the mine', 'bazooka')
   const gone = await until(
     (d) => d.minesDrawn === d.minesPlaced - d.minesEnded && d.minesEnded > 0,
     20_000,

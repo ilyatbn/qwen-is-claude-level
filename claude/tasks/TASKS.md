@@ -294,11 +294,11 @@ tests and 20 e2e specs missed all four.
 - [x] [T13.06.3](M13/T13.06.3-no-fire-while-moving.md) — You cannot fire while moving **(v4)**
 - [x] [T13.06.4](M13/T13.06.4-toxic-rain-falls.md) — Toxic rain falls from the sky **(v4)**
 - [x] [T13.06.5](M13/T13.06.5-meteors-visible.md) — Meteors you can see and dodge **(v4)**
-- [ ] [T13.06.6](M13/T13.06.6-gun-projectiles.md) — Gun projectiles are still invisible **(v4)**
+- [x] [T13.06.6](M13/T13.06.6-gun-projectiles.md) — Gun projectiles are still invisible **(v4)**
 - [x] [T13.06.7](M13/T13.06.7-one-slot-per-weapon.md) — A weapon occupies one slot, ever **(v4)**
 - [x] [T13.06.8](M13/T13.06.8-results-countdown.md) — The results countdown counts down **(v4)**
 - [x] [T13.06.9](M13/T13.06.9-jetpack-readout.md) — Show the jetpack number **(v4)**
-- [ ] [T13.06.10](M13/T13.06.10-gate-selfload.md) — The gate breaks its own wall-clock assertions **(v4)**
+- [x] [T13.06.10](M13/T13.06.10-gate-selfload.md) — The gate breaks its own wall-clock assertions **(v4)**
 - [x] [T13.06.11](M13/T13.06.11-reaper-has-no-caller.md) — The room reaper has no caller **(v4)**
 
 **Checkpoint:** connect and land in a *lobby*, not a battle. Then fire a rocket and

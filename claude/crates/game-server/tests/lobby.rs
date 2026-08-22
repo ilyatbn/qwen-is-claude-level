@@ -93,6 +93,128 @@ fn count(inbox: &Inbox, ev: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// The wall-clock budget every wait in this file gets.
+const BUDGET_MS: u64 = 30_000;
+
+/// Emit `ev` and **keep emitting** until `expect` comes back.
+///
+/// T13.06.10. Measured, over ten `cargo test -p game-server` runs: **1 in 10
+/// failed**, and the failure is always the same shape — `waited 30 s for 1
+/// `welcome`, saw 0 (inbox: empty)`. Not one event of any kind, on a socket
+/// whose `open` callback had already fired. Thirty seconds of silence is not a
+/// busy box; the emit was never delivered.
+///
+/// §A28 records the mechanism: `rust_socketio`'s `connect()` returns while the
+/// socket.io namespace CONNECT is still in flight, so an emit on the next line
+/// is dropped **with no error**. Waiting for `open` — which is what that session
+/// added — narrows the window without closing it.
+///
+/// So this is the task's third option, waiting on the effect with an adaptive
+/// bound, and not its first. Raising the budget would be treating the symptom
+/// twice over: it is already five times the observed need (the worst real wait
+/// across a full workspace run used 24 % of it), and no budget fixes a message
+/// that was never sent.
+///
+/// Re-emitting is safe because the server defines it so: "a second join on one
+/// socket is ignored, not a second player: a client that retries must not
+/// consume two seats" (`session.rs`). **Only for emits with that guarantee** —
+/// `create_room` has none, and retrying it would create a second room.
+fn emit_until(
+    client: &rust_socketio::client::Client,
+    inbox: &Inbox,
+    ev: &str,
+    payload: serde_json::Value,
+    expect: &str,
+    label: &str,
+) {
+    emit_until_dropping(client, inbox, ev, payload, expect, label, 0)
+}
+
+/// `emit_until`, with the first `drop_first` attempts sent to an event name no
+/// handler exists for — i.e. delivered nowhere.
+///
+/// This exists so the retry can be **falsified deterministically**. The failure
+/// it guards against showed up once in ten `cargo test -p game-server` runs, and
+/// across twenty-five runs afterwards the retry never fired at all — so "0/25
+/// failures" says the flake did not recur, not that the retry works. A rate that
+/// low cannot be measured with the runs anyone will actually sit through, and a
+/// metric with no control is a number rather than evidence.
+///
+/// Simulating the drop is faithful to the real mechanism: §A28's race loses the
+/// emit silently, which is indistinguishable from sending it somewhere nothing
+/// is listening.
+#[allow(clippy::too_many_arguments)]
+fn emit_until_dropping(
+    client: &rust_socketio::client::Client,
+    inbox: &Inbox,
+    ev: &str,
+    payload: serde_json::Value,
+    expect: &str,
+    label: &str,
+    drop_first: usize,
+) {
+    let budget = Duration::from_millis(BUDGET_MS);
+    // Well above the normal latency, or the retry IS the bug. Measured on this
+    // box, a healthy `welcome` takes 1.7-1.9 s (worst observed 2.4 s), and a
+    // first cut of this retried every 1.5 s — under the normal wait, so every
+    // healthy run double-joined and the failure rate went from **1/10 to 10/10**.
+    // The server's duplicate guard is `sessions.player_of(sid).is_some()`, which
+    // is only set once `room.join()` has completed, so a second join inside that
+    // window is not deduplicated at all.
+    //
+    // A third of the budget, floored at 5 s: it never fires in a healthy run and
+    // fires two or three times in a genuinely silent one.
+    let retry_every = Duration::from_millis((BUDGET_MS / 3).max(5_000));
+    let started = std::time::Instant::now();
+    let mut sent = 0;
+    while started.elapsed() < budget {
+        let target = if sent < drop_first {
+            "join_that_goes_nowhere"
+        } else {
+            ev
+        };
+        client.emit(target, payload.clone()).expect("emit");
+        sent += 1;
+        let until = std::time::Instant::now() + retry_every;
+        while std::time::Instant::now() < until {
+            if count(inbox, expect) >= 1 {
+                if sent > 1 {
+                    eprintln!("EMIT_RETRY {label}/{ev}: delivered on attempt {sent}");
+                }
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    panic!(
+        "{label}: emitted `{ev}` {sent} time(s) over {:.0} s and never saw `{expect}` (inbox: {})",
+        budget.as_secs_f32(),
+        inbox_summary(inbox)
+    );
+}
+
+/// What actually arrived. "saw 0" alone reads as a broken handshake; knowing
+/// whether a `join_error` came back or nothing at all separates a server that
+/// refused from a message that was never delivered (§B23 — a false failure is
+/// the expensive kind).
+fn inbox_summary(inbox: &Inbox) -> String {
+    inbox
+        .lock()
+        .map(|g| {
+            let mut v: Vec<String> = g
+                .iter()
+                .map(|(k, xs)| format!("{k}x{}", xs.len()))
+                .collect();
+            v.sort();
+            if v.is_empty() {
+                "empty".to_string()
+            } else {
+                v.join(" ")
+            }
+        })
+        .unwrap_or_else(|_| "poisoned".to_string())
+}
+
 fn first(inbox: &Inbox, ev: &str, field: &str) -> serde_json::Value {
     inbox
         .lock()
@@ -112,15 +234,37 @@ fn first(inbox: &Inbox, ev: &str, field: &str) -> serde_json::Value {
 /// 10 s budget was sized for. This test passed standalone and failed inside the
 /// gate for exactly that reason.
 fn wait_for(inbox: &Inbox, ev: &str, n: usize, label: &str) {
-    for _ in 0..600 {
+    let budget = Duration::from_millis(BUDGET_MS);
+    let started = std::time::Instant::now();
+    loop {
         if count(inbox, ev) >= n {
+            // T13.06.10: report the MARGIN, not just success. A pass/fail rate
+            // samples a coin flip; the fraction of the budget actually consumed
+            // says how close to one the gate is. `WAIT_MARGIN=1` prints it.
+            if std::env::var("WAIT_MARGIN").is_ok() {
+                eprintln!(
+                    "WAIT_MARGIN {label}/{ev} {:.2}s of {:.0}s ({:.0}%)",
+                    started.elapsed().as_secs_f32(),
+                    budget.as_secs_f32(),
+                    100.0 * started.elapsed().as_secs_f32() / budget.as_secs_f32(),
+                );
+            }
             return;
+        }
+        // A wall-clock deadline, not a loop count. `for _ in 0..200 { sleep(50) }`
+        // counts ITERATIONS: under load each takes longer than 50 ms, so the real
+        // budget silently stretched — which is part of why this usually passed
+        // and why, when it did not, the number in the message was a fiction.
+        if started.elapsed() >= budget {
+            break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     panic!(
-        "{label}: waited 30 s for {n} `{ev}`, saw {}",
-        count(inbox, ev)
+        "{label}: waited {:.0} s for {n} `{ev}`, saw {} (inbox: {})",
+        budget.as_secs_f32(),
+        count(inbox, ev),
+        inbox_summary(inbox)
     );
 }
 
@@ -354,18 +498,25 @@ async fn a_tombstone_skin_is_carried_and_echoed() {
     let echoed = tokio::task::spawn_blocking(move || {
         let ia: Inbox = Arc::default();
         let a = connect(addr, ia.clone());
-        a.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit");
-        wait_for(&ia, "welcome", 1, "ana");
+        emit_until(
+            &a,
+            &ia,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
 
         let ib: Inbox = Arc::default();
         let b = connect(addr, ib.clone());
-        b.emit(
+        emit_until(
+            &b,
+            &ib,
             "join",
             serde_json::json!({ "name": "bo", "skin_id": 2, "tombstone_skin_id": 7 }),
-        )
-        .expect("emit");
-        wait_for(&ib, "welcome", 1, "bo");
+            "welcome",
+            "bo",
+        );
         wait_for(&ia, "player_join", 1, "ana hears bo");
 
         let out = serde_json::json!({
@@ -428,9 +579,14 @@ async fn joining_creates_a_room_that_holds_a_map_and_does_not_tick() {
     tokio::task::spawn_blocking(move || {
         let ia: Inbox = Arc::default();
         let a = connect(addr, ia.clone());
-        a.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit");
-        wait_for(&ia, "welcome", 1, "ana");
+        emit_until(
+            &a,
+            &ia,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
         std::thread::sleep(Duration::from_millis(600));
         a
     })
@@ -498,9 +654,14 @@ async fn one_human_waits_until_they_ask_for_bots() {
     let client = tokio::task::spawn_blocking(move || {
         let ia: Inbox = Arc::default();
         let a = connect(addr, ia.clone());
-        a.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit");
-        wait_for(&ia, "welcome", 1, "ana");
+        emit_until(
+            &a,
+            &ia,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
         a
     })
     .await
@@ -622,9 +783,14 @@ async fn a_room_whose_last_human_leaves_goes_back_to_lobby_despite_its_bots() {
     tokio::task::spawn_blocking(move || {
         let ia: Inbox = Arc::default();
         let a = connect(addr, ia.clone());
-        a.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit");
-        wait_for(&ia, "welcome", 1, "ana");
+        emit_until(
+            &a,
+            &ia,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
         a.emit("start_with_bots", serde_json::json!({}))
             .expect("emit");
         std::thread::sleep(Duration::from_millis(900));
@@ -683,9 +849,14 @@ async fn a_lobby_room_has_no_bots() {
     let client = tokio::task::spawn_blocking(move || {
         let ia: Inbox = Arc::default();
         let a = connect(addr, ia.clone());
-        a.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit");
-        wait_for(&ia, "welcome", 1, "ana");
+        emit_until(
+            &a,
+            &ia,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
         std::thread::sleep(Duration::from_millis(600));
         a
     })
@@ -754,9 +925,14 @@ async fn starting_a_round_announces_the_bots_it_seats() {
     let (in_lobby, after_start) = tokio::task::spawn_blocking(move || {
         let ia: Inbox = Arc::default();
         let a = connect(addr, ia.clone());
-        a.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit");
-        wait_for(&ia, "welcome", 1, "ana");
+        emit_until(
+            &a,
+            &ia,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
         // Long enough for LOBBY_COUNTDOWN to have elapsed twice over had one
         // been running: the control is that nothing was announced *because*
         // nothing was seated, not because we looked too early.
@@ -842,15 +1018,25 @@ async fn welcome_names_everyone_in_the_room_including_yourself() {
 
         let ia: Inbox = Arc::default();
         let a = connect(addr, ia.clone());
-        a.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit");
-        wait_for(&ia, "welcome", 1, "ana");
+        emit_until(
+            &a,
+            &ia,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
 
         let ib: Inbox = Arc::default();
         let b = connect(addr, ib.clone());
-        b.emit("join", serde_json::json!({ "name": "bo" }))
-            .expect("emit");
-        wait_for(&ib, "welcome", 1, "bo");
+        emit_until(
+            &b,
+            &ib,
+            "join",
+            serde_json::json!({ "name": "bo" }),
+            "welcome",
+            "bo",
+        );
 
         let out = (names_in(&ia), names_in(&ib));
         let _ = a.disconnect();
@@ -871,6 +1057,85 @@ async fn welcome_names_everyone_in_the_room_including_yourself() {
         got,
         vec!["ana".to_string(), "bo".to_string()],
         "a client joining a room in progress was not told who was already in it: {b_names:?}"
+    );
+
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// T13.06.10 — the retry recovers a join that was never delivered, and seats
+/// exactly one player doing it.
+///
+/// This is the falsification the rate comparison cannot provide. Before the
+/// change, `cargo test -p game-server` failed **1 run in 10**, always as
+/// `waited 30 s for 1 `welcome`, saw 0 (inbox: empty)` — no event of any kind
+/// on a socket whose `open` had already fired, which is a lost emit, not a slow
+/// box (§A28). After it, **0 in 25** — but the retry never fired once in those
+/// 25 runs, so that number says the flake did not recur, not that the fix
+/// works. At a rate that low nobody can run enough iterations to tell the two
+/// apart, so the mechanism is exercised directly instead.
+///
+/// The first emit goes to an event name with no handler, which is exactly what
+/// the race produces: a message sent and silently delivered nowhere.
+///
+/// **Both halves matter.** A retry that recovers the join but seats the player
+/// twice would trade a flake for a duplicate-seat bug — and the server's
+/// duplicate guard (`sessions.player_of(sid).is_some()`) is only set once
+/// `room.join()` has completed, so a retry inside that window is *not*
+/// deduplicated. That is not hypothetical: a first cut of this retried every
+/// 1.5 s, under the 1.7-1.9 s a healthy `welcome` actually takes, so every
+/// healthy run double-joined and the failure rate went from 1/10 to **10/10**.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_join_that_is_never_delivered_is_retried_until_it_is() {
+    let h = spawn_server().await;
+    let addr = h.addr;
+
+    // The client stays connected until the seat count has been read: leaving is
+    // what frees a seat, so disconnecting first would read 0 and report a
+    // double-seat guard passing for the wrong reason.
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let (welcome_tx, welcome_rx) = std::sync::mpsc::channel::<usize>();
+    let client = tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        // The first attempt is swallowed. Without the retry this waits out the
+        // whole budget and panics with `inbox: empty` — the real failure.
+        emit_until_dropping(
+            &a,
+            &ia,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+            1,
+        );
+        let _ = welcome_tx.send(count(&ia, "welcome"));
+        let _ = done_rx.recv_timeout(Duration::from_secs(30));
+        let _ = a.disconnect();
+    });
+
+    let welcomes = welcome_rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the client thread never reported a welcome");
+    assert_eq!(
+        welcomes, 1,
+        "the recovered join produced {welcomes} welcomes"
+    );
+
+    // Exactly one seat. `status()` counts seats and bots; `test_config` sets
+    // `bot_count` to 0, so this is humans.
+    let handle = {
+        let r = h.stack.registry.lock().expect("registry");
+        let id = *r.ids().first().expect("the join created a room");
+        r.get(id).expect("room").handle.clone()
+    };
+    let (seats, bots) = handle.status().await.unwrap_or((99, 99));
+    let _ = done_tx.send(());
+    client.await.expect("client thread");
+    assert_eq!(bots, 0, "the fixture seated bots, so `seats` is not humans");
+    assert_eq!(
+        seats, 1,
+        "the retried join seated {seats} players — a retry that double-seats trades \
+         a flake for a worse bug"
     );
 
     h.stack.shutdown_all(Duration::from_secs(2)).await;

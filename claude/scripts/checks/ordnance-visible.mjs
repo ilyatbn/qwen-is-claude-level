@@ -1,85 +1,334 @@
+#!/usr/bin/env node
 /**
- * `ordnance-visible` — §C4: you must be able to see what you fired.
+ * `ordnance-visible` — §C4/§C23: you must be able to see what you fired, **in the
+ * game**, for **both** delivery kinds.
  *
- * The bug: `OrdnanceLayer.addProjectile` existed, `WorldMirror` had tracked
- * projectiles since T6.08, and nothing ever called one from the other. Rockets and
- * grenades were invisible in the game — the single most important thing a shooter
- * draws. §A39, thirteenth instance.
+ *   node scripts/checks/ordnance-visible.mjs
+ *   node scripts/e2e.mjs ordnance-visible
  *
- * Asserting on the frame is the whole point (§C2). "The server says three
- * projectiles are alive" was true the entire time it was broken.
+ * ## Why this check was rewritten
+ *
+ * T13.03 shipped visible ordnance with this check **passing**, and guns and
+ * rockets were still invisible in play. §C23 says what that means: the test was
+ * sampling something the player is not looking at. It was doing so twice over.
+ *
+ * 1. **It ran on `?sandbox=1`.** `SandboxScene` calls
+ *    `this.world.ordnance.update(dt)` itself; `GameScene` called
+ *    `this.world.update(centre)` with `dt` defaulting to 0, and `WorldView.update`
+ *    gates its ordnance work on `dt > 0`. So the layer holding every projectile
+ *    was never redrawn in a real round — its `Graphics` is only ever filled inside
+ *    `update()` — while the sandbox drew them perfectly. The check passed against
+ *    the one scene that did not have the bug.
+ * 2. **It only ever fired a bazooka.** A rocket is a projectile and a gun is a
+ *    hitscan tracer, and they take different paths through different producers.
+ *    "Ordnance is visible" was asserted for one of the two kinds, so the tracer
+ *    path was never covered at all.
+ *
+ * So this runs against a **real server** through the shared harness, fires one
+ * weapon of each kind, and asserts on rendered pixels for each — with a control
+ * region and, for the projectile, a control *frame*.
+ *
+ * ## What each assertion rules out
+ *
+ * Both-ends counters first, because they name the failure precisely: the server's
+ * narration against what the layer actually holds. Then pixels, because a counter
+ * saying a projectile is tracked is exactly what was true for the whole period the
+ * screen was empty (§A15).
  */
-import { samplePatch, assertChanged } from './pixels.mjs'
+import { samplePatch, colourDelta } from './pixels.mjs'
+import {
+  startStack,
+  enterBattle,
+  standStill,
+  selectWeapon,
+  tally,
+  sleep,
+} from './harness.mjs'
 
-export default async function ({ page, shot, log }) {
-  await page.evaluate(() => window.__game.regenerate('12345', 'medium'))
-  await page.waitForTimeout(600)
+const PORT = 3123
+const { fail, ok, failures } = tally('ordnance-visible')
 
-  // Somewhere with open air to fly through, and the camera on it.
-  const origin = await page.evaluate(() => {
-    const g = window.__game
-    const pts = g.core.meta.spawn_points
-    const p = pts[0]
-    return { x: p.x, y: p.y - 60 }
-  })
-  await page.evaluate((o) => window.__game.place(o.x, o.y), origin)
-  await page.waitForTimeout(400)
+// No bots: this counts what *we* fired, and a bot's rockets would make both the
+// counters and the patch ambiguous about whose ordnance is on screen.
+const stack = await startStack({
+  port: PORT,
+  label: 'ordnance-visible',
+  env: { ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1', FIXED_SEED: '4242' },
+})
+const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
+await enterBattle(page, { waitPlaying: true, label: 'ordnance-visible' })
 
-  // Fire, then find where the projectile actually is and photograph THAT.
-  // Steering the aim would need a control the sandbox does not have; reading the
-  // position needs nothing and frames the subject exactly (§A22 — a screenshot
-  // that does not contain its subject is not evidence).
-  const control = { x: 60, y: 560, w: 100, h: 100 }
-  const controlBefore = await samplePatch(page, control)
-  await shot('ordnance-before')
+const K = await page.evaluate(() => window.__game.constants())
+for (const [name, v] of Object.entries({
+  TRACER_LIFETIME: K.TRACER_LIFETIME,
+  PLAYER_W: K.PLAYER_W,
+})) {
+  // §B15: a threshold compared against `undefined` is false forever, and a wait
+  // built on one can never succeed. Check the instrument before using it.
+  if (!Number.isFinite(v)) fail(`${name} is not exposed to the client — nothing below can hold`)
+}
 
-  await page.evaluate(() => window.__game.fire())
-  await page.waitForTimeout(120)
+/** Where a world point is on screen, or null if it is off camera. */
+const screenPos = async (w) => {
+  const d = await dbg()
+  const sx = (w.x - d.worldView.x) * d.zoom
+  const sy = (w.y - d.worldView.y) * d.zoom
+  return sx > 0 && sx < 1280 && sy > 0 && sy < 720 ? { sx, sy } : null
+}
 
-  const shot1 = await page.evaluate(() => {
-    const g = window.__game
-    const live = g.core.liveProjectiles()
-    if (live.length === 0) return null
-    const d = g.debug()
-    const p = live[0]
-    return {
-      sx: (p.x - d.worldView.x) * d.zoom,
-      sy: (p.y - d.worldView.y) * d.zoom,
-      live: d.projectilesLive,
-      drawn: d.projectilesDrawn,
+/**
+ * A patch of frame that nothing we fire should touch: the top-left corner, which
+ * is sky above the play area at this zoom. Sampled either side of every
+ * measurement, so "these pixels changed" is never the whole argument (§A16).
+ */
+const CONTROL = { x: 20, y: 20, w: 90, h: 90 }
+
+// --- the control: nothing of ours is on screen yet --------------------------
+//
+// Without this, "a tracer is drawn after firing" also passes for a layer that
+// draws one unconditionally, which is the §A26 half that makes the rest mean
+// something.
+const idle = await dbg()
+if ((idle.tracersDrawn ?? -1) === 0 && (idle.projectilesDrawn ?? -1) === 0) {
+  ok('control: no tracer and no projectile drawn before anything is fired')
+} else {
+  fail(
+    `something was already drawn: tracers ${idle.tracersDrawn}, projectiles ${idle.projectilesDrawn}`,
+  )
+}
+
+// --- hitscan: the smg ------------------------------------------------------
+//
+// A tracer lives TRACER_LIFETIME (0.09 s), so it is sampled by *polling as fast
+// as the page answers* rather than after a sleep — a 200 ms wait misses it
+// entirely and would report "never drawn" for a tracer that was.
+await selectWeapon(page, 'smg')
+await standStill(page)
+const beforeShots = (await dbg()).observed?.hitscans ?? 0
+const controlBeforeTracer = await samplePatch(page, CONTROL)
+
+// Aim flat and to the right, so the segment crosses open air beside the player
+// rather than burying itself in the ground under their feet.
+await page.mouse.move(1150, 360)
+await sleep(150)
+
+let tracerPeak = 0
+let tracerFrame = null
+let narrated = 0
+for (let burst = 0; burst < 12 && !tracerFrame; burst++) {
+  await standStill(page)
+  await page.evaluate('window.__game.fire()')
+  for (let i = 0; i < 14; i++) {
+    const d = await dbg()
+    narrated = Math.max(narrated, (d.observed?.hitscans ?? 0) - beforeShots)
+    if ((d.tracersDrawn ?? 0) > 0) {
+      tracerPeak = Math.max(tracerPeak, d.tracersDrawn)
+      // **Freeze first, ask questions after.** A tracer's alpha decays as
+      // `life / TRACER_LIFETIME`, so every round trip between spotting one and
+      // photographing it costs brightness. The first version read the player's
+      // position (a second `debug()` call) and then froze, and the reading
+      // swung between 6.0 and 16.2 depending on how much of the 0.09 s had run
+      // out — a floor of 4.0 against a signal that can read 6.0 is the coin
+      // flip §A28 is about. Freezing stops the decay, so the position, the
+      // tracer and the photograph are all the same instant.
+      await page.evaluate(() => window.__game.freeze(true))
+      const still = await dbg()
+      const me = still.player
+      if ((still.tracersDrawn ?? 0) > 0 && me) {
+        const sx = (me.x - still.worldView.x) * still.zoom
+        const sy = (me.y - still.worldView.y) * still.zoom
+        if (sx > 0 && sx < 1280 && sy > 0 && sy < 720) {
+          // A BAND ALONG THE BEAM, not a box around it. The shot runs
+          // near-horizontally from the muzzle toward the aim point, so a
+          // 130x90 box is mostly sky either side of a 2 px line. Thirty-four
+          // pixels tall, centred on the muzzle's own row, is the beam and
+          // little else. Sampled beside the muzzle rather than on it: the
+          // player's own sprite is drawn there and would supply the difference
+          // by itself.
+          tracerFrame = {
+            patch: {
+              x: Math.round(Math.min(1280 - 140, sx + 40)),
+              y: Math.round(Math.max(0, sy - 17)),
+              w: 130,
+              h: 34,
+            },
+          }
+          tracerFrame.during = await samplePatch(page, tracerFrame.patch)
+          await shot('ordnance-tracer')
+        }
+      }
+      await page.evaluate(() => window.__game.freeze(false))
+      if (tracerFrame) break
     }
-  })
-  if (!shot1) throw new Error('nothing was fired, so nothing about visibility has been tested')
+    await sleep(20)
+  }
+  if (!tracerFrame) await sleep(150)
+}
 
-  // Count at both ends (§A39).
-  log(`core says ${shot1.live} alive, layer draws ${shot1.drawn}`)
-  if (shot1.live !== shot1.drawn) {
-    throw new Error(
-      `${shot1.live} projectiles alive and ${shot1.drawn} drawn — exactly the gap ` +
-        'that made rockets invisible',
+// Both ends, for the hitscan kind (§A39).
+if (narrated > 0) ok(`hitscan: the server narrated ${narrated} shot(s)`)
+else fail('the server narrated no hitscan at all — nothing about tracers has been tested')
+if (tracerPeak > 0) {
+  ok(`hitscan: the layer held ${tracerPeak} tracer(s) — both ends agree`)
+} else {
+  fail(
+    `the server narrated ${narrated} hitscan shot(s) and the layer held 0 tracers — ` +
+      'the tracer path does not reach a layer that draws',
+  )
+}
+
+if (tracerFrame) {
+  // The control frame: the same patch once the tracer has decayed. Same camera,
+  // same light, a fraction of a second later — the only thing that left it is
+  // the tracer.
+  await sleep(400)
+  await page.evaluate(() => window.__game.freeze(true))
+  const after = await samplePatch(page, tracerFrame.patch)
+  await page.evaluate(() => window.__game.freeze(false))
+  const controlAfter = await samplePatch(page, CONTROL)
+  const delta = colourDelta(tracerFrame.during, after)
+  const controlDelta = colourDelta(controlBeforeTracer, controlAfter)
+  const floor = Math.max(4, controlDelta * 3)
+  if (delta > floor) {
+    ok(`hitscan: the tracer moved its patch by ${delta.toFixed(1)} (floor ${floor.toFixed(1)}, control ${controlDelta.toFixed(1)})`)
+  } else {
+    fail(
+      `the tracer moved its patch by only ${delta.toFixed(1)} against a floor of ` +
+        `${floor.toFixed(1)} — it is counted but not visible`,
     )
   }
-
-  const R = 70
-  const patch = {
-    x: Math.max(0, Math.min(1280 - 2 * R, Math.round(shot1.sx - R))),
-    y: Math.max(0, Math.min(720 - 2 * R, Math.round(shot1.sy - R))),
-    w: 2 * R,
-    h: 2 * R,
-  }
-  // The "before" for this patch is the same region with no projectile in it: take
-  // it after the projectile has moved on, which is the honest control frame.
-  const during = await samplePatch(page, patch)
-  await shot('ordnance-inflight')
-
-  await page.waitForTimeout(1800) // let it detonate and clear
-  const afterGone = await samplePatch(page, patch)
-  const controlAfter = await samplePatch(page, control)
-
-  const r = assertChanged(afterGone, during, {
-    label: 'a projectile in flight',
-    control: { before: controlBefore, after: controlAfter },
-    minDelta: 3,
-  })
-  log(`the projectile changed its patch by ${r.delta.toFixed(1)}; control held at ${r.controlDelta.toFixed(1)}`)
+} else {
+  fail('no frame was captured with a tracer in it, so the pixel assertion did not run')
 }
+
+// --- projectile: the bazooka -----------------------------------------------
+await selectWeapon(page, 'bazooka')
+await standStill(page)
+// Up and to the right, not flat. A rocket fired level detonates on the first
+// thing beside the player — measured at three frames of flight, which is short
+// enough that the layer may never be told about it and short enough that the
+// patch is a crater rather than a rocket. An arc through open sky gives the
+// projectile a life to be photographed during.
+await page.mouse.move(1010, 150)
+await sleep(150)
+const controlBeforeProj = await samplePatch(page, CONTROL)
+
+let projFrame = null
+let projLive = 0
+let projDrawn = 0
+// Both ends compared **within one sample**. `syncProjectiles` runs in the
+// scene's update, so the mirror gains a projectile up to a frame before the
+// layer is told — taking the max of each counter separately across a poll would
+// compare a live count from one instant with a drawn count from another, and
+// report a gap that is only the frame between them.
+let agreedAt = 0
+for (let burst = 0; burst < 6 && !projFrame; burst++) {
+  await standStill(page)
+  await page.evaluate('window.__game.fire()')
+  for (let i = 0; i < 30; i++) {
+    const d = await dbg()
+    projLive = Math.max(projLive, d.projectilesLive ?? 0)
+    projDrawn = Math.max(projDrawn, d.projectilesDrawn ?? 0)
+    if ((d.projectilesLive ?? 0) > 0 && d.projectilesDrawn === d.projectilesLive) {
+      agreedAt = Math.max(agreedAt, d.projectilesLive)
+    }
+    if ((d.projectilesLive ?? 0) > 0) {
+      // Freeze first, for the same reason as the tracer above and one more: a
+      // rocket travels. Reading its position and *then* pausing computes a
+      // patch for where it was a round trip ago, and at BAZOOKA_SPEED that is
+      // enough to put it outside a 70 px box — which read 6.7 on one run and
+      // 26.5 on the next from identical code.
+      await page.evaluate(() => window.__game.freeze(true))
+      const still = await dbg()
+      // The DRAWN position, not the mirror's — see `drawnProjectiles` in the
+      // debug handle. Falling back to the mirror would reintroduce the bug this
+      // line exists to avoid, so there is no fallback.
+      const p = (still.drawnProjectiles ?? [])[0]
+      // Photograph only once the LAYER has it, not merely the mirror.
+      //
+      // Freezing pauses the scene, so the frame on screen is whichever one was
+      // last rendered. `syncProjectiles` runs inside that update, immediately
+      // before `world.update` redraws — so if the freeze lands between the
+      // socket delivering `projectile_spawn` and the next update, the mirror
+      // knows about a rocket that the last rendered frame does not contain. The
+      // patch is then computed for a position with nothing drawn at it, and the
+      // reading collapses: one run in three came out at 1.2 against a floor of
+      // 4.0, which looks exactly like the bug this check exists to catch.
+      // `projectilesDrawn` counts the STATE MAP, which `syncProjectiles` fills
+      // — it read 1 live / 1 drawn for the entire period in which no rocket had
+      // ever been drawn (§A15), so it cannot answer "is it on the canvas". What
+      // can is `projectilesLastFrame`: what the layer's most recent *redraw*
+      // put there. If the last rendered frame predates the rocket, this is 0
+      // and the patch would be computed for empty sky — which is the 1.2 this
+      // check kept reading against a floor of 4.0.
+      const caughtUp =
+        (still.projectilesLastFrame ?? 0) > 0 &&
+        (still.projectilesDrawn ?? 0) === (still.projectilesLive ?? 0)
+      if ((still.projectilesLive ?? 0) > 0 && p && caughtUp) {
+        const sx = (p.x - still.worldView.x) * still.zoom
+        const sy = (p.y - still.worldView.y) * still.zoom
+        if (sx > 0 && sx < 1280 && sy > 0 && sy < 720) {
+          // Sized ONTO the subject. A bazooka round is `LOOK.bazooka.r` 6 world
+          // px plus a 12-sample trail, which at zoom 2 covers a small fraction
+          // of a 120x120 patch — the mean shift came out at 8.1 against a floor
+          // of 4.0, and the falsified build once reached 3.7. Two numbers that
+          // close is a coin flip, and a gate that fails on one gates nothing
+          // (§A28). At 70x70 the rocket is a large enough share to separate the
+          // two bands properly.
+          projFrame = {
+            patch: {
+              x: Math.round(Math.max(0, Math.min(1280 - 70, sx - 35))),
+              y: Math.round(Math.max(0, Math.min(720 - 70, sy - 35))),
+              w: 70,
+              h: 70,
+            },
+          }
+          projFrame.during = await samplePatch(page, projFrame.patch)
+          await shot('ordnance-projectile')
+        }
+      }
+      await page.evaluate(() => window.__game.freeze(false))
+      if (projFrame) break
+    }
+    await sleep(25)
+  }
+  if (!projFrame) await sleep(200)
+}
+
+if (projLive > 0) ok(`projectile: the server had ${projLive} in the air`)
+else fail('nothing was fired, so nothing about projectile visibility has been tested')
+if (agreedAt > 0) {
+  ok(`projectile: the layer held all ${agreedAt} of them in one sample — both ends agree`)
+} else {
+  fail(
+    `up to ${projLive} projectile(s) alive and at most ${projDrawn} drawn, and never ` +
+      'equal in a single sample — exactly the gap that made rockets invisible',
+  )
+}
+
+if (projFrame) {
+  // Wait for it to detonate and clear, then take the same patch again.
+  await sleep(2200)
+  const after = await samplePatch(page, projFrame.patch)
+  const controlAfter = await samplePatch(page, CONTROL)
+  const delta = colourDelta(projFrame.during, after)
+  const controlDelta = colourDelta(controlBeforeProj, controlAfter)
+  const floor = Math.max(4, controlDelta * 3)
+  if (delta > floor) {
+    ok(`projectile: the rocket moved its patch by ${delta.toFixed(1)} (floor ${floor.toFixed(1)}, control ${controlDelta.toFixed(1)})`)
+  } else {
+    fail(
+      `the rocket moved its patch by only ${delta.toFixed(1)} against a floor of ` +
+        `${floor.toFixed(1)} — it is tracked but not drawn`,
+    )
+  }
+} else {
+  fail('no frame was captured with a projectile in it, so the pixel assertion did not run')
+}
+
+if (pageErrors.length) fail(`page errors: ${pageErrors.slice(0, 3).join(' | ')}`)
+else ok('no page errors')
+
+await stack.close()
+console.log(failures.length ? `\nordnance-visible: ${failures.length} FAILED` : '\nordnance-visible: ok')
+process.exit(failures.length ? 1 : 0)

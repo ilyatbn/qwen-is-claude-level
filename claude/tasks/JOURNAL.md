@@ -3779,3 +3779,72 @@ Notes: THREE OF THIS SESSION'S OWN CHANGES BROKE BROWSER CHECKS IN WAYS THAT REA
        mirror dropped it, which a correct client fails by one frame. Both fixed;
        the pickup tolerance is now derived from the poll interval and
        JETPACK_MAX_SPEED rather than being a number read off one run.
+
+## T13.06.6 — gun projectiles: nothing has ever drawn them in a real game — DONE
+Files: client/src/scenes/GameScene.ts, scripts/checks/ordnance-visible.mjs, scripts/e2e.mjs
+Verified: `node scripts/e2e.mjs ordnance-visible` 1/1; client typecheck + 507 tests.
+Notes: MEASURED FIRST, on the unmodified code, per §C23's instruction:
+         kind              server  layer  pixels
+         hitscan (smg)       1       1     13.7  vs floor 4.0 — visible
+         projectile (bazooka)1       1      0.0  vs floor 4.0 — NEVER DRAWN
+       So `TRACER_LIFETIME` 0.09 s is NOT the problem — candidate 2 is false, and
+       tracers were fine all along. The defect is candidate 1 (the §C0 shape) but
+       for PROJECTILES: `WorldView.update(near, dt = 0, weather?)` gates its
+       ordnance work on `dt > 0`, and `GameScene` called it with ONE argument. So
+       `WorldView.ordnance.update()` never ran in a real round, and that layer's
+       `Graphics` is only filled inside `update()`. **No rocket, grenade or
+       meteor has ever been drawn in an actual game.**
+       `SandboxScene` calls `this.world.ordnance.update(dt)` itself — which is
+       exactly why T13.03's pixel test passed while a player saw nothing.
+       THE BOTH-ENDS COUNTERS READ 1 LIVE / 1 DRAWN THE WHOLE TIME, because
+       `projectilesDrawn` counts the layer's state map, which `syncProjectiles`
+       fills faithfully. §A15 in its purest form: only pixels could catch this.
+       The second `OrdnanceLayer` is deleted — real duplication, which existed
+       precisely because the shared one was unreachable.
+       FALSIFIED: restoring the `dt = 0` call leaves both both-ends assertions
+       GREEN and drives both pixel assertions to exactly 0.0. Passing runs read
+       tracer 21.4 and rocket 17.8-26.5. No overlap.
+Left for later: `game-wasm`'s `fire` still re-implements the `Delivery` match and
+       its impact loop treats every projectile as a bazooka. Thirteen browser
+       checks run on `?sandbox=1` and certify a scene the player never plays —
+       that has now hidden a real bug twice. Needs its own task: the sandbox's
+       API is JSON events returned from `fire()`, and `game-wasm` cannot depend
+       on `game-server`'s serialisers without inverting the dependency.
+
+## T13.06.10 — the gate's flake is a lost message, not a busy box — DONE
+Files: crates/game-server/tests/{lobby,rooms}.rs
+Verified: `./scripts/check.sh` (below). Reproduction measured, not assumed.
+Notes: REPRODUCTION RATE, `cargo test -p game-server`, 10 runs each:
+         before                              1/10 failed, mean 83.0 s
+         first attempt (retry every 1.5 s)  10/10 failed, mean 55.6 s
+         after                               0/10 failed, mean 77.0 s
+       plus 15 further clean runs. Not slower — slightly faster.
+       THE DIAGNOSIS IS NOT WHAT THE TASK ASSUMED. The failure is always
+       `waited 30 s for 1 welcome, saw 0 (inbox: EMPTY)` — not one event of any
+       kind, on a socket whose `open` had already fired. Thirty seconds of
+       silence is not a loaded box; the emit was never delivered. §A28 records
+       the mechanism, and waiting for `open` narrows the window without closing
+       it. Wall-clock margins say the same: across a full workspace run the worst
+       real wait used 24 % of its budget, so the budget was never the constraint.
+       So this took the task's THIRD option (wait on the effect with an adaptive
+       bound), not its first. `emit_until` re-emits `join` until `welcome`
+       arrives — safe because the server defines it so ("a second join on one
+       socket is ignored, not a second player").
+       I MADE IT WORSE FIRST, and the measurement caught it: retrying every
+       1.5 s is UNDER the 1.7-1.9 s a healthy `welcome` actually takes, so every
+       healthy run double-joined — 1/10 became 10/10. The server's duplicate
+       guard is only set once `room.join()` completes, so a retry inside that
+       window is not deduplicated at all. Retry is now budget/3, floored at 5 s.
+       0/25 IS NOT EVIDENCE THE FIX WORKS: the retry never fired once in those
+       25 runs, so the rate says the flake did not recur, not that it is fixed.
+       At that rate nobody can run enough iterations to tell the two apart. So
+       the mechanism is proven directly instead —
+       `a_join_that_is_never_delivered_is_retried_until_it_is` sends the first
+       emit to an event with no handler, and asserts BOTH that the retry
+       recovers it and that exactly one seat is taken.
+       FALSIFIED: with the retry removed that test fails with
+       `emitted join 1 time(s) over 30 s and never saw welcome (inbox: empty)` —
+       the identical message as the real flake.
+       `wait_for` is also a real wall-clock deadline now. `for _ in 0..200 {
+       sleep(50) }` counts ITERATIONS, so under load the budget silently
+       stretched and the number in the failure message was a fiction.

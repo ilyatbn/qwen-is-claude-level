@@ -55,11 +55,27 @@ export class OrdnanceLayer {
     return this.state.lights()
   }
 
+  /**
+   * How many times this layer has actually **redrawn**, and what the last redraw
+   * put on the canvas.
+   *
+   * e2e only, and it exists to answer a *timing* question, not to be asserted
+   * on: `projectilesDrawn` counts the state map, which `syncProjectiles` fills
+   * — and that counter read 1 live / 1 drawn for the whole period in which no
+   * rocket had ever been drawn in a real game (§A15). A check that freezes the
+   * scene to photograph a projectile needs to know the frame on screen was
+   * rendered *after* the projectile arrived; nothing else could tell it.
+   */
+  redraws = 0
+  drawnProjectilesLastFrame = 0
+
   update(dt: number): void {
     this.state.update(dt)
     const g = this.gfx
     const c = C()
     g.clear()
+    this.redraws += 1
+    this.drawnProjectilesLastFrame = this.state.projectiles.size
 
     // Tracers: a wide warm halo, a bright core, and a muzzle flash.
     //
