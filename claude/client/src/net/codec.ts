@@ -42,6 +42,12 @@ export interface SnapshotPlayer {
   jetpackFuel: number
   /** This player's own FoV multiplier: fog times the smoke they stand in. */
   vision: number
+  /**
+   * Energy pool, in battery units 0..`BATTERY_MAX` — already dequantised from
+   * the wire byte, for the same reason `jetpackFuel` is (§A24): a value that is
+   * sometimes raw and sometimes scaled gets divided by 255 twice.
+   */
+  battery: number
   /** `null` when the player is holding nothing. */
   selectedItem: number | null
 }
@@ -175,6 +181,7 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
     const jetpackFuel = (r.u8() / 255) * C().JETPACK_MAX_FUEL
     const item = r.u8()
     const vision = r.u8() / 255
+    const battery = (r.u8() / 255) * C().BATTERY_MAX
     players.push({
       id,
       x,
@@ -186,6 +193,7 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
       flags,
       jetpackFuel,
       vision,
+      battery,
       selectedItem: item === 255 ? null : item,
     })
   }

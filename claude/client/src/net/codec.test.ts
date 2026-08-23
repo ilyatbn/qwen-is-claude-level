@@ -91,6 +91,7 @@ function snapshotFixture(n: number, trailing = 0): ArrayBuffer {
     v.setUint8(at++, 128)
     v.setUint8(at++, i === 0 ? 255 : 3)
     v.setUint8(at++, 204) // vision: 0.8 of clear
+    v.setUint8(at++, 153) // battery: 0.6 of BATTERY_MAX (T14.02)
   }
   v.setUint32(at, 9999, true)
   return b
@@ -187,6 +188,9 @@ describe('snapshot', () => {
     expect(p.aim).toBe(40000)
     expect(p.health).toBe(137)
     expect(p.vision).toBeCloseTo(204 / 255, 5)
+    // Dequantised against the constant, like `jetpackFuel` (§A24) — a raw byte
+    // here would be divided by 255 a second time somewhere downstream.
+    expect(p.battery).toBeCloseTo((153 / 255) * C().BATTERY_MAX, 4)
   })
 
   it('decodes flags to the right booleans', () => {

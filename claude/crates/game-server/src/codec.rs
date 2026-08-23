@@ -7,7 +7,7 @@
 //! without checking. The fuzz tests are not decoration.
 
 use game_core::constants::{
-    CHUNK_SIZE, HEALTH_CAP, INPUT_REDUNDANCY, JETPACK_MAX_FUEL, SNAPSHOT_FOOTER_BYTES,
+    BATTERY_MAX, CHUNK_SIZE, HEALTH_CAP, INPUT_REDUNDANCY, JETPACK_MAX_FUEL, SNAPSHOT_FOOTER_BYTES,
     SNAPSHOT_HEADER_BYTES, SNAPSHOT_PLAYER_BYTES,
 };
 use game_core::map::{rle, Map};
@@ -209,6 +209,10 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
         // `fogMult: 1` and `World::fog_multiplier` had no caller at all: heavy fog
         // was simulated every round and changed nothing anyone could see.
         b.push((world.vision_multiplier(p) * 255.0).clamp(0.0, 255.0) as u8);
+        // Battery: the energy pool §C8's blue bar shows and §B5's shield spends.
+        // Quantised like fuel — a bar has nowhere near 256 pixels of height, and
+        // the readout beside it is rounded to a whole percent.
+        b.push((p.battery / BATTERY_MAX * 255.0).clamp(0.0, 255.0) as u8);
     }
 
     b.extend_from_slice(&last_input_seq.to_le_bytes());
@@ -244,6 +248,8 @@ pub struct SnapshotPlayer {
     pub selected_item: u8,
     /// FoV multiplier, fog times smoke, quantised (T11.08).
     pub vision: u8,
+    /// Energy pool, quantised against `BATTERY_MAX` (T14.02).
+    pub battery: u8,
 }
 
 pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
@@ -267,6 +273,7 @@ pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
             jetpack_fuel: r.u8()?,
             selected_item: r.u8()?,
             vision: r.u8()?,
+            battery: r.u8()?,
         });
     }
     let last_input_seq = r.u32()?;

@@ -538,6 +538,15 @@ impl Room {
         if !self.config.dev_loadout {
             return;
         }
+        // A full battery, because §B5 made the energy pool a *resource*: an energy
+        // weapon with no charge is a paperweight, and a dev loadout that grants
+        // the weapons and none of their ammunition arms nobody. It is also what
+        // makes §C8's energy bar show anything at all — `hud-bars` sampled it and
+        // found the empty track, which is a true reading of a bar with nothing
+        // in it.
+        if let Some(p) = self.world.player_mut(id) {
+            p.battery = game_core::constants::BATTERY_MAX;
+        }
         game_core::world::give(&mut self.world, id, game_core::items::registry::BAZOOKA, 4);
         game_core::world::give(&mut self.world, id, game_core::items::registry::SMG, 60);
         // There used to be a **second** bazooka stack here, because `MAX_STACK`

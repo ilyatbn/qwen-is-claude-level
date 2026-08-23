@@ -1692,6 +1692,24 @@ impl World {
                 };
                 drops.push((pos, stacks));
                 let tick = self.tick;
+                // **Tell the owner their inventory is gone.**
+                //
+                // `die` empties it — every stack is on the ground a line below —
+                // and nothing said so. `GameEvent::Inventory` exists for exactly
+                // this and is pushed by `add`, `select` and `consume`; death is
+                // the largest change of all and was the one that did not push it,
+                // so the client kept rendering the pre-death loadout until the
+                // next pickup happened to correct it.
+                //
+                // Measured: a player killed by a molotov was still listed as
+                // holding four rockets, sixty smg rounds and two molotovs five
+                // seconds later, and the e2e harness — which looks up a weapon's
+                // slot index in that view before pressing its hotkey — was
+                // selecting by a map of an inventory that no longer existed.
+                self.events.push(GameEvent::Inventory {
+                    tick,
+                    player_id: victim,
+                });
                 self.events.push(GameEvent::Death {
                     tick,
                     victim,

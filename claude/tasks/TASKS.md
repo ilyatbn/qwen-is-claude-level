@@ -311,7 +311,7 @@ watch the hole appear, stand in toxic rain and see it, and play a round to the e
 ## M14 — HUD and UI (7)
 
 - [x] [T14.01](M14/T14.01-timer-and-banner.md) — Round timer and event banner **(v4)**
-- [ ] [T14.02](M14/T14.02-bars.md) — Health, energy and jetpack bars **(v4)**
+- [x] [T14.02](M14/T14.02-bars.md) — Health, energy and jetpack bars **(v4)**
 - [ ] [T14.03](M14/T14.03-consumables.md) — Heals and batteries leave the inventory **(v4)**
 - [ ] [T14.04](M14/T14.04-quick-throw.md) — Quick-throw a grenade with E **(v4)**
 - [ ] [T14.05](M14/T14.05-inventory-ui.md) — Quick bar and backpack **(v4)**

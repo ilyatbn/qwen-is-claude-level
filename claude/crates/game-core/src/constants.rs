@@ -646,8 +646,8 @@ pub const MASK_CHECKSUM_INTERVAL: f32 = 5.0;
 /// — velocities are required for extrapolation through a dropped snapshot
 /// (`docs/42` §4), and aim is fixed at `u16` by `docs/22` §2.
 ///
-/// A snapshot is therefore `8 + 16n + 4`: **108 bytes for six players**, against
-/// the doc's 97. At 20 Hz that is 2.2 KB/s down rather than 1.9 — well inside the
+/// A snapshot is therefore `8 + 17n + 4`: **114 bytes for six players**, against
+/// the doc's 97. At 20 Hz that is 2.3 KB/s down rather than 1.9 — well inside the
 /// budget in `docs/40` §4.
 ///
 /// The sixteenth byte is **vision** (T11.08): the player's own FoV multiplier,
@@ -656,7 +656,20 @@ pub const MASK_CHECKSUM_INTERVAL: f32 = 5.0;
 /// cannot derive it from a global effect flag. Before it existed, `GameScene`
 /// hardcoded `fogMult: 1` and `World::fog_multiplier` had **no caller at all**:
 /// heavy fog was simulated every round and changed nothing anyone could see.
-pub const SNAPSHOT_PLAYER_BYTES: usize = 16;
+/// The seventeenth byte is **battery** (T14.02).
+///
+/// §C8 puts an energy bar under the health bar and §B5 makes that bar do real
+/// work — every laser shot is a shield you are not going to have, and the trade
+/// is only legible if you can watch the number fall. The client cannot derive it:
+/// the pool is spent by the shield tick and by energy weapons, both resolved
+/// server-side.
+///
+/// **A spec gap, reported rather than absorbed.** §C8 asks for the bar and §C9
+/// budgets `SNAPSHOT_PLAYER_BYTES` 16 → 17 for its *own* byte (the heals and
+/// batteries counters, T14.03), with neither amendment saying how the energy pool
+/// itself reaches the client. Both bytes are needed and they carry different
+/// things, so this is 17 and T14.03 is 18.
+pub const SNAPSHOT_PLAYER_BYTES: usize = 17;
 /// Header bytes before the player array: tick, round_time_ds, darkness, count.
 pub const SNAPSHOT_HEADER_BYTES: usize = 8;
 /// Trailing `last_input_seq`.

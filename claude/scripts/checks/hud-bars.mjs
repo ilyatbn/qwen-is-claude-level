@@ -36,6 +36,7 @@
  * both tasks' Done-when names it; T14.02 extends it with the bars and their
  * pixels. See the report for the ordering defect.
  */
+import { samplePatch } from './pixels.mjs'
 import { startStack, enterBattle, tally, sleep } from './harness.mjs'
 
 const PORT = 3119
@@ -46,7 +47,12 @@ const { fail, ok, failures } = tally('hud-bars')
 const stack = await startStack({
   port: PORT,
   label: 'hud-bars',
-  env: { ROUND_SECONDS: '180', BOT_COUNT: '0' },
+  // `DEV_LOADOUT` for the **battery**, not for the weapons: §C8's energy bar
+  // shows the pool §B5 spends, and a player who has not found a battery pack has
+  // none — the bar was sampled and found to be the empty track, which is a true
+  // reading of a bar with nothing in it and tells you nothing about whether it
+  // is wired up or what colour it is.
+  env: { ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1' },
 })
 const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
 await enterBattle(page, { waitPlaying: true, label: 'hud-bars' })
@@ -239,6 +245,113 @@ if (falling.length >= 2) {
   }
 }
 await shot('hud-bars-refilled')
+
+// --- T14.02 / §C8: the three bars, on the screen ---------------------------
+//
+// Everything above is the jetpack *number*. The bars are the cluster §C8 asks
+// for, and a bar is exactly the kind of thing that passes every state assertion
+// while being invisible — so each claim is made twice: what the layer was told
+// to draw (`debug().hudBars`) and the pixels in the rect the element occupies
+// (§C2), each against a control.
+{
+  const rectOf = (id) =>
+    page.evaluate((elId) => {
+      const el = document.getElementById(elId)
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      if (r.width < 1 || r.height < 1) return null
+      return {
+        x: Math.round(r.x),
+        y: Math.round(r.y),
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+      }
+    }, id)
+
+  const ids = ['hud-bar-health', 'hud-bar-energy', 'hud-bar-jet']
+  const rects = {}
+  for (const id of ids) rects[id] = await rectOf(id)
+  const missing = ids.filter((id) => !rects[id])
+  if (missing.length) {
+    fail(`not laid out: ${missing.join(', ')} — there is no bar cluster on the screen`)
+  } else {
+    ok(`bars laid out: ${ids.map((id) => `${id} ${rects[id].w}x${rects[id].h}`).join(', ')}`)
+
+    // Each bar is a different colour, sampled from the frame. Three tracks that
+    // all render grey would satisfy every numeric assertion here.
+    const patches = {}
+    for (const id of ids) patches[id] = await samplePatch(page, rects[id])
+    const dominant = (p) =>
+      p.r > p.g && p.r > p.b ? 'r' : p.g > p.b ? 'g' : 'b'
+    const hp = patches['hud-bar-health']
+    const en = patches['hud-bar-energy']
+    const jet = patches['hud-bar-jet']
+    if (dominant(en) !== 'b') {
+      fail(`the energy bar is not blue on the frame — rgb ${en.r.toFixed(0)},${en.g.toFixed(0)},${en.b.toFixed(0)}`)
+    } else {
+      ok(`the energy bar renders blue — rgb ${en.r.toFixed(0)},${en.g.toFixed(0)},${en.b.toFixed(0)}`)
+    }
+    if (jet.b >= jet.r || jet.b >= jet.g) {
+      fail(`the jetpack bar is not yellow on the frame — rgb ${jet.r.toFixed(0)},${jet.g.toFixed(0)},${jet.b.toFixed(0)}`)
+    } else {
+      ok(`the jetpack bar renders yellow — rgb ${jet.r.toFixed(0)},${jet.g.toFixed(0)},${jet.b.toFixed(0)}`)
+    }
+    // The control for both: the health bar, which is neither.
+    if (dominant(hp) === dominant(en)) {
+      fail('the health and energy bars render the same colour — the cluster is one flat block')
+    } else {
+      ok(`the health bar is distinct from the energy bar (${dominant(hp)} vs ${dominant(en)})`)
+    }
+
+    // Health tracks the snapshot, at both ends, and the overheal shows.
+    const k = await page.evaluate(() => window.__game.constants())
+    const d = await dbg()
+    const shown = d.hudBars.health
+    if (Math.abs(Number(shown.label) - Math.round(d.health)) > 1) {
+      fail(`the health bar reads "${shown.label}" while the snapshot says ${d.health}`)
+    } else {
+      ok(`the health bar reads the snapshot's health (${shown.label})`)
+    }
+    if (shown.over !== 0) {
+      fail(`the overheal band is showing at ${d.health} health, which is not above ${k.BASE_HEALTH}`)
+    } else {
+      ok(`control: no overheal band at ${Math.round(d.health)} health`)
+    }
+    // ...and the fill is a real fraction of the track, not 0 or 1 by accident.
+    if (!(shown.fill > 0.1 && shown.fill < 1)) {
+      fail(`the health fill is ${shown.fill} — not a fraction of a HEALTH_CAP-wide track`)
+    } else {
+      ok(`the health fill is ${(shown.fill * 100).toFixed(0)}% of a ${k.HEALTH_CAP}-wide track`)
+    }
+
+    // The energy bar is doing real work only if it reads the battery (§B5).
+    if (Math.abs(Number(d.hudBars.energy.label) - Math.round(d.hudBars.battery)) > 1) {
+      fail(
+        `the energy bar reads "${d.hudBars.energy.label}" while the snapshot's battery ` +
+          `is ${d.hudBars.battery} — the bar is wired to something else`,
+      )
+    } else {
+      ok(`the energy bar reads the snapshot's battery (${d.hudBars.energy.label} of ${k.BATTERY_MAX})`)
+    }
+
+    // The jetpack bar moves with the tank, asserted on pixels: burn it down and
+    // sample the same rect again.
+    const before = await samplePatch(page, rects['hud-bar-jet'])
+    await page.keyboard.down(' ')
+    await sleep(2500)
+    await page.keyboard.up(' ')
+    const after = await samplePatch(page, rects['hud-bar-jet'])
+    const spent = (await dbg()).hudBars.jetpack
+    if (before.digest === after.digest) {
+      fail('the jetpack bar rendered identical pixels before and after a 2.5 s burn')
+    } else if (!(spent.fill < 0.9)) {
+      fail(`the jetpack bar still reads ${(spent.fill * 100).toFixed(0)}% after a 2.5 s burn`)
+    } else {
+      ok(`the jetpack bar fell to ${(spent.fill * 100).toFixed(0)}% and its pixels changed with it`)
+    }
+    await shot('hud-bars-cluster')
+  }
+}
 
 if (pageErrors.length) fail(`page errors: ${pageErrors.slice(0, 3).join(' | ')}`)
 else ok('no page errors')

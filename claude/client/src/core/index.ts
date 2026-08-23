@@ -217,6 +217,9 @@ export interface Constants {
   BACKDROP_MAX_DIST_TO_SOLID: number
   BACKDROP_MIN_ROOF: number
   TIMER_WARN_SECONDS: number
+  BATTERY_MAX: number
+  SHIELD_DRAIN: number
+  SHIELD_DURATION: number
 }
 
 /**

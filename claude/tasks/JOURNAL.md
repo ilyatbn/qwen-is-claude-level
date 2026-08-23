@@ -3929,3 +3929,28 @@ because the repaired fixture now runs 30–37 s instead of 18 s.
 - `ordnance` now fails with this diagnosis rather than with `"bazooka" is not in
   the inventory`, which is a true statement that says nothing.
 
+
+## T14.02 — health, energy and jetpack bars (§C8)
+
+- `client/src/ui/bars.ts` + `bars-math.ts`: the bottom-left cluster. Health runs
+  red→green over a track that is **`HEALTH_CAP` wide**, so a full bar and an
+  overhealed one are visibly different — a track that saturates at `BASE_HEALTH`
+  reads "full" at 100 and at 150, which is the one distinction §C8 asks for.
+  Overheal is its own gold band. Energy is blue, jetpack yellow, and the jetpack
+  dims through `JETPACK_REFILL_DELAY` so the flat half-second is not read as a
+  broken bar. The shield is a **ring above the cluster**, not part of the health
+  bar: it is a timer, not a pool (`docs/21` §2), and §B5's payoff is that the
+  battery ends it early, so the ring takes whichever of the two runs out first.
+- **`SNAPSHOT_PLAYER_BYTES` 16 → 17: the battery.** A spec gap, reported rather
+  than absorbed — §C8 asks for the energy bar and §C9 budgets 16 → 17 for its own
+  byte (heals/batteries counters), and neither says how the *pool* reaches the
+  client. It cannot be derived: it is spent by the shield tick and by energy
+  weapons, both server-side. T14.03 therefore takes 18.
+- `DEV_LOADOUT` now grants a full battery. It handed out energy weapons and none
+  of their ammunition, so §B5's weapons were paperweights and §C8's bar was
+  empty — `hud-bars` sampled it and correctly found the bare track.
+- 13 unit tests on the arithmetic pinned to the constants; `hud-bars` extended
+  with the cluster's own pixels: the energy bar renders blue and the jetpack
+  yellow with the health bar as the control, health reads the snapshot, and a
+  2.5 s burn moves both the fill and the pixels.
+- `./scripts/check.sh` green, 29/29 e2e.

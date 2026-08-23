@@ -37,6 +37,8 @@ import { FLAG, flag } from '../net/codec'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { Minimap } from '../ui/minimap'
 import { Hud, type EffectPhase } from '../ui/hud'
+import { Bars } from '../ui/bars'
+import { energyBar, healthBar, inRefillDelay, jetpackBar, shieldRing } from '../ui/bars-math'
 import { DebugHud } from '../ui/debugHud'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
@@ -68,6 +70,13 @@ export class GameScene extends Phaser.Scene {
   private hud!: HTMLDivElement
   /** §C8: the round timer and the event banner. Its own element tree. */
   private topHud: Hud | null = null
+  /** §C8: the bottom-left health / energy / jetpack cluster. */
+  private bars: Bars | null = null
+  /** Energy pool, straight from the snapshot (§B5). */
+  private battery = 0
+  /** Whether the server says the shield is up, and when it went up. */
+  private shieldOn = false
+  private shieldSince = 0
   private jetReadout: HTMLDivElement | null = null
   /** The private room's join code, once the server has told us (§B9). */
   private joinCode: string | null = null
@@ -635,6 +644,8 @@ export class GameScene extends Phaser.Scene {
       this.hud?.remove()
       this.topHud?.destroy()
       this.topHud = null
+      this.bars?.destroy()
+      this.bars = null
       this.jetReadout?.remove()
       this.jetReadout = null
       this.hideJoinCodeBanner()
@@ -766,6 +777,14 @@ export class GameScene extends Phaser.Scene {
       // here and dividing by 255 again would be the second half of a conversion
       // that has already happened.
       this.fuel = mine.jetpackFuel
+      // Also already dequantised by `codec.ts`, for the same reason (§A24).
+      this.battery = mine.battery
+      // The shield is a timer and the snapshot carries only the *flag*, so the
+      // start is the edge: the first tick it is up. Derived rather than sent,
+      // because a second field would be a second thing that can disagree.
+      const up = flag(mine.flags, FLAG.shield)
+      if (up && !this.shieldOn) this.shieldSince = this.serverRoundTime
+      this.shieldOn = up
       // Authoritative, because smoke is positional: what you can see depends on
       // which cloud you are standing in. This replaced a hardcoded 1, which is
       // why heavy fog changed nothing in the real game for four milestones.
@@ -1216,6 +1235,7 @@ export class GameScene extends Phaser.Scene {
     // with everything else — a DOM element outliving its scene is how the death
     // overlay once stayed on screen through a restart.
     this.topHud = new Hud()
+    this.bars = new Bars()
   }
 
   private setStatus(text: string): void {
@@ -1339,6 +1359,25 @@ export class GameScene extends Phaser.Scene {
     // not from a local stopwatch: §B4 made the death countdown server-driven
     // because a stopwatch drifts, and a round timer drifts the same way.
     this.topHud?.update(secondsLeft, this.roundTime, C().TIMER_WARN_SECONDS)
+
+    // §C8's cluster. `fuelShown` is last frame's fuel, which is what makes the
+    // refill delay derivable from two samples rather than from a flag the client
+    // is never sent.
+    const c = C()
+    const waiting = inRefillDelay(this.fuelShown, this.fuel, c.JETPACK_MAX_FUEL, this.wasJetting)
+    this.bars?.update({
+      health: healthBar(this.health, c.BASE_HEALTH, c.HEALTH_CAP),
+      energy: energyBar(this.battery, c.BATTERY_MAX),
+      jetpack: jetpackBar(this.fuel, c.JETPACK_MAX_FUEL, waiting),
+      shield: shieldRing(
+        this.shieldOn,
+        this.shieldSince,
+        this.serverRoundTime,
+        c.SHIELD_DURATION,
+        this.battery,
+        c.SHIELD_DRAIN,
+      ),
+    })
     const banner = phaseBanner(this.phase, secondsLeft)
     // Readability matters here: the previous format rendered as
     // "3:56 1= p0 0 1= p1 0 1= cy 0", where the trailing "=" reads as an equals
@@ -1626,6 +1665,15 @@ export class GameScene extends Phaser.Scene {
           hudTimer: {
             text: self.topHud?.timer.textContent ?? '',
             warn: self.topHud?.timer.dataset['warn'] === '1',
+          },
+          // §C8's cluster, both ends (§A39): what each bar is told to draw,
+          // beside the snapshot fields it was computed from.
+          hudBars: {
+            health: healthBar(self.health, C().BASE_HEALTH, C().HEALTH_CAP),
+            energy: energyBar(self.battery, C().BATTERY_MAX),
+            jetpack: jetpackBar(self.fuel, C().JETPACK_MAX_FUEL, false),
+            shieldOn: self.shieldOn,
+            battery: self.battery,
           },
           hudBanner: {
             text: self.topHud?.banner.textContent ?? '',
