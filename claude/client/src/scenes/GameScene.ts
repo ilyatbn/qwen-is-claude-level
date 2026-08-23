@@ -74,6 +74,9 @@ export class GameScene extends Phaser.Scene {
   private bars: Bars | null = null
   /** Energy pool, straight from the snapshot (§B5). */
   private battery = 0
+  /** §C9's counters, straight from the snapshot. Not inventory. */
+  private heals = 0
+  private batteries = 0
   /** Whether the server says the shield is up, and when it went up. */
   private shieldOn = false
   private shieldSince = 0
@@ -630,7 +633,21 @@ export class GameScene extends Phaser.Scene {
       this.conn.sendSelectSlot(this.selectedSlot)
       this.refreshHud()
     })
-    this.input.keyboard?.on('keydown-E', () => this.conn.sendUseItem(this.selectedSlot))
+    // §C11: `E` is quick-throw now. `use_item` on the selection moves to `G`.
+    //
+    // Not a doc'd binding — §C10 gives the quick bar `1`-`8` and the wheel and
+    // says firing and using act on the selection, without naming a use key, and
+    // §C11 takes `E`. Something still has to use a shield generator: heals and
+    // batteries left the inventory with §C9, so `use_item` now has exactly one
+    // remaining target and no key. `G` is next to it and unbound.
+    this.input.keyboard?.on('keydown-G', () => this.conn.sendUseItem(this.selectedSlot))
+    this.input.keyboard?.on('keydown-E', () => this.conn.sendQuickThrow())
+    // §C9: `Q` heals, `R` charges. Both slotless and both refused server-side at
+    // zero, so the client sends unconditionally — a client-side "do you have
+    // one?" would be a second copy of a rule the server already owns, and the
+    // two would disagree the first time a pickup was in flight.
+    this.input.keyboard?.on('keydown-Q', () => this.conn.sendUseHeal())
+    this.input.keyboard?.on('keydown-R', () => this.conn.sendUseBattery())
     this.input.keyboard?.on('keydown-TAB', (e: KeyboardEvent) => {
       e.preventDefault()
       this.scoreboardOpen = !this.scoreboardOpen
@@ -779,6 +796,8 @@ export class GameScene extends Phaser.Scene {
       this.fuel = mine.jetpackFuel
       // Also already dequantised by `codec.ts`, for the same reason (§A24).
       this.battery = mine.battery
+      this.heals = mine.heals
+      this.batteries = mine.batteries
       // The shield is a timer and the snapshot carries only the *flag*, so the
       // start is the edge: the first tick it is up. Derived rather than sent,
       // because a second field would be a second thing that can disagree.
@@ -1369,6 +1388,7 @@ export class GameScene extends Phaser.Scene {
       health: healthBar(this.health, c.BASE_HEALTH, c.HEALTH_CAP),
       energy: energyBar(this.battery, c.BATTERY_MAX),
       jetpack: jetpackBar(this.fuel, c.JETPACK_MAX_FUEL, waiting),
+      consumables: { heals: this.heals, batteries: this.batteries },
       shield: shieldRing(
         this.shieldOn,
         this.shieldSince,
@@ -1531,6 +1551,9 @@ export class GameScene extends Phaser.Scene {
             count: sl?.count ?? 0,
             selected: i === self.selectedSlot,
           })),
+          // §C11 asserts the selection is *unchanged*, which needs the index
+          // and not only the per-slot flag.
+          selectedSlot: self.selectedSlot,
           minesPlaced: self.observed.minesPlaced,
           minesEnded: self.observed.minesEnded,
           swings: self.observed.swings,
@@ -1674,6 +1697,8 @@ export class GameScene extends Phaser.Scene {
             jetpack: jetpackBar(self.fuel, C().JETPACK_MAX_FUEL, false),
             shieldOn: self.shieldOn,
             battery: self.battery,
+            heals: self.heals,
+            batteries: self.batteries,
           },
           hudBanner: {
             text: self.topHud?.banner.textContent ?? '',

@@ -236,7 +236,7 @@ describe('roster and entities', () => {
       aim: 0,
       health: 100,
       flags: 1,
-      jetpackFuel: 255, vision: 1, battery: 0,
+      jetpackFuel: 255, vision: 1, battery: 0, heals: 0, batteries: 0,
       selectedItem: null,
     })
     mirror.applySnapshot(

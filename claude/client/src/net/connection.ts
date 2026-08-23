@@ -212,6 +212,21 @@ export class Connection {
     this.emit('fire', {})
   }
 
+  /** §C9: `Q`. Slotless — the counters are not inventory. */
+  sendUseHeal(): void {
+    this.emit('use_heal', {})
+  }
+
+  /** §C9: `R`. */
+  sendUseBattery(): void {
+    this.emit('use_battery', {})
+  }
+
+  /** §C11: `E`. Slotless — the server picks by the documented order. */
+  sendQuickThrow(): void {
+    this.emit('quick_throw', {})
+  }
+
   sendToggleFlashlight(): void {
     this.emit('toggle_flashlight', {})
   }

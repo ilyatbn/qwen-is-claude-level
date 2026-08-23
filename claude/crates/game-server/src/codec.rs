@@ -213,6 +213,10 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
         // Quantised like fuel — a bar has nowhere near 256 pixels of height, and
         // the readout beside it is rounded to a whole percent.
         b.push((p.battery / BATTERY_MAX * 255.0).clamp(0.0, 255.0) as u8);
+        // §C9: heals in the low 2 bits, batteries in the next 3. Masked to the
+        // caps' widths rather than to the values, so a counter that somehow ran
+        // past its cap truncates instead of corrupting the neighbouring field.
+        b.push((p.heals & 0b11) | ((p.batteries & 0b111) << 2));
     }
 
     b.extend_from_slice(&last_input_seq.to_le_bytes());
@@ -250,6 +254,8 @@ pub struct SnapshotPlayer {
     pub vision: u8,
     /// Energy pool, quantised against `BATTERY_MAX` (T14.02).
     pub battery: u8,
+    /// §C9's counters: heals in 2 bits, batteries in 3.
+    pub consumables: u8,
 }
 
 pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
@@ -274,6 +280,7 @@ pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
             selected_item: r.u8()?,
             vision: r.u8()?,
             battery: r.u8()?,
+            consumables: r.u8()?,
         });
     }
     let last_input_seq = r.u32()?;
@@ -850,5 +857,56 @@ mod tests {
         assert!(!dimensions_are_sane(2000, 1024));
         assert!(!dimensions_are_sane(0, 1024));
         assert!(!dimensions_are_sane(100_000, 1024));
+    }
+}
+
+#[cfg(test)]
+mod consumables_ride_in_the_snapshot {
+    use super::*;
+    use game_core::constants::{MapScale, MAX_BATTERIES, MAX_HEALS, SNAPSHOT_PLAYER_BYTES};
+
+    fn world_with(heals: u8, batteries: u8) -> World {
+        let mut w = World::new(4242, MapScale::Small);
+        w.add_player(0, 0, "ana".into());
+        let p = w.player_mut(0).expect("added");
+        p.heals = heals;
+        p.batteries = batteries;
+        w
+    }
+
+    /// Every combination of the packed byte round-trips. Not a sample: heals is
+    /// 2 bits and batteries 3, so the whole space is 4 x 8 and there is no reason
+    /// to guess which pair breaks it.
+    #[test]
+    fn every_combination_of_the_packed_byte_round_trips() {
+        for heals in 0..=MAX_HEALS {
+            for batteries in 0..=MAX_BATTERIES {
+                let w = world_with(heals, batteries);
+                let bytes = encode_snapshot(&w, 0, 7);
+                let view = decode_snapshot(&bytes).expect("decodes");
+                let p = &view.players[0];
+                assert_eq!(
+                    (p.consumables & 0b11, (p.consumables >> 2) & 0b111),
+                    (heals, batteries),
+                    "heals {heals}, batteries {batteries}",
+                );
+            }
+        }
+    }
+
+    /// §A19/§B22: pinned to the constants, never to a literal. A fixture that
+    /// hardcodes the layout stays green against a decoder that has drifted.
+    #[test]
+    fn the_snapshot_is_exactly_header_plus_n_times_the_player_size_plus_footer() {
+        use game_core::constants::{SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES};
+        let mut w = World::new(4242, MapScale::Small);
+        for i in 0..3u8 {
+            w.add_player(i, 0, format!("p{i}"));
+        }
+        let bytes = encode_snapshot(&w, 0, 7);
+        assert_eq!(
+            bytes.len(),
+            SNAPSHOT_HEADER_BYTES + 3 * SNAPSHOT_PLAYER_BYTES + SNAPSHOT_FOOTER_BYTES,
+        );
     }
 }

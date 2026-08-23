@@ -160,6 +160,9 @@ fn resimulate(file: &replay::Replay, until: u32) -> Room {
                 ReplayCommand::VoteRestart(id, v) => Command::VoteRestart(*id, *v),
                 ReplayCommand::Leave(id) | ReplayCommand::DropUnready(id) => Command::Leave(*id),
                 ReplayCommand::StartWithBots(id) => Command::StartWithBots(*id),
+                ReplayCommand::UseHeal(id) => Command::UseHeal(*id),
+                ReplayCommand::UseBatteryPack(id) => Command::UseBatteryPack(*id),
+                ReplayCommand::QuickThrow(id) => Command::QuickThrow(*id),
             };
             room.apply_for_test(c);
         }

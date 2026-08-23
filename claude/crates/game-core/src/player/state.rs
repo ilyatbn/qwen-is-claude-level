@@ -59,6 +59,14 @@ pub struct PlayerState {
     /// Shared by shields and energy weapons (§B5): every laser shot is a shield
     /// you are not going to have.
     pub battery: f32,
+    /// Heals carried, 0..=`MAX_HEALS` (§C9).
+    ///
+    /// **Not inventory.** They are consumed constantly and should never compete
+    /// with a weapon for a slot, so they are counters beside the health bar and
+    /// `Q`/`R` spend them wherever the selection happens to be.
+    pub heals: u8,
+    /// Battery packs carried, 0..=`MAX_BATTERIES` (§C9).
+    pub batteries: u8,
     pub inventory: Inventory,
     pub flashlight_on: bool,
     pub alive: bool,
@@ -93,6 +101,8 @@ impl PlayerState {
             health: BASE_HEALTH,
             shield_until: None,
             battery: 0.0,
+            heals: 0,
+            batteries: 0,
             inventory: Inventory::new(),
             flashlight_on: false,
             alive: true,
@@ -116,6 +126,78 @@ impl PlayerState {
     /// fresh 20 s, and never a stronger multiplier.
     pub fn apply_shield(&mut self, now: f32) {
         self.shield_until = Some(now + SHIELD_DURATION);
+    }
+
+    /// Take a heal into the counter. **False when already at `MAX_HEALS`** — the
+    /// caller must leave the item on the ground, the same rule a full inventory
+    /// gets (`docs/30` §2). A bare `()` here would silently destroy pickups.
+    pub fn take_heal(&mut self) -> bool {
+        if self.heals >= crate::constants::MAX_HEALS {
+            return false;
+        }
+        self.heals += 1;
+        true
+    }
+
+    /// Take a battery pack into the counter. False at `MAX_BATTERIES`.
+    pub fn take_battery_pack(&mut self) -> bool {
+        if self.batteries >= crate::constants::MAX_BATTERIES {
+            return false;
+        }
+        self.batteries += 1;
+        true
+    }
+
+    /// `Q`: spend a heal for `MEDKIT_HEAL`, clamped to `HEALTH_CAP` by `heal`.
+    ///
+    /// Rejected with no effect at zero — and *rejected*, not silently ignored, so
+    /// the server can say why (`docs/61` §3's rule for every refused action).
+    pub fn use_heal(&mut self) -> Result<(), UseError> {
+        if !self.alive {
+            return Err(UseError::Dead);
+        }
+        if self.heals == 0 {
+            return Err(UseError::EmptySlot);
+        }
+        self.heals -= 1;
+        self.heal(crate::constants::MEDKIT_HEAL);
+        Ok(())
+    }
+
+    /// `R`: spend a battery pack for `BATTERY_PACK_AMOUNT`.
+    pub fn use_battery_pack(&mut self) -> Result<(), UseError> {
+        if !self.alive {
+            return Err(UseError::Dead);
+        }
+        if self.batteries == 0 {
+            return Err(UseError::EmptySlot);
+        }
+        self.batteries -= 1;
+        self.add_battery(crate::constants::BATTERY_PACK_AMOUNT);
+        Ok(())
+    }
+
+    /// The slot §C11's `E` throws from, or `None` when you have nothing to throw.
+    ///
+    /// **A fixed order, documented and shared** — grenade, molotov, toxic, smoke,
+    /// airburst — so the same key does the same thing every time. A "best" pick
+    /// or a random one would make the key unusable, which is the whole reason the
+    /// amendment names an order at all.
+    ///
+    /// The order is the list's order, not the inventory's: a grenade in slot 8
+    /// beats a molotov in slot 1.
+    pub fn quick_throw_slot(&self) -> Option<u8> {
+        use crate::items::registry::{AIRBURST, GRENADE, MOLOTOV, SMOKE, TOXIC_GRENADE};
+        const ORDER: [crate::items::registry::ItemId; 5] =
+            [GRENADE, MOLOTOV, TOXIC_GRENADE, SMOKE, AIRBURST];
+        for want in ORDER {
+            for (slot, stack) in self.inventory.iter() {
+                if stack.item == want && stack.count > 0 {
+                    return Some(slot);
+                }
+            }
+        }
+        None
     }
 
     /// Add battery, clamped. A pack at 80 gives `BATTERY_MAX`, not 130.
@@ -265,6 +347,22 @@ impl PlayerState {
         self.deaths += 1;
         self.shield_until = None;
         self.flashlight_on = false;
+        // **Heals and batteries are dropped too, and deliberately.**
+        //
+        // §C9 asks for the decision to be made and written down. They are not
+        // inventory, so nothing forced it either way; dropping them is the
+        // consistent answer. Everything else you were carrying lands where you
+        // fell and can be taken by whoever killed you (`docs/30` §5) — a pair of
+        // consumables that survived death would be the only thing in the game
+        // that a kill does not put back into play, and "kill someone before they
+        // heal" is a real decision that keeping them would delete.
+        //
+        // They are **not** re-spawned as world items: `die` returns inventory
+        // stacks and the drop loop scatters those, and a medkit on the ground is
+        // already a thing the item spawner makes. Zeroing them here is the whole
+        // effect.
+        self.heals = 0;
+        self.batteries = 0;
         self.inventory.drain_all()
     }
 
@@ -325,10 +423,20 @@ impl PlayerState {
 
     /// Validated fire. Checks kind, cooldown and ammo; spawns nothing.
     pub fn try_fire(&mut self, now: f32) -> Result<WeaponId, UseError> {
+        self.try_fire_slot(self.inventory.selected(), now)
+    }
+
+    /// The same thing, from a **named slot** rather than the selection.
+    ///
+    /// Quick-throw (§C11) fires from wherever the grenade happens to be without
+    /// moving the selection, and it must take the same validation in the same
+    /// order — alive, has one, cooldown — or it becomes a way round a cooldown
+    /// (`fire_ready_at` is per player by design). Sharing the function rather
+    /// than the guard is what makes that true by construction.
+    pub fn try_fire_slot(&mut self, slot: u8, now: f32) -> Result<WeaponId, UseError> {
         if !self.alive {
             return Err(UseError::Dead);
         }
-        let slot = self.inventory.selected();
         let stack = self.inventory.slot(slot).ok_or(UseError::EmptySlot)?;
         let d = def(stack.item).ok_or(UseError::BadSlot)?;
         // You cannot `fire` a medkit.
@@ -620,5 +728,109 @@ mod battery_tests {
         p.respawn(Vec2::new(10.0, 10.0), 0.0);
         assert_eq!(p.battery, BATTERY_MAX, "respawn wiped the charge");
         assert!(p.shield_until.is_none(), "the shield survived death");
+    }
+}
+
+#[cfg(test)]
+mod consumables {
+    use super::*;
+    use crate::constants::{
+        BASE_HEALTH, BATTERY_MAX, BATTERY_PACK_AMOUNT, HEALTH_CAP, MAX_BATTERIES, MAX_HEALS,
+        MEDKIT_HEAL,
+    };
+
+    fn player() -> PlayerState {
+        let mut p = PlayerState::new(0, crate::math::Vec2::new(100.0, 100.0), 0);
+        p.alive = true;
+        p
+    }
+
+    #[test]
+    fn a_pickup_at_max_is_refused_and_one_below_max_is_not() {
+        let mut p = player();
+        // The control: below the cap it succeeds, so the refusal below is about
+        // the cap and not about the function never working (§A26).
+        for i in 0..MAX_HEALS {
+            assert!(p.take_heal(), "heal {i} was refused below the cap");
+        }
+        assert_eq!(p.heals, MAX_HEALS);
+        assert!(!p.take_heal(), "a heal was taken at MAX_HEALS");
+        assert_eq!(
+            p.heals, MAX_HEALS,
+            "a refused pickup still moved the counter"
+        );
+
+        for i in 0..MAX_BATTERIES {
+            assert!(p.take_battery_pack(), "pack {i} was refused below the cap");
+        }
+        assert!(!p.take_battery_pack());
+        assert_eq!(p.batteries, MAX_BATTERIES);
+    }
+
+    #[test]
+    fn q_and_r_are_rejected_at_zero_and_change_nothing() {
+        let mut p = player();
+        p.health = BASE_HEALTH / 2.0;
+        p.battery = 0.0;
+        let (h0, b0) = (p.health, p.battery);
+
+        assert_eq!(p.use_heal(), Err(UseError::EmptySlot));
+        assert_eq!(p.use_battery_pack(), Err(UseError::EmptySlot));
+        // Asserted on the **effect**, not on the return: a rejection that healed
+        // you anyway would satisfy the first line alone.
+        assert_eq!(p.health, h0);
+        assert_eq!(p.battery, b0);
+        assert_eq!((p.heals, p.batteries), (0, 0));
+    }
+
+    #[test]
+    fn q_heals_exactly_medkit_heal_and_clamps_to_the_cap() {
+        let mut p = player();
+        p.heals = 1;
+        p.health = BASE_HEALTH / 2.0;
+        assert_eq!(p.use_heal(), Ok(()));
+        assert_eq!(p.health, BASE_HEALTH / 2.0 + MEDKIT_HEAL);
+        assert_eq!(p.heals, 0);
+
+        // ...and clamped, not overflowed.
+        p.heals = 1;
+        p.health = HEALTH_CAP - 1.0;
+        assert_eq!(p.use_heal(), Ok(()));
+        assert_eq!(p.health, HEALTH_CAP);
+    }
+
+    #[test]
+    fn r_adds_exactly_battery_pack_amount_and_clamps() {
+        let mut p = player();
+        p.batteries = 1;
+        p.battery = 0.0;
+        assert_eq!(p.use_battery_pack(), Ok(()));
+        assert_eq!(p.battery, BATTERY_PACK_AMOUNT);
+
+        p.batteries = 1;
+        p.battery = BATTERY_MAX - 1.0;
+        assert_eq!(p.use_battery_pack(), Ok(()));
+        assert_eq!(p.battery, BATTERY_MAX);
+    }
+
+    #[test]
+    fn a_corpse_cannot_use_either() {
+        let mut p = player();
+        p.heals = MAX_HEALS;
+        p.batteries = MAX_BATTERIES;
+        p.alive = false;
+        assert_eq!(p.use_heal(), Err(UseError::Dead));
+        assert_eq!(p.use_battery_pack(), Err(UseError::Dead));
+        assert_eq!((p.heals, p.batteries), (MAX_HEALS, MAX_BATTERIES));
+    }
+
+    /// §C9 asks for the death decision to be made deliberately. It is: they go.
+    #[test]
+    fn death_takes_the_counters_with_it() {
+        let mut p = player();
+        p.heals = MAX_HEALS;
+        p.batteries = MAX_BATTERIES;
+        p.die(DeathCause::Weather, 10.0);
+        assert_eq!((p.heals, p.batteries), (0, 0));
     }
 }

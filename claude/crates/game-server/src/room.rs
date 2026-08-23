@@ -48,6 +48,11 @@ pub enum Command {
     Input(PlayerId, Vec<Input>),
     UseItem(PlayerId, u8),
     SelectSlot(PlayerId, u8),
+    /// `Q` and `R` (§C9). Slotless: the counters are not inventory.
+    UseHeal(PlayerId),
+    UseBatteryPack(PlayerId),
+    /// `E` (§C11): throw the first grenade-class item, wherever it is.
+    QuickThrow(PlayerId),
     Fire(PlayerId),
     ToggleFlashlight(PlayerId),
     VoteRestart(PlayerId, bool),
@@ -81,6 +86,9 @@ impl std::fmt::Debug for Command {
             Command::Input(id, v) => write!(f, "Input({id}, {} inputs)", v.len()),
             Command::UseItem(id, s) => write!(f, "UseItem({id}, slot {s})"),
             Command::SelectSlot(id, s) => write!(f, "SelectSlot({id}, slot {s})"),
+            Command::UseHeal(id) => write!(f, "UseHeal({id})"),
+            Command::UseBatteryPack(id) => write!(f, "UseBatteryPack({id})"),
+            Command::QuickThrow(id) => write!(f, "QuickThrow({id})"),
             Command::Fire(id) => write!(f, "Fire({id})"),
             Command::ToggleFlashlight(id) => write!(f, "ToggleFlashlight({id})"),
             Command::VoteRestart(id, v) => write!(f, "VoteRestart({id}, {v})"),
@@ -718,6 +726,25 @@ impl Room {
             Command::SelectSlot(id, slot) => {
                 self.note(R::SelectSlot(id, slot));
                 self.world.select_slot(id, slot)
+            }
+            Command::UseHeal(id) => {
+                self.note(R::UseHeal(id));
+                if let Err(e) = self.world.use_heal(id) {
+                    tracing::debug!(target: "game::items", player = id, reason = ?e, "heal rejected");
+                }
+            }
+            Command::UseBatteryPack(id) => {
+                self.note(R::UseBatteryPack(id));
+                if let Err(e) = self.world.use_battery_pack(id) {
+                    tracing::debug!(target: "game::items", player = id, reason = ?e, "battery rejected");
+                }
+            }
+            Command::QuickThrow(id) => {
+                let now = self.world.round_time;
+                self.note(R::QuickThrow(id));
+                if let Err(e) = self.world.quick_throw(id, now) {
+                    tracing::debug!(target: "game::weapons", player = id, reason = ?e, "quick throw rejected");
+                }
             }
             Command::Fire(id) => {
                 let now = self.world.round_time;

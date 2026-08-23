@@ -1630,3 +1630,69 @@ mod energy {
         assert!(b.spawn_weight > 0, "no charge on the ground");
     }
 }
+
+#[cfg(test)]
+mod bots_already_throw_what_they_carry {
+    use super::*;
+    use crate::constants::{MapScale, SIM_DT};
+    use crate::items::registry::GRENADE;
+    use crate::world::{give, RoundPhase, World};
+
+    /// T14.04 asks whether bots need §C11's quick-throw "or they carry grenades
+    /// they never throw", and to **check rather than assume** (§B19). Checked:
+    /// they do not.
+    ///
+    /// `choose_weapon` scans every slot and scores by damage per second, with no
+    /// filter on delivery kind — a grenade is scored exactly like a rocket — and
+    /// the bot then asks for that slot via `select_slot` and fires it through the
+    /// ordinary path. Giving bots a second route to the same act would be two
+    /// mechanisms for one job, which is how they drift.
+    ///
+    /// This test is the evidence, and it is here so that a future change to
+    /// `choose_weapon` that starts skipping thrown weapons fails loudly instead of
+    /// quietly leaving bots with pockets full of grenades.
+    #[test]
+    fn a_bot_carrying_only_a_grenade_asks_to_select_it() {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "bot".into());
+        w.add_player(1, 0, "target".into());
+        give(&mut w, 0, GRENADE, 3);
+        for _ in 0..120 {
+            w.step(SIM_DT);
+        }
+
+        // Put the target within reach, so the bot has something to choose *for*.
+        let at = w.player(0).expect("bot").body.pos;
+        if let Some(t) = w.player_mut(1) {
+            t.body.pos = Vec2::new(at.x + 140.0, at.y);
+        }
+
+        let mut bot = Bot::new(0, 4242, 0, 1.0);
+        let mut asked = None;
+        for _ in 0..60 {
+            bot.think(&w, w.round_time, SIM_DT);
+            if let Some(slot) = bot.wants_select() {
+                asked = Some(slot);
+                break;
+            }
+        }
+
+        let held = w
+            .player(0)
+            .expect("bot")
+            .inventory
+            .iter()
+            .find(|(_, s)| s.item == GRENADE)
+            .map(|(slot, _)| slot);
+        assert!(held.is_some(), "the fixture never gave the bot a grenade");
+        // Either it asked for the grenade's slot, or it was already selected —
+        // `choose_weapon` only reports a *change*.
+        let selected = w.player(0).expect("bot").inventory.selected();
+        assert!(
+            asked == held || Some(selected) == held,
+            "the bot neither selected nor asked for its grenade: asked {asked:?}, \
+             selected {selected}, grenade in {held:?}",
+        );
+    }
+}

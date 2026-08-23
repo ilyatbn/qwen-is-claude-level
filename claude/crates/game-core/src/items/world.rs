@@ -64,6 +64,45 @@ pub struct WorldItems {
     next_id: WorldItemId,
 }
 
+/// What a pickup may land in: the inventory, or one of §C9's two counters.
+///
+/// A struct rather than a tuple because it grew from three fields to five and a
+/// positional destructure of five is where the next reader puts `heals` where
+/// `batteries` goes.
+pub struct PickupTarget<'a> {
+    pub id: PlayerId,
+    pub pos: Vec2,
+    pub inventory: &'a mut Inventory,
+    pub heals: &'a mut u8,
+    pub batteries: &'a mut u8,
+}
+
+/// Which counter an item belongs to, if any.
+fn counter_for<'a>(
+    item: ItemId,
+    heals: &'a mut &mut u8,
+    batteries: &'a mut &mut u8,
+) -> Option<&'a mut u8> {
+    match item {
+        crate::items::registry::MEDKIT => Some(heals),
+        crate::items::registry::BATTERY_PACK => Some(batteries),
+        _ => None,
+    }
+}
+
+/// Increment a counter if it is below its cap. False leaves the item behind.
+fn bump(item: ItemId, counter: &mut u8) -> bool {
+    let cap = match item {
+        crate::items::registry::MEDKIT => crate::constants::MAX_HEALS,
+        _ => crate::constants::MAX_BATTERIES,
+    };
+    if *counter >= cap {
+        return false;
+    }
+    *counter += 1;
+    true
+}
+
 impl WorldItems {
     pub fn new() -> Self {
         Self::default()
@@ -238,18 +277,25 @@ impl WorldItems {
     /// a replay (`docs/41-server-loop-rooms.md` §2).
     pub fn resolve_pickups(
         &mut self,
-        players: &mut [(PlayerId, Vec2, &mut Inventory)],
+        players: &mut [PickupTarget<'_>],
         now: f32,
     ) -> Vec<(WorldItemId, PlayerId)> {
         debug_assert!(
-            players.windows(2).all(|w| w[0].0 < w[1].0),
+            players.windows(2).all(|w| w[0].id < w[1].id),
             "players must be in ascending id order or pickups are nondeterministic"
         );
 
         let mut taken = Vec::new();
         let r2 = PICKUP_RADIUS * PICKUP_RADIUS;
 
-        for (pid, ppos, inv) in players.iter_mut() {
+        for t in players.iter_mut() {
+            let PickupTarget {
+                id: pid,
+                pos: ppos,
+                inventory: inv,
+                heals,
+                batteries,
+            } = t;
             for it in self.items.iter_mut() {
                 if it.count == 0 || now < it.pickup_locked_until {
                     continue;
@@ -258,6 +304,28 @@ impl WorldItems {
                 if d.x * d.x + d.y * d.y > r2 {
                     continue;
                 }
+
+                // §C9: heals and battery packs are **counters**, not inventory.
+                // Routed here rather than in `Inventory::add` because they never
+                // reach a slot at all — a guard inside `add` would be a guard on
+                // the wrong container.
+                //
+                // At max the pickup is **refused and the item stays on the
+                // ground**, which is the same rule a full inventory gets
+                // (`docs/30` §2) and is what makes birds worth shooting when you
+                // are already topped up (§C9's own note).
+                if let Some(counter) = counter_for(it.item, heals, batteries) {
+                    let mut moved = 0u8;
+                    while it.count > moved && bump(it.item, counter) {
+                        moved += 1;
+                    }
+                    if moved > 0 {
+                        it.count -= moved;
+                        taken.push((it.id, *pid));
+                    }
+                    continue;
+                }
+
                 match inv.add(it.item, it.count) {
                     AddResult::Added => {
                         it.count = 0;
@@ -301,9 +369,27 @@ impl WorldItems {
 
 #[cfg(test)]
 mod tests {
+
+    /// A one-player pickup target with its own counters, so the fixtures below
+    /// read the same as they did before `PickupTarget` grew §C9's two fields.
+    pub(super) fn target<'a>(
+        id: PlayerId,
+        pos: Vec2,
+        inv: &'a mut Inventory,
+        heals: &'a mut u8,
+        batteries: &'a mut u8,
+    ) -> PickupTarget<'a> {
+        PickupTarget {
+            id,
+            pos,
+            inventory: inv,
+            heals,
+            batteries,
+        }
+    }
     use super::*;
     use crate::constants::MapScale;
-    use crate::items::registry::{BAZOOKA, FLASHLIGHT, MEDKIT};
+    use crate::items::registry::{BAZOOKA, FLASHLIGHT, MEDKIT, SHIELD_GENERATOR};
     use crate::map::gen::silhouette::force_borders;
     use crate::map::{CoarseGrid, Map, MapMeta, Mask};
 
@@ -441,19 +527,23 @@ mod tests {
         let map = flat_map(400);
         let mut w = WorldItems::new();
         let pos = Vec2::new(256.0, 380.0);
-        w.spawn(MEDKIT, 1, pos, Vec2::ZERO, SpawnSource::Initial, 0.0);
+        // Not a medkit: since §C9 those go to a counter and never touch an
+        // inventory, so `count_of` below would read 0 for a pickup that worked.
+        w.spawn(BAZOOKA, 1, pos, Vec2::ZERO, SpawnSource::Initial, 0.0);
         let _ = &map;
 
         let mut inv = Inventory::new();
         let far = Vec2::new(pos.x + PICKUP_RADIUS + 1.0, pos.y);
-        let mut players = [(0u8, far, &mut inv)];
+        let (mut h, mut bt) = (0u8, 0u8);
+        let mut players = [target(0, far, &mut inv, &mut h, &mut bt)];
         assert!(w.resolve_pickups(&mut players, 1.0).is_empty());
 
         let mut inv2 = Inventory::new();
         let near = Vec2::new(pos.x + PICKUP_RADIUS - 1.0, pos.y);
-        let mut players = [(0u8, near, &mut inv2)];
+        let (mut h, mut bt) = (0u8, 0u8);
+        let mut players = [target(0, near, &mut inv2, &mut h, &mut bt)];
         assert_eq!(w.resolve_pickups(&mut players, 1.0).len(), 1);
-        assert_eq!(inv2.count_of(MEDKIT), 1);
+        assert_eq!(inv2.count_of(BAZOOKA), 1);
     }
 
     #[test]
@@ -466,9 +556,11 @@ mod tests {
             w.spawn(BAZOOKA, 1, pos, Vec2::ZERO, SpawnSource::Initial, 0.0);
             let mut a = Inventory::new();
             let mut b = Inventory::new();
+            let (mut ha, mut ba) = (0u8, 0u8);
+            let (mut hb, mut bb) = (0u8, 0u8);
             let mut players = [
-                (2u8, Vec2::new(pos.x - 5.0, pos.y), &mut a),
-                (7u8, Vec2::new(pos.x + 5.0, pos.y), &mut b),
+                target(2, Vec2::new(pos.x - 5.0, pos.y), &mut a, &mut ha, &mut ba),
+                target(7, Vec2::new(pos.x + 5.0, pos.y), &mut b, &mut hb, &mut bb),
             ];
             let taken = w.resolve_pickups(&mut players, 1.0);
             assert_eq!(taken.len(), 1);
@@ -482,12 +574,16 @@ mod tests {
     fn a_full_inventory_leaves_the_item_on_the_ground() {
         let mut w = WorldItems::new();
         let pos = Vec2::new(256.0, 380.0);
-        w.spawn(MEDKIT, 1, pos, Vec2::ZERO, SpawnSource::Initial, 0.0);
+        // **Not a medkit.** Since §C9 a medkit goes to a counter and never sees a
+        // slot, so a full inventory has nothing to say about it — this test would
+        // have gone on passing while testing the opposite rule.
+        w.spawn(BAZOOKA, 1, pos, Vec2::ZERO, SpawnSource::Initial, 0.0);
         let mut inv = Inventory::new();
         for _ in 0..crate::constants::INVENTORY_SLOTS {
             inv.add(FLASHLIGHT, 1);
         }
-        let mut players = [(0u8, pos, &mut inv)];
+        let (mut h, mut bt) = (0u8, 0u8);
+        let mut players = [target(0, pos, &mut inv, &mut h, &mut bt)];
         assert!(w.resolve_pickups(&mut players, 1.0).is_empty());
         assert_eq!(w.len(), 1, "the item must stay in the world");
     }
@@ -524,7 +620,8 @@ mod tests {
             "with no free slots this passes for the old rule too"
         );
 
-        let mut players = [(0u8, pos, &mut inv)];
+        let (mut h, mut bt) = (0u8, 0u8);
+        let mut players = [target(0, pos, &mut inv, &mut h, &mut bt)];
         assert!(
             w.resolve_pickups(&mut players, 1.0).is_empty(),
             "a full weapon was picked up again"
@@ -539,7 +636,8 @@ mod tests {
         // The control: a different weapon on the same ground is accepted.
         let other = crate::items::registry::GRENADE;
         w.spawn(other, 1, pos, Vec2::ZERO, SpawnSource::Initial, 0.0);
-        let mut players = [(0u8, pos, &mut inv)];
+        let (mut h, mut bt) = (0u8, 0u8);
+        let mut players = [target(0, pos, &mut inv, &mut h, &mut bt)];
         assert_eq!(
             w.resolve_pickups(&mut players, 2.0).len(),
             1,
@@ -552,21 +650,30 @@ mod tests {
     fn a_partial_pickup_reduces_the_stack_and_leaves_the_rest() {
         let mut w = WorldItems::new();
         let pos = Vec2::new(256.0, 380.0);
-        // A **consumable**, deliberately: §C24 exempts weapons from spilling
-        // into a second slot, so asserting the spill rule through a grenade
-        // (which is a weapon) would assert the one-slot break instead — the same
-        // numbers arrived at by a different mechanism, with the comment below
-        // describing neither. Medkits cap at 3 per slot like grenades do.
-        w.spawn(MEDKIT, 9, pos, Vec2::ZERO, SpawnSource::Initial, 0.0);
+        // A **consumable that still uses a slot**, deliberately, and for two
+        // reasons. §C24 exempts weapons from spilling into a second slot, so a
+        // grenade would assert the one-slot break instead — the same numbers by a
+        // different mechanism. And since §C9 a medkit does not reach a slot at
+        // all: it goes to a counter, so this test would have gone on passing
+        // while measuring nothing. A shield generator is neither.
+        w.spawn(
+            SHIELD_GENERATOR,
+            9,
+            pos,
+            Vec2::ZERO,
+            SpawnSource::Initial,
+            0.0,
+        );
         let mut inv = Inventory::new();
         for _ in 0..(crate::constants::INVENTORY_SLOTS - 1) {
             inv.add(FLASHLIGHT, 1);
         }
-        let mut players = [(0u8, pos, &mut inv)];
+        let (mut h, mut bt) = (0u8, 0u8);
+        let mut players = [target(0, pos, &mut inv, &mut h, &mut bt)];
         w.resolve_pickups(&mut players, 1.0);
-        let stack = crate::items::registry::max_stack(MEDKIT);
+        let stack = crate::items::registry::max_stack(SHIELD_GENERATOR);
         assert_eq!(
-            inv.count_of(MEDKIT),
+            inv.count_of(SHIELD_GENERATOR),
             u32::from(stack),
             "one slot's worth was taken"
         );
@@ -585,9 +692,11 @@ mod tests {
         w.spawn(MEDKIT, 1, pos, Vec2::ZERO, SpawnSource::Death, 10.0);
         let mut inv = Inventory::new();
 
-        let mut players = [(0u8, pos, &mut inv)];
+        let (mut h, mut bt) = (0u8, 0u8);
+        let mut players = [target(0, pos, &mut inv, &mut h, &mut bt)];
         assert!(w.resolve_pickups(&mut players, 10.5).is_empty(), "locked");
-        let mut players = [(0u8, pos, &mut inv)];
+        let (mut h, mut bt) = (0u8, 0u8);
+        let mut players = [target(0, pos, &mut inv, &mut h, &mut bt)];
         assert_eq!(w.resolve_pickups(&mut players, 11.1).len(), 1, "unlocked");
     }
 
@@ -722,5 +831,94 @@ mod tests {
             w.step(&map, crate::constants::SIM_DT);
         }
         assert_eq!(w.get(id).expect("there").pos, at_rest);
+    }
+}
+
+#[cfg(test)]
+mod consumable_pickups {
+    use super::tests::target;
+    use super::*;
+    use crate::constants::{MAX_BATTERIES, MAX_HEALS};
+    use crate::items::registry::{BATTERY_PACK, MEDKIT};
+
+    fn at(pos: Vec2, item: ItemId, count: u8) -> WorldItems {
+        let mut w = WorldItems::new();
+        w.spawn(item, count, pos, Vec2::ZERO, SpawnSource::Initial, 0.0);
+        w
+    }
+
+    /// §C9: a heal goes to the counter and never touches a slot.
+    #[test]
+    fn a_medkit_lands_in_the_counter_not_in_the_inventory() {
+        let pos = Vec2::new(100.0, 100.0);
+        let mut w = at(pos, MEDKIT, 1);
+        let mut inv = Inventory::new();
+        let (mut h, mut b) = (0u8, 0u8);
+        let mut players = [target(0, pos, &mut inv, &mut h, &mut b)];
+
+        assert_eq!(w.resolve_pickups(&mut players, 1.0).len(), 1);
+        assert_eq!(h, 1);
+        assert_eq!(inv.count_of(MEDKIT), 0, "a heal took an inventory slot");
+        assert_eq!(w.len(), 0, "picked up and still lying in the world");
+    }
+
+    #[test]
+    fn a_battery_pack_lands_in_its_own_counter() {
+        let pos = Vec2::new(100.0, 100.0);
+        let mut w = at(pos, BATTERY_PACK, 1);
+        let mut inv = Inventory::new();
+        let (mut h, mut b) = (0u8, 0u8);
+        let mut players = [target(0, pos, &mut inv, &mut h, &mut b)];
+
+        assert_eq!(w.resolve_pickups(&mut players, 1.0).len(), 1);
+        assert_eq!((h, b), (0, 1), "a battery pack moved the wrong counter");
+        assert_eq!(inv.count_of(BATTERY_PACK), 0);
+    }
+
+    /// The rule §C9 shares with a full inventory (`docs/30` §2): **refused, and
+    /// the item stays on the ground**. With the control immediately below it, so
+    /// this is about the cap and not about pickups never working.
+    #[test]
+    fn a_pickup_at_max_is_refused_and_the_item_stays() {
+        let pos = Vec2::new(100.0, 100.0);
+        let mut w = at(pos, MEDKIT, 1);
+        let mut inv = Inventory::new();
+        let (mut h, mut b) = (MAX_HEALS, 0u8);
+        let mut players = [target(0, pos, &mut inv, &mut h, &mut b)];
+
+        assert!(w.resolve_pickups(&mut players, 1.0).is_empty());
+        assert_eq!(h, MAX_HEALS, "a refused pickup still moved the counter");
+        assert_eq!(
+            w.len(),
+            1,
+            "a refused pickup took the item out of the world"
+        );
+
+        // Control: one below the cap, the same item is taken.
+        let (mut h2, mut b2) = (MAX_HEALS - 1, 0u8);
+        let mut inv2 = Inventory::new();
+        let mut players2 = [target(0, pos, &mut inv2, &mut h2, &mut b2)];
+        assert_eq!(w.resolve_pickups(&mut players2, 1.0).len(), 1);
+        assert_eq!(h2, MAX_HEALS);
+        assert_eq!(w.len(), 0);
+    }
+
+    /// A stack bigger than the room left: take what fits, leave the rest.
+    #[test]
+    fn a_partial_stack_fills_the_counter_and_leaves_the_remainder() {
+        let pos = Vec2::new(100.0, 100.0);
+        let mut w = at(pos, BATTERY_PACK, MAX_BATTERIES + 3);
+        let mut inv = Inventory::new();
+        let (mut h, mut b) = (0u8, 0u8);
+        let mut players = [target(0, pos, &mut inv, &mut h, &mut b)];
+
+        assert_eq!(w.resolve_pickups(&mut players, 1.0).len(), 1);
+        assert_eq!(b, MAX_BATTERIES);
+        assert_eq!(w.len(), 1, "the remainder must stay in the world");
+        assert_eq!(
+            w.iter().next().expect("still there").count,
+            3,
+            "the remainder is wrong, so pickups are being destroyed"
+        );
     }
 }

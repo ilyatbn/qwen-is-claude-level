@@ -588,6 +588,29 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                     },
                 );
             }
+            // §C9: `Q` and `R`. Slotless — heals and batteries are counters, not
+            // inventory, so unlike `use_item` there is nothing to index and
+            // nothing an attacker can point out of range.
+            for (event, mk) in [
+                ("use_heal", Command::UseHeal as fn(_) -> Command),
+                ("use_battery", Command::UseBatteryPack as fn(_) -> Command),
+                // §C11: `E`. Slotless too — the slot comes from the documented
+                // order, not from anything the client claims.
+                ("quick_throw", Command::QuickThrow as fn(_) -> Command),
+            ] {
+                let ctx = ctx.clone();
+                socket.on(event, move |socket: SocketRef| {
+                    let ctx = ctx.clone();
+                    async move {
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                            return;
+                        };
+                        if let Some(id) = sessions.player_of(socket.id) {
+                            room.send(mk(id));
+                        }
+                    }
+                });
+            }
             {
                 let ctx = ctx.clone();
                 // RTT. `docs/42` §7 says it comes from "socket.io's own ping/pong",

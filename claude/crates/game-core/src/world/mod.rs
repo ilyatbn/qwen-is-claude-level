@@ -15,7 +15,6 @@ use tombstones::Tombstones;
 use crate::constants::{
     MapScale, ENDED_SECONDS, MAX_INPUT_QUEUE, MAX_PLAYERS, ROUND_SECONDS, WARMUP_SECONDS,
 };
-use crate::items::inventory::Inventory;
 use crate::items::registry::{def, ItemId, ItemKind, WeaponId};
 use crate::items::spawning::{assign_buried_items, place_initial, reveal_buried, SpawnSchedule};
 use crate::items::world::{SpawnSource, WorldItemId, WorldItems};
@@ -1639,11 +1638,17 @@ impl World {
 
     fn resolve_pickups(&mut self, now: f32) {
         // Ascending id: `players` is kept sorted, so this is already the order.
-        let mut view: Vec<(PlayerId, Vec2, &mut Inventory)> = self
+        let mut view: Vec<crate::items::world::PickupTarget<'_>> = self
             .players
             .iter_mut()
             .filter(|p| p.alive)
-            .map(|p| (p.id, p.body.pos, &mut p.inventory))
+            .map(|p| crate::items::world::PickupTarget {
+                id: p.id,
+                pos: p.body.pos,
+                inventory: &mut p.inventory,
+                heals: &mut p.heals,
+                batteries: &mut p.batteries,
+            })
             .collect();
         let taken = self.items.resolve_pickups(&mut view, now);
         for (world_item_id, player_id) in taken {
@@ -1873,6 +1878,47 @@ impl World {
         let Some(idx) = self.players.iter().position(|p| p.id == id) else {
             return Err(UseError::Dead);
         };
+        let slot = self.players[idx].inventory.selected();
+        self.fire_from_slot(id, idx, slot, now)
+    }
+
+    /// §C11's `E`: throw the first grenade-class item you are carrying, from
+    /// wherever it is, **without changing the selected slot**.
+    ///
+    /// This is what makes twenty weapons usable — you stop losing fights while
+    /// opening a panel. It is a command like fire and use (`docs/30` §4) and it
+    /// goes down the same path, so alive, has-one and cooldown are checked in the
+    /// same order and it cannot be used to sidestep `fire_ready_at`.
+    pub fn quick_throw(&mut self, id: PlayerId, now: f32) -> Result<(), UseError> {
+        let Some(idx) = self.players.iter().position(|p| p.id == id) else {
+            return Err(UseError::Dead);
+        };
+        if !self.players[idx].alive {
+            return Err(UseError::Dead);
+        }
+        let Some(slot) = self.players[idx].quick_throw_slot() else {
+            // Rejected with no effect, and named: `docs/61` §3's rule is that the
+            // server already knows which of the six answers it was.
+            return Err(UseError::NoAmmo);
+        };
+        let before = self.players[idx].inventory.selected();
+        let r = self.fire_from_slot(id, idx, slot, now);
+        // Belt and braces: `fire_from_slot` does not touch the selection, but
+        // `consume` re-selects when it empties a stack, and the amendment is
+        // explicit that the selected slot is unchanged afterwards.
+        if self.players[idx].inventory.slot(before).is_some() {
+            self.players[idx].inventory.select(before);
+        }
+        r
+    }
+
+    fn fire_from_slot(
+        &mut self,
+        id: PlayerId,
+        idx: usize,
+        slot: u8,
+        now: f32,
+    ) -> Result<(), UseError> {
         // §C20, before `try_fire`: a refused shot must cost neither ammo nor
         // cooldown, or standing still to shoot becomes a punishment for having
         // tried. Guarded on `alive` so a corpse still reports `Dead`, which is
@@ -1880,7 +1926,7 @@ impl World {
         if self.players[idx].alive && self.moving_under_own_power(now, idx) {
             return Err(UseError::Moving);
         }
-        let weapon = self.players[idx].try_fire(now)?;
+        let weapon = self.players[idx].try_fire_slot(slot, now)?;
         let aim = crate::player::input::Input::new(0, 0, self.players[idx].aim).aim_angle();
         let centre = self.players[idx].body.pos;
         let tick = self.tick;
@@ -2084,6 +2130,23 @@ impl World {
         r
     }
 
+    /// `Q` (§C9). The counters are not inventory, so no `Inventory` event —
+    /// they ride in the snapshot, which is 20 Hz and always current.
+    pub fn use_heal(&mut self, id: PlayerId) -> Result<(), UseError> {
+        match self.players.iter_mut().find(|p| p.id == id) {
+            Some(p) => p.use_heal(),
+            None => Err(UseError::Dead),
+        }
+    }
+
+    /// `R` (§C9).
+    pub fn use_battery_pack(&mut self, id: PlayerId) -> Result<(), UseError> {
+        match self.players.iter_mut().find(|p| p.id == id) {
+            Some(p) => p.use_battery_pack(),
+            None => Err(UseError::Dead),
+        }
+    }
+
     pub fn select_slot(&mut self, id: PlayerId, slot: u8) {
         let tick = self.tick;
         if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {
@@ -2206,6 +2269,14 @@ impl World {
             // written for — every timer was once unhashed and a deliberately
             // nondeterministic build verified green.
             h.update(&p.knocked_until.to_le_bytes());
+            // §A34 again, and `battery` was already missing before §C9 added the
+            // other two. All three change the simulation: the battery gates every
+            // energy shot and ends a shield early (§B5), and the two counters
+            // gate `Q` and `R`. A replay whose battery had drifted would run to a
+            // different outcome and the checkpoint hashes would agree the whole
+            // way, which is the exact shape §A34 exists to prevent.
+            h.update(&p.battery.to_le_bytes());
+            h.update(&[p.heals, p.batteries]);
             p.inventory.hash_into(&mut h);
         }
 
@@ -2648,7 +2719,10 @@ mod crate_motion_tests {
         assert!(w.items.get(id).expect("there").grounded, "never landed");
 
         w.add_player(0, 0, "ana".into());
-        let before = w.player_mut(0).expect("added").inventory.count_of(MEDKIT);
+        // A medkit lands in §C9's **counter**, not in a slot, so this reads
+        // `heals` and not `count_of` — the inventory version went on asserting
+        // `0 == 0 + 1` and failing for the right reason the moment §C9 landed.
+        let before = w.player_mut(0).expect("added").heals;
         // Standing where the crate is — which, before this task, is a place no
         // player could know to stand.
         w.player_mut(0).expect("added").body.pos = at;
@@ -2668,9 +2742,9 @@ mod crate_motion_tests {
             "no pickup event"
         );
         assert_eq!(
-            w.player_mut(0).expect("added").inventory.count_of(MEDKIT),
+            w.player_mut(0).expect("added").heals,
             before + 1,
-            "the crate's contents never reached the inventory"
+            "the crate's contents never reached the player"
         );
         assert!(
             w.items.get(id).is_none(),
@@ -3573,5 +3647,178 @@ mod meteors_are_visible {
             "{} projectiles alive at once — fragments are spawning fragments",
             t.peak_live
         );
+    }
+}
+
+#[cfg(test)]
+mod death_tells_you_your_inventory_is_gone {
+    use super::*;
+    use crate::constants::{MapScale, SIM_DT};
+    use crate::items::registry::BAZOOKA;
+
+    /// **A found defect, not a new feature.**
+    ///
+    /// `die` empties the inventory — every stack is scattered on the ground a few
+    /// lines later — and pushed no `Inventory` event, so the owner's client kept
+    /// rendering the pre-death loadout until some later pickup happened to
+    /// correct it. Measured in a browser: a player killed by a molotov was still
+    /// listed as holding four rockets five seconds after dying, and the e2e
+    /// harness, which looks a weapon's slot index up in that view before pressing
+    /// its hotkey, was selecting from a map of an inventory that no longer
+    /// existed.
+    #[test]
+    fn a_death_pushes_an_inventory_event_for_the_victim() {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        crate::world::give(&mut w, 0, BAZOOKA, 4);
+        let _ = w.drain_events();
+
+        // Control: the inventory really is populated before the kill, so what is
+        // asserted below is a *change* and not an empty box staying empty.
+        assert_eq!(
+            w.player_mut(0).expect("there").inventory.count_of(BAZOOKA),
+            4,
+        );
+
+        w.player_mut(0).expect("there").health = 0.0;
+        w.step(SIM_DT);
+        let evs = w.drain_events();
+
+        let told = evs
+            .iter()
+            .any(|e| matches!(e, GameEvent::Inventory { player_id, .. } if *player_id == 0));
+        let died = evs
+            .iter()
+            .any(|e| matches!(e, GameEvent::Death { victim, .. } if *victim == 0));
+        assert!(died, "the fixture did not produce a death");
+        assert!(
+            told,
+            "the player died and was never told their inventory had gone",
+        );
+        // And the state the event announces is the empty one.
+        assert_eq!(
+            w.player_mut(0).expect("there").inventory.count_of(BAZOOKA),
+            0,
+        );
+    }
+}
+
+#[cfg(test)]
+mod quickthrow {
+    use super::*;
+    use crate::constants::{MapScale, SIM_DT};
+    use crate::items::registry::{
+        AIRBURST, BAZOOKA, GRENADE, MOLOTOV, SMOKE, TOXIC_GRENADE, WEAPON_GRENADE, WEAPON_MOLOTOV,
+    };
+
+    fn armed(items: &[(crate::items::registry::ItemId, u8)]) -> World {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        for (item, n) in items {
+            crate::world::give(&mut w, 0, *item, *n);
+        }
+        // Settle, so §C20 does not refuse the throw for movement — the point of
+        // this test is the choice of weapon, not the fire gate.
+        for _ in 0..120 {
+            w.step(SIM_DT);
+        }
+        let _ = w.drain_events();
+        w
+    }
+
+    fn thrown(evs: &[GameEvent]) -> Vec<crate::items::registry::WeaponId> {
+        evs.iter()
+            .filter_map(|e| match e {
+                GameEvent::ProjectileSpawn { weapon, .. } => Some(*weapon),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn e_throws_a_grenade_along_the_aim_and_spends_that_stack() {
+        let mut w = armed(&[(BAZOOKA, 4), (GRENADE, 3)]);
+        assert_eq!(w.quick_throw(0, w.round_time), Ok(()));
+        let evs = w.drain_events();
+        assert_eq!(thrown(&evs), vec![WEAPON_GRENADE], "the wrong thing flew");
+        let p = w.player_mut(0).expect("there");
+        assert_eq!(
+            p.inventory.count_of(GRENADE),
+            2,
+            "the grenade stack is untouched"
+        );
+        assert_eq!(p.inventory.count_of(BAZOOKA), 4, "it spent the wrong stack");
+    }
+
+    /// §C11's documented order: grenade, molotov, toxic, smoke, airburst — and
+    /// the order is the **list's**, not the inventory's.
+    #[test]
+    fn with_several_kinds_it_picks_the_documented_first_one() {
+        // Seeded in reverse, so a "first slot wins" implementation picks the
+        // airburst and this fails.
+        let mut w = armed(&[(AIRBURST, 2), (SMOKE, 2), (TOXIC_GRENADE, 2), (MOLOTOV, 2)]);
+        assert_eq!(w.quick_throw(0, w.round_time), Ok(()));
+        assert_eq!(thrown(&w.drain_events()), vec![WEAPON_MOLOTOV]);
+        assert_eq!(
+            w.player_mut(0).expect("there").inventory.count_of(MOLOTOV),
+            1,
+        );
+    }
+
+    #[test]
+    fn with_none_it_is_rejected_and_spawns_nothing() {
+        let mut w = armed(&[(BAZOOKA, 4)]);
+        assert_eq!(w.quick_throw(0, w.round_time), Err(UseError::NoAmmo));
+        // The effect, not the return value: a rejection that threw anyway would
+        // satisfy the line above on its own.
+        assert!(thrown(&w.drain_events()).is_empty());
+        assert_eq!(
+            w.player_mut(0).expect("there").inventory.count_of(BAZOOKA),
+            4
+        );
+    }
+
+    #[test]
+    fn the_selected_slot_is_unchanged_afterwards() {
+        let mut w = armed(&[(BAZOOKA, 4), (GRENADE, 1)]);
+        // Select the bazooka, throw the grenade — which empties its stack, the
+        // case where `consume` re-selects.
+        w.select_slot(0, 0);
+        let before = w.player_mut(0).expect("there").inventory.selected();
+        assert_eq!(w.quick_throw(0, w.round_time), Ok(()));
+        let p = w.player_mut(0).expect("there");
+        assert_eq!(
+            p.inventory.selected(),
+            before,
+            "the throw moved the selection"
+        );
+        assert_eq!(
+            p.inventory.count_of(GRENADE),
+            0,
+            "the grenade was not spent"
+        );
+    }
+
+    /// It shares the per-player cooldown, so it cannot be used to bypass one.
+    #[test]
+    fn it_respects_and_shares_the_fire_cooldown() {
+        let mut w = armed(&[(GRENADE, 3)]);
+        let now = w.round_time;
+        assert_eq!(w.quick_throw(0, now), Ok(()));
+        // Immediately again: refused, and nothing spent.
+        assert_eq!(w.quick_throw(0, now), Err(UseError::OnCooldown));
+        assert_eq!(
+            w.player_mut(0).expect("there").inventory.count_of(GRENADE),
+            2
+        );
+
+        // ...and the *other* direction, which is the one that matters: a
+        // quick-throw puts `fire` on cooldown too. `fire_ready_at` is per player
+        // by design, and a second timer would be a way round the first.
+        let ready = w.player_mut(0).expect("there").fire_ready_at;
+        assert!(ready > now, "the throw set no cooldown at all");
+        assert_eq!(w.fire(0, now), Err(UseError::OnCooldown));
     }
 }

@@ -646,8 +646,8 @@ pub const MASK_CHECKSUM_INTERVAL: f32 = 5.0;
 /// — velocities are required for extrapolation through a dropped snapshot
 /// (`docs/42` §4), and aim is fixed at `u16` by `docs/22` §2.
 ///
-/// A snapshot is therefore `8 + 17n + 4`: **114 bytes for six players**, against
-/// the doc's 97. At 20 Hz that is 2.3 KB/s down rather than 1.9 — well inside the
+/// A snapshot is therefore `8 + 18n + 4`: **120 bytes for six players**, against
+/// the doc's 97. At 20 Hz that is 2.4 KB/s down rather than 1.9 — well inside the
 /// budget in `docs/40` §4.
 ///
 /// The sixteenth byte is **vision** (T11.08): the player's own FoV multiplier,
@@ -656,6 +656,10 @@ pub const MASK_CHECKSUM_INTERVAL: f32 = 5.0;
 /// cannot derive it from a global effect flag. Before it existed, `GameScene`
 /// hardcoded `fogMult: 1` and `World::fog_multiplier` had **no caller at all**:
 /// heavy fog was simulated every round and changed nothing anyone could see.
+/// The eighteenth byte is **heals and batteries** (T14.03, §C9): heals in 2 bits
+/// and batteries in 3, one byte with 3 bits spare. §C9 budgeted 16 → 17 for it;
+/// it is 18 because T14.02's battery byte took 17 — see below.
+///
 /// The seventeenth byte is **battery** (T14.02).
 ///
 /// §C8 puts an energy bar under the health bar and §B5 makes that bar do real
@@ -669,7 +673,7 @@ pub const MASK_CHECKSUM_INTERVAL: f32 = 5.0;
 /// batteries counters, T14.03), with neither amendment saying how the energy pool
 /// itself reaches the client. Both bytes are needed and they carry different
 /// things, so this is 17 and T14.03 is 18.
-pub const SNAPSHOT_PLAYER_BYTES: usize = 17;
+pub const SNAPSHOT_PLAYER_BYTES: usize = 18;
 /// Header bytes before the player array: tick, round_time_ds, darkness, count.
 pub const SNAPSHOT_HEADER_BYTES: usize = 8;
 /// Trailing `last_input_seq`.
@@ -989,6 +993,14 @@ pub const JOIN_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 // --- B5: the battery ---
 
 pub const BATTERY_MAX: f32 = 100.0;
+
+/// Heals and battery packs a player may carry (§C9).
+///
+/// They are **counters, not inventory**: consumed constantly, and they should
+/// never compete with a weapon for a slot. Small caps, because carrying six
+/// medkits is not a decision.
+pub const MAX_HEALS: u8 = 2;
+pub const MAX_BATTERIES: u8 = 4;
 pub const BATTERY_PACK_AMOUNT: f32 = 50.0;
 /// Battery per second while a shield is up. The shield ends early at zero, so
 /// every laser shot is a shield you are not going to have.

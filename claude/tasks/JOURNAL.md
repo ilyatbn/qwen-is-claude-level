@@ -3954,3 +3954,51 @@ because the repaired fixture now runs 30–37 s instead of 18 s.
   yellow with the health bar as the control, health reads the snapshot, and a
   2.5 s burn moves both the fill and the pixels.
 - `./scripts/check.sh` green, 29/29 e2e.
+
+## T14.03 — heals and batteries leave the inventory (§C9)
+
+- `heals` (max 2) and `batteries` (max 4) on `PlayerState`, counters beside the
+  health bar. Pickups are routed in `resolve_pickups` and never reach a slot; at
+  max the pickup is **refused and the item stays on the ground**, the same rule a
+  full inventory gets. `Q` heals `MEDKIT_HEAL`, `R` adds `BATTERY_PACK_AMOUNT`,
+  both rejected with no effect at zero and both slotless — nothing an attacker
+  can point out of range.
+- **`SNAPSHOT_PLAYER_BYTES` 17 → 18**, not §C9's 17: T14.02's battery byte took
+  17. Every combination of the packed byte round-trips (4 x 8, not a sample), and
+  the size test pins to the constants.
+- Death takes them, deliberately (§C9 asks for the decision): everything else you
+  carry lands where you fell and can be taken by whoever killed you, and a pair of
+  consumables that survived death would be the only thing a kill does not put back
+  into play.
+- Three existing tests were asserting inventory rules **through a medkit**, which
+  since §C9 never reaches a slot. They now use a bazooka or a shield generator and
+  say why; one of them would have gone on passing while measuring the opposite.
+- **The open defect from T14.01 is fixed.** `die` empties the inventory and pushed
+  no `Inventory` event, so the owner's client rendered the pre-death loadout until
+  some later pickup corrected it — measured at five seconds, and the e2e harness
+  looks a weapon's slot up in that view before pressing its hotkey. Falsified:
+  with the push removed the new test fails with "the player died and was never
+  told their inventory had gone".
+- Also §A34: `battery` was never in the state hash, and nor were the two new
+  counters. All three change the simulation, so a replay could diverge with every
+  checkpoint agreeing.
+
+## T14.04 — quick-throw with E (§C11)
+
+- `E` throws the first grenade-class item — grenade, molotov, toxic, smoke,
+  airburst — from wherever it is, without moving the selection. `try_fire` split
+  into `try_fire_slot` and `World::fire` into `fire_from_slot`, so the throw takes
+  the same validation in the same order and **shares `fire_ready_at`**: it cannot
+  be used to sidestep a cooldown, and a test asserts the cooldown in both
+  directions.
+- `E` was `use_item`; that moves to `G`. Not a doc'd binding, and it is written
+  down: §C10 names no use key, §C9 took the heals and batteries out of the
+  inventory, and the shield generator is the one remaining `use_item` target.
+- **Bots: checked, not assumed** (§B19). `choose_weapon` already scans every slot
+  and scores by damage per second with no filter on delivery kind, so a bot picks
+  a grenade and throws it through the ordinary path. A second route would be two
+  mechanisms for one job; there is a test instead, so a future change that starts
+  skipping thrown weapons fails loudly.
+- `scripts/checks/quick-throw.mjs` drives the real key through the real socket —
+  the unit tests cannot tell a wired keybinding from an unwired one (§A15).
+- `./scripts/check.sh` green, 30/30 e2e.

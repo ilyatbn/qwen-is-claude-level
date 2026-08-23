@@ -71,6 +71,8 @@ export class Bars {
   readonly jetpack: HTMLDivElement
   private readonly bars: { health: Bar; energy: Bar; jetpack: Bar }
   private readonly ring: HTMLDivElement
+  /** §C9's counters, beside the health bar rather than in a slot. */
+  readonly counters: HTMLDivElement
 
   constructor(doc: Document = document, width = 168) {
     this.root = doc.createElement('div')
@@ -106,13 +108,37 @@ export class Bars {
     this.energy = this.bars.energy.root
     this.jetpack = this.bars.jetpack.root
 
+    // §C9: heals and batteries, **beside** the bars and not among them. They are
+    // counters, not a resource with a range, so a track with a fill would be
+    // saying something untrue about them.
+    this.counters = doc.createElement('div')
+    this.counters.id = 'hud-consumables'
+    this.counters.style.cssText =
+      'position:absolute;left:100%;bottom:0;margin-left:8px;white-space:nowrap;' +
+      'font:700 13px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;' +
+      'color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.95);'
+    this.root.style.position = 'fixed'
+    this.root.appendChild(this.counters)
+
     doc.body.appendChild(this.root)
   }
 
-  update(views: { health: BarView; energy: BarView; jetpack: BarView; shield: number | null }): void {
+  update(views: {
+    health: BarView
+    energy: BarView
+    jetpack: BarView
+    shield: number | null
+    consumables: { heals: number; batteries: number }
+  }): void {
     this.bars.health.set(views.health)
     this.bars.energy.set(views.energy)
     this.bars.jetpack.set(views.jetpack)
+
+    // `Q` and `R` are on the labels, because a counter whose key you cannot
+    // remember is a counter you do not use.
+    this.counters.textContent =
+      `♥ ${views.consumables.heals} Q\n⚡ ${views.consumables.batteries} R`
+    this.counters.style.whiteSpace = 'pre'
 
     const fill = this.ring.querySelector<HTMLElement>('[data-fill]')
     if (views.shield === null) {

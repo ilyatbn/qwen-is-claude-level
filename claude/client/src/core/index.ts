@@ -218,6 +218,10 @@ export interface Constants {
   BACKDROP_MIN_ROOF: number
   TIMER_WARN_SECONDS: number
   BATTERY_MAX: number
+  MAX_HEALS: number
+  MEDKIT_HEAL: number
+  MAX_BATTERIES: number
+  BATTERY_PACK_AMOUNT: number
   SHIELD_DRAIN: number
   SHIELD_DURATION: number
 }

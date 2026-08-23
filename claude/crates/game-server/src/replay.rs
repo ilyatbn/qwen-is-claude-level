@@ -96,6 +96,12 @@ pub enum ReplayCommand {
     /// elapsed time, which a replay has none of, so its effect has to be recorded
     /// or a replayed round keeps a seat the live round freed.
     DropUnready(PlayerId),
+    /// `Q` and `R` (§C9). Slotless: heals and batteries are counters, not
+    /// inventory, so there is no slot index to record.
+    UseHeal(PlayerId),
+    UseBatteryPack(PlayerId),
+    /// `E` (§C11). Slotless: the slot is chosen by the documented order.
+    QuickThrow(PlayerId),
     /// A player pressed "Start with bots" (§C18).
     ///
     /// It has to be recorded: it seats bots and begins the round, so a replay
@@ -119,6 +125,9 @@ impl ReplayCommand {
             ReplayCommand::DropUnready(_) => 10,
             ReplayCommand::Checkpoint { .. } => 11,
             ReplayCommand::StartWithBots(_) => 12,
+            ReplayCommand::UseHeal(_) => 13,
+            ReplayCommand::UseBatteryPack(_) => 14,
+            ReplayCommand::QuickThrow(_) => 15,
         }
     }
 }
@@ -367,7 +376,10 @@ fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayErro
         | ReplayCommand::ToggleFlashlight(id)
         | ReplayCommand::Leave(id)
         | ReplayCommand::DropUnready(id)
-        | ReplayCommand::StartWithBots(id) => w.write_all(&[*id])?,
+        | ReplayCommand::StartWithBots(id)
+        | ReplayCommand::UseHeal(id)
+        | ReplayCommand::UseBatteryPack(id)
+        | ReplayCommand::QuickThrow(id) => w.write_all(&[*id])?,
         ReplayCommand::Input(id, inputs) => {
             w.write_all(&[*id])?;
             let n = inputs.len().min(255);
@@ -592,6 +604,9 @@ fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
             ReplayCommand::Checkpoint { tick, hash }
         }
         12 => ReplayCommand::StartWithBots(c.u8()?),
+        13 => ReplayCommand::UseHeal(c.u8()?),
+        14 => ReplayCommand::UseBatteryPack(c.u8()?),
+        15 => ReplayCommand::QuickThrow(c.u8()?),
         other => return Err(ReplayError::BadTag(other)),
     })
 }

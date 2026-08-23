@@ -48,6 +48,10 @@ export interface SnapshotPlayer {
    * sometimes raw and sometimes scaled gets divided by 255 twice.
    */
   battery: number
+  /** Heals carried, 0..`MAX_HEALS` (§C9). */
+  heals: number
+  /** Battery packs carried, 0..`MAX_BATTERIES` (§C9). */
+  batteries: number
   /** `null` when the player is holding nothing. */
   selectedItem: number | null
 }
@@ -182,6 +186,10 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
     const item = r.u8()
     const vision = r.u8() / 255
     const battery = (r.u8() / 255) * C().BATTERY_MAX
+    // §C9: heals in the low 2 bits, batteries in the next 3.
+    const consumables = r.u8()
+    const heals = consumables & 0b11
+    const batteries = (consumables >> 2) & 0b111
     players.push({
       id,
       x,
@@ -194,6 +202,8 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
       jetpackFuel,
       vision,
       battery,
+      heals,
+      batteries,
       selectedItem: item === 255 ? null : item,
     })
   }

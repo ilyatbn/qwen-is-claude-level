@@ -349,6 +349,35 @@ await shot('hud-bars-refilled')
     } else {
       ok(`the jetpack bar fell to ${(spent.fill * 100).toFixed(0)}% and its pixels changed with it`)
     }
+    // §C9's counters, beside the bars. Laid out, on the frame, and reading the
+    // snapshot's own numbers — a counter wired to a local guess would still
+    // render two digits.
+    const cr = await rectOf('hud-consumables')
+    if (!cr) {
+      fail('#hud-consumables is not laid out — §C9 asks for counters beside the health bar')
+    } else {
+      const d2 = await dbg()
+      const text = await page.evaluate(
+        () => document.getElementById('hud-consumables')?.textContent ?? '',
+      )
+      if (!text.includes(String(d2.hudBars.heals)) || !text.includes(String(d2.hudBars.batteries))) {
+        fail(
+          `the counters read "${text.replace(/\n/g, ' / ')}" while the snapshot says ` +
+            `${d2.hudBars.heals} heal(s) and ${d2.hudBars.batteries} battery pack(s)`,
+        )
+      } else {
+        ok(
+          `counters beside the bars read the snapshot — ${d2.hudBars.heals} heal(s), ` +
+            `${d2.hudBars.batteries} pack(s), at (${cr.x}, ${cr.y})`,
+        )
+      }
+      // Beside, not on top: §C8 puts them next to the health bar.
+      if (cr.x < rects['hud-bar-health'].x + rects['hud-bar-health'].w) {
+        fail(`the counters overlap the bars — counters at x=${cr.x}, bars end at ${rects['hud-bar-health'].x + rects['hud-bar-health'].w}`)
+      } else {
+        ok('the counters sit clear of the bars')
+      }
+    }
     await shot('hud-bars-cluster')
   }
 }

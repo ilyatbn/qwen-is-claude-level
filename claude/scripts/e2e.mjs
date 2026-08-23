@@ -118,6 +118,8 @@ const CHECKS = [
   // drives a 90 s round to its warning threshold and waits for the weather
   // scheduler's first roll — it needs its own server, not a shared one.
   { name: 'hud-timer', file: 'scripts/checks/hud-timer.mjs', standalone: true },
+  // T14.04 / §C11: `E` throws a grenade from anywhere in the inventory.
+  { name: 'quick-throw', file: 'scripts/checks/quick-throw.mjs', standalone: true },
   // Standalone: it launches its own vite and browser and calls `process.exit`.
   // Imported into this process it would terminate the suite mid-run — and exit 0
   // while doing it, hiding every earlier failure. Run as a subprocess instead.
