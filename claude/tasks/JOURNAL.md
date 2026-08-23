@@ -4002,3 +4002,70 @@ because the repaired fixture now runs 30–37 s instead of 18 s.
 - `scripts/checks/quick-throw.mjs` drives the real key through the real socket —
   the unit tests cannot tell a wired keybinding from an unwired one (§A15).
 - `./scripts/check.sh` green, 30/30 e2e.
+
+## T14.05 — quick bar and backpack (§C10)
+
+- `INVENTORY_SLOTS` **8 → 24** = `QUICK_SLOTS` (8) + `BACKPACK_SLOTS` (16), in that
+  order, so "pickups fill the quick bar first" falls out of `Inventory::add`
+  filling slots by index rather than being a second rule that can disagree.
+- `Inventory::select` and `select_next_non_empty` are bounded by **`QUICK_SLOTS`**,
+  not `INVENTORY_SLOTS`. With 24 slots those stopped being the same number, and
+  the old bound would have let a `select_slot` from a modified client park the
+  trigger on something the player cannot see.
+- `move_stack` / `move_item` — the drag. Client shows intent, **server decides**:
+  out of range, `from == to` and an empty source are refused; an empty
+  destination moves; the same item merges to `max_stack` with the remainder left
+  behind; a different item swaps. Fuzzed 20 000 index pairs asserting the total
+  item count never changes.
+- `client/src/ui/inventory.ts`: tiles, right-click for the backpack, HTML5 drag.
+  Nothing moves locally — the tiles are rendered from the server's `inventory`
+  event and nothing else.
+- The old text strip carried health, the held item and the whole inventory. §C8
+  and §C10 own all three now, and printing them again put a second, worse HUD
+  across the bottom of the frame (`shots/inventory-open.png`). It keeps the join
+  code, which nothing else shows.
+
+## T14.06 — the escape menu (§C13)
+
+- Resume / Options (present, disabled, `tabIndex -1`) / Quit to title, over a
+  round that keeps running. `handleEscape` owns the stacking rule — innermost
+  overlay first — and is unit-tested as a sequence, because the bug is never one
+  press, it is two in a row.
+- **Quit sends `leave_room` and closes the socket**, not just a scene change: the
+  seat would stay taken and the room would never reap (§B14). Asserted from the
+  server's own `/metrics` player count, which is the only opinion that counts.
+
+## T14.07 — debug mode (§C12)
+
+- `F1` or `?debug=1`, off by default, and it **owns the T3.11 overlays** — one
+  toggle, not two. The aim ring goes in normal play and the crosshair stays;
+  `Crosshair::setRingVisible` is separate from `setVisible` so a corpse's
+  crosshair does not reappear with debug mode.
+- FPS from `requestAnimationFrame` deltas, **median of a 30-frame window**, never
+  `game.loop.actualFps` (§A38). Fed known deltas in the unit tests, including a
+  single 200 ms stall that a mean would report as 48 fps.
+- The state survives a scene change via `sessionStorage`; `initialEnabled` is the
+  decision and is unit-tested, because a browser check can only reach it by
+  reloading the page, which drops the seat and tests the browser.
+
+## Spawns prefer ground you can walk on
+
+Not a task: found because two browser checks reported "held D and moved 0 px".
+`is_standable` says a body fits; it says nothing about being able to leave, so a
+spawn could be a crevice you can stand, aim and fire in and not move — which a
+player reads as the controls being broken. `choose_spawns` now prefers points
+with `SPAWN_WALK_CLEARANCE` of standable ground **both** ways, falling back to
+the unfiltered set when that cannot fill the quota (count-based, not size-based:
+forty clustered roomy points pass any "enough candidates" test and still yield
+five).
+
+Six fixtures were asserting on where the player happened to stand and are now
+asserting on the game: `sandbox` probes the mask for buried rock instead of
+assuming 60 px below a spawn; `ordnance-visible` aims relative to the player and
+picks its noise control by content (the sky animates, terrain does not);
+`debug-mode` compares peak walking speed rather than distance and walks back the
+way it came; `wasd`'s jetpack descent had a 5 px bound against a 5.3 px reading;
+`two-clients` walks whichever way has room; `ordnance` throws its molotov clear
+and leaves while it is in the air.
+
+`./scripts/check.sh` green, 33/33 e2e.

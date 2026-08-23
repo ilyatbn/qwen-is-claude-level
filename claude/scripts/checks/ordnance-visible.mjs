@@ -77,17 +77,58 @@ const screenPos = async (w) => {
 }
 
 /**
- * A patch of frame that nothing we fire should touch: the top-left corner, which
- * is sky above the play area at this zoom. Sampled either side of every
- * measurement, so "these pixels changed" is never the whole argument (§A16).
+ * A patch of frame that nothing we fire should touch, **picked by content**.
+ *
+ * The top-left corner used to be it, on the reasoning that it is sky above the
+ * play area. Sky is the one thing on this screen that changes on its own: the
+ * gradient and the sun move with the round clock, and once the camera sat over
+ * open ground that corner drifted 18 points between two frames a second apart —
+ * which lifts `floor = controlDelta * 3` to 55 and fails a rocket that moved its
+ * own patch by a perfectly visible amount.
+ *
+ * Terrain does not animate. This finds a square of solid rock away from the
+ * player and uses that, and says so if there is none.
  */
-const CONTROL = { x: 20, y: 20, w: 90, h: 90 }
+const findControl = async () => {
+  const r = await page.evaluate(() => {
+    const d = window.__game.debug()
+    const raw = d.worldView
+    const v = { x: raw.x, y: raw.y, w: raw.width ?? raw.w, h: raw.height ?? raw.h }
+    const core = window.__game.core
+    const cv = document.querySelector('canvas')
+    const rect = cv.getBoundingClientRect()
+    const size = 60
+    const wpp = v.w / rect.width
+    const step = 40
+    for (let sy = 40; sy < rect.height - size - 40; sy += step) {
+      for (let sx = 20; sx < rect.width - size - 20; sx += step) {
+        const wx = v.x + sx * wpp
+        const wy = v.y + sy * wpp
+        // Away from the player, so nothing we fire passes through it.
+        if (Math.hypot(wx - d.player.x, wy - d.player.y) < 320) continue
+        let solid = true
+        for (let dx = 0; dx <= size && solid; dx += 12) {
+          for (let dy = 0; dy <= size && solid; dy += 12) {
+            solid = core.solidAt(Math.round(wx + dx * wpp), Math.round(wy + dy * wpp))
+          }
+        }
+        if (solid) return { x: Math.round(sx), y: Math.round(sy), w: size, h: size }
+      }
+    }
+    return null
+  })
+  return r
+}
 
 // --- the control: nothing of ours is on screen yet --------------------------
 //
 // Without this, "a tracer is drawn after firing" also passes for a layer that
 // draws one unconditionally, which is the §A26 half that makes the rest mean
 // something.
+const CONTROL = await findControl()
+if (!CONTROL) {
+  fail('no patch of solid rock on the frame to use as the noise control')
+}
 const idle = await dbg()
 if ((idle.tracersDrawn ?? -1) === 0 && (idle.projectilesDrawn ?? -1) === 0) {
   ok('control: no tracer and no projectile drawn before anything is fired')
@@ -107,16 +148,39 @@ await standStill(page)
 const beforeShots = (await dbg()).observed?.hitscans ?? 0
 const controlBeforeTracer = await samplePatch(page, CONTROL)
 
-// Aim flat and to the right, so the segment crosses open air beside the player
-// rather than burying itself in the ground under their feet.
-await page.mouse.move(1150, 360)
-await sleep(150)
+// Aim flat and to the right of **the player**, not of the screen centre.
+//
+// The player is only at the screen centre while the camera is free; at a map
+// edge it clamps, and then a fixed (1150, 360) points somewhere above or below
+// them. The tracer then never crosses the patch this check samples beside the
+// muzzle, and the reading comes out at 12.5 against a floor of 20.5 — a true
+// measurement of a tracer that went the other way.
+const aimRight = async (dy = 0) => {
+  const at = await page.evaluate((up) => {
+    const d = window.__game.debug()
+    const raw = d.worldView
+    const v = { x: raw.x, y: raw.y, w: raw.width ?? raw.w, h: raw.height ?? raw.h }
+    const cv = document.querySelector('canvas')
+    const r = cv.getBoundingClientRect()
+    const m = 60
+    const wx = Math.min(d.player.x + 300, v.x + v.w - m)
+    const wy = Math.max(d.player.y + up, v.y + m)
+    return {
+      x: r.left + ((wx - v.x) / v.w) * r.width,
+      y: r.top + ((wy - v.y) / v.h) * r.height,
+    }
+  }, dy)
+  await page.mouse.move(at.x, at.y)
+  await sleep(150)
+}
+await aimRight()
 
 let tracerPeak = 0
 let tracerFrame = null
 let narrated = 0
 for (let burst = 0; burst < 12 && !tracerFrame; burst++) {
   await standStill(page)
+  await aimRight()
   await page.evaluate('window.__game.fire()')
   for (let i = 0; i < 14; i++) {
     const d = await dbg()
@@ -209,7 +273,7 @@ await standStill(page)
 // enough that the layer may never be told about it and short enough that the
 // patch is a crater rather than a rocket. An arc through open sky gives the
 // projectile a life to be photographed during.
-await page.mouse.move(1010, 150)
+await aimRight(-200)
 await sleep(150)
 const controlBeforeProj = await samplePatch(page, CONTROL)
 

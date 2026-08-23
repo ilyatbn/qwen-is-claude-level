@@ -102,6 +102,8 @@ pub enum ReplayCommand {
     UseBatteryPack(PlayerId),
     /// `E` (§C11). Slotless: the slot is chosen by the documented order.
     QuickThrow(PlayerId),
+    /// §C10's drag.
+    MoveItem(PlayerId, u8, u8),
     /// A player pressed "Start with bots" (§C18).
     ///
     /// It has to be recorded: it seats bots and begins the round, so a replay
@@ -128,6 +130,7 @@ impl ReplayCommand {
             ReplayCommand::UseHeal(_) => 13,
             ReplayCommand::UseBatteryPack(_) => 14,
             ReplayCommand::QuickThrow(_) => 15,
+            ReplayCommand::MoveItem(..) => 16,
         }
     }
 }
@@ -393,6 +396,7 @@ fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayErro
         ReplayCommand::UseItem(id, slot) | ReplayCommand::SelectSlot(id, slot) => {
             w.write_all(&[*id, *slot])?
         }
+        ReplayCommand::MoveItem(id, from, to) => w.write_all(&[*id, *from, *to])?,
         ReplayCommand::VoteRestart(id, v) => w.write_all(&[*id, u8::from(*v)])?,
         ReplayCommand::Checkpoint { tick, hash } => {
             put_u32(w, *tick)?;
@@ -607,6 +611,7 @@ fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
         13 => ReplayCommand::UseHeal(c.u8()?),
         14 => ReplayCommand::UseBatteryPack(c.u8()?),
         15 => ReplayCommand::QuickThrow(c.u8()?),
+        16 => ReplayCommand::MoveItem(c.u8()?, c.u8()?, c.u8()?),
         other => return Err(ReplayError::BadTag(other)),
     })
 }

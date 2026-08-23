@@ -128,6 +128,18 @@ export class Crosshair {
     this.mark.setVisible(v)
   }
 
+  /**
+   * §C12: the **ring** is a development affordance and is off in a normal game;
+   * the crosshair riding it is the aiming affordance and stays.
+   *
+   * Separate from `setVisible` on purpose — that one is "hide the whole thing",
+   * used when the player is dead, and folding the two together would make a
+   * corpse's crosshair reappear the moment debug mode was turned on.
+   */
+  setRingVisible(v: boolean): void {
+    this.ring.setVisible(v)
+  }
+
   destroy(): void {
     this.ring.destroy()
     this.mark.destroy(true)

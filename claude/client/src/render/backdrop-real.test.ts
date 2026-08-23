@@ -55,6 +55,7 @@ const DEEP_WINDOW = {
 } as const
 
 function build(scale: MapScale, seed: bigint, generator: MapGenerator) {
+  distCache = null
   core.generateWith(seed, scale, generator)
   w = core.width
   h = core.height
@@ -93,7 +94,23 @@ function roofed(x: number, y: number): boolean {
  * field from the coarse grid, and a test that reused it would be asking the
  * implementation to grade itself. Chamfer 3-4, which is within ~2 % of Euclidean.
  */
+/**
+ * Memoised per map.
+ *
+ * This is a chamfer over the whole mask — 8.4 M pixels at Large — and it is one
+ * unbroken synchronous block. Three tests wanted it, so each case paid for it
+ * three times, and with six cases that starved the vitest worker's RPC until it
+ * reported `Timeout calling "onTaskUpdate"` and failed the file without failing a
+ * test. Computed once per `build()`, which is once per map.
+ */
+let distCache: Float32Array | null = null
 function distToSolid(): Float32Array {
+  if (distCache) return distCache
+  distCache = computeDistToSolid()
+  return distCache
+}
+
+function computeDistToSolid(): Float32Array {
   const ORTH = 3
   const DIAG = 4
   const CAP = 3 * 500

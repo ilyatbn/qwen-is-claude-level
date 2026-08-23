@@ -120,6 +120,12 @@ const CHECKS = [
   { name: 'hud-timer', file: 'scripts/checks/hud-timer.mjs', standalone: true },
   // T14.04 / §C11: `E` throws a grenade from anywhere in the inventory.
   { name: 'quick-throw', file: 'scripts/checks/quick-throw.mjs', standalone: true },
+  // T14.05 / §C10: the quick bar, the backpack, and a drag that reaches the server.
+  { name: 'inventory-ui', file: 'scripts/checks/inventory-ui.mjs', standalone: true },
+  // T14.06 / §C13: the escape menu, and a quit that actually leaves the room.
+  { name: 'escape-menu', file: 'scripts/checks/escape-menu.mjs', standalone: true },
+  // T14.07 / §C12: debug mode off by default, F1 on, and it changes nothing.
+  { name: 'debug-mode', file: 'scripts/checks/debug-mode.mjs', standalone: true },
   // Standalone: it launches its own vite and browser and calls `process.exit`.
   // Imported into this process it would terminate the suite mid-run — and exit 0
   // while doing it, hiding every earlier failure. Run as a subprocess instead.

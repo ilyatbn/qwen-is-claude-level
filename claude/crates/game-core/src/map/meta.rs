@@ -152,6 +152,7 @@ pub fn generate_full(
     let wind = range_f32(&mut substream(requested_seed, "wind"), -WIND_MAX, WIND_MAX);
 
     let spawn_points = choose_spawns(
+        &outcome.mask,
         &outcome.surface,
         &outcome.report.largest_component,
         outcome.seed,

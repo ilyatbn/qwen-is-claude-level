@@ -55,12 +55,20 @@ export class DebugOverlay {
     this.allowBuried = allowBuried
     this.gfx = scene.add.graphics().setDepth(55).setVisible(false)
 
-    scene.input.keyboard?.on('keydown-F4', () => this.toggle())
+    // **No key of its own.** §C12 folds these overlays into debug mode, and two
+    // toggles for one job is how they drift: F4 could show collision boxes while
+    // F1 said debug mode was off. The sandbox drives it from its own button and
+    // `GameScene` from `DebugMode`.
   }
 
   toggle(): void {
-    this.on = !this.on
-    this.gfx.setVisible(this.on)
+    this.set(!this.on)
+  }
+
+  /** Driven by `DebugMode` in the networked game, and by a button in the sandbox. */
+  set(on: boolean): void {
+    this.on = on
+    this.gfx.setVisible(on)
   }
 
   get enabled(): boolean {

@@ -91,13 +91,20 @@ export default async function ({ page, shot, log }) {
   await page.keyboard.up('w')
   const beforeS = await body()
   if (beforeS.grounded) throw new Error('expected to be airborne before testing S')
+  // Held long enough for the answer to be unambiguous.
+  //
+  // 350 ms and a 5 px bound was a coin flip: `S` while the jetpack is still
+  // thrusting nearly cancels gravity, so the descent came out at 5.3 px against a
+  // threshold of 5 — a gate decided by a rounding error. 800 ms and 30 px is the
+  // same property with the noise outside it.
   await page.keyboard.down('s')
-  await page.waitForTimeout(350)
+  await page.waitForTimeout(800)
   const descended = await body()
   await page.keyboard.up('s')
   await page.keyboard.up(' ')
-  log(`S: airborne y ${beforeS.y.toFixed(1)} -> ${descended.y.toFixed(1)}`)
-  if (!(descended.y > beforeS.y + 5)) throw new Error('S did not descend')
+  const fell = descended.y - beforeS.y
+  log(`S: airborne y ${beforeS.y.toFixed(1)} -> ${descended.y.toFixed(1)} (${fell.toFixed(1)} px)`)
+  if (!(fell > 30)) throw new Error(`S descended only ${fell.toFixed(1)} px in 800 ms`)
 
   // --- Aim tracks the mouse in WORLD space, after the camera has scrolled ---
   //

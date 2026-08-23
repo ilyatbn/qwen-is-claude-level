@@ -314,9 +314,9 @@ watch the hole appear, stand in toxic rain and see it, and play a round to the e
 - [x] [T14.02](M14/T14.02-bars.md) — Health, energy and jetpack bars **(v4)**
 - [x] [T14.03](M14/T14.03-consumables.md) — Heals and batteries leave the inventory **(v4)**
 - [x] [T14.04](M14/T14.04-quick-throw.md) — Quick-throw a grenade with E **(v4)**
-- [ ] [T14.05](M14/T14.05-inventory-ui.md) — Quick bar and backpack **(v4)**
-- [ ] [T14.06](M14/T14.06-escape-menu.md) — The escape menu **(v4)**
-- [ ] [T14.07](M14/T14.07-debug-mode.md) — Debug mode, and the aim line leaves production **(v4)**
+- [x] [T14.05](M14/T14.05-inventory-ui.md) — Quick bar and backpack **(v4)**
+- [x] [T14.06](M14/T14.06-escape-menu.md) — The escape menu **(v4)**
+- [x] [T14.07](M14/T14.07-debug-mode.md) — Debug mode, and the aim line leaves production **(v4)**
 - [ ] [T14.08](M14/T14.08-no-dev-surface-in-production.md) — The dev surface is compiled out **(v4)**
 
 **Checkpoint:** play a round using only the HUD — no debug overlays — and never lose

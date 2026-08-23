@@ -588,6 +588,31 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                     },
                 );
             }
+            {
+                let ctx = ctx.clone();
+                // §C10's drag. **Untrusted on both indices**: a modified client can
+                // send anything, so neither is used to index — `move_stack` bounds
+                // both and refuses `from == to`, and `unwrap_or(255)` makes a
+                // missing field a refusal rather than a default of 0, which would
+                // silently mean "the first slot".
+                socket.on(
+                    "move_item",
+                    move |socket: SocketRef, Data::<serde_json::Value>(p)| {
+                        let ctx = ctx.clone();
+                        async move {
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
+                            if let Some(id) = sessions.player_of(socket.id) {
+                                let g = |k: &str| {
+                                    p.get(k).and_then(|v| v.as_u64()).unwrap_or(255).min(255) as u8
+                                };
+                                room.send(Command::MoveItem(id, g("from"), g("to")));
+                            }
+                        }
+                    },
+                );
+            }
             // §C9: `Q` and `R`. Slotless — heals and batteries are counters, not
             // inventory, so unlike `use_item` there is nothing to index and
             // nothing an attacker can point out of range.

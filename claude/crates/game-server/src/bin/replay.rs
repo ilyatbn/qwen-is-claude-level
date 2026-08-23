@@ -371,6 +371,7 @@ fn to_command(c: &ReplayCommand) -> Command {
         ReplayCommand::UseHeal(id) => Command::UseHeal(*id),
         ReplayCommand::UseBatteryPack(id) => Command::UseBatteryPack(*id),
         ReplayCommand::QuickThrow(id) => Command::QuickThrow(*id),
+        ReplayCommand::MoveItem(id, f, t) => Command::MoveItem(*id, *f, *t),
         ReplayCommand::Fire(id) => Command::Fire(*id),
         ReplayCommand::ToggleFlashlight(id) => Command::ToggleFlashlight(*id),
         ReplayCommand::VoteRestart(id, v) => Command::VoteRestart(*id, *v),

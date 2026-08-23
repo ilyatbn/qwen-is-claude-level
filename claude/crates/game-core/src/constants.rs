@@ -225,6 +225,17 @@ pub const MIN_POCKET_PX: u32 = 250;
 /// Spacing of surface graph nodes.
 pub const SURFACE_SAMPLE_STEP: i32 = 16;
 pub const SPAWN_MIN_SEPARATION: f32 = 256.0;
+/// Walkable ground a spawn wants on **both** sides, in px.
+///
+/// A spawn is a standable point, and "standable" only means a body fits — it says
+/// nothing about being able to go anywhere. Wedged in a crevice or against a
+/// cliff you can stand, aim and fire, and you cannot walk, which reads as the
+/// controls being broken. Two browser checks caught it as "held D and moved 0 px";
+/// both were true reports about a legal spawn.
+///
+/// 48 px is three player widths — enough to tell a ledge from a slot, and small
+/// enough that a terraced hillside still offers plenty of candidates.
+pub const SPAWN_WALK_CLEARANCE: i32 = 48;
 pub const SPAWN_COUNT_MIN: usize = 6;
 
 pub const NOISE_OCTAVES: u32 = 5;
@@ -459,7 +470,18 @@ pub const ARCH_END_TAPER: f32 = 0.62;
 // Items
 // ---------------------------------------------------------------------------
 
-pub const INVENTORY_SLOTS: usize = 8;
+/// The always-visible bar (§C10). `1`–`8` and the wheel select from it, and
+/// **only** from it: firing and using act on the selection, so a selection that
+/// could land in the backpack would mean shooting something you cannot see.
+pub const QUICK_SLOTS: usize = 8;
+/// Two more rows, revealed by right-click (§C10).
+pub const BACKPACK_SLOTS: usize = 16;
+/// The whole inventory: the quick bar first, then the backpack.
+///
+/// **8 → 24.** The ordering is load-bearing rather than cosmetic: `Inventory::add`
+/// fills slots in index order, so quick-bar-first (§C10) falls out of laying the
+/// bar at 0..QUICK_SLOTS instead of being a second rule that can disagree.
+pub const INVENTORY_SLOTS: usize = QUICK_SLOTS + BACKPACK_SLOTS;
 /// Per slot, same item id.
 pub const MAX_STACK: u8 = 9;
 /// From player centre to pickup centre.

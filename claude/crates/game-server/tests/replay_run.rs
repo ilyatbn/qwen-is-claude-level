@@ -163,6 +163,7 @@ fn resimulate(file: &replay::Replay, until: u32) -> Room {
                 ReplayCommand::UseHeal(id) => Command::UseHeal(*id),
                 ReplayCommand::UseBatteryPack(id) => Command::UseBatteryPack(*id),
                 ReplayCommand::QuickThrow(id) => Command::QuickThrow(*id),
+                ReplayCommand::MoveItem(id, f, t) => Command::MoveItem(*id, *f, *t),
             };
             room.apply_for_test(c);
         }

@@ -134,6 +134,10 @@ export class SandboxScene extends Phaser.Scene {
     this.lightmap = new Lightmap(this)
     // `true`: this is the sandbox, the one place buried slots may be drawn.
     this.overlay = new DebugOverlay(this, this.core, true)
+    // The sandbox keeps `F4`. §C12 folded the overlays into debug mode for the
+    // *game* — one toggle there — but the sandbox is the development scene and
+    // its panel already has a button beside the key.
+    this.input.keyboard?.on('keydown-F4', () => this.overlay.toggle())
     // Hazards sit just under the ordnance layer: both are world-space FX, and
     // a puddle should never draw over a rocket.
     this.hazardGfx = this.add.graphics().setDepth(38)

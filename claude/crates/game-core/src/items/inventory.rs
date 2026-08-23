@@ -4,7 +4,7 @@
 //! the use path, which needs the registry and the player state. See
 //! `docs/30-items-inventory.md` §2.
 
-use crate::constants::INVENTORY_SLOTS;
+use crate::constants::{INVENTORY_SLOTS, QUICK_SLOTS};
 use crate::items::registry::{is_weapon, max_stack, ItemId};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -131,6 +131,65 @@ impl Inventory {
         true
     }
 
+    /// Move or merge a stack between two slots (§C10's drag).
+    ///
+    /// **The server is the authority**: the client shows the intent, this decides.
+    /// It parses attacker-controlled indices, so every one of them is checked and
+    /// none of them indexes without a bound.
+    ///
+    /// - out of range, or `from == to`, or an empty source: refused, nothing moves;
+    /// - empty destination: the stack moves whole;
+    /// - same item: merged up to `max_stack`, and **whatever does not fit stays
+    ///   behind** rather than being destroyed;
+    /// - different item: swapped, which is what a drag onto an occupied tile
+    ///   means to anyone who has used an inventory before.
+    pub fn move_stack(&mut self, from: u8, to: u8) -> bool {
+        let (f, t) = (from as usize, to as usize);
+        if f >= INVENTORY_SLOTS || t >= INVENTORY_SLOTS || f == t {
+            return false;
+        }
+        let Some(src) = self.slots[f] else {
+            return false;
+        };
+        match self.slots[t] {
+            None => {
+                self.slots[t] = Some(src);
+                self.slots[f] = None;
+            }
+            Some(mut dst) if dst.item == src.item => {
+                let cap = max_stack(src.item);
+                if dst.count >= cap {
+                    // Nothing would move, so this is not a move. Reported as
+                    // refused rather than as a no-op success: the caller emits an
+                    // `inventory` event on success, and an event for a change
+                    // that did not happen is a lie the client then renders.
+                    return false;
+                }
+                let take = (cap - dst.count).min(src.count);
+                dst.count += take;
+                self.slots[t] = Some(dst);
+                let left = src.count - take;
+                self.slots[f] = if left == 0 {
+                    None
+                } else {
+                    Some(Stack {
+                        item: src.item,
+                        count: left,
+                    })
+                };
+            }
+            Some(dst) => {
+                self.slots[t] = Some(src);
+                self.slots[f] = Some(dst);
+            }
+        }
+        // A selection left on a slot that just emptied fires into nothing.
+        if self.slots[self.selected as usize].is_none() {
+            self.select_next_non_empty();
+        }
+        true
+    }
+
     /// Fold the inventory into a world hash. Private slots, so it lives here.
     pub fn hash_into(&self, h: &mut blake3::Hasher) {
         for s in &self.slots {
@@ -154,8 +213,15 @@ impl Inventory {
         self.slot(self.selected)
     }
 
+    /// Select a **quick-bar** slot. Refuses anything else (§C10).
+    ///
+    /// Firing and using act on the selection, so a selection that could sit in
+    /// the backpack would mean shooting with something that is not on the screen.
+    /// The bound is `QUICK_SLOTS`, not `INVENTORY_SLOTS`: with 24 slots those are
+    /// no longer the same number, and the old check would have let a `select_slot`
+    /// from a modified client point anywhere.
     pub fn select(&mut self, slot: u8) -> bool {
-        if (slot as usize) < INVENTORY_SLOTS {
+        if (slot as usize) < QUICK_SLOTS {
             self.selected = slot;
             true
         } else {
@@ -163,11 +229,15 @@ impl Inventory {
         }
     }
 
-    /// Move selection to the next occupied slot, wrapping. Stays put if the
-    /// inventory is empty.
+    /// Move selection to the next occupied **quick-bar** slot, wrapping. Stays
+    /// put if the bar is empty.
+    ///
+    /// Bounded by `QUICK_SLOTS` for the same reason `select` is: this runs when a
+    /// stack empties, and letting it wander into the backpack would put the
+    /// trigger on something the player cannot see.
     pub fn select_next_non_empty(&mut self) {
-        for step in 1..=INVENTORY_SLOTS {
-            let idx = (self.selected as usize + step) % INVENTORY_SLOTS;
+        for step in 1..=QUICK_SLOTS {
+            let idx = (self.selected as usize + step) % QUICK_SLOTS;
             if self.slots[idx].is_some() {
                 self.selected = idx as u8;
                 return;
@@ -314,8 +384,12 @@ mod tests {
     #[test]
     fn a_partial_add_reports_the_exact_leftover() {
         let mut inv = Inventory::new();
-        // Fill seven slots, leaving one free for medkits (cap 3).
-        for _ in 0..7 {
+        // Fill all but one slot, leaving one free for medkits (cap 3).
+        //
+        // Pinned to `INVENTORY_SLOTS` rather than to 7: §C10 took the inventory
+        // from 8 slots to 24, and a fixture carrying its own copy of the size
+        // stops filling it (§A19). This one failed loudly, which is the point.
+        for _ in 0..INVENTORY_SLOTS - 1 {
             inv.add(crate::items::registry::FLASHLIGHT, 1);
         }
         // One free slot holds 3; asking for 5 must leave 2 behind, not drop them.
@@ -384,7 +458,7 @@ mod tests {
         let mut inv = Inventory::new();
         inv.add(MEDKIT, 1);
         assert!(!inv.is_full_for(MEDKIT));
-        for _ in 0..7 {
+        for _ in 0..INVENTORY_SLOTS - 1 {
             inv.add(crate::items::registry::FLASHLIGHT, 1);
         }
         // Slot 0 still has a medkit stack with room.
@@ -617,5 +691,154 @@ mod pickup_does_not_disturb_what_is_held {
                 "slot {i} was {held:?}, not the {n} of item {item} it started with",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod dragging {
+    use super::*;
+    use crate::constants::{BACKPACK_SLOTS, QUICK_SLOTS};
+    use crate::items::registry::{BAZOOKA, GRENADE, MEDKIT, SHIELD_GENERATOR};
+
+    /// The first backpack slot. Derived, so the geometry cannot drift from the
+    /// constants the client lays the panel out from.
+    const BACKPACK: u8 = QUICK_SLOTS as u8;
+
+    #[test]
+    fn a_stack_moves_to_an_empty_slot_in_either_direction() {
+        let mut inv = Inventory::new();
+        inv.add(BAZOOKA, 4);
+        assert!(inv.move_stack(0, BACKPACK), "quick bar → backpack");
+        assert_eq!(inv.slot(0), None);
+        assert_eq!(inv.slot(BACKPACK).map(|s| s.item), Some(BAZOOKA));
+
+        assert!(inv.move_stack(BACKPACK, 3), "backpack → quick bar");
+        assert_eq!(inv.slot(BACKPACK), None);
+        assert_eq!(inv.slot(3).map(|s| (s.item, s.count)), Some((BAZOOKA, 4)));
+    }
+
+    #[test]
+    fn a_drag_onto_a_different_item_swaps_them() {
+        let mut inv = Inventory::new();
+        inv.add(BAZOOKA, 4);
+        inv.add(GRENADE, 2);
+        assert!(inv.move_stack(0, 1));
+        assert_eq!(inv.slot(0).map(|s| s.item), Some(GRENADE));
+        assert_eq!(inv.slot(1).map(|s| s.item), Some(BAZOOKA));
+    }
+
+    /// §C10: merging respects `max_stack`, and the remainder stays behind rather
+    /// than being destroyed.
+    #[test]
+    fn merging_onto_a_partial_stack_respects_max_stack() {
+        let cap = max_stack(MEDKIT);
+        let mut inv = Inventory::new();
+        // Two partial stacks of the same item, in different regions.
+        inv.slots[0] = Some(Stack {
+            item: MEDKIT,
+            count: cap,
+        });
+        inv.slots[BACKPACK as usize] = Some(Stack {
+            item: MEDKIT,
+            count: cap - 1,
+        });
+        // Drag the full one onto the partial one: exactly one fits.
+        assert!(inv.move_stack(0, BACKPACK));
+        assert_eq!(inv.slot(BACKPACK).map(|s| s.count), Some(cap));
+        assert_eq!(
+            inv.slot(0).map(|s| s.count),
+            Some(cap - 1),
+            "the remainder was destroyed"
+        );
+        // And onto a stack that is already full: refused, nothing moves.
+        let before: Vec<_> = (0..INVENTORY_SLOTS).map(|i| inv.slot(i as u8)).collect();
+        inv.slots[1] = Some(Stack {
+            item: MEDKIT,
+            count: cap,
+        });
+        assert!(!inv.move_stack(1, BACKPACK));
+        assert_eq!(inv.slot(1).map(|s| s.count), Some(cap));
+        let after: Vec<_> = (0..INVENTORY_SLOTS)
+            .map(|i| inv.slot(i as u8))
+            .collect::<Vec<_>>();
+        assert_eq!(after[BACKPACK as usize], before[BACKPACK as usize]);
+    }
+
+    /// Attacker-controlled indices. Refused, and **without a panic** — this is
+    /// the one function in the inventory that parses untrusted input.
+    #[test]
+    fn out_of_range_equal_and_empty_moves_are_refused_without_panicking() {
+        let mut inv = Inventory::new();
+        inv.add(BAZOOKA, 4);
+        for (from, to) in [
+            (0u8, 0u8),                 // equal
+            (0, INVENTORY_SLOTS as u8), // just past the end
+            (INVENTORY_SLOTS as u8, 0), // ...the other way
+            (255, 255),                 // the "missing field" value
+            (0, 200),                   // wildly out of range
+            (1, 2),                     // empty source
+        ] {
+            assert!(!inv.move_stack(from, to), "{from} → {to} was accepted");
+        }
+        // Nothing moved at all.
+        assert_eq!(inv.slot(0).map(|s| (s.item, s.count)), Some((BAZOOKA, 4)));
+    }
+
+    /// Fuzzed, because "every index is checked" is a claim about *all* of them.
+    #[test]
+    fn no_pair_of_indices_can_panic_or_lose_an_item() {
+        let mut rng = crate::rng::substream(4242, "drag-fuzz");
+        let mut inv = Inventory::new();
+        inv.add(BAZOOKA, 4);
+        inv.add(GRENADE, 3);
+        inv.add(MEDKIT, 2);
+        inv.add(SHIELD_GENERATOR, 2);
+        let total = |i: &Inventory| -> u32 {
+            [BAZOOKA, GRENADE, MEDKIT, SHIELD_GENERATOR]
+                .iter()
+                .map(|it| i.count_of(*it))
+                .sum()
+        };
+        let before = total(&inv);
+        for _ in 0..20_000 {
+            let from = crate::rng::range_u32(&mut rng, 0, 300) as u8;
+            let to = crate::rng::range_u32(&mut rng, 0, 300) as u8;
+            inv.move_stack(from, to);
+            // The invariant that matters: dragging never creates or destroys.
+            assert_eq!(total(&inv), before, "a drag changed the total item count");
+        }
+    }
+
+    /// §C10: the selection follows the quick bar only.
+    #[test]
+    fn a_backpack_slot_cannot_be_selected() {
+        let mut inv = Inventory::new();
+        for i in 0..QUICK_SLOTS {
+            assert!(inv.select(i as u8), "quick slot {i} was refused");
+        }
+        for i in QUICK_SLOTS..QUICK_SLOTS + BACKPACK_SLOTS {
+            assert!(!inv.select(i as u8), "backpack slot {i} was selected");
+        }
+        // ...and the refusal left the selection where it was.
+        assert_eq!(inv.selected(), (QUICK_SLOTS - 1) as u8);
+    }
+
+    /// And the auto-advance stays in the bar too, which is the path a player hits
+    /// without ever touching a key.
+    #[test]
+    fn the_auto_advance_never_lands_in_the_backpack() {
+        let mut inv = Inventory::new();
+        // Only the backpack has anything in it.
+        inv.slots[BACKPACK as usize] = Some(Stack {
+            item: BAZOOKA,
+            count: 1,
+        });
+        inv.selected = 0;
+        inv.select_next_non_empty();
+        assert!(
+            (inv.selected() as usize) < QUICK_SLOTS,
+            "the selection wandered to slot {}",
+            inv.selected()
+        );
     }
 }

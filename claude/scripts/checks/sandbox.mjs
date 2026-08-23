@@ -65,18 +65,46 @@ export default async function ({ page, shot, log }) {
   // 4 + 5. Carving removes pixels and rebakes; radius 200 stays inside budget.
   await page.evaluate(() => window.__game.regenerate('12345', 'medium'))
   const before = await solidCount()
-  const spawn = await page.evaluate(() => window.__game.core.meta.spawn_points[0])
-  // Carve INTO the rock: 40 px *above* a spawn point is mostly air, and removing
-  // 80 px would let a broken carve pass.
-  await page.evaluate((s) => window.__game.carve(s.x, s.y + 60, 42), spawn)
+  // Carve INTO the rock, at a point **probed** to be buried.
+  //
+  // "60 px below a spawn" was the old rule and it is an assumption about the
+  // terrain, not a fact about it: on a slope or a ledge that lands half in air
+  // and the disc comes out at 3552 px of an expected 5500 — a true report that
+  // says nothing about carving. The mask is right there; ask it.
+  const target = await page.evaluate(() => {
+    const core = window.__game.core
+    const s = core.meta.spawn_points[0]
+    const r = 42
+    for (let d = r; d < 600; d += 8) {
+      const y = s.y + d
+      // Every extreme of the disc inside rock, so the whole of it is.
+      if (
+        core.solidAt(s.x, y - r) &&
+        core.solidAt(s.x, y + r) &&
+        core.solidAt(s.x - r, y) &&
+        core.solidAt(s.x + r, y)
+      ) {
+        return { x: s.x, y, r }
+      }
+    }
+    return null
+  })
+  if (!target) throw new Error('no fully buried spot under the first spawn to carve into')
+  await page.evaluate((t) => window.__game.carve(t.x, t.y, t.r), target)
   const after = await solidCount()
   // A full r=42 disc is ~5500 px; anything much less means we hit air.
-  if (before - after < 4000) throw new Error(`carve removed only ${before - after} px`)
+  if (before - after < 4000) {
+    throw new Error(
+      `carve removed only ${before - after} px at a probed-buried (${target.x}, ${target.y})`,
+    )
+  }
   d = await dbg()
   log(`4. carve r=42 removed ${before - after} px, rebake ${d.lastRebakeMs.toFixed(1)} ms`)
   await shot('sandbox-carve-42')
 
-  await page.evaluate((s) => window.__game.carve(s.x, s.y + 60, 200), spawn)
+  // The big one, at the same probed point: this step is about the **rebake
+  // budget**, not about how much came out, so it only has to land somewhere real.
+  await page.evaluate((t) => window.__game.carve(t.x, t.y, 200), target)
   d = await dbg()
   const after200 = await solidCount()
   log(`5. carve r=200 removed ${after - after200} px, rebake ${d.lastRebakeMs.toFixed(1)} ms`)

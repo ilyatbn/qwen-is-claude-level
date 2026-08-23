@@ -227,6 +227,13 @@ if (sprayed) ok(`cone: ${sprayed.jets} jet(s) received and drawn`)
 // nothing drew. Assert on hazards *drawn*, not on `hazard_spawn` being counted —
 // counting was already happening and was exactly the bug.
 await holding('mine')
+// **Before the mine, not after it.**
+//
+// Moving it last was tried — nothing depends on surviving the fire there, which
+// is attractive — and it does not work: after the rocket the player is standing
+// in the crater it made, and a bottle thrown out of a pit does not produce a
+// hazard the layer ever draws. Three runs, three "timed out waiting for a hazard
+// to be drawn". Thrown from open ground it lands every time.
 await selectWeapon(page, 'molotov')
 // Thrown **up** and to the right, not down at 45 degrees.
 //
@@ -237,7 +244,15 @@ await selectWeapon(page, 'molotov')
 // being thrown at all — molotov x2 before the step and x2 after, with the
 // failure reading "timed out waiting for a hazard to be drawn". Aimed above the
 // horizontal it carries, lands clear, and lights.
-await fireAt(900, 500)
+// Thrown **up** and to the right.
+//
+// A molotov is a thrown weapon: the aim sets the launch angle and the speed is
+// fixed, so where it lands is governed by the arc, not by the point clicked.
+// Aimed below the horizontal the bottle lands at the player's own feet, and its
+// fire kills — health went 14 → 1 → 0 over 800 ms in a frame-by-frame watch.
+// Aimed above it, the same throw carries clear; the run below still walks away
+// as well, because how far it carries depends on the ground it is thrown from.
+await fireAt(1060, 180)
 // **Walk out from under it while it is still in the air.**
 //
 // The bottle lands roughly where the player was standing, and its fire kills:
@@ -257,31 +272,28 @@ await fireAt(900, 500)
 // depends on the ground. Measured, the player was still alight at the end of it
 // on 64 health and died a moment later. Walk while health is falling, stop when
 // it has been steady for three reads.
+// **Leave while it is in the air**, and keep going.
+//
+// The fire lands roughly where the player was standing and it kills — measured
+// frame by frame, health went 14 → 1 → 0 over 800 ms — and a death drops the
+// inventory, so the rocket step below would be about a respawned player. Walking
+// starts before the bottle lands and runs for 1.5 s, which at `WALK_SPEED` is
+// 225 px: further than the zones spread. The hazard is polled **during** the
+// walk, because it appears the moment the bottle lands and this walk outlasts
+// the flames.
 await page.keyboard.down('a')
-// Caught **while running**, not after. The zones appear the moment the bottle
-// lands, and the walk below can take eight seconds — long enough for a fire that
-// was drawn to have burned out again before anything looked at it, which read as
-// "timed out waiting for a hazard to be drawn".
 const burnt = await until((d) => d.hazardsDrawn > 0, 10_000, 'a hazard to be drawn')
-let last = (await dbg()).health
-let steady = 0
-const clear = Date.now() + 8000
-while (Date.now() < clear && steady < 3) {
-  await settle(250)
-  const now = (await dbg()).health
-  steady = now >= last - 0.01 ? steady + 1 : 0
-  last = now
-}
+await settle(1500)
 await page.keyboard.up('a')
 await settle(300)
 const survived = await dbg()
-if (survived.health <= 0) {
+if ((survived.observed?.deaths ?? []).length > 0) {
   fail(
-    'the player died in its own molotov — everything after this is about a ' +
+    'the player died in its own molotov — the rocket step below would be about a ' +
       'respawned player with a dropped inventory, not about ordnance',
   )
 } else {
-  ok(`stopped burning on ${Math.round(survived.health)} health`)
+  ok(`walked clear of its own fire on ${Math.round(survived.health)} health`)
 }
 if (burnt) {
   // §B15: read the field that exists. The first version of this line printed
@@ -301,36 +313,6 @@ if (burnt) {
 
 await page.screenshot({ path: join(shotsDir, 'ordnance-hazard.png') })
 await holding('hazard')
-
-// --- let the fire go out before doing anything else ------------------------
-//
-// A molotov burns for seconds after its zones are counted, and the step below
-// stands still in front of a mine. Standing still anywhere near this fire is
-// fatal, and death is silent to this check: the client's `slots` do not refresh
-// on death, so the loadout is still listed in full for five seconds afterwards
-// (a real client defect, recorded in the journal). What the next step sees is a
-// respawned player that has walked back over most — not all — of its own dropped
-// stacks, which is why the failure reads `"bazooka" is not in the inventory` with
-// every *other* slot intact and its counts preserved.
-//
-// So: wait for the flames, out of reach of them, and then say plainly whether the
-// player is still the one that was armed.
-await until((d) => (d.hazardsDrawn ?? 0) === 0, 25_000, 'the fire to burn out')
-const afterFire = await dbg()
-// **Deaths, not health, and not `slots`.** A respawn restores health to exactly
-// `BASE_HEALTH`, so "100" reads identically to "never hurt"; and `slots` does not
-// refresh on death, so it reported a full loadout for a corpse. The death count
-// is the only signal here that cannot be mistaken for its opposite.
-const died = (afterFire.observed?.deaths ?? []).length
-if (died > 0) {
-  fail(
-    `the player died ${died} time(s) in the fixture's own fire — what follows would be ` +
-      'about a respawned player that has walked back over part of its dropped loadout, ' +
-      'which is how this used to surface as "bazooka is not in the inventory"',
-  )
-} else {
-  ok(`the fire is out, no deaths, ${Math.round(afterFire.health)} health`)
-}
 
 // --- the mine, counted at both ends ----------------------------------------
 //

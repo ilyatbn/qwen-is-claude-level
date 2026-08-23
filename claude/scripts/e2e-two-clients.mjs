@@ -113,25 +113,51 @@ if (db1.playerCount < 2) fail(`bo sees ${db1.playerCount} players, expected 2`)
 // the failure recorded three times as "two-clients fails in the suite, passes
 // standalone" — most recently as `bo held D and moved only 0.0 px locally`.
 const bx0 = db1.player?.x ?? 0
-await b.page.keyboard.down('d')
-// Hold for the original fixed window *first*, then keep holding and poll. The
-// fixed part is what the check has always done and is known to work; the poll
-// only extends it when the box is too busy to have simulated enough ticks yet.
-// Polling from t=0 instead was tried and did not move the player at all, for a
-// reason I could not explain — so this keeps the behaviour that works and adds
-// headroom rather than replacing it with something I do not understand.
-await sleep(1200)
-for (let i = 0; i < 60; i++) {
-  const d = await dbg(b)
-  if (Math.abs((d.player?.x ?? 0) - bx0) > 8) break
-  await sleep(250)
+
+/**
+ * Hold a direction until bo has actually moved.
+ *
+ * Two things this is careful about. **Not a fixed sleep**: the client steps a
+ * fixed timestep off requestAnimationFrame, so under load it simulates fewer
+ * ticks per wall-clock second and a constant window measures the box rather than
+ * the game — the failure recorded three times as "two-clients fails in the
+ * suite, passes standalone". The fixed 1200 ms is kept because it is what has
+ * always worked, and the poll only extends it.
+ *
+ * And **either direction**. What is being asserted is that a remote body moves
+ * when its owner holds a key; which way is not the point, and a spawn with a
+ * wall to its right is a legal spawn — `bo held D and moved only 0.0 px` is a
+ * true report about terrain.
+ */
+const holdUntilMoved = async (key) => {
+  await b.page.keyboard.down(key)
+  await sleep(1200)
+  let moved = 0
+  for (let i = 0; i < 40; i++) {
+    const d = await dbg(b)
+    moved = Math.abs((d.player?.x ?? 0) - bx0)
+    if (moved > 8) break
+    await sleep(250)
+  }
+  await b.page.keyboard.up(key)
+  await sleep(400)
+  return moved
 }
-await b.page.keyboard.up('d')
-await sleep(400)
+
+let heldKey = 'd'
+if ((await holdUntilMoved('d')) <= 8) {
+  heldKey = 'a'
+  await holdUntilMoved('a')
+}
 const aAfter = await dbg(a)
 const bAfter = await dbg(b)
 const bMoved = Math.abs(bAfter.player.x - db1.player.x)
-if (bMoved < 5) fail(`bo held D and moved only ${bMoved.toFixed(1)} px locally`)
+if (bMoved < 5) {
+  fail(
+    `bo held ${heldKey.toUpperCase()} — and then the other way — and moved only ` +
+      `${bMoved.toFixed(1)} px locally`,
+  )
+}
 // Control: ana must actually have a remote body to have been watching, or
 // "the remote moved" is satisfied by a client rendering nobody.
 if ((aAfter.players?.length ?? 0) < 1) fail('ana had no remote player to watch')
@@ -199,27 +225,46 @@ if (dc.maskChecksum !== daF.maskChecksum) {
 // T8.05 — the inventory verbs. `Connection` has had sendSelectSlot and
 // sendUseItem since T6.08 and nothing in the scene called them, so a medkit, a
 // shield and the flashlight were all unusable in the real game while every unit
-// test passed. Asserting the HUD *changes* is the point: a keybinding that is
-// registered but wired to nothing looks identical from outside.
+// test passed. Asserting that something *changes* is the point: a keybinding
+// that is registered but wired to nothing looks identical from outside.
+//
+// Read from the **panel and the selection index**, not from the HUD text. §C10
+// gave the inventory a quick bar and a backpack and took the 24-slot line out of
+// the text strip, so "the strip gained a newline" now measures a strip that no
+// longer carries the inventory at all.
 {
-  const hudText = () => a.page.evaluate('document.querySelector("[data-hud]")?.textContent ?? ""')
-  const before = await hudText()
+  const state = async () => {
+    const d = await a.page.evaluate('window.__game.debug()')
+    return { selected: d.selectedSlot, open: d.overlays?.inventory ?? false }
+  }
+  const before = await state()
   await a.page.keyboard.press('Digit2')
   const afterSelect = await untilValue(
-    hudText,
-    (t) => t !== before,
-    `selecting slot 2 changed nothing in the HUD:\n${before}`,
+    state,
+    (t) => t.selected !== before.selected,
+    `selecting slot 2 did not move the selection (still ${before.selected})`,
   )
-  if (afterSelect === before) fail(`selecting slot 2 changed nothing in the HUD:\n${before}`)
+  if (afterSelect.selected === before.selected) {
+    fail(`selecting slot 2 did not move the selection (still ${before.selected})`)
+  }
+
+  if (before.open) fail('the backpack was already open before any right-click')
   await a.page.mouse.click(640, 360, { button: 'right' })
-  const withPanel = await untilValue(
-    hudText,
-    (t) => t.includes('\n'),
-    'right-click did not open the inventory panel',
-  )
-  if (!withPanel.includes('\n')) fail(`right-click did not open the inventory panel:\n${withPanel}`)
+  const withPanel = await untilValue(state, (t) => t.open, 'right-click did not open the backpack')
+  if (!withPanel.open) fail('right-click did not open the backpack')
+  // ...and the panel is really on the screen, not merely flagged open.
+  const laidOut = await a.page.evaluate(() => {
+    const el = document.getElementById('inventory-backpack')
+    if (!el) return false
+    const r = el.getBoundingClientRect()
+    return r.width > 1 && r.height > 1
+  })
+  if (!laidOut) fail('the backpack reports itself open but has no rect on the screen')
+
   await a.page.mouse.click(640, 360, { button: 'right' })
-  console.log('  inventory: slot select and right-click panel both respond')
+  const closed = await untilValue(state, (t) => !t.open, 'a second right-click did not close it')
+  if (closed.open) fail('a second right-click did not close the backpack')
+  console.log('  inventory: slot select and the backpack panel both respond')
 }
 
 // T8.03 — the F3 HUD, checked here because this is the only place a *server* is

@@ -219,6 +219,9 @@ export interface Constants {
   TIMER_WARN_SECONDS: number
   BATTERY_MAX: number
   MAX_HEALS: number
+  QUICK_SLOTS: number
+  BACKPACK_SLOTS: number
+  INVENTORY_SLOTS: number
   MEDKIT_HEAL: number
   MAX_BATTERIES: number
   BATTERY_PACK_AMOUNT: number

@@ -53,6 +53,8 @@ pub enum Command {
     UseBatteryPack(PlayerId),
     /// `E` (§C11): throw the first grenade-class item, wherever it is.
     QuickThrow(PlayerId),
+    /// §C10's drag. Both indices are attacker-controlled and both are checked.
+    MoveItem(PlayerId, u8, u8),
     Fire(PlayerId),
     ToggleFlashlight(PlayerId),
     VoteRestart(PlayerId, bool),
@@ -89,6 +91,7 @@ impl std::fmt::Debug for Command {
             Command::UseHeal(id) => write!(f, "UseHeal({id})"),
             Command::UseBatteryPack(id) => write!(f, "UseBatteryPack({id})"),
             Command::QuickThrow(id) => write!(f, "QuickThrow({id})"),
+            Command::MoveItem(id, a, b) => write!(f, "MoveItem({id}, {a} -> {b})"),
             Command::Fire(id) => write!(f, "Fire({id})"),
             Command::ToggleFlashlight(id) => write!(f, "ToggleFlashlight({id})"),
             Command::VoteRestart(id, v) => write!(f, "VoteRestart({id}, {v})"),
@@ -744,6 +747,12 @@ impl Room {
                 self.note(R::QuickThrow(id));
                 if let Err(e) = self.world.quick_throw(id, now) {
                     tracing::debug!(target: "game::weapons", player = id, reason = ?e, "quick throw rejected");
+                }
+            }
+            Command::MoveItem(id, from, to) => {
+                self.note(R::MoveItem(id, from, to));
+                if !self.world.move_item(id, from, to) {
+                    tracing::debug!(target: "game::items", player = id, from, to, "move refused");
                 }
             }
             Command::Fire(id) => {

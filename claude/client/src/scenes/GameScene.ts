@@ -38,6 +38,10 @@ import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { Minimap } from '../ui/minimap'
 import { Hud, type EffectPhase } from '../ui/hud'
 import { Bars } from '../ui/bars'
+import { InventoryPanel } from '../ui/inventory'
+import { EscapeMenu, handleEscape } from '../ui/escapeMenu'
+import { DebugMode } from '../ui/debugMode'
+import { DebugOverlay } from '../render/debugOverlay'
 import { energyBar, healthBar, inRefillDelay, jetpackBar, shieldRing } from '../ui/bars-math'
 import { DebugHud } from '../ui/debugHud'
 import { traumaFromExplosion } from '../render/cameraRig-math'
@@ -72,6 +76,13 @@ export class GameScene extends Phaser.Scene {
   private topHud: Hud | null = null
   /** §C8: the bottom-left health / energy / jetpack cluster. */
   private bars: Bars | null = null
+  /** §C10: the quick bar, and the backpack behind right-click. */
+  private inventory: InventoryPanel | null = null
+  /** §C13: Resume / Options / Quit, over a round that keeps running. */
+  private escapeMenu: EscapeMenu | null = null
+  /** §C12: `F1` / `?debug=1`. Off by default, and it owns the T3.11 overlays. */
+  private debugMode: DebugMode | null = null
+  private overlay: DebugOverlay | null = null
   /** Energy pool, straight from the snapshot (§B5). */
   private battery = 0
   /** §C9's counters, straight from the snapshot. Not inventory. */
@@ -100,7 +111,13 @@ export class GameScene extends Phaser.Scene {
   private invOpen = false
   private scoreboardOpen = false
   private selectedSlot = 0
-  private slots: Array<{ key: string; count: number } | null> = Array(8).fill(null)
+  /**
+   * The whole inventory, quick bar then backpack (§C10).
+   *
+   * Sized from the constant on the first `inventory` event; the initial length
+   * only has to be non-empty, because every read is bounds-checked.
+   */
+  private slots: Array<{ key: string; count: number } | null> = []
   private health = 100
   private rttSamples = 0
   private rttAcc = 0
@@ -333,7 +350,10 @@ export class GameScene extends Phaser.Scene {
     this.conn.on('inventory', (raw) => {
       const p = asRecord(raw)
       const arr = Array.isArray(p['slots']) ? (p['slots'] as unknown[]) : []
-      this.slots = Array.from({ length: 8 }, (_, i) => {
+      // `INVENTORY_SLOTS`, not 8. §C10 took it to 24, and a fixed 8 here would
+      // silently drop everything in the backpack — the server sends the whole
+      // array (`docs/30` §6) and this decides how much of it is read.
+      this.slots = Array.from({ length: C().INVENTORY_SLOTS }, (_, i) => {
         const sl = arr[i]
         if (!sl || typeof sl !== 'object') return null
         const r = sl as Record<string, unknown>
@@ -341,6 +361,10 @@ export class GameScene extends Phaser.Scene {
       })
       const sel = p['selected']
       if (typeof sel === 'number') this.selectedSlot = sel
+      this.inventory?.update(
+        this.slots.map((sl, i) => ({ slot: i, key: sl?.key ?? null, count: sl?.count ?? 0 })),
+        this.selectedSlot,
+      )
       this.refreshHud()
     })
     // RTT, measured. `docs/42` §7 says it comes from socket.io's own ping/pong,
@@ -606,7 +630,10 @@ export class GameScene extends Phaser.Scene {
       if (p.rightButtonDown()) {
         // docs/30 §3: right-click toggles the inventory panel. It is client-side
         // and sends nothing; the round keeps running while it is open.
-        this.invOpen = !this.invOpen
+        // §C10: right-click reveals the backpack's two rows. Client-side, sends
+        // nothing, and **not a pause** — the round runs behind it, exactly as
+        // §B4 established for the death screen.
+        this.invOpen = this.inventory?.toggle() ?? !this.invOpen
         this.audio.play('ui_click', { volume: 0.5 })
         this.refreshHud()
         return
@@ -619,7 +646,10 @@ export class GameScene extends Phaser.Scene {
     // `sendUseItem` since T6.08 and nothing called them, so in the real game a
     // medkit, a shield and the flashlight were all unusable — the flashlight
     // being the item the whole night design turns on (docs/30 §4, docs/14 §4).
-    for (let i = 0; i < 8; i++) {
+    // `1`-`8`: the quick bar, and only the quick bar (§C10). Bounded by the
+    // constant rather than by a literal 8 — the inventory is 24 slots now and the
+    // two numbers are no longer the same.
+    for (let i = 0; i < C().QUICK_SLOTS; i++) {
       const key = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT'][i] as string
       this.input.keyboard?.on(`keydown-${key}`, () => {
         this.selectedSlot = i
@@ -629,7 +659,8 @@ export class GameScene extends Phaser.Scene {
       })
     }
     this.input.on('wheel', (_p: unknown, _o: unknown, _dx: number, dy: number) => {
-      this.selectedSlot = (this.selectedSlot + (dy > 0 ? 1 : 7)) % 8
+      const n = C().QUICK_SLOTS
+      this.selectedSlot = (this.selectedSlot + (dy > 0 ? 1 : n - 1)) % n
       this.conn.sendSelectSlot(this.selectedSlot)
       this.refreshHud()
     })
@@ -663,6 +694,14 @@ export class GameScene extends Phaser.Scene {
       this.topHud = null
       this.bars?.destroy()
       this.bars = null
+      this.inventory?.destroy()
+      this.inventory = null
+      this.escapeMenu?.destroy()
+      this.escapeMenu = null
+      this.debugMode?.destroy()
+      this.debugMode = null
+      this.overlay?.destroy()
+      this.overlay = null
       this.jetReadout?.remove()
       this.jetReadout = null
       this.hideJoinCodeBanner()
@@ -968,6 +1007,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   override update(_time: number, delta: number): void {
+    // §C12's FPS counter, from real frame timestamps and not from Phaser's
+    // smoothed average (§A38). Sampled every frame whether or not the mode is on,
+    // so switching it on reports the rate you already had rather than starting a
+    // fresh window that reads 0 for half a second.
+    this.debugMode?.update(_time)
     if (!this.ready) return
     const dt = delta / 1000
     if (!this.ready || !this.world || !this.predictor) return
@@ -1255,6 +1299,68 @@ export class GameScene extends Phaser.Scene {
     // overlay once stayed on screen through a restart.
     this.topHud = new Hud()
     this.bars = new Bars()
+    this.inventory = new InventoryPanel(
+      {
+        // The drag is **intent**. Nothing moves here; the server answers with an
+        // `inventory` event and that is what gets rendered (§C10).
+        moveItem: (from, to) => this.conn.sendRaw('move_item', { from, to }),
+        selectSlot: (slot) => {
+          this.selectedSlot = slot
+          this.conn.sendSelectSlot(slot)
+        },
+      },
+      C().QUICK_SLOTS,
+      C().BACKPACK_SLOTS,
+    )
+
+    // §C13. Quitting **leaves the room** as well as changing scene: a scene
+    // change alone keeps the seat, and the room then never reaps (§B14's shape,
+    // and the same reason `ResultsScreen.onExit` closes the socket).
+    this.escapeMenu = new EscapeMenu({
+      onResume: () => this.escapeMenu?.toggle(false),
+      onQuit: () => {
+        this.conn.sendRaw('leave_room', {})
+        this.conn.close()
+        this.scene.start('Title')
+      },
+    })
+    // §C12. Built after the crosshair and the overlay, because it turns both off
+    // on construction — and **off is the default**, so a normal game shows the
+    // crosshair and nothing else.
+    this.overlay = new DebugOverlay(this, this.core, false)
+    this.debugMode = new DebugMode({
+      setAimRing: (on) => this.crosshair.setRingVisible(on),
+      setOverlays: (on) => this.overlay?.set(on),
+    })
+    this.input.keyboard?.on('keydown-F1', (e: KeyboardEvent) => {
+      // The browser's own help panel is on F1 in some builds.
+      e.preventDefault?.()
+      this.debugMode?.toggle()
+      this.audio.play('ui_click', { volume: 0.4 })
+    })
+
+    this.input.keyboard?.on('keydown-ESC', () => {
+      // Innermost overlay first (§C13). The decision is `handleEscape`'s so it
+      // can be driven under node; this only carries it out.
+      switch (
+        handleEscape({
+          inventoryOpen: this.inventory?.isOpen ?? false,
+          menuOpen: this.escapeMenu?.isOpen ?? false,
+        })
+      ) {
+        case 'closed-inventory':
+          this.invOpen = this.inventory?.toggle(false) ?? false
+          this.refreshHud()
+          break
+        case 'closed-menu':
+          this.escapeMenu?.toggle(false)
+          break
+        case 'opened-menu':
+          this.escapeMenu?.toggle(true)
+          break
+      }
+      this.audio.play('ui_click', { volume: 0.5 })
+    })
   }
 
   private setStatus(text: string): void {
@@ -1411,26 +1517,19 @@ export class GameScene extends Phaser.Scene {
       })
       .join('   ·   ')
     const status = this.hud.dataset['status'] ?? ''
-    // The always-visible strip: what you are holding and how much of it, so the
-    // panel is only needed to change loadout (docs/30 §3).
-    const held = this.slots[this.selectedSlot]
-    const strip =
-      `HP ${Math.round(this.health)}   ${held ? `${held.key} x${held.count}` : '(empty)'}` +
-      // Recoverable after the banner goes: someone joining late still needs it.
-      (this.joinCode ? `   code ${this.joinCode}` : '')
+    // What is left of the old text strip.
+    //
+    // It used to carry the health, the held item and the whole inventory as a
+    // line of text. §C8 gives health its own bar, §C10 gives the inventory a
+    // quick bar and a backpack, and printing all of it twice put a second,
+    // worse copy of the HUD across the bottom of the frame — visible in
+    // `shots/inventory-open.png`, where the 24-slot list ran off both edges.
+    // The join code stays: someone arriving late still needs it, and nothing
+    // else shows it once the banner has gone.
+    const strip = this.joinCode ? `code ${this.joinCode}` : ''
     const lines = [
       [status, banner ?? formatClock(this.timeLeft), strip].filter((p) => p !== '').join('   │   '),
     ]
-    if (this.invOpen) {
-      lines.push(
-        this.slots
-          .map((sl, i) => {
-            const label = sl ? `${sl.key} x${sl.count}` : '—'
-            return i === this.selectedSlot ? `[${i + 1}:${label}]` : ` ${i + 1}:${label} `
-          })
-          .join(' '),
-      )
-    }
     if (this.scoreboardOpen) lines.push(board)
     this.hud.textContent = lines.join('\n')
 
@@ -1554,6 +1653,17 @@ export class GameScene extends Phaser.Scene {
           // §C11 asserts the selection is *unchanged*, which needs the index
           // and not only the per-slot flag.
           selectedSlot: self.selectedSlot,
+          // §C13 / §C10, for the browser check: which overlays are up.
+          overlays: {
+            inventory: self.inventory?.isOpen ?? false,
+            escapeMenu: self.escapeMenu?.isOpen ?? false,
+          },
+          // §C12, for the browser check: the mode, and the number it shows.
+          debugMode: {
+            on: self.debugMode?.enabled ?? false,
+            fps: self.debugMode?.fpsMeter.fps() ?? 0,
+            overlays: self.overlay?.enabled ?? false,
+          },
           minesPlaced: self.observed.minesPlaced,
           minesEnded: self.observed.minesEnded,
           swings: self.observed.swings,

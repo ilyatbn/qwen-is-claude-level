@@ -165,14 +165,14 @@ if (!white) {
     if (named) ok(`it names an effect the server announced — ${kinds.join(', ')}`)
     else fail(`the banner reads "${d.hudBanner.text}" but the tracked effects are ${kinds.join(', ') || '(none)'}`)
 
-    // The pixels: red text in the banner's own rect, against the same rect once
-    // the banner has gone. The control frame is the one that matters — a red
-    // patch could be a red sky.
-    if (redness(patch) > 25) {
-      ok(`the banner's rect is red text on the frame — redness ${redness(patch).toFixed(1)}`)
-    } else {
-      fail(`the banner is "shown" but its rect is not red — redness ${redness(patch).toFixed(1)}`)
-    }
+    // The pixels, **against the control frame and nothing else**.
+    //
+    // Absolute redness was tried and is not a measurement: what is behind the
+    // banner is the game, and the game is sometimes blue sky and sometimes brown
+    // rock. Red text on sky reads -26.7 on this metric and red text on rock reads
+    // +53, and neither number says whether anything was drawn. The *same rect
+    // once the banner has gone* is the only comparison that does — which is §C2's
+    // control frame, and is what the assertion below uses.
 
     // Wait for it to clear, then sample the same rect again.
     const gone = await (async () => {
@@ -187,15 +187,17 @@ if (!white) {
       fail('the banner never cleared — an effect that has ended is still being announced')
     } else {
       const after = await samplePatch(page, rect)
-      if (redness(patch) - redness(after) > 25) {
+      const delta = redness(patch) - redness(after)
+      if (delta > 25) {
         ok(
-          `and it cleared: the same rect went ${redness(patch).toFixed(1)} → ` +
-            `${redness(after).toFixed(1)} redness`,
+          `the banner's rect was ${delta.toFixed(1)} redder while it was up ` +
+            `(${redness(patch).toFixed(1)} → ${redness(after).toFixed(1)} when it cleared)`,
         )
       } else {
         fail(
-          `the banner reports itself down but its rect is unchanged: redness ` +
-            `${redness(patch).toFixed(1)} → ${redness(after).toFixed(1)}`,
+          `the banner's rect is the same with it up and with it down: redness ` +
+            `${redness(patch).toFixed(1)} → ${redness(after).toFixed(1)} — either it was ` +
+            'never drawn, or it is still there',
         )
       }
     }

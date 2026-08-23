@@ -2147,6 +2147,26 @@ impl World {
         }
     }
 
+    /// §C10's drag, validated. The client shows intent; this decides.
+    ///
+    /// Returns whether anything moved, so the caller can emit `inventory` only
+    /// when it did — an event for a refused move would have the client render a
+    /// state the server does not have.
+    pub fn move_item(&mut self, id: PlayerId, from: u8, to: u8) -> bool {
+        let tick = self.tick;
+        let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
+            return false;
+        };
+        if !p.alive || !p.inventory.move_stack(from, to) {
+            return false;
+        }
+        self.events.push(GameEvent::Inventory {
+            tick,
+            player_id: id,
+        });
+        true
+    }
+
     pub fn select_slot(&mut self, id: PlayerId, slot: u8) {
         let tick = self.tick;
         if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {
@@ -2894,10 +2914,31 @@ mod fire_gate {
         // ...and once friction has actually stopped them, the same player can
         // shoot. The control for the control: otherwise "still refused" would
         // pass for a player permanently locked out after one walk.
-        for seq in 3..3 + ticks_to_stop + 2 {
+        //
+        // **Waited on, not counted.** `ticks_to_stop` is friction against
+        // `WALK_SPEED` on flat ground, and a spawn is not promised flat ground —
+        // on a slope the body is still sliding when the count runs out and the
+        // assertion reports a fire gate that is working exactly as designed.
+        // Bounded at ten times the flat-ground figure so a genuinely stuck body
+        // still fails, and with the reached velocity in the message.
+        let mut seq = 3;
+        let deadline = 3 + ticks_to_stop * 10;
+        while seq < deadline {
+            let vx = w.player(0).expect("ana").body.vel.x.abs();
+            if vx <= FIRE_MOVE_MAX_SPEED {
+                break;
+            }
             w.queue_input(0, Input::new(seq, 0, 0));
             w.step(SIM_DT);
+            seq += 1;
         }
+        let settled = w.player(0).expect("ana").body.vel.x.abs();
+        assert!(
+            settled <= FIRE_MOVE_MAX_SPEED,
+            "the player never slowed below FIRE_MOVE_MAX_SPEED ({FIRE_MOVE_MAX_SPEED}): \
+             still {settled} after {} ticks",
+            seq - 3,
+        );
         w.queue_input(0, Input::new(99, 0, 0));
         assert_eq!(w.fire(0, 2.0), Ok(()));
     }
