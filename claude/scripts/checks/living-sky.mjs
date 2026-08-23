@@ -148,6 +148,9 @@ export default async function ({ page, shot, log }) {
   if (p.ridges !== c.layers) throw new Error(`${p.ridges} ridge layers, expected MOUNTAIN_LAYERS (${c.layers})`)
   if (p.clouds !== c.clouds) throw new Error(`${p.clouds} clouds, expected CLOUD_COUNT (${c.clouds})`)
   if (p.visibleClouds < 1) throw new Error('every cloud is hidden — the layer was built and never drawn')
+  // `p.seed` is right *here*: this check drives the sandbox, where the client
+  // really does generate the map, so its local seed is the round's. In a
+  // networked scene it would not be — see `roundSeed` in `GameScene.debug()`.
   log(`${p.ridges} ridges, ${p.clouds} clouds (${p.visibleClouds} on screen), seed ${p.seed}`)
 
   // 2. The layers are actually IN the frame.

@@ -63,7 +63,23 @@ const db0 = await dbg(b)
 if (da0.mapW !== db0.mapW || da0.mapH !== db0.mapH) {
   fail(`map size differs: ${da0.mapW}x${da0.mapH} vs ${db0.mapW}x${db0.mapH}`)
 }
-if (String(da0.seed) !== String(db0.seed)) fail(`seed differs: ${da0.seed} vs ${db0.seed}`)
+// **`roundSeed`, not `seed`.** `debug().seed` is `core.meta.seed` — this
+// client's *local* core, which in a networked round never generates the map; it
+// is handed the mask by `map_init`. Both clients therefore reported the same
+// constant and this assertion was `x !== x`: it could not fail, while sitting
+// directly above `maskChecksum` and reading like a second independent check.
+// `roundSeed` is what `welcome` carried, which is the seed the server generated
+// from — so this now compares something the two clients could actually disagree
+// about.
+if (!da0.roundSeed || !db0.roundSeed) {
+  fail(
+    `a client reported no roundSeed (${da0.roundSeed} / ${db0.roundSeed}) — the ` +
+      'comparison below cannot fail, so it proves nothing',
+  )
+}
+if (String(da0.roundSeed) !== String(db0.roundSeed)) {
+  fail(`round seed differs: ${da0.roundSeed} vs ${db0.roundSeed}`)
+}
 if (da0.maskChecksum !== db0.maskChecksum) fail('masks differ immediately after join')
 
 // Each sees two players. Poll rather than sleep: on a loaded box the second
@@ -345,7 +361,18 @@ if (!hud.visible) fail('F3 did not show the debug HUD')
 // in `GameScene` first and this assertion reported it verbatim, which is the
 // second time it has paid for itself.
 {
-  const GAME_LAYERS = [-30, -29, -28, 0, 9, 10, 11, 19, 20, 30, 39, 40, 45, 50]
+  // -22, -21, -20 are T15.03's living background (§C14): two mountain ridge
+  // layers with the cloud layer between them, all below `PARALLAX_FACTOR`.
+  // -19 is T15.04's birds (§C16), which draw **behind the terrain** — that is
+  // what "no collision with terrain" looks like on screen, and it is why they
+  // sit between the parallax and 0 rather than with the actors.
+  //
+  // This list was stale before T15.04 touched it: T15.03 added its three depths
+  // and updated `terrain-render`'s copy of this assertion but not this one, so
+  // the two scenes' parity check had already gone red. Both are updated now.
+  const GAME_LAYERS = [
+    -30, -29, -28, -22, -21, -20, -19, 0, 9, 10, 11, 19, 20, 30, 39, 40, 45, 50,
+  ]
   const depths = await a.page.evaluate('window.__game.sceneDepths()')
   if (!Array.isArray(depths) || depths.length === 0) {
     fail('GameScene.sceneDepths() returned nothing — this assertion could not fail')

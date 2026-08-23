@@ -6,10 +6,10 @@
 //! `docs/13` §5. Writing a second one per weapon is the §A24 mistake this project
 //! has already paid for twice.
 
-use crate::constants::{LAVA_BURN_DPS, LAVA_BURN_DURATION, LAVA_BURN_RADIUS, PLAYER_W};
+use crate::constants::{LAVA_BURN_DPS, LAVA_BURN_DURATION, LAVA_BURN_RADIUS};
 use crate::math::Vec2;
 use crate::weapons::explode::DamageSource;
-use crate::weapons::explode::PlayerHitTarget;
+use crate::weapons::explode::HitTarget;
 
 /// What a patch *is*, for the client to draw. Both kinds damage identically —
 /// this is the only difference, which is why it is a field on the existing patch
@@ -129,7 +129,7 @@ impl BurnField {
     /// Damage is per-patch, so overlapping fire genuinely burns faster. That is
     /// the behaviour a player expects from walking into the middle of a molotov,
     /// and capping it would make the centre of a fire no worse than its edge.
-    pub fn tick(&mut self, players: &mut [PlayerHitTarget], now: f32, dt: f32) {
+    pub fn tick(&mut self, players: &mut [HitTarget], now: f32, dt: f32) {
         for target in players.iter_mut() {
             if !target.alive {
                 continue;
@@ -139,7 +139,10 @@ impl BurnField {
                 if now >= patch.until {
                     continue;
                 }
-                if (p - patch.pos).len() <= patch.radius + PLAYER_W * 0.5 {
+                // `target.w`, not `PLAYER_W`: this slice holds birds too since
+                // §C16, and `HitTarget` carries a hit box precisely so nothing
+                // downstream has to assume one.
+                if (p - patch.pos).len() <= patch.radius + target.w * 0.5 {
                     (target.apply_damage)(patch.dps * dt, patch.source);
                 }
             }

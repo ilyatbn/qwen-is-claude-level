@@ -4176,3 +4176,41 @@ The review predicted constant-white `cloudTint` would trip `addNight >= addNoon`
 does not — measured, white adds 26.3 at noon against 19.1 at night, still ordered.
 So it was a real §A15 hole, closed with a both-ends check that reads `tintTopLeft`
 back off the sprite: "cloudTint says #d5ebf7 and the sprite is holding #ffffff".
+
+## T15.04 — birds
+
+§C16 says birds take damage from anything, and eleven places damage things. Rather
+than a bird slice each must remember to pass, birds ride in the same
+`Vec<HitTarget>` players travel in, built by the one `hit_targets` every damage path
+already calls — blast, ray, swing, cone, mine, lava and meteor hit them without
+knowing they exist. That meant `PlayerHitTarget` → `HitTarget` with
+`HitId::Player | Bird` across 28 sites; the sum type made the compiler enumerate
+them, and a bare `u8` would have been read as a player id by `resolve_deaths`, the
+score and the kill feed. `HitTarget` also gained `w`/`h`, because `fire_hitscan`
+marched against a hardcoded `PLAYER_W × PLAYER_H` and a bird is 20×14.
+
+"Above all terrain" put birds off-screen: the generator clamps the tallest rock to
+`SKY_MARGIN` 96 while the median surface sits at y=575–1160, and at `CAMERA_ZOOM` 2
+the camera shows ±180 px. The band is derived from the map's median column-top,
+computed once so a map later dug to the void cannot move it.
+
+Two fake pixel assertions, both caught by falsifying: one compared the same rect
+across frames the camera had moved between; the other compared the bird's rect
+against sky beside it and **passed at 40.7 with the layer drawing nothing**, because
+the rect held terrain and the sky did not — it was measuring the skyline. It now
+compares one rect before and after the bird leaves it and asserts the camera held
+still rather than assuming it.
+
+Review found three siblings the refactor missed — `burn.rs`, `lava.rs`, `toxic.rs`
+still sized targets as `PLAYER_W × PLAYER_H` on a slice that now holds birds.
+Unreachable today (ground hazards, sky band) and fixed anyway: it goes live the
+moment anything flies lower.
+
+**Two pre-existing defects found on the way.** `e2e-two-clients.mjs:66` compared the
+two clients' `debug().seed` — the *client's local* core, which in a networked round
+never generates the map, so both reported the same constant and the assertion was
+`x !== x`, sitting directly above the `maskChecksum` that does have teeth. The round
+seed from `welcome` is now exposed and compared, with a guard against an empty one.
+And `two-clients`' `GAME_LAYERS` parity list had been missing T15.03's `-22, -21,
+-20` since that task landed — T15.03 updated `terrain-render`'s copy of the same
+assertion and not this one.

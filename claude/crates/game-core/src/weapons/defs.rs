@@ -963,7 +963,7 @@ mod ballistics {
     use crate::map::{CoarseGrid, Map, MapMeta, Mask};
     use crate::math::Vec2;
     use crate::rng::substream;
-    use crate::weapons::explode::{fire_hitscan, HitscanHit, PlayerHitTarget};
+    use crate::weapons::explode::{fire_hitscan, HitId, HitTarget, HitscanHit};
 
     /// `docs/71-amendments-v3.md` §B7, transcribed. `(key, dmg, carve, range, cd, spread, ammo)`
     const SPEC: &[(&str, f32, f32, f32, f32, f32, u8)] = &[
@@ -1055,7 +1055,7 @@ mod ballistics {
             let mut rng = substream(7, "ballistics");
             let w = by_key(key).expect("weapon");
             for n in 1..=200u32 {
-                let mut targets: Vec<PlayerHitTarget> = Vec::new();
+                let mut targets: Vec<HitTarget> = Vec::new();
                 fire_hitscan(
                     &mut map,
                     &mut targets,
@@ -1121,7 +1121,7 @@ mod ballistics {
             let w = by_key(key).expect("weapon");
             let mut out = Vec::with_capacity(n);
             for _ in 0..n {
-                let mut targets: Vec<PlayerHitTarget> = Vec::new();
+                let mut targets: Vec<HitTarget> = Vec::new();
                 let shots = fire_hitscan(
                     &mut map,
                     &mut targets,
@@ -1231,8 +1231,10 @@ mod ballistics {
                     dealt += d;
                     true
                 };
-                let mut targets = vec![PlayerHitTarget {
-                    id: 1,
+                let mut targets = vec![HitTarget {
+                    id: HitId::Player(1),
+                    w: crate::constants::PLAYER_W,
+                    h: crate::constants::PLAYER_H,
                     alive: true,
                     pos: Vec2::new(300.0, 256.0),
                     vel: &mut vel,
@@ -1252,7 +1254,7 @@ mod ballistics {
                 assert!(
                     shots
                         .iter()
-                        .any(|s| matches!(s.hit, Some(HitscanHit::Player(1)))),
+                        .any(|s| matches!(s.hit, Some(HitscanHit::Target(HitId::Player(1))))),
                     "{key} did not hit a player 100 px away in open air"
                 );
             }

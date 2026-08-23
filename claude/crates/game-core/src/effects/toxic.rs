@@ -29,7 +29,7 @@ use crate::items::registry::{WeaponId, WEAPON_TOXIC_DROP};
 use crate::map::Map;
 use crate::math::Vec2;
 use crate::rng::{range_f32, substream, ChaCha8Rng};
-use crate::weapons::explode::{DamageSource, EffectKind, PlayerHitTarget};
+use crate::weapons::explode::{DamageSource, EffectKind, HitTarget};
 use crate::weapons::projectile::{ProjectileId, Projectiles};
 
 /// Share of puddles biased toward the half of the map the players are in.
@@ -88,7 +88,7 @@ impl ToxicRain {
         &mut self,
         projectiles: &mut Projectiles,
         map: &Map,
-        players: &mut [PlayerHitTarget],
+        players: &mut [HitTarget],
         active: bool,
         now: f32,
         dt: f32,
@@ -128,11 +128,11 @@ impl ToxicRain {
             if !target.alive {
                 continue;
             }
-            let aabb = crate::math::Aabb::from_center_size(
-                target.pos,
-                crate::constants::PLAYER_W,
-                crate::constants::PLAYER_H,
-            );
+            // The target's own box, not a player's. Since §C16 this slice holds
+            // birds, and `HitTarget` carries `w`/`h` so that nothing downstream
+            // has to guess — its doc comment says "carried rather than assumed"
+            // and this was one of three places still assuming.
+            let aabb = crate::math::Aabb::from_center_size(target.pos, target.w, target.h);
             for p in &self.puddles {
                 if circle_overlaps_aabb(p.pos, p.radius, aabb) {
                     (target.apply_damage)(
@@ -179,7 +179,7 @@ impl ToxicRain {
     /// a surface point is the top of a terrain column, and dropping a puddle
     /// straight onto one put it inside any cave that happened to be under it.
     /// The drop falls from the cloud and finds its own y.
-    fn pick_column(&mut self, map: &Map, players: &[PlayerHitTarget]) -> Option<f32> {
+    fn pick_column(&mut self, map: &Map, players: &[HitTarget]) -> Option<f32> {
         let pts = &map.meta.surface_points;
         if pts.is_empty() {
             return None;
@@ -233,6 +233,7 @@ mod tests {
     use crate::constants::{MapScale, TOXIC_DURATION};
     use crate::map::generate;
     use crate::math::Vec2;
+    use crate::weapons::explode::HitId;
 
     const DT: f32 = 1.0 / 60.0;
 
@@ -260,15 +261,17 @@ mod tests {
     }
 
     /// Build the borrow-checker-friendly view the effects take.
-    fn targets(ds: &mut [Dummy]) -> Vec<PlayerHitTarget<'_>> {
+    fn targets(ds: &mut [Dummy]) -> Vec<HitTarget<'_>> {
         ds.iter_mut()
             .enumerate()
             .map(|(i, d)| {
                 let shielded = d.shielded;
                 let iframes = d.iframes;
                 let health = &mut d.health;
-                PlayerHitTarget {
-                    id: i as u8,
+                HitTarget {
+                    id: HitId::Player(i as u8),
+                    w: crate::constants::PLAYER_W,
+                    h: crate::constants::PLAYER_H,
                     pos: d.pos,
                     vel: &mut d.vel,
                     alive: d.alive,

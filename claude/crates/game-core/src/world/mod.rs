@@ -7,10 +7,12 @@
 //!
 //! See `docs/41-server-loop-rooms.md` §2 for the tick order, which is a contract.
 
+pub mod birds;
 pub mod cycle;
 pub mod teleport;
 pub mod tombstones;
 
+use birds::{BirdId, BirdKind, Birds};
 use tombstones::Tombstones;
 
 use crate::constants::{
@@ -34,7 +36,7 @@ use crate::rng::{range_f32, substream, ChaCha8Rng};
 use crate::weapons::burn::BurnKind;
 use crate::weapons::defs::{self, BurnZone, Burst, Delivery};
 use crate::weapons::explode::{
-    explode, fire_hitscan, BlastSource, DamageSource, EffectKind, PlayerHitTarget,
+    explode, fire_hitscan, BlastSource, DamageSource, EffectKind, HitId, HitTarget,
 };
 use crate::weapons::projectile::{ProjectileId, ProjectileOutcome, Projectiles};
 use crate::weapons::smoke::SmokeField;
@@ -194,6 +196,33 @@ pub enum GameEvent {
         id: crate::weapons::placed::MineId,
         reason: crate::weapons::placed::MineEnd,
     },
+    /// A bird entered the map (§C16).
+    ///
+    /// `kind` is on the spawn rather than derived client-side, because the two
+    /// kinds carry different rewards and a player who cannot tell them apart
+    /// cannot decide whether one is worth a rocket.
+    BirdSpawn {
+        tick: u32,
+        id: BirdId,
+        kind: u8,
+        x: f32,
+        y: f32,
+        right: bool,
+    },
+    /// Where a live bird is now, at `SNAPSHOT_HZ` like every other moving thing.
+    BirdMove {
+        tick: u32,
+        id: BirdId,
+        x: f32,
+        y: f32,
+    },
+    /// A bird left the world. `killed` separates "shot down" from "flew off",
+    /// which is the difference between a puff of feathers and nothing at all.
+    BirdDespawn {
+        tick: u32,
+        id: BirdId,
+        killed: bool,
+    },
     ItemSpawn {
         tick: u32,
         world_item_id: WorldItemId,
@@ -346,6 +375,9 @@ impl GameEvent {
             | GameEvent::Cone { tick, .. }
             | GameEvent::MinePlaced { tick, .. }
             | GameEvent::MineEnded { tick, .. }
+            | GameEvent::BirdSpawn { tick, .. }
+            | GameEvent::BirdMove { tick, .. }
+            | GameEvent::BirdDespawn { tick, .. }
             | GameEvent::ItemSpawn { tick, .. }
             | GameEvent::ItemMove { tick, .. }
             | GameEvent::ItemPickup { tick, .. }
@@ -417,20 +449,44 @@ pub enum HazardKind {
 /// read before the borrow (`docs/70-amendments-v2.md` §A20).
 type DamageLog = std::rc::Rc<std::cell::RefCell<Vec<(PlayerId, f32, DamageSource)>>>;
 
-/// A player's identity as an explosion sees it: id, centre, and whether alive.
-type TargetMeta = (PlayerId, Vec2, bool);
+/// A damageable thing's identity as a weapon sees it: id, centre, alive, hit box.
+type TargetMeta = (HitId, Vec2, bool, f32, f32);
 
-/// Build the deferred-damage closures and the per-player metadata they need.
+/// Damage logged against birds this tick: `(bird, amount)`.
+///
+/// Separate from `DamageLog` because a bird has no shield, no i-frames and no
+/// `DamageSource` to care about — folding it in would give `PlayerState`'s damage
+/// path a second meaning.
+type BirdLog = std::rc::Rc<std::cell::RefCell<Vec<(BirdId, f32)>>>;
+
+/// Everything a weapon call needs to see, players **and** birds.
+///
+/// One function builds both, and that is the whole design: §C16 says birds take
+/// damage from anything, and there are eleven call sites that damage things. A
+/// bird slice each of them had to remember to pass is a bird slice eight of them
+/// would forget (CLAUDE.md: share the guard, or share the function). Because
+/// birds ride in the same `Vec<HitTarget>`, every weapon path — blast, ray,
+/// swing, cone, mine, lava, meteor — hits them without knowing they exist.
 fn hit_targets(
     players: &[PlayerState],
+    birds: &Birds,
     log: &DamageLog,
+    bird_log: &BirdLog,
     now: f32,
-) -> (Vec<Box<DamageFn>>, Vec<TargetMeta>) {
-    let meta: Vec<TargetMeta> = players
+) -> (Vec<Box<DamageFn>>, Vec<TargetMeta>, Vec<Vec2>) {
+    let mut meta: Vec<TargetMeta> = players
         .iter()
-        .map(|p| (p.id, p.body.pos, p.alive))
+        .map(|p| {
+            (
+                HitId::Player(p.id),
+                p.body.pos,
+                p.alive,
+                crate::constants::PLAYER_W,
+                crate::constants::PLAYER_H,
+            )
+        })
         .collect();
-    let closures: Vec<Box<DamageFn>> = players
+    let mut closures: Vec<Box<DamageFn>> = players
         .iter()
         .map(|p| {
             let id = p.id;
@@ -445,29 +501,72 @@ fn hit_targets(
             }) as Box<DamageFn>
         })
         .collect();
-    (closures, meta)
+
+    // Birds after the players, and the order is the contract `targets` relies on.
+    for b in birds.iter() {
+        let (w, h) = b.size();
+        meta.push((HitId::Bird(b.id), b.pos, true, w, h));
+        let id = b.id;
+        let log = bird_log.clone();
+        closures.push(Box::new(move |amount: f32, _src: DamageSource| {
+            log.borrow_mut().push((id, amount));
+            true
+        }) as Box<DamageFn>);
+    }
+
+    // A bird is never thrown: §C16 gives it a fixed sine path, so knockback has
+    // nowhere to go. These exist because `HitTarget` needs a `&mut Vec2` and
+    // writing into a scratch is honest about the value being discarded — the
+    // alternative is a bird whose velocity a blast has quietly edited.
+    let bird_vels = vec![Vec2::new(0.0, 0.0); birds.len()];
+    (closures, meta, bird_vels)
 }
 
 type DamageFn = dyn FnMut(f32, DamageSource) -> bool;
 
 /// Zip the deferred closures back onto the players' velocities.
+/// Zip the deferred closures back onto the velocities they may knock.
+///
+/// `meta` and `closures` are players-then-birds, exactly as `hit_targets` built
+/// them; the split point is `players.len()`.
 fn targets<'a>(
     players: &'a mut [PlayerState],
     closures: &'a mut [Box<DamageFn>],
     meta: &[TargetMeta],
-) -> Vec<PlayerHitTarget<'a>> {
-    players
+    bird_vels: &'a mut [Vec2],
+) -> Vec<HitTarget<'a>> {
+    let n = players.len();
+    let (player_closures, bird_closures) = closures.split_at_mut(n);
+    let mut out: Vec<HitTarget<'a>> = players
         .iter_mut()
-        .zip(closures.iter_mut())
+        .zip(player_closures.iter_mut())
         .zip(meta.iter())
-        .map(|((p, c), (id, pos, alive))| PlayerHitTarget {
+        .map(|((p, c), (id, pos, alive, w, h))| HitTarget {
             id: *id,
+            w: *w,
+            h: *h,
             pos: *pos,
             vel: &mut p.body.vel,
             alive: *alive,
             apply_damage: &mut **c,
         })
-        .collect()
+        .collect();
+    out.extend(
+        bird_vels
+            .iter_mut()
+            .zip(bird_closures.iter_mut())
+            .zip(meta[n..].iter())
+            .map(|((v, c), (id, pos, alive, w, h))| HitTarget {
+                id: *id,
+                w: *w,
+                h: *h,
+                pos: *pos,
+                vel: v,
+                alive: *alive,
+                apply_damage: &mut **c,
+            }),
+    );
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +592,9 @@ pub struct World {
     /// can never claim the same id and cancel each other on the client.
     hazard_seq: u32,
     pub tombstones: Tombstones,
+    /// §C16. Public because the server serialises them and the state hash covers
+    /// them; nothing outside this module mutates one.
+    pub birds: Birds,
     pub spawn_schedule: SpawnSchedule,
     pub effects: EffectScheduler,
     pub buried_items: Vec<ItemId>,
@@ -565,6 +667,7 @@ impl World {
         let mut items = WorldItems::new();
         let initial_draws = place_initial(&mut items, &map, seed, 0.0);
 
+        let birds = Birds::new(seed, &map);
         World {
             burn: Default::default(),
             mines: Default::default(),
@@ -575,6 +678,7 @@ impl World {
             items,
             projectiles: Projectiles::new(),
             tombstones: Tombstones::default(),
+            birds,
             spawn_schedule: SpawnSchedule::new(seed, 0.0, initial_draws),
             effects: EffectScheduler::new(seed, 0.0),
             buried_items,
@@ -830,6 +934,12 @@ impl World {
             self.step_item_spawns(now);
         }
 
+        // 6b. birds (§C16). With the items, because that is what they are: a
+        // moving supply drop. **After** the item step so a drop made this tick
+        // is not integrated twice, and before the pickups so one that lands on
+        // a player's head can be taken on the same tick it arrives.
+        self.step_birds(now, dt, playing);
+
         // 7. pickups, ascending PlayerId.
         self.resolve_pickups(now);
 
@@ -861,6 +971,55 @@ impl World {
             self.set_phase(RoundPhase::Playing);
         } else if playing && self.phase_time_left() <= 0.0 {
             self.set_phase(RoundPhase::Ended);
+        }
+    }
+
+    /// Fly the birds, and announce the ones that arrived or left.
+    ///
+    /// Movement is broadcast at `SNAPSHOT_HZ`, not every tick, for the reason
+    /// `ProjectileMove` and `ItemMove` are: 60 Hz of positions for four birds is
+    /// bandwidth spent on something nobody can see move that finely.
+    fn step_birds(&mut self, now: f32, dt: f32, playing: bool) {
+        let map_w = self.map.mask.w as f32;
+        let step = self.birds.tick(map_w, playing, now, dt);
+        let tick = self.tick;
+
+        for id in &step.spawned {
+            let Some(b) = self.birds.get(*id) else {
+                continue;
+            };
+            self.events.push(GameEvent::BirdSpawn {
+                tick,
+                id: *id,
+                kind: b.kind.to_u8(),
+                x: b.pos.x,
+                y: b.pos.y,
+                right: b.facing_right(),
+            });
+        }
+        // Flew off the far edge. `killed: false` — nothing drops, and the client
+        // must not puff feathers for a bird that simply left.
+        for id in &step.gone {
+            self.events.push(GameEvent::BirdDespawn {
+                tick,
+                id: *id,
+                killed: false,
+            });
+        }
+
+        let every = (crate::constants::SIM_HZ / crate::constants::SNAPSHOT_HZ).max(1);
+        if tick.is_multiple_of(every) {
+            let moves: Vec<GameEvent> = self
+                .birds
+                .iter()
+                .map(|b| GameEvent::BirdMove {
+                    tick,
+                    id: b.id,
+                    x: b.pos.x,
+                    y: b.pos.y,
+                })
+                .collect();
+            self.events.extend(moves);
         }
     }
 
@@ -1083,9 +1242,11 @@ impl World {
         if MeteorShower::owns(weapon) {
             let is_frag = MeteorShower::is_fragment(weapon);
             let log: DamageLog = Default::default();
-            let (mut closures, meta) = hit_targets(&self.players, &log, now);
+            let bird_log: BirdLog = Default::default();
+            let (mut closures, meta, mut bird_vels) =
+                hit_targets(&self.players, &self.birds, &log, &bird_log, now);
             let (result, fragments) = {
-                let mut t = targets(&mut self.players, &mut closures, &meta);
+                let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
                 MeteorShower::on_impact(
                     &mut self.projectiles,
                     &mut self.map,
@@ -1104,7 +1265,7 @@ impl World {
             };
             self.note_knocked(&result.knocked, now);
             self.emit_blast(at, r, CarveKind::Meteor, &result.carve, now);
-            self.apply_damage_log(&log, now);
+            self.apply_damage_log(&log, &bird_log, now);
             return;
         }
 
@@ -1121,14 +1282,16 @@ impl World {
         match w.burst {
             Burst::Blast => {
                 let log: DamageLog = Default::default();
-                let (mut closures, meta) = hit_targets(&self.players, &log, now);
+                let bird_log: BirdLog = Default::default();
+                let (mut closures, meta, mut bird_vels) =
+                    hit_targets(&self.players, &self.birds, &log, &bird_log, now);
                 let result = {
-                    let mut t = targets(&mut self.players, &mut closures, &meta);
+                    let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
                     explode(&mut self.map, &mut t, at, w.blast_radius, w.damage, source)
                 };
                 self.note_knocked(&result.knocked, now);
                 self.emit_blast(at, w.blast_radius, CarveKind::Weapon, &result.carve, now);
-                self.apply_damage_log(&log, now);
+                self.apply_damage_log(&log, &bird_log, now);
             }
             Burst::Pellets { count, fan, pellet } => {
                 self.burst_pellets(at, count, fan, pellet, owner, now)
@@ -1164,10 +1327,12 @@ impl World {
         let Some(pw) = defs::def(pellet) else { return };
         let tick = self.tick;
         let log: DamageLog = Default::default();
+        let bird_log: BirdLog = Default::default();
         let mut shots = Vec::new();
         {
-            let (mut closures, meta) = hit_targets(&self.players, &log, now);
-            let mut t = targets(&mut self.players, &mut closures, &meta);
+            let (mut closures, meta, mut bird_vels) =
+                hit_targets(&self.players, &self.birds, &log, &bird_log, now);
+            let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
             for i in 0..count {
                 // Spread evenly across the fan, centred on straight down. A random
                 // fan would make the same throw behave differently twice and would
@@ -1190,7 +1355,7 @@ impl World {
                 ));
             }
         }
-        self.apply_damage_log(&log, now);
+        self.apply_damage_log(&log, &bird_log, now);
 
         self.events.push(GameEvent::Explosion {
             tick,
@@ -1268,7 +1433,11 @@ impl World {
                     duration,
                 },
                 now,
-                source.for_victim(0),
+                // A burn zone is a place, not a duel: nobody owns being stood in
+                // fire, so the victim it is attributed to is the owner's own id
+                // only to pick the `SelfInflicted` arm correctly for whoever lit
+                // it. Zones never touch birds — they are ground fire.
+                source.for_victim(HitId::Player(0)),
             );
             self.events.push(GameEvent::HazardSpawn {
                 tick,
@@ -1311,9 +1480,11 @@ impl World {
     #[cfg(test)]
     pub(crate) fn blast_for_test(&mut self, at: Vec2, now: f32) {
         let log: DamageLog = Default::default();
-        let (mut closures, meta) = hit_targets(&self.players, &log, now);
+        let bird_log: BirdLog = Default::default();
+        let (mut closures, meta, mut bird_vels) =
+            hit_targets(&self.players, &self.birds, &log, &bird_log, now);
         let result = {
-            let mut t = targets(&mut self.players, &mut closures, &meta);
+            let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
             crate::weapons::explode::explode(
                 &mut self.map,
                 &mut t,
@@ -1335,13 +1506,16 @@ impl World {
     /// melee swing — and a gate that four call sites each remember to apply is a
     /// gate three of them will eventually forget (CLAUDE.md: "share the guard,
     /// or share the function").
-    fn note_knocked(&mut self, ids: &[PlayerId], now: f32) {
+    /// Birds are silently skipped: `HitId::player()` is `None` for one, and a
+    /// bird has no fire gate to open. Taking `&[HitId]` rather than filtering at
+    /// the five call sites is the same rule this function already exists for.
+    fn note_knocked(&mut self, ids: &[HitId], now: f32) {
         if ids.is_empty() {
             return;
         }
         let until = now + crate::constants::KNOCKBACK_FIRE_GRACE;
         for p in self.players.iter_mut() {
-            if ids.contains(&p.id) {
+            if ids.contains(&HitId::Player(p.id)) {
                 // Never shortened: two blasts in a row must not leave you
                 // pinned by the earlier one's expiry.
                 p.knocked_until = p.knocked_until.max(until);
@@ -1411,8 +1585,67 @@ impl World {
         }
     }
 
-    fn apply_damage_log(&mut self, log: &DamageLog, now: f32) {
+    /// Apply logged bird damage, and turn every kill into a drop.
+    ///
+    /// The drop is an **ordinary `WorldItem`** — the same physics, the same TTL,
+    /// the same pickup path, and therefore the same §C9 refusal at `MAX_HEALS` /
+    /// `MAX_BATTERIES` with the item left on the ground. A bespoke bird-reward
+    /// item would be a second copy of all of that, free to drift.
+    fn resolve_bird_kills(&mut self, log: &[(BirdId, f32)], now: f32) {
+        if log.is_empty() {
+            return;
+        }
+        for kill in self.birds.apply_damage(log) {
+            let tick = self.tick;
+            self.events.push(GameEvent::BirdDespawn {
+                tick,
+                id: kill.id,
+                killed: true,
+            });
+
+            let item_id = match kill.kind {
+                BirdKind::Normal => crate::items::registry::MEDKIT,
+                BirdKind::Metal => crate::items::registry::BATTERY_PACK,
+            };
+            // Room first: at `MAX_WORLD_ITEMS` the spawn would be the one thing
+            // that pushes the world over its cap, and `cull` only enforces
+            // `len <= MAX` — it has nothing to do when you are exactly at it.
+            if let Some(evicted) = self.items.make_room() {
+                self.events.push(GameEvent::ItemDespawn {
+                    tick,
+                    world_item_id: evicted,
+                });
+            }
+            let id = self.items.spawn(
+                item_id,
+                1,
+                kill.at,
+                Vec2::new(0.0, crate::constants::BIRD_DROP_VELOCITY),
+                SpawnSource::Periodic,
+                now,
+            );
+            self.events.push(GameEvent::ItemSpawn {
+                tick,
+                world_item_id: id,
+                item_id,
+                count: 1,
+                x: kill.at.x,
+                y: kill.at.y,
+                source: SpawnSource::Periodic,
+            });
+        }
+    }
+
+    /// Drain both logs: players, and the birds §C16 lets every weapon hit.
+    ///
+    /// **One function, two logs, and the signature is why.** Nine call sites
+    /// damage things; a bird log they each had to remember to drain is a bird log
+    /// most of them would forget, and the failure would be silent — a bird that
+    /// absorbs a rocket and flies on. Taking it as a parameter makes forgetting a
+    /// compile error.
+    fn apply_damage_log(&mut self, log: &DamageLog, bird_log: &BirdLog, now: f32) {
         let entries = std::mem::take(&mut *log.borrow_mut());
+        let bird_entries = std::mem::take(&mut *bird_log.borrow_mut());
         // THE warmup damage gate (`docs/41-server-loop-rooms.md` §3). Every source
         // of damage in the game — weapons, explosions, hitscan, toxic, lava —
         // funnels through this one function, so gating here gates all of them.
@@ -1421,6 +1654,13 @@ impl World {
         if self.phase == RoundPhase::Warmup {
             return;
         }
+
+        // Birds first, and through the same warmup gate above: a supply line that
+        // opened before the round did would let someone stockpile heals during
+        // the ten seconds nobody can be hurt. Both logs were taken before that
+        // return, so neither leaks into the next tick.
+        self.resolve_bird_kills(&bird_entries, now);
+
         for (victim, amount, src) in entries {
             let tick = self.tick;
             let Some(p) = self.players.iter_mut().find(|p| p.id == victim) else {
@@ -1448,14 +1688,16 @@ impl World {
     fn step_placed(&mut self, now: f32, dt: f32) {
         let tick = self.tick;
         let log: DamageLog = Default::default();
+        let bird_log: BirdLog = Default::default();
         let ended = {
-            let (mut closures, meta) = hit_targets(&self.players, &log, now);
-            let mut t = targets(&mut self.players, &mut closures, &meta);
+            let (mut closures, meta, mut bird_vels) =
+                hit_targets(&self.players, &self.birds, &log, &bird_log, now);
+            let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
             let ended = self.mines.step(&mut self.map, &mut t, now, dt);
             self.burn.tick(&mut t, now, dt);
             ended
         };
-        self.apply_damage_log(&log, now);
+        self.apply_damage_log(&log, &bird_log, now);
 
         // A cloud that vanishes server-side and lingers on screen is worse than
         // one that never appeared, because you will trust it.
@@ -1565,15 +1807,17 @@ impl World {
 
         if let Some((eid, mut t)) = self.toxic.take() {
             let log: DamageLog = Default::default();
+            let bird_log: BirdLog = Default::default();
             // §C21: what comes back is **drops**, not puddles. A puddle appears
             // in `detonate`, when a drop has finished falling — which is what
             // makes it impossible for one to form under a roof.
             let released = {
-                let (mut closures, meta) = hit_targets(&self.players, &log, now);
-                let mut tg = targets(&mut self.players, &mut closures, &meta);
+                let (mut closures, meta, mut bird_vels) =
+                    hit_targets(&self.players, &self.birds, &log, &bird_log, now);
+                let mut tg = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
                 t.tick(&mut self.projectiles, &self.map, &mut tg, toxic_on, now, dt)
             };
-            self.apply_damage_log(&log, now);
+            self.apply_damage_log(&log, &bird_log, now);
             self.toxic = Some((eid, t));
             self.announce_projectiles(&released);
         }
@@ -1586,12 +1830,14 @@ impl World {
 
         if let Some((eid, mut l)) = self.lava.take() {
             let log: DamageLog = Default::default();
+            let bird_log: BirdLog = Default::default();
             let carves = {
-                let (mut closures, meta) = hit_targets(&self.players, &log, now);
-                let mut tg = targets(&mut self.players, &mut closures, &meta);
+                let (mut closures, meta, mut bird_vels) =
+                    hit_targets(&self.players, &self.birds, &log, &bird_log, now);
+                let mut tg = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
                 l.tick(&mut self.map, &mut tg, lava_on, now, dt)
             };
-            self.apply_damage_log(&log, now);
+            self.apply_damage_log(&log, &bird_log, now);
             // Channels open once, on the first active tick, one per vent in vent
             // order — so the carves zip onto the vents that produced them.
             let vents: Vec<Vec2> = l.vents().iter().map(|v| v.pos).collect();
@@ -2149,9 +2395,11 @@ impl World {
                 // hit test knew about it.
                 let reach = crate::weapons::melee::effective_reach(reach);
                 let log: DamageLog = Default::default();
+                let bird_log: BirdLog = Default::default();
                 let result = {
-                    let (mut closures, meta) = hit_targets(&self.players, &log, now);
-                    let mut t = targets(&mut self.players, &mut closures, &meta);
+                    let (mut closures, meta, mut bird_vels) =
+                        hit_targets(&self.players, &self.birds, &log, &bird_log, now);
+                    let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
                     crate::weapons::melee::swing(
                         &mut self.map,
                         &mut t,
@@ -2165,7 +2413,7 @@ impl World {
                     )
                 };
                 self.note_knocked(&result.knocked, now);
-                self.apply_damage_log(&log, now);
+                self.apply_damage_log(&log, &bird_log, now);
                 self.events.push(GameEvent::Melee {
                     tick,
                     owner: id,
@@ -2197,9 +2445,11 @@ impl World {
                 range, arc, dps, ..
             } => {
                 let log: DamageLog = Default::default();
+                let bird_log: BirdLog = Default::default();
                 {
-                    let (mut closures, meta) = hit_targets(&self.players, &log, now);
-                    let mut t = targets(&mut self.players, &mut closures, &meta);
+                    let (mut closures, meta, mut bird_vels) =
+                        hit_targets(&self.players, &self.birds, &log, &bird_log, now);
+                    let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
                     crate::weapons::cone::spray(
                         &self.map,
                         &mut t,
@@ -2215,7 +2465,7 @@ impl World {
                         BlastSource::Fired { owner: id, weapon },
                     );
                 }
-                self.apply_damage_log(&log, now);
+                self.apply_damage_log(&log, &bird_log, now);
                 self.events.push(GameEvent::Cone {
                     tick,
                     owner: id,
@@ -2247,9 +2497,11 @@ impl World {
             }
             Delivery::Hitscan { .. } => {
                 let log: DamageLog = Default::default();
+                let bird_log: BirdLog = Default::default();
                 let shots = {
-                    let (mut closures, meta) = hit_targets(&self.players, &log, now);
-                    let mut t = targets(&mut self.players, &mut closures, &meta);
+                    let (mut closures, meta, mut bird_vels) =
+                        hit_targets(&self.players, &self.birds, &log, &bird_log, now);
+                    let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
                     fire_hitscan(
                         &mut self.map,
                         &mut t,
@@ -2261,7 +2513,7 @@ impl World {
                         now,
                     )
                 };
-                self.apply_damage_log(&log, now);
+                self.apply_damage_log(&log, &bird_log, now);
 
                 for s in shots {
                     self.events.push(GameEvent::Hitscan {
@@ -2435,6 +2687,19 @@ impl World {
         h.update(&[self.phase as u8, self.last_day_phase as u8]);
         h.update(&self.phase_started_at.to_le_bytes());
         h.update(&self.round_seconds.to_le_bytes());
+
+        // §C16, and §A34's rule applies: birds drop items, so a client whose
+        // birds have drifted will disagree about what is on the ground. Every
+        // timer that changes the simulation belongs here, and a bird's position
+        // decides where a heal lands.
+        h.update(&(self.birds.len() as u32).to_le_bytes());
+        for b in self.birds.iter() {
+            h.update(&b.id.to_le_bytes());
+            h.update(&[b.kind.to_u8()]);
+            h.update(&b.pos.x.to_le_bytes());
+            h.update(&b.pos.y.to_le_bytes());
+            h.update(&b.health.to_le_bytes());
+        }
 
         h.update(&(self.players.len() as u32).to_le_bytes());
         for p in &self.players {
@@ -2704,6 +2969,7 @@ mod state_hash_coverage {
             items: _,
             projectiles: _,
             tombstones: _,
+            birds: _,
             mines: _,
             burn: _,
             smoke: _,
@@ -4654,5 +4920,367 @@ mod void {
                 "{scale:?}: only {standing} pads survived the floor coming out"
             );
         }
+    }
+}
+
+/// §C16 — birds in a **real round**, driven through `World::step`.
+///
+/// The unit tests in `world::birds` pin the flight and the cadence. These pin the
+/// wiring: that `step` actually runs the spawner, that a weapon fired the way the
+/// game fires it reaches a bird, and that the drop is an ordinary item on the
+/// ground. A spawner nobody calls and a drop nobody can pick up both pass every
+/// test in that other module (§A15).
+#[cfg(test)]
+mod birds_in_a_round {
+    use super::*;
+    use crate::constants::{
+        BIRD_INTERVAL, BIRD_MAX, BIRD_METAL_HEALTH, MAX_BATTERIES, MAX_HEALS, SIM_DT,
+    };
+    use crate::items::registry::{BATTERY_PACK, MEDKIT};
+
+    fn world() -> World {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w
+    }
+
+    fn run(w: &mut World, seconds: f32) {
+        for _ in 0..(seconds / SIM_DT) as u32 {
+            w.step(SIM_DT);
+        }
+    }
+
+    /// Put one bird of a known kind in the sky, at a known place.
+    ///
+    /// The natural spawn is off the edge of the map and takes half a minute to
+    /// arrive; these tests are about what happens when you hit one.
+    fn plant(w: &mut World, kind: BirdKind, at: Vec2) -> BirdId {
+        run(w, SIM_DT * 2.0); // let the spawner produce its first bird
+        let id = w.birds.iter().next().expect("a bird").id;
+        w.birds.place_for_test(id, kind, at);
+        id
+    }
+
+    #[test]
+    fn birds_appear_in_the_world_during_an_ordinary_round() {
+        // §B25/§A15: asserted from the world, not from the event buffer. A
+        // count of events misses everything created before anyone was watching.
+        let mut w = world();
+        run(&mut w, 1.0);
+        assert!(
+            !w.birds.is_empty(),
+            "a second into a live round and the sky is empty"
+        );
+    }
+
+    #[test]
+    fn over_a_long_round_the_count_never_exceeds_bird_max() {
+        let mut w = world();
+        let mut peak = 0;
+        for _ in 0..((BIRD_INTERVAL * 10.0) / SIM_DT) as u32 {
+            w.step(SIM_DT);
+            peak = peak.max(w.birds.len());
+        }
+        assert!(peak <= BIRD_MAX, "{peak} birds alive, cap {BIRD_MAX}");
+        // ...and several were alive at once, or the bound above is vacuous — a
+        // spawner that produced one bird and stopped would satisfy it.
+        //
+        // Not `== BIRD_MAX`: measured, a small map peaks at 3. A crossing is
+        // `map_w / BIRD_SPEED` (~30 s here) against an 18 s cadence, so the cap
+        // is only pressed on a wider map. `world::birds` pins the cap itself on a
+        // medium one; this asserts the cap is not the thing limiting a small map.
+        assert!(peak >= 2, "only ever {peak} bird(s) alive at once");
+    }
+
+    #[test]
+    fn a_bird_announces_itself_and_its_departure() {
+        // Both ends (§A39): the world has birds, and the client was told.
+        let mut w = world();
+        run(&mut w, 1.0);
+        let spawned: Vec<BirdId> = w
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::BirdSpawn { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            spawned.len(),
+            w.birds.len(),
+            "the world holds {} birds and announced {}",
+            w.birds.len(),
+            spawned.len()
+        );
+        assert!(
+            w.events
+                .iter()
+                .any(|e| matches!(e, GameEvent::BirdMove { .. })),
+            "no bird was ever told to move — a bird drawn at its spawn point"
+        );
+    }
+
+    /// Shoot the planted bird and return **its own** drop.
+    ///
+    /// The drop is identified from the events, not by scanning the ground for a
+    /// heal: `step_item_spawns` puts medkits and batteries out on a timer too, so
+    /// "count the heals in the world" measures the periodic spawner as much as
+    /// the bird. That is what the first version of these tests did, and it failed
+    /// with "a normal bird dropped a battery" — which it had not.
+    fn shoot_and_take_the_drop(w: &mut World, at: Vec2) -> (ItemId, WorldItemId) {
+        let before = w.events.len();
+        w.explode_for_test(
+            at,
+            crate::weapons::defs::by_key("bazooka").expect("bazooka").id,
+            0,
+            w.round_time,
+        );
+        let killed_tick = w.events[before..]
+            .iter()
+            .find_map(|e| match e {
+                GameEvent::BirdDespawn {
+                    tick, killed: true, ..
+                } => Some(*tick),
+                _ => None,
+            })
+            .expect("no bird was reported killed");
+        w.events[before..]
+            .iter()
+            .find_map(|e| match e {
+                GameEvent::ItemSpawn {
+                    tick,
+                    world_item_id,
+                    item_id,
+                    ..
+                } if *tick == killed_tick => Some((*item_id, *world_item_id)),
+                _ => None,
+            })
+            .expect("the bird died and dropped nothing")
+    }
+
+    #[test]
+    fn shooting_a_normal_bird_drops_exactly_one_heal_and_it_lands() {
+        let mut w = world();
+        let x = w.map.mask.w as f32 / 2.0;
+        let id = plant(&mut w, BirdKind::Normal, Vec2::new(x, 200.0));
+
+        let (item, drop_id) = shoot_and_take_the_drop(&mut w, Vec2::new(x, 200.0));
+        assert!(w.birds.get(id).is_none(), "the bird survived a direct hit");
+        assert_eq!(
+            item, MEDKIT,
+            "a normal bird dropped item {item}, not a heal"
+        );
+
+        // Exactly one: a kill must not emit two drops.
+        let mine = w
+            .events
+            .iter()
+            .filter(|e| matches!(e, GameEvent::ItemSpawn { world_item_id, .. } if *world_item_id == drop_id))
+            .count();
+        assert_eq!(mine, 1, "the drop was announced {mine} times");
+
+        run(&mut w, 6.0);
+        let drop = w
+            .items
+            .iter()
+            .find(|i| i.id == drop_id)
+            .expect("the drop vanished");
+        assert!(drop.grounded, "the drop never landed");
+    }
+
+    #[test]
+    fn shooting_a_metal_bird_drops_exactly_one_battery() {
+        let mut w = world();
+        let x = w.map.mask.w as f32 / 2.0;
+        let id = plant(&mut w, BirdKind::Metal, Vec2::new(x, 200.0));
+
+        let (item, drop_id) = shoot_and_take_the_drop(&mut w, Vec2::new(x, 200.0));
+        assert!(
+            w.birds.get(id).is_none(),
+            "the metal bird survived a rocket"
+        );
+        assert_eq!(
+            item, BATTERY_PACK,
+            "a metal bird dropped item {item}, not a battery"
+        );
+        run(&mut w, 6.0);
+        assert!(
+            w.items.iter().any(|i| i.id == drop_id && i.grounded),
+            "the battery never landed"
+        );
+    }
+
+    #[test]
+    fn a_metal_bird_survives_the_blast_that_kills_a_normal_one() {
+        // The same weapon, at the same distance, twice — so the only difference
+        // is the bird. A grenade at the edge of its blast.
+        let grenade = crate::weapons::defs::by_key("grenade").expect("grenade");
+        let offset = grenade.blast_radius * 0.75;
+        assert!(
+            grenade.damage * 0.25 < BIRD_METAL_HEALTH,
+            "the fixture's chosen falloff must not one-shot a metal bird"
+        );
+
+        let mut outcome = Vec::new();
+        for kind in [BirdKind::Normal, BirdKind::Metal] {
+            let mut w = world();
+            let x = w.map.mask.w as f32 / 2.0;
+            let id = plant(&mut w, kind, Vec2::new(x, 200.0));
+            w.explode_for_test(Vec2::new(x + offset, 200.0), grenade.id, 0, w.round_time);
+            outcome.push(w.birds.get(id).is_some());
+        }
+        assert_eq!(
+            outcome,
+            vec![false, true],
+            "normal survived={} metal survived={} — expected the normal one to die",
+            outcome[0],
+            outcome[1]
+        );
+    }
+
+    #[test]
+    fn a_drop_is_refused_at_max_and_stays_on_the_ground() {
+        // §C9, through the bird's drop rather than a hand-placed item: the whole
+        // point of routing the reward through `WorldItem` is that it obeys the
+        // rules every other item obeys.
+        //
+        // **Both counters, not one.** The first version covered the heal and
+        // ended on `let _ = MAX_BATTERIES;` to quiet the unused import — which is
+        // the tell that half the case was written and half was left. They share
+        // `counter_for`/`bump`, so the risk is low and the cost of covering it is
+        // a loop.
+        for (kind, item, cap) in [
+            (BirdKind::Normal, MEDKIT, MAX_HEALS),
+            (BirdKind::Metal, BATTERY_PACK, MAX_BATTERIES),
+        ] {
+            let mut w = world();
+            w.add_player(0, 0, "ana".into());
+            let x = w.map.mask.w as f32 / 2.0;
+            plant(&mut w, kind, Vec2::new(x, 200.0));
+            let (dropped, drop_id) = shoot_and_take_the_drop(&mut w, Vec2::new(x, 200.0));
+            assert_eq!(dropped, item, "{kind:?} dropped the wrong item");
+            run(&mut w, 6.0);
+            let drop = w
+                .items
+                .iter()
+                .find(|i| i.id == drop_id)
+                .unwrap_or_else(|| panic!("{kind:?}: the drop vanished"));
+            let (dx, dy) = (drop.pos.x, drop.pos.y);
+
+            /// Read the counter this item routes to.
+            fn counter(p: &PlayerState, item: ItemId) -> u8 {
+                if item == MEDKIT {
+                    p.heals
+                } else {
+                    p.batteries
+                }
+            }
+
+            // Full up, and standing on it.
+            if item == MEDKIT {
+                w.players[0].heals = cap;
+            } else {
+                w.players[0].batteries = cap;
+            }
+            w.players[0].body.pos = Vec2::new(dx, dy);
+            run(&mut w, 0.5);
+
+            assert_eq!(
+                counter(&w.players[0], item),
+                cap,
+                "{kind:?}: the counter went past its cap"
+            );
+            assert!(
+                w.items.iter().any(|i| i.id == drop_id),
+                "{kind:?}: the drop was consumed by a player who could not use it"
+            );
+
+            // The control: with room, the same player standing in the same place
+            // does take it — so the assertion above is about the cap, not about a
+            // pickup path that never fires.
+            if item == MEDKIT {
+                w.players[0].heals = cap - 1;
+            } else {
+                w.players[0].batteries = cap - 1;
+            }
+            w.players[0].body.pos = Vec2::new(dx, dy);
+            run(&mut w, 0.5);
+            assert_eq!(
+                counter(&w.players[0], item),
+                cap,
+                "{kind:?}: it was not taken"
+            );
+            assert!(
+                !w.items.iter().any(|i| i.id == drop_id),
+                "{kind:?}: the drop was still refused when there was room for it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bullet_kills_a_bird() {
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        let me = w.players[0].body.pos;
+        // Straight out to the right, at the player's own height, well inside
+        // SMG_RANGE — so the geometry is trivial and only the hit test matters.
+        let at = Vec2::new(me.x + 200.0, me.y);
+        let id = plant(&mut w, BirdKind::Normal, at);
+        assert!(w.birds.get(id).is_some());
+
+        let smg = crate::weapons::defs::by_key("smg").expect("smg");
+        // aim is passed to fire_hitscan directly below; 0.0 rad is due right.
+        let log: DamageLog = Default::default();
+        let bird_log: BirdLog = Default::default();
+        let (mut closures, meta, mut bird_vels) =
+            hit_targets(&w.players, &w.birds, &log, &bird_log, w.round_time);
+        {
+            let mut t = targets(&mut w.players, &mut closures, &meta, &mut bird_vels);
+            let mut rng = substream(1, "shot");
+            crate::weapons::explode::fire_hitscan(
+                &mut w.map, &mut t, smg, 0, me, 0.0, &mut rng, 0.0,
+            );
+        }
+        let logged = bird_log.borrow().clone();
+        assert!(
+            !logged.is_empty(),
+            "a bullet fired straight at a bird 200 px away logged no damage — \
+             the ray is not testing birds"
+        );
+        w.apply_damage_log(&log, &bird_log, w.round_time);
+        assert!(w.birds.get(id).is_none(), "the bird survived an SMG round");
+    }
+
+    #[test]
+    fn six_hundred_ticks_are_deterministic() {
+        let hash = |seed: u64| {
+            let mut w = World::new(seed, MapScale::Small);
+            w.set_phase(RoundPhase::Playing);
+            for _ in 0..600 {
+                w.step(SIM_DT);
+            }
+            (w.state_hash(), w.birds.len())
+        };
+        let (a, na) = hash(31337);
+        let (b, _) = hash(31337);
+        assert_eq!(a, b, "600 ticks diverged on the same seed");
+        assert!(na > 0, "no birds existed, so the hash proves nothing here");
+        // The control: a different seed must not produce the same state.
+        let (c, _) = hash(999);
+        assert_ne!(a, c, "two seeds produced identical state");
+    }
+
+    #[test]
+    fn a_bird_is_in_the_state_hash() {
+        // §A34, falsifiable: move a bird and the hash must move with it.
+        let mut w = world();
+        run(&mut w, 1.0);
+        assert!(!w.birds.is_empty());
+        let before = w.state_hash();
+        let id = w.birds.iter().next().expect("a bird").id;
+        let at = w.birds.get(id).expect("a bird").pos;
+        w.birds
+            .place_for_test(id, BirdKind::Normal, at + Vec2::new(17.0, 0.0));
+        assert_ne!(before, w.state_hash(), "a bird moved and the hash did not");
     }
 }

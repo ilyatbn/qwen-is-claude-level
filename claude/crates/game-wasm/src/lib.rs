@@ -33,9 +33,7 @@ use game_core::player::state::PlayerState;
 use game_core::player::{apply_input, Input, JetpackState, JumpState};
 use game_core::rng::{substream, ChaCha8Rng};
 use game_core::weapons::defs;
-use game_core::weapons::explode::{
-    explode, fire_hitscan, BlastSource, DamageSource, PlayerHitTarget,
-};
+use game_core::weapons::explode::{explode, fire_hitscan, BlastSource, DamageSource, HitTarget};
 use game_core::weapons::projectile::{ProjectileOutcome, Projectiles};
 use wasm_bindgen::prelude::*;
 
@@ -398,7 +396,7 @@ impl GameCore {
                 let mut shots_json = Vec::new();
                 let map = &mut self.map;
                 let mut rng = self.rng.clone();
-                let mut targets: Vec<PlayerHitTarget> = Vec::new();
+                let mut targets: Vec<HitTarget> = Vec::new();
                 let shots = fire_hitscan(map, &mut targets, w, id, centre, aim, &mut rng, now);
                 self.rng = rng;
                 for s in shots {
@@ -497,8 +495,10 @@ impl GameCore {
                         taken += d;
                         true
                     };
-                    let mut targets = [PlayerHitTarget {
-                        id: self.players[i].id,
+                    let mut targets = [HitTarget {
+                        id: game_core::weapons::explode::HitId::Player(self.players[i].id),
+                        w: game_core::constants::PLAYER_W,
+                        h: game_core::constants::PLAYER_H,
                         pos,
                         vel: &mut vel,
                         alive,
@@ -629,7 +629,7 @@ impl GameCore {
             })
             .collect();
 
-        // Every effect damages through the same PlayerHitTarget path a weapon
+        // Every effect damages through the same HitTarget path a weapon
         // does, so shields and i-frames are handled once rather than per effect.
         let mut puddles = Vec::new();
         if let Some(t) = self.weather.toxic.as_mut() {
@@ -839,6 +839,19 @@ pub fn constants_json() -> String {
         // The kill switch, not a tunable: the renderer skips the whole
         // classifier when this is false, so it never pays for a mask it will
         // not draw.
+        // §C16. The client draws birds at the size a bullet hits them at, so
+        // these cross rather than being copied into the renderer (§A19).
+        // The two rewards, by registry id. Exported for the same reason
+        // `ASSIST_WINDOW` was (§A19): a browser check asserting "a metal bird
+        // drops a battery" must not carry its own copy of `6`.
+        ITEM_MEDKIT => game_core::items::registry::MEDKIT,
+        ITEM_BATTERY_PACK => game_core::items::registry::BATTERY_PACK,
+        BIRD_W => c::BIRD_W,
+        BIRD_H => c::BIRD_H,
+        BIRD_MAX => c::BIRD_MAX,
+        BIRD_INTERVAL => c::BIRD_INTERVAL,
+        BIRD_SPEED => c::BIRD_SPEED,
+        BIRD_METAL_HEALTH => c::BIRD_METAL_HEALTH,
         CAVE_BACKDROP => c::CAVE_BACKDROP,
         BACKDROP_RAYS => c::BACKDROP_RAYS,
         BACKDROP_RAY_LEN => c::BACKDROP_RAY_LEN,
@@ -1069,7 +1082,7 @@ pub fn core_darkness_at(u: f32) -> f32 {
     game_core::world::cycle::darkness_at(u)
 }
 
-/// Build the `PlayerHitTarget` view the effects damage through.
+/// Build the `HitTarget` view the effects damage through.
 ///
 /// Damage is *recorded* rather than applied here: `PlayerState::apply_damage`
 /// needs `&mut` on the same players the slice already borrows. Collecting
@@ -1078,7 +1091,7 @@ pub fn core_darkness_at(u: f32) -> f32 {
 /// per effect.
 type HitLog = std::rc::Rc<std::cell::RefCell<Vec<(u8, f32)>>>;
 
-fn build_targets<'a>(players: &'a mut [LocalPlayer], hits: &HitLog) -> Vec<PlayerHitTarget<'a>> {
+fn build_targets<'a>(players: &'a mut [LocalPlayer], hits: &HitLog) -> Vec<HitTarget<'a>> {
     players
         .iter_mut()
         .map(|p| {
@@ -1086,8 +1099,10 @@ fn build_targets<'a>(players: &'a mut [LocalPlayer], hits: &HitLog) -> Vec<Playe
             let alive = p.stats.alive;
             let pos = p.body.pos;
             let log = hits.clone();
-            PlayerHitTarget {
-                id,
+            HitTarget {
+                id: game_core::weapons::explode::HitId::Player(id),
+                w: game_core::constants::PLAYER_W,
+                h: game_core::constants::PLAYER_H,
                 pos,
                 vel: &mut p.body.vel,
                 alive,

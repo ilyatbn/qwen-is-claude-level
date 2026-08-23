@@ -8,10 +8,9 @@
 use crate::map::Map;
 use crate::math::Vec2;
 use crate::physics::collide::solid_at;
-use crate::player::state::PlayerId;
 use crate::weapons::burn::BurnField;
 use crate::weapons::defs::WeaponDef;
-use crate::weapons::explode::{BlastSource, PlayerHitTarget};
+use crate::weapons::explode::{BlastSource, HitId, HitTarget};
 
 /// Spacing of the line-of-sight samples. Same reasoning as melee's.
 const LOS_STEP: f32 = 4.0;
@@ -31,7 +30,7 @@ const TRAIL_LIFE: f32 = 2.0;
 #[derive(Debug, Default)]
 pub struct ConeResult {
     /// victim, damage dealt this tick
-    pub hits: Vec<(PlayerId, f32)>,
+    pub hits: Vec<(HitId, f32)>,
     pub lit: usize,
 }
 
@@ -69,7 +68,7 @@ fn clear_line(map: &Map, from: Vec2, to: Vec2) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub fn spray(
     map: &Map,
-    players: &mut [PlayerHitTarget],
+    players: &mut [HitTarget],
     burn: &mut BurnField,
     origin: Vec2,
     aim: f32,
@@ -88,7 +87,7 @@ pub fn spray(
             continue;
         }
         if let BlastSource::Fired { owner, .. } = source {
-            if owner == p.id {
+            if HitId::Player(owner) == p.id {
                 continue;
             }
         }
@@ -129,7 +128,7 @@ pub fn spray(
             dps * 0.5,
             TRAIL_LIFE,
             now,
-            source.for_victim(u8::MAX),
+            source.for_victim(HitId::Player(u8::MAX)),
         );
         out.lit = 1;
     }

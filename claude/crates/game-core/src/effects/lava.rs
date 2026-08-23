@@ -21,7 +21,7 @@ use crate::map::carve::CarveResult;
 use crate::map::Map;
 use crate::math::Vec2;
 use crate::rng::{range_f32, range_u32, substream, ChaCha8Rng};
-use crate::weapons::explode::{DamageSource, EffectKind, PlayerHitTarget};
+use crate::weapons::explode::{DamageSource, EffectKind, HitTarget};
 
 /// Minimum separation between vents, so a burst covers ground rather than
 /// stacking on one spot.
@@ -92,7 +92,7 @@ impl LavaBurst {
     pub fn tick(
         &mut self,
         map: &mut Map,
-        players: &mut [PlayerHitTarget],
+        players: &mut [HitTarget],
         active: bool,
         now: f32,
         dt: f32,
@@ -125,6 +125,7 @@ impl LavaBurst {
                 continue;
             }
             let p = target.pos;
+            let half_w = target.w * 0.5;
             for v in &self.vents {
                 let dps = if now < v.jet_until {
                     if in_jet(v, p) {
@@ -134,7 +135,9 @@ impl LavaBurst {
                     }
                 } else if now < v.burn_until {
                     // Burning ground: a disc at the vent, not a cone.
-                    if (p - v.pos).len() <= LAVA_BURN_RADIUS + PLAYER_W * 0.5 {
+                    // `t.w`, not `PLAYER_W` — see `HitTarget`: the slice holds
+                    // birds since §C16 and the box is carried, not assumed.
+                    if (p - v.pos).len() <= LAVA_BURN_RADIUS + half_w {
                         LAVA_BURN_DPS
                     } else {
                         0.0
@@ -195,6 +198,7 @@ mod tests {
     use crate::map::meta::MapMeta;
     use crate::map::{CoarseGrid, Mask};
     use crate::math::Point;
+    use crate::weapons::explode::HitId;
 
     const DT: f32 = 1.0 / 60.0;
     const W: u32 = 1024;
@@ -236,14 +240,16 @@ mod tests {
         shielded: bool,
     }
 
-    fn targets(ds: &mut [Dummy]) -> Vec<PlayerHitTarget<'_>> {
+    fn targets(ds: &mut [Dummy]) -> Vec<HitTarget<'_>> {
         ds.iter_mut()
             .enumerate()
             .map(|(i, d)| {
                 let shielded = d.shielded;
                 let health = &mut d.health;
-                PlayerHitTarget {
-                    id: i as u8,
+                HitTarget {
+                    id: HitId::Player(i as u8),
+                    w: crate::constants::PLAYER_W,
+                    h: crate::constants::PLAYER_H,
                     pos: d.pos,
                     vel: &mut d.vel,
                     alive: true,

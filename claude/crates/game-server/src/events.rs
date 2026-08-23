@@ -55,6 +55,9 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         | GameEvent::ProjectileMove { .. }
         | GameEvent::ProjectileDespawn { .. }
         | GameEvent::Hitscan { .. }
+        | GameEvent::BirdSpawn { .. }
+        | GameEvent::BirdMove { .. }
+        | GameEvent::BirdDespawn { .. }
         | GameEvent::ItemSpawn { .. }
         | GameEvent::ItemMove { .. }
         | GameEvent::ItemPickup { .. }
@@ -91,6 +94,9 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::Cone { .. } => "cone",
         GameEvent::MinePlaced { .. } => "mine_placed",
         GameEvent::MineEnded { .. } => "mine_ended",
+        GameEvent::BirdSpawn { .. } => "bird_spawn",
+        GameEvent::BirdMove { .. } => "bird_move",
+        GameEvent::BirdDespawn { .. } => "bird_despawn",
         GameEvent::ItemSpawn { .. } => "item_spawn",
         GameEvent::ItemMove { .. } => "item_move",
         GameEvent::ItemPickup { .. } => "item_pickup",
@@ -214,6 +220,22 @@ pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
         } => json!({
             "tick": tick, "owner": owner, "x0": x0, "y0": y0, "x1": x1, "y1": y1, "hit": hit
         }),
+        GameEvent::BirdSpawn {
+            id,
+            kind,
+            x,
+            y,
+            right,
+            ..
+        } => json!({
+            "tick": tick, "id": id, "kind": kind, "x": x, "y": y, "right": right
+        }),
+        GameEvent::BirdMove { id, x, y, .. } => {
+            json!({"tick": tick, "id": id, "x": x, "y": y})
+        }
+        GameEvent::BirdDespawn { id, killed, .. } => {
+            json!({"tick": tick, "id": id, "killed": killed})
+        }
         GameEvent::ItemSpawn {
             world_item_id,
             item_id,

@@ -13,7 +13,7 @@ use game_core::math::Vec2;
 use game_core::weapons::burn::BurnField;
 use game_core::weapons::cone::spray;
 use game_core::weapons::defs::{Delivery, WeaponDef};
-use game_core::weapons::explode::{BlastSource, DamageSource, PlayerHitTarget};
+use game_core::weapons::explode::{BlastSource, DamageSource, HitId, HitTarget};
 use game_core::weapons::melee::swing;
 use game_core::weapons::placed::{MineEnd, Mines};
 
@@ -149,7 +149,7 @@ impl Victim {
 
 /// Run `f` with `victims` wired as hit targets, ids starting at 1 so 0 is free
 /// for the attacker.
-fn with_targets<R>(victims: &mut [Victim], f: impl FnOnce(&mut [PlayerHitTarget]) -> R) -> R {
+fn with_targets<R>(victims: &mut [Victim], f: impl FnOnce(&mut [HitTarget]) -> R) -> R {
     // One victim per call keeps the borrow checker out of the way; every test
     // here needs at most two, so they are handled explicitly.
     assert!(
@@ -166,8 +166,10 @@ fn with_targets<R>(victims: &mut [Victim], f: impl FnOnce(&mut [PlayerHitTarget]
             t0src.push(s);
             true
         };
-        let mut targets = [PlayerHitTarget {
-            id: 1,
+        let mut targets = [HitTarget {
+            id: HitId::Player(1),
+            w: game_core::constants::PLAYER_W,
+            h: game_core::constants::PLAYER_H,
             pos: v0.pos,
             vel: &mut v0.vel,
             alive: v0.alive,
@@ -192,15 +194,19 @@ fn with_targets<R>(victims: &mut [Victim], f: impl FnOnce(&mut [PlayerHitTarget]
         true
     };
     let mut targets = [
-        PlayerHitTarget {
-            id: 1,
+        HitTarget {
+            id: HitId::Player(1),
+            w: game_core::constants::PLAYER_W,
+            h: game_core::constants::PLAYER_H,
             pos: v0.pos,
             vel: &mut v0.vel,
             alive: v0.alive,
             apply_damage: &mut cb0,
         },
-        PlayerHitTarget {
-            id: 2,
+        HitTarget {
+            id: HitId::Player(2),
+            w: game_core::constants::PLAYER_W,
+            h: game_core::constants::PLAYER_H,
             pos: v1.pos,
             vel: &mut v1.vel,
             alive: v1.alive,
@@ -305,8 +311,10 @@ fn melee_knocks_back_away_from_the_swinger_even_when_damage_is_refused() {
             refused = true;
             false
         };
-        let mut targets = [PlayerHitTarget {
-            id: 1,
+        let mut targets = [HitTarget {
+            id: HitId::Player(1),
+            w: game_core::constants::PLAYER_W,
+            h: game_core::constants::PLAYER_H,
             pos: v.pos,
             vel: &mut v.vel,
             alive: true,
@@ -360,8 +368,10 @@ fn melee_never_hits_its_own_swinger() {
             true
         };
         // id 0 is the owner in `OWNER`.
-        let mut targets = [PlayerHitTarget {
-            id: 0,
+        let mut targets = [HitTarget {
+            id: HitId::Player(0),
+            w: game_core::constants::PLAYER_W,
+            h: game_core::constants::PLAYER_H,
             pos: Vec2::new(500.0, 380.0),
             vel: &mut vel,
             alive: true,
@@ -596,8 +606,10 @@ fn a_mine_ignores_its_owner_and_triggers_on_anyone_else() {
     mines.place(0, &def, Vec2::new(500.0, 396.0), 1.0, 36.0, 90.0, 0.0);
     let mut vel = Vec2::ZERO;
     let mut cb = |_d: f32, _s: DamageSource| true;
-    let mut owner = [PlayerHitTarget {
-        id: 0,
+    let mut owner = [HitTarget {
+        id: HitId::Player(0),
+        w: game_core::constants::PLAYER_W,
+        h: game_core::constants::PLAYER_H,
         pos: Vec2::new(500.0, 396.0),
         vel: &mut vel,
         alive: true,

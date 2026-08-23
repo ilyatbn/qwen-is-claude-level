@@ -229,6 +229,16 @@ export interface Constants {
   SMG_BLAST_RADIUS: number
   SMG_RANGE: number
   /** Whether the renderer paints interior air with dark rock at all. */
+  /** Registry ids for the two bird rewards (§C16). */
+  ITEM_MEDKIT: number
+  ITEM_BATTERY_PACK: number
+  /** §C16 — the bird hit box the renderer draws to. */
+  BIRD_W: number
+  BIRD_H: number
+  BIRD_MAX: number
+  BIRD_INTERVAL: number
+  BIRD_SPEED: number
+  BIRD_METAL_HEALTH: number
   CAVE_BACKDROP: boolean
   MOUNTAIN_LAYERS: number
   /** Scroll factor per layer, far to near. Both below `PARALLAX_FACTOR`. */

@@ -1414,6 +1414,85 @@ pub const RIDGE_TEX_W: u32 = 1024;
 /// half brightness — which is why this is well past 0.5.
 pub const MOUNTAIN_INK: f32 = 0.55;
 
+// --- C16: birds ---
+
+/// Seconds between bird spawns.
+///
+/// Eighteen, so a bird is an occasional event rather than scenery. It is also the
+/// supply cadence: with `BIRD_MAX` 4 alive and a crossing taking roughly a map
+/// width at `BIRD_SPEED`, the sky is never empty for long on a large map and
+/// never crowded on a small one.
+pub const BIRD_INTERVAL: f32 = 18.0;
+/// Birds alive at once. Four — the cap that keeps them cheap (§C16).
+pub const BIRD_MAX: usize = 4;
+/// Cruising speed, px/s. A metal bird flies at `BIRD_METAL_SPEED_MULT` of it.
+pub const BIRD_SPEED: f32 = 70.0;
+/// A normal bird dies to anything that touches it.
+pub const BIRD_HEALTH: f32 = 1.0;
+/// A metal bird takes real ordnance.
+///
+/// **25, which is above every single hit a normal bird dies to and below a
+/// bazooka's direct damage** — so "a metal bird survives a hit that kills a
+/// normal one" is a property of the numbers, not of a test fixture.
+pub const BIRD_METAL_HEALTH: f32 = 25.0;
+/// Share of birds that are metal.
+pub const BIRD_METAL_CHANCE: f32 = 0.25;
+
+/// The §C16 invariant, checked by the compiler rather than by a test.
+///
+/// "A metal bird survives a hit that kills a normal one" is a property of these
+/// two numbers, and a runtime `assert!` on two constants is an assertion that
+/// cannot fail — which clippy says out loud. A `const` assertion cannot compile
+/// if the numbers ever cross.
+const _: () = assert!(
+    BIRD_METAL_HEALTH > BIRD_HEALTH,
+    "a metal bird must be the tougher one (§C16)"
+);
+/// A metal bird is the slower one, likewise.
+const _: () = assert!(BIRD_METAL_SPEED_MULT < 1.0);
+/// A metal bird is slower, which is most of what makes it readable as the
+/// tougher one before you have shot at it.
+pub const BIRD_METAL_SPEED_MULT: f32 = 0.6;
+
+/// The bird's hit box, and the sprite's footprint.
+pub const BIRD_W: f32 = 20.0;
+pub const BIRD_H: f32 = 14.0;
+
+/// Vertical amplitude of the sine path, px.
+pub const BIRD_WAVE_AMPLITUDE: f32 = 26.0;
+/// Seconds per full sine cycle. Slow enough to read as gliding rather than
+/// flapping through a waveform.
+pub const BIRD_WAVE_PERIOD: f32 = 3.4;
+
+/// Band the flight altitude is drawn from, as a height **above the map's median
+/// surface** — not as a fraction of map height.
+///
+/// Measured, because the obvious version does not work. The generator clamps the
+/// tallest terrain to `SKY_MARGIN` (96) at every scale, so "above all terrain" is
+/// the top 96 px of the world — while the median surface sits at y=575 (small),
+/// 771 (medium) and 1160 (large). At `CAMERA_ZOOM` 2 the camera shows ±180 px, so
+/// a bird up there is **never on screen**, and §C16's whole point is that you
+/// look up and shoot one.
+///
+/// So birds fly a readable distance over the ground the players are standing on,
+/// and they are drawn **behind** the terrain — which is what §C16's "no collision
+/// with terrain" should look like: a bird crossing a mesa slides behind it.
+pub const BIRD_ALTITUDE_ABOVE_MIN: f32 = 120.0;
+pub const BIRD_ALTITUDE_ABOVE_MAX: f32 = 280.0;
+
+/// How far past the wall a bird spawns and despawns.
+///
+/// Wide enough that a bird is never seen appearing or vanishing: it enters and
+/// leaves off-screen at every map scale.
+pub const BIRD_EDGE_MARGIN: f32 = 48.0;
+
+/// Downward speed given to a bird's drop, px/s.
+///
+/// Zero would work — gravity does the rest — but a small push makes the drop
+/// separate from the death puff immediately, which is what makes the reward
+/// legible (§C16: "the drop must visibly fall to a place you can reach").
+pub const BIRD_DROP_VELOCITY: f32 = 40.0;
+
 // ---------------------------------------------------------------------------
 // Map scale and its per-scale parameter table
 // ---------------------------------------------------------------------------

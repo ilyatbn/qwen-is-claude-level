@@ -12,9 +12,8 @@ use crate::constants::PLAYER_W;
 use crate::map::{CarveResult, Map};
 use crate::math::Vec2;
 use crate::physics::collide::solid_at;
-use crate::player::state::PlayerId;
 use crate::weapons::defs::WeaponDef;
-use crate::weapons::explode::{BlastSource, PlayerHitTarget};
+use crate::weapons::explode::{BlastSource, HitId, HitTarget};
 
 /// Spacing of the line-of-sight samples between attacker and victim.
 ///
@@ -27,10 +26,10 @@ const LOS_STEP: f32 = 3.0;
 pub struct MeleeResult {
     pub carve: Option<CarveResult>,
     /// victim, damage dealt, impulse applied
-    pub hits: Vec<(PlayerId, f32, Vec2)>,
+    pub hits: Vec<(HitId, f32, Vec2)>,
     /// Everyone this swing **threw**, whether or not it hurt them — see
     /// [`crate::weapons::explode::ExplosionResult::knocked`].
-    pub knocked: Vec<PlayerId>,
+    pub knocked: Vec<HitId>,
 }
 
 /// Is `to` reachable from `from` without passing through rock?
@@ -98,7 +97,7 @@ pub fn effective_reach(table_reach: f32) -> f32 {
 #[allow(clippy::too_many_arguments)]
 pub fn swing(
     map: &mut Map,
-    players: &mut [PlayerHitTarget],
+    players: &mut [HitTarget],
     origin: Vec2,
     aim: f32,
     def: &WeaponDef,
@@ -117,7 +116,7 @@ pub fn swing(
         // self-damage is the point (`docs/31` §2), a bat that hits its wielder is
         // just a bug.
         if let BlastSource::Fired { owner, .. } = source {
-            if owner == p.id {
+            if HitId::Player(owner) == p.id {
                 continue;
             }
         }
@@ -398,8 +397,10 @@ mod t130602 {
             true
         };
         let origin = Vec2::new(200.0, 400.0);
-        let mut targets = [PlayerHitTarget {
-            id: 1,
+        let mut targets = [HitTarget {
+            id: HitId::Player(1),
+            w: crate::constants::PLAYER_W,
+            h: crate::constants::PLAYER_H,
             pos: Vec2::new(origin.x + gap, origin.y),
             vel: &mut vel,
             alive: true,

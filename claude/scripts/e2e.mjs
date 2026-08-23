@@ -136,6 +136,9 @@ const CHECKS = [
   // arrive in `map_init` and the charge in the snapshot) and it walks a player
   // across the map, which wants its own round rather than a shared one.
   { name: 'teleport', file: 'scripts/checks/teleport.mjs', standalone: true },
+  // T15.04 / §C16. Standalone: it needs a real server, because birds are
+  // server-simulated and the drop has to travel the wire.
+  { name: 'birds', file: 'scripts/checks/birds.mjs', standalone: true },
   // T15.02 / §C15: the M15 checkpoint — dig through the floor, fall in, die.
   // Standalone: it needs a real server (the void kill and its attribution are
   // server-side) and a FIXED_SEED map of its own.

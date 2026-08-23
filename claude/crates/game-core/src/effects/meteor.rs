@@ -13,7 +13,7 @@ use crate::items::registry::{WEAPON_METEOR, WEAPON_METEOR_FRAG};
 use crate::map::Map;
 use crate::math::Vec2;
 use crate::rng::{range_f32, substream, ChaCha8Rng};
-use crate::weapons::explode::{explode, BlastSource, EffectKind, ExplosionResult, PlayerHitTarget};
+use crate::weapons::explode::{explode, BlastSource, EffectKind, ExplosionResult, HitTarget};
 use crate::weapons::projectile::{ProjectileId, Projectiles};
 
 /// Meteors spawn above the map and fall in.
@@ -88,7 +88,7 @@ impl MeteorShower {
     pub fn on_impact(
         projectiles: &mut Projectiles,
         map: &mut Map,
-        players: &mut [PlayerHitTarget],
+        players: &mut [HitTarget],
         at: Vec2,
         is_fragment: bool,
         seed: u64,
@@ -158,6 +158,7 @@ mod tests {
     use crate::map::{CoarseGrid, Mask};
     use crate::math::Aabb;
     use crate::weapons::explode::DamageSource;
+    use crate::weapons::explode::HitId;
     use crate::weapons::projectile::ProjectileOutcome;
 
     const DT: f32 = 1.0 / 60.0;
@@ -414,8 +415,10 @@ mod tests {
                 taken += if shielded { amount * 0.5 } else { amount };
                 true
             };
-            let mut targets = [PlayerHitTarget {
-                id: 0,
+            let mut targets = [HitTarget {
+                id: HitId::Player(0),
+                w: crate::constants::PLAYER_W,
+                h: crate::constants::PLAYER_H,
                 pos: at + Vec2::new(dist, 0.0),
                 vel: &mut vel,
                 alive: true,

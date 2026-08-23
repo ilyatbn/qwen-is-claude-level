@@ -37,6 +37,16 @@ export const DEPTH = {
   parallaxFar: -22,
   parallaxClouds: -21,
   parallax: -20,
+  /**
+   * Birds (§C16), **behind the terrain**.
+   *
+   * That is what §C16's "no collision with terrain" looks like on screen: a bird
+   * crossing a mesa slides behind it instead of gliding through it. It also means
+   * the altitude band can sit where players can see it rather than in the 96 px
+   * of guaranteed-clear sky at the top of the world, which at CAMERA_ZOOM 2 is
+   * never on screen.
+   */
+  birds: -19,
   caveBack: -10,
   terrain: 0,
   decorations: 10,

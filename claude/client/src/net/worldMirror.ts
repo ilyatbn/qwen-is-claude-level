@@ -43,6 +43,15 @@ export interface WorldItemView {
   grounded: boolean
 }
 
+/** A bird in flight (§C16). `kind` 0 is normal, 1 is metal. */
+export interface BirdView {
+  id: number
+  kind: number
+  x: number
+  y: number
+  right: boolean
+}
+
 export interface ProjectileView {
   id: number
   weapon: number
@@ -76,6 +85,8 @@ export class WorldMirror {
    */
   readonly tombstones = new Map<number, TombstoneView>()
   readonly projectiles = new Map<number, ProjectileView>()
+  /** §C16. Server-simulated; the client only draws what it is told. */
+  readonly birds = new Map<number, BirdView>()
 
   private readonly core: Core
   private nextCarveSeq = 0
@@ -285,6 +296,34 @@ export class WorldMirror {
         it.grounded = p['grounded'] === true
         break
       }
+      case 'bird_spawn': {
+        const id = n(p['id'])
+        this.birds.set(id, {
+          id,
+          kind: n(p['kind']),
+          x: n(p['x']),
+          y: n(p['y']),
+          right: p['right'] === true,
+        })
+        break
+      }
+      case 'bird_move': {
+        // As with `item_move` and `projectile_move`: without this the client
+        // holds the position the bird was *created* at, which is off the edge
+        // of the map, and draws nothing for the whole crossing.
+        const b = this.birds.get(n(p['id']))
+        if (!b) break
+        const x = n(p['x'])
+        // Facing follows travel, so a bird re-seen after a dropped packet is
+        // still drawn pointing the way it is going.
+        b.right = x >= b.x
+        b.x = x
+        b.y = n(p['y'])
+        break
+      }
+      case 'bird_despawn':
+        this.birds.delete(n(p['id']))
+        break
       case 'tombstone_spawn': {
         const id = n(p['id'])
         this.tombstones.set(id, {

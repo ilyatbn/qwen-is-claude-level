@@ -19,7 +19,7 @@ use crate::physics::body::Body;
 use crate::physics::resolve::integrate;
 use crate::player::state::PlayerId;
 use crate::weapons::defs::WeaponDef;
-use crate::weapons::explode::{explode, BlastSource, ExplosionResult, PlayerHitTarget};
+use crate::weapons::explode::{explode, BlastSource, ExplosionResult, HitId, HitTarget};
 
 pub type MineId = u32;
 
@@ -126,7 +126,7 @@ impl Mines {
     pub fn step(
         &mut self,
         map: &mut Map,
-        players: &mut [PlayerHitTarget],
+        players: &mut [HitTarget],
         now: f32,
         dt: f32,
     ) -> Vec<MineOutcome> {
@@ -156,7 +156,9 @@ impl Mines {
                     // The owner's own approach never sets it off. Their presence
                     // in the blast when someone *else* sets it off is another
                     // matter, and `explode` handles that.
-                    p.alive && p.id != m.owner && (p.pos - m.pos()).len() <= m.trigger_radius
+                    p.alive
+                        && p.id != HitId::Player(m.owner)
+                        && (p.pos - m.pos()).len() <= m.trigger_radius
                 });
 
             if triggered {

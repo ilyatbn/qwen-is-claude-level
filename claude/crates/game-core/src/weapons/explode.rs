@@ -14,6 +14,7 @@ use crate::rng::{range_f32, ChaCha8Rng};
 use crate::weapons::defs::{Delivery, WeaponDef};
 
 pub type PlayerId = u8;
+pub type BirdId = u32;
 
 /// Stubbed until M5 gives weather its own kinds.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -38,11 +39,46 @@ pub enum DamageSource {
     Weather(EffectKind),
 }
 
-/// The minimal view of a player an explosion needs, so this does not depend on the
-/// full `PlayerState`.
-pub struct PlayerHitTarget<'a> {
-    pub id: PlayerId,
+/// Who a blast, ray, swing or cone hit.
+///
+/// **Two id spaces, not one integer.** Birds (§C16) are damaged by every weapon
+/// path there is, and they get there by joining the same target slice players
+/// already travel in — which is what stops eleven call sites each remembering to
+/// hit-test birds separately (CLAUDE.md: share the guard, or share the function).
+///
+/// The moment those two share a slice, a bare `u8` id means two things, and
+/// `resolve_deaths`, the score and the kill feed all read that id as a player.
+/// A sum type makes every consumer say which it meant, and the compiler finds
+/// them all.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum HitId {
+    Player(PlayerId),
+    Bird(BirdId),
+}
+
+impl HitId {
+    /// The player, or `None` for a bird. The only way back to a `PlayerId`.
+    pub fn player(self) -> Option<PlayerId> {
+        match self {
+            HitId::Player(id) => Some(id),
+            HitId::Bird(_) => None,
+        }
+    }
+}
+
+/// The minimal view of a damageable thing a weapon needs, so this does not depend
+/// on the full `PlayerState`.
+pub struct HitTarget<'a> {
+    pub id: HitId,
     pub pos: Vec2,
+    /// The hit box, centred on `pos`.
+    ///
+    /// Carried rather than assumed: `fire_hitscan` used to march a ray against a
+    /// hardcoded `PLAYER_W × PLAYER_H`, which is silently wrong for anything that
+    /// is not a player — a bird is 20 × 14 and would have been shot at through a
+    /// 16 × 28 box centred on it.
+    pub w: f32,
+    pub h: f32,
     pub vel: &'a mut Vec2,
     pub alive: bool,
     /// Returns true when the damage was actually applied (shield and i-frames are
@@ -54,7 +90,7 @@ pub struct PlayerHitTarget<'a> {
 pub struct ExplosionResult {
     pub carve: CarveResult,
     /// victim, damage dealt, impulse applied
-    pub hits: Vec<(PlayerId, f32, Vec2)>,
+    pub hits: Vec<(HitId, f32, Vec2)>,
     /// Everyone this blast **threw**, whether or not it hurt them.
     ///
     /// Not the same set as `hits`: knockback lands even when the damage is
@@ -63,7 +99,7 @@ pub struct ExplosionResult {
     /// their own legs — §C20 refuses a shot from a player who is moving under
     /// their own power, and being thrown must not count as that (CLAUDE.md:
     /// "return what the caller needs").
-    pub knocked: Vec<PlayerId>,
+    pub knocked: Vec<HitId>,
 }
 
 /// How this blast should be attributed, before knowing who it hit.
@@ -83,9 +119,11 @@ pub enum BlastSource {
 }
 
 impl BlastSource {
-    pub(crate) fn for_victim(self, victim: PlayerId) -> DamageSource {
+    /// A bird can never be the owner, so it never takes the `SelfInflicted` arm
+    /// and a bird killed by a rocket is attributed to whoever fired it.
+    pub(crate) fn for_victim(self, victim: HitId) -> DamageSource {
         match self {
-            BlastSource::Fired { owner, weapon } if owner == victim => {
+            BlastSource::Fired { owner, weapon } if HitId::Player(owner) == victim => {
                 DamageSource::SelfInflicted { weapon }
             }
             BlastSource::Fired { owner, weapon } => DamageSource::Player { id: owner, weapon },
@@ -101,7 +139,7 @@ impl BlastSource {
 /// (`docs/11-map-destruction.md` §5).
 pub fn explode(
     map: &mut Map,
-    players: &mut [PlayerHitTarget],
+    players: &mut [HitTarget],
     at: Vec2,
     radius: f32,
     damage: f32,
@@ -115,7 +153,7 @@ pub fn explode(
 
     let mut hits = Vec::new();
 
-    let mut knocked: Vec<PlayerId> = Vec::new();
+    let mut knocked: Vec<HitId> = Vec::new();
     for p in players.iter_mut() {
         if !p.alive {
             continue;
@@ -171,7 +209,9 @@ pub fn explode(
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum HitscanHit {
-    Player(PlayerId),
+    /// Named `Target` rather than `Player` since §C16: a bird stops a bullet the
+    /// same way, and calling it `Player` is how the next reader scores one.
+    Target(HitId),
     Terrain,
 }
 
@@ -197,7 +237,7 @@ pub struct HitscanShot {
 /// chip damage, not displacement; that is the bazooka's job.
 pub fn fire_hitscan(
     map: &mut Map,
-    players: &mut [PlayerHitTarget],
+    players: &mut [HitTarget],
     weapon: &WeaponDef,
     owner: PlayerId,
     player_centre: Vec2,
@@ -226,23 +266,17 @@ pub fn fire_hitscan(
 
             let mut who = None;
             for t in players.iter() {
-                if !t.alive || t.id == owner {
+                if !t.alive || t.id == HitId::Player(owner) {
                     continue;
                 }
-                if Aabb::from_center_size(
-                    t.pos,
-                    crate::constants::PLAYER_W,
-                    crate::constants::PLAYER_H,
-                )
-                .contains_point(p)
-                {
+                if Aabb::from_center_size(t.pos, t.w, t.h).contains_point(p) {
                     who = Some(t.id);
                     break;
                 }
             }
             if let Some(victim) = who {
                 to = p;
-                hit = Some(HitscanHit::Player(victim));
+                hit = Some(HitscanHit::Target(victim));
                 break;
             }
 
@@ -254,7 +288,7 @@ pub fn fire_hitscan(
         }
 
         match hit {
-            Some(HitscanHit::Player(victim)) => {
+            Some(HitscanHit::Target(victim)) => {
                 for t in players.iter_mut() {
                     if t.id == victim {
                         (t.apply_damage)(

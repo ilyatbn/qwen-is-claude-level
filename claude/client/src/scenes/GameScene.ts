@@ -15,6 +15,7 @@ import Phaser from 'phaser'
 import { loadAssetManifest, runLoader } from '../render/assets'
 import { DeathOverlay } from '../ui/deathOverlay'
 import { TombstoneLayer } from '../render/tombstones'
+import { BirdLayer } from '../render/birds'
 import { padUnderfoot, type PadView } from '../render/pads'
 import { C, Core, dequantizeAngle } from '../core'
 import { asRecord, Connection, type LobbyIntent, type Welcome } from '../net/connection'
@@ -67,6 +68,17 @@ export class GameScene extends Phaser.Scene {
   private sky!: SkyLayer
   /** The map seed from `welcome`, for §C14's seeded skyline. */
   private mapSeed = 0
+  /**
+   * The **round's** seed, as `welcome` sent it.
+   *
+   * Distinct from `core.meta.seed`, which is this client's *local* core — and in
+   * a networked round that core never generates the map, it is handed the mask
+   * through `map_init`. So `core.meta.seed` is a constant unrelated to the round,
+   * and `e2e-two-clients` was comparing it between two clients: `x !== x`,
+   * sitting directly above the real agreement check and reading like a second
+   * independent one.
+   */
+  private roundSeed = ''
   private lightmap!: Lightmap
   private fx!: OrdnanceFxLayer
   /** e2e only: point the camera here instead of at the player. */
@@ -145,6 +157,7 @@ export class GameScene extends Phaser.Scene {
   private serverRoundTime = 0
   private readonly death = new DeathOverlay()
   private tombstones!: TombstoneLayer
+  private birds!: BirdLayer
   /** §C5's pads, as `map_init` gave them. The layer lives in `WorldView` (§C1). */
   private padViews: PadView[] = []
   /** The local player's pad charge, `0..1`, straight from the snapshot. */
@@ -268,6 +281,17 @@ export class GameScene extends Phaser.Scene {
     // T11.05 and nothing subscribed. This is the other half.
     this.fx = new OrdnanceFxLayer(this, C().MINE_ARM_TIME)
     this.tombstones = new TombstoneLayer(this, C().TOMBSTONE_W, C().TOMBSTONE_H)
+    // **Deliberately built here and not by `WorldView`**, unlike the pad and
+    // item layers — a departure from §C1's layer-parity rule, so it is written
+    // down rather than left to look like an oversight.
+    //
+    // `WorldView` owns layers it can drive from the map and the core. `BirdLayer`
+    // is driven by `mirror.birds`, which is network state `WorldView` has no
+    // handle on: birds are server-simulated and never derived locally. Moving it
+    // there would mean handing `WorldView` the mirror, which is a much larger
+    // coupling than the parity is worth. `PadLayer` reads map meta, which it can
+    // already see, which is why that one does belong there.
+    this.birds = new BirdLayer(this)
     this.results = new ResultsScreen({
       onPlayAgain: () => this.conn.sendVoteRestart(true),
       // Close the socket, do not merely change scene: the seat stays occupied
@@ -412,6 +436,10 @@ export class GameScene extends Phaser.Scene {
       // list it would do exactly what `item_move` did before it was added here:
       // nothing, with every unit test green.
       'projectile_move',
+      // §C16. Same shape again: birds are server-simulated, so all three of
+      // these have to be asked for or the sky stays empty with every test green.
+      // `subscription.test.ts` caught this omission before the browser did.
+      'bird_spawn', 'bird_move', 'bird_despawn',
       'projectile_despawn', 'mask_checksum',
       // §B8. The mirror handles these; this list is what actually subscribes,
       // and a handler with no subscription is the §A39 shape one layer down.
@@ -759,6 +787,7 @@ export class GameScene extends Phaser.Scene {
     // carve sequence, and nothing else — so it is kept here and applied once the
     // map lands. Low 32 bits, because that is all the ridge hash consumes.
     this.mapSeed = Number(BigInt(w.seed || '0') & 0xffffffffn) | 0
+    this.roundSeed = String(w.seed ?? '')
     this.roundTime = w.roundTime
     this.serverRoundTime = w.roundTime
     this.phase = w.phase as Phase
@@ -1170,6 +1199,7 @@ export class GameScene extends Phaser.Scene {
     // ground was invisible in the real game.
     this.world?.items.update(dt, [...this.mirror.items.values()], this.ear())
     this.tombstones.update([...this.mirror.tombstones.values()])
+    this.birds.update(this.mirror.birds.values(), this.time.now)
     if (this.world) {
       const me = this.core.playerState(this.me)
       const on = me ? padUnderfoot(this.padViews, me.x, me.y) : null
@@ -1663,7 +1693,15 @@ export class GameScene extends Phaser.Scene {
               : ''),
           mapW: self.core.width,
           mapH: self.core.height,
+          /**
+           * **The local core's seed, which is not the round's.** Kept because
+           * `m9-checkpoint` and `sandbox` run where the client really does
+           * generate the map, and there it is the right number. Anything about
+           * the *round* wants `roundSeed` below.
+           */
           seed: self.core.meta.seed,
+          /** The seed `welcome` carried — the one the server generated from. */
+          roundSeed: self.roundSeed,
           phase: self.phase,
           players: [...self.mirror.players.keys()],
           // Items the server says exist, and items actually on screen. Two
@@ -1678,6 +1716,7 @@ export class GameScene extends Phaser.Scene {
           chutesDrawn: self.world?.items.chutesDrawn ?? 0,
           mirrorItems: [...self.mirror.items.values()].map((i) => ({
             id: i.id,
+            item: i.item,
             x: i.x,
             y: i.y,
             source: i.source,
@@ -1687,6 +1726,11 @@ export class GameScene extends Phaser.Scene {
           // graves actually on screen.
           tombstones: self.mirror.tombstones.size,
           tombstonesDrawn: self.tombstones?.count ?? 0,
+          // Both ends (§A39): what the server said, and what is on screen. A
+          // bird nobody can see is a supply line nobody can open.
+          birds: self.mirror.birds.size,
+          birdsDrawn: self.birds?.count ?? 0,
+          birdKinds: [...self.mirror.birds.values()].map((b) => b.kind),
           // §C5, both ends again: what the wire said, and what is on screen.
           // `pads` alone would pass for a scene that decoded them and drew
           // nothing, which is the §A39 shape this list exists to catch.
@@ -1743,6 +1787,13 @@ export class GameScene extends Phaser.Scene {
             id: m.id,
             x: m.x,
             y: m.y,
+          })),
+          /** Every bird the mirror holds, so a check can aim at one. */
+          birdViews: [...self.mirror.birds.values()].map((b) => ({
+            id: b.id,
+            kind: b.kind,
+            x: b.x,
+            y: b.y,
           })),
           camera: { x: self.cameras.main.scrollX, y: self.cameras.main.scrollY },
           zoom: self.cameras.main.zoom,

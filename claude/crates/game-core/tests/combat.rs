@@ -10,7 +10,7 @@ use game_core::player::state::{choose_respawn, DeathCause, PlayerState, UseError
 use game_core::rng::substream;
 use game_core::weapons::defs;
 use game_core::weapons::explode::{
-    explode, fire_hitscan, BlastSource, DamageSource, EffectKind, HitscanHit, PlayerHitTarget,
+    explode, fire_hitscan, BlastSource, DamageSource, EffectKind, HitId, HitTarget, HitscanHit,
 };
 use game_core::weapons::projectile::{ProjectileOutcome, Projectiles};
 
@@ -251,7 +251,7 @@ struct Victim {
 fn blast(map: &mut Map, victims: &mut [Victim], at: Vec2, r: f32, dmg: f32, owner: Option<u8>) {
     let mut taken = vec![0.0f32; victims.len()];
     {
-        let mut targets: Vec<PlayerHitTarget> = Vec::new();
+        let mut targets: Vec<HitTarget> = Vec::new();
         let mut closures: Vec<Box<dyn FnMut(f32, DamageSource) -> bool>> = Vec::new();
         for _ in victims.iter() {
             closures.push(Box::new(|_, _| true));
@@ -259,7 +259,7 @@ fn blast(map: &mut Map, victims: &mut [Victim], at: Vec2, r: f32, dmg: f32, owne
         let _ = &mut closures;
         let _ = &mut targets;
     }
-    // Applied by hand: PlayerHitTarget borrows mutably, so the accumulation is
+    // Applied by hand: HitTarget borrows mutably, so the accumulation is
     // done through indices rather than closures capturing the same slice.
     for (i, v) in victims.iter_mut().enumerate() {
         let mut acc = 0.0f32;
@@ -268,8 +268,10 @@ fn blast(map: &mut Map, victims: &mut [Victim], at: Vec2, r: f32, dmg: f32, owne
                 acc += d;
                 true
             };
-            let mut targets = [PlayerHitTarget {
-                id: i as u8,
+            let mut targets = [HitTarget {
+                id: HitId::Player(i as u8),
+                w: game_core::constants::PLAYER_W,
+                h: game_core::constants::PLAYER_H,
                 pos: v.pos,
                 vel: &mut v.vel,
                 alive: v.alive,
@@ -393,7 +395,7 @@ fn explode_carves_before_it_damages_so_a_reveal_is_part_of_the_same_event() {
         revealed: false,
     }];
     let mut v: Vec<Victim> = Vec::new();
-    let mut targets: Vec<PlayerHitTarget> = Vec::new();
+    let mut targets: Vec<HitTarget> = Vec::new();
     let _ = &mut v;
     let res = explode(
         &mut map,
@@ -424,8 +426,10 @@ fn knockback_applies_through_iframes_and_through_the_shield() {
             applied = true;
             false
         };
-        let mut targets = [PlayerHitTarget {
-            id: 0,
+        let mut targets = [HitTarget {
+            id: HitId::Player(0),
+            w: game_core::constants::PLAYER_W,
+            h: game_core::constants::PLAYER_H,
             pos: at + Vec2::new(0.0, -8.0),
             vel: &mut vel,
             alive: true,
@@ -455,7 +459,7 @@ fn an_smg_ray_stops_at_terrain_and_carves_it() {
     let before = map.mask.count_solid();
     let mut rng = substream(1, "test");
     let smg = defs::by_key("smg").expect("smg");
-    let mut targets: Vec<PlayerHitTarget> = Vec::new();
+    let mut targets: Vec<HitTarget> = Vec::new();
     let shots = fire_hitscan(
         &mut map,
         &mut targets,
@@ -496,7 +500,7 @@ fn sustained_smg_fire_breaches_a_thin_wall() {
     let smg = defs::by_key("smg").expect("smg");
     let mut breached = false;
     for _ in 0..60 {
-        let mut targets: Vec<PlayerHitTarget> = Vec::new();
+        let mut targets: Vec<HitTarget> = Vec::new();
         fire_hitscan(
             &mut map,
             &mut targets,
@@ -534,8 +538,10 @@ fn an_smg_ray_hits_a_player_without_knocking_them_back() {
             dealt += d;
             true
         };
-        let mut targets = [PlayerHitTarget {
-            id: 1,
+        let mut targets = [HitTarget {
+            id: HitId::Player(1),
+            w: game_core::constants::PLAYER_W,
+            h: game_core::constants::PLAYER_H,
             pos: Vec2::new(500.0, 300.0),
             vel: &mut vel,
             alive: true,
@@ -551,7 +557,7 @@ fn an_smg_ray_hits_a_player_without_knocking_them_back() {
             &mut rng,
             0.0,
         );
-        assert_eq!(shots[0].hit, Some(HitscanHit::Player(1)));
+        assert_eq!(shots[0].hit, Some(HitscanHit::Target(HitId::Player(1))));
     }
     assert_eq!(dealt, SMG_DAMAGE);
     assert_eq!(vel, Vec2::ZERO, "the smg must not displace anyone");
@@ -852,8 +858,10 @@ fn a_refused_hit_is_not_reported_but_is_still_thrown() {
         offered += amount;
         false
     };
-    let mut targets = [PlayerHitTarget {
-        id: 3,
+    let mut targets = [HitTarget {
+        id: HitId::Player(3),
+        w: game_core::constants::PLAYER_W,
+        h: game_core::constants::PLAYER_H,
         pos: at,
         vel: &mut vel,
         alive: true,
@@ -896,8 +904,10 @@ fn an_ownerless_blast_is_attributed_to_the_source_that_caused_it() {
             seen = Some(s);
             true
         };
-        let mut targets = [PlayerHitTarget {
-            id: 1,
+        let mut targets = [HitTarget {
+            id: HitId::Player(1),
+            w: game_core::constants::PLAYER_W,
+            h: game_core::constants::PLAYER_H,
             pos: at,
             vel: &mut vel,
             alive: true,
@@ -928,8 +938,10 @@ fn a_fired_blast_names_self_inflicted_for_its_own_owner() {
             seen = Some(s);
             true
         };
-        let mut targets = [PlayerHitTarget {
-            id: victim,
+        let mut targets = [HitTarget {
+            id: HitId::Player(victim),
+            w: game_core::constants::PLAYER_W,
+            h: game_core::constants::PLAYER_H,
             pos: at,
             vel: &mut vel,
             alive: true,

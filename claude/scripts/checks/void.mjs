@@ -55,7 +55,11 @@ await enterBattle(page, { waitPlaying: true, label: 'void' })
 
 const start = await dbg()
 const mapH = start.mapH
-ok(`in a round on a ${start.mapW}x${mapH} map, seed ${start.seed}`)
+// `roundSeed`, not `seed`: the latter is this client's *local* core, which in a
+// networked round never generates the map. It printed a constant unrelated to
+// the round, which is how the same mistake survived as a real assertion in
+// `e2e-two-clients`.
+ok(`in a round on a ${start.mapW}x${mapH} map, round seed ${start.roundSeed}`)
 
 // --- the control frame ------------------------------------------------------
 //
