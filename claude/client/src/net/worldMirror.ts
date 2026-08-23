@@ -114,6 +114,13 @@ export class WorldMirror {
     if (!this.core.loadMask(m.width, m.height, m.rle)) {
       throw new Error('map_init: mask failed to load')
     }
+    // **Before any carve is applied.** §C5's pads are indestructible, and this
+    // core runs the same `carve_circle` the server does — without them it digs
+    // pixels the server refused and the two masks part company one pad-sized
+    // patch at a time. It lives here rather than in the scene because this is
+    // the layer that owns the mask, and a renderer-only install would look
+    // correct and diverge silently.
+    this.core.setTeleportPads(m.pads)
     // A resync restarts the carve stream: the mask we just loaded already
     // contains every carve the server has applied, so anything buffered is
     // either already baked in or about to be re-sent.

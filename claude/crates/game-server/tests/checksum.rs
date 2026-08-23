@@ -135,9 +135,13 @@ fn got(inbox: &Inbox, ev: &str) -> Vec<serde_json::Value> {
         .unwrap_or_default()
 }
 
-/// Only the mask matters for a hash comparison; the rest is scaffolding the
-/// wire format deliberately does not carry (`docs/32` §5 — buried slots never
-/// leave the server).
+/// The scaffolding a hash comparison does not care about.
+///
+/// **The pads are not scaffolding.** They used to be filled in as `Vec::new()`
+/// here alongside everything else, and it made this whole file lie: §C5 pads are
+/// indestructible, so a `Map` that does not know about them carves pixels the
+/// server refuses, and `replay` reported a mask the real client would never
+/// produce. `replay` now installs the pads it decodes from `map_init`.
 fn replay_meta() -> game_core::map::MapMeta {
     game_core::map::MapMeta {
         seed: 0,
@@ -147,6 +151,7 @@ fn replay_meta() -> game_core::map::MapMeta {
         scale: MapScale::Small,
         theme: 0,
         spawn_points: Vec::new(),
+        teleport_pads: Vec::new(),
         surface_points: Vec::new(),
         buried_slots: Vec::new(),
         decorations: Vec::new(),
@@ -162,9 +167,13 @@ fn replay_meta() -> game_core::map::MapMeta {
 /// order, integer-exact, against a mask decoded from the same `map_init`.
 fn replay(map_init_b64: &str, carves: &[serde_json::Value]) -> String {
     let bytes = game_server::codec::b64_decode(map_init_b64).expect("map_init decodes");
-    let mask = game_server::codec::decode_map_init_mask(&bytes).expect("mask decodes");
-    let coarse = game_core::map::CoarseGrid::build(&mask);
-    let mut map = game_core::map::Map::from_parts(mask, coarse, replay_meta());
+    let parts = game_server::codec::decode_map_init_parts(&bytes).expect("map_init decodes");
+    let coarse = game_core::map::CoarseGrid::build(&parts.mask);
+    let mut meta = replay_meta();
+    // §C5, and this is what a real client does through `Core.setTeleportPads`.
+    // Without it every carve near a pad digs a patch the server refused.
+    meta.teleport_pads = parts.teleport_pads;
+    let mut map = game_core::map::Map::from_parts(parts.mask, coarse, meta);
 
     let mut ordered: Vec<&serde_json::Value> = carves.iter().collect();
     ordered.sort_by_key(|c| c["seq"].as_u64().unwrap_or(0));
@@ -605,5 +614,69 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
     assert_eq!(
         client_hash, server_hash,
         "the late-ready joiner's mask diverged from the server's"
+    );
+}
+
+/// §C5's pads must reach the **client's core**, or every carve near one diverges.
+///
+/// ## Why this is here and not left to the socket tests above
+///
+/// `two_clients_agree_on_the_mask_after_a_hundred_carves` did catch this — once.
+/// Removing the fix and re-running it passed, because whether any of that round's
+/// hundred carves happened to land within a pad-width of a pad is chance. **A gate
+/// that fails on a coin flip gates nothing**, so the property gets a test that
+/// aims at it: the same carve, centred on a pad, applied to a server map and to
+/// two client maps — one that was told about the pads and one that was not.
+///
+/// The second half is the control. Without it "the masks agree" is also what a
+/// build with no indestructibility at all produces.
+#[test]
+fn a_client_that_is_not_told_about_the_pads_carves_a_different_mask() {
+    use game_core::constants::PAD_W;
+
+    let server = game_core::map::generate(4242, MapScale::Small);
+    let pad = *server
+        .meta
+        .teleport_pads
+        .first()
+        .expect("the generated map has pads");
+
+    let bytes = game_server::codec::encode_map_init(&server);
+    let parts = game_server::codec::decode_map_init_parts(&bytes).expect("map_init decodes");
+    assert_eq!(
+        parts.teleport_pads.len(),
+        server.meta.teleport_pads.len(),
+        "map_init dropped pads on the way out"
+    );
+
+    // Three maps from the same mask: the server's, a client told about the pads,
+    // and a client that was not.
+    let build = |pads: Vec<game_core::map::meta::TeleportPad>| {
+        let mask = parts.mask.clone();
+        let coarse = game_core::map::CoarseGrid::build(&mask);
+        let mut meta = replay_meta();
+        meta.teleport_pads = pads;
+        game_core::map::Map::from_parts(mask, coarse, meta)
+    };
+    let mut informed = build(parts.teleport_pads.clone());
+    let mut ignorant = build(Vec::new());
+    let mut authority = server.clone();
+
+    // Straight over the pad, wide enough to swallow the whole rect.
+    let (cx, cy, r) = (pad.pos.x, pad.pos.y + PAD_W, PAD_W * 2);
+    for m in [&mut authority, &mut informed, &mut ignorant] {
+        m.carve_circle(cx, cy, r);
+    }
+
+    assert_eq!(
+        informed.mask.hash_hex(),
+        authority.mask.hash_hex(),
+        "a client told about the pads carved a different mask from the server"
+    );
+    assert_ne!(
+        ignorant.mask.hash_hex(),
+        authority.mask.hash_hex(),
+        "a client with NO pads produced the same mask — so this test cannot fail, \
+         and the pads are not actually indestructible"
     );
 }

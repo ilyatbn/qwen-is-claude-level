@@ -24,6 +24,8 @@ export interface MapInit {
   /** The last carve `seq` this mask already contains. */
   carveSeq: number
   spawnPoints: { x: number; y: number }[]
+  /** §C5's indestructible pads, in id order — the index **is** the id. */
+  pads: { x: number; y: number }[]
   decorations: { kind: number; x: number; y: number; flags: number }[]
   /** Fed straight to `Core.loadMask`, which decodes it in Rust. */
   rle: Uint8Array
@@ -52,6 +54,15 @@ export interface SnapshotPlayer {
   heals: number
   /** Battery packs carried, 0..`MAX_BATTERIES` (§C9). */
   batteries: number
+  /**
+   * §C5's pad charge, `0..1`.
+   *
+   * Authoritative, like `vision` and for the same kind of reason: the fill
+   * depends on the arming latch, the cooldown and the step-off reset, all of
+   * which live in `world::teleport`. A client running its own two-second clock
+   * would be a second copy of three guards.
+   */
+  teleportCharge: number
   /** `null` when the player is holding nothing. */
   selectedItem: number | null
 }
@@ -143,6 +154,13 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
   const spawnPoints: { x: number; y: number }[] = []
   for (let i = 0; i < spawnCount; i++) spawnPoints.push({ x: r.i16(), y: r.i16() })
 
+  const padCount = r.u16()
+  if (padCount * 4 > r.remaining) {
+    throw new CodecError(`pad_count ${padCount} exceeds the payload`)
+  }
+  const pads: { x: number; y: number }[] = []
+  for (let i = 0; i < padCount; i++) pads.push({ x: r.i16(), y: r.i16() })
+
   const decoCount = r.u16()
   if (decoCount * 7 > r.remaining) {
     throw new CodecError(`decoration_count ${decoCount} exceeds the payload`)
@@ -158,7 +176,19 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
   }
   const rle = r.bytes(rleLen)
 
-  return { width, height, seed, scale, theme, wind, carveSeq, spawnPoints, decorations, rle }
+  return {
+    width,
+    height,
+    seed,
+    scale,
+    theme,
+    wind,
+    carveSeq,
+    spawnPoints,
+    pads,
+    decorations,
+    rle,
+  }
 }
 
 export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
@@ -190,6 +220,7 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
     const consumables = r.u8()
     const heals = consumables & 0b11
     const batteries = (consumables >> 2) & 0b111
+    const teleportCharge = r.u8() / 255
     players.push({
       id,
       x,
@@ -204,6 +235,7 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
       battery,
       heals,
       batteries,
+      teleportCharge,
       selectedItem: item === 255 ? null : item,
     })
   }

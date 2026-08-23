@@ -3,6 +3,7 @@
 pub mod input;
 pub mod jetpack;
 pub mod movement;
+pub mod respawn;
 
 pub use input::{button, edges, Input, InputEdges};
 pub use jetpack::JetpackState;

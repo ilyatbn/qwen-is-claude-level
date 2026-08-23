@@ -7,10 +7,13 @@
 
 use crate::constants::{
     MapGenerator, MapScale, BURIED_ATTEMPTS, BURIED_CLEARANCE, BURIED_OFFSET_MAX,
-    BURIED_OFFSET_MIN, BURIED_SEPARATION, WIND_MAX,
+    BURIED_OFFSET_MIN, BURIED_SEPARATION, PAD_H, PAD_TOUCH_SLACK, PAD_W, TELEPORT_PADS, WIND_MAX,
 };
 use crate::map::gen::components::SealedPocket;
-use crate::map::gen::{generate_terrain_with, spawns::choose_spawns};
+use crate::map::gen::{
+    generate_terrain_with,
+    spawns::{choose_separated, choose_spawns},
+};
 use crate::map::{CoarseGrid, Mask};
 use crate::math::Point;
 use crate::rng::{range_f32, range_i32, substream, ChaCha8Rng};
@@ -22,6 +25,78 @@ const DECOR_MAX: usize = 200;
 const DECOR_KINDS: u16 = 6;
 
 pub const THEME_COUNT: u8 = 3;
+
+/// An indestructible standing spot (`docs/72-amendments-v4.md` §C5).
+///
+/// ## A pad is a **protected region of terrain**, not rock added to the mask
+///
+/// `pos` is a surface point — a feet line — so the ground holding it up is the
+/// row *below*, and [`TeleportPad::rect`] is those `PAD_H` rows across `PAD_W`
+/// columns. `carve_circle` refuses to clear anything inside that rect.
+///
+/// That is enough to make the guarantee §C5 wants, and the argument is worth
+/// writing down because it is the whole reason pads exist:
+///
+/// - `is_standable` needs the body box above `pos` to be air, the row at `pos.y +
+///   1` to hold at least `MIN_SUPPORT_PX` solid pixels *within the body width*,
+///   and head clearance straight up.
+/// - Carving only ever removes pixels, so the air conditions can never be
+///   falsified by destruction.
+/// - The support row within the body box (16 px, centred) lies wholly inside the
+///   pad rect (40 px, centred), so destruction cannot falsify it either.
+///
+/// So a pad that is standable at generation is standable for the whole round,
+/// however much of the map is destroyed — which is what makes §C15's diggable
+/// floor survivable.
+///
+/// **Stamping solid rock instead would change every generated mask** and oblige a
+/// golden-table regeneration and a re-run of the 999-seed sweep (the T9.04 /
+/// T15.02 procedure). It would also buy nothing: the guarantee above already
+/// holds, and the pad is drawn by the client, not by the terrain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TeleportPad {
+    pub id: u8,
+    /// The feet line, as for every other surface point.
+    pub pos: Point,
+}
+
+impl TeleportPad {
+    /// Inclusive `(x0, y0, x1, y1)` of the protected rock, in mask coordinates.
+    ///
+    /// One definition, read by `carve_circle`, by the client renderer through the
+    /// wire format, and by the tests. Two would eventually disagree about whether
+    /// the rect is inclusive, and the failure would be a pad you can dig one row
+    /// out from under.
+    pub fn rect(&self) -> (i32, i32, i32, i32) {
+        let half = PAD_W / 2;
+        (
+            self.pos.x - half,
+            self.pos.y + 1,
+            self.pos.x + half - 1,
+            self.pos.y + PAD_H,
+        )
+    }
+
+    /// Whether `(x, y)` is inside the protected rock.
+    pub fn covers(&self, x: i32, y: i32) -> bool {
+        let (x0, y0, x1, y1) = self.rect();
+        x >= x0 && x <= x1 && y >= y0 && y <= y1
+    }
+
+    /// Whether a body centred at `(x, y)` is standing on this pad.
+    ///
+    /// The feet, not the centre: a pad is ground, and the test that matters is
+    /// whether the bottom of the body box is resting on it. Tolerant by
+    /// `PAD_TOUCH_SLACK` in y because a grounded body's feet sit within a pixel
+    /// or so of the surface line rather than exactly on it.
+    pub fn underfoot(&self, centre: crate::math::Vec2) -> bool {
+        let half = PAD_W as f32 / 2.0;
+        let feet = centre.y + crate::constants::PLAYER_H / 2.0;
+        (centre.x - self.pos.x as f32).abs() <= half
+            && (feet - self.pos.y as f32).abs() <= PAD_TOUCH_SLACK
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -50,6 +125,8 @@ pub struct MapMeta {
     pub scale: MapScale,
     pub theme: u8,
     pub spawn_points: Vec<Point>,
+    /// The indestructible standing spots (§C5). Ids are their index.
+    pub teleport_pads: Vec<TeleportPad>,
     pub surface_points: Vec<Point>,
     pub buried_slots: Vec<BuriedSlot>,
     pub decorations: Vec<Decoration>,
@@ -159,6 +236,16 @@ pub fn generate_full(
         crate::constants::SPAWN_COUNT_MIN.max(crate::constants::MAX_PLAYERS),
     );
 
+    // Pads come from the same sampler as the spawns, on their own sub-stream, so
+    // that adding them cannot move a spawn point (asserted in `pads_do_not_move_
+    // the_spawn_points`).
+    let teleport_pads = choose_pads(
+        &outcome.mask,
+        &outcome.surface,
+        &outcome.report.largest_component,
+        outcome.seed,
+    );
+
     let buried_slots = choose_buried_slots(
         &outcome.mask,
         &outcome.sealed_pockets,
@@ -181,6 +268,7 @@ pub fn generate_full(
             scale,
             theme,
             spawn_points,
+            teleport_pads,
             surface_points: outcome.surface,
             buried_slots,
             decorations,
@@ -198,6 +286,29 @@ pub fn generate_full(
         dirty: vec![false; chunk_count],
         dirty_list: Vec::new(),
     }
+}
+
+/// `TELEPORT_PADS` well-separated, standable pads (§C5).
+///
+/// The same farthest-point sampling as spawn points — §C5 asks for exactly that
+/// — through the shared `choose_separated`, on the `"pads"` sub-stream.
+///
+/// The count is not relaxed downward the way spawns are. `choose_separated` will
+/// return fewer than asked on a map with nowhere to put them, and that is a
+/// generation failure worth seeing rather than papering over: `six_pads_on_every_
+/// scale` is the test, and if it ever fires the answer is in the generator, not
+/// here.
+pub fn choose_pads(
+    mask: &Mask,
+    surface: &[Point],
+    component: &[usize],
+    seed: u64,
+) -> Vec<TeleportPad> {
+    choose_separated(mask, surface, component, seed, "pads", TELEPORT_PADS)
+        .into_iter()
+        .enumerate()
+        .map(|(i, pos)| TeleportPad { id: i as u8, pos })
+        .collect()
 }
 
 /// Points inside solid rock, biased toward tunnels and pockets.
@@ -305,6 +416,12 @@ mod tests {
             let again = generate(4242, MapScale::Small);
             assert_eq!(again.mask.hash(), first.mask.hash());
             assert_eq!(again.meta.spawn_points, first.meta.spawn_points);
+            // §C5. Here rather than in a test of its own: this loop already
+            // generates the map twenty times, and a second twenty-generation
+            // test cost 40 s of CPU running beside the socket suite — enough
+            // load to turn the timing-sensitive lobby tests into coin flips
+            // (`CLAUDE.md`: a loaded box makes every wall-clock assertion one).
+            assert_eq!(again.meta.teleport_pads, first.meta.teleport_pads);
             assert_eq!(again.meta.buried_slots, first.meta.buried_slots);
             assert_eq!(again.meta.decorations, first.meta.decorations);
             assert_eq!(again.meta.theme, first.meta.theme);
@@ -466,6 +583,187 @@ mod tests {
                 "{scale:?} dirty set size"
             );
         }
+    }
+
+    // ---------------------------------------------------------------- §C5 pads
+
+    #[test]
+    fn six_teleport_pads_on_every_scale_separated_and_standable() {
+        use crate::constants::{SPAWN_MIN_SEPARATION, TELEPORT_PADS};
+        for scale in MapScale::ALL {
+            // Two seeds, not four. A population claim needs more than one draw
+            // (`CLAUDE.md`) and this is every scale, which is what §A19 asks
+            // for; the other two seeds cost 14 s of CPU beside the socket suite
+            // and bought no new failure mode.
+            for seed in [4242u64, 31337] {
+                let map = generate(seed, scale);
+                let pads = &map.meta.teleport_pads;
+                assert_eq!(
+                    pads.len(),
+                    TELEPORT_PADS,
+                    "{scale:?}/{seed}: {} pads",
+                    pads.len()
+                );
+                for p in pads {
+                    assert!(
+                        crate::map::gen::surface::is_standable(&map.mask, p.pos.x, p.pos.y),
+                        "{scale:?}/{seed}: pad {:?} is not standable",
+                        p.pos
+                    );
+                }
+                // The same separation the sampler enforces for spawns — relaxed
+                // the same way, so this pins the relaxed floor rather than the
+                // ideal one.
+                let floor = SPAWN_MIN_SEPARATION
+                    * crate::map::gen::spawns::RELAX_FACTOR
+                        .powi(crate::map::gen::spawns::MAX_RELAXATIONS as i32);
+                for (i, a) in pads.iter().enumerate() {
+                    for b in &pads[i + 1..] {
+                        let d = (a.pos.distance_sq(b.pos) as f64).sqrt();
+                        assert!(
+                            d >= floor as f64,
+                            "{scale:?}/{seed}: pads {:?} and {:?} are {d:.0} px apart",
+                            a.pos,
+                            b.pos
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pad_ids_are_their_index() {
+        let map = generate(11, MapScale::Small);
+        for (i, p) in map.meta.teleport_pads.iter().enumerate() {
+            assert_eq!(p.id as usize, i);
+        }
+    }
+
+    /// §C5's indestructibility, **measured at every scale** — §A19's lesson is
+    /// that a single-scale measurement is a number, not a property.
+    ///
+    /// The control is the second half: the same carve one pad-width to the side
+    /// removes plenty, so "removed nothing" is about the pad and not about a
+    /// carve that was never going to do anything.
+    #[test]
+    fn a_carve_over_a_pad_removes_nothing() {
+        use crate::constants::PAD_W;
+        for scale in MapScale::ALL {
+            let mut map = generate(4242, scale);
+            let pads = map.meta.teleport_pads.clone();
+            assert!(!pads.is_empty(), "{scale:?}: no pads to test");
+
+            for pad in &pads {
+                let (x0, y0, x1, y1) = pad.rect();
+                let before: u32 = (y0..=y1).map(|y| map.mask.count_run(y, x0, x1)).sum();
+                // Centred on the pad, wide enough to swallow the whole rect.
+                let r = map.carve_circle(pad.pos.x, pad.pos.y + PAD_W, PAD_W * 2);
+                let after: u32 = (y0..=y1).map(|y| map.mask.count_run(y, x0, x1)).sum();
+                assert_eq!(
+                    before,
+                    after,
+                    "{scale:?}: a carve took {} px out of pad {} ({:?}); {} removed overall",
+                    before as i64 - after as i64,
+                    pad.id,
+                    pad.pos,
+                    r.pixels_removed
+                );
+            }
+        }
+    }
+
+    /// The control for the test above.
+    #[test]
+    fn the_same_carve_beside_a_pad_removes_plenty() {
+        use crate::constants::PAD_W;
+        let mut map = generate(4242, MapScale::Medium);
+        let pad = map.meta.teleport_pads[0];
+        // Four pad-widths to the side: clear of the rect, still in the ground.
+        let mut removed = 0;
+        for dir in [-1, 1] {
+            let mut m = map.clone();
+            removed += m
+                .carve_circle(pad.pos.x + dir * PAD_W * 4, pad.pos.y + PAD_W, PAD_W * 2)
+                .pixels_removed;
+        }
+        assert!(
+            removed > 0,
+            "the control carve removed nothing either, so the pad test proves nothing"
+        );
+        // And the pad is still whole after the real one.
+        map.carve_circle(pad.pos.x, pad.pos.y + PAD_W, PAD_W * 2);
+        assert!(crate::map::gen::surface::is_standable(
+            &map.mask, pad.pos.x, pad.pos.y
+        ));
+    }
+
+    /// The whole reason pads exist: a map dug to pieces still has six of them.
+    #[test]
+    fn every_pad_survives_a_map_carved_to_pieces() {
+        use crate::constants::TELEPORT_PADS;
+        for scale in MapScale::ALL {
+            let mut map = generate(8123, scale);
+            let (w, h) = (map.mask.w as i32, map.mask.h as i32);
+            let before = map.mask.count_solid();
+            let mut y = 0;
+            while y < h {
+                let mut x = 0;
+                while x < w {
+                    map.carve_circle(x, y, 90);
+                    x += 120;
+                }
+                y += 120;
+            }
+            assert!(
+                map.mask.count_solid() * 2 < before,
+                "{scale:?}: the fixture barely destroyed anything"
+            );
+
+            let standing = map
+                .meta
+                .teleport_pads
+                .iter()
+                .filter(|p| crate::map::gen::surface::is_standable(&map.mask, p.pos.x, p.pos.y))
+                .count();
+            assert_eq!(
+                standing, TELEPORT_PADS,
+                "{scale:?}: only {standing} pads left standing"
+            );
+        }
+    }
+
+    /// Pads draw from their own sub-stream, not the spawn points'.
+    ///
+    /// **The obvious version of this test cannot fail.** Draining a *local*
+    /// `substream(seed, "pads")` and re-generating asserts nothing: `generate` is
+    /// deterministic by construction, so both sides match however the streams are
+    /// named — including if `choose_pads` passed `"spawns"`, which is the bug the
+    /// test exists for. It would have been a determinism test wearing an
+    /// isolation test's name (CLAUDE.md: ask what a passing assertion rules out).
+    ///
+    /// What does fail is comparing the two *results*: `choose_separated` is the
+    /// same sampler over the same surface points, so a shared stream name makes
+    /// the pads land exactly on the spawn points.
+    #[test]
+    fn pads_and_spawns_draw_from_different_sub_streams() {
+        let map = generate(31337, MapScale::Medium);
+        let pads: Vec<Point> = map.meta.teleport_pads.iter().map(|p| p.pos).collect();
+        assert_eq!(pads.len(), TELEPORT_PADS);
+        assert_ne!(
+            pads, map.meta.spawn_points,
+            "the pads landed on the spawn points — they are sharing a sub-stream"
+        );
+    }
+
+    /// The control for the test above, and the determinism the task asks for:
+    /// the same seed twice gives the same pads.
+    #[test]
+    fn the_same_seed_gives_the_same_pads() {
+        let map = generate(31337, MapScale::Medium);
+        let again = generate(31337, MapScale::Medium);
+        assert_eq!(map.meta.spawn_points, again.meta.spawn_points);
+        assert_eq!(map.meta.teleport_pads, again.meta.teleport_pads);
     }
 
     #[test]

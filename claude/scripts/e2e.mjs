@@ -130,6 +130,10 @@ const CHECKS = [
   // stack — it builds the client twice and drives the *artifact*, not the dev
   // server, which is the whole point.
   { name: 'no-dev-surface', file: 'scripts/checks/no-dev-surface.mjs', standalone: true },
+  // T15.01 / §C5: teleport pads. Standalone — it needs a real server (the pads
+  // arrive in `map_init` and the charge in the snapshot) and it walks a player
+  // across the map, which wants its own round rather than a shared one.
+  { name: 'teleport', file: 'scripts/checks/teleport.mjs', standalone: true },
   // Standalone: it launches its own vite and browser and calls `process.exit`.
   // Imported into this process it would terminate the suite mid-run — and exit 0
   // while doing it, hiding every earlier failure. Run as a subprocess instead.

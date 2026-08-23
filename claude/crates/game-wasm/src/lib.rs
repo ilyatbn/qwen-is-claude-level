@@ -138,6 +138,45 @@ impl GameCore {
         true
     }
 
+    /// Install the round's teleport pads, from `map_init`.
+    ///
+    /// **Not cosmetic, and not optional.** §C5 makes pads indestructible, which
+    /// means `carve_circle` refuses pixels inside them — and the client runs the
+    /// *same* `carve_circle` on its own copy of the mask. A client that does not
+    /// know where the pads are digs holes the server refused, and the two masks
+    /// diverge by a pad-shaped patch per carve.
+    ///
+    /// That is not a hypothetical: `two_clients_agree_on_the_mask_after_a_hundred_
+    /// carves` failed with "clients agreed with each other but not with the
+    /// server" the moment pads landed, which is precisely the failure it exists
+    /// to produce.
+    ///
+    /// `xs`/`ys` are parallel arrays because wasm-bindgen has no cheap way to
+    /// pass a slice of structs; the id is the index, as on the wire.
+    pub fn set_teleport_pads(&mut self, xs: &[i32], ys: &[i32]) {
+        let n = xs.len().min(ys.len());
+        self.map.meta.teleport_pads = (0..n)
+            .map(|i| game_core::map::meta::TeleportPad {
+                id: i as u8,
+                pos: game_core::math::Point::new(xs[i], ys[i]),
+            })
+            .collect();
+    }
+
+    /// Where this core thinks the pads are, as `[x0, y0, x1, y1, …]`.
+    ///
+    /// For the mask-agreement checks: a client that silently kept an empty list
+    /// would carve differently from the server and every count on both sides
+    /// would still match.
+    pub fn teleport_pads(&self) -> Vec<i32> {
+        self.map
+            .meta
+            .teleport_pads
+            .iter()
+            .flat_map(|p| [p.pos.x, p.pos.y])
+            .collect()
+    }
+
     // ---- terrain access -------------------------------------------------
 
     /// Address of the mask words in WASM memory. See the module docs: the view JS
@@ -771,6 +810,17 @@ pub fn constants_json() -> String {
         BACKDROP_MAX_DIST_TO_SOLID => c::BACKDROP_MAX_DIST_TO_SOLID,
         BACKDROP_MIN_ROOF => c::BACKDROP_MIN_ROOF,
         TIMER_WARN_SECONDS => c::TIMER_WARN_SECONDS,
+        // §C5. The client draws the pads and fills the charge indicator, so it
+        // needs the same geometry and the same two seconds the sim uses — a
+        // renderer carrying its own 40 and its own 2.0 would keep drawing the
+        // old pad after either was tuned (§A19).
+        TELEPORT_PADS => c::TELEPORT_PADS,
+        PAD_W => c::PAD_W,
+        PAD_H => c::PAD_H,
+        PAD_TOUCH_SLACK => c::PAD_TOUCH_SLACK,
+        TELEPORT_CHARGE => c::TELEPORT_CHARGE,
+        TELEPORT_COOLDOWN => c::TELEPORT_COOLDOWN,
+        TELEPORT_ARM_DISTANCE => c::TELEPORT_ARM_DISTANCE,
         BATTERY_MAX => c::BATTERY_MAX,
         MAX_HEALS => c::MAX_HEALS,
         QUICK_SLOTS => c::QUICK_SLOTS,

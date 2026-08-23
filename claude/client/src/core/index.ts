@@ -52,6 +52,18 @@ export interface BuriedSlot {
   revealed: boolean
 }
 
+/**
+ * An indestructible standing spot (§C5).
+ *
+ * `pos` is a **feet line**, as every surface point in this project is. The rect
+ * the terrain protects is below it — see `TeleportPad::rect` in `map/meta.rs`;
+ * the client never needs that rect, only somewhere to draw the ring.
+ */
+export interface TeleportPad {
+  id: number
+  pos: Point
+}
+
 export interface Decoration {
   kind: number
   pos: Point
@@ -67,6 +79,7 @@ export interface MapMeta {
   scale: string
   theme: number
   spawn_points: Point[]
+  teleport_pads: TeleportPad[]
   surface_points: Point[]
   buried_slots: BuriedSlot[]
   decorations: Decoration[]
@@ -219,6 +232,14 @@ export interface Constants {
   BACKDROP_MAX_DIST_TO_SOLID: number
   BACKDROP_MIN_ROOF: number
   TIMER_WARN_SECONDS: number
+  /** §C5 — the pads the client draws, and the timings it fills the ring over. */
+  TELEPORT_PADS: number
+  PAD_W: number
+  PAD_H: number
+  PAD_TOUCH_SLACK: number
+  TELEPORT_CHARGE: number
+  TELEPORT_COOLDOWN: number
+  TELEPORT_ARM_DISTANCE: number
   BATTERY_MAX: number
   MAX_HEALS: number
   QUICK_SLOTS: number
@@ -335,6 +356,28 @@ export class Core {
     const ok = this.inner.load_mask(w, h, rle)
     this.invalidate()
     return ok
+  }
+
+  /**
+   * Install the round's teleport pads (§C5).
+   *
+   * **Required for mask agreement**, not for drawing. Pads are indestructible, so
+   * `carve_circle` refuses pixels inside them — and this core runs the same
+   * `carve_circle` the server does. A client that skips this digs holes the
+   * server refused and its mask diverges by a pad-shaped patch per carve, which
+   * is exactly what `two_clients_agree_on_the_mask_after_a_hundred_carves`
+   * reported the moment pads landed.
+   */
+  setTeleportPads(pads: readonly { x: number; y: number }[]): void {
+    const xs = new Int32Array(pads.map((p) => p.x))
+    const ys = new Int32Array(pads.map((p) => p.y))
+    this.inner.set_teleport_pads(xs, ys)
+    this.invalidate()
+  }
+
+  /** Where this core thinks the pads are, as `[x0, y0, x1, y1, …]`. */
+  teleportPads(): Int32Array {
+    return this.inner.teleport_pads()
   }
 
   private invalidate(): void {

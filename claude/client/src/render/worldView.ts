@@ -28,6 +28,7 @@ import { makeBackTexture, makeEdgeTexture, makeFillTexture } from './procTexture
 import { DecorationLayer } from './decorations'
 import { fromMeta } from './decorations-math'
 import { ItemLayer } from './itemSprites'
+import { PadLayer, type PadView } from './pads'
 import { OrdnanceLayer } from './ordnance'
 import { WeatherLayer, type VentView } from './weather'
 import { KIND_BY_WEAPON_KEY, WEAPON_KEYS, type ProjectileKind } from './ordnance-state'
@@ -61,6 +62,16 @@ export class WorldView {
    * never spawns one.
    */
   readonly items: ItemLayer
+  /**
+   * §C5's teleport pads.
+   *
+   * **In the shared stack, not in `GameScene`.** It was built in the scene first
+   * and `two-clients` caught it in as many words: "a layer added to one scene and
+   * not the shared stack is §C0 starting again". The sandbox and the preview show
+   * the same world, so they show the same pads — and the pads they show come from
+   * `core.meta`, which those scenes have because they generate locally.
+   */
+  readonly pads: PadLayer
   readonly timings: WorldViewTimings = { buildAllMs: 0, lastRebakeMs: 0 }
 
   private readonly backdrop: Backdrop
@@ -120,6 +131,12 @@ export class WorldView {
     this.ordnance = new OrdnanceLayer(scene)
     this.weather = new WeatherLayer(scene)
     this.items = new ItemLayer(scene)
+    this.pads = new PadLayer(scene)
+    // A locally generated map already knows its pads; a networked one is told by
+    // `map_init` and `GameScene` calls `pads.build` again with the wire's list.
+    this.pads.build(
+      core.meta.teleport_pads.map((p): PadView => ({ id: p.id, x: p.pos.x, y: p.pos.y })),
+    )
     this.weaponKeys = weaponKeys
   }
 
@@ -263,6 +280,7 @@ export class WorldView {
     this.weather.destroy()
     this.ordnance.destroy()
     this.decorations.destroy()
+    this.pads.destroy()
     this.terrain.destroy()
     this.backdrop.destroy()
     this.container.destroy()

@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { Core, MapScale } from '../core'
+import { C, Core, MapScale } from '../core'
 import { WorldMirror, hex } from './worldMirror'
 
 /**
@@ -40,7 +40,22 @@ function solidPoint(c: Core): [number, number] {
 }
 
 /** Put a mirror through a real `map_init` so its carve expectation is set. */
-function initMirror(c: Core, carveSeq = 0): WorldMirror {
+/**
+ * A `map_init` for the map `c` is already holding.
+ *
+ * **The pads come from the map, not an empty array.** `applyMapInit` installs
+ * whatever the wire says (§C5 — the client has to carve the way the server does,
+ * and pads are indestructible), so a fixture sending `pads: []` for a map that
+ * has six is a `map_init` no server would ever send, and it wipes them. That is
+ * not hypothetical: it turned `two cores fed the same carves in order hash
+ * identically` red, because the mirror's core lost its pads and the control core
+ * kept them — a true report of a fixture that was lying.
+ */
+function initMirror(
+  c: Core,
+  carveSeq = 0,
+  pads = c.meta.teleport_pads.map((p) => ({ x: p.pos.x, y: p.pos.y })),
+): WorldMirror {
   const m = new WorldMirror(c)
   m.applyMapInit({
     width: c.width,
@@ -51,6 +66,7 @@ function initMirror(c: Core, carveSeq = 0): WorldMirror {
     wind: 0,
     carveSeq,
     spawnPoints: [],
+    pads,
     decorations: [],
     rle: c.maskRle(),
   })
@@ -78,6 +94,7 @@ function freshMirror(): { mirror: WorldMirror; resyncs: number[] } {
     wind: 0,
     carveSeq: 0,
     spawnPoints: [],
+    pads: [],
     decorations: [],
     rle: core.maskRle(),
   })
@@ -169,6 +186,63 @@ describe('mask agreement', () => {
     expect(hex(core.maskHash())).toBe(hex(other.maskHash()))
   })
 
+  /**
+   * §C5: `map_init` installs the pads into the **core**, not just the renderer.
+   *
+   * Pads are indestructible, so `carve_circle` refuses pixels inside them — and
+   * this core runs the same `carve_circle` the server does. A client that never
+   * hears about them digs holes the server refused, one pad-shaped patch per
+   * carve, and the divergence shows up minutes later as "I got shot through a
+   * wall".
+   *
+   * **Both cores start with no pads**, which is what a real client is: it loads a
+   * mask through `loadMask` and never runs the generator, so its `MapMeta` has
+   * nothing in it. Only one of them is then sent a `map_init` carrying the pads.
+   * An earlier version let the core keep the pads `generate()` gave it, and
+   * deleting the `setTeleportPads` call from `applyMapInit` did not fail it —
+   * the test was passing on state the production path never has.
+   */
+  it('the pads from map_init make a carve over one a no-op', () => {
+    // The "server": it generated the map, so it knows where the pads are.
+    const server = other
+    server.generate(4242n, MapScale.Small)
+    const pad = server.meta.teleport_pads[0]
+    expect(pad).toBeDefined()
+    const k = C()
+    const wire = server.meta.teleport_pads.map((p) => ({ x: p.pos.x, y: p.pos.y }))
+
+    const padSolid = (c: Core) => {
+      let n = 0
+      const half = k.PAD_W / 2
+      for (let y = pad!.pos.y + 1; y <= pad!.pos.y + k.PAD_H; y++) {
+        for (let x = pad!.pos.x - half; x < pad!.pos.x + half; x++) {
+          if (c.solidAt(x, y)) n++
+        }
+      }
+      return n
+    }
+
+    // A client: same map, but its core knows nothing until `map_init` tells it.
+    core.generate(4242n, MapScale.Small)
+    core.setTeleportPads([])
+    expect(core.teleportPads().length).toBe(0)
+    initMirror(core, 0, wire)
+    expect(core.teleportPads().length).toBe(wire.length * 2)
+
+    const before = padSolid(core)
+    expect(before).toBeGreaterThan(0)
+    core.carve(pad!.pos.x, pad!.pos.y + k.PAD_W, k.PAD_W * 2)
+    expect(padSolid(core)).toBe(before)
+
+    // The control: the same map and the same carve, on a core still ignorant of
+    // the pads. Without it, "the pad survived" is also true of a carve that
+    // missed it entirely.
+    server.setTeleportPads([])
+    expect(padSolid(server)).toBe(before)
+    server.carve(pad!.pos.x, pad!.pos.y + k.PAD_W, k.PAD_W * 2)
+    expect(padSolid(server)).toBe(0)
+  })
+
   it('is falsifiable: a different carve set gives a different hash', () => {
     core.generate(4242n, MapScale.Small)
     other.generate(4242n, MapScale.Small)
@@ -237,6 +311,7 @@ describe('roster and entities', () => {
       health: 100,
       flags: 1,
       jetpackFuel: 255, vision: 1, battery: 0, heals: 0, batteries: 0,
+      teleportCharge: 0,
       selectedItem: null,
     })
     mirror.applySnapshot(
@@ -293,6 +368,7 @@ describe('roster and entities', () => {
         wind: 0,
         carveSeq: 0,
         spawnPoints: [],
+        pads: [],
         decorations: [],
         rle,
       }),
@@ -340,6 +416,7 @@ describe('carve stream resumption', () => {
       // The mask already contains carves 1..41; the next one will be 42.
       carveSeq: 41,
       spawnPoints: [],
+      pads: [],
       decorations: [],
       rle: core.maskRle(),
     })
@@ -365,6 +442,7 @@ describe('carve stream resumption', () => {
       wind: 0,
       carveSeq: 41,
       spawnPoints: [],
+      pads: [],
       decorations: [],
       rle: core.maskRle(),
     })

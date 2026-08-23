@@ -12,7 +12,7 @@
 //!
 //! See `docs/11-map-destruction.md` §1–§5.
 
-use crate::constants::{BEDROCK_H, CHUNK_SIZE, COARSE_CELL, WALL_W};
+use crate::constants::{BEDROCK_H, CHUNK_SIZE, COARSE_CELL, TELEPORT_PADS, WALL_W};
 use crate::map::shape;
 use crate::map::Map;
 use crate::math::isqrt;
@@ -116,6 +116,27 @@ impl Map {
         let rr = r * r;
         let mut changed = 0u32;
 
+        // Teleport pads are indestructible (§C5), and that is what guarantees six
+        // standable spots for the whole round however much of the map is dug away
+        // — including through the floor, once §C15 removes the bedrock. Collected
+        // once for the whole circle rather than re-scanned per row: there are six.
+        //
+        // Only for a **carve**. `fill_circle` adding rock inside a pad cannot
+        // break the guarantee, and refusing it would make the pad a hole that
+        // nothing can ever fill.
+        let pads: Vec<(i32, i32, i32, i32)> = if solid {
+            Vec::new()
+        } else {
+            self.meta
+                .teleport_pads
+                .iter()
+                .map(|p| p.rect())
+                .filter(|(px0, py0, px1, py1)| {
+                    *px1 >= cx - r && *px0 <= cx + r && *py1 >= cy - r && *py0 <= cy + r
+                })
+                .collect()
+        };
+
         for dy in -r..=r {
             let y = cy + dy;
             // Bedrock and the top clamp. Excluding them by clamping the span rather
@@ -131,32 +152,72 @@ impl Map {
                 continue;
             }
 
-            // Split the span at coarse-cell boundaries so the grid can be updated
+            // The row's span minus every pad crossing it. Sorted and non-empty
+            // spans only, so the coarse-cell walk below is unchanged.
+            //
+            // **A fixed array, not a `Vec`.** This runs once per row of every
+            // carve — an r=200 sandbox carve is 400 rows — and the first version
+            // allocated on every one of them even though `pads` is empty for
+            // nearly every carve. `docs/60` §6 budgets a single-chunk rebake at
+            // 4 ms and `perf` asserts against it, so a per-row heap allocation is
+            // not free. Each pad cuts at most one span in two, so `TELEPORT_PADS`
+            // cuts bound the count at `TELEPORT_PADS + 1`.
+            let mut spans = [(0i32, 0i32); TELEPORT_PADS + 1];
+            let mut n_spans = 1;
+            spans[0] = (x0, x1);
+            for &(px0, py0, px1, py1) in &pads {
+                if y < py0 || y > py1 {
+                    continue;
+                }
+                let mut next = [(0i32, 0i32); TELEPORT_PADS + 1];
+                let mut n_next = 0;
+                for &(sx, ex) in &spans[..n_spans] {
+                    if ex < px0 || sx > px1 {
+                        next[n_next] = (sx, ex);
+                        n_next += 1;
+                        continue;
+                    }
+                    if sx < px0 {
+                        next[n_next] = (sx, px0 - 1);
+                        n_next += 1;
+                    }
+                    if ex > px1 {
+                        next[n_next] = (px1 + 1, ex);
+                        n_next += 1;
+                    }
+                }
+                spans = next;
+                n_spans = n_next;
+            }
+
+            // Split each span at coarse-cell boundaries so the grid can be updated
             // from the exact per-cell counts, with no recounting.
-            let mut sx = x0;
-            while sx <= x1 {
-                let cell_end = ((sx / COARSE_CELL as i32) + 1) * COARSE_CELL as i32 - 1;
-                let ex = cell_end.min(x1);
-                let (cell_x, cell_y) = (sx as u32 / COARSE_CELL, y as u32 / COARSE_CELL);
+            for &(span_start, span_end) in &spans[..n_spans] {
+                let mut sx = span_start;
+                while sx <= span_end {
+                    let cell_end = ((sx / COARSE_CELL as i32) + 1) * COARSE_CELL as i32 - 1;
+                    let ex = cell_end.min(span_end);
+                    let (cell_x, cell_y) = (sx as u32 / COARSE_CELL, y as u32 / COARSE_CELL);
 
-                let n = if solid {
-                    let before = self.mask.count_run(y, sx, ex);
-                    self.mask.set_run(y, sx, ex);
-                    let added = (ex - sx + 1) as u32 - before;
-                    if added > 0 {
-                        self.coarse.add(cell_x, cell_y, added as u8);
-                    }
-                    added
-                } else {
-                    let removed = self.mask.clear_run(y, sx, ex);
-                    if removed > 0 {
-                        self.coarse.subtract(cell_x, cell_y, removed as u8);
-                    }
-                    removed
-                };
+                    let n = if solid {
+                        let before = self.mask.count_run(y, sx, ex);
+                        self.mask.set_run(y, sx, ex);
+                        let added = (ex - sx + 1) as u32 - before;
+                        if added > 0 {
+                            self.coarse.add(cell_x, cell_y, added as u8);
+                        }
+                        added
+                    } else {
+                        let removed = self.mask.clear_run(y, sx, ex);
+                        if removed > 0 {
+                            self.coarse.subtract(cell_x, cell_y, removed as u8);
+                        }
+                        removed
+                    };
 
-                changed += n;
-                sx = ex + 1;
+                    changed += n;
+                    sx = ex + 1;
+                }
             }
         }
 

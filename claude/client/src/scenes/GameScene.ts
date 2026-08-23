@@ -15,6 +15,7 @@ import Phaser from 'phaser'
 import { loadAssetManifest, runLoader } from '../render/assets'
 import { DeathOverlay } from '../ui/deathOverlay'
 import { TombstoneLayer } from '../render/tombstones'
+import { padUnderfoot, type PadView } from '../render/pads'
 import { C, Core, dequantizeAngle } from '../core'
 import { asRecord, Connection, type LobbyIntent, type Welcome } from '../net/connection'
 import { WorldMirror, hex } from '../net/worldMirror'
@@ -142,6 +143,10 @@ export class GameScene extends Phaser.Scene {
   private serverRoundTime = 0
   private readonly death = new DeathOverlay()
   private tombstones!: TombstoneLayer
+  /** §C5's pads, as `map_init` gave them. The layer lives in `WorldView` (§C1). */
+  private padViews: PadView[] = []
+  /** The local player's pad charge, `0..1`, straight from the snapshot. */
+  private teleportCharge = 0
   private results!: ResultsScreen
   /**
    * Input packets actually put on the wire. Counted at the send site, not at the
@@ -758,10 +763,16 @@ export class GameScene extends Phaser.Scene {
 
   private onMapInit(b64: string): void {
     if (!b64) return
-    this.mirror.applyMapInitB64(b64)
+    const init = this.mirror.applyMapInitB64(b64)
 
     this.world?.destroy()
     this.world = new WorldView(this, this.core)
+
+    // §C5. Built from the wire rather than from `core.meta`: a networked client
+    // never runs the generator, so `core.meta.teleport_pads` is empty here and a
+    // renderer reading it would draw nothing while looking correct.
+    this.padViews = init.pads.map((p, i) => ({ id: i, x: p.x, y: p.y }))
+    this.world.pads.build(this.padViews)
     // The item layer lives in the shared stack (§C0), so its registry is set
     // here rather than in `create` — there is no layer before there is a world.
     this.world.items.setRegistry(this.core.itemRegistryJson())
@@ -841,6 +852,8 @@ export class GameScene extends Phaser.Scene {
       this.battery = mine.battery
       this.heals = mine.heals
       this.batteries = mine.batteries
+      // §C5. The server's number, not a clock this scene runs — see `pads.ts`.
+      this.teleportCharge = mine.teleportCharge
       // The shield is a timer and the snapshot carries only the *flag*, so the
       // start is the edge: the first tick it is up. Derived rather than sent,
       // because a second field would be a second thing that can disagree.
@@ -1138,6 +1151,11 @@ export class GameScene extends Phaser.Scene {
     // ground was invisible in the real game.
     this.world?.items.update(dt, [...this.mirror.items.values()], this.ear())
     this.tombstones.update([...this.mirror.tombstones.values()])
+    if (this.world) {
+      const me = this.core.playerState(this.me)
+      const on = me ? padUnderfoot(this.padViews, me.x, me.y) : null
+      this.world.pads.update(dt * 1000, on, this.teleportCharge)
+    }
     this.feel.update(dt, this.feelFrame())
     // §C3. Phase-driven, not clock-driven: the server owns which phase the round
     // is in, and a client deciding locally would take the controls away a beat
@@ -1650,6 +1668,19 @@ export class GameScene extends Phaser.Scene {
           // graves actually on screen.
           tombstones: self.mirror.tombstones.size,
           tombstonesDrawn: self.tombstones?.count ?? 0,
+          // §C5, both ends again: what the wire said, and what is on screen.
+          // `pads` alone would pass for a scene that decoded them and drew
+          // nothing, which is the §A39 shape this list exists to catch.
+          pads: self.padViews.length,
+          padsDrawn: self.world?.pads.count ?? 0,
+          padPositions: self.padViews.map((p) => ({ id: p.id, x: p.x, y: p.y })),
+          // The local player's charge as the client has it, so a check can watch
+          // it fill rather than sleeping for two seconds and hoping.
+          teleportCharge: self.teleportCharge,
+          onPad: (() => {
+            const me = self.core.playerState(self.me)
+            return me ? padUnderfoot(self.padViews, me.x, me.y) : null
+          })(),
           // Count at both ends (§A39). These two numbers were silently
           // different for world items for three milestones; asserting only
           // that the server placed a mine would have passed the whole time.

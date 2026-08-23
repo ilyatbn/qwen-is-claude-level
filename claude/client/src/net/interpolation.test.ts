@@ -22,6 +22,7 @@ function p(id: number, x: number, y: number, aimDeg = 0, vx = 0, vy = 0): Snapsh
     health: 100,
     flags: 1,
     jetpackFuel: 255, vision: 1, battery: 0, heals: 0, batteries: 0,
+    teleportCharge: 0,
     selectedItem: null,
   }
 }

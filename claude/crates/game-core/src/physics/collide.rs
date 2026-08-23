@@ -170,6 +170,7 @@ pub(crate) mod tests {
                 scale: MapScale::Small,
                 theme: 0,
                 spawn_points: Vec::new(),
+                teleport_pads: Vec::new(),
                 surface_points: Vec::new(),
                 buried_slots: Vec::new(),
                 decorations: Vec::new(),

@@ -695,7 +695,12 @@ pub const MASK_CHECKSUM_INTERVAL: f32 = 5.0;
 /// batteries counters, T14.03), with neither amendment saying how the energy pool
 /// itself reaches the client. Both bytes are needed and they carry different
 /// things, so this is 17 and T14.03 is 18.
-pub const SNAPSHOT_PLAYER_BYTES: usize = 18;
+///
+/// 19 with T15.01: §C5's charge indicator is one more byte, and for the same
+/// reason — the fill is a server fact (the arming latch, the cooldown and the
+/// step-off reset all live in `world::teleport`), and a client timing its own two
+/// seconds would be a second copy of three guards.
+pub const SNAPSHOT_PLAYER_BYTES: usize = 19;
 /// Header bytes before the player array: tick, round_time_ds, darkness, count.
 pub const SNAPSHOT_HEADER_BYTES: usize = 8;
 /// Trailing `last_input_seq`.
@@ -1236,6 +1241,44 @@ pub const MINE_LIFETIME: f32 = 90.0;
 pub const TOMBSTONE_W: f32 = 14.0;
 pub const TOMBSTONE_H: f32 = 18.0;
 pub const MAX_TOMBSTONES: usize = 32;
+
+// ---- v4 amendments ----  mirrors docs/72-amendments-v4.md
+
+// --- C5: teleport pads ---
+
+/// Pads chosen per map, by the same farthest-point sampling as spawn points.
+///
+/// Six, which is `SPAWN_COUNT_MIN` — not a coincidence and not a second number:
+/// a pad is where a death puts you, so there has to be one per player or the
+/// respawn choice collapses to "the pad nobody is standing on".
+pub const TELEPORT_PADS: usize = 6;
+/// A pad is `PAD_W` wide and `PAD_H` tall, its top flush with the surface point.
+///
+/// Wider than `PLAYER_W` (16) so a body lands on it rather than beside it, and
+/// short enough that stamping one into a hillside does not build a tower.
+pub const PAD_W: i32 = 40;
+pub const PAD_H: i32 = 8;
+/// How far a body's feet may sit from a pad's surface line and still count as
+/// standing on it, in px.
+///
+/// A grounded body rests where the collision solver left it, which is near the
+/// surface line rather than exactly on it, and a body walking a slope onto the
+/// pad arrives a pixel or two high. An exact test makes "on the pad" true on
+/// some ticks and false on others, which is a charge that never completes.
+pub const PAD_TOUCH_SLACK: f32 = 4.0;
+/// Seconds of standing still on a pad before it fires.
+pub const TELEPORT_CHARGE: f32 = 2.0;
+/// Seconds after **arriving** before a pad will charge again.
+///
+/// Without it the destination pad starts charging the instant you land on it and
+/// you ping-pong between two pads for the rest of the round.
+pub const TELEPORT_COOLDOWN: f32 = 5.0;
+/// How far from where you spawned you must move before a pad arms.
+///
+/// Respawn puts you **on** a pad, so without this rule the first thing every
+/// death does is teleport you somewhere else two seconds later — including when
+/// you are stationary because you are reading the map.
+pub const TELEPORT_ARM_DISTANCE: f32 = 32.0;
 
 // ---------------------------------------------------------------------------
 // Map scale and its per-scale parameter table

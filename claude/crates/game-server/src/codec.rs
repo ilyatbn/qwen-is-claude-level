@@ -48,9 +48,15 @@ impl std::error::Error for CodecError {}
 /// ```text
 /// u32 magic  u32 width  u32 height  u64 seed  u8 scale  u8 theme  f32 wind
 /// u16 spawn_count      then spawn_count × (i16 x, i16 y)
+/// u16 pad_count        then pad_count × (i16 x, i16 y)
 /// u16 decoration_count then decoration_count × (u16 kind, i16 x, i16 y, u8 flags)
 /// u32 rle_byte_len     then the RLE payload
 /// ```
+///
+/// **Teleport pads are sent** (§C5), unlike buried slots. They are drawn — a
+/// glowing ring and a charge indicator — and there is nothing to hide: a pad is a
+/// visible feature of the terrain that every player can see and walk onto. Ids
+/// are the array index, matching `MapMeta`, so nothing on the wire carries them.
 ///
 /// **Buried item slots are deliberately absent.** Sending them would put a
 /// complete treasure map in every client's memory, which is a straightforward
@@ -86,6 +92,12 @@ pub fn encode_map_init_at(map: &Map, carve_seq: u32) -> Vec<u8> {
         b.extend_from_slice(&(p.y as i16).to_le_bytes());
     }
 
+    b.extend_from_slice(&(m.teleport_pads.len() as u16).to_le_bytes());
+    for p in &m.teleport_pads {
+        b.extend_from_slice(&(p.pos.x as i16).to_le_bytes());
+        b.extend_from_slice(&(p.pos.y as i16).to_le_bytes());
+    }
+
     b.extend_from_slice(&(m.decorations.len() as u16).to_le_bytes());
     for d in &m.decorations {
         b.extend_from_slice(&d.kind.to_le_bytes());
@@ -99,17 +111,35 @@ pub fn encode_map_init_at(map: &Map, carve_seq: u32) -> Vec<u8> {
     b
 }
 
-/// The inverse of `encode_map_init`, as far as the mask.
+/// What a client needs from `map_init` in order to **carve the way the server
+/// does**: the mask, and the teleport pads.
 ///
-/// Only the mask is recovered: it is what a replay, a divergence check or a
-/// headless tool actually needs, and reconstructing a full `MapMeta` from the
-/// wire would be inventing the fields the format deliberately omits (buried
-/// slots never cross the wire — `docs/32` §5).
+/// Not a full `MapMeta` — reconstructing one would be inventing the fields the
+/// format deliberately omits (buried slots never cross the wire, `docs/32` §5).
+///
+/// The pads are here rather than in a second function because they are part of
+/// the same requirement. §C5 makes them indestructible, so `carve_circle` refuses
+/// pixels inside them, and a client replaying the carve stream without them digs
+/// holes the server did not — `two_clients_agree_on_the_mask_after_a_hundred_
+/// carves` failed exactly that way. One parser, because two would eventually
+/// disagree about the section order.
+#[derive(Clone, Debug)]
+pub struct MapInitParts {
+    pub mask: game_core::map::Mask,
+    pub teleport_pads: Vec<game_core::map::meta::TeleportPad>,
+}
+
+/// The mask alone, for callers that do not carve.
+pub fn decode_map_init_mask(bytes: &[u8]) -> Result<game_core::map::Mask, CodecError> {
+    Ok(decode_map_init_parts(bytes)?.mask)
+}
+
+/// The inverse of `encode_map_init`, as far as anything downstream needs.
 ///
 /// This exists because `encode_map_init` had no inverse, so nothing could prove
 /// it round-trips, and the mask-agreement test would otherwise have had to parse
 /// the format a second time — two parsers that will eventually disagree.
-pub fn decode_map_init_mask(bytes: &[u8]) -> Result<game_core::map::Mask, CodecError> {
+pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
     let mut r = Reader::new(bytes);
     if r.u32()? != MAP_MAGIC {
         return Err(CodecError::BadMapInit("magic"));
@@ -127,6 +157,19 @@ pub fn decode_map_init_mask(bytes: &[u8]) -> Result<game_core::map::Mask, CodecE
 
     let spawns = r.u16()? as usize;
     r.take(spawns * 4)?;
+
+    let pad_count = r.u16()? as usize;
+    let pad_bytes = r.take(pad_count * 4)?;
+    let teleport_pads = (0..pad_count)
+        .map(|i| game_core::map::meta::TeleportPad {
+            id: i as u8,
+            pos: game_core::math::Point::new(
+                i16::from_le_bytes([pad_bytes[i * 4], pad_bytes[i * 4 + 1]]) as i32,
+                i16::from_le_bytes([pad_bytes[i * 4 + 2], pad_bytes[i * 4 + 3]]) as i32,
+            ),
+        })
+        .collect();
+
     let decos = r.u16()? as usize;
     r.take(decos * 7)?;
 
@@ -135,7 +178,10 @@ pub fn decode_map_init_mask(bytes: &[u8]) -> Result<game_core::map::Mask, CodecE
     let mask =
         game_core::map::rle::decode(w, h, payload).map_err(|_| CodecError::BadMapInit("rle"))?;
     r.finish()?;
-    Ok(mask)
+    Ok(MapInitParts {
+        mask,
+        teleport_pads,
+    })
 }
 
 fn scale_byte(s: game_core::constants::MapScale) -> u8 {
@@ -217,6 +263,15 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
         // caps' widths rather than to the values, so a counter that somehow ran
         // past its cap truncates instead of corrupting the neighbouring field.
         b.push((p.heals & 0b11) | ((p.batteries & 0b111) << 2));
+        // §C5's charge indicator, 0..255 over `TELEPORT_CHARGE`.
+        //
+        // **From the server, not timed on the client.** The client could watch
+        // its own feet and run its own two-second clock, but that would be a
+        // second implementation of the arming rule, the cooldown and the
+        // step-off reset — three guards that would each eventually drift from
+        // the ones in `world::teleport` (`CLAUDE.md`: share the guard, or share
+        // the function). A byte is cheaper than the divergence.
+        b.push((p.teleport.charge_fraction() * 255.0).clamp(0.0, 255.0) as u8);
     }
 
     b.extend_from_slice(&last_input_seq.to_le_bytes());
@@ -256,6 +311,8 @@ pub struct SnapshotPlayer {
     pub battery: u8,
     /// §C9's counters: heals in 2 bits, batteries in 3.
     pub consumables: u8,
+    /// §C5's pad charge, quantised against `TELEPORT_CHARGE`.
+    pub teleport_charge: u8,
 }
 
 pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
@@ -281,6 +338,7 @@ pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
             vision: r.u8()?,
             battery: r.u8()?,
             consumables: r.u8()?,
+            teleport_charge: r.u8()?,
         });
     }
     let last_input_seq = r.u32()?;
@@ -524,6 +582,8 @@ mod tests {
             + 2
             + map.meta.spawn_points.len() * 4
             + 2
+            + map.meta.teleport_pads.len() * 4
+            + 2
             + map.meta.decorations.len() * 7
             + 4
             + rle_len;
@@ -541,6 +601,69 @@ mod tests {
         // 4 magic + 4 w + 4 h + 8 seed + 1 scale + 1 theme + 4 wind + 4 carve_seq
         let sc = u16::from_le_bytes([b[30], b[31]]) as usize;
         assert_eq!(sc, map.meta.spawn_points.len());
+    }
+
+    /// §C5's pads reach the client, in order, with the right coordinates.
+    ///
+    /// Buried slots are deliberately absent from `map_init` and pads are
+    /// deliberately present, which is a distinction one section header apart in a
+    /// hand-rolled binary format. This reads the bytes back rather than trusting
+    /// that they were written.
+    #[test]
+    fn map_init_carries_every_teleport_pad() {
+        let map = game_core::map::generate(7, MapScale::Small);
+        let pads = &map.meta.teleport_pads;
+        assert!(!pads.is_empty(), "the fixture map has no pads");
+        let b = encode_map_init(&map);
+
+        // Straight past the fixed header and the spawn section.
+        let mut at = 4 + 4 + 4 + 8 + 1 + 1 + 4 + 4;
+        let spawns = u16::from_le_bytes([b[at], b[at + 1]]) as usize;
+        at += 2 + spawns * 4;
+
+        let count = u16::from_le_bytes([b[at], b[at + 1]]) as usize;
+        at += 2;
+        assert_eq!(count, pads.len(), "pad_count");
+        for (i, pad) in pads.iter().enumerate() {
+            let x = i16::from_le_bytes([b[at], b[at + 1]]);
+            let y = i16::from_le_bytes([b[at + 2], b[at + 3]]);
+            at += 4;
+            assert_eq!(
+                (x as i32, y as i32),
+                (pad.pos.x, pad.pos.y),
+                "pad {i} on the wire disagrees with the map"
+            );
+            // The id is the index and is not sent — assert that assumption here
+            // rather than letting the client discover it (§B16: two registries
+            // silently assumed this and a laser resolved as a bazooka).
+            assert_eq!(pad.id as usize, i);
+        }
+    }
+
+    /// §C5's charge indicator survives the wire.
+    #[test]
+    fn the_teleport_charge_round_trips() {
+        use game_core::constants::TELEPORT_CHARGE;
+        let mut w = world_with(1);
+        // Half charged, on pad 0.
+        if let Some(p) = w.player_mut(0) {
+            p.teleport.charging = Some((0, TELEPORT_CHARGE / 2.0));
+        }
+        let s = decode_snapshot(&encode_snapshot(&w, 0, 0)).expect("decode");
+        let got = s.players[0].teleport_charge as f32 / 255.0;
+        assert!(
+            (got - 0.5).abs() < 2.0 / 255.0,
+            "half a charge came back as {got}"
+        );
+
+        // The control: a player charging nothing sends zero, so the assertion
+        // above is about the charge and not about a byte that is always 128.
+        let mut w2 = world_with(1);
+        if let Some(p) = w2.player_mut(0) {
+            p.teleport.charging = None;
+        }
+        let s2 = decode_snapshot(&encode_snapshot(&w2, 0, 0)).expect("decode");
+        assert_eq!(s2.players[0].teleport_charge, 0);
     }
 
     /// The anti-wallhack test. Buried slots must not be recoverable from the

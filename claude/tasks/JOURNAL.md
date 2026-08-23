@@ -4107,3 +4107,27 @@ the live renderer and the next Regenerate silently put the backdrop back.
 ON median 252 ms against its 500 ceiling — `0 < 500` would have passed for an
 arbitrarily slow classifier. Screenshots in `shots/caveback-{off,on}.png`.
 `./scripts/check.sh` green, 34/34 e2e.
+
+## T15.01 — teleport pads
+
+Six indestructible pads per map, from the same `choose_separated` sampler as the
+spawn points on its own `"pads"` sub-stream. `carve_circle` splits each row's span
+around any pad crossing it, and because `carve_line`/`fill_circle` funnel through
+the same `circle()`, no second path can drop the guard. Respawn picks the pad
+furthest from the nearest living player; `step_teleports` charges, arms and fires.
+`SNAPSHOT_PLAYER_BYTES` 18 → 19 for the teleport state, which is in `state_hash`.
+
+The reviewer caught the one that mattered: `pads_do_not_move_the_spawn_points`
+drained a **local** `substream(seed, "pads")` and re-generated — which cannot fail,
+because `generate` is deterministic however the streams are named, including the
+`"spawns"` typo the test existed to catch. Replaced with an assertion that the pads
+and the spawns do not land on the same points; falsified by renaming the stream.
+
+Two more from the review: the per-row `vec![(x0, x1)]` in `carve_circle` allocated
+on every row of every carve (400 for an r=200) — now a `[_; TELEPORT_PADS + 1]`
+array; and `step_teleports` no longer `mem::take`s the pads out of the map, which
+left `carve_circle` unable to see them for the duration of the tick. `pads.ts`'s
+duplicate `padUnderfoot` is now pinned at both edges (`pads.test.ts`).
+
+`cargo test -p game-core --lib teleport` 18/18, `node scripts/e2e.mjs teleport` ok.
+Full gate deferred to the M15 checkpoint.

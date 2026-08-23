@@ -88,6 +88,11 @@ pub struct PlayerState {
     /// it looks like (`docs/50` §1) — it is one `u16` carried for the client.
     pub tombstone_skin_id: u16,
     pub fire_ready_at: f32,
+    /// Pad arming, charge and cooldown for **this life** (§C5).
+    ///
+    /// Reset by `respawn`, which is the whole point: the arming rule is "you have
+    /// moved since you spawned", and it has to mean *this* spawn.
+    pub teleport: crate::world::teleport::TeleportState,
 }
 
 impl PlayerState {
@@ -115,6 +120,7 @@ impl PlayerState {
             last_damaged_by: None,
             skin_id,
             fire_ready_at: 0.0,
+            teleport: crate::world::teleport::TeleportState::new(pos, 0.0),
         }
     }
 
@@ -372,6 +378,10 @@ impl PlayerState {
 
     pub fn respawn(&mut self, pos: Vec2, now: f32) {
         self.body = Body::new(pos);
+        // Before anything else can read it: respawn lands you **on** a pad, and
+        // an arming rule measuring from the previous life's spawn would fire it
+        // two seconds later (§C5).
+        self.teleport = crate::world::teleport::TeleportState::new(pos, now);
         self.health = BASE_HEALTH;
         self.shield_until = None;
         self.jetpack = JetpackState::default();

@@ -197,7 +197,7 @@ export default async function ({ page, shot, log }) {
 
   // Layer parity (§C1). The sandbox's world layers must be exactly the shared
   // stack's, so a layer added to one scene shows up here.
-  //   -30,-29,-28 sky   0 terrain   10 decorations   19 crate chutes/beacons
+  //   -30,-29,-28 sky   0 terrain   9 teleport pads   10 decorations   19 chutes
   //   20 world items   30 actors   38 sandbox hazard gfx   39 weather vignette
   //   40 particles   50 lightmap
   //
@@ -206,7 +206,9 @@ export default async function ({ page, shot, log }) {
   // the reason this list grew rather than the game's list being special-cased.
   // The layer is empty in the sandbox (nothing spawns items without a server);
   // an empty shared layer is the correct outcome, a missing one is the bug.
-  const EXPECTED = [-30, -29, -28, 0, 10, 19, 20, 30, 38, 39, 40, 50]
+  // 9 is T15.01's teleport pads (§C5). It is here as well as in the game's list
+  // because `WorldView` owns the layer, which is the whole point of §C1.
+  const EXPECTED = [-30, -29, -28, 0, 9, 10, 19, 20, 30, 38, 39, 40, 50]
   const depths = await page.evaluate(() => window.__game.sceneDepths())
   if (!Array.isArray(depths) || depths.length === 0) {
     throw new Error('sceneDepths() returned nothing — this check could not fail, so it proves nothing')

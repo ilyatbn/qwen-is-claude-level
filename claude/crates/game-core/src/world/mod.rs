@@ -8,21 +8,25 @@
 //! See `docs/41-server-loop-rooms.md` §2 for the tick order, which is a contract.
 
 pub mod cycle;
+pub mod teleport;
 pub mod tombstones;
 
 use tombstones::Tombstones;
 
 use crate::constants::{
-    MapScale, ENDED_SECONDS, MAX_INPUT_QUEUE, MAX_PLAYERS, ROUND_SECONDS, WARMUP_SECONDS,
+    MapScale, ENDED_SECONDS, MAX_INPUT_QUEUE, MAX_PLAYERS, ROUND_SECONDS, TELEPORT_PADS,
+    WARMUP_SECONDS,
 };
 use crate::items::registry::{def, ItemId, ItemKind, WeaponId};
 use crate::items::spawning::{assign_buried_items, place_initial, reveal_buried, SpawnSchedule};
 use crate::items::world::{SpawnSource, WorldItemId, WorldItems};
 use crate::map::gen::surface::is_standable;
+use crate::map::meta::TeleportPad;
 use crate::map::{CarveResult, Map};
-use crate::math::{Aabb, Vec2};
+use crate::math::{Aabb, Point, Vec2};
 use crate::player::apply_input;
 use crate::player::input::Input;
+use crate::player::respawn::choose_respawn_pad;
 use crate::player::state::{
     choose_respawn, surface_to_centre, DeathCause, PlayerId, PlayerState, UseError,
 };
@@ -253,6 +257,17 @@ pub enum GameEvent {
         x: f32,
         y: f32,
     },
+    /// A pad fired (§C5). Everyone sees it: the departure and the arrival are
+    /// both things other players need to be able to react to, and a snapshot
+    /// alone would show the player simply appearing somewhere else.
+    Teleport {
+        tick: u32,
+        id: PlayerId,
+        from_pad: u8,
+        to_pad: u8,
+        x: f32,
+        y: f32,
+    },
     /// A grave where someone fell (§B8).
     TombstoneSpawn {
         tick: u32,
@@ -340,6 +355,7 @@ impl GameEvent {
             | GameEvent::Damage { tick, .. }
             | GameEvent::Death { tick, .. }
             | GameEvent::Respawn { tick, .. }
+            | GameEvent::Teleport { tick, .. }
             | GameEvent::TombstoneSpawn { tick, .. }
             | GameEvent::TombstoneDespawn { tick, .. }
             | GameEvent::Score { tick }
@@ -770,6 +786,14 @@ impl World {
         self.apply_inputs(dt);
 
         // 3. players are integrated inside apply_input (force then move, once).
+
+        // 3b. teleport pads (§C5). **After the integration**, because the rule is
+        // about where the body ended up this tick and whether it is grounded, and
+        // **before** the projectiles, so a player who has just left is not still
+        // standing where a rocket is about to land.
+        if playing {
+            self.step_teleports(now, dt);
+        }
 
         // 4. projectiles, their collisions and explosions.
         self.step_projectiles(now, dt);
@@ -1789,7 +1813,11 @@ impl World {
             if self.players[i].alive || now < self.players[i].respawn_at {
                 continue;
             }
-            let pos = choose_respawn(&self.map, &living, &mut self.rng);
+            // §C5: the pad furthest from the nearest living player. `pad` is
+            // `None` only if every pad failed re-validation, which indestructible
+            // pads make unreachable — `a_pad_respawn_never_falls_back_on_a_map_
+            // carved_to_pieces` is the assertion that it stays that way.
+            let pos = choose_respawn_pad(&self.map, &living, &mut self.rng).pos;
             self.players[i].respawn(pos, now);
             let (id, tick) = (self.players[i].id, self.tick);
             self.events.push(GameEvent::Respawn {
@@ -1797,6 +1825,78 @@ impl World {
                 id,
                 x: pos.x,
                 y: pos.y,
+            });
+        }
+    }
+
+    /// §C5's pads, one player at a time in ascending id.
+    ///
+    /// Ascending id like every other per-player loop in `step`, so two players
+    /// completing a charge on the same tick resolve in a fixed order and the
+    /// round replays identically.
+    fn step_teleports(&mut self, now: f32, dt: f32) {
+        // **Copied onto the stack, not taken out of the map.** `teleport::step`
+        // needs `&[TeleportPad]` while the loop holds `&mut self.players`, and a
+        // `clone()` here would be a heap allocation on every tick of every room
+        // for six `Copy` structs that never change during a round.
+        //
+        // The obvious alternative — `mem::take` and put back — leaves the map
+        // with **no pads at all** for the duration of `fire_pads`, and
+        // `carve_circle` reads its pad list to decide what it must not dig. Today
+        // nothing in `fire_pads` carves; the day something does, a rocket fired
+        // from a pad would dig the pad away and the §C5 guarantee that keeps a
+        // dug-through map survivable would fail silently. A stack copy costs the
+        // same and cannot open that window (CLAUDE.md: share the guard, or share
+        // the function — this one shares the map).
+        let mut buf = [TeleportPad {
+            id: 0,
+            pos: Point { x: 0, y: 0 },
+        }; TELEPORT_PADS];
+        let n = self.map.meta.teleport_pads.len().min(TELEPORT_PADS);
+        buf[..n].copy_from_slice(&self.map.meta.teleport_pads[..n]);
+        if n >= 2 {
+            self.fire_pads(&buf[..n], now, dt);
+        }
+    }
+
+    /// The body of `step_teleports`, with the pads copied onto the caller's stack.
+    fn fire_pads(&mut self, pads: &[TeleportPad], now: f32, dt: f32) {
+        for i in 0..self.players.len() {
+            if !self.players[i].alive {
+                continue;
+            }
+            let (pos, grounded) = (self.players[i].body.pos, self.players[i].body.grounded);
+            let fired = teleport::step(&mut self.players[i].teleport, pads, pos, grounded, now, dt);
+            let teleport::TeleportStep::Fire(from) = fired else {
+                continue;
+            };
+            let Some(to) = teleport::destination(pads, from, &mut self.rng) else {
+                continue;
+            };
+
+            let dest = pads
+                .iter()
+                .find(|p| p.id == to)
+                .map(|p| surface_to_centre(Vec2::new(p.pos.x as f32, p.pos.y as f32)));
+            let Some(dest) = dest else { continue };
+
+            // A fresh `Body`, not a position write: carrying the old velocity
+            // through means a player who teleports while running arrives running
+            // and slides off the destination pad, which looks like the teleport
+            // put them in the wrong place.
+            self.players[i].body = crate::physics::body::Body::new(dest);
+            self.players[i].jump = crate::player::movement::JumpState::default();
+            self.players[i].jetpack = crate::player::jetpack::JetpackState::default();
+            teleport::arrive(&mut self.players[i].teleport, dest, now);
+
+            let (id, tick) = (self.players[i].id, self.tick);
+            self.events.push(GameEvent::Teleport {
+                tick,
+                id,
+                from_pad: from,
+                to_pad: to,
+                x: dest.x,
+                y: dest.y,
             });
         }
     }
@@ -2297,6 +2397,22 @@ impl World {
             // way, which is the exact shape §A34 exists to prevent.
             h.update(&p.battery.to_le_bytes());
             h.update(&[p.heals, p.batteries]);
+            // §A34, §C5. Every one of these decides where the player will be in
+            // two seconds' time: `armed` and `spawn_pos` gate the pad, `charging`
+            // is how far through it is, and `ready_at` is the cooldown. A replay
+            // whose charge had drifted by one tick would teleport a player on a
+            // different tick and every hash before that would agree.
+            h.update(&[p.teleport.armed as u8]);
+            h.update(&p.teleport.spawn_pos.x.to_le_bytes());
+            h.update(&p.teleport.spawn_pos.y.to_le_bytes());
+            h.update(&[p.teleport.charging.map_or(255, |(id, _)| id)]);
+            h.update(
+                &p.teleport
+                    .charging
+                    .map_or(f32::NAN, |(_, t)| t)
+                    .to_le_bytes(),
+            );
+            h.update(&p.teleport.ready_at.to_le_bytes());
             p.inventory.hash_into(&mut h);
         }
 
@@ -2569,6 +2685,38 @@ mod crate_motion_tests {
     }
 
     /// Drop a crate from the sky, the way `tick_crates` does.
+    /// The radius the crate test digs with.
+    const CARVE_R: i32 = 60;
+
+    /// An x near `want` whose ground no teleport pad protects.
+    ///
+    /// A pad rect is `PAD_W` wide and indestructible, so a carve of radius `r`
+    /// centred within `r + PAD_W / 2` of a pad's centre is partly refused. Walking
+    /// outward from `want` finds the nearest usable column rather than hardcoding
+    /// one that a future generator change would invalidate.
+    fn drop_x_clear_of_pads(w: &World, want: f32, r: i32) -> f32 {
+        let clearance = r as f32 + crate::constants::PAD_W as f32 / 2.0 + 8.0;
+        let clear = |x: f32| {
+            w.map
+                .meta
+                .teleport_pads
+                .iter()
+                .all(|p| (x - p.pos.x as f32).abs() > clearance)
+        };
+        if clear(want) {
+            return want;
+        }
+        for step in 1..200 {
+            for dir in [1.0f32, -1.0] {
+                let x = want + dir * step as f32 * 16.0;
+                if x > 64.0 && x < w.map.mask.w as f32 - 64.0 && clear(x) {
+                    return x;
+                }
+            }
+        }
+        panic!("nowhere on this map is clear of the teleport pads");
+    }
+
     fn drop_crate(w: &mut World, x: f32) -> WorldItemId {
         w.items.spawn(
             MEDKIT,
@@ -2693,7 +2841,12 @@ mod crate_motion_tests {
     #[test]
     fn a_crate_whose_ground_is_carved_away_falls_again_and_says_so() {
         let mut w = world();
-        let id = drop_crate(&mut w, 300.0);
+        // **Not a fixed x.** Teleport pads (§C5) are indestructible, so a crate
+        // that happens to land on one has ground that cannot be carved away, and
+        // this test would report the crate hanging in the air when the truth is
+        // that the carve was correctly refused. Ask the map where the pads are.
+        let x = drop_x_clear_of_pads(&w, 300.0, CARVE_R);
+        let id = drop_crate(&mut w, x);
         for _ in 0..600 {
             w.step(SIM_DT);
             let _ = w.drain_events();
@@ -2702,8 +2855,15 @@ mod crate_motion_tests {
         assert!(w.items.get(id).expect("there").grounded);
 
         // Take the floor out from under it (`docs/32` §4).
-        w.map
-            .carve_circle(resting.x as i32, (resting.y + CRATE_H) as i32, 60);
+        let removed = w
+            .map
+            .carve_circle(resting.x as i32, (resting.y + CRATE_H) as i32, CARVE_R)
+            .pixels_removed;
+        assert!(
+            removed > 0,
+            "the carve under the crate at {resting:?} removed nothing, so this \
+             test is about the fixture rather than the crate"
+        );
 
         let mut evs = Vec::new();
         for _ in 0..600 {
@@ -3170,6 +3330,7 @@ mod toxic_rain_falls {
             scale: MapScale::Small,
             theme: 0,
             spawn_points: Vec::new(),
+            teleport_pads: Vec::new(),
             surface_points: Vec::new(),
             buried_slots: Vec::new(),
             decorations: Vec::new(),
@@ -3861,5 +4022,213 @@ mod quickthrow {
         let ready = w.player_mut(0).expect("there").fire_ready_at;
         assert!(ready > now, "the throw set no cooldown at all");
         assert_eq!(w.fire(0, now), Err(UseError::OnCooldown));
+    }
+}
+
+/// §C5 end to end: a pad in a real `World`, driven by `step`.
+///
+/// The unit tests in `world::teleport` prove the state machine. These prove it is
+/// **wired** — that `step` calls it, that respawn lands on a pad, and that the
+/// event reaches an observer. Twelve mechanisms on this project were built,
+/// unit-tested and connected to nothing (`CLAUDE.md`), and a state machine nobody
+/// calls looks exactly like one that works.
+#[cfg(test)]
+mod teleport_wiring {
+    use super::*;
+    use crate::constants::{
+        MapScale, PLAYER_H, SIM_DT, TELEPORT_ARM_DISTANCE, TELEPORT_CHARGE, TELEPORT_COOLDOWN,
+    };
+    use crate::map::meta::TeleportPad;
+
+    fn playing() -> World {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        w
+    }
+
+    /// Put the player on `pad` with the arming rule already satisfied, exactly as
+    /// a player who had walked there would be.
+    fn stand_on(w: &mut World, pad: &TeleportPad) {
+        let centre = Vec2::new(pad.pos.x as f32, pad.pos.y as f32 - PLAYER_H / 2.0);
+        let p = w.player_mut(0).expect("there");
+        p.body.pos = centre;
+        p.body.vel = Vec2::ZERO;
+        p.body.grounded = true;
+        p.teleport.spawn_pos = Vec2::new(centre.x - TELEPORT_ARM_DISTANCE * 4.0, centre.y);
+        p.teleport.armed = true;
+        p.teleport.charging = None;
+        p.teleport.ready_at = 0.0;
+    }
+
+    fn teleports(evs: &[GameEvent]) -> Vec<(u8, u8)> {
+        evs.iter()
+            .filter_map(|e| match e {
+                GameEvent::Teleport {
+                    from_pad, to_pad, ..
+                } => Some((*from_pad, *to_pad)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn standing_on_a_pad_in_a_real_round_teleports_and_says_so() {
+        let mut w = playing();
+        let pad = w.map.meta.teleport_pads[0];
+        stand_on(&mut w, &pad);
+
+        let mut evs = Vec::new();
+        // Re-plant every tick: gravity and the collision solver would otherwise
+        // walk the body off a pad on a slope, and this test is about the wiring,
+        // not about the physics of standing still.
+        for _ in 0..((TELEPORT_CHARGE * 2.0 / SIM_DT) as i32) {
+            if teleports(&evs).is_empty() {
+                let p = w.player_mut(0).expect("there");
+                p.body.pos = Vec2::new(pad.pos.x as f32, pad.pos.y as f32 - PLAYER_H / 2.0);
+                p.body.grounded = true;
+            }
+            w.step(SIM_DT);
+            evs.extend(w.drain_events());
+        }
+
+        let t = teleports(&evs);
+        assert_eq!(t.len(), 1, "expected exactly one teleport, got {t:?}");
+        let (from, to) = t[0];
+        assert_eq!(from, pad.id);
+        assert_ne!(to, from);
+
+        // And the player is actually there, not merely told about it.
+        let dest = w.map.meta.teleport_pads[to as usize];
+        let p = w.player(0).expect("there");
+        assert!(
+            (p.body.pos.x - dest.pos.x as f32).abs() < 1.0,
+            "the event said pad {to} at {:?} but the player is at {:?}",
+            dest.pos,
+            p.body.pos
+        );
+    }
+
+    /// The absence, with the presence above as its control: the *only* difference
+    /// is that this player has not moved since spawning.
+    #[test]
+    fn a_player_who_has_not_moved_since_spawning_never_teleports() {
+        let mut w = playing();
+        let pad = w.map.meta.teleport_pads[0];
+        let centre = Vec2::new(pad.pos.x as f32, pad.pos.y as f32 - PLAYER_H / 2.0);
+        {
+            let p = w.player_mut(0).expect("there");
+            p.body.pos = centre;
+            p.body.grounded = true;
+            p.teleport = crate::world::teleport::TeleportState::new(centre, 0.0);
+        }
+
+        let mut evs = Vec::new();
+        for _ in 0..((TELEPORT_CHARGE * 4.0 / SIM_DT) as i32) {
+            let p = w.player_mut(0).expect("there");
+            p.body.pos = centre;
+            p.body.grounded = true;
+            w.step(SIM_DT);
+            evs.extend(w.drain_events());
+        }
+        assert!(
+            teleports(&evs).is_empty(),
+            "an unarmed player was teleported: {:?}",
+            teleports(&evs)
+        );
+    }
+
+    #[test]
+    fn a_death_respawns_the_player_standing_on_a_pad() {
+        let mut w = playing();
+        let now = w.round_time;
+        w.player_mut(0)
+            .expect("there")
+            .die(DeathCause::Weather, now);
+
+        // Past the respawn delay.
+        for _ in 0..((crate::constants::RESPAWN_DELAY / SIM_DT) as i32 + 30) {
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+        }
+
+        let p = w.player(0).expect("there");
+        assert!(p.alive, "the player never came back");
+        let feet = p.body.pos.y + PLAYER_H / 2.0;
+        let on = w.map.meta.teleport_pads.iter().any(|pad| {
+            (p.body.pos.x - pad.pos.x as f32).abs() < 1.0 && (feet - pad.pos.y as f32).abs() < 1.0
+        });
+        assert!(
+            on,
+            "respawned at {:?} (feet {feet}), which is no pad: {:?}",
+            p.body.pos, w.map.meta.teleport_pads
+        );
+    }
+
+    /// §C5's cooldown, in the world rather than the state machine: a player
+    /// re-planted on the destination pad does not bounce straight back.
+    #[test]
+    fn arriving_does_not_immediately_send_you_back() {
+        let mut w = playing();
+        let pad = w.map.meta.teleport_pads[0];
+        stand_on(&mut w, &pad);
+
+        let mut evs = Vec::new();
+        let ticks = ((TELEPORT_CHARGE + TELEPORT_COOLDOWN) * 2.0 / SIM_DT) as i32;
+        for _ in 0..ticks {
+            // Keep them planted on whichever pad they are nearest, so the only
+            // thing that can stop a second teleport is the cooldown.
+            let pos = w.player(0).expect("there").body.pos;
+            if let Some(under) = w
+                .map
+                .meta
+                .teleport_pads
+                .iter()
+                .min_by(|a, b| {
+                    (pos.x - a.pos.x as f32)
+                        .abs()
+                        .total_cmp(&(pos.x - b.pos.x as f32).abs())
+                })
+                .copied()
+            {
+                let p = w.player_mut(0).expect("there");
+                p.body.pos = Vec2::new(under.pos.x as f32, under.pos.y as f32 - PLAYER_H / 2.0);
+                p.body.grounded = true;
+            }
+            w.step(SIM_DT);
+            evs.extend(w.drain_events());
+        }
+
+        let t = teleports(&evs);
+        assert_eq!(
+            t.len(),
+            1,
+            "the cooldown did not hold: {} teleports in {:.1} s — {t:?}",
+            t.len(),
+            (TELEPORT_CHARGE + TELEPORT_COOLDOWN) * 2.0
+        );
+    }
+
+    #[test]
+    fn the_teleport_state_is_in_the_state_hash() {
+        // §A34: a timer that decides the simulation and is not hashed makes a
+        // divergent replay verify green.
+        let mut a = playing();
+        let mut b = playing();
+        assert_eq!(a.state_hash(), b.state_hash());
+        a.player_mut(0).expect("there").teleport.charging = Some((0, 1.0));
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "a charging pad is invisible to the state hash"
+        );
+        b.player_mut(0).expect("there").teleport.charging = Some((0, 1.0));
+        assert_eq!(a.state_hash(), b.state_hash());
+        a.player_mut(0).expect("there").teleport.armed = true;
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "the arming latch is invisible to the state hash"
+        );
     }
 }

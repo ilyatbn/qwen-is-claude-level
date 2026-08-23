@@ -62,6 +62,7 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         | GameEvent::CrateSpawn { .. }
         | GameEvent::Death { .. }
         | GameEvent::Respawn { .. }
+        | GameEvent::Teleport { .. }
         | GameEvent::TombstoneSpawn { .. }
         | GameEvent::TombstoneDespawn { .. }
         | GameEvent::Score { .. }
@@ -99,6 +100,7 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::Damage { .. } => "damage",
         GameEvent::Death { .. } => "death",
         GameEvent::Respawn { .. } => "respawn",
+        GameEvent::Teleport { .. } => "teleport",
         GameEvent::TombstoneSpawn { .. } => "tombstone_spawn",
         GameEvent::TombstoneDespawn { .. } => "tombstone_despawn",
         GameEvent::Score { .. } => "score",
@@ -295,6 +297,19 @@ pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
             "round_time": world.round_time,
         }),
         GameEvent::Respawn { id, x, y, .. } => json!({"tick": tick, "id": id, "x": x, "y": y}),
+        // Everyone: a player vanishing from one pad and appearing on another is
+        // something the other players have to be able to read, and a snapshot
+        // alone shows only the arrival.
+        GameEvent::Teleport {
+            id,
+            from_pad,
+            to_pad,
+            x,
+            y,
+            ..
+        } => {
+            json!({"tick": tick, "id": id, "from_pad": from_pad, "to_pad": to_pad, "x": x, "y": y})
+        }
         GameEvent::TombstoneSpawn {
             id,
             owner,

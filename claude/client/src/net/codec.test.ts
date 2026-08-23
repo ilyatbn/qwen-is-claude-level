@@ -23,6 +23,9 @@ function mapInitFixture(opts: Partial<{
   width: number
   height: number
   spawnCount: number
+  padCount: number
+  /** Write a pad count the buffer cannot hold, without growing the buffer. */
+  padCountLie: number
   decoCount: number
   rle: Uint8Array
   rleLenLie: number
@@ -31,13 +34,14 @@ function mapInitFixture(opts: Partial<{
   const width = opts.width ?? 2048
   const height = opts.height ?? 1024
   const spawns = opts.spawnCount ?? 2
+  const pads = opts.padCount ?? 3
   const decos = opts.decoCount ?? 1
   const rle = opts.rle ?? new Uint8Array([1, 2, 3, 4])
   // magic, w, h, seed, scale, theme, wind, carve_seq, then the counted sections.
   // `carve_seq` (u32) arrived with T6.16 and this fixture did not follow it —
   // 4 bytes short, so the decoder read `spawn_count` out of the middle of it.
   const size =
-    4 + 4 + 4 + 8 + 1 + 1 + 4 + 4 + 2 + spawns * 4 + 2 + decos * 7 + 4 + rle.length
+    4 + 4 + 4 + 8 + 1 + 1 + 4 + 4 + 2 + spawns * 4 + 2 + pads * 4 + 2 + decos * 7 + 4 + rle.length
   const b = new ArrayBuffer(size)
   const v = new DataView(b)
   let at = 0
@@ -53,6 +57,11 @@ function mapInitFixture(opts: Partial<{
   for (let i = 0; i < spawns; i++) {
     v.setInt16(at, 100 + i, true); at += 2
     v.setInt16(at, 200 + i, true); at += 2
+  }
+  v.setUint16(at, opts.padCountLie ?? pads, true); at += 2
+  for (let i = 0; i < pads; i++) {
+    v.setInt16(at, 500 + i, true); at += 2
+    v.setInt16(at, 600 + i, true); at += 2
   }
   v.setUint16(at, decos, true); at += 2
   for (let i = 0; i < decos; i++) {
@@ -93,6 +102,7 @@ function snapshotFixture(n: number, trailing = 0): ArrayBuffer {
     v.setUint8(at++, 204) // vision: 0.8 of clear
     v.setUint8(at++, 153) // battery: 0.6 of BATTERY_MAX (T14.02)
     v.setUint8(at++, 0b01101) // §C9: heals 1, batteries 3
+    v.setUint8(at++, 191) // §C5: teleport charge, 0.749 of the way
   }
   v.setUint32(at, 9999, true)
   return b
@@ -120,8 +130,20 @@ describe('map_init', () => {
       { x: 100, y: 200 },
       { x: 101, y: 201 },
     ])
+    // §C5. Between the spawns and the decorations, and the index is the id —
+    // asserted here because everything after it in the buffer decodes from the
+    // right offset only if this section is read.
+    expect(m.pads).toEqual([
+      { x: 500, y: 600 },
+      { x: 501, y: 601 },
+      { x: 502, y: 602 },
+    ])
     expect(m.decorations).toEqual([{ kind: 7, x: 300, y: 400, flags: 0b101 }])
     expect(Array.from(m.rle)).toEqual([1, 2, 3, 4])
+  })
+
+  it('rejects a pad count the payload cannot hold', () => {
+    expect(() => decodeMapInit(mapInitFixture({ padCountLie: 30000 }))).toThrow(/pad_count/)
   })
 
   it('rejects a wrong magic number with a clear message', () => {
@@ -196,6 +218,14 @@ describe('snapshot', () => {
     // the caller to shift — a field that means two things is a bug waiting.
     expect(p.heals).toBe(1)
     expect(p.batteries).toBe(3)
+  })
+
+  it('decodes the teleport charge as a fraction', () => {
+    const s = decodeSnapshot(snapshotFixture(1))
+    expect(s.players[0]!.teleportCharge).toBeCloseTo(191 / 255, 4)
+    // A fraction, not a raw byte: `pads.ts` multiplies it by 2π directly, and a
+    // 191 through that arithmetic draws 191 turns of arc.
+    expect(s.players[0]!.teleportCharge).toBeLessThanOrEqual(1)
   })
 
   it('decodes flags to the right booleans', () => {

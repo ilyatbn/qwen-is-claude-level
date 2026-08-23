@@ -328,7 +328,7 @@ if (!hud.visible) fail('F3 did not show the debug HUD')
 // Measured, not reasoned from the DEPTH table — my first version of this listed
 // nine depths and the game builds twelve. Guessing a layer set and calling the
 // difference a regression is how a fixture reports working code as broken.
-//   -30,-29,-28 sky   0 terrain   10 decorations   11 tombstones
+//   -30,-29,-28 sky   0 terrain   9 teleport pads   10 decorations   11 tombstones
 //   19 crate chutes/beacons   20 world items   30 actors   39 weather vignette
 //   40 particles   45 ordnance fx   50 lightmap
 // 38 is the sandbox's own hazard graphics and is deliberately absent here: it is
@@ -338,8 +338,14 @@ if (!hud.visible) fail('F3 did not show the debug HUD')
 // at 20 so a falling crate hangs under its canopy. It appears in both scenes
 // because `WorldView` owns the item layer; when it was built in `GameScene`
 // alone this check caught the difference, which is exactly what it is for.
+//
+// 9 is T15.01's teleport pads (§C5), between the terrain and the decorations: you
+// stand *on* a pad, so the actors must draw over it. It appears in both scenes
+// for the same reason 19 does — and it caught this one too. The layer was built
+// in `GameScene` first and this assertion reported it verbatim, which is the
+// second time it has paid for itself.
 {
-  const GAME_LAYERS = [-30, -29, -28, 0, 10, 11, 19, 20, 30, 39, 40, 45, 50]
+  const GAME_LAYERS = [-30, -29, -28, 0, 9, 10, 11, 19, 20, 30, 39, 40, 45, 50]
   const depths = await a.page.evaluate('window.__game.sceneDepths()')
   if (!Array.isArray(depths) || depths.length === 0) {
     fail('GameScene.sceneDepths() returned nothing — this assertion could not fail')

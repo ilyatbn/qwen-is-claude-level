@@ -13,9 +13,13 @@ use crate::math::Point;
 use crate::rng::{range_i32, substream};
 
 /// How many times the separation may be relaxed before giving up on it.
-const MAX_RELAXATIONS: u32 = 3;
+///
+/// `pub(crate)` so a test can pin the **relaxed** floor rather than carrying its
+/// own copy of it — a fixture asserting `SPAWN_MIN_SEPARATION` outright would be
+/// asserting something this sampler does not promise (§A19).
+pub(crate) const MAX_RELAXATIONS: u32 = 3;
 /// Each relaxation keeps this much of the previous separation.
-const RELAX_FACTOR: f32 = 0.75;
+pub(crate) const RELAX_FACTOR: f32 = 0.75;
 
 /// Choose well-separated spawn points from the traversable component.
 ///
@@ -26,6 +30,24 @@ pub fn choose_spawns(
     surface: &[Point],
     component: &[usize],
     seed: u64,
+    count: usize,
+) -> Vec<Point> {
+    choose_separated(mask, surface, component, seed, "spawns", count)
+}
+
+/// The sampler behind [`choose_spawns`], with the sub-stream named by the caller.
+///
+/// Teleport pads (§C5) want *the same* selection — standable, walkable both ways,
+/// farthest-point sampled with the same relaxation — from a **different** RNG
+/// stream, so that adding pads cannot move a spawn point. Parameterising the
+/// stream is the whole difference; a second copy of the sampler would drift from
+/// this one the first time either was tuned (`CLAUDE.md`: share the function).
+pub fn choose_separated(
+    mask: &Mask,
+    surface: &[Point],
+    component: &[usize],
+    seed: u64,
+    stream: &str,
     count: usize,
 ) -> Vec<Point> {
     if count == 0 || component.is_empty() {
@@ -59,7 +81,7 @@ pub fn choose_spawns(
         .collect();
     let want = count.min(SPAWN_COUNT_MIN);
 
-    let mut rng = substream(seed, "spawns");
+    let mut rng = substream(seed, stream);
 
     // Try the roomy set; fall back to the whole component if it cannot fill the
     // quota. **Count-based, not size-based**: 40 roomy points clustered in one
