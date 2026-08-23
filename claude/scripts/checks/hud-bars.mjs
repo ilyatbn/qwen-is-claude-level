@@ -180,6 +180,35 @@ for (let i = 0; i < 12; i++) {
   drain.push(await jet())
 }
 await page.keyboard.up('Space')
+const releasedAt = Date.now()
+
+// --- the refill, SAMPLED FROM THE INSTANT OF RELEASE ------------------------
+//
+// This block sits here, with nothing between it and the key release, because
+// the first version did not. It took its "before" reading *after* a screenshot
+// and three assertion blocks, and on a loaded box that gap swallowed the whole
+// refill: from the measured 2.16 of 5 at `JETPACK_REFILL` 0.5/s a full tank
+// takes 5.7 s, the reading came back `5 -> 5`, and the check reported "the tank
+// did not refill" about a tank that had refilled perfectly. It passed on a
+// re-run. A gate that fails on how long the machine took gates nothing (§A28),
+// so the rise is now watched *while it happens* rather than inferred from two
+// readings either side of an unbounded gap.
+//
+// The window is derived from the constants — `JETPACK_REFILL_DELAY` to start
+// moving, then `(max - low) / refill` to fill — never from a wall-clock guess
+// that expires the next time either number moves (§A19).
+const low = drain[drain.length - 1]
+// Bounded, because the obvious falsification of everything below is to set
+// `JETPACK_REFILL` to 0 — and `(max - low) / 0` is `Infinity`, which would hang
+// this loop rather than fail the assertion it exists to test.
+const fillMs = Math.min((C.delay + (C.max - low.fuel) / C.refill) * 1000, 18_000)
+const rise = []
+while (Date.now() - releasedAt < fillMs + 2000) {
+  const j = await jet()
+  rise.push({ t: Date.now() - releasedAt, ...j })
+  if (j.fuel >= C.max - 0.01) break
+}
+
 await shot('hud-bars-draining')
 
 const fell = drain.some((d, i) => i > 0 && d.shown < drain[i - 1].shown)
@@ -224,19 +253,58 @@ if (falling.length >= 2) {
 // tolerance on the slope — the browser samples on wall clock and the server on
 // ticks, and pinning a rate across that boundary is a coin flip (§A28).
 {
-  const start = await jet()
-  await sleep(3000)
-  const end = await jet()
-  if (!(end.shown > start.shown)) {
-    fail(`the tank did not refill after releasing: ${start.shown} -> ${end.shown}`)
+  const first = rise[0]
+  const last = rise[rise.length - 1]
+  // The instrument before the measurement. If the very first sample is already
+  // full, this check did not watch a refill — and that is two different things:
+  // a real bug if it happened faster than JETPACK_REFILL_DELAY allows, and a
+  // stalled harness if the sample simply arrived late. Say which.
+  if (!first || first.shown >= C.max - 0.01) {
+    const t = first ? first.t : -1
+    if (t >= 0 && t < C.delay * 1000) {
+      fail(
+        `the tank was already full ${t} ms after releasing, inside the ` +
+          `${C.delay}s JETPACK_REFILL_DELAY — the refill is not being simulated`,
+      )
+    } else {
+      fail(
+        `the first refill sample arrived ${t} ms after releasing, by which time the ` +
+          `tank was already full — the harness stalled, so nothing was measured`,
+      )
+    }
+  } else if (!(last.shown > first.shown)) {
+    // Summarised, not dumped. This loop takes a sample every few ms, so printing
+    // the series put 800 numbers on one line and buried the reading that matters.
+    const shown = rise.map((r) => r.shown)
+    fail(
+      `the tank did not refill after releasing: started ${first.shown}, ended ` +
+        `${last.shown}, range ${Math.min(...shown)}-${Math.max(...shown)} over ` +
+        `${last.t} ms across ${rise.length} samples`,
+    )
   } else {
-    const climbed = end.shown - start.shown
-    ok(`refilled ${start.shown} -> ${end.shown} (+${climbed.toFixed(1)} in 3 s)`)
+    const climbed = last.shown - first.shown
+    const secs = (last.t - first.t) / 1000
+    ok(
+      `refilled ${first.shown} -> ${last.shown} (+${climbed.toFixed(1)} in ` +
+        `${secs.toFixed(1)} s, ${rise.length} samples)`,
+    )
+    // The delay is visible in the samples, and it is the half of §C26's shape a
+    // bar cannot show: nothing moves for JETPACK_REFILL_DELAY.
+    const moved = rise.find((r) => r.fuel > first.fuel + 0.02)
+    if (moved && moved.t + 150 < C.delay * 1000) {
+      fail(
+        `the tank started climbing ${moved.t} ms after releasing, inside the ` +
+          `${C.delay}s JETPACK_REFILL_DELAY`,
+      )
+    } else if (moved) {
+      ok(`it held for ${moved.t} ms before climbing (JETPACK_REFILL_DELAY ${C.delay}s)`)
+    }
     // Bounded above by the constant: refilling faster than JETPACK_REFILL would
     // mean the readout is showing the predictor's guess rather than the server.
-    if (climbed > C.refill * 3 + 0.35) {
+    if (secs > 0.5 && climbed / secs > C.refill * 1.6) {
       fail(
-        `refilled ${climbed.toFixed(2)} in 3 s against a JETPACK_REFILL of ${C.refill}/s ` +
+        `refilled ${climbed.toFixed(2)} in ${secs.toFixed(1)} s = ` +
+          `${(climbed / secs).toFixed(2)}/s against a JETPACK_REFILL of ${C.refill}/s ` +
           '— that is faster than the simulation allows',
       )
     } else {

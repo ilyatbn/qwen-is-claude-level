@@ -4214,3 +4214,31 @@ seed from `welcome` is now exposed and compared, with a guard against an empty o
 And `two-clients`' `GAME_LAYERS` parity list had been missing T15.03's `-22, -21,
 -20` since that task landed — T15.03 updated `terrain-render`'s copy of the same
 assertion and not this one.
+
+## M15 checkpoint — two fixtures the milestone exposed
+
+The gate came back 36/38. Neither failure was a game bug, and neither fixture was
+sound before M15 touched it.
+
+`ordnance-visible` reported "no patch of solid rock on the frame". 29.4 % of the
+frame was solid. Its control search skipped anything within **320 world px** of the
+player — but at `CAMERA_ZOOM` 2 the visible world rect is 640×360, so that disc ate
+88 % of the search space and left 55 candidates to find a fully-solid 60 px square
+among. T15.02's regenerated terrain moved the sliver that remained onto sky. The
+exclusion is now the *firing corridor* rather than a disc (everything is fired to
+the right, so rock on the left is equally static and there is far more of it), sizes
+fall back 60 → 44 → 32 — a smaller patch is a noisier control, which raises
+`floor = controlDelta * 3`, so the fallback can only make the check stricter — and a
+failure now prints the solid fraction, the view rect and why each candidate lost.
+
+`hud-bars` failed in the gate and passed on re-run: the coin flip CLAUDE.md says
+gates nothing. It took its "before" reading after a screenshot and three assertion
+blocks, and a full refill from 2.16 takes 6.6–6.8 s, so it sometimes read `5 -> 5`
+and reported "did not refill" about a tank that had refilled perfectly. The rise is
+now sampled from the instant of release over a window derived from
+`JETPACK_REFILL_DELAY + (max - low) / JETPACK_REFILL`. Bounded at 18 s, because the
+obvious falsification (`JETPACK_REFILL = 0`) makes that window infinite and would
+hang instead of failing.
+
+Also recorded: the suite's stray-process guard counts *any* new browser as a leak,
+so a concurrent probe makes an otherwise-green run exit 1.

@@ -86,38 +86,141 @@ const screenPos = async (w) => {
  * which lifts `floor = controlDelta * 3` to 55 and fails a rocket that moved its
  * own patch by a perfectly visible amount.
  *
- * Terrain does not animate. This finds a square of solid rock away from the
- * player and uses that, and says so if there is none.
+ * Terrain does not animate. This finds a square of solid rock the shot cannot
+ * reach and uses that, and says — **with numbers** — if there is none.
+ *
+ * ## Why the exclusion is a corridor and not a radius
+ *
+ * It used to skip anything within 320 **world** px of the player. At
+ * `CAMERA_ZOOM` 2 the visible world rect is 640x360, so a 320 px radius about a
+ * roughly centred player covers everything except the four corners — the search
+ * had about 6% of the frame to work with and needed a *fully* solid 60 px square
+ * inside it. That held only as long as the generator kept putting rock in a
+ * corner, and M15 changed every generated map (T15.02 regenerated the golden
+ * table, 24 of 24, because `force_borders` lays a 16 px `FLOOR_CRUST` where a
+ * 24 px bedrock band used to be). The fixture was pinned to terrain that no
+ * longer exists.
+ *
+ * A radius was never the rule anyway. Everything this check fires goes **right**
+ * of the player and sometimes up (`aimRight`), so what must be avoided is that
+ * corridor plus room for the arc and the crater — not a disc. Rock to the *left*
+ * of the player is as static as rock 320 px away and there is far more of it.
+ *
+ * DOM overlays are excluded by asking the DOM where they are, rather than by
+ * margins that go stale: `page.screenshot` captures the HUD, the minimap and the
+ * join code along with the canvas, and a control sitting under a live readout
+ * would measure the readout.
+ *
+ * Sizes are tried largest first. A smaller patch is a *noisier* control, and a
+ * noisier control raises `floor = controlDelta * 3` — so the fallback can only
+ * make the assertions below stricter, never looser.
  */
+const CONTROL_SIZES = [60, 44, 32]
+
 const findControl = async () => {
-  const r = await page.evaluate(() => {
+  return page.evaluate((sizes) => {
     const d = window.__game.debug()
     const raw = d.worldView
     const v = { x: raw.x, y: raw.y, w: raw.width ?? raw.w, h: raw.height ?? raw.h }
     const core = window.__game.core
+    const K = window.__game.constants()
     const cv = document.querySelector('canvas')
     const rect = cv.getBoundingClientRect()
-    const size = 60
     const wpp = v.w / rect.width
-    const step = 40
-    for (let sy = 40; sy < rect.height - size - 40; sy += step) {
-      for (let sx = 20; sx < rect.width - size - 20; sx += step) {
-        const wx = v.x + sx * wpp
-        const wy = v.y + sy * wpp
-        // Away from the player, so nothing we fire passes through it.
-        if (Math.hypot(wx - d.player.x, wy - d.player.y) < 320) continue
-        let solid = true
-        for (let dx = 0; dx <= size && solid; dx += 12) {
-          for (let dy = 0; dy <= size && solid; dy += 12) {
-            solid = core.solidAt(Math.round(wx + dx * wpp), Math.round(wy + dy * wpp))
+
+    // Where the shot goes. `aimRight` aims at `player.x + 300`, up to 200 px
+    // above the player, and a bazooka arcs down from there and craters.
+    const blast = K.BAZOOKA_BLAST_RADIUS
+    const unsafeWorld = (wx, wy) => {
+      // The player's own sprite, its muzzle flash and its feet.
+      if (Math.hypot(wx - d.player.x, wy - d.player.y) < K.PLAYER_H * 2) return true
+      const downRange = wx > d.player.x - blast && wx < d.player.x + 300 + blast * 3
+      const inArc = wy > d.player.y - 300 - blast && wy < d.player.y + 200 + blast
+      return downRange && inArc
+    }
+
+    // Every positioned overlay the screenshot will contain, in CSS px. Asked of
+    // the DOM rather than hardcoded as margins, which go stale the next time a
+    // readout moves.
+    //
+    // **A full-viewport element with a fully transparent background is a layout
+    // wrapper, not something that paints.** There are four of them, and counting
+    // them rejected all 17037 candidates on the first run of this — a check that
+    // could no longer find anywhere on a frame that is 29% solid rock.
+    // Everything that really draws is either smaller than the frame or has a
+    // background: the HUD strip, the three bars, the timer, the inventory slots
+    // and the minimap all stay excluded, transparent or not.
+    const overlays = []
+    const frameArea = rect.width * rect.height
+    for (const el of document.body.querySelectorAll('*')) {
+      if (el === cv || el.contains(cv)) continue
+      const cs = getComputedStyle(el)
+      if (cs.position === 'static') continue
+      const r = el.getBoundingClientRect()
+      if (r.width <= 0 || r.height <= 0) continue
+      const clear = cs.backgroundColor === 'rgba(0, 0, 0, 0)' || cs.backgroundColor === 'transparent'
+      if (clear && r.width * r.height > frameArea * 0.9) continue
+      overlays.push(r)
+    }
+    const overlapsOverlay = (sx, sy, size) =>
+      overlays.some(
+        (r) => sx < r.right && sx + size > r.left && sy < r.bottom && sy + size > r.top,
+      )
+
+    const N = 8 // an 8x8 grid across the patch, both edges included
+    const classify = (sx, sy, size) => {
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+          const wx = v.x + (sx + (i * size) / (N - 1)) * wpp
+          const wy = v.y + (sy + (j * size) / (N - 1)) * wpp
+          if (unsafeWorld(wx, wy)) return 'corridor'
+          if (!core.solidAt(Math.round(wx), Math.round(wy))) return 'air'
+        }
+      }
+      return 'ok'
+    }
+
+    const counts = { ok: 0, air: 0, corridor: 0, overlay: 0 }
+    for (const size of sizes) {
+      for (let sy = 8; sy <= rect.height - size - 8; sy += 12) {
+        for (let sx = 8; sx <= rect.width - size - 8; sx += 12) {
+          if (overlapsOverlay(sx, sy, size)) {
+            counts.overlay++
+            continue
+          }
+          const verdict = classify(sx, sy, size)
+          counts[verdict]++
+          if (verdict === 'ok') {
+            return {
+              patch: { x: Math.round(sx), y: Math.round(sy), w: size, h: size },
+              size,
+            }
           }
         }
-        if (solid) return { x: Math.round(sx), y: Math.round(sy), w: size, h: size }
       }
     }
-    return null
-  })
-  return r
+
+    // Nothing. Say what the frame actually looked like, so the next person does
+    // not have to reproduce it to find out.
+    let solidSamples = 0
+    let total = 0
+    for (let sy = 0; sy < rect.height; sy += 16) {
+      for (let sx = 0; sx < rect.width; sx += 16) {
+        total++
+        if (core.solidAt(Math.round(v.x + sx * wpp), Math.round(v.y + sy * wpp))) solidSamples++
+      }
+    }
+    return {
+      patch: null,
+      diag: {
+        solidFrac: solidSamples / total,
+        player: { x: Math.round(d.player.x), y: Math.round(d.player.y) },
+        view: { x: Math.round(v.x), y: Math.round(v.y), w: Math.round(v.w), h: Math.round(v.h) },
+        zoom: d.zoom,
+        counts,
+      },
+    }
+  }, CONTROL_SIZES)
 }
 
 // --- the control: nothing of ours is on screen yet --------------------------
@@ -125,9 +228,23 @@ const findControl = async () => {
 // Without this, "a tracer is drawn after firing" also passes for a layer that
 // draws one unconditionally, which is the §A26 half that makes the rest mean
 // something.
-const CONTROL = await findControl()
+const FOUND = await findControl()
+const CONTROL = FOUND.patch
 if (!CONTROL) {
-  fail('no patch of solid rock on the frame to use as the noise control')
+  const g = FOUND.diag
+  fail(
+    'no patch of solid rock on the frame to use as the noise control — ' +
+      `${(g.solidFrac * 100).toFixed(1)}% of the frame is solid at all; ` +
+      `player (${g.player.x}, ${g.player.y}); view ${g.view.w}x${g.view.h} at ` +
+      `(${g.view.x}, ${g.view.y}) zoom ${g.zoom}; candidates rejected: ` +
+      `${g.counts.air} air, ${g.counts.corridor} in the firing corridor, ` +
+      `${g.counts.overlay} under a DOM overlay`,
+  )
+} else {
+  ok(
+    `control: a ${CONTROL.w}px square of solid rock at (${CONTROL.x}, ${CONTROL.y}), ` +
+      'clear of the firing corridor',
+  )
 }
 const idle = await dbg()
 if ((idle.tracersDrawn ?? -1) === 0 && (idle.projectilesDrawn ?? -1) === 0) {
