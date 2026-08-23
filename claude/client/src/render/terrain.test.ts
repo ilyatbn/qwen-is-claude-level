@@ -1,9 +1,15 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { Core, MapScale, C } from '../core'
-import { TerrainRenderer, type ImageHost, type TextureHost } from './terrain'
+import {
+  TerrainRenderer,
+  caveBackdropDefault,
+  setCaveBackdropDefault,
+  type ImageHost,
+  type TextureHost,
+} from './terrain'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const wasmBytes = readFileSync(join(here, '../core/pkg/game_wasm_bg.wasm'))
@@ -51,16 +57,24 @@ class FakeImages implements ImageHost {
 }
 
 /** Build a renderer whose canvas and bake are stubs. */
-function makeRenderer(core: Core) {
+function makeRenderer(core: Core, back: CanvasImageSource | null = null) {
   const textures = new FakeTextures()
   const images = new FakeImages()
   const baked: Array<[number, number]> = []
-  const renderer = new TerrainRenderer(textures, images, core, null, null, {
-    createCanvas: () => ({}) as HTMLCanvasElement,
-    bake: (_t, cx, cy) => {
-      baked.push([cx, cy])
+  const renderer = new TerrainRenderer(
+    textures,
+    images,
+    core,
+    null,
+    null,
+    {
+      createCanvas: () => ({}) as HTMLCanvasElement,
+      bake: (_t, cx, cy) => {
+        baked.push([cx, cy])
+      },
     },
-  })
+    back,
+  )
   return { renderer, textures, images, baked }
 }
 
@@ -206,5 +220,82 @@ describe('TerrainRenderer', () => {
     renderer.markDirty(dirty)
     expect(renderer.stats.pending).toBe(dirty.length)
     renderer.destroy()
+  })
+
+  /**
+   * `CAVE_BACKDROP` (`docs/70` §A17's classifier, now behind a switch).
+   *
+   * Asserted on `bakeLayers()` rather than on the `caveBackdrop` field, because
+   * the field is not what draws anything: a renderer that read it and handed the
+   * texture over regardless would satisfy a field assertion and still paint every
+   * cavern. `bakeLayers()` is what `bakeChunk` is actually given.
+   */
+  describe('the cave backdrop toggle', () => {
+    const backTexture = {} as CanvasImageSource
+
+    afterEach(() => setCaveBackdropDefault(null))
+
+    it('hands bakeChunk no backdrop, and builds no mask, when off', () => {
+      core.generate(4242n, MapScale.Small)
+      setCaveBackdropDefault(false)
+      const { renderer } = makeRenderer(core, backTexture)
+      renderer.buildAll()
+
+      expect(renderer.backdropEnabled).toBe(false)
+      expect(renderer.bakeLayers().back).toBeNull()
+      expect(renderer.bakeLayers().backSource).toBeNull()
+      // The classifier is three chamfers over the whole map. Skipped, not fast.
+      expect(renderer.stats.backdropMs).toBeLessThan(20)
+      renderer.destroy()
+    })
+
+    // The control. Without it the assertions above hold for a renderer that never
+    // had a backdrop to hand over in the first place.
+    it('hands it both when on', () => {
+      core.generate(4242n, MapScale.Small)
+      setCaveBackdropDefault(true)
+      const { renderer } = makeRenderer(core, backTexture)
+      renderer.buildAll()
+
+      expect(renderer.backdropEnabled).toBe(true)
+      expect(renderer.bakeLayers().back).toBe(backTexture)
+      expect(renderer.bakeLayers().backSource).not.toBeNull()
+      expect(renderer.stats.backdropMs).toBeGreaterThan(0)
+      renderer.destroy()
+    })
+
+    it('flipping it live re-queues every chunk', () => {
+      core.generate(4242n, MapScale.Small)
+      setCaveBackdropDefault(false)
+      const { renderer } = makeRenderer(core, backTexture)
+      renderer.buildAll()
+      core.takeDirtyChunks()
+      renderer.update({ x: 0, y: 0 })
+      expect(renderer.stats.pending).toBe(0)
+
+      renderer.setCaveBackdrop(true)
+      expect(renderer.stats.pending).toBe(renderer.chunksX * renderer.chunksY)
+      expect(renderer.bakeLayers().back).toBe(backTexture)
+      renderer.destroy()
+    })
+
+    it('the default survives a rebuild, which a live flip alone would not', () => {
+      core.generate(4242n, MapScale.Small)
+      setCaveBackdropDefault(true)
+      expect(caveBackdropDefault()).toBe(true)
+      const { renderer } = makeRenderer(core, backTexture)
+      expect(renderer.backdropEnabled).toBe(true)
+      renderer.destroy()
+
+      // What the Regenerate button does: a brand-new renderer.
+      const second = makeRenderer(core, backTexture).renderer
+      expect(second.backdropEnabled).toBe(true)
+      second.destroy()
+    })
+
+    it('ships off', () => {
+      expect(C().CAVE_BACKDROP).toBe(false)
+      expect(caveBackdropDefault()).toBe(false)
+    })
   })
 })

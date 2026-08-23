@@ -12,6 +12,7 @@ import Phaser from 'phaser'
 import { C, Core, MapScale, type WeatherState } from '../core'
 import { DEPTH } from '../render/backdrop'
 import { WorldView } from '../render/worldView'
+import { caveBackdropDefault, setCaveBackdropDefault } from '../render/terrain'
 import { PlayerView } from '../render/playerView'
 import { loadAssetManifest, runLoader } from '../render/assets'
 import { Crosshair, LocalInput } from '../input/localInput'
@@ -316,6 +317,21 @@ export class SandboxScene extends Phaser.Scene {
     this.refreshReadout()
   }
 
+  /**
+   * Flip the cave backdrop on the live map **and** for the next regenerate.
+   *
+   * Both, because they are two different failures: setting only the live renderer
+   * loses the choice at the next Regenerate, and setting only the default leaves
+   * the map on screen unchanged and reads as a dead button.
+   */
+  private setCaveBackdrop(on: boolean): boolean {
+    setCaveBackdropDefault(on)
+    this.world.terrain.setCaveBackdrop(on)
+    this.world.flush(this.cameras.main.midPoint)
+    this.refreshReadout()
+    return on
+  }
+
   private carveAt(x: number, y: number): void {
     const t0 = performance.now()
     this.world.applyCarve(x, y, this.carveRadius)
@@ -410,7 +426,15 @@ export class SandboxScene extends Phaser.Scene {
       fog.textContent = `Fog: ${this.fogActive ? 'on' : 'off'}`
     })
     const overlays = button('F4 overlays', () => this.overlay.toggle())
-    r3.append(label('time'), time, timeOut, live, fog, overlays)
+    // `CAVE_BACKDROP` without a wasm rebuild, so the two can be looked at one
+    // after the other on the same map. Flipped before you dig — see
+    // `TerrainRenderer.setCaveBackdrop`.
+    // `caveBackdropDefault()`, not `this.world` — `buildUi` runs before the world
+    // exists, and reading it here threw on boot.
+    const caveBack = button(`Cave bg: ${caveBackdropDefault() ? 'on' : 'off'}`, () => {
+      caveBack.textContent = `Cave bg: ${this.setCaveBackdrop(!caveBackdropDefault()) ? 'on' : 'off'}`
+    })
+    r3.append(label('time'), time, timeOut, live, fog, overlays, caveBack)
 
     // The M5 checkpoint is "force each effect and watch it run start to finish",
     // so each gets a button. Telegraph -> active -> end runs on the real
@@ -536,7 +560,9 @@ export class SandboxScene extends Phaser.Scene {
       `generate ${t.generateMs.toFixed(0)} ms  bakeAll ${t.buildAllMs.toFixed(0)} ms\n` +
       `last carve rebake ${t.lastRebakeMs.toFixed(1)} ms  bakes/frame ${this.frameBakes}\n` +
       `fps ${Math.round(this.game.loop.actualFps)}  pending ${this.world.terrain.stats.pending}  ` +
-      `lightmap ${this.lightmap?.stats.filled ? 'on' : 'off'} draws ${this.lightmap?.stats.drawsLastFrame ?? 0}`
+      `lightmap ${this.lightmap?.stats.filled ? 'on' : 'off'} draws ${this.lightmap?.stats.drawsLastFrame ?? 0}\n` +
+      `cave bg ${this.world.terrain.backdropEnabled ? 'on' : 'off'}  ` +
+      `backdrop ${this.world.terrain.stats.backdropMs.toFixed(0)} ms`
   }
 
   private exposeDebugHandle(): void {
@@ -556,6 +582,9 @@ export class SandboxScene extends Phaser.Scene {
           chunkCount: self.world.terrain.stats.chunkCount,
           // The buildAll split (T9.07): mask-only backdrop vs the canvas loop.
           backdropMs: self.world.terrain.stats.backdropMs,
+          // Whether that number is a measurement or a skipped pass. Without it
+          // `backdropMs: 0` reads as "the pass got faster" (§C0 on metrics).
+          caveBackdrop: self.world.terrain.backdropEnabled,
           chunkBakeMs: self.world.terrain.stats.chunkBakeMs,
           pending: self.world.terrain.stats.pending,
           // Phaser's texture manager is global. A missing destroy() shows up here
@@ -785,6 +814,13 @@ export class SandboxScene extends Phaser.Scene {
       carve(x: number, y: number, r: number) {
         self.carveRadius = r
         self.carveAt(x, y)
+      },
+      /**
+       * The `CAVE_BACKDROP` toggle, for a check that has to measure both sides.
+       * Takes effect on the map on screen and on the next `regenerate()`.
+       */
+      caveBackdrop(on: boolean) {
+        return self.setCaveBackdrop(on)
       },
       core: self.core,
     }

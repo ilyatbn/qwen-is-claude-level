@@ -4088,3 +4088,22 @@ looking at what comes up. Falsified by flipping the define to `true`: ten
 assertions fail.
 
 `./scripts/check.sh` green, the whole e2e suite included. M14 is complete.
+
+## Not a task — the cave backdrop is off, behind `CAVE_BACKDROP`
+
+Asked for directly: get rid of the cave backgrounds, toggled. `CAVE_BACKDROP`
+(constants.rs, mirrored through WASM) ships **false**; `TerrainRenderer` then skips
+building `BackdropMask` at all and hands `bakeChunk` no backdrop. Nothing was
+deleted — the classifier and `backdrop-real.test.ts` are untouched; the constant
+decides only whether the renderer asks for one.
+
+The decision lives in one method, `bakeLayers()`, because that is where it becomes
+pixels: a test asserting the *field* would pass for a renderer that read it and
+drew the backdrop anyway. A module-level `setCaveBackdropDefault` carries the
+sandbox's **Cave bg** button across a Regenerate — the first version set the flag on
+the live renderer and the next Regenerate silently put the backdrop back.
+
+`perf` now measures both sides: OFF median 0.0 ms (the pass is skipped, not fast),
+ON median 252 ms against its 500 ceiling — `0 < 500` would have passed for an
+arbitrarily slow classifier. Screenshots in `shots/caveback-{off,on}.png`.
+`./scripts/check.sh` green, 34/34 e2e.

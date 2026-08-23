@@ -167,6 +167,33 @@ Per-scale feature counts (islands, chasms, mesas, caves, arches) are in
 `ScaleParams`; the shape tunables are the `GROUND_*`, `TERRACE_*`, `LEDGE_*`,
 `CHASM_*`, `MESA_*`, `ROUGHEN_*`, `ISLAND2_*`, `CAVE2_*` and `ARCH_*` constants.
 
+### 5.2 The cave backdrop
+
+`CAVE_BACKDROP` (`crates/game-core/src/constants.rs`) decides whether air the
+renderer classifies as *inside* the landmass is painted with dark rock. It ships
+**off**.
+
+It was added so a crater through a hillside would not show daylight, and it does
+that. What it also does is paint open sky: no setting of the eight `BACKDROP_*`
+tunables drives the false-positive rate to zero, and it is worst exactly where v2
+put a 300 px sheer face next to open air. On the shipped classifier that is 2.5 %
+of open sky at large scale and 16 % at small — which is what "the whole map is a
+cave" looked like.
+
+It is a toggle rather than a deletion because the classifier is measured and
+unit-tested and the two are worth comparing. Nothing about it was removed:
+`BackdropMask` is still built and still asserted on in `backdrop-real.test.ts`;
+`CAVE_BACKDROP` decides only whether the renderer asks for one, and when it is off
+`buildAll` skips the pass entirely (the expensive half of a round-start bake — see
+`backdropMs` in the sandbox readout).
+
+Client-side only. It changes no mask, no hash and nothing on the wire, so two
+clients with different settings still agree about what is solid.
+
+To compare: open the sandbox and press **Cave bg**, which flips it for the map on
+screen and for the next Regenerate without a wasm rebuild. To change what ships,
+edit the constant — `npm --prefix client run build` rebuilds the wasm.
+
 Log targets: `game::map`, `game::sim`, `game::net`, `game::player`,
 `game::items`, `game::weapons`, `game::effects`, `game::round`.
 

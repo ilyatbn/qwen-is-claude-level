@@ -66,25 +66,57 @@ export default async function ({ page, shot, log }) {
   // "bimodal" samples were: whether a regenerate lands in a contended window.
   // Quiet: total median 295, max 330. Loaded: median 378, max 502. Ceilings
   // below carry headroom for a gate that runs beside other work.
-  const bakes = []
-  const backs = []
-  const chunkOnly = []
-  const gens = []
-  for (let i = 0; i < 5; i++) {
-    await page.evaluate(() => window.__game.regenerate('4242', 'medium'))
-    await page.waitForTimeout(600)
-    const d = await page.evaluate(() => window.__game.debug())
-    bakes.push(d.buildAllMs)
-    backs.push(d.backdropMs)
-    chunkOnly.push(d.chunkBakeMs)
-    gens.push(d.generateMs)
+  //
+  // ## The backdrop pass is behind a toggle now (`CAVE_BACKDROP`)
+  //
+  // Shipped off, so `backdropMs` on a default build is a skipped pass, not a fast
+  // one — and `0 < 500` would pass for a renderer whose classifier had become
+  // arbitrarily slow. So this measures **both** sides: off, to confirm the toggle
+  // really removes the work, and then on, which is where the ceiling is asserted.
+  const bakeRun = async () => {
+    const bakes = []
+    const backs = []
+    const chunkOnly = []
+    const gens = []
+    for (let i = 0; i < 5; i++) {
+      await page.evaluate(() => window.__game.regenerate('4242', 'medium'))
+      await page.waitForTimeout(600)
+      const d = await page.evaluate(() => window.__game.debug())
+      bakes.push(d.buildAllMs)
+      backs.push(d.backdropMs)
+      chunkOnly.push(d.chunkBakeMs)
+      gens.push(d.generateMs)
+    }
+    return { bakes, backs, chunkOnly, gens }
   }
-  const median = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)]
+
+  const shipped = await page.evaluate(() => window.__game.debug().caveBackdrop)
+  if (typeof shipped !== 'boolean') {
+    throw new Error('debug().caveBackdrop is not a boolean — this check cannot tell the two apart')
+  }
+
+  // With it off, first.
+  await page.evaluate(() => window.__game.caveBackdrop(false))
+  const off = await bakeRun()
+  const medianOf = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)]
+  log(`  backdrop OFF:   median ${medianOf(off.backs).toFixed(1)} ms (the pass is skipped)`)
+  if (medianOf(off.backs) > 20) {
+    throw new Error(
+      `CAVE_BACKDROP is off and the backdrop pass still costs ` +
+        `${medianOf(off.backs).toFixed(0)} ms — the toggle is not skipping the work`,
+    )
+  }
+
+  // ...and then on, which is what the ceiling below is about.
+  await page.evaluate(() => window.__game.caveBackdrop(true))
+  const { bakes, backs, chunkOnly, gens } = await bakeRun()
+  await page.evaluate((on) => window.__game.caveBackdrop(on), shipped)
+  const median = medianOf
   const list = (a) => a.map((n) => n.toFixed(0)).join(', ')
   const chunks = (await page.evaluate(() => window.__game.debug())).chunkCount
   log(`medium generate: median ${median(gens).toFixed(0)} ms of [${list(gens)}] (ceiling 1000)`)
   log(`  ${chunks}-chunk bake: median ${median(chunkOnly).toFixed(0)} ms of [${list(chunkOnly)}] (ceiling 400 — docs/60 §6)`)
-  log(`  backdrop pass:  median ${median(backs).toFixed(0)} ms of [${list(backs)}] (ceiling 500)`)
+  log(`  backdrop ON:    median ${median(backs).toFixed(0)} ms of [${list(backs)}] (ceiling 500)`)
   log(`  round-start total: median ${median(bakes).toFixed(0)} ms of [${list(bakes)}] (ceiling 800)`)
 
   // The ceiling docs/60 §6 actually states, against the quantity it names.

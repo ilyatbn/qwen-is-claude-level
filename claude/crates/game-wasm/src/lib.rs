@@ -760,6 +760,10 @@ pub fn constants_json() -> String {
         GRENADE_BLAST_RADIUS => c::GRENADE_BLAST_RADIUS,
         SMG_BLAST_RADIUS => c::SMG_BLAST_RADIUS,
         SMG_RANGE => c::SMG_RANGE,
+        // The kill switch, not a tunable: the renderer skips the whole
+        // classifier when this is false, so it never pays for a mask it will
+        // not draw.
+        CAVE_BACKDROP => c::CAVE_BACKDROP,
         BACKDROP_RAYS => c::BACKDROP_RAYS,
         BACKDROP_RAY_LEN => c::BACKDROP_RAY_LEN,
         BACKDROP_MIN_HITS => c::BACKDROP_MIN_HITS,

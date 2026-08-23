@@ -210,6 +210,8 @@ export interface Constants {
   GRENADE_BLAST_RADIUS: number
   SMG_BLAST_RADIUS: number
   SMG_RANGE: number
+  /** Whether the renderer paints interior air with dark rock at all. */
+  CAVE_BACKDROP: boolean
   BACKDROP_RAYS: number
   BACKDROP_RAY_LEN: number
   BACKDROP_MIN_HITS: number

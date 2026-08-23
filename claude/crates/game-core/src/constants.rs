@@ -814,6 +814,25 @@ pub const BURIED_ATTEMPTS: u32 = 200;
 
 // --- A17: the cave backdrop is an enclosure test ---
 
+/// Whether air inside the landmass is painted with dark rock at all.
+///
+/// **Off.** The backdrop's job was to stop a crater through a hillside showing
+/// daylight, and it does that; what it also did was make the whole map read as one
+/// cave system, because every classifier below has a false-positive rate that no
+/// setting drives to zero (see `BACKDROP_MIN_HITS`' table: 2.5-16 % of open sky
+/// drawn dark, depending on scale). Sky beside a v2 mesa is the worst case and it
+/// is the common one.
+///
+/// A toggle rather than a deletion, and the same shape as `MAP_GENERATOR`: the
+/// classifier is tuned, measured and unit-tested, and the two versions are worth
+/// being able to put side by side. Everything below stays live and stays tested —
+/// `BackdropMask` is still built and still asserted on in `backdrop-real.test.ts`.
+/// This decides only whether the renderer asks for it.
+///
+/// Flipping it needs a wasm rebuild (`npm --prefix client run build` does it); the
+/// sandbox has a checkbox that flips it without one.
+pub const CAVE_BACKDROP: bool = false;
+
 /// Rays cast from an air sample, evenly spaced from 0 rad.
 /// Seconds of round left below which the HUD's round timer turns red (§C8).
 ///

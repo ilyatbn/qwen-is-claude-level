@@ -15,7 +15,7 @@
 
 import type { Core } from '../core'
 import { C } from '../core'
-import { BackdropMask, BakeScratch, bakeChunk } from './chunkBake'
+import { BackdropMask, BakeScratch, bakeChunk, type BakeLayers } from './chunkBake'
 
 /** The slice of Phaser this needs, so tests can stub it without importing Phaser. */
 export interface TextureHost {
@@ -55,6 +55,28 @@ export interface TerrainStats {
 
 let generationCounter = 0
 
+/**
+ * A session override for `CAVE_BACKDROP`, or null to use the constant.
+ *
+ * Module state rather than a constructor argument because the thing that decides
+ * — the sandbox's button, a browser check — is nowhere near the two places that
+ * construct a `TerrainRenderer`, and because it has to **survive a regenerate**:
+ * the first version of the button set the flag on the live renderer, and the next
+ * Regenerate built a new one from the constant and silently put the backdrop back
+ * while the button still said "off".
+ */
+let backdropOverride: boolean | null = null
+
+/** Override `CAVE_BACKDROP` for renderers built from now on. Null restores it. */
+export function setCaveBackdropDefault(on: boolean | null): void {
+  backdropOverride = on
+}
+
+/** What a `TerrainRenderer` built now would use. */
+export function caveBackdropDefault(): boolean {
+  return backdropOverride ?? C().CAVE_BACKDROP
+}
+
 export class TerrainRenderer {
   private readonly textures: TextureHost
   private readonly images: ImageHost
@@ -65,6 +87,15 @@ export class TerrainRenderer {
   private scratch: BakeScratch | undefined
   /** The dilated silhouette: where the cave backdrop shows. */
   private snapshot: BackdropMask | undefined
+  /**
+   * `CAVE_BACKDROP`, or an override.
+   *
+   * **One field, read in both places.** The decision reaches the bake through
+   * `snapshot` staying `undefined` *and* through `back` being passed as null, and
+   * two call sites deciding that separately is how one of them ends up paying for
+   * an 8 Mpx chamfer whose result is thrown away.
+   */
+  private caveBackdrop: boolean
 
   private readonly generation: number
   private readonly keys: string[] = []
@@ -100,6 +131,7 @@ export class TerrainRenderer {
     this.fill = fill
     this.edge = edge
     this.back = back
+    this.caveBackdrop = caveBackdropDefault()
     this.generation = ++generationCounter
 
     // The real implementations touch the DOM; a test supplies stubs.
@@ -117,19 +149,7 @@ export class TerrainRenderer {
         ((texture, cx, cy) => {
           this.scratch ??= new BakeScratch()
           if (!this.fill) return
-          bakeChunk(
-            texture,
-            {
-              fill: this.fill,
-              edge: this.edge,
-              back: this.back,
-              backSource: this.snapshot ?? null,
-            },
-            cx,
-            cy,
-            this.core,
-            this.scratch,
-          )
+          bakeChunk(texture, this.bakeLayers(), cx, cy, this.core, this.scratch)
         }),
     }
   }
@@ -151,18 +171,23 @@ export class TerrainRenderer {
     const size = C().CHUNK_SIZE
     const t0 = now()
 
-    // The backdrop silhouette, computed once from the pristine mask.
-    this.snapshot = new BackdropMask(
-      this.core,
-      undefined,
-      C().SKY_MARGIN,
-      C().BACKDROP_RAYS,
-      C().BACKDROP_RAY_LEN,
-      C().BACKDROP_MIN_HITS,
-      C().BACKDROP_MIN_UP,
-      C().BACKDROP_MAX_DIST_TO_SOLID,
-      C().BACKDROP_MIN_ROOF,
-    )
+    // The backdrop silhouette, computed once from the pristine mask — and not at
+    // all when nothing will draw it. This is the expensive half of `buildAll`
+    // (three chamfers over the whole map), so the toggle buys back the time as
+    // well as the pixels.
+    this.snapshot = this.caveBackdrop
+      ? new BackdropMask(
+          this.core,
+          undefined,
+          C().SKY_MARGIN,
+          C().BACKDROP_RAYS,
+          C().BACKDROP_RAY_LEN,
+          C().BACKDROP_MIN_HITS,
+          C().BACKDROP_MIN_UP,
+          C().BACKDROP_MAX_DIST_TO_SOLID,
+          C().BACKDROP_MIN_ROOF,
+        )
+      : undefined
     // Split, because the two halves are different kinds of work and only one of
     // them is stable. `backdropMs` is pure CPU over the mask; the chunk loop
     // allocates canvases and hands them to the renderer. When the total moves
@@ -190,6 +215,67 @@ export class TerrainRenderer {
     this.stats.chunkCount = this.keys.length
     this.stats.chunkBakeMs = now() - tChunks
     this.stats.totalBakeMs = now() - t0
+  }
+
+  /**
+   * What `bakeChunk` is handed for every chunk.
+   *
+   * Its own method, and public, because it is where the `CAVE_BACKDROP` decision
+   * becomes pixels — and the default `bake` above is unreachable from a test
+   * without a real canvas. A test asserting the *field* would pass for a renderer
+   * that read the field and passed the backdrop anyway.
+   */
+  bakeLayers(): BakeLayers {
+    return {
+      // `fill` is only null in tests, which supply their own `bake`.
+      fill: this.fill as CanvasImageSource,
+      edge: this.edge,
+      back: this.caveBackdrop ? this.back : null,
+      backSource: this.caveBackdrop ? (this.snapshot ?? null) : null,
+    }
+  }
+
+  /** Whether interior air is being painted with dark rock right now. */
+  get backdropEnabled(): boolean {
+    return this.caveBackdrop
+  }
+
+  /**
+   * Flip the backdrop and re-bake every chunk, so the two can be compared without
+   * a wasm rebuild.
+   *
+   * It re-bakes rather than rebuilding: the textures and sprites are already
+   * placed, and tearing them down would change the texture generation and lose the
+   * comparison to a different map.
+   *
+   * **Turning it on late builds the silhouette from the mask as it is now**, not
+   * from the pristine one `buildAll` would have used, so craters carved before the
+   * flip stay showing sky. That is the price of not paying for the mask up front;
+   * flip it before you start digging, or regenerate after.
+   */
+  setCaveBackdrop(on: boolean): void {
+    if (on === this.caveBackdrop) return
+    this.caveBackdrop = on
+    if (on && !this.snapshot) {
+      // Timed, and into the same stat `buildAll` writes. Without this the sandbox
+      // readout said "cave bg on, backdrop 0 ms" — a number that reads as "the
+      // classifier is free" when it means "it ran somewhere this does not watch".
+      const t0 = now()
+      this.snapshot = new BackdropMask(
+        this.core,
+        undefined,
+        C().SKY_MARGIN,
+        C().BACKDROP_RAYS,
+        C().BACKDROP_RAY_LEN,
+        C().BACKDROP_MIN_HITS,
+        C().BACKDROP_MIN_UP,
+        C().BACKDROP_MAX_DIST_TO_SOLID,
+        C().BACKDROP_MIN_ROOF,
+      )
+      this.stats.backdropMs = now() - t0
+    }
+    for (const id of this.textureByChunk.keys()) this.pending.add(id)
+    this.stats.pending = this.pending.size
   }
 
   /** Queue chunks the core reported dirty. Out-of-range ids are ignored. */
