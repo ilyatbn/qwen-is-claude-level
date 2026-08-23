@@ -47,7 +47,14 @@ const { fail, ok, failures } = tally('ordnance')
 const stack = await startStack({
   port: PORT,
   label: 'ordnance',
-  env: { ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1' },
+  // `DEV_START_HEALTH` at the cap, because this check sets fire to the ground it
+  // is standing on and then rockets its own feet. Both are deliberate — they are
+  // what makes a hazard and a mine-kill happen — and at `BASE_HEALTH` the sum of
+  // them is fatal on a slow box: measured, the player walked out of its own
+  // molotov on 9 health and the next rocket would have finished it. A dead player
+  // drops its inventory, and the failure then reads "bazooka is not in the
+  // inventory", which is true and says nothing.
+  env: { ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1', DEV_START_HEALTH: '150' },
 })
 const { page, dbg, pageErrors } = await stack.openClient({ name: 'ana' })
 await enterBattle(page, { waitPlaying: true, label: 'ordnance' })
@@ -142,7 +149,23 @@ async function fireUntil(aim, pred, deadlineMs, what, weapon) {
       if ((d.projectilesLive ?? d.projectiles ?? 0) === 0) break
       await settle(50)
     }
-    await settle(250)
+    // ...and then give the **server** time to report what the shot did, before
+    // deciding the shot failed and taking another.
+    //
+    // This is where the ammo went. `DEV_LOADOUT` grants 4 rockets; the mine dies
+    // to the first one when the loop is patient. Under full-suite load the
+    // server's `mines_ended` arrives a beat later than the projectile leaves the
+    // air, the loop read "not yet" and fired again — four times, and then
+    // `selectWeapon` correctly refused to carry on with `"bazooka" is not in the
+    // inventory. Held: 2:smg 3:mine ...`, which is a true statement about a stack
+    // this loop had just spent.
+    //
+    // Polled on `pred` rather than slept flat: it costs nothing when the shot
+    // worked, and 2 s only when it did not.
+    for (let w = 0; w < 20; w++) {
+      if (pred(await dbg())) return true
+      await settle(100)
+    }
   }
 }
 
@@ -198,35 +221,6 @@ for (let i = 0; i < 6; i++) {
 const sprayed = await until((d) => d.jets > 0, 8000, 'a flame jet to arrive')
 if (sprayed) ok(`cone: ${sprayed.jets} jet(s) received and drawn`)
 
-// --- the mine, counted at both ends ----------------------------------------
-//
-// This is the assertion whose absence let the whole thing ship. The client's
-// live count must equal the server's narration: placed minus ended.
-//
-// No walking anywhere in here. Earlier versions stepped off the mine to
-// photograph it and stepped back to blow it up, and spent three runs proving
-// that a check doing platforming walks into a wall (x=16) or falls off a ledge
-// (mine 200 px overhead). None of it was needed: the fx layer draws at
-// DEPTH.particles, above DEPTH.actors, so a mine at your feet is drawn over your
-// own sprite and is visible without moving at all.
-await holding('cone')
-await selectWeapon(page, 'mine')
-await fireUntil({ sx: 640, sy: 700 }, (d) => d.minesPlaced > 0, 20_000, 'a mine to be placed', 'mine')
-const placed = (await dbg()).minesPlaced > 0 ? await dbg() : null
-if (placed) {
-  const expect = placed.minesPlaced - placed.minesEnded
-  if (placed.minesDrawn === expect) {
-    ok(
-      `mine: server says ${placed.minesPlaced} placed - ${placed.minesEnded} ended, client draws ${placed.minesDrawn}`,
-    )
-  } else {
-    fail(
-      `mine count disagrees: server ${placed.minesPlaced}-${placed.minesEnded}=${expect}, client draws ${placed.minesDrawn}`,
-    )
-  }
-  await page.screenshot({ path: join(shotsDir, 'ordnance-mine.png') })
-}
-
 // --- a hazard on the ground -------------------------------------------------
 //
 // A molotov leaves fire, which is a hazard the server narrates and (until now)
@@ -234,9 +228,61 @@ if (placed) {
 // counting was already happening and was exactly the bug.
 await holding('mine')
 await selectWeapon(page, 'molotov')
+// Thrown **up** and to the right, not down at 45 degrees.
+//
+// A molotov is a thrown weapon: the aim sets the launch angle and the speed is
+// fixed, so where it lands is governed by the arc rather than by the point
+// clicked. Aimed below the horizontal from a player standing on a slope the
+// bottle goes straight into the ground at its feet, and on this map it stopped
+// being thrown at all — molotov x2 before the step and x2 after, with the
+// failure reading "timed out waiting for a hazard to be drawn". Aimed above the
+// horizontal it carries, lands clear, and lights.
 await fireAt(900, 500)
-await settle(1200)
+// **Walk out from under it while it is still in the air.**
+//
+// The bottle lands roughly where the player was standing, and its fire kills:
+// watched frame by frame, health went 14 -> 1 -> 0 over 800 ms of standing in
+// it. What made that hard to see is that the client's `slots` do not refresh on
+// death — the loadout was still listed in full for five seconds after the player
+// was dead, so every diagnostic said "holding four rockets" about a corpse, and
+// the failure surfaced two steps later as `"bazooka" is not in the inventory`.
+// (That staleness is a real client defect; it is recorded in the journal.)
+//
+// Aiming further away was tried and is not reliable: a molotov is thrown, so
+// where it lands depends on the ground it is thrown from, and on a slope an
+// up-and-away aim still lands short. Moving is reliable.
+// Keep walking **until the burning stops**, not for a fixed time.
+//
+// 1400 ms was a guess and it is the wrong kind of number: how far that carries
+// depends on the ground. Measured, the player was still alight at the end of it
+// on 64 health and died a moment later. Walk while health is falling, stop when
+// it has been steady for three reads.
+await page.keyboard.down('a')
+// Caught **while running**, not after. The zones appear the moment the bottle
+// lands, and the walk below can take eight seconds — long enough for a fire that
+// was drawn to have burned out again before anything looked at it, which read as
+// "timed out waiting for a hazard to be drawn".
 const burnt = await until((d) => d.hazardsDrawn > 0, 10_000, 'a hazard to be drawn')
+let last = (await dbg()).health
+let steady = 0
+const clear = Date.now() + 8000
+while (Date.now() < clear && steady < 3) {
+  await settle(250)
+  const now = (await dbg()).health
+  steady = now >= last - 0.01 ? steady + 1 : 0
+  last = now
+}
+await page.keyboard.up('a')
+await settle(300)
+const survived = await dbg()
+if (survived.health <= 0) {
+  fail(
+    'the player died in its own molotov — everything after this is about a ' +
+      'respawned player with a dropped inventory, not about ordnance',
+  )
+} else {
+  ok(`stopped burning on ${Math.round(survived.health)} health`)
+}
 if (burnt) {
   // §B15: read the field that exists. The first version of this line printed
   // `burnt.hazards` — top-level, where the counter is not — and rendered
@@ -256,14 +302,81 @@ if (burnt) {
 await page.screenshot({ path: join(shotsDir, 'ordnance-hazard.png') })
 await holding('hazard')
 
+// --- let the fire go out before doing anything else ------------------------
+//
+// A molotov burns for seconds after its zones are counted, and the step below
+// stands still in front of a mine. Standing still anywhere near this fire is
+// fatal, and death is silent to this check: the client's `slots` do not refresh
+// on death, so the loadout is still listed in full for five seconds afterwards
+// (a real client defect, recorded in the journal). What the next step sees is a
+// respawned player that has walked back over most — not all — of its own dropped
+// stacks, which is why the failure reads `"bazooka" is not in the inventory` with
+// every *other* slot intact and its counts preserved.
+//
+// So: wait for the flames, out of reach of them, and then say plainly whether the
+// player is still the one that was armed.
+await until((d) => (d.hazardsDrawn ?? 0) === 0, 25_000, 'the fire to burn out')
+const afterFire = await dbg()
+// **Deaths, not health, and not `slots`.** A respawn restores health to exactly
+// `BASE_HEALTH`, so "100" reads identically to "never hurt"; and `slots` does not
+// refresh on death, so it reported a full loadout for a corpse. The death count
+// is the only signal here that cannot be mistaken for its opposite.
+const died = (afterFire.observed?.deaths ?? []).length
+if (died > 0) {
+  fail(
+    `the player died ${died} time(s) in the fixture's own fire — what follows would be ` +
+      'about a respawned player that has walked back over part of its dropped loadout, ' +
+      'which is how this used to surface as "bazooka is not in the inventory"',
+  )
+} else {
+  ok(`the fire is out, no deaths, ${Math.round(afterFire.health)} health`)
+}
+
+// --- the mine, counted at both ends ----------------------------------------
+//
+// This is the assertion whose absence let the whole thing ship. The client's
+// live count must equal the server's narration: placed minus ended.
+//
+// No walking anywhere in here, and **after** the molotov for that reason. The
+// hazard step has to run away from its own fire; doing that with a mine already
+// placed meant walking back to it afterwards, and a check doing platforming
+// walks into a wall or fails to arrive — "the target is not on screen". Placed
+// last, the mine is at the player's feet and stays there.
+//
+// The fx layer draws at DEPTH.particles, above DEPTH.actors, so a mine at your
+// feet is drawn over your own sprite and is visible without moving at all.
+await holding('cone')
+await selectWeapon(page, 'mine')
+await fireUntil({ sx: 640, sy: 700 }, (d) => d.minesPlaced > 0, 20_000, 'a mine to be placed', 'mine')
+const placed = (await dbg()).minesPlaced > 0 ? await dbg() : null
+if (placed) {
+  const expect = placed.minesPlaced - placed.minesEnded
+  if (placed.minesDrawn === expect) {
+    ok(
+      `mine: server says ${placed.minesPlaced} placed - ${placed.minesEnded} ended, client draws ${placed.minesDrawn}`,
+    )
+  } else {
+    fail(
+      `mine count disagrees: server ${placed.minesPlaced}-${placed.minesEnded}=${expect}, client draws ${placed.minesDrawn}`,
+    )
+  }
+  await page.screenshot({ path: join(shotsDir, 'ordnance-mine.png') })
+}
 
 // --- and the mine must go away again ---------------------------------------
 //
 // §B6 makes mines destructible "because that is what stops a map filling up
 // with them", and T11.07 found `destroy_in_blast` had no production caller at
 // all. A layer that adds and never removes passes every "is it drawn" check
-// while leaving ghosts on the map forever. Last, because rocketing your own
-// feet costs health and craters the ground the earlier steps stand on.
+// while leaving ghosts on the map forever.
+//
+// Last, because rocketing your own feet costs health and craters the ground the
+// earlier steps stand on. Moving it earlier was tried and is worse: the molotov
+// then falls into the fresh crater and never lights, and the player is still
+// being thrown around by its own blast when §C20 refuses the throw.
+//
+// The four rockets it used to spend here were not the ordering's fault — see
+// `fireUntil`, which fired again before the server had reported the first hit.
 if (placed) {
   // Mines ignore their owner (§B6), so standing on one is safe, and a rocket
   // straight down certainly puts the 42 px blast over it.
@@ -290,6 +403,7 @@ if (placed) {
     const sy = (m.y - d.worldView.y) * d.zoom
     return sx > 0 && sx < 1280 && sy > 0 && sy < 720 ? { sx, sy } : null
   }
+
   await fireUntil(aimAtMine, (d) => d.minesEnded > 0, 60_000, 'the rocket to end the mine', 'bazooka')
   const gone = await until(
     (d) => d.minesDrawn === d.minesPlaced - d.minesEnded && d.minesEnded > 0,

@@ -776,6 +776,12 @@ pub const BURIED_ATTEMPTS: u32 = 200;
 // --- A17: the cave backdrop is an enclosure test ---
 
 /// Rays cast from an air sample, evenly spaced from 0 rad.
+/// Seconds of round left below which the HUD's round timer turns red (§C8).
+///
+/// A minute: long enough that seeing it turn changes what you do — go for a
+/// crate or do not — and short enough that it is not red for most of the round.
+pub const TIMER_WARN_SECONDS: f32 = 60.0;
+
 pub const BACKDROP_RAYS: u32 = 8;
 /// How far a ray looks for rock, in world px.
 pub const BACKDROP_RAY_LEN: f32 = 320.0;

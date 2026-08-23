@@ -3884,3 +3884,48 @@ Notes: REPRODUCTION RATE, `cargo test -p game-server`, 10 runs each:
   a busy box, and a 160 ms camera settle doubled the noise floor it is measured
   against. Both now wait on the effect.
 - ./scripts/check.sh green, 28/28 e2e.
+
+## T14.01 — the round timer and the event banner (§C8)
+
+- `client/src/ui/hud.ts`: the timer top-right in a shipped condensed face
+  (`assets/fonts/kenney-future-narrow.ttf`, from the vendored Kenney UI pack — no
+  runtime fetch, `docs/51` §5), red below `TIMER_WARN_SECONDS` (60); the banner
+  top-centre, red, naming the effect and counting it down through **telegraph and
+  active**, because the telegraph is the warning.
+- Both server-driven. The timer runs off `phaseEndsAt`, the same deadline §C25
+  gave the results screen; the banner's countdown runs off `serverRoundTime` and
+  the `duration` in `effect_start`. Fed from the **effect-lifecycle loop**, not
+  from `cueFor`: that is subscribed to `effect_start` alone, so a banner wired
+  there would go up on the telegraph and never come down.
+- 26 unit tests on the arithmetic; `scripts/checks/hud-timer.mjs` asserts the rest
+  on **pixels** with controls — not-red before the boundary, red after, the
+  banner's own rect red while up and not once it has cleared — and cross-checks
+  the digits against `round_state.time_left`.
+- The check's first version compared the timer against `ROUND_SECONDS -
+  serverRoundTime` and reported it 9 s fast. `serverRoundTime` is the world clock
+  and has been running since the lobby, so that subtraction is short by the whole
+  warmup: the instrument was the bug (§A25).
+
+## OPEN DEFECT — a held weapon stack disappears
+
+Found while repairing `ordnance`, **not caused by any change in this session**:
+it reproduces on `MAP_GENERATOR=v1` too (2 of 4 runs), and only became frequent
+because the repaired fixture now runs 30–37 s instead of 18 s.
+
+- Symptom: mid-round, the player's **bazooka stack is gone** — slot 1 empty, every
+  other slot untouched with its counts preserved. The player is alive, has died 0
+  times, has fired no rockets and has not moved since the last read.
+- The server is the one that lost it. `GameEvent::Inventory` is positional —
+  index i ↔ slot i, `null` for empty — so the client's empty slot 1 is a genuinely
+  empty slot 0 on the server.
+- `Inventory::add` is ruled out: `a_pickup_never_removes_a_held_stack` fills the
+  loadout and then picks up past full, and every stack survives.
+  `resolve_pickups` only ever calls `add`. `use_item` refuses `ItemKind::Weapon`
+  before it consumes.
+- What is left is `Inventory::consume` via `try_fire`, which spends **the
+  selected slot**. Four rockets is exactly the stack size. Correlated: the failing
+  runs have picked up extra items (medkit, grenade, airburst) and are at or near
+  8/8 slots.
+- `ordnance` now fails with this diagnosis rather than with `"bazooka" is not in
+  the inventory`, which is a true statement that says nothing.
+

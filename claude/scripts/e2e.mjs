@@ -114,6 +114,10 @@ const CHECKS = [
   // `hud-bars` because T14.02's Done-when names the same check for §C8's bars,
   // which it will add here.
   { name: 'hud-bars', file: 'scripts/checks/hud-bars.mjs', standalone: true },
+  // T14.01 / §C8: the round timer and the event banner. Standalone because it
+  // drives a 90 s round to its warning threshold and waits for the weather
+  // scheduler's first roll — it needs its own server, not a shared one.
+  { name: 'hud-timer', file: 'scripts/checks/hud-timer.mjs', standalone: true },
   // Standalone: it launches its own vite and browser and calls `process.exit`.
   // Imported into this process it would terminate the suite mid-run — and exit 0
   // while doing it, hiding every earlier failure. Run as a subprocess instead.

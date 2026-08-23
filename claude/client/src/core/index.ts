@@ -216,6 +216,7 @@ export interface Constants {
   BACKDROP_MIN_UP: number
   BACKDROP_MAX_DIST_TO_SOLID: number
   BACKDROP_MIN_ROOF: number
+  TIMER_WARN_SECONDS: number
 }
 
 /**

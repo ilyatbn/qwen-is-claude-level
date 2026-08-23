@@ -572,3 +572,50 @@ mod tests {
         assert!(inv.is_empty());
     }
 }
+
+#[cfg(test)]
+mod pickup_does_not_disturb_what_is_held {
+    use super::*;
+    use crate::items::registry::{AXE, BAZOOKA, FLAMETHROWER, MEDKIT, MINE, MOLOTOV, SMG};
+
+    /// Written while chasing a live defect: a player's **bazooka stack vanishes**
+    /// from a full loadout mid-round, alive, having fired nothing and moved
+    /// nowhere. `scripts/checks/ordnance.mjs` reproduces it about one run in
+    /// three, on both map generators, and the server's own `inventory` payload is
+    /// positional — so the empty slot 1 the client renders is a genuinely empty
+    /// slot 0 on the server.
+    ///
+    /// This rules `add` out: the loadout survives every pickup, including ones
+    /// that fill the inventory. The remaining suspect is `consume` via
+    /// `try_fire`, which spends **the selected slot** — see the journal.
+    #[test]
+    fn a_pickup_never_removes_a_held_stack() {
+        let mut inv = Inventory::new();
+        let loadout = [
+            (BAZOOKA, 4u8),
+            (SMG, 60),
+            (MINE, 2),
+            (AXE, 1),
+            (FLAMETHROWER, 200),
+            (MOLOTOV, 2),
+        ];
+        for (item, n) in loadout {
+            inv.add(item, n);
+        }
+
+        // Fill the two remaining slots, then keep picking up past full.
+        for _ in 0..6 {
+            inv.add(MEDKIT, 1);
+            inv.add(crate::items::registry::BATTERY_PACK, 1);
+        }
+
+        for (i, (item, n)) in loadout.iter().enumerate() {
+            let held = inv.slot(i as u8);
+            assert_eq!(
+                held.map(|s| (s.item, s.count)),
+                Some((*item, *n)),
+                "slot {i} was {held:?}, not the {n} of item {item} it started with",
+            );
+        }
+    }
+}

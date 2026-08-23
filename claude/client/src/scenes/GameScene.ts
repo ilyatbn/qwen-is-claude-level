@@ -36,6 +36,7 @@ import { fuelText, fuelTrend } from '../ui/jetpackReadout-math'
 import { FLAG, flag } from '../net/codec'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { Minimap } from '../ui/minimap'
+import { Hud, type EffectPhase } from '../ui/hud'
 import { DebugHud } from '../ui/debugHud'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
@@ -65,6 +66,8 @@ export class GameScene extends Phaser.Scene {
   private localInput!: LocalInput
   private crosshair!: Crosshair
   private hud!: HTMLDivElement
+  /** §C8: the round timer and the event banner. Its own element tree. */
+  private topHud: Hud | null = null
   private jetReadout: HTMLDivElement | null = null
   /** The private room's join code, once the server has told us (§B9). */
   private joinCode: string | null = null
@@ -416,6 +419,25 @@ export class GameScene extends Phaser.Scene {
         if (p['kind'] !== undefined) rec.kind = String(p['kind'])
         rec.phases.add(ev === 'effect_end' ? 'end' : String(p['phase'] ?? ev))
         this.observed.effects.set(id, rec)
+
+        // §C8: and the banner, from the same three events.
+        //
+        // Here rather than in `cueFor`, which is subscribed to `effect_start`
+        // alone — a banner fed from there would go up on the telegraph and never
+        // come down. Grep the layer that owns the state, not the one that looks
+        // like it should.
+        if (ev === 'effect_start') {
+          this.topHud?.startEffect(
+            id,
+            String(p['kind'] ?? ''),
+            this.serverRoundTime,
+            Number(p['duration'] ?? 0),
+          )
+        } else if (ev === 'effect_phase') {
+          this.topHud?.setEffectPhase(id, String(p['phase'] ?? 'active') as EffectPhase)
+        } else {
+          this.topHud?.endEffect(id)
+        }
       })
     }
     this.conn.on('hazard_spawn', (raw) => {
@@ -611,6 +633,8 @@ export class GameScene extends Phaser.Scene {
       this.audio.stopAll()
       this.results?.destroy()
       this.hud?.remove()
+      this.topHud?.destroy()
+      this.topHud = null
       this.jetReadout?.remove()
       this.jetReadout = null
       this.hideJoinCodeBanner()
@@ -884,7 +908,9 @@ export class GameScene extends Phaser.Scene {
       }
       case 'effect_start':
         // The telegraph is the point of the three seconds (`docs/13` §2): it has
-        // to be audible even when the sky tint is off-screen.
+        // to be audible even when the sky tint is off-screen — and, since §C8,
+        // legible: the banner is up for the telegraph as well as the active
+        // phase, because a warning nobody can see is not a warning.
         this.audio.play('effect_telegraph', { volume: 0.9 })
         break
       case 'phase_change':
@@ -1185,6 +1211,11 @@ export class GameScene extends Phaser.Scene {
       'color:#ffd23f;text-shadow:0 1px 2px rgba(0,0,0,.9);pointer-events:none;'
     document.body.appendChild(jet)
     this.jetReadout = jet
+
+    // §C8. Built here so it shares the HUD's lifetime, torn down in SHUTDOWN
+    // with everything else — a DOM element outliving its scene is how the death
+    // overlay once stayed on screen through a restart.
+    this.topHud = new Hud()
   }
 
   private setStatus(text: string): void {
@@ -1303,7 +1334,12 @@ export class GameScene extends Phaser.Scene {
     // "Warmup — 0:10" for the whole warmup and "Round over — 0:20" for the whole
     // vote window. `phaseBanner` ignores the number for `lobby` and returns null
     // for `playing`, so this only changes the two that were frozen.
-    const banner = phaseBanner(this.phase, secondsUntil(this.phaseEndsAt, this.roundTime))
+    const secondsLeft = secondsUntil(this.phaseEndsAt, this.roundTime)
+    // §C8. Driven from the same server-anchored deadline the strip's clock uses,
+    // not from a local stopwatch: §B4 made the death countdown server-driven
+    // because a stopwatch drifts, and a round timer drifts the same way.
+    this.topHud?.update(secondsLeft, this.roundTime, C().TIMER_WARN_SECONDS)
+    const banner = phaseBanner(this.phase, secondsLeft)
     // Readability matters here: the previous format rendered as
     // "3:56 1= p0 0 1= p1 0 1= cy 0", where the trailing "=" reads as an equals
     // sign and nothing separates a name from a score. Ties now lead with "=",
@@ -1584,6 +1620,18 @@ export class GameScene extends Phaser.Scene {
           // clock run in a lobby too.
           serverRoundTime: self.serverRoundTime,
           timeLeft: self.timeLeft,
+          // §C8, both ends (§A39): what the timer *says* and whether it has gone
+          // red, beside the number it was computed from. A pixel check reads the
+          // colour off the frame; this is what it is checked against.
+          hudTimer: {
+            text: self.topHud?.timer.textContent ?? '',
+            warn: self.topHud?.timer.dataset['warn'] === '1',
+          },
+          hudBanner: {
+            text: self.topHud?.banner.textContent ?? '',
+            shown: (self.topHud?.banner.style.display ?? 'none') !== 'none',
+            effects: self.topHud?.effects() ?? [],
+          },
           darkness: self.serverDarkness,
           health: self.health,
           scores: [...self.scores.entries()].map(([id, s]) => ({

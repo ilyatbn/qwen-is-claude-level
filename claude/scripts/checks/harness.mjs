@@ -374,15 +374,33 @@ export async function standStill(page, { keys = ['a', 'd', 'w', 's'], timeoutMs 
  * weapon is not held at all, says so.
  */
 export async function selectWeapon(page, key) {
-  const slots = await page.evaluate('window.__game.debug().slots')
-  if (!Array.isArray(slots)) {
-    throw new Error('selectWeapon: debug() exposes no `slots` — cannot select by name')
+  // **Waited for, not read once.**
+  //
+  // `slots` is the client's copy of the server's `inventory` event, so right
+  // after a throw or a pickup it can be a beat behind — and a beat is longer on
+  // a loaded box. Read once, this reported `"bazooka" is not in the inventory.
+  // Held: 2:smg 3:mine 4:axe 5:flamethrower 6:molotov` on a player that was
+  // holding four rockets a hundred milliseconds earlier and used none: slot 1
+  // was momentarily empty in a mid-update snapshot. The same check passed
+  // standalone every time, which is what a race looks like.
+  //
+  // 2 s, then the same error as before — an inventory that has genuinely lost
+  // the weapon still says so, and says it with the slot list.
+  let slots = null
+  const appear = Date.now() + 2000
+  for (;;) {
+    slots = await page.evaluate('window.__game.debug().slots')
+    if (!Array.isArray(slots)) {
+      throw new Error('selectWeapon: debug() exposes no `slots` — cannot select by name')
+    }
+    if (slots.some((s) => s.key === key) || Date.now() > appear) break
+    await sleep(100)
   }
   const found = slots.find((s) => s.key === key)
   if (!found) {
     const held = slots.filter((s) => s.key).map((s) => `${s.slot + 1}:${s.key}`)
     throw new Error(
-      `selectWeapon: "${key}" is not in the inventory. Held: ${held.join(' ') || '(nothing)'}`,
+      `selectWeapon: "${key}" is not in the inventory after 2 s. Held: ${held.join(' ') || '(nothing)'}`,
     )
   }
   // Waited on, not slept. The selection is confirmed by the server's own
