@@ -208,7 +208,7 @@ export default async function ({ page, shot, log }) {
   // an empty shared layer is the correct outcome, a missing one is the bug.
   // 9 is T15.01's teleport pads (§C5). It is here as well as in the game's list
   // because `WorldView` owns the layer, which is the whole point of §C1.
-  const EXPECTED = [-30, -29, -28, 0, 9, 10, 19, 20, 30, 38, 39, 40, 50]
+  const EXPECTED = [-30, -29, -28, -22, -21, -20, 0, 9, 10, 19, 20, 30, 38, 39, 40, 50]
   const depths = await page.evaluate(() => window.__game.sceneDepths())
   if (!Array.isArray(depths) || depths.length === 0) {
     throw new Error('sceneDepths() returned nothing — this check could not fail, so it proves nothing')

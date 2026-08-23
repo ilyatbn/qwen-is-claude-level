@@ -100,7 +100,7 @@ fn solid_or_oob(mask: &Mask, x: i32, y: i32, w: i32, h: i32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{MapScale, BEDROCK_H, SKY_MARGIN};
+    use crate::constants::{MapScale, FLOOR_CRUST, SKY_MARGIN};
     use crate::map::gen::silhouette::{borders_hold, silhouette, GenParams};
     use crate::rng::substream;
     use rand::Rng;
@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn smoothing_does_not_seal_the_sky_or_breach_bedrock() {
+    fn smoothing_does_not_seal_the_sky_or_breach_the_floor() {
         let p = GenParams::default_for(MapScale::Small);
         let mut m = silhouette(3, &p);
         smooth(&mut m);
@@ -331,8 +331,12 @@ mod tests {
         for y in 0..SKY_MARGIN as i32 {
             assert_eq!(m.count_run(y, 0, w - 1), 0, "sky row {y} filled in");
         }
-        for y in (h - BEDROCK_H as i32)..h {
-            assert_eq!(m.count_run(y, 0, w - 1), w as u32, "bedrock row {y} eroded");
+        for y in (h - FLOOR_CRUST as i32)..h {
+            assert_eq!(
+                m.count_run(y, 0, w - 1),
+                w as u32,
+                "floor crust row {y} eroded"
+            );
         }
     }
 

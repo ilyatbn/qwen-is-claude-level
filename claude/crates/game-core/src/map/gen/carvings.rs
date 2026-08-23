@@ -10,8 +10,8 @@
 //! See `docs/70-amendments-v2.md` §A2 Pass 4b, Pass 4c.
 
 use crate::constants::{
-    BEDROCK_H, CREVICE_DEPTH_MAX, CREVICE_DEPTH_MIN, CREVICE_STEP, CREVICE_WANDER,
-    CREVICE_WIDTH_MAX, CREVICE_WIDTH_MIN, SKY_MARGIN, VOID_MIN_SEPARATION, VOID_RADIUS_MAX,
+    CREVICE_DEPTH_MAX, CREVICE_DEPTH_MIN, CREVICE_STEP, CREVICE_WANDER, CREVICE_WIDTH_MAX,
+    CREVICE_WIDTH_MIN, FLOOR_CRUST, SKY_MARGIN, VOID_MIN_SEPARATION, VOID_RADIUS_MAX,
     VOID_RADIUS_MIN, WALL_W,
 };
 use crate::map::gen::silhouette::{force_borders, GenParams};
@@ -33,7 +33,7 @@ pub fn carve_crevices(mask: &mut Mask, seed: u64, params: &GenParams) -> Vec<Vec
     let mut rng = substream(seed, "crevices");
     let mut paths = Vec::with_capacity(params.crevice_count as usize);
     let (w, h) = (mask.w as i32, mask.h as i32);
-    let floor = h - BEDROCK_H as i32;
+    let floor = h - FLOOR_CRUST as i32;
 
     for _ in 0..params.crevice_count {
         // Find a column with a surface to start from. A column that is empty all
@@ -94,7 +94,7 @@ pub fn carve_voids(mask: &mut Mask, seed: u64, params: &GenParams) -> Vec<Point>
     let mut rng = substream(seed, "voids");
     let (w, h) = (mask.w as i32, mask.h as i32);
     let y_lo = SKY_MARGIN as i32;
-    let y_hi = h - BEDROCK_H as i32 - 60;
+    let y_hi = h - FLOOR_CRUST as i32 - 60;
     if y_hi <= y_lo {
         force_borders(mask);
         return Vec::new();
@@ -193,7 +193,7 @@ mod tests {
         let paths = carve_crevices(&mut m, 21, &p);
         assert!(!paths.is_empty());
 
-        let floor = m.h as i32 - BEDROCK_H as i32;
+        let floor = m.h as i32 - FLOOR_CRUST as i32;
         for path in &paths {
             let first = path[0];
             assert!(
@@ -215,7 +215,7 @@ mod tests {
         let p = params();
         let mut m = solid_map(&p);
         let paths = carve_crevices(&mut m, 33, &p);
-        let floor = m.h as i32 - BEDROCK_H as i32;
+        let floor = m.h as i32 - FLOOR_CRUST as i32;
 
         for path in &paths {
             let (first, last) = (path[0], *path.last().expect("non-empty"));

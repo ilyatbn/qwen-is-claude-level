@@ -143,7 +143,7 @@ fn generate_terrain_v1(requested_seed: u64, scale: MapScale) -> GenOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{BEDROCK_H, SKY_MARGIN};
+    use crate::constants::{FLOOR_CRUST, SKY_MARGIN};
 
     #[test]
     fn generate_once_is_deterministic() {
@@ -193,11 +193,11 @@ mod tests {
             for y in 0..SKY_MARGIN as i32 {
                 assert_eq!(o.mask.count_run(y, 0, w - 1), 0, "{scale:?} sky row {y}");
             }
-            for y in (h - BEDROCK_H as i32)..h {
+            for y in (h - FLOOR_CRUST as i32)..h {
                 assert_eq!(
                     o.mask.count_run(y, 0, w - 1),
                     w as u32,
-                    "{scale:?} bedrock row {y}"
+                    "{scale:?} floor crust row {y}"
                 );
             }
         }

@@ -22,8 +22,39 @@ pub const MAP_LARGE_H: u32 = 2048;
 pub const CHUNK_SIZE: u32 = 256;
 /// Coarse occupancy cell edge, in px.
 pub const COARSE_CELL: u32 = 8;
-/// Indestructible band at the bottom.
-pub const BEDROCK_H: u32 = 24;
+/// Indestructible band at the bottom. **Zero (§C15).**
+///
+/// It was 24. The bottom of the map was a wall you bumped into, and every
+/// "dig down" plan ended against it. §C15 removes it: the floor is now
+/// `FLOOR_CRUST`, which is ordinary destructible rock, and below the map is void.
+///
+/// **Kept, at zero, rather than deleted.** Two different questions read this
+/// number and only one of them changed:
+///
+/// - *"How far down does the generator lay solid rock?"* — that is `FLOOR_CRUST`,
+///   and every generation pass now asks it.
+/// - *"What is the lowest row `carve_circle` may touch?"* — that is this, and the
+///   answer is now "all of them". `carve_circle` still computes
+///   `h - BEDROCK_H`, so the clamp keeps its name and its shape and a future band
+///   at the bottom is one constant away. Inlining `h` there would have deleted
+///   the seam along with the value.
+///
+/// What keeps a dug-through map playable is `TELEPORT_PADS` (§C5): six
+/// indestructible platforms that `carve_circle` skips whatever this is. The
+/// walls (`WALL_W`) are unchanged — §A1's hard limits on x still hold.
+pub const BEDROCK_H: u32 = 0;
+/// The destructible floor the generator lays at the bottom of every map (§C15).
+///
+/// Sixteen rather than the old 24: it is now something you dig through rather
+/// than something you stand on forever, and a thinner crust makes that a decision
+/// a player can actually reach inside a round.
+///
+/// Everything downstream of generation that used to mean "the top of the solid
+/// floor" reads this — the borders, the smoothing guard, the v2 ground profile,
+/// the cave and blob keep-outs. `borders_hold` still asserts it is fully solid on
+/// a freshly generated map; nothing asserts it is still there later, because the
+/// whole point is that it need not be.
+pub const FLOOR_CRUST: u32 = 16;
 /// Indestructible band on the left and right edges.
 pub const WALL_W: u32 = 8;
 /// Guaranteed-empty band at the top (crates fall through it).
@@ -774,6 +805,27 @@ pub const BRIDGE_MIN_SPAN: i32 = 90;
 pub const BRIDGE_MAX_SPAN: i32 = 460;
 pub const BRIDGE_SAG: i32 = 18;
 
+/// How far above the **bottom of the map** v1's cave network keeps out.
+///
+/// **Deliberately not `FLOOR_CRUST`, and it is 24 because that is what v1 was
+/// tuned against** — it was `BEDROCK_H` until §C15, purely because the two
+/// happened to be the same number.
+///
+/// Uncoupling them is the fix for a measured regression, not a preference.
+/// Letting the tunnel walk follow the crust down to 16 gives it 8 px more
+/// vertical room at the bottom, and over 50 seeds that moved the mean absolute
+/// vertical displacement of a tunnel from 217.0 px to 239.2 px against a roughly
+/// unchanged horizontal 222.8 → 227.5 — enough to flip
+/// `tunnels_are_meaningfully_horizontal`, whose whole point is that the heading
+/// bias must beat the wander. §C15 is about whether the floor can be **dug
+/// through**; it says nothing about where v1 puts its tunnels, and the two
+/// questions sharing one constant is exactly the "field that means two things"
+/// this codebase keeps paying for.
+///
+/// (The margin that assertion had was 2.6 %, which is thin. That is worth knowing
+/// separately from this change, and is reported with it.)
+pub const CAVE_FLOOR_KEEPOUT: u32 = 24;
+
 pub const CHAMBER_RADIUS_MIN: i32 = 26;
 pub const CHAMBER_RADIUS_MAX: i32 = 62;
 pub const CHAMBER_MIN_SEPARATION: i32 = 220;
@@ -1280,6 +1332,88 @@ pub const TELEPORT_COOLDOWN: f32 = 5.0;
 /// you are stationary because you are reading the map.
 pub const TELEPORT_ARM_DISTANCE: f32 = 32.0;
 
+// --- C14: a living background ---
+
+/// Parallax mountain layers behind the terrain, from the map seed.
+///
+/// Two. One reads as a flat cut-out; three is a lot of silhouette for a layer
+/// nobody is meant to look at directly, and the third would have to sit below
+/// 0.10 where it barely moves at all.
+pub const MOUNTAIN_LAYERS: usize = 2;
+/// Scroll factor per layer, far to near. **Both below `PARALLAX_FACTOR`** (0.35):
+/// these sit behind everything the terrain parallax already covers, and a layer
+/// that scrolled with the terrain would read as terrain.
+pub const MOUNTAIN_PARALLAX: [f32; MOUNTAIN_LAYERS] = [0.10, 0.20];
+/// Ridge height as a fraction of the viewport, far to near.
+///
+/// The near layer is taller, which is what makes the two read as distance rather
+/// than as one ridge drawn twice.
+pub const MOUNTAIN_HEIGHT_FRAC: [f32; MOUNTAIN_LAYERS] = [0.16, 0.24];
+/// Where the ridge base sits, as a fraction of the viewport height.
+///
+/// Below the sun and moon arc's horizon (0.82) so the ridge line crosses the
+/// gradient rather than floating in the middle of it.
+pub const MOUNTAIN_BASE_FRAC: f32 = 0.86;
+/// How far each layer's silhouette is faded toward the sky colour, far to near.
+///
+/// Aerial perspective: distance washes a silhouette out toward the colour of the
+/// air in front of it. Without it two layers in the same ink are a single shape
+/// with a seam in it.
+pub const MOUNTAIN_HAZE: [f32; MOUNTAIN_LAYERS] = [0.62, 0.38];
+/// Noise cells across one ridge. Higher is a jagged skyline, lower is rolling
+/// hills; 6 is a mountain range rather than either.
+pub const MOUNTAIN_CELLS: u32 = 6;
+/// Octaves of value noise in the ridge profile.
+pub const MOUNTAIN_OCTAVES: u32 = 3;
+
+/// Soft blobs drifting across the sky layer.
+pub const CLOUD_COUNT: usize = 12;
+/// Drift speed, px/s. Slow enough that it reads as weather rather than as motion.
+pub const CLOUD_DRIFT: f32 = 6.0;
+/// Scroll factor for the cloud band — between the far mountains and the near.
+pub const CLOUD_PARALLAX: f32 = 0.14;
+/// Cloud sprite size, in px, before per-cloud scaling.
+///
+/// Roughly 2:1. Squatter than that and the lobes have nowhere to sit; at 256x96
+/// they were clipped into a horizontal smear that read as haze, not as cloud.
+pub const CLOUD_TEX_W: u32 = 220;
+pub const CLOUD_TEX_H: u32 = 110;
+/// Per-cloud scale range, so twelve draws of one texture do not read as twelve
+/// copies of one cloud.
+///
+/// The top of the range is what decides how much sky one cloud eats: at 1.45 on
+/// a 220 px texture a single cloud is a quarter of a 1280 px screen, which reads
+/// as weather closing in rather than as a cloud passing.
+pub const CLOUD_SCALE_MIN: f32 = 0.42;
+pub const CLOUD_SCALE_MAX: f32 = 0.95;
+/// The band of the viewport clouds occupy, as fractions of its height.
+pub const CLOUD_BAND_TOP: f32 = 0.04;
+pub const CLOUD_BAND_BOTTOM: f32 = 0.46;
+/// Cloud opacity at full day. Night and dusk scale down from here.
+pub const CLOUD_ALPHA: f32 = 0.62;
+/// How far a cloud's drift speed may vary from the mean, as a fraction.
+///
+/// 0 makes the twelve move as one sheet, which reads as the camera panning
+/// rather than as weather.
+pub const CLOUD_SPEED_SPREAD: f32 = 0.6;
+/// How much of the sky's own colour a cloud takes, 0 = white, 1 = the sky.
+///
+/// A cloud is lit by the sky it is in — see `cloudTint`, which derives the whole
+/// tint from the gradient so the two cannot disagree.
+pub const CLOUD_SKY_MIX: f32 = 0.55;
+/// Cloud opacity at zero sky luminance, as a fraction of `CLOUD_ALPHA`.
+///
+/// Not 0: an unlit cloud is a silhouette against the stars, not nothing.
+pub const CLOUD_ALPHA_FLOOR: f32 = 0.4;
+
+/// Width of one baked ridge tile, in px. The profile wraps over exactly this.
+pub const RIDGE_TEX_W: u32 = 1024;
+/// How far the theme's rock is darkened toward black for a silhouette.
+///
+/// A silhouette is what the land looks like with no light on it, not the land at
+/// half brightness — which is why this is well past 0.5.
+pub const MOUNTAIN_INK: f32 = 0.55;
+
 // ---------------------------------------------------------------------------
 // Map scale and its per-scale parameter table
 // ---------------------------------------------------------------------------
@@ -1500,9 +1634,9 @@ mod tests {
     }
 
     #[test]
-    fn bedrock_and_sky_fit_inside_the_smallest_map() {
+    fn the_floor_and_sky_fit_inside_the_smallest_map() {
         let p = MapScale::Small.params();
-        assert!(BEDROCK_H + SKY_MARGIN < p.height);
+        assert!(FLOOR_CRUST + SKY_MARGIN < p.height);
         assert!(WALL_W * 2 < p.width);
     }
 

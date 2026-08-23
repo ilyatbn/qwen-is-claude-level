@@ -384,6 +384,9 @@ pub enum CarveKind {
 pub enum DespawnReason {
     Exploded,
     Expired,
+    /// Left the bottom of the map (§C15). Neither of the other two: it did not go
+    /// off, and it did not time out.
+    Void,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -811,8 +814,17 @@ impl World {
         self.step_placed(now, dt);
 
         // 6. world items and crates — and the graves, which fall the same way.
-        let landed = self.items.step(&self.map, dt);
-        self.emit_item_motion(&landed);
+        let moved = self.items.step(&self.map, dt);
+        self.emit_item_motion(&moved.landed);
+        // Anything that fell out of the world is gone; say so, or every client
+        // keeps drawing a crate falling forever (§C15).
+        for id in &moved.voided {
+            let tick = self.tick;
+            self.events.push(GameEvent::ItemDespawn {
+                tick,
+                world_item_id: *id,
+            });
+        }
         self.tombstones.step(&self.map, dt);
         if playing {
             self.step_item_spawns(now);
@@ -825,6 +837,11 @@ impl World {
         for p in self.players.iter_mut() {
             p.tick_stats(now, dt);
         }
+
+        // 8b. the void (§C15). **Before the deaths**, because it works by putting
+        // a body's health at zero and letting `resolve_deaths` do everything a
+        // death does — the drop, the score, the event, the respawn timer.
+        self.step_void();
 
         // 9. deaths and respawns.
         self.resolve_deaths(now);
@@ -990,11 +1007,24 @@ impl World {
         }
 
         for im in impacts {
+            let tick = self.tick;
             let at = match im.outcome {
                 ProjectileOutcome::Alive => continue,
+                // Out of the world: **tell the client and stop**. No detonate,
+                // so nothing is carved and nobody is hurt from below the map;
+                // the despawn event still goes out, or every client keeps
+                // drawing a rocket that the server has already forgotten (§C7 —
+                // the same shape as a crate drawn in mid-air).
+                ProjectileOutcome::Voided { .. } => {
+                    self.events.push(GameEvent::ProjectileDespawn {
+                        tick,
+                        id: im.id,
+                        reason: DespawnReason::Void,
+                    });
+                    continue;
+                }
                 ProjectileOutcome::Exploded { at } | ProjectileOutcome::HitPlayer { at, .. } => at,
             };
-            let tick = self.tick;
             self.events.push(GameEvent::ProjectileDespawn {
                 tick,
                 id: im.id,
@@ -1686,6 +1716,49 @@ impl World {
         }
     }
 
+    /// §C15: below the map is nothing, and a body that reaches it dies.
+    ///
+    /// **The top edge, not the centre or the feet.** The rule has to be one a
+    /// player cannot be halfway through: a body whose feet have passed `y = h` is
+    /// still on screen with its head above the line, and killing it there would
+    /// look like dying in mid-air. Once the *top* edge is past, the whole body is
+    /// out of the world and there is nothing left to draw.
+    ///
+    /// ## Why this is not damage
+    ///
+    /// Everything that hurts a player funnels through `apply_damage_log`, and
+    /// this deliberately does not. Three things in that path would each let a
+    /// body survive outside the world, and all three would be right to:
+    ///
+    /// - the **warmup gate** returns before applying anything, and you can carve
+    ///   during warmup — so a hole dug in the first ten seconds would drop you
+    ///   into an eternal fall;
+    /// - **spawn invulnerability** makes `apply_damage` return false outright;
+    /// - a **shield** multiplies the damage down, and no finite amount is
+    ///   guaranteed to finish someone at `HEALTH_CAP` through one.
+    ///
+    /// The void is a boundary, not a weapon (the task file says so in as many
+    /// words: "the void is not fall damage, it is a boundary"), so it sets the
+    /// health directly and lets `resolve_deaths` attribute it.
+    fn step_void(&mut self) {
+        let floor = self.map.mask.h as f32;
+        for p in self.players.iter_mut() {
+            if p.alive && p.body.head_y() > floor {
+                p.health = 0.0;
+            }
+        }
+    }
+
+    /// Whether this body is below the world (§C15).
+    ///
+    /// The same test `step_void` kills on, so `resolve_deaths` can name the cause
+    /// **without a flag to keep in sync** — the position it is reading is the one
+    /// that killed them, one pass earlier in the same tick, and nothing moves a
+    /// dead body until it respawns. Derive, do not add a fourth flag.
+    fn is_in_the_void(&self, p: &PlayerState) -> bool {
+        p.body.head_y() > self.map.mask.h as f32
+    }
+
     fn resolve_deaths(&mut self, now: f32) {
         let mut drops: Vec<(Vec2, Vec<crate::items::inventory::Stack>)> = Vec::new();
         let mut credits: Vec<PlayerId> = Vec::new();
@@ -1693,18 +1766,24 @@ impl World {
 
         for i in 0..self.players.len() {
             if self.players[i].alive && self.players[i].health <= 0.0 {
-                let direct = match self.players[i].last_damaged_by {
-                    Some((who, when)) if now - when <= crate::player::state::ASSIST_WINDOW => {
-                        // `who` may be the victim: self-damage is recorded too,
-                        // and a self-kill is not a player kill (`docs/21` §6 —
-                        // −1 to them, +0 to everyone).
-                        if who == self.players[i].id {
-                            DeathCause::SelfInflicted
-                        } else {
-                            DeathCause::Player(who)
+                // The void wins over any recent attacker as the *direct* cause;
+                // `killer` still hands the credit to whoever put you there.
+                let direct = if self.is_in_the_void(&self.players[i]) {
+                    DeathCause::Void
+                } else {
+                    match self.players[i].last_damaged_by {
+                        Some((who, when)) if now - when <= crate::player::state::ASSIST_WINDOW => {
+                            // `who` may be the victim: self-damage is recorded too,
+                            // and a self-kill is not a player kill (`docs/21` §6 —
+                            // −1 to them, +0 to everyone).
+                            if who == self.players[i].id {
+                                DeathCause::SelfInflicted
+                            } else {
+                                DeathCause::Player(who)
+                            }
                         }
+                        _ => DeathCause::Weather,
                     }
-                    _ => DeathCause::Weather,
                 };
                 let cause = self.players[i].killer(direct, now);
                 let pos = self.players[i].body.pos;
@@ -1717,7 +1796,7 @@ impl World {
                     }
                     DeathCause::Player(a) => Some(a),
                     DeathCause::SelfInflicted => Some(victim),
-                    DeathCause::Weather => None,
+                    DeathCause::Weather | DeathCause::Void => None,
                 };
                 drops.push((pos, stacks));
                 let tick = self.tick;
@@ -4230,5 +4309,350 @@ mod teleport_wiring {
             b.state_hash(),
             "the arming latch is invisible to the state hash"
         );
+    }
+}
+
+/// §C15 — below the map is death.
+///
+/// The name is `void` because that is what the Done-when filters on
+/// (`cargo test -p game-core --lib void`).
+#[cfg(test)]
+mod void {
+    use super::*;
+    use crate::constants::{MapScale, DEATH_POINTS, PLAYER_H, SIM_DT, WALL_W};
+
+    fn playing() -> World {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        w
+    }
+
+    /// Put the body's **top edge** `beyond` px past `y = h`. Negative is above it.
+    fn put_at_void_edge(w: &mut World, beyond: f32) {
+        let h = w.map.mask.h as f32;
+        let mid = w.map.mask.w as f32 / 2.0;
+        let p = w.player_mut(0).expect("there");
+        p.body.pos = Vec2::new(mid, h + PLAYER_H / 2.0 + beyond);
+        p.body.vel = Vec2::ZERO;
+        // Spawn i-frames are real and would swallow a damage-shaped kill. Clearing
+        // them is not what makes this pass — `spawn_invulnerability` below is the
+        // test that says so — but leaving them on would make every other case here
+        // pass for the wrong reason.
+        p.iframes_until = -1000.0;
+    }
+
+    fn deaths(evs: &[GameEvent]) -> Vec<DeathCause> {
+        evs.iter()
+            .filter_map(|e| match e {
+                GameEvent::Death { cause, .. } => Some(*cause),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_body_past_the_bottom_dies_once_with_the_right_cause_and_score() {
+        let mut w = playing();
+        let score_before = w.player(0).expect("there").score;
+        put_at_void_edge(&mut w, 1.0);
+
+        w.step(SIM_DT);
+        let evs = w.drain_events();
+        assert_eq!(
+            deaths(&evs),
+            vec![DeathCause::Void],
+            "one death, attributed to the void"
+        );
+        let p = w.player(0).expect("there");
+        assert!(!p.alive);
+        assert_eq!(p.score, score_before + DEATH_POINTS);
+        assert_eq!(p.deaths, 1);
+
+        // **Exactly once.** A corpse still lies below the map for the whole
+        // respawn delay, and `step_void` runs every tick — without the `alive`
+        // guard this would decrement the score sixty times a second.
+        for _ in 0..30 {
+            w.step(SIM_DT);
+        }
+        let after = w.drain_events();
+        assert!(
+            deaths(&after).is_empty(),
+            "the void killed the same body again: {:?}",
+            deaths(&after)
+        );
+        let p = w.player(0).expect("there");
+        assert_eq!(
+            p.score,
+            score_before + DEATH_POINTS,
+            "score decremented twice"
+        );
+        assert_eq!(p.deaths, 1, "counted as two deaths");
+    }
+
+    /// The control. Without it every assertion above is satisfied by a build that
+    /// kills the player wherever they are.
+    #[test]
+    fn a_body_just_above_the_line_lives() {
+        let mut w = playing();
+        put_at_void_edge(&mut w, -1.0);
+        w.step(SIM_DT);
+        assert!(
+            w.player(0).expect("there").alive,
+            "a body whose top edge is 1 px above y = h was killed"
+        );
+        assert!(deaths(&w.drain_events()).is_empty());
+    }
+
+    /// §C15 says the **top** edge, and the difference is a whole body height.
+    #[test]
+    fn feet_past_the_line_is_not_enough() {
+        let mut w = playing();
+        let h = w.map.mask.h as f32;
+        {
+            let p = w.player_mut(0).expect("there");
+            // Feet 2 px below the line, head still well above it.
+            p.body.pos = Vec2::new(100.0, h - PLAYER_H / 2.0 + 2.0);
+            p.body.vel = Vec2::ZERO;
+            p.iframes_until = -1000.0;
+        }
+        w.step(SIM_DT);
+        assert!(
+            w.player(0).expect("there").alive,
+            "killed while the head was still inside the map"
+        );
+    }
+
+    /// The reason the void is not routed through `apply_damage_log`: that path
+    /// returns early during warmup, and you can carve during warmup.
+    #[test]
+    fn the_void_kills_during_warmup_too() {
+        let mut w = World::new(4242, MapScale::Small);
+        w.add_player(0, 0, "ana".into());
+        assert_eq!(w.phase, RoundPhase::Warmup, "fixture is not in warmup");
+        put_at_void_edge(&mut w, 1.0);
+        w.step(SIM_DT);
+        assert_eq!(deaths(&w.drain_events()), vec![DeathCause::Void]);
+        assert!(!w.player(0).expect("there").alive);
+    }
+
+    /// ...and the second reason: spawn invulnerability makes `apply_damage`
+    /// return false outright, so a damage-shaped void would leave a fresh spawn
+    /// falling forever.
+    #[test]
+    fn spawn_invulnerability_does_not_save_you_from_the_void() {
+        let mut w = playing();
+        let h = w.map.mask.h as f32;
+        {
+            let p = w.player_mut(0).expect("there");
+            p.body.pos = Vec2::new(100.0, h + PLAYER_H);
+            p.body.vel = Vec2::ZERO;
+            p.iframes_until = 10_000.0;
+        }
+        // The control: they really are invulnerable right now.
+        assert!(
+            w.player(0).expect("there").invulnerable(w.round_time),
+            "fixture is not actually invulnerable, so this proves nothing"
+        );
+        w.step(SIM_DT);
+        assert_eq!(deaths(&w.drain_events()), vec![DeathCause::Void]);
+    }
+
+    /// `docs/21` §4: an environmental kill still credits whoever put you there.
+    #[test]
+    fn being_blasted_into_the_void_credits_the_shooter() {
+        let mut w = playing();
+        w.add_player(1, 1, "bo".into());
+        {
+            let now = w.round_time;
+            let p = w.player_mut(0).expect("there");
+            p.last_damaged_by = Some((1, now));
+        }
+        put_at_void_edge(&mut w, 1.0);
+        w.step(SIM_DT);
+        assert_eq!(
+            deaths(&w.drain_events()),
+            vec![DeathCause::Player(1)],
+            "the assist window did not credit the shooter"
+        );
+    }
+
+    /// ...and falling in under your own power credits nobody.
+    #[test]
+    fn falling_in_alone_credits_nobody() {
+        let mut w = playing();
+        w.add_player(1, 1, "bo".into());
+        let before = w.player(1).expect("there").score;
+        put_at_void_edge(&mut w, 1.0);
+        w.step(SIM_DT);
+        assert_eq!(deaths(&w.drain_events()), vec![DeathCause::Void]);
+        assert_eq!(
+            w.player(1).expect("there").score,
+            before,
+            "someone was credited for a solo fall"
+        );
+    }
+
+    #[test]
+    fn a_projectile_past_the_bottom_despawns_without_detonating() {
+        let mut w = playing();
+        let h = w.map.mask.h as f32;
+        let solid_before = w.map.mask.count_solid();
+
+        let id = w.projectiles.spawn_raw(
+            crate::items::registry::WEAPON_BAZOOKA,
+            0,
+            Vec2::new(300.0, h + 4.0),
+            Vec2::new(0.0, 200.0),
+            w.round_time,
+        );
+        assert_eq!(w.projectiles.len(), 1, "fixture did not spawn one");
+
+        w.step(SIM_DT);
+        assert_eq!(w.projectiles.len(), 0, "the projectile is still in the air");
+
+        let reasons: Vec<DespawnReason> = w
+            .drain_events()
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::ProjectileDespawn {
+                    id: got, reason, ..
+                } if *got == id => Some(*reason),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reasons,
+            vec![DespawnReason::Void],
+            "the client was not told, or was told the wrong thing"
+        );
+        // It must not have gone off on the way out: a bazooka detonating below
+        // the map would still carve the rows just above it.
+        assert_eq!(
+            w.map.mask.count_solid(),
+            solid_before,
+            "a voided rocket carved the map"
+        );
+    }
+
+    /// The control, and it is placed **four pixels above the line** rather than
+    /// somewhere safely far away: the rule is a comparison against `y = h`, and a
+    /// control in the sky margin would pass for an off-by-a-whole-map error.
+    ///
+    /// Getting air down there needs the floor carved out first — which is the
+    /// feature — so this is also the only test here that exercises both halves of
+    /// §C15 at once.
+    #[test]
+    fn a_projectile_just_inside_the_bottom_is_not_voided() {
+        let mut w = playing();
+        let h = w.map.mask.h as i32;
+        let x = 300;
+        w.map.carve_circle(x, h - 30, 120);
+        // The control's own control: that really is air now.
+        assert!(
+            !w.map.mask.get(x, h - 4),
+            "the fixture failed to open the floor, so this proves nothing"
+        );
+
+        w.projectiles.spawn_raw(
+            crate::items::registry::WEAPON_BAZOOKA,
+            0,
+            Vec2::new(x as f32, h as f32 - 4.0),
+            Vec2::ZERO,
+            w.round_time,
+        );
+        w.step(SIM_DT);
+        assert_eq!(
+            w.projectiles.len(),
+            1,
+            "a rocket 4 px above y = h was treated as out of the world"
+        );
+    }
+
+    #[test]
+    fn a_world_item_past_the_bottom_despawns() {
+        let mut w = playing();
+        let h = w.map.mask.h as f32;
+        let id = w.items.spawn(
+            crate::items::registry::MEDKIT,
+            1,
+            Vec2::new(300.0, h + 100.0),
+            Vec2::ZERO,
+            crate::items::world::SpawnSource::Periodic,
+            w.round_time,
+        );
+        assert!(w.items.get(id).is_some(), "fixture did not place it");
+
+        w.step(SIM_DT);
+        assert!(w.items.get(id).is_none(), "the item is still falling");
+
+        let despawned: Vec<u32> = w
+            .drain_events()
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::ItemDespawn { world_item_id, .. } => Some(*world_item_id),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            despawned.contains(&id),
+            "removed without telling anyone: {despawned:?}"
+        );
+    }
+
+    /// The control for the item case.
+    #[test]
+    fn a_world_item_inside_the_map_is_not_voided() {
+        let mut w = playing();
+        let h = w.map.mask.h as f32;
+        let id = w.items.spawn(
+            crate::items::registry::MEDKIT,
+            1,
+            Vec2::new(300.0, h - 400.0),
+            Vec2::ZERO,
+            crate::items::world::SpawnSource::Periodic,
+            w.round_time,
+        );
+        w.step(SIM_DT);
+        assert!(w.items.get(id).is_some(), "an item inside the map vanished");
+    }
+
+    /// The T15.01 guarantee, under the condition §C15 creates: a map with its
+    /// floor blown out still has six standable pads to respawn on.
+    #[test]
+    fn a_map_dug_through_to_the_void_still_has_six_standable_pads() {
+        use crate::map::gen::surface::is_standable;
+        for scale in MapScale::ALL {
+            let mut map = crate::map::generate(31337, scale);
+            let (w, h) = (map.mask.w as i32, map.mask.h as i32);
+
+            // Blow the entire floor out, in overlapping bites.
+            let mut x = 0;
+            while x <= w {
+                map.carve_circle(x, h - 8, 90);
+                x += 80;
+            }
+
+            let bottom_solid: u32 = ((h - 4)..h).map(|y| map.mask.count_run(y, 0, w - 1)).sum();
+            // The control: the carve really did remove the floor, so what follows
+            // is a claim about the pads and not about a map that never changed.
+            // Only the wall columns should be left.
+            assert!(
+                bottom_solid <= 4 * 2 * WALL_W,
+                "{scale:?}: the floor did not come out — {bottom_solid} px left"
+            );
+
+            let standing = map
+                .meta
+                .teleport_pads
+                .iter()
+                .filter(|p| is_standable(&map.mask, p.pos.x, p.pos.y))
+                .count();
+            assert_eq!(
+                standing,
+                crate::constants::TELEPORT_PADS,
+                "{scale:?}: only {standing} pads survived the floor coming out"
+            );
+        }
     }
 }

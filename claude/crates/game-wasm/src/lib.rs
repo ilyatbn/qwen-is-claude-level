@@ -456,7 +456,10 @@ impl GameCore {
         for im in outcomes {
             let pid = im.id;
             let (at, _victim) = match im.outcome {
-                ProjectileOutcome::Alive => continue,
+                // Out of the world (§C15): gone, and it detonates nothing. The
+                // local sim has no event stream to despawn it on — `step`
+                // already removed it — so there is nothing further to do.
+                ProjectileOutcome::Alive | ProjectileOutcome::Voided { .. } => continue,
                 ProjectileOutcome::Exploded { at } => (at, None),
                 ProjectileOutcome::HitPlayer { at, victim } => (at, Some(victim)),
             };
@@ -723,6 +726,10 @@ pub fn constants_json() -> String {
         RECONCILE_EPSILON_PX => c::RECONCILE_EPSILON_PX,
         COARSE_CELL => c::COARSE_CELL,
         BEDROCK_H => c::BEDROCK_H,
+        // §C15's destructible floor. Exported beside `BEDROCK_H` because the two
+        // now answer different questions and a client that wants "where does the
+        // ground start" wants this one — `BEDROCK_H` is 0.
+        FLOOR_CRUST => c::FLOOR_CRUST,
         WALL_W => c::WALL_W,
         SKY_MARGIN => c::SKY_MARGIN,
         PLAYER_W => c::PLAYER_W,
@@ -765,6 +772,31 @@ pub fn constants_json() -> String {
         SKY_BODY_PARALLAX => c::SKY_BODY_PARALLAX,
         STAR_COUNT => c::STAR_COUNT,
         STAR_FADE_START => c::STAR_FADE_START,
+        // §C14's living background. The arrays cross as JSON arrays — `json!`
+        // handles `[f32; N]` — so the client reads one definition of the scroll
+        // factors rather than keeping a second copy beside them.
+        MOUNTAIN_LAYERS => c::MOUNTAIN_LAYERS,
+        MOUNTAIN_PARALLAX => c::MOUNTAIN_PARALLAX,
+        MOUNTAIN_HEIGHT_FRAC => c::MOUNTAIN_HEIGHT_FRAC,
+        MOUNTAIN_BASE_FRAC => c::MOUNTAIN_BASE_FRAC,
+        MOUNTAIN_HAZE => c::MOUNTAIN_HAZE,
+        MOUNTAIN_CELLS => c::MOUNTAIN_CELLS,
+        MOUNTAIN_OCTAVES => c::MOUNTAIN_OCTAVES,
+        CLOUD_COUNT => c::CLOUD_COUNT,
+        CLOUD_DRIFT => c::CLOUD_DRIFT,
+        CLOUD_PARALLAX => c::CLOUD_PARALLAX,
+        CLOUD_TEX_W => c::CLOUD_TEX_W,
+        CLOUD_TEX_H => c::CLOUD_TEX_H,
+        CLOUD_SCALE_MIN => c::CLOUD_SCALE_MIN,
+        CLOUD_SCALE_MAX => c::CLOUD_SCALE_MAX,
+        CLOUD_BAND_TOP => c::CLOUD_BAND_TOP,
+        CLOUD_BAND_BOTTOM => c::CLOUD_BAND_BOTTOM,
+        CLOUD_ALPHA => c::CLOUD_ALPHA,
+        CLOUD_SPEED_SPREAD => c::CLOUD_SPEED_SPREAD,
+        CLOUD_SKY_MIX => c::CLOUD_SKY_MIX,
+        CLOUD_ALPHA_FLOOR => c::CLOUD_ALPHA_FLOOR,
+        RIDGE_TEX_W => c::RIDGE_TEX_W,
+        MOUNTAIN_INK => c::MOUNTAIN_INK,
         NIGHT_DARKNESS => c::NIGHT_DARKNESS,
         FOV_DAY => c::FOV_DAY,
         FOV_NIGHT => c::FOV_NIGHT,
@@ -775,6 +807,11 @@ pub fn constants_json() -> String {
         FLASHLIGHT_CONE_DEG => c::FLASHLIGHT_CONE_DEG,
         FLASHLIGHT_AMBIENT_MULT => c::FLASHLIGHT_AMBIENT_MULT,
         BASE_HEALTH => c::BASE_HEALTH,
+        // How long an environmental death still credits a recent attacker
+        // (`docs/21` §4). Exported for §C15's browser check, which has to wait
+        // the window out to observe a *pure* void death — a fixture carrying its
+        // own 5.0 would go quietly wrong the day this moves (§A19).
+        ASSIST_WINDOW => game_core::player::state::ASSIST_WINDOW,
         RESPAWN_DELAY => c::RESPAWN_DELAY,
         // How close you have to be to take something off the ground. The
         // browser check that walks a player at a crate asserts against it, and

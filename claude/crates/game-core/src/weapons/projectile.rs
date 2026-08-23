@@ -40,8 +40,24 @@ pub struct Projectile {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ProjectileOutcome {
     Alive,
-    Exploded { at: Vec2 },
-    HitPlayer { at: Vec2, victim: PlayerId },
+    Exploded {
+        at: Vec2,
+    },
+    HitPlayer {
+        at: Vec2,
+        victim: PlayerId,
+    },
+    /// Fell out of the bottom of the world (§C15). **Gone, not detonated.**
+    ///
+    /// Distinct from `Exploded` because the difference is the whole point: a
+    /// rocket that leaves the map must not carve or damage anything on its way
+    /// out, and `Exploded { at }` below the map would ask `carve_circle` and
+    /// `explode` to do exactly that. `carve_circle` would reject the centre and
+    /// `explode` would find nobody down there, so the bug would be invisible
+    /// until a player stood near the bottom edge.
+    Voided {
+        at: Vec2,
+    },
 }
 
 /// What `step` reports about a projectile that is now gone.
@@ -175,6 +191,24 @@ impl Projectiles {
                     });
                     continue;
                 }
+            }
+
+            // Out of the bottom of the world (§C15). Before the physics, so a
+            // projectile that left the map on the previous step does no further
+            // work — and before the fuse, so a grenade cannot detonate from
+            // somewhere no player can be.
+            //
+            // Only the bottom. Ordnance goes *up* through `y = 0` constantly —
+            // that is what an arc is — and it comes back down; despawning there
+            // would delete every mortar shot at the top of its flight.
+            if p.pos.y > map.mask.h as f32 {
+                out.push(Impact {
+                    id: p.id,
+                    weapon: p.weapon,
+                    owner: p.owner,
+                    outcome: ProjectileOutcome::Voided { at: p.pos },
+                });
+                continue;
             }
 
             let Some(w) = def(p.weapon) else { continue };

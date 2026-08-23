@@ -7,41 +7,9 @@
  * T7.05 replaces them with real theme textures.
  */
 
-/** Deterministic hash → 0..1, same shape as the Rust lattice noise. */
-function hash01(x: number, y: number, seed: number): number {
-  let h = (x * 374761393 + y * 668265263 + seed * 1274126177) | 0
-  h = (h ^ (h >>> 13)) * 1274126177
-  h = h ^ (h >>> 16)
-  return ((h >>> 0) % 65536) / 65536
-}
-
-/**
- * Value noise on a lattice that **wraps** after `cells` steps.
- *
- * The wrap is the whole point. Sampling an unwrapped lattice gives a tile whose
- * left edge does not match its right, and tiling it across the map draws a visible
- * grid — which is exactly what the first preview screenshot showed.
- */
-function wrappedNoise(x: number, y: number, cells: number, size: number, seed: number): number {
-  const fx = (x / size) * cells
-  const fy = (y / size) * cells
-  const x0 = Math.floor(fx)
-  const y0 = Math.floor(fy)
-  const tx = fx - x0
-  const ty = fy - y0
-  const s = (t: number) => t * t * (3 - 2 * t)
-  const w = (n: number) => ((n % cells) + cells) % cells
-
-  const a = hash01(w(x0), w(y0), seed)
-  const b = hash01(w(x0 + 1), w(y0), seed)
-  const c = hash01(w(x0), w(y0 + 1), seed)
-  const d = hash01(w(x0 + 1), w(y0 + 1), seed)
-  const top = a + (b - a) * s(tx)
-  const bot = c + (d - c) * s(tx)
-  return top + (bot - top) * s(ty)
-}
-
 import { resolveTheme } from './themes-math'
+// One value-noise implementation, shared with the sky's mountain ridge (§A24).
+import { wrappedNoise } from './noise-math'
 
 export interface Rgb {
   r: number

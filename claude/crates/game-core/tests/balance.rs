@@ -180,7 +180,7 @@ fn run(seed: u64, hold: Option<ItemId>, seconds: f32) -> Round {
                 GameEvent::Death { cause, .. } => match cause {
                     DeathCause::Player(_) => r.combat_deaths += 1,
                     DeathCause::SelfInflicted => r.self_deaths += 1,
-                    DeathCause::Weather => {}
+                    DeathCause::Weather | DeathCause::Void => {}
                 },
                 GameEvent::Damage {
                     amount,

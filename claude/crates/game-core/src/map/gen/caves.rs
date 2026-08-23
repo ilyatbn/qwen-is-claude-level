@@ -9,7 +9,7 @@
 //! walk toward a target.
 
 use crate::constants::{
-    BEDROCK_H, SKY_MARGIN, TUNNEL_LENGTH_MAX, TUNNEL_LENGTH_MIN, TUNNEL_RADIUS_MAX,
+    CAVE_FLOOR_KEEPOUT, SKY_MARGIN, TUNNEL_LENGTH_MAX, TUNNEL_LENGTH_MIN, TUNNEL_RADIUS_MAX,
     TUNNEL_RADIUS_MIN, TUNNEL_STEP, TUNNEL_TURN_MAX, WALL_W,
 };
 use crate::map::gen::silhouette::{force_borders, GenParams};
@@ -93,7 +93,7 @@ pub(crate) fn out_of_carveable_bounds(mask: &Mask, p: Point) -> bool {
     p.x < WALL_W as i32
         || p.x >= mask.w as i32 - WALL_W as i32
         || p.y < 0
-        || p.y >= mask.h as i32 - BEDROCK_H as i32
+        || p.y >= mask.h as i32 - CAVE_FLOOR_KEEPOUT as i32
 }
 
 /// Sample for a point buried in rock. `None` if 200 attempts fail, which happens
@@ -110,7 +110,7 @@ fn find_start(mask: &Mask, rng: &mut ChaCha8Rng) -> Option<Point> {
             range_i32(
                 rng,
                 SKY_MARGIN as i32 + START_CLEARANCE,
-                h - BEDROCK_H as i32 - START_CLEARANCE,
+                h - CAVE_FLOOR_KEEPOUT as i32 - START_CLEARANCE,
             ),
         );
         if is_buried(mask, p, START_CLEARANCE) {
@@ -217,6 +217,8 @@ mod tests {
     use crate::constants::MapScale;
     use crate::map::gen::silhouette::{borders_hold, silhouette};
 
+    use crate::constants::FLOOR_CRUST;
+
     fn params() -> GenParams {
         GenParams::default_for(MapScale::Small)
     }
@@ -271,13 +273,17 @@ mod tests {
             carve_caves(&mut m, seed, &p);
             assert!(borders_hold(&m), "seed {seed}");
 
-            // Explicitly: every bedrock pixel is still solid.
+            // Explicitly: the floor crust is still solid. `FLOOR_CRUST`, not
+            // `CAVE_FLOOR_KEEPOUT` — the claim is that generation still leaves a
+            // floor behind, and the keep-out is merely how the cave pass happens
+            // to achieve it. Asserting the keep-out here would silently become a
+            // test of the wrong constant the moment either one moves.
             let (w, h) = (m.w as i32, m.h as i32);
-            for y in (h - BEDROCK_H as i32)..h {
+            for y in (h - FLOOR_CRUST as i32)..h {
                 assert_eq!(
                     m.count_run(y, 0, w - 1),
                     w as u32,
-                    "bedrock row {y} breached"
+                    "floor crust row {y} breached"
                 );
             }
         }
@@ -296,7 +302,7 @@ mod tests {
             let terminated_early = out_of_carveable_bounds(&m, last)
                 || last.x < WALL_W as i32 + TUNNEL_RADIUS_MAX
                 || last.x > m.w as i32 - WALL_W as i32 - TUNNEL_RADIUS_MAX
-                || last.y > m.h as i32 - BEDROCK_H as i32 - TUNNEL_RADIUS_MAX
+                || last.y > m.h as i32 - CAVE_FLOOR_KEEPOUT as i32 - TUNNEL_RADIUS_MAX
                 || last.y < SKY_MARGIN as i32;
             assert!(
                 path.len() >= min_points || terminated_early,

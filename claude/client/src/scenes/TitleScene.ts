@@ -84,7 +84,9 @@ export class TitleScene extends Phaser.Scene {
     // expensive part and it happens while someone is waiting to press Start.
     this.attract = Core.attract(seed, MapScale.Small, 4, 0.85)
     this.view = new WorldView(this, this.attract as never)
-    this.sky = new SkyLayer(this)
+    // §C14's mountains come from the map seed, so the attract map gets its own
+    // skyline — the same one it would have in a round on that seed.
+    this.sky = new SkyLayer(this, this.attract.meta.seed, this.attract.meta.theme)
     this.cameras.main.setZoom(ATTRACT_ZOOM)
     this.elapsed = 0
 

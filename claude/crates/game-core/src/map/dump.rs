@@ -81,6 +81,10 @@ pub fn dump_map(map: &Map, path: &Path) -> std::io::Result<()> {
     for y in 0..h as i32 {
         for x in 0..w as i32 {
             let solid = map.mask.get(x, y);
+            // The **indestructible** border, which since §C15 is the walls and
+            // nothing else: `BEDROCK_H` is 0, so the bottom clause is never true.
+            // Kept rather than deleted so the dump keeps agreeing with
+            // `carve_circle`'s clamp, which is written the same way.
             let in_border = x < WALL_W as i32
                 || x >= w as i32 - WALL_W as i32
                 || y >= h as i32 - BEDROCK_H as i32;

@@ -18,6 +18,7 @@ import {
   type Star,
 } from './sky-math'
 import { DEPTH } from './backdrop'
+import { ParallaxLayer } from './parallax'
 
 const GRAD_KEY = '__sky_gradient'
 const GRAD_H = 256
@@ -32,13 +33,21 @@ export class SkyLayer {
   private readonly moonGlow: Phaser.GameObjects.Image
   private readonly stars: Star[]
   private readonly texture: Phaser.Textures.CanvasTexture | null
+  /**
+   * §C14's mountains and clouds.
+   *
+   * Owned by `SkyLayer` rather than added scene by scene: three scenes build a
+   * sky, and a background that each of them had to remember to construct is a
+   * background one of them would not have.
+   */
+  readonly parallax: ParallaxLayer
 
   /** Last colours baked, so the gradient is not redrawn every frame. */
   private lastTop = -1
   private lastBottom = -1
   private phase: SkyPhase = 'morning'
 
-  constructor(scene: Phaser.Scene) {
+  constructor(scene: Phaser.Scene, seed = 0, themeId = 0) {
     this.scene = scene
     const c = C()
     const w = c.VIEWPORT_W
@@ -56,6 +65,8 @@ export class SkyLayer {
       .setDisplaySize(w * 4, h * 4)
       .setScrollFactor(0)
       .setDepth(DEPTH.sky)
+
+    this.parallax = new ParallaxLayer(scene, seed, themeId)
 
     this.stars = starField(c.STAR_COUNT ?? 220, w, h * 0.75)
     this.starGfx = scene.add
@@ -138,6 +149,15 @@ export class SkyLayer {
     }
 
     this.drawStars(starAlpha(u, darkness, nightDarkness))
+
+    // The parallax band gets the gradient's **own** bottom colour, so the haze
+    // on a distant ridge cannot drift from the sky it is fading into.
+    this.parallax.update(this.scene.time.now / 1000, bottom, this.scene.cameras.main.scrollX, u)
+  }
+
+  /** Point the background at a map. Call after every generate. */
+  setSeed(seed: number, themeId: number): void {
+    this.parallax.setSeed(seed, themeId)
   }
 
   get currentPhase(): SkyPhase {
@@ -173,6 +193,7 @@ export class SkyLayer {
   }
 
   destroy(): void {
+    this.parallax.destroy()
     this.gradient.destroy()
     this.starGfx.destroy()
     this.sun.destroy()

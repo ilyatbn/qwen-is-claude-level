@@ -31,10 +31,18 @@ export function countdownText(secs: number): string {
 }
 
 /**
- * "Killed by ana" / "Killed by the meteor shower" / "You killed yourself".
+ * "Killed by ana" / "Killed by the meteor shower" / "You killed yourself" /
+ * "You fell out of the world".
  *
- * Three different attribution paths (`docs/31` §6), and they read differently on
+ * Four different attribution paths (`docs/31` §6), and they read differently on
  * purpose: a self-kill that says "killed by you" is worse than saying nothing.
+ *
+ * **The void gets its own sentence rather than a `weatherName` arm**, and it has
+ * to: every other path here is prefixed `Killed by`, and nothing is grammatical
+ * after that — the void did not kill you, you fell into it. Without this the
+ * server's `"void"` cause reached `weatherName`'s `default` and the dying player
+ * read **"Killed by void"** for the whole respawn delay, while the kill feed
+ * beside it correctly said they fell out of the world (§C15).
  */
 export function causeText(
   info: DeathInfo,
@@ -45,6 +53,11 @@ export function causeText(
   }
   if (info.attacker === info.victim && info.attacker !== null) {
     return 'You killed yourself'
+  }
+  // Only when nobody is credited. Being blasted off the edge arrives with an
+  // attacker and is an ordinary kill, which the first branch already took.
+  if (info.cause.toLowerCase() === 'void') {
+    return 'You fell out of the world'
   }
   return `Killed by ${weatherName(info.cause)}`
 }

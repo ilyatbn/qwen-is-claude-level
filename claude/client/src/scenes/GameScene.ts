@@ -65,6 +65,8 @@ export class GameScene extends Phaser.Scene {
 
   private world: WorldView | null = null
   private sky!: SkyLayer
+  /** The map seed from `welcome`, for §C14's seeded skyline. */
+  private mapSeed = 0
   private lightmap!: Lightmap
   private fx!: OrdnanceFxLayer
   /** e2e only: point the camera here instead of at the player. */
@@ -599,7 +601,12 @@ export class GameScene extends Phaser.Scene {
       this.feel.kill({
         victim: nameOf(victim),
         killer: attacker === undefined ? undefined : nameOf(attacker),
-        cause: attacker === victim ? 'self' : cause === 'weather' ? 'weather' : 'player',
+        cause:
+          attacker === victim
+            ? 'self'
+            : cause === 'weather' || cause === 'void'
+              ? (cause as 'weather' | 'void')
+              : 'player',
         by: String(p['by'] ?? cause),
         involvesYou: victim === this.me || attacker === this.me,
       })
@@ -747,6 +754,11 @@ export class GameScene extends Phaser.Scene {
 
   private onWelcome(w: Welcome): void {
     this.me = w.playerId
+    // §C14's skyline is seeded from the map. `welcome` is where a networked
+    // client learns the seed — `map_init` carries the mask, the pads and the
+    // carve sequence, and nothing else — so it is kept here and applied once the
+    // map lands. Low 32 bits, because that is all the ridge hash consumes.
+    this.mapSeed = Number(BigInt(w.seed || '0') & 0xffffffffn) | 0
     this.roundTime = w.roundTime
     this.serverRoundTime = w.roundTime
     this.phase = w.phase as Phase
@@ -767,6 +779,13 @@ export class GameScene extends Phaser.Scene {
 
     this.world?.destroy()
     this.world = new WorldView(this, this.core)
+
+    // The **same** theme the terrain resolves, not a second opinion: `WorldView`
+    // reads `core.meta.theme` for the rock palette, so reading it here is what
+    // keeps a distant ridge the colour of the ground in front of it. The theme
+    // is not on the wire today, so both are 0 in a networked round — and they
+    // are 0 *together*, which is the property that matters.
+    this.sky.setSeed(this.mapSeed, this.core.meta.theme)
 
     // §C5. Built from the wire rather than from `core.meta`: a networked client
     // never runs the generator, so `core.meta.teleport_pads` is empty here and a

@@ -30,6 +30,9 @@ pub enum DeathCause {
     Player(PlayerId),
     SelfInflicted,
     Weather,
+    /// Fell out of the world (§C15). A boundary, not damage — see
+    /// `World::step_void` for why it does not go through the damage funnel.
+    Void,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -327,7 +330,14 @@ impl PlayerState {
             // assist window has to distinguish "someone shot me into the lava"
             // from "I rocketed myself and then the lava finished it". The first
             // credits them; the second credits nobody.
-            DeathCause::Weather => match self.last_damaged_by {
+            //
+            // `Void` shares this arm on purpose. Being blasted off the edge of
+            // the world is the same shape as being blasted into lava — the
+            // rocket did it, and `docs/21` §4's reason applies word for word.
+            // Falling in under your own power still credits nobody, because
+            // `last_damaged_by` is then empty and the fallthrough returns the
+            // cause unchanged.
+            DeathCause::Weather | DeathCause::Void => match self.last_damaged_by {
                 Some((who, when)) if now - when <= ASSIST_WINDOW => {
                     if who == self.id {
                         DeathCause::SelfInflicted
@@ -335,7 +345,7 @@ impl PlayerState {
                         DeathCause::Player(who)
                     }
                 }
-                _ => DeathCause::Weather,
+                _ => direct,
             },
         }
     }

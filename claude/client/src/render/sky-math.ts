@@ -209,3 +209,172 @@ export function starAlpha(u: number, darkness: number, nightDarkness: number): n
   const byDark = nightDarkness > 0 ? Math.min(1, darkness / nightDarkness) : 0
   return Math.max(0, Math.min(1, byPhase * byDark))
 }
+
+// ---------------------------------------------------------------------------
+// §C14 — a living background: mountains and clouds
+// ---------------------------------------------------------------------------
+//
+// The pure half, as with everything else in this file. `sky.ts` draws it.
+
+import { clientTagSeed, wrappedNoise } from './noise-math'
+
+/**
+ * A ridge line for one parallax layer, as `samples` heights in `0..1`.
+ *
+ * 1 is the top of the layer's band, 0 the base. Sampled from the **existing**
+ * wrapping value noise (§A24) on a fixed y row, so the profile repeats exactly
+ * after `samples` — a parallax layer scrolls forever and has to meet itself.
+ *
+ * Seeded from the map seed through `clientTagSeed`, which borrows `substream`'s
+ * tag scheme without claiming to match its hash: the two layers use different
+ * tags, so they are independent ridges rather than one ridge at two amplitudes.
+ */
+export function mountainProfile(
+  seed: number,
+  layer: number,
+  samples: number,
+  cells: number,
+  octaves: number,
+): number[] {
+  const s = clientTagSeed(seed, `mountains${layer}`)
+  const out: number[] = []
+  // Normalised by the amplitude sum, so however many octaves are configured the
+  // profile still spans 0..1 and the layer's height fraction means what it says.
+  let norm = 0
+  for (let o = 0; o < octaves; o++) norm += 1 / (1 << o)
+
+  for (let i = 0; i < samples; i++) {
+    let n = 0
+    for (let o = 0; o < octaves; o++) {
+      // Each octave wraps over the same span, so their sum wraps too.
+      n += wrappedNoise(i, 0, cells * (1 << o), samples, s + o * 7919) / (1 << o)
+    }
+    out.push(n / norm)
+  }
+  return out
+}
+
+export interface Cloud {
+  /**
+   * Base position as a **fraction of the visible rect**, before drift.
+   *
+   * Fractions, not pixels, and this is the whole of a bug worth writing down.
+   * The field was first built in pixels against `VIEWPORT_W` while the renderer
+   * wrapped at `VIEWPORT_W / zoom`. At `CAMERA_ZOOM` 2 — the zoom the game
+   * actually runs at — the span is half the width the positions were spread
+   * over, so `x % span` folded clouds 6..11 onto the slots of 0..5: six pairs,
+   * each stacked inside one slot. At `ATTRACT_ZOOM` 0.75 it failed the other
+   * way and left the right quarter of the title sky empty. Every unit test
+   * passed, because they all ran at an implied zoom of 1.
+   */
+  x: number
+  y: number
+  scale: number
+  /** Per-cloud drift multiplier, so they do not move as one sheet. */
+  speed: number
+}
+
+/**
+ * `count` clouds scattered across a wrap span, seeded from the map seed.
+ *
+ * Seeded rather than random for the reason the star field is: a screenshot of a
+ * bug has to be reproducible, and a seed always looking the same is §C14's
+ * requirement for the mountains and costs nothing to extend to these.
+ */
+export function cloudField(
+  seed: number,
+  count: number,
+  bandTop: number,
+  bandBottom: number,
+  scaleMin: number,
+  scaleMax: number,
+  spread: number,
+): Cloud[] {
+  let s = clientTagSeed(seed, 'clouds') >>> 0
+  const rnd = () => {
+    // xorshift32, the same scatter the star field uses.
+    s ^= s << 13
+    s >>>= 0
+    s ^= s >> 17
+    s ^= s << 5
+    s >>>= 0
+    return s / 0x100000000
+  }
+  const out: Cloud[] = []
+  for (let i = 0; i < count; i++) {
+    out.push({
+      // Evenly spaced with a jitter, not uniform random: twelve uniform draws
+      // clump, and a clump of clouds beside an empty half of the sky reads as a
+      // bug rather than as weather.
+      x: (i + rnd()) / count,
+      y: bandTop + rnd() * (bandBottom - bandTop),
+      scale: scaleMin + rnd() * (scaleMax - scaleMin),
+      speed: 1 - spread / 2 + rnd() * spread,
+    })
+  }
+  return out
+}
+
+/**
+ * Where a cloud has drifted to after `elapsed` seconds, in px, wrapped into
+ * `[0, span)`.
+ *
+ * `span` is the width **currently visible**, and the base position is a fraction
+ * of it, so the spread follows the zoom instead of being laid out against one
+ * width and wrapped at another.
+ */
+export function cloudX(cloud: Cloud, elapsed: number, drift: number, span: number): number {
+  const x = cloud.x * span + drift * cloud.speed * elapsed
+  return ((x % span) + span) % span
+}
+
+/**
+ * The second x a cloud must be drawn at so the wrap has **no seam**, or null.
+ *
+ * One draw leaves a gap: a cloud whose centre has wrapped to x = 2 is half off
+ * the left edge and its right half simply is not there. The twin at `x + span`
+ * (or `x - span`) supplies it.
+ *
+ * Returns a number rather than a list because the renderer calls it twelve times
+ * a frame and an array per cloud per frame is exactly the per-frame allocation
+ * §C14 says not to do. It is still **one** description of the rule: the renderer
+ * and this test read the same function, so a caller cannot quietly draw the seam.
+ */
+export function cloudTwinX(x: number, span: number, halfWidth: number): number | null {
+  if (x - halfWidth < 0) return x + span
+  if (x + halfWidth > span) return x - span
+  return null
+}
+
+export interface CloudTint {
+  /** Packed 0xRRGGBB. */
+  color: number
+  alpha: number
+}
+
+/**
+ * Cloud colour and opacity at cycle position `u`.
+ *
+ * **Derived from `skyColors`, not from a second table.** §A13 already paid for
+ * the alternative once: two descriptions of the day drifted apart and the world
+ * went dark under an orange sunset. A cloud is lit by the sky it is in, so
+ * mixing white toward the sky's own bottom colour gives warm clouds at dawn and
+ * dusk and dark ones at night for free — and it cannot disagree with the
+ * gradient behind it, because it is made out of it.
+ */
+export function cloudTint(
+  u: number,
+  baseAlpha: number,
+  skyMix: number,
+  alphaFloor: number,
+): CloudTint {
+  const { bottom } = skyColors(u)
+  const color = mixColor(0xffffff, bottom, skyMix)
+
+  // Opacity follows the light: an unlit cloud at midnight is a silhouette you
+  // can barely see, not a bright shape on a black sky.
+  const lum =
+    (0.2126 * ((bottom >> 16) & 255) + 0.7152 * ((bottom >> 8) & 255) + 0.0722 * (bottom & 255)) /
+    255
+  return { color, alpha: baseAlpha * (alphaFloor + (1 - alphaFloor) * lum) }
+}

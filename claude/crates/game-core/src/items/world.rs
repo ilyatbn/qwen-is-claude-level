@@ -58,6 +58,20 @@ impl WorldItem {
     }
 }
 
+/// What one `WorldItems::step` did.
+///
+/// A struct rather than a bare `Vec`, because the two lists mean opposite things
+/// and a caller handed one `Vec<WorldItemId>` would eventually emit `ItemMove`
+/// for something that has been deleted. Named fields make that a compile error
+/// instead of a wrong event (`docs/70` §A39 — count the thing at both ends).
+#[derive(Clone, Debug, Default)]
+pub struct ItemStep {
+    /// Came to rest on this step. Their position is final and worth broadcasting.
+    pub landed: Vec<WorldItemId>,
+    /// Fell out of the bottom of the world and were removed (§C15).
+    pub voided: Vec<WorldItemId>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct WorldItems {
     items: Vec<WorldItem>,
@@ -149,8 +163,9 @@ impl WorldItems {
     /// final, so a periodic broadcast that happens to miss it leaves every
     /// observer holding a position the crate has already left. That is exactly
     /// how a crate ends up drawn in mid-air (§C7).
-    pub fn step(&mut self, map: &Map, dt: f32) -> Vec<WorldItemId> {
-        let mut landed = Vec::new();
+    pub fn step(&mut self, map: &Map, dt: f32) -> ItemStep {
+        let mut out = ItemStep::default();
+        let landed = &mut out.landed;
         for it in self.items.iter_mut() {
             // Idle items cost nothing — but only while the ground is still there.
             //
@@ -184,7 +199,34 @@ impl WorldItems {
                 landed.push(it.id);
             }
         }
-        landed
+
+        // Out of the bottom of the world (§C15). Removed here rather than in
+        // `cull`, because this is the pass that owns the map and just moved
+        // them; `cull` has neither. A crate dropped down a shaft someone dug
+        // through the floor would otherwise fall forever, and every one of them
+        // counts against `MAX_WORLD_ITEMS` until it does.
+        //
+        // Crates are **not** exempt the way they are from the TTL. The TTL
+        // exemption is about not deleting a contested reward out from under a
+        // fight; a crate below the map is not contested by anyone.
+        //
+        // An id cannot reach **both** lists: `landed` takes only bodies whose
+        // `integrate` ended `grounded`, and grounding requires solid rock under
+        // the feet, which no position past `y = h` has — out of the map reads as
+        // air (`physics::solid_at`). That is the hazard `ItemStep`'s doc names, so
+        // it is worth saying why it cannot happen rather than leaving it to be
+        // re-derived.
+        let floor = map.mask.h as f32;
+        let voided = &mut out.voided;
+        self.items.retain(|it| {
+            if it.pos.y - it.size().1 / 2.0 > floor {
+                voided.push(it.id);
+                false
+            } else {
+                true
+            }
+        });
+        out
     }
 
     /// Items still falling. They are the only ones whose position changes, so

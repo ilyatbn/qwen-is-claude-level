@@ -154,7 +154,10 @@ export interface Constants {
   INTERP_DELAY_MS: number
   RECONCILE_EPSILON_PX: number
   COARSE_CELL: number
+  /** Indestructible band at the bottom. **Zero since §C15** — see constants.rs. */
   BEDROCK_H: number
+  /** The destructible floor generation lays at the bottom (§C15). */
+  FLOOR_CRUST: number
   WALL_W: number
   SKY_MARGIN: number
   PLAYER_W: number
@@ -208,6 +211,8 @@ export interface Constants {
   FLASHLIGHT_CONE_DEG: number
   FLASHLIGHT_AMBIENT_MULT: number
   BASE_HEALTH: number
+  /** Seconds an environmental death still credits a recent attacker. */
+  ASSIST_WINDOW: number
   RESPAWN_DELAY: number
   PICKUP_RADIUS: number
   FIRE_MOVE_MAX_SPEED: number
@@ -225,6 +230,29 @@ export interface Constants {
   SMG_RANGE: number
   /** Whether the renderer paints interior air with dark rock at all. */
   CAVE_BACKDROP: boolean
+  MOUNTAIN_LAYERS: number
+  /** Scroll factor per layer, far to near. Both below `PARALLAX_FACTOR`. */
+  MOUNTAIN_PARALLAX: number[]
+  MOUNTAIN_HEIGHT_FRAC: number[]
+  MOUNTAIN_BASE_FRAC: number
+  MOUNTAIN_HAZE: number[]
+  MOUNTAIN_CELLS: number
+  MOUNTAIN_OCTAVES: number
+  CLOUD_COUNT: number
+  CLOUD_DRIFT: number
+  CLOUD_PARALLAX: number
+  CLOUD_TEX_W: number
+  CLOUD_TEX_H: number
+  CLOUD_SCALE_MIN: number
+  CLOUD_SCALE_MAX: number
+  CLOUD_BAND_TOP: number
+  CLOUD_BAND_BOTTOM: number
+  CLOUD_ALPHA: number
+  CLOUD_SPEED_SPREAD: number
+  CLOUD_SKY_MIX: number
+  CLOUD_ALPHA_FLOOR: number
+  RIDGE_TEX_W: number
+  MOUNTAIN_INK: number
   BACKDROP_RAYS: number
   BACKDROP_RAY_LEN: number
   BACKDROP_MIN_HITS: number

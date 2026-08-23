@@ -139,7 +139,7 @@ pub fn generate_terrain(requested_seed: u64, scale: MapScale) -> GenOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{BEDROCK_H, SKY_MARGIN};
+    use crate::constants::{FLOOR_CRUST, SKY_MARGIN};
     use crate::map::gen::borders_hold;
 
     #[test]
@@ -226,7 +226,7 @@ mod tests {
         for y in 0..SKY_MARGIN as i32 {
             assert_eq!(o.mask.count_run(y, 0, w - 1), 0, "sky row {y}");
         }
-        for y in (h - BEDROCK_H as i32)..h {
+        for y in (h - FLOOR_CRUST as i32)..h {
             assert_eq!(o.mask.count_run(y, 0, w - 1), w as u32, "bedrock row {y}");
         }
     }

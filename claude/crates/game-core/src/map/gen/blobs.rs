@@ -315,7 +315,7 @@ mod tests {
             }
             // Skip anything that merged with the map borders — that is not an
             // island any more.
-            if y1 >= m.h as i32 - crate::constants::BEDROCK_H as i32 - 1 {
+            if y1 >= m.h as i32 - crate::constants::FLOOR_CRUST as i32 - 1 {
                 continue;
             }
             let (w, h) = ((x1 - x0 + 1) as f32, (y1 - y0 + 1) as f32);

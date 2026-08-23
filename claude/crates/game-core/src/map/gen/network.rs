@@ -13,7 +13,7 @@
 //! See `docs/70-amendments-v2.md` §A2 Pass 4.
 
 use crate::constants::{
-    BEDROCK_H, CAVE_ENTRANCES_MAX, CAVE_ENTRANCES_MIN, CAVE_EXTRA_EDGE_FRACTION,
+    CAVE_ENTRANCES_MAX, CAVE_ENTRANCES_MIN, CAVE_EXTRA_EDGE_FRACTION, CAVE_FLOOR_KEEPOUT,
     CHAMBER_MIN_SEPARATION, CHAMBER_RADIUS_MAX, CHAMBER_RADIUS_MIN, ENTRANCE_RADIUS, SKY_MARGIN,
     TUNNEL_RADIUS_MAX, TUNNEL_RADIUS_MIN, TUNNEL_STEP, WALL_W,
 };
@@ -163,7 +163,7 @@ pub fn carve_network(mask: &mut Mask, seed: u64, params: &GenParams) -> CaveNetw
 fn place_chambers(mask: &Mask, rng: &mut ChaCha8Rng, want: u32) -> Vec<Point> {
     let (w, h) = (mask.w as i32, mask.h as i32);
     let y_lo = SKY_MARGIN as i32 + CHAMBER_TOP_INSET;
-    let y_hi = h - BEDROCK_H as i32 - CHAMBER_CLEARANCE;
+    let y_hi = h - CAVE_FLOOR_KEEPOUT as i32 - CHAMBER_CLEARANCE;
     if y_hi <= y_lo {
         return Vec::new();
     }
@@ -563,7 +563,7 @@ mod tests {
                 "chamber {i} at {a:?} is too shallow"
             );
             assert!(
-                a.y <= m.h as i32 - BEDROCK_H as i32 - CHAMBER_CLEARANCE,
+                a.y <= m.h as i32 - CAVE_FLOOR_KEEPOUT as i32 - CHAMBER_CLEARANCE,
                 "chamber {i} at {a:?} is in the bedrock"
             );
             for b in &net.chambers[i + 1..] {

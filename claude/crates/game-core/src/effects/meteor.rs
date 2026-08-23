@@ -235,7 +235,9 @@ mod tests {
                 let at = match im.outcome {
                     ProjectileOutcome::Exploded { at } => at,
                     ProjectileOutcome::HitPlayer { at, .. } => at,
-                    ProjectileOutcome::Alive => continue,
+                    // A meteor that leaves the map spawns no fragments: it is
+                    // gone, not detonated (§C15).
+                    ProjectileOutcome::Alive | ProjectileOutcome::Voided { .. } => continue,
                 };
                 let is_frag = MeteorShower::is_fragment(im.weapon);
                 let before = pr.len();

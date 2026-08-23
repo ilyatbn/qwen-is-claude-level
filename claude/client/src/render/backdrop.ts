@@ -26,6 +26,16 @@ export const DEFAULT_THEME: ThemeColors = {
 /** Depths from `docs/12-map-render.md` §5. */
 export const DEPTH = {
   sky: -30,
+  /**
+   * §C14's living background, inside the −20 band `docs/12` §5 reserves.
+   *
+   * Three depths rather than one because the clouds sit **between** the two
+   * mountain layers: `CLOUD_PARALLAX` (0.14) is between the ridges' 0.10 and
+   * 0.20, and a cloud drawn in front of a ridge it scrolls behind reads as a
+   * mistake immediately.
+   */
+  parallaxFar: -22,
+  parallaxClouds: -21,
   parallax: -20,
   caveBack: -10,
   terrain: 0,

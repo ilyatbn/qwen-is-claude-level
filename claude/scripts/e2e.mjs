@@ -87,6 +87,8 @@ const CHECKS = [
   { name: 'weather-visible', file: 'scripts/checks/weather-visible.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'sky', file: 'scripts/checks/sky.mjs', url: '?sandbox=1&seed=4242' },
+  // §C14: the mountains and clouds must reach the frame, not just the maths.
+  { name: 'living-sky', file: 'scripts/checks/living-sky.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'lightmap', file: 'scripts/checks/lightmap.mjs', url: '?sandbox=1&seed=4242' },
   {
     name: 'night_darkens_the_world',
@@ -134,6 +136,10 @@ const CHECKS = [
   // arrive in `map_init` and the charge in the snapshot) and it walks a player
   // across the map, which wants its own round rather than a shared one.
   { name: 'teleport', file: 'scripts/checks/teleport.mjs', standalone: true },
+  // T15.02 / §C15: the M15 checkpoint — dig through the floor, fall in, die.
+  // Standalone: it needs a real server (the void kill and its attribution are
+  // server-side) and a FIXED_SEED map of its own.
+  { name: 'void', file: 'scripts/checks/void.mjs', standalone: true },
   // Standalone: it launches its own vite and browser and calls `process.exit`.
   // Imported into this process it would terminate the suite mid-run — and exit 0
   // while doing it, hiding every earlier failure. Run as a subprocess instead.

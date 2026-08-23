@@ -327,8 +327,8 @@ a fight to a menu.
 ## M15 — The world (4)
 
 - [x] [T15.01](M15/T15.01-teleport-pads.md) — Teleport pads **(v4)**
-- [ ] [T15.02](M15/T15.02-void.md) — The floor can be dug through, and below it is death **(v4)**
-- [ ] [T15.03](M15/T15.03-living-sky.md) — Mountains and clouds **(v4)**
+- [x] [T15.02](M15/T15.02-void.md) — The floor can be dug through, and below it is death **(v4)**
+- [x] [T15.03](M15/T15.03-living-sky.md) — Mountains and clouds **(v4)**
 - [ ] [T15.04](M15/T15.04-birds.md) — Birds **(v4)**
 
 **Checkpoint:** dig a hole through the floor, fall in and die; shoot a bird and heal

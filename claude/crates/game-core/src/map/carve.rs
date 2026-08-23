@@ -374,18 +374,61 @@ mod tests {
         );
     }
 
+    /// §C15 inverted this test. It used to be `bedrock_is_never_removed`, and
+    /// with `BEDROCK_H` at 0 that version would have kept passing while asserting
+    /// **nothing**: its loop ran `h..h`, which is empty. A test that cannot fail
+    /// is worse than no test, so it now asserts the opposite thing — the floor
+    /// really can be dug through — at every scale, which is where §A19 says a
+    /// carve claim has to be measured.
     #[test]
-    fn bedrock_is_never_removed() {
+    fn the_floor_can_be_dug_through_at_every_scale() {
+        for scale in MapScale::ALL {
+            let mut m = generate(4242, scale);
+            m.mask = Mask::new_full(m.mask.w, m.mask.h);
+            m.coarse = crate::map::CoarseGrid::build(&m.mask);
+            m.drain_dirty();
+            let (w, h) = (m.mask.w as i32, m.mask.h as i32);
+
+            // The control: the bottom row is solid before the carve, so "it is
+            // clear afterwards" is a statement about the carve and not about how
+            // the fixture was built.
+            assert_eq!(
+                m.mask.count_run(h - 1, 0, w - 1),
+                m.mask.w,
+                "{scale:?}: the fixture's bottom row was not solid to begin with"
+            );
+
+            let removed = m.carve_circle(w / 2, h - 5, 60).pixels_removed;
+            assert!(
+                removed > 0,
+                "{scale:?}: a carve at the bottom removed nothing — the floor is \
+                 still indestructible"
+            );
+            assert!(
+                !m.mask.get(w / 2, h - 1),
+                "{scale:?}: the bottom row survived a carve centred 5 px above it"
+            );
+        }
+    }
+
+    /// The other half of §C15, and the control for the test above: **the walls
+    /// did not change.** Without this, "the floor can be carved" is also
+    /// satisfied by a build that stopped clamping anything at all.
+    #[test]
+    fn the_walls_are_still_indestructible_at_the_bottom() {
         let mut m = solid_map();
         let h = m.mask.h as i32;
-        let floor = h - BEDROCK_H as i32;
-        m.carve_circle(500, h - 5, 60);
-        for y in floor..h {
-            assert_eq!(
-                m.mask.count_run(y, 0, m.mask.w as i32 - 1),
-                m.mask.w,
-                "bedrock row {y} was carved"
-            );
+        m.carve_circle(0, h - 5, 120);
+        m.carve_circle(m.mask.w as i32, h - 5, 120);
+        for y in (h - 200).max(0)..h {
+            for x in 0..WALL_W as i32 {
+                assert!(m.mask.get(x, y), "left wall cleared at ({x}, {y})");
+                assert!(
+                    m.mask.get(m.mask.w as i32 - 1 - x, y),
+                    "right wall cleared at ({}, {y})",
+                    m.mask.w as i32 - 1 - x
+                );
+            }
         }
     }
 
@@ -532,18 +575,33 @@ mod tests {
 
     #[test]
     fn a_slot_inside_the_radius_but_still_solid_is_not_revealed() {
-        // A slot within the circle's radius but in the bedrock band: the span was
+        // A slot within the circle's radius but in a **wall** column: the span was
         // clamped away, so the pixel is still solid and the slot stays hidden.
+        //
+        // It used to sit in the bedrock band, which §C15 deleted — and with
+        // `BEDROCK_H` at 0 that version would have quietly started testing a
+        // carve that succeeds. The walls are the indestructible thing now, so the
+        // test moved to them rather than being dropped.
         let mut m = solid_map();
         let h = m.mask.h as i32;
+        let x = WALL_W as i32 / 2;
         m.meta.buried_slots = vec![crate::map::BuriedSlot {
             id: 0,
-            pos: Point::new(900, h - 5),
+            pos: Point::new(x, h / 2),
             revealed: false,
         }];
-        let r = m.carve_circle(900, h - 5, 20);
-        assert!(r.revealed.is_empty());
-        assert!(m.mask.get(900, h - 5), "bedrock should still be solid");
+        let r = m.carve_circle(x, h / 2, 20);
+        assert!(
+            r.revealed.is_empty(),
+            "a slot inside an indestructible wall was reported as revealed"
+        );
+        assert!(m.mask.get(x, h / 2), "the wall should still be solid");
+        // The control: the same carve **did** open rock just past the wall, so
+        // this is a statement about the clamp and not about a carve that missed.
+        assert!(
+            !m.mask.get(WALL_W as i32 + 2, h / 2),
+            "the carve removed nothing at all, so the clamp proves nothing"
+        );
     }
 
     #[test]
@@ -764,15 +822,20 @@ mod tests {
     }
 
     #[test]
-    fn a_capsule_respects_bedrock_and_walls() {
+    fn a_capsule_respects_the_walls_and_digs_through_the_floor() {
         let mut map = solid_map();
         let h = map.mask.h as i32;
         map.carve_capsule(0, h - 10, map.mask.w as i32, h - 10, 20);
-        for y in (h - BEDROCK_H as i32)..h {
-            for x in 0..map.mask.w as i32 {
-                assert!(map.mask.get(x, y), "bedrock cleared at ({x}, {y})");
-            }
-        }
+        // §C15: the sweep along the bottom now opens the floor. Asserted between
+        // the walls, which is the only part of the row the capsule was allowed
+        // to touch.
+        let cleared = (WALL_W as i32..map.mask.w as i32 - WALL_W as i32)
+            .filter(|&x| !map.mask.get(x, h - 1))
+            .count();
+        assert!(
+            cleared > 0,
+            "a capsule swept along the bottom cleared none of the floor"
+        );
         for y in 0..h {
             for x in 0..WALL_W as i32 {
                 assert!(map.mask.get(x, y), "wall cleared at ({x}, {y})");

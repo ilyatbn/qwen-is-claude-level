@@ -24,7 +24,7 @@ import { loadAudio } from '../audio/sfx'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { DebugOverlay } from '../render/debugOverlay'
-import { cycleU, darknessAt, skyPhase } from '../render/sky-math'
+import { cloudTint, cycleU, darknessAt, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
 import { devSurface } from '../dev'
 
@@ -132,7 +132,7 @@ export class SandboxScene extends Phaser.Scene {
     this.buildUi()
     this.regenerate()
 
-    this.sky = new SkyLayer(this)
+    this.sky = new SkyLayer(this, this.core.meta.seed, this.core.meta.theme)
     this.lightmap = new Lightmap(this)
     // `true`: this is the sandbox, the one place buried slots may be drawn.
     this.overlay = new DebugOverlay(this, this.core, true)
@@ -312,6 +312,13 @@ export class SandboxScene extends Phaser.Scene {
     // Regenerating recreates the player, so the loadout is granted here rather
     // than once at create() — otherwise every regenerate silently disarms you.
     this.grantSandboxLoadout()
+
+    // The background is seeded from the map, so it has to follow a regenerate.
+    // Without this the sandbox kept the first map's skyline for the whole
+    // session and "a seed always looks the same" was true of the terrain only.
+    // `sky` is undefined on the first call: `create()` regenerates before it
+    // builds the sky, and the constructor above passes the seed directly.
+    this.sky?.setSeed(this.core.meta.seed, this.core.meta.theme)
 
     this.seedInput.value = this.seed.toString()
     this.refreshReadout()
@@ -601,6 +608,9 @@ export class SandboxScene extends Phaser.Scene {
           animState: self.player?.state ?? 'idle',
           roundTime: self.roundTime,
           skyPhase: self.sky?.currentPhase ?? 'morning',
+          // §C14. `visibleClouds` separates "the layer exists" from "it is
+          // drawing", which is the distinction §A15 keeps being about.
+          parallax: self.sky?.parallax.debug() ?? null,
           darkness: darknessAt(cycleU(self.roundTime), C().NIGHT_DARKNESS),
           fogMult: self.fogActive ? C().FOV_FOG_MULT : 1,
           lightmapDraws: self.lightmap?.stats.drawsLastFrame ?? 0,
@@ -787,6 +797,46 @@ export class SandboxScene extends Phaser.Scene {
       },
       toggleOverlays() {
         self.overlay.toggle()
+      },
+      /** §C14's constants, so a check pins to them rather than to a literal. */
+      constants() {
+        return C()
+      },
+      /**
+       * Hide the parallax band, for the control frame `living-sky` needs.
+       *
+       * A check asserting "there are ridge pixels here" is satisfied by the
+       * gradient that was always there; the only way to attribute them is to
+       * take the layer away and look again.
+       */
+      setParallaxVisible(on: boolean) {
+        self.sky?.parallax.setVisible(on)
+      },
+      /**
+       * Re-seed the **skyline only**, leaving the map alone.
+       *
+       * `regenerate` with a new seed changes the terrain too, so a frame diff
+       * after one measures a new map rather than a new ridge — the check read
+       * 100 % changed and would have read 100 % for a skyline that ignored the
+       * seed entirely.
+       */
+      setSkySeed(seed: number) {
+        self.sky?.setSeed(seed, self.core.meta.theme)
+      },
+      /**
+       * Pin the cloud drift clock, `null` to resume.
+       *
+       * The spacing is only exactly even at t = 0; after that the per-cloud
+       * speed spread makes clouds pass each other on purpose. A check asserting
+       * on the smallest gap without pinning the clock is asserting on how long
+       * it took to get there, which is the coin-flip gate §C0 forbids.
+       */
+      /** `cloudTint` itself, so a check can compare it with the drawn sprite. */
+      cloudTintAt(u: number, baseAlpha: number, skyMix: number, alphaFloor: number) {
+        return cloudTint(u, baseAlpha, skyMix, alphaFloor)
+      },
+      setParallaxClock(t: number | null) {
+        self.sky?.parallax.setClock(t)
       },
       /** Jump to a point in the day, for inspecting a phase. */
       setTime(t: number) {

@@ -12,7 +12,7 @@
 //! See `docs/10-map-generation.md` §Pass 1, §Pass 2.
 
 use crate::constants::{
-    MapScale, BEDROCK_H, GRADIENT_BIAS_BOTTOM, GRADIENT_BIAS_TOP, SKY_MARGIN, SOLID_THRESHOLD,
+    MapScale, FLOOR_CRUST, GRADIENT_BIAS_BOTTOM, GRADIENT_BIAS_TOP, SKY_MARGIN, SOLID_THRESHOLD,
     WALL_W,
 };
 use crate::map::noise::WarpField;
@@ -142,7 +142,7 @@ pub fn silhouette(seed: u64, params: &GenParams) -> Mask {
     mask
 }
 
-/// Force bedrock, side walls and the sky margin.
+/// Force the floor crust, side walls and the sky margin.
 ///
 /// A separate public function because passes 3–6 all disturb the borders and each
 /// must re-apply it. Written once here so there are not four subtly different
@@ -155,8 +155,12 @@ pub fn force_borders(mask: &mut Mask) {
         mask.clear_run(y, 0, w - 1);
     }
 
-    // Bedrock: the bottom band is always solid and is never carveable.
-    for y in (h - BEDROCK_H as i32)..h {
+    // The floor: the bottom band always comes out of generation solid.
+    //
+    // It is **not** indestructible any more (§C15) — `BEDROCK_H` is 0 and
+    // `carve_circle` will happily dig through this. That is the point: what this
+    // guarantees is only that every map *starts* with a floor.
+    for y in (h - FLOOR_CRUST as i32)..h {
         mask.set_run(y, 0, w - 1);
     }
 
@@ -176,7 +180,7 @@ pub fn borders_hold(mask: &Mask) -> bool {
             return false;
         }
     }
-    for y in (h - BEDROCK_H as i32)..h {
+    for y in (h - FLOOR_CRUST as i32)..h {
         if mask.count_run(y, 0, w - 1) != w as u32 {
             return false;
         }
@@ -252,10 +256,10 @@ mod tests {
                 assert!(!m.get(x, y), "sky pixel set at ({x},{y})");
             }
         }
-        // Bedrock solid.
-        for y in (h - BEDROCK_H as i32)..h {
+        // The floor crust comes out of generation solid.
+        for y in (h - FLOOR_CRUST as i32)..h {
             for x in 0..w {
-                assert!(m.get(x, y), "bedrock pixel clear at ({x},{y})");
+                assert!(m.get(x, y), "floor crust pixel clear at ({x},{y})");
             }
         }
         // Walls solid below the sky margin.
@@ -327,9 +331,9 @@ mod tests {
         let m = silhouette(3, &p);
         let (w, h) = (m.w as i32, m.h as i32);
 
-        // Compare a band just below the sky margin against one just above bedrock.
+        // Compare a band just below the sky margin against one just above the floor.
         let top_band = SKY_MARGIN as i32 + 8;
-        let bottom_band = h - BEDROCK_H as i32 - 8;
+        let bottom_band = h - FLOOR_CRUST as i32 - 8;
         let top_solid: u32 = (0..8).map(|d| m.count_run(top_band + d, 0, w - 1)).sum();
         let bottom_solid: u32 = (0..8).map(|d| m.count_run(bottom_band - d, 0, w - 1)).sum();
 

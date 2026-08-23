@@ -71,11 +71,34 @@ describe('cause attribution', () => {
     )
   })
 
-  it('all three attribution paths produce different text', () => {
+  /**
+   * §C15. The bug this guards: `"void"` had no arm anywhere, so it fell to
+   * `weatherName`'s `default` and the overlay read **"Killed by void"** — while
+   * the kill feed two inches away said "ana fell out of the world".
+   */
+  it('says you fell rather than "Killed by void"', () => {
+    const text = causeText(info({ attacker: null, cause: 'void' }), names)
+    expect(text).toBe('You fell out of the world')
+    // The specific failure, named: the prefix cannot be grammatical here.
+    expect(text).not.toContain('Killed by')
+    expect(text).not.toContain('void')
+  })
+
+  /**
+   * The control. Being blasted off the edge arrives with an attacker — the
+   * server's assist window resolved it — so it is an ordinary kill and the void
+   * sentence must not swallow it.
+   */
+  it('leaves a blast into the void as an ordinary kill', () => {
+    expect(causeText(info({ attacker: 2, cause: 'void' }), names)).toBe('Killed by ana')
+  })
+
+  it('all four attribution paths produce different text', () => {
     const a = causeText(info({ attacker: 2 }), names)
     const b = causeText(info({ victim: 1, attacker: 1 }), names)
     const c = causeText(info({ attacker: null, cause: 'ToxicRain' }), names)
-    expect(new Set([a, b, c]).size).toBe(3)
+    const d = causeText(info({ attacker: null, cause: 'void' }), names)
+    expect(new Set([a, b, c, d]).size).toBe(4)
   })
 })
 

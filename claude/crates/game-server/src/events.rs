@@ -377,6 +377,10 @@ fn cause_name(c: DeathCause) -> &'static str {
         DeathCause::Player(_) => "player",
         DeathCause::SelfInflicted => "self",
         DeathCause::Weather => "weather",
+        // §C15. A distinct string, not folded into "weather": the death overlay
+        // and the kill feed have a sentence to write, and "killed by the weather"
+        // for someone who dug through the floor is the wrong one.
+        DeathCause::Void => "void",
     }
 }
 

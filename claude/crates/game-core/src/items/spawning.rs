@@ -4,7 +4,7 @@
 //! All of it is seeded and reproducible. See `docs/32-item-spawning.md`.
 
 use crate::constants::{
-    BEDROCK_H, CRATE_H, CRATE_INTERVAL, CRATE_W, ITEM_SPAWN_BATCH_MAX, ITEM_SPAWN_BATCH_MIN,
+    CRATE_H, CRATE_INTERVAL, CRATE_W, FLOOR_CRUST, ITEM_SPAWN_BATCH_MAX, ITEM_SPAWN_BATCH_MIN,
     ITEM_SPAWN_INTERVAL, SKY_MARGIN, WALL_W,
 };
 use crate::items::registry::{def, ItemId, ItemKind, WeightColumn};
@@ -310,9 +310,15 @@ pub fn crate_size() -> (f32, f32) {
     (CRATE_W, CRATE_H)
 }
 
-/// Lowest carveable row, for tests that build hand-made maps.
+/// The top of the generated floor crust, for tests that build hand-made maps.
+///
+/// It used to be "the lowest carveable row", which was the same number while the
+/// bottom band was indestructible. §C15 split those two meanings: the lowest
+/// carveable row is now `h` — there is nothing the carve will not touch — and
+/// what a fixture actually wants when it says "the floor" is where generation
+/// stops laying rock. That is this.
 pub fn floor_limit(map: &Map) -> i32 {
-    map.mask.h as i32 - BEDROCK_H as i32
+    map.mask.h as i32 - FLOOR_CRUST as i32
 }
 
 #[cfg(test)]
@@ -667,7 +673,14 @@ mod tests {
         // Blow the ground out from under it so it falls much further; the contents
         // must not change, or a replay could not reproduce them.
         let x = w.get(id).expect("there").pos.x as i32;
-        for y in (SKY_MARGIN as i32..map.mask.h as i32 - BEDROCK_H as i32).step_by(60) {
+        // Stop the shaft `CRATE_FALL_FLOOR_MARGIN` above the bottom. §C15 made the
+        // floor destructible, so a column carved all the way down now drops the
+        // crate out of the world and voids it — the test would then fail on a
+        // missing crate while saying the contents changed. The margin has to clear
+        // the carve radius, or the last bite punches through anyway.
+        const CRATE_FALL_FLOOR_MARGIN: i32 = 200;
+        let bottom = map.mask.h as i32 - CRATE_FALL_FLOOR_MARGIN;
+        for y in (SKY_MARGIN as i32..bottom).step_by(60) {
             map.carve_circle(x, y, 70);
         }
         for _ in 0..3000 {

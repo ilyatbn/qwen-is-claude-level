@@ -694,6 +694,70 @@ mod tests {
     const TALL_H: u32 = 2304;
 
     /// Solid rock from `y` to the bottom, full width.
+    /// §C15: the void is a **hazard, not a wall**.
+    ///
+    /// The note on T15.02 asks whether the validator counts the bottom band as
+    /// walkable ground, because if it did, thinning `BEDROCK_H` to zero would
+    /// have moved every traversability number for a reason that has nothing to do
+    /// with playability.
+    ///
+    /// **Measured, it does not, and it cannot.** `NavRegions::build` indexes rows
+    /// `0..h` and nothing below; `Mask::get` outside the map reads as air, so the
+    /// region under the map is not a wall to route around — it is simply not part
+    /// of the graph. This pins that: two maps identical except that one has a
+    /// solid bottom row and the other does not produce the same verdict for a
+    /// ledge well above the floor.
+    #[test]
+    fn removing_the_floor_does_not_change_a_verdict_higher_up() {
+        const W: u32 = 512;
+        const H: u32 = 512;
+
+        let build = |floor: bool| {
+            let mut m = Mask::new_empty(W, H);
+            // A ledge in the middle of the map, far from the bottom.
+            for y in 300..310 {
+                m.set_run(y, 100, 400);
+            }
+            if floor {
+                m.set_run(H as i32 - 1, 0, W as i32 - 1);
+            }
+            m
+        };
+
+        let a = build(true);
+        let b = build(false);
+        // Adjacent surface samples: `can_walk` only ever joins neighbours, so the
+        // gap is `SURFACE_SAMPLE_STEP` rather than a number picked to look right.
+        let ledge = vec![
+            Point { x: 200, y: 299 },
+            Point {
+                x: 200 + SURFACE_SAMPLE_STEP,
+                y: 299,
+            },
+        ];
+
+        // The control: the two masks really do differ, so "same verdict" is a
+        // claim about the validator and not about two identical inputs.
+        assert_ne!(a.hash(), b.hash(), "the fixture built the same mask twice");
+
+        assert!(
+            can_walk(&a, ledge[0], ledge[1]),
+            "the fixture ledge is not walkable even with a floor"
+        );
+        assert_eq!(
+            can_walk(&a, ledge[0], ledge[1]),
+            can_walk(&b, ledge[0], ledge[1]),
+            "taking the floor away changed a verdict about a ledge 200 px above it"
+        );
+
+        let ra = analyse(&a, &ledge);
+        let rb = analyse(&b, &ledge);
+        assert_eq!(
+            ra.traversable_fraction, rb.traversable_fraction,
+            "the traversable fraction depends on whether there is a floor"
+        );
+    }
+
     fn bedrock_from(m: &mut Mask, y: i32, h: u32) {
         for py in y..h as i32 {
             m.set_run(py, 0, m_w(m) - 1);

@@ -8,7 +8,7 @@
 export const KILLFEED_MAX = 5
 export const KILLFEED_LIFETIME = 6
 
-export type DeathCause = 'player' | 'self' | 'weather'
+export type DeathCause = 'player' | 'self' | 'weather' | 'void'
 
 export interface KillEntry {
   /**
@@ -69,6 +69,11 @@ export class KillFeed {
  */
 export function killLine(e: KillEntry): string {
   if (e.cause === 'self') return `${e.victim} blew themselves up (${e.by})`
+  // §C15. Its own line, not folded into `weather`: nobody is "killed by the
+  // void", they fall into it, and without this case a solo fall reached the
+  // last line with no killer and read `? → ana` — an unknown murderer for
+  // something the player did to themselves.
+  if (e.cause === 'void') return `${e.victim} fell out of the world`
   if (e.cause === 'weather') return `${e.victim} was killed by ${e.by}`
   return `${e.killer ?? '?'} → ${e.victim} (${e.by})`
 }

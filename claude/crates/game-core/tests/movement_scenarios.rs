@@ -716,9 +716,14 @@ fn a_body_dropped_at_every_spawn_point_settles_without_falling_through() {
             "spawn {spawn:?} never settled (y = {})",
             st.body.pos.y
         );
+        // `FLOOR_CRUST`, not `BEDROCK_H`. §C15 took `BEDROCK_H` to 0, which
+        // silently moved this bound from `h - 22` to `h + 2` — a body that fell
+        // through the crust and came to rest on nothing would have passed. The
+        // claim is "it settled on the ground, not at the bottom of the map", and
+        // the ground is where generation stops laying rock.
         assert!(
-            st.body.feet_y() < (map.mask.h - BEDROCK_H) as f32 + 2.0,
-            "spawn {spawn:?} fell to the bedrock at y = {}",
+            st.body.feet_y() < (map.mask.h - FLOOR_CRUST) as f32 + 2.0,
+            "spawn {spawn:?} sank to the floor crust at y = {}",
             st.body.pos.y
         );
         assert!(

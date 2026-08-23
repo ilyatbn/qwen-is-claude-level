@@ -1395,7 +1395,11 @@ pub(crate) mod harness {
                     GameEvent::Death { cause, .. } => match cause {
                         DeathCause::Player(_) => r.combat_deaths += 1,
                         DeathCause::SelfInflicted => r.self_deaths += 1,
-                        DeathCause::Weather => r.weather_deaths += 1,
+                        // A void death is environmental, like the weather is.
+                        // Counted together because the balance report's question
+                        // is "how many deaths did the map cause", not which part
+                        // of it (§C15).
+                        DeathCause::Weather | DeathCause::Void => r.weather_deaths += 1,
                     },
                     GameEvent::Damage {
                         amount, attacker, ..

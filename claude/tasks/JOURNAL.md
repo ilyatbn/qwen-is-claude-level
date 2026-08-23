@@ -4131,3 +4131,48 @@ duplicate `padUnderfoot` is now pinned at both edges (`pads.test.ts`).
 
 `cargo test -p game-core --lib teleport` 18/18, `node scripts/e2e.mjs teleport` ok.
 Full gate deferred to the M15 checkpoint.
+
+## T15.02 — the floor is destructible, and below it is death
+
+`BEDROCK_H` 24 → 0 with a destructible `FLOOR_CRUST` of 16. Generation sites moved
+to `FLOOR_CRUST`, destruction sites kept `BEDROCK_H` — one number had been answering
+two questions. The 999-seed sweep's attempt distribution is **identical** before and
+after (`[0, 989, 10, 0, 0]`, safe_preset 0); traversability moved 0.1–0.3 points,
+which is an 8 px thinner floor. Golden table regenerated deliberately, 24 of 24.
+
+**Deviation from the task, upheld on review:** no `DamageSource::Void`. The void
+cannot go through `apply_damage_log` — the warmup gate returns early (and you can
+dig during warmup), i-frames return false, and above all the shield multiplies by
+`SHIELD_DAMAGE_MULT`, so no finite amount is guaranteed to kill at `HEALTH_CAP` and
+a shielded player would fall forever. `DeathCause::Void` is the analogue, with
+`DamageSource::Weather → DeathCause::Weather` as precedent.
+
+`CAVE_FLOOR_KEEPOUT` 24 keeps v1's cave network bit-identical, so the golden churn
+is attributable to `force_borders` alone. It exists because
+`tunnels_are_meaningfully_horizontal` broke at the thinner crust — **that assertion
+had a 2.6 % margin before anyone touched it.** Deterministic, so not a coin flip,
+but brittle: it wants a margin and its measured values logged. Not fixed here.
+
+The review caught the kill feed's fix missing from the *other* death UI: the overlay
+read "Killed by void" for `RESPAWN_DELAY` seconds. `scripts/checks/void.mjs` now
+asserts the sentence from the frame — and catches it when the arm is removed.
+
+## T15.03 — mountains and clouds
+
+Two seeded ridge layers at 0.10/0.20 and twelve drifting clouds, tinted from
+`skyColors` rather than a second palette (§A13). `noise-math.ts` shares one value
+noise with `procTextures` (§A24).
+
+**The clouds folded in half at the zoom the game actually runs at.** The field was
+built over a 1280 px span and wrapped over `VIEWPORT_W / zoom`; at `CAMERA_ZOOM` 2
+twelve clouds collapsed into six pairs — measured gaps `69, 23, 48, 113, 20, 99, 2,
+70, 2, 72, 54`, now `35, 57, 60, 36, 36, 62, 46, 90, 49, 36, 64`. `y` was scaled and
+`x` was modulo'd; the asymmetry was the bug. `living-sky` ran at zoom 1 — the one
+zoom the game never uses — and now measures at 2, 0.75 and 1, off the drawn sprites.
+It pins the drift clock, because unpinned the gap read 11.4 px against a 13.3 floor:
+a gate failing on how long the machine took.
+
+The review predicted constant-white `cloudTint` would trip `addNight >= addNoon`. It
+does not — measured, white adds 26.3 at noon against 19.1 at night, still ordered.
+So it was a real §A15 hole, closed with a both-ends check that reads `tintTopLeft`
+back off the sprite: "cloudTint says #d5ebf7 and the sprite is holding #ffffff".
