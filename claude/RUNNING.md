@@ -122,6 +122,7 @@ Server, read once at startup (`docs/41-server-loop-rooms.md` §5):
 | `BIND_ADDR` | `0.0.0.0:3000` | |
 | `GAME_LOG` | `info` | `EnvFilter`, e.g. `info,game::map=debug` |
 | `MAP_SCALE` | `large` | `small` \| `medium` \| `large` |
+| `MAP_GENERATOR` | `v2` | `v1` \| `v2` — see [Map generators](#51-map-generators) |
 | `ROUND_SECONDS` | `240` | shorten it to test the phase machine |
 | `MAX_PLAYERS` | `6` | |
 | `MIN_PLAYERS_TO_START` | `1` | |
@@ -132,6 +133,39 @@ Server, read once at startup (`docs/41-server-loop-rooms.md` §5):
 | `REPLAY_DIR` | `replays` | |
 | `DEBUG_DUMP` | `0` | dump `map.png`, `surface.png`, `meta.json` at round start |
 | `DEV_LOADOUT` | `0` | start with weapons, for testing — finding them is the design |
+
+### 5.1 Map generators
+
+Two terrain generators ship, chosen by `MAP_GENERATOR`. They differ in one
+decision and everything else follows from it.
+
+**`v1`** — the original. A domain-warped fBm field is thresholded over the whole
+canvas, then a cave *network* of chambers, tunnels, crevices and voids is carved
+through it. The field has no idea where the ground is, so it puts as much rock in
+the sky as it puts air underground: the result is one perforated mass, its
+floating chunks are perforated too, and the whole map reads as a cave system.
+
+**`v2`** — the landscape (default). The ground comes from a **1D height profile**
+— fBm hills, terraced ledges, flat-topped mesas and canyons cut back down to the
+bedrock — and everything below the line is filled. Solid islands are then hung in
+the open sky and one or two caves are cut into the rock, each with a shaft to the
+surface. Open sky is a pixel's default state; a cave is a feature.
+
+Switching is safe at runtime. The client is sent the finished mask in `map_init`
+and never rebuilds it from the seed — only the sandbox and preview scenes call the
+generator, and both are local. A **replay records its generator** in the header, so
+a round always replays against the generator that produced it.
+
+To look at both on the same seeds:
+
+```sh
+cargo test -p game-core --features dump-png --release --test dump_maps -- --nocapture
+# target/mapdump/medium-4242-v1.png  vs  medium-4242-v2.png
+```
+
+Per-scale feature counts (islands, chasms, mesas, caves, arches) are in
+`ScaleParams`; the shape tunables are the `GROUND_*`, `TERRACE_*`, `LEDGE_*`,
+`CHASM_*`, `MESA_*`, `ROUGHEN_*`, `ISLAND2_*`, `CAVE2_*` and `ARCH_*` constants.
 
 Log targets: `game::map`, `game::sim`, `game::net`, `game::player`,
 `game::items`, `game::weapons`, `game::effects`, `game::round`.

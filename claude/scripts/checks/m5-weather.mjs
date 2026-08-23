@@ -97,9 +97,24 @@ try {
       JSON.stringify(during.active))
 
     if (name === 'toxic') {
-      check('toxic: puddles spawned', during.puddles > 0, `${during.puddles} puddles`)
-      check('toxic: left the map alone', during.solid === before.solid,
-        `${before.solid} -> ${during.solid}`)
+      // Polled, not read once 600 ms into the active phase.
+      //
+      // A drop is a projectile now (§C21): it leaves the cloud at `SKY_MARGIN`
+      // and only becomes a puddle where it stops, so the wait is however long the
+      // fall takes — which is a property of the *map*, not of the effect. Under
+      // `MAP_GENERATOR=v2` the ground sits ~880 px below the cloud instead of
+      // ~200, the first drop lands at ~1.0 s instead of ~0.35, and a single read
+      // at 0.6 s saw zero puddles and called it a failure. The active window is
+      // TOXIC_DURATION (8 s); 4 s of polling is well inside it.
+      let puddles = during.puddles
+      for (let t = 0; puddles === 0 && t < 20; t++) {
+        await page.waitForTimeout(200)
+        puddles = (await page.evaluate('window.__game.weatherProbe()')).puddles
+      }
+      check('toxic: puddles spawned', puddles > 0, `${puddles} puddles`)
+      const still = await page.evaluate('window.__game.weatherProbe()')
+      check('toxic: left the map alone', still.solid === before.solid,
+        `${before.solid} -> ${still.solid}`)
     }
     if (name === 'meteor') {
       await page.waitForTimeout(2500)

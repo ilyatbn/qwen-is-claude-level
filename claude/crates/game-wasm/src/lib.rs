@@ -102,9 +102,27 @@ impl GameCore {
     /// The seed arrives as two `u32`s: a `u64` across the wasm-bindgen boundary
     /// pulls in BigInt handling that is more trouble than it is worth.
     pub fn generate(&mut self, seed_lo: u32, seed_hi: u32, scale: u8) {
+        self.generate_with(
+            seed_lo,
+            seed_hi,
+            scale,
+            game_core::constants::DEFAULT_MAP_GENERATOR.to_u8(),
+        );
+    }
+
+    /// `generate` against a named terrain generator (0 = v1, 1 = v2).
+    ///
+    /// Local only: a networked round is sent the finished mask in `map_init` and
+    /// never rebuilds it from the seed. This exists so the sandbox and preview
+    /// scenes — and the renderer's terrain tests — can put either generator's
+    /// maps on screen, since v1 still ships behind `MAP_GENERATOR=v1` and a test
+    /// that only ever sees the default stops guarding the other one.
+    pub fn generate_with(&mut self, seed_lo: u32, seed_hi: u32, scale: u8, generator: u8) {
         let seed = ((seed_hi as u64) << 32) | seed_lo as u64;
         let scale = MapScale::from_u8(scale).unwrap_or(MapScale::Medium);
-        self.map = generate(seed, scale);
+        let generator = game_core::constants::MapGenerator::from_u8(generator)
+            .unwrap_or(game_core::constants::DEFAULT_MAP_GENERATOR);
+        self.map = game_core::map::generate_with(seed, scale, generator);
     }
 
     /// Rebuild the map from a `map_init` RLE payload. Returns false on malformed
@@ -747,6 +765,7 @@ pub fn constants_json() -> String {
         BACKDROP_MIN_HITS => c::BACKDROP_MIN_HITS,
         BACKDROP_MIN_UP => c::BACKDROP_MIN_UP,
         BACKDROP_MAX_DIST_TO_SOLID => c::BACKDROP_MAX_DIST_TO_SOLID,
+        BACKDROP_MIN_ROOF => c::BACKDROP_MIN_ROOF,
         DAY_DURATION => c::DAY_DURATION,
         NIGHT_DURATION => c::NIGHT_DURATION,
         CYCLE_TRANSITION => c::CYCLE_TRANSITION,

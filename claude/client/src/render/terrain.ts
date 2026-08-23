@@ -161,6 +161,7 @@ export class TerrainRenderer {
       C().BACKDROP_MIN_HITS,
       C().BACKDROP_MIN_UP,
       C().BACKDROP_MAX_DIST_TO_SOLID,
+      C().BACKDROP_MIN_ROOF,
     )
     // Split, because the two halves are different kinds of work and only one of
     // them is stable. `backdropMs` is pure CPU over the mask; the chunk loop

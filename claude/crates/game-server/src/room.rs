@@ -438,7 +438,12 @@ impl Room {
             None => seed.rotate_left(17) ^ 0x9E37_79B9_7F4A_7C15,
         };
         let mut room = Room {
-            world: World::with_buried_secret(seed, config.map_scale, buried_secret),
+            world: World::with_generator(
+                seed,
+                config.map_scale,
+                buried_secret,
+                config.map_generator,
+            ),
             seats: Seats::default(),
             config,
             lag_warned_at: 0,
@@ -1181,7 +1186,12 @@ impl Room {
             .iter()
             .map(|p| (p.id, p.skin_id))
             .collect();
-        self.world = World::with_buried_secret(seed, self.config.map_scale, buried_secret);
+        self.world = World::with_generator(
+            seed,
+            self.config.map_scale,
+            buried_secret,
+            self.config.map_generator,
+        );
         self.world.set_round_seconds(self.config.round_seconds);
         self.bots.clear();
         for (id, skin) in seated {

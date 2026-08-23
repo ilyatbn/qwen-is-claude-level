@@ -650,9 +650,16 @@ fn a_body_can_walk_along_a_generated_cave_floor() {
         underground.len()
     );
 
+    // A *fraction* of the sample, not a fixed count. The old `>= 30 of 40` was
+    // written against v1, whose whole map is tunnel: it silently asserted "the map
+    // has at least 40 underground standing spots", which v2 does not and is not
+    // meant to (2 caves and an arch on a medium map yield 28). The property this
+    // test is for — a 16x28 body fits on the cave floors the generator makes, and
+    // can walk along them — is the ratio, and that is what is asserted below.
+    let sample: Vec<_> = underground.iter().take(40).copied().collect();
     let mut walked = 0;
     let mut spawned_ok = 0;
-    for p in underground.iter().take(40) {
+    for p in &sample {
         let mut st = MovementState::new(Body::new(Vec2::new(
             p.x as f32,
             p.y as f32 - PLAYER_H / 2.0,
@@ -682,8 +689,9 @@ fn a_body_can_walk_along_a_generated_cave_floor() {
     }
 
     assert!(
-        spawned_ok >= 30,
-        "only {spawned_ok} of 40 cave points were clear"
+        spawned_ok * 10 >= sample.len() * 9,
+        "only {spawned_ok} of {} cave points were clear",
+        sample.len()
     );
     assert!(
         walked * 2 >= spawned_ok,

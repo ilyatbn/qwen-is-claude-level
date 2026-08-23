@@ -259,6 +259,203 @@ pub const TUNNEL_LENGTH_MAX: i32 = 900;
 pub const TUNNEL_TURN_MAX: f32 = 0.35;
 
 // ---------------------------------------------------------------------------
+// Map generator v2 — the landscape generator
+// ---------------------------------------------------------------------------
+
+/// Which terrain generator builds a map.
+///
+/// v1 thresholds one warped fBm field over the whole canvas and then carves a
+/// cave *network* through it. The field has no idea where the ground is, so the
+/// result is a single perforated mass: the airspace it leaves is interior, the
+/// floating chunks it makes are perforated too, and the whole map reads as one
+/// cave system. That is faithful to `docs/10` §Pass 2 and it is not what a Worms
+/// map looks like.
+///
+/// v2 builds the ground from a **1D height profile** instead — hills, terraces,
+/// cliffs, chasms and mesas — then hangs a few solid islands in the sky above it
+/// and punches one or two caves into the rock. Open sky is the default state of a
+/// pixel, and a cave is a feature rather than the medium.
+///
+/// Both are kept so the two can be compared on the same seed; `DEFAULT_MAP_GENERATOR`
+/// and the server's `MAP_GENERATOR` env var choose between them.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MapGenerator {
+    /// The original warped-noise field plus cave network (`docs/10`, `docs/70` §A2).
+    V1,
+    /// The height-profile landscape.
+    V2,
+}
+
+impl MapGenerator {
+    /// Parse the `MAP_GENERATOR` environment value.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "v1" | "V1" | "1" => Some(MapGenerator::V1),
+            "v2" | "V2" | "2" => Some(MapGenerator::V2),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            MapGenerator::V1 => "v1",
+            MapGenerator::V2 => "v2",
+        }
+    }
+
+    pub const fn to_u8(self) -> u8 {
+        match self {
+            MapGenerator::V1 => 0,
+            MapGenerator::V2 => 1,
+        }
+    }
+
+    pub const fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(MapGenerator::V1),
+            1 => Some(MapGenerator::V2),
+            _ => None,
+        }
+    }
+
+    pub const ALL: [MapGenerator; 2] = [MapGenerator::V1, MapGenerator::V2];
+}
+
+/// The generator you get unless `MAP_GENERATOR` says otherwise.
+pub const DEFAULT_MAP_GENERATOR: MapGenerator = MapGenerator::V2;
+
+/// Mean ground line, as a fraction of map height. 0.58 leaves the top ~52 % of
+/// the canvas as sky before the profile's amplitude is applied, which is what
+/// makes the silhouette read against the sky instead of filling the frame.
+pub const GROUND_BASE_FRAC: f32 = 0.64;
+/// Peak-to-mean swing of the ground line, as a fraction of map height.
+pub const GROUND_AMPLITUDE_FRAC: f32 = 0.25;
+/// Wavelength of the profile's first octave, as a fraction of map width. Roughly
+/// two hills across the map before the finer octaves break them up.
+pub const GROUND_WAVELENGTH_FRAC: f32 = 0.38;
+/// Octaves of the 1D profile: a hill, a shoulder, a bump, and grain.
+pub const GROUND_OCTAVES: u32 = 4;
+/// Air kept clear between the highest ground and the sky margin, in px.
+///
+/// This is also a **gameplay** floor, not only a compositional one: a meteor is
+/// broadcast while it is inside the map, and §C22 requires a third of a second of
+/// visible descent before it can hit anything. At 80 px the tallest mesa tops
+/// swallowed a meteor in five broadcasts of the required six.
+pub const GROUND_CREST_HEADROOM: i32 = 240;
+
+/// Height of one terrace step. The flat ledges in a Worms map are what you stand
+/// and fight on; a purely smooth profile gives you nowhere to stop.
+///
+/// 48 px is below `JUMP_HEIGHT` (≈ 66 px), so a terrace edge is always climbable
+/// on foot and a terraced hillside never strands anyone.
+pub const TERRACE_STEP: i32 = 48;
+/// Fraction of the map's width that is terraced rather than left rolling.
+pub const TERRACE_FRACTION: f32 = 0.45;
+/// Width of one terraced stretch, as a fraction of map width.
+pub const TERRACE_RUN_FRAC: f32 = 0.16;
+/// Width of a single ledge inside a terraced stretch, in px.
+///
+/// A terrace is built out of **ledges of this width**, not by quantising each
+/// column on its own. Per-column quantisation of a slope puts one step every few
+/// pixels and the hillside comes out crenellated like a castle wall — which is
+/// exactly what the first v2 dump showed.
+pub const LEDGE_WIDTH_MIN: i32 = 96;
+pub const LEDGE_WIDTH_MAX: i32 = 280;
+
+/// Amplitude of the fine detail added to the ground line after every feature, px.
+///
+/// Rock is not machined. Without this the flat ledges are *exactly* flat and the
+/// cliff faces are exactly vertical, and the silhouette reads as architecture.
+pub const GROUND_DETAIL_AMPLITUDE: f32 = 9.0;
+/// Wavelength of that detail, in px.
+pub const GROUND_DETAIL_WAVELENGTH: f32 = 42.0;
+
+/// Chasm width, in px. A gap this wide reads as a canyon, not as a dip.
+pub const CHASM_WIDTH_MIN: i32 = 130;
+pub const CHASM_WIDTH_MAX: i32 = 340;
+/// Width of the sloped shoulder on each side of a chasm.
+pub const CHASM_SHOULDER: i32 = 70;
+/// Probability a chasm cuts all the way to the bedrock rather than part way.
+pub const CHASM_TO_BEDROCK_CHANCE: f32 = 0.55;
+/// Depth of a chasm that stops short of bedrock, in px.
+pub const CHASM_PARTIAL_DEPTH_MIN: i32 = 160;
+pub const CHASM_PARTIAL_DEPTH_MAX: i32 = 420;
+
+/// A mesa's flat top, in px. This is the tall column silhouette.
+pub const MESA_WIDTH_MIN: i32 = 220;
+pub const MESA_WIDTH_MAX: i32 = 560;
+pub const MESA_RISE_MIN: i32 = 130;
+pub const MESA_RISE_MAX: i32 = 340;
+/// Width of the stepped shoulder on each side of a mesa.
+pub const MESA_SHOULDER: i32 = 56;
+
+/// Spacing of the boulders and notches placed along the ground line, in px.
+///
+/// Sparse on purpose. At 34 px they were a regular comb of identical semicircles
+/// — battlements, not rock. The fine wobble is `GROUND_DETAIL_AMPLITUDE`'s job;
+/// these are the occasional boulder and the occasional bite out of the edge.
+pub const ROUGHEN_STEP: i32 = 130;
+pub const ROUGHEN_RADIUS_MIN: i32 = 11;
+pub const ROUGHEN_RADIUS_MAX: i32 = 34;
+/// How far a roughening circle may sit off the ground line, in px.
+pub const ROUGHEN_OFFSET: i32 = 18;
+/// Probability a roughening circle bites in rather than bulges out.
+pub const ROUGHEN_CARVE_CHANCE: f32 = 0.5;
+/// Probability a roughening slot is used at all.
+pub const ROUGHEN_PLACE_CHANCE: f32 = 0.62;
+
+/// Half-height of a v2 island's slab.
+///
+/// An island is a horizontal **capsule** with a tapering underside, not a row of
+/// equal circles: a row of equal circles is a cloud, which is what the first v2
+/// dump produced. The capsule gives it the flat top you can land and fight on.
+pub const ISLAND2_RADIUS_MIN: i32 = 30;
+pub const ISLAND2_RADIUS_MAX: i32 = 52;
+/// Slab length as a multiple of its half-height.
+pub const ISLAND2_ASPECT_MIN: i32 = 3;
+pub const ISLAND2_ASPECT_MAX: i32 = 7;
+/// Clear air required between the underside of an island and the ground below it.
+pub const ISLAND2_GROUND_CLEARANCE: i32 = 150;
+/// How far either side of an island the ground clearance is measured.
+///
+/// Measuring only under the island's own footprint let one drop neatly into a
+/// canyon: the ground directly beneath it was the canyon floor, 900 px down, while
+/// the canyon walls 40 px to each side were level with the island's top.
+pub const ISLAND2_CLEARANCE_MARGIN: i32 = 260;
+/// Clear air required between two islands.
+pub const ISLAND2_GAP: i32 = 90;
+/// Air required above an island's top, below the sky margin. Shares
+/// `GROUND_CREST_HEADROOM`'s reason: an island is the highest thing a meteor can
+/// hit, so it has to be far enough down to be worth dodging.
+pub const ISLAND2_SKY_CLEARANCE: i32 = 240;
+
+/// v2 cave chamber radius.
+pub const CAVE2_RADIUS_MIN: i32 = 44;
+pub const CAVE2_RADIUS_MAX: i32 = 82;
+/// Radius of the shaft that opens a v2 cave to the sky. Wide enough to fall
+/// through and to climb out of.
+pub const CAVE2_MOUTH_RADIUS: i32 = 22;
+/// Rock a column needs below the ground line before a cave may be cut into it.
+pub const CAVE2_MIN_ROCK: i32 = 260;
+/// How far below the ground line a chamber's centre sits.
+pub const CAVE2_DEPTH_MIN: i32 = 150;
+pub const CAVE2_DEPTH_MAX: i32 = 330;
+/// Clear rock required all round a chamber centre before it is accepted.
+pub const CAVE2_CLEARANCE: i32 = 100;
+
+/// Half-length of the horizontal bore that makes an arch.
+pub const ARCH_HALF_LEN_MIN: i32 = 70;
+pub const ARCH_HALF_LEN_MAX: i32 = 140;
+pub const ARCH_RADIUS_MIN: i32 = 40;
+pub const ARCH_RADIUS_MAX: i32 = 62;
+/// Rock that must remain above an arch's bore for it to read as an arch.
+pub const ARCH_ROOF_MIN: i32 = 70;
+/// Fraction of its radius an arch bore keeps at the mouths. A constant-radius
+/// bore is a rounded rectangle punched through a hill; a tapered one is a hole.
+pub const ARCH_END_TAPER: f32 = 0.62;
+
+// ---------------------------------------------------------------------------
 // Items
 // ---------------------------------------------------------------------------
 
@@ -636,6 +833,25 @@ pub const BACKDROP_MIN_UP: f32 = 0.5;
 /// keeping despite the aggregate.
 pub const BACKDROP_MAX_DIST_TO_SOLID: f32 = 160.0;
 
+/// Share of a cell's neighbourhood that must have rock **straight up** before its
+/// air counts as interior. 0 disables the test.
+///
+/// The ray tests cannot separate "inside a cavern" from "outside a cliff". Beside a
+/// tall sheer face the up-diagonal rays hit the cliff, the side and down rays hit
+/// the cliff and the ground, and `BACKDROP_MIN_UP` — which counts any ray with
+/// `dy < -0.3` — is satisfied by those same diagonals. So open sky next to a cliff
+/// scores exactly like a chamber and gets painted with the cave backdrop.
+///
+/// It was always possible; `MAP_GENERATOR=v2` made it the common case, because a
+/// mesa is a 300 px sheer face with open air beside it. A whole half-frame of sky
+/// rendered as cave in the first v2 playthrough.
+///
+/// The discriminator is the vertical column: interior air has rock over its head,
+/// air outdoors does not, however much rock is beside it. Interpolated and blurred
+/// like the other two fields, so 0.5 means "most of the neighbourhood is roofed"
+/// rather than snapping to the coarse lattice.
+pub const BACKDROP_MIN_ROOF: f32 = 0.5;
+
 // --- A3: visible ordnance ---
 
 /// Seconds a tracer segment stays visible.
@@ -976,6 +1192,19 @@ pub struct ScaleParams {
     pub crevice_count: u32,
     pub void_count: u32,
     pub bridge_count: u32,
+    // MapGenerator::V2 (the landscape generator). Deliberately small numbers:
+    // these are *features* scattered over open ground, not the medium the map is
+    // made of.
+    /// Floating islands hung in the sky above the ground.
+    pub island_count: u32,
+    /// Canyons cut down through the ground profile.
+    pub chasm_count: u32,
+    /// Flat-topped columns raised out of the ground profile.
+    pub mesa_count: u32,
+    /// Caves cut into the rock, each with a shaft to the sky.
+    pub cave_count: u32,
+    /// Horizontal bores through a hill.
+    pub arch_count: u32,
 }
 
 impl MapScale {
@@ -992,6 +1221,11 @@ impl MapScale {
                 crevice_count: 4,
                 void_count: 3,
                 bridge_count: 2,
+                island_count: 2,
+                chasm_count: 1,
+                mesa_count: 1,
+                cave_count: 2,
+                arch_count: 1,
             },
             MapScale::Medium => ScaleParams {
                 width: MAP_MEDIUM_W,
@@ -1004,6 +1238,11 @@ impl MapScale {
                 crevice_count: 7,
                 void_count: 5,
                 bridge_count: 4,
+                island_count: 3,
+                chasm_count: 2,
+                mesa_count: 2,
+                cave_count: 2,
+                arch_count: 1,
             },
             MapScale::Large => ScaleParams {
                 width: MAP_LARGE_W,
@@ -1016,6 +1255,11 @@ impl MapScale {
                 crevice_count: 10,
                 void_count: 8,
                 bridge_count: 6,
+                island_count: 4,
+                chasm_count: 3,
+                mesa_count: 3,
+                cave_count: 2,
+                arch_count: 2,
             },
         }
     }

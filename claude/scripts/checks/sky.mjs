@@ -9,30 +9,83 @@ export default async function ({ page, shot, log }) {
    * preserved between frames — so the honest measurement is the same PNG a person
    * would look at, decoded through an offscreen 2D canvas.
    */
-  const skyTone = async () => {
-    const png = (await page.screenshot()).toString('base64')
-    return page.evaluate(async (b64) => {
-      const img = new Image()
-      img.src = `data:image/png;base64,${b64}`
-      await img.decode()
-      const cv = document.createElement('canvas')
-      cv.width = img.width
-      cv.height = img.height
-      const ctx = cv.getContext('2d')
-      ctx.drawImage(img, 0, 0)
-      // A strip to the right of the control panel and above the terrain.
-      const d = ctx.getImageData(Math.floor(img.width * 0.5), 10, Math.floor(img.width * 0.45), 60)
-      let r = 0
-      let g = 0
-      let bl = 0
-      const n = d.data.length / 4
-      for (let i = 0; i < d.data.length; i += 4) {
-        r += d.data[i]
-        g += d.data[i + 1]
-        bl += d.data[i + 2]
+  /**
+   * The widest band of screen columns near the top of the frame whose world
+   * pixels are **all air**, to the right of the sandbox control panel.
+   *
+   * Chosen by content rather than by a fixed rectangle. The old fixed strip —
+   * x 50-95 %, y 10-70 — was pure sky against the map the generator used to make
+   * and is mostly *rock* against the current one, so every phase's "sky tone" was
+   * dominated by terrain that barely changes with the time of day. Morning and
+   * day came out 11.3 apart against a threshold of 12: the sky was fine and the
+   * sampler was pointed at a cliff.
+   */
+  const findSkyBand = () =>
+    page.evaluate(() => {
+      const g = window.__game.debug()
+      const v = g.worldView
+      const core = window.__game.core
+      const cv = document.querySelector('canvas')
+      const r = cv.getBoundingClientRect()
+      const H = 60 // band height, screen px
+      const airColumn = (sx) => {
+        const wx = v.x + (sx / r.width) * v.w
+        for (let sy = 8; sy <= 8 + H; sy += 6) {
+          const wy = v.y + (sy / r.height) * v.h
+          if (core.solidAt(Math.round(wx), Math.round(wy))) return false
+        }
+        return true
       }
-      return [r / n, g / n, bl / n]
-    }, png)
+      // Start right of the control panel, which is a DOM overlay and not sky.
+      let best = null
+      let run = null
+      for (let sx = Math.floor(r.width * 0.32); sx < r.width - 4; sx += 4) {
+        if (airColumn(sx)) {
+          run ??= { x0: sx, x1: sx }
+          run.x1 = sx
+        } else {
+          if (run && (!best || run.x1 - run.x0 > best.x1 - best.x0)) best = run
+          run = null
+        }
+      }
+      if (run && (!best || run.x1 - run.x0 > best.x1 - best.x0)) best = run
+      if (!best) return null
+      return { x: Math.round(r.left + best.x0), y: Math.round(r.top + 8), w: best.x1 - best.x0, h: H }
+    })
+
+  /**
+   * Mean colour of `band`, measured from an actual screenshot.
+   *
+   * `gl.readPixels` on Phaser's canvas returns zeros — the drawing buffer is not
+   * preserved between frames — so the honest measurement is the same PNG a person
+   * would look at, decoded through an offscreen 2D canvas.
+   */
+  const skyTone = async (band) => {
+    const png = (await page.screenshot()).toString('base64')
+    return page.evaluate(
+      async ([b64, b]) => {
+        const img = new Image()
+        img.src = `data:image/png;base64,${b64}`
+        await img.decode()
+        const cv = document.createElement('canvas')
+        cv.width = img.width
+        cv.height = img.height
+        const ctx = cv.getContext('2d')
+        ctx.drawImage(img, 0, 0)
+        const d = ctx.getImageData(b.x, b.y, b.w, b.h)
+        let r = 0
+        let g = 0
+        let bl = 0
+        const n = d.data.length / 4
+        for (let i = 0; i < d.data.length; i += 4) {
+          r += d.data[i]
+          g += d.data[i + 1]
+          bl += d.data[i + 2]
+        }
+        return [r / n, g / n, bl / n]
+      },
+      [png, band],
+    )
   }
 
   await page.evaluate(() => window.__game.regenerate('4242', 'medium'))
@@ -45,12 +98,22 @@ export default async function ({ page, shot, log }) {
     ['night', 0.75],
   ]
 
+  // One band for every phase: the camera does not move between them, so a
+  // per-phase band would let a moving sampler explain a colour difference.
+  const band = await findSkyBand()
+  if (!band || band.w < 160) {
+    throw new Error(
+      `no band of open sky wide enough to sample (${band ? band.w : 0} px) — the camera is looking at rock`,
+    )
+  }
+  log(`sky band: x ${band.x}..${band.x + band.w}, y ${band.y}..${band.y + band.h}`)
+
   const tones = []
   for (const [name, u] of phases) {
     await page.evaluate((t) => window.__game.setTime(t), u * 120)
     await page.waitForTimeout(350)
     const d = await dbg()
-    const tone = await skyTone()
+    const tone = await skyTone(band)
     tones.push({ name, tone, phase: d.skyPhase, darkness: d.darkness })
     log(
       `${name.padEnd(8)} u=${u} phase=${d.skyPhase.padEnd(9)} ` +

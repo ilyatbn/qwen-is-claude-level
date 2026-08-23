@@ -21,10 +21,11 @@ pub mod smooth;
 pub mod spawns;
 pub mod surface;
 pub mod traversal;
+pub mod v2;
 
 pub use silhouette::{borders_hold, force_borders, solid_fraction, GenParams};
 
-use crate::constants::{MapScale, MAX_GEN_ATTEMPTS};
+use crate::constants::{MapGenerator, MapScale, DEFAULT_MAP_GENERATOR, MAX_GEN_ATTEMPTS};
 use crate::map::Mask;
 use crate::math::Point;
 use components::SealedPocket;
@@ -47,6 +48,9 @@ pub struct GenOutcome {
     pub requested_seed: u64,
     pub attempts: u8,
     pub used_safe_preset: bool,
+    /// Which generator produced this. Carried so a dump, a log line or a test can
+    /// say which of the two it is looking at without being told.
+    pub generator: MapGenerator,
 }
 
 /// One attempt, no retry. Exposed for tests and for the PNG dump.
@@ -83,6 +87,7 @@ pub fn generate_once(seed: u64, params: &GenParams) -> GenOutcome {
         requested_seed: seed,
         attempts: 1,
         used_safe_preset: false,
+        generator: MapGenerator::V1,
     }
 }
 
@@ -95,6 +100,27 @@ pub fn generate_once(seed: u64, params: &GenParams) -> GenOutcome {
 ///
 /// Does no logging — `game-core` is pure. The server logs from these fields.
 pub fn generate_terrain(requested_seed: u64, scale: MapScale) -> GenOutcome {
+    generate_terrain_with(requested_seed, scale, DEFAULT_MAP_GENERATOR)
+}
+
+/// `generate_terrain` against a named generator.
+///
+/// The two are kept side by side so the same seed can be rendered both ways —
+/// `tests/dump_maps.rs` writes a v1 and a v2 PNG per seed. Everything downstream
+/// of this function (spawns, buried slots, decorations, the traversal gate) is
+/// shared, so the only thing that varies is the mask.
+pub fn generate_terrain_with(
+    requested_seed: u64,
+    scale: MapScale,
+    generator: MapGenerator,
+) -> GenOutcome {
+    match generator {
+        MapGenerator::V1 => generate_terrain_v1(requested_seed, scale),
+        MapGenerator::V2 => v2::generate_terrain(requested_seed, scale),
+    }
+}
+
+fn generate_terrain_v1(requested_seed: u64, scale: MapScale) -> GenOutcome {
     let params = GenParams::default_for(scale);
 
     for attempt in 0..MAX_GEN_ATTEMPTS {

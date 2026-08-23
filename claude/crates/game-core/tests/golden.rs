@@ -13,20 +13,27 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use game_core::constants::MapScale;
-use game_core::map::gen::generate_terrain;
-use game_core::map::generate;
+use game_core::constants::{MapGenerator, MapScale};
+use game_core::map::gen::generate_terrain_with;
+use game_core::map::generate_with;
 
 fn table_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden_hashes.txt")
 }
 
-/// The 12 fixed pairs the table covers.
-fn cases() -> Vec<(u64, MapScale)> {
+/// The 24 fixed cases the table covers: 4 seeds x 3 scales x both generators.
+///
+/// **Both** generators, not just the default. v1 is still shipped behind
+/// `MAP_GENERATOR=v1`, and a table that only pinned whichever one happens to be
+/// the default would silently stop guarding the other the moment the default
+/// moved — which is exactly what happened when v2 landed.
+fn cases() -> Vec<(u64, MapScale, MapGenerator)> {
     let mut v = Vec::new();
-    for &seed in &[1u64, 4242, 31337, 8123491234] {
-        for scale in MapScale::ALL {
-            v.push((seed, scale));
+    for generator in MapGenerator::ALL {
+        for &seed in &[1u64, 4242, 31337, 8123491234] {
+            for scale in MapScale::ALL {
+                v.push((seed, scale, generator));
+            }
         }
     }
     v
@@ -39,8 +46,8 @@ fn cases() -> Vec<(u64, MapScale)> {
 /// `HashMap`, so the *same mask* could yield different spawn points in different
 /// processes (`docs/70` §A11). Hashing spawns, buried slots and the component size
 /// is what makes that visible.
-fn meta_digest(seed: u64, scale: MapScale) -> String {
-    let map = generate(seed, scale);
+fn meta_digest(seed: u64, scale: MapScale, generator: MapGenerator) -> String {
+    let map = generate_with(seed, scale, generator);
     let m = &map.meta;
     let mut h = blake3::Hasher::new();
     h.update(&m.theme.to_le_bytes());
@@ -64,16 +71,17 @@ fn meta_digest(seed: u64, scale: MapScale) -> String {
 
 fn compute() -> String {
     let mut out = String::new();
-    out.push_str("# seed scale blake3(mask) blake3(meta)\n");
+    out.push_str("# generator seed scale blake3(mask) blake3(meta)\n");
     out.push_str("# regenerate: GOLDEN_UPDATE=1 cargo test -p game-core --release --test golden\n");
-    for (seed, scale) in cases() {
-        let o = generate_terrain(seed, scale);
+    for (seed, scale, generator) in cases() {
+        let o = generate_terrain_with(seed, scale, generator);
         let _ = writeln!(
             out,
-            "{seed} {} {} {}",
+            "{} {seed} {} {} {}",
+            generator.as_str(),
             scale.as_str(),
             o.mask.hash_hex(),
-            meta_digest(seed, scale)
+            meta_digest(seed, scale, generator)
         );
     }
     out

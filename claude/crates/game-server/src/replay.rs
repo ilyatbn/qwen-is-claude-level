@@ -17,7 +17,7 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use game_core::constants::{MapScale, SIM_HZ};
+use game_core::constants::{MapGenerator, MapScale, SIM_HZ};
 use game_core::player::input::Input;
 use game_core::player::state::PlayerId;
 use game_core::world::World;
@@ -31,7 +31,20 @@ pub const REPLAY_MAGIC: u32 = 0x5250_4C31;
 /// round that simply ended early, which is the one file you most want to know is
 /// broken.
 pub const FOOTER_MAGIC: u32 = 0x5250_4C45;
-pub const REPLAY_VERSION: u16 = 1;
+/// Bytes a header occupies on disk: magic 4, version 2, seed 8, buried secret 8,
+/// scale 1, generator 1, sim_hz 4, round_seconds 4, max_players 2,
+/// min_players_to_start 2, bot_count 2, bot_skill 4, dev_loadout 1.
+///
+/// Public because the body starts here, and a test that wants to corrupt the
+/// first command has to know where it is. Two of them used to carry the number
+/// inline and both broke the moment the header grew a field.
+pub const HEADER_BYTES: usize = 43;
+
+/// **2**: the header gained `generator`. A v1 round replayed against v2 (or the
+/// reverse) rebuilds a different map and diverges on the first shot that touches
+/// terrain, so the generator is simulation state and belongs here. Version 1 files
+/// are rejected rather than silently assumed to be v1 terrain.
+pub const REPLAY_VERSION: u16 = 2;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///
@@ -128,6 +141,8 @@ pub struct ReplayHeader {
     /// different set of buried items and diverges the moment one is dug up.
     pub buried_secret: u64,
     pub scale: MapScale,
+    /// Which terrain generator built the map. See `REPLAY_VERSION`.
+    pub generator: MapGenerator,
     pub sim_hz: u32,
     pub round_seconds: f32,
     pub max_players: usize,
@@ -144,6 +159,7 @@ impl ReplayHeader {
             seed,
             buried_secret,
             scale: config.map_scale,
+            generator: config.map_generator,
             sim_hz: SIM_HZ,
             round_seconds: config.round_seconds,
             max_players: config.max_players,
@@ -159,6 +175,7 @@ impl ReplayHeader {
     pub fn to_config(&self) -> Config {
         Config {
             map_scale: self.scale,
+            map_generator: self.generator,
             round_seconds: self.round_seconds,
             max_players: self.max_players,
             min_players_to_start: self.min_players_to_start,
@@ -210,6 +227,7 @@ pub enum ReplayError {
     },
     BadTag(u8),
     BadScale(u8),
+    BadGenerator(u8),
     BadUtf8,
 }
 
@@ -233,6 +251,7 @@ impl std::fmt::Display for ReplayError {
             }
             ReplayError::BadTag(t) => write!(f, "unknown command tag {t}"),
             ReplayError::BadScale(s) => write!(f, "unknown map scale {s}"),
+            ReplayError::BadGenerator(g) => write!(f, "unknown map generator {g}"),
             ReplayError::BadUtf8 => f.write_str("player name is not valid utf-8"),
         }
     }
@@ -320,6 +339,7 @@ fn write_header(w: &mut impl Write, h: &ReplayHeader) -> Result<(), ReplayError>
     put_u64(w, h.seed)?;
     put_u64(w, h.buried_secret)?;
     w.write_all(&[scale_byte(h.scale)])?;
+    w.write_all(&[h.generator.to_u8()])?;
     put_u32(w, h.sim_hz)?;
     put_f32(w, h.round_seconds)?;
     put_u16(w, h.max_players as u16)?;
@@ -478,6 +498,13 @@ pub fn decode(bytes: &[u8]) -> Result<Replay, ReplayError> {
             2 => MapScale::Large,
             other => return Err(ReplayError::BadScale(other)),
         },
+        generator: {
+            let b = c.u8()?;
+            match MapGenerator::from_u8(b) {
+                Some(g) => g,
+                None => return Err(ReplayError::BadGenerator(b)),
+            }
+        },
         sim_hz: c.u32()?,
         round_seconds: c.f32()?,
         max_players: c.u16()? as usize,
@@ -579,6 +606,9 @@ mod tests {
             seed: 0xDEAD_BEEF_1234_5678,
             buried_secret: 0x0BAD_C0DE,
             scale: MapScale::Small,
+            // Not the default: a fixture that happens to match the default cannot
+            // tell "the field round-trips" from "the field is never read".
+            generator: MapGenerator::V1,
             sim_hz: SIM_HZ,
             round_seconds: 12.5,
             max_players: 6,
@@ -658,8 +688,7 @@ mod tests {
         let r = decode(&bytes).expect("decode");
         assert_eq!(r.header, h);
         assert!(r.body.is_empty());
-        // Header only: 4+2+8+8+1+4+4+2+2+2+4+1
-        assert_eq!(bytes.len(), 42, "header size is pinned");
+        assert_eq!(bytes.len(), HEADER_BYTES, "header size is pinned");
     }
 
     #[test]

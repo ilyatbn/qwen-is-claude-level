@@ -9,7 +9,7 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { C, Core, MapScale } from '../core'
+import { C, Core, MapGenerator, MapScale } from '../core'
 import { BackdropMask } from './chunkBake'
 
 let core: Core
@@ -21,19 +21,45 @@ let h = 0
  * Every scale the game can ship, not just the one the threshold was tuned on
  * (§A19). §A18 picked its value from a table measured on one medium map while
  * §A1 ships Large, and the bound it chose was violated at Large.
+ *
+ * And both generators, not just the default (`MAP_GENERATOR`, RUNNING.md §5.1).
+ *
+ * v1 is still shipped, and the two make *different populations of air*: v1's
+ * voids leave enclosed pockets ~155 px from any rock, v2's widest cavity is a
+ * cave chamber at ~82 px. A suite that only ran the default would have stopped
+ * guarding v1's deep interiors the moment v2 became the default, and its
+ * "deep enclosed air" control would have gone quietly to zero samples.
  */
 const CASES = [
-  ['small/777', MapScale.Small, 777n],
-  ['medium/4242', MapScale.Medium, 4242n],
-  ['large/99', MapScale.Large, 99n],
+  ['v1 small/777', MapScale.Small, 777n, MapGenerator.V1],
+  ['v1 medium/4242', MapScale.Medium, 4242n, MapGenerator.V1],
+  ['v1 large/99', MapScale.Large, 99n, MapGenerator.V1],
+  ['v2 small/777', MapScale.Small, 777n, MapGenerator.V2],
+  ['v2 medium/4242', MapScale.Medium, 4242n, MapGenerator.V2],
+  ['v2 large/99', MapScale.Large, 99n, MapGenerator.V2],
 ] as const
 
-function build(scale: MapScale, seed: bigint) {
-  core.generate(seed, scale)
+/**
+ * The window `still draws the deep interior of a wide void as backdrop` samples,
+ * per generator, in px from the nearest rock.
+ *
+ * It has to come from the widest cavity the generator under test actually makes,
+ * or the population is empty and the test passes on nothing. v1's voids put their
+ * centres ~155 px from a wall (`VOID_RADIUS_MAX`); v2 has no voids and its widest
+ * cavity is a cave chamber at `CAVE2_RADIUS_MAX` = 82 px. Sampling 90-150 on a v2
+ * map yields **zero** samples.
+ */
+const DEEP_WINDOW = {
+  [MapGenerator.V1]: [90, 150],
+  [MapGenerator.V2]: [55, 88],
+} as const
+
+function build(scale: MapScale, seed: bigint, generator: MapGenerator) {
+  core.generateWith(seed, scale, generator)
   w = core.width
   h = core.height
   const c = C()
-  bd = new BackdropMask(core, undefined, c.SKY_MARGIN, c.BACKDROP_RAYS, c.BACKDROP_RAY_LEN, c.BACKDROP_MIN_HITS, c.BACKDROP_MIN_UP, c.BACKDROP_MAX_DIST_TO_SOLID)
+  bd = new BackdropMask(core, undefined, c.SKY_MARGIN, c.BACKDROP_RAYS, c.BACKDROP_RAY_LEN, c.BACKDROP_MIN_HITS, c.BACKDROP_MIN_UP, c.BACKDROP_MAX_DIST_TO_SOLID, c.BACKDROP_MIN_ROOF)
 }
 
 beforeAll(async () => {
@@ -41,9 +67,22 @@ beforeAll(async () => {
   core = await Core.init(readFileSync(fileURLToPath(url)))
 }, 120_000)
 
-/** Air with rock somewhere above it in its own column. */
+/**
+ * Air with rock above it in its own column, **within the ray length**.
+ *
+ * The range bound is the point. Unbounded, this reports "roofed" for every pixel
+ * under a floating island however far above it is — and §A17 says in as many
+ * words that the air under a floating island is plainly sky. That made the
+ * enclosed-air metric below count open sky as enclosed and then score the
+ * renderer wrong for drawing it as sky: measured 1.5 % at v1 medium and 2.6 % at
+ * v1 large, of which every single sample was this. With the bound, and no change
+ * to the renderer, the same maps read 0.11 % and 0.00 %.
+ *
+ * 320 px is the window the other three directions already use, so "enclosed" now
+ * means the same thing on all four sides.
+ */
 function roofed(x: number, y: number): boolean {
-  for (let yy = y - 1; yy >= 0; yy--) if (core.solidAt(x, yy)) return true
+  for (let d = 1; d < 320; d++) if (core.solidAt(x, y - d)) return true
   return false
 }
 
@@ -92,9 +131,9 @@ function distToSolid(): Float32Array {
   return px
 }
 
-for (const [name, scale, seed] of CASES)
+for (const [name, scale, seed, generator] of CASES)
   describe(`BackdropMask on a real map (${name})`, () => {
-    beforeAll(() => build(scale, seed), 120_000)
+    beforeAll(() => build(scale, seed, generator), 120_000)
 
   it('draws almost no enclosed air as sky', () => {
     // The §A14 implementation failed this at 49.3%.
@@ -121,10 +160,19 @@ for (const [name, scale, seed] of CASES)
     const share = asSky / enclosed
     console.log(`   ${name}: ${(share * 100).toFixed(1)}% of enclosed air drawn as sky`)
     // Standing in a cavern and seeing daylight is the failure that has recurred
-    // three times, so this keeps the tighter bound. 3% at large, where the measured
-    // value is 2.9% — see the table on the sibling test.
-    const bound = scale === MapScale.Large ? 0.03 : 0.02
-    expect(share, `${(share * 100).toFixed(1)}% of enclosed air drawn as sky`).toBeLessThan(bound)
+    // three times, so this is the tightest bound in the file.
+    //
+    // 2 % / 3 % were the old ceilings, and they were loose because the metric was
+    // counting sky (see `roofed`). With the range bound in place the measured
+    // values are:
+    //
+    //   v1 small/777  0.00%   v2 small/777  0.00%
+    //   v1 medium     0.11%   v2 medium     0.07%
+    //   v1 large      0.00%   v2 large      0.04%
+    //
+    // 1 % is ~9x the worst of those: tight enough to catch a regression, loose
+    // enough that it is not a coin flip on an unlucky seed.
+    expect(share, `${(share * 100).toFixed(1)}% of enclosed air drawn as sky`).toBeLessThan(0.01)
   })
 
   it('draws almost no open sky as backdrop', () => {
@@ -154,38 +202,25 @@ for (const [name, scale, seed] of CASES)
     expect(open).toBeGreaterThan(1000)
     const share = asBackdrop / open
     console.log(`   ${name}: ${(share * 100).toFixed(1)}% of open sky drawn as backdrop`)
-    // §A21's accepted trade, with the numbers written down as it requires.
+    // This used to be §A21's *accepted trade*: §A17 wanted both this and the
+    // enclosed-as-sky bound tight, "no configuration satisfies both at all three
+    // scales", and the milder failure was taken — sky drawn dark is haze, enclosed
+    // air showing daylight is a hole through the world. The ceilings were 20 % at
+    // small and 9 % elsewhere, against measured 16.42 / 5.86 / 7.18 %.
     //
-    // §A37 added a distance bound and PREDICTED this share would fall "well below
-    // 1 %". It does not, and the prediction was wrong for a measurable reason: the
-    // false positives sit 45-160 px from rock (p50 ~100), overlapping genuinely
-    // enclosed air (p90 63-69), so no distance cut separates the populations. The
-    // measured effect of the bound is small — 16.42/5.86/7.18 % before,
-    // 16.42/5.26/6.71 % after. What it does remove is the far tail, and the far
-    // tail is what renders as a rectangle in the sky: the deepest backdrop pixel
-    // went 204 -> 168 px at medium and 196 -> 165 px at large, and the four
-    // pixels sampled from the shipped frame that were backdrop-coloured are now
-    // sky. That is why the bound is kept despite this number barely moving; the
-    // guarantee it actually buys is asserted separately, above.
+    // `BACKDROP_MIN_ROOF` ended the trade rather than rebalancing it. The residual
+    // was air beside a cliff or an island's flank, reached by *diagonal* upward
+    // rays while the column overhead was clear — so it was never a threshold
+    // problem, it was a missing discriminator. Requiring rock straight up:
     //
-    // Measured from a FRESH wasm build at BACKDROP_MIN_HITS 4 + BACKDROP_MIN_UP
-    // 0.5 (enclosed-as-sky / this metric / crest halo):
+    //   v1 small/777  16.42% -> 0.9%    v2 small/777  2.3% -> 0.0%
+    //   v1 medium     5.86%  -> 0.1%    v2 medium     8.1% -> 0.0%
+    //   v1 large      7.18%  -> 0.1%    v2 large      2.0% -> 0.0%
     //
-    //   small/777    0.00% / 16.42% / 3.3px
-    //   medium/4242  1.42% /  5.86% / 4.7px
-    //   large/99     2.49% /  7.18% / 3.9px
-    //
-    // No configuration satisfies both of §A17's bounds at all three scales, so
-    // the milder failure was taken: enclosed air showing daylight is a hole
-    // through the world, sky drawn dark is haze. These are therefore REGRESSION
-    // ceilings on an accepted trade, not the design bound — set just above the
-    // measured value so a real regression still trips them.
-    //
-    // The residual is air beside and below a floating island's flank, reached by
-    // a diagonal upward ray while the column overhead is clear. It concentrates
-    // at small scale because a small map packs six islands into a small sky.
-    const bound = scale === MapScale.Small ? 0.2 : 0.09
-    expect(share, `${(share * 100).toFixed(1)}% of open sky drawn as backdrop`).toBeLessThan(bound)
+    // with enclosed-as-sky unmoved at <= 0.1 % everywhere. Both of §A17's bounds
+    // now hold at every scale on both generators, so this is a real ceiling again
+    // and not a record of a compromise. 2 % is ~2x the worst measured.
+    expect(share, `${(share * 100).toFixed(1)}% of open sky drawn as backdrop`).toBeLessThan(0.02)
   })
 
   /**
@@ -231,18 +266,24 @@ for (const [name, scale, seed] of CASES)
 
   it('still draws the deep interior of a wide void as backdrop', () => {
     // The failure §A18 ranks worst is standing in a cavern and seeing daylight, and
-    // a distance bound is exactly the kind of change that could cause it. A void at
-    // VOID_RADIUS_MAX puts its centre ~155 px from a wall, which is why the bound
-    // is 160 and not lower — so the deepest enclosed air must still be backdrop.
+    // a distance bound is exactly the kind of change that could cause it. A v1 void
+    // at VOID_RADIUS_MAX puts its centre ~155 px from a wall, which is why
+    // BACKDROP_MAX_DIST_TO_SOLID is 160 and not lower — so the deepest enclosed air
+    // must still be backdrop. `DEEP_WINDOW` is where that air is, per generator.
+    const [deepLo, deepHi] = DEEP_WINDOW[generator]
     const dist = distToSolid()
     let deep = 0
     let asSky = 0
-    for (let y = 8; y < h; y += 4) {
-      for (let x = 8; x < w; x += 4) {
+    // Stride 2, not 4. This population is one physical region — the interior of
+    // the widest cavity on the map — and on a small map that is a single cave
+    // chamber. At stride 4 it yields 11 samples, which is a control that controls
+    // nothing; the region did not change, the sampling did.
+    for (let y = 8; y < h; y += 2) {
+      for (let x = 8; x < w; x += 2) {
         if (core.solidAt(x, y)) continue
         const d = dist[y * w + x]!
         // Deep enclosed air: far from rock, but genuinely roofed and walled.
-        if (d < 90 || d > 150) continue
+        if (d < deepLo || d > deepHi) continue
         if (!roofed(x, y)) continue
         let below = false
         for (let k = 1; k < 320 && !below; k++) below = core.solidAt(x, y + k)
@@ -259,6 +300,106 @@ for (const [name, scale, seed] of CASES)
     const share = asSky / deep
     console.log(`   ${name}: ${(share * 100).toFixed(1)}% of deep enclosed air drawn as sky`)
     expect(share, `${(share * 100).toFixed(1)}% of deep enclosed air drawn as sky`).toBeLessThan(0.35)
+  })
+
+  /**
+   * `BACKDROP_MIN_ROOF`, stated directly: air with a clear column to the sky is
+   * never backdrop, however much rock is beside it.
+   *
+   * This is the assertion the sibling metrics could not make. Their "open sky"
+   * population excludes anything with rock within 120 px, so the defect the
+   * constant exists for — half a frame of sky painted as cave next to a 300 px
+   * mesa — sat entirely outside what they measured, and they reported 5-8 % while
+   * a playthrough showed a wall of brown.
+   */
+  it('never draws air with open sky straight overhead as backdrop', () => {
+    // Two legitimate ways a pixel with a clear column can still be interior, and
+    // the population excludes both rather than the assertion tolerating them:
+    //
+    //  - the roof field is per 8 px cell and blurred over 3x3, so within ~24 px of
+    //    rock a pixel inherits its roofed neighbours. That blur is what keeps the
+    //    boundary off the coarse lattice (see the sibling test) and is wanted.
+    //  - sealed air short-circuits every ray test. The floor of a crack narrower
+    //    than 2 x REACH_PX is sealed for flood purposes even though the sky is
+    //    straight up, and drawing it dark is right.
+    //
+    // 40 px of clearance clears both: it is past the blur, and wider than half of
+    // 2 x REACH_PX (28).
+    const dist = distToSolid()
+    // Sealed air short-circuits every ray test in `BackdropMask` by design, so it
+    // is excluded rather than tolerated. Flooded here with the class's own reach
+    // rule but computed independently — the flood seeds from the sky margin
+    // through air at least `REACH_PX` from rock, so a crack narrower than a
+    // player-sized disc does not let daylight in.
+    const sealed = (() => {
+      const rC = BackdropMask.REACH_PX * 3
+      const open = new Uint8Array(w * h)
+      const stack: number[] = []
+      const push = (x: number, y: number) => {
+        if (x < 0 || y < 0 || x >= w || y >= h) return
+        const i = y * w + x
+        if (open[i] || core.solidAt(x, y) || dist[i]! * 3 <= rC) return
+        open[i] = 1
+        stack.push(i)
+      }
+      for (let x = 0; x < w; x++) for (let y = 0; y < C().SKY_MARGIN; y++) push(x, y)
+      while (stack.length) {
+        const i = stack.pop()!
+        const x = i % w
+        const y = (i - x) / w
+        push(x + 1, y)
+        push(x - 1, y)
+        push(x, y + 1)
+        push(x, y - 1)
+      }
+      return open
+    })()
+
+    let openAbove = 0
+    let asBackdrop = 0
+    let nearish = 0
+    for (let y = 8; y < h; y += 4) {
+      for (let x = 8; x < w; x += 4) {
+        if (core.solidAt(x, y)) continue
+        if (dist[y * w + x]! < 40) continue
+        if (!sealed[y * w + x]) continue
+        // A clear column here **and** across the blur's reach either side. The
+        // roof field is per 8 px cell and blurred over 3x3, so a pixel 24 px from
+        // a roofed cell inherits some of it — that softening is what keeps the
+        // boundary off the coarse lattice, and a pixel sitting in it is not a
+        // defect. Ask about pixels that are unambiguously out from under.
+        let clear = true
+        for (let d = -24; d <= 24 && clear; d += 8) clear = !roofed(x + d, y)
+        if (!clear) continue
+        openAbove++
+        // Control on the population: some of it has to be the interesting case —
+        // sky hard against a cliff, which is where the ray tests get it wrong. A
+        // population of nothing but mid-sky would prove nothing.
+        for (let d = 40; d <= 140; d += 4) {
+          if (core.solidAt(x + d, y) || core.solidAt(x - d, y)) {
+            nearish++
+            break
+          }
+        }
+        if (bd.insideAt(x, y)) asBackdrop++
+      }
+    }
+    expect(openAbove).toBeGreaterThan(1000)
+    expect(nearish, 'no sampled sky sits within 140 px of a cliff').toBeGreaterThan(200)
+    console.log(
+      `   ${name}: ${asBackdrop}/${openAbove} clear-overhead px as backdrop (${nearish} near a cliff)`,
+    )
+    // Not zero, and the residual is measured rather than tolerated: 0 / 4 / 9 /
+    // 0 / 24 / 4 px of 30k-294k, i.e. 0.02 % at worst. It is sampling granularity
+    // on both sides — the roof ray is cast from the **cell corner**, so a pixel up
+    // to 7 px away can straddle a spire the cell's own column missed, and this
+    // test's own clearance walk steps 8 px. 0.1 % is 5x the worst measured; the
+    // defect this guards against was half a frame.
+    const share = asBackdrop / openAbove
+    expect(
+      share,
+      `${asBackdrop}/${openAbove} px with clear sky overhead drawn as backdrop`,
+    ).toBeLessThan(0.001)
   })
 
   it('keeps the interior boundary off the coarse grid', () => {

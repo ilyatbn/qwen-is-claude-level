@@ -3848,3 +3848,39 @@ Notes: REPRODUCTION RATE, `cargo test -p game-server`, 10 runs each:
        `wait_for` is also a real wall-clock deadline now. `for _ in 0..200 {
        sleep(50) }` counts ITERATIONS, so under load the budget silently
        stretched and the number in the failure message was a fiction.
+
+## MAP_GENERATOR_V2 — the landscape generator (out of band, user request)
+
+- Not a task file. The maps read as one cave system: v1 thresholds a warped fBm
+  field over the whole canvas, so it puts as much rock in the sky as air
+  underground, its floating islands are perforated too, and the renderer's
+  enclosure test quite correctly paints the lot brown.
+- **v2** builds the ground from a 1D height profile — fBm hills, terraced ledges,
+  flat-topped mesas, canyons cut to the bedrock — fills below the line, then hangs
+  solid islands in the sky and cuts one or two caves with shafts to the surface.
+  Open sky is a pixel's default state. `crates/game-core/src/map/gen/v2/`.
+- Both ship. `MAP_GENERATOR=v1|v2`, default v2 (RUNNING.md §5.1), in the replay
+  header (version 1 -> 2), and in the golden table, which now pins **both** — a
+  table that only pinned the default stopped guarding the other the moment the
+  default moved. All 12 v1 mask hashes are byte-identical; only v1's *meta*
+  digests changed, from the `is_standable` fix below.
+- **Two real bugs fell out, both pre-existing and both surfaced by the new
+  geometry.** The top of the map's own side wall was a standable ledge, and a
+  spawn landed on it with half the player outside the world: `is_standable` now
+  requires the whole body box in bounds. And `BackdropMask` could not tell
+  "inside a cavern" from "outside a cliff" — the up-diagonal rays hit the cliff,
+  so `BACKDROP_MIN_UP` was satisfied by the same rock that made the point plainly
+  outdoors. `BACKDROP_MIN_ROOF` asks the vertical column instead. Open sky drawn
+  as backdrop, v1: 16.42/5.86/7.18 % -> 0.9/0.1/0.1 %; v2: 2.3/8.1/2.0 % -> 0.0.
+  §A17's two bounds now both hold at every scale on both generators, which §A21
+  recorded as impossible.
+- Five e2e specs were reading fixtures, not the game. `wasd` aimed 200 px from
+  the screen *centre* and called a correct -71 degrees wrong once the camera
+  clamped; `sky` sampled a strip that is sky on the old map and rock on this one;
+  `m5-weather` read puddles 0.6 s in, and a drop now falls 880 px not 200;
+  `crates` needed a crate with clear air under it AND one our walker can reach.
+  All four now pick by content or derive from the map. `ordnance` and `crates`
+  were also load coin-flips — a fixed 400 ms settle spent the 4-rocket budget on
+  a busy box, and a 160 ms camera settle doubled the noise floor it is measured
+  against. Both now wait on the effect.
+- ./scripts/check.sh green, 28/28 e2e.

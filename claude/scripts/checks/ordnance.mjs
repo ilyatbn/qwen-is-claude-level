@@ -124,8 +124,42 @@ async function fireUntil(aim, pred, deadlineMs, what, weapon) {
     // running out now says so instead of testing a different weapon.
     if (weapon) await selectWeapon(page, weapon)
     await fireAt(sx, sy)
-    await settle(400)
+    // Wait for the shot to **resolve**, not for 400 ms.
+    //
+    // A fixed settle is a bet on how fast the box is, and the ammo budget is
+    // what pays when the bet is wrong: `DEV_LOADOUT` grants 4 rockets, so four
+    // premature retries empty the stack and `selectWeapon` then correctly refuses
+    // to carry on — reported from a full-suite run as `"bazooka" is not in the
+    // inventory. Held: 2:smg 3:mine 4:axe 5:flamethrower 6:molotov`, i.e. exactly
+    // the rockets gone and nothing else, while the same check passed standalone.
+    //
+    // A projectile in the air means the previous shot has not landed and firing
+    // again cannot be informed by it. The 1.5 s ceiling keeps a shot that never
+    // resolves — one that flew off the map — from hanging the loop, and the
+    // trailing settle covers the blast and the server's report of it.
+    for (let w = 0; w < 30; w++) {
+      const d = await dbg()
+      if ((d.projectilesLive ?? d.projectiles ?? 0) === 0) break
+      await settle(50)
+    }
+    await settle(250)
   }
+}
+
+/**
+ * What the player is holding, for the log.
+ *
+ * Printed after every step because a `selectWeapon` failure at the end of the
+ * run says only what is left, not when it went. Under full-suite load this check
+ * has reported "bazooka is not in the inventory. Held: 1:mine 2:axe
+ * 3:flamethrower" — four rockets, sixty smg rounds and two molotovs gone between
+ * the start and the last step, and nothing in the transcript to say which step
+ * spent them. One line per step turns that into a bisect.
+ */
+async function holding(where) {
+  const slots = (await page.evaluate('window.__game.debug().slots')) ?? []
+  const held = slots.filter((s) => s.key).map((s) => `${s.key}x${s.count}`)
+  console.log(`    holding after ${where}: ${held.join(' ') || '(nothing)'}`)
 }
 
 // --- the control ----------------------------------------------------------
@@ -155,6 +189,7 @@ const swung = await until((d) => d.swings > 0, 8000, 'a melee swing to arrive')
 if (swung) ok(`melee: ${swung.swings} swing(s) received and drawn`)
 
 // --- flamethrower: a jet, and a light ---------------------------------------
+await holding('melee')
 await selectWeapon(page, 'flamethrower')
 for (let i = 0; i < 6; i++) {
   await fireAt(900, 420)
@@ -174,6 +209,7 @@ if (sprayed) ok(`cone: ${sprayed.jets} jet(s) received and drawn`)
 // (mine 200 px overhead). None of it was needed: the fx layer draws at
 // DEPTH.particles, above DEPTH.actors, so a mine at your feet is drawn over your
 // own sprite and is visible without moving at all.
+await holding('cone')
 await selectWeapon(page, 'mine')
 await fireUntil({ sx: 640, sy: 700 }, (d) => d.minesPlaced > 0, 20_000, 'a mine to be placed', 'mine')
 const placed = (await dbg()).minesPlaced > 0 ? await dbg() : null
@@ -196,6 +232,7 @@ if (placed) {
 // A molotov leaves fire, which is a hazard the server narrates and (until now)
 // nothing drew. Assert on hazards *drawn*, not on `hazard_spawn` being counted —
 // counting was already happening and was exactly the bug.
+await holding('mine')
 await selectWeapon(page, 'molotov')
 await fireAt(900, 500)
 await settle(1200)
@@ -217,6 +254,7 @@ if (burnt) {
 }
 
 await page.screenshot({ path: join(shotsDir, 'ordnance-hazard.png') })
+await holding('hazard')
 
 
 // --- and the mine must go away again ---------------------------------------

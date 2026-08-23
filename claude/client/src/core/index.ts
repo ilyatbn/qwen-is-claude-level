@@ -29,6 +29,18 @@ export const enum MapScale {
   Large = 2,
 }
 
+/**
+ * Which terrain generator builds a locally generated map. Mirrors
+ * `game_core::constants::MapGenerator`; the server's `MAP_GENERATOR` picks the
+ * same two for a networked round.
+ */
+export const enum MapGenerator {
+  /** The warped-noise field with a cave network carved through it. */
+  V1 = 0,
+  /** The height-profile landscape: ground, islands, and a cave or two. */
+  V2 = 1,
+}
+
 export interface Point {
   x: number
   y: number
@@ -203,6 +215,7 @@ export interface Constants {
   BACKDROP_MIN_HITS: number
   BACKDROP_MIN_UP: number
   BACKDROP_MAX_DIST_TO_SOLID: number
+  BACKDROP_MIN_ROOF: number
 }
 
 /**
@@ -294,6 +307,14 @@ export class Core {
     const lo = Number(seed & 0xffffffffn) >>> 0
     const hi = Number((seed >> 32n) & 0xffffffffn) >>> 0
     this.inner.generate(lo, hi, scale)
+    this.invalidate()
+  }
+
+  /** `generate` against a named generator. Local only — see the WASM doc. */
+  generateWith(seed: bigint, scale: MapScale, generator: MapGenerator): void {
+    const lo = Number(seed & 0xffffffffn) >>> 0
+    const hi = Number((seed >> 32n) & 0xffffffffn) >>> 0
+    this.inner.generate_with(lo, hi, scale, generator)
     this.invalidate()
   }
 

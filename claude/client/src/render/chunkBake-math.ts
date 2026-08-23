@@ -232,6 +232,21 @@ export class BackdropMask implements MaskSource {
      * No default, for the same reason as the two above.
      */
     maxDistToSolid: number,
+    /**
+     * Share of a cell's neighbourhood that must have rock **straight up** before
+     * its air is interior (`BACKDROP_MIN_ROOF`). 0 disables the test.
+     *
+     * The ray tests cannot tell "inside a cavern" from "outside a cliff": beside a
+     * sheer face the up-diagonals hit the cliff, so `minUp` is satisfied by the
+     * same rock that makes the point plainly outdoors. The vertical column is the
+     * discriminator — interior air has rock over its head, air outdoors does not,
+     * however much rock is beside it.
+     *
+     * Defaulted, unlike its three siblings, because it is additive: an existing
+     * caller that does not pass it gets the behaviour it had. Production passes
+     * `C().BACKDROP_MIN_ROOF`.
+     */
+    minRoof = 0,
   ) {
     const w = (this.width = src.width)
     const h = (this.height = src.height)
@@ -277,6 +292,8 @@ export class BackdropMask implements MaskSource {
     const ch = Math.ceil(h / cell) + 1
     const hits = new Float32Array(cw * ch)
     const upHits = new Float32Array(cw * ch)
+    // 1 where the vertical column above the cell hits rock within `rayLen`.
+    const roof = new Float32Array(cw * ch)
     const dirs: Array<[number, number]> = []
     for (let k = 0; k < rays; k++) {
       const a = (k / rays) * Math.PI * 2
@@ -326,6 +343,21 @@ export class BackdropMask implements MaskSource {
         }
         hits[cy * cw + cx] = count
         upHits[cy * cw + cx] = up
+
+        // Straight up, at the same step as the rays. Not one of the eight: at
+        // `rays` = 8 the "up" ray is exactly vertical, but the count that gets
+        // thresholded mixes it with the diagonals and cannot be asked about it
+        // alone.
+        let roofed = 0
+        for (let t = STEP; t <= rayLen; t += STEP) {
+          const sy = py - t
+          if (sy < 0) break
+          if (px < w && solid[sy * w + px] === 1) {
+            roofed = 1
+            break
+          }
+        }
+        roof[cy * cw + cx] = roofed
       }
     }
 
@@ -363,6 +395,25 @@ export class BackdropMask implements MaskSource {
     // continuous, so the crossing moves with the geometry instead of snapping.
     // Both fields are blurred, for the same reason: integer counts against an
     // integer threshold put the bilinear crossing exactly on a cell edge.
+    const smoothRoof = new Float32Array(cw * ch)
+    for (let cy = 0; cy < ch; cy++) {
+      for (let cx = 0; cx < cw; cx++) {
+        let sum = 0
+        let wsum = 0
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = cx + dx
+            const ny = cy + dy
+            if (nx < 0 || ny < 0 || nx >= cw || ny >= ch) continue
+            const wt = dx === 0 && dy === 0 ? 8 : 1
+            sum += roof[ny * cw + nx]! * wt
+            wsum += wt
+          }
+        }
+        smoothRoof[cy * cw + cx] = sum / wsum
+      }
+    }
+
     const smoothUp = new Float32Array(cw * ch)
     for (let cy = 0; cy < ch; cy++) {
       for (let cx = 0; cx < cw; cx++) {
@@ -405,6 +456,7 @@ export class BackdropMask implements MaskSource {
     }
     hits.set(smooth)
     upHits.set(smoothUp)
+    roof.set(smoothRoof)
 
     // --- threshold at pixel resolution ------------------------------------
     const inside = new Uint8Array(n)
@@ -458,6 +510,16 @@ export class BackdropMask implements MaskSource {
         const utop = ua + (ub - ua) * fx
         const ubot = uc + (ud - uc) * fx
         if (utop + (ubot - utop) * fy < minUp) continue
+        // ...and it has to be over your head *vertically*, not off to one side.
+        if (minRoof > 0) {
+          const ra = roof[y0 * cw + x0]!
+          const rb = roof[y0 * cw + x1]!
+          const rc = roof[y1 * cw + x0]!
+          const rd = roof[y1 * cw + x1]!
+          const rtop = ra + (rb - ra) * fx
+          const rbot = rc + (rd - rc) * fx
+          if (rtop + (rbot - rtop) * fy < minRoof) continue
+        }
         inside[i] = 1
       }
     }

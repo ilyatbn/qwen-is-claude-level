@@ -40,10 +40,13 @@ const MIN_SUPPORT_PX: u32 = 3;
 /// 168 of 192 sampled columns on a medium map, which starves spawns and item
 /// placement of anywhere to go.
 pub fn is_standable(mask: &Mask, x: i32, y: i32) -> bool {
-    // The centre must be inside the world. Without this an x a few pixels off the
-    // left edge reads as standable: out-of-bounds is air, so the half of the body
-    // box that hangs outside looks clear and the half inside finds real support.
-    if x < 0 || x >= mask.w as i32 || y < 0 || y + 1 >= mask.h as i32 {
+    // The **whole body box** must be inside the world, not merely its centre.
+    // Out-of-bounds reads as air, so a box half outside the map finds its head
+    // clearance for free and needs only `MIN_SUPPORT_PX` from the half that is
+    // inside — which is exactly enough for the 8 px side-wall band. That made the
+    // top of the wall a standable ledge at the very top of the map, and a spawn
+    // landed on it with half the player outside the world.
+    if x - HALF_W < 0 || x + HALF_W > mask.w as i32 || y < 0 || y + 1 >= mask.h as i32 {
         return false;
     }
 
@@ -112,13 +115,39 @@ mod tests {
     }
 
     #[test]
-    fn a_flat_floor_yields_one_point_per_sampled_column() {
+    fn a_flat_floor_yields_one_point_per_sampled_column_that_fits_the_body() {
         let m = floor_at(200);
         let pts = extract_surface(&m);
-        assert_eq!(pts.len(), (W / SURFACE_SAMPLE_STEP as u32) as usize);
+        // Every sampled column but x = 0, whose body box would hang half outside
+        // the map. `is_standable`'s bounds rule is what excludes it.
+        assert_eq!(pts.len(), (W / SURFACE_SAMPLE_STEP as u32) as usize - 1);
+        assert!(
+            !pts.iter().any(|p| p.x == 0),
+            "x = 0 is not a standing spot"
+        );
         for p in &pts {
             assert_eq!(p.y, 199, "point {p:?} not on the floor");
         }
+    }
+
+    /// A ledge only as wide as the side-wall band is not somewhere to stand.
+    ///
+    /// This is the shape that put a spawn on top of the map's own wall: the box
+    /// hangs half outside, out-of-bounds reads as air so the head clearance is
+    /// free, and the 8 px of wall clears `MIN_SUPPORT_PX` on its own. The control
+    /// is the same ledge moved inboard, which *is* standable.
+    #[test]
+    fn a_ledge_flush_with_the_left_edge_is_not_standable() {
+        let mut m = Mask::new_empty(W, H);
+        for y in 200..H as i32 {
+            m.set_run(y, 0, 7);
+            m.set_run(y, 40, 47);
+        }
+        assert!(!is_standable(&m, 0, 199), "stood on a half-outside box");
+        assert!(
+            is_standable(&m, 44, 199),
+            "the inboard control is not standable"
+        );
     }
 
     #[test]

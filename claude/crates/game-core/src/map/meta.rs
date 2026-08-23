@@ -6,11 +6,11 @@
 //! See `docs/10-map-generation.md` §1.4, §Pass 8.
 
 use crate::constants::{
-    MapScale, BURIED_ATTEMPTS, BURIED_CLEARANCE, BURIED_OFFSET_MAX, BURIED_OFFSET_MIN,
-    BURIED_SEPARATION, WIND_MAX,
+    MapGenerator, MapScale, BURIED_ATTEMPTS, BURIED_CLEARANCE, BURIED_OFFSET_MAX,
+    BURIED_OFFSET_MIN, BURIED_SEPARATION, WIND_MAX,
 };
 use crate::map::gen::components::SealedPocket;
-use crate::map::gen::{generate_terrain, spawns::choose_spawns};
+use crate::map::gen::{generate_terrain_with, spawns::choose_spawns};
 use crate::map::{CoarseGrid, Mask};
 use crate::math::Point;
 use crate::rng::{range_f32, range_i32, substream, ChaCha8Rng};
@@ -109,6 +109,11 @@ pub fn generate(requested_seed: u64, scale: MapScale) -> Map {
     generate_with_secret(requested_seed, scale, 0)
 }
 
+/// As `generate`, against a named generator rather than `DEFAULT_MAP_GENERATOR`.
+pub fn generate_with(requested_seed: u64, scale: MapScale, generator: MapGenerator) -> Map {
+    generate_full(requested_seed, scale, 0, generator)
+}
+
 /// As `generate`, with a per-round `buried_secret` that never crosses the wire.
 ///
 /// Every buried slot is currently derivable by anyone holding the seed, and the
@@ -120,7 +125,27 @@ pub fn generate(requested_seed: u64, scale: MapScale) -> Map {
 /// test are unaffected; only the server rolls a real one, and it goes in the
 /// replay header so a round stays reproducible.
 pub fn generate_with_secret(requested_seed: u64, scale: MapScale, buried_secret: u64) -> Map {
-    let outcome = generate_terrain(requested_seed, scale);
+    generate_full(
+        requested_seed,
+        scale,
+        buried_secret,
+        crate::constants::DEFAULT_MAP_GENERATOR,
+    )
+}
+
+/// The one implementation the three entry points above delegate to.
+///
+/// Written once rather than three times because everything after `generate_terrain`
+/// — spawns, buried slots, decorations, the coarse grid — is generator-agnostic,
+/// and a second copy of it would drift (`CLAUDE.md`: share the guard, or share the
+/// function).
+pub fn generate_full(
+    requested_seed: u64,
+    scale: MapScale,
+    buried_secret: u64,
+    generator: MapGenerator,
+) -> Map {
+    let outcome = generate_terrain_with(requested_seed, scale, generator);
     let params = scale.params();
 
     let theme = (substream(requested_seed, "theme").next_u64_compat() % THEME_COUNT as u64) as u8;

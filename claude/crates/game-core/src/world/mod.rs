@@ -513,7 +513,35 @@ impl World {
     /// a modified client recomputes every buried slot exactly. Defaults to 0
     /// everywhere except a live server, so goldens and sweeps are unaffected.
     pub fn with_buried_secret(seed: u64, scale: MapScale, buried_secret: u64) -> Self {
-        let map = crate::map::generate_with_secret(seed, scale, buried_secret);
+        Self::build(
+            seed,
+            scale,
+            buried_secret,
+            crate::constants::DEFAULT_MAP_GENERATOR,
+        )
+    }
+
+    /// As `with_buried_secret`, against a named terrain generator.
+    ///
+    /// The server passes `MAP_GENERATOR` down here so v1 and v2 can be compared on
+    /// a running box. Nothing else in the world varies with it: the generator
+    /// produces a mask, and everything downstream consumes a mask.
+    pub fn with_generator(
+        seed: u64,
+        scale: MapScale,
+        buried_secret: u64,
+        generator: crate::constants::MapGenerator,
+    ) -> Self {
+        Self::build(seed, scale, buried_secret, generator)
+    }
+
+    fn build(
+        seed: u64,
+        scale: MapScale,
+        buried_secret: u64,
+        generator: crate::constants::MapGenerator,
+    ) -> Self {
+        let map = crate::map::generate_full(seed, scale, buried_secret, generator);
         let wind = map.meta.wind;
         let buried_items = assign_buried_items(&map, seed ^ buried_secret);
         let mut items = WorldItems::new();

@@ -354,8 +354,8 @@ fn a_corrupted_file_is_a_clear_error_not_a_panic() {
     let s = Scratch::new("bin-corrupt");
     let path = record_a_round(s.path(), 300);
     let mut bytes = std::fs::read(&path).expect("read");
-    // The first command tag sits just past the 42-byte header and a u32 tick.
-    bytes[46] = 250;
+    // The first command tag sits just past the header and the command's u32 tick.
+    bytes[game_server::replay::HEADER_BYTES + 4] = 250;
     let bad = s.path().join("corrupt.replay");
     std::fs::write(&bad, &bytes).expect("write");
 

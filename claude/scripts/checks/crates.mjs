@@ -59,6 +59,33 @@ const ROUND_SECONDS = 140
 /** How often the approach loop samples. The pickup tolerance is derived from it. */
 const APPROACH_POLL_MS = 160
 
+/**
+ * The map this check is tuned against. **4242 -> 555.**
+ *
+ * Two things have to hold at once, and 4242 under `MAP_GENERATOR=v2` gives
+ * neither:
+ *
+ *  - **Clear air under the crate.** The flight is photographed, then the crate
+ *    has to fall further out of that same rect for the control frame. On 4242 the
+ *    crate lands on a floating island 253 px below its spawn, and once the camera
+ *    has been aimed and settled there are 45 px of flight left.
+ *  - **A crate our client can walk to.** The approach loop holds a direction and
+ *    jets in bursts; it is not a pathfinder, and on 31337 the crate lands across
+ *    a mesa from the spawn. Measured: pinned at x=1440 for 20 s, 433 px short.
+ *
+ * Probed rather than guessed. Clear air under the crate: 4242 253 px, 7 508,
+ * 99 635, **555 671**, 31337 943. Of those, 555 is the one whose crate is also
+ * reachable. Overridable so the next person can probe the same way without
+ * editing the file:
+ *
+ *   CRATE_SEED=99 node scripts/e2e.mjs crates
+ *
+ * A failure here is a fixture question before it is a bug: the check prints the
+ * clear air it found and the closest approach it managed, which is what those two
+ * numbers are for.
+ */
+const CRATE_SEED = process.env.CRATE_SEED ?? '555'
+
 const stack = await startStack({
   port: PORT,
   label: 'crates',
@@ -68,7 +95,7 @@ const stack = await startStack({
     // to reach it are the same every run. Without it this check is a different
     // fixture each time and "the player could not reach it" becomes a coin flip
     // rather than a result — the mistake `terrain-render` already made once.
-    FIXED_SEED: '4242',
+    FIXED_SEED: CRATE_SEED,
     // **No bots.** They used to be here to do the walking, because our client
     // could not reach the crate. It can now (it flies), and with bots in the
     // room "the crate stopped existing" is satisfied by a bot taking it 190 px
@@ -144,6 +171,66 @@ if (!seen) {
   const id = seen.mirror.id
   ok(`crate ${id} spawned at y=${seen.mirror.y.toFixed(0)}`)
 
+  // --- how far this crate is going to fall, before it falls ---------------
+  //
+  // Probed from the mask, not assumed. The framing altitude and the "it fell
+  // further" distance below used to be the literals 130 and 140, chosen against
+  // the map `FIXED_SEED=4242` produced at the time and carrying a comment saying
+  // as much: "the altitude is a fixture choice about *this* seed". The seed did
+  // not change; `MAP_GENERATOR=v2` changed what it builds. This crate lands on a
+  // floating island 258 px below its spawn, so a 130 px entry plus 140 px of
+  // further fall does not fit inside the flight, and two pixel assertions failed
+  // for having nowhere to stand rather than for anything being wrong.
+  //
+  // The columns either side are probed too: the canopy patch sits 44 px left of
+  // the crate at zoom 2 and its quiet control another 120 px left of that, so
+  // "open sky" has to hold across roughly +/-90 world px or the controls contain
+  // terrain — which this fixture has already caught once, and says so above.
+  const landY = await page.evaluate(
+    ([x, y0]) => {
+      const core = window.__game.core
+      let best = core.height
+      for (const dx of [-90, -45, 0, 45, 90]) {
+        const cx = Math.round(x + dx)
+        for (let y = Math.round(y0); y < core.height; y++) {
+          if (core.solidAt(cx, y)) {
+            if (y < best) best = y
+            break
+          }
+        }
+      }
+      return best
+    },
+    [seen.mirror.x, seen.mirror.y],
+  )
+  const drop = landY - seen.mirror.y
+  // Frame a third of the way down, and ask for another third of a fall after
+  // that. Both derived, so a map that drops a crate 250 px and one that drops it
+  // 1200 px are photographed at the same point in the flight.
+  const frameAt = seen.mirror.y + Math.max(40, Math.round(drop * 0.3))
+  // How far the crate has to fall for the control frame: **enough to take the
+  // canopy out of the rect, and no further.**
+  //
+  // Derived from the drawing, not from the flight. `itemSprites` puts the canopy
+  // 34 px above the crate with a radius of 20, and the rect is 42 screen px tall
+  // — 21 world px at zoom 2. 80 px clears all of it.
+  //
+  // It used to be a third of the fall, which on a long drop is 200 px and about
+  // 0.4 s of wall clock. That window is not free: the scene keeps moving in it —
+  // the lightmap is radial about the player (§A3) and the sky animates — and the
+  // fixture's own noise control measured 13-24 in a rect with nothing in it, on
+  // the same seed, run to run. At a floor of `max(45, drift * 3)` that is a gate
+  // decided by which end of that range the run lands on. Halving the window
+  // halves the noise; the canopy is just as gone.
+  const fellBy = 80
+  console.log(`    fall: y ${seen.mirror.y.toFixed(0)} -> clear to ${landY}, frame at ${frameAt}, then +${fellBy}`)
+  if (landY - frameAt < fellBy + 60) {
+    fail(
+      `the crate has ${drop} px of clear air under it and only ${landY - frameAt} px below the ` +
+        `framing point — not enough for the control frame (needs ${fellBy + 60})`,
+    )
+  }
+
   // --- the fall, sampled from what is drawn ------------------------------
   //
   // Sampled as fast as the page will answer, and with nothing else happening in
@@ -175,7 +262,7 @@ if (!seen) {
     // crate usually lands during it. So the observed fall below is the part
     // before this point — still hundreds of pixels, and still zero when the
     // drain is broken.
-    if (!framedInFlight && c.mirror.y >= 130) {
+    if (!framedInFlight && c.mirror.y >= frameAt) {
       // Point the camera at the crate and photograph it. The alternative is a
       // screenshot of wherever the player happens to be, which is what the first
       // version produced: three runs of `crate-falling.png` containing no crate.
@@ -185,15 +272,27 @@ if (!seen) {
       // the crate has gone*. Comparing against a patch of sky somewhere else
       // would be comparing two different places and calling the difference a
       // crate.
+      // Aim, settle, *then* stop the world — in that order.
+      //
+      // Freezing first looks like it should be better: the crate stops where the
+      // entry test found it instead of falling another ~190 px while the camera
+      // is aimed. It is not, and the reason is worth writing down. `freeze` stops
+      // the *client*; the server keeps simulating, so the crate's reported
+      // position advances anyway — and with the client frozen the camera rig
+      // stops lerping too, so `watch` never arrives. Measured: the crate ended up
+      // at screen y=630 of 720, the canopy rect landed on empty sky 100 px above
+      // it, and the pixel assertion read a delta of 1.8 against a floor of 45.
+      //
+      // So the settle is not overhead to be optimised away, it is what puts the
+      // subject in the middle of the frame. The overshoot it costs is paid for by
+      // choosing a seed with enough clear air under the crate (`CRATE_SEED`).
+      //
       // Aimed slightly below the crate: it keeps falling while the frame is
       // captured, and a subject centred at the moment of the snap is low in the
       // frame by the time the shutter opens.
       flightPos = { x: c.mirror.x, y: c.mirror.y + 90 }
       await page.evaluate(([x, y]) => window.__game.watch(x, y), [flightPos.x, flightPos.y])
       await sleep(160)
-      // Stop the world. Everything below reads a position and then takes a
-      // picture, and those have to be the same instant or the patch is computed
-      // for a crate that has already left it.
       await page.evaluate(() => window.__game.freeze(true))
       // Read where the crate actually is on screen rather than assuming the
       // camera centred on it. It does not: the rig lerps, and the crate keeps
@@ -201,7 +300,16 @@ if (!seen) {
       // the crate and measured a delta of 11.5 for a frame that, looked at, has
       // a parachute in the middle of it.
       const cur = await crateNow()
-      const sp = cur.mirror ? await screenPos(cur.mirror) : null
+      // Positioned off the **drawn** sprite, not the mirror.
+      //
+      // The frozen frame shows where the client last rendered the crate; the
+      // mirror is where the server says it is, and between them sit a snapshot
+      // interval and the render interpolation. The rect is 26x42 on a canopy
+      // about 80 px wide at this zoom, so tens of pixels of disagreement move it
+      // off the subject — and it did: the same seed measured 51.0 on one run and
+      // 39.7 on the next against a floor of 45. That is a gate that fails on a
+      // coin flip, which gates nothing.
+      const sp = cur.drawn ? await screenPos(cur.drawn) : cur.mirror ? await screenPos(cur.mirror) : null
       const _d = await dbg()
       console.log(
         `    framing: crate (${cur.mirror?.x?.toFixed(0)}, ${cur.mirror?.y?.toFixed(0)}) ` +
@@ -270,19 +378,61 @@ if (!seen) {
         canopy = await samplePatch(page, canopyRect)
         // A second rect, sampled in both frames, as the noise term: whatever it
         // moves by is what this scene does on its own in that half second.
-        const quietRect = { ...canopyRect, x: canopyRect.x - 120 }
-        const quietBefore = await samplePatch(page, quietRect)
+        //
+        // **Placed by content, not at a fixed offset.** A hardcoded -120 px is
+        // only "a rect with nothing in it" if there happens to be nothing there,
+        // and on a different map there is: this fixture's own guard reported it
+        // drifting 21-23 against a ceiling of 20 and correctly refused to
+        // attribute anything. Search outward for the nearest offset whose world
+        // pixels are all air, and say so if there is none.
+        const quietRect = await page.evaluate(
+          (rect) => {
+            const g = window.__game.debug()
+            const v = g.worldView
+            const cv = document.querySelector('canvas')
+            const r = cv.getBoundingClientRect()
+            const core = window.__game.core
+            const toWorld = (sx, sy) => ({
+              x: v.x + (sx / r.width) * v.w,
+              y: v.y + (sy / r.height) * v.h,
+            })
+            const clear = (x0) => {
+              for (let dx = -2; dx <= rect.w + 2; dx += 4) {
+                for (let dy = -2; dy <= rect.h + 2; dy += 6) {
+                  const p = toWorld(x0 + dx, rect.y + dy)
+                  if (core.solidAt(Math.round(p.x), Math.round(p.y))) return false
+                }
+              }
+              return true
+            }
+            for (const off of [-120, 120, -170, 170, -220, 220, -280, 280]) {
+              const x0 = rect.x + off
+              if (x0 < 4 || x0 + rect.w > r.width - 4) continue
+              if (clear(x0)) return { ...rect, x: Math.round(x0) }
+            }
+            return null
+          },
+          canopyRect,
+        )
+        if (!quietRect) {
+          fail(
+            'no rect of open air beside the canopy to use as the noise control — ' +
+              'the crate is falling too close to terrain on this map',
+          )
+        }
+        const quietBefore = quietRect ? await samplePatch(page, quietRect) : null
         await shot('crate-falling')
 
         // Let the crate fall clear of the rect, then re-pin the SAME point.
         await page.evaluate(() => window.__game.freeze(false))
-        const fellBy = 140
         let cleared = false
-        for (let w = 0; w < 60 && !cleared; w++) {
+        for (let w = 0; w < 200 && !cleared; w++) {
           const c2 = await crateNow()
           if (!c2.mirror) break // taken or landed already
           cleared = c2.mirror.y > cur.mirror.y + fellBy
-          if (!cleared) await sleep(50)
+          // No sleep: the evaluate round trip is already the poll interval, and
+          // every millisecond spent here is scene motion the noise control has to
+          // absorb.
         }
         if (!cleared) {
           fail(
@@ -290,19 +440,29 @@ if (!seen) {
               '"after" frame to compare the canopy against',
           )
         } else {
-          await page.evaluate(([x, y]) => window.__game.watch(x, y), [flightPos.x, flightPos.y])
-          await sleep(160)
+          // Freeze the instant the crate has cleared, and do not settle the camera
+          // again: it is still pinned to `flightPos` from the first frame, so
+          // there is nothing to settle. The 160 ms that used to sit here is 160 ms
+          // of extra scene motion in a window whose whole purpose is to hold the
+          // scene still — and the noise control is measured over exactly this
+          // window. Under full-suite load it read 23 against a ceiling of 20 while
+          // reading 12.8 standalone, which is the same run failing or passing on
+          // how busy the box is.
           await page.evaluate(() => window.__game.freeze(true))
+          await page.evaluate(([x, y]) => window.__game.watch(x, y), [flightPos.x, flightPos.y])
           skyL = await samplePatch(page, canopyRect)
-          skyR = await samplePatch(page, quietRect)
+          skyR = quietRect ? await samplePatch(page, quietRect) : null
           // `skyL` is the canopy's own rect with the canopy gone; `skyR` is the
           // quiet rect, whose change between the two frames is the noise floor.
           // Named for the shape the assertion below already had.
-          quietDriftValue = Math.hypot(
-            quietBefore.r - skyR.r,
-            quietBefore.g - skyR.g,
-            quietBefore.b - skyR.b,
-          )
+          quietDriftValue =
+            quietBefore && skyR
+              ? Math.hypot(
+                  quietBefore.r - skyR.r,
+                  quietBefore.g - skyR.g,
+                  quietBefore.b - skyR.b,
+                )
+              : 0
           const drift = quietDriftValue
           console.log(
             `    control: the same rect after the crate fell ${fellBy} px; ` +
@@ -472,6 +632,9 @@ if (!seen) {
   let last = null
   let stuckFor = 0
   let jetting = false
+  /** Jetpack duty cycle: polls spent in this burst, and polls left resting. */
+  let jetPolls = 0
+  let jetRest = 0
   let lastGap = Infinity
   const pickupsBefore = (await dbg()).observed?.itemPickups ?? 0
   const deadline = Date.now() + 70_000
@@ -513,6 +676,14 @@ if (!seen) {
       closest = Math.min(closest, lastGap)
       // Hold the key down rather than tapping it: a 400 ms tap with a gap after
       // it walks at about half speed, and the round is not long enough for that.
+      // Always toward the crate.
+      //
+      // A sidestep-when-blocked rule was tried and is why this comment exists: it
+      // flips direction on a stall, and with the crate *below* and to the right
+      // every flip is away from it. Measured, the walker oscillated between
+      // x=1153 and x=1440 for 45 s of a 70 s budget and finished 432 px away
+      // having twice been within 260. Going the wrong way on purpose needs a
+      // reason better than "we stopped moving".
       const want = dx > 0 ? 'd' : 'a'
       if (held !== want) {
         if (held) await page.keyboard.up(held)
@@ -531,7 +702,33 @@ if (!seen) {
       // once level with the crate, so the fuel refills for the next lift rather
       // than being spent overshooting into the sky.
       const above = me.y - stillThere.y // >0: the crate is higher than we are
-      const wantJet = above > 24
+      // Fly when the crate is above us, or when a wall has stopped us — and fly
+      // in **bursts**, because the tank does not refill while the key is down.
+      //
+      // Both halves were paid for. `above > 24` alone only lifts you toward a
+      // crate that is higher than you are, so a crate 1265 px away at the bottom
+      // of a canyon never triggered it: the walker hit the first cliff and
+      // covered 500 px in 70 s. Adding "or stuck" then held Space forever, which
+      // drains `JETPACK_MAX_FUEL` (5 s) and then holds an empty tank down through
+      // `JETPACK_REFILL_DELAY` for the rest of the round — measured 6 s pinned at
+      // x=1440 with the stall counter climbing to 37 and the body not moving.
+      //
+      // 20 polls of burst is ~3.2 s at APPROACH_POLL_MS, inside the tank; 16 of
+      // rest is ~2.6 s, past the refill delay.
+      let wantJet = false
+      if (jetRest > 0) {
+        jetRest--
+      } else if (above > 24 || stuckFor > 3) {
+        if (jetPolls < 20) {
+          wantJet = true
+          jetPolls++
+        } else {
+          jetPolls = 0
+          jetRest = 16
+        }
+      } else {
+        jetPolls = 0
+      }
       if (wantJet !== jetting) {
         if (wantJet) await page.keyboard.down('Space')
         else await page.keyboard.up('Space')
@@ -543,10 +740,13 @@ if (!seen) {
       last = me.x
       if (moved) stuckFor = 0
       else stuckFor++
+      // The hop stays as the zero-fuel fallback: `wantJet` above holds Space while
+      // stuck, and when the tank is empty that does nothing at all.
       if (!jetting && stuckFor > 0) await page.keyboard.press('Space')
       if (i % 12 === 0) {
         console.log(
           `    approach: me (${me.x.toFixed(0)}, ${me.y.toFixed(0)}) ` +
+            `grounded=${me.grounded} jet=${jetting} stuck=${stuckFor} key=${want} ` +
             `crate (${stillThere.x.toFixed(0)}, ${stillThere.y.toFixed(0)})`,
         )
       }

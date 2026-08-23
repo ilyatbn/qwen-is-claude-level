@@ -10,10 +10,10 @@ use std::env;
 use std::fmt;
 use std::net::SocketAddr;
 
-use game_core::constants::MapScale;
+use game_core::constants::{MapGenerator, MapScale};
 use game_core::constants::{
-    BOT_COUNT_DEFAULT, BOT_SKILL_DEFAULT, DEFAULT_MAP_SCALE, MAX_PLAYERS, MIN_PLAYERS_TO_START,
-    ROOM_EMPTY_TTL, ROUND_SECONDS,
+    BOT_COUNT_DEFAULT, BOT_SKILL_DEFAULT, DEFAULT_MAP_GENERATOR, DEFAULT_MAP_SCALE, MAX_PLAYERS,
+    MIN_PLAYERS_TO_START, ROOM_EMPTY_TTL, ROUND_SECONDS,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +21,14 @@ pub struct Config {
     pub bind_addr: SocketAddr,
     pub game_log: String,
     pub map_scale: MapScale,
+    /// Which terrain generator builds the round's map.
+    ///
+    /// Runtime rather than compile-time because the two are meant to be compared
+    /// on the same box: `MAP_GENERATOR=v1` puts the old maps back without a
+    /// rebuild. Safe to switch at runtime because the client is sent the finished
+    /// mask in `map_init` and never regenerates it from the seed — only the
+    /// sandbox and preview scenes call the generator, and they are local.
+    pub map_generator: MapGenerator,
     pub max_players: usize,
     pub round_seconds: f32,
     /// Seconds after the last human leaves before the room is dropped (§B1).
@@ -88,6 +96,7 @@ impl Default for Config {
             bind_addr: ([0, 0, 0, 0], 3000).into(),
             game_log: "info".to_string(),
             map_scale: DEFAULT_MAP_SCALE,
+            map_generator: DEFAULT_MAP_GENERATOR,
             max_players: MAX_PLAYERS,
             round_seconds: ROUND_SECONDS,
             room_empty_ttl: ROOM_EMPTY_TTL,
@@ -133,6 +142,15 @@ impl Config {
                 expected: "one of: small, medium, large".to_string(),
             })?,
             None => d.map_scale,
+        };
+
+        let map_generator = match get("MAP_GENERATOR") {
+            Some(v) => MapGenerator::parse(&v).ok_or_else(|| ConfigError {
+                var: "MAP_GENERATOR",
+                value: v.clone(),
+                expected: "one of: v1, v2".to_string(),
+            })?,
+            None => d.map_generator,
         };
 
         let max_players = parse_usize(&get, "MAX_PLAYERS", d.max_players, 1, MAX_PLAYERS)?;
@@ -222,6 +240,7 @@ impl Config {
             bind_addr,
             game_log,
             map_scale,
+            map_generator,
             max_players,
             round_seconds,
             room_empty_ttl,
@@ -243,11 +262,12 @@ impl Config {
     /// One line, `key=value`, for the startup log (`docs/61-logging-debug.md` §2).
     pub fn summary(&self) -> String {
         format!(
-            "bind={} scale={} max_players={} round_seconds={} min_players={} \
+            "bind={} scale={} generator={} max_players={} round_seconds={} min_players={} \
              room_empty_ttl={} fixed_seed={} record_replay={} debug_dump={} bots={} \
              bot_skill={}",
             self.bind_addr,
             self.map_scale.as_str(),
+            self.map_generator.as_str(),
             self.max_players,
             self.round_seconds,
             self.min_players_to_start,

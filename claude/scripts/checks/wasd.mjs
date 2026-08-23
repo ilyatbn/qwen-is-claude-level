@@ -100,14 +100,66 @@ export default async function ({ page, shot, log }) {
   if (!(descended.y > beforeS.y + 5)) throw new Error('S did not descend')
 
   // --- Aim tracks the mouse in WORLD space, after the camera has scrolled ---
+  //
+  // The mouse goes to the screen point that corresponds to a chosen **world**
+  // point beside the player, via the camera's `worldView`. Placing it 200 px from
+  // the screen centre instead assumes the player is centred, and the player is
+  // only centred while the camera is free — at a map edge it clamps. When the map
+  // generator's ground line moved down the frame the camera clamped at the
+  // bottom, the screen centre landed well above the player, and the aim this
+  // reported was -71 degrees: correct for where the mouse was, and nothing to do
+  // with what the test meant to ask.
   await settle()
   const d0 = await dbg()
-  await page.mouse.move(640 + 200, 360)
+
+  /**
+   * Put the mouse level with the player and `dx` world px to its side, and return
+   * the world point it actually landed on.
+   *
+   * The point is **clamped into the camera's `worldView`**. The viewport is
+   * 640x360 world px at this zoom, so a naive player.x + 300 is off the right of
+   * the window: the mouse move is clamped by the browser, the game sees a pointer
+   * somewhere else entirely, and the aim it reports has nothing to do with the
+   * question. That is what -2.674 rad was.
+   */
+  const aimAt = (dx) =>
+    page.evaluate(
+      (d) => {
+        const g = window.__game.debug()
+        const v = g.worldView
+        const m = 40
+        const wx = Math.min(Math.max(g.player.x + d, v.x + m), v.x + v.w - m)
+        const wy = Math.min(Math.max(g.player.y, v.y + m), v.y + v.h - m)
+        const c = document.querySelector('canvas')
+        const r = c.getBoundingClientRect()
+        return {
+          world: { x: wx, y: wy },
+          screen: {
+            x: r.left + ((wx - v.x) / v.w) * r.width,
+            y: r.top + ((wy - v.y) / v.h) * r.height,
+          },
+          player: { x: g.player.x, y: g.player.y },
+        }
+      },
+      dx,
+    )
+
+  const r = await aimAt(200)
+  await page.mouse.move(r.screen.x, r.screen.y)
   await page.waitForTimeout(120)
   const aimRight = (await dbg()).aim
-  await page.mouse.move(640 - 200, 360)
+  // Control: the mouse really is to the player's right in the world, so a failing
+  // assertion below is the game's aim and not the harness's arithmetic.
+  if (!(r.world.x > r.player.x + 50)) {
+    throw new Error(`harness put the "right" point at ${r.world.x} for a player at ${r.player.x}`)
+  }
+  const l = await aimAt(-200)
+  await page.mouse.move(l.screen.x, l.screen.y)
   await page.waitForTimeout(120)
   const aimLeft = (await dbg()).aim
+  if (!(l.world.x < l.player.x - 50)) {
+    throw new Error(`harness put the "left" point at ${l.world.x} for a player at ${l.player.x}`)
+  }
   log(`Aim: right ${aimRight.toFixed(3)} rad, left ${aimLeft.toFixed(3)} rad`)
   if (!(Math.cos(aimRight) > 0.5)) throw new Error('aim did not point right')
   if (!(Math.cos(aimLeft) < -0.5)) throw new Error('aim did not point left')
