@@ -41,6 +41,7 @@ import { Bars } from '../ui/bars'
 import { InventoryPanel } from '../ui/inventory'
 import { EscapeMenu, handleEscape } from '../ui/escapeMenu'
 import { DebugMode } from '../ui/debugMode'
+import { devSurface } from '../dev'
 import { DebugOverlay } from '../render/debugOverlay'
 import { energyBar, healthBar, inRefillDelay, jetpackBar, shieldRing } from '../ui/bars-math'
 import { DebugHud } from '../ui/debugHud'
@@ -715,7 +716,10 @@ export class GameScene extends Phaser.Scene {
       for (const r of this.remotes.values()) r.view.destroy()
     })
 
-    if (params.get('e2e') === '1') this.exposeDebugHandle()
+    // §C17: the handle is a **development** surface. `devSurface()` folds to a
+    // literal at build time, so in a production bundle this whole call and the
+    // body it reaches are deleted rather than merely unreachable.
+    if (devSurface() && params.get('e2e') === '1') this.exposeDebugHandle()
 
     const name = params.get('name') ?? `player${Math.floor(Math.random() * 1000)}`
     try {
@@ -1327,17 +1331,24 @@ export class GameScene extends Phaser.Scene {
     // §C12. Built after the crosshair and the overlay, because it turns both off
     // on construction — and **off is the default**, so a normal game shows the
     // crosshair and nothing else.
-    this.overlay = new DebugOverlay(this, this.core, false)
-    this.debugMode = new DebugMode({
-      setAimRing: (on) => this.crosshair.setRingVisible(on),
-      setOverlays: (on) => this.overlay?.set(on),
-    })
-    this.input.keyboard?.on('keydown-F1', (e: KeyboardEvent) => {
-      // The browser's own help panel is on F1 in some builds.
-      e.preventDefault?.()
-      this.debugMode?.toggle()
-      this.audio.play('ui_click', { volume: 0.4 })
-    })
+    // §C17 lists the overlays, the aim ring and the FPS counter among the things
+    // a production build does not contain. So debug mode is built only when the
+    // dev surface is — and the ring is hidden by the crosshair itself, not by
+    // this, so a build without debug mode has no ring rather than a ring nobody
+    // can turn off.
+    if (devSurface()) {
+      this.overlay = new DebugOverlay(this, this.core, false)
+      this.debugMode = new DebugMode({
+        setAimRing: (on) => this.crosshair.setRingVisible(on),
+        setOverlays: (on) => this.overlay?.set(on),
+      })
+      this.input.keyboard?.on('keydown-F1', (e: KeyboardEvent) => {
+        // The browser's own help panel is on F1 in some builds.
+        e.preventDefault?.()
+        this.debugMode?.toggle()
+        this.audio.play('ui_click', { volume: 0.4 })
+      })
+    }
 
     this.input.keyboard?.on('keydown-ESC', () => {
       // Innermost overlay first (§C13). The decision is `handleEscape`'s so it
@@ -1546,6 +1557,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   private exposeDebugHandle(): void {
+    // Guarded again *inside* the method, and not redundantly: a class method is
+    // reachable from the prototype, so the bundler keeps it however the call
+    // site is guarded. What it does delete is a block behind a `false` literal —
+    // which is what takes the word `__game` out of the artifact, and that is
+    // what `no-dev-surface` greps for.
+    if (!devSurface()) return
     const self = this
     ;(window as unknown as { __game: unknown }).__game = {
       /**

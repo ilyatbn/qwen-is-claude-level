@@ -30,10 +30,22 @@ export const shotsDir = join(root, 'shots')
 mkdirSync(shotsDir, { recursive: true })
 
 const require = createRequire(join(root, 'client/package.json'))
-const { chromium } = require('playwright-core')
+/**
+ * Exported so a check that drives a **built bundle** instead of the dev server —
+ * `no-dev-surface` — gets the browser the same way. `playwright-core` is
+ * resolved through `client/package.json`, so importing it directly from
+ * `scripts/` does not find it.
+ */
+export const { chromium } = require('playwright-core')
 
-const libDir = join(process.env.HOME ?? '', '.cache/pwlibs/root/usr/lib/x86_64-linux-gnu')
-const chromePath = join(
+/**
+ * Where the hand-extracted chromium libs live on this box, and the browser
+ * binary itself. Exported so a check that drives a **built bundle** rather than
+ * the dev server — `no-dev-surface` — can launch the same browser the same way
+ * without a second copy of the LD_LIBRARY_PATH incantation.
+ */
+export const libDir = join(process.env.HOME ?? '', '.cache/pwlibs/root/usr/lib/x86_64-linux-gnu')
+export const chromePath = join(
   process.env.HOME ?? '',
   '.cache/ms-playwright/chromium-1234/chrome-linux64/chrome',
 )

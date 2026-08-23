@@ -1,22 +1,53 @@
 import Phaser from 'phaser'
-import { BootScene } from './scenes/BootScene'
-import { PreviewScene } from './scenes/PreviewScene'
-import { SandboxScene } from './scenes/SandboxScene'
 import { GameScene } from './scenes/GameScene'
 import { TitleScene } from './scenes/TitleScene'
 import { MenuScene } from './scenes/MenuScene'
 import { SkinsScene } from './scenes/SkinsScene'
 import { C, Core } from './core'
+import { devSurface } from './dev'
 
 // No constants are declared here. VIEWPORT_W/H used to be literals in this file —
 // a second source of truth for numbers that live in game-core/src/constants.rs.
 // They now cross the WASM boundary with everything else. See docs/01-architecture.md.
-/** `?sandbox=1` is the dev tool, `?preview=1` the bare render harness. */
-function pickScene(): Phaser.Types.Scenes.SceneType[] {
+
+/**
+ * The scenes a **player** can reach: the title first (§B3), with the rest
+ * registered so `scene.start('Menu')` resolves.
+ *
+ * The dev scenes and every scene-selection query parameter live in
+ * `pickDevScene` below, behind §C17's build flag, and are not in this list.
+ */
+function playerScenes(): Phaser.Types.Scenes.SceneType[] {
+  return [TitleScene, MenuScene, SkinsScene, GameScene]
+}
+
+/**
+ * §C17: the dev scenes and the query parameters that reach them, **compiled out
+ * of a production build**.
+ *
+ * The measured problem was that anyone could type `?sandbox=1` and get a
+ * different game: the shipped bundle contained `__game`, `sandbox`,
+ * `toggleOverlays` and `regenerate`, and `import.meta.env` appeared nowhere in
+ * the source — nothing was gated at build time at all.
+ *
+ * The imports are **dynamic and inside the branch**. A top-level import of
+ * `SandboxScene` would keep the module in the graph whatever the branch did;
+ * inside a `if (false)` body the whole call disappears and the module is never
+ * part of the build.
+ */
+async function pickDevScene(): Promise<Phaser.Types.Scenes.SceneType[] | null> {
+  if (!devSurface()) return null
   const q = new URLSearchParams(location.search)
-  if (q.get('sandbox') === '1') return [SandboxScene]
-  if (q.get('preview') === '1') return [PreviewScene]
-  if (q.get('boot') === '1') return [BootScene]
+
+  if (q.get('sandbox') === '1') {
+    return [(await import('./scenes/SandboxScene')).SandboxScene]
+  }
+  if (q.get('preview') === '1') {
+    return [(await import('./scenes/PreviewScene')).PreviewScene]
+  }
+  if (q.get('boot') === '1') {
+    return [(await import('./scenes/BootScene')).BootScene]
+  }
   // `?game=1` drops straight into a round, which is what the e2e suite and the
   // two-client checks want — they were written before there was a front end and
   // should not have to click through it.
@@ -27,14 +58,14 @@ function pickScene(): Phaser.Types.Scenes.SceneType[] {
   if (q.get('menu') === '1') return [MenuScene, SkinsScene, GameScene]
   // `?skins=1` opens the picker directly, for the same reason `?game=1` exists.
   if (q.get('skins') === '1') return [SkinsScene, MenuScene]
-  // Otherwise a player meets the title screen first (§B3). Every scene is
-  // registered so `scene.start('Menu')` resolves.
-  return [TitleScene, MenuScene, SkinsScene, GameScene]
+  return null
 }
 
 async function main(): Promise<Phaser.Game> {
   const core = await Core.init()
   const c = C()
+
+  const scene = (await pickDevScene()) ?? playerScenes()
 
   const game = new Phaser.Game({
     type: Phaser.AUTO,
@@ -50,7 +81,7 @@ async function main(): Promise<Phaser.Game> {
       pixelArt: true,
       antialias: false,
     },
-    scene: pickScene(),
+    scene,
   })
 
   // Right-click is the inventory toggle (docs/30-items-inventory.md §3), so the

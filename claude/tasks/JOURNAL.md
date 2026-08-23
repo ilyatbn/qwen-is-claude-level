@@ -4069,3 +4069,22 @@ way it came; `wasd`'s jetpack descent had a 5 px bound against a 5.3 px reading;
 and leaves while it is in the air.
 
 `./scripts/check.sh` green, 33/33 e2e.
+
+## T14.08 — the dev surface is compiled out
+
+`__DEV_SURFACE__` is a vite `define`, so by build time it is the literal `false`
+and every `if (devSurface())` body is eliminated. The dev scenes are behind
+**dynamic** imports inside that branch — a top-level import keeps the module in
+the graph however the branch folds — and the production build now emits one chunk
+where the e2e build emits four.
+
+`no-dev-surface.mjs` greps the artifact, because a test asserting the code sits
+inside an `if (DEV)` block passes for a build where the eliminator never ran. Its
+control caught its own first version: `preview=1`, `boot=1` and `skins=1` are in
+no bundle, minified or not (`q.get("preview")==="1"`), and the bare words are
+worse — Phaser says `boot` 91 times and `skins` is a player feature. Those
+parameters are asserted by loading the production bundle with each one and
+looking at what comes up. Falsified by flipping the define to `true`: ten
+assertions fail.
+
+`./scripts/check.sh` green, the whole e2e suite included. M14 is complete.

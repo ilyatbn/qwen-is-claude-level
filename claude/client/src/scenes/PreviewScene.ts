@@ -14,6 +14,7 @@ import { TerrainRenderer } from '../render/terrain'
 import { CameraRig } from '../render/cameraRig'
 import { Backdrop, DEFAULT_THEME, DEPTH } from '../render/backdrop'
 import { makeBackTexture, makeEdgeTexture, makeFillTexture } from '../render/procTextures'
+import { devSurface } from '../dev'
 
 export class PreviewScene extends Phaser.Scene {
   private core!: Core
@@ -94,6 +95,7 @@ export class PreviewScene extends Phaser.Scene {
     }
 
     const self = this
+    if (!devSurface()) return
     ;(window as unknown as { __game: unknown }).__game = {
       debug() {
         return {

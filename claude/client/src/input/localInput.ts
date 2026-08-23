@@ -107,10 +107,15 @@ export class Crosshair {
   constructor(scene: Phaser.Scene, depth = 60) {
     const c = C()
     // The faint full ring is the visual cue that aim is angular, not positional.
+    // **Off by default** (§C12). The ring is a development affordance; the
+    // crosshair riding it is the aiming one. Starting it visible and having debug
+    // mode hide it would mean a production build — which has no debug mode at
+    // all (§C17) — shipped a ring nobody could turn off.
     this.ring = scene.add
       .circle(0, 0, c.AIM_RADIUS)
       .setStrokeStyle(1, 0xffffff, 0.18)
       .setDepth(depth)
+      .setVisible(false)
 
     const h = scene.add.rectangle(0, 0, 9, 1, 0xffffff, 0.9)
     const v = scene.add.rectangle(0, 0, 1, 9, 0xffffff, 0.9)

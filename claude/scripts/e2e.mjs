@@ -126,6 +126,10 @@ const CHECKS = [
   { name: 'escape-menu', file: 'scripts/checks/escape-menu.mjs', standalone: true },
   // T14.07 / §C12: debug mode off by default, F1 on, and it changes nothing.
   { name: 'debug-mode', file: 'scripts/checks/debug-mode.mjs', standalone: true },
+  // T14.08 / §C17: the dev surface is compiled out. Standalone and no shared
+  // stack — it builds the client twice and drives the *artifact*, not the dev
+  // server, which is the whole point.
+  { name: 'no-dev-surface', file: 'scripts/checks/no-dev-surface.mjs', standalone: true },
   // Standalone: it launches its own vite and browser and calls `process.exit`.
   // Imported into this process it would terminate the suite mid-run — and exit 0
   // while doing it, hiding every earlier failure. Run as a subprocess instead.

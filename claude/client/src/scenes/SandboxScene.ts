@@ -25,6 +25,7 @@ import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { DebugOverlay } from '../render/debugOverlay'
 import { cycleU, darknessAt, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
+import { devSurface } from '../dev'
 
 const SCALES: Record<string, MapScale> = {
   small: MapScale.Small,
@@ -540,6 +541,7 @@ export class SandboxScene extends Phaser.Scene {
 
   private exposeDebugHandle(): void {
     const self = this
+    if (!devSurface()) return
     ;(window as unknown as { __game: unknown }).__game = {
       debug() {
         return {
