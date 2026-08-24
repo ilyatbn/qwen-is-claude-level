@@ -1696,6 +1696,13 @@ export class GameScene extends Phaser.Scene {
             text:
               document.querySelector('.death-count')?.textContent ?? '',
             cause: document.querySelector('.death-cause')?.textContent ?? '',
+            // The overlay needs **both** of these (`shouldShow`), and they come
+            // from different places: `meAlive` from the snapshot's alive flag
+            // *and* the death event, `info` from the death event alone. When the
+            // overlay does not come up, which of the two is missing is the whole
+            // diagnosis — without them a check can only report that it is down.
+            meAlive: self.meAlive,
+            hasInfo: self.death.hasInfo,
           },
           /** Read from the DOM: what the host can actually see, not what we sent. */
           visibleCode:

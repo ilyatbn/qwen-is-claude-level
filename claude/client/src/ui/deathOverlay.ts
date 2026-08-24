@@ -78,6 +78,17 @@ export class DeathOverlay {
     return this.up
   }
 
+  /**
+   * Whether a `died()` has been recorded and not cleared.
+   *
+   * `isUp` is the conjunction of this and the alive flag, so on its own it
+   * cannot say which half is missing when the overlay stays down — and that is
+   * exactly what a check needs to report.
+   */
+  get hasInfo(): boolean {
+    return this.info !== null
+  }
+
   destroy(): void {
     this.hide()
     this.info = null
