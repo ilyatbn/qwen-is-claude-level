@@ -603,6 +603,14 @@ pub struct World {
     pub phase: RoundPhase,
     pub wind: f32,
     pub seed: u64,
+    /// How many times a respawn fell back off a pad (`docs/21` §4).
+    ///
+    /// **Zero is the claim, and it needs somewhere to be read.** `resolve_deaths`
+    /// took `choose_respawn_pad(..).pos` and dropped `.pad` on the floor, so the
+    /// one path §C5 says is unreachable would have fired in silence — the
+    /// re-validation is only worth keeping if somebody notices it firing.
+    /// T15.01 asked for exactly this assertion.
+    pub respawn_fallbacks: u32,
 
     events: Vec<GameEvent>,
     rng: ChaCha8Rng,
@@ -670,6 +678,7 @@ impl World {
         let birds = Birds::new(seed, &map);
         World {
             burn: Default::default(),
+            respawn_fallbacks: 0,
             mines: Default::default(),
             smoke: Default::default(),
             hazard_seq: 0,
@@ -2142,7 +2151,11 @@ impl World {
             // `None` only if every pad failed re-validation, which indestructible
             // pads make unreachable — `a_pad_respawn_never_falls_back_on_a_map_
             // carved_to_pieces` is the assertion that it stays that way.
-            let pos = choose_respawn_pad(&self.map, &living, &mut self.rng).pos;
+            let choice = choose_respawn_pad(&self.map, &living, &mut self.rng);
+            if choice.pad.is_none() {
+                self.respawn_fallbacks += 1;
+            }
+            let pos = choice.pos;
             self.players[i].respawn(pos, now);
             let (id, tick) = (self.players[i].id, self.tick);
             self.events.push(GameEvent::Respawn {
@@ -3016,6 +3029,12 @@ mod state_hash_coverage {
             // every point a hash is taken.
             pending: _,
             prev_input: _,
+            // `respawn_fallbacks` counts a condition §C5 says cannot happen. It
+            // is an assertion aid, not state: the choice it records is already
+            // reflected in the respawned body's position, which *is* hashed, so
+            // a divergence would show up in `players` first and hashing this
+            // would only prove the counter was incremented twice the same way.
+            respawn_fallbacks: _,
         } = w;
     }
 }
@@ -4393,8 +4412,8 @@ mod quickthrow {
 mod teleport_wiring {
     use super::*;
     use crate::constants::{
-        MapScale, JETPACK_MAX_FUEL, JETPACK_REFILL, PLAYER_H, SIM_DT, TELEPORT_ARM_DISTANCE,
-        TELEPORT_CHARGE, TELEPORT_COOLDOWN,
+        MapScale, DEATH_POINTS, JETPACK_MAX_FUEL, JETPACK_REFILL, PLAYER_H, SIM_DT,
+        TELEPORT_ARM_DISTANCE, TELEPORT_CHARGE, TELEPORT_COOLDOWN,
     };
     use crate::map::meta::TeleportPad;
 
@@ -4465,6 +4484,76 @@ mod teleport_wiring {
             dest.pos,
             p.body.pos
         );
+    }
+
+    /// **The production path**, not `choose_respawn_pad` in isolation.
+    ///
+    /// `player::respawn`'s own `a_pad_respawn_never_falls_back_on_a_map_carved_to_
+    /// pieces` calls the chooser directly. That is not the same claim: it proves
+    /// the function returns a pad, not that the thing wired into the round asks
+    /// it for one and uses the answer. `resolve_deaths` took `.pos` and discarded
+    /// `.pad`, so the §4 fallback would have fired in silence.
+    ///
+    /// Fifty deaths through `World::step` on a map carved to pieces, asserting
+    /// both the landing **and** `respawn_fallbacks`, which is the counter that
+    /// makes the silence impossible.
+    #[test]
+    fn a_real_round_never_respawns_off_a_pad() {
+        let mut w = World::new(8123, MapScale::Medium);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+
+        // Carve the whole map, exactly as `respawn.rs`'s fixture does.
+        let (mw, mh) = (w.map.mask.w as i32, w.map.mask.h as i32);
+        let mut y = 0;
+        while y < mh {
+            let mut x = 0;
+            while x < mw {
+                w.map.carve_circle(x, y, 90);
+                x += 120;
+            }
+            y += 120;
+        }
+
+        let mut now = 0.0f32;
+        for i in 0..50 {
+            {
+                let p = w.player_mut(0).expect("there");
+                if p.alive {
+                    p.die(DeathCause::Void, now);
+                }
+            }
+            // Step past RESPAWN_DELAY.
+            for _ in 0..((crate::constants::RESPAWN_DELAY / SIM_DT) as i32 + 20) {
+                w.step(SIM_DT);
+                now += SIM_DT;
+            }
+            // Checked first, and inside the loop: this is the cause, and the
+            // position below is the symptom. Asserting it after fifty deaths
+            // would report the fiftieth landing rather than the first fallback.
+            assert_eq!(
+                w.respawn_fallbacks, 0,
+                "death {i}: the `docs/21` §4 re-validation fired — §C5 says a death \
+                 puts you on a pad, and indestructible pads make that reachable"
+            );
+            let p = w.player(0).expect("there");
+            assert!(p.alive, "death {i}: never respawned by {now}");
+            let pads = &w.map.meta.teleport_pads;
+            let on = pads.iter().any(|pad| {
+                (p.body.pos.x - pad.pos.x as f32).abs() < 40.0
+                    && (p.body.pos.y - (pad.pos.y as f32 - PLAYER_H / 2.0)).abs() < 40.0
+            });
+            assert!(
+                on,
+                "death {i}: respawned at {:?}, which is no pad. Pads: {:?}",
+                p.body.pos,
+                pads.iter().map(|q| q.pos).collect::<Vec<_>>()
+            );
+        }
+
+        // The control for the loop's own assertions: fifty deaths really did
+        // happen, so "no fallback fired" is not the truth about an empty loop.
+        assert_eq!(w.player(0).expect("there").score, 50 * DEATH_POINTS);
     }
 
     /// A teleport is not a refuelling station.

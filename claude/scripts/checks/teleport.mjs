@@ -63,15 +63,29 @@ await standStill(page)
 
 const k = await page.evaluate(() => window.__game.constants())
 
-/** Poll `pred` to a deadline. Never a flat sleep — see §A28. */
+/**
+ * Poll `pred` to a deadline. Never a flat sleep — see §A28.
+ *
+ * On timeout it reports **what it was looking at when it gave up**. The bare
+ * "timed out waiting for X" told the third checkpoint gate nothing: the respawn
+ * wait expired and the assertions after it then ran on a body that had not
+ * respawned, producing a second, louder failure that blamed §C5's respawn rule
+ * for what was a stuck fixture. One cause must produce one message.
+ */
 async function until(pred, deadlineMs, what) {
   const end = Date.now() + deadlineMs
+  let last = null
   while (Date.now() < end) {
-    const d = await dbg()
-    if (pred(d)) return d
+    last = await dbg()
+    if (pred(last)) return last
     await sleep(100)
   }
-  fail(`timed out after ${deadlineMs / 1000} s waiting for ${what}`)
+  fail(
+    `timed out after ${deadlineMs / 1000} s waiting for ${what} — last seen: ` +
+      `health ${last?.health}, alive ${last?.player?.alive}, ` +
+      `death overlay ${last?.death?.visible}, grounded ${last?.player?.grounded}, ` +
+      `at (${last?.player?.x?.toFixed(0)}, ${last?.player?.y?.toFixed(0)})`,
+  )
   return null
 }
 
@@ -156,8 +170,14 @@ if (back) {
   await until((d) => d.player?.grounded, 10_000, 'the respawned body to land')
 }
 
-const afterRespawn = await dbg()
-if (afterRespawn.onPad === null || afterRespawn.onPad === undefined) {
+// **Only if the respawn actually happened.** `until` returning null already
+// counted a failure; asserting a position on a body that never respawned adds a
+// second message that contradicts the first and points at §C5 instead of at the
+// stuck wait. One cause, one message.
+const afterRespawn = back ? await dbg() : null
+if (!afterRespawn) {
+  // Already reported by `until` above.
+} else if (afterRespawn.onPad === null || afterRespawn.onPad === undefined) {
   fail(
     `respawned at (${afterRespawn.player.x.toFixed(0)}, ${afterRespawn.player.y.toFixed(0)}), ` +
       `which is no pad — §C5 says a death puts you on one. Pads: ` +
@@ -168,7 +188,7 @@ if (afterRespawn.onPad === null || afterRespawn.onPad === undefined) {
 }
 await shot('teleport-respawned')
 
-const home = afterRespawn.padPositions?.find((p) => p.id === afterRespawn.onPad)
+const home = afterRespawn?.padPositions?.find((p) => p.id === afterRespawn.onPad)
 
 // --- 3. arming: the absence -------------------------------------------------
 //
@@ -385,6 +405,20 @@ if (!home) {
     console.log(`  camera settled at (${last.x.toFixed(0)}, ${last.y.toFixed(0)})`)
   }
 
+  // **Re-take frame A here**, not before the arming jump.
+  //
+  // A and B are compared pixel-for-pixel, and the world is lit by a moving §A4
+  // day/night cycle. Frame A used to be taken before the jump, which put the
+  // jump, the landing, `standStill` and the camera settle between the two — five
+  // to eight seconds of lighting drift, and the control then legitimately
+  // reported "something global changed" about once in six runs. Nothing between
+  // here and the sample below takes more than the charge's own two seconds.
+  //
+  // The property frame A needs is "the indicator is not drawn yet", not
+  // "unarmed": the charge is still climbing from zero at this point.
+  const padA2 = canSample && fits(await padRect()) ? await samplePatch(page, await padRect()) : padA
+  const ctrlA2 = canSample && fits(await ctrlRect()) ? await samplePatch(page, await ctrlRect()) : ctrlA
+
   let peak = 0
   let sawHalf = false
   let skipReason = null
@@ -445,8 +479,8 @@ if (!home) {
           'never sampled while drawn',
     )
   } else {
-    const padDelta = colourDelta(padA, padB)
-    const ctrlDelta = colourDelta(ctrlA, ctrlB)
+    const padDelta = colourDelta(padA2, padB)
+    const ctrlDelta = colourDelta(ctrlA2, ctrlB)
     if (ctrlDelta > 4) {
       fail(
         `the control patch moved by ${ctrlDelta.toFixed(1)} between the two frames — ` +

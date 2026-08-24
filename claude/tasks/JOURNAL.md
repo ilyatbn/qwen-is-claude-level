@@ -4274,3 +4274,34 @@ threw inside `samplePatch` on an off-frame control rect; the control is now foun
 content and returned as a **world** point, because the player jumps between the two
 frames and a frozen screen rect covered different rock — `the control patch moved by
 184.8`, five runs in six.
+
+## The off-pad respawn was the fixture — and it hid a missing assertion
+
+`teleport.mjs` reported an off-pad respawn 1-in-5, which §C5 forbids. It was not a
+game bug: `until()` reports a failure on timeout and then **returns null while
+execution continues**, so the 30 s respawn wait expired, the grounded-wait was
+skipped, and the next `dbg()` read the player *while still dead*. `(716, 503)` was
+the corpse. Two messages, one cause, and the second blamed §C5. `until()` now
+reports what it was looking at when it gave up, and the position assertion only runs
+when a respawn actually happened.
+
+What was genuinely missing: `resolve_deaths` called `choose_respawn_pad(..).pos` and
+**discarded `.pad`**. `respawn.rs` has a test that the chooser never falls back on a
+carved map — but it calls the chooser directly, which proves the function returns a
+pad, not that the thing wired into the round asks for one. The `docs/21` §4 fallback
+would have fired in production in silence. T15.01 asked for this assertion in as
+many words and it did not exist at the production level.
+
+`World::respawn_fallbacks` counts it, and `a_real_round_never_respawns_off_a_pad`
+asserts it stays zero — checked inside the loop, because the counter is the cause and
+the landing position is only the symptom, with `score == 50 * DEATH_POINTS` as the
+control so "no fallback fired" cannot be the truth about an empty loop. Falsified two
+ways: clearing the pads fires the counter, and blinding the counter *as well* still
+trips the position assertion.
+
+A second flake fell out of the same runs: frame A was taken before the arming jump,
+so the jump, the landing, `standStill` and the camera settle all sat between A and B
+— five to eight seconds of §A4 lighting drift on a pixel-for-pixel comparison, read
+as `the control patch moved by 55.1`. Frame A is taken immediately before the
+sampling window now; the property it needs is "the indicator is not drawn yet", not
+"unarmed". Control delta is 0.0 on every run since.
