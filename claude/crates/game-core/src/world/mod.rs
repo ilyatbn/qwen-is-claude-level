@@ -2211,7 +2211,19 @@ impl World {
             // put them in the wrong place.
             self.players[i].body = crate::physics::body::Body::new(dest);
             self.players[i].jump = crate::player::movement::JumpState::default();
-            self.players[i].jetpack = crate::player::jetpack::JetpackState::default();
+            // **Fuel survives the trip.** The rest of the jetpack state is reset
+            // for the same reason the body is — arriving mid-thrust, or still
+            // locked out from a tank you emptied somewhere else, is arriving in a
+            // state you did not choose. Fuel is not that: `JetpackState::default()`
+            // sets it to `JETPACK_MAX_FUEL`, so a plain reset handed out a free
+            // full tank on every teleport and turned every pad into a refuelling
+            // station. §C5 says nothing about fuel, and the pads are already the
+            // one ground nobody can dig away.
+            let fuel = self.players[i].jetpack.fuel;
+            self.players[i].jetpack = crate::player::jetpack::JetpackState {
+                fuel,
+                ..Default::default()
+            };
             teleport::arrive(&mut self.players[i].teleport, dest, now);
 
             let (id, tick) = (self.players[i].id, self.tick);
@@ -4381,7 +4393,8 @@ mod quickthrow {
 mod teleport_wiring {
     use super::*;
     use crate::constants::{
-        MapScale, PLAYER_H, SIM_DT, TELEPORT_ARM_DISTANCE, TELEPORT_CHARGE, TELEPORT_COOLDOWN,
+        MapScale, JETPACK_MAX_FUEL, JETPACK_REFILL, PLAYER_H, SIM_DT, TELEPORT_ARM_DISTANCE,
+        TELEPORT_CHARGE, TELEPORT_COOLDOWN,
     };
     use crate::map::meta::TeleportPad;
 
@@ -4451,6 +4464,50 @@ mod teleport_wiring {
             "the event said pad {to} at {:?} but the player is at {:?}",
             dest.pos,
             p.body.pos
+        );
+    }
+
+    /// A teleport is not a refuelling station.
+    ///
+    /// `fire_pads` resets the jetpack alongside the body, and
+    /// `JetpackState::default()` sets `fuel: JETPACK_MAX_FUEL` — so the plain reset
+    /// handed out a **full tank on every trip**. §C5 says nothing about fuel, and
+    /// the pads are already the one ground nobody can dig away.
+    ///
+    /// Found by `hud-bars`, which performs the recipe by accident: holding `Space`
+    /// jumps first (past `TELEPORT_ARM_DISTANCE`), which arms the pad the player
+    /// is standing on, and the hold then outlasts `TELEPORT_CHARGE`.
+    #[test]
+    fn a_teleport_does_not_refill_the_jetpack() {
+        let mut w = playing();
+        let pad = w.map.meta.teleport_pads[0];
+        stand_on(&mut w, &pad);
+
+        // Spend most of the tank first, or the assertion below is satisfied by a
+        // player who happened to arrive with the fuel they left with — full.
+        let spent = JETPACK_MAX_FUEL * 0.25;
+        w.player_mut(0).expect("there").jetpack.fuel = spent;
+
+        let mut evs = Vec::new();
+        for _ in 0..((TELEPORT_CHARGE * 2.0 / SIM_DT) as i32) {
+            if teleports(&evs).is_empty() {
+                let p = w.player_mut(0).expect("there");
+                p.body.pos = Vec2::new(pad.pos.x as f32, pad.pos.y as f32 - PLAYER_H / 2.0);
+                p.body.grounded = true;
+                // Re-plant the fuel too: the refill would otherwise top it up over
+                // the two seconds of charging and hide the reset.
+                p.jetpack.fuel = spent;
+            }
+            w.step(SIM_DT);
+            evs.extend(w.drain_events());
+        }
+        assert_eq!(teleports(&evs).len(), 1, "the fixture never teleported");
+
+        let after = w.player(0).expect("there").jetpack.fuel;
+        assert!(
+            (after - spent).abs() < JETPACK_REFILL * SIM_DT * 4.0,
+            "arrived with {after} of {JETPACK_MAX_FUEL} after leaving with {spent} — \
+             the teleport refilled the tank"
         );
     }
 

@@ -4242,3 +4242,35 @@ hang instead of failing.
 
 Also recorded: the suite's stray-process guard counts *any* new browser as a leak,
 so a concurrent probe makes an otherwise-green run exit 1.
+
+## A real bug the checkpoint found: a teleport refilled the jetpack
+
+`fire_pads` (T15.01) reset the jetpack alongside the body, and
+`JetpackState::default()` sets `fuel: JETPACK_MAX_FUEL` — so **every teleport handed
+out a full tank** and every pad was a refuelling station. §C5 says nothing about
+fuel, and the pads are already the one ground nobody can dig away. Fuel now survives
+the trip; `active`, `locked_out` and the tick counters still reset, because arriving
+mid-thrust or still locked out from a tank you emptied elsewhere is arriving in a
+state you did not choose. Falsified: restoring the plain reset gives *arrived with 5
+of 5 after leaving with 1.25*.
+
+`hud-bars` performs the recipe by accident — holding `Space` jumps first, clearing
+`TELEPORT_ARM_DISTANCE`, which arms the pad the player is standing on, and the hold
+then outlasts `TELEPORT_CHARGE`. It reproduced ~40 % under load and 0/10 in
+isolation, which is why it read as a flake. The T15.01 review did not catch it and
+neither did 19 lib tests; the tightened refill assertion did.
+
+The instrument was also wrong and is fixed: it measured a simulation rate with a
+wall clock. It now times in `lastServerTick`, checks the largest **single step**
+against what the ticks between two samples allow — an average cannot tell "too fast"
+from "reissued" — and expresses slack as wire quanta (`JETPACK_MAX_FUEL / 255`)
+rather than a typed tolerance. It also stopped spinning: 440 `page.evaluate` calls
+in 6.7 s was starving the thread it was measuring.
+
+Two more fixtures, both map-dependent: `debug-mode`'s first run could start against
+a wall (its vacuity guard fired correctly, `60 px/s`), and now probes the mask for
+headroom at torso and head height and holds whichever side has more. `teleport`
+threw inside `samplePatch` on an off-frame control rect; the control is now found by
+content and returned as a **world** point, because the player jumps between the two
+frames and a frozen screen rect covered different rock — `the control patch moved by
+184.8`, five runs in six.

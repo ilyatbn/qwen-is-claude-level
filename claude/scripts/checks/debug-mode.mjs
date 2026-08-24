@@ -239,12 +239,49 @@ const runInputs = async (key) => {
   const end = (await dbg()).player
   return { vx: peak, dx: end.x - start.x }
 }
-const withDebug = await runInputs('d')
+/**
+ * How far the body could walk in `dir` before the mask stops it, in px.
+ *
+ * The two runs going opposite ways guarantees the *second* one has room — it is
+ * walking back the way it came. The **first** had no such guarantee: it started
+ * wherever the round spawned the player, and on the post-M15 maps that was
+ * sometimes hard against a wall, which read as `60 px/s` and correctly tripped
+ * the vacuity guard below. So the first direction is chosen by asking the mask
+ * rather than by always being `d`.
+ *
+ * Torso and head only. The feet may legitimately meet a step up — that is a
+ * slope, not a wall, and the body walks up it.
+ */
+const roomFor = async (dir) =>
+  page.evaluate(
+    ([d, halfW, h, reach]) => {
+      const core = window.__game.core
+      const p = window.__game.debug().player
+      for (let step = 8; step <= reach; step += 8) {
+        const x = Math.round(p.x + d * (halfW + step))
+        for (const dy of [-h * 0.4, -h * 0.1, h * 0.2]) {
+          if (core.solidAt(x, Math.round(p.y + dy))) return step
+        }
+      }
+      return reach
+    },
+    // A 700 ms hold at WALK_SPEED covers ~105 px, so that is how far ahead
+    // matters — pinned to the constants, not to a number typed here (§A19).
+    [dir, k.PLAYER_W / 2, k.PLAYER_H, Math.round(k.WALK_SPEED * 0.7)],
+  )
+
+const roomRight = await roomFor(1)
+const roomLeft = await roomFor(-1)
+const firstKey = roomRight >= roomLeft ? 'd' : 'a'
+const secondKey = firstKey === 'd' ? 'a' : 'd'
+console.log(`  room to walk: right ${roomRight} px, left ${roomLeft} px — first run holds "${firstKey}"`)
+
+const withDebug = await runInputs(firstKey)
 await page.keyboard.press('F1')
 await sleep(300)
 if ((await dbg()).debugMode?.on) fail('a second F1 did not turn it off')
 else ok('a second F1 turns it off')
-const withoutDebug = await runInputs('a')
+const withoutDebug = await runInputs(secondKey)
 
 // Loose, because the ground is not flat and the two runs start in different
 // places — but a *simulation* difference would be a different order of

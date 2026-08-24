@@ -66,10 +66,14 @@ const C = await page.evaluate(() => {
     drain: c.JETPACK_DRAIN,
     refill: c.JETPACK_REFILL,
     delay: c.JETPACK_REFILL_DELAY,
+    // The simulation's tick rate, so the refill assertions can be timed in the
+    // sim's own clock rather than the browser's — see the note above them.
+    hz: c.SIM_HZ,
   }
 })
 console.log(
-  `  constants: max ${C.max}, drain ${C.drain}/s, refill ${C.refill}/s after ${C.delay}s`,
+  `  constants: max ${C.max}, drain ${C.drain}/s, refill ${C.refill}/s after ${C.delay}s, ` +
+    `SIM_HZ ${C.hz}`,
 )
 // Every threshold below is built from these. An `undefined` here turns each of
 // them into a comparison against NaN, which is `false` — so the assertions do
@@ -204,9 +208,34 @@ const low = drain[drain.length - 1]
 const fillMs = Math.min((C.delay + (C.max - low.fuel) / C.refill) * 1000, 18_000)
 const rise = []
 while (Date.now() - releasedAt < fillMs + 2000) {
-  const j = await jet()
-  rise.push({ t: Date.now() - releasedAt, ...j })
-  if (j.fuel >= C.max - 0.01) break
+  const d = await dbg()
+  // `tick` is the simulation's own clock, and it is the one the assertions
+  // below use — see the note above them.
+  rise.push({
+    t: Date.now() - releasedAt,
+    tick: d.lastServerTick,
+    // A respawn is the only other thing that can fill this tank —
+    // `JetpackState::default()` on `die()`. Carried in every sample so a rate
+    // failure can say whether the fuel was refilled or reissued, rather than
+    // leaving the next reader to guess. Health alone cannot tell you: respawn
+    // restores BASE_HEALTH, so a death inside the window reads as 100 either
+    // side of it.
+    health: d.health,
+    deaths: (d.observed?.deaths ?? []).length,
+    // Which of the three discontinuities it was. A respawn moves `deaths`; a
+    // round restart walks `roundTime` backwards; a remade session changes the
+    // player id. Without these the failure can only say "something reissued the
+    // tank" and leave the next reader to run it fifteen more times.
+    me: d.me,
+    roundTime: d.serverRoundTime ?? d.roundTime,
+    ...d.jetpack,
+  })
+  if (d.jetpack.fuel >= C.max - 0.01) break
+  // **Not a tight spin.** The first version had no sleep and made ~440
+  // `page.evaluate` calls in 6.7 s, which starves the main thread it is
+  // measuring — the observer changing what it observes. 40 ms is still four
+  // samples per snapshot at SNAPSHOT_HZ.
+  await sleep(40)
 }
 
 await shot('hud-bars-draining')
@@ -248,10 +277,31 @@ if (falling.length >= 2) {
 
 // --- the refill, which is what was reported --------------------------------
 //
-// The measured shape: a flat REFILL_DELAY, then a climb at REFILL/s. Sampled
-// long enough to see both, and asserted as "it climbed" rather than to a
-// tolerance on the slope — the browser samples on wall clock and the server on
-// ticks, and pinning a rate across that boundary is a coin flip (§A28).
+// The measured shape: a flat REFILL_DELAY, then a climb at REFILL/s.
+//
+// ## Everything here is timed in TICKS, not milliseconds
+//
+// The wall-clock version of these assertions failed the gate reporting a refill
+// of 3.62/s against a `JETPACK_REFILL` of 0.5/s — "faster than the simulation
+// allows". It was not. There are exactly three writers of `fuel` in the sim:
+// `JetpackState::default()` (a full tank, on construction and on `die()`), the
+// drain, and `fuel + JETPACK_REFILL * dt` per tick. **No path can add fuel
+// faster than the constant per simulated second.** The failing run had health
+// pinned at 100 and zero deaths across a window shorter than `RESPAWN_DELAY`,
+// so no respawn happened either.
+//
+// What did happen: 5.8 s of simulated time arrived in 0.8 s of wall time. The
+// client had fallen behind and caught up — and it did so in the one run out of
+// fifteen where the player actually flew (y spanned 545 px; in every passing run
+// y never moved, the spawn being boxed in). Flying is when the client works
+// hardest: camera motion and chunk rebakes. The check's own tight polling loop
+// was starving the thread it was measuring.
+//
+// So the browser's clock is the wrong instrument for a claim about the
+// simulation's rate. `lastServerTick` is the simulation's own clock, it is
+// already on the debug handle, and a stalled client cannot distort it — a
+// backlog of snapshots carries its ticks with it. §A28: a gate that fails on how
+// long the machine took gates nothing.
 {
   const first = rise[0]
   const last = rise[rise.length - 1]
@@ -284,31 +334,113 @@ if (falling.length >= 2) {
   } else {
     const climbed = last.shown - first.shown
     const secs = (last.t - first.t) / 1000
+    const simSecs = (last.tick - first.tick) / C.hz
     ok(
       `refilled ${first.shown} -> ${last.shown} (+${climbed.toFixed(1)} in ` +
-        `${secs.toFixed(1)} s, ${rise.length} samples)`,
+        `${simSecs.toFixed(1)} simulated s / ${secs.toFixed(1)} s wall, ` +
+        `${rise.length} samples)`,
     )
+    // The instrument before the measurement, again: if the ticks did not move,
+    // every rate below divides by zero and passes.
+    if (!(simSecs > 0)) {
+      fail(
+        `the server tick did not advance across the refill (${first.tick} -> ` +
+          `${last.tick}) — there is no simulated clock here to measure against`,
+      )
+    }
     // The delay is visible in the samples, and it is the half of §C26's shape a
     // bar cannot show: nothing moves for JETPACK_REFILL_DELAY.
     const moved = rise.find((r) => r.fuel > first.fuel + 0.02)
-    if (moved && moved.t + 150 < C.delay * 1000) {
+    // The delay, in ticks. A client that stalls for a second and then delivers
+    // the backlog reports the *first* climbing sample late in wall time and on
+    // time in ticks, so the wall-clock version of this could only ever fail in
+    // the safe direction by luck.
+    const heldTicks = moved ? moved.tick - first.tick : null
+    const delayTicks = C.delay * C.hz
+    if (moved && heldTicks + 6 < delayTicks) {
       fail(
-        `the tank started climbing ${moved.t} ms after releasing, inside the ` +
-          `${C.delay}s JETPACK_REFILL_DELAY`,
+        `the tank started climbing ${heldTicks} ticks after releasing, inside the ` +
+          `${delayTicks}-tick JETPACK_REFILL_DELAY (${C.delay}s)`,
       )
     } else if (moved) {
-      ok(`it held for ${moved.t} ms before climbing (JETPACK_REFILL_DELAY ${C.delay}s)`)
+      ok(
+        `it held for ${heldTicks} ticks before climbing ` +
+          `(JETPACK_REFILL_DELAY ${C.delay}s = ${delayTicks} ticks)`,
+      )
     }
-    // Bounded above by the constant: refilling faster than JETPACK_REFILL would
-    // mean the readout is showing the predictor's guess rather than the server.
-    if (secs > 0.5 && climbed / secs > C.refill * 1.6) {
+    // Bounded above by the constant, **per simulated second**. Nothing in the
+    // sim can add fuel faster than `JETPACK_REFILL * dt` per tick, so this is a
+    // real bound rather than a tolerance: exceeding it means the readout is
+    // showing something other than the server's fuel.
+    // ## The step, before the average
+    //
+    // An average over the window cannot tell "refilled too fast" from "the tank
+    // was **reissued**" — and reissuing is a real possibility: the only writers
+    // of fuel in the sim are the drain, `+ JETPACK_REFILL * dt` per tick, and
+    // `JetpackState::default()`, which hands out a full tank on construction and
+    // on `die()`. A respawn, a round restart (`round_state` walks
+    // `lastServerTick` *backwards*) or a dropped-and-remade session all take the
+    // third path, and all three read as an impossible rate.
+    //
+    // So the largest **single step** is checked against what the ticks between
+    // those two samples allow. A gradual overshoot is a rate bug; one sample
+    // that vaults is a discontinuity, and the message says which.
+    let worst = { gain: 0, ticks: 0, at: 0 }
+    for (let i = 1; i < rise.length; i++) {
+      const gain = rise[i].fuel - rise[i - 1].fuel
+      const ticks = rise[i].tick - rise[i - 1].tick
+      if (gain > worst.gain) worst = { gain, ticks, at: rise[i].t }
+    }
+    // One tick of slack, because a sample can straddle a tick boundary — plus
+    // the wire's own resolution. Fuel crosses as a **byte**
+    // (`SNAPSHOT_PLAYER_BYTES`), so the smallest change the client can observe is
+    // `JETPACK_MAX_FUEL / 255` ≈ 0.02, and a step can carry a quantum of error at
+    // each end. Three quanta, expressed as the quantisation rather than as a
+    // tolerance typed here — a fixture holding 0.05 stays green against a wire
+    // format that changed its resolution (§A19).
+    const quantum = C.max / 255
+    const allowed = (worst.ticks + 1) * (C.refill / C.hz) + 3 * quantum
+    if (worst.gain > allowed) {
+      const hs = rise.map((r) => r.health).filter(Number.isFinite)
       fail(
-        `refilled ${climbed.toFixed(2)} in ${secs.toFixed(1)} s = ` +
-          `${(climbed / secs).toFixed(2)}/s against a JETPACK_REFILL of ${C.refill}/s ` +
-          '— that is faster than the simulation allows',
+        `the tank gained ${worst.gain.toFixed(2)} across ${worst.ticks} tick(s) at ` +
+          `+${worst.at} ms — at JETPACK_REFILL ${C.refill}/s those ticks allow ` +
+          `${allowed.toFixed(3)} (including 3 wire quanta of ${quantum.toFixed(3)}). ` +
+          `That is not a refill, it is a full tank being ` +
+          `reissued. ` +
+          (last.deaths > first.deaths
+            ? 'A respawn: deaths moved.'
+            : last.me !== first.me
+              ? `A remade session: the player id went ${first.me} -> ${last.me}.`
+              : last.roundTime < first.roundTime
+                ? `A round restart: roundTime went ${first.roundTime?.toFixed(1)} -> ` +
+                  `${last.roundTime?.toFixed(1)}.`
+                : 'None of a respawn, a restart or a new id — so the sim itself did it.') +
+          ` (deaths ${first.deaths}->${last.deaths}, health ${Math.min(...hs)}..` +
+          `${Math.max(...hs)}, ticks ${first.tick}->${last.tick}, id ${first.me}->${last.me})`,
       )
     } else {
-      ok(`the climb is within JETPACK_REFILL (${C.refill}/s)`)
+      ok(
+        `no step exceeded JETPACK_REFILL: worst +${worst.gain.toFixed(3)} over ` +
+          `${worst.ticks} tick(s), allowed ${allowed.toFixed(3)}`,
+      )
+    }
+
+    const rate = climbed / simSecs
+    if (simSecs > 0.5 && rate > C.refill * 1.15) {
+      const hs = rise.map((r) => r.health).filter(Number.isFinite)
+      fail(
+        `refilled ${climbed.toFixed(2)} in ${simSecs.toFixed(1)} simulated s = ` +
+          `${rate.toFixed(2)}/s against a JETPACK_REFILL of ${C.refill}/s ` +
+          '— that is faster than the simulation allows ' +
+          `(deaths ${first.deaths}->${last.deaths}, health ${Math.min(...hs)}..` +
+          `${Math.max(...hs)}, wall ${secs.toFixed(1)}s, ${rise.length} samples)`,
+      )
+    } else {
+      ok(
+        `the climb is within JETPACK_REFILL: ${rate.toFixed(2)}/simulated s ` +
+          `against ${C.refill}/s`,
+      )
     }
   }
 }

@@ -209,15 +209,113 @@ if (!home) {
     return { x: s.x - w / 2, y: s.y - h / 2, w, h }
   }
   const padRect = () => rectAt(home.x + k.PAD_W * 0.4, home.y)
-  // The control: **inside the ground below the pad**, not sky. An earlier
-  // version used open sky and it failed honestly — the sky animates (§A4's
-  // cycle, the sun, the stars) and moved 5.0 between the two frames on its own.
-  // Terrain does not animate and nothing carves it here.
-  const ctrlRect = () => rectAt(home.x + k.PAD_W * 0.4, home.y + k.PAD_H * 6)
+
+  /**
+   * Whether a rect lies **entirely** inside the canvas.
+   *
+   * `page.screenshot({clip})` throws `Clipped area is either empty or outside
+   * the resulting image` when it does not, and that is the right primitive
+   * behaviour — a partly-off-frame patch is not the patch you asked for, and
+   * clamping it would silently compare two different areas between frames A and
+   * B. So the caller checks first, and picks somewhere that fits.
+   */
+  const frame = await page.evaluate(() => {
+    const r = document.querySelector('canvas').getBoundingClientRect()
+    return { x: r.left, y: r.top, w: r.width, h: r.height }
+  })
+  const fits = (r) =>
+    r.x >= frame.x && r.y >= frame.y && r.x + r.w <= frame.x + frame.w && r.y + r.h <= frame.y + frame.h
+
+  /**
+   * The control: a patch of **solid rock**, anywhere on the frame, clear of the
+   * pad — found by content rather than by offset.
+   *
+   * It must be terrain and not sky, because the sky animates: §A4's cycle, the
+   * sun and the stars moved an earlier sky control by 5.0 between the two
+   * frames on its own. Terrain does not animate and nothing carves it here.
+   *
+   * Two fixed offsets were tried before this and both were assumptions about
+   * the map. `PAD_H * 6` below the pad fell off the bottom of the frame when the
+   * pad sat low, and the check *crashed inside `samplePatch`* rather than
+   * failing an assertion. Walking that offset in toward the pad fixed the frame
+   * problem and then failed one run in four for the other reason: a pad on a
+   * thin platform has **air underneath it**, so nothing below is solid at any
+   * offset. There is no offset that works on every map — so this searches, the
+   * way `ordnance-visible` now does.
+   *
+   * **Returned as a world point**, and converted to a screen rect at each
+   * sample. Freezing the screen rect was tried and is wrong: the player *jumps*
+   * between the two frames to arm the pad, the camera follows, and a fixed
+   * screen rect then covers different rock — measured, the control moved 178-202
+   * and the check correctly refused to trust the pad delta, five runs in six.
+   */
+  const findCtrlRect = async (wPx, hPx) =>
+    page.evaluate(
+      ([px, py, wpx, hpx, keepOut]) => {
+        const raw = window.__game.debug().worldView
+        const v = { x: raw.x, y: raw.y, w: raw.width ?? raw.w, h: raw.height ?? raw.h }
+        const r = document.querySelector('canvas').getBoundingClientRect()
+        const core = window.__game.core
+        const wppX = v.w / r.width
+        const wppY = v.h / r.height
+        const psx = r.left + ((px - v.x) / v.w) * r.width
+        const psy = r.top + ((py - v.y) / v.h) * r.height
+        for (let sy = r.top; sy + hpx <= r.top + r.height; sy += 24) {
+          for (let sx = r.left; sx + wpx <= r.left + r.width; sx += 24) {
+            // Clear of the pad, so the ring and its charge arc cannot bleed in.
+            if (Math.hypot(sx + wpx / 2 - psx, sy + hpx / 2 - psy) < keepOut) continue
+            // Every corner and the centre inside rock — a partly-sky patch is a
+            // patch that animates, which is the whole thing being avoided.
+            let solid = true
+            for (const [fx, fy] of [
+              [0, 0],
+              [1, 0],
+              [0, 1],
+              [1, 1],
+              [0.5, 0.5],
+            ]) {
+              const wx = v.x + (sx - r.left + fx * wpx) * wppX
+              const wy = v.y + (sy - r.top + fy * hpx) * wppY
+              if (!core.solidAt(Math.round(wx), Math.round(wy))) {
+                solid = false
+                break
+              }
+            }
+            if (solid) {
+              // The centre, in world coordinates — see the note above.
+              return {
+                x: v.x + (sx - r.left + wpx / 2) * wppX,
+                y: v.y + (sy - r.top + hpx / 2) * wppY,
+              }
+            }
+          }
+        }
+        return null
+      },
+      [home.x, home.y, wPx, hPx, k.PAD_W * 3],
+    )
+
+  const padProbe = await padRect()
+  const ctrl = await findCtrlRect(padProbe.w, padProbe.h)
+  const ctrlRect = () => rectAt(ctrl.x, ctrl.y)
 
   // Frame A: on the pad, unarmed, nothing drawn but the idle ring.
-  const padA = await samplePatch(page, await padRect())
-  const ctrlA = await samplePatch(page, await ctrlRect())
+  //
+  // Both rects have to fit before either is sampled. A `fail` here is loud and
+  // counts toward the tally, so this cannot degenerate into "the pixel half
+  // quietly did not run" — which is the failure mode a bare `return` would be.
+  const padA0 = await padRect()
+  const canSample = ctrl !== null && fits(padA0)
+  if (!canSample) {
+    fail(
+      `no on-frame patch for the pixel half: pad rect ${JSON.stringify(padA0)} ` +
+        `${fits(padA0) ? 'fits' : 'is off-frame'}, control ` +
+        `${ctrl === null ? 'not found — no solid rock on the frame clear of the pad' : 'ok'}, ` +
+        `canvas ${JSON.stringify(frame)}`,
+    )
+  }
+  const padA = canSample ? await samplePatch(page, padA0) : null
+  const ctrlA = canSample ? await samplePatch(page, await ctrlRect()) : null
   await shot('teleport-uncharged')
 
   // Arm by **jumping**: `JUMP_VELOCITY` gives an apex around 66 px, comfortably
@@ -256,10 +354,17 @@ if (!home) {
     if (d.teleportCharge > peak) peak = d.teleportCharge
     // Frame B: the arc is well past half. Grabbed inside the loop, because the
     // charge is gone the tick it fires.
-    if (padB === null && d.teleportCharge > 0.5) {
-      padB = await samplePatch(page, await padRect())
-      ctrlB = await samplePatch(page, await ctrlRect())
-      await shot('teleport-charging')
+    if (canSample && padB === null && d.teleportCharge > 0.5) {
+      const rb = await padRect()
+      const cb = await ctrlRect()
+      // The player stands still between A and B, so these should be the same
+      // rects — but if the camera drifted them off-frame, say so rather than
+      // dying inside `samplePatch`.
+      if (fits(rb) && fits(cb)) {
+        padB = await samplePatch(page, rb)
+        ctrlB = await samplePatch(page, cb)
+        await shot('teleport-charging')
+      }
     }
     const dist = Math.hypot(d.player.x - before.x, d.player.y - before.y)
     // A teleport is to another pad, and pads are `SPAWN_MIN_SEPARATION`-ish
@@ -277,7 +382,9 @@ if (!home) {
     ok(`after a jump, the charge climbed to ${(peak * 100).toFixed(0)}%`)
   }
 
-  if (padB === null) {
+  if (!canSample) {
+    // Already reported above; do not fail twice for one cause.
+  } else if (padB === null) {
     fail('the charge never passed 50%, so the pad was never sampled while drawn')
   } else {
     const padDelta = colourDelta(padA, padB)
