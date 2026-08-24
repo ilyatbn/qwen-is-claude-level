@@ -4305,3 +4305,36 @@ so the jump, the landing, `standStill` and the camera settle all sat between A a
 as `the control patch moved by 55.1`. Frame A is taken immediately before the
 sampling window now; the property it needs is "the indicator is not drawn yet", not
 "unarmed". Control delta is 0.0 on every run since.
+
+## quick-throw and ordnance: both fixtures, one of them hiding a burning player
+
+`quick-throw` reported "the server never had one in the air" and "E is falling
+through to fire" — both blaming production, and both were **one death**. Probed at
+the exact read the assertion uses, the failing run returned `slots = null x24,
+deaths = 1`: `die()` had cleared the inventory, so nothing was "spent". The aim was
+a hardcoded screen point — already the second attempt, carrying a comment about
+molotovs at your own feet being fatal — and T15.02's regenerated maps put rock in
+front of it. The bottle detonated at the player's feet, laid a fire zone, and
+`standStill` held them in it. Roughly one run in four.
+
+The fix that mattered was the instrument: it asserts on a **cumulative**
+`projectileSpawns` counter now, not a live count, because a molotov's whole life can
+fall between two polls — one run showed `spawns 0 → 1` where the live poll caught
+nothing. The aim is probed from the mask along the longest clear lane, and the check
+walks clear *while the bottle is airborne*, polling during the walk rather than
+after it.
+
+`ordnance` was its own documented signature: `DEV_LOADOUT` grants 4 rockets,
+premature retries burn them, and `selectWeapon` then throws something that reads
+like a broken loadout. Two earlier fixes bought patience; no wait is long enough on
+every box. `fireUntil` is ammo-aware — running dry is a finding, not an exception.
+
+That left a real 1-in-6: a bazooka rocket is ballistic and lands short of the mine,
+with only the blast radius rescuing it. The cause was not the aim but the *firing
+position* — shot one is fired standing on the mine, and **a rocket at your own feet
+throws you** (`docs/21` §5), so every later shot came from wherever the blast had
+put the player. `fireUntil` gained an `approach` step that walks back onto the mine
+between shots, thresholded on `BAZOOKA_BLAST_RADIUS` from the constants table rather
+than a copy of 42. It does not fail when it cannot arrive — a mine across a chasm is
+a map fact — and the ammo guard still bounds the spend. 8/8, and across all eight the
+mine died to the *first* rocket.

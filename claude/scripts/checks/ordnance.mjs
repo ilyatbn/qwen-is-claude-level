@@ -105,7 +105,7 @@ async function fireAt(sx, sy) {
  * before the first shot points somewhere else entirely by the second. That is
  * how four rockets aimed "at the mine" all missed it: only the first one was.
  */
-async function fireUntil(aim, pred, deadlineMs, what, weapon) {
+async function fireUntil(aim, pred, deadlineMs, what, weapon, approach) {
   const started = Date.now()
   for (;;) {
     if (pred(await dbg())) return true
@@ -113,6 +113,20 @@ async function fireUntil(aim, pred, deadlineMs, what, weapon) {
       fail(`timed out waiting for ${what}`)
       return false
     }
+    // **Close the range before aiming**, when the caller knows how.
+    //
+    // A bazooka rocket is ballistic: aimed straight at a target it drops below
+    // the aim point on the way and lands short, and only `BAZOOKA_BLAST_RADIUS`
+    // rescues the shot. That is survivable at point-blank range and not at
+    // distance — which is exactly the situation a rocket creates, because one at
+    // your own feet throws you (`docs/21` §5). Shot one is fired from on top of
+    // the mine; shots two onward were fired from wherever the blast put you, and
+    // that is why four aimed rockets could all miss.
+    //
+    // Recomputing the *screen* point per shot was the previous fix and it is
+    // necessary but not sufficient: it corrects where you are pointing, not how
+    // far the rocket falls on the way there.
+    if (approach) await approach()
     const at = typeof aim === 'function' ? await aim() : aim
     if (!at) {
       fail(`${what}: the target is not on screen, so nothing can be aimed at it`)
@@ -129,7 +143,28 @@ async function fireUntil(aim, pred, deadlineMs, what, weapon) {
     // waiting for the rocket to end the mine" while cheerfully rearming the
     // field. `selectWeapon` throws a named error once the weapon is gone, so
     // running out now says so instead of testing a different weapon.
-    if (weapon) await selectWeapon(page, weapon)
+    // **Spend no more of the stack than it holds.**
+    //
+    // The two fixes above — waiting for the shot to resolve, then polling `pred`
+    // for 2 s — bought patience, and under full-suite load it still is not
+    // enough: the gate reproduced the documented signature again, `Held: 2:smg
+    // 3:mine 4:axe 5:flamethrower 6:molotov`, exactly the rockets gone. Patience
+    // alone cannot fix this, because there is no wait long enough to be safe on
+    // every box.
+    //
+    // So the loop is ammo-aware. Running dry is a **finding** — "the mine
+    // survived every rocket it had" — and saying that is far more use than
+    // letting `selectWeapon` throw `"bazooka" is not in the inventory`, which is
+    // a true statement about a stack this loop had just spent and reads like a
+    // broken loadout.
+    if (weapon) {
+      const ammo = ((await dbg()).slots ?? []).find((x) => x.key === weapon)?.count ?? 0
+      if (ammo === 0) {
+        fail(`${what}: spent every ${weapon} and it never happened — the stack is empty`)
+        return false
+      }
+      await selectWeapon(page, weapon)
+    }
     await fireAt(sx, sy)
     // Wait for the shot to **resolve**, not for 400 ms.
     //
@@ -377,6 +412,47 @@ if (placed) {
   // `selectWeapon` then correctly refused to carry on: `"bazooka" is not in the
   // inventory. Held: 2:smg 3:mine ...`. Four rockets are plenty when each one
   // is aimed at the thing it has to hit.
+  // Within one blast radius, **derived** rather than chosen: a rocket that falls
+  // short by less than `BAZOOKA_BLAST_RADIUS` still puts the blast over the mine.
+  // Reading it from the constants table rather than copying 42 into the fixture
+  // is §A19 — a fixture carrying its own number stays green against a drifted
+  // sim.
+  const kk = await page.evaluate(() => window.__game.constants())
+  const NEAR = kk.BAZOOKA_BLAST_RADIUS
+
+  /**
+   * Walk back onto the mine between shots.
+   *
+   * Mines ignore their owner (§B6), so standing on one is safe and the range can
+   * be closed all the way. Bounded, and it does **not** fail when it cannot
+   * arrive — a mine across a chasm is a map fact, not a defect, and the ammo
+   * budget in `fireUntil` is what reports a rocket that genuinely never reaches.
+   * Turning "I could not walk there" into a failure would make this check about
+   * platforming, which the comment above says it must not be.
+   */
+  const approachMine = async () => {
+    for (let i = 0; i < 12; i++) {
+      const d = await dbg()
+      const m = (d.mines ?? [])[0]
+      if (!m || !d.player) return
+      const dx = m.x - d.player.x
+      if (Math.abs(dx) <= NEAR) return
+      const key = dx > 0 ? 'd' : 'a'
+      await page.keyboard.down(key)
+      await sleep(160)
+      await page.keyboard.up(key)
+      await sleep(140)
+    }
+    const d = await dbg()
+    const m = (d.mines ?? [])[0]
+    if (m && d.player) {
+      console.log(
+        `    could not close to within ${NEAR} px of the mine ` +
+          `(${Math.abs(m.x - d.player.x).toFixed(0)} px away) — firing from here`,
+      )
+    }
+  }
+
   const aimAtMine = async () => {
     const d = await dbg()
     const m = (d.mines ?? [])[0]
@@ -386,7 +462,14 @@ if (placed) {
     return sx > 0 && sx < 1280 && sy > 0 && sy < 720 ? { sx, sy } : null
   }
 
-  await fireUntil(aimAtMine, (d) => d.minesEnded > 0, 60_000, 'the rocket to end the mine', 'bazooka')
+  await fireUntil(
+    aimAtMine,
+    (d) => d.minesEnded > 0,
+    60_000,
+    'the rocket to end the mine',
+    'bazooka',
+    approachMine,
+  )
   const gone = await until(
     (d) => d.minesDrawn === d.minesPlaced - d.minesEnded && d.minesEnded > 0,
     20_000,

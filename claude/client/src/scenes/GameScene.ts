@@ -236,6 +236,17 @@ export class GameScene extends Phaser.Scene {
      * what you fired" was tested for one of the two delivery kinds.
      */
     hitscans: 0,
+    /**
+     * `projectile_spawn` events received — a **cumulative** count.
+     *
+     * `projectilesLive` is the mirror's current size, and a live count is the
+     * wrong instrument for "did a throw happen": a molotov detonates on contact,
+     * so its whole life can fall between two polls and the check then reports an
+     * empty sky about a throw that plainly occurred. That is §B25's lesson in the
+     * other direction — a count that misses what has already gone. This only ever
+     * goes up, so an assertion on it cannot be raced.
+     */
+    projectileSpawns: 0,
     /** Where the most recent hazard landed, so a screenshot can frame one. */
     lastHazard: null as { x: number; y: number } | null,
     deaths: [] as Array<{ victim: number; attacker: number | null; cause: string }>,
@@ -1023,6 +1034,7 @@ export class GameScene extends Phaser.Scene {
     const ear = this.ear()
     switch (ev) {
       case 'projectile_spawn':
+        this.observed.projectileSpawns += 1
         this.audio.spatial(
           String(p['weapon'] ?? '') === 'grenade' ? 'fire_grenade' : 'fire_bazooka',
           x,
@@ -1958,6 +1970,7 @@ export class GameScene extends Phaser.Scene {
             itemSpawns: self.observed.itemSpawns,
             itemPickups: self.observed.itemPickups,
             hitscans: self.observed.hitscans,
+            projectileSpawns: self.observed.projectileSpawns,
             darknessMin: self.observed.darknessMin,
             darknessMax: self.observed.darknessMax,
             maxTickLag: self.observed.maxTickLag,
