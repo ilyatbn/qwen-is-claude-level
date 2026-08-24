@@ -202,11 +202,28 @@ if (!home) {
   // The rect: the ellipse's right lobe, clear of the player sprite. The pad is
   // `PAD_W` (40) wide and the body `PLAYER_W` (16), so 0.4 × PAD_W off centre is
   // outside the player and inside the ring.
+  /**
+   * A screenshot rect around a **world** point, in whole device-independent px.
+   *
+   * Rounded, and that is not cosmetic. The third checkpoint gate failed with a
+   * control at `x: -2.1316282072803006e-14` — the canvas's own left edge,
+   * arrived at through a world→screen transform, missing `fits` by two
+   * hundred-trillionths of a pixel and reported as an off-frame patch. Every
+   * rect is derived from a world point through the same transform on both
+   * frames, so rounding both identically cannot make A and B disagree, and it
+   * removes a whole class of boundary noise rather than widening a tolerance
+   * until this particular value slips under it.
+   */
   const rectAt = async (wx, wy) => {
     const s = await toScreen(wx, wy)
     const w = Math.max(10, k.PAD_W * 0.36 * s.scale)
     const h = Math.max(10, k.PAD_H * 2.2 * s.scale)
-    return { x: s.x - w / 2, y: s.y - h / 2, w, h }
+    return {
+      x: Math.round(s.x - w / 2),
+      y: Math.round(s.y - h / 2),
+      w: Math.round(w),
+      h: Math.round(h),
+    }
   }
   const padRect = () => rectAt(home.x + k.PAD_W * 0.4, home.y)
 
@@ -224,7 +241,10 @@ if (!home) {
     return { x: r.left, y: r.top, w: r.width, h: r.height }
   })
   const fits = (r) =>
-    r.x >= frame.x && r.y >= frame.y && r.x + r.w <= frame.x + frame.w && r.y + r.h <= frame.y + frame.h
+    r.x >= Math.floor(frame.x) &&
+    r.y >= Math.floor(frame.y) &&
+    r.x + r.w <= Math.ceil(frame.x + frame.w) &&
+    r.y + r.h <= Math.ceil(frame.y + frame.h)
 
   /**
    * The control: a patch of **solid rock**, anywhere on the frame, clear of the
@@ -343,7 +363,31 @@ if (!home) {
   await until((d) => d.player?.grounded, 8_000, 'the jump to land')
   await standStill(page)
 
+  // **Wait for the camera to stop**, not just the player.
+  //
+  // The jump above is what arms the pad, and the camera lerps after it for some
+  // frames past the landing. Frames A and B are compared rect-for-rect, so a
+  // camera still moving between them either drifts a rect off-frame — which is
+  // what failed the third checkpoint gate, reported as "the charge never passed
+  // 50%" because the skip had no reason attached — or, worse, silently samples
+  // two different pieces of world. `standStill` settles the body; nothing
+  // settled the view.
+  {
+    let last = null
+    let stillFor = 0
+    const settleBy = Date.now() + 4_000
+    while (Date.now() < settleBy && stillFor < 3) {
+      const cam = (await dbg()).camera
+      stillFor = last && Math.hypot(cam.x - last.x, cam.y - last.y) < 0.5 ? stillFor + 1 : 0
+      last = cam
+      await sleep(80)
+    }
+    console.log(`  camera settled at (${last.x.toFixed(0)}, ${last.y.toFixed(0)})`)
+  }
+
   let peak = 0
+  let sawHalf = false
+  let skipReason = null
   let padB = null
   let ctrlB = null
   const before = (await dbg()).player
@@ -355,15 +399,23 @@ if (!home) {
     // Frame B: the arc is well past half. Grabbed inside the loop, because the
     // charge is gone the tick it fires.
     if (canSample && padB === null && d.teleportCharge > 0.5) {
+      sawHalf = true
       const rb = await padRect()
       const cb = await ctrlRect()
       // The player stands still between A and B, so these should be the same
       // rects — but if the camera drifted them off-frame, say so rather than
-      // dying inside `samplePatch`.
+      // dying inside `samplePatch`. **Record which**: the first version silently
+      // skipped and the failure below then blamed the charge, which `peak` had
+      // already proved reached 98%. A skip with no reason attached is how a
+      // check reports the wrong cause.
       if (fits(rb) && fits(cb)) {
         padB = await samplePatch(page, rb)
         ctrlB = await samplePatch(page, cb)
         await shot('teleport-charging')
+      } else {
+        skipReason = `at charge ${(d.teleportCharge * 100).toFixed(0)}% the pad rect ${
+          fits(rb) ? 'fits' : `${JSON.stringify(rb)} is off-frame`
+        } and the control ${fits(cb) ? 'fits' : `${JSON.stringify(cb)} is off-frame`}`
       }
     }
     const dist = Math.hypot(d.player.x - before.x, d.player.y - before.y)
@@ -385,7 +437,13 @@ if (!home) {
   if (!canSample) {
     // Already reported above; do not fail twice for one cause.
   } else if (padB === null) {
-    fail('the charge never passed 50%, so the pad was never sampled while drawn')
+    fail(
+      sawHalf
+        ? `the charge passed 50% (peak ${(peak * 100).toFixed(0)}%) but the pad was never ` +
+          `sampled: ${skipReason ?? 'no reason recorded, which is itself a bug'}`
+        : `the charge never passed 50% (peak ${(peak * 100).toFixed(0)}%), so the pad was ` +
+          'never sampled while drawn',
+    )
   } else {
     const padDelta = colourDelta(padA, padB)
     const ctrlDelta = colourDelta(ctrlA, ctrlB)
