@@ -1,0 +1,3215 @@
+{
+  "frames": {
+    "ruins_Assets_Blue-gray_ruins1": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 145,
+        "h": 172
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 145,
+        "h": 172
+      },
+      "sourceSize": {
+        "w": 145,
+        "h": 172
+      }
+    },
+    "ruins_Assets_Yellow_ruins1": {
+      "frame": {
+        "x": 147,
+        "y": 0,
+        "w": 148,
+        "h": 156
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 148,
+        "h": 156
+      },
+      "sourceSize": {
+        "w": 148,
+        "h": 156
+      }
+    },
+    "ruins_Assets_Brown_ruins1": {
+      "frame": {
+        "x": 297,
+        "y": 0,
+        "w": 142,
+        "h": 151
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 142,
+        "h": 151
+      },
+      "sourceSize": {
+        "w": 142,
+        "h": 151
+      }
+    },
+    "ruins_Assets_Brown-gray_ruins1": {
+      "frame": {
+        "x": 441,
+        "y": 0,
+        "w": 145,
+        "h": 140
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 145,
+        "h": 140
+      },
+      "sourceSize": {
+        "w": 145,
+        "h": 140
+      }
+    },
+    "ruins_Assets_Snow_ruins1": {
+      "frame": {
+        "x": 588,
+        "y": 0,
+        "w": 149,
+        "h": 136
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 149,
+        "h": 136
+      },
+      "sourceSize": {
+        "w": 149,
+        "h": 136
+      }
+    },
+    "ruins_Assets_White_ruins1": {
+      "frame": {
+        "x": 739,
+        "y": 0,
+        "w": 115,
+        "h": 136
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 115,
+        "h": 136
+      },
+      "sourceSize": {
+        "w": 115,
+        "h": 136
+      }
+    },
+    "ruins_Assets_Water_ruins1": {
+      "frame": {
+        "x": 856,
+        "y": 0,
+        "w": 98,
+        "h": 134
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 98,
+        "h": 134
+      },
+      "sourceSize": {
+        "w": 98,
+        "h": 134
+      }
+    },
+    "ruins_Assets_Sand_ruins1": {
+      "frame": {
+        "x": 956,
+        "y": 0,
+        "w": 120,
+        "h": 118
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 120,
+        "h": 118
+      },
+      "sourceSize": {
+        "w": 120,
+        "h": 118
+      }
+    },
+    "ruins_Assets_Blue-gray_ruins2": {
+      "frame": {
+        "x": 1078,
+        "y": 0,
+        "w": 101,
+        "h": 113
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 101,
+        "h": 113
+      },
+      "sourceSize": {
+        "w": 101,
+        "h": 113
+      }
+    },
+    "rocks_stalagmites_stalagmite1": {
+      "frame": {
+        "x": 1181,
+        "y": 0,
+        "w": 86,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 86,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 86,
+        "h": 110
+      }
+    },
+    "ruins_Assets_Yellow_ruins2": {
+      "frame": {
+        "x": 1269,
+        "y": 0,
+        "w": 105,
+        "h": 105
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 105,
+        "h": 105
+      },
+      "sourceSize": {
+        "w": 105,
+        "h": 105
+      }
+    },
+    "ruins_Assets_Brown-gray_ruins2": {
+      "frame": {
+        "x": 1376,
+        "y": 0,
+        "w": 107,
+        "h": 99
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 107,
+        "h": 99
+      },
+      "sourceSize": {
+        "w": 107,
+        "h": 99
+      }
+    },
+    "ruins_Assets_Brown_ruins2": {
+      "frame": {
+        "x": 1485,
+        "y": 0,
+        "w": 79,
+        "h": 99
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 79,
+        "h": 99
+      },
+      "sourceSize": {
+        "w": 79,
+        "h": 99
+      }
+    },
+    "rocks_canyon_rocks_canyon_rock1": {
+      "frame": {
+        "x": 1566,
+        "y": 0,
+        "w": 75,
+        "h": 99
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 75,
+        "h": 99
+      },
+      "sourceSize": {
+        "w": 75,
+        "h": 99
+      }
+    },
+    "ruins_Assets_Sand_ruins2": {
+      "frame": {
+        "x": 1643,
+        "y": 0,
+        "w": 101,
+        "h": 94
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 101,
+        "h": 94
+      },
+      "sourceSize": {
+        "w": 101,
+        "h": 94
+      }
+    },
+    "ruins_Assets_Snow_ruins2": {
+      "frame": {
+        "x": 1746,
+        "y": 0,
+        "w": 96,
+        "h": 94
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 96,
+        "h": 94
+      },
+      "sourceSize": {
+        "w": 96,
+        "h": 94
+      }
+    },
+    "ruins_Assets_Water_ruins2": {
+      "frame": {
+        "x": 1844,
+        "y": 0,
+        "w": 75,
+        "h": 92
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 75,
+        "h": 92
+      },
+      "sourceSize": {
+        "w": 75,
+        "h": 92
+      }
+    },
+    "crystals_crystals_orange_crystal_orange1": {
+      "frame": {
+        "x": 1921,
+        "y": 0,
+        "w": 113,
+        "h": 90
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 113,
+        "h": 90
+      },
+      "sourceSize": {
+        "w": 113,
+        "h": 90
+      }
+    },
+    "ruins_Assets_White_ruins2": {
+      "frame": {
+        "x": 0,
+        "y": 174,
+        "w": 111,
+        "h": 89
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 111,
+        "h": 89
+      },
+      "sourceSize": {
+        "w": 111,
+        "h": 89
+      }
+    },
+    "ruins_Assets_Yellow_ruins3": {
+      "frame": {
+        "x": 113,
+        "y": 174,
+        "w": 83,
+        "h": 89
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 83,
+        "h": 89
+      },
+      "sourceSize": {
+        "w": 83,
+        "h": 89
+      }
+    },
+    "ruins_Assets_Blue-gray_ruins3": {
+      "frame": {
+        "x": 198,
+        "y": 174,
+        "w": 61,
+        "h": 88
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 61,
+        "h": 88
+      },
+      "sourceSize": {
+        "w": 61,
+        "h": 88
+      }
+    },
+    "crystals_crystals_blue_crystal_blue1": {
+      "frame": {
+        "x": 261,
+        "y": 174,
+        "w": 65,
+        "h": 86
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 65,
+        "h": 86
+      },
+      "sourceSize": {
+        "w": 65,
+        "h": 86
+      }
+    },
+    "rocks_cave_rocks_cave_rock1": {
+      "frame": {
+        "x": 328,
+        "y": 174,
+        "w": 113,
+        "h": 83
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 113,
+        "h": 83
+      },
+      "sourceSize": {
+        "w": 113,
+        "h": 83
+      }
+    },
+    "rocks_middle_lane_rocks1_middle_lane_rock1_1": {
+      "frame": {
+        "x": 443,
+        "y": 174,
+        "w": 108,
+        "h": 83
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 108,
+        "h": 83
+      },
+      "sourceSize": {
+        "w": 108,
+        "h": 83
+      }
+    },
+    "crystals_crystals_green_crystal_green1": {
+      "frame": {
+        "x": 553,
+        "y": 174,
+        "w": 87,
+        "h": 83
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 87,
+        "h": 83
+      },
+      "sourceSize": {
+        "w": 87,
+        "h": 83
+      }
+    },
+    "ruins_Assets_Sand_ruins3": {
+      "frame": {
+        "x": 642,
+        "y": 174,
+        "w": 77,
+        "h": 83
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 77,
+        "h": 83
+      },
+      "sourceSize": {
+        "w": 77,
+        "h": 83
+      }
+    },
+    "ruins_Assets_Snow_ruins3": {
+      "frame": {
+        "x": 721,
+        "y": 174,
+        "w": 79,
+        "h": 82
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 79,
+        "h": 82
+      },
+      "sourceSize": {
+        "w": 79,
+        "h": 82
+      }
+    },
+    "crystals_crystals_red-pink_crystal_red-pink1": {
+      "frame": {
+        "x": 802,
+        "y": 174,
+        "w": 82,
+        "h": 81
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 82,
+        "h": 81
+      },
+      "sourceSize": {
+        "w": 82,
+        "h": 81
+      }
+    },
+    "rocks_stalagmites_stalagmite2": {
+      "frame": {
+        "x": 886,
+        "y": 174,
+        "w": 55,
+        "h": 81
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 55,
+        "h": 81
+      },
+      "sourceSize": {
+        "w": 55,
+        "h": 81
+      }
+    },
+    "crystals_crystals_violet_crystal_violet1": {
+      "frame": {
+        "x": 943,
+        "y": 174,
+        "w": 98,
+        "h": 80
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 98,
+        "h": 80
+      },
+      "sourceSize": {
+        "w": 98,
+        "h": 80
+      }
+    },
+    "crystals_crystals_black_crystal_black1": {
+      "frame": {
+        "x": 1043,
+        "y": 174,
+        "w": 98,
+        "h": 79
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 98,
+        "h": 79
+      },
+      "sourceSize": {
+        "w": 98,
+        "h": 79
+      }
+    },
+    "rocks_snowy_rocks1_snowy_rock1": {
+      "frame": {
+        "x": 1143,
+        "y": 174,
+        "w": 111,
+        "h": 78
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 111,
+        "h": 78
+      },
+      "sourceSize": {
+        "w": 111,
+        "h": 78
+      }
+    },
+    "ruins_Assets_Brown_ruins3": {
+      "frame": {
+        "x": 1256,
+        "y": 174,
+        "w": 79,
+        "h": 77
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 79,
+        "h": 77
+      },
+      "sourceSize": {
+        "w": 79,
+        "h": 77
+      }
+    },
+    "ruins_Assets_White_ruins3": {
+      "frame": {
+        "x": 1337,
+        "y": 174,
+        "w": 77,
+        "h": 77
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 77,
+        "h": 77
+      },
+      "sourceSize": {
+        "w": 77,
+        "h": 77
+      }
+    },
+    "rocks_canyon_rocks_canyon_rock2": {
+      "frame": {
+        "x": 1416,
+        "y": 174,
+        "w": 53,
+        "h": 77
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 53,
+        "h": 77
+      },
+      "sourceSize": {
+        "w": 53,
+        "h": 77
+      }
+    },
+    "ruins_Assets_Brown-gray_ruins3": {
+      "frame": {
+        "x": 1471,
+        "y": 174,
+        "w": 79,
+        "h": 70
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 79,
+        "h": 70
+      },
+      "sourceSize": {
+        "w": 79,
+        "h": 70
+      }
+    },
+    "ruins_Assets_Water_ruins3": {
+      "frame": {
+        "x": 1552,
+        "y": 174,
+        "w": 42,
+        "h": 69
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 42,
+        "h": 69
+      },
+      "sourceSize": {
+        "w": 42,
+        "h": 69
+      }
+    },
+    "rocks_middle_lane_rocks2_middle_lane_rock2_1": {
+      "frame": {
+        "x": 1596,
+        "y": 174,
+        "w": 127,
+        "h": 68
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 127,
+        "h": 68
+      },
+      "sourceSize": {
+        "w": 127,
+        "h": 68
+      }
+    },
+    "crystals_crystals_white-gold_crystal_white-gold1": {
+      "frame": {
+        "x": 1725,
+        "y": 174,
+        "w": 107,
+        "h": 68
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 107,
+        "h": 68
+      },
+      "sourceSize": {
+        "w": 107,
+        "h": 68
+      }
+    },
+    "ruins_Assets_White_ruins4": {
+      "frame": {
+        "x": 1834,
+        "y": 174,
+        "w": 64,
+        "h": 66
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 64,
+        "h": 66
+      },
+      "sourceSize": {
+        "w": 64,
+        "h": 66
+      }
+    },
+    "ruins_Assets_Blue-gray_ruins4": {
+      "frame": {
+        "x": 1900,
+        "y": 174,
+        "w": 61,
+        "h": 66
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 61,
+        "h": 66
+      },
+      "sourceSize": {
+        "w": 61,
+        "h": 66
+      }
+    },
+    "crystals_crystals_red-pink_crystal_red-pink2": {
+      "frame": {
+        "x": 1963,
+        "y": 174,
+        "w": 56,
+        "h": 66
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 56,
+        "h": 66
+      },
+      "sourceSize": {
+        "w": 56,
+        "h": 66
+      }
+    },
+    "ruins_Assets_Yellow_ruins4": {
+      "frame": {
+        "x": 0,
+        "y": 265,
+        "w": 61,
+        "h": 64
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 61,
+        "h": 64
+      },
+      "sourceSize": {
+        "w": 61,
+        "h": 64
+      }
+    },
+    "ruins_Assets_Sand_ruins4": {
+      "frame": {
+        "x": 63,
+        "y": 265,
+        "w": 63,
+        "h": 63
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 63,
+        "h": 63
+      },
+      "sourceSize": {
+        "w": 63,
+        "h": 63
+      }
+    },
+    "ruins_Assets_Snow_ruins4": {
+      "frame": {
+        "x": 128,
+        "y": 265,
+        "w": 58,
+        "h": 63
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 58,
+        "h": 63
+      },
+      "sourceSize": {
+        "w": 58,
+        "h": 63
+      }
+    },
+    "rocks_ice_rock_ice_rock1": {
+      "frame": {
+        "x": 188,
+        "y": 265,
+        "w": 131,
+        "h": 61
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 131,
+        "h": 61
+      },
+      "sourceSize": {
+        "w": 131,
+        "h": 61
+      }
+    },
+    "ruins_Assets_Brown-gray_ruins4": {
+      "frame": {
+        "x": 321,
+        "y": 265,
+        "w": 58,
+        "h": 61
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 58,
+        "h": 61
+      },
+      "sourceSize": {
+        "w": 58,
+        "h": 61
+      }
+    },
+    "ruins_Assets_Brown_ruins4": {
+      "frame": {
+        "x": 381,
+        "y": 265,
+        "w": 56,
+        "h": 60
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 56,
+        "h": 60
+      },
+      "sourceSize": {
+        "w": 56,
+        "h": 60
+      }
+    },
+    "crystals_crystals_orange_crystal_orange2": {
+      "frame": {
+        "x": 439,
+        "y": 265,
+        "w": 71,
+        "h": 59
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 71,
+        "h": 59
+      },
+      "sourceSize": {
+        "w": 71,
+        "h": 59
+      }
+    },
+    "crystals_crystals_blue_crystal_blue2": {
+      "frame": {
+        "x": 512,
+        "y": 265,
+        "w": 56,
+        "h": 59
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 56,
+        "h": 59
+      },
+      "sourceSize": {
+        "w": 56,
+        "h": 59
+      }
+    },
+    "rocks_cave_rocks_cave_rock2": {
+      "frame": {
+        "x": 570,
+        "y": 265,
+        "w": 87,
+        "h": 58
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 87,
+        "h": 58
+      },
+      "sourceSize": {
+        "w": 87,
+        "h": 58
+      }
+    },
+    "crystals_crystals_violet_crystal_violet2": {
+      "frame": {
+        "x": 659,
+        "y": 265,
+        "w": 80,
+        "h": 57
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 57
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 57
+      }
+    },
+    "crystals_crystals_black_crystal_black2": {
+      "frame": {
+        "x": 741,
+        "y": 265,
+        "w": 77,
+        "h": 57
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 77,
+        "h": 57
+      },
+      "sourceSize": {
+        "w": 77,
+        "h": 57
+      }
+    },
+    "rocks_middle_lane_rocks2_middle_lane_rock2_2": {
+      "frame": {
+        "x": 820,
+        "y": 265,
+        "w": 92,
+        "h": 56
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 92,
+        "h": 56
+      },
+      "sourceSize": {
+        "w": 92,
+        "h": 56
+      }
+    },
+    "crystals_crystals_green_crystal_green2": {
+      "frame": {
+        "x": 914,
+        "y": 265,
+        "w": 76,
+        "h": 56
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 76,
+        "h": 56
+      },
+      "sourceSize": {
+        "w": 76,
+        "h": 56
+      }
+    },
+    "rocks_desert_rocks_desert_rock1": {
+      "frame": {
+        "x": 992,
+        "y": 265,
+        "w": 121,
+        "h": 54
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 121,
+        "h": 54
+      },
+      "sourceSize": {
+        "w": 121,
+        "h": 54
+      }
+    },
+    "ruins_Assets_Water_ruins4": {
+      "frame": {
+        "x": 1115,
+        "y": 265,
+        "w": 35,
+        "h": 53
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 35,
+        "h": 53
+      },
+      "sourceSize": {
+        "w": 35,
+        "h": 53
+      }
+    },
+    "rocks_snowy_rocks1_snowy_rock2": {
+      "frame": {
+        "x": 1152,
+        "y": 265,
+        "w": 89,
+        "h": 51
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 89,
+        "h": 51
+      },
+      "sourceSize": {
+        "w": 89,
+        "h": 51
+      }
+    },
+    "crystals_crystals_lime_crystal_lime1": {
+      "frame": {
+        "x": 1243,
+        "y": 265,
+        "w": 132,
+        "h": 50
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 132,
+        "h": 50
+      },
+      "sourceSize": {
+        "w": 132,
+        "h": 50
+      }
+    },
+    "rocks_middle_lane_rocks1_middle_lane_rock1_2": {
+      "frame": {
+        "x": 1377,
+        "y": 265,
+        "w": 82,
+        "h": 50
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 82,
+        "h": 50
+      },
+      "sourceSize": {
+        "w": 82,
+        "h": 50
+      }
+    },
+    "crystals_crystals_white-gold_crystal_white-gold2": {
+      "frame": {
+        "x": 1461,
+        "y": 265,
+        "w": 84,
+        "h": 49
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 84,
+        "h": 49
+      },
+      "sourceSize": {
+        "w": 84,
+        "h": 49
+      }
+    },
+    "rocks_stalagmites_stalagmite3": {
+      "frame": {
+        "x": 1547,
+        "y": 265,
+        "w": 33,
+        "h": 49
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 33,
+        "h": 49
+      },
+      "sourceSize": {
+        "w": 33,
+        "h": 49
+      }
+    },
+    "bushes_Bushes4_Bush4_1": {
+      "frame": {
+        "x": 1582,
+        "y": 265,
+        "w": 54,
+        "h": 48
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 54,
+        "h": 48
+      },
+      "sourceSize": {
+        "w": 54,
+        "h": 48
+      }
+    },
+    "bushes_Bushes6_Bush6_1": {
+      "frame": {
+        "x": 1638,
+        "y": 265,
+        "w": 58,
+        "h": 47
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 58,
+        "h": 47
+      },
+      "sourceSize": {
+        "w": 58,
+        "h": 47
+      }
+    },
+    "crystals_crystals_red-pink_crystal_red-pink3": {
+      "frame": {
+        "x": 1698,
+        "y": 265,
+        "w": 43,
+        "h": 47
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 43,
+        "h": 47
+      },
+      "sourceSize": {
+        "w": 43,
+        "h": 47
+      }
+    },
+    "bushes_Bushes3_Bush3_1": {
+      "frame": {
+        "x": 1743,
+        "y": 265,
+        "w": 45,
+        "h": 46
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 45,
+        "h": 46
+      },
+      "sourceSize": {
+        "w": 45,
+        "h": 46
+      }
+    },
+    "bushes_Bushes7_Bush7_1": {
+      "frame": {
+        "x": 1790,
+        "y": 265,
+        "w": 57,
+        "h": 45
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 57,
+        "h": 45
+      },
+      "sourceSize": {
+        "w": 57,
+        "h": 45
+      }
+    },
+    "crystals_crystals_orange_crystal_orange3": {
+      "frame": {
+        "x": 1849,
+        "y": 265,
+        "w": 56,
+        "h": 45
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 56,
+        "h": 45
+      },
+      "sourceSize": {
+        "w": 56,
+        "h": 45
+      }
+    },
+    "bushes_Bushes8_Bush8_1": {
+      "frame": {
+        "x": 1907,
+        "y": 265,
+        "w": 51,
+        "h": 45
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 51,
+        "h": 45
+      },
+      "sourceSize": {
+        "w": 51,
+        "h": 45
+      }
+    },
+    "ruins_Assets_Yellow_ruins5": {
+      "frame": {
+        "x": 1960,
+        "y": 265,
+        "w": 44,
+        "h": 45
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 44,
+        "h": 45
+      },
+      "sourceSize": {
+        "w": 44,
+        "h": 45
+      }
+    },
+    "bushes_Bushes1_Bush1_1": {
+      "frame": {
+        "x": 0,
+        "y": 331,
+        "w": 51,
+        "h": 44
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 51,
+        "h": 44
+      },
+      "sourceSize": {
+        "w": 51,
+        "h": 44
+      }
+    },
+    "crystals_crystals_green_crystal_green3": {
+      "frame": {
+        "x": 53,
+        "y": 331,
+        "w": 54,
+        "h": 43
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 54,
+        "h": 43
+      },
+      "sourceSize": {
+        "w": 54,
+        "h": 43
+      }
+    },
+    "rocks_middle_lane_rocks1_middle_lane_rock1_3": {
+      "frame": {
+        "x": 109,
+        "y": 331,
+        "w": 55,
+        "h": 42
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 55,
+        "h": 42
+      },
+      "sourceSize": {
+        "w": 55,
+        "h": 42
+      }
+    },
+    "bushes_Bushes2_Bush2_1": {
+      "frame": {
+        "x": 166,
+        "y": 331,
+        "w": 50,
+        "h": 42
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 50,
+        "h": 42
+      },
+      "sourceSize": {
+        "w": 50,
+        "h": 42
+      }
+    },
+    "crystals_crystals_blue_crystal_blue3": {
+      "frame": {
+        "x": 218,
+        "y": 331,
+        "w": 47,
+        "h": 42
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 47,
+        "h": 42
+      },
+      "sourceSize": {
+        "w": 47,
+        "h": 42
+      }
+    },
+    "ruins_Assets_Brown_ruins5": {
+      "frame": {
+        "x": 267,
+        "y": 331,
+        "w": 42,
+        "h": 42
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 42,
+        "h": 42
+      },
+      "sourceSize": {
+        "w": 42,
+        "h": 42
+      }
+    },
+    "ruins_Assets_Blue-gray_ruins5": {
+      "frame": {
+        "x": 311,
+        "y": 331,
+        "w": 38,
+        "h": 42
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 38,
+        "h": 42
+      },
+      "sourceSize": {
+        "w": 38,
+        "h": 42
+      }
+    },
+    "crystals_crystals_lime_crystal_lime2": {
+      "frame": {
+        "x": 351,
+        "y": 331,
+        "w": 99,
+        "h": 41
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 99,
+        "h": 41
+      },
+      "sourceSize": {
+        "w": 99,
+        "h": 41
+      }
+    },
+    "rocks_desert_rocks_desert_rock2": {
+      "frame": {
+        "x": 452,
+        "y": 331,
+        "w": 88,
+        "h": 41
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 88,
+        "h": 41
+      },
+      "sourceSize": {
+        "w": 88,
+        "h": 41
+      }
+    },
+    "bushes_Bushes10_Bush10_1": {
+      "frame": {
+        "x": 542,
+        "y": 331,
+        "w": 48,
+        "h": 41
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 48,
+        "h": 41
+      },
+      "sourceSize": {
+        "w": 48,
+        "h": 41
+      }
+    },
+    "ruins_Assets_Sand_ruins5": {
+      "frame": {
+        "x": 592,
+        "y": 331,
+        "w": 38,
+        "h": 41
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 38,
+        "h": 41
+      },
+      "sourceSize": {
+        "w": 38,
+        "h": 41
+      }
+    },
+    "ruins_Assets_Snow_ruins5": {
+      "frame": {
+        "x": 632,
+        "y": 331,
+        "w": 34,
+        "h": 41
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 34,
+        "h": 41
+      },
+      "sourceSize": {
+        "w": 34,
+        "h": 41
+      }
+    },
+    "rocks_canyon_rocks_canyon_rock3": {
+      "frame": {
+        "x": 668,
+        "y": 331,
+        "w": 29,
+        "h": 41
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 29,
+        "h": 41
+      },
+      "sourceSize": {
+        "w": 29,
+        "h": 41
+      }
+    },
+    "crystals_crystals_black_crystal_black3": {
+      "frame": {
+        "x": 699,
+        "y": 331,
+        "w": 57,
+        "h": 40
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 57,
+        "h": 40
+      },
+      "sourceSize": {
+        "w": 57,
+        "h": 40
+      }
+    },
+    "rocks_cave_rocks_cave_rock3": {
+      "frame": {
+        "x": 758,
+        "y": 331,
+        "w": 56,
+        "h": 39
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 56,
+        "h": 39
+      },
+      "sourceSize": {
+        "w": 56,
+        "h": 39
+      }
+    },
+    "rocks_ice_rock_ice_rock2": {
+      "frame": {
+        "x": 816,
+        "y": 331,
+        "w": 94,
+        "h": 38
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 94,
+        "h": 38
+      },
+      "sourceSize": {
+        "w": 94,
+        "h": 38
+      }
+    },
+    "crystals_crystals_violet_crystal_violet3": {
+      "frame": {
+        "x": 912,
+        "y": 331,
+        "w": 52,
+        "h": 38
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 52,
+        "h": 38
+      },
+      "sourceSize": {
+        "w": 52,
+        "h": 38
+      }
+    },
+    "rocks_snowy_rocks1_snowy_rock3": {
+      "frame": {
+        "x": 966,
+        "y": 331,
+        "w": 50,
+        "h": 38
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 50,
+        "h": 38
+      },
+      "sourceSize": {
+        "w": 50,
+        "h": 38
+      }
+    },
+    "bushes_Bushes9_Bush9_1": {
+      "frame": {
+        "x": 1018,
+        "y": 331,
+        "w": 45,
+        "h": 38
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 45,
+        "h": 38
+      },
+      "sourceSize": {
+        "w": 45,
+        "h": 38
+      }
+    },
+    "bushes_Bushes5_Bush5_1": {
+      "frame": {
+        "x": 1065,
+        "y": 331,
+        "w": 62,
+        "h": 37
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 62,
+        "h": 37
+      },
+      "sourceSize": {
+        "w": 62,
+        "h": 37
+      }
+    },
+    "bushes_Bushes6_Bush6_2": {
+      "frame": {
+        "x": 1129,
+        "y": 331,
+        "w": 41,
+        "h": 37
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 41,
+        "h": 37
+      },
+      "sourceSize": {
+        "w": 41,
+        "h": 37
+      }
+    },
+    "bushes_Bushes3_Bush3_2": {
+      "frame": {
+        "x": 1172,
+        "y": 331,
+        "w": 42,
+        "h": 36
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 42,
+        "h": 36
+      },
+      "sourceSize": {
+        "w": 42,
+        "h": 36
+      }
+    },
+    "rocks_middle_lane_rocks2_middle_lane_rock2_3": {
+      "frame": {
+        "x": 1216,
+        "y": 331,
+        "w": 50,
+        "h": 35
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 50,
+        "h": 35
+      },
+      "sourceSize": {
+        "w": 50,
+        "h": 35
+      }
+    },
+    "bushes_Bushes10_Bush10_2": {
+      "frame": {
+        "x": 1268,
+        "y": 331,
+        "w": 40,
+        "h": 35
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 40,
+        "h": 35
+      },
+      "sourceSize": {
+        "w": 40,
+        "h": 35
+      }
+    },
+    "bushes_Bushes8_Bush8_2": {
+      "frame": {
+        "x": 1310,
+        "y": 331,
+        "w": 40,
+        "h": 35
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 40,
+        "h": 35
+      },
+      "sourceSize": {
+        "w": 40,
+        "h": 35
+      }
+    },
+    "bushes_Bushes4_Bush4_2": {
+      "frame": {
+        "x": 1352,
+        "y": 331,
+        "w": 39,
+        "h": 35
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 39,
+        "h": 35
+      },
+      "sourceSize": {
+        "w": 39,
+        "h": 35
+      }
+    },
+    "rocks_stalagmites_stalagmite4": {
+      "frame": {
+        "x": 1393,
+        "y": 331,
+        "w": 22,
+        "h": 35
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 22,
+        "h": 35
+      },
+      "sourceSize": {
+        "w": 22,
+        "h": 35
+      }
+    },
+    "bushes_Bushes1_Bush1_2": {
+      "frame": {
+        "x": 1417,
+        "y": 331,
+        "w": 40,
+        "h": 33
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 40,
+        "h": 33
+      },
+      "sourceSize": {
+        "w": 40,
+        "h": 33
+      }
+    },
+    "ruins_Assets_Water_ruins5": {
+      "frame": {
+        "x": 1459,
+        "y": 331,
+        "w": 34,
+        "h": 32
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 34,
+        "h": 32
+      },
+      "sourceSize": {
+        "w": 34,
+        "h": 32
+      }
+    },
+    "bushes_Bushes2_Bush2_2": {
+      "frame": {
+        "x": 1495,
+        "y": 331,
+        "w": 39,
+        "h": 31
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 39,
+        "h": 31
+      },
+      "sourceSize": {
+        "w": 39,
+        "h": 31
+      }
+    },
+    "crystals_crystals_orange_crystal_orange4": {
+      "frame": {
+        "x": 1536,
+        "y": 331,
+        "w": 30,
+        "h": 31
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 30,
+        "h": 31
+      },
+      "sourceSize": {
+        "w": 30,
+        "h": 31
+      }
+    },
+    "rocks_canyon_rocks_canyon_rock4": {
+      "frame": {
+        "x": 1568,
+        "y": 331,
+        "w": 22,
+        "h": 31
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 22,
+        "h": 31
+      },
+      "sourceSize": {
+        "w": 22,
+        "h": 31
+      }
+    },
+    "bushes_Bushes7_Bush7_2": {
+      "frame": {
+        "x": 1592,
+        "y": 331,
+        "w": 45,
+        "h": 30
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 45,
+        "h": 30
+      },
+      "sourceSize": {
+        "w": 45,
+        "h": 30
+      }
+    },
+    "bushes_Bushes9_Bush9_2": {
+      "frame": {
+        "x": 1639,
+        "y": 331,
+        "w": 39,
+        "h": 30
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 39,
+        "h": 30
+      },
+      "sourceSize": {
+        "w": 39,
+        "h": 30
+      }
+    },
+    "rocks_ice_rock_ice_rock3": {
+      "frame": {
+        "x": 1680,
+        "y": 331,
+        "w": 68,
+        "h": 29
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 68,
+        "h": 29
+      },
+      "sourceSize": {
+        "w": 68,
+        "h": 29
+      }
+    },
+    "crystals_crystals_white-gold_crystal_white-gold3": {
+      "frame": {
+        "x": 1750,
+        "y": 331,
+        "w": 58,
+        "h": 29
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 58,
+        "h": 29
+      },
+      "sourceSize": {
+        "w": 58,
+        "h": 29
+      }
+    },
+    "ruins_Assets_White_ruins5": {
+      "frame": {
+        "x": 1810,
+        "y": 331,
+        "w": 39,
+        "h": 29
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 39,
+        "h": 29
+      },
+      "sourceSize": {
+        "w": 39,
+        "h": 29
+      }
+    },
+    "crystals_crystals_black_crystal_black4": {
+      "frame": {
+        "x": 1851,
+        "y": 331,
+        "w": 37,
+        "h": 29
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 37,
+        "h": 29
+      },
+      "sourceSize": {
+        "w": 37,
+        "h": 29
+      }
+    },
+    "crystals_crystals_red-pink_crystal_red-pink4": {
+      "frame": {
+        "x": 1890,
+        "y": 331,
+        "w": 32,
+        "h": 29
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 32,
+        "h": 29
+      },
+      "sourceSize": {
+        "w": 32,
+        "h": 29
+      }
+    },
+    "bushes_Bushes4_Bush4_3": {
+      "frame": {
+        "x": 1924,
+        "y": 331,
+        "w": 29,
+        "h": 29
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 29,
+        "h": 29
+      },
+      "sourceSize": {
+        "w": 29,
+        "h": 29
+      }
+    },
+    "rocks_cave_rocks_cave_rock4": {
+      "frame": {
+        "x": 1955,
+        "y": 331,
+        "w": 40,
+        "h": 28
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 40,
+        "h": 28
+      },
+      "sourceSize": {
+        "w": 40,
+        "h": 28
+      }
+    },
+    "bushes_Bushes5_Bush5_2": {
+      "frame": {
+        "x": 0,
+        "y": 377,
+        "w": 52,
+        "h": 27
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 52,
+        "h": 27
+      },
+      "sourceSize": {
+        "w": 52,
+        "h": 27
+      }
+    },
+    "bushes_Bushes3_Bush3_3": {
+      "frame": {
+        "x": 54,
+        "y": 377,
+        "w": 33,
+        "h": 27
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 33,
+        "h": 27
+      },
+      "sourceSize": {
+        "w": 33,
+        "h": 27
+      }
+    },
+    "crystals_crystals_blue_crystal_blue4": {
+      "frame": {
+        "x": 89,
+        "y": 377,
+        "w": 25,
+        "h": 27
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 25,
+        "h": 27
+      },
+      "sourceSize": {
+        "w": 25,
+        "h": 27
+      }
+    },
+    "crystals_crystals_green_crystal_green4": {
+      "frame": {
+        "x": 116,
+        "y": 377,
+        "w": 37,
+        "h": 26
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 37,
+        "h": 26
+      },
+      "sourceSize": {
+        "w": 37,
+        "h": 26
+      }
+    },
+    "ruins_Assets_Brown-gray_ruins5": {
+      "frame": {
+        "x": 155,
+        "y": 377,
+        "w": 37,
+        "h": 26
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 37,
+        "h": 26
+      },
+      "sourceSize": {
+        "w": 37,
+        "h": 26
+      }
+    },
+    "crystals_crystals_violet_crystal_violet4": {
+      "frame": {
+        "x": 194,
+        "y": 377,
+        "w": 38,
+        "h": 25
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 38,
+        "h": 25
+      },
+      "sourceSize": {
+        "w": 38,
+        "h": 25
+      }
+    },
+    "rocks_middle_lane_rocks1_middle_lane_rock1_4": {
+      "frame": {
+        "x": 234,
+        "y": 377,
+        "w": 38,
+        "h": 25
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 38,
+        "h": 25
+      },
+      "sourceSize": {
+        "w": 38,
+        "h": 25
+      }
+    },
+    "rocks_middle_lane_rocks2_middle_lane_rock2_4": {
+      "frame": {
+        "x": 274,
+        "y": 377,
+        "w": 48,
+        "h": 24
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 48,
+        "h": 24
+      },
+      "sourceSize": {
+        "w": 48,
+        "h": 24
+      }
+    },
+    "rocks_snowy_rocks1_snowy_rock4": {
+      "frame": {
+        "x": 324,
+        "y": 377,
+        "w": 32,
+        "h": 24
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 32,
+        "h": 24
+      },
+      "sourceSize": {
+        "w": 32,
+        "h": 24
+      }
+    },
+    "bushes_Bushes10_Bush10_3": {
+      "frame": {
+        "x": 358,
+        "y": 377,
+        "w": 32,
+        "h": 23
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 32,
+        "h": 23
+      },
+      "sourceSize": {
+        "w": 32,
+        "h": 23
+      }
+    },
+    "crystals_crystals_white-gold_crystal_white-gold4": {
+      "frame": {
+        "x": 392,
+        "y": 377,
+        "w": 41,
+        "h": 22
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 41,
+        "h": 22
+      },
+      "sourceSize": {
+        "w": 41,
+        "h": 22
+      }
+    },
+    "bushes_Bushes2_Bush2_3": {
+      "frame": {
+        "x": 435,
+        "y": 377,
+        "w": 32,
+        "h": 22
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 32,
+        "h": 22
+      },
+      "sourceSize": {
+        "w": 32,
+        "h": 22
+      }
+    },
+    "bushes_Bushes8_Bush8_3": {
+      "frame": {
+        "x": 469,
+        "y": 377,
+        "w": 30,
+        "h": 21
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 30,
+        "h": 21
+      },
+      "sourceSize": {
+        "w": 30,
+        "h": 21
+      }
+    },
+    "bushes_Bushes6_Bush6_3": {
+      "frame": {
+        "x": 501,
+        "y": 377,
+        "w": 29,
+        "h": 21
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 29,
+        "h": 21
+      },
+      "sourceSize": {
+        "w": 29,
+        "h": 21
+      }
+    },
+    "bushes_Bushes1_Bush1_3": {
+      "frame": {
+        "x": 532,
+        "y": 377,
+        "w": 28,
+        "h": 20
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 28,
+        "h": 20
+      },
+      "sourceSize": {
+        "w": 28,
+        "h": 20
+      }
+    },
+    "bushes_Bushes4_Bush4_4": {
+      "frame": {
+        "x": 562,
+        "y": 377,
+        "w": 24,
+        "h": 20
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 20
+      },
+      "sourceSize": {
+        "w": 24,
+        "h": 20
+      }
+    },
+    "crystals_crystals_lime_crystal_lime3": {
+      "frame": {
+        "x": 588,
+        "y": 377,
+        "w": 75,
+        "h": 19
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 75,
+        "h": 19
+      },
+      "sourceSize": {
+        "w": 75,
+        "h": 19
+      }
+    },
+    "bushes_Bushes5_Bush5_3": {
+      "frame": {
+        "x": 665,
+        "y": 377,
+        "w": 37,
+        "h": 19
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 37,
+        "h": 19
+      },
+      "sourceSize": {
+        "w": 37,
+        "h": 19
+      }
+    },
+    "bushes_Bushes7_Bush7_3": {
+      "frame": {
+        "x": 704,
+        "y": 377,
+        "w": 31,
+        "h": 19
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 31,
+        "h": 19
+      },
+      "sourceSize": {
+        "w": 31,
+        "h": 19
+      }
+    },
+    "bushes_Bushes9_Bush9_3": {
+      "frame": {
+        "x": 737,
+        "y": 377,
+        "w": 30,
+        "h": 19
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 30,
+        "h": 19
+      },
+      "sourceSize": {
+        "w": 30,
+        "h": 19
+      }
+    },
+    "bushes_Bushes3_Bush3_4": {
+      "frame": {
+        "x": 769,
+        "y": 377,
+        "w": 21,
+        "h": 17
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 21,
+        "h": 17
+      },
+      "sourceSize": {
+        "w": 21,
+        "h": 17
+      }
+    },
+    "crystals_crystals_red-pink_crystal_red-pink5": {
+      "frame": {
+        "x": 792,
+        "y": 377,
+        "w": 18,
+        "h": 17
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 18,
+        "h": 17
+      },
+      "sourceSize": {
+        "w": 18,
+        "h": 17
+      }
+    },
+    "rocks_canyon_rocks_canyon_rock5": {
+      "frame": {
+        "x": 812,
+        "y": 377,
+        "w": 13,
+        "h": 17
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 13,
+        "h": 17
+      },
+      "sourceSize": {
+        "w": 13,
+        "h": 17
+      }
+    },
+    "crystals_crystals_lime_crystal_lime4": {
+      "frame": {
+        "x": 827,
+        "y": 377,
+        "w": 53,
+        "h": 16
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 53,
+        "h": 16
+      },
+      "sourceSize": {
+        "w": 53,
+        "h": 16
+      }
+    },
+    "rocks_ice_rock_ice_rock4": {
+      "frame": {
+        "x": 882,
+        "y": 377,
+        "w": 47,
+        "h": 16
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 47,
+        "h": 16
+      },
+      "sourceSize": {
+        "w": 47,
+        "h": 16
+      }
+    },
+    "rocks_desert_rocks_desert_rock3": {
+      "frame": {
+        "x": 931,
+        "y": 377,
+        "w": 42,
+        "h": 16
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 42,
+        "h": 16
+      },
+      "sourceSize": {
+        "w": 42,
+        "h": 16
+      }
+    },
+    "rocks_middle_lane_rocks1_middle_lane_rock1_5": {
+      "frame": {
+        "x": 975,
+        "y": 377,
+        "w": 26,
+        "h": 16
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 26,
+        "h": 16
+      },
+      "sourceSize": {
+        "w": 26,
+        "h": 16
+      }
+    },
+    "rocks_stalagmites_stalagmite5": {
+      "frame": {
+        "x": 1003,
+        "y": 377,
+        "w": 10,
+        "h": 16
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 10,
+        "h": 16
+      },
+      "sourceSize": {
+        "w": 10,
+        "h": 16
+      }
+    },
+    "bushes_Bushes6_Bush6_4": {
+      "frame": {
+        "x": 1015,
+        "y": 377,
+        "w": 23,
+        "h": 15
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 23,
+        "h": 15
+      },
+      "sourceSize": {
+        "w": 23,
+        "h": 15
+      }
+    },
+    "bushes_Bushes8_Bush8_4": {
+      "frame": {
+        "x": 1040,
+        "y": 377,
+        "w": 21,
+        "h": 15
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 21,
+        "h": 15
+      },
+      "sourceSize": {
+        "w": 21,
+        "h": 15
+      }
+    },
+    "rocks_snowy_rocks1_snowy_rock5": {
+      "frame": {
+        "x": 1063,
+        "y": 377,
+        "w": 20,
+        "h": 15
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 20,
+        "h": 15
+      },
+      "sourceSize": {
+        "w": 20,
+        "h": 15
+      }
+    },
+    "rocks_cave_rocks_cave_rock5": {
+      "frame": {
+        "x": 1085,
+        "y": 377,
+        "w": 18,
+        "h": 15
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 18,
+        "h": 15
+      },
+      "sourceSize": {
+        "w": 18,
+        "h": 15
+      }
+    },
+    "crystals_crystals_orange_crystal_orange5": {
+      "frame": {
+        "x": 1105,
+        "y": 377,
+        "w": 13,
+        "h": 15
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 13,
+        "h": 15
+      },
+      "sourceSize": {
+        "w": 13,
+        "h": 15
+      }
+    },
+    "bushes_Bushes10_Bush10_4": {
+      "frame": {
+        "x": 1120,
+        "y": 377,
+        "w": 23,
+        "h": 14
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 23,
+        "h": 14
+      },
+      "sourceSize": {
+        "w": 23,
+        "h": 14
+      }
+    },
+    "crystals_crystals_black_crystal_black5": {
+      "frame": {
+        "x": 1145,
+        "y": 377,
+        "w": 19,
+        "h": 14
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 19,
+        "h": 14
+      },
+      "sourceSize": {
+        "w": 19,
+        "h": 14
+      }
+    },
+    "crystals_crystals_violet_crystal_violet5": {
+      "frame": {
+        "x": 1166,
+        "y": 377,
+        "w": 19,
+        "h": 14
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 19,
+        "h": 14
+      },
+      "sourceSize": {
+        "w": 19,
+        "h": 14
+      }
+    },
+    "crystals_crystals_blue_crystal_blue5": {
+      "frame": {
+        "x": 1187,
+        "y": 377,
+        "w": 17,
+        "h": 14
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 17,
+        "h": 14
+      },
+      "sourceSize": {
+        "w": 17,
+        "h": 14
+      }
+    },
+    "crystals_crystals_lime_crystal_lime5": {
+      "frame": {
+        "x": 1206,
+        "y": 377,
+        "w": 29,
+        "h": 13
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 29,
+        "h": 13
+      },
+      "sourceSize": {
+        "w": 29,
+        "h": 13
+      }
+    },
+    "bushes_Bushes1_Bush1_4": {
+      "frame": {
+        "x": 1237,
+        "y": 377,
+        "w": 17,
+        "h": 13
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 17,
+        "h": 13
+      },
+      "sourceSize": {
+        "w": 17,
+        "h": 13
+      }
+    },
+    "crystals_crystals_green_crystal_green5": {
+      "frame": {
+        "x": 1256,
+        "y": 377,
+        "w": 24,
+        "h": 12
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 12
+      },
+      "sourceSize": {
+        "w": 24,
+        "h": 12
+      }
+    },
+    "bushes_Bushes9_Bush9_4": {
+      "frame": {
+        "x": 1282,
+        "y": 377,
+        "w": 23,
+        "h": 12
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 23,
+        "h": 12
+      },
+      "sourceSize": {
+        "w": 23,
+        "h": 12
+      }
+    },
+    "bushes_Bushes2_Bush2_4": {
+      "frame": {
+        "x": 1307,
+        "y": 377,
+        "w": 20,
+        "h": 12
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 20,
+        "h": 12
+      },
+      "sourceSize": {
+        "w": 20,
+        "h": 12
+      }
+    },
+    "crystals_crystals_white-gold_crystal_white-gold5": {
+      "frame": {
+        "x": 1329,
+        "y": 377,
+        "w": 19,
+        "h": 12
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 19,
+        "h": 12
+      },
+      "sourceSize": {
+        "w": 19,
+        "h": 12
+      }
+    },
+    "rocks_desert_rocks_desert_rock4": {
+      "frame": {
+        "x": 1350,
+        "y": 377,
+        "w": 32,
+        "h": 11
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 32,
+        "h": 11
+      },
+      "sourceSize": {
+        "w": 32,
+        "h": 11
+      }
+    },
+    "bushes_Bushes5_Bush5_4": {
+      "frame": {
+        "x": 1384,
+        "y": 377,
+        "w": 29,
+        "h": 11
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 29,
+        "h": 11
+      },
+      "sourceSize": {
+        "w": 29,
+        "h": 11
+      }
+    },
+    "rocks_middle_lane_rocks2_middle_lane_rock2_5": {
+      "frame": {
+        "x": 1415,
+        "y": 377,
+        "w": 24,
+        "h": 11
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 11
+      },
+      "sourceSize": {
+        "w": 24,
+        "h": 11
+      }
+    },
+    "rocks_ice_rock_ice_rock5": {
+      "frame": {
+        "x": 1441,
+        "y": 377,
+        "w": 33,
+        "h": 10
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 33,
+        "h": 10
+      },
+      "sourceSize": {
+        "w": 33,
+        "h": 10
+      }
+    },
+    "bushes_Bushes7_Bush7_4": {
+      "frame": {
+        "x": 1476,
+        "y": 377,
+        "w": 23,
+        "h": 10
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 23,
+        "h": 10
+      },
+      "sourceSize": {
+        "w": 23,
+        "h": 10
+      }
+    },
+    "rocks_desert_rocks_desert_rock5": {
+      "frame": {
+        "x": 1501,
+        "y": 377,
+        "w": 16,
+        "h": 8
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 8
+      },
+      "sourceSize": {
+        "w": 16,
+        "h": 8
+      }
+    }
+  },
+  "meta": {
+    "app": "scripts/build-object-masks.mjs",
+    "version": "1.0",
+    "image": "objects.png",
+    "format": "RGBA8888",
+    "size": {
+      "w": 2048,
+      "h": 512
+    },
+    "scale": "1"
+  }
+}

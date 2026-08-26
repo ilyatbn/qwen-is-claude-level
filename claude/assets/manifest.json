@@ -19,6 +19,11 @@
       "key": "fx",
       "png": "atlas/fx.png",
       "json": "atlas/fx.json"
+    },
+    {
+      "key": "objects",
+      "png": "atlas/objects.png",
+      "json": "atlas/objects.json"
     }
   ],
   "images": [],

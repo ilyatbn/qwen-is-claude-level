@@ -229,17 +229,27 @@ const manifestPath = join(root, 'assets/manifest.json')
 const existing = existsSync(manifestPath)
   ? JSON.parse(readFileSync(manifestPath, 'utf8'))
   : {}
+//
+// The same bug one layer down: this script owns the atlases named in
+// `atlas-map.json` and **only** those. `build-object-masks.mjs` writes an
+// `objects` atlas from the sprite packs, and rebuilding `atlases` from
+// `results` alone deleted it — the audio list's mistake, repeated against a
+// sibling's entry. Merge by key: replace what this run built, keep the rest.
+const built = results
+  .filter((r) => r.frames > 0)
+  .map((r) => ({ key: r.name, png: `atlas/${r.name}.png`, json: `atlas/${r.name}.json` }))
+const builtKeys = new Set(built.map((a) => a.key))
+const foreign = (existing.atlases ?? []).filter((a) => !builtKeys.has(a.key))
 const manifest = {
   ...existing,
-  atlases: results
-    .filter((r) => r.frames > 0)
-    .map((r) => ({ key: r.name, png: `atlas/${r.name}.png`, json: `atlas/${r.name}.json` })),
+  atlases: [...built, ...foreign],
   images: existing.images ?? [],
   themes,
   audio: existing.audio ?? [],
 }
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
 console.log(
-  `\nmanifest: ${manifest.atlases.length} atlas(es), ${themes.length} theme(s), ` +
-    `${manifest.audio.length} audio file(s)`,
+  `\nmanifest: ${manifest.atlases.length} atlas(es)` +
+    (foreign.length ? ` (${foreign.length} from another writer, kept)` : '') +
+    `, ${themes.length} theme(s), ${manifest.audio.length} audio file(s)`,
 )

@@ -4338,3 +4338,17 @@ between shots, thresholded on `BAZOOKA_BLAST_RADIUS` from the constants table ra
 than a copy of 42. It does not fail when it cannot arrive — a mine across a chasm is
 a map fact — and the ammo guard still bounds the spend. 8/8, and across all eight the
 mine died to the *first* rocket.
+
+## T16.01 — PNG to terrain mask: the build pipeline (v5)
+
+Pack-mean scale: one exact `num/den` per category, measured from the heights of the
+sprites actually selected and applied to each sprite's own bounds, so the spread
+inside a pack survives. Ruins lands at 1.462 (84/57.5), not §D4's 1.24, because §D0's
+mean averages four contact sheets that are not objects — derived, not corrected for.
+§D2's "integer factor" is impossible against §D4's fractional table; sampling is
+integer-only rational NN instead. Five spec defects found and logged in
+`tasks/DECISIONS.md`, which is new: Ilya went dark mid-run and asked for decisions to
+be recorded rather than blocked on. Known limits: the blob format is spelled in both
+the JS and Rust readers, and four tests plus `--check`'s source verification are
+skipped on a clone without `../sprite_packs`, so the Done-when passes there without
+reading a single PNG. e2e deferred to the end of M16 per D-07.

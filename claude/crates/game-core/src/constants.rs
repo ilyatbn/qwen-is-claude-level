@@ -1493,6 +1493,50 @@ pub const BIRD_EDGE_MARGIN: f32 = 48.0;
 /// legible (§C16: "the drop must visibly fall to a place you can reach").
 pub const BIRD_DROP_VELOCITY: f32 = 40.0;
 
+// ---- v5 amendments ----  mirrors docs/73-amendments-v5.md
+
+// --- D1: a sprite's alpha becomes terrain ---
+
+/// Alpha strictly above this is solid when a sprite is thresholded into the
+/// terrain mask (§D5).
+///
+/// It is also the threshold `scripts/catalogue-sprites.mjs` measured the packs'
+/// bounding boxes and fill ratios with, so §D0's table and the pipeline's output
+/// describe the same pixels. Changing it here without regenerating the catalogue
+/// would make the two disagree.
+pub const OBJECT_ALPHA_THRESHOLD: u8 = 128;
+
+// --- D4: scale is measured in player-heights ---
+
+/// Target height of a category's **average** object, in multiples of `PLAYER_H`
+/// (§D4).
+///
+/// The packs are already large — a mean rock is 93x67 against a 16x28 player —
+/// so three of these four scale *down*, which is the opposite of the brief's
+/// assumption and follows from §D0's measurements.
+///
+/// **One factor for the whole category**, measured as
+/// `PLAYER_H * <this> / mean_opaque_height`, and then applied to every sprite's
+/// own bounds. So the average object in the category lands on the target and the
+/// spread around it survives: a small crystal stays small, a big rock stays big.
+///
+/// Dividing each sprite by *its own* height instead would put all 40 crystals on
+/// exactly the target and flatten the variety the packs are here for. The mean
+/// is taken from the sprites the build actually selects, not from §D0's printed
+/// number — for ruins those differ, because §D0 averages 164 files including
+/// four contact sheets that are not objects.
+///
+/// These four are the **only** place an object size lives. The factors, every
+/// mask extent and the atlas are derived at build time, so adjusting one of these
+/// and rerunning `scripts/build-object-masks.mjs` is the whole edit.
+pub const OBJECT_TARGET_PLAYER_H_BUSH: f32 = 1.0;
+/// A boulder you hide behind. §D4.
+pub const OBJECT_TARGET_PLAYER_H_ROCK: f32 = 1.5;
+/// A landmark you can shoot. §D4.
+pub const OBJECT_TARGET_PLAYER_H_CRYSTAL: f32 = 1.5;
+/// Architecture — the only category scaled up. §D4.
+pub const OBJECT_TARGET_PLAYER_H_RUIN: f32 = 3.0;
+
 // ---------------------------------------------------------------------------
 // Map scale and its per-scale parameter table
 // ---------------------------------------------------------------------------

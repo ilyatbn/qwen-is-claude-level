@@ -1,0 +1,2427 @@
+{
+  "meta": {
+    "app": "scripts/build-object-masks.mjs",
+    "version": 1,
+    "masks": "objects/masks.bin",
+    "factors": {
+      "bush": {
+        "num": 70,
+        "den": 141
+      },
+      "crystal": {
+        "num": 120,
+        "den": 163
+      },
+      "rock": {
+        "num": 105,
+        "den": 167
+      },
+      "ruin": {
+        "num": 3360,
+        "den": 2299
+      }
+    }
+  },
+  "objects": [
+    {
+      "id": 0,
+      "key": "bushes_Bushes10_Bush10_1",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes10/Bush10_1.png",
+      "w": 48,
+      "h": 41,
+      "anchor": {
+        "x": 24,
+        "y": 41
+      },
+      "offset": 3212,
+      "bytes": 246
+    },
+    {
+      "id": 1,
+      "key": "bushes_Bushes10_Bush10_2",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes10/Bush10_2.png",
+      "w": 40,
+      "h": 35,
+      "anchor": {
+        "x": 20,
+        "y": 35
+      },
+      "offset": 3458,
+      "bytes": 175
+    },
+    {
+      "id": 2,
+      "key": "bushes_Bushes10_Bush10_3",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes10/Bush10_3.png",
+      "w": 32,
+      "h": 23,
+      "anchor": {
+        "x": 16,
+        "y": 23
+      },
+      "offset": 3633,
+      "bytes": 92
+    },
+    {
+      "id": 3,
+      "key": "bushes_Bushes10_Bush10_4",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes10/Bush10_4.png",
+      "w": 23,
+      "h": 14,
+      "anchor": {
+        "x": 11,
+        "y": 14
+      },
+      "offset": 3725,
+      "bytes": 41
+    },
+    {
+      "id": 4,
+      "key": "bushes_Bushes1_Bush1_1",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes1/Bush1_1.png",
+      "w": 51,
+      "h": 44,
+      "anchor": {
+        "x": 25,
+        "y": 44
+      },
+      "offset": 3766,
+      "bytes": 281
+    },
+    {
+      "id": 5,
+      "key": "bushes_Bushes1_Bush1_2",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes1/Bush1_2.png",
+      "w": 40,
+      "h": 33,
+      "anchor": {
+        "x": 20,
+        "y": 33
+      },
+      "offset": 4047,
+      "bytes": 165
+    },
+    {
+      "id": 6,
+      "key": "bushes_Bushes1_Bush1_3",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes1/Bush1_3.png",
+      "w": 28,
+      "h": 20,
+      "anchor": {
+        "x": 14,
+        "y": 20
+      },
+      "offset": 4212,
+      "bytes": 70
+    },
+    {
+      "id": 7,
+      "key": "bushes_Bushes1_Bush1_4",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes1/Bush1_4.png",
+      "w": 17,
+      "h": 13,
+      "anchor": {
+        "x": 8,
+        "y": 13
+      },
+      "offset": 4282,
+      "bytes": 28
+    },
+    {
+      "id": 8,
+      "key": "bushes_Bushes2_Bush2_1",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes2/Bush2_1.png",
+      "w": 50,
+      "h": 42,
+      "anchor": {
+        "x": 25,
+        "y": 42
+      },
+      "offset": 4310,
+      "bytes": 263
+    },
+    {
+      "id": 9,
+      "key": "bushes_Bushes2_Bush2_2",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes2/Bush2_2.png",
+      "w": 39,
+      "h": 31,
+      "anchor": {
+        "x": 19,
+        "y": 31
+      },
+      "offset": 4573,
+      "bytes": 152
+    },
+    {
+      "id": 10,
+      "key": "bushes_Bushes2_Bush2_3",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes2/Bush2_3.png",
+      "w": 32,
+      "h": 22,
+      "anchor": {
+        "x": 16,
+        "y": 22
+      },
+      "offset": 4725,
+      "bytes": 88
+    },
+    {
+      "id": 11,
+      "key": "bushes_Bushes2_Bush2_4",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes2/Bush2_4.png",
+      "w": 20,
+      "h": 12,
+      "anchor": {
+        "x": 10,
+        "y": 12
+      },
+      "offset": 4813,
+      "bytes": 30
+    },
+    {
+      "id": 12,
+      "key": "bushes_Bushes3_Bush3_1",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes3/Bush3_1.png",
+      "w": 45,
+      "h": 46,
+      "anchor": {
+        "x": 22,
+        "y": 46
+      },
+      "offset": 4843,
+      "bytes": 259
+    },
+    {
+      "id": 13,
+      "key": "bushes_Bushes3_Bush3_2",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes3/Bush3_2.png",
+      "w": 42,
+      "h": 36,
+      "anchor": {
+        "x": 21,
+        "y": 36
+      },
+      "offset": 5102,
+      "bytes": 189
+    },
+    {
+      "id": 14,
+      "key": "bushes_Bushes3_Bush3_3",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes3/Bush3_3.png",
+      "w": 33,
+      "h": 27,
+      "anchor": {
+        "x": 16,
+        "y": 27
+      },
+      "offset": 5291,
+      "bytes": 112
+    },
+    {
+      "id": 15,
+      "key": "bushes_Bushes3_Bush3_4",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes3/Bush3_4.png",
+      "w": 21,
+      "h": 17,
+      "anchor": {
+        "x": 10,
+        "y": 17
+      },
+      "offset": 5403,
+      "bytes": 45
+    },
+    {
+      "id": 16,
+      "key": "bushes_Bushes4_Bush4_1",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes4/Bush4_1.png",
+      "w": 54,
+      "h": 48,
+      "anchor": {
+        "x": 27,
+        "y": 48
+      },
+      "offset": 5448,
+      "bytes": 324
+    },
+    {
+      "id": 17,
+      "key": "bushes_Bushes4_Bush4_2",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes4/Bush4_2.png",
+      "w": 39,
+      "h": 35,
+      "anchor": {
+        "x": 19,
+        "y": 35
+      },
+      "offset": 5772,
+      "bytes": 171
+    },
+    {
+      "id": 18,
+      "key": "bushes_Bushes4_Bush4_3",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes4/Bush4_3.png",
+      "w": 29,
+      "h": 29,
+      "anchor": {
+        "x": 14,
+        "y": 29
+      },
+      "offset": 5943,
+      "bytes": 106
+    },
+    {
+      "id": 19,
+      "key": "bushes_Bushes4_Bush4_4",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes4/Bush4_4.png",
+      "w": 24,
+      "h": 20,
+      "anchor": {
+        "x": 12,
+        "y": 20
+      },
+      "offset": 6049,
+      "bytes": 60
+    },
+    {
+      "id": 20,
+      "key": "bushes_Bushes5_Bush5_1",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes5/Bush5_1.png",
+      "w": 62,
+      "h": 37,
+      "anchor": {
+        "x": 31,
+        "y": 37
+      },
+      "offset": 6109,
+      "bytes": 287
+    },
+    {
+      "id": 21,
+      "key": "bushes_Bushes5_Bush5_2",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes5/Bush5_2.png",
+      "w": 52,
+      "h": 27,
+      "anchor": {
+        "x": 26,
+        "y": 27
+      },
+      "offset": 6396,
+      "bytes": 176
+    },
+    {
+      "id": 22,
+      "key": "bushes_Bushes5_Bush5_3",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes5/Bush5_3.png",
+      "w": 37,
+      "h": 19,
+      "anchor": {
+        "x": 18,
+        "y": 19
+      },
+      "offset": 6572,
+      "bytes": 88
+    },
+    {
+      "id": 23,
+      "key": "bushes_Bushes5_Bush5_4",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes5/Bush5_4.png",
+      "w": 29,
+      "h": 11,
+      "anchor": {
+        "x": 14,
+        "y": 11
+      },
+      "offset": 6660,
+      "bytes": 40
+    },
+    {
+      "id": 24,
+      "key": "bushes_Bushes6_Bush6_1",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes6/Bush6_1.png",
+      "w": 58,
+      "h": 47,
+      "anchor": {
+        "x": 29,
+        "y": 47
+      },
+      "offset": 6700,
+      "bytes": 341
+    },
+    {
+      "id": 25,
+      "key": "bushes_Bushes6_Bush6_2",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes6/Bush6_2.png",
+      "w": 41,
+      "h": 37,
+      "anchor": {
+        "x": 20,
+        "y": 37
+      },
+      "offset": 7041,
+      "bytes": 190
+    },
+    {
+      "id": 26,
+      "key": "bushes_Bushes6_Bush6_3",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes6/Bush6_3.png",
+      "w": 29,
+      "h": 21,
+      "anchor": {
+        "x": 14,
+        "y": 21
+      },
+      "offset": 7231,
+      "bytes": 77
+    },
+    {
+      "id": 27,
+      "key": "bushes_Bushes6_Bush6_4",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes6/Bush6_4.png",
+      "w": 23,
+      "h": 15,
+      "anchor": {
+        "x": 11,
+        "y": 15
+      },
+      "offset": 7308,
+      "bytes": 44
+    },
+    {
+      "id": 28,
+      "key": "bushes_Bushes7_Bush7_1",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes7/Bush7_1.png",
+      "w": 57,
+      "h": 45,
+      "anchor": {
+        "x": 28,
+        "y": 45
+      },
+      "offset": 7352,
+      "bytes": 321
+    },
+    {
+      "id": 29,
+      "key": "bushes_Bushes7_Bush7_2",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes7/Bush7_2.png",
+      "w": 45,
+      "h": 30,
+      "anchor": {
+        "x": 22,
+        "y": 30
+      },
+      "offset": 7673,
+      "bytes": 169
+    },
+    {
+      "id": 30,
+      "key": "bushes_Bushes7_Bush7_3",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes7/Bush7_3.png",
+      "w": 31,
+      "h": 19,
+      "anchor": {
+        "x": 15,
+        "y": 19
+      },
+      "offset": 7842,
+      "bytes": 74
+    },
+    {
+      "id": 31,
+      "key": "bushes_Bushes7_Bush7_4",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes7/Bush7_4.png",
+      "w": 23,
+      "h": 10,
+      "anchor": {
+        "x": 11,
+        "y": 10
+      },
+      "offset": 7916,
+      "bytes": 29
+    },
+    {
+      "id": 32,
+      "key": "bushes_Bushes8_Bush8_1",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes8/Bush8_1.png",
+      "w": 51,
+      "h": 45,
+      "anchor": {
+        "x": 25,
+        "y": 45
+      },
+      "offset": 7945,
+      "bytes": 287
+    },
+    {
+      "id": 33,
+      "key": "bushes_Bushes8_Bush8_2",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes8/Bush8_2.png",
+      "w": 40,
+      "h": 35,
+      "anchor": {
+        "x": 20,
+        "y": 35
+      },
+      "offset": 8232,
+      "bytes": 175
+    },
+    {
+      "id": 34,
+      "key": "bushes_Bushes8_Bush8_3",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes8/Bush8_3.png",
+      "w": 30,
+      "h": 21,
+      "anchor": {
+        "x": 15,
+        "y": 21
+      },
+      "offset": 8407,
+      "bytes": 79
+    },
+    {
+      "id": 35,
+      "key": "bushes_Bushes8_Bush8_4",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes8/Bush8_4.png",
+      "w": 21,
+      "h": 15,
+      "anchor": {
+        "x": 10,
+        "y": 15
+      },
+      "offset": 8486,
+      "bytes": 40
+    },
+    {
+      "id": 36,
+      "key": "bushes_Bushes9_Bush9_1",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes9/Bush9_1.png",
+      "w": 45,
+      "h": 38,
+      "anchor": {
+        "x": 22,
+        "y": 38
+      },
+      "offset": 8526,
+      "bytes": 214
+    },
+    {
+      "id": 37,
+      "key": "bushes_Bushes9_Bush9_2",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes9/Bush9_2.png",
+      "w": 39,
+      "h": 30,
+      "anchor": {
+        "x": 19,
+        "y": 30
+      },
+      "offset": 8740,
+      "bytes": 147
+    },
+    {
+      "id": 38,
+      "key": "bushes_Bushes9_Bush9_3",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes9/Bush9_3.png",
+      "w": 30,
+      "h": 19,
+      "anchor": {
+        "x": 15,
+        "y": 19
+      },
+      "offset": 8887,
+      "bytes": 72
+    },
+    {
+      "id": 39,
+      "key": "bushes_Bushes9_Bush9_4",
+      "pack": "bushes",
+      "category": "bush",
+      "source": "Bushes9/Bush9_4.png",
+      "w": 23,
+      "h": 12,
+      "anchor": {
+        "x": 11,
+        "y": 12
+      },
+      "offset": 8959,
+      "bytes": 35
+    },
+    {
+      "id": 40,
+      "key": "crystals_crystals_black_crystal_black1",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_black/crystal_black1.png",
+      "w": 98,
+      "h": 79,
+      "anchor": {
+        "x": 49,
+        "y": 79
+      },
+      "offset": 8994,
+      "bytes": 968
+    },
+    {
+      "id": 41,
+      "key": "crystals_crystals_black_crystal_black2",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_black/crystal_black2.png",
+      "w": 77,
+      "h": 57,
+      "anchor": {
+        "x": 38,
+        "y": 57
+      },
+      "offset": 9962,
+      "bytes": 549
+    },
+    {
+      "id": 42,
+      "key": "crystals_crystals_black_crystal_black3",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_black/crystal_black3.png",
+      "w": 57,
+      "h": 40,
+      "anchor": {
+        "x": 28,
+        "y": 40
+      },
+      "offset": 10511,
+      "bytes": 285
+    },
+    {
+      "id": 43,
+      "key": "crystals_crystals_black_crystal_black4",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_black/crystal_black4.png",
+      "w": 37,
+      "h": 29,
+      "anchor": {
+        "x": 18,
+        "y": 29
+      },
+      "offset": 10796,
+      "bytes": 135
+    },
+    {
+      "id": 44,
+      "key": "crystals_crystals_black_crystal_black5",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_black/crystal_black5.png",
+      "w": 19,
+      "h": 14,
+      "anchor": {
+        "x": 9,
+        "y": 14
+      },
+      "offset": 10931,
+      "bytes": 34
+    },
+    {
+      "id": 45,
+      "key": "crystals_crystals_blue_crystal_blue1",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_blue/crystal_blue1.png",
+      "w": 65,
+      "h": 86,
+      "anchor": {
+        "x": 32,
+        "y": 86
+      },
+      "offset": 10965,
+      "bytes": 699
+    },
+    {
+      "id": 46,
+      "key": "crystals_crystals_blue_crystal_blue2",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_blue/crystal_blue2.png",
+      "w": 56,
+      "h": 59,
+      "anchor": {
+        "x": 28,
+        "y": 59
+      },
+      "offset": 11664,
+      "bytes": 413
+    },
+    {
+      "id": 47,
+      "key": "crystals_crystals_blue_crystal_blue3",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_blue/crystal_blue3.png",
+      "w": 47,
+      "h": 42,
+      "anchor": {
+        "x": 23,
+        "y": 42
+      },
+      "offset": 12077,
+      "bytes": 247
+    },
+    {
+      "id": 48,
+      "key": "crystals_crystals_blue_crystal_blue4",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_blue/crystal_blue4.png",
+      "w": 25,
+      "h": 27,
+      "anchor": {
+        "x": 12,
+        "y": 27
+      },
+      "offset": 12324,
+      "bytes": 85
+    },
+    {
+      "id": 49,
+      "key": "crystals_crystals_blue_crystal_blue5",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_blue/crystal_blue5.png",
+      "w": 17,
+      "h": 14,
+      "anchor": {
+        "x": 8,
+        "y": 14
+      },
+      "offset": 12409,
+      "bytes": 30
+    },
+    {
+      "id": 50,
+      "key": "crystals_crystals_green_crystal_green1",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_green/crystal_green1.png",
+      "w": 87,
+      "h": 83,
+      "anchor": {
+        "x": 43,
+        "y": 83
+      },
+      "offset": 12439,
+      "bytes": 903
+    },
+    {
+      "id": 51,
+      "key": "crystals_crystals_green_crystal_green2",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_green/crystal_green2.png",
+      "w": 76,
+      "h": 56,
+      "anchor": {
+        "x": 38,
+        "y": 56
+      },
+      "offset": 13342,
+      "bytes": 532
+    },
+    {
+      "id": 52,
+      "key": "crystals_crystals_green_crystal_green3",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_green/crystal_green3.png",
+      "w": 54,
+      "h": 43,
+      "anchor": {
+        "x": 27,
+        "y": 43
+      },
+      "offset": 13874,
+      "bytes": 291
+    },
+    {
+      "id": 53,
+      "key": "crystals_crystals_green_crystal_green4",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_green/crystal_green4.png",
+      "w": 37,
+      "h": 26,
+      "anchor": {
+        "x": 18,
+        "y": 26
+      },
+      "offset": 14165,
+      "bytes": 121
+    },
+    {
+      "id": 54,
+      "key": "crystals_crystals_green_crystal_green5",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_green/crystal_green5.png",
+      "w": 24,
+      "h": 12,
+      "anchor": {
+        "x": 12,
+        "y": 12
+      },
+      "offset": 14286,
+      "bytes": 36
+    },
+    {
+      "id": 55,
+      "key": "crystals_crystals_lime_crystal_lime1",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_lime/crystal_lime1.png",
+      "w": 132,
+      "h": 50,
+      "anchor": {
+        "x": 66,
+        "y": 50
+      },
+      "offset": 14322,
+      "bytes": 825
+    },
+    {
+      "id": 56,
+      "key": "crystals_crystals_lime_crystal_lime2",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_lime/crystal_lime2.png",
+      "w": 99,
+      "h": 41,
+      "anchor": {
+        "x": 49,
+        "y": 41
+      },
+      "offset": 15147,
+      "bytes": 508
+    },
+    {
+      "id": 57,
+      "key": "crystals_crystals_lime_crystal_lime3",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_lime/crystal_lime3.png",
+      "w": 75,
+      "h": 19,
+      "anchor": {
+        "x": 37,
+        "y": 19
+      },
+      "offset": 15655,
+      "bytes": 179
+    },
+    {
+      "id": 58,
+      "key": "crystals_crystals_lime_crystal_lime4",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_lime/crystal_lime4.png",
+      "w": 53,
+      "h": 16,
+      "anchor": {
+        "x": 26,
+        "y": 16
+      },
+      "offset": 15834,
+      "bytes": 106
+    },
+    {
+      "id": 59,
+      "key": "crystals_crystals_lime_crystal_lime5",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_lime/crystal_lime5.png",
+      "w": 29,
+      "h": 13,
+      "anchor": {
+        "x": 14,
+        "y": 13
+      },
+      "offset": 15940,
+      "bytes": 48
+    },
+    {
+      "id": 60,
+      "key": "crystals_crystals_orange_crystal_orange1",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_orange/crystal_orange1.png",
+      "w": 113,
+      "h": 90,
+      "anchor": {
+        "x": 56,
+        "y": 90
+      },
+      "offset": 15988,
+      "bytes": 1272
+    },
+    {
+      "id": 61,
+      "key": "crystals_crystals_orange_crystal_orange2",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_orange/crystal_orange2.png",
+      "w": 71,
+      "h": 59,
+      "anchor": {
+        "x": 35,
+        "y": 59
+      },
+      "offset": 17260,
+      "bytes": 524
+    },
+    {
+      "id": 62,
+      "key": "crystals_crystals_orange_crystal_orange3",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_orange/crystal_orange3.png",
+      "w": 56,
+      "h": 45,
+      "anchor": {
+        "x": 28,
+        "y": 45
+      },
+      "offset": 17784,
+      "bytes": 315
+    },
+    {
+      "id": 63,
+      "key": "crystals_crystals_orange_crystal_orange4",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_orange/crystal_orange4.png",
+      "w": 30,
+      "h": 31,
+      "anchor": {
+        "x": 15,
+        "y": 31
+      },
+      "offset": 18099,
+      "bytes": 117
+    },
+    {
+      "id": 64,
+      "key": "crystals_crystals_orange_crystal_orange5",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_orange/crystal_orange5.png",
+      "w": 13,
+      "h": 15,
+      "anchor": {
+        "x": 6,
+        "y": 15
+      },
+      "offset": 18216,
+      "bytes": 25
+    },
+    {
+      "id": 65,
+      "key": "crystals_crystals_red-pink_crystal_red-pink1",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_red-pink/crystal_red-pink1.png",
+      "w": 82,
+      "h": 81,
+      "anchor": {
+        "x": 41,
+        "y": 81
+      },
+      "offset": 18241,
+      "bytes": 831
+    },
+    {
+      "id": 66,
+      "key": "crystals_crystals_red-pink_crystal_red-pink2",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_red-pink/crystal_red-pink2.png",
+      "w": 56,
+      "h": 66,
+      "anchor": {
+        "x": 28,
+        "y": 66
+      },
+      "offset": 19072,
+      "bytes": 462
+    },
+    {
+      "id": 67,
+      "key": "crystals_crystals_red-pink_crystal_red-pink3",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_red-pink/crystal_red-pink3.png",
+      "w": 43,
+      "h": 47,
+      "anchor": {
+        "x": 21,
+        "y": 47
+      },
+      "offset": 19534,
+      "bytes": 253
+    },
+    {
+      "id": 68,
+      "key": "crystals_crystals_red-pink_crystal_red-pink4",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_red-pink/crystal_red-pink4.png",
+      "w": 32,
+      "h": 29,
+      "anchor": {
+        "x": 16,
+        "y": 29
+      },
+      "offset": 19787,
+      "bytes": 116
+    },
+    {
+      "id": 69,
+      "key": "crystals_crystals_red-pink_crystal_red-pink5",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_red-pink/crystal_red-pink5.png",
+      "w": 18,
+      "h": 17,
+      "anchor": {
+        "x": 9,
+        "y": 17
+      },
+      "offset": 19903,
+      "bytes": 39
+    },
+    {
+      "id": 70,
+      "key": "crystals_crystals_violet_crystal_violet1",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_violet/crystal_violet1.png",
+      "w": 98,
+      "h": 80,
+      "anchor": {
+        "x": 49,
+        "y": 80
+      },
+      "offset": 19942,
+      "bytes": 980
+    },
+    {
+      "id": 71,
+      "key": "crystals_crystals_violet_crystal_violet2",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_violet/crystal_violet2.png",
+      "w": 80,
+      "h": 57,
+      "anchor": {
+        "x": 40,
+        "y": 57
+      },
+      "offset": 20922,
+      "bytes": 570
+    },
+    {
+      "id": 72,
+      "key": "crystals_crystals_violet_crystal_violet3",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_violet/crystal_violet3.png",
+      "w": 52,
+      "h": 38,
+      "anchor": {
+        "x": 26,
+        "y": 38
+      },
+      "offset": 21492,
+      "bytes": 247
+    },
+    {
+      "id": 73,
+      "key": "crystals_crystals_violet_crystal_violet4",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_violet/crystal_violet4.png",
+      "w": 38,
+      "h": 25,
+      "anchor": {
+        "x": 19,
+        "y": 25
+      },
+      "offset": 21739,
+      "bytes": 119
+    },
+    {
+      "id": 74,
+      "key": "crystals_crystals_violet_crystal_violet5",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_violet/crystal_violet5.png",
+      "w": 19,
+      "h": 14,
+      "anchor": {
+        "x": 9,
+        "y": 14
+      },
+      "offset": 21858,
+      "bytes": 34
+    },
+    {
+      "id": 75,
+      "key": "crystals_crystals_white-gold_crystal_white-gold1",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_white-gold/crystal_white-gold1.png",
+      "w": 107,
+      "h": 68,
+      "anchor": {
+        "x": 53,
+        "y": 68
+      },
+      "offset": 21892,
+      "bytes": 910
+    },
+    {
+      "id": 76,
+      "key": "crystals_crystals_white-gold_crystal_white-gold2",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_white-gold/crystal_white-gold2.png",
+      "w": 84,
+      "h": 49,
+      "anchor": {
+        "x": 42,
+        "y": 49
+      },
+      "offset": 22802,
+      "bytes": 515
+    },
+    {
+      "id": 77,
+      "key": "crystals_crystals_white-gold_crystal_white-gold3",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_white-gold/crystal_white-gold3.png",
+      "w": 58,
+      "h": 29,
+      "anchor": {
+        "x": 29,
+        "y": 29
+      },
+      "offset": 23317,
+      "bytes": 211
+    },
+    {
+      "id": 78,
+      "key": "crystals_crystals_white-gold_crystal_white-gold4",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_white-gold/crystal_white-gold4.png",
+      "w": 41,
+      "h": 22,
+      "anchor": {
+        "x": 20,
+        "y": 22
+      },
+      "offset": 23528,
+      "bytes": 113
+    },
+    {
+      "id": 79,
+      "key": "crystals_crystals_white-gold_crystal_white-gold5",
+      "pack": "crystals",
+      "category": "crystal",
+      "source": "crystals_white-gold/crystal_white-gold5.png",
+      "w": 19,
+      "h": 12,
+      "anchor": {
+        "x": 9,
+        "y": 12
+      },
+      "offset": 23641,
+      "bytes": 29
+    },
+    {
+      "id": 80,
+      "key": "rocks_canyon_rocks_canyon_rock1",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "canyon_rocks/canyon_rock1.png",
+      "w": 75,
+      "h": 99,
+      "anchor": {
+        "x": 37,
+        "y": 99
+      },
+      "offset": 23670,
+      "bytes": 929
+    },
+    {
+      "id": 81,
+      "key": "rocks_canyon_rocks_canyon_rock2",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "canyon_rocks/canyon_rock2.png",
+      "w": 53,
+      "h": 77,
+      "anchor": {
+        "x": 26,
+        "y": 77
+      },
+      "offset": 24599,
+      "bytes": 511
+    },
+    {
+      "id": 82,
+      "key": "rocks_canyon_rocks_canyon_rock3",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "canyon_rocks/canyon_rock3.png",
+      "w": 29,
+      "h": 41,
+      "anchor": {
+        "x": 14,
+        "y": 41
+      },
+      "offset": 25110,
+      "bytes": 149
+    },
+    {
+      "id": 83,
+      "key": "rocks_canyon_rocks_canyon_rock4",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "canyon_rocks/canyon_rock4.png",
+      "w": 22,
+      "h": 31,
+      "anchor": {
+        "x": 11,
+        "y": 31
+      },
+      "offset": 25259,
+      "bytes": 86
+    },
+    {
+      "id": 84,
+      "key": "rocks_canyon_rocks_canyon_rock5",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "canyon_rocks/canyon_rock5.png",
+      "w": 13,
+      "h": 17,
+      "anchor": {
+        "x": 6,
+        "y": 17
+      },
+      "offset": 25345,
+      "bytes": 28
+    },
+    {
+      "id": 85,
+      "key": "rocks_cave_rocks_cave_rock1",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "cave_rocks/cave_rock1.png",
+      "w": 113,
+      "h": 83,
+      "anchor": {
+        "x": 56,
+        "y": 83
+      },
+      "offset": 25373,
+      "bytes": 1173
+    },
+    {
+      "id": 86,
+      "key": "rocks_cave_rocks_cave_rock2",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "cave_rocks/cave_rock2.png",
+      "w": 87,
+      "h": 58,
+      "anchor": {
+        "x": 43,
+        "y": 58
+      },
+      "offset": 26546,
+      "bytes": 631
+    },
+    {
+      "id": 87,
+      "key": "rocks_cave_rocks_cave_rock3",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "cave_rocks/cave_rock3.png",
+      "w": 56,
+      "h": 39,
+      "anchor": {
+        "x": 28,
+        "y": 39
+      },
+      "offset": 27177,
+      "bytes": 273
+    },
+    {
+      "id": 88,
+      "key": "rocks_cave_rocks_cave_rock4",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "cave_rocks/cave_rock4.png",
+      "w": 40,
+      "h": 28,
+      "anchor": {
+        "x": 20,
+        "y": 28
+      },
+      "offset": 27450,
+      "bytes": 140
+    },
+    {
+      "id": 89,
+      "key": "rocks_cave_rocks_cave_rock5",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "cave_rocks/cave_rock5.png",
+      "w": 18,
+      "h": 15,
+      "anchor": {
+        "x": 9,
+        "y": 15
+      },
+      "offset": 27590,
+      "bytes": 34
+    },
+    {
+      "id": 90,
+      "key": "rocks_desert_rocks_desert_rock1",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "desert_rocks/desert_rock1.png",
+      "w": 121,
+      "h": 54,
+      "anchor": {
+        "x": 60,
+        "y": 54
+      },
+      "offset": 27624,
+      "bytes": 817
+    },
+    {
+      "id": 91,
+      "key": "rocks_desert_rocks_desert_rock2",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "desert_rocks/desert_rock2.png",
+      "w": 88,
+      "h": 41,
+      "anchor": {
+        "x": 44,
+        "y": 41
+      },
+      "offset": 28441,
+      "bytes": 451
+    },
+    {
+      "id": 92,
+      "key": "rocks_desert_rocks_desert_rock3",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "desert_rocks/desert_rock3.png",
+      "w": 42,
+      "h": 16,
+      "anchor": {
+        "x": 21,
+        "y": 16
+      },
+      "offset": 28892,
+      "bytes": 84
+    },
+    {
+      "id": 93,
+      "key": "rocks_desert_rocks_desert_rock4",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "desert_rocks/desert_rock4.png",
+      "w": 32,
+      "h": 11,
+      "anchor": {
+        "x": 16,
+        "y": 11
+      },
+      "offset": 28976,
+      "bytes": 44
+    },
+    {
+      "id": 94,
+      "key": "rocks_desert_rocks_desert_rock5",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "desert_rocks/desert_rock5.png",
+      "w": 16,
+      "h": 8,
+      "anchor": {
+        "x": 8,
+        "y": 8
+      },
+      "offset": 29020,
+      "bytes": 16
+    },
+    {
+      "id": 95,
+      "key": "rocks_ice_rock_ice_rock1",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "ice_rock/ice_rock1.png",
+      "w": 131,
+      "h": 61,
+      "anchor": {
+        "x": 65,
+        "y": 61
+      },
+      "offset": 29036,
+      "bytes": 999
+    },
+    {
+      "id": 96,
+      "key": "rocks_ice_rock_ice_rock2",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "ice_rock/ice_rock2.png",
+      "w": 94,
+      "h": 38,
+      "anchor": {
+        "x": 47,
+        "y": 38
+      },
+      "offset": 30035,
+      "bytes": 447
+    },
+    {
+      "id": 97,
+      "key": "rocks_ice_rock_ice_rock3",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "ice_rock/ice_rock3.png",
+      "w": 68,
+      "h": 29,
+      "anchor": {
+        "x": 34,
+        "y": 29
+      },
+      "offset": 30482,
+      "bytes": 247
+    },
+    {
+      "id": 98,
+      "key": "rocks_ice_rock_ice_rock4",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "ice_rock/ice_rock4.png",
+      "w": 47,
+      "h": 16,
+      "anchor": {
+        "x": 23,
+        "y": 16
+      },
+      "offset": 30729,
+      "bytes": 94
+    },
+    {
+      "id": 99,
+      "key": "rocks_ice_rock_ice_rock5",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "ice_rock/ice_rock5.png",
+      "w": 33,
+      "h": 10,
+      "anchor": {
+        "x": 16,
+        "y": 10
+      },
+      "offset": 30823,
+      "bytes": 42
+    },
+    {
+      "id": 100,
+      "key": "rocks_middle_lane_rocks1_middle_lane_rock1_1",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "middle_lane_rocks1/middle_lane_rock1_1.png",
+      "w": 108,
+      "h": 83,
+      "anchor": {
+        "x": 54,
+        "y": 83
+      },
+      "offset": 30865,
+      "bytes": 1121
+    },
+    {
+      "id": 101,
+      "key": "rocks_middle_lane_rocks1_middle_lane_rock1_2",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "middle_lane_rocks1/middle_lane_rock1_2.png",
+      "w": 82,
+      "h": 50,
+      "anchor": {
+        "x": 41,
+        "y": 50
+      },
+      "offset": 31986,
+      "bytes": 513
+    },
+    {
+      "id": 102,
+      "key": "rocks_middle_lane_rocks1_middle_lane_rock1_3",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "middle_lane_rocks1/middle_lane_rock1_3.png",
+      "w": 55,
+      "h": 42,
+      "anchor": {
+        "x": 27,
+        "y": 42
+      },
+      "offset": 32499,
+      "bytes": 289
+    },
+    {
+      "id": 103,
+      "key": "rocks_middle_lane_rocks1_middle_lane_rock1_4",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "middle_lane_rocks1/middle_lane_rock1_4.png",
+      "w": 38,
+      "h": 25,
+      "anchor": {
+        "x": 19,
+        "y": 25
+      },
+      "offset": 32788,
+      "bytes": 119
+    },
+    {
+      "id": 104,
+      "key": "rocks_middle_lane_rocks1_middle_lane_rock1_5",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "middle_lane_rocks1/middle_lane_rock1_5.png",
+      "w": 26,
+      "h": 16,
+      "anchor": {
+        "x": 13,
+        "y": 16
+      },
+      "offset": 32907,
+      "bytes": 52
+    },
+    {
+      "id": 105,
+      "key": "rocks_middle_lane_rocks2_middle_lane_rock2_1",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "middle_lane_rocks2/middle_lane_rock2_1.png",
+      "w": 127,
+      "h": 68,
+      "anchor": {
+        "x": 63,
+        "y": 68
+      },
+      "offset": 32959,
+      "bytes": 1080
+    },
+    {
+      "id": 106,
+      "key": "rocks_middle_lane_rocks2_middle_lane_rock2_2",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "middle_lane_rocks2/middle_lane_rock2_2.png",
+      "w": 92,
+      "h": 56,
+      "anchor": {
+        "x": 46,
+        "y": 56
+      },
+      "offset": 34039,
+      "bytes": 644
+    },
+    {
+      "id": 107,
+      "key": "rocks_middle_lane_rocks2_middle_lane_rock2_3",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "middle_lane_rocks2/middle_lane_rock2_3.png",
+      "w": 50,
+      "h": 35,
+      "anchor": {
+        "x": 25,
+        "y": 35
+      },
+      "offset": 34683,
+      "bytes": 219
+    },
+    {
+      "id": 108,
+      "key": "rocks_middle_lane_rocks2_middle_lane_rock2_4",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "middle_lane_rocks2/middle_lane_rock2_4.png",
+      "w": 48,
+      "h": 24,
+      "anchor": {
+        "x": 24,
+        "y": 24
+      },
+      "offset": 34902,
+      "bytes": 144
+    },
+    {
+      "id": 109,
+      "key": "rocks_middle_lane_rocks2_middle_lane_rock2_5",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "middle_lane_rocks2/middle_lane_rock2_5.png",
+      "w": 24,
+      "h": 11,
+      "anchor": {
+        "x": 12,
+        "y": 11
+      },
+      "offset": 35046,
+      "bytes": 33
+    },
+    {
+      "id": 110,
+      "key": "rocks_snowy_rocks1_snowy_rock1",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "snowy_rocks1/snowy_rock1.png",
+      "w": 111,
+      "h": 78,
+      "anchor": {
+        "x": 55,
+        "y": 78
+      },
+      "offset": 35079,
+      "bytes": 1083
+    },
+    {
+      "id": 111,
+      "key": "rocks_snowy_rocks1_snowy_rock2",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "snowy_rocks1/snowy_rock2.png",
+      "w": 89,
+      "h": 51,
+      "anchor": {
+        "x": 44,
+        "y": 51
+      },
+      "offset": 36162,
+      "bytes": 568
+    },
+    {
+      "id": 112,
+      "key": "rocks_snowy_rocks1_snowy_rock3",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "snowy_rocks1/snowy_rock3.png",
+      "w": 50,
+      "h": 38,
+      "anchor": {
+        "x": 25,
+        "y": 38
+      },
+      "offset": 36730,
+      "bytes": 238
+    },
+    {
+      "id": 113,
+      "key": "rocks_snowy_rocks1_snowy_rock4",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "snowy_rocks1/snowy_rock4.png",
+      "w": 32,
+      "h": 24,
+      "anchor": {
+        "x": 16,
+        "y": 24
+      },
+      "offset": 36968,
+      "bytes": 96
+    },
+    {
+      "id": 114,
+      "key": "rocks_snowy_rocks1_snowy_rock5",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "snowy_rocks1/snowy_rock5.png",
+      "w": 20,
+      "h": 15,
+      "anchor": {
+        "x": 10,
+        "y": 15
+      },
+      "offset": 37064,
+      "bytes": 38
+    },
+    {
+      "id": 115,
+      "key": "rocks_stalagmites_stalagmite1",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "stalagmites/stalagmite1.png",
+      "w": 86,
+      "h": 110,
+      "anchor": {
+        "x": 43,
+        "y": 110
+      },
+      "offset": 37102,
+      "bytes": 1183
+    },
+    {
+      "id": 116,
+      "key": "rocks_stalagmites_stalagmite2",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "stalagmites/stalagmite2.png",
+      "w": 55,
+      "h": 81,
+      "anchor": {
+        "x": 27,
+        "y": 81
+      },
+      "offset": 38285,
+      "bytes": 557
+    },
+    {
+      "id": 117,
+      "key": "rocks_stalagmites_stalagmite3",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "stalagmites/stalagmite3.png",
+      "w": 33,
+      "h": 49,
+      "anchor": {
+        "x": 16,
+        "y": 49
+      },
+      "offset": 38842,
+      "bytes": 203
+    },
+    {
+      "id": 118,
+      "key": "rocks_stalagmites_stalagmite4",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "stalagmites/stalagmite4.png",
+      "w": 22,
+      "h": 35,
+      "anchor": {
+        "x": 11,
+        "y": 35
+      },
+      "offset": 39045,
+      "bytes": 97
+    },
+    {
+      "id": 119,
+      "key": "rocks_stalagmites_stalagmite5",
+      "pack": "rocks",
+      "category": "rock",
+      "source": "stalagmites/stalagmite5.png",
+      "w": 10,
+      "h": 16,
+      "anchor": {
+        "x": 5,
+        "y": 16
+      },
+      "offset": 39142,
+      "bytes": 20
+    },
+    {
+      "id": 120,
+      "key": "ruins_Assets_Blue-gray_ruins1",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Blue-gray_ruins1.png",
+      "w": 145,
+      "h": 172,
+      "anchor": {
+        "x": 72,
+        "y": 172
+      },
+      "offset": 39162,
+      "bytes": 3118
+    },
+    {
+      "id": 121,
+      "key": "ruins_Assets_Blue-gray_ruins2",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Blue-gray_ruins2.png",
+      "w": 101,
+      "h": 113,
+      "anchor": {
+        "x": 50,
+        "y": 113
+      },
+      "offset": 42280,
+      "bytes": 1427
+    },
+    {
+      "id": 122,
+      "key": "ruins_Assets_Blue-gray_ruins3",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Blue-gray_ruins3.png",
+      "w": 61,
+      "h": 88,
+      "anchor": {
+        "x": 30,
+        "y": 88
+      },
+      "offset": 43707,
+      "bytes": 671
+    },
+    {
+      "id": 123,
+      "key": "ruins_Assets_Blue-gray_ruins4",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Blue-gray_ruins4.png",
+      "w": 61,
+      "h": 66,
+      "anchor": {
+        "x": 30,
+        "y": 66
+      },
+      "offset": 44378,
+      "bytes": 504
+    },
+    {
+      "id": 124,
+      "key": "ruins_Assets_Blue-gray_ruins5",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Blue-gray_ruins5.png",
+      "w": 38,
+      "h": 42,
+      "anchor": {
+        "x": 19,
+        "y": 42
+      },
+      "offset": 44882,
+      "bytes": 200
+    },
+    {
+      "id": 125,
+      "key": "ruins_Assets_Brown-gray_ruins1",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Brown-gray_ruins1.png",
+      "w": 145,
+      "h": 140,
+      "anchor": {
+        "x": 72,
+        "y": 140
+      },
+      "offset": 45082,
+      "bytes": 2538
+    },
+    {
+      "id": 126,
+      "key": "ruins_Assets_Brown-gray_ruins2",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Brown-gray_ruins2.png",
+      "w": 107,
+      "h": 99,
+      "anchor": {
+        "x": 53,
+        "y": 99
+      },
+      "offset": 47620,
+      "bytes": 1325
+    },
+    {
+      "id": 127,
+      "key": "ruins_Assets_Brown-gray_ruins3",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Brown-gray_ruins3.png",
+      "w": 79,
+      "h": 70,
+      "anchor": {
+        "x": 39,
+        "y": 70
+      },
+      "offset": 48945,
+      "bytes": 692
+    },
+    {
+      "id": 128,
+      "key": "ruins_Assets_Brown-gray_ruins4",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Brown-gray_ruins4.png",
+      "w": 58,
+      "h": 61,
+      "anchor": {
+        "x": 29,
+        "y": 61
+      },
+      "offset": 49637,
+      "bytes": 443
+    },
+    {
+      "id": 129,
+      "key": "ruins_Assets_Brown-gray_ruins5",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Brown-gray_ruins5.png",
+      "w": 37,
+      "h": 26,
+      "anchor": {
+        "x": 18,
+        "y": 26
+      },
+      "offset": 50080,
+      "bytes": 121
+    },
+    {
+      "id": 130,
+      "key": "ruins_Assets_Brown_ruins1",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Brown_ruins1.png",
+      "w": 142,
+      "h": 151,
+      "anchor": {
+        "x": 71,
+        "y": 151
+      },
+      "offset": 50201,
+      "bytes": 2681
+    },
+    {
+      "id": 131,
+      "key": "ruins_Assets_Brown_ruins2",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Brown_ruins2.png",
+      "w": 79,
+      "h": 99,
+      "anchor": {
+        "x": 39,
+        "y": 99
+      },
+      "offset": 52882,
+      "bytes": 978
+    },
+    {
+      "id": 132,
+      "key": "ruins_Assets_Brown_ruins3",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Brown_ruins3.png",
+      "w": 79,
+      "h": 77,
+      "anchor": {
+        "x": 39,
+        "y": 77
+      },
+      "offset": 53860,
+      "bytes": 761
+    },
+    {
+      "id": 133,
+      "key": "ruins_Assets_Brown_ruins4",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Brown_ruins4.png",
+      "w": 56,
+      "h": 60,
+      "anchor": {
+        "x": 28,
+        "y": 60
+      },
+      "offset": 54621,
+      "bytes": 420
+    },
+    {
+      "id": 134,
+      "key": "ruins_Assets_Brown_ruins5",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Brown_ruins5.png",
+      "w": 42,
+      "h": 42,
+      "anchor": {
+        "x": 21,
+        "y": 42
+      },
+      "offset": 55041,
+      "bytes": 221
+    },
+    {
+      "id": 135,
+      "key": "ruins_Assets_Sand_ruins1",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Sand_ruins1.png",
+      "w": 120,
+      "h": 118,
+      "anchor": {
+        "x": 60,
+        "y": 118
+      },
+      "offset": 55262,
+      "bytes": 1770
+    },
+    {
+      "id": 136,
+      "key": "ruins_Assets_Sand_ruins2",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Sand_ruins2.png",
+      "w": 101,
+      "h": 94,
+      "anchor": {
+        "x": 50,
+        "y": 94
+      },
+      "offset": 57032,
+      "bytes": 1187
+    },
+    {
+      "id": 137,
+      "key": "ruins_Assets_Sand_ruins3",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Sand_ruins3.png",
+      "w": 77,
+      "h": 83,
+      "anchor": {
+        "x": 38,
+        "y": 83
+      },
+      "offset": 58219,
+      "bytes": 799
+    },
+    {
+      "id": 138,
+      "key": "ruins_Assets_Sand_ruins4",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Sand_ruins4.png",
+      "w": 63,
+      "h": 63,
+      "anchor": {
+        "x": 31,
+        "y": 63
+      },
+      "offset": 59018,
+      "bytes": 497
+    },
+    {
+      "id": 139,
+      "key": "ruins_Assets_Sand_ruins5",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Sand_ruins5.png",
+      "w": 38,
+      "h": 41,
+      "anchor": {
+        "x": 19,
+        "y": 41
+      },
+      "offset": 59515,
+      "bytes": 195
+    },
+    {
+      "id": 140,
+      "key": "ruins_Assets_Snow_ruins1",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Snow_ruins1.png",
+      "w": 149,
+      "h": 136,
+      "anchor": {
+        "x": 74,
+        "y": 136
+      },
+      "offset": 59710,
+      "bytes": 2533
+    },
+    {
+      "id": 141,
+      "key": "ruins_Assets_Snow_ruins2",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Snow_ruins2.png",
+      "w": 96,
+      "h": 94,
+      "anchor": {
+        "x": 48,
+        "y": 94
+      },
+      "offset": 62243,
+      "bytes": 1128
+    },
+    {
+      "id": 142,
+      "key": "ruins_Assets_Snow_ruins3",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Snow_ruins3.png",
+      "w": 79,
+      "h": 82,
+      "anchor": {
+        "x": 39,
+        "y": 82
+      },
+      "offset": 63371,
+      "bytes": 810
+    },
+    {
+      "id": 143,
+      "key": "ruins_Assets_Snow_ruins4",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Snow_ruins4.png",
+      "w": 58,
+      "h": 63,
+      "anchor": {
+        "x": 29,
+        "y": 63
+      },
+      "offset": 64181,
+      "bytes": 457
+    },
+    {
+      "id": 144,
+      "key": "ruins_Assets_Snow_ruins5",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Snow_ruins5.png",
+      "w": 34,
+      "h": 41,
+      "anchor": {
+        "x": 17,
+        "y": 41
+      },
+      "offset": 64638,
+      "bytes": 175
+    },
+    {
+      "id": 145,
+      "key": "ruins_Assets_Water_ruins1",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Water_ruins1.png",
+      "w": 98,
+      "h": 134,
+      "anchor": {
+        "x": 49,
+        "y": 134
+      },
+      "offset": 64813,
+      "bytes": 1642
+    },
+    {
+      "id": 146,
+      "key": "ruins_Assets_Water_ruins2",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Water_ruins2.png",
+      "w": 75,
+      "h": 92,
+      "anchor": {
+        "x": 37,
+        "y": 92
+      },
+      "offset": 66455,
+      "bytes": 863
+    },
+    {
+      "id": 147,
+      "key": "ruins_Assets_Water_ruins3",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Water_ruins3.png",
+      "w": 42,
+      "h": 69,
+      "anchor": {
+        "x": 21,
+        "y": 69
+      },
+      "offset": 67318,
+      "bytes": 363
+    },
+    {
+      "id": 148,
+      "key": "ruins_Assets_Water_ruins4",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Water_ruins4.png",
+      "w": 35,
+      "h": 53,
+      "anchor": {
+        "x": 17,
+        "y": 53
+      },
+      "offset": 67681,
+      "bytes": 232
+    },
+    {
+      "id": 149,
+      "key": "ruins_Assets_Water_ruins5",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Water_ruins5.png",
+      "w": 34,
+      "h": 32,
+      "anchor": {
+        "x": 17,
+        "y": 32
+      },
+      "offset": 67913,
+      "bytes": 136
+    },
+    {
+      "id": 150,
+      "key": "ruins_Assets_White_ruins1",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/White_ruins1.png",
+      "w": 115,
+      "h": 136,
+      "anchor": {
+        "x": 57,
+        "y": 136
+      },
+      "offset": 68049,
+      "bytes": 1955
+    },
+    {
+      "id": 151,
+      "key": "ruins_Assets_White_ruins2",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/White_ruins2.png",
+      "w": 111,
+      "h": 89,
+      "anchor": {
+        "x": 55,
+        "y": 89
+      },
+      "offset": 70004,
+      "bytes": 1235
+    },
+    {
+      "id": 152,
+      "key": "ruins_Assets_White_ruins3",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/White_ruins3.png",
+      "w": 77,
+      "h": 77,
+      "anchor": {
+        "x": 38,
+        "y": 77
+      },
+      "offset": 71239,
+      "bytes": 742
+    },
+    {
+      "id": 153,
+      "key": "ruins_Assets_White_ruins4",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/White_ruins4.png",
+      "w": 64,
+      "h": 66,
+      "anchor": {
+        "x": 32,
+        "y": 66
+      },
+      "offset": 71981,
+      "bytes": 528
+    },
+    {
+      "id": 154,
+      "key": "ruins_Assets_White_ruins5",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/White_ruins5.png",
+      "w": 39,
+      "h": 29,
+      "anchor": {
+        "x": 19,
+        "y": 29
+      },
+      "offset": 72509,
+      "bytes": 142
+    },
+    {
+      "id": 155,
+      "key": "ruins_Assets_Yellow_ruins1",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Yellow_ruins1.png",
+      "w": 148,
+      "h": 156,
+      "anchor": {
+        "x": 74,
+        "y": 156
+      },
+      "offset": 72651,
+      "bytes": 2886
+    },
+    {
+      "id": 156,
+      "key": "ruins_Assets_Yellow_ruins2",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Yellow_ruins2.png",
+      "w": 105,
+      "h": 105,
+      "anchor": {
+        "x": 52,
+        "y": 105
+      },
+      "offset": 75537,
+      "bytes": 1379
+    },
+    {
+      "id": 157,
+      "key": "ruins_Assets_Yellow_ruins3",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Yellow_ruins3.png",
+      "w": 83,
+      "h": 89,
+      "anchor": {
+        "x": 41,
+        "y": 89
+      },
+      "offset": 76916,
+      "bytes": 924
+    },
+    {
+      "id": 158,
+      "key": "ruins_Assets_Yellow_ruins4",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Yellow_ruins4.png",
+      "w": 61,
+      "h": 64,
+      "anchor": {
+        "x": 30,
+        "y": 64
+      },
+      "offset": 77840,
+      "bytes": 488
+    },
+    {
+      "id": 159,
+      "key": "ruins_Assets_Yellow_ruins5",
+      "pack": "ruins",
+      "category": "ruin",
+      "source": "Assets/Yellow_ruins5.png",
+      "w": 44,
+      "h": 45,
+      "anchor": {
+        "x": 22,
+        "y": 45
+      },
+      "offset": 78328,
+      "bytes": 248
+    }
+  ]
+}
