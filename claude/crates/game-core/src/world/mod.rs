@@ -3370,6 +3370,26 @@ mod fire_gate {
         }
     }
 
+    /// Walk until the player is genuinely moving, or give up.
+    ///
+    /// **Waited on, not counted** — the same reason the second half of
+    /// `firing_one_tick_after_releasing_the_key_is_still_refused` already waits:
+    /// a spawn is not promised flat ground, and how many ticks it takes to reach
+    /// walk speed depends on where the generator put you. It was `walk_for(20)`,
+    /// which held until pass 6b moved spawn 0 and twenty ticks stopped being
+    /// enough. Capped so a player who can never move fails the caller's
+    /// assertion rather than hanging here.
+    fn walk_until_moving(w: &mut World, threshold: f32) -> bool {
+        for _ in 0..(1.0 / SIM_DT) as u32 {
+            w.queue_input(0, Input::new(0, button::RIGHT, 0));
+            w.step(SIM_DT);
+            if w.player(0).is_some_and(|p| p.body.vel.x.abs() > threshold) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// The subject: a walking player fires nothing.
     ///
     /// Asserted on the **effect** — the projectile count — not on the returned
@@ -3423,7 +3443,12 @@ mod fire_gate {
     #[test]
     fn firing_one_tick_after_releasing_the_key_is_still_refused() {
         let mut w = armed_world();
-        walk_for(&mut w, 20);
+        // Enough headroom that one tick of friction cannot drop the player under
+        // the threshold — the window this test exists to guard.
+        assert!(
+            walk_until_moving(&mut w, FIRE_MOVE_MAX_SPEED + GROUND_FRICTION * SIM_DT),
+            "the player never got moving, so there is no release window to test"
+        );
         // One tick with nothing held. `GROUND_FRICTION` removes
         // GROUND_FRICTION * SIM_DT px/s per tick, so a WALK_SPEED walk needs
         // several ticks to stop — pinned to the constants rather than to a
@@ -3708,6 +3733,7 @@ mod toxic_rain_falls {
             spawn_points: Vec::new(),
             teleport_pads: Vec::new(),
             surface_points: Vec::new(),
+            objects: Vec::new(),
             buried_slots: Vec::new(),
             decorations: Vec::new(),
             wind: 0.0,
@@ -5313,6 +5339,23 @@ mod birds_in_a_round {
                 .unwrap_or_else(|| panic!("{kind:?}: the drop vanished"));
             let (dx, dy) = (drop.pos.x, drop.pos.y);
 
+            // **Clear every other item first.** Both assertions below read a
+            // counter, and a counter says only that *an* item was taken — the
+            // world has periodic spawns in it, and whether one of them lands
+            // within `PICKUP_RADIUS` of this drop depends on the map. Measured:
+            // the medkit case reached `cap` from a spawned medkit while the
+            // bird's own drop was still lying somewhere else. With everything
+            // else gone, the counter can only have come from `drop_id`.
+            let others: Vec<_> = w
+                .items
+                .iter()
+                .map(|i| i.id)
+                .filter(|&i| i != drop_id)
+                .collect();
+            for id in others {
+                w.items.remove(id);
+            }
+
             /// Read the counter this item routes to.
             fn counter(p: &PlayerState, item: ItemId) -> u8 {
                 if item == MEDKIT {
@@ -5368,14 +5411,30 @@ mod birds_in_a_round {
         let mut w = world();
         w.add_player(0, 0, "ana".into());
         let me = w.players[0].body.pos;
-        // Straight out to the right, at the player's own height, well inside
-        // SMG_RANGE — so the geometry is trivial and only the hit test matters.
-        let at = Vec2::new(me.x + 200.0, me.y);
+        // Level with the player and well inside SMG_RANGE, so the geometry is
+        // trivial and only the hit test matters — but fired **toward the map**,
+        // not blindly right.
+        //
+        // It was always `me.x + 200`. Pass 6b moved spawn 0 to x=1968 on a
+        // 2048-wide map, which put the bird outside the world and made this read
+        // as "the ray does not test birds". A fixture pinned to where the
+        // generator happens to put a spawn.
+        let reach = 200.0;
+        let room_right = me.x + reach < w.map.mask.w as f32 - crate::constants::WALL_W as f32;
+        let (at, aim) = if room_right {
+            (Vec2::new(me.x + reach, me.y), 0.0)
+        } else {
+            (Vec2::new(me.x - reach, me.y), std::f32::consts::PI)
+        };
+        // Clear the lane: since 6b there is scenery on the map, and a rock
+        // between the muzzle and the bird stops the round — correct behaviour,
+        // and not what this test is about.
+        w.map
+            .carve_capsule(me.x as i32, me.y as i32, at.x as i32, at.y as i32, 12);
         let id = plant(&mut w, BirdKind::Normal, at);
         assert!(w.birds.get(id).is_some());
 
         let smg = crate::weapons::defs::by_key("smg").expect("smg");
-        // aim is passed to fire_hitscan directly below; 0.0 rad is due right.
         let log: DamageLog = Default::default();
         let bird_log: BirdLog = Default::default();
         let (mut closures, meta, mut bird_vels) =
@@ -5384,7 +5443,7 @@ mod birds_in_a_round {
             let mut t = targets(&mut w.players, &mut closures, &meta, &mut bird_vels);
             let mut rng = substream(1, "shot");
             crate::weapons::explode::fire_hitscan(
-                &mut w.map, &mut t, smg, 0, me, 0.0, &mut rng, 0.0,
+                &mut w.map, &mut t, smg, 0, me, aim, &mut rng, 0.0,
             );
         }
         let logged = bird_log.borrow().clone();

@@ -1104,6 +1104,7 @@ impl Room {
             let report = game_core::map::gen::traversal::analyse(
                 &self.world.map.mask,
                 &self.world.map.meta.surface_points,
+                &self.world.map.meta.objects,
             );
             if let Err(e) = game_core::map::dump::dump_surface(
                 &self.world.map,

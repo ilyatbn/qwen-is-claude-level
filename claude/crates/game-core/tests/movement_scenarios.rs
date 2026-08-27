@@ -29,6 +29,7 @@ fn make_map(w: u32, h: u32, build: impl FnOnce(&mut Mask)) -> Map {
         spawn_points: Vec::new(),
         teleport_pads: Vec::new(),
         surface_points: Vec::new(),
+        objects: Vec::new(),
         buried_slots: Vec::new(),
         decorations: Vec::new(),
         wind: 0.0,

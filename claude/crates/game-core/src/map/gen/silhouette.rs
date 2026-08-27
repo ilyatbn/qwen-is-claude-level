@@ -38,6 +38,14 @@ pub struct GenParams {
     pub cave_chambers: u32,
     pub crevice_count: u32,
     pub void_count: u32,
+    // v5 (docs/73-amendments-v5.md §D5)
+    /// Which theme's category weights pass 6b draws with.
+    ///
+    /// Carried on the params rather than passed down, because it belongs to the
+    /// *requested* seed while an attempt runs on `requested_seed + attempt` —
+    /// deriving it inside the attempt would give a retried map scenery from a
+    /// different theme than its own terrain.
+    pub theme: u8,
 }
 
 impl GenParams {
@@ -54,6 +62,7 @@ impl GenParams {
             cave_chambers: p.cave_chambers,
             crevice_count: p.crevice_count,
             void_count: p.void_count,
+            theme: 0,
         }
     }
 

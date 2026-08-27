@@ -30,7 +30,8 @@ pub const fn fnv1a64(s: &str) -> u64 {
 ///
 /// Tags in use across the project: `"terrain"`, `"blobs"`, `"bridges"`, `"caves"`,
 /// `"chambers"`, `"crevices"`, `"voids"`, `"spawns"`, `"buried"`, `"items"`,
-/// `"weather"`, `"decor"`, `"theme"`, `"wind"`, and `"bot{n}"` per bot.
+/// `"weather"`, `"decor"`, `"theme"`, `"wind"`, `"objects"`, and `"bot{n}"` per
+/// bot.
 ///
 /// Two different tags on the same seed give independent streams: exhausting one
 /// cannot perturb another.

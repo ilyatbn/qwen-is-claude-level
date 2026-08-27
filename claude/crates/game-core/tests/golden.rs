@@ -54,6 +54,16 @@ fn meta_digest(seed: u64, scale: MapScale, generator: MapGenerator) -> String {
     h.update(&m.wind.to_le_bytes());
     h.update(&m.attempts.to_le_bytes());
     h.update(&[m.used_safe_preset as u8]);
+    // Objects are gameplay: they are collision, they move spawns, and they are
+    // what the client draws (§D1, §D6). A digest that skipped them would let 6b
+    // change silently on any seed whose mask hash happened not to move.
+    h.update(&(m.objects.len() as u32).to_le_bytes());
+    for o in &m.objects {
+        h.update(&o.id.to_le_bytes());
+        h.update(&o.x.to_le_bytes());
+        h.update(&o.y.to_le_bytes());
+        h.update(&[o.flip as u8]);
+    }
     h.update(&(m.spawn_points.len() as u32).to_le_bytes());
     for p in &m.spawn_points {
         h.update(&p.x.to_le_bytes());

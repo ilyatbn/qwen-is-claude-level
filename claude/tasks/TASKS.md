@@ -345,7 +345,7 @@ wire. Then bake the art clipped by that same mask, so blowing half a tree away r
 half the tree.
 
 - [x] [T16.01](M16/T16.01-object-mask-pipeline.md) — PNG to terrain mask: the build pipeline **(v5)**
-- [ ] [T16.02](M16/T16.02-stamp-objects.md) — Stamp objects into the map **(v5)**
+- [x] [T16.02](M16/T16.02-stamp-objects.md) — Stamp objects into the map **(v5)**
 - [ ] [T16.03](M16/T16.03-render-objects.md) — Draw objects, clipped by the mask **(v5)**
 - [ ] [T16.04](M16/T16.04-clouds-to-sky.md) — The clouds pack belongs in the sky **(v5)**
 - [ ] [T16.05](M16/T16.05-provenance.md) — Record where the art came from **(v5)**

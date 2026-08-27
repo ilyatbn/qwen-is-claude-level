@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! 1 height profile → 2 fill → 3 roughen → 4 islands → 5 caves → 6 arches
-//!                  → 7 smoothing → 8 cleanup → 9 surface → 10 validation
+//!                  → 7 smoothing → 8 cleanup → 8b objects → 9 surface
+//!                  → 10 validation
 //! ```
 //!
 //! v1 and v2 differ in one decision, and everything else follows from it: v1 asks
@@ -23,7 +24,7 @@ pub mod ground;
 use crate::constants::{MapGenerator, MapScale, GROUND_AMPLITUDE_FRAC, MAX_GEN_ATTEMPTS};
 use crate::map::Mask;
 
-use super::{components, smooth, surface, traversal, GenOutcome};
+use super::{components, objects, smooth, surface, traversal, GenOutcome};
 
 /// Tunables for one v2 attempt. The retry loop mutates nothing; the safe preset is
 /// this struct with milder values, exactly as `GenParams` is for v1.
@@ -37,6 +38,11 @@ pub struct V2Params {
     pub mesa_count: u32,
     pub cave_count: u32,
     pub arch_count: u32,
+    /// Which theme's category weights pass 6b draws with (§D5).
+    ///
+    /// On the params rather than an argument, because it belongs to the
+    /// *requested* seed while an attempt runs on `requested_seed + attempt`.
+    pub theme: u8,
 }
 
 impl V2Params {
@@ -50,6 +56,7 @@ impl V2Params {
             mesa_count: p.mesa_count,
             cave_count: p.cave_count,
             arch_count: p.arch_count,
+            theme: 0,
         }
     }
 
@@ -97,8 +104,12 @@ pub fn generate_once(seed: u64, params: &V2Params) -> GenOutcome {
     smooth::smooth(&mut mask);
     let sealed_pockets = components::cleanup(&mut mask);
 
+    // Pass 6b. After cleanup so `MIN_BLOB_PX` cannot delete a small crystal;
+    // before surface extraction so the surface has object tops in it (§D3).
+    let placement = objects::stamp_objects(&mut mask, seed, params.scale, params.theme);
+
     let surface = surface::extract_surface(&mask);
-    let report = traversal::analyse(&mask, &surface);
+    let report = traversal::analyse(&mask, &surface, &placement.objects);
 
     GenOutcome {
         mask,
@@ -107,6 +118,7 @@ pub fn generate_once(seed: u64, params: &V2Params) -> GenOutcome {
         sealed_pockets,
         tunnel_paths,
         islands,
+        objects: placement.objects,
         seed,
         requested_seed: seed,
         attempts: 1,
@@ -117,7 +129,8 @@ pub fn generate_once(seed: u64, params: &V2Params) -> GenOutcome {
 
 /// The v2 half of `gen::generate_terrain`: retries, then the safe preset.
 pub fn generate_terrain(requested_seed: u64, scale: MapScale) -> GenOutcome {
-    let params = V2Params::default_for(scale);
+    let mut params = V2Params::default_for(scale);
+    params.theme = crate::map::meta::theme_for(requested_seed);
 
     for attempt in 0..MAX_GEN_ATTEMPTS {
         let seed = requested_seed.wrapping_add(attempt as u64);
@@ -129,7 +142,9 @@ pub fn generate_terrain(requested_seed: u64, scale: MapScale) -> GenOutcome {
         }
     }
 
-    let mut outcome = generate_once(requested_seed, &V2Params::safe_for(scale));
+    let mut safe = V2Params::safe_for(scale);
+    safe.theme = params.theme;
+    let mut outcome = generate_once(requested_seed, &safe);
     outcome.requested_seed = requested_seed;
     outcome.attempts = MAX_GEN_ATTEMPTS;
     outcome.used_safe_preset = true;

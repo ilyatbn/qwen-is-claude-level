@@ -21,6 +21,8 @@ import { fileURLToPath } from 'node:url'
 import { PNG } from 'pngjs'
 import {
   assertIdsMatchPosition,
+  CATEGORY_ORDER,
+  categoryCode,
   crop,
   decodeMasksBin,
   divRound,
@@ -394,6 +396,7 @@ describe('ids are array positions', () => {
   const entries = [0, 1, 2].map((id) => ({
     id,
     key: `k${id}`,
+    category: 'rock',
     w: 2,
     h: 2,
     anchorX: 1,
@@ -423,8 +426,8 @@ describe('ids are array positions', () => {
 describe('masks.bin round-trips through its own encoder', () => {
   it('gives back every mask it was given', () => {
     const entries = [
-      { id: 0, key: 'a', w: 3, h: 2, anchorX: 1, anchorY: 2, packed: packBits(new Uint8Array([1, 0, 1, 0, 1, 0]), 3, 2) },
-      { id: 1, key: 'b', w: 2, h: 2, anchorX: 1, anchorY: 2, packed: packBits(new Uint8Array([1, 1, 0, 0]), 2, 2) },
+      { id: 0, key: 'a', category: 'rock', w: 3, h: 2, anchorX: 1, anchorY: 2, packed: packBits(new Uint8Array([1, 0, 1, 0, 1, 0]), 3, 2) },
+      { id: 1, key: 'b', category: 'bush', w: 2, h: 2, anchorX: 1, anchorY: 2, packed: packBits(new Uint8Array([1, 1, 0, 0]), 2, 2) },
     ]
     const records = decodeMasksBin(encodeMasksBin(entries))
     expect(records.map((r) => [r.id, r.w, r.h])).toEqual([
@@ -437,6 +440,41 @@ describe('masks.bin round-trips through its own encoder', () => {
 
   it('rejects a foreign file', () => {
     expect(() => decodeMasksBin(new Uint8Array(64))).toThrow(/magic/)
+  })
+})
+
+describe('the category encoding', () => {
+  it('matches the Rust enum position for position', () => {
+    // Position IS the encoding in masks.bin. Reorder one side without the other
+    // and every crystal silently becomes a rock — §B16 in a new place. Read the
+    // discriminants out of the enum rather than restating them here.
+    const rust = readFileSync(
+      join(root, 'crates/game-core/src/map/objects.rs'),
+      'utf8',
+    )
+    const body = rust.slice(rust.indexOf('pub enum ObjectCategory'))
+    const order = [...body.slice(0, body.indexOf('}')).matchAll(/(\w+) = (\d+),/g)].map((m) => ({
+      name: m[1]!.toLowerCase(),
+      code: Number(m[2]),
+    }))
+    expect(order.length).toBe(CATEGORY_ORDER.length)
+    for (const { name, code } of order) {
+      expect(CATEGORY_ORDER[code], `discriminant ${code}`).toBe(name)
+      expect(categoryCode(name)).toBe(code)
+    }
+  })
+
+  it('refuses a category it has never heard of', () => {
+    expect(() => categoryCode('spaceship')).toThrow(/unknown object category/)
+  })
+
+  it('round-trips every committed object through the blob', () => {
+    const records = decodeMasksBin(blob)
+    const wrong = manifest.objects
+      .filter((o, i) => records[i]?.category !== o.category)
+      .map((o) => `${o.key}: manifest ${o.category}, blob ${records[o.id]?.category}`)
+    expect(wrong).toEqual([])
+    expect(new Set(manifest.objects.map((o) => o.category)).size).toBe(CATEGORY_ORDER.length)
   })
 })
 

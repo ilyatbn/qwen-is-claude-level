@@ -1537,6 +1537,40 @@ pub const OBJECT_TARGET_PLAYER_H_CRYSTAL: f32 = 1.5;
 /// Architecture — the only category scaled up. §D4.
 pub const OBJECT_TARGET_PLAYER_H_RUIN: f32 = 3.0;
 
+// --- D5: placement ---
+
+/// Minimum distance between two object centres, px (§D5).
+///
+/// Objects are stamped as solid terrain, so two that overlap become one blob with
+/// no seam — which is not a bug, but it is not variety either. 64 is a little
+/// under the mean scaled rock's width, so a pair can touch and interlock while a
+/// clump of five cannot form.
+pub const OBJECT_MIN_SEPARATION: i32 = 64;
+
+/// Keep spawn points and teleport pads this far from an object centre, px (§D5).
+///
+/// **Enforced from the metadata side**, not at stamp time: pass 6b runs before
+/// pass 8, so when objects are placed no spawn or pad exists yet to avoid. §D3
+/// requires that order — spawns must be chosen from a surface that already has
+/// the objects in it, or players spawn inside rocks. So the objects go down
+/// first, and spawn and pad selection then skips any candidate within this of one.
+pub const OBJECT_CLEAR_OF_SPAWN: i32 = 96;
+
+/// Most of the map, as a fraction of its area, that objects may add (§D5).
+///
+/// **Measured in pixels added, not in objects placed**, because a ruin is worth
+/// twenty bushes and a count cannot tell the two apart. Placement stops at the
+/// cap even if the per-scale count has not been reached — which is what stops a
+/// large map becoming a forest.
+pub const OBJECT_PIXEL_BUDGET: f32 = 0.02;
+
+/// Rejection-sampling attempts per object before placement gives up (`docs/32` §2).
+///
+/// Capped, then stop: on a heavily carved map there may be nowhere left that
+/// satisfies the separation, and a loop that keeps trying never returns. Placing
+/// fewer objects than asked is a fine outcome; hanging is not.
+pub const OBJECT_PLACE_ATTEMPTS: u32 = 200;
+
 // ---------------------------------------------------------------------------
 // Map scale and its per-scale parameter table
 // ---------------------------------------------------------------------------
@@ -1577,6 +1611,48 @@ pub struct ScaleParams {
     pub cave_count: u32,
     /// Horizontal bores through a hill.
     pub arch_count: u32,
+    /// Destructible scenery stamped into the terrain at pass 6b (§D5).
+    ///
+    /// **Small is 12, not §D5's 18** — measured, not guessed. A small map is
+    /// 2048x1024 and yields ~50-70 standable candidates at `SURFACE_SAMPLE_STEP`;
+    /// 18 objects at a 96 px `OBJECT_CLEAR_OF_SPAWN` radius blanket most of them,
+    /// and six spawns `SPAWN_MIN_SEPARATION` apart will not come out of what is
+    /// left. Over 333 Small seeds:
+    ///
+    /// | count | failed | attempts[1..5] | safe preset | smallest pool |
+    /// |---|---|---|---|---|
+    /// | 18 | 103 | 103, 69, 58, 35, 26 | 5 | 6 |
+    /// | 15 | 26 | 209, 72, 26, 16, 6 | 0 | 9 |
+    /// | **12** | **0** | **283, 46, 4, 0, 0** | **0** | **13** |
+    /// | 10 | 0 | 320, 13, 0, 0, 0 | 0 | 14 |
+    /// | 8 | 0 | 330, 3, 0, 0, 0 | 0 | 14 |
+    ///
+    /// 12 is the largest that sits alongside Medium (301, 29, 3) and Large
+    /// (297, 28, 5, 3) — and it is cheaper than Large, which still spends three
+    /// seeds at four attempts. Going lower buys attempts nobody was short of and
+    /// costs the liveliness the feature exists for.
+    ///
+    /// **Large is 36, not §D5's 48**, for the same reason and measured the same
+    /// way. The 999-seed sweep was clean before objects existed
+    /// (Large `[0, 323, 10, 0, 0]`, `safe_preset` 0) and 48 pushed three seeds
+    /// past the `attempts > 3` guard. Over 333 Large seeds:
+    ///
+    /// | count | failed | attempts[1..5] | safe preset | smallest pool | fraction min |
+    /// |---|---|---|---|---|---|
+    /// | 48 | 3 | 297, 28, 5, 3, 0 | 0 | 8 | 0.761 |
+    /// | 40 | 1 | 323, 9, 0, 1, 0 | 0 | 12 | 0.754 |
+    /// | **36** | **0** | **325, 8, 0, 0, 0** | **0** | **14** | **0.751** |
+    /// | 32 | 0 | 323, 10, 0, 0, 0 | 0 | 26 | 0.773 |
+    ///
+    /// 36 is the largest clean count and lands on the baseline's own attempt
+    /// distribution. 32 buys a wider `fraction min` and nothing else: validation
+    /// rejects anything under `MIN_TRAVERSABLE_FRACTION` and retries, and
+    /// `safe_preset` is 0, so every accepted map is above the floor by
+    /// construction — the min is where the accepted tail sits, not a near-miss.
+    ///
+    /// Medium 30 is §D5's own number and measured clean at
+    /// `[0, 301, 29, 3, 0]`.
+    pub object_count: u32,
 }
 
 impl MapScale {
@@ -1598,6 +1674,7 @@ impl MapScale {
                 mesa_count: 1,
                 cave_count: 2,
                 arch_count: 1,
+                object_count: 12,
             },
             MapScale::Medium => ScaleParams {
                 width: MAP_MEDIUM_W,
@@ -1615,6 +1692,7 @@ impl MapScale {
                 mesa_count: 2,
                 cave_count: 2,
                 arch_count: 1,
+                object_count: 30,
             },
             MapScale::Large => ScaleParams {
                 width: MAP_LARGE_W,
@@ -1632,6 +1710,7 @@ impl MapScale {
                 mesa_count: 3,
                 cave_count: 2,
                 arch_count: 2,
+                object_count: 36,
             },
         }
     }

@@ -4352,3 +4352,20 @@ be recorded rather than blocked on. Known limits: the blob format is spelled in 
 the JS and Rust readers, and four tests plus `--check`'s source verification are
 skipped on a clone without `../sprite_packs`, so the Done-when passes there without
 reading a single PNG. e2e deferred to the end of M16 per D-07.
+
+## T16.02 — Stamp objects into the map (v5)
+
+Pass 6b between cleanup and validation (§D3). Objects become terrain: no entity, no
+damage path, nothing new on the wire. Spawn clearance moved into `traversal.rs:272`,
+so a blanketed map fails validation and **retries** instead of pass 8 quietly shipping
+five spawns. §D5's counts are wrong for two scales of three — Small 18 → 12, Large
+48 → 36, both measured over 333 seeds with the tables inline in `constants.rs`. The
+sweep was clean at `dd3820a` and is clean again: `[0, 909, 83, 7, 0]`, safe_preset 0.
+Objects push the traversable tail down (Large 0.783 → 0.751); the floor is held by the
+sweep's assertions, not by the generator — the safe preset returns without re-checking
+(`v2/mod.rs:146`), which predates M16. `masks.bin` is v2: 24-byte records with a
+category byte, so a v1 blob is rejected, not misread. The 24 changed mask hashes are
+what prove 6b ran; `meta_digest` hashes `objects.len()` unconditionally, so its 24
+would have moved either way. Six fixtures broke that had nothing to do with objects —
+all six hardcoded a fact about a generated world. Four were caught only by their own
+vacuity guards. e2e deferred per D-07.

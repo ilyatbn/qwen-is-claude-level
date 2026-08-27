@@ -172,6 +172,7 @@ pub(crate) mod tests {
                 spawn_points: Vec::new(),
                 teleport_pads: Vec::new(),
                 surface_points: Vec::new(),
+                objects: Vec::new(),
                 buried_slots: Vec::new(),
                 decorations: Vec::new(),
                 wind: 0.0,

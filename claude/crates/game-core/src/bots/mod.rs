@@ -1548,14 +1548,38 @@ mod energy {
     /// measured `ticks_engaged: 0` — and with it, it switches and fights.
     #[test]
     fn a_bot_stuck_on_a_flat_laser_still_fights() {
-        let armed = harness::run_round_holding(4242, 4, 0.85, 60.0, LASER_PISTOL, PISTOL);
+        // **Eight seeds, not one.** It was seed 4242 alone, and pass 6b moved
+        // that map: the four bots on it now never get a shot off at all
+        // (`fires 0`), which says something about where scenery put them and
+        // nothing about weapon selection. Whether four bots find each other in
+        // 60 s is a property of the map; whether they can *use* what they are
+        // holding is the claim, and a claim about a population needs more than
+        // one draw. Same shape as `most_rounds_see_a_bot_fire` above.
+        const SEEDS: [u64; 8] = [1, 7, 42, 99, 4242, 31337, 5, 11];
+        let rounds: Vec<_> = SEEDS
+            .iter()
+            .map(|&seed| harness::run_round_holding(seed, 4, 0.85, 60.0, LASER_PISTOL, PISTOL))
+            .collect();
+
+        let dealt = rounds.iter().filter(|r| r.damage_dealt > 0.0).count();
+        let fires: u32 = rounds.iter().map(|r| r.stats.fires).sum();
+        let rej: u32 = rounds.iter().map(|r| r.stats.rej_unarmed).sum();
         assert!(
-            armed.damage_dealt > 0.0,
-            "four bots holding an unusable weapon dealt no damage in 60 s — \
-             they never switched to the loaded gun in their own inventory \
-             (fires {}, rej_unarmed {})",
-            armed.stats.fires,
-            armed.stats.rej_unarmed
+            dealt >= SEEDS.len() / 2,
+            "bots holding an unusable weapon dealt damage in only {dealt} of {} rounds — \
+             they are not switching to the loaded gun in their own inventory \
+             (fires {fires}, rej_unarmed {rej})",
+            SEEDS.len()
+        );
+
+        // The control that makes the count above mean something: a bot that
+        // never switched would be refused every shot it tried. Plenty of fires
+        // and no wall of `rej_unarmed` is what "it switched" looks like.
+        assert!(fires > 0, "no bot fired in any round");
+        assert!(
+            rej < fires,
+            "more shots refused as unarmed ({rej}) than fired ({fires}) — \
+             the bots are stuck on the laser after all"
         );
     }
 

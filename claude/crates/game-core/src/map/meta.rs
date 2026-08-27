@@ -10,6 +10,7 @@ use crate::constants::{
     BURIED_OFFSET_MIN, BURIED_SEPARATION, PAD_H, PAD_TOUCH_SLACK, PAD_W, TELEPORT_PADS, WIND_MAX,
 };
 use crate::map::gen::components::SealedPocket;
+use crate::map::gen::objects::{clear_of_objects, PlacedObject, WhenStarved};
 use crate::map::gen::{
     generate_terrain_with,
     spawns::{choose_separated, choose_spawns},
@@ -25,6 +26,16 @@ const DECOR_MAX: usize = 200;
 const DECOR_KINDS: u16 = 6;
 
 pub const THEME_COUNT: u8 = 3;
+
+/// The theme a requested seed rolls.
+///
+/// Shared, not copied: pass 6b needs it *before* pass 8 runs (§D5 weights the
+/// object categories by theme), and a second copy of this line would drift the
+/// first time either moved. It keys off `requested_seed` rather than the attempt
+/// seed, so a map that retried still gets scenery matching its own terrain.
+pub fn theme_for(requested_seed: u64) -> u8 {
+    (substream(requested_seed, "theme").next_u64_compat() % THEME_COUNT as u64) as u8
+}
 
 /// An indestructible standing spot (`docs/72-amendments-v4.md` §C5).
 ///
@@ -128,6 +139,12 @@ pub struct MapMeta {
     /// The indestructible standing spots (§C5). Ids are their index.
     pub teleport_pads: Vec<TeleportPad>,
     pub surface_points: Vec<Point>,
+    /// Scenery stamped into the terrain at pass 6b (§D5).
+    ///
+    /// The mask already carries the *collision*; this carries which sprite is
+    /// where, which is what the client needs to draw the art (§D6). No per-object
+    /// state, no health, nothing that ticks — §D8.
+    pub objects: Vec<PlacedObject>,
     pub buried_slots: Vec<BuriedSlot>,
     pub decorations: Vec<Decoration>,
     pub wind: f32,
@@ -224,14 +241,33 @@ pub fn generate_full(
 ) -> Map {
     let outcome = generate_terrain_with(requested_seed, scale, generator);
     let params = scale.params();
+    let objects = outcome.objects.clone();
 
-    let theme = (substream(requested_seed, "theme").next_u64_compat() % THEME_COUNT as u64) as u8;
+    let theme = theme_for(requested_seed);
     let wind = range_f32(&mut substream(requested_seed, "wind"), -WIND_MAX, WIND_MAX);
+
+    // §D5 keeps spawns and pads `OBJECT_CLEAR_OF_SPAWN` from an object centre.
+    //
+    // Enforced **here**, not at stamp time: pass 6b runs before pass 8, so when
+    // the objects went down no spawn existed to avoid — and §D3 requires that
+    // order, because a spawn chosen from a surface without objects in it is a
+    // spawn inside a rock.
+    //
+    // The *component index list* is filtered, not `surface`: `largest_component`
+    // holds indices into `surface`, and filtering the points would silently
+    // renumber them. `MapMeta.largest_component` keeps the unfiltered set — the
+    // sweep measures cave reachability against it (§A10).
+    let clear = clear_of_objects(
+        &outcome.surface,
+        &outcome.report.largest_component,
+        &objects,
+        WhenStarved::FallBack,
+    );
 
     let spawn_points = choose_spawns(
         &outcome.mask,
         &outcome.surface,
-        &outcome.report.largest_component,
+        &clear,
         outcome.seed,
         crate::constants::SPAWN_COUNT_MIN.max(crate::constants::MAX_PLAYERS),
     );
@@ -239,12 +275,7 @@ pub fn generate_full(
     // Pads come from the same sampler as the spawns, on their own sub-stream, so
     // that adding them cannot move a spawn point (asserted in `pads_do_not_move_
     // the_spawn_points`).
-    let teleport_pads = choose_pads(
-        &outcome.mask,
-        &outcome.surface,
-        &outcome.report.largest_component,
-        outcome.seed,
-    );
+    let teleport_pads = choose_pads(&outcome.mask, &outcome.surface, &clear, outcome.seed);
 
     let buried_slots = choose_buried_slots(
         &outcome.mask,
@@ -270,6 +301,7 @@ pub fn generate_full(
             spawn_points,
             teleport_pads,
             surface_points: outcome.surface,
+            objects,
             buried_slots,
             decorations,
             wind,
@@ -405,8 +437,172 @@ impl NextU64Compat for ChaCha8Rng {
 
 #[cfg(test)]
 mod tests {
+    /// **You can stand on a rock** — the assertion that proves the pass position.
+    ///
+    /// Not "the object has a solid top row": `is_standable` also wants body-box
+    /// air, `MIN_SUPPORT_PX` below and `HEAD_CLEARANCE` above, so a bush stamped
+    /// under an overhang has a solid top and is still not standable. And not a
+    /// re-extraction inside the test either — this reads `meta.surface_points`,
+    /// the real pass-7a output, which is the thing spawns and items consume.
+    ///
+    /// Aggregated across seeds and scales: one map proves nothing.
+    #[test]
+    fn some_object_top_is_a_real_surface_point() {
+        let mut standable_tops = 0usize;
+        let mut maps_with_one = 0usize;
+        let mut maps = 0usize;
+
+        for scale in MapScale::ALL {
+            for seed in [1u64, 4242, 31337, 8123491234] {
+                let map = generate(seed, scale);
+                maps += 1;
+                let mut here = 0usize;
+                for o in &map.meta.objects {
+                    // Any surface point standing on this object's footprint and
+                    // above the row its base sits on.
+                    let base = o.y + o.h as i32;
+                    let hits = map
+                        .meta
+                        .surface_points
+                        .iter()
+                        .filter(|p| {
+                            p.x >= o.x && p.x < o.x + o.w as i32 && p.y < base && p.y >= o.y - 1
+                        })
+                        .count();
+                    here += hits;
+                }
+                standable_tops += here;
+                if here > 0 {
+                    maps_with_one += 1;
+                }
+            }
+        }
+
+        println!(
+            "object tops in surface_points: {standable_tops} across {maps} maps; \
+             {maps_with_one}/{maps} maps had at least one"
+        );
+        assert!(
+            maps_with_one * 2 >= maps,
+            "only {maps_with_one} of {maps} maps had a standable object top — \
+             surface extraction is not seeing the objects"
+        );
+    }
+
+    /// The control for the test above: with an empty object list there is
+    /// nothing to stand on and every object-top assertion passes for free.
+    #[test]
+    fn a_real_map_has_objects_on_it_at_all() {
+        let map = generate(4242, MapScale::Small);
+        assert!(
+            !map.meta.objects.is_empty(),
+            "no objects at all — every object-top assertion is vacuous"
+        );
+    }
+
+    #[test]
+    fn no_spawn_or_pad_sits_within_the_object_clearance() {
+        let mut checked = 0usize;
+        for scale in MapScale::ALL {
+            for seed in [1u64, 4242, 31337] {
+                let map = generate(seed, scale);
+                // The distance is written out here rather than borrowed from
+                // `clear_of_objects`: this is the oracle, and a test that checks
+                // a function against itself checks nothing.
+                let min = (OBJECT_CLEAR_OF_SPAWN as i64).pow(2);
+                let points = map
+                    .meta
+                    .spawn_points
+                    .iter()
+                    .chain(map.meta.teleport_pads.iter().map(|p| &p.pos));
+                for p in points {
+                    for o in &map.meta.objects {
+                        let c = o.centre();
+                        let d2 = ((c.x - p.x) as i64).pow(2) + ((c.y - p.y) as i64).pow(2);
+                        assert!(
+                            d2 >= min,
+                            "{scale:?}/{seed}: spawn {p:?} is {:.0} px from object {c:?}",
+                            (d2 as f64).sqrt()
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        // The control: the loop above is satisfied by a map with no spawns and by
+        // a map with no objects. It has to have compared something.
+        assert!(checked > 0, "nothing was compared");
+    }
+
+    /// The clearance test's real control.
+    ///
+    /// Filtering the candidate pool is what enforces the clearance, so that test
+    /// also passes if the filter merely leaves the chooser fewer candidates —
+    /// or none. This asserts the chooser still seats a full set of spawns and
+    /// pads afterwards, which is the thing that would actually break.
+    #[test]
+    fn the_object_filter_still_leaves_enough_room_to_seat_every_spawn_and_pad() {
+        for scale in MapScale::ALL {
+            for seed in [1u64, 4242, 31337, 8123491234] {
+                let map = generate(seed, scale);
+                assert!(
+                    map.meta.spawn_points.len() >= crate::constants::SPAWN_COUNT_MIN,
+                    "{scale:?}/{seed}: only {} spawns after the object filter",
+                    map.meta.spawn_points.len()
+                );
+                assert_eq!(
+                    map.meta.teleport_pads.len(),
+                    TELEPORT_PADS,
+                    "{scale:?}/{seed}: pads after the object filter"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_filter_actually_removes_candidates() {
+        // Otherwise `clear_of_objects` could be the identity and every assertion
+        // above would still pass.
+        let outcome = crate::map::gen::generate_terrain(4242, MapScale::Medium);
+        assert!(!outcome.objects.is_empty());
+        let clear = clear_of_objects(
+            &outcome.surface,
+            &outcome.report.largest_component,
+            &outcome.objects,
+            WhenStarved::FallBack,
+        );
+        assert!(
+            clear.len() < outcome.report.largest_component.len(),
+            "the object filter removed nothing: {} of {}",
+            clear.len(),
+            outcome.report.largest_component.len()
+        );
+    }
+
+    #[test]
+    fn the_filter_falls_back_rather_than_starving_the_chooser() {
+        // A pathological case: every surface point covered. Returning an empty
+        // pool would leave a map with no spawns, which is worse than a spawn
+        // beside a bush.
+        let surface = vec![Point::new(100, 100), Point::new(120, 100)];
+        let component = vec![0usize, 1];
+        let blanket = vec![PlacedObject {
+            id: 0,
+            x: 90,
+            y: 90,
+            w: 40,
+            h: 20,
+            flip: false,
+        }];
+        let clear = clear_of_objects(&surface, &component, &blanket, WhenStarved::FallBack);
+        assert_eq!(
+            clear, component,
+            "the pool was starved instead of falling back"
+        );
+    }
+
     use super::*;
-    use crate::constants::{SPAWN_COUNT_MIN, WIND_MAX};
+    use crate::constants::{OBJECT_CLEAR_OF_SPAWN, SPAWN_COUNT_MIN, WIND_MAX};
     use crate::map::gen::surface::extract_surface;
 
     #[test]

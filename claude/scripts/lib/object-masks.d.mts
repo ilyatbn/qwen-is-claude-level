@@ -8,6 +8,7 @@ export interface Box {
 export interface MaskEntry {
   id: number
   key?: string
+  category: string
   w: number
   h: number
   anchorX: number
@@ -17,6 +18,7 @@ export interface MaskEntry {
 
 export interface MaskRecord {
   id: number
+  category: string
   w: number
   h: number
   anchorX: number
@@ -30,6 +32,8 @@ export declare const MASKS_MAGIC: number
 export declare const MASKS_VERSION: number
 export declare const MASKS_HEADER_BYTES: number
 export declare const MASKS_RECORD_BYTES: number
+export declare const CATEGORY_ORDER: readonly string[]
+export declare function categoryCode(name: string): number
 
 export declare function thresholdAlpha(
   rgba: Uint8Array,

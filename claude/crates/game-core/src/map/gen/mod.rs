@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! 1 preset → 2 silhouette → 3 islands → 3b bridges → 4 cave network
-//!         → 4b crevices → 4c voids → 5 smoothing → 6 cleanup
+//!         → 4b crevices → 4c voids → 5 smoothing → 6 cleanup → 6b objects
 //!         → 7 validation → 8 metadata
 //! ```
 //!
@@ -16,6 +16,7 @@ pub mod carvings;
 pub mod caves;
 pub mod components;
 pub mod network;
+pub mod objects;
 pub mod silhouette;
 pub mod smooth;
 pub mod spawns;
@@ -43,6 +44,9 @@ pub struct GenOutcome {
     pub tunnel_paths: Vec<Vec<Point>>,
     /// Island centres, for decoration and debugging.
     pub islands: Vec<Point>,
+    /// Scenery stamped at pass 6b (§D5). Carried out so pass 8 can keep spawns
+    /// clear of it and the client can draw the art (§D6).
+    pub objects: Vec<objects::PlacedObject>,
     /// The seed that actually produced this map.
     pub seed: u64,
     pub requested_seed: u64,
@@ -73,8 +77,11 @@ pub fn generate_once(seed: u64, params: &GenParams) -> GenOutcome {
     smooth::smooth(&mut mask);
     let sealed_pockets = components::cleanup(&mut mask);
 
+    // Pass 6b (§D3): after cleanup, before surface extraction and validation.
+    let placement = objects::stamp_objects(&mut mask, seed, params.scale, params.theme);
+
     let surface = surface::extract_surface(&mask);
-    let report = traversal::analyse(&mask, &surface);
+    let report = traversal::analyse(&mask, &surface, &placement.objects);
 
     GenOutcome {
         mask,
@@ -83,6 +90,7 @@ pub fn generate_once(seed: u64, params: &GenParams) -> GenOutcome {
         sealed_pockets,
         tunnel_paths,
         islands,
+        objects: placement.objects,
         seed,
         requested_seed: seed,
         attempts: 1,
@@ -121,7 +129,8 @@ pub fn generate_terrain_with(
 }
 
 fn generate_terrain_v1(requested_seed: u64, scale: MapScale) -> GenOutcome {
-    let params = GenParams::default_for(scale);
+    let mut params = GenParams::default_for(scale);
+    params.theme = crate::map::meta::theme_for(requested_seed);
 
     for attempt in 0..MAX_GEN_ATTEMPTS {
         let seed = requested_seed.wrapping_add(attempt as u64);
@@ -133,7 +142,9 @@ fn generate_terrain_v1(requested_seed: u64, scale: MapScale) -> GenOutcome {
         }
     }
 
-    let mut outcome = generate_once(requested_seed, &GenParams::safe_for(scale));
+    let mut safe = GenParams::safe_for(scale);
+    safe.theme = params.theme;
+    let mut outcome = generate_once(requested_seed, &safe);
     outcome.requested_seed = requested_seed;
     outcome.attempts = MAX_GEN_ATTEMPTS;
     outcome.used_safe_preset = true;

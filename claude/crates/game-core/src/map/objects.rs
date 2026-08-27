@@ -12,9 +12,9 @@
 
 /// The bytes `O B J M`, read little-endian.
 const MAGIC: u32 = 0x4d4a_424f;
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const HEADER_BYTES: usize = 12;
-const RECORD_BYTES: usize = 20;
+const RECORD_BYTES: usize = 24;
 
 /// The table, as written by `scripts/build-object-masks.mjs`.
 static BLOB: &[u8] = include_bytes!("../../../../assets/objects/masks.bin");
@@ -27,6 +27,42 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
 
+/// Which pack an object came from, and what a theme weights it as (§D5).
+///
+/// **The discriminants are the encoding in `masks.bin`.** `CATEGORY_ORDER` in
+/// `scripts/lib/object-masks.mjs` writes these numbers and this enum reads them;
+/// the two orders are asserted against each other by the vitest suite and by
+/// `every_category_in_the_table_decodes` below. Reordering one without the other
+/// turns every crystal into a rock, silently — §B16's mistake in a new place.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[repr(u8)]
+pub enum ObjectCategory {
+    Bush = 0,
+    Rock = 1,
+    Crystal = 2,
+    Ruin = 3,
+}
+
+impl ObjectCategory {
+    pub const ALL: [ObjectCategory; 4] = [
+        ObjectCategory::Bush,
+        ObjectCategory::Rock,
+        ObjectCategory::Crystal,
+        ObjectCategory::Ruin,
+    ];
+
+    fn from_code(code: u8) -> Option<ObjectCategory> {
+        match code {
+            0 => Some(ObjectCategory::Bush),
+            1 => Some(ObjectCategory::Rock),
+            2 => Some(ObjectCategory::Crystal),
+            3 => Some(ObjectCategory::Ruin),
+            _ => None,
+        }
+    }
+}
+
 /// One object's silhouette: `w * h` bits, row-major, MSB first, no row padding.
 #[derive(Copy, Clone, Debug)]
 pub struct ObjectMask {
@@ -36,6 +72,7 @@ pub struct ObjectMask {
     /// Where the object meets the ground: bottom centre, in mask pixels.
     pub anchor_x: u32,
     pub anchor_y: u32,
+    pub category: ObjectCategory,
     bits: &'static [u8],
 }
 
@@ -95,8 +132,8 @@ pub fn mask(id: usize) -> Option<ObjectMask> {
         return None;
     }
     let at = HEADER_BYTES + id * RECORD_BYTES;
-    let offset = u32_at(BLOB, at + 12) as usize;
-    let len = u32_at(BLOB, at + 16) as usize;
+    let offset = u32_at(BLOB, at + 16) as usize;
+    let len = u32_at(BLOB, at + 20) as usize;
     if offset.checked_add(len)? > BLOB.len() {
         return None;
     }
@@ -106,8 +143,14 @@ pub fn mask(id: usize) -> Option<ObjectMask> {
         h: u16_at(BLOB, at + 6) as u32,
         anchor_x: u16_at(BLOB, at + 8) as u32,
         anchor_y: u16_at(BLOB, at + 10) as u32,
+        category: ObjectCategory::from_code(BLOB[at + 12])?,
         bits: &BLOB[offset..offset + len],
     })
+}
+
+/// The category of the object at `id`.
+pub fn category(id: usize) -> Option<ObjectCategory> {
+    mask(id).map(|m| m.category)
 }
 
 /// Every mask, in id order.
@@ -148,6 +191,23 @@ mod tests {
     fn every_mask_stamps_something() {
         let empty: Vec<u32> = all().filter(|m| m.solid_px() == 0).map(|m| m.id).collect();
         assert!(empty.is_empty(), "these masks are blank: {empty:?}");
+    }
+
+    #[test]
+    fn every_category_in_the_table_decodes_and_all_four_are_present() {
+        // `from_code` returning None makes `mask()` return None, which would make
+        // `count()`-driven loops quietly skip objects rather than fail. Check the
+        // whole table resolves, and that the four the pipeline writes are all here
+        // — a table of nothing but rocks would satisfy "every id decodes".
+        for id in 0..count() {
+            assert!(mask(id).is_some(), "id {id} has an unknown category byte");
+        }
+        for c in ObjectCategory::ALL {
+            assert!(
+                all().any(|m| m.category == c),
+                "no {c:?} in the table — the JS CATEGORY_ORDER and this enum disagree"
+            );
+        }
     }
 
     #[test]

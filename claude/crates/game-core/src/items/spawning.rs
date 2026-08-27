@@ -495,13 +495,15 @@ mod tests {
         let mut map = medium();
         // Carve away a whole region's worth of surface, so most of the pristine
         // snapshot in MapMeta is now mid-air over a crater.
-        let victims: Vec<Point> = map
-            .meta
-            .surface_points
-            .iter()
-            .copied()
-            .filter(|p| p.x > 800 && p.x < 2000)
-            .collect();
+        //
+        // The band is taken from the surface itself rather than from a fixed
+        // x window. It was `800 < x < 2000`, which held until pass 6b started
+        // stamping scenery and moved where a medium map's standable ground is —
+        // a fixture pinned to a coordinate the generator is free to change.
+        let mut by_x: Vec<Point> = map.meta.surface_points.clone();
+        by_x.sort_by_key(|p| (p.x, p.y));
+        let quarter = by_x.len() / 4;
+        let victims: Vec<Point> = by_x[quarter..by_x.len() - quarter].to_vec();
         assert!(victims.len() > 20, "need a meaningful region to destroy");
         for p in &victims {
             map.carve_circle(p.x, p.y, 40);

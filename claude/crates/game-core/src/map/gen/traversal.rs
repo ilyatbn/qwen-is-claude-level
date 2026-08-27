@@ -16,6 +16,7 @@ use crate::constants::{
     MIN_TRAVERSABLE_FRACTION, SPAWN_COUNT_MIN, SPAWN_MIN_SEPARATION, STEP_UP, SURFACE_SAMPLE_STEP,
     WALK_SPEED,
 };
+use crate::map::gen::objects::{self, PlacedObject};
 use crate::map::Mask;
 use crate::math::Point;
 
@@ -214,7 +215,7 @@ impl Buckets {
 /// not, so "a can reach b" does not imply "b can reach a" — and a validation that
 /// assumes it does will certify a pit you die in. The metric is the largest set of
 /// points that can all reach each other **both ways**.
-pub fn analyse(mask: &Mask, surface: &[Point]) -> TraversalReport {
+pub fn analyse(mask: &Mask, surface: &[Point], objects: &[PlacedObject]) -> TraversalReport {
     let n = surface.len();
     if n == 0 {
         return TraversalReport {
@@ -269,7 +270,18 @@ pub fn analyse(mask: &Mask, surface: &[Point]) -> TraversalReport {
     largest.sort_unstable();
 
     let traversable_fraction = largest.len() as f32 / n as f32;
-    let enough_spawns = count_separated(surface, &largest, SPAWN_MIN_SEPARATION) >= SPAWN_COUNT_MIN;
+
+    // §D5 keeps spawns `OBJECT_CLEAR_OF_SPAWN` from an object centre, so the
+    // candidates validation counts must be the ones that survive that rule.
+    //
+    // **Counted here rather than fixed up in pass 8.** A map whose objects blanket
+    // its surface has nowhere legal to put six spawns, and that is the same class
+    // of failure as a map cut in two — so it goes through the same door: fail
+    // validation, and `generate_terrain` retries on the next seed. Filtering after
+    // the fact instead would mean either five spawns on a six-player map, or
+    // spawns beside the objects the rule exists to keep them away from.
+    let clear = objects::clear_of_objects(surface, &largest, objects, objects::WhenStarved::Reject);
+    let enough_spawns = count_separated(surface, &clear, SPAWN_MIN_SEPARATION) >= SPAWN_COUNT_MIN;
     let passed = traversable_fraction >= MIN_TRAVERSABLE_FRACTION && enough_spawns;
 
     TraversalReport {
@@ -503,6 +515,89 @@ fn body_clear(mask: &Mask, x: i32, y: i32) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// The clearance branch of `analyse`, at its own call site.
+    ///
+    /// Every other test here passes `&[]`, which short-circuits to the pre-6b
+    /// behaviour — correct, and the reason those are behaviour-preserving, but it
+    /// leaves the branch that decides whether a map is **rejected** exercised only
+    /// indirectly through `generate()`. This drives it directly: the same mask and
+    /// surface, once with no objects and once with objects blanketing the ground,
+    /// and only the second is refused.
+    #[test]
+    fn objects_blanketing_the_surface_make_analyse_reject_the_map() {
+        use crate::constants::OBJECT_CLEAR_OF_SPAWN;
+        use crate::map::gen::objects::PlacedObject;
+
+        let mut m = Mask::new_empty(2048, 512);
+        for y in 400..512 {
+            m.set_run(y, 0, 2047);
+        }
+        let surface = crate::map::gen::surface::extract_surface(&m);
+
+        // The control: flat open ground passes, so a rejection below is the
+        // objects and not the fixture.
+        let clean = analyse(&m, &surface, &[]);
+        assert!(
+            clean.passed,
+            "flat ground failed validation on its own: fraction {:.3}, {} points",
+            clean.traversable_fraction,
+            surface.len()
+        );
+
+        // One object every OBJECT_CLEAR_OF_SPAWN across the whole width: no
+        // surface point is far enough from all of them to seat a spawn.
+        let blanket: Vec<PlacedObject> = (0..2048 / OBJECT_CLEAR_OF_SPAWN)
+            .map(|i| PlacedObject {
+                id: 0,
+                x: i * OBJECT_CLEAR_OF_SPAWN,
+                y: 380,
+                w: 8,
+                h: 8,
+                flip: false,
+            })
+            .collect();
+        let blanketed = analyse(&m, &surface, &blanket);
+        assert!(
+            !blanketed.passed,
+            "a surface with no legal spawn left passed validation"
+        );
+
+        // And it is the *spawn* clause that refused it, not traversability —
+        // otherwise this would pass for the wrong reason.
+        assert!(
+            blanketed.traversable_fraction >= MIN_TRAVERSABLE_FRACTION,
+            "the map became untraversable, so the spawn clause was never reached"
+        );
+        assert_eq!(
+            blanketed.largest_component, clean.largest_component,
+            "objects must not change the component; they only change what can spawn"
+        );
+    }
+
+    /// A few objects must **not** reject a map, or 6b would fail every seed.
+    #[test]
+    fn a_handful_of_objects_leaves_a_map_passing() {
+        use crate::map::gen::objects::PlacedObject;
+
+        let mut m = Mask::new_empty(2048, 512);
+        for y in 400..512 {
+            m.set_run(y, 0, 2047);
+        }
+        let surface = crate::map::gen::surface::extract_surface(&m);
+        let few: Vec<PlacedObject> = [200, 400, 600]
+            .iter()
+            .map(|&x| PlacedObject {
+                id: 0,
+                x,
+                y: 380,
+                w: 8,
+                h: 8,
+                flip: false,
+            })
+            .collect();
+        assert!(analyse(&m, &surface, &few).passed);
+    }
     use super::*;
     use crate::constants::MapScale;
     use crate::map::gen::silhouette::GenParams;
@@ -641,7 +736,7 @@ mod tests {
         }
 
         let surface = extract_surface(&m);
-        let report = analyse(&m, &surface);
+        let report = analyse(&m, &surface, &[]);
         assert!(report.total_points > 0);
 
         // The chamber floor is at y=240, feet at 239, inside x 760..940.
@@ -666,7 +761,7 @@ mod tests {
         let mut m = Mask::new_empty(W, H);
         platform(&mut m, 0, W as i32 - 1, 600);
         let surface = extract_surface(&m);
-        let report = analyse(&m, &surface);
+        let report = analyse(&m, &surface, &[]);
         assert_eq!(report.traversable_fraction, 1.0);
         assert!(report.passed, "a flat floor must pass validation");
         assert_eq!(report.largest_component.len(), report.total_points);
@@ -675,7 +770,7 @@ mod tests {
     #[test]
     fn an_empty_surface_does_not_panic() {
         let m = Mask::new_empty(W, H);
-        let report = analyse(&m, &[]);
+        let report = analyse(&m, &[], &[]);
         assert_eq!(report.total_points, 0);
         assert!(!report.passed);
         assert_eq!(report.traversable_fraction, 0.0);
@@ -750,8 +845,8 @@ mod tests {
             "taking the floor away changed a verdict about a ledge 200 px above it"
         );
 
-        let ra = analyse(&a, &ledge);
-        let rb = analyse(&b, &ledge);
+        let ra = analyse(&a, &ledge, &[]);
+        let rb = analyse(&b, &ledge, &[]);
         assert_eq!(
             ra.traversable_fraction, rb.traversable_fraction,
             "the traversable fraction depends on whether there is a floor"
@@ -780,7 +875,7 @@ mod tests {
     /// largest strongly connected set.
     fn deepest_is_connected(m: &Mask) -> (bool, f32) {
         let surface = extract_surface(m);
-        let report = analyse(m, &surface);
+        let report = analyse(m, &surface, &[]);
         let in_main: std::collections::HashSet<usize> =
             report.largest_component.iter().copied().collect();
         let deepest = surface
@@ -852,7 +947,7 @@ mod tests {
         platform(&mut m, 1800, W as i32 - 1, 400);
 
         let surface = extract_surface(&m);
-        let report = analyse(&m, &surface);
+        let report = analyse(&m, &surface, &[]);
         let in_main: std::collections::HashSet<usize> =
             report.largest_component.iter().copied().collect();
 
@@ -948,7 +1043,7 @@ mod tests {
         platform(&mut m, 0, 400, 300);
 
         let surface = extract_surface(&m);
-        let report = analyse(&m, &surface);
+        let report = analyse(&m, &surface, &[]);
         let in_main: std::collections::HashSet<usize> =
             report.largest_component.iter().copied().collect();
 
@@ -974,10 +1069,10 @@ mod tests {
         platform(&mut m, 1600, 1900, 400);
 
         let surface = extract_surface(&m);
-        let first = analyse(&m, &surface).largest_component;
+        let first = analyse(&m, &surface, &[]).largest_component;
         for _ in 0..32 {
             assert_eq!(
-                analyse(&m, &surface).largest_component,
+                analyse(&m, &surface, &[]).largest_component,
                 first,
                 "tied components must resolve the same way every time"
             );
@@ -990,9 +1085,9 @@ mod tests {
         platform(&mut m, 0, 400, 600);
         platform(&mut m, 500, 900, 500);
         let surface = extract_surface(&m);
-        let first = analyse(&m, &surface);
+        let first = analyse(&m, &surface, &[]);
         for _ in 0..20 {
-            assert_eq!(analyse(&m, &surface), first);
+            assert_eq!(analyse(&m, &surface, &[]), first);
         }
     }
 
@@ -1109,7 +1204,7 @@ mod tests {
         let surface = extract_surface(&m);
 
         let t = Instant::now();
-        let report = analyse(&m, &surface);
+        let report = analyse(&m, &surface, &[]);
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         println!(
             "analyse: {ms:.1} ms for {} points, fraction {:.3}, passed {}",

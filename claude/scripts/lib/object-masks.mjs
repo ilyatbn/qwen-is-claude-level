@@ -11,11 +11,27 @@
 
 /** `masks.bin` header magic, so a truncated or foreign file fails loudly. */
 export const MASKS_MAGIC = 0x4d4a424f // the bytes `O B J M`, read little-endian
-export const MASKS_VERSION = 1
+export const MASKS_VERSION = 2
 /** magic + version + count. */
 export const MASKS_HEADER_BYTES = 12
-/** id, w, h, anchorX, anchorY, offset, len. */
-export const MASKS_RECORD_BYTES = 20
+/** id, w, h, anchorX, anchorY, category, pad, offset, len. */
+export const MASKS_RECORD_BYTES = 24
+
+/**
+ * Category as a number, because `game-core` reads `masks.bin` and not the JSON.
+ *
+ * Position is the encoding, so this array is as load-bearing as the id/position
+ * rule in §B16 and is asserted against the Rust enum's order by the suite. A
+ * category the build has never heard of stops the build rather than defaulting
+ * to zero and silently stamping bushes.
+ */
+export const CATEGORY_ORDER = ['bush', 'rock', 'crystal', 'ruin']
+
+export function categoryCode(name) {
+  const i = CATEGORY_ORDER.indexOf(name)
+  if (i < 0) throw new Error(`unknown object category \`${name}\``)
+  return i
+}
 
 /**
  * α **strictly above** the threshold is solid.
@@ -298,8 +314,9 @@ export function encodeMasksBin(entries) {
     view.setUint16(at + 6, e.h, true)
     view.setUint16(at + 8, e.anchorX, true)
     view.setUint16(at + 10, e.anchorY, true)
-    view.setUint32(at + 12, offset, true)
-    view.setUint32(at + 16, e.packed.length, true)
+    view.setUint8(at + 12, categoryCode(e.category))
+    view.setUint32(at + 16, offset, true)
+    view.setUint32(at + 20, e.packed.length, true)
     buf.set(e.packed, offset)
     offset += e.packed.length
   })
@@ -316,8 +333,8 @@ export function decodeMasksBin(buf) {
   const out = []
   for (let i = 0; i < count; i++) {
     const at = MASKS_HEADER_BYTES + i * MASKS_RECORD_BYTES
-    const offset = view.getUint32(at + 12, true)
-    const len = view.getUint32(at + 16, true)
+    const offset = view.getUint32(at + 16, true)
+    const len = view.getUint32(at + 20, true)
     if (offset + len > buf.byteLength) throw new Error(`masks.bin record ${i} runs past the file`)
     out.push({
       id: view.getUint32(at, true),
@@ -325,6 +342,7 @@ export function decodeMasksBin(buf) {
       h: view.getUint16(at + 6, true),
       anchorX: view.getUint16(at + 8, true),
       anchorY: view.getUint16(at + 10, true),
+      category: CATEGORY_ORDER[view.getUint8(at + 12)],
       offset,
       len,
       packed: buf.subarray(offset, offset + len),

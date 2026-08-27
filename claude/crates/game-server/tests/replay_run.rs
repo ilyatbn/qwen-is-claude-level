@@ -395,51 +395,180 @@ fn a_version_mismatch_is_a_clear_error() {
     assert!(out.contains("replay version 99"), "output was:\n{out}");
 }
 
-/// The headline diagnostic: perturb one command and the runner must name a tick
-/// near the perturbation, not merely report a mismatch.
+/// Net horizontal intent: what the simulation actually reads off the buttons.
+fn net_x(buttons: u8) -> i8 {
+    i8::from(buttons & button::RIGHT != 0) - i8::from(buttons & button::LEFT != 0)
+}
+
+/// A buttons byte whose horizontal intent differs from `b`.
+///
+/// `^= LEFT | RIGHT` on its own is a **silent no-op** on an input holding
+/// neither direction or both: 00 becomes 11 and 11 becomes 00, and both read as
+/// zero horizontal intent. The replay then verifies clean and the test reads it
+/// as "divergence was not detected" when nothing had diverged — the same
+/// vacuity trap as an assertion on a field that does not exist. A reversal is
+/// preferred where one direction is held because it is the largest change
+/// available; otherwise a single bit, which always moves the net.
+fn perturb_buttons(b: u8) -> u8 {
+    [
+        b ^ (button::LEFT | button::RIGHT),
+        b ^ button::LEFT,
+        b ^ button::RIGHT,
+    ]
+    .into_iter()
+    .find(|&c| net_x(c) != net_x(b))
+    .expect("some flip changes the horizontal intent")
+}
+
+/// Byte offset of `body[index]`'s encoded input, anchored to the command index.
+///
+/// A forward cursor, advanced past every command already located, so an
+/// identical earlier input cannot be hit. The previous version searched the
+/// whole file from the start for the first matching bytes and would have
+/// corrupted that earlier command instead — possibly before the checkpoint that
+/// has to still match. Walking the commands in order is the anchor; the search
+/// only finds where the one we are already holding was written.
+fn find_input(bytes: &[u8], cursor: &mut usize, input: &Input) -> Option<usize> {
+    let mut needle = Vec::new();
+    needle.extend_from_slice(&input.seq.to_le_bytes());
+    needle.extend_from_slice(&input.aim.to_le_bytes());
+    needle.push(input.buttons);
+    let at = bytes[*cursor..]
+        .windows(needle.len())
+        .position(|w| w == needle.as_slice())?
+        + *cursor;
+    *cursor = at + needle.len();
+    // `write_command`'s Input arm: `put_u32(seq)`, `put_u16(aim)`, then the
+    // buttons byte — all little-endian (`replay.rs:391`). So the payload is 7
+    // bytes and buttons is the last of them.
+    Some(at + 6)
+}
+
+/// **When a run diverges, the checkpoints localise it to a nearby tick.**
+///
+/// That is the guarantee the format offers, and it is narrower than the one this
+/// test used to assert. The old version flipped a single input's buttons and
+/// required the replay to diverge — which is *"any flipped byte changes the
+/// run"*, a property the system does not have and never promised. A bot steers
+/// itself: reverse its input for one tick and it corrects, and whether that
+/// correction washes out before the next checkpoint depends on the terrain it is
+/// standing on. Pass 6b moved the terrain and the fixture went red having found
+/// nothing. Measured on the new map: the identical byte flip at the identical
+/// offset no longer diverges, and neither does one 600 ticks earlier.
+///
+/// So: perturb a spread of inputs, require that **at least one** diverges — the
+/// control, without which this degrades into corrupting bytes and shrugging —
+/// and for every one that does, assert the reported tick is localised. The ones
+/// that wash out are counted and printed, because that count reaching the whole
+/// set is exactly what the control catches.
 #[test]
 fn a_perturbed_command_is_localised_to_a_nearby_tick() {
     let s = Scratch::new("bin-diverge");
     let path = record_a_round(s.path(), 1400);
     let bytes = std::fs::read(&path).expect("read");
-
-    // Flip the buttons byte of an input recorded a little after tick 600, so the
-    // first checkpoint at 600 still matches and the one at 1200 does not.
     let file = replay::read_file(&path).expect("decode");
-    let target = file
-        .body
-        .iter()
-        .position(|(t, c)| *t > 700 && matches!(c, ReplayCommand::Input(..)))
-        .expect("an input after tick 700");
-    // Recompute the byte offset by re-encoding the prefix: the format is
-    // fixed-width per command, but finding the offset by arithmetic here would
-    // duplicate the encoder. Search for the exact input instead.
-    let ReplayCommand::Input(_, inputs) = &file.body[target].1 else {
-        unreachable!()
-    };
-    let needle = {
-        let mut v = Vec::new();
-        v.extend_from_slice(&inputs[0].seq.to_le_bytes());
-        v.extend_from_slice(&inputs[0].aim.to_le_bytes());
-        v.push(inputs[0].buttons);
-        v
-    };
-    let at = bytes
-        .windows(needle.len())
-        .position(|w| w == needle.as_slice())
-        .expect("find the recorded input in the file");
-    let mut perturbed = bytes.clone();
-    perturbed[at + 6] ^= button::LEFT | button::RIGHT;
 
-    let bad = s.path().join("diverge.replay");
-    std::fs::write(&bad, &perturbed).expect("write");
-
-    let (ok, out) = run_bin(&[bad.to_str().expect("utf8")]);
-    assert!(!ok, "a diverged replay must exit non-zero:\n{out}");
-    assert!(out.contains("MISMATCH"), "output was:\n{out}");
+    // Candidates after the first checkpoint, so tick 600 always reproduces and
+    // the divergence has somewhere later to be found. Spread across the rest of
+    // the recording rather than clustered: a population claim needs more than
+    // one draw, and how long a perturbation survives depends on where the bot is.
+    let mut cursor = 0usize;
+    let mut candidates: Vec<(u32, usize, u8)> = Vec::new();
+    for (tick, cmd) in &file.body {
+        let ReplayCommand::Input(_, inputs) = cmd else {
+            continue;
+        };
+        let Some(first) = inputs.first() else {
+            continue;
+        };
+        let Some(at) = find_input(&bytes, &mut cursor, first) else {
+            continue;
+        };
+        if *tick > replay::CHECKPOINT_STRIDE {
+            candidates.push((*tick, at, first.buttons));
+        }
+    }
     assert!(
-        out.contains("first divergence at tick 1200"),
-        "expected the divergence localised to the 1200 checkpoint, got:\n{out}"
+        candidates.len() >= 24,
+        "only {} perturbable inputs after tick {}",
+        candidates.len(),
+        replay::CHECKPOINT_STRIDE
+    );
+    let stride = candidates.len() / 12;
+    let sample: Vec<_> = candidates
+        .into_iter()
+        .step_by(stride.max(1))
+        .take(12)
+        .collect();
+
+    let mut diverged = 0usize;
+    let mut washed_out: Vec<u32> = Vec::new();
+
+    for (i, (tick, at, buttons)) in sample.iter().enumerate() {
+        // **The anchor.** Everything else here is satisfied wherever `at`
+        // points: "the byte changed" is true of any offset, and comparing
+        // `net_x(perturbed[at])` against `net_x(buttons)` is a tautology —
+        // `perturb_buttons` is *defined* to change `net_x`, so it would be
+        // checking a value against its own input. This is the one assertion that
+        // fails if the offset is wrong, because it reads the file.
+        assert_eq!(
+            bytes[*at], *buttons,
+            "tick {tick}: find_input landed on {:#04x}, not the buttons byte {:#04x}",
+            bytes[*at], *buttons
+        );
+
+        let mut perturbed = bytes.clone();
+        perturbed[*at] = perturb_buttons(*buttons);
+
+        let bad = s.path().join(format!("diverge-{i}.replay"));
+        std::fs::write(&bad, &perturbed).expect("write");
+        let (ok, out) = run_bin(&[bad.to_str().expect("utf8")]);
+
+        if ok {
+            washed_out.push(*tick);
+            continue;
+        }
+        diverged += 1;
+        assert!(out.contains("MISMATCH"), "tick {tick}: output was:\n{out}");
+
+        // The claim in this test's name, and the one the runner documents:
+        // localised to within a stride. Two cases, and the bound is the same
+        // either way — a checkpoint that failed puts the cause in the stride
+        // *before* it, while a tail divergence past the last checkpoint is
+        // reported at that checkpoint and puts the cause in the stride *after*.
+        let reported: u32 = out
+            .split("first divergence at tick ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("tick {tick}: no localised tick in:\n{out}"));
+        assert!(
+            reported.abs_diff(*tick) <= replay::CHECKPOINT_STRIDE,
+            "tick {tick}: divergence reported at {reported}, more than a stride \
+             ({}) away — not localised",
+            replay::CHECKPOINT_STRIDE
+        );
+    }
+
+    println!(
+        "perturbations: {diverged}/{} diverged, {} washed out at ticks {washed_out:?}",
+        sample.len(),
+        washed_out.len()
+    );
+
+    // The control. Every perturbation washing out would mean the runner cannot
+    // detect a corrupted command at all, and every assertion above would have
+    // been skipped in silence.
+    //
+    // A floor above one, and the counts in the message rather than a `println!`
+    // — which `cargo test` swallows without `--nocapture`, so a drift from 4/12
+    // to 1/12 would pass in silence with nobody the wiser.
+    assert!(
+        diverged >= 3,
+        "only {diverged} of {} perturbed inputs diverged ({} washed out at {washed_out:?}) — \
+         the runner is barely detecting corrupted commands",
+        sample.len(),
+        washed_out.len()
     );
 }
 
