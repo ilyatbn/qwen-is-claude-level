@@ -165,6 +165,54 @@ export default async function ({ page, shot, log }) {
   //    the first version of this check failed for exactly that reason, and
   //    `sky.mjs` carries the same lesson from the same cause. So: find the widest
   //    run of screen columns that is open air all the way down through the band.
+  /**
+   * **Open a window through the foreground so the background can be seen.**
+   *
+   * The ridge is drawn at a fixed screen fraction — `MOUNTAIN_BASE_FRAC` 0.86 —
+   * so `airRun(0.64, 0.85)` cannot look anywhere else for it. Whether that strip
+   * shows sky or rock is entirely a question of where the camera is, and pass 6b
+   * moved the sandbox spawn (objects push spawn candidates away under
+   * `OBJECT_CLEAR_OF_SPAWN`). Measured, the strip is now solid rock across the
+   * whole width at every zoom:
+   *
+   *   zoom 1: 0 clear columns   view y 501..1221
+   *   zoom 2: 0 clear columns   view y 681..1041
+   *   zoom 3: 0 clear columns   view y 741..981
+   *
+   * Zooming cannot help: the strip maps to world rows *below* the camera centre
+   * at any zoom, and the camera centres on a player standing on the ground.
+   *
+   * So the foreground is carved away. This is not making the world fit the
+   * fixture — the subject of every ridge assertion below is the **parallax
+   * layer**, measured by toggling it on and off, and foreground terrain in front
+   * of it is exactly the thing that has to not be there. Carving is also what
+   * `terrain-render` already does to see the terrain change.
+   */
+  const opened = await page.evaluate(() => {
+    const g = window.__game
+    const v = g.debug().worldView
+    // Both background bands: clouds at 0.06..0.40 and the ridge at 0.64..0.85.
+    // Carved as rows of overlapping circles so the whole strip opens, not just
+    // its centre line.
+    const radius = Math.ceil(0.07 * v.h) + 8
+    const x0 = v.x + 0.3 * v.w
+    const x1 = v.x + v.w
+    let n = 0
+    for (let fy = 0.05; fy <= 0.87; fy += 0.06) {
+      const wy = v.y + fy * v.h
+      for (let wx = x0; wx <= x1; wx += radius) {
+        g.carve(Math.round(wx), Math.round(wy), radius)
+        n++
+      }
+    }
+    return { carves: n, radius, from: Math.round(v.y + 0.05 * v.h), to: Math.round(v.y + 0.87 * v.h) }
+  })
+  await page.waitForTimeout(500)
+  log(
+    `opened the background bands with ${opened.carves} carves of r=${opened.radius}, ` +
+      `world y ${opened.from}..${opened.to}`,
+  )
+
   const band = await page.evaluate(() => {
     const g = window.__game.debug()
     const v = g.worldView
@@ -507,46 +555,67 @@ export default async function ({ page, shot, log }) {
     throw new Error('the sprite tint is the same at noon and at night')
   }
 
-  // 5c. **The night cloud is still VISIBLE against the night sky.**
+  // 5c. **The night cloud still puts pixels on the screen.**
   //
-  //     The assertion the task list does not have, and the one the double
-  //     darkening would have failed. "Cloud tint at night differs from noon"
-  //     passes for a cloud that has become invisible — invisible differs from
-  //     noon too. What has to hold is a delta between the cloud and the sky
-  //     *beside it in the same frame*.
+  //     "Cloud tint at night differs from noon" passes for a cloud that has
+  //     become invisible — invisible differs from noon too. Selecting a black
+  //     sprite by phase AND applying `cloudTint`'s mix-toward-the-sky at
+  //     luminance-scaled alpha would be two darkenings, and the result is a
+  //     cloud lost in a near-black sky. `cloudSpriteTint` exists to stop that;
+  //     this is what proves it worked.
   //
-  //     Selecting a black sprite AND applying `cloudTint`'s mix-toward-the-sky
-  //     at luminance-scaled alpha is two darkenings, and the result is a cloud
-  //     lost in a near-black sky. `cloudSpriteTint` exists to stop that; this is
-  //     what proves it worked.
-  for (const [name, u, minDelta] of [
-    ['noon', 0.3, 10],
-    ['night', 0.78, 6],
+  //     Measured by **toggling the layer**, the way every other cloud assertion
+  //     in this file is, not by comparing the cloud against nearby sky. Nearby
+  //     sky is not a control: it is a vertical gradient with a sun in it, and
+  //     two empty patches of it measured 8.3 apart at the same height — larger
+  //     than the cloud itself, so a noise floor built from it fails a plainly
+  //     visible daytime cloud. The layer toggle isolates exactly the cloud's own
+  //     contribution and nothing else.
+  const cloudCover = {}
+  for (const [name, u] of [
+    ['noon', 0.3],
+    ['night', 0.78],
   ]) {
-    const p = await parallaxAt(u)
-    const cx = p.cloudXs[Math.floor(p.cloudXs.length / 2)]
-    if (cx === undefined) throw new Error(`${name}: no clouds on screen to sample`)
-    const k = await page.evaluate(() => window.__game.constants())
-    const band = Math.round(k.VIEWPORT_H * ((k.CLOUD_BAND_TOP + k.CLOUD_BAND_BOTTOM) / 2))
-    // This file's own `patchMean`, not `pixels.mjs` — living-sky has no imports
-    // and every other assertion in it reads the frame this way.
-    const onCloud = await patchMean(page, { x: Math.round(cx) - 12, y: band - 8, w: 24, h: 16 })
-    // The control region: sky well above the cloud band, same frame.
-    const sky = await patchMean(page, {
-      x: Math.round(cx) - 12,
-      y: Math.max(2, Math.round(k.VIEWPORT_H * k.CLOUD_BAND_TOP) - 24),
-      w: 24,
-      h: 16,
-    })
-    const delta =
-      (Math.abs(onCloud[0] - sky[0]) + Math.abs(onCloud[1] - sky[1]) + Math.abs(onCloud[2] - sky[2])) / 3
-    if (delta < minDelta) {
-      throw new Error(
-        `${name}: the cloud is only ${delta.toFixed(1)} from the sky beside it — ` +
-          `it has been darkened past visibility`,
-      )
-    }
-    log(`${name.padEnd(5)} cloud stands ${delta.toFixed(1)} off the sky beside it`)
+    await parallaxAt(u)
+    // `band.cloud`, the same rect §4 measures — already in client coordinates
+    // and already proven to see clouds. `parallax.cloudCentres` cannot be used
+    // here: those are pre-zoom game coordinates, and `CAMERA_ZOOM` 2 transforms
+    // even `scrollFactor(0)` objects, so sampling them lands on empty sky. It
+    // measured 0.0% of "the cloud's own rect" changing when the clouds were
+    // hidden, which is a sampler aimed at nothing.
+    const withClouds = (await page.screenshot()).toString('base64')
+    await page.evaluate(() => window.__game.setParallaxVisible(false))
+    await page.waitForTimeout(250)
+    const withoutClouds = (await page.screenshot()).toString('base64')
+    await page.evaluate(() => window.__game.setParallaxVisible(true))
+    await page.waitForTimeout(250)
+    cloudCover[name] = await changedFraction(page, withClouds, withoutClouds, band.cloud)
+    log(`${name.padEnd(5)} clouds cover ${(cloudCover[name] * 100).toFixed(1)}% of the cloud strip`)
+  }
+
+  // The assertion §5c exists for: a cloud that is **still there** at night.
+  //
+  // "Tint at night differs from noon" passes for a cloud that has become
+  // invisible — invisible differs from noon too. Selecting a black sprite by
+  // phase AND applying `cloudTint`'s mix-toward-the-sky at luminance-scaled
+  // alpha is two darkenings, and the result is a cloud lost in a near-black sky.
+  // `cloudSpriteTint` exists to stop that; this is what proves it worked.
+  //
+  // Pinned to §4's own floor rather than a number invented here, and stated as a
+  // fraction of the daytime cloudCover so it cannot pass by the clouds simply
+  // being large.
+  if (cloudCover.night < 0.01) {
+    throw new Error(
+      `night: hiding the clouds changed only ${(cloudCover.night * 100).toFixed(1)}% of the ` +
+        'cloud strip — they have been darkened past visibility',
+    )
+  }
+  if (cloudCover.night < cloudCover.noon / 4) {
+    throw new Error(
+      `night clouds cover ${(cloudCover.night * 100).toFixed(1)}% of the strip against ` +
+        `${(cloudCover.noon * 100).toFixed(1)}% at noon — more than a four-fold loss is a ` +
+        'cloud being darkened away, not a cloud being lit differently',
+    )
   }
 
   // 6. The clouds stay spread at the zooms the game actually uses.

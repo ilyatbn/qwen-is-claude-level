@@ -299,3 +299,96 @@ describe('TerrainRenderer', () => {
     })
   })
 })
+
+describe('setObjects and the rebake queue', () => {
+  let core: Core
+
+  beforeAll(async () => {
+    core = await Core.init(wasmBytes)
+    core.generate(4242n, MapScale.Small)
+  })
+
+  /**
+   * **The bound this had no test for, which is how it reached the browser.**
+   *
+   * `setObjects` queued *every* chunk on the map. Nothing failed — the scenery
+   * appears either way — so a full-map backlog at the start of every round was
+   * invisible: at `CHUNK_REBAKE_BUDGET` 4 a frame, 128 chunks is ~32 frames
+   * during which a carve's own rebake waits behind chunks that did not change.
+   *
+   * The assertion is on the **queue draining within a bounded number of
+   * frames**, not on the count of dirty chunks, because that is the thing a
+   * player would feel. An injected `deps.bake` proves scheduling and never
+   * drawing — this says which chunks were asked for and when, and nothing at all
+   * about pixels.
+   */
+  function objectsAt(spots: Array<{ x: number; y: number }>) {
+    return spots.map((p, i) => ({ id: i, x: p.x, y: p.y, w: 16, h: 16, flip: false }))
+  }
+
+  it('queues only the chunks that hold an object', async () => {
+    const { renderer } = makeRenderer(core)
+    renderer.buildAll()
+    renderer.update({ x: 0, y: 0 })
+    while (renderer.stats.pending > 0) renderer.update({ x: 0, y: 0 })
+
+    const size = C().CHUNK_SIZE
+    renderer.setObjects(objectsAt([{ x: 8, y: 8 }, { x: size + 8, y: 8 }]), null)
+
+    expect(renderer.stats.pending).toBe(2)
+    // The control: the map has many more chunks than that, so "2" is a
+    // restriction and not just the size of the map.
+    expect(renderer.chunksX * renderer.chunksY).toBeGreaterThan(8)
+  })
+
+  it('drains what it queued within the budget, in a bounded number of frames', async () => {
+    const { renderer } = makeRenderer(core)
+    renderer.buildAll()
+    while (renderer.stats.pending > 0) renderer.update({ x: 0, y: 0 })
+
+    const size = C().CHUNK_SIZE
+    renderer.setObjects(
+      objectsAt([
+        { x: 8, y: 8 },
+        { x: size + 8, y: 8 },
+        { x: 8, y: size + 8 },
+      ]),
+      null,
+    )
+
+    const queued = renderer.stats.pending
+    expect(queued).toBe(3)
+    // `CHUNK_REBAKE_BUDGET` chunks a frame, so three chunks is one frame. The
+    // bound is derived from the constant rather than picked.
+    const bound = Math.ceil(queued / C().CHUNK_REBAKE_BUDGET)
+    let frames = 0
+    while (renderer.stats.pending > 0 && frames < 500) {
+      renderer.update({ x: 0, y: 0 })
+      frames++
+    }
+    expect(renderer.stats.pending).toBe(0)
+    expect(frames).toBeLessThanOrEqual(bound)
+  })
+
+  it('a whole-map queue would blow that bound — the falsification', async () => {
+    // What the old `setObjects` did, spelled out here so the bound above is
+    // shown to discriminate. Queue every chunk and the drain takes
+    // chunks/budget frames, which for this map is far more than the three
+    // chunks the objects actually occupy.
+    const { renderer } = makeRenderer(core)
+    renderer.buildAll()
+    while (renderer.stats.pending > 0) renderer.update({ x: 0, y: 0 })
+
+    const all = renderer.chunksX * renderer.chunksY
+    renderer.markDirty(Array.from({ length: all }, (_, i) => i))
+    expect(renderer.stats.pending).toBe(all)
+
+    const boundForThree = Math.ceil(3 / C().CHUNK_REBAKE_BUDGET)
+    let frames = 0
+    while (renderer.stats.pending > 0 && frames < 5000) {
+      renderer.update({ x: 0, y: 0 })
+      frames++
+    }
+    expect(frames).toBeGreaterThan(boundForThree)
+  })
+})

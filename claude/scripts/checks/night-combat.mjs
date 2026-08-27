@@ -5,10 +5,47 @@ export default async function ({ page, shot, log }) {
   await page.evaluate(() => window.__game.setTime(90))
   await page.waitForTimeout(400)
 
-  // A rocket in flight, aimed shallowly so it travels across the dark.
-  // Steeply up, so it flies through open air rather than burying itself in the
-  // slope the player is standing on.
-  await page.mouse.move(640 + 160, 360 - 260)
+  // A rocket in flight, aimed along whichever lane is actually open.
+  //
+  // This aimed at a fixed screen offset — `(640 + 160, 360 - 260)`, steeply up
+  // and to the right — on the reasoning that up is where the air is. Pass 6b
+  // stamps scenery into the terrain, and on this seed there is now something in
+  // that lane: the rocket detonated on it inside the 60 ms sample window and the
+  // check reported `projectiles: 0` as "no projectile in flight". The rocket was
+  // fine; the direction was a guess that stopped being true.
+  //
+  // So probe the client's own mask for the longest clear run and fire down that.
+  const lane = await page.evaluate(() => {
+    const g = window.__game
+    const me = g.core.playerState(g.debug().me ?? 0)
+    if (!me) return null
+    let best = null
+    // The upward arc only: a rocket fired downward buries itself in the slope
+    // the player is standing on, which is the original comment's point and
+    // still right.
+    for (let deg = -170; deg <= -10; deg += 5) {
+      const a = (deg * Math.PI) / 180
+      const dx = Math.cos(a)
+      const dy = Math.sin(a)
+      let d = 16
+      for (; d < 600; d += 8) {
+        if (g.core.solidAt(Math.round(me.x + dx * d), Math.round(me.y + dy * d))) break
+      }
+      if (!best || d > best.clear) best = { deg, clear: d }
+    }
+    return best
+  })
+  if (!lane) throw new Error('no player to fire from')
+  // Fail rather than fire into a wall and report it as a renderer fault.
+  if (lane.clear < 300) {
+    throw new Error(
+      `the clearest upward lane is only ${lane.clear} px before it hits terrain — ` +
+        'a rocket cannot get airborne here, so this fixture has nowhere to shoot',
+    )
+  }
+  log(`firing along ${lane.deg} deg, ${lane.clear} px of clear air`)
+  const a = (lane.deg * Math.PI) / 180
+  await page.mouse.move(640 + Math.cos(a) * 240, 360 + Math.sin(a) * 240)
   await page.waitForTimeout(200)
   await page.evaluate(() => window.__game.fire())
   await page.waitForTimeout(60)

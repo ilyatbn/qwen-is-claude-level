@@ -47,10 +47,28 @@ const { fail, ok, failures } = tally('death')
 
 // No bots: this check is about one player's death, and a bot landing the killing
 // blow would change the attribution the cause line is asserted against.
+//
+// **`FIXED_SEED` so the terrain is the same every run.** This is a *mechanism*
+// check — does dying raise the overlay, place a tombstone, and leave the round
+// running — and none of it is a claim about maps in general, so one map is the
+// right amount of map. Unpinned it drew a new one every run and failed roughly
+// one in five: the player needs ground thick enough to rocket its own feet
+// without the crater reaching the void that T15.02 put under the floor, and
+// picking that by luck is how a gate becomes a coin flip. The pad and terrain
+// population claims live in Rust, across every scale and more than one seed.
+//
+// **4242 specifically**: measured, it spawns the player on **704 px** of solid
+// rock. Seed 1 spawns them on the 16 px `FLOOR_CRUST` itself and seed 7 on 19 px
+// — both pass today, and both are one crater away from the rocket digging
+// through to the void and the cause line reading "You fell out of the world"
+// instead of "You killed yourself", which is the 2-in-8 this check was failing
+// before it was pinned. The seed is chosen for depth under the feet, not because
+// it is the one that happened to go green.
 const stack = await startStack({
   port: PORT,
   label: 'death',
   env: {
+    FIXED_SEED: '4242',
     ROUND_SECONDS: '120',
     BOT_COUNT: '0',
     DEV_LOADOUT: '1',

@@ -269,7 +269,20 @@ export class TerrainRenderer {
   setObjects(objects: readonly MapObject[], art: ObjectArt | null): void {
     this.objects = new ObjectIndex(objects, C().CHUNK_SIZE, this.chunksX, this.chunksY)
     this.objectArt = art
-    for (const id of this.textureByChunk.keys()) this.pending.add(id)
+    // **Only the chunks that actually hold an object.**
+    //
+    // This queued every chunk on the map. The invariant it was defending is
+    // real — a renderer handed an index and never told the map changed shows
+    // scenery only where something else happens to carve — but that invariant
+    // needs the chunks the index *places something in*, which is 12 to 36 of
+    // them, not all 128 on a medium map. At `CHUNK_REBAKE_BUDGET` 4 a frame the
+    // difference is ~32 frames of backlog at the start of every round, during
+    // which a carve's own rebake queues behind scenery that has not changed.
+    for (const id of this.textureByChunk.keys()) {
+      const cx = id % this.chunksX
+      const cy = Math.floor(id / this.chunksX)
+      if (this.objects.at(cx, cy).length > 0) this.pending.add(id)
+    }
     this.stats.pending = this.pending.size
     this.stats.objectCount = this.objects.count
     this.stats.objectChunks = this.objects.occupiedChunks

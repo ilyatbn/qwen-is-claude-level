@@ -742,6 +742,11 @@ pub fn constants_json() -> String {
         // is a second copy of the number on the client.
         MAX_FALL_SPEED => c::MAX_FALL_SPEED,
         EDGE_BAND_PX => c::EDGE_BAND_PX,
+        // Physics the client already draws with, and which a check needs to
+        // predict where a bird's drop can be: without them a fixture has to
+        // spell the numbers, which is the thing `CLAUDE.md` forbids.
+        GRAVITY => c::GRAVITY,
+        BIRD_DROP_VELOCITY => c::BIRD_DROP_VELOCITY,
         CHUNK_REBAKE_BUDGET => c::CHUNK_REBAKE_BUDGET,
         CHUNK_REBAKE_MS => c::CHUNK_REBAKE_MS,
         PARALLAX_FACTOR => c::PARALLAX_FACTOR,

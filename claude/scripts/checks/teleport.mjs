@@ -45,6 +45,15 @@ const stack = await startStack({
   port: PORT,
   label: 'teleport',
   env: {
+    // **`FIXED_SEED` so the terrain and the pads are the same every run.** The
+    // *population* claim — six pads on every scale, separated and standable — is
+    // asserted in Rust across every scale and two seeds
+    // (`six_teleport_pads_on_every_scale_separated_and_standable`). What this
+    // check asserts is the mechanism either side of the wire: `map_init` carried
+    // them, the client drew them, the charge fills, the pad fires. One map is
+    // the right amount of map for that, and an unpinned one put the respawn pad
+    // somewhere the control patch could not be sampled.
+    FIXED_SEED: '4242',
     ROUND_SECONDS: '300',
     // No bots: one wandering onto a pad would fire it and move the subject of
     // every assertion here.

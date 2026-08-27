@@ -20,6 +20,20 @@ export default async function ({ page, shot, log }) {
    * day came out 11.3 apart against a threshold of 12: the sky was fine and the
    * sampler was pointed at a cliff.
    */
+  /**
+   * The widest run of open sky on screen, searched over **y as well as x**.
+   *
+   * It scanned one fixed strip, `y = 8..68`, and took the widest air run in it.
+   * That is a bet that the camera happens to be looking at sky at the very top
+   * of the frame — and pass 6b moved the spawn points (objects push spawn
+   * candidates away under `OBJECT_CLEAR_OF_SPAWN`), so the camera now starts
+   * somewhere with terrain rising into that strip and the check reported "the
+   * camera is looking at rock" about a perfectly good sky.
+   *
+   * What the check actually needs is one rect of open sky, the same one for
+   * every phase. Which *height* it sits at was never part of that requirement,
+   * so searching for it removes a pin without weakening anything.
+   */
   const findSkyBand = () =>
     page.evaluate(() => {
       const g = window.__game.debug()
@@ -28,29 +42,36 @@ export default async function ({ page, shot, log }) {
       const cv = document.querySelector('canvas')
       const r = cv.getBoundingClientRect()
       const H = 60 // band height, screen px
-      const airColumn = (sx) => {
+      const airColumn = (sx, top) => {
         const wx = v.x + (sx / r.width) * v.w
-        for (let sy = 8; sy <= 8 + H; sy += 6) {
+        for (let sy = top; sy <= top + H; sy += 6) {
           const wy = v.y + (sy / r.height) * v.h
           if (core.solidAt(Math.round(wx), Math.round(wy))) return false
         }
         return true
       }
-      // Start right of the control panel, which is a DOM overlay and not sky.
-      let best = null
-      let run = null
-      for (let sx = Math.floor(r.width * 0.32); sx < r.width - 4; sx += 4) {
-        if (airColumn(sx)) {
-          run ??= { x0: sx, x1: sx }
-          run.x1 = sx
-        } else {
-          if (run && (!best || run.x1 - run.x0 > best.x1 - best.x0)) best = run
-          run = null
+      let overall = null
+      // Down to the middle of the frame. Below that is the ground under any
+      // camera, and a "sky" band there would be sampling the backdrop.
+      for (let top = 8; top + H < r.height * 0.5; top += 24) {
+        let best = null
+        let run = null
+        // Start right of the control panel, which is a DOM overlay and not sky.
+        for (let sx = Math.floor(r.width * 0.32); sx < r.width - 4; sx += 4) {
+          if (airColumn(sx, top)) {
+            run ??= { x0: sx, x1: sx }
+            run.x1 = sx
+          } else {
+            if (run && (!best || run.x1 - run.x0 > best.x1 - best.x0)) best = run
+            run = null
+          }
+        }
+        if (run && (!best || run.x1 - run.x0 > best.x1 - best.x0)) best = run
+        if (best && (!overall || best.x1 - best.x0 > overall.w)) {
+          overall = { x: Math.round(r.left + best.x0), y: Math.round(r.top + top), w: best.x1 - best.x0, h: H }
         }
       }
-      if (run && (!best || run.x1 - run.x0 > best.x1 - best.x0)) best = run
-      if (!best) return null
-      return { x: Math.round(r.left + best.x0), y: Math.round(r.top + 8), w: best.x1 - best.x0, h: H }
+      return overall
     })
 
   /**

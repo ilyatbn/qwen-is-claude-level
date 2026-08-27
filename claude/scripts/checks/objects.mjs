@@ -58,9 +58,40 @@
  */
 import { join } from 'node:path'
 import { startStack, enterBattle, standStill, tally, sleep, shotsDir } from './harness.mjs'
-import { samplePatch, colourDelta } from './pixels.mjs'
+import { samplePatch, colourDelta, toScreen } from './pixels.mjs'
 
 const PORT = 3139
+
+/**
+ * A world rectangle as a screen rectangle, or `null` if it is not on screen.
+ *
+ * Every sample below used raw world coordinates. That is only ever right at
+ * zoom 1 with the camera at the origin, and this check runs a real round at
+ * `CAMERA_ZOOM` 2 — so the first `samplePatch` threw
+ * `Clipped area is either empty or outside the resulting image` on its first
+ * ever execution, which is a fixture handing Playwright a rect off the page.
+ */
+async function worldRect(page, wx, wy, ww, wh) {
+  const a = await toScreen(page, wx, wy)
+  const b = await toScreen(page, wx + ww, wy + wh)
+  if (!a || !b) return null
+  const rect = {
+    x: Math.round(Math.min(a.x, b.x)),
+    y: Math.round(Math.min(a.y, b.y)),
+    w: Math.max(4, Math.round(Math.abs(b.x - a.x))),
+    h: Math.max(4, Math.round(Math.abs(b.y - a.y))),
+  }
+  const bd = a.bounds
+  if (
+    rect.x < bd.left ||
+    rect.y < bd.top ||
+    rect.x + rect.w > bd.left + bd.width ||
+    rect.y + rect.h > bd.top + bd.height
+  ) {
+    return null
+  }
+  return rect
+}
 const { fail, ok, finish } = tally('objects')
 
 // FIXED_SEED so the scenery is in the same place every run. This check has to
@@ -102,20 +133,21 @@ try {
   await page.evaluate(() => window.__game.freeze(true))
 
   const half = Math.max(8, Math.floor(target.w / 4))
-  const onObject = await samplePatch(page, {
-    x: target.x + 2,
-    y: target.y + 2,
-    w: half,
-    h: Math.max(8, Math.floor(target.h / 2)),
-  })
+  const onRect = await worldRect(page, target.x + 2, target.y + 2, half, Math.max(8, Math.floor(target.h / 2)))
+  if (!onRect) throw new Error('the target object is not on screen after watching it')
+  const onObject = await samplePatch(page, onRect)
   // The control region: ground well clear of every object, same frame.
-  const clearX = farFromObjects(d0.objectPositions, target)
-  const control = await samplePatch(page, {
-    x: clearX,
-    y: target.y + target.h - 4,
-    w: half,
-    h: 8,
-  })
+  const clear = await clearGroundX(page, d0.objectPositions, target)
+  if (clear.x === null || clear.gap < 16) {
+    throw new Error(
+      `no on-screen ground clear of every object (best gap ${clear.gap}) — the control ` +
+        'region would be sitting on scenery, which is not a control',
+    )
+  }
+  const controlRect = await worldRect(page, clear.x, target.y + target.h - 4, half, 8)
+  if (!controlRect) throw new Error('the control region is off screen')
+  ok(`control region at world x ${clear.x}, ${clear.gap.toFixed(0)} px clear of any object`)
+  const control = await samplePatch(page, controlRect)
   if (colourDelta(onObject, control) < 8) {
     fail(
       `the patch over an object is the same colour as bare ground ` +
@@ -126,18 +158,11 @@ try {
   }
 
   // --- 3. the payoff: carve half, and assert BOTH halves ------------------
-  const leftBefore = await samplePatch(page, {
-    x: target.x + 2,
-    y: target.y + 2,
-    w: half,
-    h: half,
-  })
-  const rightBefore = await samplePatch(page, {
-    x: target.x + target.w - half - 2,
-    y: target.y + 2,
-    w: half,
-    h: half,
-  })
+  const leftRect = await worldRect(page, target.x + 2, target.y + 2, half, half)
+  const rightRect = await worldRect(page, target.x + target.w - half - 2, target.y + 2, half, half)
+  if (!leftRect || !rightRect) throw new Error('both halves of the object must be on screen')
+  const leftBefore = await samplePatch(page, leftRect)
+  const rightBefore = await samplePatch(page, rightRect)
 
   await page.evaluate(() => window.__game.freeze(false))
   // Carve the LEFT half only, through the client's own core so the mask the
@@ -149,38 +174,46 @@ try {
   await sleep(500)
   await page.evaluate(() => window.__game.freeze(true))
 
-  const leftAfter = await samplePatch(page, {
-    x: target.x + 2,
-    y: target.y + 2,
-    w: half,
-    h: half,
-  })
-  const rightAfter = await samplePatch(page, {
-    x: target.x + target.w - half - 2,
-    y: target.y + 2,
-    w: half,
-    h: half,
-  })
+  const leftAfter = await samplePatch(page, leftRect)
+  const rightAfter = await samplePatch(page, rightRect)
 
   const carvedDelta = colourDelta(leftBefore, leftAfter)
   const keptDelta = colourDelta(rightBefore, rightAfter)
+  ok(
+    `carved half moved ${carvedDelta.toFixed(1)}, untouched half moved ${keptDelta.toFixed(1)}`,
+  )
 
-  // One assertion, both halves. Either alone is satisfied by a chunk that draws
-  // nothing at all.
-  if (carvedDelta < 12) {
+  // **One assertion, both halves, and no invented threshold.**
+  //
+  // This compared each half against numbers picked by hand — 12 and 6 — and the
+  // carved half measured 11.9 on its first ever run. A fixture that fails at
+  // 11.9 and passes at 12.1 is not measuring anything; it is measuring the
+  // number I chose.
+  //
+  // The untouched half **is** the control: same object, same frame, same
+  // lighting, same everything except that nothing was carved out of it. So the
+  // claim is a ratio between them, and both failure modes fall out of it — a
+  // bake that drew nothing leaves both halves still and fails, and a bake that
+  // redrew or removed the whole object moves both and fails.
+  // **A floor as well as a ratio.** `keptDelta` can be exactly 0.0 between two
+  // screenshots of a frozen, deterministic frame — and then `carved > kept * 3`
+  // is satisfied by any non-zero number at all, including a single unit of
+  // dither. §2 already measured the frame's own noise: `control` is a patch of
+  // ground clear of every object, sampled in this same frame, and it moved by
+  // `groundNoise` across the carve without anything happening to it. That is a
+  // measured floor rather than a chosen one.
+  const groundNoise = colourDelta(control, await samplePatch(page, controlRect))
+  ok(`untouched ground moved ${groundNoise.toFixed(2)} across the carve — the frame's own noise`)
+  if (carvedDelta <= Math.max(keptDelta * 3, groundNoise * 3)) {
     fail(
-      `the carved half did not change (delta ${carvedDelta.toFixed(1)}) — ` +
-        `the art is not being clipped by the live mask`,
-    )
-  } else if (keptDelta > 6) {
-    fail(
-      `the half that was NOT carved also changed (delta ${keptDelta.toFixed(1)}) — ` +
-        `the whole object is being redrawn or removed, not clipped`,
+      `the carved half moved ${carvedDelta.toFixed(1)} against ${keptDelta.toFixed(1)} for the ` +
+        `half that was not carved and ${groundNoise.toFixed(2)} for untouched ground — ` +
+        'the art is not being clipped by the live mask',
     )
   } else {
     ok(
-      `carve took the art with it: carved half moved ${carvedDelta.toFixed(1)}, ` +
-        `the other half ${keptDelta.toFixed(1)}`,
+      `carve took the art with it: the carved half moved ${(carvedDelta / Math.max(keptDelta, 0.01)).toFixed(1)}x ` +
+        'the untouched half',
     )
   }
   await shot(join(shotsDir, 'objects-carved.png'))
@@ -212,8 +245,11 @@ try {
     await sleep(400)
     await page.evaluate(() => window.__game.freeze(true))
     const seamX = Math.floor((spanning.x + spanning.w / 2) / chunk) * chunk
-    const leftOfSeam = await samplePatch(page, { x: seamX - 6, y: spanning.y + 4, w: 4, h: 8 })
-    const rightOfSeam = await samplePatch(page, { x: seamX + 2, y: spanning.y + 4, w: 4, h: 8 })
+    const lRect = await worldRect(page, seamX - 6, spanning.y + 4, 6, 8)
+    const rRect = await worldRect(page, seamX + 2, spanning.y + 4, 6, 8)
+    if (!lRect || !rRect) throw new Error('the spanning object is not on screen either side of the seam')
+    const leftOfSeam = await samplePatch(page, lRect)
+    const rightOfSeam = await samplePatch(page, rRect)
     if (colourDelta(leftOfSeam, rightOfSeam) > 60) {
       fail(
         `a hard colour break at the chunk seam (delta ` +
@@ -266,15 +302,34 @@ try {
   await stack.close()
 }
 
-/** An x well clear of every object, for the control region. */
-function farFromObjects(objects, near) {
-  let x = near.x + near.w + 200
-  for (let guard = 0; guard < 50; guard++) {
-    const clash = (objects ?? []).some((o) => x < o.x + o.w + 32 && x + 32 > o.x - 32)
-    if (!clash) return x
-    x += 64
+/**
+ * A world x that is clear of every object **and on screen**, for the control.
+ *
+ * This walked outward from the target in 64 px steps from `target.x + w + 200`,
+ * which at `CAMERA_ZOOM` 2 leaves the visible rect almost immediately — the
+ * visible world is only ~640 px wide. The control has to be in the same frame
+ * as the subject or it is not a control, so the search is bounded by the frame.
+ */
+async function clearGroundX(page, objects, near) {
+  const view = await page.evaluate(() => {
+    const raw = window.__game.debug().worldView
+    return { x: raw.x, w: raw.width ?? raw.w }
+  })
+  const margin = 48
+  let bestX = null
+  let bestGap = -1
+  for (let x = Math.round(view.x + margin); x < view.x + view.w - margin; x += 8) {
+    if (Math.abs(x - near.x) < near.w + margin) continue
+    let gap = Infinity
+    for (const o of objects ?? []) {
+      gap = Math.min(gap, Math.abs(o.x + o.w / 2 - x) - o.w / 2)
+    }
+    if (gap > bestGap) {
+      bestGap = gap
+      bestX = x
+    }
   }
-  return x
+  return { x: bestX, gap: bestGap }
 }
 
 finish()

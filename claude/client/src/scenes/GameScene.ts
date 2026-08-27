@@ -1682,6 +1682,22 @@ export class GameScene extends Phaser.Scene {
        * number and sampled from the second measured the parachute on one run
        * (117) and empty sky on the next (15) — the same code, the same seed.
        */
+      /**
+       * e2e only (§C2): hide the bird layer so a check can diff one frozen frame
+       * against itself.
+       *
+       * The alternative — photograph a bird, wait for it to fly off, photograph
+       * again — compares two instants, and every coordinate in the first is a
+       * scene-graph value while the picture is a rendered frame. Under load
+       * those diverge and the patch lands where the bird is not: measured, the
+       * rect changed 15.5 standalone and 0.0 under load while 31,058 px of the
+       * frame changed elsewhere. Toggling the layer inside one frozen frame has
+       * no second instant to disagree with, which is how `living-sky` measures
+       * the parallax band.
+       */
+      setBirdsVisible(on: boolean) {
+        self.birds?.setVisible(on)
+      },
       freeze(on: boolean) {
         if (on) self.scene.pause()
         else self.scene.resume()
@@ -1760,6 +1776,10 @@ export class GameScene extends Phaser.Scene {
           // bird nobody can see is a supply line nobody can open.
           birds: self.mirror.birds.size,
           birdsDrawn: self.birds?.count ?? 0,
+          // The DRAWN positions, for a check that photographs a bird. The
+          // mirror's coordinates below describe a different instant whenever the
+          // renderer is behind, which under load it is.
+          birdsDrawnAt: self.birds?.drawn ?? [],
           birdKinds: [...self.mirror.birds.values()].map((b) => b.kind),
           // §C5, both ends again: what the wire said, and what is on screen.
           // `pads` alone would pass for a scene that decoded them and drew

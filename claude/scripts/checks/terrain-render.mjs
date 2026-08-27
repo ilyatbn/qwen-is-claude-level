@@ -106,10 +106,41 @@ export default async function ({ page, shot, log }) {
 
   const R = 42
   const M = R + 16 // keep the whole patch, and its control, inside the frame
-  // Rock that is on screen, clear of the player, and not under them.
+  /**
+   * The fraction of the crater patch that has to change for the assertion below
+   * to pass, and therefore the thing the target has to be selected *for*.
+   *
+   * Named once and read in both places. It was spelled `0.25` at the assertion
+   * only, while the selection asked an unrelated question — which is how a
+   * fixture ends up choosing a target its own assertion cannot accept.
+   */
+  const PATCH_CHANGE_MIN = 0.25
+
+  /**
+   * **The rockiest candidate, not the first one that is merely legal.**
+   *
+   * This took the first `surface_points` entry that was on screen, solid and
+   * 150 px from the player. That is not what the check needs: it needs a patch
+   * that is *mostly solid rock*, because a crater into thin terrain over cave
+   * backdrop repaints almost nothing — this file's own header says so, and it
+   * is why the discriminator is a change fraction rather than a mean.
+   *
+   * Pass 6b added surface points on top of stamped objects, so "the first legal
+   * one" moved from 74% solid to 37% solid and the crater stopped repainting
+   * enough of its own patch. Measured, baseline against HEAD:
+   *
+   *   f1d2d2a  target (288,381)  solid-in-patch 74%  ->  patch changed 100.0%  ok
+   *   5d14aef  target (432,736)  solid-in-patch 37%  ->  patch changed   0.5%  FAILED
+   *
+   * The map is free to move. A fixture that picks by "first match" is not
+   * pinned to the map so much as to the map's iteration order, which is worse.
+   * So: score every candidate by exactly what the assertion needs, and take the
+   * best one.
+   */
   const target = await page.evaluate(
     ([c, st, m, r]) => {
       const g = window.__game
+      let best = null
       for (const p of g.core.meta.surface_points) {
         const t = { x: p.x, y: p.y + 40 }
         if (!g.core.solidAt(t.x, t.y)) continue
@@ -117,13 +148,44 @@ export default async function ({ page, shot, log }) {
         const sy = (t.y - c.y) * c.z
         if (sx < m || sx > 1280 - m || sy < m || sy > 720 - m) continue
         if (Math.abs(t.x - st.x) < 150) continue // do not undermine the player
-        return { x: t.x, y: t.y, sx, sy }
+        // How much of the patch this crater would actually be able to repaint.
+        // Sampled on a 3 px lattice: 784 reads per candidate is cheap, and the
+        // number is the one the assertion will be judged on.
+        let solid = 0
+        let total = 0
+        for (let dy = -r; dy <= r; dy += 3) {
+          for (let dx = -r; dx <= r; dx += 3) {
+            total++
+            if (g.core.solidAt(t.x + dx, t.y + dy)) solid++
+          }
+        }
+        const solidFrac = solid / total
+        if (!best || solidFrac > best.solidFrac) best = { x: t.x, y: t.y, sx, sy, solidFrac }
       }
-      return null
+      return best
     },
     [cam, stand, M, R],
   )
   if (!target) throw new Error('no on-screen rock clear of the player — fixture cannot test this')
+  // Say what was chosen and why. Six fixtures broke silently in T16.02 and four
+  // were caught only by their own vacuity guards; one line of output here turns
+  // the next such break into a diagnosis instead of an investigation.
+  log(
+    `target world (${target.x},${target.y}) screen (${Math.round(target.sx)},` +
+      `${Math.round(target.sy)}) — ${(target.solidFrac * 100).toFixed(0)}% of its patch is solid`,
+  )
+  // **Fail rather than proceed with a poor one** (D-29). A candidate whose patch
+  // is barely rock cannot repaint `PATCH_CHANGE_MIN` of itself however healthy
+  // the renderer is, and running the assertion anyway reports a renderer bug
+  // that is really a fixture with nowhere to aim. Twice the assertion's own
+  // threshold, so the margin is derived rather than picked.
+  if (target.solidFrac < PATCH_CHANGE_MIN * 2) {
+    throw new Error(
+      `the rockiest on-screen target is only ${(target.solidFrac * 100).toFixed(0)}% solid — ` +
+        `no crater here can repaint the ${(PATCH_CHANGE_MIN * 100).toFixed(0)}% this check ` +
+        'asserts, so the fixture has nowhere to aim on this map',
+    )
+  }
 
   const screen = { x: target.sx, y: target.sy }
   const patch = { x: Math.round(screen.x - R), y: Math.round(screen.y - R), w: R * 2, h: R * 2 }
@@ -174,7 +236,7 @@ export default async function ({ page, shot, log }) {
     `frame ${(spread * 100).toFixed(1)}%  patch ${(inPatch * 100).toFixed(1)}%  ` +
       `control ${(inControl * 100).toFixed(1)}%  mean ${(after.lum - before.lum).toFixed(1)}`,
   )
-  if (inPatch < 0.25) {
+  if (inPatch < PATCH_CHANGE_MIN) {
     throw new Error(
       `only ${(inPatch * 100).toFixed(1)}% of the crater patch changed — the mask was ` +
         'carved but the chunk was never re-baked',

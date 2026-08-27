@@ -24,7 +24,13 @@ const stack = await startStack({
   label: 'quick-throw',
   // The dev loadout carries molotovs, which are grenade-class. No bots: another
   // player's projectiles would be counted by the same field.
-  env: { ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1' },
+  // **`FIXED_SEED` so the terrain is the same every run.** This asserts a
+  // mechanism — E throws a grenade-class item, leaves the selection alone, and
+  // does nothing at all with none — none of which is about maps. Unpinned, the
+  // throw's clear lane depended on the map: the bottle detonated at the player's
+  // feet, laid a fire zone, and `standStill` held them in it until they died,
+  // which surfaced as two assertions blaming production code.
+  env: { FIXED_SEED: '4242', ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1' },
 })
 const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
 await enterBattle(page, { waitPlaying: true, label: 'quick-throw' })
@@ -266,22 +272,56 @@ if (molotovBefore === 0) {
     // cumulative spawn count cannot be raced in either direction: it is the
     // number of projectiles the server announced, and E must add none.
     await standStill(page)
-    const spawnsIdle = (await dbg()).observed?.projectileSpawns ?? 0
-    await page.keyboard.press('e')
-    await sleep(700)
-    const none = await dbg()
-    if ((none.observed?.deaths ?? []).length > 0) {
-      fail('the player died during the empty-handed control, so it proves nothing')
-    } else {
-      const spawnsNow = none.observed?.projectileSpawns ?? 0
-      if (spawnsNow > spawnsIdle) {
-        fail(
-          `E threw something with no grenade-class item in the inventory ` +
-            `(spawns ${spawnsIdle} → ${spawnsNow})`,
-        )
-      } else {
-        ok(`control: E with nothing to throw announced no projectile (${spawnsIdle})`)
+    // **The empty-handed control is the last press of the drain, not a separate
+    // press afterwards.**
+    //
+    // Two things went wrong with a standalone control. The premise was assumed:
+    // the loop above empties the *molotov* stack, and this then asserted "no
+    // grenade-class item in the inventory" — which stopped being true when pass
+    // 6b moved the surface points items spawn on. Measured, the slots at the
+    // moment of failure read `smokex1`, so E threw the smoke exactly as it
+    // should and the check called a correct throw a bug.
+    //
+    // Draining first fixes the premise but not the race: the player is standing
+    // where items land, so one can arrive between the drain and the control, and
+    // then the control throws that. There is no gap to lose if the drain's own
+    // terminal press *is* the control — E pressed with nothing throwable,
+    // announcing no projectile. That is the claim, and it is observed rather
+    // than set up.
+    const seen = []
+    let empty = false
+    for (let i = 0; i < 12; i++) {
+      const n0 = (await dbg()).observed?.projectileSpawns ?? 0
+      const slotsBefore = ((await dbg()).slots ?? [])
+        .filter((sl) => sl.key && sl.key !== 'null' && sl.count > 0)
+        .map((sl) => `${sl.key}x${sl.count}`)
+      await page.keyboard.press('e')
+      await sleep(600)
+      const d1 = await dbg()
+      const n1 = d1.observed?.projectileSpawns ?? 0
+      seen.push(`${slotsBefore.join(',')} -> spawns ${n0}->${n1}`)
+      if ((d1.observed?.deaths ?? []).length > 0) {
+        fail('the player died during the empty-handed control, so it proves nothing')
+        empty = true
+        break
       }
+      if (n1 === n0) {
+        ok(`control: E with nothing to throw announced no projectile (${n1})`)
+        empty = true
+        break
+      }
+    }
+    if (!empty) {
+      // Twelve presses and every one threw. Either E is throwing with nothing in
+      // hand, or the world keeps handing the player throwables — the slot
+      // history separates those, so it is printed rather than guessed at.
+      fail(
+        `E announced a projectile on all 12 presses — either it throws empty-handed ` +
+          `or pickups kept refilling it. Slots before each press: ${seen.join(' | ')}`,
+      )
+    }
+    {
+      const none = await dbg()
       // ...and it did not quietly reach for something else.
       const stillArmed = (none.slots ?? []).some((s) => s.key === 'bazooka')
       if (stillArmed) ok('and it did not spend a weapon instead')

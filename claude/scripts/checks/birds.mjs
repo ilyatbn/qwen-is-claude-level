@@ -95,6 +95,8 @@ const c = await page.evaluate(() => {
     BIRD_MAX: k.BIRD_MAX,
     BIRD_INTERVAL: k.BIRD_INTERVAL,
     BIRD_W: k.BIRD_W,
+    BIRD_DROP_VELOCITY: k.BIRD_DROP_VELOCITY,
+    GRAVITY: k.GRAVITY,
     BIRD_H: k.BIRD_H,
     SMG_RANGE: k.SMG_RANGE,
     ITEM_MEDKIT: k.ITEM_MEDKIT,
@@ -106,6 +108,27 @@ const c = await page.evaluate(() => {
 const budgetMs = ((start.mapW / c.BIRD_SPEED) * 1000 + c.BIRD_INTERVAL * 1000) * 1.2
 
 /** World -> screen, the §A35-correct way: `worldView` and zoom, never scrollX. */
+/**
+ * Stop the scene and let the renderer catch up to it.
+ *
+ * `freeze` pauses `update`, not rendering — so the scene graph stops moving but
+ * the last *rasterised* frame can still be older than it. Under suite load
+ * Phaser's update outpaces its render, and a patch computed from
+ * `birdsDrawnAt` (which is `root.x`, a scene-graph position) then describes a
+ * bird the screenshot has not drawn yet: measured, the rect changed 15.5
+ * standalone and 0.0 inside the full suite on identical code, with the control
+ * at 0.3 proving the frame itself was quiet.
+ *
+ * Two `requestAnimationFrame`s after the pause is one full render of the stopped
+ * scene, after which the pixels and the positions describe the same instant.
+ */
+const freezeAndSettle = async () => {
+  await page.evaluate(() => window.__game.freeze(true))
+  await page.evaluate(
+    () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+  )
+}
+
 const screenPos = (d, world) => {
   if (!d.worldView) {
     throw new Error(
@@ -135,6 +158,25 @@ if (!onScreen || onScreen.inView.length === 0) {
 }
 
 // --- both ends --------------------------------------------------------------
+//
+// **Converged, not sampled once.** The layer reconciles against the mirror in
+// the scene's update, so it is legitimately up to one frame behind: a single
+// read can catch a bird the server has announced and the layer has not drawn
+// yet, and under load that window is wide — measured, "announced 2, drew 1" on
+// a client that was drawing both a moment later. Polling until the two agree
+// removes the frame, and **the comparison itself is unchanged**: they must be
+// equal, and if they never become equal that is still a failure.
+if (onScreen) {
+  for (let i = 0; i < 40; i++) {
+    const d = await dbg()
+    const birds = (d.birdViews ?? []).length
+    const drawn = d.birdsDrawn ?? 0
+    onScreen.birds = birds
+    onScreen.drawn = drawn
+    if (birds === drawn) break
+    await sleep(100)
+  }
+}
 if (onScreen && onScreen.birds !== onScreen.drawn) {
   fail(
     `the server announced ${onScreen.birds} bird(s) and the layer drew ${onScreen.drawn} — ` +
@@ -160,17 +202,70 @@ if (onScreen && onScreen.inView.length > 0) {
   // patch from the poll's `dbg()` and screenshotted afterwards; a bird covers
   // BIRD_SPEED px/s, so by the time the frame was taken it had left its own
   // patch and the delta read 3.3. Position and frame have to be the same moment.
-  const dNow = await dbg()
-  const target = (dNow.birdViews ?? []).find((b) => screenPos(dNow, b) !== null)
-  if (!target) fail('the bird left the camera before it could be photographed')
+  // **Wait for a bird worth photographing, then freeze on it.**
+  //
+  // Freezing first only stops the clock wherever it happens to be, which is
+  // usually a bird at the edge of the frame. So: poll while the world runs until
+  // one is wholly in shot, and only then stop the scene.
+  //
+  // Freezing at all is because the patch is computed from a `dbg()` poll and the
+  // screenshot is taken afterwards. A bird covers `BIRD_SPEED` px/s and under
+  // suite load the gap between the two widens until it has left its own patch —
+  // measured, the rect changed 20.9 standalone and 2.7 inside the full suite on
+  // identical code, with the drift guard passing 11 px, a third of the patch at
+  // `CAMERA_ZOOM` 2. `freeze` makes the position and the picture one instant,
+  // and other checks already use it for exactly this.
+  /**
+   * Padding around the bird's own box, in screen px.
+   *
+   * A bird is `BIRD_W x BIRD_H` and the patch has to hold it plus the wing
+   * animation and a little antialiasing. Named because it is read in three
+   * places — the fit test, the patch, and the drift bound — and a literal in
+   * three places is three chances to change two of them.
+   */
+  const PAD = 10
+
+  const patchFitsIn = (dd, b) => {
+    const p = screenPos(dd, b)
+    if (!p) return false
+    const halfW = (c.BIRD_W / 2) * dd.zoom + PAD
+    const halfH = (c.BIRD_H / 2) * dd.zoom + PAD
+    return p.sx - halfW >= 0 && p.sx + halfW <= 1280 && p.sy - halfH >= 0 && p.sy + halfH <= 720
+  }
+
+  let dNow = null
+  let target = null
+  for (let i = 0; i < 80; i++) {
+    const probe = await dbg()
+    // **The DRAWN positions, not the mirror's.** `freeze` pauses the scene, so
+    // the frame on screen is whichever one was last rendered while the mirror
+    // keeps taking socket updates — a patch computed from mirror coordinates and
+    // then screenshotted compares two instants. Measured, that read 20.9
+    // standalone and 0.2 inside the full suite on identical code.
+    if ((probe.birdsDrawnAt ?? []).some((b) => patchFitsIn(probe, b))) {
+      await freezeAndSettle()
+      // Re-read once stopped: the bird moved between the probe and the freeze,
+      // and it is the frozen position the screenshot will show.
+      dNow = await dbg()
+      target = (dNow.birdsDrawnAt ?? []).find((b) => patchFitsIn(dNow, b))
+      if (target) break
+      await page.evaluate(() => window.__game.freeze(false))
+    }
+    await sleep(120)
+  }
+  if (!target) {
+    // Fail rather than photograph one at the edge: a bird in shot but not wholly
+    // in shot is a fixture with nowhere to aim, not a renderer fault.
+    fail('no bird stayed wholly in frame long enough to photograph — nothing to measure')
+  }
+
   const d = dNow
   const s = screenPos(d, target)
-  const pad = 10
   const patch = {
-    x: Math.round(s.sx - (c.BIRD_W / 2) * d.zoom - pad),
-    y: Math.round(s.sy - (c.BIRD_H / 2) * d.zoom - pad),
-    w: Math.round(c.BIRD_W * d.zoom + pad * 2),
-    h: Math.round(c.BIRD_H * d.zoom + pad * 2),
+    x: Math.round(s.sx - (c.BIRD_W / 2) * d.zoom - PAD),
+    y: Math.round(s.sy - (c.BIRD_H / 2) * d.zoom - PAD),
+    w: Math.round(c.BIRD_W * d.zoom + PAD * 2),
+    h: Math.round(c.BIRD_H * d.zoom + PAD * 2),
   }
 
   // The control frame is only a control if this patch held no bird when it was
@@ -191,104 +286,187 @@ if (onScreen && onScreen.inView.length > 0) {
     ok('control: no bird was in this patch when the control frame was taken')
   }
 
-  const flightShot = await page.screenshot({ path: join(shotsDir, 'birds-in-flight.png') })
-  // Did it stay inside the patch while the frame was taken? If not, the delta
-  // below is measuring an empty box and would fail for the wrong reason.
-  const after = await dbg()
-  const moved = (after.birdViews ?? []).find((b) => b.id === target.id)
-  if (moved) {
-    const drift = Math.hypot(moved.x - target.x, moved.y - target.y)
-    if (drift > c.BIRD_W) {
-      fail(`the bird drifted ${drift.toFixed(0)} px while the frame was taken — patch is stale`)
-    } else {
-      ok(`the bird held still enough for the frame (drifted ${drift.toFixed(0)} px)`)
-    }
-  }
-  // **The same rectangle, before and after the bird occupies it, with the
-  // camera proven still.**
-  //
-  // Two earlier versions of this assertion were wrong, and the second was worse
-  // than the first because it passed:
-  //
-  //   1. Same rect across two frames taken minutes apart — the camera had
-  //      settled in between, so the rect was a different piece of world and the
-  //      delta collapsed to 3.3.
-  //   2. Bird's rect against empty sky beside it on one frame. Falsified by
-  //      making the layer draw nothing: it still read **40.7**, because the
-  //      bird's rect contained terrain and the sky beside it did not. It was
-  //      measuring the skyline.
-  //
-  // What actually isolates the bird is the same rect on two frames with nothing
-  // else changed: the bird is in it, then it has flown on. The camera is
-  // asserted still between them rather than assumed, and a far-off rect is
-  // sampled on both frames as the control for anything global (the day cycle).
+  /**
+   * **The same frozen frame, with the layer and without it.**
+   *
+   * Every earlier version compared two *instants* — the bird here, then the bird
+   * gone — and each failed for its own reason:
+   *
+   *   1. Two frames minutes apart: the camera settled between them, the rect was
+   *      a different piece of world, and the delta collapsed to 3.3.
+   *   2. The bird's rect against sky beside it on one frame. Falsified by making
+   *      the layer draw nothing: it still read **40.7**, because the rect held
+   *      terrain and the sky beside it did not. It was measuring the skyline.
+   *   3. Two frozen frames, patch computed from `birdsDrawnAt`. Passed
+   *      standalone at 15.5 and failed under load at 0.0 — with 31,058 px of the
+   *      frame changing elsewhere, so the two frames were far apart in time and
+   *      the coordinates, read from scene state, described neither picture.
+   *
+   * Toggling the layer inside **one** frozen frame has no second instant to
+   * disagree with. The camera cannot move, the clouds cannot drift, and the only
+   * difference between the two images is the birds — so whatever changes *is*
+   * the bird, wherever the renderer chose to put it. This is how `living-sky`
+   * measures the parallax band, for the same reason.
+   */
+  /**
+   * A rect far from the bird, sampled on both images.
+   *
+   * With the layer toggled inside one frozen frame this is no longer a noise
+   * floor — the two images are the same instant, so an unchanged region is
+   * bit-identical and this should read **0.0**. `objects` measures exactly that
+   * with a different instrument. Any non-zero value means something outside the
+   * bird layer moved between two screenshots that were supposed to be one frame,
+   * and that is worth investigating rather than absorbing by raising a number.
+   */
+  /**
+   * A region no bird ever enters, sampled in the same two frames.
+   *
+   * **On a frozen frame this has changed job.** It used to be a noise floor —
+   * how much the sky churns on its own — but the frames either side of the
+   * toggle are now the *same* frozen frame, so the sky, the clouds and the
+   * weather are all still. It reads ~0.1, and `objects.mjs` measured 0.00 for
+   * the same reason with a different instrument: a frozen frame is
+   * bit-deterministic.
+   *
+   * So this is a **determinism self-test**, not a threshold. Any non-zero value
+   * means something in the frame is genuinely moving, and the response is to
+   * find what — never to raise a number to accommodate it.
+   */
   const CONTROL_RECT = { x: 40, y: 40, w: 120, h: 90 }
 
-  const withBird = await samplePatch(page, patch, flightShot)
-  const globalBefore = await samplePatch(page, CONTROL_RECT, flightShot)
-  const viewBefore = d.worldView
-
-  // Wait for it to leave its own rect — derived from BIRD_SPEED, not a guess.
-  const clearMs = ((c.BIRD_W * 3) / c.BIRD_SPEED) * 1000 + 400
-  let leftIt = false
-  const leaveBy = Date.now() + clearMs * 3
-  while (Date.now() < leaveBy) {
-    const now = await dbg()
-    const still = (now.birdViews ?? []).find((b) => b.id === target.id)
-    const p = still ? screenPos(now, still) : null
-    const inside =
-      p && p.sx >= patch.x && p.sx <= patch.x + patch.w && p.sy >= patch.y && p.sy <= patch.y + patch.h
-    if (!inside) {
-      leftIt = true
-      break
-    }
-    await sleep(150)
-  }
-  if (!leftIt) fail('the bird never left its own patch, so there is no control frame')
-
-  const dAfter = await dbg()
+  const flightShot = await page.screenshot({ path: join(shotsDir, 'birds-in-flight.png') })
+  await page.evaluate(() => window.__game.setBirdsVisible(false))
+  await page.evaluate(
+    () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+  )
   const emptyShot = await page.screenshot({ path: join(shotsDir, 'birds-patch-empty.png') })
-  const viewAfter = dAfter.worldView
-  const cameraMoved =
-    Math.abs(viewBefore.x - viewAfter.x) + Math.abs(viewBefore.y - viewAfter.y)
-  if (cameraMoved > 1) {
-    fail(
-      `the camera moved ${cameraMoved.toFixed(1)} px between the two frames — this rect is ` +
-        'no longer the same piece of world, so the comparison means nothing',
-    )
-  } else {
-    ok('the camera held still between the two frames')
-  }
+  const emptyShot2 = await page.screenshot()
+  await page.evaluate(() => window.__game.setBirdsVisible(true))
+  await page.evaluate(() => window.__game.freeze(false))
 
-  // No other bird wandered into the rect in the meantime.
-  const stillOccupied = (dAfter.birdViews ?? []).some((b) => {
-    const p = screenPos(dAfter, b)
-    return p && p.sx >= patch.x && p.sx <= patch.x + patch.w && p.sy >= patch.y && p.sy <= patch.y + patch.h
-  })
-  if (stillOccupied) fail('another bird moved into the rect — the control frame is not empty')
-
-  const withoutBird = await samplePatch(page, patch, emptyShot)
+  /**
+   * **Find the bird in the picture; do not predict where it should be.**
+   *
+   * With the layer toggled inside one frozen frame, the difference between the
+   * two images *is* the birds — so the changed region is the bird, wherever the
+   * renderer put it. Every version of this check that instead computed a rect
+   * from state and sampled it has failed under load, because a coordinate read
+   * from the scene graph and a screenshot of a rendered frame are two different
+   * instants: 15.5 standalone against 0.0 under load, with the frame's own
+   * control at 1.0 proving the images really did differ.
+   *
+   * This also makes the assertion stronger rather than weaker. It was "a patch I
+   * chose changed"; it is now "a bird-sized region changed, and it is where the
+   * state says the bird is" — the second half being the both-ends claim that a
+   * predicted rect could only ever assume.
+   */
+  const globalBefore = await samplePatch(page, CONTROL_RECT, flightShot)
   const globalAfter = await samplePatch(page, CONTROL_RECT, emptyShot)
 
-  const birdDelta = colourDelta(withBird, withoutBird)
-  const globalDelta = colourDelta(globalBefore, globalAfter)
-  ok(
-    `the bird's own rect changed ${birdDelta.toFixed(1)} when it flew on; ` +
-      `a far-off control rect changed ${globalDelta.toFixed(1)}`,
-  )
-  if (birdDelta < 6) {
-    fail(
-      `the rect the bird was in changed only ${birdDelta.toFixed(1)} when it left — ` +
-        'nothing was drawn there',
+  const changedBetween = (b0, b1) =>
+    page.evaluate(
+    async ([b0, b1]) => {
+      const load = async (b) => {
+        const img = new Image()
+        img.src = `data:image/png;base64,${b}`
+        await img.decode()
+        const cv = document.createElement('canvas')
+        cv.width = img.width
+        cv.height = img.height
+        const cx = cv.getContext('2d')
+        cx.drawImage(img, 0, 0)
+        return { d: cx.getImageData(0, 0, img.width, img.height).data, w: img.width, h: img.height }
+      }
+      const A = await load(b0)
+      const B = await load(b1)
+      let minX = A.w
+      let minY = A.h
+      let maxX = -1
+      let maxY = -1
+      let n = 0
+      for (let y = 0; y < A.h; y++) {
+        for (let x = 0; x < A.w; x++) {
+          const i = (y * A.w + x) * 4
+          const dd =
+            Math.abs(A.d[i] - B.d[i]) +
+            Math.abs(A.d[i + 1] - B.d[i + 1]) +
+            Math.abs(A.d[i + 2] - B.d[i + 2])
+          if (dd > 30) {
+            n++
+            if (x < minX) minX = x
+            if (x > maxX) maxX = x
+            if (y < minY) minY = y
+            if (y > maxY) maxY = y
+          }
+        }
+      }
+      return { n, minX, minY, maxX, maxY }
+    },
+      [b0.toString('base64'), b1.toString('base64')],
     )
-  } else if (birdDelta <= globalDelta * 2) {
+
+  const seen = await changedBetween(flightShot, emptyShot)
+  // **The null.** Two screenshots of the same frozen frame with the layer in the
+  // same state: whatever changes between *those* is the floor, measured rather
+  // than chosen. It should be 0, and if it is not, the frame is not as frozen as
+  // this check believes.
+  const nothing = await changedBetween(emptyShot, emptyShot2)
+
+  const birdBox = { w: c.BIRD_W * d.zoom, h: c.BIRD_H * d.zoom }
+  ok(
+    `hiding the bird layer changed ${seen.n} px in ` +
+      `[${seen.minX}..${seen.maxX}]x[${seen.minY}..${seen.maxY}]; the same frame differs ` +
+      `from itself by ${nothing.n} px`,
+  )
+
+  // **Against the measured null, not a chosen number.** A bird is thin — an
+  // ellipse and two triangles — so it changes far fewer pixels than its own
+  // bounding box: 90 against 1120 at zoom 2, measured. A floor derived from that
+  // box would fail a bird that is plainly drawn, which is what a picked
+  // threshold does.
+  if (seen.n <= Math.max(nothing.n * 3, 1)) {
     fail(
-      `the bird's rect changed ${birdDelta.toFixed(1)} and an unrelated rect changed ` +
-        `${globalDelta.toFixed(1)} — that is the whole frame moving, not a bird`,
+      `hiding the bird layer changed ${seen.n} px against a frozen frame that differs ` +
+        `from itself by ${nothing.n} — nothing is being drawn`,
+    )
+  } else if (
+    seen.maxX - seen.minX > birdBox.w * 3 ||
+    seen.maxY - seen.minY > birdBox.h * 3
+  ) {
+    // The other control: if the changed region is far larger than a bird, the
+    // two images are not one frozen frame and this is not measuring a bird.
+    fail(
+      `hiding the bird layer changed a ${seen.maxX - seen.minX}x${seen.maxY - seen.minY} ` +
+        `region against a bird's own ${Math.round(birdBox.w)}x${Math.round(birdBox.h)} — ` +
+        'the frame is not frozen',
     )
   } else {
-    ok('a bird is drawn: its rect changed far more than the frame did on its own')
+    ok('a bird is drawn: hiding the layer removed a bird-sized region and nothing else')
   }
+
+  // ...and it is where the state says it is. This is the both-ends half: the
+  // layer drew something bird-sized, and it drew it at the position the debug
+  // handle reports, within one bird's width.
+  const predicted = screenPos(d, target)
+  const cx = (seen.minX + seen.maxX) / 2
+  const cy = (seen.minY + seen.maxY) / 2
+  const off = Math.hypot(cx - predicted.sx, cy - predicted.sy)
+  if (off > c.BIRD_W * d.zoom) {
+    fail(
+      `the drawn bird is centred at (${cx.toFixed(0)}, ${cy.toFixed(0)}) but the state ` +
+        `says (${predicted.sx.toFixed(0)}, ${predicted.sy.toFixed(0)}) — ${off.toFixed(0)} px apart`,
+    )
+  } else {
+    ok(`drawn where the state says it is (${off.toFixed(0)} px apart)`)
+  }
+
+  // The frame's own control, and with one frozen frame it is no longer a noise
+  // floor: an unchanged region between two screenshots of the same instant is
+  // bit-identical, so this should read 0.0 — `objects` measures exactly that
+  // with a different instrument. A non-zero value means something outside the
+  // bird layer moved between two images that were supposed to be one frame.
+  const globalDelta = colourDelta(globalBefore, globalAfter)
+  ok(`a far-off control rect changed ${globalDelta.toFixed(1)} across the layer toggle`)
 }
 
 // --- shoot one, and watch the supply line open ------------------------------
@@ -353,6 +531,8 @@ if (onScreen && onScreen.inView.length > 0) {
   // that fails on the draw rather than on the code (`ordnance.mjs`, same lesson).
   let killed = null
   let killedAt = { x: 0, y: 0 }
+  /** How stale `killedAt` is, so the column tolerance can allow for it. */
+  let killedStaleMs = 0
   let killedKind = 0
   let fired = 0
   let blockedBySight = 0
@@ -430,14 +610,25 @@ if (onScreen && onScreen.inView.length > 0) {
 
     // Did that one land? Poll the bird rather than sleeping a fixed time.
     const until = Date.now() + 1200
+    // **The freshest position, and how old it is.** `killedAt` was taken from
+    // `target2` — the reading from before the shot was fired — so the bird had
+    // been flying for the whole flight time by the time it died, and the drop
+    // spawns where it *was* when it died. Tracking the last live sample and its
+    // age lets the column tolerance below allow exactly the uncertainty the
+    // sampling actually has, rather than a fixed 20 px that happens to work when
+    // the box is quiet.
+    let lastSeen = { x: target2.x, y: target2.y, t: Date.now() }
     while (Date.now() < until) {
       const now = await dbg()
-      if (!(now.birdViews ?? []).some((b) => b.id === target2.id)) {
+      const still = (now.birdViews ?? []).find((b) => b.id === target2.id)
+      if (!still) {
         killed = target2.id
-        killedAt = { x: target2.x, y: target2.y }
+        killedAt = { x: lastSeen.x, y: lastSeen.y }
+        killedStaleMs = Date.now() - lastSeen.t
         killedKind = target2.kind
         break
       }
+      lastSeen = { x: still.x, y: still.y, t: Date.now() }
       await sleep(200)
     }
   }
@@ -450,20 +641,64 @@ if (onScreen && onScreen.inView.length > 0) {
     )
   } else {
     ok(`shot a bird down (id ${killed}) after ${fired} shot(s)`)
+    // How far the bird could have travelled since the last position we saw,
+    // plus its own width. Derived from `BIRD_SPEED` and the measured staleness,
+    // so it is as tight as the sampling allows and no tighter — under load the
+    // poll period stretches and this stretches with it.
+    const columnTolerance = c.BIRD_W + (c.BIRD_SPEED * killedStaleMs) / 1000
+    ok(
+      `looking for the drop within ${columnTolerance.toFixed(0)} px of x=` +
+        `${killedAt.x.toFixed(0)} (last seen ${killedStaleMs} ms before it died)`,
+    )
+    /**
+     * **Where an item was FIRST seen, not where it is now.**
+     *
+     * A bird drop spawns at the bird — high in the air — and falls; a periodic
+     * spawn appears on a surface point, on the ground. That difference is the
+     * only reliable discriminator available, because `world/mod.rs:1633` spawns
+     * the drop with `SpawnSource::Periodic`, so the wire cannot tell them apart
+     * (a finding in its own right). Column alone is not enough: with the
+     * tolerance widened for sampling staleness, a periodic spawn landed inside
+     * it and the check reported "one bird dropped 2 items".
+     */
+    const firstSeen = new Map()
+    const killedAtMs = Date.now()
+    /**
+     * Did this item start where the bird died?
+     *
+     * Both axes. The vertical window is how far a drop could have fallen by the
+     * time we first saw it — `BIRD_DROP_VELOCITY` plus gravity over the elapsed
+     * time — so it is derived from the physics rather than picked, and it grows
+     * exactly as fast as the uncertainty does.
+     */
+    const fromTheBird = (i) => {
+      const at = firstSeen.get(i.id) ?? { x: i.x, y: i.y }
+      if (Math.abs(at.x - killedAt.x) > columnTolerance) return false
+      const t = Math.max(0, (Date.now() - killedAtMs) / 1000)
+      const fell = c.BIRD_DROP_VELOCITY * t + 0.5 * c.GRAVITY * t * t
+      return at.y >= killedAt.y - c.BIRD_H && at.y <= killedAt.y + fell + c.BIRD_H
+    }
     // The drop has to fall and reach this client as an item it can see.
     let fresh = []
     const until = Date.now() + 8000
     while (Date.now() < until) {
       const now = await dbg()
       fresh = (now.mirrorItems ?? []).filter((i) => !before.has(i.id))
-      if (fresh.length) break
+      for (const i of fresh) if (!firstSeen.has(i.id)) firstSeen.set(i.id, { x: i.x, y: i.y })
+      // **Wait for the drop, not for any item.** This broke on the first new
+      // item of any kind, and the world spawns items on a cadence of its own —
+      // under load one of those arrives first, the loop stops looking, and the
+      // bird's own drop is still falling when the assertion runs. Measured, the
+      // failure names it: "1 unrelated item(s) did spawn". The column filter
+      // below is the thing being waited for, so it is the thing to wait on.
+      if (fresh.some((i) => fromTheBird(i))) break
       await sleep(300)
     }
     await page.screenshot({ path: join(shotsDir, 'birds-after-shot.png') })
     // The drop falls straight down from where the bird was (`BIRD_DROP_VELOCITY`
     // is vertical), so its column is the bird's. A periodic spawn lands on a
     // surface point and essentially never shares that column.
-    const mine = fresh.filter((i) => Math.abs(i.x - killedAt.x) <= c.BIRD_W)
+    const mine = fresh.filter((i) => fromTheBird(i))
     if (mine.length === 0) {
       fail(
         `the bird died and no new item appeared in its column (x=${killedAt.x.toFixed(0)}); ` +

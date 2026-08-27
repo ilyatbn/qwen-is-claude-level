@@ -26,6 +26,39 @@
  * approach `night_darkens_the_world.mjs` already proved. `clip` means we decode a
  * patch, not a 1280x720 frame, per sample.
  */
+/**
+ * World point → screen point, through the **live camera**, never a fixed pixel.
+ *
+ * `death.mjs` and `teleport.mjs` each carry a copy of this; it lives here so the
+ * next check needs one import instead of a third copy. Those two are left alone
+ * deliberately — they are mid-edit in another session — but nothing new should
+ * respell it.
+ *
+ * Returns `null` when the point is off screen, so a caller can say so rather
+ * than handing Playwright a rect outside the image and getting
+ * `Clipped area is either empty or outside the resulting image`.
+ */
+export async function toScreen(page, wx, wy) {
+  return page.evaluate(
+    ([x, y]) => {
+      const raw = window.__game.debug().worldView
+      const v = { x: raw.x, y: raw.y, w: raw.width ?? raw.w, h: raw.height ?? raw.h }
+      const cv = document.querySelector('canvas')
+      const r = cv.getBoundingClientRect()
+      const sx = r.left + ((x - v.x) / v.w) * r.width
+      const sy = r.top + ((y - v.y) / v.h) * r.height
+      return {
+        x: sx,
+        y: sy,
+        scale: r.width / v.w,
+        onScreen: sx >= r.left && sx <= r.left + r.width && sy >= r.top && sy <= r.top + r.height,
+        bounds: { left: r.left, top: r.top, width: r.width, height: r.height },
+      }
+    },
+    [wx, wy],
+  )
+}
+
 export async function samplePatch(page, { x, y, w, h }) {
   const b64 = (await page.screenshot({ clip: { x, y, width: w, height: h } })).toString('base64')
   return page.evaluate(async (src) => {

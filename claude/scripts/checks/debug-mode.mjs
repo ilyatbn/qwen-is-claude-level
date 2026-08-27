@@ -22,7 +22,14 @@ const { fail, ok, finish } = tally('debug-mode')
 const stack = await startStack({
   port: PORT,
   label: 'debug-mode',
-  env: { ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1' },
+  // **`FIXED_SEED` so the terrain is the same every run.** This is a mechanism
+// check — does F1 toggle the overlays, the ring and the FPS counter, and does
+// debug mode leave the simulation alone — and none of it is a claim about maps,
+// so one map is the right amount of map. Unpinned it drew a new one every run
+// and its own vacuity guard fired when the player spawned against a wall with no
+// room to walk: `the player never got walking in one of the two runs`. The guard
+// was right; the map was the problem.
+  env: { FIXED_SEED: '4242', ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1' },
 })
 const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
 await enterBattle(page, { waitPlaying: true, label: 'debug-mode' })

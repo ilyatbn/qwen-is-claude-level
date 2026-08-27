@@ -60,7 +60,21 @@ const ROUND_SECONDS = 140
 const APPROACH_POLL_MS = 160
 
 /**
- * The map this check is tuned against. **4242 -> 555.**
+ * The map this check is tuned against. **4242 -> 555 -> 7.**
+ *
+ * ## Re-probed after pass 6b (T16.02)
+ *
+ * Objects are stamped into the terrain now, so both properties below were
+ * re-measured rather than assumed to survive. On 555 the crate is still reachable
+ * in principle, but the approach loop walks into a stamped object and stops:
+ * measured, pinned at (1641, 499) for 354 consecutive polls holding `a`, jetpack
+ * firing, 199 px short of a crate at (1547, 324). The loop holds a direction and
+ * jets — it is not a pathfinder, and scenery gives it far more to catch on.
+ *
+ * Re-probed the same way: 99 gets 830 px short, **7 takes the crate from 32 px**.
+ * So 7. If a future map moves again, the two printed numbers — clear air and
+ * closest approach — are still what to probe with, and `CRATE_SEED` is still the
+ * way to do it without editing this file.
  *
  * Two things have to hold at once, and 4242 under `MAP_GENERATOR=v2` gives
  * neither:
@@ -84,7 +98,7 @@ const APPROACH_POLL_MS = 160
  * clear air it found and the closest approach it managed, which is what those two
  * numbers are for.
  */
-const CRATE_SEED = process.env.CRATE_SEED ?? '555'
+const CRATE_SEED = process.env.CRATE_SEED ?? '7'
 
 const stack = await startStack({
   port: PORT,
@@ -636,7 +650,45 @@ if (!seen) {
   let jetPolls = 0
   let jetRest = 0
   let lastGap = Infinity
+  /** Last lane probe result, refreshed as we move. */
+  let lane = null
   const pickupsBefore = (await dbg()).observed?.itemPickups ?? 0
+
+  /**
+   * Is the straight line from here to the crate blocked, and how high is the
+   * thing blocking it?
+   *
+   * Asked of the client's own mask, the same `core.solidAt` `night-combat` and
+   * `terrain-render` now probe with. Pass 6b stamps scenery into the terrain and
+   * the approach loop is explicitly not a pathfinder — it holds a direction and
+   * jets — so it walks into a rock and stays there. Measured on the old pinned
+   * seed: pinned at (1641, 499) for 354 consecutive polls, jetpack firing,
+   * 199 px short of a crate at (1547, 324).
+   */
+  const laneTo = (from, to) =>
+    page.evaluate(
+      ([a, b]) => {
+        const core = window.__game.core
+        const dx = b.x - a.x
+        const dy = b.y - a.y
+        const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 4))
+        let firstHit = null
+        let topOfBlock = null
+        for (let i = 1; i <= steps; i++) {
+          const x = Math.round(a.x + (dx * i) / steps)
+          const y = Math.round(a.y + (dy * i) / steps)
+          if (!core.solidAt(x, y)) continue
+          if (!firstHit) firstHit = { x, y }
+          // How far up we would have to be to clear it at this column.
+          let up = y
+          while (up > 0 && core.solidAt(x, up)) up -= 2
+          if (topOfBlock === null || up < topOfBlock) topOfBlock = up
+        }
+        return { blocked: !!firstHit, firstHit, topOfBlock }
+      },
+      [from, to],
+    )
+
   const deadline = Date.now() + 70_000
   for (let i = 0; Date.now() < deadline && !gone; i++) {
     const c = await crateNow()
@@ -684,6 +736,15 @@ if (!seen) {
       // x=1153 and x=1440 for 45 s of a 70 s budget and finished 432 px away
       // having twice been within 260. Going the wrong way on purpose needs a
       // reason better than "we stopped moving".
+      // Refreshed as we move, for the failure message below. It is **not** used
+      // to steer: a "climb above the obstruction" policy was tried and reverted.
+      // It releases the movement key while climbing, and on seed 555 the player
+      // drifted from x=1641 to x=1856 — away from a crate at x=1547 — and ended
+      // 343 px short instead of 199. Going over an obstruction reliably is
+      // pathfinding, and this loop says plainly that it is not a pathfinder.
+      if (i % 8 === 0) {
+        lane = await laneTo({ x: me.x, y: me.y }, { x: stillThere.x, y: stillThere.y })
+      }
       const want = dx > 0 ? 'd' : 'a'
       if (held !== want) {
         if (held) await page.keyboard.up(held)
@@ -762,9 +823,17 @@ if (!seen) {
   if (held) await page.keyboard.up(held)
   if (jetting) await page.keyboard.up('Space')
   if (!gone) {
+    // Say **why**, not just how close. A closest-approach number alone reads as
+    // "the pickup is broken" when the truth is usually "there was a rock in the
+    // way" — the lane probe knows which, so it is reported rather than left for
+    // the next person to rediscover with a 70 s run.
+    const why = lane?.blocked
+      ? `terrain blocked the lane at (${lane.firstHit?.x}, ${lane.firstHit?.y}), clearable ` +
+        `from y=${lane.topOfBlock}`
+      : 'the lane was clear, so this is the approach or the pickup, not the map'
     fail(
       `our client flew at the crate for 70 s and never picked it up — closest ` +
-        `approach ${closest.toFixed(0)} px, PICKUP_RADIUS is 20`,
+        `approach ${closest.toFixed(0)} px, PICKUP_RADIUS is 20; ${why}`,
     )
   } else if (!(gone.pickups > 0)) {
     fail(

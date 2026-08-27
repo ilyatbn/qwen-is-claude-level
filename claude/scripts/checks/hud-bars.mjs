@@ -52,7 +52,14 @@ const stack = await startStack({
   // none — the bar was sampled and found to be the empty track, which is a true
   // reading of a bar with nothing in it and tells you nothing about whether it
   // is wired up or what colour it is.
-  env: { ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1' },
+  // **`FIXED_SEED` so the terrain is the same every run.** Nothing here is a
+  // claim about maps — it reads bars, colours and numbers against the snapshot —
+  // but where the player spawns decides whether it lands on a teleport pad, and
+  // T15.01's pads fire after `TELEPORT_CHARGE` of standing still. Holding Space
+  // jumps first, which arms the pad; this check then holds it, and the teleport
+  // moved the subject of every assertion. That is how it found the refuelling
+  // bug, and having found it once there is no reason to keep rolling for it.
+  env: { FIXED_SEED: '4242', ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1' },
 })
 const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
 await enterBattle(page, { waitPlaying: true, label: 'hud-bars' })

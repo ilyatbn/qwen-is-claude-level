@@ -50,8 +50,32 @@ export class BirdLayer {
     return [...this.entries.keys()]
   }
 
+  /** Show or hide the whole layer, for a check's control frame (§C2). */
+  setVisible(on: boolean): void {
+    this.container.setVisible(on)
+  }
+
   get count(): number {
     return this.entries.size
+  }
+
+  /**
+   * Where each bird is **drawn**, as opposed to where the mirror says it is.
+   *
+   * `freeze` pauses the scene, so the frame on screen is whichever one was last
+   * rendered — while the mirror keeps taking socket updates. A check that
+   * computes a patch from mirror coordinates and then screenshots is comparing
+   * two different instants, and under load the bird has left that patch:
+   * measured, `birds` read 20.9 standalone and 0.2 in the full suite on
+   * identical code. These are the positions the last redraw actually used, which
+   * is the only thing a screenshot can agree with.
+   */
+  get drawn(): Array<{ id: number; x: number; y: number }> {
+    return [...this.entries.entries()].map(([id, e]) => ({
+      id,
+      x: e.root.x,
+      y: e.root.y,
+    }))
   }
 
   /**

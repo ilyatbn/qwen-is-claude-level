@@ -445,6 +445,29 @@ for (let burst = 0; burst < 6 && !projFrame; burst++) {
       const caughtUp =
         (still.projectilesLastFrame ?? 0) > 0 &&
         (still.projectilesDrawn ?? 0) === (still.projectilesLive ?? 0)
+
+      // **Record the agreement from the FROZEN read, not the live poll.**
+      //
+      // `caughtUp` is already the both-ends comparison this check exists for —
+      // one live count and one drawn count from a single stopped instant — but
+      // it was only used to decide whether to photograph, while `agreedAt` was
+      // taken from the unfrozen `dbg()` above. That poll is a round trip against
+      // a running scene: under load the rocket's whole drawn lifetime can pass
+      // between two samples, and the check then reports *"up to 1 projectile(s)
+      // alive and at most 0 drawn"* about a rocket that was drawn perfectly
+      // well. Measured: passes standalone (17.5 s, twice), fails inside the full
+      // suite, on a file untouched by M16 and by this repair round — both diffs
+      // empty. Same shape as `birds`, which read 20.9 standalone and 2.7 under
+      // suite load on identical code.
+      //
+      // The comparison itself is **not** relaxed: it is still "these two numbers
+      // must be equal", which is the whole point of the check. It is only read
+      // from an instant where both numbers describe the same rendered frame.
+      if (caughtUp) {
+        agreedAt = Math.max(agreedAt, still.projectilesLive ?? 0)
+        projLive = Math.max(projLive, still.projectilesLive ?? 0)
+        projDrawn = Math.max(projDrawn, still.projectilesDrawn ?? 0)
+      }
       if ((still.projectilesLive ?? 0) > 0 && p && caughtUp) {
         const sx = (p.x - still.worldView.x) * still.zoom
         const sy = (p.y - still.worldView.y) * still.zoom

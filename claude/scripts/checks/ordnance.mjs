@@ -47,6 +47,11 @@ const { fail, ok, failures } = tally('ordnance')
 const stack = await startStack({
   port: PORT,
   label: 'ordnance',
+  // **`FIXED_SEED` so the terrain is the same every run.** Every assertion here
+  // is a mechanism — a swing, a cone, a hazard zone and a mine kill are received
+  // and drawn — and none is a claim about maps. Unpinned, the mine kill depended
+  // on where the blast threw the player and how far the next rocket fell on the
+  // way back, which is a map fact wearing a renderer's clothes.
   // `DEV_START_HEALTH` at the cap, because this check sets fire to the ground it
   // is standing on and then rockets its own feet. Both are deliberate — they are
   // what makes a hazard and a mine-kill happen — and at `BASE_HEALTH` the sum of
@@ -54,7 +59,13 @@ const stack = await startStack({
   // molotov on 9 health and the next rocket would have finished it. A dead player
   // drops its inventory, and the failure then reads "bazooka is not in the
   // inventory", which is true and says nothing.
-  env: { ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1', DEV_START_HEALTH: '150' },
+  env: {
+    FIXED_SEED: '4242',
+    ROUND_SECONDS: '180',
+    BOT_COUNT: '0',
+    DEV_LOADOUT: '1',
+    DEV_START_HEALTH: '150',
+  },
 })
 const { page, dbg, pageErrors } = await stack.openClient({ name: 'ana' })
 await enterBattle(page, { waitPlaying: true, label: 'ordnance' })
@@ -419,6 +430,27 @@ if (placed) {
   // sim.
   const kk = await page.evaluate(() => window.__game.constants())
   const NEAR = kk.BAZOOKA_BLAST_RADIUS
+  /**
+   * How close is **too** close to shoot a mine.
+   *
+   * `approachMine` had a maximum distance and no minimum, so it walked the
+   * player onto the mine and stopped: measured, player (1284, 526) against a
+   * mine at (1285, 526). A rocket fired one pixel away detonates on the muzzle
+   * rather than travelling, and four bazookas went that way without ever ending
+   * the mine — reported as "the stack is empty", which reads as an obstruction
+   * and is not one. The lane was clear the whole time.
+   *
+   * **One** body width, not two. The window has to be wider than the walk step
+   * or the controller cannot land in it: one burst is `WALK_SPEED` 150 px/s for
+   * 160 ms — about 24 px before the release adds momentum — so a 32..42 band is
+   * a 10 px target hit by a 24 px stride, and the approach oscillates
+   * (1 -> ~25 -> ~49 -> ~25) until the iteration bound falls through to "firing
+   * from here". Half of that oscillation sits *outside* `BAZOOKA_BLAST_RADIUS`,
+   * which is the exact failure the approach exists to prevent. 16..42 is a 26 px
+   * window, wider than the stride, still a full body clear of the muzzle, and
+   * still derived rather than picked.
+   */
+  const STANDOFF = Math.round(kk.PLAYER_W)
 
   /**
    * Walk back onto the mine between shots.
@@ -436,8 +468,12 @@ if (placed) {
       const m = (d.mines ?? [])[0]
       if (!m || !d.player) return
       const dx = m.x - d.player.x
-      if (Math.abs(dx) <= NEAR) return
-      const key = dx > 0 ? 'd' : 'a'
+      const gap = Math.abs(dx)
+      if (gap <= NEAR && gap >= STANDOFF) return
+      // Too close as well as too far: back away when standing on top of it.
+      const toward = dx > 0 ? 'd' : 'a'
+      const away = dx > 0 ? 'a' : 'd'
+      const key = gap < STANDOFF ? away : toward
       await page.keyboard.down(key)
       await sleep(160)
       await page.keyboard.up(key)
@@ -447,7 +483,12 @@ if (placed) {
     const m = (d.mines ?? [])[0]
     if (m && d.player) {
       console.log(
-        `    could not close to within ${NEAR} px of the mine ` +
+        // Both bounds, not one. The approach wants a gap inside
+        // [STANDOFF, NEAR] — close enough that the blast reaches, far enough
+        // that the rocket clears the muzzle — and naming only the max sends
+        // the reader looking for an obstruction when the miss was on the near
+        // side.
+        `    could not settle between ${STANDOFF} and ${NEAR} px of the mine ` +
           `(${Math.abs(m.x - d.player.x).toFixed(0)} px away) — firing from here`,
       )
     }

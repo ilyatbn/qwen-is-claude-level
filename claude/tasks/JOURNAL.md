@@ -4424,3 +4424,45 @@ sprite-pack section so a CC0 Kenney row cannot vouch for a same-named sprite pac
 gaps recorded rather than gated on: no pack carries a `LICENSE.txt`, and §8's "CC0 only"
 line does not admit this licence class — both are owed amendments, both are in the
 README where an auditor will read them. e2e deferred per D-07.
+
+## M16 — the e2e sweep, and what it cost
+
+`./scripts/check.sh` green end to end: fmt, clippy `-D warnings`, 1115 rust tests, tsc,
+714 client tests, **all 39 e2e checks**, net smoke 25/25, assets. Ilya deferred the
+browser until every task was done (D-07); this is that run and the repairs it forced.
+
+**Eleven regressions. Every one a fixture. Not one line of product code changed to fix
+them.** Baselined at `f1d2d2a` with the six pre-existing `scripts/checks/` edits applied
+on top, so M16 was the only variable — all eleven passed there. The single deliberate
+product change is `setObjects`, a performance fix carrying its own test that is red on
+`5d14aef` (`expected 32 to be 2`), plus the dev-surface accessors the repairs needed.
+
+The cause, in one sentence: **coordinate and situation assumptions that stopped
+holding.** `objects`, `birds` and `void` sampled or aimed in the wrong space;
+`terrain-render`, `night-combat`, `sky`, `living-sky` and `crates` assumed a situation
+the map no longer granted; `quick-throw` and `ordnance` assumed a premise they never
+checked.
+
+**§D1 is proven** — carve half an object and its art goes with it: carved half 11.6,
+untouched half 0.2, ground-noise control 0.00, a 55× ratio. Rebake median 0.90 ms, max
+1.50 ms against `docs/60` §6's 4 ms.
+
+Twice the obvious diagnosis was wrong and only measuring caught it. `terrain-render`
+looked like the composite rewrite or a rebake backlog; reverting `chunkBake.ts` still
+failed and `pending` read 0 — it was the target selection. `ordnance` looked exactly like
+`night-combat`'s obstructed lane; the probe read `blocked: false` every shot — the
+approach had a maximum distance and no minimum and walked the player **onto** the mine,
+where a rocket detonates on the muzzle.
+
+The sharpest number: `birds` passed at **20.9 standalone and 2.7 in the suite on
+identical code** — under load the gap between the state poll and the screenshot widened
+until the bird had left its own patch. It now toggles the layer inside one frozen frame,
+which has no second instant to disagree with. On a frozen frame the control is no longer
+a noise floor but a **determinism self-test**: it reads ~0.1, `objects` measured 0.00
+with a different instrument, and any non-zero value means something is genuinely moving.
+
+Findings recorded in `tasks/DECISIONS.md`: D-36 the sweep, D-37 vertical self-excavation
+is bounded by self-damage (~four rockets, mines inert to their owner, a self-dug shaft's
+death credited to the rocket not the void — an amendment owed against `docs/21` §5),
+D-38 measuring beats the obvious diagnosis, D-39 three harness traps, D-40 the frame
+moves now because cloud sprites drift where the procedural blob was flatter.
