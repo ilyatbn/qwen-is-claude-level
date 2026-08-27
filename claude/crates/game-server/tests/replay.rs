@@ -218,14 +218,18 @@ fn an_unready_sweep_is_recorded_because_a_replay_has_no_clock() {
 fn finish_writes_a_footer_with_the_world_hash_and_scores() {
     let s = Scratch::new("footer");
     let mut room = Room::new(cfg(true));
+    // §E1: the recorder opens first (as the room task does), and the match is
+    // started because a footer hashes a world.
     room.start_recording(s.path(), "000000000001");
+    let w = room.generate_world();
+    room.install_world(w);
     let id = seat(&mut room, "ana");
     room.apply_for_test(Command::Ready(id));
     for _ in 0..30 {
         room.tick_once(SIM_DT);
     }
-    let expected_hash = room.world.state_hash();
-    let expected_tick = room.world.tick;
+    let expected_hash = room.world_for_test().state_hash();
+    let expected_tick = room.world_for_test().tick;
     room.finish_recording();
 
     let r = replay::read_file(&s.only_file()).expect("decode");
@@ -240,7 +244,12 @@ fn finish_writes_a_footer_with_the_world_hash_and_scores() {
 fn a_round_with_no_commands_produces_a_valid_minimal_file() {
     let s = Scratch::new("empty");
     let mut room = Room::new(cfg(true));
+    // §E1: the recorder opens at construction, as production does — but a
+    // *footer* needs a world to hash, and a room that never starts has none. A
+    // replay file describes a round, so this fixture starts one.
     room.start_recording(s.path(), "000000000001");
+    let w = room.generate_world();
+    room.install_world(w);
     for _ in 0..10 {
         room.tick_once(SIM_DT);
     }
@@ -388,7 +397,9 @@ fn bots_survive_the_unready_sweep_and_humans_who_never_ready_do_not() {
     // this the sweep has no bots to spare and the test passes for the wrong
     // reason — `left: 0, right: 3`.
     room.request_start();
-    room.tick_once(game_core::constants::SIM_DT);
+    // §E1 split "ask for a world" from "build one"; `tick_inline` does both, the
+    // way the room task does across a tick and a blocking thread.
+    room.tick_inline(game_core::constants::SIM_DT);
     // A human who joins and never sends `ready`.
     let ghost = seat(&mut room, "ghost");
 
@@ -401,7 +412,7 @@ fn bots_survive_the_unready_sweep_and_humans_who_never_ready_do_not() {
         "exactly the unready human should be swept, not the bots"
     );
     assert_eq!(
-        room.world.players.len(),
+        room.world_for_test().players.len(),
         3,
         "the three bots must still be in the world after the sweep"
     );

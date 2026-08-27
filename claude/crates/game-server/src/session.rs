@@ -837,23 +837,21 @@ async fn seat(
     sessions.insert(id, socket.id);
     ctx.attach(socket.id, room_id);
 
-    let Some(w) = room
-        .inspect(move |w| {
-            (
-                w.tick,
-                w.round_time,
-                w.phase.as_str().to_string(),
-                w.phase_time_left(),
-                w.seed,
-                w.map.meta.scale,
-                encode_map_init_at(&w.map, w.carve_seq()),
-            )
-        })
-        .await
-    else {
+    // §E1: `join_info`, not `inspect` — a lobby has no world, and `inspect`
+    // would drop its closure and answer `None`, which reads as "the room is
+    // gone" and is not.
+    let Some(info) = room.join_info().await else {
         return;
     };
-    let (tick, round_time, phase, time_left, seed, scale, map_bytes) = w;
+    let crate::room::JoinInfo {
+        tick,
+        round_time,
+        phase,
+        time_left,
+        seed,
+        scale,
+        map: map_bytes,
+    } = info;
 
     // The roster **with names**, which the world cannot supply: `add_player`
     // takes a name and drops it. Without this the joining client is told who is
@@ -912,11 +910,18 @@ async fn seat(
         }),
     );
 
-    // Binary: `Bytes` becomes a socket.io attachment.
-    // Base64 text, not a binary attachment — see
-    // `codec::b64_encode` for why.
-    if let Err(e) = socket.emit("map_init", &b64_encode(&map_bytes)) {
-        tracing::warn!(target: "game::net", socket = %socket.id, "map_init failed: {e}");
+    // §E1: **only if there is a map.** A player seated into a lobby gets
+    // `welcome` and `round_state` and nothing else; the map does not exist yet,
+    // and `map_init` is sent to everyone seated at the moment the match starts.
+    // That is what makes the lobby a place rather than an overlay on a battle
+    // already under way.
+    if let Some(bytes) = map_bytes.as_ref() {
+        // Binary: `Bytes` becomes a socket.io attachment.
+        // Base64 text, not a binary attachment — see
+        // `codec::b64_encode` for why.
+        if let Err(e) = socket.emit("map_init", &b64_encode(bytes)) {
+            tracing::warn!(target: "game::net", socket = %socket.id, "map_init failed: {e}");
+        }
     }
 
     // The map is on the wire, so this socket can take

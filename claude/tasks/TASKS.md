@@ -362,7 +362,7 @@ already started. `docs/74-amendments-v6.md` §E1 is the enabling idea: **a room 
 has no `World`** — the map, the round clock and the weather come into existence when the
 match starts, which is why a private lobby can change its map size at all.
 
-- [ ] [T17.01](M17/T17.01-lobby-without-a-world.md) — A lobby is a room without a world **(v6)**
+- [x] [T17.01](M17/T17.01-lobby-without-a-world.md) — A lobby is a room without a world **(v6)**
 - [ ] [T17.02](M17/T17.02-lobby-state-wire.md) — The lobby on the wire **(v6)**
 - [ ] [T17.03](M17/T17.03-public-lobbies.md) — Public lobbies: fill to five, or bots after ten seconds **(v6)**
 - [ ] [T17.04](M17/T17.04-private-lobbies.md) — Private lobbies: a code, settings and ready **(v6)**

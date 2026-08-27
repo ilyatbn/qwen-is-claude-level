@@ -4466,3 +4466,22 @@ is bounded by self-damage (~four rockets, mines inert to their owner, a self-dug
 death credited to the rocket not the void — an amendment owed against `docs/21` §5),
 D-38 measuring beats the obvious diagnosis, D-39 three harness traps, D-40 the frame
 moves now because cloud sprites drift where the procedural blob was flatter.
+
+## T17.01 — A lobby is a room without a world (v6)
+
+`Room.world` is an `Option`; a lobby holds seats, a code and settings, and the map is
+built on a blocking thread at match start. `RoundController::tick` splits — the lobby
+half takes no world at all. **`inspect` answering `None` IS the §E1 signal**, which seven
+fixtures had spelled as "the room is dead": `join.rs`'s readiness loop was
+`unwrap_or(0) > 0` on it, a condition that can never be true in a lobby, so it had
+stopped waiting for anything and burned its full budget every run. §E1.1: `Seats` is the
+single source of seat identity and the world's player list is built from it, because with
+no world there was nowhere to put a skin. §E1.2: one monotonic room clock, so **a replay
+replays the lobby too** — the alternative makes `room.tick()` run backwards at match
+start, which makes every command stamp and checkpoint ambiguous; skipping the lobby
+seated the human after the bots and diverged at tick 600. The tick that generates a map
+is excluded from `record_tick`; measuring it marked a healthy server over budget on every
+round start. Known limit: `spawn_blocking` protects the runtime and other rooms, but this
+room's own loop does pause for its generation and nothing measures that. `room.rs` grew
+~927 lines against a ~250 guide, flagged after the fact rather than before — the miss was
+the silence, not the size. `game-core` is untouched: the whole change is in `game-server`.

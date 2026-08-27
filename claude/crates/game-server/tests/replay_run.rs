@@ -95,7 +95,7 @@ fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
         if t % 120 == 0 {
             room.apply_for_test(Command::Fire(id));
         }
-        room.tick_once(SIM_DT);
+        room.tick_inline(SIM_DT);
     }
     // NON-VACUITY. Both halves of this fixture's fix were falsified independently
     // and the test passed either way: with the clock advancing but no round
@@ -103,15 +103,15 @@ fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
     // trivially. A determinism test that cannot tell a real round from a room
     // that never started is testing nothing (§B11).
     assert_ne!(
-        room.world.phase,
+        room.world_for_test().phase,
         game_core::world::RoundPhase::Lobby,
         "the fixture recorded a room that never left Lobby — 1400 idle ticks, and \
          the hash comparison below would pass against any build"
     );
     assert!(
-        room.world.tick > 0,
+        room.tick() > 0,
         "the fixture recorded {} simulated ticks",
-        room.world.tick
+        room.tick()
     );
 
     room.finish_recording();
@@ -132,11 +132,11 @@ fn resimulate(file: &replay::Replay, until: u32) -> Room {
     // in a phase that does not step never advances it. Without this the test
     // does not fail, it *hangs* — and it did, at 100 % CPU, on a machine someone
     // was using.
-    let mut last_tick = room.world.tick;
+    let mut last_tick = room.tick();
     let mut stalled = 0u32;
-    while room.world.tick < until {
+    while room.tick() < until {
         while let Some((tick, cmd)) = file.body.get(next) {
-            if *tick > room.world.tick {
+            if *tick > room.tick() {
                 break;
             }
             next += 1;
@@ -167,18 +167,17 @@ fn resimulate(file: &replay::Replay, until: u32) -> Room {
             };
             room.apply_for_test(c);
         }
-        room.tick_once(SIM_DT);
-        if room.world.tick == last_tick {
+        room.tick_inline(SIM_DT);
+        if room.tick() == last_tick {
             stalled += 1;
+            let (t, ph) = (room.tick(), room.world_for_test().phase);
             assert!(
                 stalled <= 100,
-                "replay stalled at tick {} in phase {:?} — 100 steps advanced nothing",
-                room.world.tick,
-                room.world.phase
+                "replay stalled at tick {t} in phase {ph:?} — 100 steps advanced nothing"
             );
         } else {
             stalled = 0;
-            last_tick = room.world.tick;
+            last_tick = room.tick();
         }
     }
     room
@@ -194,13 +193,14 @@ fn a_recorded_round_replays_to_the_same_state_hash() {
     let file = replay::read_file(&path).expect("decode");
     let footer = file.footer.clone().expect("footer");
 
-    let room = resimulate(&file, footer.final_tick);
+    let mut room = resimulate(&file, footer.final_tick);
     assert_eq!(
-        room.world.tick, footer.final_tick,
+        room.tick(),
+        footer.final_tick,
         "the replay must reach the recorded tick"
     );
     assert_eq!(
-        room.world.state_hash(),
+        room.world_for_test().state_hash(),
         footer.state_hash,
         "a recorded round did not reproduce — determinism is broken somewhere"
     );
@@ -219,9 +219,9 @@ fn a_different_round_produces_a_different_hash() {
     // Drop the last third of the commands: same seed, same map, different round.
     let mut perturbed = file.clone();
     perturbed.body.truncate(perturbed.body.len() * 2 / 3);
-    let room = resimulate(&perturbed, footer.final_tick);
+    let mut room = resimulate(&perturbed, footer.final_tick);
     assert_ne!(
-        room.world.state_hash(),
+        room.world_for_test().state_hash(),
         footer.state_hash,
         "the hash is insensitive to the round's actual content"
     );
@@ -233,8 +233,8 @@ fn replaying_twice_produces_identical_results() {
     let path = record_a_round(s.path(), 900);
     let file = replay::read_file(&path).expect("decode");
     let until = file.footer.as_ref().expect("footer").final_tick;
-    let a = resimulate(&file, until).world.state_hash();
-    let b = resimulate(&file, until).world.state_hash();
+    let a = resimulate(&file, until).world_for_test().state_hash();
+    let b = resimulate(&file, until).world_for_test().state_hash();
     assert_eq!(a, b, "two runs of the same file disagree");
 }
 
@@ -264,22 +264,22 @@ fn empty_ticks_are_simulated_not_skipped() {
         if t == 800 {
             room.apply_for_test(Command::Fire(id));
         }
-        room.tick_once(SIM_DT);
+        room.tick_inline(SIM_DT);
     }
-    let expected = room.world.state_hash();
+    let expected = room.world_for_test().state_hash();
     room.finish_recording();
 
     let file = replay::read_file(&s.only_file()).expect("decode");
-    let replayed = resimulate(&file, 800);
+    let mut replayed = resimulate(&file, 800);
     assert_eq!(
-        replayed.world.state_hash(),
+        replayed.world_for_test().state_hash(),
         expected,
         "a round of mostly-empty ticks did not reproduce"
     );
     // And the control: a run that skipped the empty ticks would land elsewhere.
-    let short = resimulate(&file, 400);
+    let mut short = resimulate(&file, 400);
     assert_ne!(
-        short.world.state_hash(),
+        short.world_for_test().state_hash(),
         expected,
         "the hash does not change with tick count, so this proves nothing"
     );
@@ -683,10 +683,18 @@ fn sigterm_leaves_a_verifiable_file_and_sigkill_does_not() {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         let (open_tx, open_rx) = std::sync::mpsc::channel::<()>();
+        let (map_tx, map_rx) = std::sync::mpsc::channel::<()>();
+        let (welcome_tx, welcome_rx) = std::sync::mpsc::channel::<()>();
         let sock = ClientBuilder::new(format!("http://{addr}"))
             .namespace("/")
             .on("open", move |_: Payload, _: RawClient| {
                 let _ = open_tx.send(());
+            })
+            .on("map_init", move |_: Payload, _: RawClient| {
+                let _ = map_tx.send(());
+            })
+            .on("welcome", move |_: Payload, _: RawClient| {
+                let _ = welcome_tx.send(());
             })
             .connect()
             .expect("socket.io connect");
@@ -699,25 +707,26 @@ fn sigterm_leaves_a_verifiable_file_and_sigkill_does_not() {
         sock.emit("join", serde_json::json!({ "name": "ana", "skin_id": 0 }))
             .expect("join");
 
-        // Wait for the recorder to open a file, rather than sleeping a guess —
-        // map generation in a debug build is seconds, not milliseconds.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        loop {
-            let opened = std::fs::read_dir(s.path())
-                .map(|d| {
-                    d.flatten()
-                        .any(|e| e.path().extension().is_some_and(|x| x == "replay"))
-                })
-                .unwrap_or(false);
-            if opened {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the server never started recording"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
+        // §E1: a file existing no longer means a round is under way — the
+        // recorder opens with the room, and the room starts as a lobby. A footer
+        // hashes a world, so this test needs a match, and `map_init` is the
+        // message that says there is one. Asking for it is the solo path (§C18).
+        // Seated first. `start_with_bots` from a socket the room has not seated
+        // yet is dropped with no error — the same §A28 shape the `open` wait
+        // above exists for, one verb along. The old version of this test was
+        // shielded from it by a filesystem poll that happened to take long
+        // enough; §E1 removed that poll's meaning, and the race underneath it
+        // surfaced immediately.
+        welcome_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("never seated");
+        sock.emit("start_with_bots", serde_json::json!({}))
+            .expect("start_with_bots");
+        map_rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the match never started, so there is no round to verify");
+        // Let a few ticks land, so the footer describes a simulation rather than
+        // tick zero.
         std::thread::sleep(std::time::Duration::from_millis(500));
 
         let _ = Proc::new("kill")

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use game_core::effects::scheduler::EffectPhase;
 use game_core::items::registry::def;
 use game_core::player::state::{DeathCause, PlayerId};
-use game_core::world::{GameEvent, World};
+use game_core::world::{GameEvent, RoundPhase, World};
 use socketioxide::SocketIo;
 
 use crate::session::SessionMap;
@@ -386,10 +386,7 @@ pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
         }
         GameEvent::RoundState {
             phase, time_left, ..
-        } => json!({
-            "tick": tick, "phase": phase.as_str(), "time_left": time_left,
-            "seed": world.seed.to_string()
-        }),
+        } => round_state_payload(tick, *phase, *time_left, world.seed),
         GameEvent::RoundEnd { .. } => json!({"tick": tick, "reason": "round_over"}),
     }
 }
@@ -413,6 +410,83 @@ fn cause_name(c: DeathCause) -> &'static str {
 /// went to its own `tokio::spawn`. Carves are never reordered or coalesced:
 /// clients apply them in `seq` order, and merging two overlapping carves into
 /// one changes the resulting mask (`docs/11-map-destruction.md` §6).
+/// The `round_state` payload, built in **one** place.
+///
+/// Two paths emit this event — `payload_of` for a match, `flush_lobby_events`
+/// for a lobby, which has no world to read the seed off — and they each built
+/// the object independently. Identical today; add a field and the lobby path
+/// silently omits it, so a client would get one shape for its first seconds and
+/// a different one once playing. `CLAUDE.md`: share the guard, or share the
+/// function. The decoration `7` spelled six places is the same shape.
+fn round_state_payload(
+    tick: u32,
+    phase: RoundPhase,
+    time_left: f32,
+    seed: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "tick": tick,
+        "phase": phase.as_str(),
+        "time_left": time_left,
+        "seed": seed.to_string(),
+    })
+}
+
+/// Send `map_init` to every socket in the room, at match start.
+///
+/// §E1: the map does not exist while the room is a lobby, so this is the moment
+/// every seated player receives one — not the moment they sat down. Base64 text
+/// rather than a binary attachment, for the reason `codec::b64_encode` gives.
+pub fn broadcast_map_init(io: &SocketIo, sessions: &Arc<SessionMap>, bytes: &[u8]) {
+    let payload = crate::codec::b64_encode(bytes);
+    for sid in sessions.sids() {
+        let Some(s) = io.get_socket(sid) else {
+            continue;
+        };
+        if let Err(e) = s.emit("map_init", &payload) {
+            tracing::warn!(target: "game::net", socket = %sid, "match-start map_init failed: {e}");
+        }
+    }
+}
+
+/// Flush the events a **lobby** produces, which has no world to describe them.
+///
+/// A lobby can only emit `RoundState` — there is no simulation to produce
+/// anything else — and the one field `payload_of` reads off the world for it is
+/// the seed, which the room holds anyway and which is the same number the world
+/// will be built from. Anything else arriving here is a bug rather than a case
+/// to handle, so it is logged instead of silently dropped.
+pub fn flush_lobby_events(
+    io: &SocketIo,
+    sessions: &Arc<SessionMap>,
+    seed: u64,
+    events: &[GameEvent],
+) {
+    for e in events {
+        let GameEvent::RoundState {
+            tick,
+            phase,
+            time_left,
+        } = e
+        else {
+            tracing::warn!(
+                target: "game::round",
+                event = name_of(e),
+                "a lobby produced an event that needs a world"
+            );
+            continue;
+        };
+        let payload = round_state_payload(*tick, *phase, *time_left, seed);
+        for sid in sessions.sids() {
+            if sessions.queue_or_emit(sid, "round_state", &payload) {
+                if let Some(s) = io.get_socket(sid) {
+                    let _ = s.emit("round_state", &payload);
+                }
+            }
+        }
+    }
+}
+
 pub fn flush_events(
     io: &SocketIo,
     world: &World,
@@ -599,7 +673,7 @@ pub fn emit_player_join(
 mod tests {
     use super::*;
     use game_core::constants::MapScale;
-    use game_core::world::{CarveKind, DespawnReason, RoundPhase};
+    use game_core::world::{CarveKind, DespawnReason};
 
     fn world() -> World {
         let mut w = World::new(4242, MapScale::Small);

@@ -42,6 +42,41 @@ and a code". It holds a roster, a code and its settings. It does not hold a map.
 §C18's actual principle — *no battle exists until players ask for one* — is unchanged and
 is strengthened: now not even the map exists.
 
+### E1.1 — The seat is the identity, and the world is built from it
+
+Today a joining player's identity lands on the world: `Command::Join` calls
+`world.add_player(id, skin_id, name)`, `roster()` reads skin, tombstone skin and score
+back off `world.players`, and `Seats` holds only a name and a ready flag. With no world in
+`Lobby` there is nowhere to put a skin.
+
+> **`Seats` is the single source of seat identity** — seat id, name, skin, tombstone skin,
+> ready, bot. The world's player list is **created from** `Seats` at match start.
+
+Everything else is derived from it and nothing is maintained in parallel. `CLAUDE.md`:
+*derive, do not add a fourth flag — three flags can disagree.* Three rosters on one wire
+is the same bug with a different spelling.
+
+`tick` and `round_time` are the **room's**, not the world's. A lobby's `tick` advances
+(`docs/72` §C18-clarified) and its `round_time` is zero. Whatever carried them off the
+world needs another source, and that source is the room.
+
+### E1.2 — A replay is a room's life, not a round
+
+One clock, and it is the room's. The world **continues** the lobby's tick count rather
+than restarting at zero, because a clock that goes backwards at match start makes every
+command stamp and every checkpoint ambiguous the moment a lobby lasts longer than a tick.
+
+It follows that **a replay records the lobby too**. That is not incidental: the joins
+that happened in the lobby are part of what happened, and a replay that skips them
+rebuilds an empty roster — measured, it seated the human after the bots and diverged at
+tick 600. Ordering is content.
+
+> **A replay file is the life of a room, not the duration of a round.** Its tick count is
+> not a round length and never was safe to read as one.
+
+The cost is a bare increment per idle tick — a ten-minute lobby is 36,000 of them.
+`ReplayHeader` carries no tick count, so nothing downstream misreads the longer file.
+
 ## E2 — Public lobbies
 
 **Quick Game joins the open public lobby, or makes one.** There is still no queue, and
@@ -139,6 +174,13 @@ Client→server verbs: `ready { on: bool }` (existing, meaning tightened), and
 `set_scale { scale }` (new, refused unless the sender is `settings_owner`).
 
 `room_list` is deleted. It has never had a subscriber.
+
+**`welcome` loses `scale` and `players`.** Both are now said better by `lobby_state`, and
+keeping them would put two sources of truth on one wire — `welcome.scale` is *provisional*
+the moment §E3 lets a host change it, and the client currently reads that stale copy.
+`welcome` keeps what is true at the instant of seating and never changes afterwards: who
+you are, which room, and its capacity. This is the `room_list` finding (`docs/71` §B14)
+applied to the message replacing it, before it can bite rather than after.
 
 **The client is not in `GameScene` while any of this is happening.** The lobby is a menu
 screen holding the socket; `map_init` is what moves it to the game.

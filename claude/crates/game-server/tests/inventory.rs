@@ -40,6 +40,12 @@ async fn settle() {
 async fn a_move_item_command_moves_the_stack_and_the_server_agrees() {
     let (room, _shut) = room();
     let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    // §E1: a lobby has no world, so an inventory test has to start the match
+    // before there is anywhere to put an item.
+    assert!(
+        room.start_and_wait(id, Duration::from_secs(20)).await,
+        "the match never started, so there is no world to hold an inventory"
+    );
     room.inspect(move |w| game_core::world::give(w, id, BAZOOKA, 4))
         .await
         .expect("alive");
@@ -89,6 +95,12 @@ async fn a_move_item_command_moves_the_stack_and_the_server_agrees() {
 async fn a_malformed_move_is_refused_and_does_not_kill_the_room() {
     let (room, _shut) = room();
     let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    // §E1: a lobby has no world, so an inventory test has to start the match
+    // before there is anywhere to put an item.
+    assert!(
+        room.start_and_wait(id, Duration::from_secs(20)).await,
+        "the match never started, so there is no world to hold an inventory"
+    );
     room.inspect(move |w| game_core::world::give(w, id, BAZOOKA, 4))
         .await
         .expect("alive");
@@ -130,6 +142,12 @@ async fn a_malformed_move_is_refused_and_does_not_kill_the_room() {
 async fn select_slot_cannot_reach_the_backpack() {
     let (room, _shut) = room();
     let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    // §E1: a lobby has no world, so an inventory test has to start the match
+    // before there is anywhere to put an item.
+    assert!(
+        room.start_and_wait(id, Duration::from_secs(20)).await,
+        "the match never started, so there is no world to hold an inventory"
+    );
     room.inspect(move |w| game_core::world::give(w, id, BAZOOKA, 4))
         .await
         .expect("alive");
@@ -161,6 +179,12 @@ async fn select_slot_cannot_reach_the_backpack() {
 async fn what_is_given_fills_the_quick_bar_before_the_backpack() {
     let (room, _shut) = room();
     let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    // §E1: a lobby has no world, so an inventory test has to start the match
+    // before there is anywhere to put an item.
+    assert!(
+        room.start_and_wait(id, Duration::from_secs(20)).await,
+        "the match never started, so there is no world to hold an inventory"
+    );
     room.inspect(move |w| {
         // One weapon per slot: §C24 gives each weapon id exactly one slot, so
         // this is `QUICK_SLOTS` distinct ids and not one big stack.
@@ -199,6 +223,12 @@ async fn what_is_given_fills_the_quick_bar_before_the_backpack() {
 async fn the_world_keeps_ticking_while_the_inventory_is_being_rearranged() {
     let (room, _shut) = room();
     let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    // §E1: a lobby has no world, so an inventory test has to start the match
+    // before there is anywhere to put an item.
+    assert!(
+        room.start_and_wait(id, Duration::from_secs(20)).await,
+        "the match never started, so there is no world to hold an inventory"
+    );
     room.inspect(move |w| game_core::world::give(w, id, BAZOOKA, 4))
         .await
         .expect("alive");

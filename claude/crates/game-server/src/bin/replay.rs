@@ -141,13 +141,13 @@ fn run(opts: &Opts) -> Result<bool, Box<dyn std::error::Error>> {
         .unwrap_or_else(|| file.body.last().map_or(0, |(t, _)| *t));
 
     let started = std::time::Instant::now();
-    let (room, applied) = simulate(&file, stop_at, opts.dump_map, opts.stats)?;
+    let (mut room, applied) = simulate(&file, stop_at, opts.dump_map, opts.stats)?;
     let elapsed = started.elapsed();
 
-    let hash = room.world.state_hash();
+    let hash = room.world_for_test().state_hash();
     println!(
         "  simulated {} ticks, applied {} commands in {:.2}s",
-        room.world.tick,
+        room.tick(),
         applied,
         elapsed.as_secs_f64()
     );
@@ -195,6 +195,10 @@ fn simulate(
 ) -> Result<(Room, usize), Box<dyn std::error::Error>> {
     let config = Arc::new(file.header.to_config());
     let mut room = Room::new(config);
+    // §E1: no pre-built world. The recording starts at room construction and
+    // includes the lobby, so the replay drives the same lifecycle — `tick_inline`
+    // builds the world at the recorded `StartWithBots`, which is what puts the
+    // human in the roster ahead of the bots exactly as the live round did.
     let mut applied = 0usize;
     let mut next = 0usize;
     let mut slowest = (0u32, 0.0f64);
@@ -208,11 +212,11 @@ fn simulate(
     // `step`, and two of these runners were found alive at ~97 % CPU for 35
     // minutes on a machine someone was playing on. A guard costs one comparison
     // per tick and turns a silent spin into a named error.
-    let mut last_tick = room.world.tick;
+    let mut last_tick = room.tick();
     let mut stalled = 0u32;
-    while room.world.tick < stop_at {
+    while room.tick() < stop_at {
         while let Some((tick, cmd)) = file.body.get(next) {
-            if *tick > room.world.tick {
+            if *tick > room.tick() {
                 break;
             }
             next += 1;
@@ -223,30 +227,33 @@ fn simulate(
             applied += 1;
         }
 
-        if Some(room.world.tick) == dump_at {
-            dump(&room, room.world.tick)?;
+        if Some(room.tick()) == dump_at {
+            let t = room.tick();
+            dump(&room, t)?;
         }
 
         let t0 = std::time::Instant::now();
-        room.tick_once(SIM_DT);
+        room.tick_inline(SIM_DT);
         if stats {
             let ms = t0.elapsed().as_secs_f64() * 1000.0;
             if ms > slowest.1 {
-                slowest = (room.world.tick, ms);
+                slowest = (room.tick(), ms);
             }
         }
 
         // A few stalled iterations are legitimate — nothing here advances the
         // clock during a phase transition — but a hundred means it never will.
-        if room.world.tick == last_tick {
+        let tick_now = room.tick();
+        let phase_now = room.phase();
+        if tick_now == last_tick {
             stalled += 1;
             if stalled > STALL_LIMIT {
                 return Err(format!(
                     "replay stalled at tick {} in phase {:?} after {STALL_LIMIT} steps that \
                      advanced nothing — the recording never starts a round, or the room is \
                      in a phase that does not tick ({} of {} commands applied)",
-                    room.world.tick,
-                    room.world.phase,
+                    tick_now,
+                    phase_now,
                     next,
                     file.body.len()
                 )
@@ -254,13 +261,14 @@ fn simulate(
             }
         } else {
             stalled = 0;
-            last_tick = room.world.tick;
+            last_tick = room.tick();
         }
     }
 
     // A dump requested at the final tick, after the loop has stopped there.
-    if Some(room.world.tick) == dump_at {
-        dump(&room, room.world.tick)?;
+    if Some(room.tick()) == dump_at {
+        let t = room.tick();
+        dump(&room, t)?;
     }
 
     if stats {
@@ -297,12 +305,16 @@ fn find_divergence(file: &Replay, final_tick: u32) -> Option<u32> {
 
     let config = Arc::new(file.header.to_config());
     let mut room = Room::new(config);
+    // §E1: no pre-built world. The recording starts at room construction and
+    // includes the lobby, so the replay drives the same lifecycle — `tick_inline`
+    // builds the world at the recorded `StartWithBots`, which is what puts the
+    // human in the roster ahead of the bots exactly as the live round did.
     let mut next = 0usize;
     let mut check = 0usize;
 
-    while room.world.tick < final_tick && check < expected.len() {
+    while room.tick() < final_tick && check < expected.len() {
         while let Some((tick, cmd)) = file.body.get(next) {
-            if *tick > room.world.tick {
+            if *tick > room.tick() {
                 break;
             }
             next += 1;
@@ -311,11 +323,11 @@ fn find_divergence(file: &Replay, final_tick: u32) -> Option<u32> {
             }
             room.apply_for_test(to_command(cmd));
         }
-        room.tick_once(SIM_DT);
+        room.tick_inline(SIM_DT);
 
         let (at, want) = expected[check];
-        if room.world.tick == at {
-            if room.world.state_hash() != want {
+        if room.tick() == at {
+            if room.world_for_test().state_hash() != want {
                 return Some(at);
             }
             check += 1;
@@ -330,7 +342,13 @@ fn dump(room: &Room, tick: u32) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "dump-png")]
     {
         let path = std::path::PathBuf::from(format!("replay-tick-{tick}.png"));
-        game_core::map::dump::dump_map(&room.world.map, &path)?;
+        // The read-only accessor, and an error rather than a panic: §E1 makes
+        // "no world" a state this binary can legitimately be in, and a dump is
+        // a diagnostic that should say so rather than abort the run.
+        let world = room
+            .world()
+            .ok_or("cannot dump a map: this room is a lobby and has none")?;
+        game_core::map::dump::dump_map(&world.map, &path)?;
         println!("  wrote {}", path.display());
         Ok(())
     }

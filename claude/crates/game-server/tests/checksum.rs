@@ -266,14 +266,16 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
         let cs = got(&i1, "mask_checksum");
         let carves1 = got(&i1, "carve");
         let carves2 = got(&i2, "carve");
-        let _ = c1.disconnect();
-        let _ = c2.disconnect();
-        (m1, m2, cs, carves1, carves2)
+        // §E1: the clients stay connected until the server's mask has been read.
+        // The last human leaving now sends the room back to `Lobby`, and a lobby
+        // has no world — so disconnecting here would make the server hash below
+        // a read of a room that has already ended.
+        (m1, m2, cs, carves1, carves2, c1, c2)
     })
     .await
     .expect("client thread");
 
-    let (m1, m2, checksums, carves1, carves2) = out;
+    let (m1, m2, checksums, carves1, carves2, c1, c2) = out;
 
     // The control. Without carves this test proves only that two clients
     // decoded the same map, which is true of a completely broken carve stream.
@@ -306,6 +308,8 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
         h1, server_hash,
         "clients agreed with each other but not with the server"
     );
+
+    drop((c1, c2));
 
     // The checksum the server broadcasts must be the one a client can verify.
     assert!(
@@ -442,10 +446,14 @@ async fn a_client_flooding_inputs_does_not_outrun_one_sending_normally() {
             std::thread::sleep(Duration::from_millis(16));
         }
         std::thread::sleep(Duration::from_millis(300));
-        let _ = c1.disconnect();
+        // Returned, not disconnected. §E1: the last human leaving sends the room
+        // back to `Lobby` and a lobby has no world, so disconnecting here races
+        // the read below — and won that race in three runs out of four before
+        // this change made it matter.
+        c1
     })
     .await;
-    travelled.expect("client thread");
+    let c1 = travelled.expect("client thread");
 
     // 30 batches x 8 inputs = 240 inputs over ~30 ticks. If every queued input
     // were applied with a full dt, the player would have covered roughly eight
@@ -457,6 +465,7 @@ async fn a_client_flooding_inputs_does_not_outrun_one_sending_normally() {
         "the input backlog grew to {pending} against a cap of {}",
         game_core::constants::MAX_INPUT_QUEUE
     );
+    drop(c1);
 }
 
 /// A client that joins **while carves are happening** and delays `ready` must
@@ -565,14 +574,14 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
 
         let m2 = got(&i2, "map_init");
         let carves2 = got(&i2, "carve");
-        let _ = c1.disconnect();
-        let _ = c2.disconnect();
-        (m2, carves2)
+        // Kept alive: see the note in the test above. §E1 drops the world when
+        // the last human leaves, so the server read below needs a human left.
+        (m2, carves2, c1, c2)
     })
     .await
     .expect("client thread");
 
-    let (m2, carves2) = out;
+    let (m2, carves2, c1, c2) = out;
     assert_eq!(
         m2.len(),
         1,
@@ -616,6 +625,7 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
         client_hash, server_hash,
         "the late-ready joiner's mask diverged from the server's"
     );
+    drop((c1, c2));
 }
 
 /// §C5's pads must reach the **client's core**, or every carve near one diverges.

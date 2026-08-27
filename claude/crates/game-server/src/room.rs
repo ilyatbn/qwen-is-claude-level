@@ -74,6 +74,15 @@ pub enum Command {
     Status {
         reply: oneshot::Sender<(usize, usize)>,
     },
+    /// Everything the join handshake needs, in **either** state.
+    ///
+    /// `Inspect` cannot answer it: a lobby has no world, so the closure is
+    /// dropped and the caller sees `None` — which reads as "the room is gone"
+    /// and is not. §E1 made a world-less room the normal case, so the join path
+    /// needs a read that does not assume one.
+    JoinInfo {
+        reply: oneshot::Sender<JoinInfo>,
+    },
     /// Test and debug hook: run `f` against the world between ticks.
     Inspect(Box<dyn FnOnce(&mut World) + Send>),
 }
@@ -100,6 +109,7 @@ impl std::fmt::Debug for Command {
             Command::StartWithBots(id) => write!(f, "StartWithBots({id})"),
             Command::Roster { .. } => f.write_str("Roster"),
             Command::Status { .. } => f.write_str("Status"),
+            Command::JoinInfo { .. } => f.write_str("JoinInfo"),
             Command::Inspect(_) => f.write_str("Inspect"),
         }
     }
@@ -216,6 +226,49 @@ impl RoomHandle {
             .ok()?;
         rx.await.ok()
     }
+
+    /// Ask this room to start its match, and wait until it has a world.
+    ///
+    /// The solo path (`start_with_bots`, §C18) plus the wait §E1 introduced:
+    /// the room asks for a world on the tick and the room task builds it on a
+    /// blocking thread, so "started" is not true the instant the command lands.
+    /// A test that asserts on a world has to wait for one, and waiting on the
+    /// condition rather than a sleep is what stops it expiring the next time the
+    /// generator gets slower.
+    pub async fn start_and_wait(&self, id: PlayerId, budget: Duration) -> bool {
+        if self.tx.send(Command::StartWithBots(id)).await.is_err() {
+            return false;
+        }
+        let deadline = Instant::now() + budget;
+        while Instant::now() < deadline {
+            if self.inspect(|w| w.tick).await.is_some() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    /// Read the join handshake's inputs. Works in a lobby, where `inspect` cannot.
+    pub async fn join_info(&self) -> Option<JoinInfo> {
+        let (tx, rx) = oneshot::channel();
+        self.tx.send(Command::JoinInfo { reply: tx }).await.ok()?;
+        rx.await.ok()
+    }
+}
+
+/// What the join handshake reads off a room, whether or not it has a world.
+///
+/// `map` is `None` in a lobby, and that is the whole point: §E1 sends `map_init`
+/// when the match starts, not when a player sits down.
+pub struct JoinInfo {
+    pub tick: u32,
+    pub round_time: f32,
+    pub phase: String,
+    pub time_left: f32,
+    pub seed: u64,
+    pub scale: game_core::constants::MapScale,
+    pub map: Option<Vec<u8>>,
 }
 
 /// One row of the roster a client needs to render other players:
@@ -261,6 +314,19 @@ struct Seat {
     /// already in it as `p1`, `p2`, `p3` forever, because `welcome`'s roster
     /// carried ids and skins and no names.
     name: String,
+    /// The skin and grave this seat joined with.
+    ///
+    /// Kept here for the same reason `name` is, and now for a second one: a
+    /// lobby has no world to put them in (§E1), so they wait on the seat until
+    /// the match starts and `populate_world` adds everyone at once.
+    skin_id: u16,
+    tombstone_skin_id: u16,
+    /// Bots are seated in the same table as humans and must be distinguishable
+    /// without consulting `Room::bots` — `human_count` used to subtract one list
+    /// length from another, which is a derived answer that two lists can
+    /// disagree about (CLAUDE.md: "derive, do not add a fourth flag" cuts both
+    /// ways — this is the flag that removes a disagreement, not one that adds).
+    bot: bool,
     ready: bool,
     joined_at: Instant,
     last_seq: u32,
@@ -281,6 +347,23 @@ impl Seats {
     fn set_name(&mut self, id: PlayerId, name: &str) {
         if let Some(s) = self.seats.iter_mut().find(|s| s.id == id) {
             s.name = name.to_string();
+        }
+    }
+
+    /// Record who a seat is, for a world that does not exist yet (§E1).
+    fn set_identity(&mut self, id: PlayerId, name: &str, skin_id: u16, tombstone_skin_id: u16) {
+        if let Some(s) = self.seats.iter_mut().find(|s| s.id == id) {
+            s.name = name.to_string();
+            s.skin_id = skin_id;
+            s.tombstone_skin_id = tombstone_skin_id;
+        }
+    }
+
+    /// Mark a seat as held by a bot, so `human_count` is a filter and not a
+    /// subtraction of two list lengths.
+    fn mark_bot(&mut self, id: PlayerId) {
+        if let Some(s) = self.seats.iter_mut().find(|s| s.id == id) {
+            s.bot = true;
         }
     }
 
@@ -313,6 +396,9 @@ impl Seats {
             // reached from the bot path and the join path alike, and only the
             // latter has a name to give.
             name: String::new(),
+            skin_id: 0,
+            tombstone_skin_id: 0,
+            bot: false,
             ready: false,
             joined_at: Instant::now(),
             last_seq: 0,
@@ -354,7 +440,33 @@ pub fn stamp_for(_seed: u64) -> String {
 }
 
 pub struct Room {
-    pub world: World,
+    /// The world, once there is a match. **`None` while this room is a lobby**
+    /// (`docs/74-amendments-v6.md` §E1).
+    ///
+    /// A lobby holds a roster, a code and its settings and nothing else. The map,
+    /// the round clock, the weather schedule and the item spawns come into
+    /// existence when the match starts — which is what lets a private lobby offer
+    /// map size as a setting at all, because there is no map yet to contradict.
+    ///
+    /// This is an `Option` rather than two types because every command handler,
+    /// the metrics and the replay writer already read a room and would otherwise
+    /// each need both spellings. Asking for a world in a lobby is `None` — an
+    /// answer, not a panic.
+    world: Option<World>,
+    /// The clock, while there is no world to hold it.
+    ///
+    /// `docs/72` §C18-clarified: a lobby room must keep advancing `tick` even
+    /// with no round, and §C27 records a determinism test that could not tell a
+    /// round from an empty lobby. The world's `tick` continues from here when the
+    /// match starts, so the sequence a client sees never goes backwards.
+    lobby_tick: u32,
+    /// Set when the start condition fires and cleared when the world arrives.
+    ///
+    /// The generator is 0.3–1.1 s of pure CPU and the tick loop is 16.7 ms, so
+    /// `tick_once` cannot generate. It raises this instead; [`Room::wants_world`]
+    /// is how the async loop notices, and [`Room::install_world`] is how the
+    /// answer comes back.
+    starting: bool,
     seats: Seats,
     config: Arc<Config>,
     lag_warned_at: u32,
@@ -448,13 +560,15 @@ impl Room {
             Some(_) => 0,
             None => seed.rotate_left(17) ^ 0x9E37_79B9_7F4A_7C15,
         };
-        let mut room = Room {
-            world: World::with_generator(
-                seed,
-                config.map_scale,
-                buried_secret,
-                config.map_generator,
-            ),
+        // §E1: **no map is generated here.** A room is born a lobby, and a lobby
+        // has no world. `docs/71` §B2 measured generation at 0.3–1.1 s and
+        // ticking at nearly nothing; that cost now falls at match start, where a
+        // player expects a loading beat, instead of on the click that made the
+        // lobby.
+        Room {
+            world: None,
+            lobby_tick: 0,
+            starting: false,
             seats: Seats::default(),
             config,
             lag_warned_at: 0,
@@ -467,35 +581,151 @@ impl Room {
             dropped_inputs: 0,
             seed,
             buried_secret,
+        }
+    }
+
+    /// Build this room's world. Pure CPU, hundreds of milliseconds, no `self`
+    /// borrow held across it — so the caller can put it on a blocking thread.
+    ///
+    /// The seed rule is unchanged (`docs/71` §B13): `mix_seed(session_base(),
+    /// room_id)` per room, fixed at construction, so two lobbies never play the
+    /// same map and `FIXED_SEED` still pins one exactly.
+    pub fn generate_world(&self) -> World {
+        (self.generate_world_task())()
+    }
+
+    /// A closure that builds this room's world, owning everything it needs.
+    ///
+    /// Returned rather than generating in place because the caller puts it on a
+    /// blocking thread and a `&self` borrow cannot cross that boundary.
+    ///
+    /// [`Room::generate_world`] calls this immediately, so there is **one**
+    /// implementation of "build this room's map" and the inline path and the
+    /// blocking path cannot drift apart (CLAUDE.md: share the guard, or share
+    /// the function). They did, briefly, and the second copy was already missing
+    /// a log line.
+    pub fn generate_world_task(&self) -> impl FnOnce() -> World + Send + 'static {
+        let seed = self.seed;
+        let secret = self.buried_secret;
+        let scale = self.config.map_scale;
+        let generator = self.config.map_generator;
+        let round_seconds = self.config.round_seconds;
+        move || {
+            let mut world = World::with_generator(seed, scale, secret, generator);
+            // `ROUND_SECONDS` is an environment override for testing (`docs/41`
+            // §5) and it was parsed and then dropped: the world used the
+            // constant, so a shortened round never shortened.
+            world.set_round_seconds(round_seconds);
+            world.set_phase(game_core::world::RoundPhase::Lobby);
+            let _ = world.drain_events();
+            // `docs/61` §3 row 1: the line a report of "the map was unplayable"
+            // maps onto. Without `attempts` and `traversable_fraction` there is
+            // nothing to look at but the seed.
+            let m = &world.map.meta;
+            tracing::info!(
+                target: "game::map",
+                seed = m.seed,
+                requested_seed = m.requested_seed,
+                attempts = m.attempts,
+                used_safe_preset = m.used_safe_preset,
+                traversable_fraction = m.traversable_fraction,
+                spawns = m.spawn_points.len(),
+                surface_points = m.surface_points.len(),
+                theme = m.theme,
+                "map generated"
+            );
+            world
+        }
+    }
+
+    /// Has the start condition fired and the world not arrived yet?
+    ///
+    /// The async loop polls this rather than the room calling out, because
+    /// `tick_once` runs inside a 16.7 ms budget and generation does not fit in
+    /// one.
+    pub fn wants_world(&self) -> bool {
+        self.starting && self.world.is_none()
+    }
+
+    /// Install a generated world and begin the round. The one place a match
+    /// starts.
+    ///
+    /// Everyone already seated is added here: a lobby seat is a promise of a
+    /// player, and this is where the promise is kept. Bots come after, so a
+    /// human who joined during generation still gets a seat ahead of them.
+    pub fn install_world(&mut self, mut world: World) {
+        // **One clock.** The world continues the count the lobby was keeping.
+        //
+        // The alternative — start the world at 0 — makes the room's `tick` go
+        // backwards at match start, and a replay stamps its commands with the
+        // room's tick. Two clocks over one room's life is a field that means two
+        // things, and the recorded stamps become ambiguous the moment a lobby
+        // lasts more than a tick.
+        //
+        // The consequence is that **a replay must replay the lobby too**: how
+        // long a room waited is part of what it recorded, not an unrecorded
+        // variable to be skipped. `simulate`/`resimulate` drive `tick_inline`
+        // from room construction for exactly that reason — and the state hash
+        // diverged at the first checkpoint until they did, because a replay that
+        // skipped the lobby seated its human *after* the bots instead of before.
+        world.tick = self.lobby_tick;
+        self.world = Some(world);
+        self.starting = false;
+        self.populate_world();
+        self.debug_dump();
+        self.begin_round();
+    }
+
+    /// Add every seated human to the freshly built world.
+    fn populate_world(&mut self) {
+        let seated: Vec<(PlayerId, String, u16, u16)> = self
+            .seats
+            .seats
+            .iter()
+            .filter(|s| !s.bot)
+            .map(|s| (s.id, s.name.clone(), s.skin_id, s.tombstone_skin_id))
+            .collect();
+        let Some(world) = self.world.as_mut() else {
+            return;
         };
-        // `ROUND_SECONDS` is an environment override for testing (`docs/41` §5)
-        // and it was parsed and then dropped: the world used the constant, so a
-        // shortened round never shortened.
-        room.world.set_round_seconds(room.config.round_seconds);
-        // §C18: a room is born in `Lobby` and seats **no** bots. Bots were
-        // seated here, and a room was created at server startup, so every
-        // player who connected landed in a battle already in progress. Bots are
-        // seated when a round starts — `begin_round` — and nowhere else.
-        room.world.set_phase(game_core::world::RoundPhase::Lobby);
-        let _ = room.world.drain_events();
-        // `docs/61` §3 row 1: the line a report of "the map was unplayable" maps
-        // onto. Without `attempts` and `traversable_fraction` there is nothing to
-        // look at but the seed.
-        let m = &room.world.map.meta;
-        tracing::info!(
-            target: "game::map",
-            seed = m.seed,
-            requested_seed = m.requested_seed,
-            attempts = m.attempts,
-            used_safe_preset = m.used_safe_preset,
-            traversable_fraction = m.traversable_fraction,
-            spawns = m.spawn_points.len(),
-            surface_points = m.surface_points.len(),
-            theme = m.theme,
-            "map generated"
-        );
-        room.debug_dump();
-        room
+        for (id, name, skin_id, tombstone_skin_id) in &seated {
+            world.add_player(*id, *skin_id, name.clone());
+            if let Some(p) = world.player_mut(*id) {
+                p.tombstone_skin_id = *tombstone_skin_id;
+            }
+        }
+        for (id, _, _, _) in &seated {
+            self.grant_dev_loadout(*id);
+        }
+    }
+
+    /// The world, once a match is running. `None` in a lobby (§E1).
+    pub fn world(&self) -> Option<&World> {
+        self.world.as_ref()
+    }
+
+    /// The world, once a match is running. `None` in a lobby (§E1).
+    pub fn world_mut(&mut self) -> Option<&mut World> {
+        self.world.as_mut()
+    }
+
+    /// The tick this room is on, world or not.
+    ///
+    /// A lobby's clock runs (`docs/72` §C18-clarified); this is the one place
+    /// that answers "which tick" without caring which of the two is holding it.
+    pub fn tick(&self) -> u32 {
+        match self.world.as_ref() {
+            Some(w) => w.tick,
+            None => self.lobby_tick,
+        }
+    }
+
+    /// The phase this room is in. A room with no world is a lobby, by definition.
+    pub fn phase(&self) -> game_core::world::RoundPhase {
+        match self.world.as_ref() {
+            Some(w) => w.phase,
+            None => game_core::world::RoundPhase::Lobby,
+        }
     }
 
     /// Seat `BOT_COUNT` bots, up to the room's capacity.
@@ -510,7 +740,10 @@ impl Room {
             self.bot_seq += 1;
             let name = bot_name(index as usize);
             self.seats.set_name(id, &name);
-            self.world.add_player(id, 0, name);
+            self.seats.mark_bot(id);
+            if let Some(world) = self.world.as_mut() {
+                world.add_player(id, 0, name);
+            }
             // A bot is ready the moment it is seated. `ready` means "in the
             // simulation", and the handshake it normally gates on — download the
             // map, decode it, render it — does not exist for something with no
@@ -540,10 +773,19 @@ impl Room {
     /// end-to-end run can demonstrate terrain destruction without first walking
     /// to a crate.
     fn grant_dev_loadout(&mut self, id: PlayerId) {
+        // A lobby has no world to arm anyone in. `populate_world` calls this
+        // again for every seat the moment the match starts, so nothing is lost
+        // by returning here — the loadout lands when there is somewhere to put
+        // it.
+        if self.world.is_none() {
+            return;
+        }
         // Independent of the loadout: a check may want one without the other.
         if self.config.dev_start_health > 0.0 {
-            if let Some(p) = self.world.player_mut(id) {
-                p.health = self.config.dev_start_health;
+            if let Some(w) = self.world.as_mut() {
+                if let Some(p) = w.player_mut(id) {
+                    p.health = self.config.dev_start_health;
+                }
             }
         }
         if !self.config.dev_loadout {
@@ -555,11 +797,16 @@ impl Room {
         // makes §C8's energy bar show anything at all — `hud-bars` sampled it and
         // found the empty track, which is a true reading of a bar with nothing
         // in it.
-        if let Some(p) = self.world.player_mut(id) {
-            p.battery = game_core::constants::BATTERY_MAX;
+        if let Some(w) = self.world.as_mut() {
+            if let Some(p) = w.player_mut(id) {
+                p.battery = game_core::constants::BATTERY_MAX;
+            }
         }
-        game_core::world::give(&mut self.world, id, game_core::items::registry::BAZOOKA, 4);
-        game_core::world::give(&mut self.world, id, game_core::items::registry::SMG, 60);
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
+        game_core::world::give(world, id, game_core::items::registry::BAZOOKA, 4);
+        game_core::world::give(world, id, game_core::items::registry::SMG, 60);
         // There used to be a **second** bazooka stack here, because `MAX_STACK`
         // for a bazooka is 4 and four rockets is not enough to be "armed" for
         // anything longer than a few seconds — T9.06's full round burns them in
@@ -582,15 +829,10 @@ impl Room {
         //
         // These four give T11.10 a mine to place, a swing to see, a jet to spray
         // and a hazard to stand in.
-        game_core::world::give(&mut self.world, id, game_core::items::registry::MINE, 2);
-        game_core::world::give(&mut self.world, id, game_core::items::registry::AXE, 1);
-        game_core::world::give(
-            &mut self.world,
-            id,
-            game_core::items::registry::FLAMETHROWER,
-            200,
-        );
-        game_core::world::give(&mut self.world, id, game_core::items::registry::MOLOTOV, 2);
+        game_core::world::give(world, id, game_core::items::registry::MINE, 2);
+        game_core::world::give(world, id, game_core::items::registry::AXE, 1);
+        game_core::world::give(world, id, game_core::items::registry::FLAMETHROWER, 200);
+        game_core::world::give(world, id, game_core::items::registry::MOLOTOV, 2);
     }
 
     /// Free a seat for a human by removing the newest bot.
@@ -603,7 +845,9 @@ impl Room {
             return false;
         };
         tracing::info!(target: "game::round", player = bot.player, "kicked a bot for a human");
-        self.world.remove_player(bot.player);
+        if let Some(world) = self.world.as_mut() {
+            world.remove_player(bot.player);
+        }
         self.seats.free_seat(bot.player);
         true
     }
@@ -635,7 +879,7 @@ impl Room {
     /// error path that can end a live round — trades a real game for a debugging
     /// aid, which is the wrong way round.
     fn note(&mut self, cmd: crate::replay::ReplayCommand) {
-        let tick = self.world.tick;
+        let tick = self.tick();
         let Some(w) = self.replay.as_mut() else {
             return;
         };
@@ -670,14 +914,21 @@ impl Room {
                         name: name.clone(),
                         skin_id,
                     });
-                    self.seats.set_name(id, &name);
-                    self.world.add_player(id, skin_id, name);
-                    // §B8. Parsed from `join` and, until now, dropped on the
-                    // floor — the §A39 shape again, in the join path itself.
-                    if let Some(p) = self.world.player_mut(id) {
-                        p.tombstone_skin_id = tombstone_skin_id;
+                    // §E1: the seat is the roster now. A lobby has no world to
+                    // put a player in, so who they are waits here until
+                    // `populate_world` adds everyone at match start. A player who
+                    // joins a running match is still added immediately, below.
+                    self.seats
+                        .set_identity(id, &name, skin_id, tombstone_skin_id);
+                    if let Some(world) = self.world.as_mut() {
+                        world.add_player(id, skin_id, name);
+                        // §B8. Parsed from `join` and, until now, dropped on the
+                        // floor — the §A39 shape again, in the join path itself.
+                        if let Some(p) = world.player_mut(id) {
+                            p.tombstone_skin_id = tombstone_skin_id;
+                        }
+                        self.grant_dev_loadout(id);
                     }
-                    self.grant_dev_loadout(id);
                 }
                 let _ = reply.send(id);
             }
@@ -714,63 +965,85 @@ impl Room {
                 }
                 if !accepted.is_empty() {
                     self.note(R::Input(id, accepted.clone()));
-                    for input in accepted {
-                        self.world.queue_input(id, input);
+                    // Input in a lobby has nowhere to go. Dropping it is the
+                    // answer, not an omission: there is no world to move in.
+                    if let Some(world) = self.world.as_mut() {
+                        for input in accepted {
+                            world.queue_input(id, input);
+                        }
                     }
                 }
             }
             Command::UseItem(id, slot) => {
-                let now = self.world.round_time;
                 self.note(R::UseItem(id, slot));
-                if let Err(e) = self.world.use_item(id, slot, now) {
-                    tracing::debug!(target: "game::items", player = id, slot, reason = ?e, "use rejected");
+                if let Some(world) = self.world.as_mut() {
+                    let now = world.round_time;
+                    if let Err(e) = world.use_item(id, slot, now) {
+                        tracing::debug!(target: "game::items", player = id, slot, reason = ?e, "use rejected");
+                    }
                 }
             }
             Command::SelectSlot(id, slot) => {
                 self.note(R::SelectSlot(id, slot));
-                self.world.select_slot(id, slot)
+                if let Some(world) = self.world.as_mut() {
+                    world.select_slot(id, slot)
+                }
             }
             Command::UseHeal(id) => {
                 self.note(R::UseHeal(id));
-                if let Err(e) = self.world.use_heal(id) {
-                    tracing::debug!(target: "game::items", player = id, reason = ?e, "heal rejected");
+                if let Some(world) = self.world.as_mut() {
+                    if let Err(e) = world.use_heal(id) {
+                        tracing::debug!(target: "game::items", player = id, reason = ?e, "heal rejected");
+                    }
                 }
             }
             Command::UseBatteryPack(id) => {
                 self.note(R::UseBatteryPack(id));
-                if let Err(e) = self.world.use_battery_pack(id) {
-                    tracing::debug!(target: "game::items", player = id, reason = ?e, "battery rejected");
+                if let Some(world) = self.world.as_mut() {
+                    if let Err(e) = world.use_battery_pack(id) {
+                        tracing::debug!(target: "game::items", player = id, reason = ?e, "battery rejected");
+                    }
                 }
             }
             Command::QuickThrow(id) => {
-                let now = self.world.round_time;
                 self.note(R::QuickThrow(id));
-                if let Err(e) = self.world.quick_throw(id, now) {
-                    tracing::debug!(target: "game::weapons", player = id, reason = ?e, "quick throw rejected");
+                if let Some(world) = self.world.as_mut() {
+                    let now = world.round_time;
+                    if let Err(e) = world.quick_throw(id, now) {
+                        tracing::debug!(target: "game::weapons", player = id, reason = ?e, "quick throw rejected");
+                    }
                 }
             }
             Command::MoveItem(id, from, to) => {
                 self.note(R::MoveItem(id, from, to));
-                if !self.world.move_item(id, from, to) {
-                    tracing::debug!(target: "game::items", player = id, from, to, "move refused");
+                if let Some(world) = self.world.as_mut() {
+                    if !world.move_item(id, from, to) {
+                        tracing::debug!(target: "game::items", player = id, from, to, "move refused");
+                    }
                 }
             }
             Command::Fire(id) => {
-                let now = self.world.round_time;
                 self.note(R::Fire(id));
-                // `docs/61` §3 row 6: "my rocket did nothing" has six possible
-                // answers and the server already knows which one it was.
-                if let Err(e) = self.world.fire(id, now) {
-                    tracing::debug!(target: "game::weapons", player = id, reason = ?e, "fire rejected");
+                if let Some(world) = self.world.as_mut() {
+                    let now = world.round_time;
+                    // `docs/61` §3 row 6: "my rocket did nothing" has six possible
+                    // answers and the server already knows which one it was.
+                    if let Err(e) = world.fire(id, now) {
+                        tracing::debug!(target: "game::weapons", player = id, reason = ?e, "fire rejected");
+                    }
                 }
             }
             Command::ToggleFlashlight(id) => {
                 self.note(R::ToggleFlashlight(id));
-                self.world.toggle_flashlight(id)
+                if let Some(world) = self.world.as_mut() {
+                    world.toggle_flashlight(id)
+                }
             }
             Command::VoteRestart(id, v) => {
                 self.note(R::VoteRestart(id, v));
-                self.round.vote(&self.world, id, v)
+                if let Some(world) = self.world.as_ref() {
+                    self.round.vote(world, id, v)
+                }
             }
             // Not recorded: a resync sends the client a fresh map and changes
             // nothing about the simulation.
@@ -778,15 +1051,15 @@ impl Room {
             Command::Leave(id) => {
                 self.note(R::Leave(id));
                 self.seats.free_seat(id);
-                self.world.remove_player(id);
+                if let Some(world) = self.world.as_mut() {
+                    world.remove_player(id);
+                }
                 self.round.forget(id);
                 // §C18: a room that has lost its last human goes back to
                 // `Lobby` — not on to a fresh round — and is reaped by the
                 // registry after `ROOM_EMPTY_TTL`. Without this a room full of
                 // bots keeps playing a match nobody is in.
-                if self.human_count() == 0
-                    && self.world.phase != game_core::world::RoundPhase::Lobby
-                {
+                if self.human_count() == 0 && self.phase() != game_core::world::RoundPhase::Lobby {
                     tracing::info!(target: "game::round", "last human left; back to lobby");
                     self.return_to_lobby();
                 }
@@ -800,9 +1073,42 @@ impl Room {
                 let _ = reply.send(self.roster());
             }
             Command::Status { reply } => {
-                let _ = reply.send((self.world.players.len(), self.bots.len()));
+                let seated = self
+                    .world
+                    .as_ref()
+                    .map_or(self.seats.seats.len(), |w| w.players.len());
+                let _ = reply.send((seated, self.bots.len()));
             }
-            Command::Inspect(f) => f(&mut self.world),
+            // A lobby has no world to inspect. The closure is dropped, which is
+            // the honest answer — running it against a world that does not exist
+            // is the panic this `Option` is here to prevent.
+            Command::JoinInfo { reply } => {
+                let info = JoinInfo {
+                    tick: self.tick(),
+                    round_time: self.world.as_ref().map_or(0.0, |w| w.round_time),
+                    phase: self.phase().as_str().to_string(),
+                    // A lobby's round has not started, so it has no time left to
+                    // report. `INFINITY` is what the round controller already
+                    // emits for "not counting" (`round.rs`), so the client needs
+                    // no second spelling.
+                    time_left: self
+                        .world
+                        .as_ref()
+                        .map_or(f32::INFINITY, |w| w.phase_time_left()),
+                    seed: self.seed,
+                    scale: self.config.map_scale,
+                    map: self
+                        .world
+                        .as_ref()
+                        .map(|w| crate::codec::encode_map_init_at(&w.map, w.carve_seq())),
+                };
+                let _ = reply.send(info);
+            }
+            Command::Inspect(f) => {
+                if let Some(world) = self.world.as_mut() {
+                    f(world)
+                }
+            }
         }
     }
 
@@ -825,7 +1131,9 @@ impl Room {
             // live round freed, and diverges from there.
             self.note(crate::replay::ReplayCommand::DropUnready(*id));
             self.seats.free_seat(*id);
-            self.world.remove_player(*id);
+            if let Some(world) = self.world.as_mut() {
+                world.remove_player(*id);
+            }
         }
         stale
     }
@@ -859,10 +1167,16 @@ impl Room {
 
     /// True once per `MASK_CHECKSUM_INTERVAL`.
     pub fn due_for_checksum(&mut self) -> bool {
-        if self.world.round_time - self.last_checksum_at < MASK_CHECKSUM_INTERVAL {
+        // A lobby has no mask to checksum. Returning `false` rather than
+        // checksumming an absent map is the whole reason this reads the world
+        // through an `Option`.
+        let Some(now) = self.world.as_ref().map(|w| w.round_time) else {
+            return false;
+        };
+        if now - self.last_checksum_at < MASK_CHECKSUM_INTERVAL {
             return false;
         }
-        self.last_checksum_at = self.world.round_time;
+        self.last_checksum_at = now;
         true
     }
 
@@ -875,13 +1189,15 @@ impl Room {
     /// `seats.len()` counts bots, and using it as the start condition is what
     /// let a room start itself with nobody in it (§C18).
     pub fn human_count(&self) -> usize {
-        self.seats.seats.len().saturating_sub(self.bots.len())
+        self.seats.seats.iter().filter(|s| !s.bot).count()
     }
 
     /// Seat bots and enter `Warmup`. The one place a round begins.
     fn begin_round(&mut self) {
         self.seat_bots(self.seed);
-        self.world.set_phase(game_core::world::RoundPhase::Warmup);
+        if let Some(world) = self.world.as_mut() {
+            world.set_phase(game_core::world::RoundPhase::Warmup);
+        }
         tracing::info!(
             target: "game::round",
             humans = self.human_count(),
@@ -898,9 +1214,16 @@ impl Room {
     fn return_to_lobby(&mut self) {
         for b in std::mem::take(&mut self.bots) {
             self.seats.free_seat(b.player);
-            self.world.remove_player(b.player);
+            if let Some(world) = self.world.as_mut() {
+                world.remove_player(b.player);
+            }
         }
-        self.world.set_phase(game_core::world::RoundPhase::Lobby);
+        // §E1: back to a lobby means back to having no world. The next match
+        // generates a fresh one, which is what makes a changed map size take
+        // effect and what stops a second round replaying the first one's map.
+        self.lobby_tick = self.world.as_ref().map_or(self.lobby_tick, |w| w.tick);
+        self.world = None;
+        self.starting = false;
     }
 
     /// The bots currently seated, as `(id, name, skin, tombstone skin)`.
@@ -926,7 +1249,8 @@ impl Room {
                     .name_of(b.player)
                     .unwrap_or_else(|| format!("p{}", b.player));
                 self.world
-                    .player(b.player)
+                    .as_ref()
+                    .and_then(|w| w.player(b.player))
                     .map(|p| (b.player, name, p.skin_id, p.tombstone_skin_id))
             })
             .collect()
@@ -939,7 +1263,18 @@ impl Room {
     /// no names — so a joining client was told who was there but not what any
     /// of them were called, including itself.
     pub fn roster(&self) -> Vec<RosterRow> {
-        self.world
+        // §E1: in a lobby the seats *are* the roster — there is no world to read
+        // one off. `welcome` is sent to a player sitting in a lobby now, so this
+        // is the path that answers "who else is here" before a match exists.
+        let Some(world) = self.world.as_ref() else {
+            return self
+                .seats
+                .seats
+                .iter()
+                .map(|s| (s.id, s.name.clone(), s.skin_id, s.tombstone_skin_id, 0))
+                .collect();
+        };
+        world
             .players
             .iter()
             .map(|p| {
@@ -958,7 +1293,7 @@ impl Room {
 
     /// A player pressed "Start with bots".
     pub fn request_start(&mut self) {
-        if self.world.phase == game_core::world::RoundPhase::Lobby {
+        if self.phase() == game_core::world::RoundPhase::Lobby {
             self.round.request_start();
         }
     }
@@ -967,38 +1302,46 @@ impl Room {
     pub fn tick_once(&mut self, dt: f32) -> Vec<game_core::world::GameEvent> {
         self.seats.begin_tick();
 
-        // §C18: a `Lobby` room holds a map and a roster and does nothing else —
-        // no world step, no bots, no timers, no scoring, no item spawns, no
-        // weather. Only the start condition is evaluated.
-        let in_lobby = self.world.phase == game_core::world::RoundPhase::Lobby;
-        if !in_lobby {
-            self.drive_bots(dt);
-            self.world.step(dt);
-        } else {
-            // The clock runs; nothing else does. See `World::tick_idle`.
-            self.world.tick_idle();
-        }
-
+        // §E1: a lobby has no world at all — no map, no round clock, no weather
+        // schedule, no item spawns. Only the clock and the start condition run.
         let humans = self.human_count();
         let connected = self.seats.seats.len();
         let min = self.config.min_players_to_start;
-        let (mut events, outcome) = self.round.tick(&mut self.world, humans, connected, min, dt);
 
-        if in_lobby {
-            // Nothing below this point applies to a lobby: no replay
-            // checkpoints (no ticks to check), no diagnostic event scan (no
-            // events), no phase-change flush beyond the one `begin_round` makes.
+        if self.world.is_none() {
+            // The clock runs; nothing else does (`docs/72` §C18-clarified, and
+            // §C27's determinism test which could not tell a round from an empty
+            // lobby).
+            self.lobby_tick += 1;
+            let tick = self.lobby_tick;
+            let (events, outcome) = self.round.tick_lobby(tick, humans, min, dt);
             if outcome == crate::round::RoundOutcome::Start {
-                self.begin_round();
-                events.extend(self.world.drain_events());
+                // Not `begin_round` — there is nothing to begin yet. The world
+                // has to be built first, and that is 0.3–1.1 s of CPU which
+                // cannot happen inside a 16.7 ms tick. `run` picks this up.
+                self.starting = true;
             }
             return events;
         }
 
+        self.drive_bots(dt);
+        let Some(world) = self.world.as_mut() else {
+            return Vec::new();
+        };
+        world.step(dt);
+
+        let (mut events, outcome) = self.round.tick(world, connected, dt);
+
         // `docs/61` §3, the rows that only the event stream can answer. These are
         // deliberate diagnostic lines, not verbosity: each one is the thing you
         // grep for when a player says something vague.
-        for e in self.world.events_so_far() {
+        let round_time = self.world.as_ref().map_or(0.0, |w| w.round_time);
+        for e in self
+            .world
+            .as_ref()
+            .map(|w| w.events_so_far())
+            .unwrap_or_default()
+        {
             match e {
                 // "I spawned inside a rock" — the chosen point, so it can be
                 // compared against the map.
@@ -1018,7 +1361,7 @@ impl Room {
                         effect = id,
                         kind = ?kind,
                         duration,
-                        round_time = self.world.round_time,
+                        round_time,
                         "effect telegraphing"
                     );
                 }
@@ -1029,25 +1372,25 @@ impl Room {
         // A state hash every CHECKPOINT_STRIDE ticks, so a failed verification can
         // report *where* it diverged rather than only that it did. Written after
         // the step, so the hash describes the state at the tick it names.
-        if self.replay.is_some()
-            && self.world.tick > 0
-            && self
-                .world
-                .tick
-                .is_multiple_of(crate::replay::CHECKPOINT_STRIDE)
-        {
-            let cp = crate::replay::ReplayCommand::Checkpoint {
-                tick: self.world.tick,
-                hash: self.world.state_hash(),
-            };
-            self.note(cp);
+        let checkpoint = self.world.as_ref().and_then(|w| {
+            (w.tick > 0 && w.tick.is_multiple_of(crate::replay::CHECKPOINT_STRIDE)).then(|| {
+                crate::replay::ReplayCommand::Checkpoint {
+                    tick: w.tick,
+                    hash: w.state_hash(),
+                }
+            })
+        });
+        if self.replay.is_some() {
+            if let Some(cp) = checkpoint {
+                self.note(cp);
+            }
         }
 
         // Flush on a phase transition, not per command. A round that dies during
         // `Playing` then still has its warmup on disk, and the cost is four
         // flushes a round rather than thousands.
-        if self.world.phase != self.last_recorded_phase {
-            self.last_recorded_phase = self.world.phase;
+        if self.phase() != self.last_recorded_phase {
+            self.last_recorded_phase = self.phase();
             self.flush_recording();
         }
 
@@ -1087,7 +1430,10 @@ impl Room {
             tracing::error!(target: "game::map", "DEBUG_DUMP: cannot create {}: {e}", dir.display());
             return;
         }
-        match serde_json::to_string_pretty(&self.world.map.meta) {
+        let Some(world) = self.world.as_ref() else {
+            return;
+        };
+        match serde_json::to_string_pretty(&world.map.meta) {
             Ok(j) => {
                 if let Err(e) = std::fs::write(dir.join("meta.json"), j) {
                     tracing::error!(target: "game::map", "DEBUG_DUMP: meta.json: {e}");
@@ -1098,19 +1444,17 @@ impl Room {
 
         #[cfg(feature = "dump-png")]
         {
-            if let Err(e) = game_core::map::dump::dump_map(&self.world.map, &dir.join("map.png")) {
+            if let Err(e) = game_core::map::dump::dump_map(&world.map, &dir.join("map.png")) {
                 tracing::error!(target: "game::map", "DEBUG_DUMP: map.png: {e}");
             }
             let report = game_core::map::gen::traversal::analyse(
-                &self.world.map.mask,
-                &self.world.map.meta.surface_points,
-                &self.world.map.meta.objects,
+                &world.map.mask,
+                &world.map.meta.surface_points,
+                &world.map.meta.objects,
             );
-            if let Err(e) = game_core::map::dump::dump_surface(
-                &self.world.map,
-                &report,
-                &dir.join("surface.png"),
-            ) {
+            if let Err(e) =
+                game_core::map::dump::dump_surface(&world.map, &report, &dir.join("surface.png"))
+            {
                 tracing::error!(target: "game::map", "DEBUG_DUMP: surface.png: {e}");
             }
         }
@@ -1162,13 +1506,19 @@ impl Room {
         let Some(w) = self.replay.take() else {
             return;
         };
-        let scores: Vec<(PlayerId, i16)> =
-            self.world.players.iter().map(|p| (p.id, p.score)).collect();
-        match w.finish(&self.world, &scores) {
+        // A lobby has no world, so a recorder opened for one has no round to
+        // close. Dropping it without a footer is right: there is nothing to
+        // verify, and writing a footer that describes no simulation would make
+        // the reader's "verified" mean less than it does.
+        let Some(world) = self.world.as_ref() else {
+            return;
+        };
+        let scores: Vec<(PlayerId, i16)> = world.players.iter().map(|p| (p.id, p.score)).collect();
+        match w.finish(world, &scores) {
             Ok(path) => tracing::info!(
                 target: "game::round",
                 path = %path.display(),
-                tick = self.world.tick,
+                tick = world.tick,
                 "replay written"
             ),
             Err(e) => tracing::error!(target: "game::round", "replay footer failed: {e}"),
@@ -1226,32 +1576,46 @@ impl Room {
         self.finish_recording();
         self.seed = seed;
         self.buried_secret = buried_secret;
-        let seated: Vec<(PlayerId, u16)> = self
-            .world
-            .players
-            .iter()
-            .map(|p| (p.id, p.skin_id))
-            .collect();
-        self.world = World::with_generator(
+        // §E1.1: the seats are the roster. A restart used to copy the old
+        // world's player list into the new one, which meant the identity of a
+        // player survived only as long as a world did.
+        let mut world = World::with_generator(
             seed,
             self.config.map_scale,
             buried_secret,
             self.config.map_generator,
         );
-        self.world.set_round_seconds(self.config.round_seconds);
+        world.set_round_seconds(self.config.round_seconds);
+        self.world = Some(world);
         self.bots.clear();
-        for (id, skin) in seated {
-            self.world.add_player(id, skin, String::new());
+        // Bot seats are freed here rather than carried: `seat_bots` below
+        // allocates fresh ones, and a bot seat that outlived its `Bot` would be
+        // a seat nothing drives.
+        let bot_seats: Vec<PlayerId> = self
+            .seats
+            .seats
+            .iter()
+            .filter(|s| s.bot)
+            .map(|s| s.id)
+            .collect();
+        for id in bot_seats {
+            self.seats.free_seat(id);
         }
+        self.populate_world();
         self.seat_bots(seed);
-        self.world.set_phase(game_core::world::RoundPhase::Warmup);
+        if let Some(world) = self.world.as_mut() {
+            world.set_phase(game_core::world::RoundPhase::Warmup);
+        }
         self.last_checksum_at = 0.0;
         tracing::info!(target: "game::round", seed, "round restarted");
         if recording {
             let dir = std::path::PathBuf::from(self.config.replay_dir.clone());
             self.start_recording(&dir, &stamp_for(seed));
         }
-        self.world.drain_events()
+        self.world
+            .as_mut()
+            .map(|w| w.drain_events())
+            .unwrap_or_default()
     }
 
     /// Bots think **before** the step, so their input is consumed by the same
@@ -1261,7 +1625,10 @@ impl Room {
         if self.bots.is_empty() {
             return;
         }
-        let now = self.world.round_time;
+        let Some(world) = self.world.as_ref() else {
+            return;
+        };
+        let now = world.round_time;
         let mut uses: Vec<(PlayerId, u8)> = Vec::new();
         let mut selects: Vec<(PlayerId, u8)> = Vec::new();
         let mut fires: Vec<PlayerId> = Vec::new();
@@ -1270,7 +1637,7 @@ impl Room {
         let mut inputs: Vec<(PlayerId, game_core::player::input::Input)> =
             Vec::with_capacity(self.bots.len());
         for bot in &mut self.bots {
-            let input = bot.think(&self.world, now, dt);
+            let input = bot.think(world, now, dt);
             if let Some(slot) = bot.wants_use() {
                 uses.push((bot.player, slot));
             }
@@ -1298,29 +1665,66 @@ impl Room {
             }
             inputs.push((bot.player, input));
         }
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
         for (id, input) in inputs {
-            self.world.queue_input(id, input);
+            world.queue_input(id, input);
         }
         // Select before use and before fire: a bot that just picked up a better
         // weapon should fire *that* one this tick, not next tick.
         for (id, slot) in selects {
-            self.world.select_slot(id, slot);
+            world.select_slot(id, slot);
         }
         for (id, slot) in uses {
-            let _ = self.world.use_item(id, slot, now);
+            let _ = world.use_item(id, slot, now);
         }
         for id in fires {
-            if let Err(e) = self.world.fire(id, now) {
+            if let Err(e) = world.fire(id, now) {
                 tracing::debug!(target: "game::weapons", player = id, reason = ?e, "bot fire rejected");
             }
         }
+    }
+
+    /// Drive one tick, building the world inline if the tick asked for one.
+    ///
+    /// The production loop generates on a blocking thread instead (§E1: 0.3–1.1 s
+    /// does not fit in a 16.7 ms tick). Both paths call the same
+    /// `wants_world` / `generate_world` / `install_world` trio — only the thread
+    /// that pays differs — so this is not a second implementation of starting a
+    /// match. A test that had to stand up a tokio runtime and a `spawn_blocking`
+    /// to watch a lobby start would not be written.
+    pub fn tick_inline(&mut self, dt: f32) -> Vec<game_core::world::GameEvent> {
+        let mut events = self.tick_once(dt);
+        if self.wants_world() {
+            let world = self.generate_world();
+            self.install_world(world);
+            if let Some(w) = self.world.as_mut() {
+                events.extend(w.drain_events());
+            }
+        }
+        events
+    }
+
+    /// The world, for a test that has started a match.
+    ///
+    /// **A test seam, and it panics.** Production reads the world through
+    /// [`Room::world`], which returns `None` in a lobby — that is the answer §E1
+    /// requires. A *test* that asserts on a world it never started is a broken
+    /// test, and a panic naming the line is the fastest way to say so.
+    pub fn world_for_test(&mut self) -> &mut World {
+        self.world
+            .as_mut()
+            .expect("this test asserts on a world but never started a match")
     }
 
     /// Test seams. The room owns the controller, and a test that reached in and
     /// constructed its own would be testing a different object than the one the
     /// tick loop drives.
     pub fn vote_for_test(&mut self, id: PlayerId, restart: bool) {
-        self.round.vote(&self.world, id, restart);
+        if let Some(world) = self.world.as_ref() {
+            self.round.vote(world, id, restart);
+        }
     }
 
     pub fn leave_for_test(&mut self, id: PlayerId) {
@@ -1384,7 +1788,19 @@ async fn run(
     metrics: Option<Arc<crate::metrics::Metrics>>,
     room_id: u32,
 ) {
-    let mut room = Room::new_async(config, room_id).await;
+    // §E1: instant. No map is generated until the lobby says go, so this is a
+    // struct allocation rather than `docs/71` §B2's 0.3–1.1 s of generator.
+    let mut room = Room::new_in_room(config, room_id);
+    // At construction, as it always was — **not** at match start.
+    //
+    // I moved it to match start first, reasoning that a file describing a lobby
+    // has no round in it. That is true and it is the wrong trade: the lobby is
+    // where `Join` lands, so a recorder that opens after it produces a file whose
+    // replay rebuilds an empty roster and diverges immediately. §E1 made the
+    // lobby part of what a room does, so it is part of what a room records.
+    //
+    // A room that never starts leaves a file with no footer, which is the honest
+    // outcome: there is no simulation to verify.
     let dir = std::path::PathBuf::from(room.config.replay_dir.clone());
     room.start_recording(&dir, &stamp_for(room.seed));
     let mut ticker = interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
@@ -1406,7 +1822,7 @@ async fn run(
                 // One span per tick, so every line logged inside the loop carries
                 // `room` and `tick` automatically rather than by remembering
                 // (`docs/61-logging-debug.md` §2).
-                let span = tracing::info_span!("room", room = room_id, tick = room.world.tick + 1);
+                let span = tracing::info_span!("room", room = room_id, tick = room.tick() + 1);
                 let _g = span.enter();
 
                 let tick_started = Instant::now();
@@ -1422,7 +1838,42 @@ async fn run(
                 // anything a restart produced) come back from `tick_once` and are
                 // flushed with the world's, in that order.
                 let round_events = room.tick_once(SIM_DT);
-                let in_lobby = room.world.phase == game_core::world::RoundPhase::Lobby;
+
+                // §E1: the tick asked for a world and cannot build one — the
+                // generator is 0.3–1.1 s and this loop has 16.7 ms. Off the tick
+                // loop, on a blocking thread, exactly as `docs/41` §1 requires
+                // and for the same reason `new_async` existed.
+                let mut generated_this_tick = false;
+                if room.wants_world() {
+                    generated_this_tick = true;
+                    let started_at = Instant::now();
+                    let blueprint = room.generate_world_task();
+                    let world = match tokio::task::spawn_blocking(blueprint).await {
+                        Ok(w) => w,
+                        // A panic inside generation is a bug worth surfacing.
+                        // The lobby keeps waiting rather than the room dying.
+                        Err(e) => {
+                            tracing::error!(target: "game::map", "map generation failed: {e}");
+                            continue;
+                        }
+                    };
+                    tracing::info!(
+                        target: "game::map",
+                        ms = started_at.elapsed().as_millis() as u64,
+                        "world generated for match start"
+                    );
+                    room.install_world(world);
+                    // §E1: everyone seated gets the map now. They joined a lobby
+                    // and were sent `welcome` without one; this is the message
+                    // that turns a lobby screen into a game.
+                    if let Some(world) = room.world() {
+                        let bytes =
+                            crate::codec::encode_map_init_at(&world.map, world.carve_seq());
+                        crate::events::broadcast_map_init(&io, &sessions, &bytes);
+                    }
+                }
+
+                let in_lobby = room.phase() == game_core::world::RoundPhase::Lobby;
                 if was_lobby && !in_lobby {
                     start = Instant::now();
                     // The round just began, which is when `begin_round` seats
@@ -1433,7 +1884,7 @@ async fn run(
                         crate::events::emit_player_join(
                             &io,
                             &sessions,
-                            room.world.tick,
+                            room.tick(),
                             id,
                             &name,
                             skin,
@@ -1444,21 +1895,39 @@ async fn run(
                 was_lobby = in_lobby;
                 room.sweep_unready(READY_TIMEOUT);
 
-                let mut events = room.world.drain_events();
+                // A lobby has no world to drain or to broadcast. The round
+                // controller's own events still flush — that is how a client
+                // watching a lobby learns anything at all.
+                let mut events = room
+                    .world_mut()
+                    .map(|w| w.drain_events())
+                    .unwrap_or_default();
                 events.extend(round_events);
-                crate::events::flush_events(&io, &room.world, &sessions, &events);
+                if let Some(world) = room.world() {
+                    crate::events::flush_events(&io, world, &sessions, &events);
+                } else {
+                    crate::events::flush_lobby_events(&io, &sessions, room.seed, &events);
+                }
 
                 // Every third tick: 20 Hz, as SNAPSHOT_HZ says.
-                if room.world.tick.is_multiple_of(SIM_HZ / SNAPSHOT_HZ) {
+                if room.tick().is_multiple_of(SIM_HZ / SNAPSHOT_HZ) {
                     let seqs = room.last_seqs();
-                    let bytes =
-                        crate::events::broadcast_snapshot(&io, &room.world, &sessions, &seqs);
-                    if let Some(m) = metrics.as_ref() {
-                        m.record_snapshot(bytes);
+                    if let Some(world) = room.world() {
+                        let bytes =
+                            crate::events::broadcast_snapshot(&io, world, &sessions, &seqs);
+                        if let Some(m) = metrics.as_ref() {
+                            m.record_snapshot(bytes);
+                        }
                     }
                 }
 
-                if let Some(m) = metrics.as_ref() {
+                // **Not the tick that built the map.** §E1 moved generation to
+                // match start, and it is awaited inside this arm — so
+                // `tick_started.elapsed()` on that one tick is the generator's
+                // 0.3-1.1 s, not the simulation's. Recording it marked a healthy
+                // server as over budget on every round it started. The generation
+                // cost is logged on its own line above, where it means something.
+                if let Some(m) = metrics.as_ref().filter(|_| !generated_this_tick) {
                     // Measured around the whole tick — drain, step, flush and
                     // snapshot — because that is what has to fit in 16.7 ms.
                     let us = tick_started.elapsed().as_micros().min(u32::MAX as u128) as u32;
@@ -1475,15 +1944,18 @@ async fn run(
                 }
 
                 if room.due_for_checksum() {
-                    let hash = room.world.map.mask.hash_hex();
-                    crate::events::emit_mask_checksum(&io, &sessions, room.world.tick, &hash);
+                    if let Some(world) = room.world() {
+                        let hash = world.map.mask.hash_hex();
+                        let tick = world.tick;
+                        crate::events::emit_mask_checksum(&io, &sessions, tick, &hash);
+                    }
                 }
 
                 // Expected tick count from wall-clock, so a slow tick shows up.
                 let expected = (start.elapsed().as_secs_f64() * SIM_HZ as f64) as u32;
-                let behind = expected.saturating_sub(room.world.tick);
-                if behind > LAG_WARN_TICKS && room.world.tick > room.lag_warned_at + SIM_HZ {
-                    room.lag_warned_at = room.world.tick;
+                let behind = expected.saturating_sub(room.tick());
+                if behind > LAG_WARN_TICKS && room.tick() > room.lag_warned_at + SIM_HZ {
+                    room.lag_warned_at = room.tick();
                     if let Some(m) = metrics.as_ref() {
                         m.record_overrun();
                     }
@@ -1492,7 +1964,7 @@ async fn run(
             }
             _ = &mut shutdown => {
                 tracing::info!(target: "game::round", "shutting down");
-                crate::events::emit_round_end(&io, &sessions, room.world.tick, "server_shutdown");
+                crate::events::emit_round_end(&io, &sessions, room.tick(), "server_shutdown");
                 // Before the break, or `docker compose down` truncates exactly
                 // the round someone wanted to inspect (`docs/41` §7).
                 room.finish_recording();
@@ -1563,11 +2035,14 @@ mod tests {
     #[test]
     fn two_rooms_with_no_fixed_seed_get_different_maps() {
         let c = cfg();
-        let a = Room::new_in_room(c.clone(), 0);
-        let b = Room::new_in_room(c, 1);
+        // §E1: a lobby has no map, so the maps under comparison are the ones
+        // each room *would* build. The seed rule this guards (`docs/71` §B13) is
+        // fixed at construction and unchanged by the move.
+        let a = Room::new_in_room(c.clone(), 0).generate_world();
+        let b = Room::new_in_room(c, 1).generate_world();
         assert_ne!(
-            a.world.map.mask.hash(),
-            b.world.map.mask.hash(),
+            a.map.mask.hash(),
+            b.map.mask.hash(),
             "every room is playing the same map"
         );
     }
@@ -1581,9 +2056,9 @@ mod tests {
             fixed_seed: Some(4242),
             ..Config::default()
         });
-        let a = Room::new_in_room(c.clone(), 0);
-        let b = Room::new_in_room(c, 7);
-        assert_eq!(a.world.map.mask.hash(), b.world.map.mask.hash());
+        let a = Room::new_in_room(c.clone(), 0).generate_world();
+        let b = Room::new_in_room(c, 7).generate_world();
+        assert_eq!(a.map.mask.hash(), b.map.mask.hash());
     }
 
     #[test]
@@ -1598,22 +2073,28 @@ mod tests {
         // §C18: bots are seated when a round starts, not at construction, so a
         // test that wants bots has to start one.
         room.request_start();
-        room.tick_once(game_core::constants::SIM_DT);
-        room.world.set_phase(game_core::world::RoundPhase::Playing);
+        room.tick_inline(game_core::constants::SIM_DT);
+        room.world_for_test()
+            .set_phase(game_core::world::RoundPhase::Playing);
 
         // Arm both bots and stand them in a clear line, so the only thing under
         // test is whether the trigger reaches the world.
-        let ids: Vec<PlayerId> = room.world.players.iter().map(|p| p.id).collect();
+        let ids: Vec<PlayerId> = room.world_for_test().players.iter().map(|p| p.id).collect();
         assert_eq!(ids.len(), 2, "bots were not seated");
         for id in &ids {
-            game_core::world::give(&mut room.world, *id, game_core::items::registry::SMG, 60);
+            game_core::world::give(
+                room.world_for_test(),
+                *id,
+                game_core::items::registry::SMG,
+                60,
+            );
         }
 
         // Stand them 200 px apart on a clear line. Left to wander a 2048x1024
         // map they may simply never meet inside the test's budget, and a test
         // that depends on an encounter is measuring the map, not the wiring.
         let at = {
-            let w = &room.world;
+            let w = &*room.world_for_test();
             let mut found = None;
             'y: for y in (200..(w.map.mask.h as i32 - 200)).step_by(16) {
                 'x: for x in (100..(w.map.mask.w as i32 - 400)).step_by(16) {
@@ -1628,21 +2109,22 @@ mod tests {
             }
             found.expect("no clear 260 px span; the fixture is wrong, not the room")
         };
-        if let Some(p) = room.world.player_mut(ids[0]) {
+        if let Some(p) = room.world_for_test().player_mut(ids[0]) {
             p.body.pos = game_core::math::Vec2::new(at.0, at.1);
         }
-        if let Some(p) = room.world.player_mut(ids[1]) {
+        if let Some(p) = room.world_for_test().player_mut(ids[1]) {
             p.body.pos = game_core::math::Vec2::new(at.0 + 200.0, at.1);
         }
 
         let mut fired = false;
         for _ in 0..600 {
-            room.tick_once(1.0 / 60.0);
+            room.tick_inline(1.0 / 60.0);
+            let now = room.world_for_test().round_time;
             if room
-                .world
+                .world_for_test()
                 .players
                 .iter()
-                .any(|p| p.fire_ready_at > room.world.round_time)
+                .any(|p| p.fire_ready_at > now)
             {
                 fired = true;
                 break;
@@ -1739,7 +2221,7 @@ mod tests {
         room.apply(Command::ToggleFlashlight(200));
         room.apply(Command::Ready(200));
         room.apply(Command::Leave(200));
-        let _ = room.tick_once(SIM_DT);
+        let _ = room.tick_inline(SIM_DT);
     }
 
     #[test]
@@ -1752,11 +2234,36 @@ mod tests {
             tombstone_skin_id: 0,
             reply,
         });
+        // §E1.1: the seat is the roster. In a lobby there is no world for a
+        // player to be in, so this is the only place the join is recorded — and
+        // it has to be, or the match would start with nobody in it.
         assert_eq!(room.player_count(), 1);
-        assert_eq!(room.world.players.len(), 1);
+        assert!(
+            room.world().is_none(),
+            "a lobby built a world to hold one joining player"
+        );
+
+        // The presence control, and the §E1.1 assertion proper: the world is
+        // *created from* the seats. Without it, "the seat holds the player" also
+        // passes for a room that never carries them into the match.
+        let w = room.generate_world();
+        room.install_world(w);
+        assert_eq!(
+            room.world_for_test().players.len(),
+            1,
+            "the match started without the player who was seated in the lobby"
+        );
+
         room.apply(Command::Leave(0));
         assert_eq!(room.player_count(), 0);
-        assert_eq!(room.world.players.len(), 0);
+        // The last human leaving sends the room back to `Lobby`, and §E1 makes
+        // that mean the world goes with it. "No players in the world" and "no
+        // world" are the same statement now; asserting the emptier one would
+        // have needed a world that no longer exists.
+        assert!(
+            room.world().is_none(),
+            "the room kept simulating a match with nobody in it"
+        );
     }
 
     /// Bots are seated **when a round starts** (§C18) and hold real seats.
@@ -1772,11 +2279,11 @@ mod tests {
             "bots were seated before the round started"
         );
         room.request_start();
-        room.tick_once(game_core::constants::SIM_DT);
+        room.tick_inline(game_core::constants::SIM_DT);
         let bots = room.bot_count();
         assert!(bots > 0, "BOT_COUNT defaults to 0, so §A5 is not in effect");
         assert_eq!(
-            room.world.players.len(),
+            room.world_for_test().players.len(),
             bots,
             "seated bots are not in the world"
         );
@@ -1792,8 +2299,8 @@ mod tests {
         });
         let mut room = Room::new(cfg);
         room.request_start();
-        room.tick_once(game_core::constants::SIM_DT);
-        assert_eq!(room.world.players.len(), 6);
+        room.tick_inline(game_core::constants::SIM_DT);
+        assert_eq!(room.world_for_test().players.len(), 6);
         let (reply, _rx) = oneshot::channel();
         room.apply(Command::Join {
             name: "human".into(),
@@ -1803,7 +2310,7 @@ mod tests {
         });
         assert_eq!(room.bot_count(), 5, "no bot was kicked");
         assert_eq!(
-            room.world.players.len(),
+            room.world_for_test().players.len(),
             6,
             "capacity was exceeded rather than a bot removed"
         );

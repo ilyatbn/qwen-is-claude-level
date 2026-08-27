@@ -47,11 +47,13 @@ async fn spawn_server() -> Harness {
         let _ = axum::serve(listener, router).await;
     });
     // Wait for the default room to be ticking, rather than sleeping a guess.
-    // §C18: a room waits in `Lobby`, so there is no tick until a round starts.
-    // This presses "Start with bots" once, the way a player does.
+    // §E1: `join_info`, not `inspect` — a lobby has no world, so the world-shaped
+    // read answers `None`, `unwrap_or(0)` reads 0 forever, and this loop stopped
+    // waiting for anything at all. The lobby's own clock is the real signal and
+    // it advances as soon as the room task runs (`docs/72` §C18-clarified).
     let started = stack.start_default_room();
-    for _ in 0..200 {
-        if started.inspect(|w| w.tick).await.unwrap_or(0) > 0 {
+    for _ in 0..400 {
+        if started.join_info().await.map(|i| i.tick).unwrap_or(0) > 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -327,6 +329,14 @@ async fn two_rooms_run_side_by_side_and_neither_hears_the_other() {
             "welcome",
             "bo",
         );
+
+        // §E1: `room_b` was created straight in the registry and never started,
+        // so it is a lobby and has no map to hand out — `b_maps` below is a
+        // control that bo is properly seated, and it can only mean that if bo's
+        // room is a match like ana's. Ask for one, the way ana's harness did.
+        b.emit("start_with_bots", serde_json::json!({}))
+            .expect("start_with_bots");
+        wait_for(&inbox_b, "map_init", 1, "bo's map once room_b starts");
 
         // Give any cross-room leak time to arrive. Asserting a negative
         // immediately would pass simply because nothing had been delivered yet.
@@ -727,7 +737,10 @@ async fn a_room_whose_last_human_left_is_reaped_by_the_running_server() {
     };
     assert_eq!(healthz_rooms(addr).await, 1, "control: the room is there");
     assert!(
-        handle.inspect(|w| w.tick).await.is_some(),
+        // §E1: liveness is `join_info` answering. `inspect` answers `None` for a
+        // *living* lobby, so spelling the control that way asserts the room is
+        // already dead — which is what this control exists to rule out.
+        handle.join_info().await.is_some(),
         "control: the room task answers before the reap"
     );
 
@@ -757,7 +770,7 @@ async fn a_room_whose_last_human_left_is_reaped_by_the_running_server() {
     // T13.06.10's finding, and there is no reason to add a sixteenth instance.
     let mut stopped = false;
     for _ in 0..100 {
-        if handle.inspect(|w| w.tick).await.is_none() {
+        if handle.join_info().await.is_none() {
             stopped = true;
             break;
         }

@@ -126,20 +126,24 @@ impl RoundController {
     /// The world advances Warmup → Playing → Ended itself; this adds the
     /// connection-aware parts: entering Warmup when a lobby fills, the periodic
     /// re-broadcast, and resolving the vote when the `Ended` window closes.
-    pub fn tick(
+    /// The lobby half, which **takes no world** — because a lobby does not have
+    /// one (`docs/74-amendments-v6.md` §E1).
+    ///
+    /// Split out rather than guarded inside `tick`, because the only thing the
+    /// old lobby branch read off the world was `tick` for the event stamp; a
+    /// signature that demands a world to decide whether to build one is the
+    /// wrong way round.
+    pub fn tick_lobby(
         &mut self,
-        world: &mut World,
+        tick: u32,
         humans: usize,
-        connected: usize,
         min_to_start: usize,
         dt: f32,
     ) -> (Vec<GameEvent>, RoundOutcome) {
         let mut events = Vec::new();
-        let now = world.round_time;
         let mut started = false;
-
-        match world.phase {
-            RoundPhase::Lobby => {
+        {
+            {
                 // `humans`, not seats. Counting bots here is what let a room
                 // start itself with nobody in it (§C18).
                 let enough = humans >= min_to_start.max(1);
@@ -169,7 +173,7 @@ impl RoundController {
                         let shown = |v: f32| v.ceil() as i32;
                         if before.is_none_or(|b| shown(b) != shown(left)) {
                             events.push(GameEvent::RoundState {
-                                tick: world.tick,
+                                tick,
                                 phase: RoundPhase::Lobby,
                                 time_left: left,
                             });
@@ -179,12 +183,33 @@ impl RoundController {
                     // Someone left mid-countdown. Say so, or the client sits on
                     // a number that has stopped moving.
                     events.push(GameEvent::RoundState {
-                        tick: world.tick,
+                        tick,
                         phase: RoundPhase::Lobby,
                         time_left: f32::INFINITY,
                     });
                 }
             }
+        }
+        if started {
+            return (events, RoundOutcome::Start);
+        }
+        (events, RoundOutcome::Continue)
+    }
+
+    /// The match half. `world` is present by construction: every phase below
+    /// `Lobby` has one.
+    pub fn tick(
+        &mut self,
+        world: &mut World,
+        connected: usize,
+        dt: f32,
+    ) -> (Vec<GameEvent>, RoundOutcome) {
+        let mut events = Vec::new();
+        let now = world.round_time;
+        let _ = dt;
+
+        match world.phase {
+            RoundPhase::Lobby => {}
             RoundPhase::Playing => {
                 if now - self.last_state_at >= ROUND_STATE_INTERVAL {
                     self.last_state_at = now;
@@ -216,12 +241,6 @@ impl RoundController {
         // Leaving `Ended` for any reason re-arms the resolver.
         if world.phase != RoundPhase::Ended {
             self.resolved = false;
-        }
-        if started {
-            // The room seats bots and spawns players; the phase change is its
-            // signal to do so. Returning an outcome rather than setting the
-            // phase here keeps "a round begins" in one place.
-            return (events, RoundOutcome::Start);
         }
         (events, RoundOutcome::Continue)
     }
@@ -310,7 +329,7 @@ mod tests {
         let mut broadcasts = 0;
         // Three seconds of ticks.
         for _ in 0..(3 * 60) {
-            let (evs, _) = r.tick(&mut w, 1, 1, 1, SIM_DT);
+            let (evs, _) = r.tick(&mut w, 1, SIM_DT);
             broadcasts += evs
                 .iter()
                 .filter(|e| matches!(e, GameEvent::RoundState { .. }))
@@ -324,10 +343,12 @@ mod tests {
     }
 
     /// Run a lobby for `secs`, returning whether it asked to start.
-    fn lobby_for(r: &mut RoundController, w: &mut World, humans: usize, secs: f32) -> bool {
+    fn lobby_for(r: &mut RoundController, humans: usize, secs: f32) -> bool {
         let steps = (secs / SIM_DT) as usize;
         for _ in 0..steps {
-            let (_, out) = r.tick(w, humans, humans, MIN_PLAYERS_TO_START, SIM_DT);
+            // §E1: the lobby half takes no world, because a lobby does not have
+            // one.
+            let (_, out) = r.tick_lobby(0, humans, MIN_PLAYERS_TO_START, SIM_DT);
             if out == RoundOutcome::Start {
                 return true;
             }
@@ -337,48 +358,43 @@ mod tests {
 
     #[test]
     fn one_human_alone_never_starts_a_round() {
-        let mut w = world_in(RoundPhase::Lobby);
         let mut r = RoundController::new(1);
         // Ten seconds is twice the countdown; if it were going to fire it has.
         assert!(
-            !lobby_for(&mut r, &mut w, 1, 10.0),
+            !lobby_for(&mut r, 1, 10.0),
             "a lobby with one human started on its own"
         );
-        assert_eq!(w.phase, RoundPhase::Lobby);
     }
 
     /// The control for the test above: without it, "never starts" also passes
     /// for a lobby that can never start at all.
     #[test]
     fn two_humans_start_after_the_countdown() {
-        let mut w = world_in(RoundPhase::Lobby);
         let mut r = RoundController::new(1);
         assert!(
-            !lobby_for(&mut r, &mut w, MIN_PLAYERS_TO_START, LOBBY_COUNTDOWN - 0.5),
+            !lobby_for(&mut r, MIN_PLAYERS_TO_START, LOBBY_COUNTDOWN - 0.5),
             "started before the countdown elapsed"
         );
         assert!(
-            lobby_for(&mut r, &mut w, MIN_PLAYERS_TO_START, 1.0),
+            lobby_for(&mut r, MIN_PLAYERS_TO_START, 1.0),
             "did not start after the countdown"
         );
     }
 
     #[test]
     fn start_with_bots_starts_one_human_immediately() {
-        let mut w = world_in(RoundPhase::Lobby);
         let mut r = RoundController::new(1);
         r.request_start();
-        let (_, out) = r.tick(&mut w, 1, 1, MIN_PLAYERS_TO_START, SIM_DT);
+        let (_, out) = r.tick_lobby(0, 1, MIN_PLAYERS_TO_START, SIM_DT);
         assert_eq!(out, RoundOutcome::Start, "the solo path did not start");
     }
 
     #[test]
     fn a_player_leaving_mid_countdown_stops_it() {
-        let mut w = world_in(RoundPhase::Lobby);
         let mut r = RoundController::new(1);
-        lobby_for(&mut r, &mut w, MIN_PLAYERS_TO_START, 2.0);
+        lobby_for(&mut r, MIN_PLAYERS_TO_START, 2.0);
         assert!(r.lobby_countdown().is_some(), "never started counting");
-        r.tick(&mut w, 1, 1, MIN_PLAYERS_TO_START, SIM_DT);
+        r.tick_lobby(0, 1, MIN_PLAYERS_TO_START, SIM_DT);
         assert!(
             r.lobby_countdown().is_none(),
             "kept counting down with only one human left"
@@ -392,13 +408,11 @@ mod tests {
     /// five-second countdown.
     #[test]
     fn the_countdown_is_announced_once_a_second_not_once_a_tick() {
-        let mut w = world_in(RoundPhase::Lobby);
         let mut r = RoundController::new(1);
         let mut n = 0;
-        for _ in 0..((LOBBY_COUNTDOWN / SIM_DT) as usize) {
-            let (evs, out) = r.tick(
-                &mut w,
-                MIN_PLAYERS_TO_START,
+        for tick in 0..((LOBBY_COUNTDOWN / SIM_DT) as usize) {
+            let (evs, out) = r.tick_lobby(
+                tick as u32,
                 MIN_PLAYERS_TO_START,
                 MIN_PLAYERS_TO_START,
                 SIM_DT,
@@ -423,15 +437,8 @@ mod tests {
 
     #[test]
     fn the_countdown_is_announced_while_it_runs() {
-        let mut w = world_in(RoundPhase::Lobby);
         let mut r = RoundController::new(1);
-        let (evs, _) = r.tick(
-            &mut w,
-            MIN_PLAYERS_TO_START,
-            2,
-            MIN_PLAYERS_TO_START,
-            SIM_DT,
-        );
+        let (evs, _) = r.tick_lobby(0, MIN_PLAYERS_TO_START, MIN_PLAYERS_TO_START, SIM_DT);
         // A lobby does not step the world, so the periodic `round_state` path
         // cannot fire — this is the only thing telling a client the number.
         assert!(
@@ -455,9 +462,9 @@ mod tests {
         for _ in 0..(25 * 60) {
             w.step(SIM_DT);
         }
-        let (_, first) = r.tick(&mut w, 1, 1, 1, SIM_DT);
+        let (_, first) = r.tick(&mut w, 1, SIM_DT);
         assert!(matches!(first, RoundOutcome::Restart { .. }));
-        let (_, second) = r.tick(&mut w, 1, 1, 1, SIM_DT);
+        let (_, second) = r.tick(&mut w, 1, SIM_DT);
         assert_eq!(
             second,
             RoundOutcome::Continue,

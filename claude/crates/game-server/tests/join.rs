@@ -18,6 +18,13 @@ use rust_socketio::{ClientBuilder, Payload, RawClient};
 fn test_config() -> Config {
     Config {
         map_scale: MapScale::Small,
+        // Armed, so **ana's own fires are the carves**. Without this ana has no
+        // weapon and every carve this test counted was a bot's — which made the
+        // comparison depend on when the bots happened to engage, and on ana and
+        // bo connecting at the same instant. It measured 19 vs 13, then 0 vs 0.
+        // The claim is that a carve ana causes reaches both sockets; arming her
+        // is what makes the test perform that action instead of watching for one.
+        dev_loadout: true,
         ..Config::default()
     }
 }
@@ -46,13 +53,36 @@ async fn spawn_server(config: Config) -> Server {
     // from inside that loop. A sleep long enough on an idle box is not long enough
     // on a busy one, and the failure surfaces as "never received welcome" — which
     // looks like a protocol bug and is a race in the fixture.
-    // §C18: a room waits in `Lobby`, so there is no tick until a round starts.
-    // This presses "Start with bots" once, the way a player does.
+    // §E1: `join_info`, not `inspect`. A lobby has no world, so `inspect` drops
+    // its closure and answers `None` — `unwrap_or(0)` then reads 0 forever and
+    // this loop stopped waiting for readiness at all: it burned its full 10 s
+    // and continued regardless, which is a condition that can never be true.
+    //
+    // **Wait for `Playing`**, not for a world.
+    //
+    // This fixture fires weapons and compares carve counts, and the old wait was
+    // vacuous — `inspect` answers `None` in a lobby, so `unwrap_or(0)` read 0
+    // forever and the loop burned its full budget and continued regardless. That
+    // accidental 10 s was what carried the room past `WARMUP_SECONDS` into
+    // `Playing`. Replacing it with a real "has a world" check made the whole test
+    // run inside Warmup instead, where the two clients saw 0 and 0 carves, or 7
+    // and 5 as the phase flipped underneath the measurement.
+    //
+    // So the condition this needed all along is the phase, stated outright.
     let started = stack.start_default_room();
-    for _ in 0..200 {
-        if started.inspect(|w| w.tick).await.unwrap_or(0) > 0 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if started
+            .join_info()
+            .await
+            .is_some_and(|i| i.phase == "playing")
+        {
             break;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the room never reached Playing"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     Server {
@@ -250,18 +280,57 @@ async fn the_join_flow_end_to_end() {
             c1.emit("fire", serde_json::json!({})).expect("emit");
             std::thread::sleep(Duration::from_millis(120));
         }
-        std::thread::sleep(Duration::from_millis(400));
+        // Settled, not slept. Both counts are read at one instant and compared,
+        // so a fixed sleep makes this a race between two sockets: it passed alone
+        // and failed inside `cargo test --workspace`, where the box is loaded and
+        // bo's socket lags ana's by more than the guess. Wait until neither count
+        // has moved for a while, which is the condition the comparison needs and
+        // the shape `checksum.rs` already uses.
+        {
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            let (mut last_a, mut last_b, mut stable) = (usize::MAX, usize::MAX, 0);
+            loop {
+                std::thread::sleep(Duration::from_millis(50));
+                let (a, b) = (got(&i1, "carve").len(), got(&i2, "carve").len());
+                if a == last_a && b == last_b && a > 0 {
+                    stable += 1;
+                    if stable >= 8 {
+                        break;
+                    }
+                } else {
+                    stable = 0;
+                    last_a = a;
+                    last_b = b;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "carve streams never settled: ana {a}, bo {b}"
+                );
+            }
+        }
         let carves_a = got(&i1, "carve");
         let carves_b = got(&i2, "carve");
-        report.insert("carves_a".into(), carves_a.len().into());
-        report.insert("carves_b".into(), carves_b.len().into());
-        report.insert(
-            "carve_seqs".into(),
-            serde_json::json!(carves_a
-                .iter()
-                .filter_map(|v| v["seq"].as_u64())
-                .collect::<Vec<_>>()),
-        );
+        // Compared over the window **both** sockets were live for, not as raw
+        // totals. ana connects before bo, and the carves are the bots' — so
+        // every carve in between lands on one socket and not the other, and the
+        // totals differ by whatever the bots did in the gap (measured 19 vs 13).
+        // "Terrain is public" claims the two agree on the carves they could both
+        // have seen, which is the seq range from where the later one starts.
+        let seqs_of = |v: &[serde_json::Value]| -> Vec<u64> {
+            v.iter().filter_map(|c| c["seq"].as_u64()).collect()
+        };
+        let (sa, sb) = (seqs_of(&carves_a), seqs_of(&carves_b));
+        let base = sa
+            .iter()
+            .min()
+            .copied()
+            .unwrap_or(0)
+            .max(sb.iter().min().copied().unwrap_or(0));
+        let common_a: Vec<u64> = sa.iter().copied().filter(|s| *s >= base).collect();
+        let common_b: Vec<u64> = sb.iter().copied().filter(|s| *s >= base).collect();
+        report.insert("carves_a".into(), common_a.len().into());
+        report.insert("carves_b".into(), common_b.len().into());
+        report.insert("carve_seqs".into(), serde_json::json!(common_a));
 
         // --- a disconnect frees the seat and tells the others -----------
         //

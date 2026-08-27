@@ -50,10 +50,13 @@ fn room() -> (RoomHandle, oneshot::Sender<()>) {
 async fn the_room_ticks_at_approximately_sim_hz() {
     let (room, _shut) = room();
     // Let it settle, then measure a clean window.
+    // The **lobby's** clock, which is the room's (`docs/72` §C18-clarified, and
+    // §E1: there is no world to hold one). That a room waiting for players still
+    // ticks at SIM_HZ is the property this asserts.
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let t0 = room.inspect(|w| w.tick).await.expect("alive");
+    let t0 = room.join_info().await.expect("alive").tick;
     tokio::time::sleep(Duration::from_millis(1000)).await;
-    let t1 = room.inspect(|w| w.tick).await.expect("alive");
+    let t1 = room.join_info().await.expect("alive").tick;
 
     let ticked = (t1 - t0) as f64;
     let expected = SIM_HZ as f64;
@@ -69,12 +72,14 @@ async fn the_room_ticks_at_approximately_sim_hz() {
 async fn join_seats_a_player_and_leave_removes_them() {
     let (room, _shut) = room();
     let id = room.join("ana".into(), 0, 0).await.expect("seated");
-    let n = room.inspect(|w| w.players.len()).await.expect("alive");
+    // §E1.1: the seats **are** the roster in a lobby — there is no world holding
+    // a player list to count. `status` answers in both states.
+    let (n, _bots) = room.status().await.expect("alive");
     assert_eq!(n, 1);
 
     room.send(Command::Leave(id));
     tokio::time::sleep(Duration::from_millis(80)).await;
-    let n = room.inspect(|w| w.players.len()).await.expect("alive");
+    let (n, _bots) = room.status().await.expect("alive");
     assert_eq!(n, 0);
 }
 
@@ -98,19 +103,23 @@ async fn a_seventh_join_is_refused() {
 /// still waits out `LOBBY_COUNTDOWN` — there is no override for it, so this
 /// really does take about five seconds.
 async fn start_round(room: &RoomHandle, id: u8) {
+    // §E1: `join_info`, not `inspect`. A lobby has no world, so the world-shaped
+    // read answers `None` — which `expect` then reports as a dead room while the
+    // room is alive and waiting, exactly as asked.
     room.send(Command::StartWithBots(id));
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let phase = room
-            .inspect(|w| w.phase)
+            .join_info()
             .await
-            .expect("room alive while waiting for the round to start");
-        if phase != game_core::world::RoundPhase::Lobby {
+            .expect("room alive while waiting for the round to start")
+            .phase;
+        if phase != "lobby" {
             return;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the round never started; still {phase:?} after 20 s"
+            "the round never started; still {phase} after 30 s"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -151,13 +160,13 @@ async fn commands_sent_between_ticks_are_all_applied() {
 async fn a_flood_of_commands_does_not_stall_the_tick_loop() {
     let (room, _shut) = room();
     let id = room.join("ana".into(), 0, 0).await.expect("seated");
-    let before = room.inspect(|w| w.tick).await.expect("alive");
+    let before = room.join_info().await.expect("alive").tick;
 
     for seq in 1..=10_000u32 {
         room.send(Command::Input(id, vec![Input::new(seq, 0, 0)]));
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let after = room.inspect(|w| w.tick).await.expect("alive");
+    let after = room.join_info().await.expect("alive").tick;
 
     let ticked = after - before;
     assert!(
@@ -170,13 +179,16 @@ async fn a_flood_of_commands_does_not_stall_the_tick_loop() {
 async fn the_shutdown_signal_ends_the_task() {
     let (room, shut) = room();
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(room.inspect(|w| w.tick).await.is_some(), "running");
+    // "Alive" is `join_info` answering, not `inspect`. §E1 makes `inspect`
+    // answer `None` for a *living* lobby, so spelling liveness that way asserts
+    // the room is dead the moment it is behaving correctly.
+    assert!(room.join_info().await.is_some(), "running");
 
     let _ = shut.send(());
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // The task is gone, so `inspect` can no longer be answered.
-    let answered = tokio::time::timeout(Duration::from_millis(300), room.inspect(|w| w.tick))
+    let answered = tokio::time::timeout(Duration::from_millis(300), room.join_info())
         .await
         .unwrap_or(None);
     assert!(answered.is_none(), "the room task outlived its shutdown");

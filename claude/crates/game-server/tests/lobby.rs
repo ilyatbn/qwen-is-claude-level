@@ -571,7 +571,7 @@ async fn a_fresh_server_has_no_rooms_and_nothing_ticking() {
 /// and it does hold a map. Without this, "no rooms" also passes for a server
 /// that cannot create one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn joining_creates_a_room_that_holds_a_map_and_does_not_tick() {
+async fn joining_creates_a_lobby_that_holds_no_map_and_does_not_simulate() {
     let h = spawn_server().await;
     let addr = h.addr;
     let reg = h.stack.registry.clone();
@@ -602,43 +602,100 @@ async fn joining_creates_a_room_that_holds_a_map_and_does_not_tick() {
         r.get(id).expect("room").handle.clone()
     };
 
-    let (round_time, surface, phase, players) = handle
-        .inspect(|w| {
-            (
-                w.round_time,
-                w.map.meta.surface_points.len(),
-                w.phase,
-                w.players.len(),
-            )
-        })
-        .await
-        .expect("room alive");
-
+    // §E1 **inverted this test.** It used to assert `surface > 0` — "a lobby
+    // room has no map; players cannot see what they are about to play". A lobby
+    // now deliberately has no map, because that is what lets a private lobby
+    // offer map size as a setting: there is nothing yet to contradict.
+    //
+    // `inspect` is the world-shaped read, and this is the assertion that a
+    // lobby answers it rather than panicking on it.
+    let peek = handle.inspect(|w| w.map.meta.surface_points.len()).await;
     assert!(
-        surface > 0,
-        "a lobby room has no map; players cannot see what they are about to play"
+        peek.is_none(),
+        "a lobby answered a question about a map it does not have ({peek:?})"
+    );
+
+    let info = handle.join_info().await.expect("room alive");
+    assert!(
+        info.map.is_none(),
+        "a lobby handed out a map; §E1 says the map is built when the match starts"
     );
     assert_eq!(
-        phase,
-        game_core::world::RoundPhase::Lobby,
+        info.phase, "lobby",
         "a room with one human is not in a lobby"
     );
-    // `tick` is no longer the witness for this. It is a **clock** and now
-    // advances in a lobby too (`World::tick_idle`), because freezing it made
-    // every command recorded during a lobby land on tick 0 and made every
-    // replay loop — bounded by `while tick < until` — over-simulate by the
-    // lobby's length, or never terminate at all.
-    //
-    // `round_time` is the stricter witness anyway: it is advanced *only* inside
-    // `World::step`, so it is zero exactly when nothing has been simulated,
-    // whereas `tick` was zero only because the clock had been stopped with it.
+    // `round_time` is the strict witness for "nothing has been simulated": it
+    // advances only inside `World::step`. `tick` is a *clock* and runs in a
+    // lobby too (`docs/72` §C18-clarified), which the next test asserts.
     assert_eq!(
-        round_time, 0.0,
-        "a lobby room is simulating — round_time {round_time} with one human in it"
+        info.round_time, 0.0,
+        "a lobby room is simulating — round_time {} with one human in it",
+        info.round_time
     );
+
+    // The roster is the seats now (§E1.1), and it still holds the one human.
+    let roster = handle.roster().await.expect("room alive");
     assert_eq!(
-        players, 1,
+        roster.len(),
+        1,
         "the lobby holds its roster: expected the one human who joined"
+    );
+    assert_eq!(roster[0].1, "ana", "the seat lost the name it joined under");
+
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// The clock runs while the simulation does not.
+///
+/// `docs/72` §C18-clarified, and §C27 records a determinism test that could not
+/// tell a round from an empty lobby. Freezing `tick` made every command recorded
+/// during a lobby land on tick 0; this is the pair of assertions that keeps both
+/// halves true at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lobby_ticks_but_does_not_simulate() {
+    let h = spawn_server().await;
+    let addr = h.addr;
+    let reg = h.stack.registry.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        emit_until(
+            &a,
+            &ia,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
+        std::thread::sleep(Duration::from_millis(400));
+        a
+    })
+    .await
+    .expect("client thread");
+
+    let handle = {
+        let r = reg.lock().expect("registry");
+        let id = *r.ids().first().expect("joining created a room");
+        r.get(id).expect("room").handle.clone()
+    };
+
+    let first = handle.join_info().await.expect("room alive");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let second = handle.join_info().await.expect("room alive");
+
+    assert!(
+        second.tick > first.tick,
+        "the lobby clock stopped: tick {} then {} half a second later",
+        first.tick,
+        second.tick
+    );
+    // The control. Without it "the clock runs" also passes for a lobby that is
+    // quietly simulating a round nobody asked for.
+    assert_eq!(
+        second.round_time, 0.0,
+        "the lobby stepped the world: round_time {}",
+        second.round_time
     );
 
     h.stack.shutdown_all(Duration::from_secs(2)).await;
@@ -678,29 +735,38 @@ async fn one_human_waits_until_they_ask_for_bots() {
         game_core::constants::LOBBY_COUNTDOWN * 2.0,
     ))
     .await;
-    let phase = handle.inspect(|w| w.phase).await.expect("alive");
-    assert_eq!(
-        phase,
-        game_core::world::RoundPhase::Lobby,
-        "one human alone started a battle"
-    );
+    // §E1: `join_info`, not `inspect` — a lobby has no world for a
+    // world-shaped read to reach, and `None` there would read as a dead room.
+    let phase = handle.join_info().await.expect("alive").phase;
+    assert_eq!(phase, "lobby", "one human alone started a battle");
 
     // The control: asking does start it.
     tokio::task::spawn_blocking(move || {
         client
             .emit("start_with_bots", serde_json::json!({}))
             .expect("emit");
-        std::thread::sleep(Duration::from_millis(800));
     })
     .await
     .expect("client thread");
 
-    let (phase, tick) = handle.inspect(|w| (w.phase, w.tick)).await.expect("alive");
-    assert_ne!(
-        phase,
-        game_core::world::RoundPhase::Lobby,
-        "start_with_bots did nothing"
-    );
+    // Waited on, not slept. §E1 moved map generation to match start, so the gap
+    // between asking and the phase changing is however long the generator takes
+    // — 0.3-1.1 s in release and several times that in a debug build under
+    // `cargo test --workspace`, where this failed while passing alone.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let phase = loop {
+        let p = handle.join_info().await.expect("alive").phase;
+        if p != "lobby" {
+            break p;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "start_with_bots did nothing: still {p} after 60 s"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_ne!(phase, "lobby", "start_with_bots did nothing");
+    let tick = handle.join_info().await.expect("alive").tick;
     assert!(tick > 0, "the round started but nothing is ticking");
 
     h.stack.shutdown_all(Duration::from_secs(2)).await;
@@ -809,13 +875,12 @@ async fn a_room_whose_last_human_leaves_goes_back_to_lobby_despite_its_bots() {
         r.get(id).expect("room").handle.clone()
     };
     let (phase, seats, bots) = {
-        let p = handle.inspect(|w| w.phase).await.expect("alive");
+        let p = handle.join_info().await.expect("alive").phase;
         let (seats, bots) = handle.status().await.unwrap_or((99, 99));
         (p, seats, bots)
     };
     assert_eq!(
-        phase,
-        game_core::world::RoundPhase::Lobby,
+        phase, "lobby",
         "a room with {seats} seats ({bots} of them bots) kept playing a match \
          with no humans in it"
     );
@@ -868,9 +933,9 @@ async fn a_lobby_room_has_no_bots() {
         let id = *r.ids().first().expect("room");
         r.get(id).expect("room").handle.clone()
     };
-    let phase = handle.inspect(|w| w.phase).await.expect("alive");
+    let phase = handle.join_info().await.expect("alive").phase;
     let (seats, bots) = handle.status().await.unwrap_or((99, 99));
-    assert_eq!(phase, game_core::world::RoundPhase::Lobby, "not a lobby");
+    assert_eq!(phase, "lobby", "not a lobby");
     assert_eq!(
         bots, 0,
         "a lobby room seated {bots} bots (of {seats} seats) before anyone asked \
@@ -941,7 +1006,12 @@ async fn starting_a_round_announces_the_bots_it_seats() {
 
         a.emit("start_with_bots", serde_json::json!({}))
             .expect("emit");
-        std::thread::sleep(Duration::from_millis(1200));
+        // Waited on, not counted. §E1 moved map generation to match start, so
+        // the gap between asking and the bots being announced is now however
+        // long the generator takes — 0.3-1.1 s in release and several times that
+        // in debug. The old `sleep(1200)` was a wait hardcoded against a
+        // duration that this change moved, which is a test that expires.
+        wait_for(&ia, "player_join", 3, "bots announced at match start");
         let names: Vec<String> = ia
             .lock()
             .ok()
@@ -1139,4 +1209,190 @@ async fn a_join_that_is_never_delivered_is_retried_until_it_is() {
     );
 
     h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+// ---------------------------------------------------------------------------
+// §E1: the map arrives when the match starts, not when you sit down.
+// ---------------------------------------------------------------------------
+
+/// Seating sends `welcome` and **no** `map_init`; starting the match sends one.
+///
+/// Both halves in one test on purpose. "No `map_init` at join" is satisfied by a
+/// server that never sends one at all — which is a broken game, not a lobby — so
+/// the presence control is the second half, on the same socket.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lobby_sends_no_map_init_and_the_match_start_sends_exactly_one() {
+    let h = spawn_server().await;
+    let addr = h.addr;
+
+    let (before, after) = tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        emit_until(
+            &a,
+            &ia,
+            "join",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
+        // Long enough that a `map_init` sent at seat time would have landed.
+        std::thread::sleep(Duration::from_millis(700));
+        let before = count(&ia, "map_init");
+
+        // The solo path (§C18), which is the manual form of §E2's timeout.
+        a.emit("start_with_bots", serde_json::json!({}))
+            .expect("start_with_bots");
+        wait_for(&ia, "map_init", 1, "map_init after the match started");
+        // Settle, so a second copy would be counted.
+        std::thread::sleep(Duration::from_millis(700));
+        let after = count(&ia, "map_init");
+        drop(a);
+        (before, after)
+    })
+    .await
+    .expect("client thread");
+
+    assert_eq!(
+        before, 0,
+        "a player seated in a lobby was sent a map; §E1 says the map does not exist yet"
+    );
+    assert_eq!(
+        after, 1,
+        "expected exactly one map_init once the match started, got {after}"
+    );
+
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// Everyone seated at the moment the match starts gets the map — not just the
+/// player who asked for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_seated_socket_gets_the_map_when_the_match_starts() {
+    let h = spawn_server().await;
+    let addr = h.addr;
+
+    let (a_maps, b_maps) = tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        emit_until(
+            &a,
+            &ia,
+            "quick_match",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
+        let ib: Inbox = Arc::default();
+        let b = connect(addr, ib.clone());
+        emit_until(
+            &b,
+            &ib,
+            "quick_match",
+            serde_json::json!({ "name": "ben" }),
+            "welcome",
+            "ben",
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(count(&ia, "map_init"), 0, "ana had a map while in a lobby");
+        assert_eq!(count(&ib, "map_init"), 0, "ben had a map while in a lobby");
+
+        a.emit("start_with_bots", serde_json::json!({}))
+            .expect("start_with_bots");
+        wait_for(&ia, "map_init", 1, "ana's map at match start");
+        wait_for(&ib, "map_init", 1, "ben's map at match start");
+        std::thread::sleep(Duration::from_millis(500));
+        let out = (count(&ia, "map_init"), count(&ib, "map_init"));
+        drop((a, b));
+        out
+    })
+    .await
+    .expect("client thread");
+
+    assert_eq!(a_maps, 1, "ana got {a_maps} maps, expected exactly one");
+    assert_eq!(
+        b_maps, 1,
+        "ben sat in the same lobby and got {b_maps} maps — the broadcast reached only the asker"
+    );
+
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// Two lobbies started with the same settings play different maps.
+///
+/// `docs/71` §B13's rule, re-asserted **through the new lifecycle**: the seed is
+/// still mixed per room at construction, and moving generation to match start
+/// must not have moved it to something shared. Testing `mix_seed` alone would
+/// not catch that, because it never exercises the decision about when the seed
+/// is taken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_lobbies_started_with_the_same_settings_get_different_maps() {
+    use game_server::room::Room;
+    let cfg = Arc::new(Config {
+        bot_count: 0,
+        ..test_config()
+    });
+
+    let mut a = Room::new_in_room(cfg.clone(), 0);
+    let mut b = Room::new_in_room(cfg, 1);
+    assert!(
+        a.world().is_none() && b.world().is_none(),
+        "§E1: a freshly built room is a lobby and holds no world"
+    );
+
+    let wa = a.generate_world();
+    a.install_world(wa);
+    let wb = b.generate_world();
+    b.install_world(wb);
+
+    let ha = a.world_for_test().map.mask.hash();
+    let hb = b.world_for_test().map.mask.hash();
+    assert_ne!(
+        ha, hb,
+        "two lobbies generated the same map at match start; the per-room seed was lost"
+    );
+}
+
+/// The tick loop never generates.
+///
+/// `docs/71` §B2 measured generation at 0.3–1.1 s against a 16.7 ms tick, so
+/// `tick_once` may only *ask* for a world. This is the assertion that keeps the
+/// generator off the loop: after the start condition fires, the tick has
+/// returned and there is still no world.
+#[test]
+fn the_tick_asks_for_a_world_and_does_not_build_one() {
+    use game_core::constants::SIM_DT;
+    use game_server::room::Room;
+    let cfg = Arc::new(Config {
+        bot_count: 0,
+        ..test_config()
+    });
+    let mut room = Room::new_in_room(cfg, 0);
+
+    room.request_start();
+    let _ = room.tick_once(SIM_DT);
+
+    assert!(
+        room.wants_world(),
+        "the start condition fired and the room did not ask for a world"
+    );
+    assert!(
+        room.world().is_none(),
+        "the tick built a map; §E1 keeps 0.3-1.1 s of generator off a 16.7 ms loop"
+    );
+
+    // The control: the same trio the room task runs does produce one, so
+    // "no world" above is the tick declining rather than a room that cannot
+    // start at all.
+    let w = room.generate_world();
+    room.install_world(w);
+    assert!(
+        room.world().is_some(),
+        "installing a generated world left the room without one"
+    );
+    assert_eq!(
+        room.phase(),
+        game_core::world::RoundPhase::Warmup,
+        "installing the world did not begin the round"
+    );
 }
