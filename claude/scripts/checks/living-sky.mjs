@@ -436,9 +436,16 @@ export default async function ({ page, shot, log }) {
     await page.waitForTimeout(400)
     const both = await page.evaluate((uu) => {
       const k = window.__game.constants()
-      const want = window.__game.cloudTintAt(uu, k.CLOUD_ALPHA, k.CLOUD_SKY_MIX, k.CLOUD_ALPHA_FLOOR)
       const got = window.__game.debug().parallax
-      return { want, got: { color: got.cloudTint, alpha: got.cloudAlpha } }
+      // **Whichever path is live.** Since T16.04 a pack sprite is drawn with
+      // `cloudSpriteTint` — no colour mix, flat alpha — because selecting
+      // `Clouds_black` by phase already darkened it and `cloudTint` on top would
+      // darken it twice. Comparing against `cloudTint` here would assert the
+      // wrong function's answer and go red for a renderer doing the right thing.
+      const want = got.cloudAtlas
+        ? window.__game.cloudSpriteTintAt(k.CLOUD_ALPHA)
+        : window.__game.cloudTintAt(uu, k.CLOUD_ALPHA, k.CLOUD_SKY_MIX, k.CLOUD_ALPHA_FLOOR)
+      return { want, got: { color: got.cloudTint, alpha: got.cloudAlpha }, atlas: got.cloudAtlas }
     }, u)
     const hex = (v) => `#${(v >>> 0).toString(16).padStart(6, '0')}`
     if (both.want.color !== both.got.color) {
@@ -457,13 +464,89 @@ export default async function ({ page, shot, log }) {
   }
   // The control: the two phases must not be the same colour, or "they agree"
   // is two constants agreeing.
-  const tintAt = async (u) => {
+  const parallaxAt = async (u) => {
     await page.evaluate((t) => window.__game.setTime(t), u * 120)
     await page.waitForTimeout(400)
-    return (await dbg()).parallax.cloudTint
+    return (await dbg()).parallax
   }
-  if ((await tintAt(0.3)) === (await tintAt(0.78))) {
+  const noonP = await parallaxAt(0.3)
+  const nightP = await parallaxAt(0.78)
+
+  if (noonP.cloudAtlas) {
+    // §C14 through the **colour set**: the frames themselves change, white by
+    // day and black at night. `cloudTint` is flat on this path, so the old
+    // "tints differ" control cannot see the phase response at all any more.
+    if (JSON.stringify(noonP.cloudFrames) === JSON.stringify(nightP.cloudFrames)) {
+      throw new Error(
+        `the clouds show the same frames at noon and at night ` +
+          `(${noonP.cloudFrames[0]}) — the colour set is not following the phase`,
+      )
+    }
+    // Every cloud, not the first one. Eleven wrong and one right satisfies a
+    // spot check, and the set-inequality above only catches a gross failure.
+    const wrongAtNoon = (noonP.cloudFrames ?? []).filter((f) => !/_white_/.test(f))
+    const wrongAtNight = (nightP.cloudFrames ?? []).filter((f) => !/_black_/.test(f))
+    if (!noonP.cloudFrames?.length) throw new Error('noon drew no clouds at all')
+    if (wrongAtNoon.length > 0) {
+      throw new Error(
+        `noon is drawing ${wrongAtNoon.length}/${noonP.cloudFrames.length} non-white ` +
+          `clouds, e.g. ${wrongAtNoon[0]}`,
+      )
+    }
+    if (wrongAtNight.length > 0) {
+      throw new Error(
+        `night is drawing ${wrongAtNight.length}/${nightP.cloudFrames.length} non-black ` +
+          `clouds, e.g. ${wrongAtNight[0]}`,
+      )
+    }
+    log(
+      `colour set follows the phase across all ${noonP.cloudFrames.length}: ` +
+        `${noonP.cloudFrames[0]} → ${nightP.cloudFrames[0]}`,
+    )
+  } else if (noonP.cloudTint === nightP.cloudTint) {
     throw new Error('the sprite tint is the same at noon and at night')
+  }
+
+  // 5c. **The night cloud is still VISIBLE against the night sky.**
+  //
+  //     The assertion the task list does not have, and the one the double
+  //     darkening would have failed. "Cloud tint at night differs from noon"
+  //     passes for a cloud that has become invisible — invisible differs from
+  //     noon too. What has to hold is a delta between the cloud and the sky
+  //     *beside it in the same frame*.
+  //
+  //     Selecting a black sprite AND applying `cloudTint`'s mix-toward-the-sky
+  //     at luminance-scaled alpha is two darkenings, and the result is a cloud
+  //     lost in a near-black sky. `cloudSpriteTint` exists to stop that; this is
+  //     what proves it worked.
+  for (const [name, u, minDelta] of [
+    ['noon', 0.3, 10],
+    ['night', 0.78, 6],
+  ]) {
+    const p = await parallaxAt(u)
+    const cx = p.cloudXs[Math.floor(p.cloudXs.length / 2)]
+    if (cx === undefined) throw new Error(`${name}: no clouds on screen to sample`)
+    const k = await page.evaluate(() => window.__game.constants())
+    const band = Math.round(k.VIEWPORT_H * ((k.CLOUD_BAND_TOP + k.CLOUD_BAND_BOTTOM) / 2))
+    // This file's own `patchMean`, not `pixels.mjs` — living-sky has no imports
+    // and every other assertion in it reads the frame this way.
+    const onCloud = await patchMean(page, { x: Math.round(cx) - 12, y: band - 8, w: 24, h: 16 })
+    // The control region: sky well above the cloud band, same frame.
+    const sky = await patchMean(page, {
+      x: Math.round(cx) - 12,
+      y: Math.max(2, Math.round(k.VIEWPORT_H * k.CLOUD_BAND_TOP) - 24),
+      w: 24,
+      h: 16,
+    })
+    const delta =
+      (Math.abs(onCloud[0] - sky[0]) + Math.abs(onCloud[1] - sky[1]) + Math.abs(onCloud[2] - sky[2])) / 3
+    if (delta < minDelta) {
+      throw new Error(
+        `${name}: the cloud is only ${delta.toFixed(1)} from the sky beside it — ` +
+          `it has been darkened past visibility`,
+      )
+    }
+    log(`${name.padEnd(5)} cloud stands ${delta.toFixed(1)} off the sky beside it`)
   }
 
   // 6. The clouds stay spread at the zooms the game actually uses.

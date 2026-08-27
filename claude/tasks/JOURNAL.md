@@ -4386,3 +4386,41 @@ covers the bake**: vitest is `environment:'node'` with no canvas, and
 deleted. The payoff lives in `scripts/checks/objects.mjs`, written and never executed;
 its seam step was a `skip-reported-as-pass` and is now a `fail`, with the precondition
 guarded in `cargo test`. e2e deferred per D-07.
+
+## T16.04 — The clouds pack belongs in the sky (v5)
+
+T16.04 says three shape families; there are **eight** — `Shape1`–`Shape8` × 5 sizes ×
+3 colours = 120, plus 5 `Lightning` = §D0's 125. Reading it as three would have thrown
+away five-eighths of the pack. New `scripts/build-cloud-atlas.mjs`, not an extension of
+`build-object-masks.mjs`: the sky keeps soft alpha, trims at α>0 and produces no mask,
+and merging them would be one script with a boolean that changes what it means.
+`cloudTint` was written for a single white blob — it mixes toward the sky colour and
+scales alpha by luminance — so applying it over a phase-picked black sprite darkens
+twice. The sprite path uses `cloudSpriteTint`; the blob path is untouched and
+`sky-math.ts` is byte-identical to `9031e62`. **The cost: sprite clouds no longer pick
+up the sky's warmth at dawn** — three colour sets are coarser than a continuous mix, and
+a blend needs tunables no doc specifies, so an amendment is owed rather than a number
+invented. The shape pick has its own `'cloud-shapes'` seed tag and all twelve clouds'
+x/y/scale/speed are pinned against `9031e62`. `storm` and `Lightning` both have no
+caller, declared rather than discovered. **The unit half proves no pixels**:
+`ParallaxLayer` needs a `Phaser.Scene` and cannot be built under vitest, so a green run
+of `clouds-math.test.ts` does not mean the sky changed colour. The tint and visibility
+assertions are in `scripts/checks/living-sky.mjs`, written and never run.
+
+## T16.05 — Record where the art came from (v5)
+
+`assets/vendor/README.md` **was never tracked** — `assets/vendor/` is gitignored (§A29)
+and `git ls-files` on it returned nothing, so the licensing record `docs/51` §8 asks for
+existed on one machine and nowhere else. The ignore now excludes the contents, not the
+directory, because git does not descend into an excluded directory and the obvious
+one-line negation would have looked like a fix and done nothing. Provenance for the five
+sprite packs is recorded with the owner's licence quoted verbatim, fetch dates from this
+box, and the source URL written as **unknown** rather than invented. `verify-assets.mjs`
+derives its required-pack list from `assets/objects/manifest.json` **union**
+`assets/manifest.json`'s `vendorPacks`, so the cloud atlas — a second pipeline with no
+object manifest behind it — is covered too; it names each unaccounted pack and the file
+that requires it, and rejects a row whose cells are blank. Row scanning is scoped to the
+sprite-pack section so a CC0 Kenney row cannot vouch for a same-named sprite pack. Two
+gaps recorded rather than gated on: no pack carries a `LICENSE.txt`, and §8's "CC0 only"
+line does not admit this licence class — both are owed amendments, both are in the
+README where an auditor will read them. e2e deferred per D-07.

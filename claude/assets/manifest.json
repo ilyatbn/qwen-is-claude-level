@@ -24,6 +24,11 @@
       "key": "objects",
       "png": "atlas/objects.png",
       "json": "atlas/objects.json"
+    },
+    {
+      "key": "clouds",
+      "png": "atlas/clouds.png",
+      "json": "atlas/clouds.json"
     }
   ],
   "images": [],
@@ -52,5 +57,8 @@
     "audio/walk_0.ogg",
     "audio/walk_1.ogg",
     "audio/walk_2.ogg"
+  ],
+  "vendorPacks": [
+    "clouds"
   ]
 }

@@ -11,6 +11,8 @@ import { readFileSync, existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { incompleteProvenance, missingProvenance, packSources } from './lib/vendor-provenance.mjs'
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const assets = join(root, 'assets')
 const manifestPath = join(assets, 'manifest.json')
@@ -126,6 +128,64 @@ if (existsSync(skinsPath) && manifest) {
     const frames = atlasFrames.get(w.atlas)
     if (!frames) { problems.push(`weapon skin ${w.id}: unknown atlas "${w.atlas}"`); continue }
     if (!frames.has(w.frame)) problems.push(`weapon skin ${w.id}: frame "${w.frame}" not in atlas ${w.atlas}`)
+  }
+}
+
+// Provenance: docs/51 §8 and docs/73 §D7.
+//
+// §8 wants every vendored pack listed in assets/vendor/README.md with its
+// source, licence and fetch date. The manifest is the side that decides what
+// must be accounted for, because it is the list of packs the shipped art
+// actually derives from — assets/vendor/ is gitignored (§A29), so on a clone
+// the raw art is absent while the atlas and the manifest are still there.
+//
+// This gates the art commit and nothing else: with no manifest there are no
+// vendored objects to account for, and the check has nothing to say.
+// `vendorPacks` in assets/manifest.json is how a build script that consumed a
+// sprite pack declares it, so a pipeline with no object manifest behind it —
+// the cloud atlas — is still accounted for. Without it this check would gate
+// the art it was written for and stay silent about the art the next task
+// commits through a second pipeline.
+const objectManifestPath = join(assets, 'objects', 'manifest.json')
+const shipsObjectArt = (manifest?.atlases ?? []).some((a) => a.key === 'objects')
+if (shipsObjectArt && !existsSync(objectManifestPath)) {
+  // Otherwise the guard below cannot tell "no vendored objects" from "someone
+  // deleted the manifest", and this script is the only thing standing in front
+  // of the art commit.
+  problems.push(
+    `assets/manifest.json ships the "objects" atlas but assets/objects/manifest.json ` +
+      `is missing, so no pack behind that art can be accounted for (docs/51 §8)`,
+  )
+}
+if (existsSync(objectManifestPath) || (manifest?.vendorPacks ?? []).length > 0) {
+  const objectManifest = existsSync(objectManifestPath) ? readJson(objectManifestPath) : { objects: [] }
+  const readmePath = join(assets, 'vendor', 'README.md')
+  if (!existsSync(readmePath)) {
+    problems.push(
+      `assets/vendor/README.md is missing, so no pack the object art derives from has ` +
+        `its source or licence recorded (docs/51 §8)`,
+    )
+  } else if (objectManifest) {
+    const readme = readFileSync(readmePath, 'utf8')
+    // Named, not counted. "3 packs unrecorded" sends the next person reading
+    // every row by hand; the names send them to the three that are wrong.
+    const sources = packSources(objectManifest, manifest)
+    for (const pack of missingProvenance(objectManifest, readme, manifest)) {
+      problems.push(
+        `pack "${pack}" is required by ${sources.get(pack)} but has no entry in ` +
+          `assets/vendor/README.md — record its source, licence and fetch date (docs/51 §8)`,
+      )
+    }
+    // A row is not a record. Naming the pack and leaving the cells blank would
+    // otherwise satisfy the check above while the message it prints asks for
+    // three things it never looked at. "not recorded" is a legitimate source
+    // for these packs (§D7: nobody knows the URL); an empty cell is not.
+    for (const pack of incompleteProvenance(objectManifest, readme, manifest)) {
+      problems.push(
+        `pack "${pack}" has a row in assets/vendor/README.md but leaves its source, ` +
+          `licence or fetch date blank — an empty cell is not a record (docs/51 §8)`,
+      )
+    }
   }
 }
 

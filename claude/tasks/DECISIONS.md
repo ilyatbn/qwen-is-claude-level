@@ -480,3 +480,97 @@ first run is the M16 e2e sweep.
 **The artifact was honest and the summary was not** — `chunkBake.test.ts:396-403` says
 this in the file itself, unprompted, and the report upgraded it. Recorded because that
 is the direction that misleads.
+
+## D-31 — The provenance record was never in the repository  ·  T16.05
+**Found while writing T16.05.** `docs/73` §D7 and T16.05 both say to record provenance
+in `assets/vendor/README.md`. That directory is gitignored (§A29), and
+`git ls-files claude/assets/vendor/` returned **nothing** — the README was untracked.
+A licensing record that exists on one machine and nowhere else records nothing, and
+`docs/51` §8 is about what is *in the repository*.
+**Chosen:** ignore the **contents**, not the directory —
+```
+assets/vendor/*
+!assets/vendor/README.md
+```
+`assets/vendor/` would have made the negation unreachable: git does not descend into an
+excluded directory, so the README would have stayed untracked while the change looked
+like a fix. Verified both ways — `git add --dry-run` accepts the README,
+`assets/vendor/kenney` is still ignored.
+**Consequence:** **an amendment is owed** — §A29 and §D7 disagree, and §D7 loses.
+
+## D-32 — The missing `LICENSE.txt` is recorded, not gated on  ·  T16.05
+**Decided by:** me, and it is a judgement call rather than a forced move.
+`docs/51` §8 wants each vendored pack's `LICENSE.txt` alongside its files. **No sprite
+pack has one** — §D7 says so itself: *"`sprite_packs/` contains no licence, readme, or
+credit file of any kind — I looked."* Ilya's statement (D-08) is what stands in for it.
+**Chosen:** `verify-assets.mjs` fails on a missing **README entry** — T16.05's stated
+requirement — and the README records the two gaps explicitly: no `LICENSE.txt`, and the
+source URL unknown and written as unknown rather than guessed.
+**Rejected:** failing the gate on the missing licence files. No builder can produce
+them, so that gate could never go green, and a gate that can never pass gets deleted or
+bypassed by the next person — worse than a gap somebody can read.
+**What Ilya can close in one edit:** the origin URL of the five packs, and their licence
+files dropped in beside them.
+
+## D-33 — §8's "CC0 only" bullet does not cover these packs, and that is named  ·  T16.05
+**Raised by the review, and it is right.** `docs/51` §8 opens with *"Only CC0 or
+explicitly-public-domain art enters this repo."* Ilya's **royalty-free / unlimited use**
+(D-08) is neither. D-09 ruled §8's *sibling-directory* bullet stale; the CC0 bullet is a
+separate sentence and was still standing over a green gate.
+**Chosen:** the art stays. It is the owner of the packs stating the terms he acquired
+them under, for art he supplied himself, and unlimited use covers the redistribution §8
+exists to protect against. **An amendment is owed** — §8 needs to admit a
+coordinator-supplied licence class, or say plainly that it does not.
+**Recorded in `assets/vendor/README.md` as well as here**, because the README is the
+artefact an auditor actually reads, and a conflict that needs a second file to explain
+it will be found the hard way.
+
+## D-34 — A row is not a record  ·  T16.05
+**Review finding on my own work, and a fair one.** The first version of the check
+matched `` | `rocks` | `` and stopped. A row reading `` | `rocks` | | | | `` — name
+present, every other cell blank — **passed**, while the message the check would
+otherwise print says *"record its source, licence and fetch date"*. It tested the
+intention and not the effect.
+**Chosen:** `incompleteProvenance` requires source, licence and fetch date to be
+non-empty, with its own falsification: gut a row's cells and the missing-entry check
+still passes it while the completeness check names it. **"not recorded" stays a
+legitimate source** — a known gap is a record; an empty cell is indistinguishable from
+nobody having looked.
+**Also closed:** the provenance block was guarded by *"is there an object manifest"*,
+which could not tell "no vendored objects" from "someone deleted the manifest" — and
+`verify-assets.mjs` is the only thing in front of the art commit. It now cross-checks:
+`assets/manifest.json` shipping the `objects` atlas with no `assets/objects/manifest.json`
+beside it is a problem, not a silence.
+
+## D-35 — Three more holes in my own provenance check  ·  T16.05
+All three raised by the review, all three real, all three fixed.
+
+**1. A Kenney row could vouch for a same-named sprite pack.** `packsInReadme` scanned
+every table in the file, and the README holds **two provenance domains in one
+namespace** — CC0 Kenney packs fetched by script, and owner-supplied `sprite_packs`.
+Nothing collides today, but Kenney ships rock packs: a `rocks` row in the Kenney table
+would have recorded *"CC0 by Kenney"* as the licence for art that is neither.
+**Fixed:** row scanning is scoped to the `## Sprite packs` heading, with a test that the
+Kenney half of the README yields **zero** packs.
+
+**2. `clouds` was committed art the check had nothing to say about.** The required list
+came from `assets/objects/manifest.json`, which excludes clouds by design (§D0 routes
+them to the sky). T16.04 commits `assets/atlas/clouds.png` from `../sprite_packs/clouds`
+through a **second pipeline**, and deleting its README row would have gone unnoticed.
+The gate would have covered the art it was written for and stayed silent about the art
+the next task was committing.
+**Fixed:** `packsInManifest` takes the union of the object manifest's packs and a
+`vendorPacks` array on `assets/manifest.json`. Any build script that consumes a sprite
+pack declares it there; `build-cloud-atlas.mjs` declares `clouds`.
+
+**3. Nothing tested `verify-assets.mjs` itself.** Eleven tests exercised the predicate;
+the script's `existsSync` branches, its missing-README branch, the loop that pushes one
+problem line per pack, and its exit code were covered by nothing. Change the loop to
+compute the list and forget to push it and every test still passed while the gate went
+permanently green — *a test calling the function is not a caller*, one layer up. I had
+verified it by hand, which is evidence that exists only in a message.
+**Fixed:** a test that copies `assets/` and `scripts/` to a temp dir, symlinks `client`
+beside them (the script resolves `pngjs` through `client/package.json` and would
+otherwise die on an import, and an exit code from the wrong failure proves nothing),
+strips one row, and asserts the script exits non-zero **naming that pack** — with a
+**control run on the unedited copy asserting exit 0**.

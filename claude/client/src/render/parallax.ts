@@ -25,12 +25,29 @@
 import Phaser from 'phaser'
 import { C } from '../core'
 import { DEPTH } from './backdrop'
-import { cloudField, cloudTint, cloudTwinX, cloudX, mountainProfile, type Cloud } from './sky-math'
+import {
+  cloudColourForPhase,
+  cloudFrame,
+  cloudSpriteTint,
+  cloudSprites,
+  type CloudSprite,
+} from './clouds-math'
+import {
+  cloudField,
+  cloudTint,
+  cloudTwinX,
+  cloudX,
+  mountainProfile,
+  skyPhase,
+  type Cloud,
+} from './sky-math'
 import { resolveTheme } from './themes-math'
 
 /** Keys are per-layer and per-seed: a stale texture is a stale mountain range. */
 const RIDGE_KEY = (layer: number, seed: number) => `__ridge_${layer}_${seed >>> 0}`
 const CLOUD_KEY = '__cloud_blob'
+/** The pack's clouds, built by `scripts/build-cloud-atlas.mjs`. */
+const CLOUD_ATLAS_KEY = 'clouds'
 
 function mix(a: number, b: number, t: number): number {
   const ch = (sh: number) => {
@@ -125,6 +142,12 @@ export class ParallaxLayer {
   private readonly cloudGfx: Phaser.GameObjects.Image[] = []
   private readonly cloudTwins: Phaser.GameObjects.Image[] = []
   private clouds: Cloud[] = []
+  /** Which sprite each cloud is — fixed for the round, seeded from the map. */
+  private cloudSprites: CloudSprite[] = []
+  /** The pack atlas, or null when it did not load (`docs/50` §8). */
+  private cloudAtlas: string | null = null
+  /** Last colour set drawn, so the texture is swapped only when it changes. */
+  private lastCloudColour: string | null = null
   private seed = 0
   private themeId = 0
   private ridgeKeys: string[] = []
@@ -205,6 +228,18 @@ export class ParallaxLayer {
       this.cloudTwins.push(make())
     }
 
+    // §D0/§C14: the pack's own clouds when the atlas loaded, T15.03's procedural
+    // blobs when it did not. Resolved once here rather than per frame — the
+    // answer cannot change mid-round, and `docs/50` §8's fallback must not cost
+    // a texture lookup twelve times a frame to stay silent.
+    this.cloudAtlas = scene.textures.exists(CLOUD_ATLAS_KEY) ? CLOUD_ATLAS_KEY : null
+    if (!this.cloudAtlas) {
+      // Once. Twelve clouds x 60 fps is how a warning becomes noise nobody reads.
+      console.warn(
+        `cloud atlas "${CLOUD_ATLAS_KEY}" is not loaded — falling back to procedural blobs`,
+      )
+    }
+
     this.setSeed(seed, themeId)
   }
 
@@ -222,6 +257,8 @@ export class ParallaxLayer {
     this.themeId = themeId
     // Fractions of the visible rect, resolved to pixels at draw time — see the
     // `Cloud.x` doc for the zoom bug that came of doing it the other way.
+    this.cloudSprites = cloudSprites(seed, c.CLOUD_COUNT)
+    this.lastCloudColour = null
     this.clouds = cloudField(
       seed,
       c.CLOUD_COUNT,
@@ -294,7 +331,21 @@ export class ParallaxLayer {
       ts.setSize(view.w, bandH)
     }
 
-    const { color, alpha } = cloudTint(u, c.CLOUD_ALPHA, c.CLOUD_SKY_MIX, c.CLOUD_ALPHA_FLOOR)
+    // **One darkening, not two.** `cloudTint` mixes white toward the sky and
+    // scales alpha by its luminance — right for T15.03's white blob, wrong on
+    // top of a sprite whose colour set already encodes the phase. See
+    // `cloudSpriteTint`.
+    const { color, alpha } = this.cloudAtlas
+      ? cloudSpriteTint(c.CLOUD_ALPHA)
+      : cloudTint(u, c.CLOUD_ALPHA, c.CLOUD_SKY_MIX, c.CLOUD_ALPHA_FLOOR)
+    // Which colour SET the sprites come from (§C14), on top of which `cloudTint`
+    // applies the continuous tint. Two different things: the set is white/grey/
+    // black by phase, the tint is the sky's own bottom colour mixed in, and
+    // §A13's lesson is that the second must be derived from the sky rather than
+    // authored beside it.
+    const colour = cloudColourForPhase(skyPhase(u))
+    const colourChanged = colour !== this.lastCloudColour
+    this.lastCloudColour = colour
     // The wrap span is the width actually on screen, so a cloud leaving the right
     // edge re-enters at the left one however far the camera is zoomed in.
     const span = view.w
@@ -313,6 +364,20 @@ export class ParallaxLayer {
       const scale = cloud.scale * yScale
       const y = view.top + cloud.y * view.h
       const halfW = (c.CLOUD_TEX_W / 2) * scale
+
+      // Swap the texture, never the geometry. Every sprite is displayed at the
+      // same `CLOUD_TEX_W x CLOUD_TEX_H * scale` the procedural blob was, so
+      // `halfW`, the wrap and the parallax below are bit-for-bit T15.03's — this
+      // task changes what a cloud looks like and nothing about where it is.
+      if (this.cloudAtlas && colourChanged) {
+        const frame = cloudFrame(colour, this.cloudSprites[i]!)
+        if (this.scene.textures.getFrame(this.cloudAtlas, frame)) {
+          img.setTexture(this.cloudAtlas, frame)
+          twin.setTexture(this.cloudAtlas, frame)
+          img.setDisplaySize(c.CLOUD_TEX_W * scale, c.CLOUD_TEX_H * scale)
+          twin.setDisplaySize(c.CLOUD_TEX_W * scale, c.CLOUD_TEX_H * scale)
+        }
+      }
 
       img.setVisible(true).setPosition(view.left + x, y).setScale(scale).setAlpha(alpha)
       const tx = cloudTwinX(x, span, halfW)
@@ -377,6 +442,17 @@ export class ParallaxLayer {
     cloudAlpha: number
     /** And on the near ridge, for the same reason. */
     ridgeTint: number
+    /**
+     * Which cloud path is live: the pack atlas, or T15.03's procedural blob.
+     *
+     * A check comparing the sprite's tint against `cloudTint` is comparing it
+     * against the wrong function when the atlas is loaded — the two paths tint
+     * differently on purpose (`cloudSpriteTint`), and without this the check
+     * cannot tell which one it is looking at.
+     */
+    cloudAtlas: string | null
+    /** The frame each cloud is showing, so a check can see the colour set move. */
+    cloudFrames: string[]
   } {
     return {
       seed: this.seed,
@@ -396,6 +472,8 @@ export class ParallaxLayer {
       cloudTint: this.cloudGfx[0]?.tintTopLeft ?? 0,
       cloudAlpha: this.cloudGfx[0]?.alpha ?? 0,
       ridgeTint: this.ridges[this.ridges.length - 1]?.tintTopLeft ?? 0,
+      cloudAtlas: this.cloudAtlas,
+      cloudFrames: this.cloudGfx.map((g) => String(g.frame?.name ?? '')),
     }
   }
 }

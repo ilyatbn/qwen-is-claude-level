@@ -30,5 +30,11 @@ shots/
 
 # Vendored art: 15MB+ against a 12MB budget (docs/70-amendments-v2.md A29).
 # scripts/fetch-assets.sh restores it; assets/atlas/ is what ships.
-assets/vendor/
+#
+# The contents, not the directory: git does not descend into an excluded
+# directory, so `assets/vendor/` would make the negation below unreachable and
+# README.md would stay untracked. docs/51 §8 wants the provenance recorded in
+# the repository, and a record that only exists on one machine records nothing.
+assets/vendor/*
+!assets/vendor/README.md
 .run/

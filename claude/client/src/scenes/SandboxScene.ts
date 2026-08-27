@@ -25,6 +25,7 @@ import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { DebugOverlay } from '../render/debugOverlay'
 import { cloudTint, cycleU, darknessAt, skyPhase } from '../render/sky-math'
+import { cloudSpriteTint } from '../render/clouds-math'
 import { dequantizeAngle } from '../core'
 import { devSurface } from '../dev'
 
@@ -834,6 +835,17 @@ export class SandboxScene extends Phaser.Scene {
       /** `cloudTint` itself, so a check can compare it with the drawn sprite. */
       cloudTintAt(u: number, baseAlpha: number, skyMix: number, alphaFloor: number) {
         return cloudTint(u, baseAlpha, skyMix, alphaFloor)
+      },
+      /**
+       * The tint a **pack sprite** is drawn with, which is not `cloudTint`.
+       *
+       * §D0/T16.04: selecting `Clouds_black` by phase already darkens the cloud,
+       * so applying `cloudTint`'s mix-and-dim on top would darken it twice. A
+       * check must compare against whichever path `parallax.cloudAtlas` says is
+       * live, or it is asserting the wrong function's answer.
+       */
+      cloudSpriteTintAt(baseAlpha: number) {
+        return cloudSpriteTint(baseAlpha)
       },
       setParallaxClock(t: number | null) {
         self.sky?.parallax.setClock(t)
