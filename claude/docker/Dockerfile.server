@@ -29,6 +29,11 @@ RUN mkdir -p crates/game-core/src crates/game-server/src/bin crates/game-wasm/sr
 # Real sources. COPY preserves the build context's mtimes, which can be older
 # than the stubs written above, so cargo would happily reuse the stub artifacts.
 # Touching every source file after the copy is what forces the real rebuild.
+# `game-core` embeds the object masks with `include_bytes!` (docs/73 §D2), so
+# the blob is a build input for the server even though it is art. Copying only
+# `crates` compiled fine until M16 and then failed here and nowhere else, since
+# every other build runs from a checkout that already has it.
+COPY assets/objects/masks.bin assets/objects/masks.bin
 COPY crates crates
 RUN find crates -name '*.rs' -exec touch {} + && cargo build --release -p game-server
 

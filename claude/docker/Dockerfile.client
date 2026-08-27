@@ -10,6 +10,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
 COPY Cargo.toml Cargo.lock ./
+# Same build input as the server needs: `game-core` embeds the object masks with
+# `include_bytes!` (docs/73 §D2), and `game-wasm` depends on `game-core`. The
+# `COPY assets assets` further down is for the build stage, and lands too late
+# and in the wrong stage for this.
+COPY assets/objects/masks.bin assets/objects/masks.bin
 COPY crates crates
 RUN wasm-pack build crates/game-wasm --target web --out-dir /wasm-pkg --release
 
@@ -19,7 +24,14 @@ WORKDIR /app
 COPY client/package.json client/package-lock.json ./client/
 RUN npm --prefix client ci
 COPY client client
-COPY scripts/wasm-build.mjs scripts/wasm-build.mjs
+COPY scripts scripts
+# The whole directory, not `wasm-build.mjs` alone. `npm run build` is
+# `tsc --noEmit && vite build` and tsc typechecks the test files, several of
+# which import a build script across the client boundary for its `.d.mts` types
+# — the mask pipeline, the cloud atlas, the provenance check. Cherry-picking the
+# files meant this image broke every time a test reached for a new one, and the
+# breakage looked like `strict` rejecting `any` rather than a missing COPY. This
+# is a discarded build stage, so the cost is nothing.
 # `client/vite.config.ts` sets `publicDir: '../assets'` — the art lives at the
 # project root because it is shared with the atlas and audio build scripts. Vite
 # emits **nothing** and does not fail when publicDir is absent, so without this

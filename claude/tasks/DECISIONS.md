@@ -659,3 +659,34 @@ the worse outcome; a reader can see them in this commit rather than wondering wh
 `git status` was never clean.
 **If Ilya wanted them held back**, they are one `git revert` of the four purely
 pre-existing files away.
+
+## D-42 — `include_bytes!` made an art file a build input, and only Docker noticed  ·  T16.01
+**`make docker-up` failed on `2ab583a`.**
+```
+error: couldn't read `crates/game-core/src/map/../../../../assets/objects/masks.bin`
+  --> crates/game-core/src/map/objects.rs:20:22
+```
+`docker/Dockerfile.server` copies `crates` and not `assets`, which was correct until
+T16.01 embedded the object masks with `include_bytes!` (§D2, so the pure crate reads its
+own art with no `std::fs`). From that commit the blob is a **build input for the server**
+even though it is art, and `Dockerfile.client` has the same problem via `game-wasm`'s
+dependency on `game-core`.
+**Why nothing caught it:** every other build in this project runs from a checkout that
+already has `assets/`. `./scripts/check.sh` never builds an image, so the gate was green
+across five commits while the container build was broken.
+**Fixed:** both Dockerfiles copy `assets/objects/masks.bin` before their cargo/wasm step.
+
+**A second, separate break behind it.** With the server building, the client image then
+failed `tsc --noEmit` with ~40 `TS7006 implicit any` and `TS2307 cannot find module` —
+because the build stage copied `scripts/wasm-build.mjs` alone, while several client tests
+import a build script across the boundary for its `.d.mts` types (the mask pipeline, the
+cloud atlas, T16.05's provenance check). The imports resolved to `any` and `strict` did
+exactly its job. **Fixed by copying the whole `scripts` tree** rather than cherry-picking:
+the file-by-file version broke every time a test reached for a new script, and the
+breakage presented as `strict` rejecting `any` rather than as a missing `COPY`. It is a
+discarded build stage, so the cost is nothing.
+**Verified:** `make docker-up` builds both images, server healthy, client serving 200 on
+`:8080`.
+**Worth an amendment:** the gate does not build the Docker images, so this class of break
+is invisible to it. Whether that is worth a slow step in `check.sh` is the coordinator's
+call.
