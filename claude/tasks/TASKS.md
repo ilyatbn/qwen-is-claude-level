@@ -352,3 +352,42 @@ half the tree.
 
 **Checkpoint:** generate a map with trees and boulders on it, fire a rocket into one,
 and watch the half you hit disappear — art and collision together.
+
+---
+
+## M17 — Lobbies and queues (8)
+
+A lobby becomes a place you sit in rather than a five-second overlay on a match that has
+already started. `docs/74-amendments-v6.md` §E1 is the enabling idea: **a room in `Lobby`
+has no `World`** — the map, the round clock and the weather come into existence when the
+match starts, which is why a private lobby can change its map size at all.
+
+- [ ] [T17.01](M17/T17.01-lobby-without-a-world.md) — A lobby is a room without a world **(v6)**
+- [ ] [T17.02](M17/T17.02-lobby-state-wire.md) — The lobby on the wire **(v6)**
+- [ ] [T17.03](M17/T17.03-public-lobbies.md) — Public lobbies: fill to five, or bots after ten seconds **(v6)**
+- [ ] [T17.04](M17/T17.04-private-lobbies.md) — Private lobbies: a code, settings and ready **(v6)**
+- [ ] [T17.05](M17/T17.05-closed-match.md) — A live match is closed **(v6)**
+- [ ] [T17.06](M17/T17.06-reaper-counts-humans.md) — Lobbies and matches die when their humans leave **(v6)**
+- [ ] [T17.07](M17/T17.07-lobby-screen.md) — The lobby screen holds the socket **(v6)**
+- [ ] [T17.08](M17/T17.08-main-menu.md) — SHRED, and a menu that steps **(v6)**
+
+**Checkpoint:** two browsers click Quick Game, see each other in a roster, wait ten
+seconds, and land in the same match with three bots. A third browser hosting a private
+game gets a code, a friend joins it, they both ready, and they play on a Large map.
+
+---
+
+## M18 — UI and defects (6)
+
+Six independent items. The one that matters most is the first: the title screen runs a
+real simulation at a third of real time, and thirty seconds in it takes the menu with it.
+
+- [ ] [T18.01](M18/T18.01-title-screen-stops.md) — The title screen stops after thirty seconds **(v6)**
+- [ ] [T18.02](M18/T18.02-smarter-bots.md) — Bots that explore, arm themselves and run **(v6)**
+- [ ] [T18.03](M18/T18.03-clouds-bigger.md) — Clouds are bigger and vary in brightness **(v6)**
+- [ ] [T18.04](M18/T18.04-objects-sit-on-ground.md) — Rocks and bushes are bigger, and sit on the ground **(v6)**
+- [ ] [T18.05](M18/T18.05-toxic-rain-poisons.md) — Toxic rain poisons on hit **(v6)**
+- [ ] [T18.06](M18/T18.06-inventory-icons.md) — Inventory tiles show the item **(v6)**
+
+**Checkpoint:** leave the menu open for two minutes and it still works; stand in toxic
+rain and watch a green health bar drain; look at a boulder and see it touching the ground.

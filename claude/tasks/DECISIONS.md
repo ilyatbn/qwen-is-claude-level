@@ -690,3 +690,73 @@ discarded build stage, so the cost is nothing.
 **Worth an amendment:** the gate does not build the Docker images, so this class of break
 is invisible to it. Whether that is worth a slow step in `check.sh` is the coordinator's
 call.
+
+## D-43 — `docs/` is coordinator-authorized for v6  ·  M17, M18
+**`CLAUDE.md` forbids a builder editing `docs/`.** Ilya authorized it explicitly —
+*"build new docs if needed"* — so `docs/74-amendments-v6.md` is written by me and every
+M17/M18 task cites it, which keeps those task files the same shape as the 169 before
+them. Recorded because the rule it suspends is one of the load-bearing ones, and the
+authorization was a sentence in chat rather than a change to `CLAUDE.md`.
+
+## D-44 — No Redis, and what would change that  ·  M17
+**Asked for explicitly** — *"if you need some backend databases like redis or something
+to better achieve this queue system, do that."*
+**Chosen: no.** `registry.rs:161` already **is** the lobby directory — rooms keyed by id,
+join codes, insertion order for deterministic tie-breaks, and a TTL reaper. Redis buys
+exactly one thing: a directory shared **across processes**. There is no second process
+and no sticky routing, and `docs/62` §7 lists both of those *before* Redis in its own
+scale-out order. Adding a store with no second reader is a mechanism wired to nothing —
+the failure this project has recorded twelve times.
+**What flips it:** wanting lobbies to survive a server restart, or wanting a second
+server. Neither was asked for. The compose block is already there, commented, with the
+path written down.
+**Also rejected: a separate lobby service.** Same reasoning one level up — it would need
+its own directory, its own protocol and a handoff, to replace a `HashMap` that works.
+
+## D-45 — Five is the fill target, six is the seat cap  ·  M17
+**Reconciles two things Ilya said.** *"Up to 5 random people"*, and later *"during
+debugging there can be 5 bots playing... we want to test full games too."*
+**Chosen:** `LOBBY_CAPACITY` 5 is what a lobby fills to and shows; `MAX_PLAYERS` 6 stays
+the hard seat cap. `BOT_COUNT=5` alongside one human is therefore a legal six-seat game
+and needs no spectator concept and no second capacity number.
+**And the reaper rule is the same rule as the testing requirement, not a conflict with
+it:** bots are not occupants, so a room with no humans reaps — but an e2e check drives a
+real client, and that client is the human holding the room open. Five bots fight for
+exactly as long as the tester is connected.
+
+## D-46 — The map is generated at match start  ·  M17
+**Forced by the feature.** A private lobby can only offer map size as a setting if no map
+exists yet to contradict it. Ilya confirmed: *"no problem with map generating when match
+starts. we're still in the menu anyway."*
+**Consequences:** room creation stops paying `docs/71` §B2's 0.6–1.1 s generation cost —
+that moves to match start, where a loading beat is expected. `map_init` is no longer sent
+at join. And `docs/72` §C18's "a Lobby room holds a map, a roster and a code" is
+**overridden** — it holds a roster, a code and its settings.
+
+## D-47 — The title screen stops simulating  ·  M18
+**Diagnosed before it was specified.** `TitleScene.ts:155` steps 20×/s while each step
+advances `SIM_DT` (1/60), so the attract world runs at **one third of real time**.
+`WARMUP_SECONDS` (10 simulated) therefore lands at **~30 s of wall clock** — the reported
+window — and at that instant damage un-gates, the weather scheduler starts, item spawns
+start and teleports start together. At 45 s the scene tears the world down and rebuilds
+it from inside `update()`; a throw there leaves the DOM removed **and** stops Phaser's
+frame loop, which is why the button dies too.
+**Chosen: the title screen does not run the simulation at all.** Ilya: *"i really care
+just generate something random that doesnt require the backend. just make sure the menu
+works."* Fixing the timestep would fix this instance; a background that runs the game can
+always break the menu.
+**Consequence:** `AttractCore` and `Core.attract()` lose their only caller. Recorded, not
+deleted silently.
+
+## D-48 — Toxic rain: puddles out, poison in  ·  M18
+**Not a bug fix — a redesign, on Ilya's instruction.** Toxic rain *does* damage today
+(`TOXIC_DPS` 6 while standing in a puddle for `TOXIC_PUDDLE_LIFE` 3 s), but Ilya: *"never
+seen a puddle of toxic rain so just remove puddles and change them to projectiles that
+hit you and poison you instead."*
+**Chosen:** the drop is a projectile; a hit poisons for `TOXIC_POISON_DURATION` at
+`TOXIC_POISON_DPS`, re-hit resets rather than stacks, a roof protects you, terrain takes
+a bullet-sized carve, and the health bar goes green.
+**Two things this exposes.** There is **no per-player status field** on `PlayerState` —
+shield and overheal are the only timed states — so one has to exist. And **the meteor
+shower has no roof check either**, despite `docs/74` §E13 describing it as "the same
+reasoning the meteor needs"; the occlusion test is one function used twice.
