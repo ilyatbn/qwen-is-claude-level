@@ -8,6 +8,7 @@ import {
   encodeInputBatch,
   CodecError,
   MAP_MAGIC,
+  OBJECT_WIRE_BYTES,
   FLAG,
   flag,
 } from './codec'
@@ -27,6 +28,7 @@ function mapInitFixture(opts: Partial<{
   /** Write a pad count the buffer cannot hold, without growing the buffer. */
   padCountLie: number
   decoCount: number
+  objectCount: number
   rle: Uint8Array
   rleLenLie: number
   carveSeq: number
@@ -36,12 +38,15 @@ function mapInitFixture(opts: Partial<{
   const spawns = opts.spawnCount ?? 2
   const pads = opts.padCount ?? 3
   const decos = opts.decoCount ?? 1
+  const objects = opts.objectCount ?? 2
   const rle = opts.rle ?? new Uint8Array([1, 2, 3, 4])
   // magic, w, h, seed, scale, theme, wind, carve_seq, then the counted sections.
   // `carve_seq` (u32) arrived with T6.16 and this fixture did not follow it —
   // 4 bytes short, so the decoder read `spawn_count` out of the middle of it.
   const size =
-    4 + 4 + 4 + 8 + 1 + 1 + 4 + 4 + 2 + spawns * 4 + 2 + pads * 4 + 2 + decos * 7 + 4 + rle.length
+    // §D6's object section sits between the decorations and the RLE length.
+    4 + 4 + 4 + 8 + 1 + 1 + 4 + 4 + 2 + spawns * 4 + 2 + pads * 4 + 2 + decos * 7 +
+    2 + objects * OBJECT_WIRE_BYTES + 4 + rle.length
   const b = new ArrayBuffer(size)
   const v = new DataView(b)
   let at = 0
@@ -70,6 +75,15 @@ function mapInitFixture(opts: Partial<{
     v.setInt16(at, 400, true); at += 2
     v.setUint8(at++, 0b101)
   }
+  v.setUint16(at, objects, true); at += 2
+  for (let i = 0; i < objects; i++) {
+    v.setUint16(at, 40 + i, true); at += 2   // id
+    v.setInt16(at, 700 + i, true); at += 2   // x
+    v.setInt16(at, 800 + i, true); at += 2   // y
+    v.setUint16(at, 24, true); at += 2       // w
+    v.setUint16(at, 32, true); at += 2       // h
+    v.setUint8(at++, i % 2)                  // flip: varies, so a decoder that
+  }                                          // hardcodes either value fails
   v.setUint32(at, opts.rleLenLie ?? rle.length, true); at += 4
   new Uint8Array(b).set(rle, at)
   return b
@@ -139,6 +153,12 @@ describe('map_init', () => {
       { x: 502, y: 602 },
     ])
     expect(m.decorations).toEqual([{ kind: 7, x: 300, y: 400, flags: 0b101 }])
+    // §D6. After the decorations and before the RLE — and, like the pads above,
+    // everything past it decodes from the right offset only if it is read.
+    expect(m.objects).toEqual([
+      { id: 40, x: 700, y: 800, w: 24, h: 32, flip: false },
+      { id: 41, x: 701, y: 801, w: 24, h: 32, flip: true },
+    ])
     expect(Array.from(m.rle)).toEqual([1, 2, 3, 4])
   })
 

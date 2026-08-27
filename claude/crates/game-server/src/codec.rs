@@ -50,8 +50,21 @@ impl std::error::Error for CodecError {}
 /// u16 spawn_count      then spawn_count × (i16 x, i16 y)
 /// u16 pad_count        then pad_count × (i16 x, i16 y)
 /// u16 decoration_count then decoration_count × (u16 kind, i16 x, i16 y, u8 flags)
+/// u16 object_count     then object_count × (u16 id, i16 x, i16 y, u16 w, u16 h, u8 flip)
 /// u32 rle_byte_len     then the RLE payload
 /// ```
+///
+/// **Objects are sent, and this is not a new entity type** (§D8). The mask
+/// already carries their collision — they *are* terrain from the moment 6b
+/// stamps them (§D1). What crosses here is which sprite is where, which is the
+/// only thing the client cannot derive from a bag of bits, and it is what §D6's
+/// chunk index is built from. Nothing about them ticks and nothing updates: this
+/// section is written once per round and never again.
+///
+/// `w`/`h` are sent even though the client's `objects/manifest.json` has them.
+/// The renderer must build its chunk index whether or not the art loaded
+/// (`docs/50` §8: the game starts with no art at all), and an index that depends
+/// on the atlas is an index that is missing exactly when the fallback needs it.
 ///
 /// **Teleport pads are sent** (§C5), unlike buried slots. They are drawn — a
 /// glowing ring and a charge indicator — and there is nothing to hide: a pad is a
@@ -104,6 +117,16 @@ pub fn encode_map_init_at(map: &Map, carve_seq: u32) -> Vec<u8> {
         b.extend_from_slice(&(d.pos.x as i16).to_le_bytes());
         b.extend_from_slice(&(d.pos.y as i16).to_le_bytes());
         b.push(u8::from(d.flip) | (d.scale_tier << 1));
+    }
+
+    b.extend_from_slice(&(m.objects.len() as u16).to_le_bytes());
+    for o in &m.objects {
+        b.extend_from_slice(&(o.id as u16).to_le_bytes());
+        b.extend_from_slice(&(o.x as i16).to_le_bytes());
+        b.extend_from_slice(&(o.y as i16).to_le_bytes());
+        b.extend_from_slice(&(o.w as u16).to_le_bytes());
+        b.extend_from_slice(&(o.h as u16).to_le_bytes());
+        b.push(u8::from(o.flip));
     }
 
     b.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -173,6 +196,12 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
     let decos = r.u16()? as usize;
     r.take(decos * 7)?;
 
+    // Skipped, not decoded: objects are art placement, and this parser exists to
+    // let a client carve the way the server does. The mask it returns already
+    // has them stamped into it.
+    let objects = r.u16()? as usize;
+    r.take(objects * OBJECT_WIRE_BYTES)?;
+
     let payload_len = r.u32()? as usize;
     let payload = r.take(payload_len)?;
     let mask =
@@ -183,6 +212,12 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
         teleport_pads,
     })
 }
+
+/// `u16 id, i16 x, i16 y, u16 w, u16 h, u8 flip`.
+///
+/// Named, and used by both the writer's size hint and the reader's skip, so the
+/// two cannot drift — the decoration section above spells `7` twice.
+pub const OBJECT_WIRE_BYTES: usize = 11;
 
 fn scale_byte(s: game_core::constants::MapScale) -> u8 {
     use game_core::constants::MapScale::*;
@@ -585,6 +620,8 @@ mod tests {
             + map.meta.teleport_pads.len() * 4
             + 2
             + map.meta.decorations.len() * 7
+            + 2
+            + map.meta.objects.len() * OBJECT_WIRE_BYTES
             + 4
             + rle_len;
         assert_eq!(b.len(), expect);
@@ -609,6 +646,61 @@ mod tests {
     /// deliberately present, which is a distinction one section header apart in a
     /// hand-rolled binary format. This reads the bytes back rather than trusting
     /// that they were written.
+    #[test]
+    fn map_init_carries_every_object_and_round_trips_the_mask_after_it() {
+        let map = game_core::map::generate(4242, game_core::constants::MapScale::Small);
+        assert!(
+            !map.meta.objects.is_empty(),
+            "the map has no objects, so this test asserts nothing"
+        );
+        let b = encode_map_init(&map);
+
+        // Counted at both ends: the section says how many, and the parser that
+        // skips it still lands on a decodable mask. A wrong stride here would
+        // desynchronise the RLE payload and `decode_map_init_parts` would fail —
+        // which is the point of asserting on the mask rather than on the count.
+        let parts = decode_map_init_parts(&b).expect("decode");
+        assert_eq!(parts.mask.hash(), map.mask.hash());
+        assert_eq!(parts.teleport_pads.len(), map.meta.teleport_pads.len());
+    }
+
+    #[test]
+    fn every_object_field_survives_the_wire() {
+        let map = game_core::map::generate(4242, game_core::constants::MapScale::Small);
+        let b = encode_map_init(&map);
+
+        // Walk to the object section by replaying the layout, so this reads the
+        // bytes rather than trusting the encoder's own arithmetic.
+        let mut at = 4 + 4 + 4 + 8 + 1 + 1 + 4 + 4;
+        let u16_at = |b: &[u8], i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
+        let i16_at = |b: &[u8], i: usize| i16::from_le_bytes([b[i], b[i + 1]]);
+        at += 2 + u16_at(&b, at) as usize * 4; // spawns
+        at += 2 + u16_at(&b, at) as usize * 4; // pads
+        at += 2 + u16_at(&b, at) as usize * 7; // decorations
+
+        let count = u16_at(&b, at) as usize;
+        assert_eq!(count, map.meta.objects.len());
+        at += 2;
+        for (i, o) in map.meta.objects.iter().enumerate() {
+            let r = at + i * OBJECT_WIRE_BYTES;
+            assert_eq!(u16_at(&b, r) as u32, o.id, "object {i} id");
+            assert_eq!(i16_at(&b, r + 2) as i32, o.x, "object {i} x");
+            assert_eq!(i16_at(&b, r + 4) as i32, o.y, "object {i} y");
+            assert_eq!(u16_at(&b, r + 6) as u32, o.w, "object {i} w");
+            assert_eq!(u16_at(&b, r + 8) as u32, o.h, "object {i} h");
+            assert_eq!(b[r + 10] != 0, o.flip, "object {i} flip");
+        }
+
+        // The control: flip must actually vary, or "flip survives" is satisfied
+        // by a field that is false everywhere.
+        let flipped = map.meta.objects.iter().filter(|o| o.flip).count();
+        assert!(
+            flipped > 0 && flipped < map.meta.objects.len(),
+            "{flipped} of {} objects are flipped — the flag does not vary",
+            map.meta.objects.len()
+        );
+    }
+
     #[test]
     fn map_init_carries_every_teleport_pad() {
         let map = game_core::map::generate(7, MapScale::Small);

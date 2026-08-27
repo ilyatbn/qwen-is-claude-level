@@ -68,6 +68,7 @@ function initMirror(
     spawnPoints: [],
     pads,
     decorations: [],
+    objects: [],
     rle: c.maskRle(),
   })
   return m
@@ -96,6 +97,7 @@ function freshMirror(): { mirror: WorldMirror; resyncs: number[] } {
     spawnPoints: [],
     pads: [],
     decorations: [],
+    objects: [],
     rle: core.maskRle(),
   })
   return { mirror, resyncs }
@@ -370,6 +372,7 @@ describe('roster and entities', () => {
         spawnPoints: [],
         pads: [],
         decorations: [],
+        objects: [],
         rle,
       }),
     ).toThrow() // an empty RLE cannot load — the guard is real
@@ -418,6 +421,7 @@ describe('carve stream resumption', () => {
       spawnPoints: [],
       pads: [],
       decorations: [],
+      objects: [],
       rle: core.maskRle(),
     })
 
@@ -444,6 +448,7 @@ describe('carve stream resumption', () => {
       spawnPoints: [],
       pads: [],
       decorations: [],
+      objects: [],
       rle: core.maskRle(),
     })
     mirror.applyCarve(50, () => {}, 0) // 42..49 missing

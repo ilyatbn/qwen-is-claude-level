@@ -17,6 +17,8 @@ import { DeathOverlay } from '../ui/deathOverlay'
 import { TombstoneLayer } from '../render/tombstones'
 import { BirdLayer } from '../render/birds'
 import { padUnderfoot, type PadView } from '../render/pads'
+import { atlasArt } from '../render/objects'
+import type { MapObject } from '../net/codec'
 import { C, Core, dequantizeAngle } from '../core'
 import { asRecord, Connection, type LobbyIntent, type Welcome } from '../net/connection'
 import { WorldMirror, hex } from '../net/worldMirror'
@@ -160,6 +162,8 @@ export class GameScene extends Phaser.Scene {
   private birds!: BirdLayer
   /** §C5's pads, as `map_init` gave them. The layer lives in `WorldView` (§C1). */
   private padViews: PadView[] = []
+  /** §D6's scenery, straight off the wire — the count the index is checked against. */
+  private mapObjects: MapObject[] = []
   /** The local player's pad charge, `0..1`, straight from the snapshot. */
   private teleportCharge = 0
   private results!: ResultsScreen
@@ -832,6 +836,13 @@ export class GameScene extends Phaser.Scene {
     // renderer reading it would draw nothing while looking correct.
     this.padViews = init.pads.map((p, i) => ({ id: i, x: p.x, y: p.y }))
     this.world.pads.build(this.padViews)
+
+    // §D6. From the wire for the same reason the pads are: a networked client
+    // never runs the generator. `atlasArt` returns null frames when the objects
+    // atlas did not load, and the bake then draws terrain with no scenery on it
+    // rather than failing — `docs/50` §8, the game starts with no art at all.
+    this.mapObjects = init.objects
+    this.world.terrain.setObjects(init.objects, atlasArt(this.textures, 'objects'))
     // The item layer lives in the shared stack (§C0), so its registry is set
     // here rather than in `create` — there is no layer before there is a world.
     this.world.items.setRegistry(this.core.itemRegistryJson())
@@ -1755,6 +1766,24 @@ export class GameScene extends Phaser.Scene {
           // nothing, which is the §A39 shape this list exists to catch.
           pads: self.padViews.length,
           padsDrawn: self.world?.pads.count ?? 0,
+          // §D6, both ends again: what `map_init` carried, and what the index
+          // the bake reads actually holds. `objects` alone would pass for a
+          // scene that decoded them and never called `setObjects` — which is
+          // exactly the "renderer never told the map had changed" shape.
+          objects: self.mapObjects.length,
+          objectsIndexed: self.world?.terrain.objectIndex?.count ?? 0,
+          objectChunks: self.world?.terrain.stats.objectChunks ?? 0,
+          objectPositions: self.mapObjects.map((o) => ({
+            id: o.id,
+            x: o.x,
+            y: o.y,
+            w: o.w,
+            h: o.h,
+            flip: o.flip,
+          })),
+          // `docs/60` §6's rebake budget, read from the renderer's own
+          // instrument rather than a stopwatch the check starts itself.
+          lastBakeMs: self.world?.terrain.stats.lastBakeMs ?? 0,
           padPositions: self.padViews.map((p) => ({ id: p.id, x: p.x, y: p.y })),
           // The local player's charge as the client has it, so a check can watch
           // it fill rather than sleeping for two seconds and hoping.

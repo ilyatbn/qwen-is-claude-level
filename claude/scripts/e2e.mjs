@@ -76,6 +76,9 @@ const CHECKS = [
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
   // §C0's gate: destroying terrain must change the picture, not just the mask.
   { name: 'terrain-render', file: 'scripts/checks/terrain-render.mjs', url: '?sandbox=1&seed=4242' },
+  // §D1's gate: destroying terrain must take the SCENERY's pixels with it.
+  // Standalone — it needs a real round for `map_init` to carry the objects.
+  { name: 'objects', file: 'scripts/checks/objects.mjs', standalone: true },
   // §C4/§C23: you must be able to see what you fired — in the GAME, and for both
   // delivery kinds. Standalone and on a real server since T13.06.6: it ran on
   // `?sandbox=1`, and the sandbox is the one scene that calls

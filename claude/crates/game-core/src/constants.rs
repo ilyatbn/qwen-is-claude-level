@@ -747,7 +747,19 @@ pub const MAX_INPUT_QUEUE: usize = 8;
 pub const VIEWPORT_W: u32 = 1280;
 pub const VIEWPORT_H: u32 = 720;
 /// Chunks re-baked per frame, to avoid hitches.
+///
+/// A **count**, not a duration — see `CHUNK_REBAKE_MS` directly below, which is
+/// also 4 and means something else entirely. Anything asserting a time budget
+/// wants that one.
 pub const CHUNK_REBAKE_BUDGET: u32 = 4;
+/// Wall-clock ceiling for **one** chunk rebake, ms. `docs/60` §6's table row.
+///
+/// A different number from `CHUNK_REBAKE_BUDGET` above, which is a *count* of
+/// chunks per frame — the two are four and four and mean nothing alike. It lives
+/// here because `docs/60` §6 states it and nothing in the codebase mirrored it,
+/// so the only way to assert it was to spell `4` in a check and call that a
+/// budget (`CLAUDE.md`: never hardcode a number in a test).
+pub const CHUNK_REBAKE_MS: f32 = 4.0;
 /// Thickness of the grass/edge highlight on terrain.
 pub const EDGE_BAND_PX: i32 = 5;
 /// Background scroll rate relative to camera.

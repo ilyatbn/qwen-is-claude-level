@@ -16,6 +16,8 @@
 import type { Core } from '../core'
 import { C } from '../core'
 import { BackdropMask, BakeScratch, bakeChunk, type BakeLayers } from './chunkBake'
+import { ObjectIndex, type ObjectArt } from './objects'
+import type { MapObject } from '../net/codec'
 
 /** The slice of Phaser this needs, so tests can stub it without importing Phaser. */
 export interface TextureHost {
@@ -43,7 +45,10 @@ export interface TerrainDeps {
 
 export interface TerrainStats {
   bakesThisFrame: number
+  /** The slowest **single** chunk bake of the last frame, ms (`docs/60` §6). */
   lastBakeMs: number
+  /** Every chunk baked last frame, added up — what `lastBakeMs` used to hold. */
+  frameBakeMs: number
   totalBakeMs: number
   /** `buildAll` split: the mask-only backdrop pass... */
   backdropMs: number
@@ -51,6 +56,10 @@ export interface TerrainStats {
   chunkBakeMs: number
   pending: number
   chunkCount: number
+  /** Scenery installed by `setObjects` (§D6). Zero until `map_init` arrives. */
+  objectCount: number
+  /** How many chunks hold at least one — the index's own reach. */
+  objectChunks: number
 }
 
 let generationCounter = 0
@@ -97,6 +106,10 @@ export class TerrainRenderer {
    */
   private caveBackdrop: boolean
 
+  /** §D6's chunk → objects index. Null until `map_init` arrives. */
+  private objects: ObjectIndex | null = null
+  private objectArt: ObjectArt | null = null
+
   private readonly generation: number
   private readonly keys: string[] = []
   private readonly sprites: Array<{ destroy(): void }> = []
@@ -107,11 +120,14 @@ export class TerrainRenderer {
   readonly stats: TerrainStats = {
     bakesThisFrame: 0,
     lastBakeMs: 0,
+    frameBakeMs: 0,
     totalBakeMs: 0,
     backdropMs: 0,
     chunkBakeMs: 0,
     pending: 0,
     chunkCount: 0,
+    objectCount: 0,
+    objectChunks: 0,
   }
 
   private readonly deps: TerrainDeps
@@ -232,7 +248,36 @@ export class TerrainRenderer {
       edge: this.edge,
       back: this.caveBackdrop ? this.back : null,
       backSource: this.caveBackdrop ? (this.snapshot ?? null) : null,
+      objects: this.objects,
+      objectArt: this.objectArt,
     }
+  }
+
+  /**
+   * Install the round's scenery and re-bake every chunk (§D6).
+   *
+   * **Built from the wire, not from `core.meta`**, for the reason §C5's pads
+   * already document: a networked client never runs the generator, so
+   * `core.meta.objects` is empty and a renderer reading it would draw nothing
+   * while looking perfectly correct.
+   *
+   * Marking every chunk dirty is the other half. A renderer handed an index and
+   * never told the map changed shows the scenery only where something else
+   * happens to carve — which is precisely the "terrain renderer never told the
+   * map had changed" bug this project already paid for once.
+   */
+  setObjects(objects: readonly MapObject[], art: ObjectArt | null): void {
+    this.objects = new ObjectIndex(objects, C().CHUNK_SIZE, this.chunksX, this.chunksY)
+    this.objectArt = art
+    for (const id of this.textureByChunk.keys()) this.pending.add(id)
+    this.stats.pending = this.pending.size
+    this.stats.objectCount = this.objects.count
+    this.stats.objectChunks = this.objects.occupiedChunks
+  }
+
+  /** The index, for the debug HUD and for tests that assert it was installed. */
+  get objectIndex(): ObjectIndex | null {
+    return this.objects
   }
 
   /** Whether interior air is being painted with dark rock right now. */
@@ -308,17 +353,30 @@ export class TerrainRenderer {
 
     const ordered = [...this.pending].sort((a, b) => this.dist(a, cameraCenter, size) - this.dist(b, cameraCenter, size))
 
-    const t0 = now()
+    // **Timed per bake, not per frame.** This wrapped the whole loop, so
+    // `lastBakeMs` was the total for up to `CHUNK_REBAKE_BUDGET` chunks while
+    // its name — and every assertion pinned to it — said one. `docs/60` §6's
+    // ceiling is a *single* chunk, so comparing the total against it is up to
+    // four times stricter than the budget, and the number reported is a
+    // different quantity from the one it is called. The instrument being the
+    // bug, again.
+    let worst = 0
+    let total = 0
     for (const id of ordered.slice(0, budget)) {
       const texture = this.textureByChunk.get(id)
       this.pending.delete(id)
       if (!texture) continue
       const cx = id % this.chunksX
       const cy = Math.floor(id / this.chunksX)
+      const t0 = now()
       this.deps.bake(texture, cx, cy)
+      const ms = now() - t0
+      if (ms > worst) worst = ms
+      total += ms
       this.stats.bakesThisFrame++
     }
-    this.stats.lastBakeMs = now() - t0
+    this.stats.lastBakeMs = worst
+    this.stats.frameBakeMs = total
     this.stats.pending = this.pending.size
   }
 

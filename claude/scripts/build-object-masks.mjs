@@ -279,8 +279,13 @@ export function build(packRoot = PACK_ROOT) {
     })),
   }
 
+  // **Frames are named by id, not by key.** `map_init` carries the id and
+  // nothing else — a renderer holding an id and a key-named atlas would need
+  // `objects/manifest.json` fetched and parsed before it could draw anything,
+  // which is a second failure path in front of the art. The key stays in the
+  // manifest for humans; §B16's position-is-the-id rule is what makes this safe.
   const sheet = pack(
-    entries.map((e) => ({ frame: e.key, art: e.art, w: e.w, h: e.h })),
+    entries.map((e) => ({ frame: `obj_${e.id}`, art: e.art, w: e.w, h: e.h })),
   )
   const png = new PNG({ width: sheet.w, height: sheet.h })
   png.data.fill(0)

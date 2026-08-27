@@ -16,6 +16,7 @@
 import type { Core } from '../core'
 import { C } from '../core'
 import { BackdropMask, backdropBits, edgeBits, stencilBits, tileOffset } from './chunkBake-math'
+import { drawObjects, type ObjectArt, type ObjectIndex } from './objects'
 
 export {
   chunkOrigin,
@@ -113,6 +114,10 @@ export interface BakeLayers {
   back?: CanvasImageSource | null
   /** The dilated silhouette that decides where "inside the landmass" is. */
   backSource?: BackdropMask | null
+  /** Scenery overlapping this chunk (§D6), or null before map_init arrives. */
+  objects?: ObjectIndex | null
+  /** Resolves an object frame to art, or null with no atlas (`docs/50` §8). */
+  objectArt?: ObjectArt | null
 }
 
 export function bakeChunk(
@@ -145,13 +150,28 @@ export function bakeChunk(
 
   buildStencil(core, chunkX, chunkY, scratch)
 
-  // 1. the rock body, punched to the live mask, composited over the backdrop
+  // 1. the rock body and 2b the objects, both punched to the live mask.
+  //
+  // **Fill, then objects, then `destination-in`** — the order `docs/12` §2 and
+  // §D6 both give, and it is load-bearing rather than stylistic. This used to
+  // read stencil-then-`source-in`-fill, which clips one layer correctly and
+  // cannot clip two: `source-in` keeps only where the *new* drawing lands, so
+  // objects drawn that way would erase the rock everywhere they are not.
+  //
+  // Drawing the objects before the punch-out is the whole of §D1's payoff.
+  // Destruction needs no per-object work at all: `buildStencil` read the live
+  // mask a few lines up, so a carve that took half a rock has already removed
+  // those bits, and `destination-in` drops the art over them with it.
   const body = scratch.edgeCtx
   body.save()
-  body.globalCompositeOperation = 'copy'
-  body.drawImage(scratch.stencilCanvas, 0, 0)
-  body.globalCompositeOperation = 'source-in'
+  body.globalCompositeOperation = 'source-over'
+  body.clearRect(0, 0, size, size)
   drawTiled(body, fillImage, chunkX, chunkY, size)
+  if (layers.objects && layers.objectArt) {
+    drawObjects(body, layers.objects, layers.objectArt, chunkX, chunkY, size)
+  }
+  body.globalCompositeOperation = 'destination-in'
+  body.drawImage(scratch.stencilCanvas, 0, 0)
   body.restore()
   ctx.drawImage(scratch.edgeCanvas, 0, 0)
 

@@ -369,3 +369,114 @@ and at 3/12 it sits exactly on the floor with the next step red.
 **Cheap hardening when it next bites:** sample more than 12, or bias the sample toward
 the late candidates — the property asserted is *localisation*, and the early ticks
 contribute nothing but wash-outs.
+
+## D-25 — CORRECTED: the spec was right, the code had drifted  ·  T16.03
+**First reading, wrong:** I recorded that `docs/12` §2 and §D6 describe a
+`destination-in` the shipped bake did not have, and told the coder to aim the
+falsification at the `source-in` at `chunkBake.ts:150` instead. **That was backwards.**
+**What is actually true:** the spec was right and the *implementation* had drifted from
+it. The old `stencil` → `source-in` → `fill` clips **one** layer correctly and **cannot
+clip two** — `source-in` keeps only where the *new* drawing lands, so objects composited
+that way would have erased the rock everywhere they are not. My instruction to draw
+objects "inside the `body` scratch while `source-in` is still in effect" was that exact
+bug.
+**What shipped:** `chunkBake.ts:165-175` now reads fill → objects → `destination-in`
+with the stencil, which is what `docs/12` §2 and §D6 say. The falsification target is
+the `destination-in` at `chunkBake.ts:173`.
+**No amendment owed** — the reverse of what I first wrote. And the step-0 concern does
+not apply: objects go into the `body` scratch while the cave backdrop is composited
+onto `ctx`, so an object over a cave mouth cannot show art where the mask is air.
+**Kept as a correction rather than deleted:** a coordinator ruling that would have
+produced a wrong composite is worth more on the record than off it.
+
+## D-26 — T16.03's payoff is asserted in e2e, and its unit half does not prove it  ·  T16.03
+**Decided by:** me, and it is a cost, not a win.
+**The constraint:** `client/vite.config.ts:46` is `environment: 'node'`.
+`chunkBake.test.ts` covers only the pure bit functions in `chunkBake-math.ts`;
+`bakeChunk` cannot run there at all, because `BakeScratch` calls
+`document.createElement('canvas')`. No client test uses a canvas today. So T16.03's
+headline assertion — *carve half an object, its art vanishes in the carved half and
+survives in the other* — **cannot be written under vitest as it stands.**
+**Rejected:** adding a canvas implementation to vitest. A node rasterizer would prove
+something about node-canvas, not about Chrome, and `docs/72` §C2 requires rendered
+pixels in the real thing for anything visible. This is the most visible claim in M16.
+**Chosen:** the carve-half assertion lives in `node scripts/e2e.mjs objects`, **written
+now and unrun**, with a control region, a control frame, both halves asserted in the
+same test, and the falsification aimed at `source-in` (D-25). It runs in the
+end-of-M16 sweep per D-07.
+**What this costs, stated plainly:** a green
+`npm --prefix client test -- --run chunkBake` **does not prove T16.03's central
+claim.** It proves the chunk→object index and the bit math. The claim that destruction
+takes the art with it is unverified until the sweep. Anyone reading that green as proof
+of the payoff is reading it wrong.
+**Related trap:** `terrain.ts:135-152` injects `deps?.createCanvas` and `deps?.bake`.
+A test that injects a fake `bake` proves **scheduling**, never drawing.
+
+## D-27 — §D8 is wrong: objects do go on the wire  ·  T16.03
+**Spec defect.** §D8: *"No new entity type on the wire… The only new data is the
+manifest, which is client-side art."* An object section in `map_init` is new wire data.
+**Why there was no alternative:** §D6 requires a chunk→object index; the client cannot
+build one without knowing which sprite is where; and deriving it client-side would
+break §D2's *"only the server stamps"* — the one rule that stops server and client
+disagreeing about the map.
+**Chosen:** an object section in `map_init`, `OBJECT_WIRE_BYTES = 11` named once and
+used by **both** the writer's size hint and the reader's skip — which also fixes the
+decoration section that spelled `7` twice.
+**Consequence:** **an amendment to §D8 is owed**, before someone reads it and deletes
+the section.
+
+## D-28 — `lastBakeMs` timed four chunks while its name said one  ·  T16.03
+**Instrument bug, found before its first use.** `terrain.ts:352-363` started a clock,
+baked up to `CHUNK_REBAKE_BUDGET` (4) chunks in a loop, and stored the **total** as
+`lastBakeMs`. The new e2e check compared that total against `CHUNK_REBAKE_MS` — a
+**one-chunk** ceiling from `docs/60` §6 — and printed it as *"worst single rebake"*.
+Up to 4× stricter than the spec states, reporting a different quantity from the one it
+names. `CLAUDE.md`: *the instrument is often the bug.*
+**Chosen:** each `deps.bake` call is timed individually and `lastBakeMs` keeps the max
+single bake. The old quantity survives as `frameBakeMs` — it is the honest per-frame
+cost and the debug HUD may want it. **A field that meant two things became two fields.**
+**And the gate moved off the max.** `docs/60` §6's ceilings are explicitly generous
+*"so a 50× regression is caught and normal variance is not"*; a max-of-40 wall-clock in
+a browser on a loaded box is decided by one GC pause. Gates on the **median** of 40,
+reports the max. The instrument guard stays and now fires on an empty sample set rather
+than a zero max — a zero that reads as "fast" is the worse failure.
+**Also:** `CHUNK_REBAKE_BUDGET`'s doc now points at `CHUNK_REBAKE_MS`. Both are 4 and
+they mean nothing alike.
+
+## D-29 — A seam check that reported `ok` without asserting anything  ·  T16.03
+**Caught before its first run.** `scripts/checks/objects.mjs:190` called
+`ok('no object spans a chunk boundary on this seed — seam case not exercised')` —
+**green output for an assertion that did not run.** On a pinned seed that is
+deterministic: it either always runs or never does, and nobody knew which, because the
+check has never executed.
+**Measured off the placement pass, no browser needed:**
+
+| seed / scale | objects | span a vertical seam | horizontal |
+|---|---|---|---|
+| 4242 / Small | 12 | 5 | 3 |
+| 31337 / Small | 12 | **0** | 2 |
+| 1 / Small | 12 | 2 | 0 |
+
+So on the pinned seed the branch would **always** have run and the skip was dead code —
+but `31337/Small` is exactly the silent-skip case, one seed change away.
+**Chosen:** the skip is now `fail`, and the precondition is guarded where the *fast*
+gate can see it — `seed_4242_small_has_an_object_across_a_chunk_seam` in
+`map/gen/objects.rs`. A drift in generation now breaks `cargo test` instead of quietly
+stripping §D6's seam coverage from a browser check nobody has run.
+
+## D-30 — What T16.03's green gate does and does not prove  ·  T16.03
+**Stated here because it is the most misreadable green in this project.**
+`chunkBake.test.ts` imports from `./chunkBake-math` and `./objects`. **It never imports
+`./chunkBake`.** The only importer of `bakeChunk` in the whole client is `terrain.ts`,
+production. Those tests would pass identically with `bakeChunk` deleted.
+So the bake was rewritten — `copy`/`source-in` → `source-over`/`clearRect`/
+`destination-in`, plus a new object draw inserted mid-sequence — and **not one line of
+that composite path has been executed by anything that has run.**
+**What the green gate proves:** the chunk→object index, the wire encoding on both sides,
+and the geometry of the draw calls — the arguments, never the picture.
+**What it does not prove:** that a single object pixel reaches the screen, or disappears
+with a carve. That is `scripts/checks/objects.mjs`, written and never executed. Its
+first run is the M16 e2e sweep.
+**The artifact was honest and the summary was not** — `chunkBake.test.ts:396-403` says
+this in the file itself, unprompted, and the report upgraded it. Recorded because that
+is the direction that misleads.

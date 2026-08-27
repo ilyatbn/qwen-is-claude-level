@@ -653,6 +653,32 @@ mod tests {
         assert!(crate::map::gen::borders_hold(&o.mask), "borders");
     }
 
+    /// The precondition `scripts/checks/objects.mjs` depends on.
+    ///
+    /// §D6 requires an object crossing a chunk boundary to draw in **both**,
+    /// offset. The only assertion that can see that is the browser check, and it
+    /// runs on `FIXED_SEED` 4242 at Small — so if generation drifts and that map
+    /// stops having a straddling object, the seam requirement silently loses all
+    /// coverage. Counted here instead, where the fast gate can see it: seed
+    /// 31337 at Small has none, so this is a real property of a real seed and not
+    /// a thing every map happens to have.
+    #[test]
+    fn seed_4242_small_has_an_object_across_a_chunk_seam() {
+        let chunk = crate::constants::CHUNK_SIZE as i32;
+        let map = crate::map::generate(4242, MapScale::Small);
+        let spanning = map
+            .meta
+            .objects
+            .iter()
+            .filter(|o| o.x / chunk != (o.x + o.w as i32 - 1) / chunk)
+            .count();
+        assert!(
+            spanning > 0,
+            "no object crosses a vertical chunk seam on seed 4242/Small — \
+             scripts/checks/objects.mjs can no longer exercise §D6's seam case"
+        );
+    }
+
     #[test]
     fn a_theme_shifts_which_categories_appear() {
         // Weighted, not filtered — so this asserts the *mix* moves, not that a

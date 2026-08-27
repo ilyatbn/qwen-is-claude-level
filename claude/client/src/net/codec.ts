@@ -14,6 +14,15 @@ export const MAP_MAGIC = 0x4d415031
 
 export class CodecError extends Error {}
 
+export interface MapObject {
+  id: number
+  x: number
+  y: number
+  w: number
+  h: number
+  flip: boolean
+}
+
 export interface MapInit {
   width: number
   height: number
@@ -27,6 +36,15 @@ export interface MapInit {
   /** §C5's indestructible pads, in id order — the index **is** the id. */
   pads: { x: number; y: number }[]
   decorations: { kind: number; x: number; y: number; flags: number }[]
+  /**
+   * Scenery stamped into the terrain at pass 6b (§D5).
+   *
+   * Their collision is already in the mask — they *are* terrain (§D1). This is
+   * only which sprite is where, so the renderer can draw the art. `w`/`h` come
+   * over the wire rather than out of `objects/manifest.json` so the chunk index
+   * can be built with no atlas loaded (`docs/50` §8).
+   */
+  objects: MapObject[]
   /** Fed straight to `Core.loadMask`, which decodes it in Rust. */
   rle: Uint8Array
 }
@@ -120,6 +138,16 @@ class Reader {
   }
 }
 
+/**
+ * `u16 id, i16 x, i16 y, u16 w, u16 h, u8 flip` — `codec.rs`'s own
+ * `OBJECT_WIRE_BYTES`.
+ *
+ * Exported so the suite's byte fixture reads it instead of spelling `11` a
+ * second time. The decoration section above spells `7` in three places and they
+ * have stayed in step by luck.
+ */
+export const OBJECT_WIRE_BYTES = 11
+
 export function decodeMapInit(buf: ArrayBuffer): MapInit {
   const r = new Reader(new DataView(buf))
   const magic = r.u32()
@@ -170,6 +198,22 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
     decorations.push({ kind: r.u16(), x: r.i16(), y: r.i16(), flags: r.u8() })
   }
 
+  const objCount = r.u16()
+  if (objCount * OBJECT_WIRE_BYTES > r.remaining) {
+    throw new CodecError(`object_count ${objCount} exceeds the payload`)
+  }
+  const objects: MapObject[] = []
+  for (let i = 0; i < objCount; i++) {
+    objects.push({
+      id: r.u16(),
+      x: r.i16(),
+      y: r.i16(),
+      w: r.u16(),
+      h: r.u16(),
+      flip: r.u8() !== 0,
+    })
+  }
+
   const rleLen = r.u32()
   if (rleLen !== r.remaining) {
     throw new CodecError(`rle_byte_len ${rleLen} disagrees with ${r.remaining} remaining`)
@@ -187,6 +231,7 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
     spawnPoints,
     pads,
     decorations,
+    objects,
     rle,
   }
 }

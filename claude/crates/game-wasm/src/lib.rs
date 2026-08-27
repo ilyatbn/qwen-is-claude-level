@@ -743,6 +743,7 @@ pub fn constants_json() -> String {
         MAX_FALL_SPEED => c::MAX_FALL_SPEED,
         EDGE_BAND_PX => c::EDGE_BAND_PX,
         CHUNK_REBAKE_BUDGET => c::CHUNK_REBAKE_BUDGET,
+        CHUNK_REBAKE_MS => c::CHUNK_REBAKE_MS,
         PARALLAX_FACTOR => c::PARALLAX_FACTOR,
         CAMERA_LERP => c::CAMERA_LERP,
         CAMERA_ZOOM => c::CAMERA_ZOOM,

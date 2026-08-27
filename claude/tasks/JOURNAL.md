@@ -4369,3 +4369,20 @@ what prove 6b ran; `meta_digest` hashes `objects.len()` unconditionally, so its 
 would have moved either way. Six fixtures broke that had nothing to do with objects —
 all six hardcoded a fact about a generated world. Four were caught only by their own
 vacuity guards. e2e deferred per D-07.
+
+## T16.03 — Draw objects, clipped by the mask (v5)
+
+Objects were on no wire at all, so `map_init` gained a section — §D8 says otherwise and
+an amendment is owed, but §D6 needs a chunk→object index and deriving it client-side
+would break §D2's "only the server stamps". The bake now reads fill → objects →
+`destination-in`, which is what `docs/12` §2 said all along: the old
+stencil-then-`source-in` clips one layer and cannot clip two. Frames are `obj_<id>`, so
+the renderer draws from the wire id with no manifest fetch in front of the art. Two
+instrument fixes: `CHUNK_REBAKE_MS` (§6 stated 4 ms and nothing mirrored it), and
+`lastBakeMs`, which timed a whole frame's four chunks while its name said one — now max
+single bake, with the old quantity kept as `frameBakeMs`. **Nothing that runs today
+covers the bake**: vitest is `environment:'node'` with no canvas, and
+`chunkBake.test.ts` never imports `chunkBake` — those tests pass with `bakeChunk`
+deleted. The payoff lives in `scripts/checks/objects.mjs`, written and never executed;
+its seam step was a `skip-reported-as-pass` and is now a `fail`, with the precondition
+guarded in `cargo test`. e2e deferred per D-07.

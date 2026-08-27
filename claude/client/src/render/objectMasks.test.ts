@@ -540,11 +540,13 @@ describe('the committed table', () => {
     const atlas = JSON.parse(readFileSync(join(root, 'assets/atlas/objects.json'), 'utf8')) as {
       frames: Record<string, { frame: { w: number; h: number } }>
     }
-    const missing = manifest.objects.filter((o) => !atlas.frames[o.key]).map((o) => o.key)
+    // Named by id: `map_init` carries the id, so the renderer resolves the frame
+    // without fetching objects/manifest.json first.
+    const missing = manifest.objects.filter((o) => !atlas.frames[`obj_${o.id}`]).map((o) => o.key)
     expect(missing).toEqual([])
     const mismatched = manifest.objects
       .filter((o) => {
-        const f = atlas.frames[o.key]
+        const f = atlas.frames[`obj_${o.id}`]
         return !f || f.frame.w !== o.w || f.frame.h !== o.h
       })
       .map((o) => o.key)

@@ -390,3 +390,189 @@ describe('BackdropMask', () => {
     expect(longest).toBeLessThan(40)
   })
 })
+
+// ---------------------------------------------------------------------------
+// §D6 — the chunk → objects index, and the draw calls it produces
+//
+// **None of this is a pixel assertion, and none of it proves T16.03's central
+// claim.** `client/vite.config.ts` runs vitest with `environment: 'node'`, there
+// is no canvas or jsdom in the client's dependencies, and `BakeScratch` calls
+// `document.createElement('canvas')` — so `bakeChunk` cannot execute here at all.
+// What follows covers the index and the geometry of the draw calls.
+//
+// That the art disappears with the terrain — the whole of §D1's payoff — is
+// asserted on rendered pixels in `scripts/checks/objects.mjs`, which is written
+// and **not run** in this task (D-07 defers e2e to the end-of-M16 sweep). Until
+// that sweep runs, this file passing does not mean the feature works.
+// ---------------------------------------------------------------------------
+
+import { ObjectIndex, atlasArt, drawObjects, frameName, localOrigin } from './objects'
+import type { MapObject } from '../net/codec'
+
+const OBJ_CHUNK = 256
+
+function obj(over: Partial<MapObject> = {}): MapObject {
+  return { id: 0, x: 0, y: 0, w: 32, h: 32, flip: false, ...over }
+}
+
+/** Records `drawImage` geometry. Proves the arguments, never the picture. */
+function recordingCtx(): {
+  ctx: CanvasRenderingContext2D
+  calls: Array<{ sx: number; sy: number; dx: number; dy: number; dw: number; dh: number }>
+  transforms: string[]
+} {
+  const calls: Array<{ sx: number; sy: number; dx: number; dy: number; dw: number; dh: number }> = []
+  const transforms: string[] = []
+  const ctx = {
+    save: () => transforms.push('save'),
+    restore: () => transforms.push('restore'),
+    translate: (x: number, y: number) => transforms.push(`translate(${x},${y})`),
+    scale: (x: number, y: number) => transforms.push(`scale(${x},${y})`),
+    drawImage: (...a: unknown[]) => {
+      // The 9-argument form: image, sx, sy, sw, sh, dx, dy, dw, dh — so the
+      // numbers start at index 1, not 0.
+      const n = (i: number) => a[i] as number
+      calls.push({ sx: n(1), sy: n(2), dx: n(5), dy: n(6), dw: n(7), dh: n(8) })
+    },
+  }
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, calls, transforms }
+}
+
+const art = {
+  get: (frame: string) =>
+    frame.startsWith('obj_')
+      ? { image: {} as CanvasImageSource, sx: 7, sy: 9, sw: 32, sh: 32 }
+      : null,
+}
+
+describe('the object index', () => {
+  it('lists an object in the one chunk it fits inside', () => {
+    const index = new ObjectIndex([obj({ x: 40, y: 40 })], OBJ_CHUNK, 4, 4)
+    expect(index.at(0, 0).length).toBe(1)
+    expect(index.at(1, 0).length).toBe(0)
+    expect(index.occupiedChunks).toBe(1)
+  })
+
+  it('lists an object spanning a boundary in BOTH chunks', () => {
+    // §D6: drawn in both, offset — clipping it to one leaves a straight cut down
+    // every object unlucky enough to straddle a 256 px line.
+    const index = new ObjectIndex([obj({ x: OBJ_CHUNK - 16, y: 40, w: 32 })], OBJ_CHUNK, 4, 4)
+    expect(index.at(0, 0).length).toBe(1)
+    expect(index.at(1, 0).length).toBe(1)
+    expect(index.occupiedChunks).toBe(2)
+  })
+
+  it('lists an object spanning a corner in all four', () => {
+    const index = new ObjectIndex([obj({ x: OBJ_CHUNK - 8, y: OBJ_CHUNK - 8, w: 16, h: 16 })], OBJ_CHUNK, 4, 4)
+    for (const [cx, cy] of [
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      [1, 1],
+    ]) {
+      expect(index.at(cx!, cy!).length, `chunk ${cx},${cy}`).toBe(1)
+    }
+  })
+
+  it('does not run off the edge of the map', () => {
+    const index = new ObjectIndex([obj({ x: -8, y: -8 })], OBJ_CHUNK, 4, 4)
+    expect(index.at(0, 0).length).toBe(1)
+    expect(index.occupiedChunks).toBe(1)
+  })
+
+  it('is empty where nothing was placed — the control', () => {
+    const index = new ObjectIndex([], OBJ_CHUNK, 4, 4)
+    expect(index.at(0, 0).length).toBe(0)
+    expect(index.occupiedChunks).toBe(0)
+    expect(index.count).toBe(0)
+  })
+
+  it('resolves the frame name the atlas was built with', () => {
+    expect(frameName(12)).toBe('obj_12')
+    expect(new ObjectIndex([obj({ id: 12 })], OBJ_CHUNK, 4, 4).at(0, 0)[0]!.frame).toBe('obj_12')
+  })
+})
+
+describe('object draw calls', () => {
+  it('offsets an object by the chunk origin, in both chunks it spans', () => {
+    const index = new ObjectIndex([obj({ x: OBJ_CHUNK - 16, y: 40, w: 32 })], OBJ_CHUNK, 4, 4)
+
+    const a = recordingCtx()
+    expect(drawObjects(a.ctx, index, art, 0, 0, OBJ_CHUNK)).toBe(1)
+    expect(a.calls[0]).toMatchObject({ dx: OBJ_CHUNK - 16, dy: 40, dw: 32, dh: 32 })
+
+    const b = recordingCtx()
+    expect(drawObjects(b.ctx, index, art, 1, 0, OBJ_CHUNK)).toBe(1)
+    // Same object, drawn at a negative x in the next chunk so the two halves
+    // line up across the seam.
+    expect(b.calls[0]).toMatchObject({ dx: -16, dy: 40, dw: 32, dh: 32 })
+    expect(localOrigin(obj({ x: OBJ_CHUNK - 16, y: 40 }), 1, 0, OBJ_CHUNK)).toEqual({ x: -16, y: 40 })
+  })
+
+  it('blits the frame rect, not the whole atlas page', () => {
+    const index = new ObjectIndex([obj()], OBJ_CHUNK, 4, 4)
+    const r = recordingCtx()
+    drawObjects(r.ctx, index, art, 0, 0, OBJ_CHUNK)
+    expect(r.calls[0]).toMatchObject({ sx: 7, sy: 9 })
+  })
+
+  it('mirrors a flipped object about its own far edge', () => {
+    const index = new ObjectIndex([obj({ x: 100, y: 40, flip: true })], OBJ_CHUNK, 4, 4)
+    const r = recordingCtx()
+    drawObjects(r.ctx, index, art, 0, 0, OBJ_CHUNK)
+    expect(r.transforms).toEqual(['save', 'translate(132,40)', 'scale(-1,1)', 'restore'])
+    expect(r.calls[0]).toMatchObject({ dx: 0, dy: 0 })
+  })
+
+  it('draws an unflipped object with no transform at all — the control', () => {
+    // Without this, "flip mirrors" passes for a draw path that mirrors always.
+    const index = new ObjectIndex([obj({ x: 100, y: 40, flip: false })], OBJ_CHUNK, 4, 4)
+    const r = recordingCtx()
+    drawObjects(r.ctx, index, art, 0, 0, OBJ_CHUNK)
+    expect(r.transforms).toEqual([])
+    expect(r.calls[0]).toMatchObject({ dx: 100, dy: 40 })
+  })
+
+  it('draws nothing for a chunk with no objects', () => {
+    const index = new ObjectIndex([obj({ x: 40, y: 40 })], OBJ_CHUNK, 4, 4)
+    const r = recordingCtx()
+    expect(drawObjects(r.ctx, index, art, 3, 3, OBJ_CHUNK)).toBe(0)
+    expect(r.calls).toEqual([])
+  })
+})
+
+describe('the no-art path (`docs/50` §8)', () => {
+  it('draws nothing and warns once when the atlas never loaded', () => {
+    const warnings: string[] = []
+    const missing = atlasArt({ exists: () => false, get: () => ({ getSourceImage: () => null }) }, 'objects', (m) =>
+      warnings.push(m),
+    )
+    const index = new ObjectIndex([obj(), obj({ id: 1, x: 60 })], OBJ_CHUNK, 4, 4)
+    const r = recordingCtx()
+
+    expect(drawObjects(r.ctx, index, missing, 0, 0, OBJ_CHUNK)).toBe(0)
+    expect(r.calls).toEqual([])
+    expect(warnings.length).toBe(1)
+  })
+
+  it('warns once, not once per object, for a loaded atlas missing frames', () => {
+    const warnings: string[] = []
+    const empty = atlasArt(
+      { exists: () => true, get: () => ({ getSourceImage: () => null, frames: {} }) },
+      'objects',
+      (m) => warnings.push(m),
+    )
+    const index = new ObjectIndex([obj(), obj({ id: 1, x: 60 }), obj({ id: 2, x: 120 })], OBJ_CHUNK, 4, 4)
+    const r = recordingCtx()
+    expect(drawObjects(r.ctx, index, empty, 0, 0, OBJ_CHUNK)).toBe(0)
+    // `getSourceImage` returned null, so it never reaches the frame lookup —
+    // one warning about the source, not three about frames.
+    expect(warnings.length).toBe(1)
+  })
+
+  it('a working atlas DOES draw — the control for both of the above', () => {
+    const index = new ObjectIndex([obj()], OBJ_CHUNK, 4, 4)
+    const r = recordingCtx()
+    expect(drawObjects(r.ctx, index, art, 0, 0, OBJ_CHUNK)).toBe(1)
+  })
+})
