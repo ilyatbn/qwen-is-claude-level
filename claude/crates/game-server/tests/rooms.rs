@@ -51,7 +51,11 @@ async fn spawn_server() -> Harness {
     // read answers `None`, `unwrap_or(0)` reads 0 forever, and this loop stopped
     // waiting for anything at all. The lobby's own clock is the real signal and
     // it advances as soon as the room task runs (`docs/72` §C18-clarified).
-    let started = stack.start_default_room();
+    // §E2/§E4: created, **not started**. `quick_match` skips a started match, so
+    // starting here put every joining client in a different room than the handle
+    // these tests inspect. Tests that need a running match press start
+    // themselves, after their clients are seated.
+    let started = stack.room();
     for _ in 0..400 {
         if started.join_info().await.map(|i| i.tick).unwrap_or(0) > 0 {
             break;
@@ -329,6 +333,14 @@ async fn two_rooms_run_side_by_side_and_neither_hears_the_other() {
             "welcome",
             "bo",
         );
+
+        // §E2: ana's room is not started either now — the harness creates it and
+        // leaves it open so quick match can seat into it. Both rooms are started
+        // by their own occupant, which is also what makes `a_maps`/`b_maps`
+        // meaningful: each client's map comes from the room it is actually in.
+        a.emit("start_with_bots", serde_json::json!({}))
+            .expect("start ana's room");
+        wait_for(&inbox_a, "map_init", 1, "ana's map once her room starts");
 
         // §E1: `room_b` was created straight in the registry and never started,
         // so it is a lobby and has no map to hand out — `b_maps` below is a

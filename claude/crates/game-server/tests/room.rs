@@ -97,10 +97,10 @@ async fn a_seventh_join_is_refused() {
 
 /// Get a room out of `Lobby` and into a running round.
 ///
-/// §C18: a room is born in `Lobby` and one human does not meet
-/// `MIN_PLAYERS_TO_START`, so a test that joins one player and expects movement
-/// is testing a room that never steps. `StartWithBots` is the solo path, and it
-/// still waits out `LOBBY_COUNTDOWN` — there is no override for it, so this
+/// §C18: a room is born in `Lobby`, so a test that joins one player and expects
+/// movement is testing a room that never steps. §E2 would start it on its own
+/// after `LOBBY_BOT_TIMEOUT`; `StartWithBots` is the manual form and does not
+/// wait, which is why this uses it — there is no countdown left to sit through,
 /// really does take about five seconds.
 async fn start_round(room: &RoomHandle, id: u8) {
     // §E1: `join_info`, not `inspect`. A lobby has no world, so the world-shaped

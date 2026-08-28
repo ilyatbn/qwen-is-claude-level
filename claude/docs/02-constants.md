@@ -133,7 +133,6 @@ accelerations are **px/s²**, angles are **radians** unless stated.
 | `ENDED_SECONDS` | 20 | vote window |
 | `KILL_POINTS` | +1 | |
 | `DEATH_POINTS` | −1 | applies to self-kills and deaths to weather too |
-| `MIN_PLAYERS_TO_START` | 1 | 1 for development; raise later |
 
 ## Map generation
 

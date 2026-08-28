@@ -202,20 +202,6 @@ pub const ENDED_SECONDS: f32 = 20.0;
 pub const KILL_POINTS: i16 = 1;
 /// Applies to self-kills and deaths to weather too.
 pub const DEATH_POINTS: i16 = -1;
-/// Humans required before a round starts on its own (`docs/72` §C18).
-///
-/// It counts **humans**, not seats. It was 1, and a room was created at server
-/// startup with bots already seated and ticking, so every player who connected
-/// landed in a battle already in progress. Nobody waiting is only good if there
-/// is something to wait for.
-///
-/// One human alone still plays: the lobby's "Start with bots" seats bots and
-/// starts the round, which makes solo a choice rather than the default that
-/// caused the bug (§A5 is why solo has to stay possible at all).
-pub const MIN_PLAYERS_TO_START: usize = 2;
-/// Seconds between a lobby reaching `MIN_PLAYERS_TO_START` and the round
-/// starting, so nobody is dropped in mid-sentence (`docs/72` §C18).
-pub const LOBBY_COUNTDOWN: f32 = 5.0;
 /// Seconds a seated socket may go without sending `ready` before its seat is
 /// swept (`room::sweep_unready`).
 ///
@@ -1094,8 +1080,11 @@ pub const JOIN_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 // the queue's outcome with no waiting state to be stuck in.
 //
 // §C18 corrects the rest of that reasoning: "nobody ever waits" was the wrong
-// goal. A room now waits in `Lobby` until players ask for a battle, and
-// MIN_PLAYERS_TO_START is 2 humans.
+// goal — a room waits in `Lobby` until there is a reason to start. §E2 then
+// retired `MIN_PLAYERS_TO_START` entirely: a lobby starts when it fills to
+// `LOBBY_CAPACITY`, or when `LOBBY_BOT_TIMEOUT` expires and bots take the empty
+// seats. One human plus four bots after ten seconds is a game; two humans and
+// an infinite wait is not.
 
 // --- B4: death and the respawn timer ---
 // RESPAWN_DELAY moved to 5.0 by §B4; it lives with the other player constants.

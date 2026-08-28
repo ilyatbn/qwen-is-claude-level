@@ -58,33 +58,24 @@ async fn spawn_server(config: Config) -> Server {
     // this loop stopped waiting for readiness at all: it burned its full 10 s
     // and continued regardless, which is a condition that can never be true.
     //
-    // **Wait for `Playing`**, not for a world.
+    // **Do not start it here.** §E2/§E4: `quick_match` skips a match that has
+    // begun, so a room started before the clients connect leaves every one of
+    // them in a *different* lobby — the test then fires in one room and asserts
+    // against another.
     //
-    // This fixture fires weapons and compares carve counts, and the old wait was
-    // vacuous — `inspect` answers `None` in a lobby, so `unwrap_or(0)` read 0
-    // forever and the loop burned its full budget and continued regardless. That
-    // accidental 10 s was what carried the room past `WARMUP_SECONDS` into
-    // `Playing`. Replacing it with a real "has a world" check made the whole test
-    // run inside Warmup instead, where the two clients saw 0 and 0 carves, or 7
-    // and 5 as the phase flipped underneath the measurement.
+    // The room is created and left open; **c1 presses `start_with_bots` further
+    // down**, once bo is seated, and both then wait for `map_init`. An earlier
+    // draft of this comment named a `start_playing` helper that was never
+    // written — a comment pointing at a function nobody wrote is the same class
+    // as a diagnostic that lies, which this repo has a commit named after.
     //
-    // So the condition this needed all along is the phase, stated outright.
-    let started = stack.start_default_room();
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        if started
-            .join_info()
-            .await
-            .is_some_and(|i| i.phase == "playing")
-        {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the room never reached Playing"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // The start waits out `Warmup` too, because this fixture fires weapons and
+    // compares carve counts: Warmup gates damage, so measuring inside it saw 0
+    // and 0 carves, or 7 and 5 as the phase flipped underneath.
+    // Created, not started, and not held: the clients drive the start
+    // themselves (c1 presses it once bo is seated), so there is nothing here to
+    // keep a handle for.
+    let _ = stack.room();
     Server {
         addr,
         _shutdown: stack.shutdown,
@@ -221,12 +212,24 @@ async fn the_join_flow_end_to_end() {
         c1.emit("join", serde_json::json!({ "name": "ana", "skin_id": 3 }))
             .expect("emit join");
         wait_for(&r1, "welcome", 15);
-        wait_for(&r1, "map_init", 15);
-        // **After** `map_init`, not before. `wait_for` drains this channel and
-        // discards what it is not waiting for, so asking for `lobby_state` first
-        // ate the `map_init` token — `map_init` is emitted earlier in the seat
-        // path, and `lobby_state` comes after `go_live` deliberately (§E6).
+        // §E1 reversed this pair. `lobby_state` follows `go_live` at seat time,
+        // and `map_init` no longer arrives until the match starts — so the lobby
+        // comes first now. `wait_for` drains and discards, so asking in the wrong
+        // order loses the token entirely.
         wait_for(&r1, "lobby_state", 15);
+
+        // §E2/§E4: **bo seats before the match starts.** `quick_match` skips a
+        // started match, so a client that arrives after the start lands in a
+        // different lobby — and the carve comparison below would then be between
+        // two clients in two rooms. Both seat into the lobby; c1 starts it.
+        let (c2, i2, r2) = connect(addr, &["welcome", "inventory", "carve"]);
+        c2.emit("join", serde_json::json!({ "name": "bo" }))
+            .expect("emit");
+        wait_for(&r2, "welcome", 15);
+
+        c1.emit("start_with_bots", serde_json::json!({}))
+            .expect("start");
+        wait_for(&r1, "map_init", 30);
         report.insert("welcome".into(), got(&i1, "welcome")[0].clone());
         report.insert("lobby_state".into(), got(&i1, "lobby_state")[0].clone());
         report.insert("map_init".into(), got(&i1, "map_init")[0].clone());
@@ -249,11 +252,7 @@ async fn the_join_flow_end_to_end() {
         report.insert("bad_name".into(), got(&i_bad, "join_error")[0].clone());
         let _ = c_bad.disconnect();
 
-        // --- a second real player, and player_join reaches the first ----
-        let (c2, i2, r2) = connect(addr, &["welcome", "inventory", "carve"]);
-        c2.emit("join", serde_json::json!({ "name": "bo" }))
-            .expect("emit");
-        wait_for(&r2, "welcome", 15);
+        // --- the second real player is already seated, above ------------
         wait_for(&r1, "player_join", 15);
         // bo must be *ready*, or it receives no broadcasts at all (T9.06 gates
         // `flush_events` on readiness) and the scoping assertion below cannot

@@ -93,7 +93,7 @@ live round.
 ## 3. Round state machine
 
 ```
-              players >= MIN_PLAYERS_TO_START
+              lobby full, or the bot timeout expired (74 E2)
    ┌────────┐──────────────────────────────▶┌────────┐
    │ Lobby  │                               │ Warmup │  10 s
    └────────┘◀───── everyone left ──────────└────────┘
@@ -109,7 +109,7 @@ live round.
 
 | Phase | Duration | Behaviour |
 |---|---|---|
-| `Lobby` | — | Waiting for `MIN_PLAYERS_TO_START` (1 during development). No map. |
+| `Lobby` | — | Waiting to fill, or for `LOBBY_BOT_TIMEOUT` (`docs/74` §E2). **No world at all** (§E1). |
 | `Warmup` | `WARMUP_SECONDS` (10) | Map generated and sent; players spawned and can move; **no damage, no weather, no item spawns**. Time to load and orient. |
 | `Playing` | `ROUND_SECONDS` (240) | Everything live. Day/night runs. Weather rolls. |
 | `Ended` | `ENDED_SECONDS` (20) | Sim frozen except rendering. Scoreboard shown, votes collected. |
@@ -156,7 +156,6 @@ From environment, read once at startup:
 | `MAP_SCALE` | `medium` | `small` \| `medium` \| `large` |
 | `ROUND_SECONDS` | `240` | overrides the constant, for testing |
 | `MAX_PLAYERS` | `6` | |
-| `MIN_PLAYERS_TO_START` | `1` | |
 | `FIXED_SEED` | unset | if set, every round uses this seed — invaluable for debugging |
 | `RECORD_REPLAY` | `0` | write a replay file per round (`61-logging-debug.md`) |
 

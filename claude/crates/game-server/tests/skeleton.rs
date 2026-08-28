@@ -57,17 +57,15 @@ async fn unknown_routes_are_404_not_a_panic() {
 fn default_config_matches_the_documented_defaults() {
     // Guards against a default drifting without the docs following.
     //
-    // These pin to the **constants**, not to literals. `min_players_to_start`
-    // was a literal `1` and §C18 changed it to 2 (a room now waits for a second
-    // human rather than starting a battle nobody asked for); a literal turns a
+    // These pin to the **constants**, not to literals: a literal turns a
     // deliberate spec change into a mystery failure in an unrelated file, and
     // CLAUDE.md's "never hardcode a tunable in a test" exists for exactly this.
+    //
+    // `min_players_to_start` was asserted here and is **retired** (§E2): a lobby
+    // starts when it fills or when its bot timeout expires, so a minimum-humans
+    // rule has nothing left to decide.
     let c = Config::default();
     assert_eq!(c.bind_addr.to_string(), "0.0.0.0:3000");
     assert_eq!(c.max_players, game_core::constants::MAX_PLAYERS);
-    assert_eq!(
-        c.min_players_to_start,
-        game_core::constants::MIN_PLAYERS_TO_START
-    );
     assert_eq!(c.round_seconds, game_core::constants::ROUND_SECONDS);
 }

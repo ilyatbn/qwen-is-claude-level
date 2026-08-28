@@ -149,6 +149,15 @@ impl std::fmt::Debug for Command {
 #[derive(Clone)]
 pub struct RoomHandle {
     tx: mpsc::Sender<Command>,
+    /// Set the instant the match starts, so `quick_match` can skip this room
+    /// without awaiting a reply it cannot await while holding the registry lock
+    /// (§E2/§E4).
+    ///
+    /// An `AtomicBool` rather than a `Command`: the answer is one bit, the
+    /// reader is inside a lock, and a bit that is read stale for one tick is a
+    /// player seated into a match that has just begun — which is the thing being
+    /// prevented.
+    started: Arc<std::sync::atomic::AtomicBool>,
     /// The room task, so shutdown can **wait** for it.
     ///
     /// Without this, signalling shutdown and returning from `main` races the
@@ -189,8 +198,22 @@ impl RoomHandle {
         drop(shutdown);
         RoomHandle {
             tx,
+            started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             task: Arc::new(tokio::sync::Mutex::new(None)),
         }
+    }
+
+    /// Has this room's match begun? Closed to quick match once true (§E2/§E4).
+    pub fn has_started(&self) -> bool {
+        self.started.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Mark this room started, without running a match. Test seam for the
+    /// registry's "quick match skips a started match" claim (§E2/§E4): it flips
+    /// the same bit `install_world` sets, at the site `quick_match` reads.
+    pub fn mark_started_for_test(&self) {
+        self.started
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Seats taken and how many are bots, for the lobby (§B10).
@@ -1539,7 +1562,6 @@ impl Room {
         // schedule, no item spawns. Only the clock and the start condition run.
         let humans = self.human_count();
         let connected = self.seats.seats.len();
-        let min = self.config.min_players_to_start;
 
         if self.world.is_none() {
             // The clock runs; nothing else does (`docs/72` §C18-clarified, and
@@ -1553,23 +1575,40 @@ impl Room {
             // every tick in between is an identical-looking message to every
             // client — the throttle `round.rs` already applies to `RoundState`.
             //
-            // What happens when it reaches zero is T17.03's: this task carries
-            // the number to the client, and stops it going negative.
+            // It runs from the **first** seating and does not reset when others
+            // join: a player who has waited ten seconds is not made to wait
+            // twenty because a second player arrived. A resetting timer is the
+            // bug §E2 exists to prevent, so the countdown is started once, in
+            // `Command::Join`, and only ever decremented here.
+            let mut timed_out = false;
             if let Some(left) = self.starts_in {
                 let left = (left - dt).max(0.0);
                 self.starts_in = Some(left);
+                timed_out = left <= 0.0;
                 let shown = left.ceil() as i32;
                 if self.starts_in_shown != Some(shown) {
                     self.starts_in_shown = Some(shown);
                     self.note_lobby_change();
                 }
             }
-            let (events, outcome) = self.round.tick_lobby(tick, humans, min, dt);
-            if outcome == crate::round::RoundOutcome::Start {
+
+            let (events, outcome) = self.round.tick_lobby(tick, dt);
+            // §E2's start rule, in one place because all three of its inputs
+            // live here and none of them live on the round controller.
+            //
+            // **Full starts immediately** — no countdown, because everyone who
+            // is coming has arrived. `MIN_PLAYERS_TO_START` and
+            // `LOBBY_COUNTDOWN` are retired: one human plus four bots after ten
+            // seconds is a game, and two humans waiting forever is not.
+            let full = humans >= game_core::constants::LOBBY_CAPACITY;
+            if outcome == crate::round::RoundOutcome::Start || full || timed_out {
                 // Not `begin_round` — there is nothing to begin yet. The world
                 // has to be built first, and that is 0.3–1.1 s of CPU which
                 // cannot happen inside a 16.7 ms tick. `run` picks this up.
                 self.starting = true;
+                // Stop counting: the match is starting, and a countdown that
+                // kept running would keep marking the lobby dirty.
+                self.starts_in = None;
             }
             return events;
         }
@@ -2021,9 +2060,20 @@ pub fn spawn_room_with(
     room_id: u32,
 ) -> RoomHandle {
     let (tx, rx) = mpsc::channel(1024);
-    let task = tokio::spawn(run(io, config, sessions, rx, shutdown, metrics, room_id));
+    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let task = tokio::spawn(run(
+        io,
+        config,
+        sessions,
+        rx,
+        shutdown,
+        metrics,
+        room_id,
+        started.clone(),
+    ));
     RoomHandle {
         tx,
+        started,
         task: Arc::new(tokio::sync::Mutex::new(Some(task))),
     }
 }
@@ -2037,6 +2087,7 @@ async fn run(
     mut shutdown: oneshot::Receiver<()>,
     metrics: Option<Arc<crate::metrics::Metrics>>,
     room_id: u32,
+    started: Arc<std::sync::atomic::AtomicBool>,
 ) {
     // §E1: instant. No map is generated until the lobby says go, so this is a
     // struct allocation rather than `docs/71` §B2's 0.3–1.1 s of generator.
@@ -2113,6 +2164,10 @@ async fn run(
                         "world generated for match start"
                     );
                     room.install_world(world);
+                    // §E2/§E4: closed to quick match from this instant. Set
+                    // before the map goes out, so no socket can be seated into
+                    // a match that is already handing out its map.
+                    started.store(true, std::sync::atomic::Ordering::Relaxed);
                     // §E1: everyone seated gets the map now. They joined a lobby
                     // and were sent `welcome` without one; this is the message
                     // that turns a lobby screen into a game.
@@ -2120,6 +2175,11 @@ async fn run(
                         let bytes =
                             crate::codec::encode_map_init_at(&world.map, world.carve_seq());
                         crate::events::broadcast_map_init(&io, &sessions, &bytes);
+                        // And what they are holding. The loadout is granted by
+                        // `populate_world` a moment ago, and `inventory`
+                        // describes *changes* — so without this a player seated
+                        // in a lobby is armed on the server and empty on screen.
+                        crate::events::broadcast_inventories(&io, &sessions, world);
                     }
                 }
 

@@ -33,7 +33,8 @@ pub const REPLAY_MAGIC: u32 = 0x5250_4C31;
 pub const FOOTER_MAGIC: u32 = 0x5250_4C45;
 /// Bytes a header occupies on disk: magic 4, version 2, seed 8, buried secret 8,
 /// scale 1, generator 1, sim_hz 4, round_seconds 4, max_players 2,
-/// min_players_to_start 2, bot_count 2, bot_skill 4, dev_loadout 1.
+/// min_players_to_start 2 (retired §E2; still written, as 0), bot_count 2,
+/// bot_skill 4, dev_loadout 1.
 ///
 /// Public because the body starts here, and a test that wants to corrupt the
 /// first command has to know where it is. Two of them used to carry the number
@@ -158,6 +159,12 @@ pub struct ReplayHeader {
     pub sim_hz: u32,
     pub round_seconds: f32,
     pub max_players: usize,
+    /// **Retired** (`docs/74` §E2), kept so the format does not move.
+    ///
+    /// A header records the config that produced *that* round, and files
+    /// recorded before §E2 carry a real value here. Dropping the field would
+    /// bump `REPLAY_VERSION` and invalidate every one of them to remove a number
+    /// nothing reads — the wrong trade. Written as 0 by anything recorded since.
     pub min_players_to_start: usize,
     pub bot_count: usize,
     pub bot_skill: f32,
@@ -175,7 +182,7 @@ impl ReplayHeader {
             sim_hz: SIM_HZ,
             round_seconds: config.round_seconds,
             max_players: config.max_players,
-            min_players_to_start: config.min_players_to_start,
+            min_players_to_start: 0,
             bot_count: config.bot_count,
             bot_skill: config.bot_skill,
             dev_loadout: config.dev_loadout,
@@ -190,7 +197,6 @@ impl ReplayHeader {
             map_generator: self.generator,
             round_seconds: self.round_seconds,
             max_players: self.max_players,
-            min_players_to_start: self.min_players_to_start,
             fixed_seed: Some(self.seed),
             bot_count: self.bot_count,
             bot_skill: self.bot_skill,
@@ -355,6 +361,11 @@ fn write_header(w: &mut impl Write, h: &ReplayHeader) -> Result<(), ReplayError>
     put_u32(w, h.sim_hz)?;
     put_f32(w, h.round_seconds)?;
     put_u16(w, h.max_players as u16)?;
+    // Retired (§E2) but **still in the format**. Written as 0 now; a v2 file
+    // recorded before the retirement carries a real value and still parses.
+    // Removing the field would shift `bot_count`, `bot_skill` and `dev_loadout`
+    // two bytes while `REPLAY_VERSION` still read 2 — the version check would
+    // pass and the file would silently misparse.
     put_u16(w, h.min_players_to_start as u16)?;
     put_u16(w, h.bot_count as u16)?;
     put_f32(w, h.bot_skill)?;
@@ -848,6 +859,18 @@ mod tests {
         let h = header();
         let c = h.to_config();
         let again = ReplayHeader::from_config(&c, h.seed, h.buried_secret);
+        // §E2 retired `min_players_to_start`: `Config` no longer has one, so a
+        // header cannot round-trip through it and nothing should pretend it can.
+        // The slot stays in the format — see the field's own comment — and is
+        // written as 0 from here on, which is what this asserts.
+        assert_eq!(
+            again.min_players_to_start, 0,
+            "the retired slot was populated"
+        );
+        let h = ReplayHeader {
+            min_players_to_start: 0,
+            ..h
+        };
         assert_eq!(again, h, "a header must survive a trip through Config");
     }
 
@@ -875,5 +898,68 @@ mod tests {
         for c in one_of_each {
             assert!(seen.insert(c.tag()), "duplicate tag {} for {c:?}", c.tag());
         }
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    /// A v2 header this suite did **not** write, parsed byte for byte.
+    ///
+    /// Every other test here generates a file and reads it back, so a writer and
+    /// a reader that moved together agree with each other perfectly — the shape
+    /// `checksum.rs` already names. `HEADER_BYTES` cannot catch it either: it is
+    /// compared against the writer, so moving both keeps it green.
+    ///
+    /// This is the fixture the suite has never had. §E2 retired
+    /// `min_players_to_start`; taking it out of the format without bumping
+    /// `REPLAY_VERSION` would shift `bot_count`, `bot_skill` and `dev_loadout`
+    /// two bytes each while the version check still passed. The field was kept
+    /// for exactly that reason, and this asserts it stayed.
+    fn v2_header_bytes() -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&REPLAY_MAGIC.to_le_bytes());
+        v.extend_from_slice(&2u16.to_le_bytes()); // version
+        v.extend_from_slice(&0x0123_4567_89AB_CDEFu64.to_le_bytes()); // seed
+        v.extend_from_slice(&0xFEDC_BA98_7654_3210u64.to_le_bytes()); // buried_secret
+        v.push(0); // scale: Small
+        v.push(0); // generator
+        v.extend_from_slice(&60u32.to_le_bytes()); // sim_hz
+        v.extend_from_slice(&240.0f32.to_le_bytes()); // round_seconds
+        v.extend_from_slice(&6u16.to_le_bytes()); // max_players
+        v.extend_from_slice(&2u16.to_le_bytes()); // min_players_to_start (retired)
+        v.extend_from_slice(&3u16.to_le_bytes()); // bot_count
+        v.extend_from_slice(&0.6f32.to_le_bytes()); // bot_skill
+        v.push(1); // dev_loadout
+        v
+    }
+
+    #[test]
+    fn a_v2_header_written_by_hand_still_parses_field_for_field() {
+        let bytes = v2_header_bytes();
+        assert_eq!(
+            bytes.len(),
+            HEADER_BYTES,
+            "the hand-written header is not HEADER_BYTES long, so this fixture \
+             cannot detect a shift in the real one"
+        );
+
+        // Header plus an empty body: `decode` tolerates a file with no commands
+        // and no footer, which is what a round killed at tick 0 leaves.
+        let r = decode(&bytes).expect("a v2 header must parse");
+        let h = r.header;
+        assert_eq!(h.version, 2);
+        assert_eq!(h.seed, 0x0123_4567_89AB_CDEF);
+        assert_eq!(h.buried_secret, 0xFEDC_BA98_7654_3210);
+        assert_eq!(h.sim_hz, 60);
+        assert_eq!(h.round_seconds, 240.0);
+        assert_eq!(h.max_players, 6);
+        assert_eq!(h.min_players_to_start, 2, "the retired slot still reads");
+        // The three fields that would shift if the retired slot were removed
+        // without bumping the version. This is the whole point of the fixture.
+        assert_eq!(h.bot_count, 3, "bot_count shifted");
+        assert_eq!(h.bot_skill, 0.6, "bot_skill shifted");
+        assert!(h.dev_loadout, "dev_loadout shifted");
     }
 }

@@ -125,7 +125,6 @@ Server, read once at startup (`docs/41-server-loop-rooms.md` §5):
 | `MAP_GENERATOR` | `v2` | `v1` \| `v2` — see [Map generators](#51-map-generators) |
 | `ROUND_SECONDS` | `240` | shorten it to test the phase machine |
 | `MAX_PLAYERS` | `6` | |
-| `MIN_PLAYERS_TO_START` | `1` | |
 | `BOT_COUNT` | `3` | bots seated; a human is never refused a seat because of a bot |
 | `BOT_SKILL` | `0.6` | 0–1, scales aim error and reaction delay |
 | `FIXED_SEED` | unset | every round uses this seed |

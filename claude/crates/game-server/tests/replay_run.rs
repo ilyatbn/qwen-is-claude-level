@@ -76,9 +76,9 @@ fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
     });
     let id = rx.blocking_recv().ok().flatten().expect("seat");
     room.apply_for_test(Command::Ready(id));
-    // §C18: a room is born in `Lobby` and one human does not meet
-    // `MIN_PLAYERS_TO_START`. Without this the fixture records 1400 ticks of a
-    // room that never starts — and, because `tick` only advanced inside `step`,
+    // §C18: a room is born in `Lobby`, and §E2 would not start this one for
+    // `LOBBY_BOT_TIMEOUT`. Without this the fixture records 1400 ticks of a
+    // room that has not started — and, because `tick` only advanced inside `step`,
     // recorded every one of them at tick 0.
     room.apply_for_test(Command::StartWithBots(id));
 
@@ -254,9 +254,9 @@ fn empty_ticks_are_simulated_not_skipped() {
     });
     let id = rx.blocking_recv().ok().flatten().expect("seat");
     room.apply_for_test(Command::Ready(id));
-    // §C18: a room is born in `Lobby` and one human does not meet
-    // `MIN_PLAYERS_TO_START`. Without this the fixture records 1400 ticks of a
-    // room that never starts — and, because `tick` only advanced inside `step`,
+    // §C18: a room is born in `Lobby`, and §E2 would not start this one for
+    // `LOBBY_BOT_TIMEOUT`. Without this the fixture records 1400 ticks of a
+    // room that has not started — and, because `tick` only advanced inside `step`,
     // recorded every one of them at tick 0.
     room.apply_for_test(Command::StartWithBots(id));
     // One command at tick 0 and one at tick 800; everything between is empty.

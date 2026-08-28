@@ -496,6 +496,54 @@ pub fn broadcast_lobby_state(
     }
 }
 
+/// One player's own inventory, as `docs/30` §6 scopes it.
+///
+/// Built in one place because two callers need it: the join handshake, and match
+/// start. They were one caller until §E1 moved the world — see
+/// [`broadcast_inventories`].
+pub fn inventory_payload(world: &World, id: PlayerId) -> Option<serde_json::Value> {
+    let p = world.player(id)?;
+    let slots = (0..game_core::constants::INVENTORY_SLOTS)
+        .map(|i| match p.inventory.slot(i as u8) {
+            Some(st) => serde_json::json!({
+                "item": st.item,
+                "count": st.count,
+                "key": game_core::items::registry::def(st.item)
+                    .map(|d| d.key)
+                    .unwrap_or("?"),
+            }),
+            None => serde_json::Value::Null,
+        })
+        .collect::<Vec<_>>();
+    Some(serde_json::json!({
+        "tick": world.tick,
+        "slots": slots,
+        "selected": p.inventory.selected(),
+    }))
+}
+
+/// Send every seated player their own inventory, at match start.
+///
+/// **The bug this exists for.** `inventory` is pushed on pickup, use and death —
+/// it describes *changes* — so a player holding something before the first event
+/// needs to be told the current value. The join handshake did that, and §E1 moved
+/// the world out from under it: a player seats into a **lobby**, where
+/// `grant_dev_loadout` has nothing to act on, and the loadout is granted later by
+/// `populate_world`. Nothing told them. Armed on the server, empty on screen.
+///
+/// T17.01 added `broadcast_map_init` here and left this consumer behind — one
+/// mechanism moved, one of its two readers updated. It surfaced only when a
+/// fixture in another task tripped over it, two tasks later.
+///
+/// Owner-scoped like every other `inventory`, never broadcast.
+pub fn broadcast_inventories(io: &SocketIo, sessions: &Arc<SessionMap>, world: &World) {
+    for p in world.players.iter() {
+        if let Some(payload) = inventory_payload(world, p.id) {
+            emit_to(io, sessions, p.id, "inventory", &payload);
+        }
+    }
+}
+
 /// Send `map_init` to every socket in the room, at match start.
 ///
 /// §E1: the map does not exist while the room is a lobby, so this is the moment

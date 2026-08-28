@@ -766,7 +766,7 @@ async fn a_lobby_ticks_but_does_not_simulate() {
 
 /// One human waits; "Start with bots" is what starts them (§C18's solo path).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn one_human_waits_until_they_ask_for_bots() {
+async fn one_human_waits_a_while_before_the_bots_arrive() {
     let h = spawn_server().await;
     let addr = h.addr;
     let reg = h.stack.registry.clone();
@@ -793,15 +793,22 @@ async fn one_human_waits_until_they_ask_for_bots() {
         r.get(id).expect("room").handle.clone()
     };
 
-    // Twice the countdown. If it were going to start on its own, it has.
+    // Half the bot timeout: long enough that a countdown-era start would have
+    // fired, short enough that §E2's timeout has not.
     tokio::time::sleep(Duration::from_secs_f32(
-        game_core::constants::LOBBY_COUNTDOWN * 2.0,
+        game_core::constants::LOBBY_BOT_TIMEOUT / 2.0,
     ))
     .await;
     // §E1: `join_info`, not `inspect` — a lobby has no world for a
     // world-shaped read to reach, and `None` there would read as a dead room.
     let phase = handle.join_info().await.expect("alive").phase;
-    assert_eq!(phase, "lobby", "one human alone started a battle");
+    // §E2 **changed this claim.** One human alone used to wait forever for a
+    // second — `MIN_PLAYERS_TO_START` was 2 — and "Start with bots" was the only
+    // way out. Now the bot timeout is, and a solo player gets a game after
+    // `LOBBY_BOT_TIMEOUT` whether they ask or not. What is still true, and what
+    // this asserts, is that it does not start *immediately*: half the timeout in,
+    // they are still in a lobby.
+    assert_eq!(phase, "lobby", "one human alone started a battle instantly");
 
     // The control: asking does start it.
     tokio::task::spawn_blocking(move || {
@@ -870,9 +877,9 @@ async fn two_humans_start_on_their_own() {
         r.get(id).expect("room").handle.clone()
     };
 
-    // Countdown plus slack for the socket round trips.
+    // The bot timeout plus slack for the socket round trips and generation.
     tokio::time::sleep(Duration::from_secs_f32(
-        game_core::constants::LOBBY_COUNTDOWN + 2.0,
+        game_core::constants::LOBBY_BOT_TIMEOUT + 3.0,
     ))
     .await;
     let (phase, tick) = handle.inspect(|w| (w.phase, w.tick)).await.expect("alive");

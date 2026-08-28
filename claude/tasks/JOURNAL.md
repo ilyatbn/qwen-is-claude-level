@@ -4546,3 +4546,33 @@ asserts strictly more than before and cannot pass by looking early.
 0/40 bounds the rate below roughly 7% at 95%, not at zero — and three of these modes were
 invisible for sixteen consecutive runs, so the claim is "three mechanisms closed, each
 with a measured before-rate", not "the flake is gone".
+
+## T17.03 — Public lobbies: fill to five, or bots after ten seconds (v6)
+
+A lobby starts when it fills to `LOBBY_CAPACITY`, or when `LOBBY_BOT_TIMEOUT` expires
+from the **first** seating — it never resets, and the test asserts the *time*, not the
+fact: falsified by making the timer reset on join, it starts at **17.98 s against a
+message predicting 18**. `LOBBY_COUNTDOWN` and `MIN_PLAYERS_TO_START` retired across
+sixteen sites in five categories. The replay header **keeps its slot, written as 0** —
+bumping `REPLAY_VERSION` would invalidate every recorded file to drop a dead `u16` — and
+a **hand-written v2 header** now guards the layout, with distinct sentinel values per
+field so a two-byte shift yields wrong values rather than coincidentally equal ones. That
+suite had never had a file it did not write itself.
+
+Three tests in this task were vacuous and each was caught differently. The
+differ-control found one in the coder's own work: `RoomRegistry::new` seeds from the
+**wall clock**, so "same seed, same scale" was comparing two different seeds and passing
+two runs in three — a determinism test not testing determinism. And **T17.01 moved the
+world to match start without moving inventory with it** — players armed on the server and
+empty on screen, surfaced two tasks later by a fixture belonging to neither. Two tests
+were then written for that fix and **both passed with the fix deleted**; the coder deleted
+its own and kept the pre-existing one that fails hard without it, on the grounds that a
+second test going green when its subject is gone is worse than no second test, because it
+makes the next reader believe the fix is double-covered.
+
+`quick_match` no longer filters on scale — §E7 randomises it, so filtering would split
+every lobby by map size. Closing started matches to quick match broke **six fixtures
+across five files**, all the same shape: a harness that started its room before its
+clients connected, so every client was skipped into a different lobby while the test
+inspected the original. That is §E4 arriving two tasks early, and it is the right
+breakage.

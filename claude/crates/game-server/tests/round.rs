@@ -201,9 +201,9 @@ fn without_a_majority_the_room_returns_to_lobby() {
             break;
         }
     }
-    // With one connected player it goes to Lobby and immediately restarts warmup,
-    // since MIN_PLAYERS_TO_START is 1 — so the observable is that it did not stay
-    // Ended forever.
+    // With one connected player it goes back to `Lobby` and starts again once
+    // §E2's bot timeout expires — so the observable is that it did not stay
+    // `Ended` forever.
     assert_ne!(room.phase(), RoundPhase::Ended);
 }
 

@@ -88,6 +88,11 @@ impl Ctx {
         self.lock().quick_match(scale, max_players)
     }
 
+    /// A seeded map size for a new quick-match lobby (§E7).
+    pub fn random_scale(&self) -> game_core::constants::MapScale {
+        self.lock().random_scale()
+    }
+
     pub fn detach(&self, sid: Sid) -> Option<RoomId> {
         self.lock().detach(sid)
     }
@@ -437,7 +442,13 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                     move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
                         let (ctx, io, config) = (ctx.clone(), io.clone(), config.clone());
                         async move {
-                            let scale = scale_from(&payload, config.map_scale);
+                            // §E7: quick match **randomises** its settings — the
+                            // stepper is for private games, and a client asking
+                            // for a size here is asking for something the mode
+                            // does not offer. Seeded in the registry, so
+                            // `FIXED_SEED` still reproduces the whole round.
+                            let _ = &payload;
+                            let scale = ctx.random_scale();
                             let max = config.max_players;
                             match ctx.quick_match(scale, max) {
                                 crate::registry::QuickMatch::Existing(room_id)
@@ -1118,27 +1129,11 @@ async fn seat(
     // Owner-scoped, like every other `inventory`
     // (`docs/30` §6): emitted to this socket only, never
     // broadcast.
+    // One builder, shared with the match-start broadcast (§E1 gave it a second
+    // caller): a lobby has no world here, so this sends nothing and
+    // `broadcast_inventories` covers it the moment the match begins.
     if let Some(inv) = room
-        .inspect(move |w| {
-            let p = w.player(id)?;
-            let slots = (0..game_core::constants::INVENTORY_SLOTS)
-                .map(|i| match p.inventory.slot(i as u8) {
-                    Some(st) => serde_json::json!({
-                        "item": st.item,
-                        "count": st.count,
-                        "key": game_core::items::registry::def(st.item)
-                            .map(|d| d.key)
-                            .unwrap_or("?"),
-                    }),
-                    None => serde_json::Value::Null,
-                })
-                .collect::<Vec<_>>();
-            Some(serde_json::json!({
-                "tick": w.tick,
-                "slots": slots,
-                "selected": p.inventory.selected(),
-            }))
-        })
+        .inspect(move |w| crate::events::inventory_payload(w, id))
         .await
         .flatten()
     {

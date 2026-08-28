@@ -45,9 +45,19 @@ async fn spawn_server() -> Server {
     });
     // §C18: a room waits in `Lobby`, so there is no tick until a round starts.
     // This presses "Start with bots" once, the way a player does.
-    let started = stack.start_default_room();
+    // §E2/§E4: **create the room, do not start it yet.** Quick match now skips a
+    // match that has begun, so a harness that started the default room first
+    // left every joining client in a *fresh* lobby while this handle still
+    // pointed at the original — the two clients agreed with each other and the
+    // test compared them against a mask from a room they were never in.
+    //
+    // The clients join the open lobby; `start()` below begins it once they are
+    // seated, which is §E2's order anyway: sit in a lobby, then play.
+    let started = stack.room();
     for _ in 0..200 {
-        if started.inspect(|w| w.tick).await.unwrap_or(0) > 0 {
+        // `is_some_and`, not `unwrap_or(0)`: §E1 makes `inspect` answer `None`
+        // for a lobby, so the old form read 0 forever and waited for nothing.
+        if started.join_info().await.map(|i| i.tick).unwrap_or(0) > 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -201,6 +211,23 @@ fn replay(map_init_b64: &str, carves: &[serde_json::Value]) -> String {
     map.mask.hash_hex()
 }
 
+/// Start a room's match and wait for its world.
+///
+/// §E2 left `spawn_server` handing back an **unstarted** lobby, because quick
+/// match skips a started match and every client would otherwise land somewhere
+/// else. A test that inspects a world has to ask for one first.
+async fn start_and_wait(room: &game_server::room::RoomHandle) {
+    room.send(game_server::room::Command::StartWithBots(0));
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while room.inspect(|w| w.tick).await.is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the room never started, so there is no world to inspect"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
     let s = spawn_server().await;
@@ -214,18 +241,24 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
 
     let out = tokio::task::spawn_blocking(move || {
         let evs = ["welcome", "map_init", "carve", "mask_checksum"];
+        // §E1/§E2: both clients seat into the **lobby**, and the match starts
+        // once they are in. `map_init` arrives at match start, not at join, so
+        // waiting for it before starting would wait forever.
         let (c1, i1, r1) = connect(addr, &evs);
         c1.emit("join", serde_json::json!({ "name": "ana" }))
             .expect("emit join");
         wait_for(&r1, "welcome", 15);
-        wait_for(&r1, "map_init", 15);
-        c1.emit("ready", serde_json::json!({})).expect("emit ready");
 
         let (c2, i2, r2) = connect(addr, &evs);
         c2.emit("join", serde_json::json!({ "name": "bo" }))
             .expect("emit join");
         wait_for(&r2, "welcome", 15);
-        wait_for(&r2, "map_init", 15);
+
+        c1.emit("start_with_bots", serde_json::json!({}))
+            .expect("start");
+        wait_for(&r1, "map_init", 30);
+        wait_for(&r2, "map_init", 30);
+        c1.emit("ready", serde_json::json!({})).expect("emit ready");
         c2.emit("ready", serde_json::json!({})).expect("emit ready");
 
         // Give player 0 plenty of rockets, through the room's own command
@@ -413,6 +446,8 @@ async fn a_carve_stream_applied_out_of_order_diverges() {
     // The falsification for the test above: if order did not matter, the whole
     // `seq` discipline in `WorldMirror` would be dead weight.
     let s = spawn_server().await;
+    // This one inspects a map rather than driving clients, so it needs a world.
+    start_and_wait(&s.room).await;
 
     // Find a spot where a one-pixel radius increase provably bites fresh rock,
     // by carving both radii and comparing `pixels_removed` — do not assume any
@@ -574,12 +609,29 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
     let out = tokio::task::spawn_blocking(move || {
         let evs = ["welcome", "map_init", "carve"];
 
-        // The shooter, live and firing.
+        // §E2 moved *when* the joiner can arrive, not what is under test.
+        //
+        // The claim is the **ready window**: a client that is seated and has its
+        // map but has not sent `ready` must still receive every carve. That
+        // window is unchanged. What changed is that a client can no longer
+        // arrive mid-firefight — §E4 closes a started match, and `quick_match`
+        // now skips one — so bo seats into the lobby alongside ana and simply
+        // does not ready. Seated, mapped, not ready: the same three conditions,
+        // reached the way §E2 lets a player reach them.
         let (c1, _i1, r1) = connect(addr, &evs);
         c1.emit("join", serde_json::json!({ "name": "ana" }))
             .expect("emit join");
         wait_for(&r1, "welcome", 15);
-        wait_for(&r1, "map_init", 15);
+
+        let (c2, i2, r2) = connect(addr, &evs);
+        c2.emit("join", serde_json::json!({ "name": "bo" }))
+            .expect("emit join");
+        wait_for(&r2, "welcome", 15);
+
+        c1.emit("start_with_bots", serde_json::json!({}))
+            .expect("start");
+        wait_for(&r1, "map_init", 30);
+        wait_for(&r2, "map_init", 30);
         c1.emit("ready", serde_json::json!({})).expect("emit ready");
 
         let handle = tokio::runtime::Handle::current();
@@ -617,12 +669,8 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
             std::thread::sleep(Duration::from_millis(110));
         }
 
-        // The joiner. It joins and then sits on `ready` — the window under test.
-        let (c2, i2, r2) = connect(addr, &evs);
-        c2.emit("join", serde_json::json!({ "name": "bo" }))
-            .expect("emit join");
-        wait_for(&r2, "welcome", 15);
-        wait_for(&r2, "map_init", 15);
+        // bo is seated and mapped from here, and has **not** sent `ready` —
+        // the window under test.
 
         // Keep shooting while bo is seated, mapped and *not* ready. Every one of
         // these is a carve that used to be dropped on the floor.

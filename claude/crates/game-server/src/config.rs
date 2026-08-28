@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use game_core::constants::{MapGenerator, MapScale};
 use game_core::constants::{
     BOT_COUNT_DEFAULT, BOT_SKILL_DEFAULT, DEFAULT_MAP_GENERATOR, DEFAULT_MAP_SCALE, MAX_PLAYERS,
-    MIN_PLAYERS_TO_START, ROOM_EMPTY_TTL, ROUND_SECONDS,
+    ROOM_EMPTY_TTL, ROUND_SECONDS,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,7 +37,6 @@ pub struct Config {
     /// that proves the sweep runs has to observe a room actually disappear, and
     /// a test that sleeps for the 30 s default is a test nobody runs.
     pub room_empty_ttl: f32,
-    pub min_players_to_start: usize,
     pub fixed_seed: Option<u64>,
     pub record_replay: bool,
     /// Where `RECORD_REPLAY=1` writes. Configurable so a test can point at a
@@ -100,7 +99,6 @@ impl Default for Config {
             max_players: MAX_PLAYERS,
             round_seconds: ROUND_SECONDS,
             room_empty_ttl: ROOM_EMPTY_TTL,
-            min_players_to_start: MIN_PLAYERS_TO_START,
             fixed_seed: None,
             record_replay: false,
             replay_dir: "replays".to_string(),
@@ -154,13 +152,6 @@ impl Config {
         };
 
         let max_players = parse_usize(&get, "MAX_PLAYERS", d.max_players, 1, MAX_PLAYERS)?;
-        let min_players_to_start = parse_usize(
-            &get,
-            "MIN_PLAYERS_TO_START",
-            d.min_players_to_start,
-            1,
-            MAX_PLAYERS,
-        )?;
 
         let round_seconds = match get("ROUND_SECONDS") {
             Some(v) => {
@@ -244,7 +235,6 @@ impl Config {
             max_players,
             round_seconds,
             room_empty_ttl,
-            min_players_to_start,
             fixed_seed,
             record_replay,
             replay_dir,
@@ -262,7 +252,7 @@ impl Config {
     /// One line, `key=value`, for the startup log (`docs/61-logging-debug.md` §2).
     pub fn summary(&self) -> String {
         format!(
-            "bind={} scale={} generator={} max_players={} round_seconds={} min_players={} \
+            "bind={} scale={} generator={} max_players={} round_seconds={} \
              room_empty_ttl={} fixed_seed={} record_replay={} debug_dump={} bots={} \
              bot_skill={}",
             self.bind_addr,
@@ -270,7 +260,6 @@ impl Config {
             self.map_generator.as_str(),
             self.max_players,
             self.round_seconds,
-            self.min_players_to_start,
             self.room_empty_ttl,
             self.fixed_seed
                 .map(|s| s.to_string())
@@ -363,7 +352,6 @@ mod tests {
         assert_eq!(c.map_scale, DEFAULT_MAP_SCALE);
         assert_eq!(c.max_players, MAX_PLAYERS);
         assert_eq!(c.round_seconds, 240.0);
-        assert_eq!(c.min_players_to_start, MIN_PLAYERS_TO_START);
         assert_eq!(c.fixed_seed, None);
         assert!(!c.record_replay);
         assert!(!c.debug_dump);

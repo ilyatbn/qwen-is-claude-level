@@ -181,6 +181,24 @@ pub struct RoomRegistry {
 }
 
 impl RoomRegistry {
+    /// As [`RoomRegistry::new`], with the RNG pinned.
+    ///
+    /// `new` seeds from the wall clock, which is right for join codes and wrong
+    /// for a test: two registries built a millisecond apart get different seeds,
+    /// so "the same seed gives the same map size" was comparing two *different*
+    /// seeds and passing about two times in three. Pinning it is what makes that
+    /// assertion mean anything.
+    pub fn with_seed(
+        io: SocketIo,
+        base_config: Arc<Config>,
+        spawner: Arc<dyn RoomSpawner>,
+        seed: u64,
+    ) -> Self {
+        let mut r = Self::new(io, base_config, spawner);
+        r.rng = seed | 1;
+        r
+    }
+
     pub fn new(io: SocketIo, base_config: Arc<Config>, spawner: Arc<dyn RoomSpawner>) -> Self {
         // Join codes are cosmetic identifiers, not secrets — they gate nothing a
         // room's own capacity check does not. Seeded from the process start so
@@ -348,13 +366,38 @@ impl RoomRegistry {
     ///
     /// Fullest-first so games start sooner and half-empty rooms drain rather
     /// than multiply. Ties break on the lower id, which is why `order` exists.
+    /// A map size for a new quick-match lobby (§E7: quick matches randomise).
+    ///
+    /// Seeded, not `thread_rng`: `game-server` may be impure but a room's
+    /// settings are part of what `FIXED_SEED` has to reproduce, and a test that
+    /// cannot predict the map cannot assert on it. Mixed from the same
+    /// monotonic room id the seed uses, so two lobbies made in a row differ and
+    /// the same id always gives the same answer.
+    pub fn random_scale(&self) -> MapScale {
+        let mut x = self.rng ^ u64::from(self.next_id).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+        x ^= x >> 29;
+        let all = MapScale::ALL;
+        all[(x % all.len() as u64) as usize]
+    }
+
     pub fn quick_match(&mut self, scale: MapScale, max_players: usize) -> QuickMatch {
         let mut best: Option<(usize, RoomId)> = None;
         for id in &self.order {
             let Some(e) = self.rooms.get(id) else {
                 continue;
             };
-            if e.private || e.scale != scale || e.humans >= max_players {
+            // §E2: the fullest **public lobby that has not started**, with a
+            // free seat. `started` is the new clause — a live match is closed
+            // (§E4), and seating into one gave a player a half-dug map, no
+            // weapons and everyone else armed.
+            //
+            // The scale clause is gone: §E7 has quick match **randomise** its
+            // settings, so matching on it would split every lobby by map size
+            // and players would wait alone in three separate rooms.
+            let _ = scale;
+            if e.private || e.handle.has_started() || e.humans >= max_players {
                 continue;
             }
             let seats = e.humans;
@@ -641,17 +684,37 @@ mod tests {
         assert_eq!(r.quick_match(MapScale::Medium, 6), QuickMatch::Existing(b));
     }
 
+    /// §E2: private rooms are skipped. **Scale no longer is.**
+    ///
+    /// This used to assert "and the wrong scale" too. §E7 has quick match
+    /// randomise its settings, so filtering on scale would split every lobby by
+    /// map size and leave players waiting alone in three separate rooms — you
+    /// take the lobby quick match gives you, and it decided the map.
     #[test]
-    fn quick_match_skips_private_rooms_and_the_wrong_scale() {
+    fn quick_match_skips_private_rooms_but_not_a_different_scale() {
         let mut r = reg();
         let (p, _) = r.create(MapScale::Medium, true).expect("private");
         r.attach(Sid::new(), p);
+
+        // A public room of a *different* scale is eligible now.
         let (s, _) = r.create(MapScale::Small, false).expect("small");
         r.attach(Sid::new(), s);
+        assert_eq!(
+            r.quick_match(MapScale::Medium, 6),
+            QuickMatch::Existing(s),
+            "quick match refused a public lobby because its map size differed"
+        );
 
-        // Neither is eligible for a medium public match, so it makes a new one.
-        match r.quick_match(MapScale::Medium, 6) {
-            QuickMatch::Created(id) => assert!(id != p && id != s),
+        // The control: with only the private room, it makes a fresh one rather
+        // than seating into it. Without this, "it chose `s`" would also pass for
+        // a filter that skips nothing at all.
+        let mut only_private = reg();
+        let (p2, _) = only_private
+            .create(MapScale::Medium, true)
+            .expect("private");
+        only_private.attach(Sid::new(), p2);
+        match only_private.quick_match(MapScale::Medium, 6) {
+            QuickMatch::Created(id) => assert!(id != p2, "seated into the private room"),
             other => panic!("expected a fresh room, got {other:?}"),
         }
     }
@@ -822,5 +885,57 @@ mod tests {
             let r = reg();
             assert_eq!(r.by_code(&n), None);
         }
+    }
+
+    /// §E2/§E4: quick match never seats into a match that has begun.
+    ///
+    /// Falsified at the live site — the room is genuinely marked started, the
+    /// same bit `install_world` sets — with a control that it *was* chosen while
+    /// it was still a lobby.
+    #[test]
+    fn quick_match_skips_a_started_match() {
+        let mut r = reg();
+        let (id, _) = r.create(MapScale::Small, false).expect("created");
+        assert_eq!(
+            r.quick_match(MapScale::Small, 6),
+            QuickMatch::Existing(id),
+            "control: an open public lobby must be chosen"
+        );
+
+        r.get(id).expect("room").handle.mark_started_for_test();
+
+        match r.quick_match(MapScale::Small, 6) {
+            QuickMatch::Created(fresh) => assert_ne!(fresh, id, "seated into a started match"),
+            other => panic!("quick match returned {other:?} for a started match"),
+        }
+    }
+
+    /// §E7: quick match randomises its map size, **seeded**.
+    ///
+    /// Two halves, and the second is what stops `fn scale() -> Small` passing.
+    #[test]
+    fn random_scale_is_seeded_and_actually_varies() {
+        let seeded = |seed: u64| {
+            let (_layer, io) = SocketIo::new_layer();
+            RoomRegistry::with_seed(io, Arc::new(Config::default()), Arc::new(NullSpawner), seed)
+        };
+
+        // Same seed, same answer. `reg()` seeds from the wall clock, so this
+        // needs the pinned constructor or it compares two different seeds.
+        assert_eq!(
+            seeded(0xDEAD_BEEF).random_scale(),
+            seeded(0xDEAD_BEEF).random_scale(),
+            "the same seed gave two different map sizes"
+        );
+
+        // **The differ-control.** Across distinct seeds more than one size must
+        // appear, or a constant dressed as a choice passes the half above.
+        let seen: std::collections::HashSet<_> = (0..64u64)
+            .map(|i| seeded(i * 0x9E37_79B9).random_scale())
+            .collect();
+        assert!(
+            seen.len() > 1,
+            "every seed gave the same map size ({seen:?}) — that is not randomised"
+        );
     }
 }

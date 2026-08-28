@@ -55,7 +55,7 @@ and **zero of the reported gameplay bugs addressed.**
 `tasks/M13/T13.06.1-rooms-on-demand.md`, "Reopened" section at the bottom.
 
 Add **one shared `enterBattle(page, opts)`** helper and route every browser check
-through it. **Do not** add `MIN_PLAYERS_TO_START` to five more checks — eight copies
+through it. **Do not** add the room's start config to five more checks — eight copies
 of one setup is eight places to forget one, and this repo has paid for that four
 times (five vite parses, four wasm hooks, two capsule rasterisers, two escapers).
 

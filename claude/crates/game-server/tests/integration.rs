@@ -56,6 +56,10 @@ fn test_config() -> Config {
 
 struct Server {
     addr: SocketAddr,
+    /// So a test can reach a room created **by a client** — the code-join path,
+    /// which is the only one that still admits a player into a live match now
+    /// that `quick_match` skips started ones (§E2/§E4).
+    registry: std::sync::Arc<std::sync::Mutex<game_server::registry::RoomRegistry>>,
     room: game_server::room::RoomHandle,
     _shutdown: tokio::sync::oneshot::Sender<()>,
 }
@@ -76,19 +80,43 @@ async fn spawn_server(config: Config) -> Server {
     // generates its map before entering the loop, and `join` is answered from
     // inside it. A sleep long enough on an idle box is not long enough on a busy
     // one, and the failure reads as a protocol bug.
-    // §C18: a room waits in `Lobby`, so there is no tick until a round starts.
-    // This presses "Start with bots" once, the way a player does.
-    let started = stack.start_default_room();
+    // §E2/§E4: the room is **created but not started**. Quick match now skips a
+    // match that has begun, so starting it here left every joining client in a
+    // fresh lobby while `Server::room` still pointed at the original — the tests
+    // then asserted against a room their clients were never in.
+    //
+    // Clients seat into the open lobby; `start_match` below begins it once they
+    // are in, which is §E2's order: sit in a lobby, then play.
+    let started = stack.room();
     for _ in 0..200 {
-        if started.inspect(|w| w.tick).await.unwrap_or(0) > 0 {
+        // The lobby's own clock, which needs no match. `inspect(|w| w.tick)` is
+        // `None` for a lobby (§E1), so `unwrap_or(0)` waited for nothing.
+        if started.join_info().await.map(|i| i.tick).unwrap_or(0) > 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     Server {
         addr,
+        registry: stack.registry.clone(),
         room: started.clone(),
         _shutdown: stack.shutdown,
+    }
+}
+
+/// Begin the room's match and wait for its world (§E2).
+///
+/// `spawn_server` hands back a lobby now, so a test that needs players moving,
+/// dying or holding things has to start one — after its clients are seated.
+async fn start_match(room: &game_server::room::RoomHandle) {
+    room.send(game_server::room::Command::StartWithBots(0));
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while room.inspect(|w| w.tick).await.is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the room never started"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -250,11 +278,16 @@ fn join_and_ready(
 ) -> (rust_socketio::client::Client, Inbox, mpsc::Receiver<String>) {
     let mut all: Vec<&'static str> = vec!["welcome", "map_init", "join_error"];
     all.extend_from_slice(events);
+    // §E1/§E2: **seated, not playing.** `map_init` arrives when the match
+    // starts, not at join, so waiting for it here would sit until §E2's bot
+    // timeout auto-started the room — and every client seated after that point
+    // is skipped into a *different* lobby, because quick match will not seat
+    // into a started match. Seat everyone first; `start_match` then begins the
+    // one room they are all in.
     let (c, inbox, rx) = connect(addr, &all);
     c.emit("join", serde_json::json!({ "name": name }))
         .expect("emit join");
     wait_for(&rx, "welcome", 15);
-    wait_for(&rx, "map_init", 15);
     c.emit("ready", serde_json::json!({})).expect("emit ready");
     (c, inbox, rx)
 }
@@ -398,6 +431,7 @@ async fn a_disconnect_tells_the_other_players() {
 
     // And the seat is genuinely released, not merely announced.
     tokio::time::sleep(Duration::from_millis(400)).await;
+    start_match(&room).await;
     let seated = room.inspect(|w| w.players.len()).await.expect("room alive");
     assert_eq!(
         seated, 1,
@@ -605,8 +639,12 @@ async fn a_joiner_is_told_what_it_is_already_holding() {
     let addr = s.addr;
 
     let inv = tokio::task::spawn_blocking(move || {
+        // §E1: a loadout needs a world, and a lobby has none — so seat, then
+        // start, then the inventory arrives with the match.
         let (c, inbox, rx) = join_and_ready(addr, "ana", &["inventory"]);
-        wait_for(&rx, "inventory", 15);
+        c.emit("start_with_bots", serde_json::json!({}))
+            .expect("start");
+        wait_for(&rx, "inventory", 30);
         let got = got(&inbox, "inventory");
         let _ = c.disconnect();
         got
@@ -647,13 +685,28 @@ async fn a_joiner_never_receives_another_player_s_inventory() {
     let addr = s.addr;
 
     let (first_id, second_id, seen) = tokio::task::spawn_blocking(move || {
+        // §E2: both seat into the lobby first — a client that arrives after the
+        // match starts is skipped into a different room — and then it begins.
+        //
+        // **This is the test that guards `broadcast_inventories`.** §E1 moved the
+        // world to match start, so `grant_dev_loadout` now runs after the join
+        // handshake has finished — the server arms the player and, without the
+        // match-start broadcast, nothing tells them. Verified by deleting the
+        // broadcast: this fails with `never received inventory; saw ["map_init"]`.
+        //
+        // A second test was written for it and deleted again, because it passed
+        // with the broadcast gone — `dev_loadout` gave it a faster, more reliable
+        // way to be satisfied than the thing it was meant to prove. One test that
+        // discriminates beats two where one is green for the wrong reason.
         let (a, a_in, a_rx) = join_and_ready(addr, "ana", &["inventory"]);
-        wait_for(&a_rx, "inventory", 15);
         let a_id = got(&a_in, "welcome")[0]["player_id"].as_i64().expect("id");
-
         let (b, b_in, b_rx) = join_and_ready(addr, "bo", &["inventory"]);
-        wait_for(&b_rx, "inventory", 15);
         let b_id = got(&b_in, "welcome")[0]["player_id"].as_i64().expect("id");
+
+        a.emit("start_with_bots", serde_json::json!({}))
+            .expect("start");
+        wait_for(&a_rx, "inventory", 30);
+        wait_for(&b_rx, "inventory", 30);
 
         // Everything the second client was told about an inventory.
         let seen = got(&b_in, "inventory").len();
@@ -696,16 +749,52 @@ async fn a_mid_round_joiner_sees_the_graves_that_are_already_there() {
     // than a new test-only command: it already gives mutable access to the world
     // between ticks, and a second mechanism for the same thing is how duplicates
     // get built (§A24).
-    let first = tokio::task::spawn_blocking(move || {
-        let (c, _inbox, _rx) = join_and_ready(addr, "ana", &[]);
-        c
+    // §E4 closed the path this test used. `quick_match` now skips a started
+    // match, so a plain `join` puts the joiner in a different room entirely —
+    // and the tombstone catch-up, which is what is under test, never fires.
+    //
+    // **`join_room` by code still admits a mid-match joiner**: `by_code` is a
+    // bare lookup and `has_started()` is read only in the quick-match loop. That
+    // is the live path, so the test uses it — ana hosts a private room, starts
+    // it, and bo arrives by code once the graves are on the ground.
+    //
+    // **Expected to break at T17.05.** §E4 closes joins by *phase*, not by verb,
+    // so it will close this path too and this test will lose its subject again.
+    // That is the design landing, not a regression: when it goes red, the
+    // question is whether the tombstone catch-up still has any reachable caller,
+    // and T17.05 owns the reconnection seam §E4 leaves open deliberately.
+    let (first, code) = tokio::task::spawn_blocking(move || {
+        let (c, inbox, rx) = connect(addr, &["welcome", "map_init", "room_created"]);
+        c.emit(
+            "create_room",
+            serde_json::json!({ "name": "ana", "private": true }),
+        )
+        .expect("create_room");
+        wait_for(&rx, "room_created", 15);
+        wait_for(&rx, "welcome", 15);
+        let code = got(&inbox, "room_created")[0]["code"]
+            .as_str()
+            .expect("a private room gets a code")
+            .to_string();
+        c.emit("ready", serde_json::json!({})).expect("ready");
+        c.emit("start_with_bots", serde_json::json!({}))
+            .expect("start");
+        wait_for(&rx, "map_init", 30);
+        (c, code)
     })
     .await
     .expect("ana joined");
+
+    // The room the deaths must land in is ana's, not the harness's default.
+    let room = {
+        let r = s.registry.lock().expect("registry");
+        let id = r.by_code(&code).expect("the code resolves");
+        r.get(id).expect("room").handle.clone()
+    };
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     for _ in 0..3 {
-        s.room.send(game_server::room::Command::Inspect(Box::new(
+        room.send(game_server::room::Command::Inspect(Box::new(
             |w: &mut game_core::world::World| {
                 w.set_phase(game_core::world::RoundPhase::Playing);
                 if let Some(p) = w.player_mut(0) {
@@ -718,8 +807,7 @@ async fn a_mid_round_joiner_sees_the_graves_that_are_already_there() {
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
 
-    let server_graves = s
-        .room
+    let server_graves = room
         .inspect(|w| w.tombstones.len())
         .await
         .expect("room alive");
@@ -730,7 +818,14 @@ async fn a_mid_round_joiner_sees_the_graves_that_are_already_there() {
 
     // Now a second client joins into that round.
     let seen = tokio::task::spawn_blocking(move || {
-        let (c, inbox, _rx) = join_and_ready(addr, "bo", &["tombstone_spawn"]);
+        let (c, inbox, rx) = connect(addr, &["welcome", "map_init", "tombstone_spawn"]);
+        c.emit(
+            "join_room",
+            serde_json::json!({ "name": "bo", "code": code }),
+        )
+        .expect("join_room");
+        wait_for(&rx, "welcome", 15);
+        c.emit("ready", serde_json::json!({})).expect("ready");
         std::thread::sleep(Duration::from_millis(900));
         let n = got(&inbox, "tombstone_spawn").len();
         let _ = c.disconnect();
