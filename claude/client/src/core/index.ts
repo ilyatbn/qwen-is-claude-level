@@ -355,11 +355,22 @@ export class Core {
   }
 
   /**
-   * A self-contained round of bots fighting, for the title screen (§B3).
+   * A self-contained round of bots fighting: a real `World` rather than the
+   * prediction subset.
    *
-   * Separate from `Core` because it wraps a real `World` rather than the
-   * prediction subset — which is what makes the title screen a smoke test of
-   * the simulation rather than a decorative background.
+   * **Dormant since T18.01 — this has no caller.** It was built for the title
+   * screen under §B3, on the reasoning that a live round behind the menu is a
+   * smoke test of the simulation anyone can see. `docs/74` §E9 overrides that:
+   * the attract sim ran at a third of real time, un-gated its warmup at about
+   * thirty seconds of wall clock, and rebuilt its world from inside `update()`
+   * — where a throw removed the DOM *and* stopped Phaser's frame loop, taking
+   * the Start button with the picture. A background that runs the game can
+   * always break the menu.
+   *
+   * Kept rather than deleted, because §B3's argument is still a good one and the
+   * sandbox is where it belongs if anyone wants it back. `Attract`
+   * (`core/attract.ts`) and the Rust `AttractCore` are dormant for the same
+   * reason and have no other caller either.
    */
   static attract(
     seed: bigint,

@@ -33,6 +33,7 @@ import {
   type Scale,
 } from '../net/lobby'
 import { Connection, type LobbyIntent, type Welcome } from '../net/connection'
+import { devSurface } from '../dev'
 
 const SCALES: Scale[] = ['small', 'medium', 'large']
 
@@ -72,7 +73,14 @@ export class MenuScene extends Phaser.Scene {
       this.conn?.close()
       this.conn = null
     })
-    this.exposeDebugHandle()
+    // §C17, same guard `GameScene` carries. This was unguarded from T17.07:
+    // `__menu` shipped in the production bundle exposing `debug`, `dispatch`,
+    // `ready`, `visibleCode` and `roster` — and `dispatch` drives menu actions.
+    // Not an escalation, since the user owns their own client, but it is exactly
+    // what T14.08 exists to stop.
+    if (devSurface() && new URLSearchParams(location.search).get('e2e') === '1') {
+      this.exposeDebugHandle()
+    }
   }
 
   /**
@@ -411,6 +419,14 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private exposeDebugHandle(): void {
+    // **Guarded again here, and not redundantly.** A class method is reachable
+    // from the prototype, so the bundler keeps it however the call site is
+    // guarded; what it does delete is a block behind a `false` literal, and
+    // that is what takes the word `__menu` out of the artifact — which is
+    // what `no-dev-surface` greps for.
+    // T17.07 shipped `__menu` the same way, exposing `dispatch`, which drives menu
+    // actions. One fix covers both tasks.
+    if (!devSurface()) return
     const self = this
     ;(window as unknown as { __menu: unknown }).__menu = {
       debug: () => ({ ...self.model }),

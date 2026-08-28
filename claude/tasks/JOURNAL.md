@@ -4743,3 +4743,33 @@ The font assertion is three assertions, not one: `document.fonts.check` (the fac
 computed `fontFamily` (applied to the title), and advance-width 264 px against the body's
 210 px (actually used). Advance-width alone could be fooled by a fallback that also
 differs from `serif`; (1) is what closes that.
+
+## T18.01 — The title screen stops after thirty seconds (v6)
+
+The attract sim stepped `ATTRACT_HZ` 20 times a second while advancing `SIM_DT`, so it
+ran at **one third of real time**: warmup ended at ~30 s wall clock — un-gating damage,
+starting the weather scheduler, item spawns and teleports together — and at 45 s it
+rebuilt its world from inside `update()`, where a throw removes the DOM **and** stops
+Phaser's loop. The picture vanishing and the button dying were one failure, not two.
+
+§E9 does not fix the timestep: the background is the game's own sky now — seeded, needing
+no `World`, no core and no server — and the **UI is built first and unconditionally**,
+with everything decorative inside a guard that catches, says so once, and stops.
+`Core.attract`, `Attract` and `AttractCore` lose their only caller and are declared
+dormant **where a reader meets them**, per T17.05's precedent.
+
+**Falsifying with the bug restored found a weak assertion.** `frames` still advanced —
+**1187 against 3660** — because Phaser keeps calling a scene that throws, at a third of
+the rate. A `>` counter test passes for a loop the defect has crippled. The **click** is
+the acceptance criterion; the counter is a diagnostic that says how badly. The pixel check
+needed `freeze` for the same class of reason: the sky twinkles and drifts, so two samples
+differ whether or not a backdrop exists, and its own control caught that on the first run.
+
+**And the first version shipped `__title` in the production bundle.** Guarding the call
+site was not enough — *a class method is reachable from the prototype, so the bundler
+keeps it however the call site is guarded; what it deletes is a block behind a `false`
+literal*. The guard has to be **inside** the method. `__menu` had shipped the same way
+since T17.07, and `no-dev-surface` passed both, because its `FORBIDDEN` list predated both
+handles. **The check whose purpose is enforcing §C17 was blind to the two newest
+violations of it** — the list is the deeper failure, so anything writing to `window` now
+belongs in it the moment it is written.

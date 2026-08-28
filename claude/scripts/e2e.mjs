@@ -59,7 +59,9 @@ const CHECKS = [
   {
     name: 'title',
     file: 'scripts/checks/title.mjs',
-    url: '',
+    // `?e2e=1` because the debug handle is behind §C17's guard now; without it
+    // `__title` does not exist even in a dev build, which is the point.
+    url: '?e2e=1',
     ready: '!!window.__title',
   },
   // Reached through the menu, not at `?skins=1`: the Skins button was a caller
@@ -67,7 +69,7 @@ const CHECKS = [
   {
     name: 'skins',
     file: 'scripts/checks/skins.mjs',
-    url: '?menu=1',
+    url: '?menu=1&e2e=1',
     ready: '!!window.__menu',
   },
   // The pixel harness self-test. It runs on a synthetic page — it is proving the

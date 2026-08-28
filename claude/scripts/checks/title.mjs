@@ -1,10 +1,20 @@
 /**
- * T10.03 + T10.04: the title screen, its attract mode, and the menu.
+ * T10.03 + T10.04 + T18.01: the title screen, its backdrop, and the menu.
  *
- * The attract mode is a smoke test of `game-core` that anyone can see (§B3), so
- * this asserts the simulation is genuinely running behind the title — bots
- * moving, terrain being destroyed — not merely that a canvas is not blank.
+ * §B3 asked for a live round behind the title as a visible smoke test of
+ * `game-core`. **§E9 overrides that**, so what is asserted here changed with it:
+ * not "the simulation is running" but **"the menu survives the background"**.
+ * The measured defect was that a throw inside `update()` removed the DOM and
+ * stopped Phaser's frame loop, so the button died with the picture — one
+ * failure, not two.
+ *
+ * Two claims, and neither can be reached by the unit suite: `environment: 'node'`
+ * has no font engine and no canvas, so a green `npm test` says nothing about
+ * which face rendered or whether anything was drawn. D-26 is why that is written
+ * down rather than assumed.
  */
+import { samplePatch } from './pixels.mjs'
+
 export default async function ({ page, shot, log }) {
   // --- §E7: the title is SHRED, in the display face ------------------------
   //
@@ -61,79 +71,102 @@ export default async function ({ page, shot, log }) {
   log(`title: SHRED in the display face (${faces.display.toFixed(0)}px vs body ${faces.body.toFixed(0)}px)`)
   await shot('title-shred')
 
-  await page.waitForFunction('window.__title.debug().mapW > 0', { timeout: 60_000 })
-
+  await page.waitForFunction('window.__title.debug().frames > 0', { timeout: 60_000 })
   const d = () => page.evaluate('window.__title.debug()')
 
-  // --- the attract mode is really simulating ------------------------------
-  const a = await d()
-  if (a.bots.length < 2) throw new Error(`attract has ${a.bots.length} bots`)
-
-  await page.waitForTimeout(4000)
-  const b = await d()
-
-  if (b.ticks <= a.ticks) {
-    throw new Error(`the attract sim is not ticking: ${a.ticks} -> ${b.ticks}`)
+  // --- the backdrop draws something (§C2) ---------------------------------
+  //
+  // **A layer toggle inside one frame**, not a before/after across two moments.
+  // The sky walks a day cycle, so two frames a second apart differ whether or
+  // not the backdrop exists — that comparison would pass for a blank canvas
+  // under a moving gradient. Hiding the layer and diffing the same frame against
+  // itself isolates what the backdrop contributes and nothing else, which is how
+  // `birds` and `living-sky` measure their layers.
+  const first = await d()
+  if (!first.backdrop) {
+    throw new Error(`no backdrop was built: ${first.reason ?? 'no reason given'}`)
   }
-  // Displacement, not ticks: a sim that advances while every bot stands still
-  // would satisfy a tick counter and prove nothing about game-core.
-  const moved = b.bots.reduce((acc, bot, i) => {
-    const was = a.bots[i]
-    return acc + (was ? Math.hypot(bot.x - was.x, bot.y - was.y) : 0)
-  }, 0)
-  if (moved < 20) {
-    throw new Error(`bots barely moved in 4 s (total ${moved.toFixed(1)} px)`)
+  const REGION = { x: 40, y: 40, w: 300, h: 200 }
+  // Frozen first. The sky twinkles, drifts and interpolates its gradient, so two
+  // samples a moment apart differ whether or not the backdrop exists — the
+  // control below caught exactly that on the first run of this check.
+  await page.evaluate('window.__title.freeze(true)')
+  await page.waitForTimeout(150)
+  const withSky = await samplePatch(page, REGION)
+  const same = await samplePatch(page, REGION)
+  // The control: the same frame, sampled twice, with nothing toggled. If this
+  // differs, the diff below is measuring the day cycle rather than the layer.
+  if (same.digest !== withSky.digest) {
+    throw new Error('the same frame differs from itself — the backdrop diff below would be noise')
   }
-  log(`attract: ${b.ticks - a.ticks} ticks, bots moved ${moved.toFixed(0)} px total`)
-
-  // Terrain can only lose pixels — nothing in the game puts rock back. Over
-  // four seconds the bots may not have found a weapon yet, so this is an
-  // invariant rather than evidence of a fight, and it is logged as such.
-  if (b.solid > a.solid) {
-    throw new Error(`solid pixels grew: ${a.solid} -> ${b.solid}`)
+  await page.evaluate('window.__title.setBackdropVisible(false)')
+  const withoutSky = await samplePatch(page, REGION)
+  await page.evaluate('window.__title.setBackdropVisible(true)')
+  await page.evaluate('window.__title.freeze(false)')
+  if (withoutSky.digest === withSky.digest) {
+    throw new Error('hiding the backdrop changed nothing: the title screen is drawing a blank sky')
   }
-  log(`attract: terrain ${a.solid} -> ${b.solid} px solid (never grows)`)
-
+  log(
+    `backdrop: hiding it moved the region (lum ${withSky.lum.toFixed(1)} -> ` +
+      `${withoutSky.lum.toFixed(1)}); the same frame differs from itself by 0`,
+  )
   await shot('title')
 
-  // --- leaving the scene actually stops it (§A15) --------------------------
+  // --- and the menu survives it (§E9) -------------------------------------
   //
-  // The assertion is that no further ticks happen, not that `stop()` was
-  // called. A counter that reports intent is how a whole milestone of this
-  // project shipped a lightmap that computed and composited nothing.
-  // The counter is scene-level and monotonic, so it survives teardown. The
-  // control is that it is non-zero first: comparing 0 against 0 would pass
-  // however the simulation behaved, which is what the first version of this
-  // check did.
-  const before = (await d()).ticks
-  if (before <= 0) throw new Error('the attract sim never ticked, so stopping it proves nothing')
+  // The acceptance criterion, stated as measurement: **the frame loop is still
+  // running after the window the old bug died in.** `frames` is scene-level and
+  // monotonic, so a frozen count is exactly what a throw escaping `update()`
+  // looks like from outside — which is the failure that took the button with it.
+  //
+  // Sixty-one seconds because the old scene un-gated its warmup at about thirty
+  // and rebuilt its world at forty-five; a check that waited less than both
+  // would have passed against the code this replaces.
+  const early = await d()
+  if (early.frames <= 0) throw new Error('the scene never rendered a frame, so waiting proves nothing')
+  if (!early.uiPresent) throw new Error('the Start button was gone within a second')
 
-  await page.evaluate('window.__title.start()')
-  await page.waitForFunction('window.__menu !== undefined', { timeout: 20_000 })
-  const stopped1 = await d()
-  await page.waitForTimeout(1500)
-  const stopped2 = await d()
-  if (stopped2.ticks !== stopped1.ticks) {
+  await page.waitForTimeout(61_000)
+  const late = await d()
+
+  // **Growth alone is not the claim, and falsification proved it.** With an
+  // unguarded throw put back into `update()` — the exact §E9 defect — this
+  // counter still advanced, 1187 frames against 3660 for a healthy run: Phaser
+  // kept calling a scene that threw, at a third of the rate. So a `>` test
+  // passes for a loop the bug has crippled. It stays as the diagnostic that says
+  // *how badly*, and the click below is the assertion that says *whether*.
+  if (late.frames <= early.frames) {
     throw new Error(
-      `the attract sim kept running behind the menu: ${stopped1.ticks} -> ${stopped2.ticks}`,
+      `the frame loop stopped dead: ${early.frames} -> ${late.frames} frames over 61 s ` +
+        `(reason: ${late.reason ?? 'none reported'})`,
     )
   }
-  // Frozen ticks alone are weak evidence: Phaser stops calling `update` on a
-  // scene that is no longer running, so the count would freeze whether or not
-  // anything was released. Verified by falsification — deleting the SHUTDOWN
-  // handler still passed that assertion.
-  //
-  // What proves the sim was actually released is that the handle is gone:
-  // `attractTicks` is -1 only when the Attract object has been destroyed.
-  if (stopped2.attractTicks !== -1) {
-    throw new Error(
-      `the attract sim is still allocated behind the menu (attractTicks ${stopped2.attractTicks})`,
-    )
+  if (!late.uiPresent) {
+    throw new Error(`the Start button vanished after ${late.elapsed.toFixed(0)} s`)
   }
-  if (stopped2.running) throw new Error('the attract sim reports itself still running')
+  if (!late.drawOk || !late.backdropOk) {
+    throw new Error(`the backdrop failed while drawing: ${late.reason}`)
+  }
+  const fps = (late.frames - early.frames) / 61
   log(
-    `attract released: ticks frozen at ${stopped2.ticks} (ran ${before} before), handle freed`,
+    `menu survived: ${late.frames - early.frames} frames over 61 s (${fps.toFixed(0)}/s), ` +
+      `button still there, backdrop still drawing`,
   )
+
+  // **This is the acceptance criterion.** Everything above narrows *why* if it
+  // fails; this is the only line that says the screen did its job. Verified by
+  // falsification: an unguarded throw in `update()` sails past every assertion
+  // above and dies here, because the button is present, the counter is moving,
+  // and the click still never reaches the menu.
+  await page.click('#start-game')
+  await page
+    .waitForFunction('window.__menu !== undefined', { timeout: 20_000 })
+    .catch(() => {
+      throw new Error(
+        `the Start button did not reach the menu after ${late.elapsed.toFixed(0)} s ` +
+          `(${fps.toFixed(0)} frames/s, backdrop ${late.drawOk ? 'drawing' : 'failed'})`,
+      )
+    })
 
   // --- the menu ------------------------------------------------------------
   const m = () => page.evaluate('window.__menu.debug()')

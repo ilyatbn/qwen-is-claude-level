@@ -382,7 +382,7 @@ game gets a code, a friend joins it, they both ready, and they play on a Large m
 Six independent items. The one that matters most is the first: the title screen runs a
 real simulation at a third of real time, and thirty seconds in it takes the menu with it.
 
-- [ ] [T18.01](M18/T18.01-title-screen-stops.md) — The title screen stops after thirty seconds **(v6)**
+- [x] [T18.01](M18/T18.01-title-screen-stops.md) — The title screen stops after thirty seconds **(v6)**
 - [ ] [T18.02](M18/T18.02-smarter-bots.md) — Bots that explore, arm themselves and run **(v6)**
 - [ ] [T18.03](M18/T18.03-clouds-bigger.md) — Clouds are bigger and vary in brightness **(v6)**
 - [ ] [T18.04](M18/T18.04-objects-sit-on-ground.md) — Rocks and bushes are bigger, and sit on the ground **(v6)**

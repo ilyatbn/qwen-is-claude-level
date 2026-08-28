@@ -50,6 +50,14 @@ const clientDir = join(root, 'client')
  */
 const FORBIDDEN = [
   '__game',
+  // Added after both shipped. `__title` (T18.01) and `__menu` (T17.07) were in
+  // the production bundle and **this check passed anyway**, because the list was
+  // written before either handle existed — the guard whose whole purpose is
+  // §C17 could not see the two newest violations of it. A list of names is only
+  // as good as its last update, so anything that writes to `window` belongs here
+  // the moment it is written.
+  '__title',
+  '__menu',
   'sandbox',
   'toggleOverlays',
   'regenerate',

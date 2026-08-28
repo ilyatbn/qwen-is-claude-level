@@ -46,6 +46,15 @@ export class SkyLayer {
   private lastTop = -1
   private lastBottom = -1
   private phase: SkyPhase = 'morning'
+  /**
+   * Set by `setVisible(false)`; `update` must not undo it on the next frame.
+   *
+   * The same latch `ParallaxLayer` carries, and for the same reason: the bodies
+   * and the stars are shown or hidden per frame by their own rules, so without
+   * this a hidden sky would come back on the very next tick and a check that
+   * toggles the layer would diff a frame against itself.
+   */
+  private hidden = false
 
   constructor(scene: Phaser.Scene, seed = 0, themeId = 0) {
     this.scene = scene
@@ -130,7 +139,7 @@ export class SkyLayer {
       glow: Phaser.GameObjects.Image,
       b: { x: number; y: number; a: number } | null,
     ) => {
-      const on = b !== null && b.a > 0.001
+      const on = b !== null && b.a > 0.001 && !this.hidden
       disc.setVisible(on)
       glow.setVisible(on)
       if (!b) return
@@ -177,7 +186,7 @@ export class SkyLayer {
 
   private drawStars(alpha: number): void {
     this.starGfx.clear()
-    if (alpha <= 0.002) {
+    if (alpha <= 0.002 || this.hidden) {
       this.starGfx.setVisible(false)
       return
     }
@@ -190,6 +199,26 @@ export class SkyLayer {
       this.starGfx.fillStyle(0xffffff, alpha * s.b * tw)
       this.starGfx.fillRect(s.x, s.y, 1, 1)
     }
+  }
+
+  /**
+   * Show or hide the whole sky, for a check's control frame (§C2).
+   *
+   * The gradient, the bodies and the stars are this layer's; the ridges and
+   * clouds belong to `parallax`, which carries the same latch. Toggling one
+   * frozen frame against itself isolates what the sky contributes and nothing
+   * else — a before/after across two moments would also catch the day cycle
+   * advancing, which is not the thing being asserted.
+   */
+  setVisible(on: boolean): void {
+    this.hidden = !on
+    this.gradient.setVisible(on)
+    this.starGfx.setVisible(on)
+    this.sun.setVisible(on)
+    this.sunGlow.setVisible(on)
+    this.moon.setVisible(on)
+    this.moonGlow.setVisible(on)
+    this.parallax.setVisible(on)
   }
 
   destroy(): void {
