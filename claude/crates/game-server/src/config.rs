@@ -12,8 +12,8 @@ use std::net::SocketAddr;
 
 use game_core::constants::{MapGenerator, MapScale};
 use game_core::constants::{
-    BOT_COUNT_DEFAULT, BOT_SKILL_DEFAULT, DEFAULT_MAP_GENERATOR, DEFAULT_MAP_SCALE, MAX_PLAYERS,
-    ROOM_EMPTY_TTL, ROUND_SECONDS,
+    BOT_COUNT_DEFAULT, BOT_SKILL_DEFAULT, DEFAULT_MAP_GENERATOR, DEFAULT_MAP_SCALE,
+    LOBBY_BOT_TIMEOUT, MAX_PLAYERS, ROOM_EMPTY_TTL, ROUND_SECONDS,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +37,16 @@ pub struct Config {
     /// that proves the sweep runs has to observe a room actually disappear, and
     /// a test that sleeps for the 30 s default is a test nobody runs.
     pub room_empty_ttl: f32,
+    /// How long a public lobby waits before bots fill it and the match starts
+    /// (`docs/74-amendments-v6.md` §E2).
+    ///
+    /// Configurable for exactly the reason `room_empty_ttl` is, and the loss it
+    /// repairs is on the record: at the default 10 s a browser cannot observe
+    /// the lobby at all, because a cold page — vite transform, wasm init, first
+    /// frame — takes longer than that to reach `ready`. T17.07 measured ~0.0 s
+    /// of waiting and had to retire the browser-level claim that you arrive in
+    /// a lobby. A check can raise this and see it.
+    pub lobby_bot_timeout: f32,
     pub fixed_seed: Option<u64>,
     pub record_replay: bool,
     /// Where `RECORD_REPLAY=1` writes. Configurable so a test can point at a
@@ -99,6 +109,7 @@ impl Default for Config {
             max_players: MAX_PLAYERS,
             round_seconds: ROUND_SECONDS,
             room_empty_ttl: ROOM_EMPTY_TTL,
+            lobby_bot_timeout: LOBBY_BOT_TIMEOUT,
             fixed_seed: None,
             record_replay: false,
             replay_dir: "replays".to_string(),
@@ -191,6 +202,25 @@ impl Config {
             None => d.room_empty_ttl,
         };
 
+        let lobby_bot_timeout = match get("LOBBY_BOT_TIMEOUT") {
+            Some(v) => {
+                let n = v.parse::<f32>().map_err(|_| ConfigError {
+                    var: "LOBBY_BOT_TIMEOUT",
+                    value: v.clone(),
+                    expected: "a positive number of seconds".to_string(),
+                })?;
+                if !(n.is_finite() && n > 0.0) {
+                    return Err(ConfigError {
+                        var: "LOBBY_BOT_TIMEOUT",
+                        value: v,
+                        expected: "a positive number of seconds".to_string(),
+                    });
+                }
+                n
+            }
+            None => d.lobby_bot_timeout,
+        };
+
         let fixed_seed = match get("FIXED_SEED") {
             // An empty value means "unset" — compose writes `FIXED_SEED=` when the
             // .env variable is blank, and that must not be a parse error.
@@ -235,6 +265,7 @@ impl Config {
             max_players,
             round_seconds,
             room_empty_ttl,
+            lobby_bot_timeout,
             fixed_seed,
             record_replay,
             replay_dir,
@@ -253,7 +284,7 @@ impl Config {
     pub fn summary(&self) -> String {
         format!(
             "bind={} scale={} generator={} max_players={} round_seconds={} \
-             room_empty_ttl={} fixed_seed={} record_replay={} debug_dump={} bots={} \
+             room_empty_ttl={} lobby_bot_timeout={} fixed_seed={} record_replay={} debug_dump={} bots={} \
              bot_skill={}",
             self.bind_addr,
             self.map_scale.as_str(),
@@ -261,6 +292,7 @@ impl Config {
             self.max_players,
             self.round_seconds,
             self.room_empty_ttl,
+            self.lobby_bot_timeout,
             self.fixed_seed
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "random".to_string()),

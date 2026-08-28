@@ -1262,7 +1262,10 @@ impl Room {
                     // §E2: the bot timeout runs from the **first** seating and
                     // does not reset. A private lobby never gets one (§E3).
                     if !self.private && self.starts_in.is_none() && self.world.is_none() {
-                        self.starts_in = Some(game_core::constants::LOBBY_BOT_TIMEOUT);
+                        // From the config, not the constant: a browser check has to be
+                        // able to raise it, because at 10 s a cold page cannot reach
+                        // `ready` before the lobby it means to observe is over.
+                        self.starts_in = Some(self.config.lobby_bot_timeout);
                     }
                     if let Some(world) = self.world.as_mut() {
                         world.add_player(id, skin_id, name);

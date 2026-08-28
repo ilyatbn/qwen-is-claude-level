@@ -5,18 +5,42 @@ import {
   menuReducer,
   saveScale,
   scaleBlurb,
+  stepIndex,
   type MenuModel,
   type Screen,
 } from './menu'
 
-const ALL: Screen[] = ['menu', 'create', 'join', 'matching', 'lobby', 'skins']
+const ALL: Screen[] = ['menu', 'private', 'create', 'join', 'matching', 'lobby', 'skins']
 
 describe('menu navigation', () => {
   it('back reaches the menu from every screen — no screen is a trap', () => {
+    // **Repeated Back, not one Back.** §E7 nests Host and Join under Private
+    // Game, so `create` and `join` step to `private` and then to `menu`. The
+    // claim was never "one press" — it is that no screen traps you, and a bound
+    // is what turns that into an assertion: a cycle between two nested screens
+    // would spin here and fail, which a single-step check could not see.
     for (const screen of ALL) {
-      const m: MenuModel = { ...DEFAULT_MODEL, screen }
-      expect(menuReducer(m, { type: 'back' }).screen).toBe('menu')
+      let m: MenuModel = { ...DEFAULT_MODEL, screen }
+      let steps = 0
+      while (m.screen !== 'menu' && steps < ALL.length) {
+        m = menuReducer(m, { type: 'back' })
+        steps += 1
+      }
+      expect(m.screen, `\`${screen}\` never reached the menu in ${ALL.length} presses`).toBe(
+        'menu',
+      )
     }
+  })
+
+  it('and every nested screen goes up one level, not straight to the top', () => {
+    // The control for the loop above: it would also pass if every screen went
+    // directly to `menu`, which is the behaviour §E7 replaced.
+    expect(menuReducer({ ...DEFAULT_MODEL, screen: 'create' }, { type: 'back' }).screen).toBe(
+      'private',
+    )
+    expect(menuReducer({ ...DEFAULT_MODEL, screen: 'join' }, { type: 'back' }).screen).toBe(
+      'private',
+    )
   })
 
   it('navigation clears a stale error', () => {
@@ -82,6 +106,18 @@ describe('map size', () => {
     const all = (['small', 'medium', 'large'] as const).map(scaleBlurb)
     expect(new Set(all).size).toBe(3)
     for (const b of all) expect(b.length).toBeGreaterThan(4)
+  })
+
+  it('steps left from the first entry, which is the branch the `+ n` exists for', () => {
+    // The browser check clicks next-then-prev, so `prev` always runs from index
+    // 1 and never reaches this. Without the `+ n`, JS gives `(0 - 1) % 3 === -1`
+    // and `SCALES[-1]` is `undefined` — the stepper breaks on the one press
+    // nothing else makes.
+    expect(stepIndex(0, -1, 3)).toBe(2)
+    expect(stepIndex(2, 1, 3)).toBe(0)
+    // The control: an ordinary step, so the wrap assertions above are not the
+    // only thing this function is asked for.
+    expect(stepIndex(0, 1, 3)).toBe(1)
   })
 })
 

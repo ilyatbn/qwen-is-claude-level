@@ -102,7 +102,7 @@ const STYLE_ID = 'hud-font'
  * object because it is declarative, it survives a scene rebuild, and there is
  * nothing to await — the fallback stack renders until the face arrives.
  */
-function installFont(doc: Document): void {
+export function installFont(doc: Document): void {
   if (doc.getElementById(STYLE_ID)) return
   const style = doc.createElement('style')
   style.id = STYLE_ID
@@ -112,7 +112,14 @@ function installFont(doc: Document): void {
   doc.head.appendChild(style)
 }
 
-const DISPLAY_STACK = `'${FONT_FAMILY}',ui-monospace,SFMono-Regular,Menlo,monospace`
+/**
+ * The display face, with its fallback stack.
+ *
+ * Exported so the title and the menu use the *same* declaration the HUD does.
+ * A second `@font-face` for one file is D-49's pattern, and here it would also
+ * mean two answers to "what do we fall back to" — `docs/50` §8 wants one.
+ */
+export const DISPLAY_STACK = `'${FONT_FAMILY}',ui-monospace,SFMono-Regular,Menlo,monospace`
 
 /** Round timer, top-right; event banner, top-centre. */
 export class Hud {

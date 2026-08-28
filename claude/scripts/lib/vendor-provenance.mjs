@@ -22,6 +22,18 @@
 export const SPRITE_PACK_SECTION = 'Sprite packs'
 
 /**
+ * The headings a provenance row may live under.
+ *
+ * Scoping exists to stop a Kenney row vouching for a same-named sprite pack —
+ * two provenance domains in one namespace. It was never meant to say "sprite
+ * packs are the only vendored art": a **font** is an asset and `docs/51` §8
+ * applies to it identically, so `## Fonts` is a second place a row may sit.
+ *
+ * Adding a heading here is how a new class of vendored asset gets covered.
+ */
+export const PROVENANCE_SECTIONS = [SPRITE_PACK_SECTION, 'Fonts']
+
+/**
  * Every pack the shipped object art derives from, sorted, de-duplicated.
  *
  * Reads the manifest rather than the vendor directory: `assets/vendor/` is
@@ -83,12 +95,13 @@ export function packsInReadme(text) {
  * intention and not the effect, which is the rule this project pays for most
  * often.
  */
-export function readmeRows(text, section = SPRITE_PACK_SECTION) {
+export function readmeRows(text, sections = PROVENANCE_SECTIONS) {
   const rows = []
-  let inSection = section === null
+  const want = sections === null ? null : [].concat(sections)
+  let inSection = want === null
   for (const line of String(text).split('\n')) {
     if (/^#{1,6}\s/.test(line)) {
-      inSection = section === null || line.includes(section)
+      inSection = want === null || want.some((h) => line.includes(h))
       continue
     }
     if (!inSection) continue

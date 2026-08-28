@@ -53,7 +53,12 @@ const inGame = (c) =>
 
 // --- ana hosts, and stays in the lobby -----------------------------------
 const ana = await openAtMenu('ana')
-await ana.page.evaluate(() => document.querySelector('#create')?.click())
+await ana.page.evaluate(() => {
+  // §E7: hosting is behind Private Game now — Quick Game takes no options, so
+  // the map-size stepper lives on the step that can actually use it.
+  document.querySelector('#private')?.click()
+})
+await ana.page.evaluate(() => document.querySelector('#host')?.click())
 await ana.page.waitForFunction('window.__menu.visibleCode().length === 6', null, {
   timeout: 30_000,
 })
@@ -81,8 +86,9 @@ else ok(`control frame: ${namesBefore.length} roster rows, ${namesBefore.filter(
 
 // --- bo joins by the code ------------------------------------------------
 const bo = await openAtMenu('bo')
+await bo.page.evaluate(() => document.querySelector('#private')?.click())
+await bo.page.evaluate(() => document.querySelector('#join')?.click())
 await bo.page.evaluate((c) => {
-  document.querySelector('#join')?.click()
   const input = document.querySelector('#code')
   input.value = c
   input.dispatchEvent(new Event('input', { bubbles: true }))

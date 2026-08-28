@@ -75,3 +75,18 @@ published. The packs' own files date from 2022–2023.
 Neither gap is something a builder can close: only the owner knows where these
 came from. Recorded here so the next person reads a known gap instead of
 assuming the paperwork was done.
+
+## Fonts
+
+Shipped in `assets/fonts/` and served from our own origin — nothing is fetched
+from a CDN, because the game must start with no network (`docs/51` §5).
+
+| pack | source | licence | fetched | size |
+|---|---|---|---|---|
+| `kenney-fonts` | https://kenney.nl/assets/kenney-fonts | CC0 | 2026-08-23 | 34K |
+
+**This row is new at T17.08 and the font is not.** `kenney-future-narrow.ttf`
+has been committed and rendering the HUD since T14 with **no provenance record
+at all** — `docs/51` §8 asks for one and there was none, and nothing checked.
+It is in `assets/manifest.json`'s `vendorPacks` now, so `verify-assets.mjs`
+fails the gate if this row is removed rather than trusting anyone to notice.

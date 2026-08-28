@@ -9,6 +9,7 @@
  * is broken, and it is visible before anyone opens a test suite.
  */
 import Phaser from 'phaser'
+import { installFont, DISPLAY_STACK } from '../ui/hud'
 import { C, Core, MapScale } from '../core'
 import type { Attract } from '../core/attract'
 import { WorldView } from '../render/worldView'
@@ -117,9 +118,16 @@ export class TitleScene extends Phaser.Scene {
     // `scrollFactor(0)` Phaser object is still scaled by camera zoom (§A35).
     const el = document.createElement('div')
     el.className = 'title-screen'
+    // §E7. The tagline is gone and the title is SHRED, set in the display face.
+    //
+    // `installFont` and `DISPLAY_STACK` come from the HUD rather than being
+    // declared again here: one `@font-face`, one fallback stack. If the face
+    // never loads the stack renders in the body-adjacent monospace and the menu
+    // still works (`docs/50` §8) — the face is not awaited and nothing gates on
+    // it.
+    installFont(document)
     el.innerHTML = `
-      <h1>DEEP CUT</h1>
-      <p class="tagline">A deathmatch in a map you can dig through.</p>
+      <h1 id="game-title" style="font-family:${DISPLAY_STACK};letter-spacing:.18em">SHRED</h1>
       <button id="start-game" autofocus>Start Game</button>
       <p class="hint">Enter to start</p>
     `

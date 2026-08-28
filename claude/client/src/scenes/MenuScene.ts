@@ -15,9 +15,9 @@ import {
   loadScale,
   menuReducer,
   saveScale,
-  scaleBlurb,
   type MenuAction,
   type MenuModel,
+  stepIndex,
 } from '../ui/menu'
 import {
   checkCode,
@@ -58,6 +58,11 @@ export class MenuScene extends Phaser.Scene {
 
     // Esc always goes back one step, from anywhere (§B3).
     this.input.keyboard?.on('keydown-ESC', () => this.dispatch({ type: 'back' }))
+    // §E7: the stepper works from the keyboard. Routed by screen rather than
+    // bound to the buttons, so it steps the model on the private screen and the
+    // live lobby setting in the lobby — the two places a size can change.
+    this.input.keyboard?.on('keydown-LEFT', () => this.stepEither(-1))
+    this.input.keyboard?.on('keydown-RIGHT', () => this.stepEither(1))
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.root?.remove()
@@ -202,33 +207,50 @@ export class MenuScene extends Phaser.Scene {
     const err = m.error ? `<p class="error" role="alert">${escapeHtml(m.error)}</p>` : ''
 
     if (m.screen === 'menu') {
+      // §E7. Quick Game takes no options — quick match **randomises** its
+      // settings, so showing a stepper here would be a control that silently
+      // does nothing. Map size belongs to the private lobby, where a host can
+      // actually change it, and that stepper is the one in `stepScale`.
       el.innerHTML = `
-        <h2>Start Game</h2>
-        <fieldset class="scales">
-          <legend>Map size</legend>
-          ${SCALES.map(
-            (s) =>
-              `<button data-scale="${s}" class="${m.scale === s ? 'on' : ''}">${scaleBlurb(s)}</button>`,
-          ).join('')}
-        </fieldset>
         <div class="actions">
-          <button id="quick">Quick match</button>
-          <button id="create">Create private game</button>
-          <button id="join">Join private game</button>
+          <button id="quick" autofocus>Quick Game</button>
+          <button id="private">Private Game</button>
           <button id="skins">Skins</button>
         </div>
         ${err}`
-      for (const s of SCALES) {
-        el.querySelector(`[data-scale="${s}"]`)?.addEventListener('click', () =>
-          this.dispatch({ type: 'setScale', scale: s }),
-        )
-      }
       el.querySelector('#quick')?.addEventListener('click', () => this.quickMatch())
-      el.querySelector('#create')?.addEventListener('click', () => this.createRoom())
+      el.querySelector('#private')?.addEventListener('click', () =>
+        this.dispatch({ type: 'go', screen: 'private' }),
+      )
+      el.querySelector('#skins')?.addEventListener('click', () => this.scene.start('Skins'))
+      return
+    }
+
+    if (m.screen === 'private') {
+      // Host or join — the two things a private game can be (§E7). Hosting
+      // carries the map size, because the host owns the settings (§E3), and it
+      // is the same stepper the lobby shows: one control, built once.
+      el.innerHTML = `
+        <h2>Private game</h2>
+        <div class="settings-row">
+          <span class="setting-name">Map size</span>
+          <button id="scale-prev" aria-label="Smaller map">‹</button>
+          <span class="setting-value" id="scale-value">${m.scale.toUpperCase()}</span>
+          <button id="scale-next" aria-label="Larger map">›</button>
+        </div>
+        <div class="actions">
+          <button id="host">Host</button>
+          <button id="join">Join</button>
+          <button id="back">Back</button>
+        </div>
+        ${err}`
+      el.querySelector('#scale-prev')?.addEventListener('click', () => this.stepMenuScale(-1))
+      el.querySelector('#scale-next')?.addEventListener('click', () => this.stepMenuScale(1))
+      el.querySelector('#host')?.addEventListener('click', () => this.createRoom())
       el.querySelector('#join')?.addEventListener('click', () =>
         this.dispatch({ type: 'go', screen: 'join' }),
       )
-      el.querySelector('#skins')?.addEventListener('click', () => this.scene.start('Skins'))
+      el.querySelector('#back')?.addEventListener('click', () => this.dispatch({ type: 'back' }))
       return
     }
 
@@ -335,6 +357,25 @@ export class MenuScene extends Phaser.Scene {
     }
   }
 
+  /** Whichever stepper the current screen owns. */
+  private stepEither(delta: number): void {
+    if (this.model.screen === 'private') this.stepMenuScale(delta)
+    else if (this.model.screen === 'lobby') this.stepScale(delta)
+  }
+
+  /**
+   * The menu's own stepper, before a lobby exists.
+   *
+   * Same wrap, same order, same `SCALES` as `stepScale` — the difference is only
+   * where the answer goes: here into the model that `createRoom` will send, and
+   * there over the wire to a room that already exists. Both call `stepIndex` so
+   * "what is the next size" has one answer.
+   */
+  private stepMenuScale(delta: number): void {
+    const next = SCALES[stepIndex(SCALES.indexOf(this.model.scale), delta, SCALES.length)]
+    if (next) this.dispatch({ type: 'setScale', scale: next })
+  }
+
   /**
    * Move the map size one step, wrapping.
    *
@@ -344,8 +385,7 @@ export class MenuScene extends Phaser.Scene {
   private stepScale(delta: number): void {
     const L = this.lobby
     if (!L || !ownsSettings(L, this.mySeat)) return
-    const i = SCALES.indexOf(L.scale)
-    const next = SCALES[(i + delta + SCALES.length) % SCALES.length]
+    const next = SCALES[stepIndex(SCALES.indexOf(L.scale), delta, SCALES.length)]
     if (next) this.conn?.sendSetScale(next)
   }
 

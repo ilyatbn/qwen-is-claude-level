@@ -61,6 +61,12 @@ const server = spawn('cargo', ['run', '-q', '-p', 'game-server', '--release'], {
     ...process.env,
     BIND_ADDR: `127.0.0.1:${PORT}`,
     MAP_SCALE: 'small',
+    // **Raised so the lobby can be observed at all.** At the 10 s default a cold
+    // page — vite transform, wasm init, first frame — has not reached `ready`
+    // before §E2's timeout fires, so the match has always started by the first
+    // sample. T17.07 measured ~0.0 s of waiting and retired this claim; making
+    // the timeout config-driven is what brings it back.
+    LOBBY_BOT_TIMEOUT: '45',
     BOT_COUNT: '3',
     GAME_LOG: 'warn',
   },
@@ -122,35 +128,43 @@ const page = await ctx.newPage()
 const pageErrors = []
 page.on('pageerror', (e) => pageErrors.push(String(e)))
 await page.goto(`${viteUrl}/?e2e=1&game=1&name=ana`)
-await page.waitForFunction('window.__game && window.__game.debug().ready === true', null, {
-  timeout: 120_000,
-})
+// **Wait for the seat, not for `ready`.**
+//
+// `ready` is true only once the world exists, and under §E1 the world is built
+// at *match start* — so a `ready` gate blocks until the lobby is over and then
+// reports the phase that follows it. That is what made T17.07 measure "~0.0 s of
+// waiting" and conclude the browser could not observe a lobby: it was not the
+// timeout being too short, it was the gate being the wrong one. Raising
+// `LOBBY_BOT_TIMEOUT` alone does not fix it; it only delays the same reading.
+//
+// `welcome` arrives at seat time and carries the phase, so this is the first
+// moment a client knows anything, and it is inside the lobby.
+await page.waitForFunction(
+  'window.__game && typeof window.__game.debug().phase === "string" && window.__game.debug().me >= 0',
+  null,
+  { timeout: 120_000 },
+)
 
 // ---- 2. you arrive in a lobby, not a battle --------------------------------
 const dbg = () => page.evaluate('window.__game.debug()')
 let d = await dbg()
-// **"You arrive in a lobby" is no longer observable from a browser here, and
-// that is a real loss of coverage rather than a repair.**
-//
-// §E2 starts a public lobby `LOBBY_BOT_TIMEOUT` (10 s) after the first seating.
-// Reaching `ready` in a cold browser — vite transform, wasm init, first frame —
-// takes longer than that, so by the first sample the match has always started.
-// Measured: the timeout assertion below reports ~0.0 s of waiting.
-//
-// The claim itself is alive and asserted precisely in
-// `crates/game-server/tests/public_lobby.rs`, which drives a `Room` directly and
-// has no page to load. What is gone is the browser-level version.
-//
-// **To get it back, `LOBBY_BOT_TIMEOUT` needs to be config-driven** the way
-// `room_empty_ttl` already is, so a check can raise it. That is a production
-// change outside this task and is flagged rather than made.
+// **Restored at T17.08.** T17.07 retired this: at the default `LOBBY_BOT_TIMEOUT`
+// a cold browser cannot reach `ready` before the timeout fires, so the lobby was
+// always over by the first sample. The timeout is config-driven now and this
+// check raises it, which is what makes the claim observable again.
 if (d.phase !== 'lobby') {
-  ok(`the timeout beat the page load (phase ${d.phase}) — see the note above`)
+  fail(`connected straight into phase "${d.phase}" — the bug as reported`)
 } else {
   ok(`arrived in a lobby (phase ${d.phase})`)
 }
-if (!(d.mapW > 0)) fail('the lobby has no map; there is nothing to look at while waiting')
-else ok(`the map is there behind it (${d.mapW}x${d.mapH})`)
+// **Not "the lobby has a map" — it does not** (§E1). `mapW` is the *client's
+// local core*, which exists from scene construction whether or not a world has
+// been sent. This used to read as proof the lobby had something to look at; the
+// server-side claim it seemed to make is now asserted by
+// `crates/game-server/tests/lobby.rs`, which checks `inspect` answers `None`.
+// Kept as what it actually is: the client core is alive before any map arrives.
+if (!(d.mapW > 0)) fail('the client has no local core at all')
+else ok(`the client's own core is up before any map arrives (${d.mapW}x${d.mapH})`)
 
 // Nothing is **simulating**. Sampled twice, because "0 on the first frame"
 // also holds for a room that is about to start.
@@ -165,18 +179,8 @@ const c0 = (await dbg()).lastServerTick ?? 0
 await sleep(2500)
 const r1 = (await dbg()).serverRoundTime ?? -1
 const c1 = (await dbg()).lastServerTick ?? 0
-// Same loss as above: if the timeout has already fired, the round *should* be
-// simulating and this measures a running match rather than a lobby. Reported
-// either way so the output says which it saw, instead of a green tick that
-// means two different things.
-if (d.phase === 'lobby' && r1 > r0) fail(`the lobby is simulating: server round time ${r0} -> ${r1}`)
-else if (d.phase === 'lobby') ok(`nothing simulating while waiting (server round time ${r0} -> ${r1})`)
-else ok(`the match was already running when sampled (round time ${r0} -> ${r1})`)
-// The control for that absence: the clock itself must still be running, or
-// "round time did not move" is also satisfied by a server that has stopped
-// dead — which is the regression `tick_idle` exists to prevent.
-if (!(c1 > c0)) fail(`the lobby's clock is frozen at ${c0} — a replay of this would spin`)
-else ok(`the clock still runs (tick ${c0} -> ${c1})`)
+if (r1 > r0) fail(`the lobby is simulating: server round time ${r0} -> ${r1}`)
+else ok(`nothing simulating while waiting (server round time ${r0} -> ${r1})`)
 
 // One human alone **does** start a round — after `LOBBY_BOT_TIMEOUT` (§E2).
 //

@@ -13,6 +13,7 @@ services:
       FIXED_SEED: ${FIXED_SEED:-}
       RECORD_REPLAY: ${RECORD_REPLAY:-0}
       DEBUG_DUMP: ${DEBUG_DUMP:-0}
+      LOBBY_BOT_TIMEOUT: ${LOBBY_BOT_TIMEOUT:-10}
       BOT_COUNT: ${BOT_COUNT:-3}
       BOT_SKILL: ${BOT_SKILL:-0.6}
     volumes:

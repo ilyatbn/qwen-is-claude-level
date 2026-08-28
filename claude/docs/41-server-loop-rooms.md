@@ -156,6 +156,8 @@ From environment, read once at startup:
 | `MAP_SCALE` | `medium` | `small` \| `medium` \| `large` |
 | `ROUND_SECONDS` | `240` | overrides the constant, for testing |
 | `MAX_PLAYERS` | `6` | |
+| `ROOM_EMPTY_TTL` | `30` | seconds a room with no humans survives before the reaper takes it (`docs/74` §E5) |
+| `LOBBY_BOT_TIMEOUT` | `10` | seconds a **public** lobby waits before bots fill it and the match starts (`docs/74` §E2). Raise it to observe a lobby in a browser: a cold page takes longer than the default to load |
 | `FIXED_SEED` | unset | if set, every round uses this seed — invaluable for debugging |
 | `RECORD_REPLAY` | `0` | write a replay file per round (`61-logging-debug.md`) |
 

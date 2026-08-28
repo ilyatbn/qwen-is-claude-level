@@ -67,7 +67,12 @@ const dbg = (c) => c.page.evaluate('window.__game.debug()')
 
 // --- host creates a private room -----------------------------------------
 const host = await openAtMenu('ana')
-await host.page.evaluate(() => document.querySelector('#create')?.click())
+await host.page.evaluate(() => {
+  // §E7: hosting is behind Private Game now — Quick Game takes no options, so
+  // the map-size stepper lives on the step that can actually use it.
+  document.querySelector('#private')?.click()
+})
+await host.page.evaluate(() => document.querySelector('#host')?.click())
 // **Stays in the lobby.** Since T17.07 creating a private game seats the client
 // in a menu screen holding the live socket; `map_init` is what moves it to
 // `GameScene`, and that does not happen until the match starts. Waiting for
@@ -91,8 +96,9 @@ log(`host sees code ${code}`)
 
 // --- guest joins by that code --------------------------------------------
 const guest = await openAtMenu('bo')
+await guest.page.evaluate(() => document.querySelector('#private')?.click())
+await guest.page.evaluate(() => document.querySelector('#join')?.click())
 await guest.page.evaluate((c) => {
-  document.querySelector('#join')?.click()
   const input = document.querySelector('#code')
   input.value = c
   input.dispatchEvent(new Event('input', { bubbles: true }))

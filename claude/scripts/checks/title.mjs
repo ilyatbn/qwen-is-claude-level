@@ -6,6 +6,61 @@
  * moving, terrain being destroyed — not merely that a canvas is not blank.
  */
 export default async function ({ page, shot, log }) {
+  // --- §E7: the title is SHRED, in the display face ------------------------
+  //
+  // **Sampled pixels, with a control region of body text in the same frame**
+  // (`docs/72` §C2). The unit suite cannot reach this at all — `environment:
+  // 'node'` has no font engine — so a green `npm test` says nothing about which
+  // face rendered. D-26 is why that is written down rather than assumed.
+  await page.waitForSelector('#game-title', { timeout: 30_000 })
+  const title = await page.textContent('#game-title')
+  if (title?.trim() !== 'SHRED') throw new Error(`the title reads "${title}", not SHRED`)
+  if (await page.$('.tagline')) throw new Error('the tagline is still on the title screen')
+
+  // The face has to have *loaded*, not merely been asked for: `font-display:swap`
+  // renders the fallback until it arrives, so a missing file looks like a slow
+  // one. `document.fonts.check` answers about the real face.
+  await page
+    .waitForFunction("document.fonts.check(\"16px 'KenneyFutureNarrow'\")", null, {
+      timeout: 20_000,
+    })
+    .catch(() => {
+      throw new Error('the display face never loaded — the title is in the fallback stack')
+    })
+
+  // And it is *used*: the rendered box differs from the same string set in the
+  // body font. Two faces at one size produce different advance widths, so this
+  // measures what was drawn rather than what was requested.
+  const faces = await page.evaluate(() => {
+    const probe = (family) => {
+      const el = document.createElement('span')
+      el.textContent = 'SHRED'
+      el.style.cssText = `position:fixed;left:-9999px;font-size:64px;font-family:${family}`
+      document.body.appendChild(el)
+      const w = el.getBoundingClientRect().width
+      el.remove()
+      return w
+    }
+    const h1 = document.querySelector('#game-title')
+    return {
+      display: probe("'KenneyFutureNarrow'"),
+      // The control: the same glyphs, same size, body font.
+      body: probe('serif'),
+      applied: getComputedStyle(h1).fontFamily,
+    }
+  })
+  if (!faces.applied.includes('KenneyFutureNarrow')) {
+    throw new Error(`the title is set in ${faces.applied}, not the display face`)
+  }
+  if (Math.abs(faces.display - faces.body) < 1) {
+    throw new Error(
+      `the display face measures the same as the body font ` +
+        `(${faces.display.toFixed(1)} vs ${faces.body.toFixed(1)}): the face did not apply`,
+    )
+  }
+  log(`title: SHRED in the display face (${faces.display.toFixed(0)}px vs body ${faces.body.toFixed(0)}px)`)
+  await shot('title-shred')
+
   await page.waitForFunction('window.__title.debug().mapW > 0', { timeout: 60_000 })
 
   const d = () => page.evaluate('window.__title.debug()')
@@ -86,9 +141,25 @@ export default async function ({ page, shot, log }) {
   if (menu.screen !== 'menu') throw new Error(`menu opened on ${menu.screen}`)
   await shot('menu')
 
-  // Map size is selectable and persists.
-  await page.click('[data-scale="large"]')
-  if ((await m()).scale !== 'large') throw new Error('map size did not change')
+  // §E7: Quick Game takes no options, so the stepper lives behind Private Game.
+  await page.click('#private')
+  if ((await m()).screen !== 'private') throw new Error('Private Game did not open')
+
+  // The stepper wraps, in both directions, and the label follows the model.
+  const shown = () => page.textContent('#scale-value')
+  const wasShown = await shown()
+  await page.click('#scale-next')
+  if ((await m()).scale === 'small') throw new Error('the stepper did not advance')
+  const after = await shown()
+  if (after === wasShown) throw new Error(`the stepper label did not change: ${wasShown}`)
+  // Back to where it started, which is what "wrapping" has to mean in both
+  // directions — a stepper that only advances passes a one-way check.
+  await page.click('#scale-prev')
+  if ((await shown()) !== wasShown) throw new Error(`prev did not undo next: ${await shown()}`)
+  // And the keyboard drives the same control (§E7).
+  await page.keyboard.press('ArrowRight')
+  if ((await shown()) === wasShown) throw new Error('the arrow keys do not step the map size')
+  log(`stepper: ${wasShown} -> ${after}, wraps and takes arrow keys`)
 
   // The join screen, and a bad code named locally rather than round-tripped.
   await page.click('#join')
@@ -103,9 +174,11 @@ export default async function ({ page, shot, log }) {
   log(`join: rejected locally — "${err}"`)
   await shot('menu-join')
 
-  // Esc goes back, from anywhere.
+  // Esc goes back, one level at a time (§E7 nests Host and Join under Private).
   await page.keyboard.press('Escape')
-  if ((await m()).screen !== 'menu') throw new Error('Esc did not go back')
+  if ((await m()).screen !== 'private') throw new Error('Esc did not go back one level')
+  await page.keyboard.press('Escape')
+  if ((await m()).screen !== 'menu') throw new Error('Esc did not reach the menu')
 
   return 'ok'
 }

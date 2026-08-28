@@ -7,7 +7,7 @@
  */
 import type { Scale } from '../net/lobby'
 
-export type Screen = 'menu' | 'create' | 'join' | 'matching' | 'lobby' | 'skins'
+export type Screen = 'menu' | 'private' | 'create' | 'join' | 'matching' | 'lobby' | 'skins'
 
 export interface MenuModel {
   screen: Screen
@@ -45,8 +45,12 @@ export type MenuAction =
  */
 const BACK: Record<Screen, Screen> = {
   menu: 'menu',
-  create: 'menu',
-  join: 'menu',
+  // §E7: Private Game is a step, so Back from Host or Join returns to it rather
+  // than skipping to the top. `Screen` is exhaustive here by type, which is why
+  // adding a screen without deciding its Back is a compile error.
+  private: 'menu',
+  create: 'private',
+  join: 'private',
   matching: 'menu',
   lobby: 'menu',
   skins: 'menu',
@@ -98,3 +102,14 @@ export function scaleBlurb(s: Scale): string {
 }
 
 
+
+/**
+ * Step an index, wrapping in both directions (§E7).
+ *
+ * One line, and it exists so the menu's stepper and the lobby's cannot disagree
+ * about what "next" means. `(i + d) % n` is wrong for negative `d` in JS, which
+ * is the bug this removes rather than duplicates.
+ */
+export function stepIndex(i: number, delta: number, n: number): number {
+  return (((i + delta) % n) + n) % n
+}

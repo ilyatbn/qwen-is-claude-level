@@ -59,6 +59,7 @@
     "audio/walk_2.ogg"
   ],
   "vendorPacks": [
-    "clouds"
+    "clouds",
+    "kenney-fonts"
   ]
 }

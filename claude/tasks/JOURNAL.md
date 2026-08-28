@@ -4709,3 +4709,37 @@ live the first time one echoes something a player typed.
 waiting — so that claim lives only in `public_lobby.rs`. T17.08 makes the timeout
 config-driven to get it back. And `lobby-start` was **already red at `1f7f0b4`**, asserting
 a solo player never starts, which §E2 retired at T17.03.
+
+## T17.08 — SHRED, and a menu that steps (v6)  ·  M17 complete
+
+Title is SHRED in the display face, tagline gone; `installFont` and `DISPLAY_STACK` come
+from `hud.ts`, so there is one `@font-face` and one fallback stack. Quick Game takes no
+options because quick match randomises — the stepper lives on Private Game and in the
+lobby, sharing `stepIndex`, which also fixes `(i + d) % n` for negative `d`. That is the
+duplication pattern done right, and the opposite of `escapeHtml`'s three copies.
+
+**T17.07's diagnosis was wrong, and only instrumenting found it.** I ruled that
+`LOBBY_BOT_TIMEOUT` should be config-driven to restore the lost browser claim. It is —
+`config.rs`, env, `.env`/`.env.example`/compose, `docs/41` §5 — **and raising it to 45 s
+did not restore the claim.** The server had 45 seconds and never force-started. The check
+was **waiting on the wrong gate**: `ready` is true only once the world exists, and under
+§E1 the world is built at *match start*, so a `ready` gate blocks until the lobby is over
+and then reports what follows it. T17.07's measured "~0.0 s of waiting" was never a
+timeout problem — the timeout had already fired during the wait. Waiting on the **seat**
+instead: `arrived in a lobby (phase lobby)`, `nothing simulating (round time 0 → 0)`,
+`started itself after ~45.7s`. The config change was necessary and not sufficient, and
+would have shipped as the fix.
+
+The same check read `mapW` for *"the map is there behind it"* — that is the **client's
+local core**, alive from scene construction, so it could never have said anything about a
+lobby. Corrected to say what it measures.
+
+**The HUD font has been shipping since T14 with no provenance row at all.** `docs/51` §8
+asks for one and nothing checked, because T16.05's gate only looked at sprite packs. It is
+in `vendorPacks` now with a `## Fonts` section, and the section scoping generalised — the
+Kenney-row guard survives, verified empirically at zero rows in scope.
+
+The font assertion is three assertions, not one: `document.fonts.check` (the face loaded),
+computed `fontFamily` (applied to the title), and advance-width 264 px against the body's
+210 px (actually used). Advance-width alone could be fooled by a fallback that also
+differs from `serif`; (1) is what closes that.
