@@ -97,13 +97,4 @@ export function scaleBlurb(s: Scale): string {
   }
 }
 
-/** "3/6, two of them bots" — §B10's replacement for an ETA that was always 0. */
-export function describeRoom(players: number, capacity: number, bots: number): string {
-  const bit =
-    bots === 0 ? '' : bots === 1 ? ', one of them a bot' : `, ${numberWord(bots)} of them bots`
-  return `${players}/${capacity}${bit}`
-}
 
-function numberWord(n: number): string {
-  return ['zero', 'one', 'two', 'three', 'four', 'five', 'six'][n] ?? String(n)
-}

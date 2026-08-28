@@ -24,10 +24,19 @@ export interface Welcome {
   phase: string
   simHz: number
   snapshotHz: number
-  players: Array<{ id: number; name?: string | undefined; skin_id: number; score: number }>
+  /**
+   * §E6: `players` and `scale` are gone.
+   *
+   * Both are said better by `lobby_state`, and keeping them put two sources of
+   * truth on one wire — `scale` is *provisional* the moment §E3 lets a host
+   * change it, and `players` came from the world's roster. `welcome` now carries
+   * only what is true at the instant of seating and never changes.
+   *
+   * `maxPlayers` is parsed here and read by nothing — dead, and left alone
+   * because removing it is not this task's.
+   */
   /** A string on the wire: a u64 seed does not survive JSON's number type. */
   seed: string
-  scale: string
   maxPlayers: number
 }
 
@@ -280,18 +289,9 @@ export function parseWelcome(p: Record<string, unknown>): Welcome {
     phase: String(p['phase'] ?? 'lobby'),
     simHz: num(p['sim_hz'], 60),
     snapshotHz: num(p['snapshot_hz'], 20),
-    players: Array.isArray(p['players'])
-      ? (p['players'] as Array<Record<string, unknown>>).map((q) => ({
-          id: num(q['id']),
-          name: typeof q['name'] === 'string' ? q['name'] : undefined,
-          skin_id: num(q['skin_id']),
-          score: num(q['score']),
-        }))
-      : [],
     // Kept as a string all the way to the HUD: `Number` would round a u64 seed
     // and a bug report carrying a rounded seed reproduces a different map.
     seed: String(p['seed'] ?? '0'),
-    scale: String(p['scale'] ?? 'medium'),
     maxPlayers: num(p['max_players'], 6),
   }
 }

@@ -74,6 +74,32 @@ pub enum Command {
     Status {
         reply: oneshot::Sender<(usize, usize)>,
     },
+    /// Change the map size the match will use (§E3).
+    ///
+    /// Refused unless the sender is the `settings_owner`; the reply says which,
+    /// because a silent no-op is indistinguishable from a lost message at the
+    /// client (§E6).
+    SetScale {
+        by: PlayerId,
+        scale: game_core::constants::MapScale,
+        reply: oneshot::Sender<Result<(), &'static str>>,
+    },
+    /// Tell the room who it is: its join code, and whether it is private.
+    ///
+    /// The registry owns identity — it mints codes and keeps the `code -> id`
+    /// map — but `lobby_state` is emitted from the room task, which has no
+    /// registry. Sent once, immediately after `spawn`, before anyone can be
+    /// seated. A command rather than a constructor argument because the code is
+    /// minted *after* the spawn and reordering that would push both through the
+    /// `Spawner` trait and its test doubles.
+    SetIdentity {
+        code: Option<String>,
+        private: bool,
+    },
+    /// Read the lobby, for the join handshake and for tests.
+    LobbyRead {
+        reply: oneshot::Sender<LobbyState>,
+    },
     /// Everything the join handshake needs, in **either** state.
     ///
     /// `Inspect` cannot answer it: a lobby has no world, so the closure is
@@ -110,6 +136,11 @@ impl std::fmt::Debug for Command {
             Command::Roster { .. } => f.write_str("Roster"),
             Command::Status { .. } => f.write_str("Status"),
             Command::JoinInfo { .. } => f.write_str("JoinInfo"),
+            Command::SetIdentity { code, private } => {
+                write!(f, "SetIdentity({code:?}, private {private})")
+            }
+            Command::SetScale { by, scale, .. } => write!(f, "SetScale({by}, {scale:?})"),
+            Command::LobbyRead { .. } => f.write_str("LobbyRead"),
             Command::Inspect(_) => f.write_str("Inspect"),
         }
     }
@@ -249,6 +280,40 @@ impl RoomHandle {
         false
     }
 
+    /// Tell the room its identity. Fire-and-forget: sent once, before seating.
+    pub fn set_identity(&self, code: Option<String>, private: bool) {
+        let _ = self.tx.try_send(Command::SetIdentity { code, private });
+    }
+
+    /// Change the map size, as `by`. `Err` names why it was refused (§E6).
+    pub async fn set_scale(
+        &self,
+        by: PlayerId,
+        scale: game_core::constants::MapScale,
+    ) -> Result<(), &'static str> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::SetScale {
+                by,
+                scale,
+                reply: tx,
+            })
+            .await
+            .is_err()
+        {
+            return Err("the room is gone");
+        }
+        rx.await.unwrap_or(Err("the room is gone"))
+    }
+
+    /// This room's lobby, for the join handshake and for tests.
+    pub async fn lobby_state(&self) -> Option<LobbyState> {
+        let (tx, rx) = oneshot::channel();
+        self.tx.send(Command::LobbyRead { reply: tx }).await.ok()?;
+        rx.await.ok()
+    }
+
     /// Read the join handshake's inputs. Works in a lobby, where `inspect` cannot.
     pub async fn join_info(&self) -> Option<JoinInfo> {
         let (tx, rx) = oneshot::channel();
@@ -269,6 +334,38 @@ pub struct JoinInfo {
     pub seed: u64,
     pub scale: game_core::constants::MapScale,
     pub map: Option<Vec<u8>>,
+    /// The lobby, in the **same** read (§E6).
+    ///
+    /// Not a second round-trip: the room task does not drain commands while it
+    /// awaits map generation, so a second `await` in the seat path stalls for
+    /// the whole generator — measured, `map_init` then missed a 15 s budget
+    /// while carves flowed past on other sockets.
+    pub lobby: LobbyState,
+}
+
+/// One seat, as a lobby shows it (§E6).
+pub struct LobbySeat {
+    pub seat: PlayerId,
+    pub name: String,
+    pub skin_id: u16,
+    pub ready: bool,
+    pub bot: bool,
+}
+
+/// What a client sitting in a lobby is shown (§E6).
+///
+/// `players` is **derived from `Seats`** — §E1.1's single source — not built
+/// beside it. There is no world to read a roster off in a lobby, and building a
+/// third list here is the shape `welcome.players` and `room_list` already took
+/// twice.
+pub struct LobbyState {
+    pub code: Option<String>,
+    pub private: bool,
+    pub capacity: usize,
+    pub scale: game_core::constants::MapScale,
+    pub settings_owner: Option<PlayerId>,
+    pub starts_in: Option<f32>,
+    pub players: Vec<LobbySeat>,
 }
 
 /// One row of the roster a client needs to render other players:
@@ -460,6 +557,24 @@ pub struct Room {
     /// round from an empty lobby. The world's `tick` continues from here when the
     /// match starts, so the sequence a client sees never goes backwards.
     lobby_tick: u32,
+    /// This room's join code, and whether it is private (§E6). Set by the
+    /// registry through `SetIdentity` right after the task is spawned.
+    code: Option<String>,
+    private: bool,
+    /// Seconds until a public lobby fills its seats with bots (§E2).
+    ///
+    /// `None` until the **first** player is seated, and `None` forever in a
+    /// private lobby, which has no timeout. It does not reset when others join.
+    starts_in: Option<f32>,
+    /// The whole second last announced, so `starts_in` is not broadcast 60x a
+    /// second. The same throttle `round.rs` uses on `RoundState`, and for the
+    /// same reason: the UI shows `ceil(left)`, so every tick in between is an
+    /// identical-looking message to every client.
+    starts_in_shown: Option<i32>,
+    /// Something a client can see about this lobby changed, and has not been
+    /// sent yet. Set by join, leave, ready, a settings change, and the timeout
+    /// crossing a second; cleared by `take_lobby_update`.
+    lobby_dirty: bool,
     /// Set when the start condition fires and cleared when the world arrives.
     ///
     /// The generator is 0.3–1.1 s of pure CPU and the tick loop is 16.7 ms, so
@@ -568,6 +683,14 @@ impl Room {
         Room {
             world: None,
             lobby_tick: 0,
+            code: None,
+            private: false,
+            starts_in: None,
+            starts_in_shown: None,
+            // A freshly built lobby is worth announcing to the first socket that
+            // is seated in it, and `seat` sends it directly. Nothing is seated
+            // yet, so there is nothing to broadcast to.
+            lobby_dirty: false,
             starting: false,
             seats: Seats::default(),
             config,
@@ -707,6 +830,76 @@ impl Room {
     /// The world, once a match is running. `None` in a lobby (§E1).
     pub fn world_mut(&mut self) -> Option<&mut World> {
         self.world.as_mut()
+    }
+
+    /// Mark the lobby as changed, so the next tick broadcasts it.
+    ///
+    /// A flag rather than an emit at each call site: the room task owns the
+    /// socket handles, and `apply` runs inside a drain loop that can process a
+    /// join and a leave in the same tick. One broadcast per tick is what a
+    /// client needs, and it is one message rather than two.
+    fn note_lobby_change(&mut self) {
+        self.lobby_dirty = true;
+    }
+
+    /// What a lobby looks like from outside (§E6).
+    ///
+    /// Reads `Seats` and nothing else for the roster: §E1.1 made it the source of
+    /// seat identity, and this is the read that proves it — a lobby has no world
+    /// to build a player list from.
+    pub fn lobby_state(&self) -> LobbyState {
+        LobbyState {
+            code: self.code.clone(),
+            private: self.private,
+            capacity: game_core::constants::LOBBY_CAPACITY,
+            scale: self.config.map_scale,
+            settings_owner: self.settings_owner(),
+            starts_in: self.starts_in,
+            players: self
+                .seats
+                .seats
+                .iter()
+                .map(|s| LobbySeat {
+                    seat: s.id,
+                    name: s.name.clone(),
+                    skin_id: s.skin_id,
+                    ready: s.ready,
+                    bot: s.bot,
+                })
+                .collect(),
+        }
+    }
+
+    /// Who may change the settings: the longest-seated human (§E3).
+    ///
+    /// Derived rather than stored, so it cannot disagree with the roster: when
+    /// the host leaves the answer moves on its own and there is no second flag
+    /// to update (§E3).
+    ///
+    /// Keyed on `joined_at`, not on position in the vec. Position happens to be
+    /// seating order today — `alloc` pushes and `free_seat` removes by index —
+    /// but that is an accident of the container, and "longest-seated" is the
+    /// rule. `Seat` already carries the timestamp.
+    fn settings_owner(&self) -> Option<PlayerId> {
+        self.seats
+            .seats
+            .iter()
+            .filter(|s| !s.bot)
+            .min_by_key(|s| s.joined_at)
+            .map(|s| s.id)
+    }
+
+    /// Take the pending lobby broadcast, if the lobby changed this tick.
+    ///
+    /// `None` once a match is running: §E6's message describes a lobby, and a
+    /// client that has a map is past needing it.
+    pub fn take_lobby_update(&mut self) -> Option<LobbyState> {
+        if !self.lobby_dirty || self.world.is_some() {
+            self.lobby_dirty = false;
+            return None;
+        }
+        self.lobby_dirty = false;
+        Some(self.lobby_state())
     }
 
     /// The tick this room is on, world or not.
@@ -920,6 +1113,12 @@ impl Room {
                     // joins a running match is still added immediately, below.
                     self.seats
                         .set_identity(id, &name, skin_id, tombstone_skin_id);
+                    self.note_lobby_change();
+                    // §E2: the bot timeout runs from the **first** seating and
+                    // does not reset. A private lobby never gets one (§E3).
+                    if !self.private && self.starts_in.is_none() && self.world.is_none() {
+                        self.starts_in = Some(game_core::constants::LOBBY_BOT_TIMEOUT);
+                    }
                     if let Some(world) = self.world.as_mut() {
                         world.add_player(id, skin_id, name);
                         // §B8. Parsed from `join` and, until now, dropped on the
@@ -936,6 +1135,7 @@ impl Room {
                 if let Some(s) = self.seats.get_mut(id) {
                     s.ready = true;
                     self.note(R::Ready(id));
+                    self.note_lobby_change();
                 }
             }
             Command::Input(id, inputs) => {
@@ -1051,6 +1251,7 @@ impl Room {
             Command::Leave(id) => {
                 self.note(R::Leave(id));
                 self.seats.free_seat(id);
+                self.note_lobby_change();
                 if let Some(world) = self.world.as_mut() {
                     world.remove_player(id);
                 }
@@ -1082,6 +1283,37 @@ impl Room {
             // A lobby has no world to inspect. The closure is dropped, which is
             // the honest answer — running it against a world that does not exist
             // is the panic this `Option` is here to prevent.
+            // Not recorded: reading a lobby changes nothing.
+            Command::LobbyRead { reply } => {
+                let _ = reply.send(self.lobby_state());
+            }
+            // Not recorded: a settings change happens before the round exists.
+            Command::SetScale { by, scale, reply } => {
+                let answer = if self.world.is_some() {
+                    Err("the match has already started")
+                } else if self.settings_owner() != Some(by) {
+                    Err("only the host can change the settings")
+                } else {
+                    let mut config = (*self.config).clone();
+                    config.map_scale = scale;
+                    self.config = Arc::new(config);
+                    // §E3: everyone agreed to the game they were shown, so a
+                    // settings change clears every ready flag — including the
+                    // changer's. T17.04 asserts that; the clearing lives here
+                    // because this is the one place a setting moves.
+                    for st in self.seats.seats.iter_mut() {
+                        st.ready = false;
+                    }
+                    self.note_lobby_change();
+                    Ok(())
+                };
+                let _ = reply.send(answer);
+            }
+            // Not recorded: identity is registry bookkeeping, not simulation.
+            Command::SetIdentity { code, private } => {
+                self.code = code;
+                self.private = private;
+            }
             Command::JoinInfo { reply } => {
                 let info = JoinInfo {
                     tick: self.tick(),
@@ -1101,6 +1333,7 @@ impl Room {
                         .world
                         .as_ref()
                         .map(|w| crate::codec::encode_map_init_at(&w.map, w.carve_seq())),
+                    lobby: self.lobby_state(),
                 };
                 let _ = reply.send(info);
             }
@@ -1314,6 +1547,23 @@ impl Room {
             // lobby).
             self.lobby_tick += 1;
             let tick = self.lobby_tick;
+
+            // §E2's bot timeout, counted down here and **announced once per
+            // whole second**, not sixty times a second. The UI shows `ceil`, so
+            // every tick in between is an identical-looking message to every
+            // client — the throttle `round.rs` already applies to `RoundState`.
+            //
+            // What happens when it reaches zero is T17.03's: this task carries
+            // the number to the client, and stops it going negative.
+            if let Some(left) = self.starts_in {
+                let left = (left - dt).max(0.0);
+                self.starts_in = Some(left);
+                let shown = left.ceil() as i32;
+                if self.starts_in_shown != Some(shown) {
+                    self.starts_in_shown = Some(shown);
+                    self.note_lobby_change();
+                }
+            }
             let (events, outcome) = self.round.tick_lobby(tick, humans, min, dt);
             if outcome == crate::round::RoundOutcome::Start {
                 // Not `begin_round` — there is nothing to begin yet. The world
@@ -1894,6 +2144,11 @@ async fn run(
                 }
                 was_lobby = in_lobby;
                 room.sweep_unready(READY_TIMEOUT);
+
+                // §E6: one lobby broadcast per tick, when something changed.
+                if let Some(state) = room.take_lobby_update() {
+                    crate::events::broadcast_lobby_state(&io, &sessions, &state);
+                }
 
                 // A lobby has no world to drain or to broadcast. The round
                 // controller's own events still flush — that is how a client

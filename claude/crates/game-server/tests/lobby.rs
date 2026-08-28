@@ -52,7 +52,10 @@ fn connect(addr: SocketAddr, inbox: Inbox) -> rust_socketio::client::Client {
         "welcome",
         "map_init",
         "room_created",
-        "room_list",
+        // §E6: `room_list` is deleted — it had no subscriber anywhere in the
+        // app. `lobby_state` is what replaces it, and it is read.
+        "lobby_state",
+        "lobby_error",
         "room_left",
         "join_error",
         "player_join",
@@ -84,6 +87,42 @@ fn connect(addr: SocketAddr, inbox: Inbox) -> rust_socketio::client::Client {
         .recv_timeout(Duration::from_secs(10))
         .expect("socket.io never reported `open`");
     client
+}
+
+/// A field from the **last** occurrence of `ev`, or `Null`.
+///
+/// `first()` is right for a message sent once; it is wrong for one that is
+/// re-broadcast on every change, where the claim is about the latest state.
+fn last(inbox: &Inbox, ev: &str, field: &str) -> serde_json::Value {
+    inbox
+        .lock()
+        .ok()
+        .and_then(|g| g.get(ev).and_then(|v| v.last().cloned()))
+        .and_then(|v| v.get(field).cloned())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// The names in the **last** `lobby_state` a client received.
+///
+/// The last, not the first: a later arrival re-broadcasts, and it is that
+/// message which must name everyone. Shared by the two tests that ask "was this
+/// client told who is in the room", so they cannot drift apart on the answer.
+fn names_in(inbox: &Inbox) -> Vec<String> {
+    inbox
+        .lock()
+        .ok()
+        .and_then(|g| g.get("lobby_state").and_then(|v| v.last().cloned()))
+        .and_then(|w| w.get("players").cloned())
+        .and_then(|p| p.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .map(|p| {
+            p.get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("<no name>")
+                .to_string()
+        })
+        .collect()
 }
 
 fn count(inbox: &Inbox, ev: &str) -> usize {
@@ -399,13 +438,19 @@ async fn quick_match_seats_two_clients_in_one_room() {
         wait_for(&ib, "welcome", 1, "bo");
         wait_for(&ia, "player_join", 1, "ana hears bo");
 
+        // §E6: these read `room_list`, which is deleted — and `first()` answers
+        // `Value::Null` for an event that never arrived, so the assertion whose
+        // message names the claim had become `assert_eq!(Null, Null)` and could
+        // not fail. The test still caught a split through `a_seed == b_seed`, so
+        // it passed for the right reason by accident.
+        //
+        // `lobby_state` says the same thing and is a **stronger** witness: two
+        // clients in one room see the same roster, which a room id cannot tell
+        // you and which is the thing quick match is actually being asked for.
         let out = serde_json::json!({
-            "a_room": first(&ia, "room_list", "room_id"),
-            "b_room": first(&ib, "room_list", "room_id"),
-            // §B10: what the lobby reports is who is in there, not an ETA.
-            "b_players": first(&ib, "room_list", "players"),
-            "b_capacity": first(&ib, "room_list", "capacity"),
-            "b_bots": first(&ib, "room_list", "bots"),
+            "a_names": names_in(&ia),
+            "b_names": names_in(&ib),
+            "b_capacity": first(&ib, "lobby_state", "capacity"),
             "a_seed": first(&ia, "welcome", "seed"),
             "b_seed": first(&ib, "welcome", "seed"),
         });
@@ -416,9 +461,27 @@ async fn quick_match_seats_two_clients_in_one_room() {
     .await
     .expect("blocking half");
 
+    // Both clients see both players, which is only true if they are in one room.
+    let mut a_names: Vec<String> =
+        serde_json::from_value(out["a_names"].clone()).unwrap_or_default();
+    let mut b_names: Vec<String> =
+        serde_json::from_value(out["b_names"].clone()).unwrap_or_default();
+    a_names.sort();
+    b_names.sort();
     assert_eq!(
-        out["a_room"], out["b_room"],
+        a_names,
+        vec!["ana".to_string(), "bo".to_string()],
         "quick match split them: {out}"
+    );
+    assert_eq!(
+        a_names, b_names,
+        "the two clients saw different rooms: {out}"
+    );
+    // The control: these came from a message that actually arrived, not from
+    // `first()`'s `Null` for one that did not.
+    assert!(
+        out["b_capacity"].is_number(),
+        "no lobby_state reached bo, so the rosters above are vacuous: {out}"
     );
     assert_eq!(out["a_seed"], out["b_seed"], "{out}");
     // And it filled the existing default room rather than spawning another.
@@ -1063,29 +1126,11 @@ async fn starting_a_round_announces_the_bots_it_seats() {
 /// The second client is the control. Without it, "the roster has names" also
 /// passes for a server that only ever names the one player it is talking to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn welcome_names_everyone_in_the_room_including_yourself() {
+async fn lobby_state_names_everyone_in_the_room_including_yourself() {
     let h = spawn_server().await;
     let addr = h.addr;
 
     let (a_names, b_names) = tokio::task::spawn_blocking(move || {
-        let names_in = |inbox: &Inbox| -> Vec<String> {
-            inbox
-                .lock()
-                .ok()
-                .and_then(|g| g.get("welcome").and_then(|v| v.first().cloned()))
-                .and_then(|w| w.get("players").cloned())
-                .and_then(|p| p.as_array().cloned())
-                .unwrap_or_default()
-                .iter()
-                .map(|p| {
-                    p.get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("<no name>")
-                        .to_string()
-                })
-                .collect()
-        };
-
         let ia: Inbox = Arc::default();
         let a = connect(addr, ia.clone());
         emit_until(
@@ -1107,6 +1152,8 @@ async fn welcome_names_everyone_in_the_room_including_yourself() {
             "welcome",
             "bo",
         );
+        // Let bo's join reach ana: the room broadcasts on the next tick.
+        std::thread::sleep(Duration::from_millis(600));
 
         let out = (names_in(&ia), names_in(&ib));
         let _ = a.disconnect();
@@ -1116,10 +1163,12 @@ async fn welcome_names_everyone_in_the_room_including_yourself() {
     .await
     .expect("client thread");
 
+    let mut a_sorted = a_names.clone();
+    a_sorted.sort();
     assert_eq!(
-        a_names,
-        vec!["ana".to_string()],
-        "the first player was not told their own name"
+        a_sorted,
+        vec!["ana".to_string(), "bo".to_string()],
+        "ana was not re-told the roster when bo arrived: {a_names:?}"
     );
     let mut got = b_names.clone();
     got.sort();
@@ -1395,4 +1444,87 @@ fn the_tick_asks_for_a_world_and_does_not_build_one() {
         game_core::world::RoundPhase::Warmup,
         "installing the world did not begin the round"
     );
+}
+
+/// A refused `set_scale` reaches the socket that sent it (§E6).
+///
+/// The command layer's refusal is tested in `lobby_state.rs`; what this asserts
+/// is the half that a Rust-side test cannot see — that the reason **arrives**.
+/// A silent no-op is indistinguishable from a lost message at the client, and
+/// `join_error` could not carry it: `connection.ts` registers that handler
+/// during the connect handshake behind `if (settled) return`, so a refusal sent
+/// after seating is dropped before anything reads it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_set_scale_tells_the_sender_why() {
+    let h = spawn_server().await;
+    let addr = h.addr;
+
+    let (owner_errs, other_errs, scale_after) = tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        emit_until(
+            &a,
+            &ia,
+            "quick_match",
+            serde_json::json!({ "name": "ana" }),
+            "welcome",
+            "ana",
+        );
+        let ib: Inbox = Arc::default();
+        let b = connect(addr, ib.clone());
+        emit_until(
+            &b,
+            &ib,
+            "quick_match",
+            serde_json::json!({ "name": "bo" }),
+            "welcome",
+            "bo",
+        );
+        std::thread::sleep(Duration::from_millis(400));
+
+        // bo is not the longest-seated human, so bo may not change the settings.
+        b.emit("set_scale", serde_json::json!({ "scale": "large" }))
+            .expect("emit");
+        wait_for(
+            &ib,
+            "lobby_error",
+            1,
+            "bo is told why the change was refused",
+        );
+        std::thread::sleep(Duration::from_millis(400));
+
+        // The control: ana is the owner, so ana's change is accepted — and
+        // silently, with no error. Without it, "bo got an error" also passes for
+        // a server that refuses everybody, which is a lobby nobody can set up.
+        let owner_before = count(&ia, "lobby_error");
+        a.emit("set_scale", serde_json::json!({ "scale": "large" }))
+            .expect("emit");
+        std::thread::sleep(Duration::from_millis(600));
+
+        let out = (
+            count(&ia, "lobby_error") - owner_before,
+            count(&ib, "lobby_error"),
+            last(&ia, "lobby_state", "scale"),
+        );
+        let _ = a.disconnect();
+        let _ = b.disconnect();
+        out
+    })
+    .await
+    .expect("client thread");
+
+    assert_eq!(
+        other_errs, 1,
+        "the refusal never reached the socket that sent it"
+    );
+    assert_eq!(
+        owner_errs, 0,
+        "the owner was refused their own settings change"
+    );
+    assert_eq!(
+        scale_after, "large",
+        "the owner's change was accepted but never announced"
+    );
+
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
 }

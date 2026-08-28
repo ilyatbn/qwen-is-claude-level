@@ -21,6 +21,7 @@ import { atlasArt } from '../render/objects'
 import type { MapObject } from '../net/codec'
 import { C, Core, dequantizeAngle } from '../core'
 import { asRecord, Connection, type LobbyIntent, type Welcome } from '../net/connection'
+import { parseLobbyState } from '../net/lobby'
 import { WorldMirror, hex } from '../net/worldMirror'
 import { Predictor } from '../net/prediction'
 import { ClockSync, RemoteInterpolator } from '../net/interpolation'
@@ -333,6 +334,21 @@ export class GameScene extends Phaser.Scene {
     // Wire the handlers *before* connecting, so nothing that arrives during the
     // handshake is missed. `Connection.on` queues until the socket exists.
     // `map_init` and `snapshot` are base64 **strings**, not objects (§A27).
+    // §E6: the lobby's roster, which is where names come from now that
+    // `welcome` no longer carries them. Seeded rather than overwritten — a
+    // player already carrying a score from a `score` event keeps it, because
+    // `lobby_state` is authoritative about *who is here*, not about the game.
+    this.conn.on('lobby_state', (raw) => {
+      const st = parseLobbyState(asRecord(raw))
+      for (const p of st.players) {
+        const had = this.scores.get(p.seat)
+        this.scores.set(p.seat, {
+          name: p.name || `p${p.seat}`,
+          score: had?.score ?? 0,
+          deaths: had?.deaths ?? 0,
+        })
+      }
+    })
     this.conn.on('map_init', (p) => this.onMapInit(typeof p === 'string' ? p : ''))
     this.conn.on('snapshot', (p) => this.onSnapshot(typeof p === 'string' ? p : ''))
     this.conn.on('round_state', (raw) => {
@@ -811,9 +827,14 @@ export class GameScene extends Phaser.Scene {
     // `Playing` (`docs/41` §3), so the transition into `Warmup` happens before
     // anyone is seated and no client ever receives a `round_state` for it.
     this.observed.phases.add(this.phase)
-    for (const p of w.players) {
-      this.scores.set(p.id, { name: p.name ?? `p${p.id}`, score: p.score, deaths: 0 })
-    }
+    // §E6: the roster no longer rides on `welcome` — `lobby_state` carries it,
+    // from `Seats`, which is §E1.1's single source. `onLobbyState` below seeds
+    // the scoreboard, and it arrives before this does not matter: whichever is
+    // second fills in what the first could not.
+    //
+    // Dropping this without a replacement would render every player as `p1`,
+    // `p2`, `p3` — the bug `Seat.name`'s own doc comment records this project
+    // already paying for once.
     this.setStatus('decoding map…')
   }
 

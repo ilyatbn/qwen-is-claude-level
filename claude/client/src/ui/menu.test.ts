@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_MODEL,
-  describeRoom,
   loadScale,
   menuReducer,
   saveScale,
@@ -86,19 +85,3 @@ describe('map size', () => {
   })
 })
 
-describe('room description (§B10)', () => {
-  it('reports players, capacity and bots in words a person reads', () => {
-    expect(describeRoom(1, 6, 0)).toBe('1/6')
-    expect(describeRoom(2, 6, 1)).toBe('2/6, one of them a bot')
-    expect(describeRoom(3, 6, 2)).toBe('3/6, two of them bots')
-  })
-
-  it('never mentions an ETA, which was always going to be zero', () => {
-    for (let p = 0; p <= 6; p++) {
-      for (let b = 0; b <= p; b++) {
-        const s = describeRoom(p, 6, b)
-        expect(s).not.toMatch(/eta|wait|second/i)
-      }
-    }
-  })
-})

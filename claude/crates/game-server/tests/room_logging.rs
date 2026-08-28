@@ -72,20 +72,40 @@ async fn every_tick_span_carries_room_and_tick() {
     let (_tx, rx) = oneshot::channel();
     let handle = spawn_room(io, Arc::new(test_config()), rx);
 
-    // Wait for the room to be live before measuring. `Room::new` generates the map
-    // first, which takes hundreds of milliseconds — a fixed sleep measures map
-    // generation rather than the tick loop, and reports one span.
+    // Wait for the room to be live before measuring: a fixed sleep would time the
+    // startup rather than the tick loop.
+    //
+    // §E1: this read `inspect(|w| w.tick)`, which answers `None` for a room that
+    // is a **lobby** — and this one never starts a match, so `unwrap_or(0)` read
+    // 0 forever. The loop burned its full 10 s waiting on a condition that could
+    // not become true, and `ticks` below was therefore always 0: the failure
+    // message has read "over 0 ticks" ever since. The `spans > 3` assertion is on
+    // a different quantity and still discriminated, so it passed correctly while
+    // its own diagnostic lied — which is `f1d2d2a`'s finding, recurring.
+    //
+    // The lobby's clock is the right witness and needs no match: it advances as
+    // soon as the room task is running, which is exactly what "live" means here.
     for _ in 0..200 {
-        if handle.inspect(|w| w.tick).await.unwrap_or(0) > 0 {
+        if handle.join_info().await.map(|i| i.tick).unwrap_or(0) > 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    let before = handle.join_info().await.map(|i| i.tick).unwrap_or(0);
+    assert!(
+        before > 0,
+        "the room never started ticking, so the span count below measures nothing"
+    );
     cap.fields.lock().expect("poisoned").clear();
     cap.spans.store(0, Ordering::Relaxed);
 
     tokio::time::sleep(Duration::from_millis(250)).await;
-    let ticks = handle.inspect(|w| w.tick).await.unwrap_or(0);
+    let ticks = handle
+        .join_info()
+        .await
+        .map(|i| i.tick)
+        .unwrap_or(0)
+        .saturating_sub(before);
 
     let spans = cap.spans.load(Ordering::Relaxed);
     assert!(

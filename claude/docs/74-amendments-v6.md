@@ -347,8 +347,8 @@ New:
 
 | Name | Value | Notes |
 |---|---|---|
-| `LOBBY_CAPACITY` | 5 | fill target; `MAX_PLAYERS` 6 is still the seat cap (§E5) |
-| `LOBBY_BOT_TIMEOUT` | 10.0 | public only, from the first seating, does not reset (§E2) |
+| `LOBBY_CAPACITY` | 5 | fill target; `MAX_PLAYERS` 6 is still the seat cap (§E5). Lands in T17.02 — §E6's `capacity` field needs it |
+| `LOBBY_BOT_TIMEOUT` | 10.0 | public only, from the first seating, does not reset (§E2). Lands in T17.02 — §E6's `starts_in` and its throttle test cannot exist without it; T17.03 supplies what happens at zero |
 | `BOT_FLEE_HEALTH` | 35 | break contact below this (§E10) |
 | `BOT_EXPLORE_CELL` | 256 | coverage grid, map pixels (§E10) |
 | `TOXIC_POISON_DURATION` | 3.0 | seconds, resets on re-hit (§E13) |

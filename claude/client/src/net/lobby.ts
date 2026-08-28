@@ -119,12 +119,73 @@ export function quickMatchPayload(id: Identity, scale: Scale) {
  * bugs live (a `join_error` that leaves the UI spinning forever, a `welcome`
  * that arrives after the player has backed out).
  */
+/** One seat, as `lobby_state` reports it (`docs/74` §E6). */
+export interface LobbySeat {
+  seat: number
+  name: string
+  skinId: number
+  ready: boolean
+  bot: boolean
+}
+
+/**
+ * The lobby a client is sitting in (§E6).
+ *
+ * Optional fields are **absent, not null**: a public lobby has no `code`, and a
+ * private one has no `startsIn` because it has no timeout. `undefined` is the
+ * one spelling of that.
+ */
+export interface LobbyStateMsg {
+  private: boolean
+  capacity: number
+  scale: Scale
+  players: LobbySeat[]
+  code?: string
+  settingsOwner?: number
+  startsIn?: number
+}
+
+const isScale = (v: unknown): v is Scale => SCALES.includes(v as Scale)
+
+/**
+ * Decode `lobby_state`, defensively.
+ *
+ * Every field is checked rather than cast: this is the message a client trusts
+ * to render who is in the room, and the same hostile-input rule the code parser
+ * already follows applies to it.
+ */
+export function parseLobbyState(p: Record<string, unknown>): LobbyStateMsg {
+  const rawScale = p['scale']
+  const out: LobbyStateMsg = {
+    private: p['private'] === true,
+    capacity: typeof p['capacity'] === 'number' ? p['capacity'] : 0,
+    scale: isScale(rawScale) ? rawScale : 'small',
+    players: Array.isArray(p['players'])
+      ? (p['players'] as unknown[]).filter(isRecord).map((q) => ({
+          seat: typeof q['seat'] === 'number' ? q['seat'] : -1,
+          name: typeof q['name'] === 'string' ? q['name'] : '',
+          skinId: typeof q['skin_id'] === 'number' ? q['skin_id'] : 0,
+          ready: q['ready'] === true,
+          bot: q['bot'] === true,
+        }))
+      : [],
+  }
+  if (typeof p['code'] === 'string') out.code = p['code']
+  if (typeof p['settings_owner'] === 'number') out.settingsOwner = p['settings_owner']
+  if (typeof p['starts_in'] === 'number') out.startsIn = p['starts_in']
+  return out
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null
+}
+
 export type LobbyEvent =
   | { type: 'create'; scale: Scale }
   | { type: 'join'; code: string }
   | { type: 'match'; scale: Scale }
   | { type: 'room_created'; roomId: number; code?: string }
-  | { type: 'room_list'; roomId: number }
+  | { type: 'lobby_state'; state: LobbyStateMsg }
   | { type: 'welcome'; roomId?: number }
   | { type: 'join_error'; reason: string }
   | { type: 'cancel' }
@@ -139,10 +200,11 @@ export function lobbyReducer(s: LobbyState, e: LobbyEvent): LobbyState {
       return { kind: 'matching', scale: e.scale }
     case 'room_created':
       return { kind: 'seated', roomId: e.roomId, ...(e.code ? { code: e.code } : {}) }
-    case 'room_list':
-      // Quick match confirms the seat before the map arrives, so the player
-      // stops seeing a spinner as soon as they actually have one.
-      return s.kind === 'seated' ? s : { kind: 'seated', roomId: e.roomId }
+    case 'lobby_state':
+      // §E6: `room_list` said this and had no subscriber. `lobby_state` is the
+      // message that replaces it, and it confirms the seat before the map
+      // arrives — so the player stops seeing a spinner as soon as they have one.
+      return s.kind === 'seated' ? s : { kind: 'seated', roomId: -1 }
     case 'welcome':
       if (s.kind === 'seated') return s
       return { kind: 'seated', roomId: e.roomId ?? -1 }

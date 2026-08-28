@@ -432,6 +432,70 @@ fn round_state_payload(
     })
 }
 
+/// The `lobby_state` payload (§E6), built in one place and sent to every socket.
+///
+/// `players` comes from `LobbyState`, which derives it from `Seats` — §E1.1's
+/// single source. Optional fields are **omitted**, not sent as null: §E6 says
+/// "absent", and a client distinguishing `undefined` from `null` is a second
+/// spelling of the same absence.
+pub fn lobby_state_payload(state: &crate::room::LobbyState) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "private": state.private,
+        "capacity": state.capacity,
+        "scale": state.scale.as_str(),
+        "players": state
+            .players
+            .iter()
+            .map(|p| serde_json::json!({
+                "seat": p.seat,
+                "name": p.name,
+                "skin_id": p.skin_id,
+                "ready": p.ready,
+                "bot": p.bot,
+            }))
+            .collect::<Vec<_>>(),
+    });
+    let map = v.as_object_mut().expect("json! built an object");
+    if let Some(code) = state.code.as_ref() {
+        map.insert("code".into(), serde_json::json!(code));
+    }
+    if let Some(owner) = state.settings_owner {
+        map.insert("settings_owner".into(), serde_json::json!(owner));
+    }
+    if let Some(left) = state.starts_in {
+        map.insert("starts_in".into(), serde_json::json!(left));
+    }
+    v
+}
+
+/// Send `lobby_state` to every socket in the room (§E6).
+pub fn broadcast_lobby_state(
+    io: &SocketIo,
+    sessions: &Arc<SessionMap>,
+    state: &crate::room::LobbyState,
+) {
+    let payload = lobby_state_payload(state);
+    // **Emitted directly, never queued**, the way `broadcast_map_init` is.
+    //
+    // `queue_or_emit` holds events for a socket still inside its join window and
+    // the hold is *bounded* (`JOIN_EVENT_QUEUE_MAX`); overflowing it forces a
+    // fresh `map_init`, and a client that replays its carve stream against a
+    // mask snapshot taken at a different moment disagrees with the server. A
+    // lobby broadcasts on every join, leave, ready and whole second, so routing
+    // it through that queue spent the capacity carves need: measured, it took
+    // `two_clients_agree_on_the_mask_after_a_hundred_carves` from 1 failure in
+    // 16 to 8 in 24.
+    //
+    // Nothing is lost by skipping the queue. `lobby_state` carries no sequence
+    // and is ordered against nothing, and a socket still in its join window is
+    // sent the current lobby by `seat` the moment it goes live.
+    for sid in sessions.sids() {
+        if let Some(s) = io.get_socket(sid) {
+            let _ = s.emit("lobby_state", &payload);
+        }
+    }
+}
+
 /// Send `map_init` to every socket in the room, at match start.
 ///
 /// §E1: the map does not exist while the room is a lobby, so this is the moment

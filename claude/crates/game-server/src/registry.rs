@@ -272,6 +272,10 @@ impl RoomRegistry {
         if let Some(c) = &code {
             self.codes.insert(c.clone(), id);
         }
+        // §E6: the room emits `lobby_state`, which carries the code — but the
+        // registry is what mints one, and the room task has no registry. Told
+        // once, here, before anything can be seated in it.
+        handle.set_identity(code.clone(), private);
 
         self.rooms.insert(
             id,

@@ -443,29 +443,16 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                                 crate::registry::QuickMatch::Existing(room_id)
                                 | crate::registry::QuickMatch::Created(room_id) => {
                                     ctx.attach(socket.id, room_id);
-                                    // Status before the map: a client that has to
-                                    // wait for a 20 KB `map_init` should already
-                                    // know it got a seat.
-                                    //
-                                    // §B10: `waiting`/`eta_s` are gone — they
-                                    // were structurally always zero, because
-                                    // there is no queue to wait in. What is true
-                                    // and useful is who is already in there:
-                                    // "3/6, two of them bots".
-                                    let (players, bots) = match ctx.room_parts(room_id) {
-                                        Some((h, _)) => h.status().await.unwrap_or((0, 0)),
-                                        None => (0, 0),
-                                    };
-                                    emit(
-                                        &socket,
-                                        "room_list",
-                                        &serde_json::json!({
-                                            "room_id": room_id,
-                                            "players": players,
-                                            "capacity": max,
-                                            "bots": bots,
-                                        }),
-                                    );
+                                    // §E6: `room_list` is deleted. It carried
+                                    // who was already in the room and had
+                                    // **never had a subscriber** —
+                                    // `MenuScene.roomInfo` was never assigned
+                                    // and `describeRoom` had no production
+                                    // caller. `lobby_state` says the same thing
+                                    // and is read: `seat` sends it below, and
+                                    // the room task again on every change. This
+                                    // is `docs/71` §B14's finding applied to the
+                                    // message that replaces it.
                                     seat(socket, ctx, io, config, room_id, payload).await;
                                 }
                                 crate::registry::QuickMatch::Full => emit(
@@ -502,6 +489,58 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
             }
 
             // ----------------------------------------------------------- ready
+            {
+                let ctx = ctx.clone();
+                // §E6: change the map size the match will use.
+                //
+                // The refusal goes out as **`lobby_error`, not `join_error`**.
+                // `join_error` is registered during the connect handshake and
+                // guarded by `if (settled) return` (`connection.ts:171`), so a
+                // refusal sent after seating — the only time `set_scale` can
+                // happen — is dropped before it reaches anything. Reusing it
+                // would give a refusal that is correct on the server and silent
+                // at the client, and a Rust test asserting "the error was
+                // emitted" would pass while the real client ignored it.
+                socket.on(
+                    "set_scale",
+                    move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
+                        let ctx = ctx.clone();
+                        async move {
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
+                            let Some(id) = sessions.player_of(socket.id) else {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": "not seated" }),
+                                );
+                                return;
+                            };
+                            let Some(scale) = payload
+                                .get("scale")
+                                .and_then(|v| v.as_str())
+                                .and_then(game_core::constants::MapScale::parse)
+                            else {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": "unknown map size" }),
+                                );
+                                return;
+                            };
+                            if let Err(reason) = room.set_scale(id, scale).await {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": reason }),
+                                );
+                            }
+                        }
+                    },
+                );
+            }
+
             {
                 let ctx = ctx.clone();
                 socket.on("ready", move |socket: SocketRef| {
@@ -849,8 +888,11 @@ async fn seat(
         phase,
         time_left,
         seed,
-        scale,
+        // §E6: `welcome` no longer carries it, and `lobby_state` does — from the
+        // room, which is where a host's change to it lands.
+        scale: _,
         map: map_bytes,
+        lobby,
     } = info;
 
     // The roster **with names**, which the world cannot supply: `add_player`
@@ -860,22 +902,6 @@ async fn seat(
     // saw every player already in it as `p1`, `p2`, `p3` for the rest of it.
     // `player_join` is broadcast to everyone *except* the joiner, so it can
     // never be the fix.
-    let players: Vec<serde_json::Value> = room
-        .roster()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(pid, name, skin_id, tombstone_skin_id, score)| {
-            serde_json::json!({
-                "id": pid,
-                "name": name,
-                "skin_id": skin_id,
-                "tombstone_skin_id": tombstone_skin_id,
-                "score": score,
-            })
-        })
-        .collect();
-
     emit(
         &socket,
         "welcome",
@@ -886,11 +912,16 @@ async fn seat(
             "phase": phase,
             "sim_hz": game_core::constants::SIM_HZ,
             "snapshot_hz": game_core::constants::SNAPSHOT_HZ,
-            "players": players,
+            // §E6: **no `players`, no `scale`.** Both are said better by
+            // `lobby_state`, and keeping them would put two sources of truth on
+            // one wire: `scale` is *provisional* the moment §E3 lets a host
+            // change it, and `players` was built from `roster()`, which is the
+            // world. `welcome` now carries only what is true at the instant of
+            // seating and never changes — who you are, which room, its capacity.
+            //
             // On the HUD, so a bug report carries a
             // reproducible seed (`docs/61` §8).
             "seed": seed.to_string(),
-            "scale": scale_name(scale),
             "max_players": config.max_players,
         }),
     );
@@ -969,6 +1000,28 @@ async fn seat(
                 );
             }
         }
+    }
+
+    // §E6: the lobby, to the socket that just sat down in it.
+    //
+    // Sent for the same reason `round_state` is (§A39): state that exists before
+    // the client does has to be announced to it, or a player joining a lobby
+    // with three people in it sees an empty roster until one of them moves.
+    //
+    // Two things about **where** this sits, both learned the hard way. It was
+    // first written inside the `if let Some(bytes)` above — so it only fired
+    // when the room already had a map, which is the one case that is *not* a
+    // lobby. And it costs a round-trip to the room task, so putting that
+    // between `attach` and `go_live` widens the join window carves accumulate
+    // in: measured, the late-ready joiner's mask then diverged from the
+    // server's about one run in three. Nothing here needs the map, so it
+    // belongs after the flush.
+    if lobby.players.iter().any(|p| p.seat == id) {
+        emit(
+            &socket,
+            "lobby_state",
+            &crate::events::lobby_state_payload(&lobby),
+        );
     }
 
     // The world already on the ground.

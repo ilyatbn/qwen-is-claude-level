@@ -54,7 +54,6 @@ export class MenuScene extends Phaser.Scene {
     this.scene.start('Game')
   }
 
-  private roomInfo = ''
 
   private identity(): Identity {
     return {
@@ -159,7 +158,6 @@ export class MenuScene extends Phaser.Scene {
       el.innerHTML = `
         <h2>Waiting to start</h2>
         ${code}
-        <p class="room-info">${this.roomInfo}</p>
         <div class="actions"><button id="back">Leave</button></div>
         ${err}`
       el.querySelector('#copy')?.addEventListener('click', () => {
@@ -195,7 +193,7 @@ export class MenuScene extends Phaser.Scene {
   private exposeDebugHandle(): void {
     const self = this
     ;(window as unknown as { __menu: unknown }).__menu = {
-      debug: () => ({ ...self.model, roomInfo: self.roomInfo }),
+      debug: () => ({ ...self.model }),
       dispatch: (a: MenuAction) => self.dispatch(a),
       /** The code as the player can actually see it, read from the DOM. */
       visibleCode: () =>

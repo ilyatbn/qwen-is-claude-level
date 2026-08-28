@@ -4485,3 +4485,33 @@ round start. Known limit: `spawn_blocking` protects the runtime and other rooms,
 room's own loop does pause for its generation and nothing measures that. `room.rs` grew
 ~927 lines against a ~250 guide, flagged after the fact rather than before — the miss was
 the silence, not the size. `game-core` is untouched: the whole change is in `game-server`.
+
+## T17.02 — The lobby on the wire (v6)
+
+`lobby_state` replaces `room_list`, whose producer was its only live half — it had never
+had a subscriber. `welcome` loses `scale` (a host can change it under a copy taken at
+seating) and `players` (the roster is `Seats`, §E1.1); `GameScene` seeds the scoreboard
+from `lobby_state` instead, or every player renders as `p1`. `set_scale` refuses through a
+new `lobby_error`, because `connection.ts` drops `join_error` after the handshake settles
+— a refusal that looks correct server-side and is silent at the client. `starts_in`
+throttles to whole seconds: 599 updates without the guard, 12 with.
+
+**The regression this task introduced, and the measurement that found it.**
+`broadcast_lobby_state` routed through `queue_or_emit`, which for a socket still in its
+join window pushes into a bounded queue; a lobby broadcasts on every join, leave, ready
+and whole second, so it spent the capacity carves need. Overflow makes `go_live` fail,
+the server resends `map_init` at a later `carve_seq`, and the client replays carves
+against the earlier mask. `checksum` went 12.5% → 33%. Emitting `lobby_state` directly,
+never queued, took it back to 17.5% — indistinguishable from baseline (p ≈ 0.75), with
+the `:307` mode gone entirely (21% → 0/40).
+
+**Three sampling lessons, all paid for here.** A 9-run clean streak read the tail of a
+1-in-3. A 16-run baseline read 6% where 40 runs read 12.5%. And "`:307` only happens on
+the new tree" was N=16 talking — it occurs 3/40 at baseline. The elevation was real; the
+exclusivity was not.
+
+`lobby.test.ts` was a **binary file**: one raw NUL in a hostile-input fixture made `grep`
+skip it entirely and `git diff` report `Bin, 0 insertions, 0 deletions` — so "nothing
+weakened" was unverifiable on the file this task rewrites most. Rewritten as escapes;
+`grep -c expect` went from nothing to 55, and the next grep found two test cases every
+prior audit had silently skipped.

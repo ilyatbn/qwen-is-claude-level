@@ -1767,6 +1767,24 @@ impl MapScale {
     pub const ALL: [MapScale; 3] = [MapScale::Small, MapScale::Medium, MapScale::Large];
 }
 
+// --- E2/E5: lobbies ---
+
+/// How many seats a lobby **fills to**, and shows.
+///
+/// Not the seat cap: `MAX_PLAYERS` (6) is still that, and stays the hard limit
+/// (`docs/74-amendments-v6.md` §E5). This is the target §E2 fills a public lobby
+/// to before starting, which is why `BOT_COUNT=5` alongside one human is a legal
+/// six-seat game and needs no second capacity concept.
+pub const LOBBY_CAPACITY: usize = 5;
+
+/// Seconds a public lobby waits before filling its empty seats with bots (§E2).
+///
+/// Measured from the moment the **first** player is seated, and it **does not
+/// reset** when others join: a player who has waited ten seconds is not made to
+/// wait twenty because somebody else arrived. A private lobby has no timeout at
+/// all (§E3) — it starts when everyone is ready.
+pub const LOBBY_BOT_TIMEOUT: f32 = 10.0;
+
 #[cfg(test)]
 // Every assertion in this module is deliberately over compile-time constants —
 // checking the relationships between them is the entire purpose of the file.

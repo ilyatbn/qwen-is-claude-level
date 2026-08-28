@@ -209,6 +209,7 @@ async fn the_join_flow_end_to_end() {
             addr,
             &[
                 "welcome",
+                "lobby_state",
                 "map_init",
                 "join_error",
                 "inventory",
@@ -221,7 +222,13 @@ async fn the_join_flow_end_to_end() {
             .expect("emit join");
         wait_for(&r1, "welcome", 15);
         wait_for(&r1, "map_init", 15);
+        // **After** `map_init`, not before. `wait_for` drains this channel and
+        // discards what it is not waiting for, so asking for `lobby_state` first
+        // ate the `map_init` token — `map_init` is emitted earlier in the seat
+        // path, and `lobby_state` comes after `go_live` deliberately (§E6).
+        wait_for(&r1, "lobby_state", 15);
         report.insert("welcome".into(), got(&i1, "welcome")[0].clone());
+        report.insert("lobby_state".into(), got(&i1, "lobby_state")[0].clone());
         report.insert("map_init".into(), got(&i1, "map_init")[0].clone());
 
         // --- a retry on the same socket must not take a second seat -----
@@ -353,8 +360,28 @@ async fn the_join_flow_end_to_end() {
     assert!(w["player_id"].is_number(), "welcome carries a player id");
     // `docs/61` §8: the seed is on the HUD so a bug report reproduces the map.
     assert!(w["seed"].is_string(), "seed must survive as a string");
-    assert_eq!(w["scale"], "small");
+    // §E6: `scale` and `players` are **off** `welcome` — a host can change the
+    // map size (§E3), so a copy taken at seating goes stale, and the roster
+    // belongs to `lobby_state`, which derives it from `Seats`. `welcome` now
+    // carries only what is true at seating and never changes.
+    assert!(
+        w.get("scale").is_none_or(|v| v.is_null()),
+        "welcome still carries a scale a host can change under it: {w}"
+    );
+    assert!(
+        w.get("players").is_none_or(|v| v.is_null()),
+        "welcome still carries a roster: {w}"
+    );
     assert_eq!(w["sim_hz"], 60);
+
+    // And the client is told the scale — by the message that owns it. Without
+    // this the two assertions above pass for a server that stopped saying it.
+    let ls = &out["lobby_state"];
+    assert_eq!(ls["scale"], "small", "lobby_state did not carry the scale");
+    assert!(
+        ls["players"].as_array().is_some_and(|p| !p.is_empty()),
+        "lobby_state carried an empty roster: {ls}"
+    );
 
     // ---- map_init: base64 text, not a binary attachment (codec::b64_encode) ----
     let b64 = out["map_init"]
