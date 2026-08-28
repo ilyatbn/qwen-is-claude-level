@@ -797,3 +797,80 @@ the allocator, which is the strongest form.
 of `room.join`, *after* the allocator, unlike the two that are proven before it. It rests on
 the class argument alone. Folded into T17.06, where a phantom occupant holding a room against
 the reaper is literally the subject.
+
+## D-51 — The M17 boundary sweep, and why it happened here  ·  M17
+**Ran at the milestone boundary rather than after all fourteen tasks**, because T17.07
+discovered `lobby-start` had been red since T17.03 and nobody knew. **40 checks, four red.**
+
+| check | baseline `85001e8` | verdict |
+|---|---|---|
+| `two-clients` | pass | **ours** |
+| `full-round` | pass | **ours** |
+| `death` | FAIL ×3 | pre-existing |
+| `void` | FAIL ×3 | pre-existing |
+
+**Both of ours were one bug, in the shared harness.** `openClient` waited on `ready`;
+`ready` needs a world; §E1 builds the world at match start — so the wait could not return
+until the client's lobby had already closed, and the second client found the first's room
+started and was quick-matched elsewhere. Different seeds, one player each, terrain
+diverging because they were never in the same world. **`enterBattle`'s guard was circular
+in the same file** — it demanded `ready` before doing the thing that produces `ready`, a
+precondition asserting its own post-condition, in the harness of eighteen checks.
+**Lesson kept:** deferring the browser suite hid four failures for six tasks. The boundary
+sweep is the right cadence.
+
+## D-52 — A green run is evidence it passed once  ·  method, third instance
+**`death` and `void` were red at `2ab583a`** — the M16 sweep's own commit — three runs
+each, identical messages. **So M16's green was the tail.** `death`'s own comment already
+said `latch + probed aim — 6 of 8`: the number was written down and nobody read it as
+*this gate fails a quarter of the time*.
+That is the **third** small-sample-reads-tail in this build:
+- 9 clean checksum runs read the tail of a 1-in-3 (D-36)
+- an N=16 baseline read 6% where N=40 read 12.5%
+- an entire green sweep read the tail of two 25%-and-worse checks
+**Three instances is a rule, not an accident:** a green run is not evidence a check passes,
+it is evidence it passed once. Any check whose comments record a pass *rate* is a check
+that fails, and should be treated as red until the rate is fixed.
+
+## D-53 — `death` was never a product defect  ·  M16 fixture, fixed
+*Zero death events reached the client while health fell 20 → 10* looked like the server
+failing to narrate a death. It was not: `cargo test -p game-core --lib death` is 6/6, and
+**the player never died** — a rocket detonated away from the feet and landed partial
+damage, exactly the failure the check's own header describes. No death event was the
+correct behaviour.
+**Fixed by making the damage sufficient** (`DEV_START_HEALTH` 20 → 1) rather than by
+chasing the aim: two earlier attempts to clean up the aim are recorded in that file as
+having made it *worse* (6/8 → 5/8 → 4/8). 8/8.
+**And the fix was nearly reported having changed nothing.** The first measurement came
+back **2 of 3 — indistinguishable from the documented 6/8** — with `starting on 20 health`
+in every log, because two `game-server` processes leaked from a worktree run **eighty
+minutes earlier** still held the port. **A wrong number that resembles the expected number
+is worse than one that does not.** D-39's third bite, and its most expensive.
+`dev_start_health` is now printed in the config summary — the one dev knob that was not —
+turning a six-run investigation into a one-run one.
+
+## D-54 — `void`: three mechanisms, none of them the assertion  ·  M16 fixture, fixed
+**0/8 deterministic → 8/8.** Every assertion *after* the failure already passed; the
+player did fall, and the walk loop simply never got them there.
+1. **The probe asked a different question from the physics.** `openColumn` scanned a single
+   centre column while the physics supports you if solid meets your **body box** — so on
+   the lip of a fresh crater it answered *"you are already over the hole"* while the player
+   stood beside it, unmoved for 25 s. Scanning across `PLAYER_W`, the width `surface.rs`
+   itself uses, made the two agree. **0/8 → 6/8.**
+2. **`DIG_OFFSET` was `PLAYER_W * 1.5` = 24 against `BAZOOKA_BLAST_RADIUS` 42**, so the
+   crater reached 18 px past the player's centre and undermined them **every time**;
+   surviving the `ASSIST_WINDOW` wait was luck. Derived as `BLAST + PLAYER_W`, which is
+   what "dig beside" always meant. **6/8 → 7/8.** An inlined literal smaller than the
+   constant it must clear is precisely why this project forbids the literal.
+3. **The fixture damaged the player it then asked the void to kill** — health hit 0 a few
+   pixels above the line with the rocket still inside the window, so the server correctly
+   said `SelfInflicted`. **Closed the confound rather than racing it**: heal between
+   digging and walking in. **7/8 → 8/8.**
+**No new dev surface.** `DEV_LOADOUT` grants six weapons and no heal, and the first attempt
+— `give(world, id, MEDKIT, 3)` — did nothing, because **§C9 moved heals out of the
+inventory into a counter**: it would have taken a quick-bar slot, shifting every index
+other checks depend on, while leaving `Q` with nothing to spend. Setting `p.heals` beside
+the existing `p.battery` is slotless and is the grant the loadout already makes. The check
+heals with **`Q`, the shipped binding**, and **asserts the heal landed** (`95 → 148`) —
+a heal that silently did nothing would put the confound straight back, which is exactly
+what the first version did.

@@ -233,8 +233,21 @@ const BLAST = await page.evaluate(() => window.__game.constants().BAZOOKA_BLAST_
  * moved, which is the failure this project wrote its constants rule for.
  */
 const ONE_ROCKET_PX = BLAST
-/** A body clear of the player, so the crater is beside them and not under. */
-const DIG_OFFSET = Math.round(PLAYER_W + PLAYER_W / 2)
+/**
+ * Far enough that the crater cannot undermine the player's own footing.
+ *
+ * **Derived from the blast radius, not from the body.** This was
+ * `PLAYER_W * 1.5` — 24 px — against a `BAZOOKA_BLAST_RADIUS` of 42, so the
+ * crater reached 18 px *past* the player's centre and always ate the ground
+ * they were standing on. Staying upright through the `ASSIST_WINDOW` wait was
+ * then luck: measured, they were unsupported on the first poll after the shot,
+ * and on 2 runs in 8 they fell before the wait could react — inside the window,
+ * so the server credited the rocket and the check read "You killed yourself".
+ *
+ * `BLAST + PLAYER_W` puts the crater's near edge a half-body clear of the
+ * footprint, which is what makes "dig beside, wait, walk in" mean what it says.
+ */
+const DIG_OFFSET = Math.round(BLAST + PLAYER_W)
 const before = await shaftDepth()
 
 /**
@@ -355,18 +368,110 @@ ok(`waiting out ASSIST_WINDOW (${assistWindow}s) so the rocket stops taking the 
 // Measured on seed 5: `walked off the edge` passed and the very next assertion
 // reported `no death overlay` about a player already back at y=652 with full
 // health. Latching here catches the overlay wherever in the sequence it appears.
+/**
+ * The nearest column the player would **fall through**, as an offset.
+ *
+ * **Measured across the body, not down one line.** This scanned a single
+ * centre column, and a single column is not what holds a player up: the
+ * physics supports you if solid meets your body box, which is `PLAYER_W`
+ * wide. Standing on the lip of a freshly dug hole, the centre column reads
+ * empty while the box is still resting on the far edge — so this reported
+ * `dx: 0` ("you are already over it"), the loop below held no key and waited
+ * for a gravity that was never coming, and 25 s later the check said the
+ * player never left the map.
+ *
+ * Measured: `col={"dx":0} me=(945,1004) grounded=true` for the whole
+ * deadline, unmoved, while the hole it had just dug sat at x=984. The death
+ * the check went on to assert was real — it happened after the walk loop gave
+ * up, inside the 12 s fallback below.
+ *
+ * Asking the same question the game asks is what makes `dx: 0` mean "nothing
+ * is holding me".
+ */
+const openColumn = () =>
+  page.evaluate(
+    ([h, halfW]) => {
+      const core = window.__game.core
+      const me = core.playerState(window.__game.debug().me ?? 0)
+      if (!me) return null
+      const feet = Math.floor(me.y + 14)
+      const unsupported = (cx) => {
+        for (let x = cx - halfW; x <= cx + halfW - 1; x++) {
+          for (let y = feet; y < h; y++) if (core.solidAt(x, y)) return false
+        }
+        return true
+      }
+      for (let dx = 0; dx <= 64; dx += 4) {
+        for (const sign of [-1, 1]) {
+          if (unsupported(Math.round(me.x) + sign * dx)) return { dx: sign * dx }
+        }
+      }
+      return null
+    },
+    [mapH, 8],
+  )
+
 let deathSnapshot = null
 {
   const until = Date.now() + assistWindow * 1000 + 700
+  // **Stay on solid ground while the window runs.**
+  //
+  // Waiting the window out only works if the player is still standing at the
+  // end of it. Once the footing probe below started asking the question the
+  // physics asks — across the body box rather than down one column — the dig
+  // sometimes leaves the player already unsupported, and they fall *inside*
+  // `ASSIST_WINDOW`. The server then credits the rocket, correctly, and the
+  // check fails on the wording: measured, 2 runs in 8 read "You killed
+  // yourself" and `attributed to "self"`.
+  //
+  // So if nothing is holding them up, step away from the hole until the window
+  // expires. This is the same trap M16 hit from the other side — digging
+  // *underneath* produced a rocket-attributed death — and it is why the wait
+  // exists at all.
+  let backedOff = null
   while (Date.now() < until) {
     const d = await dbg()
     if (d.death.visible) {
       deathSnapshot = d
       break
     }
+    const col = await openColumn()
+    // `dx === 0` now means "the body box has nothing under it".
+    const away = col && col.dx === 0 ? (dig.side < 0 ? 'd' : 'a') : null
+    if (backedOff !== away) {
+      if (backedOff) await page.keyboard.up(backedOff)
+      if (away) await page.keyboard.down(away)
+      backedOff = away
+    }
     await sleep(100)
   }
+  if (backedOff) await page.keyboard.up(backedOff)
   if (Date.now() < until) await sleep(until - Date.now())
+}
+
+// **Heal before walking in, so only the void can kill.**
+//
+// The dig costs ~25 health a rocket, and the check then asks the *void* to be
+// the cause of death. On 1 run in 8 the blast or the fall finished the player a
+// few pixels above the line: the server returned `SelfInflicted`, correctly —
+// `is_in_the_void` was false, so the rocket inside `ASSIST_WINDOW` took the
+// credit. The fixture was competing with itself for the kill.
+//
+// `Q` is the shipped binding (§C9) and `DEV_LOADOUT` now grants medkits, so this
+// uses the real path and adds no dev surface. Asserted, not assumed: a heal that
+// silently did nothing would put the confound straight back.
+{
+  const before = (await dbg()).health
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.press('q')
+    await sleep(250)
+  }
+  const after = (await dbg()).health
+  if (!(after > before) && before < 100) {
+    fail(`healing did nothing: ${before} -> ${after} health, heals ${(await dbg()).hudBars?.heals}`)
+  } else {
+    ok(`healed before walking in: ${before} -> ${after} health`)
+  }
 }
 
 // **Walk in.** The body perches on the lip of its own crater — `supported` keeps
@@ -386,22 +491,7 @@ if (opened) {
    * was when it was found. Measured, the player came to rest at y=1004 with the
    * map bottom at 1024 and simply stood there.
    */
-  const openColumn = () =>
-    page.evaluate((h) => {
-      const core = window.__game.core
-      const me = core.playerState(window.__game.debug().me ?? 0)
-      if (!me) return null
-      const feet = Math.floor(me.y + 14)
-      for (let dx = 0; dx <= 64; dx += 4) {
-        for (const sign of [-1, 1]) {
-          const x = Math.round(me.x) + sign * dx
-          let rock = 0
-          for (let y = feet; y < h; y++) if (core.solidAt(x, y)) rock += 1
-          if (rock === 0) return { dx: sign * dx }
-        }
-      }
-      return null
-    }, mapH)
+
 
   const deadline = Date.now() + 25_000
   let held = null
@@ -434,6 +524,7 @@ if (opened) {
       continue
     }
     const col = await openColumn()
+
     // Directly over it: hold nothing and let gravity do the work. Holding a
     // direction here is what walks off the hole instead of into it.
     const want = !col || col.dx === 0 ? null : col.dx < 0 ? 'a' : 'd'

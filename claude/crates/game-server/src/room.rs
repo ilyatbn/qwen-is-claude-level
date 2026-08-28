@@ -1138,6 +1138,17 @@ impl Room {
         if let Some(w) = self.world.as_mut() {
             if let Some(p) = w.player_mut(id) {
                 p.battery = game_core::constants::BATTERY_MAX;
+                // Heals too, and as a **counter** rather than through `give`:
+                // §C9 took heals out of the inventory, so `give(MEDKIT)` would
+                // occupy a quick-bar slot — shifting every slot index a check
+                // depends on — and still leave `Q` with nothing to spend.
+                //
+                // `void` is why they are here: it digs beside the player with a
+                // rocket, then asks the *void* to kill them. On 1 run in 8 the
+                // blast or the fall finished them a few pixels above the line,
+                // the server correctly credited the rocket, and the fixture had
+                // competed with itself for its own kill.
+                p.heals = game_core::constants::MAX_HEALS;
             }
         }
         let Some(world) = self.world.as_mut() else {
