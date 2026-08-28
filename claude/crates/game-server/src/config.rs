@@ -285,7 +285,7 @@ impl Config {
         format!(
             "bind={} scale={} generator={} max_players={} round_seconds={} \
              room_empty_ttl={} lobby_bot_timeout={} fixed_seed={} record_replay={} debug_dump={} bots={} \
-             bot_skill={}",
+             bot_skill={} dev_start_health={}",
             self.bind_addr,
             self.map_scale.as_str(),
             self.map_generator.as_str(),
@@ -300,6 +300,7 @@ impl Config {
             self.debug_dump,
             self.bot_count,
             self.bot_skill,
+            self.dev_start_health,
         )
     }
 }

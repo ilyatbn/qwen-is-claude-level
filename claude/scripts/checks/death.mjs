@@ -85,7 +85,19 @@ const stack = await startStack({
     // so the round killed the player before the rockets did and this check
     // reported `cause "Killed by weather"`, which reads as an attribution bug
     // rather than a slow fixture. One rocket lands inside the first 30 s.
-    DEV_START_HEALTH: '20',
+    // **1, not 20.** 20 was chosen so one *clean* rocket kills — but the
+    // failure this check has always had is that the rocket is not clean: on a
+    // ledge it flies past the feet, detonates far below and lands a fraction of
+    // the damage. Measured here, health fell 20 -> 10 and the loop ran out of
+    // clock, which is why the overlay was never told: **the player never died.**
+    //
+    // The check's own notes record it at 6 of 8, and two attempts to make the
+    // rocket cleaner both made it worse. So make the damage sufficient instead
+    // of making the aim perfect: at 1 health any real hit is lethal, and the
+    // death is still fired, resolved and attributed by the server through the
+    // same path. The `killed yourself` assertion below is what stops this
+    // passing on a *different* death.
+    DEV_START_HEALTH: '1',
   },
 })
 const { page, dbg, pageErrors } = await stack.openClient({ name: 'ana' })
