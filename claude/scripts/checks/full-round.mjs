@@ -58,6 +58,13 @@ const stack = await startStack({
     ROUND_SECONDS: String(ROUND_SECONDS),
     // Bots are ordinary players (§A5) and they are what makes anything happen in
     // 150 s. Skill is raised so they actually land shots rather than wander.
+    // **Long enough for a second client to be seated** (§E2, T17.08's knob).
+    // Seating on `welcome` rather than `ready` is necessary and not sufficient:
+    // ana's lobby can still time out while bo's page is loading, and then §E4
+    // refuses him and quick match gives him a room of his own. That failure is
+    // intermittent rather than certain, which is worse. This makes the window
+    // wider than two cold page loads.
+    LOBBY_BOT_TIMEOUT: '120',
     BOT_COUNT: '3',
     BOT_SKILL: '0.85',
     // Arm everyone. Finding a weapon first is the game's design, but this check

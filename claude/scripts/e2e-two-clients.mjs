@@ -33,6 +33,13 @@ const stack = await startStack({
   label: 'two-clients',
   env: {
     // No bots: this test counts players, and a bot is a player (§A5).
+    // **Long enough for a second client to be seated** (§E2, T17.08's knob).
+    // Seating on `welcome` rather than `ready` is necessary and not sufficient:
+    // ana's lobby can still time out while bo's page is loading, and then §E4
+    // refuses him and quick match gives him a room of his own. That failure is
+    // intermittent rather than certain, which is worse. This makes the window
+    // wider than two cold page loads.
+    LOBBY_BOT_TIMEOUT: '120',
     BOT_COUNT: '0',
     // Arm the players: the checkpoint has to fire a rocket, and finding one
     // first is the game's design, not this test's job.
@@ -231,12 +238,24 @@ if (daF.pendingCarves !== 0 || dbF.pendingCarves !== 0) {
   fail(`carves left buffered: ana ${daF.pendingCarves}, bo ${dbF.pendingCarves}`)
 }
 
-// A late joiner gets the already-damaged map and agrees with it.
-const c = await openClient('cy')
-const [dc] = await settle([c])
-if (dc.maskChecksum !== daF.maskChecksum) {
-  fail(`a late joiner disagrees with the round in progress:\n  late ${dc.maskChecksum}\n  ana  ${daF.maskChecksum}`)
-}
+// ---------------------------------------- the late joiner, abolished by §E4
+//
+// This asserted that a third client joining a round in progress received the
+// already-damaged map and agreed with it. **§E4 closed every path that could
+// produce that**: a join against a room past `Lobby` is refused with
+// `in_progress`, and quick match skips such rooms, so `cy` was landing in a room
+// of her own with a pristine map — the checksum mismatch was two different
+// worlds, not a catch-up bug.
+//
+// **Deleted rather than re-pointed**, for the same reason as
+// `a_mid_round_joiner_sees_the_graves_that_are_already_there` in T17.05: there is
+// no production route to a running match left, and a check that manufactures one
+// asserts nothing about production. The catch-up code it exercised is still
+// there and is already declared dormant at its site in `session.rs`, kept for the
+// reconnection seam §E4 leaves open on purpose.
+//
+// **When reconnection lands, this is the check to write again** — same shape,
+// against a client rejoining a match it was already seated in.
 
 // T8.05 — the inventory verbs. `Connection` has had sendSelectSlot and
 // sendUseItem since T6.08 and nothing in the scene called them, so a medkit, a
@@ -392,9 +411,8 @@ await a.page.keyboard.press('F3')
 
 await a.page.screenshot({ path: join(shots, 'm6-client-a.png') })
 await b.page.screenshot({ path: join(shots, 'm6-client-b.png') })
-await c.page.screenshot({ path: join(shots, 'm6-client-late.png') })
 
-const allErrors = [...a.errors, ...b.errors, ...c.errors]
+const allErrors = [...a.errors, ...b.errors]
 if (allErrors.length) fail(`page errors: ${allErrors.slice(0, 3).join(' | ')}`)
 
 console.log(
@@ -406,7 +424,6 @@ console.log(
       boMovedPx: Number(bMoved.toFixed(1)),
       terrainRemoved: { ana: removedA, bo: removedB },
       checksum: daF.maskChecksum.slice(0, 16),
-      lateJoinerAgrees: dc.maskChecksum === daF.maskChecksum,
       corrections: { ana: daF.corrections, bo: dbF.corrections },
       resyncs: { ana: daF.resyncs, bo: dbF.resyncs },
       pageErrors: allErrors.length,

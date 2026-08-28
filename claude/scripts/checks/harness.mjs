@@ -219,9 +219,23 @@ export async function openClient({ browser, viteUrl }, { name = 'ana', query = '
     (code ? `&code=${encodeURIComponent(code)}` : '') +
     query
   await page.goto(url)
-  await page.waitForFunction('window.__game && window.__game.debug().ready === true', null, {
-    timeout: 120_000,
-  })
+  // **Seated, not ready** (§E1).
+  //
+  // `ready` is true only once the world exists, and the world is built at
+  // *match start* — so waiting on it here does not mean "this client is in a
+  // room", it means "this client's lobby has already closed". That is fatal for
+  // any check that opens two clients: ana's lobby times out while she is being
+  // waited for, §E4 then refuses bo, and quick match puts him in a room of his
+  // own. Different seeds, one player each, terrain that cannot agree — which is
+  // exactly what `two-clients` and `full-round` reported.
+  //
+  // `welcome` arrives at seat time and carries the phase, so this is the first
+  // moment a client is genuinely in a room, and it is still in the lobby.
+  await page.waitForFunction(
+    'window.__game && typeof window.__game.debug().phase === "string" && window.__game.debug().me >= 0',
+    null,
+    { timeout: 120_000 },
+  )
   const dbg = () => page.evaluate('window.__game.debug()')
   const shot = async (n) => {
     await page.screenshot({ path: join(shotsDir, `${n}.png`) })
@@ -251,7 +265,15 @@ export async function enterBattle(page, opts = {}) {
   const dbg = () => page.evaluate('window.__game.debug()')
 
   let d = await dbg()
-  if (!d.ready) throw new Error(`${label}: the client is not connected (ready ${d.ready})`)
+  // **Seated is the precondition; `ready` is the post-condition** (§E1).
+  //
+  // This used to demand `ready` before starting a round, which is circular now:
+  // `ready` needs a world, and the world is built when the match starts — which
+  // is the thing this function exists to cause. A client in a lobby is
+  // connected and has no world, and that is the normal state to arrive here in.
+  if (typeof d.phase !== 'string' || !(d.me >= 0)) {
+    throw new Error(`${label}: the client is not seated (phase ${d.phase}, me ${d.me})`)
+  }
 
   if (d.phase === 'lobby' && press) {
     // **The verb, not the button** (§E1, T17.07). `#lobby-start` lived on a DOM
