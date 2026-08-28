@@ -4673,3 +4673,39 @@ resolves its receiver just as a send does. Only `mem::forget(tx)` keeps the task
 observed `Some(353) → Some(384)`, *ticking where nothing can reach it*. Both are written
 beside the assertion, along with the **three** `mem::forget`s on live sockets that read as
 oversights and are load-bearing.
+
+## T17.07 — The lobby screen holds the socket (v6)
+
+`MenuScene` built `matching` and `lobby` DOM and called `scene.start('Game')` in the same
+frame, so both were torn down before rendering — the lobby a player saw was a panel in
+`GameScene` drawn over a world they were already standing in. The menu owns the socket now
+and **hands it over**; `GameScene` adopts it rather than constructing a second.
+
+**That last part was written and not received.** Three registry keys had no reader,
+`GameScene` still opened its own connection with **no intent** — which falls through to
+quick match — so both clients of one private lobby abandoned it and landed together in a
+new public room. Every roster assertion passed, because two clients in one *wrong* room
+see each other perfectly well. The first attempt at a discriminating assertion was itself
+vacuous: `debug().seed` is the local core's seed and the check pins `FIXED_SEED`, so it
+reads identically in two different rooms. **What catches it is counting rooms on the
+server**, and that is permanent in `lobby.mjs` now, falsified by restoring
+`new Connection()`.
+
+Two more fell out. Handing the socket over left the **scoreboard empty** — `lobby_state`
+seeds it since T17.02, and that message now arrives at the *menu*; the last one is replayed
+through `emitLocal` before `map_init`, roster first, because the world must not start
+before the scoreboard knows who is in it. And `enterBattle` clicked `#lobby-start`, a
+deleted button, in the **shared harness every check uses**; it emits the verb now, still as
+a throw rather than a silent skip.
+
+`escapeHtml` had reached **three implementations** — byte-identical, but on a security
+function divergence is a hole rather than a wrong number. One survives, the exported and
+tested one. The unescaped `m.error` interpolation is closed: it carries the one
+network-derived string in the lobby, harmless while every reason is a fixed literal and
+live the first time one echoes something a player typed.
+
+**Declared coverage loss:** "you arrive in a lobby" is no longer observable from a browser
+— a cold page takes longer to load than `LOBBY_BOT_TIMEOUT`, measured at `~0.0s` of
+waiting — so that claim lives only in `public_lobby.rs`. T17.08 makes the timeout
+config-driven to get it back. And `lobby-start` was **already red at `1f7f0b4`**, asserting
+a solo player never starts, which §E2 retired at T17.03.

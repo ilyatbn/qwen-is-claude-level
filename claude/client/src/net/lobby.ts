@@ -182,7 +182,7 @@ export function parseLobbyState(p: Record<string, unknown>): LobbyStateMsg {
   return out
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
+export function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null
 }
 
@@ -222,4 +222,69 @@ export function lobbyReducer(s: LobbyState, e: LobbyEvent): LobbyState {
       // than one that occasionally forgets a message.
       return { kind: 'idle' }
   }
+}
+
+/**
+ * One roster line, ready to render (§E6).
+ *
+ * Pure, so the roster can be asserted without a browser — the DOM half is
+ * `MenuScene`'s and is covered by `scripts/checks/lobby.mjs`.
+ */
+export interface RosterRow {
+  seat: number
+  label: string
+  ready: boolean
+  bot: boolean
+  you: boolean
+}
+
+/**
+ * The roster as it should appear, padded to `capacity` with empty seats.
+ *
+ * **Bots are labelled as bots.** A roster that hides them lies about who you are
+ * playing: four "players" and one human is a different game from five humans,
+ * and the player is entitled to know which one they are in.
+ *
+ * Empty seats are rendered rather than omitted, because "3 of 5" is the number
+ * a player is waiting on and a list of three names does not say it.
+ */
+export function rosterRows(s: LobbyStateMsg, mySeat: number | undefined): RosterRow[] {
+  const rows: RosterRow[] = s.players.map((p) => ({
+    seat: p.seat,
+    label: p.bot ? `${p.name} (bot)` : p.name,
+    ready: p.ready,
+    bot: p.bot,
+    you: p.seat === mySeat,
+  }))
+  for (let i = rows.length; i < s.capacity; i += 1) {
+    rows.push({ seat: -1, label: 'empty', ready: false, bot: false, you: false })
+  }
+  return rows
+}
+
+/**
+ * What the lobby's status line says, and it is three different sentences.
+ *
+ * A private lobby has no timeout (§E3) and a public one has no ready gate (§E2),
+ * so a single "waiting…" would be wrong in both. `startsIn` is absent for
+ * private lobbies precisely so this cannot show a countdown that will never
+ * fire.
+ */
+export function lobbyStatus(s: LobbyStateMsg): string {
+  const humans = s.players.filter((p) => !p.bot).length
+  if (s.private) {
+    const notReady = s.players.filter((p) => !p.bot && !p.ready).length
+    return notReady === 0
+      ? 'Everyone is ready — starting…'
+      : `Waiting for ${notReady} of ${humans} to be ready.`
+  }
+  if (s.startsIn !== undefined) {
+    return `Starting in ${Math.max(0, Math.ceil(s.startsIn))}s, or when the lobby fills.`
+  }
+  return 'Waiting for players…'
+}
+
+/** May this seat change the settings? (§E3) */
+export function ownsSettings(s: LobbyStateMsg, mySeat: number | undefined): boolean {
+  return mySeat !== undefined && s.settingsOwner === mySeat
 }

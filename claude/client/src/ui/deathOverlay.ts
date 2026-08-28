@@ -9,6 +9,10 @@
  * `docs/30` §3 makes for the inventory panel, and the reason dying in the open
  * is a real cost rather than a loading screen.
  */
+// One escaper, the exported and tested one. This file had a byte-identical
+// private copy; a security function with three implementations is a divergence
+// waiting to become a vulnerability rather than a wrong number.
+import { escapeHtml } from './results-math'
 import {
   causeText,
   countdownText,
@@ -93,12 +97,4 @@ export class DeathOverlay {
     this.hide()
     this.info = null
   }
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(
-    /[&<>"']/g,
-    (c) =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c,
-  )
 }

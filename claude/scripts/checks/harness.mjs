@@ -254,14 +254,23 @@ export async function enterBattle(page, opts = {}) {
   if (!d.ready) throw new Error(`${label}: the client is not connected (ready ${d.ready})`)
 
   if (d.phase === 'lobby' && press) {
-    const hasButton = await page.evaluate(() => !!document.querySelector('#lobby-start'))
-    if (!hasButton) {
+    // **The verb, not the button** (§E1, T17.07). `#lobby-start` lived on a DOM
+    // panel `GameScene` drew over the world; a player waits in the *menu* now,
+    // and a client that reached this scene at all has a match. What is left on
+    // this path is the debug surface, which emits exactly what the button did.
+    //
+    // Kept as a throw rather than a silent skip: a check asking to start a round
+    // and finding no way to is a finding, not something to wait out.
+    const canStart = await page.evaluate(
+      () => typeof window.__game?.startWithBots === 'function',
+    )
+    if (!canStart) {
       throw new Error(
-        `${label}: in a lobby with no #lobby-start button — there is no way for a ` +
-          `player to begin a round`,
+        `${label}: in a lobby with no way to start — __game.startWithBots is ` +
+          `missing, so a player has no way to begin a round`,
       )
     }
-    await page.click('#lobby-start')
+    await page.evaluate(() => window.__game.startWithBots())
   }
 
   const deadline = Date.now() + timeoutMs

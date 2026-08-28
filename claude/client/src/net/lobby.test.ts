@@ -7,6 +7,9 @@ import {
   createRoomPayload,
   identityPayload,
   joinErrorMessage,
+  rosterRows,
+  lobbyStatus,
+  ownsSettings,
   joinRoomPayload,
   lobbyReducer,
   parseLobbyState,
@@ -240,5 +243,63 @@ describe('lobby_state (§E6)', () => {
     // reads. A blank name is what the `p1, p2, p3` bug looked like.
     const s = parseLobbyState(raw)
     expect(s.players.every((p: { name: string }) => p.name.length > 0)).toBe(true)
+  })
+})
+
+describe('the roster (§E6)', () => {
+  const base = {
+    private: false,
+    capacity: 5,
+    scale: 'small' as const,
+    players: [
+      { seat: 0, name: 'ana', skinId: 0, ready: true, bot: false },
+      { seat: 1, name: 'Bot 1', skinId: 0, ready: true, bot: true },
+    ],
+  }
+
+  it('labels bots as bots', () => {
+    const rows = rosterRows(base, 0)
+    expect(rows.map((r) => r.label).slice(0, 2)).toEqual(['ana', 'Bot 1 (bot)'])
+    // The control: the flag and the label agree, so a roster that dropped the
+    // suffix could not pass by keeping the flag.
+    expect(rows.map((r) => r.bot).slice(0, 2)).toEqual([false, true])
+  })
+
+  it('pads to capacity so "3 of 5" is visible', () => {
+    const rows = rosterRows(base, 0)
+    expect(rows).toHaveLength(5)
+    expect(rows.slice(2).every((r) => r.label === 'empty')).toBe(true)
+  })
+
+  it('marks which row is you, and only that one', () => {
+    const rows = rosterRows(base, 1)
+    expect(rows.filter((r) => r.you).map((r) => r.seat)).toEqual([1])
+    // Nobody is "you" when the seat is unknown — an undefined seat must not
+    // match an empty row's -1.
+    expect(rosterRows(base, undefined).some((r) => r.you)).toBe(false)
+  })
+
+  it('says something different for a private lobby than a public one', () => {
+    const pub = lobbyStatus({ ...base, startsIn: 4 })
+    expect(pub).toContain('4s')
+    const priv = lobbyStatus({
+      ...base,
+      private: true,
+      players: [
+        { seat: 0, name: 'ana', skinId: 0, ready: true, bot: false },
+        { seat: 1, name: 'bo', skinId: 0, ready: false, bot: false },
+      ],
+    })
+    // A private lobby has no timeout, so a countdown would be a lie.
+    expect(priv).not.toContain('s,')
+    expect(priv).toContain('1 of 2')
+  })
+
+  it('only the settings owner owns the settings', () => {
+    const s = { ...base, settingsOwner: 0 }
+    expect(ownsSettings(s, 0)).toBe(true)
+    expect(ownsSettings(s, 1)).toBe(false)
+    // Absent owner: nobody, rather than everybody.
+    expect(ownsSettings(base, 0)).toBe(false)
   })
 })

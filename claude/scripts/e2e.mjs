@@ -114,6 +114,10 @@ const CHECKS = [
   // machine on a shortened ROUND_SECONDS, and there is no sandbox path to `Ended`.
   { name: 'round-end', file: 'scripts/checks/round-end.mjs', standalone: true },
   { name: 'lobby-start', file: 'scripts/checks/lobby-start.mjs', standalone: true },
+  // §E1/§E6/§E7. The only gate on the lobby screen: vitest is `environment:
+  // 'node'` with no canvas, so a green unit run proves the reducer and says
+  // nothing about whether a lobby appears (D-26).
+  { name: 'lobby', file: 'scripts/checks/lobby.mjs', standalone: true },
   // §C26 — the jetpack number reaches the screen. Standalone: fuel comes from
   // the snapshot, so it needs a real server rather than the sandbox. Named
   // `hud-bars` because T14.02's Done-when names the same check for §C8's bars,

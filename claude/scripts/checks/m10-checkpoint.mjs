@@ -68,22 +68,24 @@ const dbg = (c) => c.page.evaluate('window.__game.debug()')
 // --- host creates a private room -----------------------------------------
 const host = await openAtMenu('ana')
 await host.page.evaluate(() => document.querySelector('#create')?.click())
-await inGame(host)
-// The host asks for a round straight away rather than waiting for the guest to
-// arrive and the lobby countdown to run. That is a deliberate loss of coverage:
-// two humans reaching the countdown together is `lobby-start`'s subject, and
-// making it this check's as well would put a five-second wall-clock wait in
-// front of every assertion below it. What this check is for is three rooms
-// running at once and not leaking into each other.
-await enterBattle(host.page, { label: 'm10/host' })
+// **Stays in the lobby.** Since T17.07 creating a private game seats the client
+// in a menu screen holding the live socket; `map_init` is what moves it to
+// `GameScene`, and that does not happen until the match starts. Waiting for
+// `__game` here would hang for the full ninety seconds.
 
 // Read the six characters the way a person would: off the screen.
+//
+// **`__menu`, not `__game`, since T17.07.** The code is shown in the lobby now
+// — a menu screen holding the live socket — rather than as a banner over a world
+// the host is already standing in. `__game.debug().visibleCode` still exists and
+// is now always `''`, which is the truthful answer from a scene that draws no
+// code; reading it here would wait thirty seconds and then fail.
 await host.page.waitForFunction(
-  'window.__game.debug().visibleCode && window.__game.debug().visibleCode.length === 6',
+  'window.__menu && window.__menu.visibleCode().length === 6',
   null,
   { timeout: 30_000 },
 )
-const code = (await dbg(host)).visibleCode
+const code = await host.page.evaluate('window.__menu.visibleCode()')
 if (!/^[A-HJ-NP-Z2-9]{6}$/.test(code)) die(`the code on screen is not a code: "${code}"`)
 log(`host sees code ${code}`)
 
@@ -96,6 +98,16 @@ await guest.page.evaluate((c) => {
   input.dispatchEvent(new Event('input', { bubbles: true }))
   document.querySelector('#go')?.click()
 }, code)
+// Both are now sitting in the same private lobby. §E3 starts it when everyone is
+// ready — but this check is about three rooms not leaking into each other, not
+// about the ready gate (`private_lobby` owns that), so the host starts it with
+// bots rather than putting a two-client handshake in front of every assertion
+// below.
+await guest.page.waitForFunction('window.__menu && window.__menu.visibleCode().length === 6', null, {
+  timeout: 30_000,
+})
+await host.page.evaluate(() => window.__menu.startWithBots())
+await inGame(host)
 await inGame(guest)
 await enterBattle(guest.page, { press: false, waitPlaying: true, label: 'm10/guest' })
 await enterBattle(host.page, { press: false, waitPlaying: true, label: 'm10/host-playing' })
@@ -103,6 +115,8 @@ await enterBattle(host.page, { press: false, waitPlaying: true, label: 'm10/host
 // --- a third player quick-matches into a different room -------------------
 const solo = await openAtMenu('cy')
 await solo.page.evaluate(() => document.querySelector('#quick')?.click())
+// A public lobby: §E2 seats bots and starts it after `LOBBY_BOT_TIMEOUT`, so
+// this one reaches the game on its own without being told to.
 await inGame(solo)
 // Alone in a room of their own: nobody else is coming, so this one asks.
 await enterBattle(solo.page, { waitPlaying: true, label: 'm10/solo' })

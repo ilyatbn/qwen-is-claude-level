@@ -20,7 +20,7 @@ import { padUnderfoot, type PadView } from '../render/pads'
 import { atlasArt } from '../render/objects'
 import type { MapObject } from '../net/codec'
 import { C, Core, dequantizeAngle } from '../core'
-import { asRecord, Connection, type LobbyIntent, type Welcome } from '../net/connection'
+import { asRecord, Connection, type Welcome } from '../net/connection'
 import { parseLobbyState } from '../net/lobby'
 import { WorldMirror, hex } from '../net/worldMirror'
 import { Predictor } from '../net/prediction'
@@ -113,7 +113,6 @@ export class GameScene extends Phaser.Scene {
   private jetReadout: HTMLDivElement | null = null
   /** The private room's join code, once the server has told us (§B9). */
   private joinCode: string | null = null
-  private lobbyPanel: HTMLDivElement | null = null
   private codeBanner: HTMLElement | null = null
   private feel!: FeelLayer
   private minimap: Minimap | null = null
@@ -289,7 +288,16 @@ export class GameScene extends Phaser.Scene {
     this.mirror = new WorldMirror(this.core)
     this.interp = new RemoteInterpolator()
     this.clock = new ClockSync()
-    this.conn = new Connection()
+    // **Adopt the lobby's socket if there is one** (§E1).
+    //
+    // `MenuScene` opens the connection, sits in the lobby with it, and hands it
+    // over when `map_init` arrives. Constructing a second one here would leave
+    // the player seated in the lobby's room *and* joined somewhere else — and
+    // because a plain `join` with no intent falls through to quick match, both
+    // clients of one private lobby would land together in a brand new public
+    // room. That reads correct from every roster: they can see each other. It is
+    // two rooms on the server, and it is what `lobby.mjs` now measures.
+    this.conn = (this.registry.get('liveConn') as Connection | undefined) ?? new Connection()
 
     this.sky = new SkyLayer(this)
     this.lightmap = new Lightmap(this)
@@ -379,10 +387,11 @@ export class GameScene extends Phaser.Scene {
       // The big code is for inviting someone, which is a warmup activity. Once
       // the round is live it belongs in the strip, not across the screen.
       if (this.phase !== 'lobby' && this.phase !== 'warmup') this.hideJoinCodeBanner()
-      // §C18: a lobby is a place you wait, so say what is being waited for.
-      // `time_left` is finite only while the countdown runs.
-      if (this.phase === 'lobby') this.showLobby(this.timeLeft)
-      else this.hideLobby()
+      // §E1: waiting happens in the **menu**, not here. A client only reaches
+      // this scene once `map_init` has arrived, so a `lobby` phase seen from
+      // inside a match is a round that ended and went back — not a place to
+      // draw a waiting panel over a world the player is standing in, which is
+      // what this used to do and is the defect T17.07 exists to fix.
     })
     // The payload is the point: `score` carries the whole table (`docs/40` §3),
     // and this handler used to discard it and merely re-render `this.scores` —
@@ -448,13 +457,11 @@ export class GameScene extends Phaser.Scene {
       }
     })
     this.conn.on('player_leave', (raw) => this.dropRemote(Number(asRecord(raw)['id'] ?? -1)))
-    // The join code for a private room. Nothing subscribed to this before, so
-    // creating a private game never showed anyone the code — which is the only
-    // thing a private game is for (§A39, and the M10 checkpoint found it).
-    this.conn.on('room_created', (raw) => {
-      const code = asRecord(raw)['code']
-      if (typeof code === 'string' && code.length > 0) this.showJoinCode(code)
-    })
+    // The join code is shown in the **lobby**, which is where a player is when
+    // there is anyone to invite (§E1). `MenuScene` subscribes to `lobby_state`
+    // and renders `code` from it; by the time this scene exists the match has
+    // started and §E4 has closed the door, so a code on screen here would
+    // invite people to a game they cannot join.
     for (const ev of ['carve', 'carve_capsule', 'item_spawn', 'crate_spawn', 'item_pickup',
       // `item_move` is where a falling crate goes (§C7). Written into the mirror
       // and left out of this list, it did exactly what the comment below warns
@@ -793,15 +800,39 @@ export class GameScene extends Phaser.Scene {
     if (devSurface() && params.get('e2e') === '1') this.exposeDebugHandle()
 
     const name = params.get('name') ?? `player${Math.floor(Math.random() * 1000)}`
+
+    // Handed over from the lobby: already connected, already seated, and its
+    // `map_init` already delivered once. Nothing to join.
+    const adopted = this.registry.get('liveWelcome') as Welcome | undefined
+    if (adopted) {
+      this.registry.remove('liveConn')
+      this.registry.remove('liveWelcome')
+      this.onWelcome(adopted)
+      // Replayed **after** the handlers above are registered. The map arrived
+      // while `MenuScene` owned the socket, so nothing in this scene saw it;
+      // `emitLocal` runs the real handler, which is what turns a lobby into a
+      // world. Without it the client sits in an empty game forever.
+      // The roster first: `map_init` starts the world, and the scoreboard has to
+      // know who is in it before that. Both go through `emitLocal`, which runs
+      // the real handlers — the production path, minus the wire.
+      const lob = this.registry.get('pendingLobbyState') as unknown
+      this.registry.remove('pendingLobbyState')
+      if (lob) this.conn.emitLocal('lobby_state', lob)
+      const map = this.registry.get('pendingMapInit') as string | undefined
+      this.registry.remove('pendingMapInit')
+      if (map) this.conn.emitLocal('map_init', map)
+      return
+    }
+
     try {
       const w = await this.conn.connect(
       undefined,
       name,
       Number(localStorage.getItem('deepcut.skin') ?? 0),
-      // What the menu chose, if the player came through it. `?game=1` skips the
-      // front end entirely, and then this is undefined and a plain `join`
-      // happens — which is what every check written before the menu expects.
-      this.registry.get('lobbyIntent') as LobbyIntent | undefined,
+      // `?game=1` skips the front end entirely, so there is no lobby to adopt
+      // and a plain `join` happens — which is what every check written before
+      // the menu expects. The menu path never reaches here.
+      undefined,
     )
       this.onWelcome(w)
     } catch (e) {
@@ -1489,79 +1520,6 @@ export class GameScene extends Phaser.Scene {
     if (this.hud) this.hud.dataset['status'] = text
   }
 
-  /**
-   * Show the host their join code.
-   *
-   * Displayed until the round leaves warmup, because that is when you would
-   * read it to someone; after that it moves into the HUD strip so it is
-   * recoverable without being in the way. It is DOM, like every other
-   * screen-space element here (§A35).
-   */
-  private showJoinCode(code: string): void {
-    this.joinCode = code
-    if (this.codeBanner) return
-    const el = document.createElement('div')
-    el.id = 'join-code'
-    el.style.cssText =
-      'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:11;' +
-      'font:14px/1.6 monospace;color:#e8ecff;text-align:center;pointer-events:none;' +
-      'background:rgba(6,10,26,0.72);padding:6px 14px;border-radius:4px;'
-    el.innerHTML =
-      `<div style="opacity:.7">Invite with this code</div>` +
-      `<b style="font-size:2rem;letter-spacing:.5rem;color:#ffd23f">${code}</b>`
-    document.body.appendChild(el)
-    this.codeBanner = el
-  }
-
-  /**
-   * The lobby overlay: who is here, the countdown, and "Start with bots".
-   *
-   * §C18. It lives in `GameScene` and not in a scene of its own because the
-   * player is already *in* the room — the socket is here, and the map is
-   * already loaded behind it, which is the point of generating it when the room
-   * is created. A second scene would be a second lobby to keep in step, which
-   * is the shape of defect this milestone exists to end (§C0).
-   *
-   * DOM, like every other screen-space element here (§A35): a Phaser object with
-   * `scrollFactor(0)` still has camera zoom applied and lands off-viewport.
-   */
-  private showLobby(countdown: number): void {
-    const humans = this.scores.size
-    const counting = Number.isFinite(countdown) && countdown > 0
-    const line = counting
-      ? `Starting in ${Math.ceil(countdown)}…`
-      : `Waiting for another player — or start now with bots.`
-
-    if (!this.lobbyPanel) {
-      const el = document.createElement('div')
-      el.id = 'lobby-panel'
-      el.style.cssText =
-        'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:14;' +
-        'font:16px/1.7 system-ui,sans-serif;color:#e8ecff;text-align:center;' +
-        'background:rgba(6,10,26,0.88);padding:22px 34px;border-radius:8px;' +
-        'min-width:320px;'
-      document.body.appendChild(el)
-      this.lobbyPanel = el
-    }
-    const el = this.lobbyPanel
-    // Rebuilt each update, so the button is re-bound with it.
-    el.innerHTML =
-      `<div style="font-size:1.4rem;font-weight:700;margin-bottom:6px">Lobby</div>` +
-      `<div id="lobby-roster" style="opacity:.85">${humans} player${humans === 1 ? '' : 's'} here</div>` +
-      `<div id="lobby-status" style="margin:10px 0 14px">${line}</div>` +
-      `<button id="lobby-start" style="font:15px system-ui;padding:8px 18px;` +
-      `border-radius:5px;border:0;background:#3d5afe;color:#fff;cursor:pointer">` +
-      `Start with bots</button>`
-    el.querySelector('#lobby-start')?.addEventListener('click', () => {
-      this.conn.sendStartWithBots()
-    })
-  }
-
-  private hideLobby(): void {
-    this.lobbyPanel?.remove()
-    this.lobbyPanel = null
-  }
-
   private hideJoinCodeBanner(): void {
     this.codeBanner?.remove()
     this.codeBanner = null
@@ -1677,6 +1635,15 @@ export class GameScene extends Phaser.Scene {
     const self = this
     ;(window as unknown as { __game: unknown }).__game = {
       /**
+       * Start now with bots — the manual form of §E2's timeout.
+       *
+       * Was `#lobby-start`, a button on a panel this scene no longer draws
+       * (§E1). The `?game=1` path bypasses the menu entirely, so on that path
+       * there is no lobby screen to press either — this is the surface a check
+       * has left, and it emits the same verb the button did.
+       */
+      startWithBots: () => self.conn.sendRaw('start_with_bots', {}),
+      /**
        * The depths the shared world stack actually produced, deduped and sorted.
        *
        * Asserted between the two scenes (§C1). Not "both call WorldView" — a scene
@@ -1752,12 +1719,23 @@ export class GameScene extends Phaser.Scene {
             meAlive: self.meAlive,
             hasInfo: self.death.hasInfo,
           },
-          /** Read from the DOM: what the host can actually see, not what we sent. */
-          visibleCode:
-            document.querySelector('#join-code b')?.textContent?.trim() ??
-            (self.joinCode && self.hud?.textContent?.includes(self.joinCode)
-              ? self.joinCode
-              : ''),
+          /**
+           * **Always `''` since T17.07, and deliberately not deleted.**
+           *
+           * This read `#join-code b` — a banner this scene no longer draws,
+           * because the code belongs in the lobby, which is where a player is
+           * when there is anyone to invite (§E1). The surface it observed is
+           * gone, so the honest answer is "nothing is visible here".
+           *
+           * The fallback it used to carry is the reason this is spelled out
+           * rather than removed: it asked whether the HUD text *contained* the
+           * code, so with the banner gone the field would have kept answering
+           * from a different surface than the one it was written to observe —
+           * passing or failing for reasons unrelated to what a host can see.
+           * `m10-checkpoint` reads `__menu.visibleCode()` now, which is the
+           * lobby's own DOM.
+           */
+          visibleCode: '',
           mapW: self.core.width,
           mapH: self.core.height,
           /**

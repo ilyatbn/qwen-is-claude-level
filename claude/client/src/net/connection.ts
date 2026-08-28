@@ -209,6 +209,31 @@ export class Connection {
     this.emit(event, payload)
   }
 
+  /**
+   * Ready, or no longer ready (§E3/§E6).
+   *
+   * Typed rather than `sendRaw('ready', {})`, because the payload is now
+   * load-bearing: a private lobby starts when every human is ready, so
+   * un-readying has to be able to hold the match back. The server reads an
+   * absent `on` as `true`, which is what keeps every check written before this
+   * working — but a client that means "no" has to say so.
+   */
+  sendReady(on: boolean): void {
+    this.sendRaw('ready', { on })
+  }
+
+  /**
+   * Ask to change the map size (§E3).
+   *
+   * Refused with `lobby_error` unless the sender is the lobby's
+   * `settings_owner`. The refusal is **not** `join_error`: that handler is
+   * registered during the connect handshake and drops anything arriving after
+   * the promise settles, which is every possible `set_scale`.
+   */
+  sendSetScale(scale: string): void {
+    this.sendRaw('set_scale', { scale })
+  }
+
   sendUseItem(slot: number): void {
     this.emit('use_item', { slot })
   }
