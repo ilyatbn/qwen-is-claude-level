@@ -4641,3 +4641,35 @@ caught it asserted `not.toBe(reason)`, which the fallback passes trivially becau
 *embeds* the token rather than equalling it. Strengthened to exclude the fallback's exact
 shape, since the obvious stronger form is too strong the other way: *"That game is full."*
 legitimately contains "full".
+
+## T17.06 — Lobbies and matches die when their humans leave (v6)
+
+**The rule was already true, and this asserts it rather than building it.**
+`RoomEntry.humans` is keyed on socket id and a bot has no socket, so bots can never be
+occupants. Adding a filtering rule would have created a *second source of truth for
+occupancy* — the registry diff is 13 insertions, 2 deletions and zero non-comment lines.
+
+**Two mechanisms answered "the last human left", and one was lying.** The registry's
+comment said the world is left standing so a player can reconnect inside the TTL, while
+`Room` destroyed it on the same condition and ran first. §E5 makes the reaper the only
+answer; the comment is now true. The `room.rs` unit test asserting the old behaviour is
+**inverted rather than deleted** — it asserts the world *survives*, so re-adding the call
+goes red. A deletion removes coverage; an inversion turns the old assertion into a
+regression guard.
+
+**Found while tracing it: `started` was set at match start and never cleared.** So a room
+whose round ended with the restart vote failing — players still seated — sat in `Lobby`
+refusing **every** join with `in_progress` until it was reaped, and quick match skipped it
+forever. `Room` owns that bit now, and all three `self.world` assignments store it;
+`restart` was leaning on an invariant that lives in `round.rs`, which is how the bit came
+to be set-once-never-cleared in the first place. That last change has **no falsification**
+and is not claimed as one — it is a consistency fix.
+
+**The shutdown assertion needed two corrections.** Its first version used
+`inspect(...).is_none()`, which cannot tell a stopped task from a **lobby** — §E1's own
+signal. It asserts on the clock now. And the obvious falsification does not discriminate:
+deleting `let _ = tx.send(())` leaves every test green, because a dropped oneshot sender
+resolves its receiver just as a send does. Only `mem::forget(tx)` keeps the task alive —
+observed `Some(353) → Some(384)`, *ticking where nothing can reach it*. Both are written
+beside the assertion, along with the **three** `mem::forget`s on live sockets that read as
+oversights and are load-bearing.

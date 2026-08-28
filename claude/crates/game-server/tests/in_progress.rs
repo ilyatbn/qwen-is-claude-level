@@ -314,6 +314,11 @@ async fn a_refused_join_leaves_no_phantom_occupant() {
              measuring what this test claims"
         );
         std::thread::sleep(Duration::from_millis(300));
+        // **`forget`, not `drop`.** Both sockets must stay open until the
+        // registry is read: closing the refused one triggers the disconnect
+        // handler, which detaches and decrements, masking the phantom occupant
+        // this test exists to catch. Closing ana's would empty the room and put
+        // it on the reaper's clock. Load-bearing, not an oversight.
         std::mem::forget((a, b));
         room_id
     })

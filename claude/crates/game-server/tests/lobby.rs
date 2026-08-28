@@ -894,70 +894,23 @@ async fn two_humans_start_on_their_own() {
     h.stack.shutdown_all(Duration::from_secs(2)).await;
 }
 
-/// The humans-vs-seats distinction, at the only layer where it is observable.
-///
-/// `round.rs`'s unit tests pass `humans == connected`, so they **cannot** tell
-/// the two apart — falsifying `humans` to `connected` there leaves them all
-/// green. Bots hold seats, so the distinction only exists once a round has
-/// started, which is here.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_room_whose_last_human_leaves_goes_back_to_lobby_despite_its_bots() {
-    let mut cfg = test_config();
-    cfg.bot_count = 3;
-    let state = AppState::new(cfg);
-    let stack = app::build_stack(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    let router = stack.router.clone();
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, router).await;
-    });
-    let reg = stack.registry.clone();
-
-    tokio::task::spawn_blocking(move || {
-        let ia: Inbox = Arc::default();
-        let a = connect(addr, ia.clone());
-        emit_until(
-            &a,
-            &ia,
-            "join",
-            serde_json::json!({ "name": "ana" }),
-            "welcome",
-            "ana",
-        );
-        a.emit("start_with_bots", serde_json::json!({}))
-            .expect("emit");
-        std::thread::sleep(Duration::from_millis(900));
-        // Leaving: an explicit disconnect, not a drop. `drop` does not close
-        // the socket promptly, so the server never sees the leave and the test
-        // reports "the room kept playing" for the wrong reason.
-        let _ = a.disconnect();
-        std::thread::sleep(Duration::from_millis(1200));
-    })
-    .await
-    .expect("client thread");
-
-    let handle = {
-        let r = reg.lock().expect("registry");
-        let id = *r.ids().first().expect("room");
-        r.get(id).expect("room").handle.clone()
-    };
-    let (phase, seats, bots) = {
-        let p = handle.join_info().await.expect("alive").phase;
-        let (seats, bots) = handle.status().await.unwrap_or((99, 99));
-        (p, seats, bots)
-    };
-    assert_eq!(
-        phase, "lobby",
-        "a room with {seats} seats ({bots} of them bots) kept playing a match \
-         with no humans in it"
-    );
-    assert_eq!(bots, 0, "a lobby room still has {bots} bots seated");
-
-    stack.shutdown_all(Duration::from_secs(2)).await;
-}
+// ------------------------------------------- the last human, and who answers
+//
+// `a_room_whose_last_human_leaves_goes_back_to_lobby_despite_its_bots` lived
+// here until T17.06. It asserted that the room tore its world down the instant
+// the last human left — behaviour §E5 removed, not behaviour that broke.
+//
+// Two mechanisms answered that one event. `Room` destroyed the world; the
+// registry started `ROOM_EMPTY_TTL` and its own comment said the world was
+// deliberately left standing so a player could reconnect inside the window. The
+// room's handler ran first, so the registry's comment described something that
+// could not happen. §E5 makes the reaper the only answer, and
+// `tests/reap.rs` is where that is now asserted — including the half this test
+// was really about, that bots do not hold a room open.
+//
+// Deleted rather than re-pointed: its subject is a call site that no longer
+// exists, and a test driving a path production does not take asserts nothing
+// about production. Two assertions, which is the whole of `lobby`'s 61 -> 59.
 
 /// A `Lobby` room has **no bots**.
 ///

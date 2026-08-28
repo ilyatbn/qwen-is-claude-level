@@ -162,9 +162,18 @@ impl std::fmt::Debug for Command {
 #[derive(Clone)]
 pub struct RoomHandle {
     tx: mpsc::Sender<Command>,
-    /// Set the instant the match starts, so `quick_match` can skip this room
-    /// without awaiting a reply it cannot await while holding the registry lock
-    /// (§E2/§E4).
+    /// Whether a match is running **right now** (§E2/§E4).
+    ///
+    /// Read by `quick_match`, which cannot await a reply while holding the
+    /// registry lock, and by the seat path's §E4 refusal.
+    ///
+    /// **Owned by `Room`**, which sets it in `install_world` and clears it in
+    /// `return_to_lobby`. It used to be set by the room task and never cleared
+    /// at all — so a room whose round ended and returned to the lobby stayed
+    /// "started" for the rest of its life: quick match skipped it forever and
+    /// §E4 refused every join with `in_progress`, for a room sitting in `Lobby`
+    /// with players in it. One bit with one owner, because the two answers to
+    /// "is a match running" had already drifted apart.
     ///
     /// An `AtomicBool` rather than a `Command`: the answer is one bit, the
     /// reader is inside a lock, and a bit that is read stale for one tick is a
@@ -638,6 +647,9 @@ pub struct Room {
     /// is how the async loop notices, and [`Room::install_world`] is how the
     /// answer comes back.
     starting: bool,
+    /// Shared with `RoomHandle::has_started`; see the field there for why the
+    /// room owns it rather than the task.
+    started: Arc<std::sync::atomic::AtomicBool>,
     seats: Seats,
     config: Arc<Config>,
     lag_warned_at: u32,
@@ -776,6 +788,16 @@ impl Room {
     /// (`docs/41` §5: "reproduce the bug"). Without it the seed mixes a
     /// per-process base — so maps vary between rooms *and* between runs, while
     /// staying reproducible within a run given the room id.
+    /// Point this room's "a match is running" bit at the handle's.
+    ///
+    /// `RoomHandle` is built before `run` constructs the `Room`, so the shared
+    /// allocation is made there and adopted here — one `AtomicBool` with one
+    /// owner writing it and the registry reading it.
+    pub fn adopt_started_flag(&mut self, flag: Arc<std::sync::atomic::AtomicBool>) {
+        flag.store(self.world.is_some(), std::sync::atomic::Ordering::Relaxed);
+        self.started = flag;
+    }
+
     pub fn new_in_room(config: Arc<Config>, room_id: u32) -> Self {
         let seed = match config.fixed_seed {
             Some(s) => s,
@@ -807,6 +829,7 @@ impl Room {
             // yet, so there is nothing to broadcast to.
             lobby_dirty: false,
             starting: false,
+            started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             seats: Seats::default(),
             config,
             lag_warned_at: 0,
@@ -892,6 +915,10 @@ impl Room {
     /// player, and this is where the promise is kept. Bots come after, so a
     /// human who joined during generation still gets a seat ahead of them.
     pub fn install_world(&mut self, mut world: World) {
+        // §E2/§E4: a match is running from this instant. Set here rather than
+        // in the room task, so the bit and the world it describes move together.
+        self.started
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         // **One clock.** The world continues the count the lobby was keeping.
         //
         // The alternative — start the world at 0 — makes the room's `tick` go
@@ -1383,13 +1410,22 @@ impl Room {
                 }
                 self.round.forget(id);
                 // §C18: a room that has lost its last human goes back to
-                // `Lobby` — not on to a fresh round — and is reaped by the
-                // registry after `ROOM_EMPTY_TTL`. Without this a room full of
-                // bots keeps playing a match nobody is in.
-                if self.human_count() == 0 && self.phase() != game_core::world::RoundPhase::Lobby {
-                    tracing::info!(target: "game::round", "last human left; back to lobby");
-                    self.return_to_lobby();
-                }
+                // **The reaper owns this event, and nothing else does** (§E5).
+                //
+                // This used to call `return_to_lobby`, which destroys the world
+                // immediately. The registry says the opposite on the very same
+                // condition (`detach_from`): "the tick keeps running until
+                // reap... stopping the world mid-round would break a player
+                // reconnecting inside the TTL". The room's handler ran first, so
+                // that comment described an intent the code did not deliver —
+                // and it sat directly on the seam §E4 leaves open on purpose.
+                //
+                // One mechanism for one event: the room keeps ticking, the
+                // registry starts its clock, and `ROOM_EMPTY_TTL` later the whole
+                // room goes. The cost is bots simulating in an abandoned room for
+                // at most that TTL, bounded by `MAX_ROOMS` — cheap and finite,
+                // and it is what makes reconnection reachable later rather than
+                // more closed.
             }
             Command::StartWithBots(id) => {
                 self.note(R::StartWithBots(id));
@@ -1590,6 +1626,11 @@ impl Room {
         self.lobby_tick = self.world.as_ref().map_or(self.lobby_tick, |w| w.tick);
         self.world = None;
         self.starting = false;
+        // No world, no match: the room is joinable again. Without this a room
+        // whose round ended sat in `Lobby` refusing every join with
+        // `in_progress` until the reaper took it.
+        self.started
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The bots currently seated, as `(id, name, skin, tombstone skin)`.
@@ -2006,6 +2047,17 @@ impl Room {
         );
         world.set_round_seconds(self.config.round_seconds);
         self.world = Some(world);
+        // §E2/§E4, unconditionally. There are three assignments to `self.world`
+        // and every one of them must leave the bit agreeing with it, or
+        // `has_started` describes a room that no longer exists.
+        //
+        // Correct without this **only** because `RoundOutcome::Restart` cannot
+        // be produced without a world — an invariant that lives in `round.rs`,
+        // not here. Leaning on a neighbour's invariant for a gate that decides
+        // who may join is how the bit came to be set-once-never-cleared in the
+        // first place.
+        self.started
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         self.bots.clear();
         // Bot seats are freed here rather than carried: `seat_bots` below
         // allocates fresh ones, and a bot seat that outlived its `Bot` would be
@@ -2222,6 +2274,7 @@ async fn run(
     // §E1: instant. No map is generated until the lobby says go, so this is a
     // struct allocation rather than `docs/71` §B2's 0.3–1.1 s of generator.
     let mut room = Room::new_in_room(config, room_id);
+    room.adopt_started_flag(started);
     // At construction, as it always was — **not** at match start.
     //
     // I moved it to match start first, reasoning that a file describing a lobby
@@ -2293,11 +2346,10 @@ async fn run(
                         ms = started_at.elapsed().as_millis() as u64,
                         "world generated for match start"
                     );
+                    // Sets the §E2/§E4 bit itself, before the map goes out, so
+                    // no socket can be seated into a match that is already
+                    // handing out its map.
                     room.install_world(world);
-                    // §E2/§E4: closed to quick match from this instant. Set
-                    // before the map goes out, so no socket can be seated into
-                    // a match that is already handing out its map.
-                    started.store(true, std::sync::atomic::Ordering::Relaxed);
                     // §E1: everyone seated gets the map now. They joined a lobby
                     // and were sent `welcome` without one; this is the message
                     // that turns a lobby screen into a game.
@@ -2701,13 +2753,19 @@ mod tests {
 
         room.apply(Command::Leave(0));
         assert_eq!(room.player_count(), 0);
-        // The last human leaving sends the room back to `Lobby`, and §E1 makes
-        // that mean the world goes with it. "No players in the world" and "no
-        // world" are the same statement now; asserting the emptier one would
-        // have needed a world that no longer exists.
+        // **Inverted at T17.06, deliberately.** This used to assert the world
+        // was gone: the last human leaving called `return_to_lobby`, which
+        // dropped it on the spot. §E5 makes the reaper the only answer to that
+        // event, so the world now stands until `ROOM_EMPTY_TTL` takes the whole
+        // room — which is what the registry's own comment always claimed and
+        // could not deliver while two mechanisms raced on one condition.
+        //
+        // Kept rather than deleted because it now guards the ruling: re-adding
+        // the `return_to_lobby` call turns this red.
         assert!(
-            room.world().is_none(),
-            "the room kept simulating a match with nobody in it"
+            room.world().is_some(),
+            "the world was torn down when the last human left: something is \
+             answering that event besides the reaper (§E5)"
         );
     }
 

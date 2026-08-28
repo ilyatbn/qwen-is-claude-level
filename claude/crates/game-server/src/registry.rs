@@ -350,8 +350,19 @@ impl RoomRegistry {
             e.humans = e.humans.saturating_sub(1);
             if e.humans == 0 {
                 // The tick keeps running until reap; what stops immediately is
-                // the clock on the room's life. Stopping the world mid-round
-                // would break a player reconnecting inside the TTL.
+                // the clock on the room's life.
+                //
+                // **True as of T17.06.** Until then `Room` destroyed the world
+                // on this same condition and ran first, so this comment
+                // described an intent the code did not deliver: there was
+                // nothing left to reconnect to. §E5 makes the reaper the only
+                // answer to "the last human left", which is what leaves a world
+                // standing for the TTL at all.
+                //
+                // Nothing can use that window yet — §E4 refuses a rejoining
+                // socket with `in_progress` — so this buys nothing today. It is
+                // the precondition for the reconnection seam §E4 leaves open,
+                // rather than a second mechanism closing it.
                 e.empty_since = Some(Instant::now());
                 tracing::info!(
                     target: "game::round", room,
