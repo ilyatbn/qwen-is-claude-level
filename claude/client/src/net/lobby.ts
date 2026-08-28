@@ -66,6 +66,12 @@ export function joinErrorMessage(reason: string): string {
       return 'Pick a name with at least one character.'
     case 'no_room':
       return 'That game is no longer running.'
+    // §E4. Distinct from `full` on purpose: a full lobby will have room later
+    // and a started match will not, so the two say different things to the
+    // player. Without this case the browser reads "Could not join
+    // (in_progress)." — the wire's enum name, shown to a human.
+    case 'in_progress':
+      return 'That game has already started. Try another, or host one.'
     default:
       return `Could not join (${reason}).`
   }

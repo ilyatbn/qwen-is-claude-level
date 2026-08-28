@@ -760,3 +760,40 @@ a bullet-sized carve, and the health bar goes green.
 shield and overheal are the only timed states — so one has to exist. And **the meteor
 shower has no roof check either**, despite `docs/74` §E13 describing it as "the same
 reasoning the meteor needs"; the occlusion test is one function used twice.
+
+## D-49 — `wait_for` is two contracts under one name  ·  test harness, pre-existing
+**Found while auditing T17.05's eighth copy of the test harness.** Seven test files each
+carry their own `spawn_server`/`connect`/`wait_for` and there is no `tests/common/`. The
+duplication has **already drifted, further than `to_command` did** — `wait_for` is now two
+incompatible functions sharing one name:
+
+| files | signature | semantics |
+|---|---|---|
+| `checksum`, `integration`, `join` | `(rx: &mpsc::Receiver<String>, want: &str, secs: u64)` | channel-based, **drains and discards** non-matching events, per-call timeout |
+| `in_progress`, `lobby`, `rooms` | `(inbox: &Inbox, ev: &str, n: usize, label: &str)` | inbox-based, counts occurrences, shared `BUDGET_MS`, takes a label |
+
+Different arguments, different semantics, different timeout sources. **Not variants of one
+helper — two contracts.**
+**And the destructive one has already caused a real bug:** in T17.02, `wait_for(lobby_state)`
+ate `map_init`'s token in `join.rs`, precisely because that variant discards what it is not
+waiting for. A reader moving between test files carries the wrong model of a function name
+they have already read.
+**Chosen:** not refactored inside T17.05 — seven files is not a small task's business, and
+the new file chose the non-destructive variant, which is right. **Recorded so that when
+someone builds `tests/common/`, the first decision is which `wait_for` survives — and it
+must not be the one that discards.**
+
+## D-50 — Refused joins were leaving phantom occupants  ·  T17.05, pre-existing
+**Found by the count-at-both-ends rule, and nothing else would have.** The refusal was
+correct on the wire while the registry still counted the refused player —
+`left: Some(2), right: Some(1)`. **Every verb calls `ctx.attach` before the seat path runs,
+and attach increments the human count**, so a refusal that returned without detaching left
+a phantom that **consumed a capacity slot and held the room open against the reaper**.
+`full` and `bad_name` had done this since long before M17. An `assert!(reason == "in_progress")`
+would have passed.
+**All three detach now**, and `in_progress` refuses **before** `room.join` — it never reaches
+the allocator, which is the strongest form.
+**One is untested and it is the structurally riskiest**: `full`'s detach sits in the `else`
+of `room.join`, *after* the allocator, unlike the two that are proven before it. It rests on
+the class argument alone. Folded into T17.06, where a phantom occupant holding a room against
+the reaper is literally the subject.

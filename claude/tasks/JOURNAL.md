@@ -4610,3 +4610,34 @@ while the guard that should have caught it pinned **11 against an enum of 16** w
 message still saying 10. It is now an exhaustive `match` with no catch-all, which
 contains no assertion at all — the compiler is the assertion — with the count moved
 beside it, because a number far from what it counts is a number nobody updates.
+
+## T17.05 — A live match is closed (v6)
+
+§E4 closes joins **by phase, not by verb**, so the refusal lives in the one function
+`join`, `create_room`, `join_room` and `quick_match` all reach — T17.03 had gated quick
+match alone, and `join_room` by code walked straight past it into a running match. It
+reads the same `has_started` bit quick match reads, because `has_started` is set at
+`install_world` while `phase()` derives from the world's own state, and **two answers to
+that question drift through the window between them**.
+
+**Counting seats at both ends found a leak older than this task.** Every verb attaches
+before the seat path runs and attach increments the human count, so `full` and `bad_name`
+had been leaving phantom occupants that consume capacity and hold a room against the
+reaper. All three refusals detach now; `in_progress` refuses **before** `room.join`, so it
+never reaches the allocator (D-50).
+
+**The mid-round joiner is gone, and with it the reachable caller for all three
+world-gated catch-ups** — `map_init`, `item_spawn` and `tombstone_spawn`. They are
+declared dormant at their sites and kept, because §E4 leaves reconnection open on purpose
+and reconnection needs exactly them. `encode_map_init_at` is **not** dormant: it keeps
+three callers, including `resync_map`, which serves an already-seated client and is not a
+join. The graves test is **deleted rather than re-pointed a third time** — the only route
+to that code is one the server refuses to create, and a test exercising a path production
+cannot take asserts nothing about production.
+
+Two client-side tests could not fail. `joinErrorMessage` had no `in_progress` case, so the
+browser would have shown *"Could not join (in_progress)."* — and the test that should have
+caught it asserted `not.toBe(reason)`, which the fallback passes trivially because it
+*embeds* the token rather than equalling it. Strengthened to exclude the fallback's exact
+shape, since the obvious stronger form is too strong the other way: *"That game is full."*
+legitimately contains "full".

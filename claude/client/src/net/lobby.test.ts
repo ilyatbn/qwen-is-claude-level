@@ -94,11 +94,16 @@ describe('join codes', () => {
 
 describe('join errors', () => {
   it('maps every server reason to something actionable', () => {
-    for (const r of ['unknown_code', 'full', 'server_full', 'bad_name', 'no_room']) {
+    for (const r of ['unknown_code', 'full', 'server_full', 'bad_name', 'no_room', 'in_progress']) {
       const m = joinErrorMessage(r)
       expect(m.length).toBeGreaterThan(0)
-      // Not just the raw token echoed back at the player.
-      expect(m).not.toBe(r)
+      // **The default branch is the thing to exclude, not the word.**
+      // `not.toBe(r)` passed for it — `Could not join (full).` is not *equal*
+      // to `full` — so a reason with no case of its own showed the player a
+      // wire enum while this test stayed green. And plain `not.toContain(r)` is
+      // too strong the other way: "That game is full." legitimately contains
+      // "full". What identifies the fallback is its parenthesised token.
+      expect(m).not.toContain(`(${r})`)
     }
   })
 

@@ -870,6 +870,10 @@ async fn seat(
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     let Some(name) = sanitise_name(name) else {
+        // Same reason as the `in_progress` detach below: every verb attaches
+        // before reaching here, so a refusal that does not detach leaves the
+        // registry counting a player who was turned away.
+        ctx.detach(socket.id);
         emit(
             &socket,
             "join_error",
@@ -893,7 +897,44 @@ async fn seat(
         .unwrap_or(0)
         .min(u16::MAX as u64) as u16;
 
+    // §E4: once a match has begun, nobody new is seated.
+    //
+    // **Here, not in each verb.** `join`, `create_room`, `join_room` and
+    // `quick_match` all converge on this function, so closing the door once
+    // closes it for all four — T17.03 gated only `quick_match`, and `join_room`
+    // by code walked straight past it into a running match.
+    //
+    // The same `has_started` bit `quick_match` reads, not a second answer to the
+    // same question: quick match skipping a room and this refusing a code have
+    // to agree, and two sources would drift.
+    //
+    // Refused **before** `room.join`, so no seat is allocated and no id is
+    // consumed. A refusal that seats and then apologises is not a refusal.
+    if room.has_started() {
+        // **Detach, or the refusal is only on the wire.** Every verb calls
+        // `ctx.attach` before reaching here, and attach increments the room's
+        // human count — so returning without detaching leaves the registry
+        // holding a player the server just turned away, which then counts
+        // against capacity and keeps the room from being reaped. Found by
+        // counting seats at both ends: the wire said refused and the registry
+        // said 2.
+        ctx.detach(socket.id);
+        emit(
+            &socket,
+            "join_error",
+            &serde_json::json!({ "reason": "in_progress" }),
+        );
+        return;
+    }
     let Some(id) = room.join(name.clone(), skin_id, tombstone_skin_id).await else {
+        // Distinct from `in_progress` above: a full lobby will have room later
+        // and a started match will not, and the client says different things
+        // about them. **Both are bare string literals on the wire**, not
+        // `JoinRejection` variants — that enum carries only `UnknownCode` and
+        // `ServerFull`, and `full` has always been written here directly. Kept
+        // that way rather than promoting one of the two, because expressing one
+        // concept two ways is the drift, not the literal.
+        ctx.detach(socket.id);
         emit(
             &socket,
             "join_error",
@@ -974,6 +1015,24 @@ async fn seat(
     // and `map_init` is sent to everyone seated at the moment the match starts.
     // That is what makes the lobby a place rather than an overlay on a battle
     // already under way.
+    // **Dormant since §E4, and deliberately so.**
+    //
+    // This block and the two below it (`item_spawn`, `tombstone_spawn`) are the
+    // mid-round joiner's catch-up: they are all gated on the room having a
+    // world, and a seating socket can now only seat into a lobby, where
+    // `inspect` answers `None`. So all three take the `None` arm every time and
+    // are unreachable in production.
+    //
+    // They are kept, not deleted. §E4 leaves reconnection open on purpose, and
+    // reconnection needs exactly these three — a player rejoining a match they
+    // were already in arrives to a damaged map, items already on the ground and
+    // graves already standing. `CLAUDE.md` asks that a mechanism wired to
+    // nothing be *stated* rather than discovered; this is the one case where
+    // dormant is the intended state, so it is stated here and in the journal.
+    //
+    // `encode_map_init_at` itself is **not** dormant: `encode_map_init`
+    // delegates to it, `room.rs`'s match-start broadcast calls it, and the
+    // `resync_map` handler serves an already-seated client, which is not a join.
     if let Some(bytes) = map_bytes.as_ref() {
         // Binary: `Bytes` becomes a socket.io attachment.
         // Base64 text, not a binary attachment — see
@@ -1085,6 +1144,9 @@ async fn seat(
         })
         .await
     {
+        // Dormant with the `map_init` catch-up above, for the same reason and
+        // kept for the same one: reconnection needs the items already on the
+        // ground.
         for it in &items {
             emit(&socket, "item_spawn", it);
         }
@@ -1123,6 +1185,11 @@ async fn seat(
         .await
     {
         for t in &stones {
+            // The third of the three dormant catch-ups (see `map_init` above).
+            // This is the block `a_mid_round_joiner_sees_the_graves_that_are_
+            // already_there` was written against: T17.03 re-pointed that test
+            // onto `join_room` by code because that path was still open, and
+            // §E4 has now closed it. Its going red is the design landing.
             emit(&socket, "tombstone_spawn", t);
         }
         tracing::debug!(

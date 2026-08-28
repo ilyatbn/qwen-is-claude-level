@@ -59,7 +59,6 @@ struct Server {
     /// So a test can reach a room created **by a client** — the code-join path,
     /// which is the only one that still admits a player into a live match now
     /// that `quick_match` skips started ones (§E2/§E4).
-    registry: std::sync::Arc<std::sync::Mutex<game_server::registry::RoomRegistry>>,
     room: game_server::room::RoomHandle,
     _shutdown: tokio::sync::oneshot::Sender<()>,
 }
@@ -98,7 +97,6 @@ async fn spawn_server(config: Config) -> Server {
     }
     Server {
         addr,
-        registry: stack.registry.clone(),
         room: started.clone(),
         _shutdown: stack.shutdown,
     }
@@ -726,118 +724,29 @@ async fn a_joiner_never_receives_another_player_s_inventory() {
 
 // -------------------------------------------------------------- tombstones
 
-/// A player joining mid-round sees the graves that are already there (§B8).
-///
-/// **Counted at both ends** (§A39): the server's own tombstone count against the
-/// number of `tombstone_spawn` events the joiner received. Asserting only "the
-/// joiner got some tombstones" passes while the server holds thirty and sends
-/// one, and asserting only "the server has graves" passes while the client sees
-/// none — which is exactly the shape that hid initial world items for three
-/// milestones.
-///
-/// This is the fourth instance of one pattern: state that exists before a client
-/// connects is never announced to it. Initial items, scores, inventory, and now
-/// the graveyard.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_mid_round_joiner_sees_the_graves_that_are_already_there() {
-    let s = spawn_server(test_config()).await;
-    let addr = s.addr;
-
-    // Someone dies before the second player has ever connected.
-    //
-    // The deaths are driven through the existing `Command::Inspect` hook rather
-    // than a new test-only command: it already gives mutable access to the world
-    // between ticks, and a second mechanism for the same thing is how duplicates
-    // get built (§A24).
-    // §E4 closed the path this test used. `quick_match` now skips a started
-    // match, so a plain `join` puts the joiner in a different room entirely —
-    // and the tombstone catch-up, which is what is under test, never fires.
-    //
-    // **`join_room` by code still admits a mid-match joiner**: `by_code` is a
-    // bare lookup and `has_started()` is read only in the quick-match loop. That
-    // is the live path, so the test uses it — ana hosts a private room, starts
-    // it, and bo arrives by code once the graves are on the ground.
-    //
-    // **Expected to break at T17.05.** §E4 closes joins by *phase*, not by verb,
-    // so it will close this path too and this test will lose its subject again.
-    // That is the design landing, not a regression: when it goes red, the
-    // question is whether the tombstone catch-up still has any reachable caller,
-    // and T17.05 owns the reconnection seam §E4 leaves open deliberately.
-    let (first, code) = tokio::task::spawn_blocking(move || {
-        let (c, inbox, rx) = connect(addr, &["welcome", "map_init", "room_created"]);
-        c.emit(
-            "create_room",
-            serde_json::json!({ "name": "ana", "private": true }),
-        )
-        .expect("create_room");
-        wait_for(&rx, "room_created", 15);
-        wait_for(&rx, "welcome", 15);
-        let code = got(&inbox, "room_created")[0]["code"]
-            .as_str()
-            .expect("a private room gets a code")
-            .to_string();
-        c.emit("ready", serde_json::json!({})).expect("ready");
-        c.emit("start_with_bots", serde_json::json!({}))
-            .expect("start");
-        wait_for(&rx, "map_init", 30);
-        (c, code)
-    })
-    .await
-    .expect("ana joined");
-
-    // The room the deaths must land in is ana's, not the harness's default.
-    let room = {
-        let r = s.registry.lock().expect("registry");
-        let id = r.by_code(&code).expect("the code resolves");
-        r.get(id).expect("room").handle.clone()
-    };
-    tokio::time::sleep(Duration::from_millis(400)).await;
-
-    for _ in 0..3 {
-        room.send(game_server::room::Command::Inspect(Box::new(
-            |w: &mut game_core::world::World| {
-                w.set_phase(game_core::world::RoundPhase::Playing);
-                if let Some(p) = w.player_mut(0) {
-                    p.alive = true;
-                    p.iframes_until = 0.0;
-                    p.health = 0.0;
-                }
-            },
-        )));
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-
-    let server_graves = room
-        .inspect(|w| w.tombstones.len())
-        .await
-        .expect("room alive");
-    assert!(
-        server_graves > 0,
-        "the control: nobody died, so nothing is being tested"
-    );
-
-    // Now a second client joins into that round.
-    let seen = tokio::task::spawn_blocking(move || {
-        let (c, inbox, rx) = connect(addr, &["welcome", "map_init", "tombstone_spawn"]);
-        c.emit(
-            "join_room",
-            serde_json::json!({ "name": "bo", "code": code }),
-        )
-        .expect("join_room");
-        wait_for(&rx, "welcome", 15);
-        c.emit("ready", serde_json::json!({})).expect("ready");
-        std::thread::sleep(Duration::from_millis(900));
-        let n = got(&inbox, "tombstone_spawn").len();
-        let _ = c.disconnect();
-        let _ = first.disconnect();
-        n
-    })
-    .await
-    .expect("bo joined");
-
-    assert_eq!(
-        seen, server_graves,
-        "the joiner must be told about every grave the server holds, \
-         got {seen} of {server_graves}"
-    );
-}
+// -------------------------------------------------- the mid-round joiner, gone
+//
+// `a_mid_round_joiner_sees_the_graves_that_are_already_there` lived here until
+// T17.05, and §E4 removed its subject rather than its implementation.
+//
+// It was written for §B8 — a player arriving mid-round is told about the graves
+// already standing — and it counted at both ends, which is why it was worth
+// keeping through two re-pointings. T17.03 moved it from `quick_match` onto
+// `join_room` by code, because that path was still open. T17.05 closed joins by
+// **phase**, so every path is closed now and there is no production route that
+// seats a client into a running match.
+//
+// **The honest answer to the question its note posed: the tombstone catch-up has
+// no reachable caller.** Neither do the other two beside it — `map_init` and
+// `item_spawn` in `session.rs`'s seat path are gated on the room having a world,
+// and a seating socket can only seat into a lobby. All three are declared
+// dormant at their sites and kept, because §E4 leaves reconnection open on
+// purpose and reconnection needs exactly them.
+//
+// It is **deleted rather than re-pointed**: the only way to reach the catch-up
+// now is to construct a path the server refuses to create, and a test that
+// exercises a route production cannot take asserts nothing about production.
+// Two assertions went with it, which is the whole of `integration`'s 21 -> 19.
+//
+// **When reconnection lands, this test is the one to write again** — the same
+// both-ends shape, against a client rejoining a match it was already seated in.
