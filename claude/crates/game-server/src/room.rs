@@ -22,6 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, MissedTickBehavior};
 
 use crate::config::Config;
+use crate::replay::ReplayCommand;
 use crate::session::SessionMap;
 
 /// How many commands one tick will drain before getting on with the simulation.
@@ -44,7 +45,19 @@ pub enum Command {
         tombstone_skin_id: u16,
         reply: oneshot::Sender<Option<PlayerId>>,
     },
-    Ready(PlayerId),
+    /// Ready, or no longer ready (§E3).
+    ///
+    /// A toggle, not a latch: a private lobby starts when every seated human is
+    /// ready, so un-readying has to be able to hold the match back. The `bool`
+    /// matches `VoteRestart`, the codebase's other yes/no command.
+    ///
+    /// **The serialised form does not carry the bool.** `ReplayCommand::Ready`
+    /// is tag 2 followed by one byte, and every recorded file written before
+    /// today says so; widening it would let an old file pass the version check
+    /// and then read one byte short for the rest of the round. Un-readying is
+    /// `ReplayCommand::Unready`, a new tag, which old files simply never
+    /// contain. Same reasoning that kept `min_players_to_start`'s header slot.
+    Ready(PlayerId, bool),
     Input(PlayerId, Vec<Input>),
     UseItem(PlayerId, u8),
     SelectSlot(PlayerId, u8),
@@ -119,7 +132,7 @@ impl std::fmt::Debug for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Command::Join { name, skin_id, .. } => write!(f, "Join({name:?}, skin {skin_id})"),
-            Command::Ready(id) => write!(f, "Ready({id})"),
+            Command::Ready(id, on) => write!(f, "Ready({id}, {on})"),
             Command::Input(id, v) => write!(f, "Input({id}, {} inputs)", v.len()),
             Command::UseItem(id, s) => write!(f, "UseItem({id}, slot {s})"),
             Command::SelectSlot(id, s) => write!(f, "SelectSlot({id}, slot {s})"),
@@ -447,7 +460,22 @@ struct Seat {
     /// disagree about (CLAUDE.md: "derive, do not add a fourth flag" cuts both
     /// ways — this is the flag that removes a disagreement, not one that adds).
     bot: bool,
+    /// Handshake finished, and therefore simulated.
+    ///
+    /// Set once when `ready` first arrives and **never cleared**: it is what
+    /// `sweep_unready` and `ready_ids` read, so clearing it would drop a player
+    /// from the simulation and then from the room.
     ready: bool,
+    /// §E3's consent: "I agree to start the game I am being shown."
+    ///
+    /// **A second field, because `ready` already meant two things and this would
+    /// have been a third.** A private lobby starts when every human consents, so
+    /// consent has to be revocable — and revoking `ready` would make the player
+    /// eligible for `sweep_unready` thirty seconds later, which is precisely the
+    /// timeout §E3 says a private lobby does not have. `CLAUDE.md`: a field that
+    /// means two things is a bug waiting for the first caller that wants one of
+    /// them, and T17.04 is that caller.
+    consent: bool,
     joined_at: Instant,
     last_seq: u32,
     accepted_this_tick: u8,
@@ -492,6 +520,10 @@ impl Seats {
     fn mark_ready(&mut self, id: PlayerId) {
         if let Some(s) = self.seats.iter_mut().find(|s| s.id == id) {
             s.ready = true;
+            // A bot is always willing. §E3's gate filters bots out, so this
+            // changes nothing today — it is set so that the day the filter is
+            // relaxed, a bot does not silently hold a lobby closed forever.
+            s.consent = true;
         }
     }
 
@@ -520,6 +552,7 @@ impl Seats {
             tombstone_skin_id: 0,
             bot: false,
             ready: false,
+            consent: false,
             joined_at: Instant::now(),
             last_seq: 0,
             accepted_this_tick: 0,
@@ -662,6 +695,65 @@ fn mix_seed(base: u64, room_id: u32) -> u64 {
     x ^= x >> 33;
     x = x.wrapping_mul(0xC4CE_B9FE_1A85_EC53);
     x ^ (x >> 33)
+}
+
+/// A recorded command, turned back into one the room can apply.
+///
+/// **In the library, not in the `replay` binary, because a test cannot import a
+/// binary** — so `tests/replay_run.rs` grew a second copy, and that copy had
+/// already drifted: it was missing `SetScale` the moment the tag existed, which
+/// is how a replay test could pass while the runner it stands in for diverged.
+/// One implementation, two callers (`CLAUDE.md`).
+pub fn to_command(c: &ReplayCommand) -> Command {
+    match c {
+        ReplayCommand::Join { name, skin_id } => {
+            // The reply goes nowhere: the runner has no socket waiting on an id,
+            // and seat allocation is deterministic from the command order, so the
+            // replayed room assigns the same id the live one did.
+            let (reply, _rx) = tokio::sync::oneshot::channel();
+            Command::Join {
+                name: name.clone(),
+                skin_id: *skin_id,
+                // Not recorded, and not needed: a grave's skin is cosmetic and
+                // is excluded from `state_hash` for the same reason
+                // `PlayerState.skin_id` is. A replay reproduces the simulation,
+                // not the palette.
+                tombstone_skin_id: 0,
+                reply,
+            }
+        }
+        ReplayCommand::Ready(id) => Command::Ready(*id, true),
+        ReplayCommand::Unready(id) => Command::Ready(*id, false),
+        // The reply goes nowhere: a replay has no socket to refuse to. The
+        // room's own owner check still runs, so a recorded change made by
+        // somebody who was the host then is applied now for the same reason.
+        ReplayCommand::SetScale(id, scale) => Command::SetScale {
+            by: *id,
+            scale: *scale,
+            reply: tokio::sync::oneshot::channel().0,
+        },
+        ReplayCommand::Input(id, v) => Command::Input(*id, v.clone()),
+        ReplayCommand::UseItem(id, s) => Command::UseItem(*id, *s),
+        ReplayCommand::SelectSlot(id, s) => Command::SelectSlot(*id, *s),
+        ReplayCommand::UseHeal(id) => Command::UseHeal(*id),
+        ReplayCommand::UseBatteryPack(id) => Command::UseBatteryPack(*id),
+        ReplayCommand::QuickThrow(id) => Command::QuickThrow(*id),
+        ReplayCommand::MoveItem(id, f, t) => Command::MoveItem(*id, *f, *t),
+        ReplayCommand::Fire(id) => Command::Fire(*id),
+        ReplayCommand::ToggleFlashlight(id) => Command::ToggleFlashlight(*id),
+        ReplayCommand::VoteRestart(id, v) => Command::VoteRestart(*id, *v),
+        // A sweep and a leave have the same effect on the world; the distinction
+        // is only in why it happened, which the recorder keeps for the reader.
+        ReplayCommand::Leave(id) | ReplayCommand::DropUnready(id) => Command::Leave(*id),
+        // §C18. Named rather than folded into a catch-all: a `_ =>` here would
+        // silently drop the command that *starts the round*, and the replay
+        // would sit in an empty lobby and diverge on tick one.
+        ReplayCommand::StartWithBots(id) => Command::StartWithBots(*id),
+        // Unreachable: filtered out before this is called, because a checkpoint
+        // is an observation rather than an input. Mapping it to a no-op command
+        // would be a quiet lie about what the file contains.
+        ReplayCommand::Checkpoint { .. } => unreachable!("checkpoints are not commands"),
+    }
 }
 
 impl Room {
@@ -886,7 +978,10 @@ impl Room {
                     seat: s.id,
                     name: s.name.clone(),
                     skin_id: s.skin_id,
-                    ready: s.ready,
+                    // The consent flag, not the handshake latch: "ready" on
+                    // screen is the tick-box a player pressed, and §E3 starts
+                    // the match on it.
+                    ready: s.consent,
                     bot: s.bot,
                 })
                 .collect(),
@@ -1154,10 +1249,18 @@ impl Room {
                 }
                 let _ = reply.send(id);
             }
-            Command::Ready(id) => {
+            Command::Ready(id, on) => {
                 if let Some(s) = self.seats.get_mut(id) {
+                    // The latch only ever goes up: this socket has finished its
+                    // handshake and stays simulated whether or not it later
+                    // withdraws consent.
                     s.ready = true;
-                    self.note(R::Ready(id));
+                    s.consent = on;
+                    // Tag 2 means "ready"; un-readying is its own tag, so the
+                    // recorded stream stays readable by anything that could
+                    // read it yesterday. A replay that dropped the un-ready
+                    // would start a private match early and diverge on tick 1.
+                    self.note(if on { R::Ready(id) } else { R::Unready(id) });
                     self.note_lobby_change();
                 }
             }
@@ -1310,7 +1413,13 @@ impl Room {
             Command::LobbyRead { reply } => {
                 let _ = reply.send(self.lobby_state());
             }
-            // Not recorded: a settings change happens before the round exists.
+            // **Recorded**, and the reason is a divergence this task created.
+            // The replay header writes `scale` when the room is *constructed*
+            // (`replay.rs`), and T17.01 moved world generation to match *start*
+            // — so between those two moments the host can now change the map and
+            // the header stops describing what was built. The runner applies
+            // commands into a real `Room`, so replaying the change is what makes
+            // the regenerated map the one that was played.
             Command::SetScale { by, scale, reply } => {
                 let answer = if self.world.is_some() {
                     Err("the match has already started")
@@ -1320,12 +1429,13 @@ impl Room {
                     let mut config = (*self.config).clone();
                     config.map_scale = scale;
                     self.config = Arc::new(config);
+                    self.note(R::SetScale(by, scale));
                     // §E3: everyone agreed to the game they were shown, so a
                     // settings change clears every ready flag — including the
                     // changer's. T17.04 asserts that; the clearing lives here
                     // because this is the one place a setting moves.
                     for st in self.seats.seats.iter_mut() {
-                        st.ready = false;
+                        st.consent = false;
                     }
                     self.note_lobby_change();
                     Ok(())
@@ -1600,8 +1710,28 @@ impl Room {
             // is coming has arrived. `MIN_PLAYERS_TO_START` and
             // `LOBBY_COUNTDOWN` are retired: one human plus four bots after ten
             // seconds is a game, and two humans waiting forever is not.
-            let full = humans >= game_core::constants::LOBBY_CAPACITY;
-            if outcome == crate::round::RoundOutcome::Start || full || timed_out {
+            // **Both fill and timeout are public rules** (§E2). A private
+            // lobby has neither: §E3 gives it one rule of its own, and a
+            // private lobby that filled to five would otherwise start on top of
+            // players who had not readied — the exact consent the ready gate
+            // exists to ask for.
+            let full = !self.private && humans >= game_core::constants::LOBBY_CAPACITY;
+
+            // §E3: a private lobby starts when every seated human is ready.
+            //
+            // `all()` over an empty iterator is `true`, so the human count is
+            // not a nicety — without it an empty private lobby starts itself
+            // the tick it is created, with nobody in it.
+            let everyone_ready = self.private
+                && humans > 0
+                && self
+                    .seats
+                    .seats
+                    .iter()
+                    .filter(|s| !s.bot)
+                    .all(|s| s.consent);
+
+            if outcome == crate::round::RoundOutcome::Start || full || timed_out || everyone_ready {
                 // Not `begin_round` — there is nothing to begin yet. The world
                 // has to be built first, and that is 0.3–1.1 s of CPU which
                 // cannot happen inside a 16.7 ms tick. `run` picks this up.
@@ -2534,7 +2664,7 @@ mod tests {
         room.apply(Command::SelectSlot(200, 200));
         room.apply(Command::Fire(200));
         room.apply(Command::ToggleFlashlight(200));
-        room.apply(Command::Ready(200));
+        room.apply(Command::Ready(200, true));
         room.apply(Command::Leave(200));
         let _ = room.tick_inline(SIM_DT);
     }
@@ -2656,7 +2786,7 @@ mod tests {
             tombstone_skin_id: 0,
             reply,
         });
-        room.apply(Command::Ready(0));
+        room.apply(Command::Ready(0, true));
         assert!(room.sweep_unready(Duration::from_millis(0)).is_empty());
     }
 }

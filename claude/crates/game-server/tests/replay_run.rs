@@ -75,7 +75,7 @@ fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
         reply: tx,
     });
     let id = rx.blocking_recv().ok().flatten().expect("seat");
-    room.apply_for_test(Command::Ready(id));
+    room.apply_for_test(Command::Ready(id, true));
     // §C18: a room is born in `Lobby`, and §E2 would not start this one for
     // `LOBBY_BOT_TIMEOUT`. Without this the fixture records 1400 ticks of a
     // room that has not started — and, because `tick` only advanced inside `step`,
@@ -140,31 +140,14 @@ fn resimulate(file: &replay::Replay, until: u32) -> Room {
                 break;
             }
             next += 1;
-            let c = match cmd {
-                ReplayCommand::Checkpoint { .. } => continue,
-                ReplayCommand::Join { name, skin_id } => {
-                    let (reply, _rx) = tokio::sync::oneshot::channel();
-                    Command::Join {
-                        name: name.clone(),
-                        skin_id: *skin_id,
-                        tombstone_skin_id: 0,
-                        reply,
-                    }
-                }
-                ReplayCommand::Ready(id) => Command::Ready(*id),
-                ReplayCommand::Input(id, v) => Command::Input(*id, v.clone()),
-                ReplayCommand::UseItem(id, s) => Command::UseItem(*id, *s),
-                ReplayCommand::SelectSlot(id, s) => Command::SelectSlot(*id, *s),
-                ReplayCommand::Fire(id) => Command::Fire(*id),
-                ReplayCommand::ToggleFlashlight(id) => Command::ToggleFlashlight(*id),
-                ReplayCommand::VoteRestart(id, v) => Command::VoteRestart(*id, *v),
-                ReplayCommand::Leave(id) | ReplayCommand::DropUnready(id) => Command::Leave(*id),
-                ReplayCommand::StartWithBots(id) => Command::StartWithBots(*id),
-                ReplayCommand::UseHeal(id) => Command::UseHeal(*id),
-                ReplayCommand::UseBatteryPack(id) => Command::UseBatteryPack(*id),
-                ReplayCommand::QuickThrow(id) => Command::QuickThrow(*id),
-                ReplayCommand::MoveItem(id, f, t) => Command::MoveItem(*id, *f, *t),
-            };
+            // One `to_command`, shared with the runner binary. This used to be
+            // a second copy, and it had already drifted: it never learned about
+            // `SetScale`, so this test would have replayed a round the real
+            // runner replays differently.
+            if matches!(cmd, ReplayCommand::Checkpoint { .. }) {
+                continue;
+            }
+            let c = game_server::room::to_command(cmd);
             room.apply_for_test(c);
         }
         room.tick_inline(SIM_DT);
@@ -253,7 +236,7 @@ fn empty_ticks_are_simulated_not_skipped() {
         reply: tx,
     });
     let id = rx.blocking_recv().ok().flatten().expect("seat");
-    room.apply_for_test(Command::Ready(id));
+    room.apply_for_test(Command::Ready(id, true));
     // §C18: a room is born in `Lobby`, and §E2 would not start this one for
     // `LOBBY_BOT_TIMEOUT`. Without this the fixture records 1400 ticks of a
     // room that has not started — and, because `tick` only advanced inside `step`,
@@ -753,5 +736,76 @@ fn sigterm_leaves_a_verifiable_file_and_sigkill_does_not() {
     assert_eq!(
         kill.header.seed, 31337,
         "a killed round must still say which map it was"
+    );
+}
+
+/// A settings change is recorded, so a replay regenerates the map that was played.
+///
+/// **The divergence this guards is one T17.04 created.** The header writes
+/// `scale` when the room is *constructed*; T17.01 moved world generation to match
+/// *start*; and §E3 lets the host change the map size in between. So the header
+/// says Small, the live world is Large, and a replay that trusted the header
+/// would rebuild the wrong map and diverge on the first tick.
+///
+/// The assertion is on the **map's own dimensions**, not on the recorded command:
+/// a body containing `SetScale` proves it was written, not that replaying it
+/// changes anything.
+#[test]
+fn a_recorded_settings_change_rebuilds_the_map_that_was_played() {
+    let dir = Scratch::new("setscale");
+    let mut room = Room::new(cfg());
+    room.start_recording(dir.path(), "000000000002");
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    room.apply_for_test(Command::Join {
+        name: "ana".into(),
+        skin_id: 0,
+        tombstone_skin_id: 0,
+        reply: tx,
+    });
+    let id = rx.blocking_recv().ok().flatten().expect("seat");
+    room.apply_for_test(Command::Ready(id, true));
+
+    // The host changes the map before the match begins — the whole point of
+    // building the world at match start.
+    let (reply, ack) = tokio::sync::oneshot::channel();
+    room.apply_for_test(Command::SetScale {
+        by: id,
+        scale: MapScale::Large,
+        reply,
+    });
+    ack.blocking_recv()
+        .expect("the room answered")
+        .expect("the host may change the map size");
+
+    room.apply_for_test(Command::StartWithBots(id));
+    for _ in 0..10 {
+        room.tick_inline(SIM_DT);
+    }
+    let played = {
+        let w = room.world_for_test();
+        (w.map.mask.w, w.map.mask.h)
+    };
+    room.finish_recording();
+
+    // Control: the header still says what the room was *created* with, so a
+    // replayer that trusted it would build the wrong map. Without this the
+    // assertion below passes for a header that happened to say Large already.
+    let file = replay::decode(&std::fs::read(dir.only_file()).expect("read")).expect("decode");
+    assert_eq!(
+        file.header.scale,
+        MapScale::Small,
+        "the header already recorded the new scale, so this test proves nothing"
+    );
+
+    let replayed = {
+        let mut r = resimulate(&file, 10);
+        let w = r.world_for_test();
+        (w.map.mask.w, w.map.mask.h)
+    };
+    assert_eq!(
+        replayed, played,
+        "the replay rebuilt a different map than the round played: the settings \
+         change was not applied"
     );
 }

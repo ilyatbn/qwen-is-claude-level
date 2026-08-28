@@ -554,18 +554,35 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
 
             {
                 let ctx = ctx.clone();
-                socket.on("ready", move |socket: SocketRef| {
-                    let ctx = ctx.clone();
-                    async move {
-                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
-                            return;
-                        };
-                        if let Some(id) = sessions.player_of(socket.id) {
-                            sessions.mark_ready(socket.id);
-                            room.send(Command::Ready(id));
+                socket.on(
+                    "ready",
+                    move |socket: SocketRef, data: Data<serde_json::Value>| {
+                        let ctx = ctx.clone();
+                        async move {
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
+                            // §E6 is `ready { on: bool }`, but `ready` has been
+                            // payloadless since M6 and the e2e checks still emit
+                            // it bare. Absent means true: the only client that
+                            // sends nothing is one that means "I am ready", and
+                            // reading a missing field as `false` would leave
+                            // every one of them sitting in a lobby forever.
+                            let on = data
+                                .0
+                                .get("on")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(true);
+                            if let Some(id) = sessions.player_of(socket.id) {
+                                // `mark_ready` is the join-window latch, not the
+                                // lobby toggle: it says this socket finished its
+                                // handshake, which un-readying does not undo.
+                                sessions.mark_ready(socket.id);
+                                room.send(Command::Ready(id, on));
+                            }
                         }
-                    }
-                });
+                    },
+                );
             }
 
             // ----------------------------------------------------------- input

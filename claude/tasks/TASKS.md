@@ -365,7 +365,7 @@ match starts, which is why a private lobby can change its map size at all.
 - [x] [T17.01](M17/T17.01-lobby-without-a-world.md) — A lobby is a room without a world **(v6)**
 - [x] [T17.02](M17/T17.02-lobby-state-wire.md) — The lobby on the wire **(v6)**
 - [x] [T17.03](M17/T17.03-public-lobbies.md) — Public lobbies: fill to five, or bots after ten seconds **(v6)**
-- [ ] [T17.04](M17/T17.04-private-lobbies.md) — Private lobbies: a code, settings and ready **(v6)**
+- [x] [T17.04](M17/T17.04-private-lobbies.md) — Private lobbies: a code, settings and ready **(v6)**
 - [ ] [T17.05](M17/T17.05-closed-match.md) — A live match is closed **(v6)**
 - [ ] [T17.06](M17/T17.06-reaper-counts-humans.md) — Lobbies and matches die when their humans leave **(v6)**
 - [ ] [T17.07](M17/T17.07-lobby-screen.md) — The lobby screen holds the socket **(v6)**

@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use game_core::constants::SIM_DT;
 use game_server::replay::{self, Replay, ReplayCommand};
-use game_server::room::{Command, Room};
+use game_server::room::{to_command, Room};
 
 /// Steps that may advance nothing before the runner calls it a stall.
 ///
@@ -361,49 +361,6 @@ fn dump(room: &Room, tick: u32) -> Result<(), Box<dyn std::error::Error>> {
              `cargo build -p game-server --bin replay --features dump-png`"
                 .into(),
         )
-    }
-}
-
-fn to_command(c: &ReplayCommand) -> Command {
-    match c {
-        ReplayCommand::Join { name, skin_id } => {
-            // The reply goes nowhere: the runner has no socket waiting on an id,
-            // and seat allocation is deterministic from the command order, so the
-            // replayed room assigns the same id the live one did.
-            let (reply, _rx) = tokio::sync::oneshot::channel();
-            Command::Join {
-                name: name.clone(),
-                skin_id: *skin_id,
-                // Not recorded, and not needed: a grave's skin is cosmetic and
-                // is excluded from `state_hash` for the same reason
-                // `PlayerState.skin_id` is. A replay reproduces the simulation,
-                // not the palette.
-                tombstone_skin_id: 0,
-                reply,
-            }
-        }
-        ReplayCommand::Ready(id) => Command::Ready(*id),
-        ReplayCommand::Input(id, v) => Command::Input(*id, v.clone()),
-        ReplayCommand::UseItem(id, s) => Command::UseItem(*id, *s),
-        ReplayCommand::SelectSlot(id, s) => Command::SelectSlot(*id, *s),
-        ReplayCommand::UseHeal(id) => Command::UseHeal(*id),
-        ReplayCommand::UseBatteryPack(id) => Command::UseBatteryPack(*id),
-        ReplayCommand::QuickThrow(id) => Command::QuickThrow(*id),
-        ReplayCommand::MoveItem(id, f, t) => Command::MoveItem(*id, *f, *t),
-        ReplayCommand::Fire(id) => Command::Fire(*id),
-        ReplayCommand::ToggleFlashlight(id) => Command::ToggleFlashlight(*id),
-        ReplayCommand::VoteRestart(id, v) => Command::VoteRestart(*id, *v),
-        // A sweep and a leave have the same effect on the world; the distinction
-        // is only in why it happened, which the recorder keeps for the reader.
-        ReplayCommand::Leave(id) | ReplayCommand::DropUnready(id) => Command::Leave(*id),
-        // §C18. Named rather than folded into a catch-all: a `_ =>` here would
-        // silently drop the command that *starts the round*, and the replay
-        // would sit in an empty lobby and diverge on tick one.
-        ReplayCommand::StartWithBots(id) => Command::StartWithBots(*id),
-        // Unreachable: filtered out before this is called, because a checkpoint
-        // is an observation rather than an input. Mapping it to a no-op command
-        // would be a quiet lie about what the file contains.
-        ReplayCommand::Checkpoint { .. } => unreachable!("checkpoints are not commands"),
     }
 }
 

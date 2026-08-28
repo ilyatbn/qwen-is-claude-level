@@ -71,6 +71,26 @@ pub enum ReplayCommand {
         skin_id: u16,
     },
     Ready(PlayerId),
+    /// A player who was ready and is not any more (§E3).
+    ///
+    /// **A new tag rather than a bool on `Ready`.** Tag 2 is one byte of player
+    /// id in every file already written; widening it would let those files pass
+    /// the version check and then read the rest of the round one byte short.
+    /// An old file never contains this tag, so adding one costs nothing.
+    ///
+    /// It has to be recorded at all because a private lobby starts when every
+    /// human is ready: a replay that dropped the un-ready would start the match
+    /// early and diverge on the first tick.
+    Unready(PlayerId),
+    /// The host changed the map size before the match began (§E3).
+    ///
+    /// **The header's `scale` is written when the room is constructed, and the
+    /// world is now built at match start** — so between those two moments the
+    /// host can change the map and the header no longer describes what was
+    /// generated. Recording the change is what closes that: the replay runner
+    /// applies commands into a real `Room`, so the config it generates from is
+    /// the one the live room had.
+    SetScale(PlayerId, MapScale),
     /// Already filtered: duplicates and stale sequences are dropped before they
     /// reach here, so a replay applies exactly the input the live round did.
     Input(PlayerId, Vec<Input>),
@@ -132,6 +152,8 @@ impl ReplayCommand {
             ReplayCommand::UseBatteryPack(_) => 14,
             ReplayCommand::QuickThrow(_) => 15,
             ReplayCommand::MoveItem(..) => 16,
+            ReplayCommand::Unready(_) => 17,
+            ReplayCommand::SetScale(..) => 18,
         }
     }
 }
@@ -386,6 +408,7 @@ fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayErro
             put_u16(w, *skin_id)?;
         }
         ReplayCommand::Ready(id)
+        | ReplayCommand::Unready(id)
         | ReplayCommand::Fire(id)
         | ReplayCommand::ToggleFlashlight(id)
         | ReplayCommand::Leave(id)
@@ -394,6 +417,10 @@ fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayErro
         | ReplayCommand::UseHeal(id)
         | ReplayCommand::UseBatteryPack(id)
         | ReplayCommand::QuickThrow(id) => w.write_all(&[*id])?,
+        ReplayCommand::SetScale(id, scale) => {
+            w.write_all(&[*id])?;
+            w.write_all(&[scale_byte(*scale)])?;
+        }
         ReplayCommand::Input(id, inputs) => {
             w.write_all(&[*id])?;
             let n = inputs.len().min(255);
@@ -422,6 +449,20 @@ fn scale_byte(s: MapScale) -> u8 {
         MapScale::Small => 0,
         MapScale::Medium => 1,
         MapScale::Large => 2,
+    }
+}
+
+/// The inverse, shared by the header and `SetScale`.
+///
+/// One function because there are now two places a scale byte is read, and two
+/// copies of a wire mapping is the drift `CLAUDE.md` names: the next scale added
+/// would land in one of them.
+fn scale_from_byte(b: u8) -> Result<MapScale, ReplayError> {
+    match b {
+        0 => Ok(MapScale::Small),
+        1 => Ok(MapScale::Medium),
+        2 => Ok(MapScale::Large),
+        other => Err(ReplayError::BadScale(other)),
     }
 }
 
@@ -519,12 +560,7 @@ pub fn decode(bytes: &[u8]) -> Result<Replay, ReplayError> {
         version,
         seed: c.u64()?,
         buried_secret: c.u64()?,
-        scale: match c.u8()? {
-            0 => MapScale::Small,
-            1 => MapScale::Medium,
-            2 => MapScale::Large,
-            other => return Err(ReplayError::BadScale(other)),
-        },
+        scale: scale_from_byte(c.u8()?)?,
         generator: {
             let b = c.u8()?;
             match MapGenerator::from_u8(b) {
@@ -592,6 +628,8 @@ fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
             }
         }
         2 => ReplayCommand::Ready(c.u8()?),
+        17 => ReplayCommand::Unready(c.u8()?),
+        18 => ReplayCommand::SetScale(c.u8()?, scale_from_byte(c.u8()?)?),
         3 => {
             let id = c.u8()?;
             let n = c.u8()? as usize;
@@ -684,7 +722,70 @@ mod tests {
                 tick: 600,
                 hash: [7u8; 32],
             },
+            ReplayCommand::StartWithBots(0),
+            ReplayCommand::UseHeal(1),
+            ReplayCommand::UseBatteryPack(1),
+            ReplayCommand::QuickThrow(2),
+            ReplayCommand::MoveItem(2, 3, 4),
+            ReplayCommand::Unready(0),
+            ReplayCommand::SetScale(0, MapScale::Large),
         ]
+    }
+
+    /// Forces `every_command` to stay complete.
+    ///
+    /// It was not: tags 12–16 (`StartWithBots` through `MoveItem`) were added
+    /// without being added here, so five commands had never been round-tripped
+    /// and a bad encoder for any of them would have shipped green. A list whose
+    /// name is "every" and which is not is worse than no list, because it is the
+    /// one a reader trusts.
+    ///
+    /// This is a `match` rather than a count so the compiler names the missing
+    /// variant instead of a test reporting a number.
+    #[test]
+    fn every_command_really_is_every_command() {
+        fn assert_listed(c: &ReplayCommand) {
+            match c {
+                ReplayCommand::Join { .. }
+                | ReplayCommand::Ready(_)
+                | ReplayCommand::Unready(_)
+                | ReplayCommand::SetScale(..)
+                | ReplayCommand::Input(..)
+                | ReplayCommand::UseItem(..)
+                | ReplayCommand::SelectSlot(..)
+                | ReplayCommand::Fire(_)
+                | ReplayCommand::ToggleFlashlight(_)
+                | ReplayCommand::VoteRestart(..)
+                | ReplayCommand::Leave(_)
+                | ReplayCommand::DropUnready(_)
+                | ReplayCommand::Checkpoint { .. }
+                | ReplayCommand::StartWithBots(_)
+                | ReplayCommand::UseHeal(_)
+                | ReplayCommand::UseBatteryPack(_)
+                | ReplayCommand::QuickThrow(_)
+                | ReplayCommand::MoveItem(..) => {}
+            }
+        }
+        let all = every_command();
+        for c in &all {
+            assert_listed(c);
+        }
+
+        // **The count sits here, next to the match, on purpose.** The two guard
+        // different things: the `match` guards the *enum*, and this guards
+        // `every_command`'s *coverage* of it. Adding a 19th variant breaks the
+        // build above — but whoever fixes that compile error can still forget to
+        // extend `every_command`, and a count living in another test would then
+        // read 18 against a returned 18 and pass. Sitting here, the number is in
+        // front of the person holding the error.
+        let tags: std::collections::BTreeSet<u8> = all.iter().map(|c| c.tag()).collect();
+        assert_eq!(
+            tags.len(),
+            18,
+            "`every_command` returns {} distinct tags, not 18 — a variant was \
+             added to the match above without being added to the list: {tags:?}",
+            tags.len()
+        );
     }
 
     fn encode_round(h: &ReplayHeader, body: &[(u32, ReplayCommand)]) -> Vec<u8> {
@@ -889,10 +990,18 @@ mod tests {
                 .filter(|c| seen_discriminants.insert(std::mem::discriminant(c)))
                 .collect()
         };
-        assert_eq!(
-            one_of_each.len(),
-            11,
-            "every_command() must cover all 10 variants, or this proves less than it claims"
+        // Coverage is asserted by `every_command_really_is_every_command`, which
+        // holds both the exhaustive match and the count. This test owns one
+        // thing: that no two variants share a tag.
+        //
+        // The count used to live here and had gone stale — it said 11 while the
+        // enum had grown to 16, and its message still said 10, so it passed
+        // while the thing it guarded moved underneath it. Splitting the two
+        // claims is what stops that recurring: a number far from what it counts
+        // is a number nobody updates.
+        assert!(
+            !one_of_each.is_empty(),
+            "every_command() returned nothing, so uniqueness below is vacuous"
         );
         let mut seen = std::collections::BTreeSet::new();
         for c in one_of_each {

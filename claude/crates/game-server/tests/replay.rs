@@ -104,7 +104,7 @@ fn record_replay_off_writes_nothing_at_all() {
     let mut room = Room::new(cfg(false));
     room.start_recording(s.path(), "000000000001");
     let id = seat(&mut room, "ana");
-    room.apply_for_test(Command::Ready(id));
+    room.apply_for_test(Command::Ready(id, true));
     room.apply_for_test(Command::Fire(id));
     room.finish_recording();
 
@@ -132,7 +132,7 @@ fn commands_are_recorded_and_the_file_grows() {
     room.start_recording(s.path(), "000000000001");
 
     let id = seat(&mut room, "ana");
-    room.apply_for_test(Command::Ready(id));
+    room.apply_for_test(Command::Ready(id, true));
     for seq in 1..=20 {
         room.apply_for_test(Command::Input(id, vec![Input::new(seq, button::RIGHT, 0)]));
         room.tick_once(SIM_DT);
@@ -160,7 +160,7 @@ fn rejected_input_is_not_recorded() {
     let mut room = Room::new(cfg(true));
     room.start_recording(s.path(), "000000000001");
     let id = seat(&mut room, "ana");
-    room.apply_for_test(Command::Ready(id));
+    room.apply_for_test(Command::Ready(id, true));
 
     // seq 5 accepted, then 3 and 5 again — both stale, both must vanish.
     room.apply_for_test(Command::Input(id, vec![Input::new(5, button::RIGHT, 0)]));
@@ -224,7 +224,7 @@ fn finish_writes_a_footer_with_the_world_hash_and_scores() {
     let w = room.generate_world();
     room.install_world(w);
     let id = seat(&mut room, "ana");
-    room.apply_for_test(Command::Ready(id));
+    room.apply_for_test(Command::Ready(id, true));
     for _ in 0..30 {
         room.tick_once(SIM_DT);
     }
@@ -268,7 +268,7 @@ fn a_file_truncated_before_its_footer_still_reads_as_a_replay() {
     let mut room = Room::new(cfg(true));
     room.start_recording(s.path(), "000000000001");
     let id = seat(&mut room, "ana");
-    room.apply_for_test(Command::Ready(id));
+    room.apply_for_test(Command::Ready(id, true));
     for seq in 1..=40 {
         room.apply_for_test(Command::Input(id, vec![Input::new(seq, button::RIGHT, 0)]));
         room.tick_once(SIM_DT);
@@ -319,7 +319,7 @@ fn a_four_minute_six_player_round_stays_under_the_size_bound() {
 
     let ids: Vec<u8> = (0..6).map(|i| seat(&mut room, &format!("p{i}"))).collect();
     for id in &ids {
-        room.apply_for_test(Command::Ready(*id));
+        room.apply_for_test(Command::Ready(*id, true));
     }
     // 240 s at 60 Hz, every player sending an input every tick — the worst case
     // the format has to hold, not a typical one.
@@ -358,7 +358,7 @@ fn recording_costs_under_a_tenth_of_a_millisecond_per_tick() {
     let mut room = Room::new(cfg(true));
     room.start_recording(s.path(), "000000000001");
     let id = seat(&mut room, "ana");
-    room.apply_for_test(Command::Ready(id));
+    room.apply_for_test(Command::Ready(id, true));
 
     let start = std::time::Instant::now();
     for seq in 1..=1000 {

@@ -232,8 +232,8 @@ fn changing_the_settings_clears_everyone_s_ready() {
     let mut room = Room::new(cfg());
     let ana = seat(&mut room, "ana");
     let ben = seat(&mut room, "ben");
-    room.apply_for_test(Command::Ready(ana));
-    room.apply_for_test(Command::Ready(ben));
+    room.apply_for_test(Command::Ready(ana, true));
+    room.apply_for_test(Command::Ready(ben, true));
     assert!(
         room.lobby_state().players.iter().all(|p| p.ready),
         "control: both were ready before the change"
@@ -281,7 +281,7 @@ fn a_match_stops_producing_lobby_updates() {
     room.tick_inline(SIM_DT);
     assert!(room.world().is_some(), "control: the match started");
 
-    room.apply_for_test(Command::Ready(ana));
+    room.apply_for_test(Command::Ready(ana, true));
     assert!(
         room.take_lobby_update().is_none(),
         "a running match broadcast a lobby"

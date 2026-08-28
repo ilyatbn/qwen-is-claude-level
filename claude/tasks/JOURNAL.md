@@ -4576,3 +4576,37 @@ across five files**, all the same shape: a harness that started its room before 
 clients connected, so every client was skipped into a different lobby while the test
 inspected the original. That is §E4 arriving two tasks early, and it is the right
 breakage.
+
+## T17.04 — Private lobbies: a code, settings and ready (v6)
+
+A private lobby has neither public rule: no timeout, and no fill-start, because five
+people who have not agreed to play are still five people who have not agreed to play. It
+starts when every seated human consents — and `all()` over an empty iterator is `true`,
+so the human count is what stops an empty lobby starting itself.
+
+**`Seat.ready` meant three things**: handshake-complete, simulated, and now consent. And
+`sweep_unready` reads it — so un-readying would have armed a 30-second eviction from a
+lobby §E3 says has no timeout. Consent is its own field; `ready` stays a latch that only
+goes up. **That split was carrying no assertion at all** — collapsing the two fields back
+into one passed all eight tests written for the feature, and the ninth exists because the
+falsification found nothing. Its control is a **zero** sweep timeout, so "nobody was
+dropped" cannot be explained by the clock not elapsing.
+
+**Succession follows the clock, not the seat number.** `Seats::alloc` pops a freed id, so
+a rejoiner holds a **recycled low id with the latest timestamp** — and ordering by id
+would hand them the host's settings. One test of ten catches it; the other nine stay
+green.
+
+**A replay divergence this task would otherwise have created.** The header writes `scale`
+at construction, T17.01 moved generation to match start, and §E3 lets the host change
+scale in between — so a replay rebuilt the wrong map and diverged on tick 1. `SetScale`
+is recorded as a new tag; the guard asserts on **the map's own dimensions**, because a
+body containing the command only proves it was written. Tag 2 is unchanged in number and
+width: un-readying is a new tag, since widening tag 2 would let every existing file pass
+the version check and then read one byte short for the rest of the round.
+
+**`every_command()` was not every command** — five tags had never been round-tripped,
+while the guard that should have caught it pinned **11 against an enum of 16** with a
+message still saying 10. It is now an exhaustive `match` with no catch-all, which
+contains no assertion at all — the compiler is the assertion — with the count moved
+beside it, because a number far from what it counts is a number nobody updates.
