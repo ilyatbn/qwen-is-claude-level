@@ -150,6 +150,14 @@ pub fn encode_map_init_at(map: &Map, carve_seq: u32) -> Vec<u8> {
 pub struct MapInitParts {
     pub mask: game_core::map::Mask,
     pub teleport_pads: Vec<game_core::map::meta::TeleportPad>,
+    /// The carve sequence this mask is stamped at (`docs/70` §A40).
+    ///
+    /// Every carve with `seq <= carve_seq` is **already baked into `mask`**; the
+    /// client picks the stream up at `carve_seq + 1` and discards anything at or
+    /// below it as a duplicate. Parsed and thrown away until now, which is what
+    /// made a resent `map_init` invisible to anything decoding one — including
+    /// the fixture that replays a carve stream against it.
+    pub carve_seq: u32,
 }
 
 /// The mask alone, for callers that do not carve.
@@ -176,7 +184,7 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
     r.u8()?; // scale
     r.u8()?; // theme
     r.take(4)?; // wind
-    r.u32()?; // carve_seq
+    let carve_seq = r.u32()?;
 
     let spawns = r.u16()? as usize;
     r.take(spawns * 4)?;
@@ -210,6 +218,7 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
     Ok(MapInitParts {
         mask,
         teleport_pads,
+        carve_seq,
     })
 }
 

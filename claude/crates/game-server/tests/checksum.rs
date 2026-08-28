@@ -166,9 +166,18 @@ fn replay_meta() -> game_core::map::MapMeta {
 ///
 /// This is what a real client does (`WorldMirror.applyCarve`): apply in `seq`
 /// order, integer-exact, against a mask decoded from the same `map_init`.
+/// Replay a carve stream onto a `map_init`, the way a real client does.
+///
+/// **Carves at or below the mask's own `carve_seq` are skipped**, because they
+/// are already baked into it (`docs/70` §A40). That is not a detail: when the
+/// join-window queue overflows, `go_live` fails and the server sends a *second*
+/// `map_init` stamped at the current sequence — so a client that replayed its
+/// whole stream against the first mask was applying carves twice and missing the
+/// ones dropped from the queue. This fixture did exactly that.
 fn replay(map_init_b64: &str, carves: &[serde_json::Value]) -> String {
     let bytes = game_server::codec::b64_decode(map_init_b64).expect("map_init decodes");
     let parts = game_server::codec::decode_map_init_parts(&bytes).expect("map_init decodes");
+    let baked = parts.carve_seq as u64;
     let coarse = game_core::map::CoarseGrid::build(&parts.mask);
     let mut meta = replay_meta();
     // §C5, and this is what a real client does through `Core.setTeleportPads`.
@@ -176,7 +185,10 @@ fn replay(map_init_b64: &str, carves: &[serde_json::Value]) -> String {
     meta.teleport_pads = parts.teleport_pads;
     let mut map = game_core::map::Map::from_parts(parts.mask, coarse, meta);
 
-    let mut ordered: Vec<&serde_json::Value> = carves.iter().collect();
+    let mut ordered: Vec<&serde_json::Value> = carves
+        .iter()
+        .filter(|c| c["seq"].as_u64().unwrap_or(0) > baked)
+        .collect();
     ordered.sort_by_key(|c| c["seq"].as_u64().unwrap_or(0));
     for c in ordered {
         let (x, y, r) = (
@@ -270,12 +282,12 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
         // The last human leaving now sends the room back to `Lobby`, and a lobby
         // has no world — so disconnecting here would make the server hash below
         // a read of a room that has already ended.
-        (m1, m2, cs, carves1, carves2, c1, c2)
+        (m1, m2, cs, carves1, carves2, c1, c2, i1, i2)
     })
     .await
     .expect("client thread");
 
-    let (m1, m2, checksums, carves1, carves2, c1, c2) = out;
+    let (m1, m2, checksums, carves1, carves2, c1, c2, i1, i2) = out;
 
     // The control. Without carves this test proves only that two clients
     // decoded the same map, which is true of a completely broken carve stream.
@@ -284,14 +296,45 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
         "expected the fires to produce carves; got {}",
         carves1.len()
     );
-    assert_eq!(
-        carves1.len(),
-        carves2.len(),
-        "both clients must see the same number of carves"
-    );
+    // **The last `map_init`, not the first.** A client whose join-window queue
+    // overflowed is sent a second one at the current sequence, and the carves
+    // held in that queue are dropped rather than flushed — so the first mask and
+    // the full carve stream describe two different moments. The sibling test at
+    // `:586` already asserts `m2.len() == 1`; this one never looked, so a resend
+    // was invisible to it and surfaced as a mask that would not reconcile.
+    let b1 = m1
+        .last()
+        .expect("a map_init")
+        .as_str()
+        .expect("base64 text");
+    let b2 = m2
+        .last()
+        .expect("a map_init")
+        .as_str()
+        .expect("base64 text");
 
-    let b1 = m1[0].as_str().expect("map_init is base64 text");
-    let b2 = m2[0].as_str().expect("map_init is base64 text");
+    // Compared over the window **both** clients were live for. If only one of
+    // them overflowed they resume at different sequences, so the raw counts
+    // differ for a correct server — the same repair `join.rs` already carries.
+    let seq_of = |v: &[serde_json::Value]| -> Vec<u64> {
+        v.iter().filter_map(|c| c["seq"].as_u64()).collect()
+    };
+    let (s1, s2) = (seq_of(&carves1), seq_of(&carves2));
+    let base = s1
+        .iter()
+        .min()
+        .copied()
+        .unwrap_or(0)
+        .max(s2.iter().min().copied().unwrap_or(0));
+    let common = |v: &[u64]| v.iter().filter(|s| **s >= base).count();
+    assert_eq!(
+        common(&s1),
+        common(&s2),
+        "both clients must see the same carves over the window both were live for \
+         (ana {} total, bo {} total, common floor seq {base})",
+        s1.len(),
+        s2.len()
+    );
 
     let h1 = replay(b1, &carves1);
     let h2 = replay(b2, &carves2);
@@ -300,14 +343,56 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
     // And both must match the server, which is the half a client-to-client
     // comparison cannot see: two clients replaying the same wrong stream agree
     // with each other perfectly.
-    let server_hash = room
-        .inspect(|w| w.map.mask.hash_hex())
-        .await
-        .expect("room alive");
-    assert_eq!(
-        h1, server_hash,
-        "clients agreed with each other but not with the server"
-    );
+    //
+    // **Read at the same sequence.** The snapshots above were taken inside the
+    // blocking half and the server is read here, so anything that carved in
+    // between — a projectile still in flight — leaves the server ahead of both
+    // clients and the comparison fails for a correct server. Both sockets are
+    // still connected, so both inboxes are still filling: wait for them to reach
+    // the server's sequence and compare there.
+    let mut server_hash;
+    let mut server_seq;
+    let mut a1;
+    let mut a2;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let read = room
+            .inspect(|w| (w.map.mask.hash_hex(), w.carve_seq()))
+            .await
+            .expect("room alive");
+        server_hash = read.0;
+        server_seq = read.1;
+
+        let (n1, n2) = (got(&i1, "carve"), got(&i2, "carve"));
+        let max_of = |v: &[serde_json::Value]| -> u64 {
+            v.iter()
+                .filter_map(|c| c["seq"].as_u64())
+                .max()
+                .unwrap_or(0)
+        };
+        a1 = max_of(&n1);
+        a2 = max_of(&n2);
+        if a1 >= u64::from(server_seq) && a2 >= u64::from(server_seq) {
+            let h = replay(b1, &n1);
+            assert_eq!(
+                h,
+                replay(b2, &n2),
+                "two clients diverged from each other at seq {server_seq}"
+            );
+            assert_eq!(
+                h, server_hash,
+                "clients agreed with each other but not with the server at \
+                 seq {server_seq} — genuinely different pixels, not a client \
+                 reading early"
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the clients never caught up: ana {a1}, bo {a2}, server {server_seq}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     drop((c1, c2));
 
@@ -574,14 +659,17 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
 
         let m2 = got(&i2, "map_init");
         let carves2 = got(&i2, "carve");
-        // Kept alive: see the note in the test above. §E1 drops the world when
-        // the last human leaves, so the server read below needs a human left.
-        (m2, carves2, c1, c2)
+        // The inbox comes back too: the socket stays connected, so it keeps
+        // filling, and the comparison below waits for it to catch up with the
+        // server rather than trusting the settle loop above to have caught
+        // everything. Kept alive for the same reason as the test above — §E1
+        // drops the world when the last human leaves.
+        (m2, carves2, c1, c2, i2)
     })
     .await
     .expect("client thread");
 
-    let (m2, carves2, c1, c2) = out;
+    let (m2, carves2, c1, c2, i2) = out;
     assert_eq!(
         m2.len(),
         1,
@@ -616,14 +704,54 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
 
     // And the mask it ends up with is the server's, byte for byte — the check a
     // carve count cannot make.
-    let client_hash = replay(b2, &carves2);
-    let server_hash = room
-        .inspect(|w| w.map.mask.hash_hex())
-        .await
-        .expect("room alive");
+    // **Compared at the same instant, not at two.**
+    //
+    // The settle loop above waits for the client's stream to go quiet, and quiet
+    // is not the same as finished: a projectile still in flight lands after it,
+    // carves, and the server is then ahead of the snapshot the client took.
+    // Measured, that is exactly what this was — `client at seq 116, server at
+    // seq 117`, one carve behind, on about one run in eight.
+    //
+    // So the reads are aligned instead of hoped about: take the server's
+    // sequence, wait for the client to reach it, and only then compare. That
+    // asserts *more* than before — the client must actually receive everything
+    // the server has — and it cannot pass by looking early.
+    let mut server_hash;
+    let mut server_seq;
+    let mut client_hash;
+    let mut client_seq;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let read = room
+            .inspect(|w| (w.map.mask.hash_hex(), w.carve_seq()))
+            .await
+            .expect("room alive");
+        server_hash = read.0;
+        server_seq = read.1;
+
+        let now = got(&i2, "carve");
+        client_seq = now
+            .iter()
+            .filter_map(|c| c["seq"].as_u64())
+            .max()
+            .unwrap_or(0);
+        client_hash = replay(b2, &now);
+
+        if client_seq >= u64::from(server_seq) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the joiner never caught up: client at seq {client_seq}, server at seq {server_seq}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
     assert_eq!(
         client_hash, server_hash,
-        "the late-ready joiner's mask diverged from the server's"
+        "the late-ready joiner's mask diverged from the server's at the same \
+         sequence (both at {client_seq}/{server_seq}) — this is genuinely \
+         different pixels, not a client reading early"
     );
     drop((c1, c2));
 }

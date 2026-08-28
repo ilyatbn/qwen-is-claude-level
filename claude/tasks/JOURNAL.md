@@ -4515,3 +4515,34 @@ skip it entirely and `git diff` report `Bin, 0 insertions, 0 deletions` — so "
 weakened" was unverifiable on the file this task rewrites most. Rewritten as escapes;
 `grep -c expect` went from nothing to 55, and the next grep found two test cases every
 prior audit had silently skipped.
+
+## checksum — the fixture read the client and the server at different instants
+
+Not a task; a gate repair before T17.03, because a flake that fires once in eight makes
+every gate after it untrustworthy.
+
+Three failure modes, all pre-existing, all **one mechanism**. `replay()` applied every
+carve against `m[0]`, so a resent `map_init` — sent when the join-window queue overflows
+— left the fixture comparing a full carve stream to a superseded mask. `carve_seq` was
+**parsed and discarded**, which is exactly what made a resend invisible to everything
+that decodes a `map_init`; it is on `MapInitParts` now and `replay` skips what is already
+baked. Counts compare over the window both clients were live for —
+`base = max(min(sa), min(sb))` — because per-client filtering alone leaves two clients
+that overflowed at different sequences disagreeing on the count.
+
+The larger defect was temporal. The settle loop waited for the client's stream to go
+*quiet*, and **quiet is not finished**: a projectile still in flight lands after it, so
+the server holds a carve the client's snapshot does not. Instrumented, run 8 of 25:
+`client at seq 116, server at seq 117` — exactly one carve behind. The reads are aligned
+now, waiting for the client to *reach* the server's sequence on a bounded deadline, which
+asserts strictly more than before and cannot pass by looking early.
+
+| assertion | baseline | after T17.02 | now |
+|---|---|---|---|
+| `:287` count mismatch | 1/40 | 4/40 | 0/40 |
+| `:307` client vs server | 3/40 | 0/40 | 0/40 |
+| `:624` late joiner | 1/40 | 3/40 | 0/40 |
+
+0/40 bounds the rate below roughly 7% at 95%, not at zero — and three of these modes were
+invisible for sixteen consecutive runs, so the claim is "three mechanisms closed, each
+with a measured before-rate", not "the flake is gone".
