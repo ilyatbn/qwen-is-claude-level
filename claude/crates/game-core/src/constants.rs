@@ -1553,9 +1553,9 @@ pub const OBJECT_ALPHA_THRESHOLD: u8 = 128;
 /// These four are the **only** place an object size lives. The factors, every
 /// mask extent and the atlas are derived at build time, so adjusting one of these
 /// and rerunning `scripts/build-object-masks.mjs` is the whole edit.
-pub const OBJECT_TARGET_PLAYER_H_BUSH: f32 = 1.0;
+pub const OBJECT_TARGET_PLAYER_H_BUSH: f32 = 1.5;
 /// A boulder you hide behind. §D4.
-pub const OBJECT_TARGET_PLAYER_H_ROCK: f32 = 1.5;
+pub const OBJECT_TARGET_PLAYER_H_ROCK: f32 = 2.25;
 /// A landmark you can shoot. §D4.
 pub const OBJECT_TARGET_PLAYER_H_CRYSTAL: f32 = 1.5;
 /// Architecture — the only category scaled up. §D4.
@@ -1594,6 +1594,30 @@ pub const OBJECT_PIXEL_BUDGET: f32 = 0.02;
 /// satisfies the separation, and a loop that keeps trying never returns. Placing
 /// fewer objects than asked is a fine outcome; hanging is not.
 pub const OBJECT_PLACE_ATTEMPTS: u32 = 200;
+
+/// How much of an object's own width must rest on ground, to place it (§E12).
+///
+/// `is_standable` tests a `PLAYER_W`-wide box, which is the right question for a
+/// player and the wrong one for scenery: a rock three player-widths across has
+/// its centre supported and its outer base columns over air, and that is the
+/// mid-air look — worse at the sizes above, not better.
+///
+/// **What the rule permits, stated plainly.** The object is seated at the
+/// *median* ground height under its footprint, so roughly half its base is
+/// buried in the slope and half stands proud. Partial burial is correct and
+/// wanted: a boulder half-sunk in a hillside is what a boulder looks like.
+/// Hanging is not, so a majority of the base must be within
+/// `OBJECT_SEAT_BAND` of where it is seated. A rock spanning a chasm fails this;
+/// a rock on a slope passes it.
+pub const OBJECT_FOOTPRINT_SUPPORT: f32 = 0.6;
+
+/// How far the ground may deviate from an object's seated base and still count
+/// as supporting it, as a fraction of the object's **own height** (§E12).
+///
+/// A fraction rather than a pixel count because the objects differ by 3x in
+/// height: a band that reads as "nestled" under a 42 px rock reads as "floating"
+/// under a 28 px bush and as "buried" under an 84 px ruin.
+pub const OBJECT_SEAT_BAND: f32 = 0.25;
 
 // ---------------------------------------------------------------------------
 // Map scale and its per-scale parameter table
@@ -1698,7 +1722,7 @@ impl MapScale {
                 mesa_count: 1,
                 cave_count: 2,
                 arch_count: 1,
-                object_count: 12,
+                object_count: 9,
             },
             MapScale::Medium => ScaleParams {
                 width: MAP_MEDIUM_W,
@@ -1716,7 +1740,7 @@ impl MapScale {
                 mesa_count: 2,
                 cave_count: 2,
                 arch_count: 1,
-                object_count: 30,
+                object_count: 28,
             },
             MapScale::Large => ScaleParams {
                 width: MAP_LARGE_W,

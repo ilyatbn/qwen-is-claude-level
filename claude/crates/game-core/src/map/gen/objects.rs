@@ -29,8 +29,9 @@
 //! path and nothing extra on the wire (§D1, §D8).
 
 use crate::constants::{
-    MapScale, OBJECT_CLEAR_OF_SPAWN, OBJECT_MIN_SEPARATION, OBJECT_PIXEL_BUDGET,
-    OBJECT_PLACE_ATTEMPTS, SKY_MARGIN, SPAWN_COUNT_MIN, WALL_W,
+    MapScale, OBJECT_CLEAR_OF_SPAWN, OBJECT_FOOTPRINT_SUPPORT, OBJECT_MIN_SEPARATION,
+    OBJECT_PIXEL_BUDGET, OBJECT_PLACE_ATTEMPTS, OBJECT_SEAT_BAND, SKY_MARGIN, SPAWN_COUNT_MIN,
+    WALL_W,
 };
 use crate::map::objects::{self, ObjectCategory, ObjectMask};
 use crate::map::Mask;
@@ -227,10 +228,18 @@ pub fn stamp_objects(mask: &mut Mask, seed: u64, scale: MapScale, theme: u8) -> 
 
             // The anchor is a feet line: air at `anchor`, solid at `anchor.y + 1`.
             // T16.01 defines the object's anchor as `(w >> 1, h)` — `y = h` being
-            // the ground line it sits *on*, one row below its last. So the last
-            // row lands on `anchor.y` and the top is `anchor.y + 1 - h`.
+            // the ground line it sits *on*, one row below its last.
+            //
+            // **But a feet line is a player-sized answer.** `is_standable` tests a
+            // `PLAYER_W` box at one column, so it says nothing about the ground
+            // under the rest of a sprite three player-widths across — which is
+            // the mid-air look §E12 is about. `seat` asks the object's own
+            // footprint instead, and returns the row its base actually rests on.
             let x = anchor.x - m.w as i32 / 2;
-            let y = anchor.y + 1 - m.h as i32;
+            let Some(base) = seat(mask, x, anchor.y, &m) else {
+                continue;
+            };
+            let y = base + 1 - m.h as i32;
             if !inside_world(mask, x, y, &m) {
                 continue;
             }
@@ -376,6 +385,139 @@ fn surface_anchor(mask: &Mask, rng: &mut crate::rng::ChaCha8Rng) -> Option<Point
     None
 }
 
+/// How close below its base a column's ground must be to count as touching it.
+///
+/// A seated object's supporting columns have ground one row below the base, so
+/// anything past a couple of pixels is a gap you can see.
+const SEAT_CONTACT: i32 = 2;
+
+/// Where an object `m` wide, placed with its left edge at `x`, actually rests —
+/// or `None` if it would hang (§E12).
+///
+/// **The whole footprint, not a player-sized box at the centre.** For every
+/// column the object covers, this finds the first solid row at or below the
+/// candidate feet line, then seats the object at the **median** of those. Half
+/// the base ends up buried in the slope and half stands proud, which is how a
+/// boulder sits in a hillside — and it is the reason the rule is stated as a
+/// median rather than a maximum or a minimum. Seating on the highest ground
+/// leaves the low side hanging; seating on the lowest buries the object whole.
+///
+/// It refuses when fewer than `OBJECT_FOOTPRINT_SUPPORT` of its columns lie
+/// within `OBJECT_SEAT_BAND` of that seat: a rock spanning a chasm, or perched
+/// across a spike, fails; a rock on a slope passes.
+fn seat(mask: &Mask, x: i32, feet: i32, m: &ObjectMask) -> Option<i32> {
+    let w = m.w as i32;
+    if w <= 0 || x < 0 || x + w > mask.w as i32 {
+        return None;
+    }
+    // How far below the feet line a column may find its ground before the object
+    // is considered to be hanging over a hole rather than sitting on a slope.
+    let band = ((m.h as f32) * OBJECT_SEAT_BAND).round().max(1.0) as i32;
+    let limit = (feet + band).min(mask.h as i32 - 1);
+
+    let mut grounds: Vec<i32> = Vec::with_capacity(w as usize);
+    for col in x..(x + w) {
+        // Start one row below the feet line: the anchor row itself is air by
+        // construction, and a column whose ground is *above* the feet line is a
+        // rise the object will bury into, which is allowed.
+        let mut g = None;
+        for y in (feet + 1 - band).max(0)..=limit {
+            if mask.get(col, y) {
+                g = Some(y);
+                break;
+            }
+        }
+        if let Some(g) = g {
+            grounds.push(g);
+        }
+    }
+    // Every column that found ground within the band, out of the full width.
+    // Columns that found none are the hanging ones and are counted against it.
+    //
+    // This is not the same statement as the `contact_fraction` check below, and
+    // measured is not redundant with it: relaxing this one to "any ground at
+    // all" moves the golden table. If fewer than `want` columns find ground the
+    // percentile index clamps to the deepest one, which seats a wide object down
+    // inside a narrow spike — where `contact_fraction` then passes it on burial.
+    // This gate is what stops that, and the one below is what checks the seat it
+    // chose. Falsifying either alone leaves the overhang case red via the other,
+    // so neither is dead.
+    let supported = grounds.len() as f32 / w as f32;
+    if supported < OBJECT_FOOTPRINT_SUPPORT {
+        return None;
+    }
+    grounds.sort_unstable();
+    // **Seated at the `OBJECT_FOOTPRINT_SUPPORT` percentile of ground depth**,
+    // so that fraction of the base is buried or touching *by construction*.
+    //
+    // The first version used the median, and the median is the wrong statistic
+    // for the rule it was serving: seating halfway means half the base rests in
+    // hollows it does not touch, which measured 51 % contact against a 60 %
+    // requirement — the rule and its own threshold disagreeing. Taking the
+    // percentile the requirement names makes the two the same statement.
+    //
+    // Deeper than the median also reads better: scenery that sits *in* the
+    // ground looks placed, and scenery balanced on the highest point under it
+    // looks dropped. That is the burial §E12 permits, chosen deliberately rather
+    // than arrived at.
+    //
+    // **Over the object's full width, not over the columns that found ground.**
+    // Taking it over `grounds.len()` meant 60 % of the 85 % that found any
+    // ground — 51 % of the base, measured — because a column with no ground
+    // under it at all is hanging and has to count against the fraction, not be
+    // excluded from the denominator.
+    let want = (OBJECT_FOOTPRINT_SUPPORT * w as f32).ceil() as usize;
+    let idx = want.saturating_sub(1).min(grounds.len() - 1);
+    let base = grounds[idx];
+    // The base row sits one above the ground it rests on, matching the anchor
+    // convention: `y = h` is the line the object sits *on*, not its last row.
+    let seated = base - 1;
+
+    // **Then check the seat that was actually chosen**, rather than trusting the
+    // percentile that suggested it. The two can disagree: the ground search is
+    // windowed around the *anchor's* feet line, so after seating deeper some
+    // columns' ground falls outside the window it was picked from and is
+    // misclassified — measured, that left a 105 px rock at 57 % against a 60 %
+    // rule. Counting contact at the final position is one statement instead of
+    // two that can drift apart.
+    if contact_fraction(mask, x, seated, m) < OBJECT_FOOTPRINT_SUPPORT {
+        return None;
+    }
+    Some(seated)
+}
+
+/// What fraction of an object's base is buried in, or touching, the terrain when
+/// its base row sits at `base` (§E12).
+///
+/// A column counts if it is **buried** — solid at the base row, so the ground
+/// rises through the object — or **resting**, with the first solid within
+/// `SEAT_CONTACT` px below. Anything further down is a hollow the object bridges,
+/// which is allowed for a minority of its width and is what "partial burial into
+/// a slope" means in pixels.
+fn contact_fraction(mask: &Mask, x: i32, base: i32, m: &ObjectMask) -> f32 {
+    let w = m.w as i32;
+    if w <= 0 {
+        return 0.0;
+    }
+    let mut ok = 0;
+    for col in x..(x + w) {
+        if col < 0 || col >= mask.w as i32 {
+            continue;
+        }
+        // **The rows directly beneath the base**, which this object never
+        // occupies — so the same expression means the same thing before and
+        // after stamping, and an object cannot hold itself up. Terrain is solid
+        // downward, so a rise that buries the object's base also fills the row
+        // below it: burial and resting are the one test, not two.
+        if ((base + 1).max(0)..=(base + SEAT_CONTACT).min(mask.h as i32 - 1))
+            .any(|y| mask.get(col, y))
+        {
+            ok += 1;
+        }
+    }
+    ok as f32 / w as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,6 +530,170 @@ mod tests {
             m.set_run(y, 0, w as i32 - 1);
         }
         m
+    }
+
+    /// The fraction of an object's base that is **touching** ground, recomputed
+    /// from the finished map rather than from the placement code.
+    ///
+    /// Asking `seat` whether `seat` was satisfied is a function checking itself,
+    /// so this reads the mask the generator produced — but it took three
+    /// attempts to read the right thing:
+    ///
+    /// - **Proximity, not contact.** Allowing solid anywhere within
+    ///   `OBJECT_SEAT_BAND` *below* the base is a 16 px window under a 63 px
+    ///   rock, and on ordinary terrain nearly every column has ground within
+    ///   16 px of nearly anything. It passed with the seating reverted.
+    /// - **The object's own body.** An object *becomes* terrain (§D1), so the
+    ///   post-stamp mask reads its own silhouette as the ground it rests on —
+    ///   which scored the old player-box anchor at 95 %.
+    /// - **Excluding every object.** Measuring against pre-stamp terrain is too
+    ///   strict in the other direction: a boulder resting on an earlier boulder
+    ///   is resting on terrain, and that is what the generator sees.
+    ///
+    /// So: the finished mask, asked the one question that cannot be confused —
+    /// is there ground in the rows **directly beneath** the object's base, which
+    /// the object itself can never occupy. Sharing `contact_fraction` with the
+    /// placement rule rather than restating it, because two spellings of "is it
+    /// touching" is how the last three attempts disagreed.
+    fn supported_fraction(mask: &Mask, p: &PlacedObject, m: &ObjectMask) -> f32 {
+        contact_fraction(mask, p.x, p.y + m.h as i32 - 1, m)
+    }
+
+    /// §E12: nothing hangs in the air, on any map this generator makes.
+    #[test]
+    fn every_placed_object_rests_on_the_ground_under_it() {
+        let mut checked = 0;
+        let mut all: Vec<f32> = Vec::new();
+        let mut worst = 1.0f32;
+        for seed in [1u64, 4242, 31337] {
+            for scale in [MapScale::Small, MapScale::Medium, MapScale::Large] {
+                let mut mask = v2::generate_once(seed, &v2::V2Params::default_for(scale)).mask;
+                let placed = stamp_objects(&mut mask, seed, scale, 0).objects;
+                for p in &placed {
+                    let Some(m) = objects::mask(p.id as usize) else {
+                        continue;
+                    };
+                    let f = supported_fraction(&mask, p, &m);
+                    worst = worst.min(f);
+                    all.push(f);
+                    assert!(
+                        f >= OBJECT_FOOTPRINT_SUPPORT,
+                        "seed {seed} {scale:?}: object {} is {} px wide at ({}, {}) and only \
+                         {:.0}% of its base has ground under it — it is hanging",
+                        p.id,
+                        m.w,
+                        p.x,
+                        p.y,
+                        f * 100.0,
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        // The control. Without it the assertion above passes for a generator
+        // that places nothing at all, which is exactly what a too-strict seating
+        // rule would produce.
+        assert!(
+            checked > 100,
+            "only {checked} objects were placed across nine maps — the rule is rejecting \
+             everything, so 'none of them hangs' means nothing",
+        );
+        let mut hist = [0usize; 5];
+        for f in &all {
+            hist[((f * 5.0) as usize).min(4)] += 1;
+        }
+        let mean: f32 = all.iter().sum::<f32>() / all.len() as f32;
+        println!(
+            "SEATING {checked} objects, worst {:.0}%, mean {:.0}%, buckets(0-20,..,80-100) {:?}",
+            worst * 100.0,
+            mean * 100.0,
+            hist
+        );
+    }
+
+    /// §E12's rule is a **fraction**, and it needs one case of each.
+    ///
+    /// A rule requiring every base column solid rejects the slopes burial is
+    /// meant to allow; a rule requiring any permits the hanging it is meant to
+    /// forbid. So the pair is the assertion: a slope is seated, an overhang is
+    /// refused. Either alone passes for a rule that is wrong in the other
+    /// direction — "nothing floats" is satisfied by placing nothing.
+    #[test]
+    fn a_slope_is_seated_and_an_overhang_is_refused() {
+        let m = objects::mask(0).expect("the table has a first object");
+        let w = m.w as i32;
+        let h = m.h as i32;
+        let ground = 300;
+
+        // A slope under the whole footprint: the ground falls away by a quarter
+        // of the object's height across its width, which is burial on the high
+        // side and contact on the low.
+        let mut sloped = Mask::new_empty(1024, 512);
+        for col in 0..1024 {
+            let drop = ((col - 100) as f32 / w as f32 * (h as f32 * 0.25)).max(0.0) as i32;
+            for y in (ground + drop)..512 {
+                sloped.set(col, y);
+            }
+        }
+        assert!(
+            seat(&sloped, 100, ground - 1, &m).is_some(),
+            "a slope falling {} px across the object's {} px was refused — burial into a \
+             slope is what §E12 permits",
+            (h as f32 * 0.25) as i32,
+            w,
+        );
+
+        // A ledge that ends under the object: solid for a quarter of the width,
+        // then nothing for the rest. This is the mid-air case.
+        let mut ledge = Mask::new_empty(1024, 512);
+        for col in 100..(100 + w / 4) {
+            for y in ground..512 {
+                ledge.set(col, y);
+            }
+        }
+        assert!(
+            seat(&ledge, 100, ground - 1, &m).is_none(),
+            "an object {w} px wide was seated on a ledge only {} px long — that is the \
+             hanging §E12 forbids",
+            w / 4,
+        );
+    }
+
+    /// §E15's sizes, asserted against the art rather than against a literal.
+    ///
+    /// The pipeline computes `factor = PLAYER_H * target / mean_opaque_height`,
+    /// and `mean_opaque_height` is a property of the **pack**, not of the
+    /// constants — so an exact pixel count would pin the art and break the first
+    /// time a sprite is replaced. The tolerance is the integer scaler's: each
+    /// sprite's height rounds to a whole pixel, so a mean over forty is within
+    /// one of the target.
+    #[test]
+    fn each_category_is_scaled_to_the_height_its_constant_asks_for() {
+        use crate::constants::{
+            OBJECT_TARGET_PLAYER_H_BUSH, OBJECT_TARGET_PLAYER_H_CRYSTAL,
+            OBJECT_TARGET_PLAYER_H_ROCK, OBJECT_TARGET_PLAYER_H_RUIN, PLAYER_H,
+        };
+        for (cat, target) in [
+            (ObjectCategory::Bush, OBJECT_TARGET_PLAYER_H_BUSH),
+            (ObjectCategory::Rock, OBJECT_TARGET_PLAYER_H_ROCK),
+            (ObjectCategory::Crystal, OBJECT_TARGET_PLAYER_H_CRYSTAL),
+            (ObjectCategory::Ruin, OBJECT_TARGET_PLAYER_H_RUIN),
+        ] {
+            let hs: Vec<f32> = (0..objects::count())
+                .filter_map(objects::mask)
+                .filter(|m| m.category == cat)
+                .map(|m| m.h as f32)
+                .collect();
+            assert!(!hs.is_empty(), "{cat:?} has no objects in the table");
+            let mean = hs.iter().sum::<f32>() / hs.len() as f32;
+            let want = PLAYER_H * target;
+            assert!(
+                (mean - want).abs() <= 1.0,
+                "{cat:?} means {mean:.1} px tall against {want:.1} asked for by its \
+                 constant ({} sprites)",
+                hs.len(),
+            );
+        }
     }
 
     #[test]

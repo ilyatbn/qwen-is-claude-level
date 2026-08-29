@@ -742,12 +742,23 @@ async fn a_room_whose_last_human_left_is_reaped_by_the_running_server() {
     // The control, and the handle, both taken while the room is still there.
     // Without the control, "rooms went to 0" also passes for a server that
     // never made one.
-    let (room, handle) = {
+    let (room, handle, live) = {
         let r = h.stack.registry.lock().expect("registry");
         let id = *r.ids().first().expect("the join created a room");
-        (id, r.get(id).expect("room").handle.clone())
+        (id, r.get(id).expect("room").handle.clone(), r.ids().len())
     };
-    assert_eq!(healthz_rooms(addr).await, 1, "control: the room is there");
+    // **The control reads the registry, under the lock it already holds.**
+    //
+    // It used to read `/healthz`, and that is a different representation of the
+    // same fact: `registry.rs` `publish_count()` stores into an `AtomicUsize`
+    // gauge the endpoint serves, so the two are updated at different moments and
+    // compared across an HTTP round trip. Measured, this failed about one run in
+    // eight under load and never when idle — a race by construction, and the
+    // two-sources-of-truth shape this project has paid for repeatedly.
+    //
+    // The gauge is still what the *effect* is asserted on below, and correctly:
+    // that assertion waits for it to converge rather than sampling it once.
+    assert_eq!(live, 1, "control: the room is there");
     assert!(
         // §E1: liveness is `join_info` answering. `inspect` answers `None` for a
         // *living* lobby, so spelling the control that way asserts the room is

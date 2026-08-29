@@ -21,14 +21,14 @@
       "json": "atlas/fx.json"
     },
     {
-      "key": "objects",
-      "png": "atlas/objects.png",
-      "json": "atlas/objects.json"
-    },
-    {
       "key": "clouds",
       "png": "atlas/clouds.png",
       "json": "atlas/clouds.json"
+    },
+    {
+      "key": "objects",
+      "png": "atlas/objects.png",
+      "json": "atlas/objects.json"
     }
   ],
   "images": [],

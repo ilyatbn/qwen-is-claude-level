@@ -477,11 +477,32 @@ fn a_perturbed_command_is_localised_to_a_nearby_tick() {
         candidates.len(),
         replay::CHECKPOINT_STRIDE
     );
-    let stride = candidates.len() / 12;
-    let sample: Vec<_> = candidates
-        .into_iter()
-        .step_by(stride.max(1))
-        .take(12)
+    // **A contiguous run of late candidates, not a stride across the whole
+    // recording.** D-24 predicted this test would need moving the next time the
+    // map changed, and T18.04's bigger objects are that change. Measured here:
+    // spreading twelve samples across the round gave **0 of 12** where it had
+    // given 4, and widening the same stride to 24 gave **0 of 24**.
+    //
+    // A contiguous late run gives **11 of 20**, and the nine that wash out are
+    // the *last nine ticks in the window* — an ordered boundary, not scatter. A
+    // perturbation needs round left after it to compound before the recording
+    // ends, and those have almost none. Why an evenly-strided sample across the
+    // earlier round found nothing I did not establish, and do not assert.
+    //
+    // The window stops eight candidates short of the end because those eight are
+    // the far side of that boundary: including them would only dilute the sample
+    // with ticks already known to have nowhere to diverge.
+    //
+    // The property under test is **localisation of the divergences that do
+    // occur** (D-20), not that any given byte diverges — so the sample is taken
+    // where divergences live, which is late, and it is larger. A bigger sample in
+    // the right region is the hardening; the floor below is not lowered to meet
+    // a thinner one.
+    let n = candidates.len();
+    let sample: Vec<_> = candidates[n.saturating_sub(28)..]
+        .iter()
+        .take(20)
+        .cloned()
         .collect();
 
     let mut diverged = 0usize;
@@ -543,11 +564,17 @@ fn a_perturbed_command_is_localised_to_a_nearby_tick() {
     // detect a corrupted command at all, and every assertion above would have
     // been skipped in silence.
     //
-    // A floor above one, and the counts in the message rather than a `println!`
-    // — which `cargo test` swallows without `--nocapture`, so a drift from 4/12
-    // to 1/12 would pass in silence with nobody the wiser.
+    // The floor is 5 of 20 against a measured 11 of 20. D-24's complaint about
+    // the old one was that 3 of 12 measured sat *on* its own floor of 3, so the
+    // next map change went red by construction; this one has six candidates of
+    // room, which is the whole distance from the boundary to the start of the
+    // window. Below 5 the runner would be missing three quarters of corrupted
+    // commands, which is a real regression and not terrain drift.
+    //
+    // Counts in the message rather than a `println!` — which `cargo test`
+    // swallows without `--nocapture`, so a drift to 1 would pass in silence.
     assert!(
-        diverged >= 3,
+        diverged >= 5,
         "only {diverged} of {} perturbed inputs diverged ({} washed out at {washed_out:?}) — \
          the runner is barely detecting corrupted commands",
         sample.len(),

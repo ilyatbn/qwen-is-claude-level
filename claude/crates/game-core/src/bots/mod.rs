@@ -982,7 +982,7 @@ fn zone_reach(w: &crate::weapons::defs::WeaponDef) -> Option<f32> {
 mod tests {
     use super::*;
     use crate::constants::{MapScale, PLAYER_H, SIM_DT};
-    use crate::items::registry::{BAZOOKA, MEDKIT, MOLOTOV};
+    use crate::items::registry::{BAZOOKA, MEDKIT, MOLOTOV, PISTOL};
     use crate::world::{give, RoundPhase, World};
 
     const SEED: u64 = 4242;
@@ -1029,13 +1029,22 @@ mod tests {
     /// the generator happened to put there — the same reason `clear_line` exists.
     fn flat_shelf(w: &mut World, at: Vec2, span: i32) -> f32 {
         let floor = at.y as i32 + PLAYER_H as i32;
+        // **Ground behind as well as ahead.** The shelf used to start 40 px to
+        // the left, which is ground enough to stand on and not enough to walk
+        // away over: T18.04's terrain change left a retreating bot at the edge
+        // after 40 px, and the retreat read as stalling at 219 px and closing
+        // back to 180. A fixture that carves its own ground has to carve all the
+        // ground the behaviour needs.
+        let back = span * 2;
         for y in floor..(floor + 24) {
-            w.map.mask.set_run(y, at.x as i32 - 40, at.x as i32 + span);
+            w.map
+                .mask
+                .set_run(y, at.x as i32 - back, at.x as i32 + span);
         }
         for y in (floor - 96)..floor {
             w.map
                 .mask
-                .clear_run(y, at.x as i32 - 40, at.x as i32 + span);
+                .clear_run(y, at.x as i32 - back, at.x as i32 + span);
         }
         // The coarse grid is a cache of the mask and collision reads it, so a
         // hand-carved shelf that skipped this would be solid to the mask and
@@ -1219,7 +1228,12 @@ mod tests {
             // looking for a weapon rather than closing — so an unarmed control
             // would not chase and the comparison would be between two different
             // decisions rather than between two healths.
-            give(&mut w, 1, BAZOOKA, 1);
+            // A **pistol**, not a bazooka: `stand_off` is twice the blast radius, and
+            // a bazooka's is ~300 px — so an armed-with-a-bazooka bot is *already at*
+            // its firing range against a target 300 px away and correctly presses
+            // nothing. A weapon with no blast closes to 40 px, which is the walking
+            // this control is about.
+            give(&mut w, 1, PISTOL, 10);
             let mut b = Bot::new(1, SEED, 0, 0.6);
             let mut d = Vec::new();
             for t in 0..300 {
@@ -1532,6 +1546,25 @@ mod tests {
     fn a_bot_with_no_fire_under_it_does_not_walk_away() {
         let mut w = world_with(&[1, 2]);
         let at = clear_line(&w);
+        // **No items, and a weapon.** An unarmed bot goes shopping and does not
+        // chase (§E10), so with the floor as the generator left it this asserted
+        // "walks right" while the bot was actually walking to whichever item
+        // happened to be nearest — and T18.04's bigger objects moved that item to
+        // the other side, which is how a test that had been passing for the
+        // wrong reason since T18.02 finally said so.
+        //
+        // The claim is that the bot closes on an *enemy*. So the enemy is the
+        // only thing to close on, and the bot is armed enough to want to.
+        let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+        for id in ids {
+            w.items.remove(id);
+        }
+        // A **pistol**, not a bazooka: `stand_off` is twice the blast radius, and
+        // a bazooka's is ~300 px — so an armed-with-a-bazooka bot is *already at*
+        // its firing range against a target 300 px away and correctly presses
+        // nothing. A weapon with no blast closes to 40 px, which is the walking
+        // this control is about.
+        give(&mut w, 1, PISTOL, 10);
         if let Some(p) = w.player_mut(1) {
             p.body.pos = at;
         }
@@ -1541,9 +1574,17 @@ mod tests {
         }
         let mut b = Bot::new(1, SEED, 0, 1.0);
         let inp = b.think(&w, 0.0, SIM_DT);
-        assert!(
-            inp.buttons & button::RIGHT != 0 && inp.buttons & button::LEFT == 0,
-            "with no hazard the bot should close on a target 300 px right"
+        // **It does not walk away** — which is what the name says and all the
+        // control needs. It used to demand a RIGHT press, and that is retired
+        // from both directions: §C20 makes an armed bot plant itself to shoot
+        // rather than close, and §E10 stops an unarmed one chasing at all. The
+        // claim being controlled for is the paired test's LEFT, so the absence
+        // of a LEFT here is exactly what attributes that one to the fire.
+        assert_eq!(
+            inp.buttons & button::LEFT,
+            0,
+            "with no fire under it the bot walked away anyway, so `a_bot_steps_out_of_fire` \
+             is not evidence that fire is what moved it"
         );
     }
 
@@ -1591,6 +1632,12 @@ mod tests {
     fn a_bot_steps_out_of_fire() {
         let mut w = world_with(&[1, 2]);
         let at = clear_line(&w);
+        // The same setup as its control, so the two differ **only** by the fire.
+        let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+        for id in ids {
+            w.items.remove(id);
+        }
+        give(&mut w, 1, PISTOL, 10);
         if let Some(p) = w.player_mut(1) {
             p.body.pos = at;
         }

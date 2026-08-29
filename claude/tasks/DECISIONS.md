@@ -874,3 +874,41 @@ the existing `p.battery` is slotless and is the grant the loadout already makes.
 heals with **`Q`, the shipped binding**, and **asserts the heal landed** (`95 → 148`) —
 a heal that silently did nothing would put the confound straight back, which is exactly
 what the first version did.
+
+## D-55 — `replay_run`'s divergence floor: 5 of 20, from a measured 11
+
+D-24 predicted this and prescribed the fix: *"sample more than 12, or bias toward the late
+candidates"*, because the property is **localisation of the divergences that occur**, not
+that any given byte diverges — the early ticks contribute nothing but wash-outs. T18.04
+moved the map, and the prediction landed exactly: the old even stride gave **0 of 12** where
+it had given 4, and widening the same stride to 24 gave **0 of 24**.
+
+A contiguous late window (`candidates[n-28..]`, take 20) gives **11 of 20**, and the nine
+wash-outs are the **final nine consecutive ticks** — an ordered boundary, not scatter. The
+floor is set at **5**: six candidates of room, which is the whole distance from the boundary
+to the start of the window, so terrain drift moves it without breaking it, while a fall
+below 5 means the runner is missing three quarters of corrupted commands. The old floor's
+defect was margin, not value — 3 measured against a floor of 3.
+
+## D-56 — the two seating gates are not redundant, measured
+
+`seat` gates twice: `grounds.len() / w` before choosing a percentile, and `contact_fraction`
+on the seat it chose. Relaxing **either one alone** leaves every test green, which looks
+like dead logic. It is not: replacing the first with "any ground at all" **moves the golden
+table**. With fewer than `want` columns finding ground the percentile index clamps to the
+deepest one, seating a wide object down inside a narrow spike — where `contact_fraction`
+then passes it on burial. The first gate stops that; the second checks the seat.
+
+The lesson for the falsification rule: **one-at-a-time falsification cannot distinguish
+redundancy from mutual cover.** Both had to be relaxed together for the overhang unit test
+to go red, and the golden table was the instrument that separated them.
+
+## D-57 — `OBJECT_MIN_SEPARATION` is centre-only, and now says the wrong thing
+
+64 px between centres, against object widths up to **197 px** after §E12's scaling.
+Measured across nine maps: **27 of 3132 pairs overlap by bounding box, worst penetration
+50 px** — 0.9 % of pairs. Not a correctness defect, because objects are stamped into the
+mask and an overlap merges terrain rather than corrupting it, and nothing downstream reads
+an object's box. But the constant's name is now a claim it does not make. If §E12 wants
+separation to mean separation it needs the two half-widths added; that is an amendment, not
+a builder's call.

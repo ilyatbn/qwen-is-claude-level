@@ -4846,3 +4846,22 @@ live code with tests, and `sky-math` is zero-diff.
 gauge against a registry read taken under the mutex two lines above — two representations
 of "how many rooms", updated at different moments, across an HTTP round trip. A race by
 construction, load-sensitive, and it will cost the M18 sweep a run.
+
+## T18.04 — rocks and bushes are bigger, and sit on the ground
+
+Scale is **per category to a target player-height** (`OBJECT_TARGET_PLAYER_H_BUSH` 1.5,
+`_ROCK` 2.25), so widths now reach 197 px. Seating is a **percentile of ground depth over
+the object's full width**, not the centre column: the anchor's feet line was one column's
+opinion of where the ground is. `contact_fraction` reads the rows *directly beneath* the
+base — rows the object can never occupy — so burial and resting are one test and
+self-support is impossible; four earlier measurements each read a different thing (a ±16 px
+band, the object's own silhouette, pre-stamp terrain, own-pixel exclusion).
+
+**The sweep decided the counts**, not the threshold: Small 12→**9**, Medium 30→**28**,
+Large 36 unchanged. `fraction min` Small 0.762 / Medium 0.835 / **Large 0.754** — above the
+0.75 floor and above D-23's 0.751. All 24 golden mask rows moved, 12 per generator.
+
+**Finding:** `too_close` compares centres against `OBJECT_MIN_SEPARATION` 64 while objects
+are up to 197 px wide. Measured on nine maps: **27 of 3132 pairs overlap by box, worst 50
+px**. Cosmetic, not a correctness defect — objects are stamped into the mask, so an overlap
+merges terrain rather than breaking it — but the constant no longer means what it says.
