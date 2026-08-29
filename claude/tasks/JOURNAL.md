@@ -4810,3 +4810,39 @@ it is already at a bazooka's stand-off, so asserting it closed would assert agai
 `AttractCore::step` is a hand-rolled mirror of `drive_bots` with no caller since T18.01 —
 explicitly **frozen**, naming `to_command` and `wait_for` as the two this project has
 already paid for.
+
+## T18.03 — Clouds are bigger and vary in brightness (v6)
+
+**The frame is authoritative (§E11.1), and the bug was `halfW`.** Measured: 120 atlas
+frames, width 33–288 against `CLOUD_TEX_W`'s 220 — so forcing the constant would have
+been a per-cloud change spanning **8.7×** that discarded the pack's five seeded size
+variants. `halfW` derives from the drawn width now: it had assumed the constant, a **6.7×
+error in the wrap offset** for the narrowest frames, which is why the seam was wrong in
+both directions. The asymmetry that hid it: `setDisplaySize` ran only on a colour-set
+change, `setScale` ran every frame. The comment claiming the sprites were drawn
+*"bit-for-bit T15.03's"* was reassuring a reader about exactly the broken thing.
+
+Drawn width, seed 4242, shipped picker against shipped atlas: **mean 97.8 → 127.8 px,
++30.7%** — §E15's numbers stand as written, once something reads them.
+
+**Two vacuous tests, both found by falsifying.** The seam check first sampled a strip
+centred on where the twin *said* it was — true however wrong `halfW` is, and green with
+the fix reverted. Rewritten to predict from the drawn box, it **still** could not fail,
+because a single pinned clock held no disagreement (D-29). It sweeps 16 drift moments now
+and fails loudly if none straddles an edge. A third fault on the way: a screen-pixel strip
+built from **camera-space** coordinates, 640 against a 1280 viewport — the conversion
+happens once at the source now, so no check handles two spaces, which is `objects.mjs`'s
+lesson from M16.
+
+Brightness is a **grey multiplier within** the phase's colour set, never across it, so a
+black cloud cannot come out white at midnight; the band's ceiling is 1.0 because a tint
+cannot brighten past the art's own white — the variation is a range of shadow. All four
+draws are unconditional and in fixed order, asserted directly, because a conditional draw
+would consume two `rnd()` instead of four and shift every shape from the second cloud on.
+`CLOUD_SKY_MIX` and `CLOUD_ALPHA_FLOOR` are **kept** — they are the procedural fallback's,
+live code with tests, and `sky-math` is zero-diff.
+
+**Found while verifying, not ours:** `rooms.rs:751` compares `/healthz`'s `AtomicUsize`
+gauge against a registry read taken under the mutex two lines above — two representations
+of "how many rooms", updated at different moments, across an HTTP round trip. A race by
+construction, load-sensitive, and it will cost the M18 sweep a run.

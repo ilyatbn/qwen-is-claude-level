@@ -384,7 +384,7 @@ real simulation at a third of real time, and thirty seconds in it takes the menu
 
 - [x] [T18.01](M18/T18.01-title-screen-stops.md) — The title screen stops after thirty seconds **(v6)**
 - [x] [T18.02](M18/T18.02-smarter-bots.md) — Bots that explore, arm themselves and run **(v6)**
-- [ ] [T18.03](M18/T18.03-clouds-bigger.md) — Clouds are bigger and vary in brightness **(v6)**
+- [x] [T18.03](M18/T18.03-clouds-bigger.md) — Clouds are bigger and vary in brightness **(v6)**
 - [ ] [T18.04](M18/T18.04-objects-sit-on-ground.md) — Rocks and bushes are bigger, and sit on the ground **(v6)**
 - [ ] [T18.05](M18/T18.05-toxic-rain-poisons.md) — Toxic rain poisons on hit **(v6)**
 - [ ] [T18.06](M18/T18.06-inventory-icons.md) — Inventory tiles show the item **(v6)**

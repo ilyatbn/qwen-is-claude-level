@@ -395,6 +395,134 @@ export default async function ({ page, shot, log }) {
     )
   }
 
+  // --- §E11.1: the wrap seam ------------------------------------------------
+  //
+  // A cloud leaving one edge re-enters at the other as a `twin`, offset by the
+  // span. Where the twin goes is decided by `halfW`, and `halfW` used to assume
+  // `CLOUD_TEX_W` while a sprite draws at its **atlas frame** width — 33 to 288
+  // px against 220, so the offset was out by up to 6.7x and the twin sat
+  // hundreds of pixels from the seam it exists to hide.
+  //
+  // **Sampled across the boundary, not near it.** A strip in the middle of a
+  // cloud is covered whether or not the twin is placed correctly; only the far
+  // edge, where the other half of a straddling cloud must appear, can tell.
+  {
+    // **Swept, not pinned to one moment.** Which clouds straddle an edge depends
+    // on the drift, so a single pinned value is hostage to whether that instant
+    // happens to contain a disagreement — measured, the first version pinned t=0
+    // and stayed green with the fix reverted, because no cloud sat in the band
+    // where a wrong `halfW` and a right one differ. D-29 is the same trap: a
+    // seam check that does not reach its case reports success.
+    let geom = null
+    let firstTwin = null
+    const W = 1280
+    const shouldWrap = (b) => b.x - b.w / 2 < 0 || b.x + b.w / 2 > W
+    for (let step = 0; step < 16; step++) {
+      const t = step * 4
+      await page.evaluate((tt) => window.__game.setParallaxClock(tt), t)
+      await page.waitForTimeout(80)
+      const g = await page.evaluate(() => window.__game.debug().parallax)
+
+      // Whether a twin *should* exist, computed from the drawn box. This is the
+      // half that makes the assertion falsifiable: sampling a strip centred on
+      // the twin's *reported* position asks "is the twin where the code says it
+      // is", which is true however wrong `halfW` is.
+      //
+      // A cloud needs a wrapped half exactly when its drawn box crosses a screen
+      // edge, and the box comes from `displayWidth` read back off the sprite — so
+      // this compares the wrap rule against the pixels Phaser will actually put
+      // down, not against the constant the rule used to assume.
+      const wrong = g.cloudBoxes
+        .map((b, i) => ({ i, b, want: shouldWrap(b), has: b.twinX !== null }))
+        .filter((r) => r.want !== r.has)
+      if (wrong.length > 0) {
+        const r = wrong[0]
+        throw new Error(
+          `at t=${t}, cloud ${r.i} is ${r.b.w.toFixed(0)} px wide at x=${r.b.x.toFixed(0)}, ` +
+            `so it ${r.want ? 'crosses' : 'does not cross'} a screen edge — and it ` +
+            `${r.has ? 'has' : 'has no'} wrap twin. The offset is computed from a width ` +
+            'that is not the width being drawn.',
+        )
+      }
+      // And where the twin sits: continuity requires exactly one screen width of
+      // offset, or the two halves overlap or leave a gap.
+      for (const b of g.cloudBoxes) {
+        if (b.twinX === null) continue
+        if (Math.abs(Math.abs(b.twinX - b.x) - W) > 1.5) {
+          throw new Error(
+            `at t=${t}, a wrap twin sits ${Math.abs(b.twinX - b.x).toFixed(0)} px from its ` +
+              `cloud, not ${W} — the halves do not join`,
+          )
+        }
+      }
+      if (!firstTwin && g.cloudBoxes.some((b) => b.twinX !== null)) {
+        firstTwin = t
+        geom = g
+      }
+    }
+    if (!geom) {
+      throw new Error(
+        'no cloud straddled a screen edge at any of the 16 sampled moments, so the ' +
+          'geometry above was never exercised — the sweep is not reaching its case',
+      )
+    }
+    // Back to the moment that has one, for the pixel half below.
+    await page.evaluate((tt) => window.__game.setParallaxClock(tt), firstTwin)
+    await page.waitForTimeout(200)
+    const straddling = geom.cloudBoxes.filter((b) => b.twinX !== null)
+
+    // The widest one: the most pixels to find, and the frame whose old `halfW`
+    // error was largest.
+    const c0 = straddling.reduce((a, b) => (a.w > b.w ? a : b))
+    const stripW = Math.max(8, Math.round(c0.w / 8))
+    const strip = {
+      x: Math.max(0, Math.min(1280 - stripW, Math.round(c0.twinX - stripW / 2))),
+      y: Math.max(0, Math.round(c0.y - c0.h / 2)),
+      w: stripW,
+      h: Math.max(8, Math.round(c0.h)),
+    }
+
+    const withT = (await page.screenshot()).toString('base64')
+    await page.evaluate(() => window.__game.setParallaxVisible(false))
+    await page.waitForTimeout(200)
+    const withoutT = (await page.screenshot()).toString('base64')
+    await page.evaluate(() => window.__game.setParallaxVisible(true))
+    await page.waitForTimeout(200)
+
+    const seam = await changedFraction(page, withT, withoutT, strip)
+    // **The control is the same column, below the band.** Not "a strip with no
+    // cloud in it": with twelve clouds across the sky the widest gap still had
+    // one in it, and the first version of this control measured 8.6% against the
+    // twin's 8.6% — the same number, because it had found another cloud.
+    //
+    // Holding x and moving y isolates *a cloud is at this height* from *the
+    // toggle changes this column*, which is the thing that could otherwise
+    // explain the assertion above.
+    const belowY = Math.min(719 - strip.h, Math.round(strip.y + strip.h * 3))
+    const control = await changedFraction(page, withT, withoutT, { ...strip, y: belowY })
+
+    if (seam < 0.05) {
+      throw new Error(
+        `the wrap twin covers ${(seam * 100).toFixed(1)}% of the strip at x=${strip.x} — ` +
+          `a cloud ${c0.w.toFixed(0)} px wide straddles the edge and its other half is ` +
+          'not there: the seam is open',
+      )
+    }
+    if (control >= seam) {
+      throw new Error(
+        `an empty strip changed ${(control * 100).toFixed(1)}% against the twin's ` +
+          `${(seam * 100).toFixed(1)}% — the toggle is changing the whole band, so the ` +
+          'seam assertion above is measuring the layer rather than the twin',
+      )
+    }
+    log(
+      `wrap seam: twin strip at x=${strip.x} changed ${(seam * 100).toFixed(1)}% ` +
+        `across the layer toggle, the same column below the band ${(control * 100).toFixed(1)}% ` +
+        `(cloud ${c0.w.toFixed(0)} px wide, twin at ${c0.twinX.toFixed(0)})`,
+    )
+    await page.evaluate(() => window.__game.setParallaxClock(null))
+  }
+
   // The clouds must actually be adding something at noon, or "the difference
   // changed" is a difference between two zeroes.
   const addNoon = lum(tones.noon.add)
@@ -490,25 +618,58 @@ export default async function ({ page, shot, log }) {
       // `Clouds_black` by phase already darkened it and `cloudTint` on top would
       // darken it twice. Comparing against `cloudTint` here would assert the
       // wrong function's answer and go red for a renderer doing the right thing.
+      //
+      // **Per cloud since §E11.** Each one carries its own brightness inside the
+      // phase's colour set, so a single band-wide expectation now matches no
+      // cloud in particular — the first version of this compared sprite zero
+      // against `cloudSpriteTintAt(alpha)` with no sprite and read
+      // `#ffffff` against `#d6d6d6`.
+      const p = got
       const want = got.cloudAtlas
-        ? window.__game.cloudSpriteTintAt(k.CLOUD_ALPHA)
-        : window.__game.cloudTintAt(uu, k.CLOUD_ALPHA, k.CLOUD_SKY_MIX, k.CLOUD_ALPHA_FLOOR)
-      return { want, got: { color: got.cloudTint, alpha: got.cloudAlpha }, atlas: got.cloudAtlas }
+        ? p.cloudVars.map((v) => window.__game.cloudSpriteTintAt(k.CLOUD_ALPHA, v).color)
+        : p.cloudTints.map(
+            () => window.__game.cloudTintAt(uu, k.CLOUD_ALPHA, k.CLOUD_SKY_MIX, k.CLOUD_ALPHA_FLOOR).color,
+          )
+      return {
+        want,
+        applied: p.cloudTints,
+        vars: p.cloudVars,
+        got: { color: got.cloudTint, alpha: got.cloudAlpha },
+        atlas: got.cloudAtlas,
+        baseAlpha: k.CLOUD_ALPHA,
+      }
     }, u)
     const hex = (v) => `#${(v >>> 0).toString(16).padStart(6, '0')}`
-    if (both.want.color !== both.got.color) {
+    const wrong = both.want.findIndex((w, i) => w !== both.applied[i])
+    if (wrong !== -1) {
       throw new Error(
-        `${name}: cloudTint says ${hex(both.want.color)} and the sprite is holding ` +
-          `${hex(both.got.color)} — the tint is computed and not applied`,
+        `${name}: cloud ${wrong} should be tinted ${hex(both.want[wrong])} and is holding ` +
+          `${hex(both.applied[wrong])} — the tint is computed and not applied`,
       )
     }
-    if (Math.abs(both.want.alpha - both.got.alpha) > 0.001) {
+    // Alpha is per cloud too, so this compares sprite zero against sprite zero's
+    // own expectation rather than against a band-wide one.
+    const wantAlpha0 = both.baseAlpha * (both.atlas ? both.vars[0].alpha : 1)
+    if (both.atlas && Math.abs(wantAlpha0 - both.got.alpha) > 0.001) {
       throw new Error(
-        `${name}: cloudTint says alpha ${both.want.alpha.toFixed(3)} and the sprite has ` +
+        `${name}: cloud 0 should have alpha ${wantAlpha0.toFixed(3)} and has ` +
           `${both.got.alpha.toFixed(3)}`,
       )
     }
-    log(`${name.padEnd(5)} sprite tint ${hex(both.got.color)} alpha ${both.got.alpha.toFixed(3)} — agrees with cloudTint`)
+    const shades = new Set(both.applied.map((v) => v >>> 0)).size
+    log(
+      `${name.padEnd(5)} ${both.applied.length} clouds in ${shades} shades, ` +
+        `cloud 0 ${hex(both.got.color)} alpha ${both.got.alpha.toFixed(3)} — each agrees with its own tint`,
+    )
+    // §E11: the point of per-cloud brightness is that they are not all one
+    // shade. Without this the element-wise comparison above passes for twelve
+    // identical clouds, which is the sheet the band exists to break up.
+    if (both.atlas && shades < 4) {
+      throw new Error(
+        `${name}: twelve clouds are drawn in only ${shades} shade(s) — the per-cloud ` +
+          'brightness band is not reaching the sprites',
+      )
+    }
   }
   // The control: the two phases must not be the same colour, or "they agree"
   // is two constants agreeing.

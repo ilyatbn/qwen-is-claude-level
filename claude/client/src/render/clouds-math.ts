@@ -34,6 +34,17 @@ export interface CloudSprite {
   shape: number
   /** 1-based, matching the `_N` suffix. */
   size: number
+  /**
+   * How light this cloud is **within** its phase's colour set, 0..1 (§E11).
+   *
+   * A multiplier on the tint, not a replacement for the set: §C14 still decides
+   * white by day and black at night, and this only varies how lit one cloud
+   * looks inside that choice. Twelve clouds at one brightness read as a sheet;
+   * twelve across a band read as sky.
+   */
+  bright: number
+  /** How thick this cloud is, as a multiplier on `CLOUD_ALPHA` (§E11). */
+  alpha: number
 }
 
 /**
@@ -72,7 +83,10 @@ export function cloudColourForPhase(phase: SkyPhase, storm = false): CloudColour
 /**
  * Atlas frame for one cloud. `build-cloud-atlas.mjs` names them this way.
  */
-export function cloudFrame(colour: CloudColour, sprite: CloudSprite): string {
+export function cloudFrame(
+  colour: CloudColour,
+  sprite: Pick<CloudSprite, 'shape' | 'size'>,
+): string {
   return `cloud_${colour}_s${sprite.shape}_${sprite.size}`
 }
 
@@ -84,7 +98,14 @@ export function cloudFrame(colour: CloudColour, sprite: CloudSprite): string {
  * this cannot move the positions `cloudField` already drew from the `'clouds'`
  * stream: the same sub-stream discipline `docs/10` §2 uses server-side.
  */
-export function cloudSprites(seed: number, count: number): CloudSprite[] {
+export function cloudSprites(
+  seed: number,
+  count: number,
+  brightMin = 1,
+  brightMax = 1,
+  alphaMin = 1,
+  alphaMax = 1,
+): CloudSprite[] {
   let s = clientTagSeed(seed, 'cloud-shapes') >>> 0
   const rnd = (): number => {
     // xorshift32, the same scatter `cloudField` and the star field use.
@@ -96,11 +117,17 @@ export function cloudSprites(seed: number, count: number): CloudSprite[] {
     return s / 0x100000000
   }
   const out: CloudSprite[] = []
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t
   for (let i = 0; i < count; i++) {
-    out.push({
-      shape: 1 + Math.floor(rnd() * CLOUD_SHAPES),
-      size: 1 + Math.floor(rnd() * CLOUD_SIZES),
-    })
+    // All four draws happen for every cloud, in a fixed order. Drawing
+    // conditionally — brightness only when an atlas is loaded, say — would make
+    // the *positions* depend on whether the art was there, and §C14's promise is
+    // that a seed always looks the same.
+    const shape = 1 + Math.floor(rnd() * CLOUD_SHAPES)
+    const size = 1 + Math.floor(rnd() * CLOUD_SIZES)
+    const bright = lerp(brightMin, brightMax, rnd())
+    const alpha = lerp(alphaMin, alphaMax, rnd())
+    out.push({ shape, size, bright, alpha })
   }
   return out
 }
@@ -132,6 +159,22 @@ export function cloudSprites(seed: number, count: number): CloudSprite[] {
  * the two — a reduced mix over the sprite — would need two new tunables that no
  * doc specifies, so it is not being invented here.
  */
-export function cloudSpriteTint(baseAlpha: number): { color: number; alpha: number } {
-  return { color: 0xffffff, alpha: baseAlpha }
+export function cloudSpriteTint(
+  baseAlpha: number,
+  sprite?: Pick<CloudSprite, 'bright' | 'alpha'>,
+): { color: number; alpha: number } {
+  // §E11's per-cloud variation rides on top, and only ever *downward*: a grey
+  // multiplier on the art's own colour. Brightening past 0xffffff is not
+  // available in a tint, so the band's top is 1.0 and the variation is a range
+  // of shadow rather than of light — which is what a cloud further away looks
+  // like anyway.
+  const b = Math.round(255 * clamp01(sprite?.bright ?? 1))
+  return {
+    color: (b << 16) | (b << 8) | b,
+    alpha: baseAlpha * clamp01(sprite?.alpha ?? 1),
+  }
+}
+
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v
 }

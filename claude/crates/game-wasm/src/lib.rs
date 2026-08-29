@@ -798,6 +798,12 @@ pub fn constants_json() -> String {
         CLOUD_BAND_TOP => c::CLOUD_BAND_TOP,
         CLOUD_BAND_BOTTOM => c::CLOUD_BAND_BOTTOM,
         CLOUD_ALPHA => c::CLOUD_ALPHA,
+        // §E11's per-cloud variation. Across the boundary like every other
+        // tunable, so the client cannot hold a second copy of the band.
+        CLOUD_BRIGHT_MIN => c::CLOUD_BRIGHT_MIN,
+        CLOUD_BRIGHT_MAX => c::CLOUD_BRIGHT_MAX,
+        CLOUD_ALPHA_MIN => c::CLOUD_ALPHA_MIN,
+        CLOUD_ALPHA_MAX => c::CLOUD_ALPHA_MAX,
         CLOUD_SPEED_SPREAD => c::CLOUD_SPEED_SPREAD,
         CLOUD_SKY_MIX => c::CLOUD_SKY_MIX,
         CLOUD_ALPHA_FLOOR => c::CLOUD_ALPHA_FLOOR,

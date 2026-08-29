@@ -259,6 +259,10 @@ export interface Constants {
   CLOUD_BAND_BOTTOM: number
   CLOUD_ALPHA: number
   CLOUD_SPEED_SPREAD: number
+  CLOUD_BRIGHT_MIN: number
+  CLOUD_BRIGHT_MAX: number
+  CLOUD_ALPHA_MIN: number
+  CLOUD_ALPHA_MAX: number
   CLOUD_SKY_MIX: number
   CLOUD_ALPHA_FLOOR: number
   RIDGE_TEX_W: number

@@ -146,6 +146,21 @@ export class ParallaxLayer {
   private cloudSprites: CloudSprite[] = []
   /** The pack atlas, or null when it did not load (`docs/50` §8). */
   private cloudAtlas: string | null = null
+  /**
+   * The native width of each cloud's atlas frame, resolved once (§E11.1).
+   *
+   * The frames are **trimmed and packed at their cropped size**
+   * (`build-cloud-atlas.mjs`): 120 of them, 33 to 288 px wide, against a
+   * `CLOUD_TEX_W` of 220. **The frame is authoritative** — the pack ships 8
+   * shapes x 5 sizes and those five variants are the only thing that makes a
+   * small cloud small, so forcing every one to 220 px would be a per-cloud
+   * change spanning 8.7x that throws the size variety away and leaves
+   * `CLOUD_SCALE_MIN..MAX`'s 2.3x spread as the whole of it.
+   *
+   * So this exists to make `halfW` agree with what is drawn, not to make the
+   * draw agree with `halfW`.
+   */
+  private cloudFrameW: number[] = []
   /** Last colour set drawn, so the texture is swapped only when it changes. */
   private lastCloudColour: string | null = null
   private seed = 0
@@ -153,7 +168,8 @@ export class ParallaxLayer {
   private ridgeKeys: string[] = []
   /** Last tint applied, so `setTint` is not called sixty times a second. */
   private lastRidgeTint: number[] = []
-  private lastCloudTint = -1
+  /** Last tint applied per cloud, so `setTint` is not called twelve times a frame. */
+  private lastCloudTints: number[] = []
   /** Set by `setVisible(false)`; `update` must not undo it on the next frame. */
   private hidden = false
   /** Reused by `view()`, so the per-frame maths does not allocate a literal. */
@@ -257,8 +273,24 @@ export class ParallaxLayer {
     this.themeId = themeId
     // Fractions of the visible rect, resolved to pixels at draw time — see the
     // `Cloud.x` doc for the zoom bug that came of doing it the other way.
-    this.cloudSprites = cloudSprites(seed, c.CLOUD_COUNT)
+    this.cloudSprites = cloudSprites(
+      seed,
+      c.CLOUD_COUNT,
+      c.CLOUD_BRIGHT_MIN,
+      c.CLOUD_BRIGHT_MAX,
+      c.CLOUD_ALPHA_MIN,
+      c.CLOUD_ALPHA_MAX,
+    )
     this.lastCloudColour = null
+    this.lastCloudTints = new Array(c.CLOUD_COUNT).fill(-1)
+    // Resolved once per seed, not per frame. The width is the same across the
+    // three colour sets — they are the same shapes in different inks — so one
+    // lookup answers for whichever set the phase picks later.
+    this.cloudFrameW = this.cloudSprites.map((sp) => {
+      if (!this.cloudAtlas) return c.CLOUD_TEX_W
+      const f = this.scene.textures.getFrame(this.cloudAtlas, cloudFrame('white', sp))
+      return f ? f.width : c.CLOUD_TEX_W
+    })
     this.clouds = cloudField(
       seed,
       c.CLOUD_COUNT,
@@ -363,35 +395,64 @@ export class ParallaxLayer {
       // Apparent size held constant through a zoom, like the ridge band.
       const scale = cloud.scale * yScale
       const y = view.top + cloud.y * view.h
-      const halfW = (c.CLOUD_TEX_W / 2) * scale
+      // **From the width actually drawn.** A sprite is `frameW * scale` across;
+      // this used to assume `CLOUD_TEX_W * scale`, which is a 6.7x error in the
+      // wrap offset for the narrowest frame in the pack — the twin sat hundreds
+      // of pixels from the seam it exists to hide. `CLOUD_TEX_W` still sizes the
+      // procedural blob, whose texture really is that wide.
+      const drawnW = this.cloudFrameW[i] ?? c.CLOUD_TEX_W
+      const halfW = (drawnW / 2) * scale
 
-      // Swap the texture, never the geometry. Every sprite is displayed at the
-      // same `CLOUD_TEX_W x CLOUD_TEX_H * scale` the procedural blob was, so
-      // `halfW`, the wrap and the parallax below are bit-for-bit T15.03's — this
-      // task changes what a cloud looks like and nothing about where it is.
+      // Swap the texture, never the geometry.
+      //
+      // **This used to claim every sprite is drawn at the blob's
+      // `CLOUD_TEX_W x CLOUD_TEX_H * scale`, so the wrap maths was bit-for-bit
+      // T15.03's. It was not** — the `setDisplaySize` that would have made it
+      // true was overridden by `setScale` on the next line, so the sprite drew at
+      // its own frame width and `halfW` disagreed with it. The comment reassured
+      // a reader checking exactly the thing that was broken.
+      //
+      // §E11.1: the frame is authoritative for a sprite, and `halfW` above is
+      // derived from it. `CLOUD_TEX_W`/`CLOUD_TEX_H` describe the procedural
+      // fallback, which is the only thing whose texture is really that size.
       if (this.cloudAtlas && colourChanged) {
         const frame = cloudFrame(colour, this.cloudSprites[i]!)
         if (this.scene.textures.getFrame(this.cloudAtlas, frame)) {
           img.setTexture(this.cloudAtlas, frame)
           twin.setTexture(this.cloudAtlas, frame)
-          img.setDisplaySize(c.CLOUD_TEX_W * scale, c.CLOUD_TEX_H * scale)
-          twin.setDisplaySize(c.CLOUD_TEX_W * scale, c.CLOUD_TEX_H * scale)
         }
       }
 
-      img.setVisible(true).setPosition(view.left + x, y).setScale(scale).setAlpha(alpha)
+      // §E11: each cloud's own opacity on top of the phase's. `setScale` is the
+      // only sizing call on this path now — the `setDisplaySize` that used to sit
+      // in the colour-change branch above was overridden by it every frame, and
+      // the asymmetry is what hid the whole thing: `setDisplaySize` ran **only on
+      // a colour-set change**, `setScale` runs **every frame**, so the override
+      // always won and the computed display size was discarded unread.
+      const spriteAlpha = alpha * (this.cloudAtlas ? (this.cloudSprites[i]?.alpha ?? 1) : 1)
+      img.setVisible(true).setPosition(view.left + x, y).setScale(scale).setAlpha(spriteAlpha)
       const tx = cloudTwinX(x, span, halfW)
       if (tx === null) {
         twin.setVisible(false)
       } else {
-        twin.setVisible(true).setPosition(view.left + tx, y).setScale(scale).setAlpha(alpha)
+        twin
+          .setVisible(true)
+          .setPosition(view.left + tx, y)
+          .setScale(scale)
+          .setAlpha(spriteAlpha)
       }
-      if (color !== this.lastCloudTint) {
-        img.setTint(color)
-        twin.setTint(color)
+      // §E11: each cloud's own brightness, so the tint differs per sprite rather
+      // than once for the whole band. The phase's colour set is still what
+      // `colour` picked above — this only varies within it.
+      const perCloud = this.cloudAtlas
+        ? cloudSpriteTint(alpha, this.cloudSprites[i]).color
+        : color
+      if (perCloud !== this.lastCloudTints[i]) {
+        img.setTint(perCloud)
+        twin.setTint(perCloud)
+        this.lastCloudTints[i] = perCloud
       }
     }
-    this.lastCloudTint = color
   }
 
   /**
@@ -453,6 +514,30 @@ export class ParallaxLayer {
     cloudAtlas: string | null
     /** The frame each cloud is showing, so a check can see the colour set move. */
     cloudFrames: string[]
+    /**
+     * The **drawn** geometry of every cloud, for the seam (§E11.1).
+     *
+     * `displayWidth` read back off the sprite rather than computed here: the
+     * whole defect was a width that was calculated and then overridden, so a
+     * check that recomputed it would agree with the calculation and miss the
+     * override. `twinX` is `null` when the cloud does not straddle an edge, and
+     * a check needs one that does — sampling the middle of a cloud passes while
+     * the twin sits hundreds of pixels from where it belongs.
+     */
+    cloudBoxes: Array<{ x: number; w: number; twinX: number | null; y: number; h: number }>
+    /** The camera-space rect that fills the screen, so a check can convert. */
+    view: { left: number; top: number; w: number; h: number }
+    /**
+     * §E11's per-cloud brightness and alpha, and the tint each sprite is
+     * **actually holding**.
+     *
+     * Both ends, per cloud. Reading one sprite's tint against one band-wide
+     * expectation was enough while every cloud shared a tint; now they differ by
+     * design, so a single comparison would be asserting that cloud zero happens
+     * to match a value no cloud is drawn with.
+     */
+    cloudVars: Array<{ bright: number; alpha: number }>
+    cloudTints: number[]
   } {
     return {
       seed: this.seed,
@@ -474,6 +559,32 @@ export class ParallaxLayer {
       ridgeTint: this.ridges[this.ridges.length - 1]?.tintTopLeft ?? 0,
       cloudAtlas: this.cloudAtlas,
       cloudFrames: this.cloudGfx.map((g) => String(g.frame?.name ?? '')),
+      // **In screen pixels, converted here.** These sprites are
+      // `scrollFactor(0)`, so their coordinates are camera space — at
+      // `CAMERA_ZOOM` 2 the visible rect is 640 wide against a 1280 px viewport.
+      // A check that clipped a screenshot with the raw numbers would sample the
+      // wrong half of the sky, which is the world-versus-screen mistake
+      // `objects.mjs` already paid for. One conversion, at the source.
+      cloudBoxes: (() => {
+        const v = this.view()
+        const c2 = C()
+        const sx = c2.VIEWPORT_W / v.w
+        const sy = c2.VIEWPORT_H / v.h
+        const toScreenX = (x: number) => (x - v.left) * sx
+        return this.cloudGfx.map((g, i) => {
+          const twin = this.cloudTwins[i]
+          return {
+            x: toScreenX(g.x),
+            w: g.displayWidth * sx,
+            y: (g.y - v.top) * sy,
+            h: g.displayHeight * sy,
+            twinX: twin?.visible ? toScreenX(twin.x) : null,
+          }
+        })
+      })(),
+      view: this.view(),
+      cloudVars: this.cloudSprites.map((sp) => ({ bright: sp.bright, alpha: sp.alpha })),
+      cloudTints: this.cloudGfx.map((g) => g.tintTopLeft),
     }
   }
 }

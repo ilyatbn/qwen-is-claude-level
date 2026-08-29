@@ -844,8 +844,8 @@ export class SandboxScene extends Phaser.Scene {
        * check must compare against whichever path `parallax.cloudAtlas` says is
        * live, or it is asserting the wrong function's answer.
        */
-      cloudSpriteTintAt(baseAlpha: number) {
-        return cloudSpriteTint(baseAlpha)
+      cloudSpriteTintAt(baseAlpha: number, sprite?: { bright: number; alpha: number }) {
+        return cloudSpriteTint(baseAlpha, sprite)
       },
       setParallaxClock(t: number | null) {
         self.sky?.parallax.setClock(t)

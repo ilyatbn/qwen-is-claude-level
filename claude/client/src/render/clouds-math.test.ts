@@ -110,6 +110,71 @@ describe('the seeded sprite pick', () => {
   })
 })
 
+describe('per-cloud brightness and alpha (§E11)', () => {
+  const band = () => cloudSprites(4242, 24, 0.62, 1.0, 0.7, 1.0)
+
+  it('gives the same clouds the same brightness for the same seed', () => {
+    const a = band()
+    const b = band()
+    expect(a.map((c) => c.bright)).toEqual(b.map((c) => c.bright))
+    expect(a.map((c) => c.alpha)).toEqual(b.map((c) => c.alpha))
+  })
+
+  it('varies across the sky rather than giving twelve clouds one value', () => {
+    const sp = band()
+    // The control the assertion needs: a constant would satisfy "inside the
+    // band" perfectly, and twelve identical clouds is the sheet §E11 exists to
+    // break up.
+    expect(new Set(sp.map((c) => c.bright.toFixed(3))).size).toBeGreaterThan(4)
+    expect(new Set(sp.map((c) => c.alpha.toFixed(3))).size).toBeGreaterThan(4)
+  })
+
+  it('stays inside the band it was given', () => {
+    for (const c of band()) {
+      expect(c.bright).toBeGreaterThanOrEqual(0.62)
+      expect(c.bright).toBeLessThanOrEqual(1.0)
+      expect(c.alpha).toBeGreaterThanOrEqual(0.7)
+      expect(c.alpha).toBeLessThanOrEqual(1.0)
+    }
+  })
+
+  it('does not move the shapes it was drawn alongside', () => {
+    // §C14 promises a seed always looks the same. The brightness draws are taken
+    // for **every** cloud in a fixed order, so adding them cannot shift the
+    // shape or size picks — which is what a conditional draw would have done.
+    const withBand = cloudSprites(4242, 12, 0.62, 1.0, 0.7, 1.0)
+    const without = cloudSprites(4242, 12)
+    expect(withBand.map((c) => c.shape)).toEqual(without.map((c) => c.shape))
+    expect(withBand.map((c) => c.size)).toEqual(without.map((c) => c.size))
+  })
+
+  it('darkens the tint per cloud without touching the phase that chose it', () => {
+    const sp = band()
+    const dark = sp.reduce((a, b) => (a.bright < b.bright ? a : b))
+    const light = sp.reduce((a, b) => (a.bright > b.bright ? a : b))
+    const d = cloudSpriteTint(0.62, dark)
+    const l = cloudSpriteTint(0.62, light)
+    expect(d.color).toBeLessThan(l.color)
+    expect(d.alpha).not.toBe(l.alpha)
+
+    // **It varies within the set, never across it.** The colour set is still
+    // whatever `cloudColourForPhase` picked — this only multiplies it — so a
+    // black cloud cannot come out white at midnight, which is the §C14 bug the
+    // whole three-set arrangement exists to prevent.
+    for (const c of sp) {
+      const { color } = cloudSpriteTint(0.62, c)
+      expect(color).toBeLessThanOrEqual(0xffffff)
+      const grey = color & 0xff
+      expect((color >> 16) & 0xff).toBe(grey)
+      expect((color >> 8) & 0xff).toBe(grey)
+    }
+  })
+
+  it('is a no-op when no sprite is given — the fallback path is unchanged', () => {
+    expect(cloudSpriteTint(0.62)).toEqual({ color: 0xffffff, alpha: 0.62 })
+  })
+})
+
 describe('the atlas the renderer asks for', () => {
   const atlasPath = join(root, 'assets/atlas/clouds.json')
 

@@ -275,11 +275,37 @@ clock, no ambient randomness.
 
 ## E11 — Clouds are bigger and vary in brightness
 
-**They are also drawn at the wrong size today.** `parallax.ts` sets a display size and
-then calls `setScale` on the same sprite, which overrides it — so a cloud is its native
-atlas frame scaled, not `CLOUD_TEX_W × CLOUD_TEX_H` scaled, while the wrap-twin seam
-maths still assumes the latter. That is a bug, and it must be fixed before any size
-change means anything.
+**They are also drawn at the wrong size today** — but not in the direction this section
+first assumed. `parallax.ts` sets a display size and then calls `setScale` on the same
+sprite, which overrides it, so a cloud draws at its **native atlas frame** scaled while
+the wrap-twin's `halfW` still assumes `CLOUD_TEX_W`. Measured: 120 frames, width min 33 /
+median 104 / max 288 against a `CLOUD_TEX_W` of 220.
+
+### E11.1 — The frame is authoritative, not the constant
+
+Forcing `CLOUD_TEX_W` would not be a fix. It is a **per-cloud change spanning 8.7×** —
+0.76× for the widest frame, 6.67× for the narrowest — and it is **lossy**: the pack ships
+8 shapes × **5 sizes**, seeded per cloud, and those five variants are the only thing
+making a small cloud small. Flattening every frame to one width leaves `CLOUD_SCALE_MIN..MAX`
+as the sole source of variety, a 2.3× spread replacing an 8.7× one. That discards art
+that T16.04 deliberately selected.
+
+> **The drawn frame is the authority for a sprite cloud's size, and `halfW` must be
+> derived from it.** `CLOUD_TEX_W` / `CLOUD_TEX_H` remain the *procedural blob's* size —
+> they describe the fallback, not the sprite path.
+
+So the bug is `halfW`: a **6.7× error in the wrap offset** for the narrowest frames, which
+is why the seam is wrong today in both directions. And `parallax.ts:369-370`'s claim that
+the sprites are drawn at *"the same `CLOUD_TEX_W x CLOUD_TEX_H * scale` the procedural blob
+was, so `halfW`, the wrap and the parallax below are bit-for-bit T15.03's"* is **false**,
+and it reassures a reader checking exactly the thing that is broken.
+
+The asymmetry that makes the override always win is worth recording: `setDisplaySize` runs
+**only on a colour-set change**, `setScale` runs **every frame**.
+
+With the frame authoritative, §E15's `CLOUD_SCALE_MIN`/`MAX` change is what "about 30%
+bigger" means, and it applies on top of the frame's own size — which is what the section
+intended before the measurement.
 
 - **About 30% bigger**, expressed as a change to `CLOUD_SCALE_MIN` / `CLOUD_SCALE_MAX`.
 - **Per-cloud brightness.** Every cloud in the sky is currently the same colour set at the
@@ -354,6 +380,8 @@ New:
 | `TOXIC_POISON_DURATION` | 3.0 | seconds, resets on re-hit (§E13) |
 | `TOXIC_POISON_DPS` | 2.0 | health per second (§E13) |
 | `TOXIC_DROP_CARVE_R` | 6 | bullet-sized (§E13) |
+| `CLOUD_BRIGHT_MIN` / `_MAX` | per T18.03's measurement | the band §E11 asks for and did not name. The top is **1.0**: a tint cannot brighten past the art's own white, so the variation is a range of *shadow* |
+| `CLOUD_ALPHA_MIN` / `_MAX` | per T18.03's measurement | as above |
 
 Changed:
 
@@ -374,6 +402,11 @@ Retired:
 | `TOXIC_PUDDLE_RADIUS` | " |
 | `TOXIC_PUDDLE_LIFE` | " |
 | `TOXIC_DPS` | replaced by `TOXIC_POISON_DPS` (§E13) |
+
+§E11 asked for per-cloud brightness "within a band" and named no band; the four constants
+above close that gap. All four draws are taken for **every** cloud in a fixed order, so
+adding them cannot shift the shape and size picks that precede them — a conditional draw
+would have moved every seed's sky.
 
 `OBJECT_TARGET_PLAYER_H_ROCK` at 2.25 makes a mean rock 63 px against a 28 px player.
 `docs/73` §D5's counts were measured at the old sizes and the 999-seed sweep is what
