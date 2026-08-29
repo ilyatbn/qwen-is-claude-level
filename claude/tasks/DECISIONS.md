@@ -970,3 +970,43 @@ pre-existing at the M17 boundary (D-51).
 
 **What would earn a number: n ≥ 30 on an idle box**, about 90 minutes. Worth doing once,
 deliberately — not worth inferring from the tail.
+
+## D-59 — The M18 boundary sweep, and the cost of one missing `npm test`  ·  M18
+**191 assertions passed, six checks red.** Split at `a154018` (pre-T18.04) in an isolated
+worktree, each check run individually:
+
+| check | pre-T18.04 | T18.04 | HEAD alone | verdict |
+|---|---|---|---|---|
+| `terrain-render` | pass | RED | RED | **T18.04** |
+| `objects` | pass | RED | RED | **T18.04** |
+| `void` | pass | RED | RED | **T18.04** |
+| `birds` | pass | RED ×3 | RED | **T18.04** |
+| `audio` | pass | RED ×3 | RED | **T18.04** |
+| `crates` | pass | pass ×3 | **pass ×2** | **sweep-load flake** |
+
+**Five of six are T18.04's, all deterministic**, and **T18.04 shipped because its gate was
+Rust-only**. That is the *second* consequence of one missing `npm --prefix client test` —
+the first was the `backdrop-real` regression T18.05 had to carry. Three signatures on it:
+the coder's report, the reviewer's reproduction, and mine at landing.
+**The rule that follows:** a task that regenerates committed art or changes generated
+terrain runs the **whole** gate, browser suite included, before it lands — deferring the
+browser suite to a boundary sweep is how five checks travel two tasks downstream.
+
+**Four of the five are one sentence.** `terrain-render`'s *"the rockiest on-screen target
+is only 37% solid"*, `void`'s *"no thin floor within a body width either side"*, `objects`'
+collapsed carve signal, and `audio`'s log — **`cues after walking: land, land`**, the
+player *falling* rather than walking — are all **bigger objects changed the terrain under
+the player**, breaking four fixtures that assumed what was under their feet.
+
+**`birds` is the exception and it is a measurement bug.** Its rect reads
+`[1280..-1]x[720..-1]` — an **inverted, empty rectangle**: a bounding box initialised to the
+viewport bounds whose expanding scan matched no pixels. Its companion failure reports the
+bird at **(640, 360)**, the exact viewport centre. Both are **a default standing in for a
+value never computed**, not a layer drawing nothing — the check's own earlier assertions
+pass, including *a bird is in the camera: 1 of 1* and *both ends agree: 1 announced, 1
+drawn*.
+
+**`crates` needs no fix.** Green 2/2 at HEAD run alone and green on every baseline — **7
+green against the sweep's single red**. It is the check that in M16 *"flew at the crate for
+70 s"*; under a forty-check sweep it loses its timing. **D-58's discipline arriving on the
+browser side:** a single failure is unproven until re-run.
