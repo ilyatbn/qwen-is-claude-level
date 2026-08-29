@@ -44,6 +44,37 @@ describe('healthBar', () => {
     expect(over.fill + over.over).toBeCloseTo(1, 5)
   })
 
+  it('draws a poisoned player in a green the healthy bar never uses', () => {
+    const healthy = healthBar(BASE, BASE, CAP)
+    const sick = healthBar(BASE, BASE, CAP, true)
+    // The pair: the poison has to change the colour, or §E13's indicator is a
+    // no-op, and it has to change it to something the full-health bar does not
+    // already show, or it is invisible on the player it is about.
+    expect(sick.colour).not.toBe(healthy.colour)
+    expect(sick.colour).toBe('#7cd44a')
+    // And it changes nothing else: the fill is still the health.
+    expect(sick.fill).toBeCloseTo(healthy.fill, 5)
+    expect(sick.label).toBe(healthy.label)
+  })
+
+  it('lets low health outrank the poison tint, so green never masks red', () => {
+    // The failure this exists for: poisoned at 10 health drawn green inverts the
+    // one signal the bar carries. Red wins below half.
+    const dying = healthBar(BASE * 0.1, BASE, CAP, true)
+    expect(dying.colour).toBe(healthBar(BASE * 0.1, BASE, CAP).colour)
+    // The control, one step the other side of the boundary: above half the
+    // poison does show, so the rule above is a precedence and not a mute button.
+    const hurt = healthBar(BASE * 0.9, BASE, CAP, true)
+    expect(hurt.colour).toBe('#7cd44a')
+    expect(hurt.colour).not.toBe(healthBar(BASE * 0.9, BASE, CAP).colour)
+  })
+
+  it('shows overheal gold even while poisoned', () => {
+    // A band, not a ramp position: the poison tint is a colour on the ramp and
+    // has nothing to say about a bar that is above `base`.
+    expect(healthBar(CAP, BASE, CAP, true).colour).toBe('#ffc93f')
+  })
+
   it('runs red at nothing and green at full', () => {
     expect(healthBar(0, BASE, CAP).colour).toBe('#e0342b')
     expect(healthBar(BASE, BASE, CAP).colour).toBe('#3ec75a')

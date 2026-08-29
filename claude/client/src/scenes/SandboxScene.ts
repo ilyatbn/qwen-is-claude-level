@@ -142,7 +142,7 @@ export class SandboxScene extends Phaser.Scene {
     // its panel already has a button beside the key.
     this.input.keyboard?.on('keydown-F4', () => this.overlay.toggle())
     // Hazards sit just under the ordnance layer: both are world-space FX, and
-    // a puddle should never draw over a rocket.
+    // a vent's flame should never draw over a rocket.
     this.hazardGfx = this.add.graphics().setDepth(38)
     this.player = new PlayerView(this, 0)
     this.player.container.setDepth(DEPTH.actors)
@@ -753,8 +753,6 @@ export class SandboxScene extends Phaser.Scene {
         const w = self.lastWeather
         const v = w?.vents[0]
         if (v) return { x: v.x, y: v.y }
-        const p = w?.puddles[0]
-        if (p) return { x: p.x, y: p.y }
         return null
       },
       /** What the weather is doing right now — the M5 checkpoint reads this. */
@@ -762,7 +760,6 @@ export class SandboxScene extends Phaser.Scene {
         const w = self.lastWeather
         return {
           active: w?.active ?? [],
-          puddles: w?.puddles.length ?? 0,
           vents: w?.vents.length ?? 0,
           fog: w?.fog ?? 0,
           solid: self.core.countSolid(),
@@ -1075,13 +1072,6 @@ export class SandboxScene extends Phaser.Scene {
   private drawHazards(w: WeatherState): void {
     const g = this.hazardGfx
     g.clear()
-
-    for (const p of w.puddles) {
-      g.fillStyle(0x6dff4a, 0.35)
-      g.fillCircle(p.x, p.y, p.r)
-      g.lineStyle(2, 0x9dff7a, 0.8)
-      g.strokeCircle(p.x, p.y, p.r)
-    }
 
     for (const v of w.vents) {
       if (v.jetting) {

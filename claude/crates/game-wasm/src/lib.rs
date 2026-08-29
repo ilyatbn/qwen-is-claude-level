@@ -453,7 +453,7 @@ impl GameCore {
         let mut events = Vec::new();
         for im in outcomes {
             let pid = im.id;
-            let (at, _victim) = match im.outcome {
+            let (at, victim) = match im.outcome {
                 // Out of the world (§C15): gone, and it detonates nothing. The
                 // local sim has no event stream to despawn it on — `step`
                 // already removed it — so there is nothing further to do.
@@ -461,19 +461,34 @@ impl GameCore {
                 ProjectileOutcome::Exploded { at } => (at, None),
                 ProjectileOutcome::HitPlayer { at, victim } => (at, Some(victim)),
             };
-            // §C21: a drop of toxic rain does **not** explode. It lands and
-            // becomes a puddle, and toxic rain leaves the mask byte-identical
-            // (`docs/13` §3). Without this the sandbox detonates it as a bazooka
-            // — see the fallback below, which treats every projectile as one —
-            // so rain would dig craters here while digging nothing in a real
-            // game, and `weather-visible` samples the sandbox.
+            // §C21/§E13: a drop of toxic rain does **not** explode. It poisons
+            // whoever it landed on and takes a bullet-sized bite out of anything
+            // else (`docs/13` §3 — never a crater). Without this the sandbox
+            // detonates it as a bazooka — see the fallback below, which treats
+            // every projectile as one — so rain would dig craters here while
+            // digging pinholes in a real game, and `weather-visible` samples the
+            // sandbox.
+            //
+            // The same two rules as `World::detonate`, because this is the same
+            // decision: `poison_lands` is the shared roof test, not a second copy
+            // of one.
             if game_core::effects::toxic::owns(im.weapon) {
-                if let Some(t) = self.weather.toxic.as_mut() {
-                    let p = t.land(at, now);
-                    events.push(serde_json::json!({
-                        "puddle": { "id": p.id, "x": p.pos.x, "y": p.pos.y, "r": p.radius }
-                    }));
+                if let Some(v) = victim {
+                    if game_core::effects::toxic::poison_lands(&self.map, at) {
+                        if let Some(p) = self.players.iter_mut().find(|p| p.id == v) {
+                            if p.stats.alive {
+                                p.stats.poison(now);
+                                events.push(serde_json::json!({
+                                    "poisoned": { "id": v, "until": p.stats.poisoned_until }
+                                }));
+                            }
+                        }
+                    }
+                    continue;
                 }
+                let r = game_core::constants::TOXIC_DROP_CARVE_R.round() as i32;
+                self.map
+                    .carve_circle(at.x.round() as i32, at.y.round() as i32, r);
                 continue;
             }
             // Every other projectile explodes: contact, fuse or lifetime.
@@ -599,7 +614,7 @@ impl GameCore {
     /// client should draw, as JSON.
     pub fn weather_step(&mut self, now: f32, dt: f32) -> String {
         let Some(sched) = self.weather.scheduler.as_mut() else {
-            return "{\"active\":[],\"puddles\":[],\"vents\":[],\"fog\":0.0}".to_string();
+            return "{\"active\":[],\"vents\":[],\"fog\":0.0}".to_string();
         };
         sched.tick(now, f32::MAX);
 
@@ -631,23 +646,39 @@ impl GameCore {
 
         // Every effect damages through the same HitTarget path a weapon
         // does, so shields and i-frames are handled once rather than per effect.
-        let mut puddles = Vec::new();
         if let Some(t) = self.weather.toxic.as_mut() {
-            let hits: HitLog = Default::default();
-            {
-                let mut targets = build_targets(&mut self.players, &hits);
-                t.tick(
-                    &mut self.projectiles,
-                    &self.map,
-                    &mut targets,
-                    toxic_on,
-                    now,
-                    dt,
-                );
-            }
-            apply_hits(&mut self.players, &hits.borrow(), now);
-            for p in t.puddles() {
-                puddles.push(serde_json::json!({"x": p.pos.x, "y": p.pos.y, "r": p.radius}));
+            let living: Vec<f32> = self
+                .players
+                .iter()
+                .filter(|p| p.stats.alive)
+                .map(|p| p.body.pos.x)
+                .collect();
+            t.tick(&mut self.projectiles, &self.map, &living, toxic_on, now);
+        }
+
+        // §E13's poison, ticked here rather than in the effect: it outlives the
+        // shower, so an effect the scheduler is free to drop cannot own it.
+        //
+        // **Through `apply_damage`, not `health -=`.** The comment above this
+        // block says every effect damages through the same path so that shields
+        // and i-frames are handled once, and the first version of this made
+        // poison the one that did not — a raw subtraction, fifteen lines under
+        // that sentence. Three consequences, and only the first is cosmetic:
+        // a shielded player would have taken full damage here while the server
+        // halved it, a spawning player would have taken it through i-frames, and
+        // `health` could have crossed zero with `alive` still true, because
+        // `apply_damage` is where the death, the score and the respawn timer are
+        // decided. A corpse walking in the local sim, in exactly the builds
+        // `hud-bars` photographs.
+        //
+        // `apply_hits` exists for this and is what every other effect here uses;
+        // poison has no `HitTarget` to go through because nothing is hit, so it
+        // calls the same stats method that closure ends at.
+        let poison = game_core::constants::TOXIC_POISON_DPS * dt;
+        for p in self.players.iter_mut() {
+            if p.stats.alive && p.stats.poisoned(now) {
+                p.stats
+                    .apply_damage(poison, DamageSource::Weather(EffectKind::ToxicRain), now);
             }
         }
 
@@ -678,7 +709,6 @@ impl GameCore {
 
         serde_json::json!({
             "active": active,
-            "puddles": puddles,
             "vents": vents,
             "fog": fog,
         })
@@ -838,7 +868,9 @@ pub fn constants_json() -> String {
         // could have travelled between two samples.
         JETPACK_MAX_SPEED => c::JETPACK_MAX_SPEED,
         LAVA_BURN_RADIUS => c::LAVA_BURN_RADIUS,
-        TOXIC_PUDDLE_RADIUS => c::TOXIC_PUDDLE_RADIUS,
+        TOXIC_POISON_DURATION => c::TOXIC_POISON_DURATION,
+        TOXIC_POISON_DPS => c::TOXIC_POISON_DPS,
+        TOXIC_DROP_CARVE_R => c::TOXIC_DROP_CARVE_R,
         HEALTH_CAP => c::HEALTH_CAP,
         TRACER_LIFETIME => c::TRACER_LIFETIME,
         TRACER_WIDTH => c::TRACER_WIDTH,
@@ -924,6 +956,61 @@ pub fn dequantize_angle(q: u16) -> f32 {
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// §E13's poison in the **sandbox** core, which is a second damage path.
+    ///
+    /// A plain `#[test]`, not `#[wasm_bindgen_test]`: the ones below need
+    /// `wasm-pack test` and `cargo test -p game-wasm` runs **zero** of them, so a
+    /// `wasm_bindgen_test` here would not run in the gate either. This one does.
+    ///
+    /// The claim is the one `a_shielded_player_takes_half_and_iframes_take_none`
+    /// used to make about puddles, asserted where this build actually broke it:
+    /// the first version of `weather_step`'s poison was `p.stats.health -=
+    /// poison`, fifteen lines under a comment saying every effect damages through
+    /// one path so shields and i-frames are handled once.
+    ///
+    /// Two players and one poison. The unprotected one is the control — without
+    /// it, "the invulnerable player took nothing" is satisfied by a poison that
+    /// does nothing at all.
+    #[test]
+    fn the_sandbox_poison_respects_i_frames() {
+        let mut core = GameCore::new();
+        core.generate(4242, 0, 0);
+        core.add_player(0, 200.0, 200.0);
+        core.add_player(1, 260.0, 200.0);
+        // A scheduler has to exist or `weather_step` returns before the poison
+        // block. Forcing an effect is how the sandbox makes one.
+        core.force_effect(0, 0.0);
+
+        let before: Vec<f32> = core.players.iter().map(|p| p.stats.health).collect();
+        for p in core.players.iter_mut() {
+            p.stats.iframes_until = 0.0;
+            p.stats.poison(0.0);
+        }
+        core.players[1].stats.iframes_until = 10.0;
+
+        let dt = 1.0 / 60.0;
+        for i in 0..60 {
+            core.weather_step(i as f32 * dt, dt);
+        }
+
+        let lost: Vec<f32> = core
+            .players
+            .iter()
+            .enumerate()
+            .map(|(i, p)| before[i] - p.stats.health)
+            .collect();
+        assert!(
+            lost[0] > 0.0,
+            "the unprotected player lost nothing to a second of poison, so the \
+             assertion below would hold for a sandbox that never applies it"
+        );
+        assert_eq!(
+            lost[1], 0.0,
+            "an invulnerable player lost {} to poison in the sandbox core",
+            lost[1]
+        );
+    }
 
     #[wasm_bindgen_test]
     fn generate_sets_the_requested_dimensions() {

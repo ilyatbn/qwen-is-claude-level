@@ -99,22 +99,31 @@ try {
     if (name === 'toxic') {
       // Polled, not read once 600 ms into the active phase.
       //
-      // A drop is a projectile now (§C21): it leaves the cloud at `SKY_MARGIN`
-      // and only becomes a puddle where it stops, so the wait is however long the
-      // fall takes — which is a property of the *map*, not of the effect. Under
-      // `MAP_GENERATOR=v2` the ground sits ~880 px below the cloud instead of
-      // ~200, the first drop lands at ~1.0 s instead of ~0.35, and a single read
-      // at 0.6 s saw zero puddles and called it a failure. The active window is
+      // A drop is a projectile (§C21): it leaves the cloud at `SKY_MARGIN` and
+      // only lands where it stops, so the wait is however long the fall takes —
+      // a property of the *map*, not of the effect. Under `MAP_GENERATOR=v2` the
+      // ground sits ~880 px below the cloud instead of ~200, and a single read at
+      // 0.6 s saw nothing and called it a failure. The active window is
       // TOXIC_DURATION (8 s); 4 s of polling is well inside it.
-      let puddles = during.puddles
-      for (let t = 0; puddles === 0 && t < 20; t++) {
+      //
+      // **What is polled is the carve.** §E13 removed the puddles, so the
+      // landing has no lingering object to count — the bullet-sized bite it
+      // takes out of the ground is the evidence that a drop finished falling,
+      // and it is a stronger one, because it is measured on the map rather than
+      // on a list the effect keeps.
+      let dug = 0
+      for (let t = 0; dug === 0 && t < 20; t++) {
         await page.waitForTimeout(200)
-        puddles = (await page.evaluate('window.__game.weatherProbe()')).puddles
+        const now = await page.evaluate('window.__game.weatherProbe()')
+        dug = before.solid - now.solid
       }
-      check('toxic: puddles spawned', puddles > 0, `${puddles} puddles`)
-      const still = await page.evaluate('window.__game.weatherProbe()')
-      check('toxic: left the map alone', still.solid === before.solid,
-        `${before.solid} -> ${still.solid}`)
+      check('toxic: drops landed and bit the ground', dug > 0, `${dug} px removed`)
+      // ...and it is a bite, not a crater. `TOXIC_DROP_CARVE_R` is 6 px, so 20
+      // drops can remove at most ~20·π·6² ≈ 2300 px; a meteor's 50 px crater
+      // clears that in a single impact. Both ends, against the constants.
+      const c = await page.evaluate('window.__game.constants()')
+      const ceiling = 2 * Math.PI * c.TOXIC_DROP_CARVE_R ** 2 * (8 / 0.4)
+      check('toxic: bites, never craters', dug < ceiling, `${dug} px vs a ${ceiling.toFixed(0)} px ceiling`)
     }
     if (name === 'meteor') {
       await page.waitForTimeout(2500)

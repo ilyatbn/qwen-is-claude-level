@@ -100,9 +100,31 @@ impl MeteorShower {
             (METEOR_CARVE_R, METEOR_DAMAGE)
         };
 
+        // **A roof protects you** (§E13). Asked before the blast, because the
+        // blast carves: a meteor that opened the ceiling and *then* checked
+        // would find open sky above everyone it just buried.
+        //
+        // Partitioned rather than filtered, because `explode` takes a slice.
+        // Sheltered targets are swapped to the tail and the blast is handed the
+        // head; the head keeps its relative order, so which victims appear in
+        // `hits` and in what order is unchanged for everyone still exposed.
+        //
+        // This is the half §E13 predicted: the amendment asked toxic rain for a
+        // roof rule and observed that the shower "also does not have it". It did
+        // not — a meteor landing on a cave roof dealt its full 55 through the
+        // rock to whoever was sheltering underneath, which is the one thing
+        // cover is for.
+        let mut exposed = 0usize;
+        for i in 0..players.len() {
+            if !crate::effects::under_a_roof(map, players[i].pos) {
+                players.swap(i, exposed);
+                exposed += 1;
+            }
+        }
+
         let result = explode(
             map,
-            players,
+            &mut players[..exposed],
             at,
             radius,
             damage,
@@ -194,6 +216,22 @@ mod tests {
     /// what the property under test needs and no more.
     fn solid_map() -> Map {
         let mask = Mask::new_full(W, H);
+        let coarse = CoarseGrid::build(&mask);
+        Map::from_parts(mask, coarse, meta())
+    }
+
+    /// Solid ground with **open sky over a column**, so a meteor can reach what
+    /// is standing there.
+    ///
+    /// `solid_map` is solid to `y = 0`, which since §E13 means every point in it
+    /// is under a roof and immune to the shower. That is the rule working, not a
+    /// fixture bug — but a fixture that measures blast falloff has to put its
+    /// target somewhere a blast can reach, or it measures the roof instead.
+    fn map_with_a_shaft(x0: i32, x1: i32, down_to: i32) -> Map {
+        let mut mask = Mask::new_full(W, H);
+        for y in 0..down_to {
+            mask.clear_run(y, x0, x1);
+        }
         let coarse = CoarseGrid::build(&mask);
         Map::from_parts(mask, coarse, meta())
     }
@@ -406,7 +444,9 @@ mod tests {
     #[test]
     fn damage_falls_off_and_the_shield_halves_it() {
         for (dist, shielded) in [(0.0f32, false), (0.0, true), (METEOR_CARVE_R * 0.5, false)] {
-            let mut map = solid_map();
+            // Open above the target and the impact point, so this test measures
+            // falloff rather than §E13's roof.
+            let mut map = map_with_a_shaft(500, 800, 320);
             let mut pr = Projectiles::new();
             let at = Vec2::new(600.0, 300.0);
             let mut vel = Vec2::ZERO;
@@ -434,6 +474,73 @@ mod tests {
                 "dist {dist} shielded {shielded}: took {taken}, expected {expected}"
             );
         }
+    }
+
+    /// §E13's roof rule, on the shower.
+    ///
+    /// The amendment asked toxic rain for it and observed the shower "also does
+    /// not have it" — it did not, and a meteor landing on a cave roof dealt its
+    /// full `METEOR_DAMAGE` through the rock to whoever was sheltering.
+    ///
+    /// The pair, on one map and one impact: two targets the same distance from
+    /// the blast, one under the slab and one in the shaft beside it. A single
+    /// sheltered target proves nothing — a blast that hurt nobody would pass it —
+    /// so the exposed one is the control and it has to take the full number.
+    #[test]
+    fn a_roof_stops_a_meteor_and_the_player_beside_it_still_takes_the_hit() {
+        // Solid everywhere, with one open shaft. The impact sits in the shaft,
+        // and both targets sit at its mouth: same distance, different ceilings.
+        let mut map = map_with_a_shaft(600, 640, 400);
+        let mut pr = Projectiles::new();
+        let at = Vec2::new(620.0, 300.0);
+
+        let mut sheltered_vel = Vec2::ZERO;
+        let mut exposed_vel = Vec2::ZERO;
+        let mut sheltered = 0.0f32;
+        let mut exposed = 0.0f32;
+        {
+            let mut a = |amount: f32, _s: DamageSource| {
+                sheltered += amount;
+                true
+            };
+            let mut b = |amount: f32, _s: DamageSource| {
+                exposed += amount;
+                true
+            };
+            let mut targets = [
+                HitTarget {
+                    id: HitId::Player(0),
+                    w: crate::constants::PLAYER_W,
+                    h: crate::constants::PLAYER_H,
+                    // Just outside the shaft: rock overhead, well inside the blast.
+                    pos: Vec2::new(590.0, 300.0),
+                    vel: &mut sheltered_vel,
+                    alive: true,
+                    apply_damage: &mut a,
+                },
+                HitTarget {
+                    id: HitId::Player(1),
+                    w: crate::constants::PLAYER_W,
+                    h: crate::constants::PLAYER_H,
+                    // Inside it, the same distance the other way.
+                    pos: Vec2::new(620.0, 330.0),
+                    vel: &mut exposed_vel,
+                    alive: true,
+                    apply_damage: &mut b,
+                },
+            ];
+            MeteorShower::on_impact(&mut pr, &mut map, &mut targets, at, false, 1, 0.0);
+        }
+
+        assert!(
+            exposed > 0.0,
+            "the control took nothing — the blast reached neither of them, so \
+             'the roof protected the other one' is free"
+        );
+        assert_eq!(
+            sheltered, 0.0,
+            "a meteor dealt {sheltered} through solid rock to a player under a roof"
+        );
     }
 
     #[test]

@@ -337,7 +337,7 @@ fn a_toxic_grenade_leaves_one_toxic_zone_at_the_toxic_rate() {
     let patches = w.burn.patches();
     assert_eq!(patches.len(), 1, "one zone, not a scatter");
     assert_eq!(patches[0].kind, BurnKind::Toxic);
-    assert!((patches[0].dps - TOXIC_DPS).abs() < 1e-6);
+    assert!((patches[0].dps - TOXIC_GRENADE_DPS).abs() < 1e-6);
     assert!((patches[0].radius - TOXIC_GRENADE_RADIUS).abs() < 1e-6);
 }
 

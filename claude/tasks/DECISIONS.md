@@ -939,3 +939,34 @@ Not a correctness defect: objects are stamped into the mask, so an overlap merge
 rather than corrupting it, and nothing downstream reads an object's box. It is a §D5 value
 question — whether separation should be `64 + (w_a + w_b) / 2`, which would change the map,
 or whether 64 centres is what §E12 wants at these sizes. A coordinator call, not a builder's.
+
+## D-58 — The `game-server` integration suite is load-sensitive as a suite  ·  method
+**Measured, and the rate is deliberately not claimed.** Pinned at `d453e76`, isolated
+worktree, idle box: **1 failure in 8 serial runs.** At n=8 the 95% interval runs from
+roughly 0.3% to 50%, so **"12.5%" is one observation, not a rate** — D-52's lesson applied
+to the measurement itself.
+
+**The robust finding is the shape.** Across ~11 full-suite runs, **four distinct tests have
+failed and never the same one twice**:
+
+```
+a_room_whose_last_human_left_is_reaped_by_the_running_server   rooms.rs:751
+sigterm_leaves_a_verifiable_file_and_sigkill_does_not          replay_run.rs:732
+two_clients_in_one_room_do_hear_each_other                     rooms.rs:208/441
+quick_match_makes_a_new_lobby_rather_than_being_refused        rooms.rs
+```
+
+If one test were broken it would recur; instead **the failure moves**. Every one of the
+four spawns real sockets or processes and waits on them. One already has a diagnosed
+mechanism — `rooms.rs:751` compares a registry read under the mutex against a lagging
+`AtomicUsize` gauge across an HTTP round trip, a race by construction — and the others are
+expected to be variants of the same shape: **two sources of truth for one fact, sampled
+once.**
+
+**Consequence for any sweep:** a single `game-server` failure is **unproven until re-run**,
+and the cheap discipline is to re-run the failing target alone and baseline it at the
+previous commit before attributing it to the task in hand. That is what separated ours from
+pre-existing at the M17 boundary (D-51).
+
+**What would earn a number: n ≥ 30 on an idle box**, about 90 minutes. Worth doing once,
+deliberately — not worth inferring from the tail.

@@ -589,9 +589,114 @@ await shot('hud-bars-refilled')
   }
 }
 
+// --- §E13: the health bar goes green while poisoned ------------------------
+//
+// **The control is a second frame, not a second region.** The subject is one
+// bar's colour, and there is no other bar that would go green — so the honest
+// control is the same bar on a run where the player is not poisoned, which is
+// every assertion above. The rect is captured here and the comparison happens
+// against a second stack below.
+//
+// Why a second stack rather than waiting for rain: `TOXIC_DROP_EVERY` puts ~20
+// drops on the whole map per window and a player is 16 px wide, so a check that
+// waited for one to land on them would be a coin flip, and a gate that fails on
+// a coin flip gates nothing. `DEV_POISONED` puts the player in the state; that a
+// **drop** is what causes it is proved in `game-core`, through the real
+// projectile step, in `a_drop_that_lands_on_a_player_poisons_them_...`.
+const healthRect = await page.evaluate(() => {
+  const el = document.getElementById('hud-bar-health')
+  if (!el) return null
+  const r = el.getBoundingClientRect()
+  return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }
+})
+const cleanPatch = healthRect ? await samplePatch(page, healthRect) : null
+const cleanColour = (await dbg()).hudBars?.health?.colour ?? null
+
 if (pageErrors.length) fail(`page errors: ${pageErrors.slice(0, 3).join(' | ')}`)
 else ok('no page errors')
 
 await stack.close()
+
+if (!healthRect || !cleanPatch) {
+  fail('no health bar rect to compare a poisoned one against')
+} else {
+  const sick = await startStack({
+    port: PORT + 1,
+    label: 'hud-bars-poisoned',
+    env: {
+      FIXED_SEED: '4242',
+      ROUND_SECONDS: '180',
+      BOT_COUNT: '0',
+      DEV_LOADOUT: '1',
+      DEV_POISONED: '1',
+    },
+  })
+  const sickClient = await sick.openClient({ name: 'ana' })
+  await enterBattle(sickClient.page, { waitPlaying: true, label: 'hud-bars-poisoned' })
+  // Past the warmup gate, so the poison is actually biting, but well short of
+  // the point where `POISON_MAX_T` hands the bar back to red.
+  await sleep(1500)
+
+  const d = await sickClient.dbg()
+  const sickColour = d.hudBars?.health?.colour ?? null
+  // Both ends (§A39): the wire flag, the colour it produced, and the pixels.
+  if (d.hudBars?.poisoned !== true) {
+    fail(`the snapshot's poisoned flag is ${d.hudBars?.poisoned} — nothing below is about poison`)
+  } else if (sickColour === cleanColour) {
+    fail(`poisoned and healthy both compute ${sickColour} — the colour path ignores the flag`)
+  } else {
+    ok(`poisoned computes ${sickColour}, healthy computed ${cleanColour}`)
+
+    const sickPatch = await samplePatch(sickClient.page, healthRect)
+    const delta = Math.hypot(
+      sickPatch.r - cleanPatch.r,
+      sickPatch.g - cleanPatch.g,
+      sickPatch.b - cleanPatch.b,
+    )
+    // **The direction the computed colours predict, per channel.** The bar is a
+    // track with a dark background and white text over it, so the patch mean is
+    // not the fill colour and no absolute rgb assertion about it is honest.
+    // What is honest is that the frame moved the way `bars-math` said it would.
+    //
+    // The first version of this asserted "greener" as `g - r` rising, and it
+    // failed on a correct frame: §E13's `#7cd44a` is a *yellower* green than
+    // full health's `#3ec75a`, so `g - r` falls and `r` rises. Asserting a
+    // direction I had assumed instead of one I had computed is what made it
+    // wrong — the two hex strings are right there, so the prediction comes from
+    // them.
+    const hex = (c, i) => parseInt(c.slice(1 + i * 2, 3 + i * 2), 16)
+    const chans = ['r', 'g', 'b']
+    const wrong = chans.filter((ch, i) => {
+      const want = hex(sickColour, i) - hex(cleanColour, i)
+      // Channels the two colours barely separate cannot say anything; the frame
+      // is composited over a track background and text.
+      if (Math.abs(want) < 8) return false
+      const got = sickPatch[ch] - cleanPatch[ch]
+      return Math.sign(got) !== Math.sign(want)
+    })
+    if (delta < 4) {
+      fail(
+        `the poisoned health bar is ${delta.toFixed(1)} away from the healthy one on the ` +
+          'frame — the colour was computed and never reached a pixel',
+      )
+    } else if (wrong.length) {
+      fail(
+        `the poisoned bar moved by ${delta.toFixed(1)} but channel(s) ${wrong.join(', ')} ` +
+          `moved against what ${cleanColour} -> ${sickColour} predicts — ` +
+          `rgb ${sickPatch.r.toFixed(0)},${sickPatch.g.toFixed(0)},${sickPatch.b.toFixed(0)} ` +
+          `vs ${cleanPatch.r.toFixed(0)},${cleanPatch.g.toFixed(0)},${cleanPatch.b.toFixed(0)}`,
+      )
+    } else {
+      ok(
+        `the poisoned health bar moved on the frame exactly as ${cleanColour} -> ` +
+          `${sickColour} predicts (delta ${delta.toFixed(1)}, rgb ` +
+          `${sickPatch.r.toFixed(0)},${sickPatch.g.toFixed(0)},${sickPatch.b.toFixed(0)} ` +
+          `vs ${cleanPatch.r.toFixed(0)},${cleanPatch.g.toFixed(0)},${cleanPatch.b.toFixed(0)})`,
+      )
+    }
+    await sickClient.shot('hud-bars-poisoned')
+  }
+  await sick.close()
+}
 console.log(failures.length ? `\nhud-bars: ${failures.length} FAILED` : '\nhud-bars: ok')
 process.exit(failures.length ? 1 : 0)

@@ -5,7 +5,7 @@
 use crate::constants::{
     BASE_HEALTH, BATTERY_MAX, DEATH_POINTS, HEALTH_CAP, HEALTH_SPEED_MIN, KILL_POINTS,
     LASER_BATTERY_DRAIN, LASER_SHIELD_MULT, OVERHEAL_DECAY, RESPAWN_DELAY, SHIELD_DAMAGE_MULT,
-    SHIELD_DRAIN, SHIELD_DURATION, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST,
+    SHIELD_DRAIN, SHIELD_DURATION, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST, TOXIC_POISON_DURATION,
 };
 use crate::items::inventory::{Inventory, Stack};
 use crate::items::registry::{def, ItemId, ItemKind, WeaponId};
@@ -75,6 +75,17 @@ pub struct PlayerState {
     pub alive: bool,
     pub respawn_at: f32,
     pub iframes_until: f32,
+    /// Until when toxic rain is still eating them (§E13).
+    ///
+    /// **The first per-player status the UI shows.** A re-hit writes this again
+    /// rather than adding to it, which is what "resets, does not stack" means in
+    /// one line — the same shape as `shield_until` and for the same reason.
+    ///
+    /// A timestamp rather than a countdown: a countdown has to be decremented by
+    /// exactly the right `dt` in exactly one place, and a deadline is correct
+    /// however the caller ticks. It is compared against the same `now` every
+    /// other timer here uses.
+    pub poisoned_until: f32,
     /// Until when this player counts as **thrown** rather than walking (§C20).
     ///
     /// Stamped wherever an impulse is applied to them — `explode` and
@@ -116,6 +127,7 @@ impl PlayerState {
             alive: true,
             respawn_at: 0.0,
             iframes_until: 0.0,
+            poisoned_until: 0.0,
             knocked_until: 0.0,
             tombstone_skin_id: 0,
             score: 0,
@@ -247,7 +259,27 @@ impl PlayerState {
         now < self.iframes_until
     }
 
+    /// Is toxic rain still working on them (§E13)?
+    pub fn poisoned(&self, now: f32) -> bool {
+        now < self.poisoned_until
+    }
+
+    /// Start — or **restart** — the poison.
+    ///
+    /// Writing the deadline is the whole rule. Adding to it would stack, and two
+    /// drops in three seconds would then kill through a full health bar; §E13
+    /// asks for a status you can wait out, not a stacking bleed.
+    pub fn poison(&mut self, now: f32) {
+        self.poisoned_until = now + TOXIC_POISON_DURATION;
+    }
+
     /// Overheal decay and shield expiry.
+    ///
+    /// **Poison is not here.** It deals damage, and every source of damage in the
+    /// game goes through `World::apply_damage_log` — which is where the warmup
+    /// gate lives (`docs/41` §3). A subtraction from `health` in this function
+    /// would be the one source that skipped it, and "toxic rain hurt me during
+    /// warmup" would be a bug with no single place to fix.
     pub fn tick_stats(&mut self, now: f32, dt: f32) {
         if self.health > BASE_HEALTH {
             // A stacked medkit is ~25 s of extra buffer, not a permanent upgrade.
@@ -362,6 +394,10 @@ impl PlayerState {
         self.score += DEATH_POINTS;
         self.deaths += 1;
         self.shield_until = None;
+        // Death clears it, like the shield: a corpse is not poisoned, and a
+        // status that survived into the next life would tick down against a
+        // player who was never rained on.
+        self.poisoned_until = 0.0;
         self.flashlight_on = false;
         // **Heals and batteries are dropped too, and deliberately.**
         //
@@ -399,6 +435,7 @@ impl PlayerState {
         self.inventory.clear();
         self.alive = true;
         self.iframes_until = now + SPAWN_IFRAMES;
+        self.poisoned_until = 0.0;
         self.last_damaged_by = None;
         // The item is gone with the inventory, so the light goes with it.
         self.flashlight_on = false;

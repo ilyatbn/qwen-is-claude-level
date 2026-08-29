@@ -109,6 +109,8 @@ export class GameScene extends Phaser.Scene {
   private batteries = 0
   /** Whether the server says the shield is up, and when it went up. */
   private shieldOn = false
+  /** §E13: is toxic rain still working on me? Snapshot flag, never predicted. */
+  private poisoned = false
   private shieldSince = 0
   private jetReadout: HTMLDivElement | null = null
   /** The private room's join code, once the server has told us (§B9). */
@@ -982,6 +984,9 @@ export class GameScene extends Phaser.Scene {
       const up = flag(mine.flags, FLAG.shield)
       if (up && !this.shieldOn) this.shieldSince = this.serverRoundTime
       this.shieldOn = up
+      // §E13. The snapshot carries the boolean, like the shield above: the
+      // client colours a bar off it and never predicts a status.
+      this.poisoned = flag(mine.flags, FLAG.poisoned)
       // Authoritative, because smoke is positional: what you can see depends on
       // which cloud you are standing in. This replaced a hardcoded 1, which is
       // why heavy fog changed nothing in the real game for four milestones.
@@ -1571,7 +1576,7 @@ export class GameScene extends Phaser.Scene {
     const c = C()
     const waiting = inRefillDelay(this.fuelShown, this.fuel, c.JETPACK_MAX_FUEL, this.wasJetting)
     this.bars?.update({
-      health: healthBar(this.health, c.BASE_HEALTH, c.HEALTH_CAP),
+      health: healthBar(this.health, c.BASE_HEALTH, c.HEALTH_CAP, this.poisoned),
       energy: energyBar(this.battery, c.BATTERY_MAX),
       jetpack: jetpackBar(this.fuel, c.JETPACK_MAX_FUEL, waiting),
       consumables: { heals: this.heals, batteries: this.batteries },
@@ -1987,10 +1992,14 @@ export class GameScene extends Phaser.Scene {
           // §C8's cluster, both ends (§A39): what each bar is told to draw,
           // beside the snapshot fields it was computed from.
           hudBars: {
-            health: healthBar(self.health, C().BASE_HEALTH, C().HEALTH_CAP),
+            health: healthBar(self.health, C().BASE_HEALTH, C().HEALTH_CAP, self.poisoned),
             energy: energyBar(self.battery, C().BATTERY_MAX),
             jetpack: jetpackBar(self.fuel, C().JETPACK_MAX_FUEL, false),
             shieldOn: self.shieldOn,
+            // Both ends (§A39): the flag off the wire beside the colour it
+            // produced, so a green bar with `poisoned` false is visible as a
+            // disagreement rather than as a colour nobody can explain.
+            poisoned: self.poisoned,
             battery: self.battery,
             heals: self.heals,
             batteries: self.batteries,

@@ -8,7 +8,7 @@ describe('hazardKind', () => {
   it('reads the kinds the server actually sends', () => {
     expect(hazardKind('Smoke')).toBe('smoke')
     expect(hazardKind('ToxicZone')).toBe('toxic')
-    expect(hazardKind('ToxicPuddle')).toBe('toxic')
+    expect(hazardKind('ToxicZone')).toBe('toxic')
     expect(hazardKind('Fire')).toBe('fire')
     expect(hazardKind('LavaBurn')).toBe('fire')
   })

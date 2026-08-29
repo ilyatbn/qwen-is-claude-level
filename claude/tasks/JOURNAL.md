@@ -4871,3 +4871,40 @@ cannot tell a moved boundary from a broken feature.
 lies — but 64 was calibrated when a median rock was ~50 px and §E12 makes it ~75, max 197.
 Measured, nine maps: **27 of 3132 pairs overlap by box, worst 50 px**. Not a correctness
 defect; a §D5 value question.
+
+## T18.05 — Toxic rain poisons on hit (v6)
+
+Puddles are gone — `TOXIC_PUDDLE_EVERY/_RADIUS/_LIFE` and `TOXIC_DPS` deleted along with
+`Puddle`, `land()`, `circle_overlaps_aabb`, `HazardKind::Puddle`, the wasm export, the
+`WeatherState` field and the sandbox renderer. **Two of those deletions were traps.**
+`TOXIC_DPS` **meant two things**: `defs.rs` reads it for the toxic grenade's burn zone, a
+§B7 weapon §E15 never mentions, so retiring it as written would have cut that weapon from
+6 dps to 2 **in silence**, with the test that pins it "fixed" to match. It is
+`TOXIC_GRENADE_DPS` now. And `TOXIC_PUDDLE_EVERY` was the **drop cadence**, not a puddle
+property — `TOXIC_DROP_EVERY`, 0.4 unchanged.
+
+**The roof rule is one function used twice**, and the meteor half was load-bearing: the
+shower had **no occlusion test at all**, and `explode` damages by radius through terrain —
+*"a meteor dealt 21.999998 through solid rock to a player under a roof"*. It is asked
+**before** `explode`, because the blast carves: a meteor that opened the ceiling first
+would find open sky above everyone it had just buried.
+
+**Reset versus stack is asserted on the total only**, second hit at half the duration —
+inside the window, since a hit after expiry gives both models the same answer. Falsified by
+making `poison()` add: 11.97 against 9 for reset and 12 for stack.
+
+**Two findings that were one story.** The only test asserting weather damage respects
+shield and i-frames went with the puddle mechanism it happened to use — and the same diff
+added a **second damage path** that ignored both, fifteen lines under a comment saying every
+effect damages through one path so shields and i-frames are handled once. Worse than
+cosmetic: `apply_damage` is also where `stats.deaths`, the killer's score and
+`DamageOutcome::Died` are produced, so a raw subtraction could cross zero with `alive` still
+true — a corpse walking, in exactly the `e2e` builds `hud-bars` photographs. Both call sites
+route through `apply_damage` now, and the successor test asserts **through the poison path
+end to end** rather than by calling `apply_damage` directly, so it fails if poison ever
+stops using it. **The rule was true by construction, stopped being asserted, and stopped
+being true in the same change** — which is why "it survives by construction" is not a reason
+to let an assertion go.
+
+Two untracked probe files were running in the suite with **four `it()` blocks and zero
+`expect()`** — `__spike` recurring.

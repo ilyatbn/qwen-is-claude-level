@@ -1126,6 +1126,16 @@ impl Room {
                 }
             }
         }
+        // Also independent, and also not gated on the loadout: §C8's bar colour
+        // is what this is for, and it has nothing to do with weapons.
+        if self.config.dev_poisoned {
+            let now = self.world.as_ref().map(|w| w.round_time).unwrap_or(0.0);
+            if let Some(w) = self.world.as_mut() {
+                if let Some(p) = w.player_mut(id) {
+                    p.poison(now);
+                }
+            }
+        }
         if !self.config.dev_loadout {
             return;
         }
@@ -1799,9 +1809,22 @@ impl Room {
         }
 
         self.drive_bots(dt);
+        let poisoned = self.config.dev_poisoned;
         let Some(world) = self.world.as_mut() else {
             return Vec::new();
         };
+        // Development only (§E13). **Held**, not stamped once at spawn: the
+        // status lasts `TOXIC_POISON_DURATION` — three seconds — and a browser
+        // check that has to reach the frame inside that window is a race. It
+        // still costs `TOXIC_POISON_DPS`, so a player left in it does eventually
+        // drop below the point where §C8's bar goes red, which is the rule
+        // working rather than the knob failing.
+        if poisoned {
+            let now = world.round_time;
+            for p in world.players.iter_mut() {
+                p.poison(now);
+            }
+        }
         world.step(dt);
 
         let (mut events, outcome) = self.round.tick(world, connected, dt);

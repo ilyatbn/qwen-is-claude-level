@@ -78,6 +78,16 @@ pub struct Config {
     /// rocket, resolved by the server, with real attribution — the same thing
     /// `world_step`'s unit test does when it sets 20 health and fires once.
     pub dev_start_health: f32,
+    /// Development only (`DEV_POISONED=1`): spawn poisoned (§E13).
+    ///
+    /// Exists for the same reason `dev_start_health` does. The rain hits one
+    /// 16 px column in twenty tries across a whole map, so a browser check that
+    /// waited for a drop to land on the local player would be a coin flip, and
+    /// `CLAUDE.md` is explicit that a gate failing on a coin flip gates nothing.
+    /// What the check needs to photograph is a **poisoned player's bar**; that a
+    /// drop is what poisons them is proved in `game-core`, end to end, through
+    /// the real projectile step.
+    pub dev_poisoned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +127,7 @@ impl Default for Config {
             bot_count: BOT_COUNT_DEFAULT,
             dev_loadout: false,
             dev_start_health: 0.0,
+            dev_poisoned: false,
             bot_skill: BOT_SKILL_DEFAULT,
         }
     }
@@ -277,6 +288,7 @@ impl Config {
                 .and_then(|v| v.parse::<f32>().ok())
                 .filter(|v| *v > 0.0)
                 .unwrap_or(0.0),
+            dev_poisoned: matches!(get("DEV_POISONED").as_deref(), Some("1") | Some("true")),
         })
     }
 
@@ -285,7 +297,7 @@ impl Config {
         format!(
             "bind={} scale={} generator={} max_players={} round_seconds={} \
              room_empty_ttl={} lobby_bot_timeout={} fixed_seed={} record_replay={} debug_dump={} bots={} \
-             bot_skill={} dev_start_health={}",
+             bot_skill={} dev_start_health={} dev_poisoned={}",
             self.bind_addr,
             self.map_scale.as_str(),
             self.map_generator.as_str(),
@@ -301,6 +313,7 @@ impl Config {
             self.bot_count,
             self.bot_skill,
             self.dev_start_health,
+            self.dev_poisoned,
         )
     }
 }

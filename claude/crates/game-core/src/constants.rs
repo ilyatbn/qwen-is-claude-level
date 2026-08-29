@@ -619,16 +619,28 @@ pub const EFFECT_INTERVAL_MAX: f32 = 45.0;
 pub const EFFECT_TELEGRAPH: f32 = 3.0;
 
 pub const TOXIC_DURATION: f32 = 8.0;
-pub const TOXIC_PUDDLE_EVERY: f32 = 0.4;
+/// Seconds between drops while the rain is active.
+///
+/// Was `TOXIC_PUDDLE_EVERY`. §E15 retires that name with the puddles, but the
+/// **cadence is not a puddle** — §E13 keeps the scheduler and the number of
+/// drops per window unchanged, so the value is carried over untouched under a
+/// name that says what it times.
+pub const TOXIC_DROP_EVERY: f32 = 0.4;
 /// Downward speed a toxic drop leaves its cloud at (§C21).
 ///
 /// Slow enough that the fall reads as rain rather than as artillery: from
 /// `SKY_MARGIN` this gives roughly a second of visible descent on a medium map,
 /// which is the point — §C21 makes the rain visible by making it fall.
 pub const TOXIC_DROP_SPEED: f32 = 180.0;
-pub const TOXIC_PUDDLE_RADIUS: f32 = 40.0;
-pub const TOXIC_PUDDLE_LIFE: f32 = 3.0;
-pub const TOXIC_DPS: f32 = 6.0;
+/// How long a drop's poison lasts, and how hard it bites (§E13).
+///
+/// A re-hit **replaces** the timer; it never stacks. Same rule as the shield,
+/// and for the same reason: a stacking status is a damage cliff nobody can read
+/// off the screen.
+pub const TOXIC_POISON_DURATION: f32 = 3.0;
+pub const TOXIC_POISON_DPS: f32 = 2.0;
+/// The hole a drop leaves in the ground: bullet-sized, not a crater (§E13).
+pub const TOXIC_DROP_CARVE_R: f32 = 6.0;
 
 pub const METEOR_DURATION: f32 = 10.0;
 pub const METEOR_EVERY: f32 = 0.5;
@@ -1276,6 +1288,14 @@ pub const MOLOTOV_BURN_DURATION: f32 = 5.0;
 pub const MOLOTOV_MUZZLE_SPEED: f32 = 470.0;
 pub const MOLOTOV_AMMO: u8 = 2;
 
+/// The thrown toxic zone's damage (§B7).
+///
+/// **This was `TOXIC_DPS`**, shared with the weather. §E15 retires that name as
+/// "replaced by `TOXIC_POISON_DPS`", but `defs.rs` reads it for the *grenade*
+/// as well, so deleting it outright would have quietly cut a §B7 weapon from
+/// 6 dps to 2. A name that meant two things; the grenade keeps its number under
+/// a name that is only its own.
+pub const TOXIC_GRENADE_DPS: f32 = 6.0;
 pub const TOXIC_GRENADE_RADIUS: f32 = 90.0;
 pub const TOXIC_GRENADE_DURATION: f32 = 8.0;
 pub const TOXIC_GRENADE_FUSE: f32 = 2.0;

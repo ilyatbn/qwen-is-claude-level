@@ -283,6 +283,17 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
         flags |= u8::from(p.shield_active(now)) << 3;
         flags |= u8::from(p.flashlight_on) << 4;
         flags |= u8::from(p.invulnerable(now)) << 5;
+        // §E13. **The boolean, not the timer.** The client's only use for it is
+        // the colour of one bar, and it does not predict status any more than it
+        // predicts the shield — which is the precedent this follows exactly,
+        // bit 3 being `shield_active(now)` and not `shield_until`. A float per
+        // player per snapshot at `SNAPSHOT_HZ` would be bandwidth spent on a
+        // number nothing renders, and a second representation of a deadline that
+        // could disagree with the server's.
+        //
+        // `docs/40` §3 lists bits 6-7 as reserved: this is bit 6, and the
+        // amendment naming it is owed.
+        flags |= u8::from(p.poisoned(now)) << 6;
         b.push(flags);
 
         b.push((p.jetpack.fuel / JETPACK_MAX_FUEL * 255.0).clamp(0.0, 255.0) as u8);
@@ -879,18 +890,23 @@ mod tests {
             p.shield_until = None;
             p.flashlight_on = false;
             p.iframes_until = 0.0;
+            p.poisoned_until = 0.0;
         }
         let s = decode_snapshot(&encode_snapshot(&w, 0, 0)).expect("decode");
         assert_eq!(s.players[0].flags, 0, "all clear");
 
         type SetFlag = fn(&mut game_core::player::state::PlayerState, f32);
-        let cases: [(u8, SetFlag); 6] = [
+        // §E13's bit 6 is here for the reason the other six are: the client
+        // colours a bar off it, and a status the snapshot does not carry is a
+        // status the client cannot draw.
+        let cases: [(u8, SetFlag); 7] = [
             (0, |p, _| p.alive = true),
             (1, |p, _| p.body.grounded = true),
             (2, |p, _| p.jetpack.active = true),
             (3, |p, n| p.shield_until = Some(n + 10.0)),
             (4, |p, _| p.flashlight_on = true),
             (5, |p, n| p.iframes_until = n + 10.0),
+            (6, |p, n| p.poisoned_until = n + 10.0),
         ];
         for (bit, set) in cases {
             let mut w = world_with(1);
@@ -901,6 +917,7 @@ mod tests {
                 p.shield_until = None;
                 p.flashlight_on = false;
                 p.iframes_until = 0.0;
+                p.poisoned_until = 0.0;
                 set(p, now);
             }
             let s = decode_snapshot(&encode_snapshot(&w, 0, 0)).expect("decode");

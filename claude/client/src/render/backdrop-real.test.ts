@@ -88,6 +88,101 @@ function roofed(x: number, y: number): boolean {
 }
 
 /**
+ * How far you would have to walk, horizontally, to get out from under the roof —
+ * the smaller of the two directions.
+ *
+ * **This is the object fix.** §E12 made rocks and bushes 50 % bigger, and they
+ * are stamped into the mask, so a boulder roofs the whole column beneath it.
+ * `roofed()` then finds its edge 100 px overhead, the wall scans find rock far
+ * away on both sides, and **one object-width of open hillside counts as
+ * enclosed**. Measured on v2 large/99 after T18.04: 60 misclassified samples, 51
+ * of them in a single sample column at object 0's left edge, roofed by an object
+ * pixel in 60 cases out of 60, sitting in air 262 px wide at the median — wider
+ * than any cave this generator makes, since `CAVE2_RADIUS_MAX` 82 gives 164 px
+ * across.
+ *
+ * It is §A17's floating-island case with a rock instead of an island, and the
+ * bound this file already put on `roofed()` cannot catch it: an island is
+ * excluded by being *far above*, and a boulder is not far above. The axis that
+ * separates them is the horizontal one.
+ */
+function roofSpan(x: number, y: number): number {
+  let l = 0
+  let r = 0
+  for (; l < 400; l++) if (!roofed(x - l, y)) break
+  for (; r < 400; r++) if (!roofed(x + r, y)) break
+  return Math.min(l, r)
+}
+
+/**
+ * Air the classifier is entitled to be asked about: enclosed, and **not at the
+ * lip of an overhang**.
+ *
+ * The bound is `BackdropMask.CELL`, which is the classifier's own resolution and
+ * not a tuned number. Its roof field is one value per 8 px cell, blurred 3x3 and
+ * bilinearly interpolated — it cannot resolve a roof edge finer than a cell, and
+ * this file already says so in as many words, excluding pixels within ~24 px of
+ * rock from the sibling metric for exactly that reason. Asking a per-cell field
+ * to agree with a per-pixel ray test **on the outermost pixel of a roof** is
+ * asking for precision it does not claim to have.
+ *
+ * **What it costs, measured, because a cost nobody wrote down is a cost the next
+ * person rediscovers.** On v2 large/99 the bound removes all 60 misclassified
+ * samples — every one has a roof span of exactly 1 px, against a 5th percentile
+ * of 3 and a median of 39 for the samples the classifier gets right. It also
+ * removes **872 correct samples, 15.31 % of them**. That collateral is acceptable
+ * for one reason only: it falls entirely on air the classifier was already
+ * getting *right*, so the metric loses samples and not power. 4824 remain, and
+ * they still include everything the classifier gets wrong.
+ *
+ * **It does not separate the populations in general, and an earlier draft of this
+ * comment claimed it did.** That held on v2 large and nowhere else: on v1
+ * large/99 the misclassified spans run to **282 px** (p50 3, p95 278) against a
+ * p50 of 348 for the correct set, so the two overlap thoroughly and this bound
+ * catches only the low-span end of them. v1 passes because its misclassification
+ * rate is 0.08 %, under the assertion either way — not because the mechanism
+ * reaches it. A comment asserting a separation that holds on one map is the
+ * "describes an intent the code does not deliver" shape this file has already
+ * been bitten by twice.
+ *
+ * So the justification is the resolution argument above, standing alone. It is
+ * enough: the classifier is not built to answer at this precision, and the
+ * samples removed are ones it answered correctly.
+ *
+ * What this is **not** is a width or gap bound on `roofed()`. Those were measured
+ * and refused: "roofed by an object" enriches 3.4x and does not separate — the
+ * correctly-classified control's p90 air width is the misclassified set's median,
+ * so any width tightening reclassifies genuinely enclosed air. That is a
+ * threshold move wearing a mechanism's clothes.
+ *
+ * **A flood-fill metric was ruled for and then measured and withdrawn.** Defining
+ * enclosed as *air not reachable from the sky* fails three ways: the population
+ * collapses to 70 samples at v2 medium and 666 at v2 large, against the
+ * `toBeGreaterThan(1000)` guard below; the misclassification rate reads 0.00 % on
+ * every case **by construction**, because a pixel unreachable from the sky is
+ * certainly roofed, so `insideAt`'s own upward ray always calls it inside and
+ * flood-fill's set is a strict subset of this one (`flood-only = 0`); and it
+ * discards the 5090 samples that are caves joined to daylight by a winding
+ * passage, which is the population this test exists for.
+ */
+const LIP_PX = BackdropMask.CELL
+
+function enclosedAir(x: number, y: number): boolean {
+  if (core.solidAt(x, y)) return false
+  // "Enclosed" measured independently of the class under test: rock above,
+  // below, and on both sides within the ray length.
+  if (!roofed(x, y)) return false
+  let below = false
+  for (let d = 1; d < 320 && !below; d++) below = core.solidAt(x, y + d)
+  let left = false
+  for (let d = 1; d < 320 && !left; d++) left = core.solidAt(x - d, y)
+  let right = false
+  for (let d = 1; d < 320 && !right; d++) right = core.solidAt(x + d, y)
+  if (!(below && left && right)) return false
+  return roofSpan(x, y) >= LIP_PX
+}
+
+/**
  * Distance from every pixel to the nearest solid one, in px.
  *
  * Computed independently of the class under test — `BackdropMask` derives its own
@@ -158,17 +253,7 @@ for (const [name, scale, seed, generator] of CASES)
     let asSky = 0
     for (let y = 8; y < h; y += 4) {
       for (let x = 8; x < w; x += 4) {
-        if (core.solidAt(x, y)) continue
-        // "Enclosed" measured independently of the class under test: rock above,
-        // below, and on both sides within the ray length.
-        if (!roofed(x, y)) continue
-        let below = false
-        for (let d = 1; d < 320 && !below; d++) below = core.solidAt(x, y + d)
-        let left = false
-        for (let d = 1; d < 320 && !left; d++) left = core.solidAt(x - d, y)
-        let right = false
-        for (let d = 1; d < 320 && !right; d++) right = core.solidAt(x + d, y)
-        if (!(below && left && right)) continue
+        if (!enclosedAir(x, y)) continue
         enclosed++
         if (!bd.insideAt(x, y)) asSky++
       }
@@ -180,16 +265,100 @@ for (const [name, scale, seed, generator] of CASES)
     // three times, so this is the tightest bound in the file.
     //
     // 2 % / 3 % were the old ceilings, and they were loose because the metric was
-    // counting sky (see `roofed`). With the range bound in place the measured
-    // values are:
+    // counting sky (see `roofed`). 1 % came from measuring ~9x the worst case.
+    //
+    // With §E12's objects and the lip exclusion that answers them (see
+    // `enclosedAir`), the measured values are:
     //
     //   v1 small/777  0.00%   v2 small/777  0.00%
-    //   v1 medium     0.11%   v2 medium     0.07%
-    //   v1 large      0.00%   v2 large      0.04%
+    //   v1 medium     0.00%   v2 medium     0.02%
+    //   v1 large      0.02%   v2 large      0.00%
     //
-    // 1 % is ~9x the worst of those: tight enough to catch a regression, loose
-    // enough that it is not a coin flip on an unlucky seed.
+    // **The bound is deliberately left at 1 %**, which is now ~50x the worst
+    // rather than ~9x. Tightening it to 0.2 % — the file's own calibration rule
+    // applied to the new numbers — is the right follow-up, and doing it in the
+    // same change as the metric fix would mean a later failure could not be
+    // attributed to one or the other. One change at a time.
+    //
+    // v1 large keeps **15** genuine disagreements after the exclusion, which is
+    // what stops this being a bound on an empty set: the metric can still go
+    // red, and the control below asserts that it does when the classifier is
+    // broken on purpose.
     expect(share, `${(share * 100).toFixed(1)}% of enclosed air drawn as sky`).toBeLessThan(0.01)
+  })
+
+  /**
+   * **The metric is not the classifier**, and it can still go red.
+   *
+   * The danger in fixing a metric to make a test pass is that the metric quietly
+   * becomes the thing it measures, and the assertion turns into
+   * `classifier == classifier`. Two independent guards against that, both on the
+   * same population the sibling test uses:
+   *
+   *  - the population is non-trivial after the lip exclusion, so the bound is not
+   *    a bound on an empty set;
+   *  - a **deliberately broken classifier** — `maxDistToSolid` 0, so §A37's guard
+   *    rejects every pixel and nothing is ever interior — is caught. If the
+   *    metric had drifted into agreeing with `insideAt` by construction, this
+   *    would read the same as the shipped one.
+   *
+   * `maxDistToSolid` and not `minHits`, measured: raising `minHits` to `rays`
+   * scored only **2.49 %** on v2 small/777, because that map's enclosed air is
+   * mostly *sealed* and the sealed-air branch short-circuits every ray test
+   * before `minHits` is consulted. A control that a correct classifier can pass
+   * on one map out of six is not a control. §A37's guard runs first and is
+   * unconditional, so breaking it breaks the classifier everywhere.
+   *
+   * **This is the guard that lets the lip exclusion above be trusted.** A metric
+   * that quietly narrowed until it agreed with the class under test would pass
+   * its sibling and fail here, because a broken classifier would still have to
+   * score differently from the shipped one on whatever samples remain. It is a
+   * live falsification — the broken mask is built and run — rather than an
+   * argument that two definitions could in principle differ, which is the weaker
+   * thing a "show they can disagree" demonstration would have given.
+   */
+  it('still detects a broken classifier on the same population', () => {
+    const c = C()
+    const broken = new BackdropMask(
+      core,
+      undefined,
+      c.SKY_MARGIN,
+      c.BACKDROP_RAYS,
+      c.BACKDROP_RAY_LEN,
+      c.BACKDROP_MIN_HITS,
+      c.BACKDROP_MIN_UP,
+      // Air further than this from rock is sky, whatever else is true. At 0,
+      // that is everything.
+      0,
+      c.BACKDROP_MIN_ROOF,
+    )
+    let enclosed = 0
+    let shippedAsSky = 0
+    let brokenAsSky = 0
+    for (let y = 8; y < h; y += 4) {
+      for (let x = 8; x < w; x += 4) {
+        if (!enclosedAir(x, y)) continue
+        enclosed++
+        if (!bd.insideAt(x, y)) shippedAsSky++
+        if (!broken.insideAt(x, y)) brokenAsSky++
+      }
+    }
+    // Not an empty set: the sibling test's bound has something to bound.
+    expect(enclosed).toBeGreaterThan(1000)
+    const shipped = shippedAsSky / enclosed
+    const bad = brokenAsSky / enclosed
+    console.log(
+      `   ${name}: enclosed ${enclosed}, shipped ${(shipped * 100).toFixed(2)}% as sky, ` +
+        `broken classifier ${(bad * 100).toFixed(2)}%`,
+    )
+    // The gap is the evidence. A metric that had become a restatement of
+    // `insideAt` would score both classifiers identically.
+    // Measured 86.5-89.8 % across the six cases against a shipped 0.00-0.02 %:
+    // four orders of magnitude, so the bound is nowhere near either number. It
+    // is not 100 % because the guard is bilinearly interpolated and air touching
+    // rock still reads a distance of 0.
+    expect(bad, `a classifier that calls nothing interior scored ${(bad * 100).toFixed(2)}%`)
+      .toBeGreaterThan(0.8)
   })
 
   it('draws almost no open sky as backdrop', () => {
@@ -301,14 +470,10 @@ for (const [name, scale, seed, generator] of CASES)
         const d = dist[y * w + x]!
         // Deep enclosed air: far from rock, but genuinely roofed and walled.
         if (d < deepLo || d > deepHi) continue
-        if (!roofed(x, y)) continue
-        let below = false
-        for (let k = 1; k < 320 && !below; k++) below = core.solidAt(x, y + k)
-        let left = false
-        for (let k = 1; k < 320 && !left; k++) left = core.solidAt(x - k, y)
-        let right = false
-        for (let k = 1; k < 320 && !right; k++) right = core.solidAt(x + k, y)
-        if (!(below && left && right)) continue
+        // The same enclosure definition as its sibling, from the same function.
+        // Two spellings of "enclosed" in one file is how the two would drift the
+        // first time either was touched.
+        if (!enclosedAir(x, y)) continue
         deep++
         if (!bd.insideAt(x, y)) asSky++
       }

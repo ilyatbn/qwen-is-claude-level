@@ -299,6 +299,8 @@ export const FLAG = {
   shield: 1 << 3,
   flashlight: 1 << 4,
   iframes: 1 << 5,
+  /** §E13. Bit 6; `docs/40` §3 still lists 6-7 as reserved. */
+  poisoned: 1 << 6,
 } as const
 
 export function flag(flags: number, bit: number): boolean {

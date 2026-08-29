@@ -12,8 +12,9 @@ use crate::constants::{
     AIRBURST_FAN, AIRBURST_FUSE, AIRBURST_MUZZLE_SPEED, AIRBURST_PELLETS, AIRBURST_PELLET_CARVE,
     AIRBURST_PELLET_DAMAGE, AIRBURST_PELLET_ENERGY, AIRBURST_PELLET_RANGE, LAVA_BURN_DPS,
     LAVA_BURN_RADIUS, MOLOTOV_BURN_DURATION, MOLOTOV_MUZZLE_SPEED, MOLOTOV_PATCHES,
-    MOLOTOV_SCATTER, SMOKE_DURATION, SMOKE_FUSE, SMOKE_MUZZLE_SPEED, SMOKE_RADIUS, TOXIC_DPS,
-    TOXIC_GRENADE_DURATION, TOXIC_GRENADE_FUSE, TOXIC_GRENADE_MUZZLE_SPEED, TOXIC_GRENADE_RADIUS,
+    MOLOTOV_SCATTER, SMOKE_DURATION, SMOKE_FUSE, SMOKE_MUZZLE_SPEED, SMOKE_RADIUS,
+    TOXIC_GRENADE_DPS, TOXIC_GRENADE_DURATION, TOXIC_GRENADE_FUSE, TOXIC_GRENADE_MUZZLE_SPEED,
+    TOXIC_GRENADE_RADIUS,
 };
 use crate::constants::{
     AXE_ARC, AXE_CARVE, AXE_COOLDOWN, AXE_DAMAGE, AXE_KNOCKBACK, AXE_REACH, BAT_ARC, BAT_CARVE,
@@ -636,7 +637,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         burst: Burst::Zone {
             kind: BurnZone::Toxic,
             radius: TOXIC_GRENADE_RADIUS,
-            dps: TOXIC_DPS,
+            dps: TOXIC_GRENADE_DPS,
             duration: TOXIC_GRENADE_DURATION,
             patches: 1,
             scatter: 0.0,
@@ -662,13 +663,13 @@ pub static WEAPONS: &[WeaponDef] = &[
         energy_cost: AIRBURST_PELLET_ENERGY,
         burst: Burst::Blast,
     },
-    // A drop of toxic rain (§C21). It falls and it lands; it does **not** go
-    // off. Zero damage and zero blast radius are not "a very small explosion" —
-    // `World::detonate` intercepts this weapon before the blast entirely and
-    // hands the landing point to `ToxicRain`, which is what turns it into a
-    // puddle. Toxic rain leaves the mask byte-identical (`docs/13` §3: it denies
-    // space, it does not dig), and routing it through `explode` with a radius of
-    // zero would be one refactor away from digging.
+    // A drop of toxic rain (§C21, §E13). It falls and it lands; it does **not**
+    // go off. Zero damage and zero blast radius are not "a very small
+    // explosion" — `World::detonate` intercepts this weapon before the blast
+    // entirely: what it hits it poisons, and what it lands on it takes a
+    // `TOXIC_DROP_CARVE_R` bite out of. A meteor's crater is the one thing
+    // `docs/13` §3 says toxic rain must never leave, and routing it through
+    // `explode` at some small radius is one tuning pass away from becoming one.
     //
     // `wind_scale` 1.0: rain drifts, and it is the one weather projectile where
     // drift is a feature rather than an aiming error.
@@ -805,10 +806,10 @@ mod tests {
         const MAY_NOT_CARVE: &[&str] = &["knife", "bat", "whip"];
         // Weather ordnance that **lands** rather than going off. A toxic drop is
         // a projectile only so that it falls (§C21); `World::detonate` intercepts
-        // it before any blast and turns it into a puddle, so damage and a carve
-        // radius on its def would describe an explosion that never happens — and
-        // toxic rain leaving the mask byte-identical is a stated invariant of it
-        // (`docs/13` §3).
+        // it before any blast, so damage and a blast radius on its def would
+        // describe an explosion that never happens. The bite it does take out of
+        // the ground is `TOXIC_DROP_CARVE_R` (§E13) and is applied there, not
+        // here — a def-level carve radius is what `explode` reads.
         //
         // Named here rather than skipped by a property, so it cannot be joined
         // silently; and `a_landing_weapon_is_actually_intercepted` below asserts

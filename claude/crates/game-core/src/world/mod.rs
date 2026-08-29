@@ -423,7 +423,6 @@ pub enum DespawnReason {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum HazardKind {
-    Puddle,
     Meteor,
     LavaVent,
     /// Thrown ordnance (§B7). `Smoke` does no damage at all.
@@ -957,6 +956,29 @@ impl World {
             p.tick_stats(now, dt);
         }
 
+        // 8a. toxic poison (§E13). Through the damage log, not through
+        // `tick_stats`, because that is where the warmup gate is
+        // (`docs/41` §3) — a subtraction from `health` inside the player would
+        // be the one damage source in the game that skipped it. It also buys the
+        // `Damage` event and the attacker bookkeeping for free.
+        {
+            let log: DamageLog = Default::default();
+            {
+                let mut entries = log.borrow_mut();
+                for p in self.players.iter() {
+                    if p.alive && p.poisoned(now) {
+                        entries.push((
+                            p.id,
+                            crate::constants::TOXIC_POISON_DPS * dt,
+                            DamageSource::Weather(EffectKind::ToxicRain),
+                        ));
+                    }
+                }
+            }
+            let bird_log: BirdLog = Default::default();
+            self.apply_damage_log(&log, &bird_log, now);
+        }
+
         // 8b. the void (§C15). **Before the deaths**, because it works by putting
         // a body's health at zero and letting `resolve_deaths` do everything a
         // death does — the drop, the score, the event, the respawn timer.
@@ -1176,7 +1198,7 @@ impl World {
 
         for im in impacts {
             let tick = self.tick;
-            let at = match im.outcome {
+            let (at, victim) = match im.outcome {
                 ProjectileOutcome::Alive => continue,
                 // Out of the world: **tell the client and stop**. No detonate,
                 // so nothing is carved and nobody is hurt from below the map;
@@ -1191,14 +1213,18 @@ impl World {
                     });
                     continue;
                 }
-                ProjectileOutcome::Exploded { at } | ProjectileOutcome::HitPlayer { at, .. } => at,
+                // The victim travels with the outcome. §E13 needs it: a drop of
+                // rain poisons **the player it hit**, and reading "who was
+                // nearest" instead would be a blast by another name.
+                ProjectileOutcome::Exploded { at } => (at, None),
+                ProjectileOutcome::HitPlayer { at, victim } => (at, Some(victim)),
             };
             self.events.push(GameEvent::ProjectileDespawn {
                 tick,
                 id: im.id,
                 reason: DespawnReason::Exploded,
             });
-            self.detonate(im.id, im.weapon, im.owner, at, now);
+            self.detonate(im.id, im.weapon, im.owner, at, victim, now);
         }
     }
 
@@ -1209,7 +1235,18 @@ impl World {
     /// caller while its unit test passed.
     #[doc(hidden)]
     pub fn explode_for_test(&mut self, at: Vec2, weapon: WeaponId, owner: PlayerId, now: f32) {
-        self.detonate(u32::MAX, weapon, owner, at, now);
+        self.detonate(u32::MAX, weapon, owner, at, None, now);
+    }
+
+    /// Test seam: resolve a projectile that stopped **on a player**.
+    ///
+    /// The same `detonate` the impact loop calls, with the `victim` the shared
+    /// projectile step would have reported. §E13's poison is the first outcome
+    /// that depends on *who* was hit rather than on a radius, so a seam that
+    /// could only say "something went off here" cannot reach it.
+    #[doc(hidden)]
+    pub fn hit_player_for_test(&mut self, at: Vec2, weapon: WeaponId, victim: PlayerId, now: f32) {
+        self.detonate(u32::MAX, weapon, u8::MAX, at, Some(victim), now);
     }
 
     /// Resolve one projectile going off, whatever it was.
@@ -1219,6 +1256,7 @@ impl World {
         weapon: WeaponId,
         owner: PlayerId,
         at: Vec2,
+        victim: Option<PlayerId>,
         now: f32,
     ) {
         // `Projectiles::step` has already removed the projectile by the time it
@@ -1226,23 +1264,44 @@ impl World {
         // outcome rather than looked up here. Reading them afterwards is exactly
         // how a fragment gets mistaken for a meteor and spawns six more.
 
-        // §C21: a drop of rain lands, it does not go off. Intercepted here —
-        // before `defs::def` and before any blast — because toxic rain must
-        // leave the mask byte-identical, and the way to guarantee that is for
-        // the code that carves never to be reached at all.
+        // §E13: a drop of rain lands, it does not go off. Intercepted here —
+        // before `defs::def` and before any blast — because a drop takes a
+        // bullet-sized bite out of the ground and a meteor's crater is exactly
+        // what `docs/13` §3 says toxic rain must never leave.
         if crate::effects::toxic::owns(weapon) {
-            if let Some((eid, mut t)) = self.toxic.take() {
-                let p = t.land(at, now);
-                self.toxic = Some((eid, t));
+            // Whoever it landed on, not everyone nearby: a drop is not a blast,
+            // and `victim` is the player the shared projectile step reports it
+            // actually touched.
+            if let Some(v) = victim {
+                if crate::effects::toxic::poison_lands(&self.map, at) {
+                    if let Some(p) = self.players.iter_mut().find(|p| p.id == v) {
+                        if p.alive {
+                            p.poison(now);
+                        }
+                    }
+                }
+                // No carve: the drop stopped on a player, and the ground it
+                // never reached keeps its pixels.
+                return;
+            }
+            let r = crate::constants::TOXIC_DROP_CARVE_R.round() as i32;
+            let (x, y) = (at.x.round() as i32, at.y.round() as i32);
+            let carve = self.map.carve_circle(x, y, r);
+            if carve.pixels_removed > 0 {
+                self.carve_seq += 1;
                 let tick = self.tick;
-                self.events.push(GameEvent::HazardSpawn {
+                let seq = self.carve_seq;
+                // `Weapon`, not a fourth kind: the client keys the carve's
+                // *sound and dust* off this, and a bullet-sized bite is what a
+                // bullet-sized bite already sounds like. §E13 asks for a small
+                // hole, not a new class of hole.
+                self.events.push(GameEvent::Carve {
                     tick,
-                    id: p.id,
-                    kind: HazardKind::Puddle,
-                    x: p.pos.x,
-                    y: p.pos.y,
-                    r: p.radius,
-                    duration: crate::constants::TOXIC_PUDDLE_LIFE,
+                    seq,
+                    x,
+                    y,
+                    r,
+                    kind: CarveKind::Weapon,
                 });
             }
             return;
@@ -1815,18 +1874,17 @@ impl World {
         let lava_on = self.effects.is_active(EffectKind::LavaBurst);
 
         if let Some((eid, mut t)) = self.toxic.take() {
-            let log: DamageLog = Default::default();
-            let bird_log: BirdLog = Default::default();
-            // §C21: what comes back is **drops**, not puddles. A puddle appears
-            // in `detonate`, when a drop has finished falling — which is what
-            // makes it impossible for one to form under a roof.
-            let released = {
-                let (mut closures, meta, mut bird_vels) =
-                    hit_targets(&self.players, &self.birds, &log, &bird_log, now);
-                let mut tg = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
-                t.tick(&mut self.projectiles, &self.map, &mut tg, toxic_on, now, dt)
-            };
-            self.apply_damage_log(&log, &bird_log, now);
+            // §E13: the rain releases drops and does nothing else. A drop is
+            // resolved in `detonate` like any other projectile — which is what
+            // makes "the poison outlives the shower" free rather than a special
+            // case, since the effect owns none of it.
+            let living: Vec<f32> = self
+                .players
+                .iter()
+                .filter(|p| p.alive)
+                .map(|p| p.body.pos.x)
+                .collect();
+            let released = t.tick(&mut self.projectiles, &self.map, &living, toxic_on, now);
             self.toxic = Some((eid, t));
             self.announce_projectiles(&released);
         }
@@ -2751,6 +2809,15 @@ impl World {
             h.update(&p.shield_until.unwrap_or(f32::NAN).to_le_bytes());
             h.update(&p.respawn_at.to_le_bytes());
             h.update(&p.iframes_until.to_le_bytes());
+            // §A34, §E13. **Hashed, deliberately.** It is a timer that changes
+            // the simulation — two health points a second, for three seconds,
+            // and a player who dies of it drops their inventory where they fell.
+            // Leaving it out would make a poison divergence invisible to the one
+            // guarantee that would catch it, which is precisely the shape §A34
+            // was written for. Nothing stored depends on this hash — replay
+            // checkpoints are computed on both sides of the same run — so the
+            // cost of folding it in is nil.
+            h.update(&p.poisoned_until.to_le_bytes());
             h.update(&p.fire_ready_at.to_le_bytes());
             // §A34, and it is load-bearing: this timer decides whether a
             // projectile spawns (§C20's knockback exemption). Leaving a
@@ -2885,6 +2952,12 @@ mod state_hash_tests {
         let mut w = world();
         w.players[0].aim = w.players[0].aim.wrapping_add(1);
         changed.push(("aim", w.state_hash()));
+
+        // §E13's status is a timer, and every other timer here is in the hash
+        // for the reason §A34 records.
+        let mut w = world();
+        w.players[0].poisoned_until += 0.5;
+        changed.push(("poisoned_until", w.state_hash()));
 
         let mut w = world();
         w.players[0].jetpack.fuel -= 0.5;
@@ -3677,11 +3750,13 @@ mod fire_gate {
     }
 }
 
-/// T13.06.4 / §C21 — toxic rain falls, so it cannot land under a roof.
+/// T13.06.4 / §C21 / §E13 — toxic rain falls, so it cannot land under a roof,
+/// and what it lands on it bites rather than cratering.
 #[cfg(test)]
 mod toxic_rain_falls {
     use super::*;
-    use crate::constants::{MapScale, SKY_MARGIN, TOXIC_DURATION, TOXIC_PUDDLE_EVERY};
+    use crate::constants::{MapScale, SKY_MARGIN, TOXIC_DROP_EVERY, TOXIC_DURATION};
+    use crate::items::registry::WEAPON_TOXIC_DROP;
     use crate::map::{CoarseGrid, Mask};
     use crate::weapons::explode::EffectKind;
 
@@ -3713,7 +3788,7 @@ mod toxic_rain_falls {
                 mask.set(x as i32, y as i32);
             }
         }
-        // The cave: a roof slab, and a floor for a puddle to sit on under it.
+        // The cave: a roof slab, and a floor under it for a drop to land on.
         for x in CAVE_X0..CAVE_X1 {
             for y in ROOF..(ROOF + 12) {
                 mask.set(x as i32, y as i32);
@@ -3740,10 +3815,10 @@ mod toxic_rain_falls {
             traversable_fraction: 1.0,
             largest_component: Vec::new(),
         };
-        // The surface points the old code placed puddles on directly. Under the
-        // cave the "surface" is the CAVE FLOOR — under a roof — which is exactly
-        // how a puddle ended up indoors. They are still what chooses the column
-        // to rain over, so both halves of the map get rained on.
+        // The surface points the pre-§C21 code placed the hazard on directly.
+        // Under the cave the "surface" is the CAVE FLOOR — under a roof — which
+        // is exactly how rain ended up indoors. They are still what chooses the
+        // column to rain over, so both halves of the map get rained on.
         for x in (CAVE_X0..CAVE_X1).step_by(4) {
             meta.surface_points.push(crate::math::Point {
                 x: x as i32,
@@ -3769,7 +3844,12 @@ mod toxic_rain_falls {
         (0..top).any(|py| map.mask.get(xi as i32, py as i32))
     }
 
-    /// Rain on the cave map for a full active window and collect every puddle.
+    /// Rain on the cave map for a full active window and collect every place a
+    /// drop **landed**, read off the carve it left.
+    ///
+    /// The carve is the evidence now that there is no puddle to count: §E13 gives
+    /// a drop a `TOXIC_DROP_CARVE_R` bite of the ground it stops on, and this
+    /// fixture fires no weapons, so every carve in it is a raindrop.
     fn rain(seed: u64) -> (World, Vec<(f32, f32)>) {
         let mut w = World::new(seed, MapScale::Small);
         w.map = map_with_a_cave();
@@ -3782,21 +3862,19 @@ mod toxic_rain_falls {
         }
         w.force_effect(EffectKind::ToxicRain, w.round_time);
 
-        let mut puddles = Vec::new();
+        let mut landings = Vec::new();
         // The active window, plus time for the last drop to fall the height of
         // the map and land.
         let ticks = ((TOXIC_DURATION + 12.0) / crate::constants::SIM_DT) as u32;
         for _ in 0..ticks {
             w.step(crate::constants::SIM_DT);
             for e in w.drain_events() {
-                if let GameEvent::HazardSpawn { kind, x, y, .. } = e {
-                    if kind == HazardKind::Puddle {
-                        puddles.push((x, y));
-                    }
+                if let GameEvent::Carve { x, y, .. } = e {
+                    landings.push((x as f32, y as f32));
                 }
             }
         }
-        (w, puddles)
+        (w, landings)
     }
 
     /// The subject, and its control, on one map.
@@ -3806,16 +3884,16 @@ mod toxic_rain_falls {
     /// saying anything about the cave (§A27 — a population claim needs more than
     /// one draw).
     #[test]
-    fn no_puddle_forms_under_a_roof_and_puddles_do_form_in_the_open() {
+    fn no_drop_lands_under_a_roof_and_drops_do_land_in_the_open() {
         let mut indoors = 0;
         let mut outdoors = 0;
         for seed in [1u64, 7, 42, 99, 4242, 12345] {
-            let (w, puddles) = rain(seed);
+            let (w, landings) = rain(seed);
             assert!(
-                !puddles.is_empty(),
-                "seed {seed}: no puddles at all — nothing here is tested"
+                !landings.is_empty(),
+                "seed {seed}: nothing landed at all — nothing here is tested"
             );
-            for (x, y) in puddles {
+            for (x, y) in landings {
                 if has_a_roof_over_it(&w.map, x, y) {
                     indoors += 1;
                 } else {
@@ -3827,21 +3905,21 @@ mod toxic_rain_falls {
         // indoors" would be satisfied by rain that never lands at all.
         assert!(
             outdoors > 0,
-            "no puddle formed in the open, so the absence below proves nothing"
+            "nothing landed in the open, so the absence below proves nothing"
         );
         assert_eq!(
             indoors, 0,
-            "{indoors} puddle(s) formed under a roof — rain fell through solid rock"
+            "{indoors} drop(s) landed under a roof — rain fell through solid rock"
         );
     }
 
     /// The falsification for the test above, as a test.
     ///
-    /// The **old** rule was "put the puddle on the surface point". This asserts
-    /// that doing so on this map really would land puddles indoors — otherwise
-    /// the fixture has no cave in it and the test above is green for free.
+    /// The **old** rule was "put the hazard on the surface point". This asserts
+    /// that doing so on this map really would land it indoors — otherwise the
+    /// fixture has no cave in it and the test above is green for free.
     #[test]
-    fn the_old_surface_point_rule_would_have_landed_puddles_indoors() {
+    fn the_old_surface_point_rule_would_have_landed_rain_indoors() {
         let map = map_with_a_cave();
         let indoors = map
             .meta
@@ -3896,32 +3974,320 @@ mod toxic_rain_falls {
         );
         assert_eq!(
             released,
-            (TOXIC_DURATION / TOXIC_PUDDLE_EVERY) as usize,
+            (TOXIC_DURATION / TOXIC_DROP_EVERY) as usize,
             "{released} drops"
         );
     }
 
-    /// It still denies space rather than reshaping the map.
+    /// §E13 gives the rain a **bullet-sized** bite, and the risk is that it
+    /// quietly becomes a second meteor shower.
     ///
-    /// The property most at risk from this change: a drop is now a projectile,
-    /// and every other projectile in the game carves when it lands.
+    /// Pinned at both ends, to constants rather than to numbers: every carve the
+    /// rain emits is `TOXIC_DROP_CARVE_R`, and that radius is far under
+    /// `METEOR_CARVE_R`. A test asserting only "it carves something" passes for a
+    /// drop that digs a 50 px crater, which is the one outcome `docs/13` §3
+    /// forbids.
+    ///
+    /// The **control is that it carves at all**: this exact test used to assert a
+    /// byte-identical mask, and inverting an assertion without checking that the
+    /// new direction actually happens is how "no puddles form" would have been
+    /// satisfied by rain that never fell.
     #[test]
-    fn a_full_toxic_rain_leaves_the_mask_byte_identical() {
+    fn every_drop_takes_a_bullet_sized_bite_and_never_a_crater() {
         let mut w = World::new(4242, MapScale::Small);
         w.map = map_with_a_cave();
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         let before = w.map.mask.count_solid();
-        let hash_before = w.map.mask.hash();
         w.force_effect(EffectKind::ToxicRain, w.round_time);
 
+        let mut radii: Vec<i32> = Vec::new();
+        let ticks = ((TOXIC_DURATION + 12.0) / crate::constants::SIM_DT) as u32;
+        for _ in 0..ticks {
+            w.step(crate::constants::SIM_DT);
+            for e in w.drain_events() {
+                if let GameEvent::Carve { r, .. } = e {
+                    radii.push(r);
+                }
+            }
+        }
+        assert!(
+            !radii.is_empty(),
+            "the rain carved nothing at all, so 'never a crater' is free"
+        );
+        assert!(
+            w.map.mask.count_solid() < before,
+            "{} carve event(s) and the mask is unchanged — the events are announcing \
+             work that did not happen",
+            radii.len()
+        );
+        let want = crate::constants::TOXIC_DROP_CARVE_R.round() as i32;
+        assert!(
+            radii.iter().all(|&r| r == want),
+            "a drop carved at radii {radii:?}, not all {want}"
+        );
+        assert!(
+            (want as f32) < crate::constants::METEOR_CARVE_R,
+            "a drop's bite ({want}) is not smaller than a meteor's crater ({})",
+            crate::constants::METEOR_CARVE_R
+        );
+    }
+
+    /// A map whose **only** surface point is one column of open ground.
+    ///
+    /// `pick_column` draws from `surface_points`, so a map with one of them rains
+    /// on one column every time. That turns "does a drop ever hit a player" from
+    /// a coin flip — 20 drops across thousands of pixels — into a fact, without
+    /// reaching past the projectile step to arrange it.
+    fn map_with_one_rain_column(x: u32) -> Map {
+        let mut mask = Mask::new_empty(W, H);
+        for y in GROUND..H {
+            for px in 0..W {
+                mask.set(px as i32, y as i32);
+            }
+        }
+        let coarse = CoarseGrid::build(&mask);
+        let mut meta = crate::map::MapMeta {
+            seed: 1,
+            requested_seed: 1,
+            attempts: 1,
+            used_safe_preset: false,
+            scale: MapScale::Small,
+            theme: 0,
+            spawn_points: Vec::new(),
+            teleport_pads: Vec::new(),
+            surface_points: Vec::new(),
+            objects: Vec::new(),
+            buried_slots: Vec::new(),
+            decorations: Vec::new(),
+            wind: 0.0,
+            traversable_fraction: 1.0,
+            largest_component: Vec::new(),
+        };
+        meta.surface_points.push(crate::math::Point {
+            x: x as i32,
+            y: GROUND as i32,
+        });
+        Map::from_parts(mask, coarse, meta)
+    }
+
+    /// §E13, end to end: rain that falls on you poisons you, and rain that falls
+    /// somewhere else does not.
+    ///
+    /// Through the real projectile step, not through a seam — the whole claim is
+    /// that a **drop** reaches a player, and a test that hands `detonate` a
+    /// victim has assumed the part that can be wrong. The control is a second
+    /// player standing well clear of the one column it rains on: without them,
+    /// "poisoned" would be satisfied by a world that poisons everybody.
+    #[test]
+    fn a_drop_that_lands_on_a_player_poisons_them_and_a_bystander_is_untouched() {
+        let mut w = World::new(4242, MapScale::Small);
+        w.map = map_with_one_rain_column(OPEN_X0);
+        // The generated map's wind came with the `World`, and replacing the map
+        // does not replace it. A drop has `wind_scale` 1.0, so eleven pixels of
+        // drift is the difference between landing on a 16 px player and beside
+        // them — measured, that is exactly what happened here first.
+        w.wind = 0.0;
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        w.add_player(1, 1, "bo".into());
+        if let Some(p) = w.player_mut(0) {
+            p.body.pos = Vec2::new(OPEN_X0 as f32, GROUND as f32 - 16.0);
+        }
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = Vec2::new(OPEN_X1 as f32, GROUND as f32 - 16.0);
+        }
+        w.force_effect(EffectKind::ToxicRain, w.round_time);
+
+        let mut rained_on = false;
+        let mut bystander = false;
         let ticks = ((TOXIC_DURATION + 12.0) / crate::constants::SIM_DT) as u32;
         for _ in 0..ticks {
             w.step(crate::constants::SIM_DT);
             w.drain_events();
+            let now = w.round_time;
+            rained_on |= w.player(0).is_some_and(|p| p.poisoned(now));
+            bystander |= w.player(1).is_some_and(|p| p.poisoned(now));
         }
-        assert_eq!(w.map.mask.count_solid(), before, "toxic rain dug");
-        assert_eq!(w.map.mask.hash(), hash_before, "the mask changed");
+        assert!(
+            rained_on,
+            "eight seconds of rain fell on the column this player is standing in \
+             and never poisoned them"
+        );
+        assert!(
+            !bystander,
+            "a player {} px from the only column it rained on was poisoned",
+            OPEN_X1 - OPEN_X0
+        );
+    }
+
+    /// The arithmetic, pinned to the constants at both ends.
+    ///
+    /// One hit, then run past the duration: the total lost is
+    /// `TOXIC_POISON_DPS × TOXIC_POISON_DURATION`. A number instead of the
+    /// constants would stay green against a drifted implementation, and the
+    /// tolerance is one tick of poison because the last tick straddles the
+    /// deadline.
+    #[test]
+    fn one_hit_costs_exactly_dps_times_duration_and_then_stops() {
+        use crate::constants::{TOXIC_POISON_DPS, TOXIC_POISON_DURATION};
+        let (mut w, before) = poisoned_world();
+        run_for(&mut w, TOXIC_POISON_DURATION + 1.0);
+
+        let lost = before - w.player(0).expect("ana").health;
+        let want = TOXIC_POISON_DPS * TOXIC_POISON_DURATION;
+        assert!(
+            (lost - want).abs() <= TOXIC_POISON_DPS * crate::constants::SIM_DT * 2.0,
+            "lost {lost}, expected {want}"
+        );
+        assert!(
+            !w.player(0).expect("ana").poisoned(w.round_time),
+            "the poison outlived TOXIC_POISON_DURATION"
+        );
+
+        // The control: a second full duration costs nothing more. Without it,
+        // "exactly one duration" is satisfied by a poison that never expires and
+        // happened to be measured at the right moment.
+        let settled = w.player(0).expect("ana").health;
+        run_for(&mut w, TOXIC_POISON_DURATION + 1.0);
+        assert_eq!(
+            w.player(0).expect("ana").health,
+            settled,
+            "the poison was still ticking after it expired"
+        );
+    }
+
+    /// §E13: a second hit **resets** the timer, it does not stack.
+    ///
+    /// **The total is the only thing that tells them apart.** Reading
+    /// `poisoned_until` would assert the implementation back to itself, and
+    /// "still poisoned after the second hit" is true of both rules. Two hits half
+    /// a duration apart cost one and a half durations if the timer resets, and
+    /// two full ones at double rate if it stacks — so the assertion is an upper
+    /// bound at the reset total, with the stacking total named in the message.
+    #[test]
+    fn a_second_hit_resets_the_timer_rather_than_stacking() {
+        use crate::constants::{TOXIC_POISON_DPS, TOXIC_POISON_DURATION};
+        let (mut w, before) = poisoned_world();
+        run_for(&mut w, TOXIC_POISON_DURATION / 2.0);
+        let at = Vec2::new(OPEN_X0 as f32, GROUND as f32 - 16.0);
+        w.hit_player_for_test(at, WEAPON_TOXIC_DROP, 0, w.round_time);
+        run_for(&mut w, TOXIC_POISON_DURATION * 2.0);
+
+        let lost = before - w.player(0).expect("ana").health;
+        let reset = TOXIC_POISON_DPS * TOXIC_POISON_DURATION * 1.5;
+        let stacked = TOXIC_POISON_DPS * TOXIC_POISON_DURATION * 2.0;
+        assert!(
+            (lost - reset).abs() <= TOXIC_POISON_DPS * crate::constants::SIM_DT * 4.0,
+            "two hits half a duration apart cost {lost}; a timer that resets costs \
+             {reset} and one that stacks costs {stacked}"
+        );
+    }
+
+    /// **The successor to `a_shielded_player_takes_half_and_iframes_take_none`.**
+    ///
+    /// That test was deleted with the puddles, and it should not have been: its
+    /// claim was never about puddles. It said **weather damage respects the
+    /// shield and i-frames**, and §E13 changed what the weather does, not who it
+    /// spares. The behaviour survives by construction — poison goes through
+    /// `apply_damage_log` into `apply_damage`, which returns early on
+    /// `invulnerable(now)` and applies the multiplier centrally — and a rule that
+    /// is true with nothing asserting it is one refactor from being false in
+    /// silence.
+    ///
+    /// Three players, one poison, one run: plain, shielded, invulnerable. The
+    /// plain one is the control — without it "the shielded player took less" is
+    /// satisfied by a poison that does nothing to anybody.
+    #[test]
+    fn poison_respects_the_shield_and_i_frames() {
+        use crate::constants::{SHIELD_DAMAGE_MULT, TOXIC_POISON_DURATION};
+        let mut w = World::new(4242, MapScale::Small);
+        w.map = map_with_one_rain_column(OPEN_X0);
+        w.wind = 0.0;
+        w.set_phase(RoundPhase::Playing);
+        for id in 0..3u8 {
+            w.add_player(id, id as u16, format!("p{id}"));
+        }
+        let at = Vec2::new(OPEN_X0 as f32, GROUND as f32 - 16.0);
+        let before: Vec<f32> = (0..3)
+            .map(|id| {
+                let now = w.round_time;
+                let p = w.player_mut(id).expect("seated");
+                p.body.pos = at;
+                p.iframes_until = 0.0;
+                match id {
+                    1 => p.shield_until = Some(now + TOXIC_POISON_DURATION * 4.0),
+                    // Longer than the run, so it is i-frames and not their
+                    // expiry that decides.
+                    2 => p.iframes_until = now + TOXIC_POISON_DURATION * 4.0,
+                    _ => {}
+                }
+                p.health
+            })
+            .collect();
+        // The battery keeps the shield up: §B5 drains it while it is raised, and
+        // a shield that ran out mid-run would make the halving look partial.
+        if let Some(p) = w.player_mut(1) {
+            p.battery = crate::constants::BATTERY_MAX;
+        }
+        for id in 0..3u8 {
+            w.hit_player_for_test(at, WEAPON_TOXIC_DROP, id, w.round_time);
+        }
+        run_for(&mut w, TOXIC_POISON_DURATION + 1.0);
+
+        let lost: Vec<f32> = (0..3)
+            .map(|id| before[id as usize] - w.player(id).expect("seated").health)
+            .collect();
+
+        // The control. Everything below is a comparison against this number.
+        assert!(
+            lost[0] > 0.0,
+            "the unprotected player lost nothing to a full duration of poison — \
+             the two comparisons below would hold for a poison that does nothing"
+        );
+        assert!(
+            (lost[1] - lost[0] * SHIELD_DAMAGE_MULT).abs() <= lost[0] * 0.05,
+            "shielded lost {}, unprotected {} — SHIELD_DAMAGE_MULT is {}",
+            lost[1],
+            lost[0],
+            SHIELD_DAMAGE_MULT
+        );
+        assert_eq!(
+            lost[2], 0.0,
+            "an invulnerable player lost {} to poison",
+            lost[2]
+        );
+    }
+
+    /// Set up a player who has just been hit by a drop, and report their health
+    /// before the poison starts biting.
+    fn poisoned_world() -> (World, f32) {
+        let mut w = World::new(4242, MapScale::Small);
+        w.map = map_with_one_rain_column(OPEN_X0);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        let at = Vec2::new(OPEN_X0 as f32, GROUND as f32 - 16.0);
+        if let Some(p) = w.player_mut(0) {
+            p.body.pos = at;
+            // Past the spawn i-frames, or every tick of poison is refused and the
+            // total is zero for a reason that has nothing to do with the rule.
+            p.iframes_until = 0.0;
+        }
+        let before = w.player(0).expect("ana").health;
+        w.hit_player_for_test(at, WEAPON_TOXIC_DROP, 0, w.round_time);
+        assert!(
+            w.player(0).expect("ana").poisoned(w.round_time),
+            "the fixture's own hit did not poison anyone"
+        );
+        (w, before)
+    }
+
+    fn run_for(w: &mut World, seconds: f32) {
+        let ticks = (seconds / crate::constants::SIM_DT) as u32;
+        for _ in 0..ticks {
+            w.step(crate::constants::SIM_DT);
+            w.drain_events();
+        }
     }
 
     /// A drop is visible on its way down: it is released in open sky and the

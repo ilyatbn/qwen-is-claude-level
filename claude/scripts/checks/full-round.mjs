@@ -277,7 +277,8 @@ for (;;) {
       // Named for what it can honestly promise. The proximity gate guarantees a
       // hazard was announced *near the camera*; it cannot guarantee one is still
       // alive when the shot lands, because a meteor impact is instantaneous and a
-      // toxic puddle lives 3 s while the poll interval is 1 s. Calling this
+      // toxic drop is gone the instant it lands while the poll interval is 1 s.
+      // Calling this
       // "weather" would be claiming more than the frame shows (§A22). That
       // weather *ran* is asserted from the effect lifecycle, not from a picture.
       await shot(a, 'round-3-hazard-nearby')
@@ -300,7 +301,7 @@ for (;;) {
     fail(`the round never reached \`ended\` (stuck in ${d.phase} at t=${d.roundTime.toFixed(1)})`)
     break
   }
-  // 1 s, not 2: hazards are transient (a toxic puddle lives 3 s, a meteor
+  // 1 s, not 2: hazards are transient (a lava vent's jet is seconds, a meteor
   // impact is instantaneous), so a slow poll misses the only frames worth
   // photographing.
   await sleep(1000)

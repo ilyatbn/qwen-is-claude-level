@@ -351,6 +351,28 @@ Modelled on the meteor, which is the same shape of thing:
   path. This is the first per-player status the UI has shown; there is no per-player
   status field on `PlayerState` today, and one is needed.
 
+### E13.1 — What the status field turned out to need
+
+- **On the wire as a flag bit, never the timer** — bit 6 of the snapshot flags, exactly the
+  `shield_active(now)` precedent at bit 3. **`docs/40` §3 still says "6-7 reserved"; that
+  amendment is owed.**
+- **Hashed.** `state_hash` folds the deadline in. §A34 is explicit that an unhashed timer
+  is the documented bug shape, and poison kills. Nothing stored depends on the hash, so the
+  cost is nil.
+- **Damage goes through `apply_damage_log`**, in its own step, *not* `tick_stats` — a
+  subtraction from `health` inside the player would have been the one source that skipped
+  the `Warmup` gate.
+- **Green must not mask red.** Precedence is gold > red-below-half > toxic, and the toxic
+  green is deliberately *yellower* than full health's: "poisoned is green" written in the
+  healthy green would be invisible on the only player it is about.
+
+`TOXIC_DPS` **meant two things** and §E15 did not know it: `defs.rs` reads it for the toxic
+grenade's burn zone, a §B7 weapon this document never mentions. Retiring it as written would
+have cut that weapon from 6 dps to 2 in silence. It is `TOXIC_GRENADE_DPS` now, value
+unchanged. And `TOXIC_PUDDLE_EVERY` was the **drop cadence**, not a puddle property — it is
+`TOXIC_DROP_EVERY`, 0.4 unchanged. §E15 retired a name that was doing a job it was not named
+for.
+
 The scheduler, the telegraph and the rain visuals are unchanged.
 
 ## E14 — Inventory tiles show the item

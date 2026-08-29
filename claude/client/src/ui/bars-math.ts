@@ -34,6 +34,17 @@ const RED = '#e0342b'
 const GREEN = '#3ec75a'
 /** Overheal band: distinct from full health, or the cap is invisible. */
 const GOLD = '#ffc93f'
+/**
+ * §E13's poison. A **sicker** green than full health's, and deliberately so:
+ * `GREEN` is already what a healthy bar reads, so "poisoned is green" written
+ * with the same green would be invisible on the one player it matters for.
+ */
+const TOXIC = '#7cd44a'
+/**
+ * The point on the health ramp below which red outranks the poison tint.
+ * Half of `BASE_HEALTH`, which is where the ramp itself stops reading as green.
+ */
+const POISON_MAX_T = 0.5
 
 /**
  * Health, red at 0 through green at `BASE_HEALTH`, with anything above that
@@ -45,15 +56,35 @@ const GOLD = '#ffc93f'
  * apart. So a full-but-not-overhealed bar is two thirds of the track, and that is
  * deliberate.
  */
-export function healthBar(health: number, base: number, cap: number): BarView {
+export function healthBar(health: number, base: number, cap: number, poisoned = false): BarView {
   const h = Math.min(cap, Math.max(0, health))
   const t = base <= 0 ? 1 : Math.min(1, h / base)
   return {
     fill: cap <= 0 ? 0 : Math.min(h, base) / cap,
     over: cap <= 0 ? 0 : Math.max(0, h - base) / cap,
-    colour: h > base ? GOLD : mix(RED, GREEN, t),
+    colour: poisonedColour(h, base, t, poisoned),
     label: String(Math.round(h)),
   }
+}
+
+/**
+ * Health's colour, with §E13's poison folded in — and **health wins when it is
+ * low**.
+ *
+ * A poisoned player at 10 health drawn green is worse than no indicator at all:
+ * it inverts the one signal the bar exists for, and the player reads "fine" at
+ * the moment the bar is telling them they are about to die. So the poison tint
+ * applies only while the ramp is still on the green side of `POISON_MAX_T`; a
+ * player being poisoned *to death* watches the bar go red, which is the true
+ * thing to show.
+ *
+ * The overheal gold outranks both, because a bar above `base` is a different
+ * band and not a ramp position at all.
+ */
+function poisonedColour(h: number, base: number, t: number, poisoned: boolean): string {
+  if (h > base) return GOLD
+  if (poisoned && t > POISON_MAX_T) return TOXIC
+  return mix(RED, GREEN, t)
 }
 
 /** Energy, blue, flat colour: it is a quantity, not a warning. */

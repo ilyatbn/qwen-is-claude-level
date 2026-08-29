@@ -218,7 +218,9 @@ export interface Constants {
   FIRE_MOVE_MAX_SPEED: number
   JETPACK_MAX_SPEED: number
   LAVA_BURN_RADIUS: number
-  TOXIC_PUDDLE_RADIUS: number
+  TOXIC_POISON_DURATION: number
+  TOXIC_POISON_DPS: number
+  TOXIC_DROP_CARVE_R: number
   HEALTH_CAP: number
   TRACER_LIFETIME: number
   TRACER_WIDTH: number
@@ -329,7 +331,6 @@ export const coreDarknessAt = core_darkness_at
 
 export interface WeatherState {
   active: { id: number; kind: 'toxic' | 'meteor' | 'lava' | 'fog'; phase: string }[]
-  puddles: { x: number; y: number; r: number }[]
   vents: { x: number; y: number; lean: number; jetting: boolean; burning: boolean }[]
   /** 0..1 */
   fog: number
