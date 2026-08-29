@@ -15,17 +15,22 @@ import { ensureItemTextures } from './itemTextures'
 import {
   beaconPulse,
   bobFor,
+  artFor,
   diffItems,
-  frameFor,
   isFallingCrate,
   labelFor,
   parseRegistry,
+  spriteByRegistryKey,
+  spriteKeyFor,
   withinLabelRange,
   type ItemDefView,
   type WorldItemView,
 } from './itemSprites-math'
 
-const ATLAS = 'items'
+/** The packed item atlas key. Exported so the inventory tile resolves art
+ * through the same atlas the world does rather than naming it a second time. */
+export const ITEM_ATLAS = 'items'
+const ATLAS = ITEM_ATLAS
 /** Tint for the fallback box, by item id — enough to tell them apart. */
 const FALLBACK_TINTS = [0xff5d5d, 0x5db4ff, 0xffe45d, 0xff9d3d, 0x9d7bff, 0x7bffb0]
 
@@ -48,6 +53,7 @@ export class ItemLayer {
    */
   private readonly chutes: Phaser.GameObjects.Graphics
   private defs: Map<number, ItemDefView> = new Map()
+  private spriteByKey: Map<string, string> = new Map()
   private warned = new Set<string>()
   private t = 0
 
@@ -65,6 +71,20 @@ export class ItemLayer {
   /** From `Core.itemRegistryJson()`. Safe to call before any item exists. */
   setRegistry(json: string): void {
     this.defs = parseRegistry(json)
+    this.spriteByKey = spriteByRegistryKey(this.defs)
+  }
+
+  /**
+   * `weapon_bazooka` → the art key the world draws it with.
+   *
+   * The inventory holds registry *keys* — that is what the `inventory` event
+   * carries — while art is keyed by `ItemDef.sprite`. This is the one place the
+   * registry is parsed, so it is the one place that mapping is derived; the UI
+   * asks here rather than parsing `item_registry_json()` a second time.
+   */
+  spriteForKey(key: string | null): string | null {
+    if (!key) return null
+    return this.spriteByKey.get(key) ?? null
   }
 
   get count(): number {
@@ -202,21 +222,19 @@ export class ItemLayer {
   }
 
   private spawn(item: WorldItemView): void {
-    const hasAtlas = this.scene.textures.exists(ATLAS)
-    const texture = hasAtlas ? this.scene.textures.get(ATLAS) : null
-    const frame = texture ? frameFor(item, this.defs, (f) => texture.has(f)) : null
-    // Packed art wins; a procedural icon is the fallback `docs/51` §5 describes,
-    // not a competitor. Eighteen v3 items have no packed frame (§B20), and
-    // without this every one of them was an identical coloured box.
-    const proc = frame
-      ? null
-      : frameFor(item, this.defs, (f) => this.scene.textures.exists(f))
+    // The order is `artFor`'s, shared with the inventory tile so the two cannot
+    // come to disagree about which item looks like what.
+    const art = artFor(
+      spriteKeyFor(item, this.defs),
+      (f) => this.scene.textures.exists(ATLAS) && this.scene.textures.get(ATLAS).has(f),
+      (k) => this.scene.textures.exists(k),
+    )
 
     let sprite: Phaser.GameObjects.Image | Phaser.GameObjects.Rectangle
-    if (frame) {
-      sprite = this.scene.add.image(item.x, item.y, ATLAS, frame).setOrigin(0.5, 0.5)
-    } else if (proc) {
-      sprite = this.scene.add.image(item.x, item.y, proc).setOrigin(0.5, 0.5)
+    if (art?.kind === 'atlas') {
+      sprite = this.scene.add.image(item.x, item.y, ATLAS, art.frame).setOrigin(0.5, 0.5)
+    } else if (art?.kind === 'texture') {
+      sprite = this.scene.add.image(item.x, item.y, art.key).setOrigin(0.5, 0.5)
     } else {
       // docs/50 §8: the game starts with no art, and every fallback logs once.
       const key = `item:${item.item}`

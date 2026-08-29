@@ -142,7 +142,83 @@ if (!bar) {
     await shot('inventory-dragged')
   }
 
-  // --- and a backpack slot cannot be selected (§C10) -----------------------
+  // --- the tile draws the item, not its name (T18.06, §E14) ----------------
+//
+// The digest comparison above passed before this task too, when a filled tile
+// held a wrapped text label and an empty one held nothing. It says the tiles
+// differ, not that either draws art. These assertions are about the art layer
+// itself.
+{
+  const filled = await page.evaluate(() => {
+    const tiles = [...document.querySelectorAll('[data-slot]')]
+    const art = (t) => t.querySelector('[data-art]')
+    const first = tiles.find((t) => t.dataset.filled === '1' && art(t)?.dataset.art === '1')
+    const empty = tiles.find((t) => t.dataset.filled === '0')
+    const rect = (el) => {
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      if (r.width < 1 || r.height < 1) return null
+      return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }
+    }
+    return {
+      slot: first ? Number(first.dataset.slot) : null,
+      url: first ? art(first).style.backgroundImage : '',
+      text: first ? (first.querySelector('b')?.textContent ?? '') : '',
+      artRect: rect(first && art(first)),
+      emptyArtRect: rect(empty && art(empty)),
+      emptyUrl: empty ? (art(empty)?.style.backgroundImage ?? '') : '',
+    }
+  })
+
+  if (filled.slot === null) {
+    // DEV_LOADOUT fills the bar, so no tile resolving art means the resolution
+    // is broken, not that the loadout was empty. Failing rather than skipping:
+    // a skip reported as `ok` is the D-29 shape.
+    fail('no filled tile resolved any art — every tile fell back to its name')
+  } else {
+    const m = /^url\("data:image\/png;base64,([^"]+)"\)$/.exec(filled.url)
+    if (!m) {
+      fail(`slot ${filled.slot + 1} says it has art but its background is ${filled.url || '(empty)'}`)
+    } else {
+      // Not just "a URL is set": a 1x1 transparent PNG would satisfy that and
+      // render nothing, which is the failure this whole task exists to fix.
+      const bytes = Buffer.from(m[1], 'base64').length
+      if (bytes > 100) ok(`slot ${filled.slot + 1} draws a ${bytes}-byte PNG, not its name`)
+      else fail(`slot ${filled.slot + 1}'s art is ${bytes} bytes — too small to be an icon`)
+    }
+
+    // The control: an empty tile has no art. Without it, "the filled tile has a
+    // background" passes for a panel that paints every tile the same.
+    if (filled.emptyUrl === '') ok('control: an empty tile resolves no art at all')
+    else fail(`an empty tile has a background image (${filled.emptyUrl})`)
+
+    // The text is now the count, not the key — the picture says which item it
+    // is. `x1` is deliberately absent, so a single item shows no text at all.
+    if (!/[a-z]{3}/.test(filled.text)) {
+      ok(`and its text is "${filled.text}", not the registry key`)
+    } else {
+      fail(`slot ${filled.slot + 1} still shows the key as text: "${filled.text}"`)
+    }
+
+    // Pixels, on the art layer itself and against an empty tile's art layer in
+    // the same frame — docs/72 §C2. The digest, not the mean: a small icon
+    // centred in a box moves few pixels and a mean can absorb it.
+    if (!filled.artRect || !filled.emptyArtRect) {
+      fail('the art layers have no rect to sample')
+    } else {
+      const a = await samplePatch(page, filled.artRect)
+      const b = await samplePatch(page, filled.emptyArtRect)
+      if (a.digest !== b.digest) {
+        ok(`the art layer renders pixels an empty tile's does not (lum ${a.lum.toFixed(1)} vs ${b.lum.toFixed(1)})`)
+      } else {
+        fail('the filled tile\'s art layer is pixel-identical to an empty one')
+      }
+    }
+  }
+  await shot('inventory-art')
+}
+
+// --- and a backpack slot cannot be selected (§C10) -----------------------
   const selBefore = (await dbg()).selectedSlot
   await page.click(`[data-slot="${TOTAL - 1}"]`)
   await sleep(300)

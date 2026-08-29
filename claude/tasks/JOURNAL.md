@@ -4908,3 +4908,41 @@ to let an assertion go.
 
 Two untracked probe files were running in the suite with **four `it()` blocks and zero
 `expect()`** — `__spike` recurring.
+
+## T18.06 — Inventory tiles show the item (v6)  ·  M18 complete
+
+The tile drew `tile.textContent = tileLabel(slot)` — the raw registry key in a 46 px box —
+while the same item on the map was a sprite. `artFor()` is now the fallback order written
+**once** — atlas frame, else the procedural canvas under the same key, else nothing — and
+both `ItemLayer.spawn` and the tile resolve through it. `spawn` had expressed that order as
+two `frameFor` calls with different probes.
+
+`spriteKeyFor` splits *which art key* from *does art exist under it*, because the inventory
+holds a **registry key** and art is keyed by `ItemDef.sprite` — a different string, and the
+tile has no `WorldItemView` to ask with. `ensureItemTextures` is untouched and still called
+only from `ItemLayer`'s constructor; the panel takes an injected `artUrl`, so there is no
+second painter table.
+
+**`frameFor` then had no production caller** — imported by one file, its own test — so it
+was **dead code kept alive by nine assertions, including the drift test written to guard
+it**. Deleted, `describeRoom`'s answer for `describeRoom`'s reason: three lines composing
+two functions that remain, not a subsystem anyone would revive. And **what replaced the
+drift test is stronger**: it had compared `frameFor` against the function `frameFor` called
+— true by construction — where the guarantee that matters is that the **two paths that
+exist** agree. `world_and_inventory_resolve_an_item_to_the_same_art_key` asks with an item
+id on one side and a registry key on the other, with a `checked > 1` control because the
+loop passes on an empty registry. *If those diverge, a bazooka is one picture on the ground
+and another in the bag.*
+
+**The byte floor is the assertion worth keeping.** `bytes > 100`, not the observed 295: a
+URL being set is *intent*, and a 1×1 transparent PNG (~70 bytes) would satisfy it while
+rendering nothing — the exact failure this task exists to fix. The pixel comparison is on
+**digest not mean**, and the control is the **empty tile's own art layer in the same frame**.
+
+**Two limits recorded rather than left implicit.** The art cache cannot poison — the
+procedural table is registered synchronously before any tile renders, so a cached `null`
+belongs only to a sprite neither source will ever hold — but if the atlas arrives *after*
+the first inventory render, that sprite is pinned to its procedural answer for the session:
+a quality ceiling, not staleness. And **the tile and the world can diverge in
+*presentation*** — scale, tint, crop — while resolving identically; §E14's claim is about
+resolution and that is what is tested.

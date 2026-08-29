@@ -10,6 +10,17 @@ export interface SlotView {
   slot: number
   key: string | null
   count: number
+  /**
+   * The art key, resolved by the layer that already owns the registry.
+   *
+   * Optional because the wire does not carry it: the `inventory` event sends a
+   * registry key, and `ItemDef.sprite` is a different string. `ItemLayer` parses
+   * the registry once and answers `spriteForKey`, so this is threaded in rather
+   * than re-derived here — a second resolution of one fact is the pattern that
+   * produced two `wait_for`s, three `escapeHtml`s and two poison damage paths in
+   * this build alone.
+   */
+  sprite?: string | null
 }
 
 /** Where a slot index lives. */
@@ -62,6 +73,19 @@ export function backpackGrid(backpackSlots: number): { rows: number; cols: numbe
 export function tileLabel(slot: SlotView | undefined): string {
   if (!slot?.key) return ''
   return slot.count > 1 ? `${slot.key} x${slot.count}` : slot.key
+}
+
+/**
+ * What a tile puts in its corner once it is drawing art: the count, or nothing.
+ *
+ * Same rule as `tileLabel` — a lone `x1` reads as a quantity worth noticing —
+ * but without the key, because the picture is now saying which item it is. The
+ * key survives only in `tileLabel`, which is what a tile with no resolvable art
+ * falls back to (`docs/50` §8).
+ */
+export function tileCount(slot: SlotView | undefined): string {
+  if (!slot?.key) return ''
+  return slot.count > 1 ? `x${slot.count}` : ''
 }
 
 /**

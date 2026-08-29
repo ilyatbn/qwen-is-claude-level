@@ -50,6 +50,8 @@ import { devSurface } from '../dev'
 import { DebugOverlay } from '../render/debugOverlay'
 import { energyBar, healthBar, inRefillDelay, jetpackBar, shieldRing } from '../ui/bars-math'
 import { DebugHud } from '../ui/debugHud'
+import { ITEM_ATLAS } from '../render/itemSprites'
+import { artFor } from '../render/itemSprites-math'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
@@ -436,7 +438,14 @@ export class GameScene extends Phaser.Scene {
       const sel = p['selected']
       if (typeof sel === 'number') this.selectedSlot = sel
       this.inventory?.update(
-        this.slots.map((sl, i) => ({ slot: i, key: sl?.key ?? null, count: sl?.count ?? 0 })),
+        this.slots.map((sl, i) => ({
+          slot: i,
+          key: sl?.key ?? null,
+          count: sl?.count ?? 0,
+          // Asked of the layer that parsed the registry, not re-derived here.
+          // The wire carries a registry key and art is keyed by `ItemDef.sprite`.
+          sprite: this.world?.items.spriteForKey(sl?.key ?? null) ?? null,
+        })),
         this.selectedSlot,
       )
       this.refreshHud()
@@ -1458,6 +1467,21 @@ export class GameScene extends Phaser.Scene {
         selectSlot: (slot) => {
           this.selectedSlot = slot
           this.conn.sendSelectSlot(slot)
+        },
+        // The tile draws what the world draws. `artFor` is the world's own
+        // fallback order and `ItemLayer` already registered the procedural
+        // textures, so this reads them rather than building a second set —
+        // `getBase64` is the only bridge a DOM tile needs into Phaser's
+        // texture manager.
+        artUrl: (sprite) => {
+          const t = this.textures
+          const art = artFor(
+            sprite,
+            (f) => t.exists(ITEM_ATLAS) && t.get(ITEM_ATLAS).has(f),
+            (k) => t.exists(k),
+          )
+          if (!art) return null
+          return art.kind === 'atlas' ? t.getBase64(ITEM_ATLAS, art.frame) : t.getBase64(art.key)
         },
       },
       C().QUICK_SLOTS,

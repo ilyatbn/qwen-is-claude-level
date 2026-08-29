@@ -14,6 +14,7 @@ import {
   backpackGrid,
   isDragWorthSending,
   regionOf,
+  tileCount,
   tileLabel,
   wheelSelect,
   type SlotView,
@@ -24,6 +25,20 @@ export interface InventoryDeps {
   moveItem(from: number, to: number): void
   /** Select a quick-bar slot. */
   selectSlot(slot: number): void
+  /**
+   * The art for a sprite key, as a data URL, or `null` if none resolves.
+   *
+   * Injected rather than reached for, because this panel is DOM and the art
+   * lives in Phaser's texture manager. `GameScene` supplies it over the same
+   * textures `ItemLayer` draws from, resolved through the same `artFor` order —
+   * so the tile and the world agree by construction instead of by two painter
+   * tables that happen to match. `ensureItemTextures` stays where it is, called
+   * once from `ItemLayer`'s constructor; nothing here rebuilds it.
+   *
+   * Absent in tests and wherever there is no renderer, which is what makes the
+   * text fallback below reachable under `environment: 'node'`.
+   */
+  artUrl?(sprite: string): string | null
 }
 
 const TILE = 46
@@ -33,6 +48,18 @@ export class InventoryPanel {
   readonly bar: HTMLDivElement
   readonly backpack: HTMLDivElement
   private readonly tiles: HTMLDivElement[] = []
+  private readonly arts: HTMLElement[] = []
+  private readonly texts: HTMLElement[] = []
+  /**
+   * Resolved data URLs, by sprite key.
+   *
+   * `update` runs on every `inventory` event, and re-encoding a texture to
+   * base64 each time is work for an answer that cannot change: the textures are
+   * registered once at construction. `null` is cached too, so an item with no
+   * art does not re-ask on every event either.
+   */
+  private readonly artCache = new Map<string, string | null>()
+  private readonly warned = new Set<string>()
   private slots: SlotView[] = []
   private selected = 0
   private open = false
@@ -82,6 +109,25 @@ export class InventoryPanel {
         'display:flex;align-items:flex-end;padding:3px;text-shadow:0 1px 2px #000;' +
         'cursor:grab;user-select:none;'
 
+      // Two layers, because `textContent` on the tile would wipe the art. The
+      // art fills the tile and the text sits over it — a count in the corner
+      // when there is art, the item key when there is not.
+      const art = doc.createElement('i')
+      art.dataset['art'] = '0'
+      // `pixelated`: the source is 16 px in a 46 px box, and the browser's
+      // default smoothing turns pixel art into a smear.
+      art.style.cssText =
+        'position:absolute;inset:3px;background-repeat:no-repeat;' +
+        'background-position:center;background-size:contain;' +
+        'image-rendering:pixelated;pointer-events:none;'
+      tile.appendChild(art)
+
+      const text = doc.createElement('b')
+      text.style.cssText = 'position:relative;font-weight:600;word-break:break-all;'
+      tile.appendChild(text)
+      this.arts.push(art)
+      this.texts.push(text)
+
       // Drag is client-side **intent** only: the tiles do not move here.
       tile.addEventListener('dragstart', (e) => {
         this.dragFrom = i
@@ -127,6 +173,44 @@ export class InventoryPanel {
     this.deps.selectSlot(wheelSelect(this.selected, delta, this.quickSlots))
   }
 
+  /**
+   * The art for a slot, cached, warning once when nothing resolves.
+   *
+   * **Named for the cache, not for the resolution** — `artFor` is the shared
+   * order in `itemSprites-math.ts` and this only calls through to it via
+   * `deps.artUrl`. Two same-named functions inside one feature is what gets
+   * "simplified" into one wrongly later, even when, as here, one of them is
+   * plainly a wrapper.
+   *
+   * `docs/50` §8: the game starts with no art, and every fallback logs once —
+   * `ItemLayer` warns per item id for the same reason, and per *sprite key* here
+   * because that is what failed to resolve.
+   *
+   * **A cached `null` cannot go stale, and there is one thing it can cost.**
+   * The procedural table is registered synchronously by `ensureItemTextures` in
+   * `ItemLayer`'s constructor, before any tile renders, so a sprite the table
+   * covers always resolves and a `null` can only belong to a sprite neither
+   * source will ever hold. The atlas is the one asynchronous source: if it
+   * arrives *after* the first inventory render, a sprite that has both is
+   * pinned to its procedural answer for the session and never upgrades to the
+   * packed frame. That is a quality ceiling, not staleness — the tile still
+   * draws the right item — and it is why this cache is keyed on the sprite and
+   * not on the slot.
+   */
+  private cachedArtUrl(slot: SlotView | undefined): string | null {
+    const sprite = slot?.sprite ?? null
+    if (!sprite || !this.deps.artUrl) return null
+    const hit = this.artCache.get(sprite)
+    if (hit !== undefined) return hit
+    const url = this.deps.artUrl(sprite) ?? null
+    this.artCache.set(sprite, url)
+    if (!url && !this.warned.has(sprite)) {
+      this.warned.add(sprite)
+      console.info(`[inventory] no art for "${sprite}" — showing its name`)
+    }
+    return url
+  }
+
   /** Render the server's answer. One-way: this never writes back. */
   update(slots: readonly SlotView[], selected: number): void {
     this.slots = slots.map((s) => ({ ...s }))
@@ -134,7 +218,13 @@ export class InventoryPanel {
     for (let i = 0; i < this.tiles.length; i++) {
       const tile = this.tiles[i]!
       const slot = slots[i]
-      tile.textContent = tileLabel(slot)
+      const url = this.cachedArtUrl(slot)
+      const art = this.arts[i]!
+      art.style.backgroundImage = url ? `url("${url}")` : ''
+      art.dataset['art'] = url ? '1' : '0'
+      // The picture says which item it is, so the text is only the count. With
+      // no art the key comes back — that is the fallback, not a second style.
+      this.texts[i]!.textContent = url ? tileCount(slot) : tileLabel(slot)
       const isSelected = i === selected && regionOf(i, this.quickSlots) === 'quick'
       tile.style.borderColor = isSelected ? '#ffd23f' : 'rgba(255,255,255,.22)'
       tile.style.background = slot?.key ? 'rgba(30,38,56,.86)' : 'rgba(8,10,16,.72)'
@@ -148,5 +238,5 @@ export class InventoryPanel {
   }
 }
 
-export { backpackGrid, isDragWorthSending, regionOf, tileLabel, wheelSelect }
+export { backpackGrid, isDragWorthSending, regionOf, tileCount, tileLabel, wheelSelect }
 export type { SlotView }

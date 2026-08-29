@@ -75,18 +75,74 @@ export function beaconPulse(t: number): number {
   return 0.35 + 0.3 * (0.5 + 0.5 * Math.sin(t * Math.PI * 2))
 }
 
-export function frameFor(
+/**
+ * The art key for a world item, before asking whether any art exists under it.
+ *
+ * This was `frameFor`, which answered "the frame, if the atlas has it" — one
+ * function doing the mapping and the existence probe together. The inventory
+ * needs the mapping alone and has no `WorldItemView` to ask with, so the two
+ * halves are separate now: this, and `artFor` below.
+ *
+ * `frameFor` itself was **deleted rather than kept**. Once `spawn` moved to
+ * `artFor` its only importer was its own test, so it was nine assertions
+ * guarding code nothing called while reading as live to the next person —
+ * `describeRoom`'s situation in T17.02, and answered the same way. It was three
+ * lines composing the two functions that remain; anyone who wants it back can
+ * write it again in less time than reading this took.
+ */
+export function spriteKeyFor(
   item: WorldItemView,
   defs: Map<number, ItemDefView>,
-  hasFrame: (f: string) => boolean,
 ): string | null {
-  if (item.source === 'Crate') {
-    if (hasFrame('crate')) return 'crate'
-    return null
-  }
-  const def = defs.get(item.item)
-  if (!def) return null
-  return hasFrame(def.sprite) ? def.sprite : null
+  if (item.source === 'Crate') return 'crate'
+  return defs.get(item.item)?.sprite ?? null
+}
+
+/**
+ * `registry key → art key`, for the half of the game that holds the first and
+ * needs the second.
+ *
+ * The world asks `spriteKeyFor` with an item id; the inventory has only the
+ * registry key the `inventory` event carries. **Both must land on the same art
+ * key or a bazooka is one picture on the ground and another in the bag** —
+ * which is what `world_and_inventory_resolve_an_item_to_the_same_art_key`
+ * asserts, and it is the guarantee the deleted `frameFor` drift test used to
+ * stand in for. That test compared a function against the function it called;
+ * this compares the two paths that actually exist.
+ */
+export function spriteByRegistryKey(defs: Map<number, ItemDefView>): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const d of defs.values()) if (d.key) out.set(d.key, d.sprite)
+  return out
+}
+
+/** Where an item's art comes from, or nothing at all. */
+export type ItemArt =
+  | { kind: 'atlas'; frame: string }
+  | { kind: 'texture'; key: string }
+  | null
+
+/**
+ * The fallback order, written once: packed atlas frame, else the procedural
+ * canvas `ensureItemTextures` registered under the same key, else nothing.
+ *
+ * `docs/50` §8 and `docs/51` §5 — the procedural icon is the fallback, *not* a
+ * competitor to packed art. Eighteen v3 items have no packed frame (§B20).
+ *
+ * Both the world sprite and the inventory tile resolve through this. They used
+ * to be one path and a text label; when the tile started drawing art, the
+ * alternative was a second copy of these three lines, and a second copy is how
+ * the two would come to disagree about which item looks like what.
+ */
+export function artFor(
+  sprite: string | null,
+  hasAtlasFrame: (f: string) => boolean,
+  hasTexture: (k: string) => boolean,
+): ItemArt {
+  if (!sprite) return null
+  if (hasAtlasFrame(sprite)) return { kind: 'atlas', frame: sprite }
+  if (hasTexture(sprite)) return { kind: 'texture', key: sprite }
+  return null
 }
 
 export function labelFor(

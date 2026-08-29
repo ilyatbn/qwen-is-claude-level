@@ -6,6 +6,7 @@ import {
   backpackGrid,
   isDragWorthSending,
   regionOf,
+  tileCount,
   tileLabel,
   wheelSelect,
   type SlotView,
@@ -117,5 +118,26 @@ describe('wheelSelect', () => {
       expect(up).toBeGreaterThanOrEqual(0)
       expect(down).toBeGreaterThanOrEqual(0)
     }
+  })
+})
+
+describe('tileCount', () => {
+  // The tile draws the item now, so the key stops being the label and the count
+  // becomes the whole of it. `tileLabel` survives as the no-art fallback.
+  it('shows a count only when there is more than one', () => {
+    expect(tileCount({ slot: 0, key: 'bazooka', count: 1 })).toBe('')
+    expect(tileCount({ slot: 0, key: 'grenade', count: 3 })).toBe('x3')
+  })
+
+  it('says nothing about an empty slot', () => {
+    expect(tileCount({ slot: 0, key: null, count: 0 })).toBe('')
+    expect(tileCount(undefined)).toBe('')
+  })
+
+  it('drops the key that tileLabel keeps, which is the whole difference', () => {
+    // Without this pair the two functions could quietly become the same one.
+    const slot: SlotView = { slot: 0, key: 'bazooka', count: 2 }
+    expect(tileLabel(slot)).toContain('bazooka')
+    expect(tileCount(slot)).not.toContain('bazooka')
   })
 })

@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   BOB_AMPLITUDE,
   bobOffset,
+  artFor,
   diffItems,
-  frameFor,
+  spriteByRegistryKey,
+  spriteKeyFor,
   labelFor,
   parseRegistry,
   withinLabelRange,
@@ -19,7 +21,6 @@ const REGISTRY_JSON = JSON.stringify([
 ])
 
 const defs: Map<number, ItemDefView> = parseRegistry(REGISTRY_JSON)
-const all = () => true
 
 function item(over: Partial<WorldItemView> = {}): WorldItemView {
   return { id: 1, item: 0, count: 1, x: 100, y: 200, source: 'Initial', grounded: true, ...over }
@@ -67,24 +68,78 @@ describe('bobOffset', () => {
   })
 })
 
-describe('frameFor', () => {
-  it('resolves an item to its registry sprite', () => {
-    expect(frameFor(item({ item: 0 }), defs, all)).toBe('item_medkit')
-    expect(frameFor(item({ item: 3 }), defs, all)).toBe('weapon_bazooka')
+describe('artFor', () => {
+  // The order the world and the inventory tile share. It is written once here
+  // because a second copy is how the two would come to disagree about which
+  // item looks like what — the failure this project has paid for in
+  // `to_command`, two `wait_for`s and three `escapeHtml`s.
+  const none = () => false
+  const any = () => true
+
+  it('prefers a packed atlas frame over the procedural canvas', () => {
+    // Both exist. Packed art wins — docs/51 §5 makes the procedural icon the
+    // fallback, not a competitor, and a test that only offered one could not
+    // tell which was chosen.
+    expect(artFor('weapon_bazooka', any, any)).toEqual({
+      kind: 'atlas',
+      frame: 'weapon_bazooka',
+    })
   })
 
-  it('draws a crate as a crate regardless of its contents', () => {
-    // docs/32 §4: what is inside is rolled at spawn and is not shown.
-    expect(frameFor(item({ source: 'Crate', item: 3 }), defs, all)).toBe('crate')
+  it('falls back to the procedural canvas when the atlas lacks the frame', () => {
+    // §B20: eighteen v3 items have no packed frame, and without this every one
+    // of them was an identical coloured box.
+    expect(artFor('weapon_bazooka', none, any)).toEqual({
+      kind: 'texture',
+      key: 'weapon_bazooka',
+    })
   })
 
-  it('returns null for an unknown item, so the caller can fall back', () => {
-    expect(frameFor(item({ item: 99 }), defs, all)).toBeNull()
+  it('resolves to nothing when neither source has it', () => {
+    expect(artFor('weapon_bazooka', none, none)).toBeNull()
   })
 
-  it('returns null when the atlas lacks the frame', () => {
-    // The fallback path docs/50 §8 requires: no art must still boot.
-    expect(frameFor(item({ item: 0 }), defs, () => false)).toBeNull()
+  it('resolves to nothing for an item with no sprite key at all', () => {
+    // An unknown item id reaches here as null, and asking the atlas for a frame
+    // named "null" is how a lookup becomes a crash.
+    expect(artFor(null, any, any)).toBeNull()
+  })
+})
+
+describe('spriteKeyFor', () => {
+  it('gives the art key without asking whether any art exists', () => {
+    // The split `frameFor` could not offer: the inventory holds a registry key
+    // and no `WorldItemView`, so it needs the mapping separately from the
+    // existence probe.
+    expect(spriteKeyFor(item({ item: 3 }), defs)).toBe('weapon_bazooka')
+    expect(spriteKeyFor(item({ source: 'Crate', item: 3 }), defs)).toBe('crate')
+    expect(spriteKeyFor(item({ item: 99 }), defs)).toBeNull()
+  })
+
+  it('world_and_inventory_resolve_an_item_to_the_same_art_key', () => {
+    // The guarantee that actually matters, and the reason the two halves were
+    // split. The world asks with an item id; the inventory has only the registry
+    // key its event carries. If those ever land on different art, a bazooka is
+    // one picture on the ground and another in the bag.
+    //
+    // This replaces a drift test that compared `frameFor` against the function
+    // `frameFor` called — true by construction, and moot once nothing called it.
+    const byKey = spriteByRegistryKey(defs)
+    let checked = 0
+    for (const def of defs.values()) {
+      expect(byKey.get(def.key)).toBe(spriteKeyFor(item({ item: def.id }), defs))
+      checked++
+    }
+    // Without this the loop above passes on an empty registry.
+    expect(checked).toBeGreaterThan(1)
+  })
+
+  it('maps every registry entry, so no item silently loses its art', () => {
+    const byKey = spriteByRegistryKey(defs)
+    expect(byKey.size).toBe(defs.size)
+    expect(byKey.get('bazooka')).toBe('weapon_bazooka')
+    // An unknown key resolves to nothing rather than to some other item's art.
+    expect(byKey.get('no_such_item')).toBeUndefined()
   })
 })
 
