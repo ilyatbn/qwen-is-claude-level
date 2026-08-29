@@ -890,25 +890,52 @@ to the start of the window, so terrain drift moves it without breaking it, while
 below 5 means the runner is missing three quarters of corrupted commands. The old floor's
 defect was margin, not value — 3 measured against a floor of 3.
 
-## D-56 — the two seating gates are not redundant, measured
+## D-56 — one seating gate had no test, and only the golden table knew
 
-`seat` gates twice: `grounds.len() / w` before choosing a percentile, and `contact_fraction`
-on the seat it chose. Relaxing **either one alone** leaves every test green, which looks
-like dead logic. It is not: replacing the first with "any ground at all" **moves the golden
-table**. With fewer than `want` columns finding ground the percentile index clamps to the
-deepest one, seating a wide object down inside a narrow spike — where `contact_fraction`
-then passes it on burial. The first gate stops that; the second checks the seat.
+`seat` gates twice: `grounds.len() / w` on the fraction of columns finding ground **inside
+the seat band** (gate A), and `contact_fraction` on the seat it then chose (gate B).
+Measured, one at a time:
 
-The lesson for the falsification rule: **one-at-a-time falsification cannot distinguish
-redundancy from mutual cover.** Both had to be relaxed together for the overhang unit test
-to go red, and the golden table was the instrument that separated them.
+| variant | result |
+|---|---|
+| control | 30 passed |
+| gate A relaxed | **30 passed — green** |
+| gate B relaxed | 29 passed, 1 failed — *"object 145 is 98 px wide … only 59 % of its base has ground under it"* |
+| both relaxed | 29 passed, 1 failed — the same test |
 
-## D-57 — `OBJECT_MIN_SEPARATION` is centre-only, and now says the wrong thing
+**One-at-a-time falsification worked.** It found that **gate A has no unit guard at all**:
+relaxing it is invisible to every test, and its only signal is the golden table moving —
+which happens on *any* generation change, so the next relaxation would be attributed to
+whatever else was in the commit and ship in silence. My first reading of this was wrong and
+is corrected here: I reported *"both had to go for the unit test to go red"*, which the
+measurement contradicts, and wrote the same claim into the code comment where it would have
+told a reader the gate was guarded when it was not.
 
-64 px between centres, against object widths up to **197 px** after §E12's scaling.
-Measured across nine maps: **27 of 3132 pairs overlap by bounding box, worst penetration
-50 px** — 0.9 % of pairs. Not a correctness defect, because objects are stamped into the
-mask and an overlap merges terrain rather than corrupting it, and nothing downstream reads
-an object's box. But the constant's name is now a claim it does not make. If §E12 wants
-separation to mean separation it needs the two half-widths added; that is an amendment, not
-a builder's call.
+The guard is now written — `a_footprint_that_mostly_finds_its_ground_outside_the_band_is_
+refused`. Gate A's case is specific: when fewer than `want` columns find ground in the band,
+the percentile index **clamps to the deepest one found**, seating the object at the bottom
+of the band, and `contact_fraction` then passes it at **100 %** because the ground the search
+missed lies within `SEAT_CONTACT` of that deeper seat. Building it took a correction of its
+own — the first profile put the missed ground at `limit + SEAT_CONTACT`, one row past what
+`contact_fraction` reaches from a seat on `limit`, so it was green under a relaxed gate and
+proved nothing. Falsified at `objects.rs:446`: `seat = Some(314)`, contact 1.00, red.
+
+**The method lesson is the opposite of the one I first recorded:** falsifying gates one at a
+time is what distinguishes a guarded rule from an unguarded one, and a gate that only moves
+a regeneratable table is untested.
+
+## D-57 — §D5's `OBJECT_MIN_SEPARATION` value, not its name
+
+`docs/73` §D5 says verbatim `OBJECT_MIN_SEPARATION | 64 | between object centres`, so the
+spec is explicit and `too_close` is a generic name — **nothing lies**, and the earlier
+framing of this as a naming defect is withdrawn.
+
+The question is the **value**. 64 px between centres was calibrated when a median rock was
+~50 px wide; §E12's scaling puts the median at ~75 and the maximum at **197**, so the
+constant no longer produces any separation between the objects it governs. Measured across
+nine maps: **27 of 3132 pairs overlap by bounding box, worst penetration 50 px** — 0.9 %.
+
+Not a correctness defect: objects are stamped into the mask, so an overlap merges terrain
+rather than corrupting it, and nothing downstream reads an object's box. It is a §D5 value
+question — whether separation should be `64 + (w_a + w_b) / 2`, which would change the map,
+or whether 64 centres is what §E12 wants at these sizes. A coordinator call, not a builder's.

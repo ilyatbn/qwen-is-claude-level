@@ -580,6 +580,22 @@ fn a_perturbed_command_is_localised_to_a_nearby_tick() {
         sample.len(),
         washed_out.len()
     );
+
+    // **The window has to straddle the boundary, and a floor cannot tell that it
+    // does.** The count above is meaningful only while some of these ticks have
+    // round left to diverge in and some do not; if every one goes the same way,
+    // the window has slid off the boundary and the number has stopped measuring
+    // anything — which is D-29's failure, a green run that proves nothing. Both
+    // ends fail loudly, and the fix is to move the window, not the floor.
+    assert!(
+        diverged > 0 && !washed_out.is_empty(),
+        "all {} perturbations went the same way ({diverged} diverged, {} washed out) — the \
+         sampled window no longer straddles the point where a perturbation runs out of round \
+         to compound in, so this count is not evidence either way. Move the window \
+         (`n - 28 .. n - 8`), do not touch the floor.",
+        sample.len(),
+        washed_out.len()
+    );
 }
 
 #[test]

@@ -4861,7 +4861,13 @@ band, the object's own silhouette, pre-stamp terrain, own-pixel exclusion).
 Large 36 unchanged. `fraction min` Small 0.762 / Medium 0.835 / **Large 0.754** — above the
 0.75 floor and above D-23's 0.751. All 24 golden mask rows moved, 12 per generator.
 
-**Finding:** `too_close` compares centres against `OBJECT_MIN_SEPARATION` 64 while objects
-are up to 197 px wide. Measured on nine maps: **27 of 3132 pairs overlap by box, worst 50
-px**. Cosmetic, not a correctness defect — objects are stamped into the mask, so an overlap
-merges terrain rather than breaking it — but the constant no longer means what it says.
+**Found by falsifying the two seating gates one at a time:** gate B goes red, **gate A was
+green under every test** — its only signal was the golden table, which moves anyway.
+`a_footprint_that_mostly_finds_its_ground_outside_the_band_is_refused` is that missing guard
+(D-56). `replay_run` gains a straddle guard: 0 or 20 of 20 both fail loudly, because a floor
+cannot tell a moved boundary from a broken feature.
+
+**Finding (D-57):** §D5 spells `OBJECT_MIN_SEPARATION` 64 *between centres*, so nothing
+lies — but 64 was calibrated when a median rock was ~50 px and §E12 makes it ~75, max 197.
+Measured, nine maps: **27 of 3132 pairs overlap by box, worst 50 px**. Not a correctness
+defect; a §D5 value question.

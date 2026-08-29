@@ -434,14 +434,19 @@ fn seat(mask: &Mask, x: i32, feet: i32, m: &ObjectMask) -> Option<i32> {
     // Every column that found ground within the band, out of the full width.
     // Columns that found none are the hanging ones and are counted against it.
     //
-    // This is not the same statement as the `contact_fraction` check below, and
-    // measured is not redundant with it: relaxing this one to "any ground at
-    // all" moves the golden table. If fewer than `want` columns find ground the
-    // percentile index clamps to the deepest one, which seats a wide object down
-    // inside a narrow spike — where `contact_fraction` then passes it on burial.
-    // This gate is what stops that, and the one below is what checks the seat it
-    // chose. Falsifying either alone leaves the overhang case red via the other,
-    // so neither is dead.
+    // This is not the same statement as the `contact_fraction` check below. If
+    // fewer than `want` columns find ground here, the percentile index clamps to
+    // the deepest one and seats the object at the bottom of the band — where
+    // `contact_fraction` then passes it, because the ground the search missed
+    // sits within `SEAT_CONTACT` of that deeper seat. This gate is what refuses
+    // the anchor; the one below checks the seat it chose.
+    //
+    // Measured: relaxing the gate below alone turns
+    // `every_placed_object_rests_on_the_ground_under_it` red. Relaxing **this**
+    // one alone left all thirty tests green — its only signal was the golden
+    // table moving, which happens on any generation change and would be
+    // attributed to something else. `a_footprint_that_mostly_finds_its_ground_
+    // outside_the_band_is_refused` is the guard that was missing.
     let supported = grounds.len() as f32 / w as f32;
     if supported < OBJECT_FOOTPRINT_SUPPORT {
         return None;
@@ -656,6 +661,92 @@ mod tests {
             "an object {w} px wide was seated on a ledge only {} px long — that is the \
              hanging §E12 forbids",
             w / 4,
+        );
+    }
+
+    /// **The width gate's own case**, which nothing else covers.
+    ///
+    /// `seat` refuses twice: once on the fraction of columns that find ground
+    /// *inside the seat band* (`grounds.len() / w`), and once on the contact of
+    /// the seat it then chose. Measured, relaxing the second alone turns
+    /// `every_placed_object_rests_on_the_ground_under_it` red — but relaxing the
+    /// **first** alone left all thirty tests green, and its only signal was the
+    /// golden table moving. A table that moves on every generation change is not
+    /// a guard: the next relaxation would be attributed to whatever else was in
+    /// the commit and ship in silence. This test is that missing guard.
+    ///
+    /// The case is the one the gate exists for. When fewer than `want` columns
+    /// find ground in the band, the percentile index **clamps to the deepest one
+    /// found**, seating the object at the bottom of the band instead of on the
+    /// surface half its width is resting on — and `contact_fraction` then passes
+    /// it, because the ground it missed sits within `SEAT_CONTACT` of that deeper
+    /// seat. So the profile is three levels: a shallow majority, a deep sliver
+    /// inside the band, and the rest just outside it.
+    ///
+    /// With the control, because "it was refused" is satisfied by a gate that
+    /// refuses everything: the same three levels with the in-band share pushed
+    /// over `OBJECT_FOOTPRINT_SUPPORT` is seated.
+    #[test]
+    fn a_footprint_that_mostly_finds_its_ground_outside_the_band_is_refused() {
+        let m = objects::mask(0).expect("the table has a first object");
+        let w = m.w as i32;
+        let feet = 300;
+        let band = ((m.h as f32) * OBJECT_SEAT_BAND).round().max(1.0) as i32;
+        let limit = feet + band;
+        let deep = (w / 20).max(1);
+
+        // `shallow` columns at the top of the band, `deep` at its very bottom,
+        // and the remainder just below the band — outside the ground search
+        // entirely, and outside `contact_fraction` too from any seat but the
+        // deep one the clamp produces.
+        let profile = |shallow: i32| {
+            let mut mask = Mask::new_empty(1024, 512);
+            for col in 0..1024 {
+                let k = col - 100;
+                let g = if !(0..w).contains(&k) || k < shallow {
+                    feet + 1
+                } else if k < shallow + deep {
+                    limit
+                } else {
+                    // The deepest row `contact_fraction` still reaches from a
+                    // seat on `limit`: outside the ground search, inside contact.
+                    limit + SEAT_CONTACT - 1
+                };
+                for y in g..512 {
+                    mask.set(col, y);
+                }
+            }
+            mask
+        };
+
+        let in_band = |shallow: i32| (shallow + deep) as f32 / w as f32;
+
+        let short = w / 2;
+        assert!(
+            in_band(short) < OBJECT_FOOTPRINT_SUPPORT,
+            "the refused case must actually be short of the rule: {:.2} is not under {}",
+            in_band(short),
+            OBJECT_FOOTPRINT_SUPPORT
+        );
+        assert!(
+            seat(&profile(short), 100, feet, &m).is_none(),
+            "only {:.0}% of a {w} px footprint found ground inside the {band} px band and it              was seated anyway — the percentile clamped to the deepest of too few and buried              it, which is what this gate exists to refuse",
+            in_band(short) * 100.0,
+        );
+
+        // The control. Same terrain, same seat band, enough of the width inside
+        // it — so the refusal above is the fraction and not the shape.
+        let long = (w as f32 * 0.8) as i32;
+        assert!(
+            in_band(long) >= OBJECT_FOOTPRINT_SUPPORT,
+            "the accepted case must actually satisfy the rule: {:.2} is not at least {}",
+            in_band(long),
+            OBJECT_FOOTPRINT_SUPPORT
+        );
+        assert!(
+            seat(&profile(long), 100, feet, &m).is_some(),
+            "{:.0}% of the footprint found ground inside the band and it was still refused —              the gate is rejecting the shape, not the fraction",
+            in_band(long) * 100.0,
         );
     }
 
