@@ -233,8 +233,39 @@ if (onScreen && onScreen.inView.length > 0) {
     return p.sx - halfW >= 0 && p.sx + halfW <= 1280 && p.sy - halfH >= 0 && p.sy + halfH <= 720
   }
 
+  /**
+   * **In frame is not the same as visible.** A bird flying behind a hillside is
+   * wholly on screen and wholly hidden, and toggling the layer then changes
+   * nothing — which reads, at the assertion below, as "the layer draws nothing".
+   *
+   * Measured: after §E12 made rocks and bushes 50 % bigger, the bird this check
+   * chose sat at world (1141, 390) with `solidAt` **true at its own centre and
+   * at 121 of 121 samples in an 80 px box around it**. Buried, not missing. The
+   * check had no way to say so because it only ever asked whether the bird was
+   * inside the viewport.
+   *
+   * So the premise is "against open sky", asked of the same mask the renderer
+   * draws from: the bird's own box, plus the patch's padding, entirely clear.
+   * Terrain is what changed under this fixture, and this is the fixture saying
+   * which situation it needs rather than assuming the map still provides it.
+   */
+  const clearOfTerrain = (b) =>
+    page.evaluate(
+      ([bx, by, hw, hh]) => {
+        const core = window.__game.core
+        for (let y = -hh; y <= hh; y += 4)
+          for (let x = -hw; x <= hw; x += 4)
+            if (core.solidAt(Math.round(bx + x), Math.round(by + y))) return false
+        return true
+      },
+      [b.x, b.y, c.BIRD_W / 2 + PAD, c.BIRD_H / 2 + PAD],
+    )
+
   let dNow = null
   let target = null
+  let seenFramed = 0
+  let seenFrozen = 0
+  let buried = 0
   for (let i = 0; i < 80; i++) {
     const probe = await dbg()
     // **The DRAWN positions, not the mirror's.** `freeze` pauses the scene, so
@@ -242,21 +273,35 @@ if (onScreen && onScreen.inView.length > 0) {
     // keeps taking socket updates — a patch computed from mirror coordinates and
     // then screenshotted compares two instants. Measured, that read 20.9
     // standalone and 0.2 inside the full suite on identical code.
-    if ((probe.birdsDrawnAt ?? []).some((b) => patchFitsIn(probe, b))) {
+    const framed = (probe.birdsDrawnAt ?? []).filter((b) => patchFitsIn(probe, b))
+    seenFramed += framed.length
+    if (framed.length > 0) {
       await freezeAndSettle()
       // Re-read once stopped: the bird moved between the probe and the freeze,
       // and it is the frozen position the screenshot will show.
       dNow = await dbg()
-      target = (dNow.birdsDrawnAt ?? []).find((b) => patchFitsIn(dNow, b))
+      for (const b of (dNow.birdsDrawnAt ?? []).filter((x) => patchFitsIn(dNow, x))) {
+        seenFrozen++
+        if (await clearOfTerrain(b)) {
+          target = b
+          break
+        }
+        buried++
+      }
       if (target) break
       await page.evaluate(() => window.__game.freeze(false))
     }
     await sleep(120)
   }
   if (!target) {
-    // Fail rather than photograph one at the edge: a bird in shot but not wholly
-    // in shot is a fixture with nowhere to aim, not a renderer fault.
-    fail('no bird stayed wholly in frame long enough to photograph — nothing to measure')
+    // Fail rather than photograph one that cannot be seen. The counts separate
+    // the three ways this ends with nothing to aim at, because "no bird" and
+    // "every bird behind a hill" are different findings and the second one is
+    // what §E12 produced.
+    fail(
+      `no bird was both wholly in frame and against open sky — ${seenFramed} framed, ` +
+        `${seenFrozen} re-read while frozen, ${buried} of those buried in terrain`,
+    )
   }
 
   const d = dNow
@@ -400,7 +445,16 @@ if (onScreen && onScreen.inView.length > 0) {
           }
         }
       }
-      return { n, minX, minY, maxX, maxY }
+      // **No match is `null`, not the viewport.** These start at the image
+      // bounds so the first match can shrink them, and if nothing ever matches
+      // they stay inverted: `minX` 1280 against `maxX` -1. Returned as numbers
+      // that reads as a full-screen box, and every arithmetic done on it
+      // produces something plausible — the midpoint of that inverted rect is
+      // (639.5, 359.5), which is the exact centre of the screen. That is how one
+      // cause (nothing changed) printed as two failures, the second of which
+      // looked like a coordinate bug in the renderer.
+      if (n === 0) return { n: 0, box: null }
+      return { n, box: { minX, minY, maxX, maxY } }
     },
       [b0.toString('base64'), b1.toString('base64')],
     )
@@ -413,9 +467,11 @@ if (onScreen && onScreen.inView.length > 0) {
   const nothing = await changedBetween(emptyShot, emptyShot2)
 
   const birdBox = { w: c.BIRD_W * d.zoom, h: c.BIRD_H * d.zoom }
+  const where = seen.box
+    ? `[${seen.box.minX}..${seen.box.maxX}]x[${seen.box.minY}..${seen.box.maxY}]`
+    : 'nowhere — no pixel differed at all'
   ok(
-    `hiding the bird layer changed ${seen.n} px in ` +
-      `[${seen.minX}..${seen.maxX}]x[${seen.minY}..${seen.maxY}]; the same frame differs ` +
+    `hiding the bird layer changed ${seen.n} px in ${where}; the same frame differs ` +
       `from itself by ${nothing.n} px`,
   )
 
@@ -430,13 +486,13 @@ if (onScreen && onScreen.inView.length > 0) {
         `from itself by ${nothing.n} — nothing is being drawn`,
     )
   } else if (
-    seen.maxX - seen.minX > birdBox.w * 3 ||
-    seen.maxY - seen.minY > birdBox.h * 3
+    seen.box.maxX - seen.box.minX > birdBox.w * 3 ||
+    seen.box.maxY - seen.box.minY > birdBox.h * 3
   ) {
     // The other control: if the changed region is far larger than a bird, the
     // two images are not one frozen frame and this is not measuring a bird.
     fail(
-      `hiding the bird layer changed a ${seen.maxX - seen.minX}x${seen.maxY - seen.minY} ` +
+      `hiding the bird layer changed a ${seen.box.maxX - seen.box.minX}x${seen.box.maxY - seen.box.minY} ` +
         `region against a bird's own ${Math.round(birdBox.w)}x${Math.round(birdBox.h)} — ` +
         'the frame is not frozen',
     )
@@ -448,16 +504,25 @@ if (onScreen && onScreen.inView.length > 0) {
   // layer drew something bird-sized, and it drew it at the position the debug
   // handle reports, within one bird's width.
   const predicted = screenPos(d, target)
-  const cx = (seen.minX + seen.maxX) / 2
-  const cy = (seen.minY + seen.maxY) / 2
-  const off = Math.hypot(cx - predicted.sx, cy - predicted.sy)
-  if (off > c.BIRD_W * d.zoom) {
-    fail(
-      `the drawn bird is centred at (${cx.toFixed(0)}, ${cy.toFixed(0)}) but the state ` +
-        `says (${predicted.sx.toFixed(0)}, ${predicted.sy.toFixed(0)}) — ${off.toFixed(0)} px apart`,
-    )
+  // Guarded rather than computed unconditionally: with no changed region there
+  // is no centre, and the midpoint of the old inverted box was (639.5, 359.5) —
+  // the middle of the screen, and a number a reader accepts at a glance. This
+  // assertion is downstream of the one above, so if that failed this says so
+  // instead of inventing a second, different-looking failure from one cause.
+  if (!seen.box) {
+    fail('no changed region, so there is no drawn position to compare — see above')
   } else {
-    ok(`drawn where the state says it is (${off.toFixed(0)} px apart)`)
+    const cx = (seen.box.minX + seen.box.maxX) / 2
+    const cy = (seen.box.minY + seen.box.maxY) / 2
+    const off = Math.hypot(cx - predicted.sx, cy - predicted.sy)
+    if (off > c.BIRD_W * d.zoom) {
+      fail(
+        `the drawn bird is centred at (${cx.toFixed(0)}, ${cy.toFixed(0)}) but the state ` +
+          `says (${predicted.sx.toFixed(0)}, ${predicted.sy.toFixed(0)}) — ${off.toFixed(0)} px apart`,
+      )
+    } else {
+      ok(`drawn where the state says it is (${off.toFixed(0)} px apart)`)
+    }
   }
 
   // The frame's own control, and with one frozen frame it is no longer a noise

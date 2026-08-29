@@ -4946,3 +4946,54 @@ the first inventory render, that sprite is pinned to its procedural answer for t
 a quality ceiling, not staleness. And **the tile and the world can diverge in
 *presentation*** — scale, tint, crop — while resolving identically; §E14's claim is about
 resolution and that is what is tested.
+
+## M18 sweep repairs — six fixtures, no product code
+
+The M18 boundary sweep ran 191 assertions and six checks red. **Five were T18.04's**, all
+deterministic, and **`crates` was not a regression at all** — 7 green runs against the
+sweep's single red, a check that loses its timing under a forty-check suite (D-58's
+discipline on the browser side). T18.04 shipped them because **its gate was Rust-only**,
+which is the second cost of one missing `npm --prefix client test` (D-59).
+
+**Four were one sentence: bigger objects changed the terrain under the player.**
+`terrain-render` scored crater sites off `surface_points`, and **object tops are surface
+points now**, so most candidates were a thin silhouette in open air and the rockiest fell
+to 37% — it searches the on-screen region directly. `audio`'s log said it outright,
+`cues after walking: land, land` — the player *falling*, not walking; and teleporting it
+somewhere better was **worse**, because a position that satisfies a mask scan is not one
+the physics accepts. `objects` was not a frozen-frame problem at all: the determinism probe
+read 0.00, and the real cause was `leftRect` pinned to the object's **top** while the carve
+sits at `y + h/2` — **for `h > w` they never overlap**, and §E12 scales by height. The
+carved half moves 34.1× the untouched one again.
+
+**`birds` was terrain too, and my "measurement bug" reading was half right.** The bird was
+**buried in rock — 121 of 121 samples solid in an 80 px box** — and `patchFitsIn` only ever
+asked whether it was inside the viewport. ***In frame is not the same as visible.***
+The measurement half is real as well: `changedBetween` returned `[1280..-1]x[720..-1]`, an
+**inverted empty rectangle**, and the companion assertion reported the bird at the exact
+viewport centre — **defaults standing in for values never computed**. It returns
+`{n:0, box:null}` now and fails saying there is no drawn position.
+
+**`void` cost two rounds and taught the most.** A **D-29 violation** — `fail()` records and
+returns, so `ok digging beside the player: column x=undefined` printed anyway — meant
+**every later message about the shaft described shots that were never fired**, and sent two
+of us hunting a bazooka that spawns and never detonates. It does not exist: a control shot
+fired sideways carved 1032 px of solid, and the "aim at own feet" probe was inside
+`AIM_DEADZONE`, so it fired sideways into a chasm where the void correctly despawned it.
+Three of the probes used to chase it were themselves broken — a target box with 0 solid
+before the shot, a census keyed on constants that do not exist reading `0 → 0`, and an aim
+field that is `undefined` comparing nothing to nothing. *Only measuring an effect gave a
+true answer.* The real defect was mundane: the dig site is 136 px away and the check
+searched one body width.
+
+Two rules this milestone adds, both about **a measurement taken at a moment that looks like
+the end and is not**:
+- **Releasing the key is not arriving.** The player crosses the target airborne and slides
+  another 33 px after key-up — the difference between 44 px short and 0.5 px. Sibling to
+  the checksum repair's *quiet is not finished*.
+- **A test's own deadline is a claim about the system's timers.** `net-smoke` waited 10 s
+  for a map while `LOBBY_BOT_TIMEOUT` was 10 s — 25 independent even-money races, which is
+  why it failed 13 then 5. And its joins are **strictly sequential** (`await` inside the
+  loop), so no lobby ever filled and every client waited out the timer alone. When a
+  feature introduces a timer, every generous fixture deadline becomes a coin flip silently,
+  and reports it as the feature failing.

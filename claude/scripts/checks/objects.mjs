@@ -158,8 +158,27 @@ try {
   }
 
   // --- 3. the payoff: carve half, and assert BOTH halves ------------------
-  const leftRect = await worldRect(page, target.x + 2, target.y + 2, half, half)
-  const rightRect = await worldRect(page, target.x + target.w - half - 2, target.y + 2, half, half)
+  /**
+   * **The two halves, banded on the row the carve is actually centred on.**
+   *
+   * These were `half x half` squares pinned to the object's *top* while the
+   * carve below is centred on its *vertical middle*. For a wide, squat object
+   * those overlap and the check worked. §E12 scales objects by **height**, so
+   * after it the objects this picks are taller than they are wide — and for any
+   * object with `h > w` the carve at `y + h/2` with radius `w/4` never reaches a
+   * rect spanning `y+2 .. y+2+w/4`. The carve happened, the art disappeared, and
+   * the fixture was photographing a part of the object nothing had touched:
+   * carved 4.2 against 4.0 for the untouched half, both below the frame's own
+   * noise.
+   *
+   * Both rects and the carve now come off one row, so they cannot drift apart
+   * again — the carve is centred inside `leftRect` by construction.
+   */
+  const bandY = target.y + Math.floor(target.h / 2)
+  const bandH = Math.max(8, Math.min(target.h - 4, half * 2))
+  const bandTop = Math.max(target.y + 1, bandY - Math.floor(bandH / 2))
+  const leftRect = await worldRect(page, target.x + 2, bandTop, half, bandH)
+  const rightRect = await worldRect(page, target.x + target.w - half - 2, bandTop, half, bandH)
   if (!leftRect || !rightRect) throw new Error('both halves of the object must be on screen')
   const leftBefore = await samplePatch(page, leftRect)
   const rightBefore = await samplePatch(page, rightRect)
@@ -169,7 +188,9 @@ try {
   // renderer reads is the one that changed.
   await page.evaluate(
     ([x, y, r]) => window.__game.core.carve(x, y, r),
-    [target.x + Math.floor(target.w / 4), target.y + Math.floor(target.h / 2), half],
+    // The same row the rects are banded on, so "the half that was carved" and
+    // "the half that was photographed" are the same half.
+    [target.x + Math.floor(target.w / 4), bandY, half],
   )
   await sleep(500)
   await page.evaluate(() => window.__game.freeze(true))

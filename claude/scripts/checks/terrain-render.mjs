@@ -141,12 +141,28 @@ export default async function ({ page, shot, log }) {
     ([c, st, m, r]) => {
       const g = window.__game
       let best = null
-      for (const p of g.core.meta.surface_points) {
-        const t = { x: p.x, y: p.y + 40 }
+      // **Every on-screen point, not only `surface_points`.**
+      //
+      // The candidate list used to be `surface_points` offset 40 px down, which
+      // was a convenient way of saying "somewhere on the terrain". §E12 broke
+      // that convenience: objects are stamped into the mask and their tops are
+      // surface points, so most candidates became a thin silhouette standing in
+      // open air, and 40 px below one is a spot whose patch is mostly sky. The
+      // rockiest available fell to 37 %, under the assertion's own 25 % floor
+      // twice over, and the fixture correctly refused to run.
+      //
+      // What the assertion needs is a patch that is mostly solid rock on screen
+      // and clear of the player. That is what this now searches for directly —
+      // the same "select the situation, do not assume it" repair this check made
+      // once already when it stopped taking the first legal candidate.
+      const cand = []
+      for (let sy = m; sy <= 720 - m; sy += 24)
+        for (let sx = m; sx <= 1280 - m; sx += 24)
+          cand.push({ x: Math.round(c.x + sx / c.z), y: Math.round(c.y + sy / c.z), sx, sy })
+      for (const t of cand) {
         if (!g.core.solidAt(t.x, t.y)) continue
-        const sx = (t.x - c.x) * c.z
-        const sy = (t.y - c.y) * c.z
-        if (sx < m || sx > 1280 - m || sy < m || sy > 720 - m) continue
+        const sx = t.sx
+        const sy = t.sy
         if (Math.abs(t.x - st.x) < 150) continue // do not undermine the player
         // How much of the patch this crater would actually be able to repaint.
         // Sampled on a 3 px lattice: 784 reads per candidate is cheap, and the

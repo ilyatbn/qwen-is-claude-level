@@ -224,6 +224,7 @@ const loadout = await page.evaluate(() => {
 })
 const PLAYER_W = await page.evaluate(() => window.__game.constants().PLAYER_W)
 const BLAST = await page.evaluate(() => window.__game.constants().BAZOOKA_BLAST_RADIUS)
+const WALK_SPEED = await page.evaluate(() => window.__game.constants().WALK_SPEED)
 /**
  * How much rock one rocket can be expected to take out of a column.
  *
@@ -251,29 +252,184 @@ const DIG_OFFSET = Math.round(BLAST + PLAYER_W)
 const before = await shaftDepth()
 
 /**
+ * How far the check is willing to walk to reach the crust.
+ *
+ * **Derived from a walk budget, not picked**: a site the player cannot reach
+ * inside the budget is not a site this check can use, so the distance and the
+ * time are the same fact. Read from `WALK_SPEED` rather than spelled, so the
+ * radius follows the walk if the speed ever moves.
+ *
+ * Before T18.04 the spawn landed on thin floor and the check dug where it
+ * stood. The spawn then drifted 136 px away, and a search of one body width
+ * could not see the site `probeSite` had already found and printed two lines
+ * earlier — the check failed with "no thin floor here" while its own report
+ * said where the floor was.
+ */
+const WALK_BUDGET_MS = 4000
+const WALK_RADIUS = Math.round((WALK_SPEED * WALK_BUDGET_MS) / 1000)
+
+/**
+ * Where to stand so the crust is `DIG_OFFSET` to one side.
+ *
+ * `site` is `probeSite`'s answer — the same scan whose distance this check
+ * already reports — rather than a second sweep with its own idea of "usable".
+ * A separate scanner here would be free to disagree with the line above it, and
+ * two definitions of the same property is how this fixture got rebuilt three
+ * times. The side chosen is whichever standing position is nearer.
+ */
+const stand = (() => {
+  if (!site) return null
+  let best = null
+  for (const side of [1, -1]) {
+    const x = site.x - side * DIG_OFFSET
+    const walk = Math.abs(x - before.x)
+    if (!best || walk < best.walk) best = { x, side, walk }
+  }
+  return best
+})()
+
+if (stand && stand.walk > WALK_RADIUS) {
+  fail(
+    `the nearest floor one rocket can open is x=${site.x} (${site.rock} px of rock), which ` +
+      `needs standing at x=${stand.x} — ${stand.walk.toFixed(0)} px from the spawn at ` +
+      `(${before.x}, ${before.y}) and beyond the ${WALK_RADIUS} px this check will walk in ` +
+      `${WALK_BUDGET_MS} ms`,
+  )
+}
+
+/**
+ * Walk there, and **assert arrival**.
+ *
+ * Held until the position says so rather than for a fixed time — the shape
+ * `audio` needed for the same reason, because a wall-clock walk is a bet on how
+ * loaded the box is. Arrival is a precondition for everything below, so a
+ * player who did not get there says *that*: reporting "no thin floor" for a
+ * player standing in the wrong place is exactly how this check spent T18.04
+ * describing a map defect it did not have.
+ *
+ * Not the pathfinding M16 rejected. It holds one key along the ground the
+ * player is already standing on, and never tries to clear an obstruction.
+ */
+let short = null
+if (stand && stand.walk <= WALK_RADIUS && stand.walk > PLAYER_W / 2) {
+  const dir = stand.x > before.x ? 1 : -1
+  // Just the x, not `shaftDepth` — that counts every solid pixel from the feet
+  // to the bottom of the map, and a poll that expensive samples the walk every
+  // ~15 px. Polled with it, the player sailed 46 px past a target it was
+  // supposed to stop within 8 px of.
+  const posX = async () =>
+    (await page.evaluate(
+      '(() => { const g = window.__game; const p = g.core.playerState(g.debug().me ?? 0); return p ? p.x : null; })()',
+    )) ?? before.x
+  // **Re-aimed every poll, not held in one direction.**
+  //
+  // The ground left of the spawn drops ~80 px, so the player does not walk to
+  // the site — they walk off the edge and fall, drifting the whole way down.
+  // Held one way they land 26 px *past* the target and a single-direction walk
+  // calls that a failure to arrive. Steering to the target instead simply walks
+  // back, which is what a player would do, and it is still one key along the
+  // ground with no attempt to climb anything.
+  //
+  // **Settled before it is believed.** Releasing the key is not arriving: the
+  // player crosses the target while still falling and slides another 33 px
+  // after the release, so a position read straight after the key-up describes
+  // somewhere they are not going to be. This waits for `grounded` and for x to
+  // stop changing, then re-aims if the slide moved them off — which is why the
+  // outer loop exists at all.
+  const rest = async () => {
+    let prev = null
+    for (let i = 0; i < 40; i++) {
+      const p = await page.evaluate(
+        '(() => { const g = window.__game; const p = g.core.playerState(g.debug().me ?? 0); ' +
+          'return p ? { x: p.x, grounded: !!p.grounded } : null; })()',
+      )
+      if (p && p.grounded && prev !== null && Math.abs(p.x - prev) < 1) return p.x
+      prev = p ? p.x : prev
+      await sleep(25)
+    }
+    return await posX()
+  }
+  const deadline = Date.now() + WALK_BUDGET_MS
+  let held = null
+  let at = before.x
+  while (Date.now() < deadline) {
+    at = await posX()
+    const delta = stand.x - at
+    if (Math.abs(delta) <= PLAYER_W / 2) {
+      if (held) {
+        await page.keyboard.up(held)
+        held = null
+      }
+      at = await rest()
+      if (Math.abs(stand.x - at) <= PLAYER_W / 2) break
+      continue
+    }
+    const want = delta > 0 ? 'd' : 'a'
+    if (held !== want) {
+      if (held) await page.keyboard.up(held)
+      await page.keyboard.down(want)
+      held = want
+    }
+    await sleep(25)
+  }
+  const key = held ?? (dir > 0 ? 'd' : 'a')
+  if (held) await page.keyboard.up(held)
+  await standStill(page)
+  at = await rest()
+  const off = Math.abs(at - stand.x)
+  if (off > PLAYER_W) {
+    short = { key, at, off }
+    fail(
+      `held "${key}" for up to ${WALK_BUDGET_MS} ms to reach x=${stand.x} and stopped at ` +
+        `x=${at}, ${off.toFixed(0)} px short — the player never reached the dig site, so ` +
+        `nothing below is a claim about the void`,
+    )
+  } else {
+    ok(`walked ${Math.abs(at - before.x).toFixed(0)} px to x=${at}, beside the crust at x=${site.x}`)
+  }
+}
+
+/**
  * The column to open: one body-width to the side, whichever side has floor.
  *
  * Probed, not assumed — a hole dug into thin air is not a hole, and which side
- * of the player the crust continues on is a fact about the map.
+ * of the player the crust continues on is a fact about the map. Re-probed from
+ * **where the player actually ended up**, not from where the walk aimed, so a
+ * stop a few pixels early still digs into real crust. The preferred side is
+ * tried first and the other is still tried, which is what the check did before.
  */
-const dig = await (async () => {
-  for (const side of [1, -1]) {
-    const col = before.x + side * DIG_OFFSET
-    const d = await depthAt(col)
-    if (d && d.rock > 0 && d.rock <= ONE_ROCKET_PX) return { col, side, rock: d.rock }
-  }
-  return null
-})()
-if (!dig) {
+const dig =
+  short !== null
+    ? null
+    : await (async () => {
+        const here = await shaftDepth()
+        const first = stand ? stand.side : 1
+        for (const side of [first, -first]) {
+          const col = here.x + side * DIG_OFFSET
+          const d = await depthAt(col)
+          if (d && d.rock > 0 && d.rock <= ONE_ROCKET_PX) return { col, side, rock: d.rock }
+        }
+        return null
+      })()
+
+// Says nothing rather than something untrue. `fail` records and returns, so the
+// `ok` below used to run whatever happened and printed `column x=undefined
+// carries undefined px of rock` as a **green line** (D-29). It had done so since
+// T18.04, and because an empty `dig` also skips the entire rocket loop, every
+// later message about the shaft was describing shots that were never fired.
+if (!dig && short === null) {
+  const here = await shaftDepth()
   fail(
-    `no thin floor within a body width either side of the player at (${before.x}, ` +
-      `${before.y}) — nothing to dig through here`,
+    `standing at x=${here.x}, neither column ${DIG_OFFSET} px to the side has a floor one ` +
+      `rocket can open` +
+      (site ? ` — the crust found at x=${site.x} is not reachable from where the walk ended` : ''),
+  )
+} else if (dig) {
+  ok(
+    `digging beside the player: column x=${dig.col} carries ${dig.rock} px of rock to the ` +
+      `void, ${loadout.bazooka} rockets in hand`,
   )
 }
-ok(
-  `digging beside the player: column x=${dig?.col} carries ${dig?.rock} px of rock to the ` +
-    `void, ${loadout.bazooka} rockets in hand`,
-)
 
 /**
  * Deaths before any digging starts.

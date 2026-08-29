@@ -34,10 +34,51 @@ const { io } = await import(require.resolve('socket.io-client'))
 const N = Number(process.argv[2] ?? 25)
 const PORT = 3111 // not 3000, so a dev server left running does not get joined instead
 
+/**
+ * The lobby's bot timer, **set for this run and used to size the deadline**.
+ *
+ * This fixture predates lobbies. It joined a game directly, so 10 s was a
+ * generous ceiling on a handshake. T17 put a lobby in front of the join: a
+ * client now waits in one until it fills to `LOBBY_CAPACITY` or until
+ * `LOBBY_BOT_TIMEOUT` expires and bots take the empty seats — and only then is
+ * there a match, and a `map_init` to receive.
+ *
+ * `LOBBY_BOT_TIMEOUT` ships at 10 s and the deadline here was **also** 10 s, so
+ * the fixture's ceiling and the feature's timer were the same number and the
+ * run was a coin flip on which fired first. That is why the failure count
+ * varied between runs — 13, then 5 — with every failure sitting at
+ * `TIMEOUT, mapBytes: 0`: not a client failing to join, but a client asked
+ * about a map before its lobby had decided to make one.
+ *
+ * The capacity arithmetic never applied: the joins below are sequential
+ * (`await joinOnce(i)`), so there is only ever **one** client connected and it
+ * is always alone in its lobby. Every client waits out the whole timer; none of
+ * them ever fills a lobby. Set low here through the knob T17.08 added, which
+ * also takes the stage from ~25 x 10 s to ~25 x 1 s.
+ */
+const LOBBY_BOT_TIMEOUT_S = 1
+
+/**
+ * How long one join may take: the lobby's wait plus room for the work around it.
+ *
+ * **Derived from the timer above, not spelled**, which is the whole point — a
+ * wait hardcoded against a tunable is a test that expires, and this one did.
+ * The headroom covers the socket handshake, map generation and the base64
+ * `map_init` transfer, none of which are instant on a loaded box.
+ */
+const JOIN_HEADROOM_MS = 8000
+const JOIN_DEADLINE_MS = Math.round(LOBBY_BOT_TIMEOUT_S * 1000) + JOIN_HEADROOM_MS
+
 const server = spawn('cargo', ['run', '--quiet', '-p', 'game-server'], {
   detached: true,
   cwd: root,
-  env: { ...process.env, BIND_ADDR: `127.0.0.1:${PORT}`, MAP_SCALE: 'small', GAME_LOG: 'warn' },
+  env: {
+    ...process.env,
+    BIND_ADDR: `127.0.0.1:${PORT}`,
+    MAP_SCALE: 'small',
+    GAME_LOG: 'warn',
+    LOBBY_BOT_TIMEOUT: String(LOBBY_BOT_TIMEOUT_S),
+  },
   stdio: ['ignore', 'inherit', 'inherit'],
 })
 const stop = () => {
@@ -78,7 +119,7 @@ function joinOnce(i) {
       }
       resolve({ verdict, ms: Date.now() - t0, mapBytes: got.map_init ?? 0 })
     }
-    const timer = setTimeout(() => finish('TIMEOUT'), 10_000)
+    const timer = setTimeout(() => finish('TIMEOUT'), JOIN_DEADLINE_MS)
     const done = () => {
       if (got.welcome && got.map_init) {
         clearTimeout(timer)
