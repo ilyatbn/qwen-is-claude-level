@@ -1774,6 +1774,25 @@ pub const LOBBY_CAPACITY: usize = 5;
 /// all (§E3) — it starts when everyone is ready.
 pub const LOBBY_BOT_TIMEOUT: f32 = 10.0;
 
+// --- E10: bots that explore, arm themselves and run ---
+
+/// Health below which a bot breaks contact instead of closing (§E10).
+///
+/// Below `HEAL_BELOW` (40) a bot already reaches for a medkit, and this sits
+/// under it on purpose: heal first if you can, run only when that has not saved
+/// you. The gap is what stops a bot with a medkit in its bag running away
+/// instead of using it.
+pub const BOT_FLEE_HEALTH: f32 = 35.0;
+
+/// Side of one cell in a bot's coverage grid, in map pixels (§E10).
+///
+/// A bot marks the cell it is standing in and heads for the nearest unmarked
+/// one. **That is the whole model** — a grid of visited cells and a direction,
+/// not pathfinding, and it is sized so a small map is a few dozen cells rather
+/// than thousands: the grid is per-bot state carried for the whole round, and
+/// five bots on a large map is 5 x 128 bits.
+pub const BOT_EXPLORE_CELL: i32 = 256;
+
 #[cfg(test)]
 // Every assertion in this module is deliberately over compile-time constants —
 // checking the relationships between them is the entire purpose of the file.

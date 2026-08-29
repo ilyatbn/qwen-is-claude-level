@@ -4773,3 +4773,40 @@ since T17.07, and `no-dev-surface` passed both, because its `FORBIDDEN` list pre
 handles. **The check whose purpose is enforcing §C17 was blind to the two newest
 violations of it** — the list is the deeper failure, so anything writing to `window` now
 belongs in it the moment it is written.
+
+## T18.02 — Bots that explore, arm themselves and run (v6)
+
+`Wander` **became** exploration rather than sitting beside it — a per-bot bitset of visited
+cells, head for the nearest unmarked one, mark it seen on arrival or on giving up. Not
+pathfinding, and the doc says so. `spawn_points` is now consulted nowhere in the file.
+`Coverage` is allocated **once per bot**, lazily, because `Bot::new` has no world to size
+it from; `think()` still allocates nothing per tick, and byte-identical inputs still holds
+over its full 600 ticks.
+
+**Coverage, measured at `9a19b2d` before the change** because the old model could not be
+re-measured afterwards — five bots, skill 0.85, 120 simulated seconds:
+`11→21`, `18→24`, `24→24`. **Two better, one tied**, and the assertion is per-case `>=`
+with the **total** strictly `>`. Not `>` on all three quietly relaxed later: two wins and
+a draw is not three wins, and the doc comment says so. A separate vacuity control derives
+its floor from the setup — one cell per bot — so the comparison cannot be satisfied by a
+too-low before-number.
+
+**The `balance.rs` fallout was a real bug, not a moved premise.** `choose_goal` asked
+`selected_weapon` — *the one in hand* — so a bot holding a flat laser with a loaded pistol
+two slots over counted as **unarmed** and went shopping for a weapon it already had:
+**12583 shots refused against 474 fired**. `has_firable_weapon` asks every slot. The three
+surviving `selected_weapon` callers are each correctly about the held weapon — a stat, a
+stand-off range, and what you fire.
+
+**And that fix was unguarded.** Reverting it left every test green; the laser fixture
+caught it only *in combination* with the rest of the task, which is not a guard. Verified:
+with the revert, the new test fails alone with 795 filtered out while the laser fixture
+**passes**.
+
+Four fixture faults were made and measured out, all the same shape — `clear_line` finds
+clear **air**, so both players fell and a distance between two falling bodies says nothing
+about who walked. Retreat's healthy control asserts the bot **holds its ground**: at 120 px
+it is already at a bazooka's stand-off, so asserting it closed would assert against §C20.
+`AttractCore::step` is a hand-rolled mirror of `drive_bots` with no caller since T18.01 —
+explicitly **frozen**, naming `to_command` and `wait_for` as the two this project has
+already paid for.

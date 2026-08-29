@@ -11,8 +11,8 @@ use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 
 use crate::constants::{
-    BATTERY_MAX, FIRE_MOVE_MAX_SPEED, FOV_DAY, INVENTORY_SLOTS, JETPACK_MAX_FUEL, PICKUP_RADIUS,
-    PLAYER_H, STEP_UP,
+    BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, FIRE_MOVE_MAX_SPEED, FOV_DAY, INVENTORY_SLOTS,
+    JETPACK_MAX_FUEL, PICKUP_RADIUS, STEP_UP,
 };
 use crate::items::registry::{def, ItemId, ItemKind};
 use crate::math::{Vec2, TAU};
@@ -66,12 +66,119 @@ const PREDICT_TICKS: u32 = 120;
 
 const STUCK_PX: f32 = 6.0;
 const STUCK_WINDOW: f32 = 0.5;
+/// Seconds a bot heads for one unvisited cell before marking it seen and
+/// choosing another (§E10).
+///
+/// The escape hatch for a cell whose middle is inside rock: without it a bot
+/// walks at a wall for the rest of the round. Local like the rest of the bot's
+/// tuning; `BOT_EXPLORE_CELL` is in `constants.rs` because §E15 names it.
+const WANDER_GIVE_UP: f32 = 6.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Goal {
     Enemy(PlayerId),
+    /// Break contact with this enemy (§E10).
+    ///
+    /// A separate goal rather than a flag on `Enemy`, because the two disagree
+    /// about the *only* thing a goal decides — which way to walk — and a field
+    /// that means "chase" or "run" depending on a second field is the shape
+    /// `CLAUDE.md` warns about. The bot still aims at them and may still shoot;
+    /// it is retreating, not surrendering.
+    Flee(PlayerId),
     Item(u32),
     Wander,
+}
+
+/// Which cells of the map a bot has been to (§E10).
+///
+/// **This is not pathfinding and must not become it.** A bot marks the cell it
+/// is standing in, heads for the middle of the nearest cell it has not marked,
+/// and gives up on one it cannot reach. There is no graph, no route and no
+/// A* — the map is destructible, so any route is stale the moment somebody
+/// fires, and the behaviour this exists to produce is "went somewhere else",
+/// not "took the best way there".
+///
+/// Per bot, not shared: five bots that agreed on where they had been would
+/// spread out like a search party rather than like opponents.
+#[derive(Debug, Clone)]
+struct Coverage {
+    cols: i32,
+    rows: i32,
+    /// One bit per cell, row-major.
+    seen: Vec<u64>,
+}
+
+impl Coverage {
+    fn new(map_w: i32, map_h: i32) -> Self {
+        let cols = (map_w.max(1) + BOT_EXPLORE_CELL - 1) / BOT_EXPLORE_CELL;
+        let rows = (map_h.max(1) + BOT_EXPLORE_CELL - 1) / BOT_EXPLORE_CELL;
+        let cells = (cols.max(1) * rows.max(1)) as usize;
+        Coverage {
+            cols: cols.max(1),
+            rows: rows.max(1),
+            seen: vec![0; cells.div_ceil(64)],
+        }
+    }
+
+    fn index(&self, cx: i32, cy: i32) -> usize {
+        (cy * self.cols + cx) as usize
+    }
+
+    fn cell_of(&self, p: Vec2) -> (i32, i32) {
+        (
+            ((p.x as i32) / BOT_EXPLORE_CELL).clamp(0, self.cols - 1),
+            ((p.y as i32) / BOT_EXPLORE_CELL).clamp(0, self.rows - 1),
+        )
+    }
+
+    fn is_seen(&self, i: usize) -> bool {
+        self.seen
+            .get(i / 64)
+            .is_some_and(|w| w & (1 << (i % 64)) != 0)
+    }
+
+    fn mark(&mut self, i: usize) {
+        if let Some(w) = self.seen.get_mut(i / 64) {
+            *w |= 1 << (i % 64);
+        }
+    }
+
+    fn all_seen(&self) -> bool {
+        (0..(self.cols * self.rows) as usize).all(|i| self.is_seen(i))
+    }
+
+    fn clear(&mut self) {
+        for w in &mut self.seen {
+            *w = 0;
+        }
+    }
+
+    /// The middle of the nearest cell this bot has not been to, if any.
+    ///
+    /// Ties break on the lower index rather than at random, so two bots with the
+    /// same coverage make the same choice — the sim is deterministic and this is
+    /// read on the hot path, where a coin flip would cost a draw from the RNG
+    /// and buy nothing.
+    fn nearest_unseen(&self, from: Vec2) -> Option<Vec2> {
+        let mut best: Option<(f32, Vec2)> = None;
+        for cy in 0..self.rows {
+            for cx in 0..self.cols {
+                let i = self.index(cx, cy);
+                if self.is_seen(i) {
+                    continue;
+                }
+                let c = Vec2::new(
+                    (cx * BOT_EXPLORE_CELL + BOT_EXPLORE_CELL / 2) as f32,
+                    (cy * BOT_EXPLORE_CELL + BOT_EXPLORE_CELL / 2) as f32,
+                );
+                let d = (c - from).len();
+                if best.is_none_or(|(bd, _)| d < bd) {
+                    best = Some((d, c));
+                }
+            }
+        }
+        best.map(|(_, c)| c)
+    }
 }
 
 /// Why a bot did not pull the trigger this tick.
@@ -128,6 +235,16 @@ pub struct Bot {
     aim_error: f32,
     goal: Goal,
     wander_to: Option<Vec2>,
+    /// Where this bot has been (§E10). Built on the first `think`, because the
+    /// map's size is not known until then and a bot outlives no world.
+    coverage: Option<Coverage>,
+    /// Seconds spent heading for the current wander target.
+    ///
+    /// A cell whose middle sits inside rock can never be *entered*, so without
+    /// this a bot fixates on one it will never reach. Giving up marks it seen —
+    /// "seen" means "been there or tried", which is what a coverage grid for
+    /// exploring wants it to mean.
+    wander_for: f32,
     /// For stuck detection.
     last_x: f32,
     still_for: f32,
@@ -150,6 +267,8 @@ impl Bot {
             aim_error: (1.0 - skill) * 0.35,
             goal: Goal::Wander,
             wander_to: None,
+            coverage: None,
+            wander_for: 0.0,
             last_x: 0.0,
             still_for: 0.0,
             want_use: None,
@@ -195,7 +314,7 @@ impl Bot {
         let pos = me.body.pos;
         self.stats.ticks += 1;
 
-        self.choose_goal(world, pos);
+        self.choose_goal(world, pos, dt);
         if matches!(self.goal, Goal::Enemy(_)) {
             self.stats.ticks_engaged += 1;
         }
@@ -224,23 +343,38 @@ impl Bot {
 
         // --- move -------------------------------------------------------
         let dx = aim_at.x - pos.x;
-        let want_close = matches!(self.goal, Goal::Item(_));
-        let stop_within = if want_close {
-            PICKUP_RADIUS * 0.5
-        } else {
-            // Hold at a range the weapon can actually be fired at. Closing to a
-            // flat 40 px walked bazooka-armed bots inside their own blast guard
-            // (blast_radius * 1.5 = 63 px), where the rule that stops them
-            // suiciding also stopped them shooting — measured as the single
-            // largest rejection reason, 8469 against 91 shots taken.
-            self.stand_off(world)
-        };
-        if dx.abs() > stop_within {
+        if matches!(self.goal, Goal::Flee(_)) {
+            // §E10: away, and **not gated on `stand_off`**. Stopping at the
+            // stand-off distance is what a bot does when it wants to shoot from
+            // there; a retreating bot that stopped at it would flee to exactly
+            // the range it was just losing at, take another hit and flee again —
+            // an oscillation that satisfies a two-sample distance check and is
+            // worse than never fleeing at all. It keeps walking while its health
+            // is low, and `choose_goal` stops choosing `Flee` once healed.
             buttons |= if dx > 0.0 {
-                button::RIGHT
-            } else {
                 button::LEFT
+            } else {
+                button::RIGHT
             };
+        } else {
+            let want_close = matches!(self.goal, Goal::Item(_));
+            let stop_within = if want_close {
+                PICKUP_RADIUS * 0.5
+            } else {
+                // Hold at a range the weapon can actually be fired at. Closing to a
+                // flat 40 px walked bazooka-armed bots inside their own blast guard
+                // (blast_radius * 1.5 = 63 px), where the rule that stops them
+                // suiciding also stopped them shooting — measured as the single
+                // largest rejection reason, 8469 against 91 shots taken.
+                self.stand_off(world)
+            };
+            if dx.abs() > stop_within {
+                buttons |= if dx > 0.0 {
+                    button::RIGHT
+                } else {
+                    button::LEFT
+                };
+            }
         }
 
         // Standing in fire beats reaching the target. Overriding the direction
@@ -378,8 +512,15 @@ impl Bot {
         }
     }
 
-    fn choose_goal(&mut self, world: &World, pos: Vec2) {
+    fn choose_goal(&mut self, world: &World, pos: Vec2, dt: f32) {
         let mut best: Option<(f32, Goal)> = None;
+
+        let health = world.player(self.player).map_or(0.0, |p| p.health);
+        // §E10: below this a bot breaks contact. Decided here rather than in the
+        // movement code so `Goal` stays the single answer to "which way", and so
+        // `target_pos` and the aim keep working — a retreating bot still faces
+        // the thing it is retreating from.
+        let flee = health > 0.0 && health < BOT_FLEE_HEALTH;
 
         for p in &world.players {
             if p.id == self.player || !p.alive {
@@ -387,25 +528,57 @@ impl Bot {
             }
             let d = (p.body.pos - pos).len();
             if d <= FOV_DAY && best.is_none_or(|(bd, _)| d < bd) {
-                best = Some((d, Goal::Enemy(p.id)));
+                best = Some((
+                    d,
+                    if flee {
+                        Goal::Flee(p.id)
+                    } else {
+                        Goal::Enemy(p.id)
+                    },
+                ));
             }
         }
 
-        // Unarmed, or nothing in sight: go shopping.
-        let armed = self.selected_weapon(world).is_some();
+        // Unarmed, or nothing in sight: go shopping. **Any** firable slot counts,
+        // not just the one in hand — see `has_firable_weapon`.
+        let armed = self.has_firable_weapon(world);
         if best.is_none() || !armed {
-            let mut item_best: Option<(f32, Goal)> = None;
+            let mut item_best: Option<(bool, f32, Goal)> = None;
             for it in world.items.iter() {
                 let d = (it.pos - pos).len();
-                if item_best.is_none_or(|(bd, _)| d < bd) {
-                    item_best = Some((d, Goal::Item(it.id)));
+                // §E10, reachability. Two gates, and they are the ones the enemy
+                // search already applies to *people*: you cannot want what you
+                // cannot see. Without them a bot walked the width of the map
+                // toward an item on the far side of a mountain, which is the
+                // behaviour exploration is supposed to replace.
+                if d > FOV_DAY || !self.reachable(world, pos, it.pos) {
+                    continue;
+                }
+                // A weapon outranks a medkit **when we have no weapon** (§E10).
+                // Nearest-of-anything sent an unarmed bot past a bazooka to the
+                // battery beyond it; arming yourself is the thing that makes the
+                // next ten seconds go differently.
+                let is_weapon = def(it.item).is_some_and(|d| matches!(d.kind, ItemKind::Weapon(_)));
+                let rank = !armed && is_weapon;
+                if item_best.is_none_or(|(br, bd, _)| (rank, -d) > (br, -bd)) {
+                    item_best = Some((rank, d, Goal::Item(it.id)));
                 }
             }
-            if let Some(found) = item_best {
+            if let Some((_, d, g)) = item_best {
                 // A visible enemy still wins if we are armed.
                 if !armed || best.is_none() {
-                    best = Some(found);
+                    best = Some((d, g));
                 }
+            } else if !armed && !flee {
+                // §E10: **arm first.** Nothing to pick up that we can see, and
+                // nothing to shoot with — so go and find one rather than walking
+                // at somebody we cannot hurt. Dropping the enemy here is what
+                // sends the bot into exploration below, which is the only way it
+                // reaches a weapon that is not already in view.
+                //
+                // Fleeing is exempt: a hurt bot running away is not shopping, and
+                // an unarmed one has more reason to run than most.
+                best = None;
             }
         }
 
@@ -415,31 +588,54 @@ impl Bot {
         };
 
         if self.goal == Goal::Wander {
-            let need_new = self.wander_to.is_none_or(|w| (w - pos).len() < 64.0);
-            if need_new {
-                // NOTE: this branch is very nearly dead. `choose_goal` only
-                // falls through to Wander when the map holds no items at all,
-                // and items respawn every ITEM_SPAWN_INTERVAL up to
-                // MAX_WORLD_ITEMS — so in a real round a bot is always either
-                // engaging or shopping. Measured: replacing the random spawn
-                // point below with "walk toward the nearest living player"
-                // changed the round statistics by exactly nothing, in every
-                // counter, on every seed.
-                let spawns = &world.map.meta.spawn_points;
-                if !spawns.is_empty() {
-                    let i = self.rng.gen_range(0..spawns.len());
-                    let s = spawns[i];
-                    self.wander_to = Some(Vec2::new(s.x as f32, s.y as f32 - PLAYER_H / 2.0));
+            self.wander_for += dt;
+            let cov = self.coverage.get_or_insert_with(|| {
+                Coverage::new(world.map.mask.w as i32, world.map.mask.h as i32)
+            });
+            let (cx, cy) = cov.cell_of(pos);
+            let here = cov.index(cx, cy);
+            cov.mark(here);
+
+            // Arrived, or gave up. Both mark the cell: "seen" means "been there
+            // or tried", because a cell whose middle is buried in rock can never
+            // be entered and a bot that insists on it stops exploring.
+            let arrived = self
+                .wander_to
+                .is_some_and(|w| cov.cell_of(w) == (cx, cy) || (w - pos).len() < 64.0);
+            let gave_up = self.wander_for > WANDER_GIVE_UP;
+            if arrived || gave_up {
+                if let Some(w) = self.wander_to {
+                    let (wx, wy) = cov.cell_of(w);
+                    let i = cov.index(wx, wy);
+                    cov.mark(i);
                 }
+                self.wander_to = None;
+            }
+
+            if self.wander_to.is_none() {
+                self.wander_for = 0.0;
+                // Every cell visited: start again rather than stand still. The
+                // map is destructible and full of respawning items, so a second
+                // lap is not a wasted one.
+                if cov.all_seen() {
+                    cov.clear();
+                    cov.mark(here);
+                }
+                self.wander_to = cov.nearest_unseen(pos);
             }
         } else {
             self.wander_to = None;
+            self.wander_for = 0.0;
         }
     }
 
     fn target_pos(&self, world: &World, pos: Vec2) -> Option<Vec2> {
         match self.goal {
-            Goal::Enemy(id) => world.player(id).filter(|p| p.alive).map(|p| p.body.pos),
+            // `Flee` aims at the enemy too — only the walking direction differs,
+            // and it is inverted where the buttons are chosen.
+            Goal::Enemy(id) | Goal::Flee(id) => {
+                world.player(id).filter(|p| p.alive).map(|p| p.body.pos)
+            }
             Goal::Item(id) => world.items.iter().find(|i| i.id == id).map(|i| i.pos),
             Goal::Wander => self.wander_to.or(Some(pos)),
         }
@@ -513,6 +709,32 @@ impl Bot {
             }
             _ => None,
         }
+    }
+
+    /// Whether **any** slot holds a weapon that could be fired right now.
+    ///
+    /// Distinct from `selected_weapon`, which asks about the one in hand, and the
+    /// distinction matters at exactly one place: deciding whether to go shopping.
+    /// A bot holding a flat laser with a loaded gun two slots over is *armed* —
+    /// `choose_weapon` switches it on this same tick — and treating it as unarmed
+    /// sent it looking for a weapon it already had. Measured against the laser
+    /// fixture, that read as 12583 shots refused for being unarmed against 474
+    /// fired.
+    fn has_firable_weapon(&self, world: &World) -> bool {
+        let Some(me) = world.player(self.player) else {
+            return false;
+        };
+        (0..INVENTORY_SLOTS as u8).any(|slot| {
+            me.inventory.slot(slot).is_some_and(|stack| {
+                def(stack.item).is_some_and(|d| match d.kind {
+                    ItemKind::Weapon(wid) => {
+                        let cost = crate::weapons::defs::def(wid).map_or(0.0, |w| w.energy_cost);
+                        cost <= 0.0 || me.battery >= cost
+                    }
+                    _ => false,
+                })
+            })
+        })
     }
 
     fn should_fire(
@@ -600,15 +822,37 @@ impl Bot {
         // near-the-muzzle guard was measured and refused 87 % of the shots the
         // count allows, because a bot standing on the ground has rock within
         // 28 px of its muzzle almost always.
+        if !self.reachable(world, pos, target) {
+            self.stats.rej_los += 1;
+            return false;
+        }
+        true
+    }
+
+    /// Whether a straight line from `from` to `to` is clear enough to matter.
+    ///
+    /// **One implementation, two callers**, because a second copy of this rule
+    /// would be a second answer to "can I get at that" — and `should_fire` and
+    /// item choice would drift apart the first time either was tuned
+    /// (`CLAUDE.md`: share the guard, or share the function).
+    ///
+    /// The tolerance is deliberately generous and it is a **count**, not a
+    /// distance: every weapon in this game digs (§A3), so rock between you and a
+    /// target is soft cover rather than a wall, and a near-the-muzzle guard was
+    /// measured refusing 87 % of the shots this allows. The same generosity is
+    /// right for items for a different reason — a bot walks over hills, and a
+    /// straight line clips every one of them, so anything stricter would reject
+    /// items on the far side of ordinary ground.
+    fn reachable(&self, world: &World, from: Vec2, to: Vec2) -> bool {
+        let dist = (to - from).len();
         let steps = (dist / LOS_STEP).ceil() as u32;
         let mut blocked = 0u32;
         for i in 1..steps {
             let t = i as f32 / steps as f32;
-            let p = pos + (target - pos) * t;
+            let p = from + (to - from) * t;
             if crate::physics::collide::solid_at(&world.map, p.x as i32, p.y as i32) {
                 blocked += 1;
                 if blocked > MAX_BLOCKED_SAMPLES {
-                    self.stats.rej_los += 1;
                     return false;
                 }
             }
@@ -737,7 +981,7 @@ fn zone_reach(w: &crate::weapons::defs::WeaponDef) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{MapScale, SIM_DT};
+    use crate::constants::{MapScale, PLAYER_H, SIM_DT};
     use crate::items::registry::{BAZOOKA, MEDKIT, MOLOTOV};
     use crate::world::{give, RoundPhase, World};
 
@@ -770,6 +1014,470 @@ mod tests {
         }
         let _ = w.drain_events();
         w
+    }
+
+    /// A flat shelf with clear air above it, carved into the map.
+    ///
+    /// Returns the y a player stands at. `clear_line` finds clear *air*, which is
+    /// what a shot needs and the wrong thing for a walking test: in the first
+    /// version of the retreat fixture both players fell, and a distance between
+    /// two falling bodies measures nothing about which way anybody walked. The
+    /// second stood them on generated ground, and the two columns differed enough
+    /// in height to put the enemy outside `FOV_DAY`, so the bot never engaged.
+    ///
+    /// Carving the ground makes this a test of the bot rather than of whatever
+    /// the generator happened to put there — the same reason `clear_line` exists.
+    fn flat_shelf(w: &mut World, at: Vec2, span: i32) -> f32 {
+        let floor = at.y as i32 + PLAYER_H as i32;
+        for y in floor..(floor + 24) {
+            w.map.mask.set_run(y, at.x as i32 - 40, at.x as i32 + span);
+        }
+        for y in (floor - 96)..floor {
+            w.map
+                .mask
+                .clear_run(y, at.x as i32 - 40, at.x as i32 + span);
+        }
+        // The coarse grid is a cache of the mask and collision reads it, so a
+        // hand-carved shelf that skipped this would be solid to the mask and
+        // empty to the physics.
+        w.map.coarse = crate::map::coarse::CoarseGrid::build(&w.map.mask);
+        floor as f32 - PLAYER_H / 2.0 - 1.0
+    }
+
+    /// Put an item on the ground where the test wants it, not where the world
+    /// would have. Returns its id so an assertion can name which one.
+    fn drop_at(w: &mut World, item: crate::items::registry::ItemId, pos: Vec2) -> u32 {
+        w.items.spawn(
+            item,
+            1,
+            pos,
+            Vec2::new(0.0, 0.0),
+            crate::items::world::SpawnSource::Initial,
+            0.0,
+        )
+    }
+
+    /// Distinct `BOT_EXPLORE_CELL` cells the bots stood in over `seconds`.
+    ///
+    /// Sampled from the world rather than read off the bots' own grids: a
+    /// coverage grid asserting on itself would pass for a grid that marks
+    /// everything and a bot that never moves.
+    fn cells_visited(seed: u64, scale: MapScale, n_bots: usize, seconds: f32) -> usize {
+        let mut w = World::new(seed, scale);
+        w.set_phase(RoundPhase::Playing);
+        let mut bots = Vec::new();
+        for i in 0..n_bots {
+            let id = i as PlayerId;
+            w.add_player(id, 0, format!("p{i}"));
+            bots.push(Bot::new(id, seed, i as u32, 0.85));
+        }
+        let _ = w.drain_events();
+        let mut seen: std::collections::BTreeSet<(i32, i32)> = std::collections::BTreeSet::new();
+        let ticks = (seconds / SIM_DT) as u32;
+        for t in 0..ticks {
+            let now = t as f32 * SIM_DT;
+            for b in bots.iter_mut() {
+                let inp = b.think(&w, now, SIM_DT);
+                w.queue_input(b.player, inp);
+                if let Some(slot) = b.wants_select() {
+                    w.select_slot(b.player, slot);
+                }
+                if inp.buttons & button::FIRE != 0 {
+                    let _ = w.fire(b.player, now);
+                }
+                if let Some(slot) = b.wants_use() {
+                    let _ = w.use_item(b.player, slot, now);
+                }
+            }
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+            for p in &w.players {
+                if p.alive {
+                    seen.insert((
+                        p.body.pos.x as i32 / BOT_EXPLORE_CELL,
+                        p.body.pos.y as i32 / BOT_EXPLORE_CELL,
+                    ));
+                }
+            }
+        }
+        seen.len()
+    }
+
+    /// §E10: exploration, against the model it replaced.
+    ///
+    /// **The `before` numbers were measured at `9a19b2d`** — the commit before
+    /// this task — with five bots at skill 0.85 for 120 simulated seconds, the
+    /// same seeds, scales and sim time used here. They cannot be re-measured
+    /// in-tree, because the random-spawn-point `Wander` they describe no longer
+    /// exists; that is why they are written down with their provenance rather
+    /// than left as a remembered figure. A metric with no control is a number.
+    ///
+    /// | seed / scale | before | after |
+    /// |---|---|---|
+    /// | 4242 small | 11 of 32 | 21 |
+    /// | 4242 medium | 18 of 72 | 24 |
+    /// | 31337 medium | 24 of 72 | **24 — a tie** |
+    ///
+    /// **Two of the three improve and the third ties**, so the assertion is a
+    /// population one: no case is worse, and the total is strictly better. Said
+    /// that way rather than as three wins, because it is not three wins — and a
+    /// `>` on every case would have to be weakened to a `>=` to pass, which is
+    /// the same thing said dishonestly.
+    #[test]
+    fn exploring_covers_more_map_than_the_random_wander_it_replaced() {
+        const BEFORE: [(u64, MapScale, usize, &str); 3] = [
+            (4242, MapScale::Small, 11, "4242 small"),
+            (4242, MapScale::Medium, 18, "4242 medium"),
+            (31337, MapScale::Medium, 24, "31337 medium"),
+        ];
+        let mut before_total = 0;
+        let mut after_total = 0;
+        for (seed, scale, before, label) in BEFORE {
+            let after = cells_visited(seed, scale, 5, 120.0);
+            assert!(
+                after >= before,
+                "{label}: {after} cells against {before} measured at 9a19b2d — \
+                 exploration covered *less* ground than picking a random spawn point",
+            );
+            before_total += before;
+            after_total += after;
+        }
+        assert!(
+            after_total > before_total,
+            "across all three: {after_total} cells against {before_total} at 9a19b2d — \
+             no better than the model this replaced",
+        );
+    }
+
+    /// The vacuity control the comparison above needs.
+    ///
+    /// Five bots that never moved would still occupy up to five cells, so a
+    /// "more than before" comparison could in principle be satisfied by a wrong
+    /// before-number rather than by movement. The floor here is **derived from
+    /// the setup** — one cell per bot — rather than picked, which is the whole
+    /// difference between a control and another threshold.
+    #[test]
+    fn bots_visit_more_cells_than_they_could_by_standing_still() {
+        const N: usize = 5;
+        let seen = cells_visited(SEED, MapScale::Small, N, 120.0);
+        assert!(
+            seen > N,
+            "{N} bots reached {seen} cells in 120 s — no more than standing still would",
+        );
+    }
+
+    /// §E10: below `BOT_FLEE_HEALTH` a bot breaks contact.
+    ///
+    /// The control is that a healthy bot in **the same situation** does not.
+    /// Not "closes": both start at 120 px, which is a bazooka's stand-off, so a
+    /// healthy bot has already arrived and stands still to shoot (§C20) — that
+    /// is correct behaviour and asserting it walked closer would be asserting
+    /// against the range-holding this project measured and fixed. Same map, same
+    /// positions, same weapon; health is the only variable, and it is the only
+    /// thing that decides whether the bot walks away.
+    ///
+    /// **The trend across the window, not two samples.** A bot that flees, clears
+    /// `stand_off`, re-engages, is hit and flees again would satisfy a
+    /// before/after pair while oscillating on the spot — which is worse than
+    /// never fleeing. So this requires the distance to be greater than the start
+    /// at *every* sample after the first second, and the healthy control to close
+    /// over the same window on the same map.
+    #[test]
+    fn a_hurt_bot_breaks_contact_and_a_healthy_one_holds_its_ground() {
+        // Distance per tick, and whether the bot was *fleeing* on that tick.
+        // The window that matters is the one where it has chosen to run: once it
+        // has broken contact the enemy is out of `FOV_DAY`, the goal stops being
+        // `Flee`, and exploration takes over — which is the retreat succeeding,
+        // not the retreat ending. Asserting past that point would demand the bot
+        // never come back to a map it has to keep playing on.
+        let track = |health: f32| -> Vec<(f32, bool, i8)> {
+            let mut w = world_with(&[1, 2]);
+            let at = clear_line(&w);
+            // **No items anywhere.** A fresh world spawns them, and an unarmed
+            // bot goes shopping rather than engaging — measured, the first
+            // version of this fixture watched a bot walk to `Item(5)` for forty
+            // ticks. With the floor bare the only goal available is the enemy,
+            // which is the choice this test is about.
+            let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+            for id in ids {
+                w.items.remove(id);
+            }
+            // Standing on flat ground, not hanging in the air above it.
+            let y = flat_shelf(&mut w, at, 240);
+            if let Some(p) = w.player_mut(1) {
+                p.body.pos = Vec2::new(at.x, y);
+                p.health = health;
+            }
+            if let Some(p) = w.player_mut(2) {
+                // Close, so breaking contact is a walk rather than a step:
+                // `FOV_DAY` is 320, so a pair starting at 220 leaves only 100 px
+                // of retreat before the goal stops being `Flee` — measured, 29
+                // ticks, too short to have a trend in.
+                p.body.pos = Vec2::new(at.x + 120.0, y);
+            }
+            // Armed, because §E10's "arm first" means an *unarmed* bot goes
+            // looking for a weapon rather than closing — so an unarmed control
+            // would not chase and the comparison would be between two different
+            // decisions rather than between two healths.
+            give(&mut w, 1, BAZOOKA, 1);
+            let mut b = Bot::new(1, SEED, 0, 0.6);
+            let mut d = Vec::new();
+            for t in 0..300 {
+                let now = t as f32 * SIM_DT;
+                let inp = b.think(&w, now, SIM_DT);
+                w.queue_input(1, inp);
+                // Health is pinned: the question is which way it walks at this
+                // health, not whether it survives long enough to be asked.
+                if let Some(p) = w.player_mut(1) {
+                    p.health = health;
+                }
+                w.step(SIM_DT);
+                let _ = w.drain_events();
+                let (a, c) = (w.player(1).unwrap().body.pos, w.player(2).unwrap().body.pos);
+                // Which way it *pressed*, relative to the enemy. This is the
+                // decision itself; distance is that decision plus whatever the
+                // physics did afterwards, and a bazooka blast throws both bodies
+                // apart hard enough to swamp a walk (`docs/21` §5).
+                let toward = if inp.buttons & button::RIGHT != 0 {
+                    if c.x > a.x {
+                        1
+                    } else {
+                        -1
+                    }
+                } else if inp.buttons & button::LEFT != 0 {
+                    if c.x < a.x {
+                        1
+                    } else {
+                        -1
+                    }
+                } else {
+                    0
+                };
+                d.push(((a - c).len(), matches!(b.goal, Goal::Flee(_)), toward));
+            }
+            d
+        };
+
+        let hurt = track(BOT_FLEE_HEALTH - 5.0);
+        let healthy = track(100.0);
+
+        // The retreat window: every tick from the first on which it chose to
+        // flee, up to the last.
+        let first = hurt.iter().position(|(_, f, _)| *f).expect(
+            "a bot below BOT_FLEE_HEALTH never chose to flee, so the trend below is vacuous",
+        );
+        let last = hurt.iter().rposition(|(_, f, _)| *f).unwrap();
+        let window = last - first;
+        assert!(
+            window > 40,
+            "the retreat lasted {window} ticks — too short to have a trend",
+        );
+
+        // **The trend across the window, not two samples.** A bot that fled,
+        // cleared `stand_off`, re-engaged and fled again would satisfy a
+        // before/after pair while oscillating on the spot.
+        let start = hurt[first].0;
+        let settle = first + window / 4;
+        for (i, (d, _, _)) in hurt.iter().enumerate().take(last + 1).skip(settle) {
+            assert!(
+                *d > start,
+                "a fleeing bot closed back to {d:.0} px at tick {i} (retreat began at \
+                 {start:.0}) — it is oscillating, not retreating",
+            );
+        }
+        assert!(
+            hurt[last].0 > hurt[settle].0,
+            "the retreat stalled: {:.0} px at tick {settle}, {:.0} at {last}",
+            hurt[settle].0,
+            hurt[last].0,
+        );
+
+        // And the direction it pressed, which is the decision rather than its
+        // consequences. Counted over the flee window on one side and the whole
+        // run on the other.
+        let away = hurt[first..=last].iter().filter(|(_, _, t)| *t < 0).count();
+        assert!(
+            away * 2 > window,
+            "a fleeing bot pressed *toward* the enemy on most of its {window} \
+             retreating ticks ({away} away)",
+        );
+
+        // The control. Without it "it walked away" is satisfied by a bot that
+        // walks away whatever its health, which is not the behaviour asked for.
+        assert!(
+            !healthy.iter().any(|(_, f, _)| *f),
+            "the healthy control chose to flee, so the two runs differ by something \
+             other than health",
+        );
+        // It holds: at its stand-off it presses nothing horizontal and shoots.
+        // What matters is that it never *retreats*, which is the behaviour under
+        // test — and that its distance stays inside the range it chose, rather
+        // than growing the way the hurt one's does.
+        let retreating = healthy.iter().filter(|(_, _, t)| *t < 0).count();
+        assert_eq!(
+            retreating, 0,
+            "the healthy control pressed away from the enemy on {retreating} ticks — \
+             it is retreating, so health is not what decides this",
+        );
+        assert!(
+            healthy[299].0 < hurt[last].0,
+            "the healthy control ended {:.0} px away and the hurt one {:.0} — \
+             they did not end up doing different things",
+            healthy[299].0,
+            hurt[last].0,
+        );
+    }
+
+    /// §E10: arming yourself outranks the nearest thing on the floor.
+    #[test]
+    fn an_unarmed_bot_goes_for_the_weapon_past_a_nearer_medkit() {
+        let mut w = world_with(&[1]);
+        let at = clear_line(&w);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = at;
+        }
+        // The medkit is nearer. Nearest-of-anything would take it and leave the
+        // bot unarmed, which is what this replaces.
+        let heal = drop_at(&mut w, MEDKIT, Vec2::new(at.x + 60.0, at.y));
+        let gun = drop_at(&mut w, BAZOOKA, Vec2::new(at.x + 200.0, at.y));
+        let mut b = Bot::new(1, SEED, 0, 0.6);
+        b.think(&w, 0.0, SIM_DT);
+        assert_eq!(
+            b.goal,
+            Goal::Item(gun),
+            "an unarmed bot took the nearer medkit (item {heal}) over the weapon",
+        );
+
+        // The control: once armed, nearest wins again — the rule is "arm
+        // yourself first", not "always prefer weapons".
+        give(&mut w, 1, MOLOTOV, 1);
+        let mut armed = Bot::new(1, SEED, 0, 0.6);
+        armed.think(&w, 0.0, SIM_DT);
+        assert_eq!(
+            armed.goal,
+            Goal::Item(heal),
+            "an armed bot ignored the nearer medkit, so the preference is not conditional",
+        );
+    }
+
+    /// A weapon in the bag counts as armed, even when the one in hand is dead.
+    ///
+    /// `choose_goal` asked `selected_weapon`, so a bot holding a flat laser with
+    /// a loaded pistol two slots over was treated as **unarmed** and went
+    /// shopping for a weapon it already had. `choose_weapon` switches it on the
+    /// same tick, so the shopping trip was pure waste — and once §E10 stopped
+    /// unarmed bots from chasing, it became the difference between fighting and
+    /// wandering off.
+    ///
+    /// This exists because the falsification found nothing: reverting the fix on
+    /// its own left every test green. The laser fixture only caught it in
+    /// combination with the rest of this task, which is not a guard.
+    #[test]
+    fn a_loaded_gun_in_the_bag_counts_as_armed_even_with_a_dead_one_in_hand() {
+        use crate::items::registry::{LASER_PISTOL, PISTOL};
+
+        let setup = |with_spare: bool| {
+            let mut w = world_with(&[1, 2]);
+            let at = clear_line(&w);
+            let y = flat_shelf(&mut w, at, 240);
+            let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+            for id in ids {
+                w.items.remove(id);
+            }
+            if let Some(p) = w.player_mut(1) {
+                p.body.pos = Vec2::new(at.x, y);
+            }
+            if let Some(p) = w.player_mut(2) {
+                p.body.pos = Vec2::new(at.x + 120.0, y);
+            }
+            give(&mut w, 1, LASER_PISTOL, 1);
+            if with_spare {
+                give(&mut w, 1, PISTOL, 10);
+            }
+            // The laser in hand, and no charge to fire it: `selected_weapon` is
+            // `None` either way, so the two runs differ only by what is in the bag.
+            let slot = (0..INVENTORY_SLOTS as u8).find(|s| {
+                w.player(1)
+                    .and_then(|p| p.inventory.slot(*s))
+                    .is_some_and(|st| st.item == LASER_PISTOL)
+            });
+            if let Some(slot) = slot {
+                w.select_slot(1, slot);
+            }
+            if let Some(p) = w.player_mut(1) {
+                p.battery = 0.0;
+            }
+            // Something on the floor to be tempted by.
+            let bait = drop_at(&mut w, MEDKIT, Vec2::new(at.x + 40.0, y));
+            let mut b = Bot::new(1, SEED, 0, 0.6);
+            b.think(&w, 0.0, SIM_DT);
+            assert!(
+                b.selected_weapon(&w).is_none(),
+                "the fixture armed the bot in hand, so it proves nothing about the bag",
+            );
+            (b.goal, bait)
+        };
+
+        let (with_spare, _) = setup(true);
+        assert!(
+            matches!(with_spare, Goal::Enemy(2)),
+            "a bot with a loaded pistol in the bag went shopping ({with_spare:?}) \
+             instead of engaging — it is armed and does not know it",
+        );
+
+        // The control: with nothing in the bag it really is unarmed, and then
+        // going for the item is correct. Without this the assertion above passes
+        // for a bot that always engages.
+        let (without, bait) = setup(false);
+        assert_eq!(
+            without,
+            Goal::Item(bait),
+            "a genuinely unarmed bot did not go shopping, so the contrast above is \
+             not about the spare weapon",
+        );
+    }
+
+    /// §E10: an item behind a wall is not a target.
+    #[test]
+    fn an_item_behind_solid_rock_is_not_a_target() {
+        let mut w = world_with(&[1]);
+        let at = clear_line(&w);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = at;
+        }
+        // Inside `FOV_DAY` (320) — an item further than that is invisible and
+        // the presence half below would fail for the wrong reason, which the
+        // first version of this fixture did — and far enough that a wall between
+        // can exceed `MAX_BLOCKED_SAMPLES * LOS_STEP` (192 px).
+        let clear = drop_at(&mut w, BAZOOKA, Vec2::new(at.x + 300.0, at.y));
+        let mut b = Bot::new(1, SEED, 0, 0.6);
+        b.think(&w, 0.0, SIM_DT);
+        // The presence half: with a clear line the bot wants it. Without this
+        // the absence below passes for a bot that never targets an item at all.
+        assert_eq!(
+            b.goal,
+            Goal::Item(clear),
+            "a bot ignored an item in plain sight"
+        );
+
+        // Now wall it off. The tolerance is a **count**: `MAX_BLOCKED_SAMPLES`
+        // samples at `LOS_STEP` px is 192 px of rock, so a 160 px wall passes it
+        // — which the first version of this test discovered by failing. This one
+        // is 300 px along the line, "behind a mountain" rather than "over a
+        // hill", and it is derived from the two constants rather than picked.
+        let thick = (MAX_BLOCKED_SAMPLES as f32 * LOS_STEP * 1.25) as i32;
+        for dx in 30..(30 + thick) {
+            for dy in -200..200 {
+                w.map.mask.set(at.x as i32 + dx, at.y as i32 + dy);
+            }
+        }
+        let mut walled = Bot::new(1, SEED, 0, 0.6);
+        walled.think(&w, 0.0, SIM_DT);
+        assert_ne!(
+            walled.goal,
+            Goal::Item(clear),
+            "a bot targeted an item behind {thick} px of solid rock",
+        );
     }
 
     /// A bot's inputs must be reproducible, or a replay does not reproduce the

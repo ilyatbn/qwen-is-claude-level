@@ -1175,6 +1175,18 @@ impl AttractCore {
     /// sent explicitly; that is the defect that left bots never firing a shot in
     /// the game's history, and reproducing the room's exact sequence here is
     /// what keeps this a faithful smoke test rather than a lookalike.
+    ///
+    /// **Frozen, and dormant since T18.01.** `AttractCore` lost its only caller
+    /// when the title screen stopped running the simulation, so this is a
+    /// hand-rolled copy of `drive_bots` that nothing exercises — and a copy
+    /// nothing exercises is one that diverges silently. `to_command` and
+    /// `wait_for` are the two this project has already paid for.
+    ///
+    /// T18.02 changed what `think` *decides* (exploration, arming, retreat) and
+    /// deliberately did not change the driving sequence, so this needed no edit.
+    /// **If the sequence itself ever changes — a new command a bot can ask for,
+    /// a different order — edit this with it or delete `AttractCore`.** Do not
+    /// leave it half-true.
     pub fn step(&mut self, dt: f32) {
         let now = self.world.round_time;
         let mut inputs = Vec::with_capacity(self.bots.len());
