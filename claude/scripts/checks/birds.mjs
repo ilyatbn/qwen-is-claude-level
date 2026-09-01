@@ -99,6 +99,7 @@ const c = await page.evaluate(() => {
     GRAVITY: k.GRAVITY,
     BIRD_H: k.BIRD_H,
     SMG_RANGE: k.SMG_RANGE,
+    SMG_MUZZLE_SPEED: k.SMG_MUZZLE_SPEED,
     ITEM_MEDKIT: k.ITEM_MEDKIT,
     ITEM_BATTERY_PACK: k.ITEM_BATTERY_PACK,
   }
@@ -582,13 +583,14 @@ if (onScreen && onScreen.inView.length > 0) {
   await standStill(page)
   // **The SMG, not the bazooka.** A rocket is a ballistic projectile: fired at a
   // bird 200 px up it arcs into the ground long before it gets there, and eight
-  // attempts produced eight craters. Hitscan is instant and has no gravity, and
-  // at `SMG_DAMAGE` 8 against `BIRD_HEALTH` 1 a single bullet is decisive.
+  // attempts produced eight craters. An SMG round flies straight and ignores
+  // gravity and wind (§F1), and at `SMG_DAMAGE` 8 against `BIRD_HEALTH` 1 a
+  // single bullet is decisive.
   //
-  // It is also the better path to exercise: `fire_hitscan` is where §C16 made
-  // the ray march against each target's own hit box instead of a hardcoded
-  // `PLAYER_W x PLAYER_H`, so this check covers the change rather than routing
-  // around it.
+  // It is also the better path to exercise: §C16 made the hit test march against
+  // each target's own box rather than a hardcoded `PLAYER_W x PLAYER_H`, and
+  // §F1 carried that rule into the projectile step — a bird stops a bullet and
+  // nothing else. This check covers both rather than routing around them.
   await selectWeapon(page, 'smg')
 
   // Retry on the effect, re-aiming each time: the bird is still moving between
@@ -658,9 +660,15 @@ if (onScreen && onScreen.inView.length > 0) {
       await sleep(500)
       continue
     }
-    // A small lead for the tick between aiming and the server resolving the
-    // shot. Hitscan is instant, so this is one tick of travel, not a flight time.
-    const lead = c.BIRD_SPEED * (1 / 60) * (target2.right ? 1 : -1)
+    // Lead the bird by the round's **flight time** (§F1).
+    //
+    // This was one tick of travel, and the comment said why: "hitscan is
+    // instant". It is not any more — an SMG round covers `SMG_MUZZLE_SPEED`
+    // px/s, so a bird 400 px away is half a second of flight and a one-tick lead
+    // aims at where it was. Computed from the constants at both ends, so it
+    // tracks the speed rather than expiring against it (§A19).
+    const flight = dist / c.SMG_MUZZLE_SPEED
+    const lead = c.BIRD_SPEED * flight * (target2.right ? 1 : -1)
     const aim = screenPos(d2, { x: target2.x + lead, y: target2.y })
     if (!aim) {
       await sleep(400)

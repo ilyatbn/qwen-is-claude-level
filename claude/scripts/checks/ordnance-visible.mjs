@@ -255,12 +255,17 @@ if ((idle.tracersDrawn ?? -1) === 0 && (idle.projectilesDrawn ?? -1) === 0) {
   )
 }
 
-// --- hitscan: the smg ------------------------------------------------------
+// --- hitscan: the laser pistol ---------------------------------------------
+//
+// **The laser, not the smg, since §F1.** The five ballistic guns are projectiles
+// now — they fly, and T19.02's `bullets-visible` is what photographs one moving.
+// The two energy weapons are the only beams left, so they are the only thing
+// this half can be about.
 //
 // A tracer lives TRACER_LIFETIME (0.09 s), so it is sampled by *polling as fast
 // as the page answers* rather than after a sleep — a 200 ms wait misses it
 // entirely and would report "never drawn" for a tracer that was.
-await selectWeapon(page, 'smg')
+await selectWeapon(page, 'laser_pistol')
 await standStill(page)
 const beforeShots = (await dbg()).observed?.hitscans ?? 0
 const controlBeforeTracer = await samplePatch(page, CONTROL)

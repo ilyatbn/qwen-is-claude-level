@@ -1,4 +1,4 @@
-/** §A3 at night: tracers and a rocket lighting the map. */
+/** §A3 at night: gunfire and a rocket lighting the map (§F1 — bullets, not tracers). */
 export default async function ({ page, shot, log }) {
   await page.evaluate(() => window.__game.regenerate('12345', 'medium'))
   await page.waitForTimeout(500)
@@ -55,38 +55,39 @@ export default async function ({ page, shot, log }) {
   if (o.lights < 1) throw new Error('a rocket in the dark emits no light')
   await shot('night-rocket')
 
-  // Then the smg. Two things matter here: fire_ready_at is per PLAYER, so the
-  // bazooka's 0.9 s cooldown gates the switch (deliberate — swapping weapons must
-  // not bypass a cooldown), and a tracer lives 90 ms, which is shorter than a
-  // screenshot round-trip. So sustained fire from inside the page keeps tracers on
-  // screen while the shot is taken.
+  // Then the smg. `fire_ready_at` is per PLAYER, so the bazooka's 0.9 s cooldown
+  // gates the switch (deliberate — swapping weapons must not bypass a cooldown).
+  //
+  // **This half used to be about tracers, and since §F1 it is about bullets.**
+  // The smg was `Delivery::Hitscan`: it returned `{hitscan: [...]}` and drew a
+  // 90 ms tracer, which was shorter than a screenshot round-trip and needed
+  // `holdTracers` to be photographed at all. It fires a projectile now, and the
+  // claim under test is unchanged — sustained fire has to light the dark — but
+  // the thing that carries the light is a round in flight rather than a decaying
+  // line. That it no longer needs freezing to be seen is the point of §F1.
   await page.waitForTimeout(1000)
   await page.evaluate(() => window.__game.selectSlot(2))
   const first = await page.evaluate(() => window.__game.fire())
-  if (!first.hitscan) throw new Error(`the smg did not fire: ${JSON.stringify(first)}`)
+  if (!first.projectile) throw new Error(`the smg did not fire: ${JSON.stringify(first)}`)
+  await page.waitForFunction('window.__game.ordnance().projectiles > 0', null, { timeout: 5000 })
   o = await page.evaluate(() => window.__game.ordnance())
   log(`immediately after one shot: ${JSON.stringify(o)}`)
-  if (o.tracers < 1) throw new Error('no tracer from an smg shot')
+  if (o.projectiles < 1) throw new Error('no bullet in the air from an smg shot')
 
   await page.evaluate(() => {
     window.__smg = setInterval(() => window.__game.fire(), 40)
   })
   await page.waitForTimeout(400)
-  // Freeze tracer decay before the shot: 0.09 s is shorter than a screenshot
-  // round-trip, and the first version of this check photographed an empty
-  // hillside while asserting a tracer existed.
-  await page.evaluate('window.__game.holdTracers(true)')
-  await page.waitForFunction('window.__game.ordnance().tracers > 0', null, { timeout: 10000 })
-  // Let the frozen tracer survive at least one render + lightmap pass before the
-  // capture. Without this the shot lands between frames and photographs the
-  // hillside the tracer is about to cross.
+  // No freeze: a round crosses the map over most of a second, so it is on screen
+  // for the whole capture. The assertion is the same one the tracer half made —
+  // ordnance emits light — read off a body that is genuinely there.
+  await page.waitForFunction('window.__game.ordnance().projectiles > 0', null, { timeout: 10000 })
   await page.waitForTimeout(400)
   const lit = await page.evaluate(() => window.__game.ordnance().lights)
-  if (lit < 3) throw new Error(`tracer emits only ${lit} lights — it will be lost in the dark`)
+  if (lit < 3) throw new Error(`gunfire emits only ${lit} lights — it will be lost in the dark`)
   await shot('night-tracers')
-  await page.evaluate('window.__game.holdTracers(false)')
   const during = await page.evaluate(() => window.__game.ordnance())
   await page.evaluate(() => clearInterval(window.__smg))
   log(`during sustained fire: ${JSON.stringify(during)}`)
-  if (during.tracers < 1) throw new Error('sustained fire shows no tracers')
+  if (during.projectiles < 1) throw new Error('sustained fire puts no rounds in the air')
 }

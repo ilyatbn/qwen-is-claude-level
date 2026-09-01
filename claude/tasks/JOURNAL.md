@@ -4997,3 +4997,35 @@ the end and is not**:
   loop), so no lobby ever filled and every client waited out the timer alone. When a
   feature introduces a timer, every generous fixture deadline becomes a coin flip silently,
   and reports it as the feature failing.
+
+## T19.01 — bullets fly, and a bullet is not a small blast
+
+**§F1 as written did not survive contact.** "A projectile whose burst is a very small
+`Blast`" deals **zero damage**: `explode` measures falloff centre-to-centre, a round stops
+*inside* the body ~8 px from centre, and the guns' radii are 3–6. The coder deviated to a
+`bullet::resolve` — full damage to the body it stopped on — and the doc was amended to
+match (D-62). The spec was wrong and the builder was right.
+
+**Then the deviation was applied in one of the two crates that decide what an impact
+means**, and `game-wasm` kept exploding. Not zero damage, as the review first read it: the
+sandbox fallback hardcodes a **bazooka's** 42/45 for every projectile, so a 14-damage
+pistol dealt ~45 with rocket knockback, credited to weapon 0 — a defect older than this
+task (D-63). The rule: when you fork a shared path on purpose, grep the *other*
+implementations of the same decision before calling it done.
+
+**Two tests were vacuous and are now not.** The owner-grace test survived deleting the
+guard — `MUZZLE_OFFSET` 18 clears the 14 px half-body, so a round always spawns outside
+its owner and the test pinned the offset. It spawns *inside* now. The straight-flight test
+survived deleting the guard too, because the table is already 0.0; `integrate()` is
+extracted so a bullet can be flown with gravity 1.0 and the guard is the only thing
+keeping it flat. Both verified red-then-green twice, once by each agent.
+
+**And every thrown weapon has launched with the bazooka roar** since the cue was written:
+`String(p['weapon']) === 'grenade'` against a wire that carries a numeric id has never
+once been true. Keyed through `WEAPON_KEYS` now, with weather explicitly silent so the
+unmapped counter is assertable at zero.
+
+Gate: `check.sh --fast` EXIT=0 (36 Rust suites, game-core lib 815, combat 37; client 49
+files / 754 tests), clippy clean. **Browser suite deliberately not run** — T19.01 breaks
+`ordnance-visible`'s hitscan half by design and T19.02 repairs it; the full gate runs at
+the pair boundary (D-61).

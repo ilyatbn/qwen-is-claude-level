@@ -1010,3 +1010,108 @@ drawn*.
 green against the sweep's single red**. It is the check that in M16 *"flew at the crate for
 70 s"*; under a forty-check sweep it loses its timing. **D-58's discipline arriving on the
 browser side:** a single failure is unproven until re-run.
+
+## D-60 — M19 is run as a pair, and the reports are the interface  ·  M19
+Thirteen tasks, one coder and one hard reviewer, both **forks of the coordinator's
+context** so the spec is read once and not re-derived per agent. The reviewer never sees
+the coder's transcript and the coder never sees the reviewer's — they exchange
+**structured reports through the coordinator**, capped at ~25 lines. That cap is the
+point: the failure mode of a long-running pair is two agents whose understanding has
+drifted apart while both believe they agree, and a report short enough to read is a
+report you actually check against the task file.
+
+Three interpretation calls landed before any code, and they are recorded because a
+builder reading the spec cold would not be able to tell they were calls at all:
+
+- **"Remove all the rest" means the melee cabinet, not the arsenal.** Knife, bat, whip,
+  axe and hammer retire; guns, grenades, launchers, lasers and the airburst stay. Five
+  weapons differing by twenty percent on four numbers are not five decisions (§F5).
+- **The mouse does not change.** Both-buttons-fire was specified, then withdrawn on the
+  report that left fires and right opens the backpack. Kept in §F4.1 as a rejected
+  option, because the reported defect — a click that produces silence — is §C20's gate
+  and has nothing to do with which button was pressed.
+- **Retired ids stay dead.** `WEAPONS[i].id == WeaponId(i)` is positional and the client
+  mirrors it; deleting five weapons out of the middle renumbers everything after them,
+  which is §B16 — the bug where a laser resolved as a bazooka.
+
+## D-61 — The browser suite runs at the pair boundary, not inside the first half  ·  M19
+M19's shooting and fire work come in **pairs**: a core change that deliberately breaks a
+browser check, and the task that repairs the picture. T19.01 turns the SMG into a
+projectile, and `ordnance-visible` fires an SMG expecting a *tracer* — so the suite is red
+between T19.01 and T19.02 **by construction**, and running it inside T19.01 only
+re-reports a failure already scoped to the next task.
+
+So the rule for this milestone: the first half of a pair gates on `check.sh --fast`
+(fmt, clippy, `cargo test --workspace`, typecheck, client unit tests) and the **full**
+gate, browser suite included, runs at the pair boundary. Pairs: T19.01+T19.02,
+T19.07+T19.08, T19.11+T19.12+T19.13.
+
+This is **not** a softening of D-59, which is what it would look like from the outside.
+D-59's finding was that T18.04 shipped on a *Rust-only* Done-when and five browser checks
+travelled two tasks downstream **unnoticed**. The difference is the word: here the
+breakage is named in advance, in the task file, with the repair assigned. An expected red
+that is written down is a plan; an unrun suite is the thing D-59 is about.
+
+**And the coordinator's own error, recorded because it cost a run:** the baseline gate was
+launched *while the coder was editing the same tree* and failed compiling a half-wired
+`Delivery::Bullet`. `CLAUDE.md` already says not to run the gate while another cargo is
+active; it does not say **the agent owns the toolchain for the duration of its task**, and
+that is the operational form of the same rule. A baseline taken after the work has started
+is not a baseline.
+
+## D-62 — A bullet is not a small blast, and one damage path means every crate  ·  M19
+§F1 as written said a bullet was "a projectile whose burst is a very small `Blast`". Built
+that way it does **nothing**: `explode` measures falloff from the blast centre to the
+victim's *centre*, a bullet stops **inside** the body about 8 px from it, and the five
+guns' blast radii are 3–6 px. `d > radius` for every one of them, so the victim is skipped
+and **every gun deals zero damage** — while the weapon table's own tests stay green,
+because a table test asserts the table.
+
+The coder found this building it and deviated: a `bullet::resolve` that damages the body
+the round stopped on, at full damage, no falloff — the same interception shape §E13's
+toxic drop already uses. §F1 is amended to say so. **The spec was wrong and the builder
+was right**, which is the outcome `CLAUDE.md` asks for when a doc does not survive contact.
+
+**And then the deviation was applied in one of the two damage paths.** `game-wasm`'s
+`combat_step` still let a bullet hit fall through to the generic "everything else
+explodes" branch, so **guns dealt zero damage in the sandbox** while the server's dealt
+full. A deviation is not a decision until it is applied at *every* site that decides what
+an impact means. The rule this adds:
+
+> **When you fork a shared path deliberately, grep for the other implementations of the
+> same decision before you call it done.** One damage path is a property of the codebase,
+> not of a file — `game-core` and `game-wasm` both decide what an outcome means, and a
+> reviewer found the second one only by asking where else the enum is matched.
+
+Found by the reviewer, not the gate: 921 workspace tests and a green `--fast` gate both
+passed with the sandbox dealing no damage at all.
+
+## D-63 — Two defects that predate M19, found by changing the thing next to them  ·  M19
+Neither was reported by a player and neither had a failing test. Both surfaced because
+T19.01 moved guns onto the projectile path and forced someone to read the code around it.
+
+- **The sandbox dealt a bazooka's blast for every projectile.** `game-wasm`'s
+  `combat_step` hardcoded `BAZOOKA_BLAST_RADIUS` 42, `BAZOOKA_DAMAGE` 45 and
+  `WeaponId(0)` in its fallback branch, so a 14-damage pistol dealt ~45 with rocket
+  knockback, attributed to weapon 0. The review's first mechanism for this — "guns deal
+  zero damage" — was **wrong in the same place the code was wrong**, and the coder
+  corrected it. Both agreed a fork existed; neither had the number right until someone
+  read the branch.
+- **Every thrown weapon has launched with the bazooka roar.** `GameScene` cued the fire
+  sound with `String(p['weapon']) === 'grenade'`, and the wire carries `weapon` as a
+  **numeric id**, so that comparison has never once been true. A grenade has sounded like
+  a rocket for as long as the cue has existed. Now keyed through `WEAPON_KEYS` — the table
+  already pinned to the Rust registry — with silent-by-design weather keys marked
+  explicitly, so an unmapped id is a real gap and can be asserted at zero.
+
+A third of the same shape is **left standing and written down**: the sandbox's generic
+projectile fallback still hand-derives `SelfInflicted { weapon: 0 }` for rockets, grenades
+and meteors. It predates T19.01, it is not the bullet path, and widening the task to reach
+it would have been scope taken quietly. It is a defect, it is recorded here, and it is
+somebody's next task.
+
+**The pattern both share:** a comparison or a constant that was *never* right, in a path
+with no assertion on its output, sitting behind a test suite that grew to 921 cases
+without touching it. `CLAUDE.md` already says *assert on effects, not intentions*; these
+add the corollary that **a defect with no test is usually found by the task that walks
+past it**, which is an argument for making the walk-past deliberate rather than hoping.

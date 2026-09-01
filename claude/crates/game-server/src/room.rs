@@ -1192,6 +1192,13 @@ impl Room {
         game_core::world::give(world, id, game_core::items::registry::AXE, 1);
         game_core::world::give(world, id, game_core::items::registry::FLAMETHROWER, 200);
         game_core::world::give(world, id, game_core::items::registry::MOLOTOV, 2);
+        // §F1 made the five ballistic guns projectiles, which leaves the two
+        // energy weapons as the only things in the game that still fire a
+        // **beam** — and `ordnance-visible` exists to prove a beam is drawn.
+        // Without one in the loadout that half of the check has nothing to point
+        // at. The battery above is what makes it fire; a laser with no charge is
+        // a paperweight (§B5).
+        game_core::world::give(world, id, game_core::items::registry::LASER_PISTOL, 1);
     }
 
     /// Free a seat for a human by removing the newest bot.

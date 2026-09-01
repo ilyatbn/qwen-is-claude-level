@@ -28,14 +28,15 @@ use crate::constants::{
     BAZOOKA_MUZZLE_SPEED, BAZOOKA_WIND_SCALE, GRENADE_AMMO, GRENADE_BLAST_RADIUS, GRENADE_COOLDOWN,
     GRENADE_DAMAGE, GRENADE_FRICTION, GRENADE_FUSE, GRENADE_GRAVITY_SCALE, GRENADE_MUZZLE_SPEED,
     GRENADE_RESTITUTION, GRENADE_WIND_SCALE, SMG_AMMO, SMG_BLAST_RADIUS, SMG_COOLDOWN, SMG_DAMAGE,
-    SMG_GRAVITY_SCALE, SMG_RANGE, SMG_SHOTS, SMG_SPREAD, SMG_WIND_SCALE,
+    SMG_MUZZLE_SPEED, SMG_RANGE, SMG_SPREAD,
 };
 use crate::constants::{
-    DEAGLE_AMMO, DEAGLE_BLAST_RADIUS, DEAGLE_COOLDOWN, DEAGLE_DAMAGE, DEAGLE_RANGE, DEAGLE_SPREAD,
-    MACHINEGUN_AMMO, MACHINEGUN_BLAST_RADIUS, MACHINEGUN_COOLDOWN, MACHINEGUN_DAMAGE,
-    MACHINEGUN_RANGE, MACHINEGUN_SPREAD, PISTOL_AMMO, PISTOL_BLAST_RADIUS, PISTOL_COOLDOWN,
-    PISTOL_DAMAGE, PISTOL_RANGE, PISTOL_SPREAD, REVOLVER_AMMO, REVOLVER_BLAST_RADIUS,
-    REVOLVER_COOLDOWN, REVOLVER_DAMAGE, REVOLVER_RANGE, REVOLVER_SPREAD,
+    DEAGLE_AMMO, DEAGLE_BLAST_RADIUS, DEAGLE_COOLDOWN, DEAGLE_DAMAGE, DEAGLE_MUZZLE_SPEED,
+    DEAGLE_RANGE, DEAGLE_SPREAD, MACHINEGUN_AMMO, MACHINEGUN_BLAST_RADIUS, MACHINEGUN_COOLDOWN,
+    MACHINEGUN_DAMAGE, MACHINEGUN_MUZZLE_SPEED, MACHINEGUN_RANGE, MACHINEGUN_SPREAD, PISTOL_AMMO,
+    PISTOL_BLAST_RADIUS, PISTOL_COOLDOWN, PISTOL_DAMAGE, PISTOL_MUZZLE_SPEED, PISTOL_RANGE,
+    PISTOL_SPREAD, REVOLVER_AMMO, REVOLVER_BLAST_RADIUS, REVOLVER_COOLDOWN, REVOLVER_DAMAGE,
+    REVOLVER_MUZZLE_SPEED, REVOLVER_RANGE, REVOLVER_SPREAD,
 };
 use crate::constants::{
     FLAMETHROWER_AMMO, FLAMETHROWER_ARC, FLAMETHROWER_COOLDOWN, FLAMETHROWER_DPS,
@@ -68,10 +69,27 @@ pub enum Delivery {
         friction: f32,
         explode_on_contact: bool,
     },
-    Hitscan {
-        shots: u8,
-        spread: f32,
-    },
+    /// An instant ray (§B7). **Energy weapons only, since §F1** — a laser is a
+    /// beam and arrives the moment it is fired, which is the one thing that
+    /// makes it different from a bullet.
+    Hitscan { shots: u8, spread: f32 },
+    /// A round that **flies** (§F1).
+    ///
+    /// The ballistic guns were `Hitscan` for six milestones and the report never
+    /// stopped being "I cannot see gun projectiles". The cause was upstream of
+    /// the renderer: a hitscan shot is a line segment that appears and vanishes
+    /// in the same instant, and `ordnance-visible` could only photograph one by
+    /// **freezing the frame first**. A check that has to stop time to see a thing
+    /// is telling you the player cannot.
+    ///
+    /// So a bullet is an object: it leaves the muzzle at the def's `muzzle_speed`,
+    /// flies **straight** — no gravity, no wind, enforced in the step rather than
+    /// trusted to two zeroes in the table — and stops at the first thing it
+    /// touches or when it has flown `range`.
+    ///
+    /// `auto` is the weapon's, not the input's, so a bot holding fire behaves
+    /// exactly as a human does (§F3).
+    Bullet { spread: f32, auto: bool },
     /// An arc swept around the aim angle (§B6). No ammo — a cooldown instead,
     /// which is what makes melee the floor of the arsenal rather than a novelty.
     Melee {
@@ -232,17 +250,20 @@ pub static WEAPONS: &[WeaponDef] = &[
     WeaponDef {
         id: WEAPON_SMG,
         key: "smg",
-        delivery: Delivery::Hitscan {
-            shots: SMG_SHOTS,
+        delivery: Delivery::Bullet {
             spread: SMG_SPREAD,
+            auto: true,
         },
         damage: SMG_DAMAGE,
         blast_radius: SMG_BLAST_RADIUS,
         range: SMG_RANGE,
         cooldown: SMG_COOLDOWN,
-        muzzle_speed: 0.0,
-        gravity_scale: SMG_GRAVITY_SCALE,
-        wind_scale: SMG_WIND_SCALE,
+        muzzle_speed: SMG_MUZZLE_SPEED,
+        // Zero because a bullet flies straight, and the step enforces it rather
+        // than reading these (§F1). They stay 0.0 so nothing that iterates the
+        // table sees a number that would be a lie if it were ever read.
+        gravity_scale: 0.0,
+        wind_scale: 0.0,
         energy_cost: 0.0,
         burst: Burst::Blast,
     },
@@ -325,7 +346,11 @@ pub static WEAPONS: &[WeaponDef] = &[
         energy_cost: LASER_SMG_ENERGY,
         burst: Burst::Blast,
     },
-    // --- ballistic hitscan (§B7) ---
+    // --- ballistic bullets (§B7, §F1) ---
+    //
+    // These five were `Hitscan` until §F1. They fly now: same damage, same
+    // carve, same spread, but the shot is an object that crosses the map at
+    // `muzzle_speed` and can be photographed without stopping time.
     //
     // Appended, never inserted: `def` indexes by array position, and putting a
     // new id in the middle remaps every weapon after it — a laser resolving as a
@@ -333,15 +358,15 @@ pub static WEAPONS: &[WeaponDef] = &[
     WeaponDef {
         id: WEAPON_PISTOL,
         key: "pistol",
-        delivery: Delivery::Hitscan {
-            shots: 1,
+        delivery: Delivery::Bullet {
             spread: PISTOL_SPREAD,
+            auto: false,
         },
         damage: PISTOL_DAMAGE,
         blast_radius: PISTOL_BLAST_RADIUS,
         range: PISTOL_RANGE,
         cooldown: PISTOL_COOLDOWN,
-        muzzle_speed: 0.0,
+        muzzle_speed: PISTOL_MUZZLE_SPEED,
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
@@ -350,15 +375,15 @@ pub static WEAPONS: &[WeaponDef] = &[
     WeaponDef {
         id: WEAPON_REVOLVER,
         key: "revolver",
-        delivery: Delivery::Hitscan {
-            shots: 1,
+        delivery: Delivery::Bullet {
             spread: REVOLVER_SPREAD,
+            auto: false,
         },
         damage: REVOLVER_DAMAGE,
         blast_radius: REVOLVER_BLAST_RADIUS,
         range: REVOLVER_RANGE,
         cooldown: REVOLVER_COOLDOWN,
-        muzzle_speed: 0.0,
+        muzzle_speed: REVOLVER_MUZZLE_SPEED,
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
@@ -367,15 +392,15 @@ pub static WEAPONS: &[WeaponDef] = &[
     WeaponDef {
         id: WEAPON_DEAGLE,
         key: "deagle",
-        delivery: Delivery::Hitscan {
-            shots: 1,
+        delivery: Delivery::Bullet {
             spread: DEAGLE_SPREAD,
+            auto: false,
         },
         damage: DEAGLE_DAMAGE,
         blast_radius: DEAGLE_BLAST_RADIUS,
         range: DEAGLE_RANGE,
         cooldown: DEAGLE_COOLDOWN,
-        muzzle_speed: 0.0,
+        muzzle_speed: DEAGLE_MUZZLE_SPEED,
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
@@ -384,15 +409,15 @@ pub static WEAPONS: &[WeaponDef] = &[
     WeaponDef {
         id: WEAPON_MACHINEGUN,
         key: "machinegun",
-        delivery: Delivery::Hitscan {
-            shots: 1,
+        delivery: Delivery::Bullet {
             spread: MACHINEGUN_SPREAD,
+            auto: true,
         },
         damage: MACHINEGUN_DAMAGE,
         blast_radius: MACHINEGUN_BLAST_RADIUS,
         range: MACHINEGUN_RANGE,
         cooldown: MACHINEGUN_COOLDOWN,
-        muzzle_speed: 0.0,
+        muzzle_speed: MACHINEGUN_MUZZLE_SPEED,
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
@@ -910,17 +935,19 @@ mod tests {
             }
             _ => panic!("the grenade must be a projectile"),
         }
-        // Chip damage that tunnels: cheap per shot, fast, small carve.
+        // Chip damage that tunnels: cheap per shot, fast, small carve — and
+        // since §F1 a round that flies, held down (`auto`) rather than clicked.
         match smg.delivery {
-            Delivery::Hitscan { shots, spread } => {
-                assert_eq!(shots, SMG_SHOTS);
+            Delivery::Bullet { spread, auto } => {
                 assert!(spread > 0.0);
+                assert!(auto, "the smg is an automatic");
             }
-            _ => panic!("the smg must be hitscan"),
+            _ => panic!("the smg must fire bullets"),
         }
         assert!(smg.damage < bazooka.damage / 4.0);
         assert!(smg.cooldown < bazooka.cooldown / 4.0);
-        assert!(smg.range > 0.0, "hitscan needs a range");
+        assert!(smg.range > 0.0, "a bullet's life is its range");
+        assert!(smg.muzzle_speed > 0.0, "a bullet has to fly");
     }
 
     #[test]
@@ -948,7 +975,8 @@ mod tests {
         let s = by_key("smg").expect("smg");
         assert_eq!(s.damage, SMG_DAMAGE);
         assert_eq!(s.range, SMG_RANGE);
-        assert_eq!(s.gravity_scale, 0.0, "hitscan is not ballistic");
+        assert_eq!(s.muzzle_speed, SMG_MUZZLE_SPEED);
+        assert_eq!(s.gravity_scale, 0.0, "a bullet flies straight");
     }
 }
 
@@ -964,19 +992,31 @@ mod ballistics {
     use crate::map::{CoarseGrid, Map, MapMeta, Mask};
     use crate::math::Vec2;
     use crate::rng::substream;
-    use crate::weapons::explode::{fire_hitscan, HitId, HitTarget, HitscanHit};
+    use crate::weapons::explode::{HitId, HitTarget};
 
-    /// `docs/71-amendments-v3.md` §B7, transcribed. `(key, dmg, carve, range, cd, spread, ammo)`
-    const SPEC: &[(&str, f32, f32, f32, f32, f32, u8)] = &[
-        ("smg", 8.0, 3.0, 700.0, 0.10, 0.030, 60),
-        ("pistol", 14.0, 3.0, 520.0, 0.28, 0.020, 40),
-        ("revolver", 32.0, 5.0, 700.0, 0.70, 0.010, 12),
-        ("deagle", 45.0, 6.0, 760.0, 0.85, 0.015, 8),
-        ("machinegun", 11.0, 3.0, 900.0, 0.09, 0.045, 120),
+    /// `docs/71-amendments-v3.md` §B7 and `docs/75` §F1, transcribed.
+    /// `(key, dmg, carve, range, cd, spread, ammo, muzzle_speed, auto)`
+    #[allow(clippy::type_complexity)]
+    const SPEC: &[(&str, f32, f32, f32, f32, f32, u8, f32, bool)] = &[
+        ("smg", 8.0, 3.0, 700.0, 0.10, 0.030, 60, 800.0, true),
+        ("pistol", 14.0, 3.0, 520.0, 0.28, 0.020, 40, 900.0, false),
+        ("revolver", 32.0, 5.0, 700.0, 0.70, 0.010, 12, 1000.0, false),
+        ("deagle", 45.0, 6.0, 760.0, 0.85, 0.015, 8, 1050.0, false),
+        (
+            "machinegun",
+            11.0,
+            3.0,
+            900.0,
+            0.09,
+            0.045,
+            120,
+            850.0,
+            true,
+        ),
     ];
 
     fn is_ballistic(w: &WeaponDef) -> bool {
-        matches!(w.delivery, Delivery::Hitscan { .. }) && !w.is_energy()
+        matches!(w.delivery, Delivery::Bullet { .. }) && !w.is_energy()
     }
 
     /// The table is the test. Every number in §B7 is asserted, **and** the set of
@@ -985,23 +1025,43 @@ mod ballistics {
     /// omission.
     #[test]
     fn every_ballistic_weapon_matches_the_spec_table() {
-        for &(key, dmg, carve, range, cd, spread, ammo) in SPEC {
+        for &(key, dmg, carve, range, cd, spread, ammo, speed, auto) in SPEC {
             let w = by_key(key).unwrap_or_else(|| panic!("{key} is not in the weapon table"));
-            assert!(is_ballistic(w), "{key} is not ballistic hitscan");
+            assert!(is_ballistic(w), "{key} does not fire bullets");
             assert_eq!(w.damage, dmg, "{key} damage");
             assert_eq!(w.blast_radius, carve, "{key} carve radius");
             assert_eq!(w.range, range, "{key} range");
             assert_eq!(w.cooldown, cd, "{key} cooldown");
-            assert_eq!(
-                w.gravity_scale, 0.0,
-                "{key} is hitscan, not ballistic flight"
-            );
+            assert_eq!(w.muzzle_speed, speed, "{key} muzzle speed");
+            assert_eq!(w.gravity_scale, 0.0, "{key} is a bullet: it flies straight");
+            assert_eq!(w.wind_scale, 0.0, "{key} is a bullet: no wind");
             assert_eq!(ammo_per_pickup(w.id), ammo, "{key} ammo per pickup");
             match w.delivery {
-                Delivery::Hitscan { spread: s, .. } => assert_eq!(s, spread, "{key} spread"),
+                Delivery::Bullet { spread: s, auto: a } => {
+                    assert_eq!(s, spread, "{key} spread");
+                    assert_eq!(a, auto, "{key} auto");
+                }
                 _ => unreachable!(),
             }
         }
+
+        // §F3: the automatics hit softer than the guns that fire once, and it is
+        // an invariant rather than a coincidence of today's numbers — a balance
+        // change that inverts it fails here instead of being found in play.
+        let worst_semi = SPEC
+            .iter()
+            .filter(|&&(.., auto)| !auto)
+            .map(|&(_, dmg, ..)| dmg)
+            .fold(f32::INFINITY, f32::min);
+        let best_auto = SPEC
+            .iter()
+            .filter(|&&(.., auto)| auto)
+            .map(|&(_, dmg, ..)| dmg)
+            .fold(0.0f32, f32::max);
+        assert!(
+            best_auto < worst_semi,
+            "an automatic hits for {best_auto}, harder than the weakest semi-auto at {worst_semi}"
+        );
 
         let mut in_table: Vec<&str> = WEAPONS
             .iter()
@@ -1015,6 +1075,68 @@ mod ballistics {
             in_table, in_spec,
             "a ballistic weapon exists with no numbers in the §B7 table (or vice versa)"
         );
+    }
+
+    /// Fire one round and fly it to wherever it stops, through the real path.
+    ///
+    /// Returns the pixels it removed. A helper that carved directly would test a
+    /// path the game does not run.
+    fn fire_one(
+        map: &mut Map,
+        targets: &mut [crate::weapons::explode::HitTarget],
+        key: &str,
+        from: Vec2,
+        aim: f32,
+        rng: &mut crate::rng::ChaCha8Rng,
+    ) -> (Option<HitId>, u32) {
+        use crate::weapons::projectile::{ProjectileOutcome, Projectiles};
+        let w = by_key(key).expect("weapon");
+        let Delivery::Bullet { spread, .. } = w.delivery else {
+            panic!("{key} is not a bullet");
+        };
+        let a = crate::weapons::bullet::muzzle_angle(rng, aim, spread);
+        let mut pr = Projectiles::new();
+        pr.spawn(w.id, 0, from, a, 0.0);
+        let boxes: Vec<(HitId, crate::math::Aabb)> = targets
+            .iter()
+            .map(|t| (t.id, crate::math::Aabb::from_center_size(t.pos, t.w, t.h)))
+            .collect();
+        let max_ticks = ((w.range / w.muzzle_speed) / crate::constants::SIM_DT).ceil() as u32 + 10;
+        for i in 0..max_ticks {
+            let now = i as f32 * crate::constants::SIM_DT;
+            // One round in flight: the first impact is the only impact.
+            if let Some(im) = pr
+                .step(map, &boxes, &[], 0.0, now, crate::constants::SIM_DT)
+                .into_iter()
+                .next()
+            {
+                let (at, victim) = match im.outcome {
+                    ProjectileOutcome::Exploded { at } => (at, None),
+                    ProjectileOutcome::Hit { at, victim } => (at, Some(victim)),
+                    // Ran out of range or left the map: it resolves to nothing.
+                    ProjectileOutcome::Spent { .. } | ProjectileOutcome::Voided { .. } => {
+                        return (None, 0)
+                    }
+                    ProjectileOutcome::Alive => unreachable!(),
+                };
+                let r = crate::weapons::bullet::resolve(
+                    map,
+                    targets,
+                    w,
+                    at,
+                    victim,
+                    crate::weapons::explode::BlastSource::Fired {
+                        owner: 0,
+                        weapon: w.id,
+                    },
+                );
+                return (
+                    r.hit.map(|(id, _)| id),
+                    r.carve.as_ref().map_or(0, |c| c.pixels_removed),
+                );
+            }
+        }
+        panic!("{key} was still flying after {max_ticks} ticks");
     }
 
     /// §A3: nothing hits a wall without marking it, and the carve radius is part
@@ -1055,18 +1177,15 @@ mod ballistics {
             let coarse = CoarseGrid::build(&mask);
             let mut map = Map::from_parts(mask, coarse, meta());
             let mut rng = substream(7, "ballistics");
-            let w = by_key(key).expect("weapon");
             for n in 1..=200u32 {
                 let mut targets: Vec<HitTarget> = Vec::new();
-                fire_hitscan(
+                fire_one(
                     &mut map,
                     &mut targets,
-                    w,
-                    0,
+                    key,
                     Vec2::new(300.0, 256.0),
                     0.0,
                     &mut rng,
-                    0.0,
                 );
                 if (500..510).all(|x| !map.mask.get(x, 256)) {
                     return Some(n);
@@ -1085,75 +1204,44 @@ mod ballistics {
         );
     }
 
-    /// Zero spread is exactly straight; a spread weapon stays inside its bound and
-    /// is reproducible from its seed.
+    /// The spread reaches the **flight**, not just the draw.
+    ///
+    /// `bullet::muzzle_angle` has its own bound-and-determinism test; this is the
+    /// one that would catch a fire path that drew an angle and then spawned along
+    /// the un-jittered aim — which is a real shape, because `Projectiles::spawn`
+    /// takes an aim and nothing forces the caller to pass the drawn one.
     #[test]
-    fn spread_is_bounded_and_deterministic() {
-        const W: u32 = 1024;
-        const H: u32 = 512;
-        fn empty_map() -> Map {
-            let mut mask = Mask::new_empty(W, H);
-            force_borders(&mut mask);
-            let coarse = CoarseGrid::build(&mask);
-            Map::from_parts(
-                mask,
-                coarse,
-                MapMeta {
-                    seed: 1,
-                    requested_seed: 1,
-                    attempts: 1,
-                    used_safe_preset: false,
-                    scale: crate::constants::MapScale::Small,
-                    theme: 0,
-                    spawn_points: Vec::new(),
-                    teleport_pads: Vec::new(),
-                    surface_points: Vec::new(),
-                    objects: Vec::new(),
-                    buried_slots: Vec::new(),
-                    decorations: Vec::new(),
-                    wind: 0.0,
-                    traversable_fraction: 1.0,
-                    largest_component: Vec::new(),
-                },
-            )
-        }
-
-        fn angles(key: &str, seed: u64, n: usize) -> Vec<f32> {
-            let mut map = empty_map();
-            let mut rng = substream(seed, "spread");
+    fn the_spread_reaches_where_the_round_goes() {
+        let heading = |seed: u64, key: &str, n: usize| -> Vec<f32> {
+            use crate::weapons::projectile::Projectiles;
             let w = by_key(key).expect("weapon");
-            let mut out = Vec::with_capacity(n);
-            for _ in 0..n {
-                let mut targets: Vec<HitTarget> = Vec::new();
-                let shots = fire_hitscan(
-                    &mut map,
-                    &mut targets,
-                    w,
-                    0,
-                    Vec2::new(200.0, 256.0),
-                    0.0,
-                    &mut rng,
-                    0.0,
-                );
-                for s in shots {
-                    let d = s.to - s.from;
-                    out.push(d.y.atan2(d.x));
-                }
-            }
-            out
+            let Delivery::Bullet { spread, .. } = w.delivery else {
+                panic!("{key} is not a bullet");
+            };
+            let mut rng = substream(seed, "spread");
+            (0..n)
+                .map(|_| {
+                    let a = crate::weapons::bullet::muzzle_angle(&mut rng, 0.0, spread);
+                    let mut pr = Projectiles::new();
+                    let id = pr.spawn(w.id, 0, Vec2::new(200.0, 256.0), a, 0.0);
+                    let p = pr.get(id).expect("spawned");
+                    p.vel.y.atan2(p.vel.x)
+                })
+                .collect()
+        };
+
+        // The laser pistol is the zero-spread weapon in the table — but it is a
+        // beam now, so the zero-spread bullet control is the revolver's 0.010:
+        // small, and it must still be *applied*.
+        let rev = heading(3, "revolver", 200);
+        for a in &rev {
+            assert!(
+                a.abs() <= REVOLVER_SPREAD + 1e-6,
+                "revolver strayed to {a} beyond ±{REVOLVER_SPREAD}"
+            );
         }
 
-        // The laser pistol is the zero-spread weapon in the table; it must be
-        // exactly straight, not merely close.
-        let straight = angles("laser_pistol", 3, 50);
-        assert!(!straight.is_empty());
-        for a in &straight {
-            assert_eq!(*a, 0.0, "zero spread must be exactly straight, got {a}");
-        }
-
-        // A spread weapon: inside its bound, and actually spreading — a bound
-        // test alone passes for a weapon whose spread silently became zero.
-        let mg = angles("machinegun", 11, 1000);
+        let mg = heading(11, "machinegun", 1000);
         assert_eq!(mg.len(), 1000);
         for a in &mg {
             assert!(
@@ -1161,15 +1249,28 @@ mod ballistics {
                 "machinegun strayed to {a} beyond ±{MACHINEGUN_SPREAD}"
             );
         }
+        // A bound test alone passes for a weapon whose spread silently became
+        // zero — or for a fire path that ignored the draw.
         let distinct = mg.iter().filter(|a| a.abs() > 1e-9).count();
         assert!(
             distinct > 900,
-            "only {distinct} of 1000 machinegun shots deviated — spread is not being applied"
+            "only {distinct} of 1000 machinegun rounds deviated — the spread is not reaching the flight"
+        );
+        // And the machinegun spreads wider than the revolver, which is the table.
+        let spread_of = |v: &[f32]| v.iter().fold(0.0f32, |m, a| m.max(a.abs()));
+        assert!(
+            spread_of(&mg) > spread_of(&rev),
+            "the machinegun is not spreading wider than the revolver"
         );
 
-        // Same seed, same shots.
-        assert_eq!(angles("machinegun", 11, 100), angles("machinegun", 11, 100));
-        assert_ne!(angles("machinegun", 12, 100), angles("machinegun", 11, 100));
+        assert_eq!(
+            heading(11, "machinegun", 100),
+            heading(11, "machinegun", 100)
+        );
+        assert_ne!(
+            heading(12, "machinegun", 100),
+            heading(11, "machinegun", 100)
+        );
     }
 
     /// Every new gun is a real, findable, resolvable item — §A39's shape is a
@@ -1245,22 +1346,20 @@ mod ballistics {
                     apply_damage: &mut hit_fn,
                 }];
                 let mut rng = substream(5, "hit");
-                let shots = fire_hitscan(
+                let (hit, carved) = fire_one(
                     &mut map,
                     &mut targets,
-                    by_key(key).expect("weapon"),
-                    0,
+                    key,
                     Vec2::new(200.0, 256.0),
                     0.0,
                     &mut rng,
-                    0.0,
                 );
-                assert!(
-                    shots
-                        .iter()
-                        .any(|s| matches!(s.hit, Some(HitscanHit::Target(HitId::Player(1))))),
+                assert_eq!(
+                    hit,
+                    Some(HitId::Player(1)),
                     "{key} did not hit a player 100 px away in open air"
                 );
+                assert_eq!(carved, 0, "{key} carved the ground it never reached");
             }
             assert_eq!(dealt, dmg, "{key} dealt {dealt}, expected {dmg}");
         }

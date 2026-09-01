@@ -572,10 +572,6 @@ pub const SMG_RANGE: f32 = 700.0;
 pub const SMG_COOLDOWN: f32 = 0.10;
 pub const SMG_AMMO: u8 = 60;
 pub const SMG_SPREAD: f32 = 0.03;
-/// Rays per trigger pull. `docs/70-amendments-v2.md` §A7.
-pub const SMG_SHOTS: u8 = 1;
-pub const SMG_GRAVITY_SCALE: f32 = 0.0;
-pub const SMG_WIND_SCALE: f32 = 0.0;
 
 // --- Energy weapons (§B5, §B7) -------------------------------------------
 // Their ammo is the battery, so they carry an `energy_cost` rather than an
@@ -1860,6 +1856,29 @@ pub const BOT_FLEE_HEALTH: f32 = 35.0;
 /// five bots on a large map is 5 x 128 bits.
 pub const BOT_EXPLORE_CELL: i32 = 256;
 
+// ---- v7 amendments ----  mirrors docs/75-amendments-v7.md
+
+// --- F1: a bullet is a thing that flies ---
+
+/// Muzzle speeds for the five ballistic guns, px/s (§F1).
+///
+/// A hitscan shot does not exist for long enough to be seen — the check that
+/// photographed one had to **freeze the frame first**, which is the measurement
+/// saying a player cannot. These are the speeds that turn a line segment into an
+/// object: at 900 px/s a bullet crosses a 1536 px map in 1.7 s, which is ~15 px
+/// per frame — a streak that moves, not a flicker.
+///
+/// They are also the only thing that decides how far a bullet reaches per tick,
+/// so they are what `PROJECTILE_OWNER_GRACE_TICKS` (3) has to clear: the fastest
+/// of them is 17.5 px a tick against a `MUZZLE_OFFSET` of 18 and a half-body of
+/// 8, so a bullet is already outside its owner at spawn and 52 px away before the
+/// grace ends.
+pub const PISTOL_MUZZLE_SPEED: f32 = 900.0;
+pub const REVOLVER_MUZZLE_SPEED: f32 = 1000.0;
+pub const DEAGLE_MUZZLE_SPEED: f32 = 1050.0;
+pub const MACHINEGUN_MUZZLE_SPEED: f32 = 850.0;
+pub const SMG_MUZZLE_SPEED: f32 = 800.0;
+
 #[cfg(test)]
 // Every assertion in this module is deliberately over compile-time constants —
 // checking the relationships between them is the entire purpose of the file.
@@ -2046,6 +2065,35 @@ mod tests {
         assert!(
             (CREVICE_WIDTH_MIN as f32) < PLAYER_W,
             "the narrowest crevice should stay a crack, not a doorway"
+        );
+    }
+
+    /// §F1: a bullet must be outside its own shooter before the owner grace
+    /// ends, or the fastest gun in the game kills whoever fires it.
+    ///
+    /// The grace is a *tick count*, so the thing it has to clear is a distance
+    /// per tick — and the fastest muzzle speed is the binding case. Asserted
+    /// rather than reasoned about in a comment, because the failure is a weapon
+    /// that kills its owner and looks like a physics bug.
+    #[test]
+    fn a_bullet_clears_its_owner_before_the_grace_ends() {
+        let fastest = DEAGLE_MUZZLE_SPEED
+            .max(REVOLVER_MUZZLE_SPEED)
+            .max(PISTOL_MUZZLE_SPEED)
+            .max(MACHINEGUN_MUZZLE_SPEED)
+            .max(SMG_MUZZLE_SPEED);
+        // It spawns at MUZZLE_OFFSET, which must already be outside the body.
+        assert!(
+            MUZZLE_OFFSET > PLAYER_W / 2.0,
+            "a bullet spawns inside its owner: MUZZLE_OFFSET {MUZZLE_OFFSET} vs half-body {}",
+            PLAYER_W / 2.0
+        );
+        // And by the end of the grace it is far enough that no plausible body
+        // could still contain it.
+        let after_grace = MUZZLE_OFFSET + fastest * SIM_DT * PROJECTILE_OWNER_GRACE_TICKS as f32;
+        assert!(
+            after_grace > PLAYER_W.max(PLAYER_H),
+            "a bullet is still inside its owner when the grace ends: {after_grace} px"
         );
     }
 

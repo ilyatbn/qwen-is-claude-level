@@ -419,6 +419,13 @@ pub enum DespawnReason {
     /// Left the bottom of the map (§C15). Neither of the other two: it did not go
     /// off, and it did not time out.
     Void,
+    /// A bullet that flew its `range` and stopped (§F1).
+    ///
+    /// Its own word rather than `Void` or `Expired`, because it is neither: it
+    /// did not leave the map and it did not run out of clock. The client removes
+    /// the projectile on any reason, so this costs nothing on the wire and keeps
+    /// the log honest about why a round vanished.
+    Spent,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -1165,15 +1172,27 @@ impl World {
     }
 
     fn step_projectiles(&mut self, now: f32, dt: f32) {
-        let boxes: Vec<(PlayerId, Aabb)> = self
+        let boxes: Vec<(HitId, Aabb)> = self
             .players
             .iter()
             .filter(|p| p.alive)
-            .map(|p| (p.id, p.body.aabb()))
+            .map(|p| (HitId::Player(p.id), p.body.aabb()))
+            .collect();
+        // §C16, kept alive across §F1: a bird stops a bullet. It is a separate
+        // slice because only bullets test it — see `Projectiles::step`.
+        let birds: Vec<(HitId, Aabb)> = self
+            .birds
+            .iter()
+            .map(|b| {
+                let (w, h) = b.size();
+                (HitId::Bird(b.id), Aabb::from_center_size(b.pos, w, h))
+            })
             .collect();
         // `weapon` and `owner` arrive with the outcome: `step` has already removed
         // the projectile, so there is nothing left to look up (see `Impact`).
-        let impacts = self.projectiles.step(&self.map, &boxes, self.wind, now, dt);
+        let impacts = self
+            .projectiles
+            .step(&self.map, &boxes, &birds, self.wind, now, dt);
 
         // Where everything still in flight has got to. At `SNAPSHOT_HZ`, for the
         // same reason `emit_item_motion` uses it: a rocket flies for a second or
@@ -1217,7 +1236,17 @@ impl World {
                 // rain poisons **the player it hit**, and reading "who was
                 // nearest" instead would be a blast by another name.
                 ProjectileOutcome::Exploded { at } => (at, None),
-                ProjectileOutcome::HitPlayer { at, victim } => (at, Some(victim)),
+                ProjectileOutcome::Hit { at, victim } => (at, Some(victim)),
+                // §F1: a bullet that ran out of range. Told to the client and
+                // dropped — no detonate, so it carves nothing and hurts nobody.
+                ProjectileOutcome::Spent { .. } => {
+                    self.events.push(GameEvent::ProjectileDespawn {
+                        tick,
+                        id: im.id,
+                        reason: DespawnReason::Spent,
+                    });
+                    continue;
+                }
             };
             self.events.push(GameEvent::ProjectileDespawn {
                 tick,
@@ -1246,7 +1275,14 @@ impl World {
     /// could only say "something went off here" cannot reach it.
     #[doc(hidden)]
     pub fn hit_player_for_test(&mut self, at: Vec2, weapon: WeaponId, victim: PlayerId, now: f32) {
-        self.detonate(u32::MAX, weapon, u8::MAX, at, Some(victim), now);
+        self.detonate(
+            u32::MAX,
+            weapon,
+            u8::MAX,
+            at,
+            Some(HitId::Player(victim)),
+            now,
+        );
     }
 
     /// Resolve one projectile going off, whatever it was.
@@ -1256,7 +1292,7 @@ impl World {
         weapon: WeaponId,
         owner: PlayerId,
         at: Vec2,
-        victim: Option<PlayerId>,
+        victim: Option<HitId>,
         now: f32,
     ) {
         // `Projectiles::step` has already removed the projectile by the time it
@@ -1270,13 +1306,21 @@ impl World {
         // what `docs/13` §3 says toxic rain must never leave.
         if crate::effects::toxic::owns(weapon) {
             // Whoever it landed on, not everyone nearby: a drop is not a blast,
-            // and `victim` is the player the shared projectile step reports it
+            // and `victim` is the body the shared projectile step reports it
             // actually touched.
+            //
+            // `player()` because the victim is a `HitId` since §F1. A drop cannot
+            // in fact land on a bird — only bullets test the bird slice — so the
+            // `None` arm is unreachable today, and it is written rather than
+            // unwrapped because the day something else stops on a bird this is a
+            // decision someone has to make, not a panic.
             if let Some(v) = victim {
-                if crate::effects::toxic::poison_lands(&self.map, at) {
-                    if let Some(p) = self.players.iter_mut().find(|p| p.id == v) {
-                        if p.alive {
-                            p.poison(now);
+                if let Some(pid) = v.player() {
+                    if crate::effects::toxic::poison_lands(&self.map, at) {
+                        if let Some(p) = self.players.iter_mut().find(|p| p.id == pid) {
+                            if p.alive {
+                                p.poison(now);
+                            }
                         }
                     }
                 }
@@ -1343,6 +1387,41 @@ impl World {
         } else {
             BlastSource::Fired { owner, weapon }
         };
+
+        // §F1: a bullet stops, it does not go off. Intercepted here — before the
+        // burst match — because `Burst::Blast` cannot express a direct hit:
+        // `explode` falls off from the blast *centre* to the victim's *centre*,
+        // and a body is wider than a pistol's 3 px radius, so every gun in the
+        // game would deal zero damage with every table test still green. The
+        // reasoning is in `weapons/bullet.rs`.
+        if crate::weapons::bullet::is_bullet(w) {
+            let log: DamageLog = Default::default();
+            let bird_log: BirdLog = Default::default();
+            let impact = {
+                let (mut closures, meta, mut bird_vels) =
+                    hit_targets(&self.players, &self.birds, &log, &bird_log, now);
+                let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
+                crate::weapons::bullet::resolve(&mut self.map, &mut t, w, at, victim, source)
+            };
+            self.apply_damage_log(&log, &bird_log, now);
+            if let Some(c) = impact.carve {
+                if c.pixels_removed > 0 {
+                    self.carve_seq += 1;
+                    let tick = self.tick;
+                    let seq = self.carve_seq;
+                    self.events.push(GameEvent::Carve {
+                        tick,
+                        seq,
+                        x: at.x.round() as i32,
+                        y: at.y.round() as i32,
+                        r: w.blast_radius.round() as i32,
+                        kind: CarveKind::Weapon,
+                    });
+                }
+                self.reveal(&c.revealed, now);
+            }
+            return;
+        }
 
         // The one place that decides what going off means. Matched exhaustively:
         // a new `Burst` is a compile error here rather than a weapon that silently
@@ -2447,6 +2526,27 @@ impl World {
             return Ok(());
         };
         match w.delivery {
+            // §F1: a round that flies. The spread is drawn here — at the one site
+            // that fires — so the flight code stays free of the RNG and the
+            // meteor shower, the toxic rain and the airburst, which all spawn
+            // projectiles, never draw from it.
+            Delivery::Bullet { spread, .. } => {
+                let a = crate::weapons::bullet::muzzle_angle(&mut self.rng, aim, spread);
+                let pid = self.projectiles.spawn(weapon, id, centre, a, now);
+                if let Some(p) = self.projectiles.get(pid) {
+                    let (x, y, vx, vy) = (p.pos.x, p.pos.y, p.vel.x, p.vel.y);
+                    self.events.push(GameEvent::ProjectileSpawn {
+                        tick,
+                        id: pid,
+                        weapon,
+                        owner: id,
+                        x,
+                        y,
+                        vx,
+                        vy,
+                    });
+                }
+            }
             Delivery::Projectile { .. } => {
                 let pid = self.projectiles.spawn(weapon, id, centre, aim, now);
                 if let Some(p) = self.projectiles.get(pid) {
@@ -5800,28 +5900,28 @@ mod birds_in_a_round {
         let id = plant(&mut w, BirdKind::Normal, at);
         assert!(w.birds.get(id).is_some());
 
-        let smg = crate::weapons::defs::by_key("smg").expect("smg");
-        let log: DamageLog = Default::default();
-        let bird_log: BirdLog = Default::default();
-        let (mut closures, meta, mut bird_vels) =
-            hit_targets(&w.players, &w.birds, &log, &bird_log, w.round_time);
-        {
-            let mut t = targets(&mut w.players, &mut closures, &meta, &mut bird_vels);
-            let mut rng = substream(1, "shot");
-            crate::weapons::explode::fire_hitscan(
-                &mut w.map, &mut t, smg, 0, me, aim, &mut rng, 0.0,
-            );
+        // Through `fire`, not through a hit-test helper: §F1 turned the round
+        // into a projectile, so the only thing that proves a bird still stops one
+        // is the path the game runs — spawn, fly, collide, resolve. The old
+        // version called `fire_hitscan` directly and would now pass or fail for
+        // reasons that have nothing to do with a real shot.
+        crate::world::give(&mut w, 0, crate::items::registry::SMG, 10);
+        w.players[0].aim = crate::math::quantize_angle(aim);
+        w.fire(0, w.round_time).expect("the shot was refused");
+        // Fly it. The bird is 200 px away and an SMG round covers 800 px/s, so a
+        // quarter second is the whole flight with room to spare.
+        for _ in 0..30 {
+            let t = w.round_time;
+            w.step_projectiles(t, crate::constants::SIM_DT);
+            if w.birds.get(id).is_none() {
+                break;
+            }
         }
-        let logged = bird_log.borrow().clone();
         assert!(
-            !logged.is_empty(),
-            "a bullet fired straight at a bird 200 px away logged no damage — \
-             the ray is not testing birds"
+            w.birds.get(id).is_none(),
+            "the bird survived an SMG round — a bullet is not testing birds"
         );
-        w.apply_damage_log(&log, &bird_log, w.round_time);
-        assert!(w.birds.get(id).is_none(), "the bird survived an SMG round");
     }
-
     #[test]
     fn six_hundred_ticks_are_deterministic() {
         let hash = |seed: u64| {

@@ -23,6 +23,45 @@ import { C, Core, dequantizeAngle } from '../core'
 import { asRecord, Connection, type Welcome } from '../net/connection'
 import { parseLobbyState } from '../net/lobby'
 import { WorldMirror, hex } from '../net/worldMirror'
+import { WEAPON_KEYS } from '../render/ordnance-state'
+
+/**
+ * Weapon key to launch sound.
+ *
+ * By key, never by id: `WEAPON_KEYS` is pinned to the Rust registry so an
+ * inserted weapon is a test failure rather than a re-sounded arsenal (§B16).
+ * A weapon absent from this table makes no launch sound at all, which is the
+ * honest state for something that has not been given one.
+ */
+const FIRE_CUE: Record<string, 'fire_bazooka' | 'fire_grenade' | 'fire_smg' | null> = {
+  bazooka: 'fire_bazooka',
+  grenade: 'fire_grenade',
+  smoke: 'fire_grenade',
+  molotov: 'fire_grenade',
+  toxic_grenade: 'fire_grenade',
+  airburst: 'fire_grenade',
+  // §F1: the five guns fire projectiles now, and they get the gun sound that
+  // used to be cued off the hitscan event they no longer emit.
+  smg: 'fire_smg',
+  pistol: 'fire_smg',
+  revolver: 'fire_smg',
+  deagle: 'fire_smg',
+  machinegun: 'fire_smg',
+  // **Silent on purpose, and said so rather than left absent.** Weather
+  // ordnance arrives as `projectile_spawn` like everything else, and none of it
+  // is *launched* by anyone — a meteor has no muzzle. `null` is the difference
+  // between "decided to be quiet" and "nobody has looked at this yet", which is
+  // what makes `unmappedFireCues` an assertable zero instead of a number that
+  // counts the weather.
+  meteor: null,
+  meteor_fragment: null,
+  toxic_drop: null,
+}
+
+// Those fourteen keys are **exactly** the weapons whose delivery is `Projectile`
+// or `Bullet` in `defs.rs` — the only two that produce a `projectile_spawn`. The
+// rest (melee, cone, placed, hitscan) can never reach this branch, so they have
+// no entry and their absence is not a gap.
 import { Predictor } from '../net/prediction'
 import { ClockSync, RemoteInterpolator } from '../net/interpolation'
 import { WorldView } from '../render/worldView'
@@ -255,6 +294,20 @@ export class GameScene extends Phaser.Scene {
      * goes up, so an assertion on it cannot be raced.
      */
     projectileSpawns: 0,
+    /**
+     * Spawns whose weapon has **no entry** in `FIRE_CUE` — not the ones entered
+     * as deliberately silent.
+     *
+     * Counted rather than defaulted: the previous code played the bazooka for
+     * anything it did not recognise, which is why every grenade in the game
+     * launched with a rocket's roar and nobody noticed for eight milestones. A
+     * silent shot is visible in this number; a plausible wrong sound is not.
+     *
+     * **Assertable at zero**, which is the whole point: weather ordnance spawns
+     * projectiles too and is silent by design, so counting that as a gap would
+     * make this a number nobody could ever check.
+     */
+    unmappedFireCues: 0,
     /** Where the most recent hazard landed, so a screenshot can frame one. */
     lastHazard: null as { x: number; y: number } | null,
     deaths: [] as Array<{ victim: number; attacker: number | null; cause: string }>,
@@ -1110,15 +1163,31 @@ export class GameScene extends Phaser.Scene {
     const y = Number(p['y'] ?? 0)
     const ear = this.ear()
     switch (ev) {
-      case 'projectile_spawn':
+      case 'projectile_spawn': {
         this.observed.projectileSpawns += 1
-        this.audio.spatial(
-          String(p['weapon'] ?? '') === 'grenade' ? 'fire_grenade' : 'fire_bazooka',
-          x,
-          y,
-          ear,
-        )
+        // **Keyed on the weapon, not defaulted to a rocket.**
+        //
+        // Two bugs met here. The wire carries `weapon` as a numeric id
+        // (`events.rs`: `"weapon": weapon.0`), so `String(id) === 'grenade'` was
+        // never true and every thrown weapon in the game has always launched
+        // with the bazooka's roar. §F1 then made the five guns projectiles, so
+        // gunfire joined them and the default became impossible to miss.
+        //
+        // `WEAPON_KEYS` is the id→key table that is already pinned against the
+        // Rust registry by a unit test, so this cannot drift the way §B16's
+        // laser-as-a-bazooka did. An id that resolves to nothing gets **no
+        // sound** rather than a rocket: a missing cue is a finding, and a
+        // plausible wrong one hides it.
+        const key = WEAPON_KEYS[Number(p['weapon'] ?? -1)]
+        const cue = key === undefined ? undefined : FIRE_CUE[key]
+        if (cue) this.audio.spatial(cue, x, y, ear)
+        // `undefined` is a weapon nothing has decided about; `null` is one
+        // decided to be silent. Only the first is a gap, so only the first is
+        // counted — otherwise every meteor inflates the number and it can never
+        // be asserted at zero, which is the only assertion it is for.
+        else if (cue === undefined) this.observed.unmappedFireCues += 1
         break
+      }
       case 'item_pickup':
         // Only your own pickup is a confirmation; someone else's is information
         // you should not get for free.
@@ -2059,6 +2128,7 @@ export class GameScene extends Phaser.Scene {
             itemPickups: self.observed.itemPickups,
             hitscans: self.observed.hitscans,
             projectileSpawns: self.observed.projectileSpawns,
+            unmappedFireCues: self.observed.unmappedFireCues,
             darknessMin: self.observed.darknessMin,
             darknessMax: self.observed.darknessMax,
             maxTickLag: self.observed.maxTickLag,

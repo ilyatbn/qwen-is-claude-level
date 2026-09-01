@@ -127,8 +127,13 @@ const drive = async (c, dir) => {
 // ~55 times over the round — so driving with the default slot empties the
 // bazooka in the first minute and the scripted self-kill later has nothing to
 // fire. Slot 2 is the SMG (`grant_dev_loadout` gives bazooka then smg), and
-// hitscan **excludes its owner** (`docs/31` §4), so the SMG cannot self-damage
-// and the rockets stay for the one shot that has to.
+// an SMG round **cannot hurt the player who fired it**, so the rockets stay for
+// the one shot that has to.
+//
+// The reason changed with §F1 and the behaviour did not: it used to be that
+// hitscan excluded its owner (`docs/31` §4); it is now that a bullet spawns
+// `MUZZLE_OFFSET` outside the body and is immune to its owner for
+// `PROJECTILE_OWNER_GRACE_TICKS`, by which point it is 50+ px away.
 for (const c of [a, b]) {
   await c.page.keyboard.press('Digit2')
   await sleep(200)
@@ -220,8 +225,8 @@ async function selfKill(c) {
     const d = await dbg(c)
     if (!d.health) break
     // When the first stack empties, selection moves to the next occupied slot,
-    // which is the smg — and hitscan cannot hurt its owner. Take the second
-    // rocket stack instead.
+    // which is the smg — and an SMG round cannot hurt its owner (§F1: it leaves
+    // the body before the owner grace ends). Take the second rocket stack.
     if (!switched && i >= 4) {
       switched = true
       await c.page.keyboard.press('Digit3')

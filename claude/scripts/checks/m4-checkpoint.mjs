@@ -55,15 +55,34 @@ export default async function ({ page, shot, log }) {
   await shot('m4-inventory')
   log('inventory panel open')
 
-  // SMG: a visible tracer, and it digs.
+  // SMG: a visible round, and it digs.
+  //
+  // **A bullet, not a tracer, since §F1.** `fire()` returned `{hitscan: [...]}`
+  // and the shot resolved in the tick it was fired; it returns `{projectile}`
+  // now and the round has to *fly* to the wall before it digs. So the dig is
+  // asserted after stepping the sim rather than on the next line — a check that
+  // measured the mask immediately would read 0 px and call it a regression.
   await page.evaluate(() => window.__game.toggleInventory())
   await page.evaluate(() => window.__game.selectSlot(2))
   const beforeSmg = await solid()
   const smg = await page.evaluate(() => window.__game.fire())
-  if (!smg.hitscan) throw new Error(`the smg did not produce a hitscan: ${JSON.stringify(smg)}`)
-  const afterSmg = await solid()
-  log(`smg: ${smg.hitscan.length} ray(s), ${smg.hitscan[0].hit}, dug ${beforeSmg - afterSmg} px`)
+  if (!smg.projectile) throw new Error(`the smg did not fire: ${JSON.stringify(smg)}`)
   const ord = await page.evaluate(() => window.__game.ordnance())
   log(`ordnance layer: ${JSON.stringify(ord)}`)
-  if (ord.tracers < 1) throw new Error('the smg drew no tracer — every shot must be visible')
+  if (ord.projectiles < 1) throw new Error('the smg put no round in the air — every shot must be visible')
+  // Wait for it to land. The deadline comes from the constants — flight time is
+  // range/speed — rather than a literal, so it tracks the speed instead of
+  // expiring against it (§A19). Polled with the same `solid()` the crater half
+  // uses, so both halves measure the mask the same way.
+  const k = await page.evaluate(() => window.__game.constants())
+  const flightMs = (k.SMG_RANGE / k.SMG_MUZZLE_SPEED) * 1000 + 500
+  const deadline = Date.now() + Math.ceil(flightMs)
+  let afterSmg = beforeSmg
+  while (Date.now() < deadline) {
+    afterSmg = await solid()
+    if (afterSmg < beforeSmg) break
+    await page.waitForTimeout(50)
+  }
+  log(`smg: dug ${beforeSmg - afterSmg} px after flight`)
+  if (beforeSmg - afterSmg <= 0) throw new Error('the smg round left no mark')
 }

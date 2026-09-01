@@ -8,9 +8,10 @@ use game_core::math::{Aabb, Point, Vec2};
 use game_core::physics::collide::aabb_overlaps_solid;
 use game_core::player::state::{choose_respawn, DeathCause, PlayerState, UseError};
 use game_core::rng::substream;
-use game_core::weapons::defs;
+use game_core::weapons::bullet;
+use game_core::weapons::defs::{self, Delivery};
 use game_core::weapons::explode::{
-    explode, fire_hitscan, BlastSource, DamageSource, EffectKind, HitId, HitTarget, HitscanHit,
+    explode, BlastSource, DamageSource, EffectKind, HitId, HitTarget,
 };
 use game_core::weapons::projectile::{ProjectileOutcome, Projectiles};
 
@@ -68,6 +69,80 @@ fn empty_map() -> Map {
     Map::from_parts(mask, coarse, meta())
 }
 
+/// Fire one bullet and fly it until it stops — the **whole** §F1 path.
+///
+/// Spawn, spread draw, sub-stepped flight and impact resolution, in the order and
+/// through the functions the world uses. A helper that reached past any of them
+/// would be testing a path the game does not run, which is how `destroy_in_blast`
+/// sat green with no production caller.
+///
+/// Returns what it did: where it stopped, whether it hit a body, and what it took
+/// out of the ground.
+fn fire_bullet(
+    map: &mut Map,
+    targets: &mut [HitTarget],
+    key: &str,
+    owner: u8,
+    from: Vec2,
+    aim: f32,
+    rng: &mut game_core::rng::ChaCha8Rng,
+) -> (Vec2, Option<(HitId, f32)>, bool, u32) {
+    let w = defs::by_key(key).unwrap_or_else(|| panic!("{key} is not a weapon"));
+    let Delivery::Bullet { spread, .. } = w.delivery else {
+        panic!("{key} is not a bullet");
+    };
+    let a = bullet::muzzle_angle(rng, aim, spread);
+    let mut pr = Projectiles::new();
+    let id = pr.spawn(w.id, owner, from, a, 0.0);
+
+    // Long enough for the slowest gun to fly its longest range, and no longer:
+    // a loop with no bound turns a stuck projectile into a hang.
+    let max_ticks = ((w.range / w.muzzle_speed) / SIM_DT).ceil() as u32 + 10;
+    let boxes: Vec<(HitId, Aabb)> = targets
+        .iter()
+        .map(|t| (t.id, Aabb::from_center_size(t.pos, t.w, t.h)))
+        .collect();
+    for i in 0..max_ticks {
+        let now = i as f32 * SIM_DT;
+        // One round in flight, so the first impact is the only impact — and
+        // clippy is right that this never loops.
+        if let Some(im) = pr
+            .step(map, &boxes, &[], 0.0, now, SIM_DT)
+            .into_iter()
+            .next()
+        {
+            assert_eq!(im.id, id);
+            let (at, victim, spent) = match im.outcome {
+                ProjectileOutcome::Exploded { at } => (at, None, false),
+                ProjectileOutcome::Hit { at, victim } => (at, Some(victim), false),
+                ProjectileOutcome::Spent { at } => (at, None, true),
+                ProjectileOutcome::Voided { at } => (at, None, true),
+                ProjectileOutcome::Alive => unreachable!(),
+            };
+            let r = if spent {
+                // A spent round resolves to nothing at all — that is the point of
+                // the outcome being distinct.
+                Default::default()
+            } else {
+                bullet::resolve(
+                    map,
+                    targets,
+                    w,
+                    at,
+                    victim,
+                    BlastSource::Fired {
+                        owner,
+                        weapon: w.id,
+                    },
+                )
+            };
+            let removed = r.carve.as_ref().map_or(0, |c| c.pixels_removed);
+            return (at, r.hit, spent, removed);
+        }
+    }
+    panic!("{key} was still flying after {max_ticks} ticks");
+}
+
 // ------------------------------------------------------------------ T4.09
 
 #[test]
@@ -85,7 +160,7 @@ fn a_bazooka_explodes_on_the_wall_it_hits() {
     let mut hit_at = None;
     for i in 0..600 {
         let now = i as f32 * SIM_DT;
-        for im in pr.step(&map, &[], 0.0, now, SIM_DT) {
+        for im in pr.step(&map, &[], &[], 0.0, now, SIM_DT) {
             assert_eq!(im.id, id);
             if let ProjectileOutcome::Exploded { at } = im.outcome {
                 hit_at = Some(at);
@@ -108,7 +183,7 @@ fn a_grenade_bounces_rather_than_exploding_on_contact() {
     let mut bounced = false;
     for i in 0..60 {
         let now = i as f32 * SIM_DT;
-        let outs = pr.step(&map, &[], 0.0, now, SIM_DT);
+        let outs = pr.step(&map, &[], &[], 0.0, now, SIM_DT);
         assert!(
             outs.is_empty(),
             "a grenade must not explode on contact: {outs:?}"
@@ -132,7 +207,7 @@ fn a_grenade_comes_to_rest_on_a_slope_instead_of_jittering() {
     let mut last = Vec2::ZERO;
     for i in 0..(2.0 / SIM_DT) as i32 {
         let now = i as f32 * SIM_DT;
-        pr.step(&map, &[], 0.0, now, SIM_DT);
+        pr.step(&map, &[], &[], 0.0, now, SIM_DT);
         if let Some(p) = pr.get(id) {
             last = p.pos;
         }
@@ -145,7 +220,7 @@ fn a_grenade_comes_to_rest_on_a_slope_instead_of_jittering() {
 
     // And it stays put: bit-identical over another second.
     for i in 0..(1.0 / SIM_DT) as i32 {
-        pr.step(&map, &[], 0.0, 2.0 + i as f32 * SIM_DT, SIM_DT);
+        pr.step(&map, &[], &[], 0.0, 2.0 + i as f32 * SIM_DT, SIM_DT);
     }
     assert_eq!(pr.get(id).expect("still there").pos, last);
 }
@@ -159,7 +234,7 @@ fn a_grenade_fuse_fires_in_mid_air_if_it_never_touches_anything() {
     let mut exploded = None;
     for i in 0..(GRENADE_FUSE / SIM_DT) as i32 + 30 {
         let now = i as f32 * SIM_DT;
-        for im in pr.step(&map, &[], 0.0, now, SIM_DT) {
+        for im in pr.step(&map, &[], &[], 0.0, now, SIM_DT) {
             if im.id == id {
                 exploded = Some((now, im.outcome));
             }
@@ -190,7 +265,7 @@ fn a_projectile_never_passes_through_a_one_pixel_wall() {
     );
     let mut at = None;
     for i in 0..120 {
-        for im in pr.step(&map, &[], 0.0, i as f32 * SIM_DT, SIM_DT) {
+        for im in pr.step(&map, &[], &[], 0.0, i as f32 * SIM_DT, SIM_DT) {
             if let ProjectileOutcome::Exploded { at: a } = im.outcome {
                 at = Some(a);
             }
@@ -218,7 +293,7 @@ fn a_projectile_despawns_at_its_lifetime_even_with_no_gravity() {
     let mut gone = false;
     for i in 0..((PROJECTILE_MAX_LIFETIME + 1.0) / SIM_DT) as i32 {
         if !pr
-            .step(&map, &[], 0.0, i as f32 * SIM_DT, SIM_DT)
+            .step(&map, &[], &[], 0.0, i as f32 * SIM_DT, SIM_DT)
             .is_empty()
         {
             gone = true;
@@ -236,8 +311,102 @@ fn the_owner_is_immune_for_the_first_few_ticks() {
     let owner_box = Aabb::from_center_size(Vec2::new(500.0, 300.0), PLAYER_W, PLAYER_H);
     // Spawned inside the owner's own hitbox, firing sideways.
     pr.spawn(WEAPON_BAZOOKA, 0, Vec2::new(500.0, 300.0), 0.0, 0.0);
-    let outs = pr.step(&map, &[(0u8, owner_box)], 0.0, SIM_DT, SIM_DT);
+    let outs = pr.step(
+        &map,
+        &[(HitId::Player(0), owner_box)],
+        &[],
+        0.0,
+        SIM_DT,
+        SIM_DT,
+    );
     assert!(outs.is_empty(), "a rocket hit its own owner at the muzzle");
+}
+
+/// The owner grace, tested where it is the **only** thing standing in the way.
+///
+/// The first version of this spawned through `Projectiles::spawn`, which offsets
+/// by `MUZZLE_OFFSET` 18 — past the body's 14 px half-height — so a round was
+/// outside its owner before the guard was ever consulted. Deleting the guard
+/// outright left all 36 tests in this file green: the test proved the muzzle
+/// offset and said nothing about the grace.
+///
+/// `spawn_raw` puts the round **inside** the owner's box, at the body centre,
+/// which is the state the guard exists for: a projectile that starts in contact
+/// and must be ignored until it has left. That is not a hypothetical — every
+/// `spawn_raw` caller (meteors, rain, death throws) places a body wherever it
+/// likes, and §F10's flames will spawn in a crowd around whoever lit them.
+#[test]
+fn the_owner_grace_ignores_a_round_that_starts_inside_its_owner() {
+    for key in ["deagle", "smg", "pistol", "revolver", "machinegun"] {
+        let map = empty_map();
+        let mut pr = Projectiles::new();
+        let at = Vec2::new(500.0, 300.0);
+        let owner_box = Aabb::from_center_size(at, PLAYER_W, PLAYER_H);
+        let w = defs::by_key(key).expect(key);
+        // Dead centre of the owner, moving right: inside the box on tick one.
+        pr.spawn_raw(w.id, 0, at, Vec2::new(w.muzzle_speed, 0.0), 0.0);
+        let mut hit_self = None;
+        for i in 0..(PROJECTILE_OWNER_GRACE_TICKS + 5) {
+            let now = i as f32 * SIM_DT;
+            let outs = pr.step(
+                &map,
+                &[(HitId::Player(0), owner_box)],
+                &[],
+                0.0,
+                now,
+                SIM_DT,
+            );
+            for im in outs {
+                if matches!(
+                    im.outcome,
+                    ProjectileOutcome::Hit {
+                        victim: HitId::Player(0),
+                        ..
+                    }
+                ) {
+                    hit_self = Some(i);
+                }
+            }
+        }
+        assert_eq!(
+            hit_self, None,
+            "a {key} round spawned inside its owner shot them on tick {hit_self:?}"
+        );
+    }
+}
+
+/// The control: the same round, the same box, a **different** owner — it hits.
+///
+/// Without this the test above is satisfied by a build where nothing hits
+/// anybody, which is the shape `CLAUDE.md` names: an absence needs a presence.
+#[test]
+fn a_round_that_starts_inside_someone_else_hits_them() {
+    let map = empty_map();
+    let mut pr = Projectiles::new();
+    let at = Vec2::new(500.0, 300.0);
+    let victim_box = Aabb::from_center_size(at, PLAYER_W, PLAYER_H);
+    let w = defs::by_key("deagle").expect("deagle");
+    // Owner 1, victim 0 — the only difference from the test above.
+    pr.spawn_raw(w.id, 1, at, Vec2::new(w.muzzle_speed, 0.0), 0.0);
+    let outs = pr.step(
+        &map,
+        &[(HitId::Player(0), victim_box)],
+        &[],
+        0.0,
+        0.0,
+        SIM_DT,
+    );
+    assert!(
+        outs.iter().any(|im| matches!(
+            im.outcome,
+            ProjectileOutcome::Hit {
+                victim: HitId::Player(0),
+                ..
+            }
+        )),
+        "a round inside a stranger did not hit them: {:?}",
+        outs.iter().map(|i| i.outcome).collect::<Vec<_>>()
+    );
 }
 
 // ------------------------------------------------------------------ T4.10
@@ -454,34 +623,76 @@ fn knockback_applies_through_iframes_and_through_the_shield() {
 
 // ------------------------------------------------------------------ T4.11
 
+/// §F1: the same claim as the old hitscan test, now flown.
 #[test]
-fn an_smg_ray_stops_at_terrain_and_carves_it() {
+fn an_smg_bullet_stops_at_terrain_and_carves_it() {
     let mut map = flat_map(400);
     let before = map.mask.count_solid();
     let mut rng = substream(1, "test");
-    let smg = defs::by_key("smg").expect("smg");
     let mut targets: Vec<HitTarget> = Vec::new();
-    let shots = fire_hitscan(
+    let (at, hit, spent, removed) = fire_bullet(
         &mut map,
         &mut targets,
-        smg,
+        "smg",
         0,
         Vec2::new(300.0, 300.0),
         std::f32::consts::FRAC_PI_2,
         &mut rng,
-        0.0,
     );
-    assert_eq!(shots.len(), SMG_SHOTS as usize);
-    assert_eq!(shots[0].hit, Some(HitscanHit::Terrain));
     assert!(
-        (shots[0].to.y - 400.0).abs() < 3.0,
-        "hit at {}",
-        shots[0].to.y
+        !spent,
+        "a bullet fired at a floor 100 px away ran out of range"
     );
+    assert_eq!(hit, None, "it hit a body on an empty map");
+    assert!((at.y - 400.0).abs() < 3.0, "stopped at {}", at.y);
     // The 3-px carve is the SMG's identity: sustained fire tunnels.
+    assert!(removed > 0, "the bullet did not dig");
+    assert_eq!(
+        before - map.mask.count_solid(),
+        removed as u64,
+        "the carve it reported and the pixels it removed disagree"
+    );
+}
+
+/// The property §F1 exists for, and the one a hitscan implementation cannot
+/// satisfy: **a bullet is somewhere in between**.
+///
+/// A hitscan shot resolves in the tick it is fired — it is never in flight, which
+/// is why nothing could draw it. This asserts the opposite directly: ticks after
+/// firing at a distant wall, the round is still alive and its position has
+/// advanced along the aim by roughly `muzzle_speed × elapsed`.
+#[test]
+fn a_bullet_is_in_flight_between_the_muzzle_and_the_wall() {
+    let map = empty_map();
+    let smg = defs::by_key("smg").expect("smg");
+    let mut pr = Projectiles::new();
+    let from = Vec2::new(100.0, 256.0);
+    pr.spawn(smg.id, 0, from, 0.0, 0.0);
+
+    let mut seen: Vec<f32> = Vec::new();
+    for i in 0..12 {
+        let now = i as f32 * SIM_DT;
+        let done = pr.step(&map, &[], &[], 0.0, now, SIM_DT);
+        assert!(done.is_empty(), "the round stopped on an empty map");
+        seen.push(pr.iter().next().expect("still flying").pos.x);
+    }
+    // It moved, monotonically, and it is still short of its range.
     assert!(
-        before - map.mask.count_solid() > 0,
-        "the bullet did not dig"
+        seen.windows(2).all(|w| w[1] > w[0]),
+        "a bullet that is not advancing: {seen:?}"
+    );
+    let flown = seen.last().expect("samples") - from.x;
+    let expected = SMG_MUZZLE_SPEED * 12.0 * SIM_DT;
+    assert!(
+        (flown - expected).abs() < expected * 0.25,
+        "flew {flown} px in 12 ticks, expected about {expected}"
+    );
+    // The control that makes this about *flight* rather than about spawning: a
+    // laser is still hitscan and puts nothing in the air at all.
+    let laser = defs::by_key("laser_pistol").expect("laser");
+    assert!(
+        matches!(laser.delivery, Delivery::Hitscan { .. }),
+        "the laser stopped being a beam"
     );
 }
 
@@ -498,19 +709,17 @@ fn sustained_smg_fire_breaches_a_thin_wall() {
     let mut map = Map::from_parts(mask, coarse, meta());
 
     let mut rng = substream(2, "test");
-    let smg = defs::by_key("smg").expect("smg");
     let mut breached = false;
     for _ in 0..60 {
         let mut targets: Vec<HitTarget> = Vec::new();
-        fire_hitscan(
+        fire_bullet(
             &mut map,
             &mut targets,
-            smg,
+            "smg",
             0,
             Vec2::new(300.0, 256.0),
             0.0,
             &mut rng,
-            0.0,
         );
         let mut clear = true;
         for x in 500..510 {
@@ -528,12 +737,12 @@ fn sustained_smg_fire_breaches_a_thin_wall() {
 }
 
 #[test]
-fn an_smg_ray_hits_a_player_without_knocking_them_back() {
+fn an_smg_bullet_hits_a_player_without_knocking_them_back() {
     let mut map = empty_map();
     let mut rng = substream(3, "test");
-    let smg = defs::by_key("smg").expect("smg");
     let mut vel = Vec2::ZERO;
     let mut dealt = 0.0f32;
+    let hit;
     {
         let mut cb = |d: f32, _s: DamageSource| {
             dealt += d;
@@ -548,20 +757,92 @@ fn an_smg_ray_hits_a_player_without_knocking_them_back() {
             alive: true,
             apply_damage: &mut cb,
         }];
-        let shots = fire_hitscan(
+        let (_, h, spent, removed) = fire_bullet(
             &mut map,
             &mut targets,
-            smg,
+            "smg",
             0,
             Vec2::new(300.0, 300.0),
             0.0,
             &mut rng,
-            0.0,
         );
-        assert_eq!(shots[0].hit, Some(HitscanHit::Target(HitId::Player(1))));
+        assert!(!spent, "it ran out of range 200 px from the muzzle");
+        assert_eq!(
+            removed, 0,
+            "a bullet that stopped on a body carved the ground"
+        );
+        hit = h;
     }
+    assert_eq!(hit, Some((HitId::Player(1), SMG_DAMAGE)));
+    // Once, at full value — not once per sub-step, which at 800 px/s would be
+    // thirteen hits in the tick it arrives.
     assert_eq!(dealt, SMG_DAMAGE);
     assert_eq!(vel, Vec2::ZERO, "the smg must not displace anyone");
+}
+
+/// §F1's range, and the thing that separates it from `Exploded`: a round that
+/// reaches the end of its flight leaves **no mark at all**.
+#[test]
+fn a_bullet_that_flies_its_range_is_spent_and_carves_nothing() {
+    let mut map = empty_map();
+    let mut rng = substream(4, "test");
+    let mut targets: Vec<HitTarget> = Vec::new();
+    let before = map.mask.count_solid();
+    let from = Vec2::new(100.0, 256.0);
+    let (at, hit, spent, removed) =
+        fire_bullet(&mut map, &mut targets, "pistol", 0, from, 0.0, &mut rng);
+    assert!(
+        spent,
+        "a pistol round crossing empty air did not run out of range"
+    );
+    assert_eq!(hit, None);
+    assert_eq!(removed, 0, "a spent round left a hole");
+    assert_eq!(
+        map.mask.count_solid(),
+        before,
+        "the mask changed when a round ran out of range"
+    );
+    // It stopped at its range, not at the edge of the world — pinned to the
+    // constant at both ends.
+    let flown = at.x - from.x;
+    assert!(
+        (flown - PISTOL_RANGE).abs() <= MUZZLE_OFFSET + PISTOL_MUZZLE_SPEED * SIM_DT,
+        "flew {flown} px against a range of {PISTOL_RANGE}"
+    );
+}
+
+/// A fast round cannot pass through a thin wall (§A24's sub-stepping, inherited).
+///
+/// The deagle is the fastest gun in the game: 1050 px/s is 17.5 px a tick, and a
+/// 2 px wall is invisible to any check that only looks where the round lands.
+#[test]
+fn the_fastest_bullet_cannot_tunnel_a_two_pixel_wall() {
+    let mut mask = Mask::new_empty(W, H);
+    for y in 0..H as i32 {
+        for x in 500..502 {
+            mask.set(x, y);
+        }
+    }
+    force_borders(&mut mask);
+    let coarse = CoarseGrid::build(&mask);
+    let mut map = Map::from_parts(mask, coarse, meta());
+    let mut rng = substream(5, "test");
+    let mut targets: Vec<HitTarget> = Vec::new();
+    let (at, _, spent, _) = fire_bullet(
+        &mut map,
+        &mut targets,
+        "deagle",
+        0,
+        Vec2::new(300.0, 256.0),
+        0.0,
+        &mut rng,
+    );
+    assert!(!spent, "the round passed the wall and flew its whole range");
+    assert!(
+        at.x < 505.0,
+        "a deagle round stopped at x={} — it went through a 2 px wall",
+        at.x
+    );
 }
 
 // ------------------------------------------------------------------ T4.12

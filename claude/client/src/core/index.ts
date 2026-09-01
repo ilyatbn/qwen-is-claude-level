@@ -222,6 +222,7 @@ export interface Constants {
   TOXIC_POISON_DPS: number
   TOXIC_DROP_CARVE_R: number
   HEALTH_CAP: number
+  SMG_MUZZLE_SPEED: number
   TRACER_LIFETIME: number
   TRACER_WIDTH: number
   PROJECTILE_TRAIL_LEN: number

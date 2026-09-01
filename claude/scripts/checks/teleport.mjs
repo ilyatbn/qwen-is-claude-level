@@ -139,8 +139,9 @@ const killDeadline = Date.now() + 90_000
 for (let i = 0; Date.now() < killDeadline; i++) {
   const d = await dbg()
   if (!d.player || d.health <= 0 || d.death?.visible) break
-  // The stack empties into the smg, and hitscan excludes its owner
-  // (`docs/31` §4), so it cannot self-damage. Re-select by name.
+  // The stack empties into the smg, and an SMG round cannot hurt the player who
+  // fired it (§F1: outside the body before the owner grace ends). Re-select by
+  // name.
   if (i > 0 && i % 3 === 0) await selectWeapon(page, 'bazooka')
   // Step aside so the next rocket lands on ground rather than in the last hole.
   if (i > 0) {

@@ -251,8 +251,9 @@ for (let i = 0; Date.now() < killDeadline; i++) {
   // so a death that happened during the last iteration's waits is invisible to a
   // live reading by the time this line runs.
   if (!d.player || myDeaths(d) > 0 || d.health <= 0 || latched) break
-  // When the stack empties, selection moves to the smg — and hitscan excludes
-  // its owner (`docs/31` §4), so it cannot self-damage. Re-select the rockets
+  // When the stack empties, selection moves to the smg — and an SMG round
+  // cannot hurt the player who fired it (§F1: it is outside the body before the
+  // owner grace ends), so it cannot self-damage. Re-select the rockets
   // by name rather than by a hotkey: there used to be a *second* bazooka stack
   // at Digit3, and §C24 merged it into the first, so that press now selects the
   // mine. It went unnoticed because one rocket at 20 health ends the loop

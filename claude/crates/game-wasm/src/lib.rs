@@ -33,7 +33,9 @@ use game_core::player::state::PlayerState;
 use game_core::player::{apply_input, Input, JetpackState, JumpState};
 use game_core::rng::{substream, ChaCha8Rng};
 use game_core::weapons::defs;
-use game_core::weapons::explode::{explode, fire_hitscan, BlastSource, DamageSource, HitTarget};
+use game_core::weapons::explode::{
+    explode, fire_hitscan, BlastSource, DamageSource, HitId, HitTarget,
+};
 use game_core::weapons::projectile::{ProjectileOutcome, Projectiles};
 use wasm_bindgen::prelude::*;
 
@@ -407,6 +409,19 @@ impl GameCore {
                 }
                 serde_json::json!({ "hitscan": shots_json, "weapon": wid.0 }).to_string()
             }
+            // §F1: a bullet is a projectile, and the sandbox flies it exactly as
+            // a rocket — same spawn, same step, same JSON. The spread is drawn
+            // here for the same reason the server draws it at its fire site.
+            defs::Delivery::Bullet { spread, .. } => {
+                let a = game_core::weapons::bullet::muzzle_angle(&mut self.rng, aim, spread);
+                let pid = self.projectiles.spawn(wid, id, centre, a, now);
+                let p = self.projectiles.get(pid).map(|p| (p.pos.x, p.pos.y));
+                serde_json::json!({
+                    "projectile": { "id": pid, "weapon": wid.0, "key": w.key,
+                                    "x": p.map(|q| q.0), "y": p.map(|q| q.1) }
+                })
+                .to_string()
+            }
             defs::Delivery::Projectile { .. } => {
                 let pid = self.projectiles.spawn(wid, id, centre, aim, now);
                 let p = self.projectiles.get(pid).map(|p| (p.pos.x, p.pos.y));
@@ -441,14 +456,15 @@ impl GameCore {
 
     /// Step projectiles and resolve whatever they hit. Returns JSON events.
     pub fn combat_step(&mut self, now: f32, dt: f32) -> String {
-        let boxes: Vec<(u8, game_core::math::Aabb)> = self
+        let boxes: Vec<(HitId, game_core::math::Aabb)> = self
             .players
             .iter()
             .filter(|p| p.stats.alive)
-            .map(|p| (p.id, p.body.aabb()))
+            .map(|p| (HitId::Player(p.id), p.body.aabb()))
             .collect();
         let wind = self.map.meta.wind;
-        let outcomes = self.projectiles.step(&self.map, &boxes, wind, now, dt);
+        // The sandbox has no birds, so the bullet-only slice is empty here.
+        let outcomes = self.projectiles.step(&self.map, &boxes, &[], wind, now, dt);
 
         let mut events = Vec::new();
         for im in outcomes {
@@ -457,9 +473,13 @@ impl GameCore {
                 // Out of the world (§C15): gone, and it detonates nothing. The
                 // local sim has no event stream to despawn it on — `step`
                 // already removed it — so there is nothing further to do.
-                ProjectileOutcome::Alive | ProjectileOutcome::Voided { .. } => continue,
+                // A spent bullet (§F1) is the same story as a voided one: gone,
+                // and it resolves to nothing.
+                ProjectileOutcome::Alive
+                | ProjectileOutcome::Voided { .. }
+                | ProjectileOutcome::Spent { .. } => continue,
                 ProjectileOutcome::Exploded { at } => (at, None),
-                ProjectileOutcome::HitPlayer { at, victim } => (at, Some(victim)),
+                ProjectileOutcome::Hit { at, victim } => (at, victim.player()),
             };
             // §C21/§E13: a drop of toxic rain does **not** explode. It poisons
             // whoever it landed on and takes a bullet-sized bite out of anything
@@ -489,6 +509,96 @@ impl GameCore {
                 let r = game_core::constants::TOXIC_DROP_CARVE_R.round() as i32;
                 self.map
                     .carve_circle(at.x.round() as i32, at.y.round() as i32, r);
+                continue;
+            }
+            // §F1: a bullet stops, it does not go off — and this is the second
+            // place that decides what an outcome means, so it is the second place
+            // that has to know.
+            //
+            // Left to the fallback below, a pistol round resolved as a **bazooka
+            // blast**: 42 px and 45 damage, hardcoded, for every projectile. A
+            // round stops ~8 px from the body's centre, well inside 42, so the
+            // sandbox dealt ~36 damage and rocket knockback for a 14-damage gun
+            // and attributed it to `SelfInflicted { weapon: 0 }`.
+            //
+            // `bullet::resolve` is called rather than reimplemented: one damage
+            // path, and the reason `game-core` has one is that two of them drift
+            // (§A24). The victim is the only target that can matter — `resolve`
+            // damages the body it was handed and nobody else — so a one-element
+            // slice is the whole target list, and terrain passes an empty one.
+            if let Some(w) =
+                defs::def(im.weapon).filter(|w| game_core::weapons::bullet::is_bullet(w))
+            {
+                let source = BlastSource::Fired {
+                    owner: im.owner,
+                    weapon: im.weapon,
+                };
+                match victim.and_then(|v| self.players.iter().position(|p| p.id == v)) {
+                    Some(i) => {
+                        let (before, pos, alive) = {
+                            let p = &self.players[i];
+                            (p.stats.health, p.body.pos, p.stats.alive)
+                        };
+                        let mut vel = self.players[i].body.vel;
+                        let mut taken = 0.0f32;
+                        // The source `resolve` computed, captured rather than
+                        // re-derived. `BlastSource::for_victim` is the one place
+                        // that decides who gets the kill credit; a second copy of
+                        // that rule here would be the same shape as the damage
+                        // fork this branch exists to remove.
+                        let mut src: Option<DamageSource> = None;
+                        let hit_id = game_core::weapons::explode::HitId::Player(self.players[i].id);
+                        {
+                            let mut cb = |d: f32, s: DamageSource| {
+                                taken += d;
+                                src = Some(s);
+                                true
+                            };
+                            let mut targets = [HitTarget {
+                                id: hit_id,
+                                w: game_core::constants::PLAYER_W,
+                                h: game_core::constants::PLAYER_H,
+                                pos,
+                                vel: &mut vel,
+                                alive,
+                                apply_damage: &mut cb,
+                            }];
+                            game_core::weapons::bullet::resolve(
+                                &mut self.map,
+                                &mut targets,
+                                w,
+                                at,
+                                Some(hit_id),
+                                source,
+                            );
+                        }
+                        self.players[i].body.vel = vel;
+                        if let (true, Some(src)) = (taken > 0.0, src) {
+                            self.players[i].stats.apply_damage(taken, src, now);
+                            events.push(serde_json::json!({
+                                "bullet": { "id": pid, "x": at.x, "y": at.y,
+                                            "hit": self.players[i].id, "damage": taken,
+                                            "health_before": before,
+                                            "health_after": self.players[i].stats.health }
+                            }));
+                        }
+                    }
+                    None => {
+                        let mut targets: [HitTarget; 0] = [];
+                        game_core::weapons::bullet::resolve(
+                            &mut self.map,
+                            &mut targets,
+                            w,
+                            at,
+                            None,
+                            source,
+                        );
+                        events.push(serde_json::json!({
+                            "bullet": { "id": pid, "x": at.x, "y": at.y,
+                                        "r": w.blast_radius }
+                        }));
+                    }
+                }
                 continue;
             }
             // Every other projectile explodes: contact, fuse or lifetime.
@@ -880,6 +990,12 @@ pub fn constants_json() -> String {
         GRENADE_BLAST_RADIUS => c::GRENADE_BLAST_RADIUS,
         SMG_BLAST_RADIUS => c::SMG_BLAST_RADIUS,
         SMG_RANGE => c::SMG_RANGE,
+        // §F1: a bullet flies, so anything that aims at a moving target has to
+        // lead it by the flight time. `birds` did exactly one tick of lead when
+        // the round was hitscan and instant; a fixture that keeps that number
+        // now aims where the bird *was* (§A19 — a wait, or a lead, hardcoded
+        // against a tunable is a fixture that expires).
+        SMG_MUZZLE_SPEED => c::SMG_MUZZLE_SPEED,
         // The kill switch, not a tunable: the renderer skips the whole
         // classifier when this is false, so it never pays for a mask it will
         // not draw.

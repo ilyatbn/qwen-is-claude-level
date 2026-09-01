@@ -1,5 +1,6 @@
 //! Weapons: definitions, projectiles, explosions, hitscan, melee, cones and mines.
 
+pub mod bullet;
 pub mod burn;
 pub mod cone;
 pub mod defs;

@@ -49,8 +49,25 @@ predict is indistinguishable from a miss.
   tunnel through a thin wall at 900 px/s. **Share the function** (`CLAUDE.md`): a second
   flight loop is a second set of tunnelling bugs.
 - `spread` applies at the muzzle, once, as it does today.
-- Damage, shields, attribution and the carve all go through `detonate` unchanged. A
-  bullet is a projectile whose burst is a very small `Blast`.
+- Shields, attribution, the warmup gate and the carve all go through the existing damage
+  path unchanged.
+
+**A bullet is not a small blast, and T19.01 proved it by building one.** The obvious
+reading of this section was `Burst::Blast` with a tiny radius, and it silently does
+nothing: `explode` measures falloff from the blast centre to the victim's **centre**, a
+bullet stops *inside* the body about 8 px from that centre, and every gun's blast radius
+is 3–6 px. `d > radius` for all five, so the victim is skipped and **every gun deals zero
+damage** — with the weapon table's tests all green, because they assert the table.
+
+> A bullet that has stopped on a body damages **that body**, at full damage, with no
+> falloff and no radius. It carves where it stopped and hurts nothing else.
+
+The carve stays a carve; `blast_radius` keeps its meaning as the hole a round makes. The
+one thing this must not become is a second damage path: attribution, the warmup gate,
+shields, i-frames and the damage log are shared, and **the deviation has to be applied at
+every site that decides what an impact means — `game-core` and `game-wasm` both.** Doing
+it in one of the two is the §A24 fork this is written down to prevent, and it happened
+once already, in the sandbox, where guns dealt zero damage while the server's did not.
 
 **Ammo is unchanged**: a bullet spends a round from the stack when it is fired, not when
 it lands. A shot in flight is already paid for.

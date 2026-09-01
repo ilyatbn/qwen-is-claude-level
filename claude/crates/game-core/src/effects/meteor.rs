@@ -271,10 +271,14 @@ mod tests {
             //
             // `Impact` now carries the weapon, so there is nothing to snapshot and
             // nothing to get wrong.
-            for im in pr.step(&map, &[], 0.0, now, DT) {
+            for im in pr.step(&map, &[], &[], 0.0, now, DT) {
                 let at = match im.outcome {
                     ProjectileOutcome::Exploded { at } => at,
-                    ProjectileOutcome::HitPlayer { at, .. } => at,
+                    ProjectileOutcome::Hit { at, .. } => at,
+                    // A meteor has no `range`, so it can never be spent — named
+                    // rather than caught by `_` so a new outcome is a compile
+                    // error here too.
+                    ProjectileOutcome::Spent { at } => at,
                     // A meteor that leaves the map spawns no fragments: it is
                     // gone, not detonated (§C15).
                     ProjectileOutcome::Alive | ProjectileOutcome::Voided { .. } => continue,
@@ -608,7 +612,7 @@ mod tests {
         let mut hit = None;
         for i in 1..600 {
             let now = i as f32 * DT;
-            for im in pr.step(&map, &[], 0.0, now, DT) {
+            for im in pr.step(&map, &[], &[], 0.0, now, DT) {
                 if let ProjectileOutcome::Exploded { at } = im.outcome {
                     hit = Some(at);
                 }
