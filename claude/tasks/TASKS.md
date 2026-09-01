@@ -1,14 +1,16 @@
 # Master task list
 
-169 tasks across 17 milestones.
+193 tasks across 20 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
-when the v2 tasks were added. Counted, not assumed.) Work them **in order**. See `README.md` for the
+when the v2 tasks were added; it then read 169 against 183 rows. Counted with
+`grep -c '^- \[[ x]\]'`, not assumed.) Work them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
 
 Tasks marked **(v2)** come from `docs/70-amendments-v2.md`, **(v3)** from
-`docs/71-amendments-v3.md`, **(v4)** from `docs/72-amendments-v4.md` and **(v5)**
-from `docs/73-amendments-v5.md`. Both override the earlier docs where they disagree.
-Read v2 before M1 and v3 before M10.
+`docs/71-amendments-v3.md`, **(v4)** from `docs/72-amendments-v4.md`, **(v5)**
+from `docs/73-amendments-v5.md`, **(v6)** from `docs/74-amendments-v6.md` and
+**(v7)** from `docs/75-amendments-v7.md`. Each overrides the earlier docs where they
+disagree. Read v2 before M1 and v3 before M10.
 
 Tick a box only when the task's **Done when** command passes.
 
@@ -391,3 +393,28 @@ real simulation at a third of real time, and thirty seconds in it takes the menu
 
 **Checkpoint:** leave the menu open for two minutes and it still works; stand in toxic
 rain and watch a green health bar drain; look at a boulder and see it touching the ground.
+
+---
+
+## M19 — Guns you can see, and a game you can debug (10)
+
+Nine reports, ten tasks, and seven of them are one complaint said seven ways: **the
+simulation is right and the player cannot tell.** A tracer that lives 0.09 s, a fog that only shrinks a
+lightmap radius, rain that lands on nobody, a firing gate that turns most clicks into
+silence. The first four are the shooting; the rest are independent.
+
+- [ ] [T19.01](M19/T19.01-bullets-fly.md) — Bullets fly: guns stop being hitscan **(v7)**
+- [ ] [T19.02](M19/T19.02-you-can-see-a-bullet.md) — You can see a bullet, without freezing the game **(v7)**
+- [ ] [T19.03](M19/T19.03-fire-button.md) — Hold to empty the clip, and both buttons fire **(v7)**
+- [ ] [T19.04](M19/T19.04-fire-while-moving.md) — §C20 repealed: you fire while moving **(v7)**
+- [ ] [T19.05](M19/T19.05-the-shovel.md) — The shovel, and the end of the melee cabinet **(v7)**
+- [ ] [T19.06](M19/T19.06-rain-that-hurts.md) — Rain that falls on you hurts **(v7)**
+- [ ] [T19.07](M19/T19.07-private-settings-server.md) — Private-game settings: the wire, and the match that honours them **(v7)**
+- [ ] [T19.08](M19/T19.08-private-settings-screen.md) — The private lobby's settings panel **(v7)**
+- [ ] [T19.09](M19/T19.09-teleport-charge.md) — The teleport charge is 1.5 seconds **(v7)**
+- [ ] [T19.10](M19/T19.10-fog-fills-the-screen.md) — Fog fills the screen **(v7)**
+
+**Checkpoint:** host a private game with bots off, All weapons and a 4-minute timer; run
+sideways while holding fire and watch a stream of bullets cross the screen; dig into a
+hill with the shovel; stand in toxic rain and lose health; wait for fog and lose the far
+side of the map.
