@@ -1,6 +1,6 @@
 # 75 — Amendments v7: bullets you can see, and a game you can debug
 
-M19. Nine items, and seven of them are the same complaint said seven ways: **the
+M19. Ten items, and seven of them are the same complaint said seven ways: **the
 simulation is right and the player cannot tell.** A tracer that lives 0.09 s, a fog that
 only shrinks a lightmap radius, a poison that lands on nobody, a firing gate that turns
 every click into silence — each one passes its test and each one reads as a broken game.
@@ -8,8 +8,8 @@ every click into silence — each one passes its test and each one reads as a br
 Constants introduced here are as authoritative as `02-constants.md` and must be mirrored
 in `crates/game-core/src/constants.rs` (a `v7` section).
 
-This document **overrides** `docs/72` §C20 and §C23, `docs/74` §E13 and `docs/31` §1
-where they disagree. Each override is named at the point it happens.
+This document **overrides** `docs/72` §C20 and §C23, `docs/74` §E13, `docs/31` §1 and
+`docs/71` §B6/§B7's fire where they disagree. Each override is named at the point it happens.
 
 ---
 
@@ -241,7 +241,77 @@ which is the exact shape `CLAUDE.md` records under *assert on effects, not inten
 differs by the alpha the constant names, with a control frame taken before the effect
 starts.
 
-## F10 — Constants
+## F10 — Fire is an object
+
+**This overrides `docs/71` §B6 and §B7 for the fire half of the burn system.** Fire today
+is two things and neither is a fire: the flamethrower is a `Delivery::Cone` that damages
+whatever is inside an arc each tick and draws particles that mean nothing, and a molotov
+lights `MOLOTOV_PATCHES` static discs of "burning ground". A disc that damages you while
+you stand in it is a rule, not a flame — you cannot see where fire will go, you cannot
+push it, and it does not behave like the thing on the screen.
+
+> **A flame is a physical object.** It is spawned, it flies, it falls, it settles on the
+> ground, it **burns players and burns terrain** for `FLAME_LIFE` — 5 seconds — and then
+> it goes out. Everything that makes fire in this game makes flames.
+
+The reference is the Worms picture in the M19 brief: a molotov lands and a *crowd* of
+individual flames scatters along the ground, and you can see the shape of the area that
+has become dangerous.
+
+### F10.1 — What a flame is
+
+A flame is a projectile on the shared step (`weapons/projectile.rs`), like a bullet
+(§F1), with four differences:
+
+- **It does not die on contact.** It bounces at `FLAME_RESTITUTION` / `FLAME_FRICTION`
+  and comes to rest on the ground. Its only end is `FLAME_LIFE`, which is what makes it
+  area denial rather than a hit.
+- **It falls slowly**: `FLAME_GRAVITY_SCALE` well under 1.0, so a flame drifts and settles
+  instead of dropping like a grenade.
+- **It burns what it touches.** Any player within `FLAME_RADIUS` takes `FLAME_DPS` for as
+  long as they are inside it — *including whoever lit it*, once the owner grace has passed.
+  Fire does not check whose side you are on, and being able to burn yourself is the cost
+  that keeps a flamethrower from being a free win at close range.
+- **It burns the ground.** Every `FLAME_SCORCH_EVERY` a resting flame takes a
+  `FLAME_SCORCH_R` bite out of the terrain under it. Over five seconds a crowd of them
+  eats a real hole, which is the digging tool the fire weapons never had.
+
+**Attribution survives**: the flame carries who lit it, so a burn kill is credited to
+them and not to the map (§A20's rule, which the current `BurnPatch` already honours).
+
+`FLAME_MAX_LIVE` caps the field globally, oldest-first. A molotov plus a held flamethrower
+trigger can otherwise put hundreds of objects on the wire, and the projectile broadcast is
+per-object at `SNAPSHOT_HZ`.
+
+### F10.2 — What makes flames
+
+- **The flamethrower** emits `FLAMETHROWER_FLAMES_PER_SHOT` flames per shot at
+  `FLAME_MUZZLE_SPEED` with `FLAME_SPREAD` of jitter, on its existing cooldown and ammo.
+  Held down (§F3 — it is not `auto`; it is a per-press weapon whose cooldown is 0.05 s)
+  it is a stream of objects rather than an arc that is checked.
+  **`Delivery::Cone` is retired**, along with `cone.rs` and its three private trail
+  constants.
+- **A molotov** bursts into `MOLOTOV_FLAMES` flames at `MOLOTOV_FLAME_SPEED`, thrown
+  outward and up from the impact, **when it hits the ground**. `Burst::Zone { Fire }` is
+  retired.
+- **A lava vent's afterburn** emits `LAVA_FLAMES_PER_SECOND` for `LAVA_BURN_DURATION`
+  instead of lighting discs. The vent, its telegraph and its jet are unchanged.
+
+`BurnKind::Fire` is retired with them. `BurnField` survives holding **toxic zones only** —
+the toxic grenade is unchanged and is deliberately not a flame, because a toxic cloud that
+digs would be a second fire.
+
+### F10.3 — The picture
+
+A flame is drawn per object, and this is the point of the whole change: **you can see
+where the fire is.** It flickers, it lights the world through the existing lightmap
+hazard path, and a crowd of them reads as a spreading fire rather than as a decal.
+
+**Acceptance is pixels in a real game**: a molotov lands, and the frame afterwards has
+many separate bright sources spread along the ground, not one disc — counted, with a
+control frame from before the throw.
+
+## F11 — Constants
 
 New:
 
@@ -267,6 +337,21 @@ New:
 | `ROUND_SECONDS_STEP` | 60.0 | the step the host's arrows take |
 | `FOG_SCREEN_ALPHA` | 0.8 | at full strength (§F9) |
 | `FOG_SCREEN_COLOUR` | 0x9AA0A6 | grey |
+| `FLAME_LIFE` | 5.0 | seconds a flame burns (§F10) |
+| `FLAME_DPS` | 12.0 | health per second while inside one |
+| `FLAME_RADIUS` | 10.0 | px; damage and collision |
+| `FLAME_GRAVITY_SCALE` | 0.35 | it drifts down, it does not drop |
+| `FLAME_RESTITUTION` | 0.25 | bounces, settles |
+| `FLAME_FRICTION` | 0.60 | " |
+| `FLAME_SCORCH_EVERY` | 0.5 | seconds between terrain bites |
+| `FLAME_SCORCH_R` | 3.0 | px per bite |
+| `FLAME_MAX_LIVE` | 160 | global cap, oldest first |
+| `FLAME_MUZZLE_SPEED` | 320.0 | flamethrower |
+| `FLAME_SPREAD` | 0.18 | radians of jitter |
+| `FLAMETHROWER_FLAMES_PER_SHOT` | 2 | at `FLAMETHROWER_COOLDOWN` 0.05 that is 40/s |
+| `MOLOTOV_FLAMES` | 24 | the crowd a molotov becomes |
+| `MOLOTOV_FLAME_SPEED` | 220.0 | thrown outward and up from the impact |
+| `LAVA_FLAMES_PER_SECOND` | 6 | the vent's afterburn |
 
 Changed:
 
@@ -285,12 +370,20 @@ Retired:
 | `KNIFE_*`, `BAT_*`, `WHIP_*`, `AXE_*`, `HAMMER_*` | one melee weapon (§F5) |
 | `SMG_SHOTS` | a bullet weapon fires one bullet; multi-pellet is the airburst's job (§F1) |
 | `SMG_GRAVITY_SCALE`, `SMG_WIND_SCALE` | a bullet flies straight, and 0.0 is not a tunable (§F1) |
+| `FLAMETHROWER_DPS`, `FLAMETHROWER_ARC`, `FLAMETHROWER_RANGE`, `FLAMETHROWER_PARTICLE_LIFE` | there is no cone; reach is speed × life (§F10) |
+| `MOLOTOV_PATCHES`, `MOLOTOV_SCATTER`, `MOLOTOV_BURN_DURATION` | there are no patches (§F10) |
+| `LAVA_BURN_DPS`, `LAVA_BURN_RADIUS` | the afterburn is flames; `LAVA_BURN_DURATION` stays as its window (§F10) |
 
-## F11 — What this deliberately does not add
+## F12 — What this deliberately does not add
 
 - **No reload.** The stack is the clip; when it is empty the weapon is empty.
 - **No secondary fire, and no change to the mouse** (§F4.1). Left fires, right opens the
   backpack.
+- **No burning status on a player.** A flame hurts you while you are in it and stops when
+  you leave. A worm that keeps burning after it escapes is a status field, and §E13 has
+  the only one this game has earned.
+- **No fire spread.** A flame does not light other flames or set the map alight; the
+  crowd you see is the crowd that was spawned (§F10).
 - **No bullet drop, no ricochet, no penetration.** A bullet stops at the first thing it
   touches. Every one of those is a new flight rule and §F1's whole claim is that the
   flight rule is now simple enough to predict.

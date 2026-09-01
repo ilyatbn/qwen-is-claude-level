@@ -1,6 +1,6 @@
 # Master task list
 
-193 tasks across 20 milestones.
+196 tasks across 20 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added; it then read 169 against 183 rows. Counted with
 `grep -c '^- \[[ x]\]'`, not assumed.) Work them **in order**. See `README.md` for the
@@ -396,12 +396,14 @@ rain and watch a green health bar drain; look at a boulder and see it touching t
 
 ---
 
-## M19 — Guns you can see, and a game you can debug (10)
+## M19 — Guns you can see, and a game you can debug (13)
 
-Nine reports, ten tasks, and seven of them are one complaint said seven ways: **the
-simulation is right and the player cannot tell.** A tracer that lives 0.09 s, a fog that only shrinks a
-lightmap radius, rain that lands on nobody, a firing gate that turns most clicks into
-silence. The first four are the shooting; the rest are independent.
+Ten reports, thirteen tasks, and seven of them are one complaint said seven ways: **the
+simulation is right and the player cannot tell.** A tracer that lives 0.09 s, a fog that
+only shrinks a lightmap radius, rain that lands on nobody, fire that is an arc being
+checked rather than a thing on the ground, a firing gate that turns most clicks into
+silence. T19.01–03 are the shooting and T19.11–13 are the fire; the rest are
+independent.
 
 - [ ] [T19.01](M19/T19.01-bullets-fly.md) — Bullets fly: guns stop being hitscan **(v7)**
 - [ ] [T19.02](M19/T19.02-you-can-see-a-bullet.md) — You can see a bullet, without freezing the game **(v7)**
@@ -413,8 +415,12 @@ silence. The first four are the shooting; the rest are independent.
 - [ ] [T19.08](M19/T19.08-private-settings-screen.md) — The private lobby's settings panel **(v7)**
 - [ ] [T19.09](M19/T19.09-teleport-charge.md) — The teleport charge is 1.5 seconds **(v7)**
 - [ ] [T19.10](M19/T19.10-fog-fills-the-screen.md) — Fog fills the screen **(v7)**
+- [ ] [T19.11](M19/T19.11-fire-is-an-object.md) — Fire is an object **(v7)**
+- [ ] [T19.12](M19/T19.12-what-lights-a-fire.md) — What lights a fire: the flamethrower, the molotov, the vent **(v7)**
+- [ ] [T19.13](M19/T19.13-flames-on-screen.md) — Flames on screen **(v7)**
 
 **Checkpoint:** host a private game with bots off, All weapons and a 4-minute timer; run
 sideways while holding fire and watch a stream of bullets cross the screen; dig into a
-hill with the shovel; stand in toxic rain and lose health; wait for fog and lose the far
-side of the map.
+hill with the shovel; throw a molotov and watch a crowd of flames scatter along the
+ground, burn it and go out five seconds later; stand in toxic rain and lose health; wait
+for fog and lose the far side of the map.
