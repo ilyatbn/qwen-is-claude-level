@@ -8,8 +8,8 @@ every click into silence — each one passes its test and each one reads as a br
 Constants introduced here are as authoritative as `02-constants.md` and must be mirrored
 in `crates/game-core/src/constants.rs` (a `v7` section).
 
-This document **overrides** `docs/72` §C20 and §C23, `docs/74` §E13, `docs/31` §1 and
-`docs/30` §3 where they disagree. Each override is named at the point it happens.
+This document **overrides** `docs/72` §C20 and §C23, `docs/74` §E13 and `docs/31` §1
+where they disagree. Each override is named at the point it happens.
 
 ---
 
@@ -117,17 +117,15 @@ been reported three times.
   Delete them and **replace them with the opposite claim**: a player at full run fires,
   and a player in mid-air fires. An absence needs a presence (`CLAUDE.md`).
 
-### F4.1 — Both mouse buttons fire
+### F4.1 — The mouse is unchanged
 
-**This overrides `docs/30` §3.** Right-click currently opens the backpack. The reported
-expectation is that *clicking fires* — either button, at any time — and a right-click
-that opens a panel in the middle of a firefight is the same class of defect as a click
-that silently does nothing.
+**Left button fires. Right button opens the backpack**, exactly as `docs/30` §3 and §C10
+already say. §F4 is about *when* a click is allowed to become a shot, and nothing about
+which button does what needs to move to fix it — the reported defect was silence, not the
+wrong button.
 
-- **Left button and right button both fire.** Identically: there is no secondary fire.
-- **The backpack moves to `Tab`.** It keeps every other behaviour §C10 gave it — a
-  toggle, client-side, sends nothing, does not pause the round.
-- The escape menu and the quick bar are untouched.
+Recorded because it was considered and rejected: making both buttons fire would take the
+backpack off the mouse for a problem the mouse did not cause.
 
 ## F5 — The shovel, and the end of the melee cabinet
 
@@ -291,9 +289,8 @@ Retired:
 ## F11 — What this deliberately does not add
 
 - **No reload.** The stack is the clip; when it is empty the weapon is empty.
-- **No secondary fire.** Both mouse buttons do the same thing (§F4.1), and a game where
-  they differ is a game where the reported bug — "I click and nothing happens" — comes
-  back wearing a different hat.
+- **No secondary fire, and no change to the mouse** (§F4.1). Left fires, right opens the
+  backpack.
 - **No bullet drop, no ricochet, no penetration.** A bullet stops at the first thing it
   touches. Every one of those is a new flight rule and §F1's whole claim is that the
   flight rule is now simple enough to predict.

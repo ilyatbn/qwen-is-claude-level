@@ -405,7 +405,7 @@ silence. The first four are the shooting; the rest are independent.
 
 - [ ] [T19.01](M19/T19.01-bullets-fly.md) — Bullets fly: guns stop being hitscan **(v7)**
 - [ ] [T19.02](M19/T19.02-you-can-see-a-bullet.md) — You can see a bullet, without freezing the game **(v7)**
-- [ ] [T19.03](M19/T19.03-fire-button.md) — Hold to empty the clip, and both buttons fire **(v7)**
+- [ ] [T19.03](M19/T19.03-fire-button.md) — Hold to empty the clip **(v7)**
 - [ ] [T19.04](M19/T19.04-fire-while-moving.md) — §C20 repealed: you fire while moving **(v7)**
 - [ ] [T19.05](M19/T19.05-the-shovel.md) — The shovel, and the end of the melee cabinet **(v7)**
 - [ ] [T19.06](M19/T19.06-rain-that-hurts.md) — Rain that falls on you hurts **(v7)**
