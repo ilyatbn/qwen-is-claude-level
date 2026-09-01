@@ -406,7 +406,7 @@ silence. T19.01–03 are the shooting and T19.11–13 are the fire; the rest are
 independent.
 
 - [x] [T19.01](M19/T19.01-bullets-fly.md) — Bullets fly: guns stop being hitscan **(v7)**
-- [ ] [T19.02](M19/T19.02-you-can-see-a-bullet.md) — You can see a bullet, without freezing the game **(v7)**
+- [x] [T19.02](M19/T19.02-you-can-see-a-bullet.md) — You can see a bullet, without freezing the game **(v7)**
 - [ ] [T19.03](M19/T19.03-fire-button.md) — Hold to empty the clip **(v7)**
 - [ ] [T19.04](M19/T19.04-fire-while-moving.md) — §C20 repealed: you fire while moving **(v7)**
 - [ ] [T19.05](M19/T19.05-the-shovel.md) — The shovel, and the end of the melee cabinet **(v7)**

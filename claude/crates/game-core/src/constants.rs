@@ -981,9 +981,7 @@ pub const BACKDROP_MIN_ROOF: f32 = 0.5;
 
 // --- A3: visible ordnance ---
 
-/// Seconds a tracer segment stays visible.
-pub const TRACER_LIFETIME: f32 = 0.09;
-/// px, at zoom 1.
+/// px, at zoom 1. The beam's width, and since §F2 the bullet streak's too.
 pub const TRACER_WIDTH: f32 = 2.0;
 pub const PROJECTILE_TRAIL_LEN: usize = 12;
 
@@ -1878,6 +1876,24 @@ pub const REVOLVER_MUZZLE_SPEED: f32 = 1000.0;
 pub const DEAGLE_MUZZLE_SPEED: f32 = 1050.0;
 pub const MACHINEGUN_MUZZLE_SPEED: f32 = 850.0;
 pub const SMG_MUZZLE_SPEED: f32 = 800.0;
+
+// --- F2: you can see what you fired ---
+
+/// The drawn streak: length along the velocity, width across it (§F2).
+///
+/// A **streak, not a dot**. At 850 px/s a round crosses 14 px between frames, so
+/// a circle reads as a flicker with no direction in it; a segment reads as a line
+/// going somewhere, which is the information a player actually needs.
+pub const BULLET_LENGTH: f32 = 10.0;
+pub const BULLET_WIDTH: f32 = 2.0;
+
+/// Seconds a **beam** stays visible (§F2). Was `TRACER_LIFETIME` 0.09.
+///
+/// That path serves the two energy weapons only now — the five ballistic guns
+/// fire objects that fly (§F1). 0.09 s is five frames, which is why
+/// `ordnance-visible` could only photograph one by stopping time first: a check
+/// that has to freeze the frame to see a thing is telling you the player cannot.
+pub const BEAM_LIFETIME: f32 = 0.35;
 
 #[cfg(test)]
 // Every assertion in this module is deliberately over compile-time constants —

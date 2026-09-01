@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { KIND_BY_WEAPON_KEY, LOOK, OrdnanceState, WEAPON_KEYS } from './ordnance-state'
+import {
+  bulletStreak,
+  KIND_BY_WEAPON_KEY,
+  LOOK,
+  OrdnanceState,
+  WEAPON_KEYS,
+} from './ordnance-state'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -118,7 +124,101 @@ describe('the projectile look-up tables', () => {
 
   it('draws something for every kind, so nothing is silently invisible', () => {
     for (const kind of Object.keys(LOOK) as Array<keyof typeof LOOK>) {
+      // A bullet is exempt from the radius rule and only from that rule: it is
+      // drawn as a `BULLET_LENGTH` streak (§F2), so its `r` is the head dot and
+      // its visibility comes from the segment. Asserting `r >= 3` on it would be
+      // asserting the wrong dimension — and the `bulletStreak` tests above are
+      // what cover the one that matters.
+      if (kind === 'bullet') continue
       expect(LOOK[kind].r).toBeGreaterThanOrEqual(3)
     }
+  })
+
+  it('maps all five guns to a bullet and neither laser to one', () => {
+    // §F1 moved exactly five weapons off hitscan. The lasers stayed, and that is
+    // the whole reason the two look different — a check that only asserted the
+    // guns would pass with the lasers drawn as bullets too.
+    for (const key of ['smg', 'pistol', 'revolver', 'deagle', 'machinegun']) {
+      expect(KIND_BY_WEAPON_KEY[key], `${key} does not draw as a bullet`).toBe('bullet')
+    }
+    for (const key of ['laser_pistol', 'laser_smg']) {
+      expect(KIND_BY_WEAPON_KEY[key], `${key} draws as a bullet`).not.toBe('bullet')
+    }
+  })
+
+  it('pins BEAM_LIFETIME to the Rust constant', () => {
+    // §F2 raised it from 0.09 to 0.35 because five frames is shorter than a
+    // screenshot round-trip — the reason the old check had to freeze the frame.
+    // Read from the source rather than copied, or the day it moves this agrees
+    // with a value nothing uses.
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../../../crates/game-core/src/constants.rs'),
+      'utf8',
+    )
+    const beam = src.match(/pub const BEAM_LIFETIME: f32 = ([0-9.]+);/)
+    expect(beam, 'BEAM_LIFETIME is not in constants.rs').not.toBeNull()
+    expect(Number(beam![1])).toBe(0.35)
+    // And the name it replaced is gone, so nothing can read a stale 0.09.
+    expect(src).not.toMatch(/pub const TRACER_LIFETIME/)
+  })
+})
+
+// ------------------------------------------------------------------ §F2 streak
+
+describe('bulletStreak', () => {
+  const trailed = (pts: Array<[number, number]>) => ({
+    x: pts[pts.length - 1]![0],
+    y: pts[pts.length - 1]![1],
+    trail: pts.map(([x, y]) => ({ x, y })),
+  })
+
+  it('lays the streak back along the direction of travel', () => {
+    // Moving right: the head is where the round is, the tail is behind it.
+    const s = bulletStreak(trailed([[100, 50], [120, 50]]), 10)
+    expect(s.x0).toBe(120)
+    expect(s.y0).toBe(50)
+    expect(s.x1).toBe(110)
+    expect(s.y1).toBe(50)
+  })
+
+  it('follows a diagonal, at the length asked for', () => {
+    const s = bulletStreak(trailed([[0, 0], [30, 40]]), 10)
+    // Direction (0.6, 0.8), so the tail is 10 px back along it.
+    expect(s.x1).toBeCloseTo(30 - 6, 6)
+    expect(s.y1).toBeCloseTo(40 - 8, 6)
+    // The length drawn is the length asked for, whatever the heading.
+    expect(Math.hypot(s.x0 - s.x1, s.y0 - s.y1)).toBeCloseTo(10, 6)
+  })
+
+  it('scales with the length, so the constant reaches the drawing', () => {
+    const short = bulletStreak(trailed([[0, 0], [20, 0]]), 4)
+    const long = bulletStreak(trailed([[0, 0], [20, 0]]), 40)
+    expect(short.x1).toBe(16)
+    expect(long.x1).toBe(-20)
+  })
+
+  it('draws a dot for a round that has not moved yet, not a NaN', () => {
+    // One trail point: spawned this frame, no direction to derive. A normalise
+    // here would be 0/0 — which paints nothing while looking exactly like a
+    // draw, so the failure would show up as "bullets are invisible" three
+    // milestones later.
+    const fresh = bulletStreak({ x: 7, y: 9, trail: [{ x: 7, y: 9 }] }, 10)
+    expect(fresh).toEqual({ x0: 7, y0: 9, x1: 7, y1: 9 })
+    for (const v of Object.values(fresh)) expect(Number.isFinite(v)).toBe(true)
+
+    // Two identical points: a round that reported the same position twice.
+    const still = bulletStreak(trailed([[3, 4], [3, 4]]), 10)
+    expect(still).toEqual({ x0: 3, y0: 4, x1: 3, y1: 4 })
+    for (const v of Object.values(still)) expect(Number.isFinite(v)).toBe(true)
+  })
+
+  it('uses the last two points, not the whole trail', () => {
+    // A round that turned would otherwise be drawn along its oldest heading.
+    // Nothing in this game turns yet, and that is exactly why it has to be
+    // pinned: `Delivery::Bullet` flies straight today (§F1) and the drawing must
+    // not quietly depend on it.
+    const s = bulletStreak(trailed([[0, 0], [100, 0], [100, 50]]), 10)
+    expect(s.x1).toBeCloseTo(100, 6)
+    expect(s.y1).toBeCloseTo(40, 6)
   })
 })

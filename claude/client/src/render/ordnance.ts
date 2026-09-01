@@ -8,7 +8,13 @@
 
 import Phaser from 'phaser'
 import { C } from '../core'
-import { LOOK, OrdnanceState, type Light, type ProjectileKind } from './ordnance-state'
+import {
+  bulletStreak,
+  LOOK,
+  OrdnanceState,
+  type Light,
+  type ProjectileKind,
+} from './ordnance-state'
 import { DEPTH } from './backdrop'
 
 // The colour and radius tables used to live here as well as in ordnance-state,
@@ -21,7 +27,10 @@ export class OrdnanceLayer {
 
   constructor(scene: Phaser.Scene) {
     const c = C()
-    this.state = new OrdnanceState(c.TRACER_LIFETIME, c.PROJECTILE_TRAIL_LEN)
+    // §F2: `BEAM_LIFETIME`, and the field it feeds is the **beam's** now — the
+    // five ballistic guns fire objects that fly and are drawn below, with the
+    // other projectiles.
+    this.state = new OrdnanceState(c.BEAM_LIFETIME, c.PROJECTILE_TRAIL_LEN)
     // One Graphics, cleared and redrawn: an object per tracer at 10 shots/s would
     // allocate constantly.
     this.gfx = scene.add.graphics().setDepth(DEPTH.particles)
@@ -77,13 +86,18 @@ export class OrdnanceLayer {
     this.redraws += 1
     this.drawnProjectilesLastFrame = this.state.projectiles.size
 
-    // Tracers: a wide warm halo, a bright core, and a muzzle flash.
+    // Beams: a wide warm halo, a bright core, and a muzzle flash.
     //
-    // At 10 shots/s with a 0.09 s life there is often nothing on screen between
-    // shots, so each one has to land. Three passes rather than two, all additive:
-    // the halo gives it presence against terrain, the core gives it the line, and
-    // the muzzle flash marks the shooter — which is the point of a tracer at
-    // night. Shooting in the dark should tell everyone where you are.
+    // **This path is the two laser weapons now** (§F1/§F2). The ballistic guns
+    // fire projectiles that fly, drawn below with the other ordnance; a beam is
+    // the one thing left in the game that is instant, and `BEAM_LIFETIME` 0.35 s
+    // is how long the afterimage of one hangs there. It was 0.09 s, which is
+    // shorter than a screenshot round-trip and about as long as a player's
+    // chance of seeing it.
+    //
+    // Three passes rather than two, all additive: the halo gives it presence
+    // against terrain, the core gives it the line, and the muzzle flash marks
+    // the shooter. Shooting in the dark should tell everyone where you are.
     for (const t of this.state.tracers) {
       const k = t.life / t.ttl
       g.lineStyle(c.TRACER_WIDTH * 5, 0xff9a3c, 0.18 * k)
@@ -109,6 +123,26 @@ export class OrdnanceLayer {
         g.lineStyle(1 + 2 * a, look.colour, 0.6 * a)
         g.lineBetween(p.trail[i - 1]!.x, p.trail[i - 1]!.y, p.trail[i]!.x, p.trail[i]!.y)
       }
+
+      // §F2: a bullet is a **streak along its velocity**, not a disc.
+      //
+      // A dot at 850 px/s reads as a flicker and says nothing about where the
+      // round is going; a segment reads as a line. Three passes, as the beam
+      // has: a halo so it holds against terrain, a core so it reads as a line,
+      // and a white centre so it reads as hot.
+      if (p.kind === 'bullet') {
+        const s = bulletStreak(p, c.BULLET_LENGTH)
+        g.lineStyle(c.BULLET_WIDTH * 3, look.colour, 0.35)
+        g.lineBetween(s.x0, s.y0, s.x1, s.y1)
+        g.lineStyle(c.BULLET_WIDTH, 0xffffff, 1)
+        g.lineBetween(s.x0, s.y0, s.x1, s.y1)
+        // The head, so a round that has not moved yet is still something rather
+        // than a zero-length line.
+        g.fillStyle(0xffffff, 1)
+        g.fillCircle(p.x, p.y, c.BULLET_WIDTH * 0.6)
+        continue
+      }
+
       g.fillStyle(look.colour, 1)
       g.fillCircle(p.x, p.y, look.r)
       // A hot core, so a dot reads as ordnance rather than as a decal — except

@@ -5029,3 +5029,39 @@ Gate: `check.sh --fast` EXIT=0 (36 Rust suites, game-core lib 815, combat 37; cl
 files / 754 tests), clippy clean. **Browser suite deliberately not run** — T19.01 breaks
 `ordnance-visible`'s hitscan half by design and T19.02 repairs it; the full gate runs at
 the pair boundary (D-61).
+
+## T19.02 — you can see a bullet, and three fixtures that never measured what they claimed
+
+**The moving-streak assertion is the deliverable, not the drawing.** `bullets-visible`
+samples the same lane twice ~300 ms apart with the game *running* — no `freeze` — and
+requires the streak to have moved. That is the one assertion a hitscan build cannot pass,
+and the old check could only photograph a tracer by freezing the frame first, which is the
+check telling us in writing that a player could not see it.
+
+**It was still too weak twice over.** First-to-last comparison proves "drawn in ≥2
+places": the reviewer froze the drawn position after four updates and it **passed**. It
+requires motion between *consecutive* samples now — and the falsification for that had to
+be built carefully, because stalling after 4 moves is caught by the old rule too and
+proves nothing about the change. Stalling after **12** gives `706 → 500 → 492 → 492 → 492`,
+which the old rule passes at 214 px of first-to-last travel and the new rule fails.
+
+**`two-clients` was the interesting one, and both of us were wrong about it.** The review
+called it a T19.01 regression from a control worktree: 6/6 green pre-bullet in a tight
+8272–10240 px band, 2 zeroes at HEAD. The coder probed instead of repairing and found the
+fixture never did what it said: `BAZOOKA_COOLDOWN` 0.9 s against a 0.25 s loop meant **9 of
+12 shots were silently refused**, so a 4-rocket stack never emptied and **the SMG was never
+fired at all** — §F1 could not have reached it by the path described. It also **never
+aimed**: Playwright leaves the mouse at the top-left, so twelve rockets went up-and-left
+and hitting terrain was luck of the spawn point. A latent flake, older than M19.
+
+Repairing it exposed a **second** pass-by-luck in the same file: it pressed `Digit2` and
+asserted only that the selection *changed*. The quick bar is one-indexed, so that selects
+slot 1 — it passed because selection happened to start at 0, and it failed against a
+perfectly-behaving client the moment the stack emptied properly. Both ends are counted
+now: shots fired against rockets that left the muzzle, so a refused shot is a finding
+rather than a smaller crater.
+
+**Full gate GATE_EXIT=0** — fmt, clippy, workspace, typecheck, client 49 files / 761
+tests, **e2e 41/41**, **net smoke 25/25**, assets. Net-smoke and the asset check ran for
+the first time this milestone (D-64: `set -e` had been exiting at e2e). `two-clients`
+5/5 green at 5983–13044 px; `bullets-visible` green under full-suite load.

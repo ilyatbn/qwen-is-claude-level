@@ -23,6 +23,7 @@ export interface Tracer {
 }
 
 export type ProjectileKind =
+  | 'bullet'
   | 'bazooka'
   | 'grenade'
   | 'meteor'
@@ -53,6 +54,12 @@ export interface ProjectileLook {
 }
 
 export const LOOK: Record<ProjectileKind, ProjectileLook> = {
+  // §F2. `r` is unused for a bullet — it is drawn as a streak, not a disc — and
+  // the trail is **short** on purpose: at `MACHINEGUN_COOLDOWN` 0.09 s there are
+  // several rounds on one line, and a long tail behind each would merge them
+  // into a bar. The picture is a stream of separate rounds (the M19 reference
+  // image), not a laser.
+  bullet: { r: 2, colour: 0xffe9a0, trail: 3 },
   bazooka: { r: 6, colour: 0xff8a3d, trail: 12 },
   grenade: { r: 5, colour: 0x3f7d3f, trail: 6 },
   airburst: { r: 5, colour: 0xa77dff, trail: 10 },
@@ -115,6 +122,14 @@ export const WEAPON_KEYS: string[] = [
 ]
 
 export const KIND_BY_WEAPON_KEY: Record<string, ProjectileKind> = {
+  // §F1's five guns. The lasers are deliberately absent: they are still
+  // `Delivery::Hitscan` and draw as beams, which is the one thing that makes
+  // them look different from a gun.
+  smg: 'bullet',
+  pistol: 'bullet',
+  revolver: 'bullet',
+  deagle: 'bullet',
+  machinegun: 'bullet',
   toxic_drop: 'drop',
   bazooka: 'bazooka',
   grenade: 'grenade',
@@ -140,6 +155,40 @@ export interface TrackedProjectile {
   trail: TrailPoint[]
 }
 
+/**
+ * The two ends of a bullet's drawn streak (§F2).
+ *
+ * **Direction comes from the trail, not from the wire.** `projectile_move`
+ * carries a position and nothing else, and adding a velocity field to make a
+ * drawing decision would put a rendering concern into the protocol — the server
+ * would have to send, snapshot and replay a number only the renderer reads. The
+ * last two positions already say which way the round is going.
+ *
+ * A round with one trail point has no direction yet (it was spawned this frame
+ * and has not moved), and so does one whose last two samples are identical. Both
+ * draw a **dot** — `x0 === x1`, `y0 === y1` — rather than normalising a zero
+ * vector, which is `0/0` and paints nothing at all while looking like a draw.
+ * That is the NaN the unit test is about.
+ *
+ * The streak is drawn **behind** the round: the head sits at the current
+ * position, where the physics says the bullet is, and the tail trails back along
+ * where it came from. A streak centred on the position would put half the round
+ * in front of itself.
+ */
+export function bulletStreak(
+  p: { x: number; y: number; trail: TrailPoint[] },
+  length: number,
+): { x0: number; y0: number; x1: number; y1: number } {
+  const head = { x0: p.x, y0: p.y, x1: p.x, y1: p.y }
+  const prev = p.trail.length >= 2 ? p.trail[p.trail.length - 2] : undefined
+  if (!prev) return head
+  const dx = p.x - prev.x
+  const dy = p.y - prev.y
+  const len = Math.hypot(dx, dy)
+  if (len < 1e-6) return head
+  return { x0: p.x, y0: p.y, x1: p.x - (dx / len) * length, y1: p.y - (dy / len) * length }
+}
+
 export interface Impact {
   x: number
   y: number
@@ -158,6 +207,9 @@ export interface Light {
 
 /** How brightly each kind glows, and how far. */
 const GLOW: Record<ProjectileKind, { r: number; a: number }> = {
+  // Bright and small: a round has to be findable at night (§A3) without a
+  // sustained burst turning the map into daylight — twenty can be in the air.
+  bullet: { r: 40, a: 0.6 },
   bazooka: { r: 90, a: 0.85 },
   grenade: { r: 45, a: 0.5 },
   meteor: { r: 150, a: 1 },
@@ -179,11 +231,17 @@ const GLOW: Record<ProjectileKind, { r: number; a: number }> = {
 export class OrdnanceState {
   readonly tracers: Tracer[] = []
   /**
-   * Freeze tracer decay. Debug-only, for headless screenshots.
+   * Freeze beam decay. Debug-only, for headless screenshots.
    *
-   * A tracer lives 0.09 s, which is shorter than a Playwright screenshot
-   * round-trip, so a shot of "the tracer" reliably captured an empty hillside
-   * instead. Holding decay makes the evidence deterministic rather than a race.
+   * A beam lives `BEAM_LIFETIME` — 0.35 s since §F2, and 0.09 s before it, which
+   * was shorter than a Playwright screenshot round-trip, so a shot of "the
+   * tracer" reliably captured an empty hillside instead. Holding decay makes the
+   * evidence deterministic rather than a race.
+   *
+   * **A bullet needs none of this**, and that is the point of §F1: `bullets-visible`
+   * photographs a round in flight with the game running, because a thing that
+   * takes time to cross the screen can simply be looked at. Needing to stop the
+   * world to see your own gunfire was the bug.
    */
   holdTracers = false
   readonly projectiles = new Map<number, TrackedProjectile>()

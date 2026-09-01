@@ -982,11 +982,23 @@ pub fn constants_json() -> String {
         TOXIC_POISON_DPS => c::TOXIC_POISON_DPS,
         TOXIC_DROP_CARVE_R => c::TOXIC_DROP_CARVE_R,
         HEALTH_CAP => c::HEALTH_CAP,
-        TRACER_LIFETIME => c::TRACER_LIFETIME,
+        // §F2: the beam's life, and the bullet streak's shape. `TRACER_LIFETIME`
+        // is retired — that path is the two lasers now.
+        BEAM_LIFETIME => c::BEAM_LIFETIME,
+        BULLET_LENGTH => c::BULLET_LENGTH,
+        BULLET_WIDTH => c::BULLET_WIDTH,
         TRACER_WIDTH => c::TRACER_WIDTH,
         PROJECTILE_TRAIL_LEN => c::PROJECTILE_TRAIL_LEN,
         MUZZLE_OFFSET => c::MUZZLE_OFFSET,
         BAZOOKA_BLAST_RADIUS => c::BAZOOKA_BLAST_RADIUS,
+        // `two-clients` fires the bazooka and needs both of these to fire it
+        // *deliberately*: the cadence so every shot is accepted rather than
+        // refused on cooldown, and the stack size so the shot count is a number
+        // it chose. It slept 250 ms against a 900 ms cooldown, so nine of its
+        // twelve calls were silently refused and it destroyed whatever three
+        // rockets happened to reach.
+        BAZOOKA_COOLDOWN => c::BAZOOKA_COOLDOWN,
+        BAZOOKA_AMMO => c::BAZOOKA_AMMO as f32,
         GRENADE_BLAST_RADIUS => c::GRENADE_BLAST_RADIUS,
         SMG_BLAST_RADIUS => c::SMG_BLAST_RADIUS,
         SMG_RANGE => c::SMG_RANGE,

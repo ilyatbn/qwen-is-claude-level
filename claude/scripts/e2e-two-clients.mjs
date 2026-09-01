@@ -217,15 +217,49 @@ async function settle(clients, deadlineMs = 20_000) {
 }
 
 // A rocket fired by one craters the map in both.
+//
+// **Aimed, and paced by the weapon's own cadence.** This fired twelve times at
+// whatever angle the mouse happened to sit at — Playwright leaves it at the
+// top-left corner, so the shots went up and to the left, and whether they hit
+// any terrain at all was luck of the spawn point. Measured across four runs the
+// same twelve calls destroyed 4071, 6969, 9164 and 9291 px, and a run that
+// destroys nothing is inside that distribution rather than outside it: the
+// failure this repairs was a **latent flake of its own**, not a consequence of
+// §F1 (the SMG is never reached — see below).
+//
+// Two things make it deliberate. It aims **down and to the side**, so the rocket
+// meets ground a short distance away whatever the terrain looks like, and it
+// spaces the shots by `BAZOOKA_COOLDOWN` so every one is accepted. At 250 ms
+// against a 900 ms cooldown, **nine of the twelve calls were silently refused**
+// and the check measured three rockets while believing it had fired twelve.
+const k = await a.page.evaluate('window.__game.constants()')
+// Down-and-right at ~45°. Not straight down: the blast radius is 42 px and the
+// zoom is 2, so a 200 px screen offset is 100 world px of separation — outside
+// the blast, and three point-blank rocket jumps would kill her before the
+// inventory assertions below ever ran.
+await a.page.mouse.move(640 + 200, 360 + 200)
+await sleep(200)
 const solidBeforeA = (await dbg(a)).solid
 const solidBeforeB = (await dbg(b)).solid
-for (let i = 0; i < 12; i++) {
+const spawnsBefore = (await dbg(a)).observed?.projectileSpawns ?? 0
+// The whole stack, at the cadence that empties it.
+const rockets = Math.round(k.BAZOOKA_AMMO)
+for (let i = 0; i < rockets; i++) {
   await a.page.evaluate('window.__game.fire()')
-  await sleep(250)
+  await sleep(k.BAZOOKA_COOLDOWN * 1000 + 120)
 }
 const [daF, dbF] = await settle([a, b])
 const removedA = solidBeforeA - daF.solid
 const removedB = solidBeforeB - dbF.solid
+
+// **Count the shots at both ends.** The old loop could have every call refused
+// and still pass on a single lucky rocket, which is how it came to believe it
+// fired twelve. If the server did not accept what we sent, that is the finding —
+// not the smaller crater it produces.
+const spawnsAfter = (await dbg(a)).observed?.projectileSpawns ?? 0
+if (spawnsAfter - spawnsBefore !== rockets) {
+  fail(`fired ${rockets} but only ${spawnsAfter - spawnsBefore} rockets left the muzzle`)
+}
 
 // The control: if nothing was destroyed, "both agree" is satisfied by two
 // clients that both did nothing.
@@ -270,17 +304,34 @@ if (daF.pendingCarves !== 0 || dbF.pendingCarves !== 0) {
 {
   const state = async () => {
     const d = await a.page.evaluate('window.__game.debug()')
-    return { selected: d.selectedSlot, open: d.overlays?.inventory ?? false }
+    return { selected: d.selectedSlot, open: d.overlays?.inventory ?? false, slots: d.slots }
   }
   const before = await state()
-  await a.page.keyboard.press('Digit2')
+  // **Pick a slot that is not the one already selected, and say which.**
+  //
+  // This pressed `Digit2` and asserted only that the selection *changed*. Two
+  // things were wrong with that and the second one hid the first: the quick bar
+  // is one-indexed, so `Digit2` selects **slot 1**, not slot 2 — and it passed
+  // only because the selection happened to start at 0. Now that the bazooka
+  // stack is emptied above, `consume` re-selects to the SMG at slot 1, `Digit2`
+  // asks for the slot already held, and the assertion fails against a client
+  // that is behaving perfectly.
+  //
+  // So: choose the first quick-bar slot that holds something and is not current,
+  // press its key, and assert the selection lands **on that slot**. Asserting
+  // where it went rules out a handler that moves the selection somewhere.
+  const target = (before.slots ?? []).find(
+    (sl) => sl && sl.key && sl.slot !== before.selected && sl.slot < 8,
+  )
+  if (!target) fail(`no quick-bar slot to switch to (selected ${before.selected})`)
+  await a.page.keyboard.press(`Digit${target.slot + 1}`)
   const afterSelect = await untilValue(
     state,
-    (t) => t.selected !== before.selected,
-    `selecting slot 2 did not move the selection (still ${before.selected})`,
+    (t) => t.selected === target.slot,
+    `Digit${target.slot + 1} did not select slot ${target.slot} (still ${before.selected})`,
   )
-  if (afterSelect.selected === before.selected) {
-    fail(`selecting slot 2 did not move the selection (still ${before.selected})`)
+  if (afterSelect.selected !== target.slot) {
+    fail(`Digit${target.slot + 1} did not select slot ${target.slot} (still ${afterSelect.selected})`)
   }
 
   if (before.open) fail('the backpack was already open before any right-click')

@@ -64,9 +64,25 @@ export default async function ({ page, shot, log }) {
   // measured the mask immediately would read 0 px and call it a regression.
   await page.evaluate(() => window.__game.toggleInventory())
   await page.evaluate(() => window.__game.selectSlot(2))
+  // **Aim sideways first.** The bazooka above fires at the player's own feet —
+  // that is the rocket-jump case it is testing — and the mouse was never moved
+  // afterwards, so the SMG fired into the ground 18 px below the muzzle. A
+  // hitscan round did not care: it resolved instantly and drew a tracer. A
+  // bullet (§F1) explodes on its first step and is never airborne for a single
+  // frame, so "no round in the air" was a true reading of a shot with nowhere
+  // to go.
+  await page.mouse.move(640 + 300, 360)
+  await page.waitForTimeout(200)
   const beforeSmg = await solid()
   const smg = await page.evaluate(() => window.__game.fire())
   if (!smg.projectile) throw new Error(`the smg did not fire: ${JSON.stringify(smg)}`)
+  // **Waited for, not read once.** The layer is filled from the mirror on the
+  // next frame, so reading it in the same turn as `fire()` samples the instant
+  // before the round exists. Measured: this read 0 in the full suite while
+  // passing standalone, which is what a race looks like.
+  await page
+    .waitForFunction('window.__game.ordnance().projectiles > 0', null, { timeout: 3000 })
+    .catch(() => {})
   const ord = await page.evaluate(() => window.__game.ordnance())
   log(`ordnance layer: ${JSON.stringify(ord)}`)
   if (ord.projectiles < 1) throw new Error('the smg put no round in the air — every shot must be visible')

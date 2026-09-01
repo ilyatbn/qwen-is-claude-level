@@ -88,6 +88,11 @@ const CHECKS = [
   // `GameScene` drew none at all. A check that passes only where the bug is
   // absent is worse than no check.
   { name: 'ordnance-visible', file: 'scripts/checks/ordnance-visible.mjs', standalone: true },
+  // §F2: a bullet is drawn **while it flies**, proved without stopping time.
+  // Standalone and on a real server for the reason `ordnance-visible` is: the
+  // sandbox is the one scene that drives its own ordnance layer, so a check that
+  // ran there would pass with `GameScene` drawing nothing at all.
+  { name: 'bullets-visible', file: 'scripts/checks/bullets-visible.mjs', standalone: true },
   // §C6: the weather must reach the screen, not just the simulation.
   { name: 'weather-visible', file: 'scripts/checks/weather-visible.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242' },

@@ -60,7 +60,7 @@ await enterBattle(page, { waitPlaying: true, label: 'ordnance-visible' })
 
 const K = await page.evaluate(() => window.__game.constants())
 for (const [name, v] of Object.entries({
-  TRACER_LIFETIME: K.TRACER_LIFETIME,
+  BEAM_LIFETIME: K.BEAM_LIFETIME,
   PLAYER_W: K.PLAYER_W,
 })) {
   // §B15: a threshold compared against `undefined` is false forever, and a wait
@@ -262,9 +262,10 @@ if ((idle.tracersDrawn ?? -1) === 0 && (idle.projectilesDrawn ?? -1) === 0) {
 // The two energy weapons are the only beams left, so they are the only thing
 // this half can be about.
 //
-// A tracer lives TRACER_LIFETIME (0.09 s), so it is sampled by *polling as fast
-// as the page answers* rather than after a sleep — a 200 ms wait misses it
-// entirely and would report "never drawn" for a tracer that was.
+// A beam lives BEAM_LIFETIME (0.35 s since §F2, was 0.09), so it is sampled by
+// *polling as fast as the page answers* rather than after a sleep — a 200 ms
+// wait used to miss it entirely and would report "never drawn" for a beam that
+// was.
 await selectWeapon(page, 'laser_pistol')
 await standStill(page)
 const beforeShots = (await dbg()).observed?.hitscans ?? 0
@@ -310,7 +311,7 @@ for (let burst = 0; burst < 12 && !tracerFrame; burst++) {
     if ((d.tracersDrawn ?? 0) > 0) {
       tracerPeak = Math.max(tracerPeak, d.tracersDrawn)
       // **Freeze first, ask questions after.** A tracer's alpha decays as
-      // `life / TRACER_LIFETIME`, so every round trip between spotting one and
+      // `life / BEAM_LIFETIME`, so every round trip between spotting one and
       // photographing it costs brightness. The first version read the player's
       // position (a second `debug()` call) and then froze, and the reading
       // swung between 6.0 and 16.2 depending on how much of the 0.09 s had run

@@ -1115,3 +1115,29 @@ with no assertion on its output, sitting behind a test suite that grew to 921 ca
 without touching it. `CLAUDE.md` already says *assert on effects, not intentions*; these
 add the corollary that **a defect with no test is usually found by the task that walks
 past it**, which is an argument for making the walk-past deliberate rather than hoping.
+
+## D-64 — The gate's last two stages have not run all milestone  ·  M19
+`check.sh` is `set -e`, and the e2e suite is the **third-from-last** stage. One red browser
+check exits the script, so **net-smoke and the asset check never run at all** — and the
+e2e suite has been red at least once in every M19 session so far. Two stages of the gate
+have been silently skipped for the whole milestone, and nothing said so: the summary line
+that prints is the e2e failure, not "two stages were not reached".
+
+This is `CLAUDE.md`'s *a test count going up is not evidence that no test was removed*,
+one level up: **a gate that stops at the first red is not a gate over everything after
+it.** Recorded rather than fixed, because reordering or `set +e`-ing the gate mid-milestone
+is a change to the instrument while it is measuring. The requirement stands instead: a
+milestone does not close until one run reaches **all** stages.
+
+**And a companion finding about how the red was read.** `two-clients` failed the gate with
+*"no terrain was destroyed (ana removed 0 px)"*, which reads as broken. It is **flaky**:
+6/6 green pre-bullet at 8272–10240 px removed (a tight band), against 4 green and 2 zeroes
+at HEAD — one of the greens at 334 px, which is ≈12 carves of a 3 px radius, i.e. **bullets
+only, no rocket contribution at all**. A single failing run would have been "fixed" by a
+wider sleep; six runs with a control at the pre-change commit named the cause instead —
+`consume` re-selects when the bazooka's four rockets run out, so most of the twelve shots
+are SMG, and an SMG round now has to *fly* where it used to resolve instantly.
+
+> **A fixture that measures an effect with no travel time will not survive giving that
+> effect travel time.** Three checks have now been invalidated by the same one-line change
+> — `birds`, `m4-checkpoint`, `two-clients` — and each was found by a different mechanism.

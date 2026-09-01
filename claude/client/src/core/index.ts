@@ -223,11 +223,15 @@ export interface Constants {
   TOXIC_DROP_CARVE_R: number
   HEALTH_CAP: number
   SMG_MUZZLE_SPEED: number
-  TRACER_LIFETIME: number
+  BEAM_LIFETIME: number
+  BULLET_LENGTH: number
+  BULLET_WIDTH: number
   TRACER_WIDTH: number
   PROJECTILE_TRAIL_LEN: number
   MUZZLE_OFFSET: number
   BAZOOKA_BLAST_RADIUS: number
+  BAZOOKA_COOLDOWN: number
+  BAZOOKA_AMMO: number
   GRENADE_BLAST_RADIUS: number
   SMG_BLAST_RADIUS: number
   SMG_RANGE: number
