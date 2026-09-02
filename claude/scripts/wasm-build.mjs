@@ -25,6 +25,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeSync,
@@ -137,19 +138,59 @@ const acquireLock = () => {
       return
     } catch (err) {
       if (err.code !== 'EEXIST') throw err
-      let holder = 0
+      let raw
       try {
-        holder = Number(readFileSync(lockPath, 'utf8').trim())
+        raw = readFileSync(lockPath, 'utf8').trim()
       } catch {
         // The holder released between our create and our read. Retry.
         continue
       }
+      // **Empty or unparseable means "a holder is still starting up", never
+      // "stale".** The holder creates the file and writes its pid in two steps
+      // (`openSync(wx)` then `writeSync`), so a waiter arriving between them
+      // reads `''`. Treating that as a pid gave `Number('') === 0`, which
+      // `holderIsAlive` rejects on its `pid <= 0` guard — so the waiter judged a
+      // **live** lock stale, unlinked it and built concurrently. That is the
+      // corruption this lock exists to prevent, and the window is entered on
+      // every contended acquire, no crash required. Only a positive integer pid
+      // that is provably dead may authorise a steal.
+      const holder = Number(raw)
+      if (!raw || !Number.isInteger(holder) || holder <= 0) {
+        // Bounded by the same deadline as a live holder, or a lock file left
+        // empty forever — a holder killed between its create and its write —
+        // would spin here until the heat death of the repository.
+        if (Date.now() > deadline) {
+          console.error(
+            `wasm-build: ${lockPath} has been unreadable for ` +
+              `${LOCK_TIMEOUT_MS / 60_000} minutes (content ${JSON.stringify(raw)}). ` +
+              'A build was probably killed between creating the lock and writing ' +
+              'its pid. Delete that file and re-run.',
+          )
+          process.exit(1)
+        }
+        sleepSync(LOCK_POLL_MS)
+        continue
+      }
       if (!holderIsAlive(holder)) {
-        console.log(`wasm-build: clearing a stale lock left by pid ${holder}`)
+        // **Steal atomically.** Checking liveness and then unlinking is a
+        // TOCTOU: with a dead holder and two waiters, B can unlink, win its
+        // `openSync(wx)` and start building while C — still between its own
+        // check and its unlink — deletes *B's live lock* and creates its own.
+        // Two concurrent builds again. `renameSync` is atomic, so exactly one
+        // waiter wins the steal and the losers get ENOENT and re-loop. The
+        // `console.log` that used to sit between the check and the unlink
+        // widened the window, and a log to a pipe can block.
+        const claimed = `${lockPath}.steal.${process.pid}`
         try {
-          unlinkSync(lockPath)
+          renameSync(lockPath, claimed)
         } catch {
-          /* another waiter cleared it first */
+          continue
+        }
+        console.log(`wasm-build: cleared a stale lock left by pid ${holder}`)
+        try {
+          unlinkSync(claimed)
+        } catch {
+          /* already gone */
         }
         continue
       }

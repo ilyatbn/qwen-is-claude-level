@@ -115,8 +115,8 @@ await guest.page.waitForFunction('window.__menu && window.__menu.visibleCode().l
 await host.page.evaluate(() => window.__menu.startWithBots())
 await inGame(host)
 await inGame(guest)
-await enterBattle(guest.page, { press: false, waitPlaying: true, label: 'm10/guest' })
-await enterBattle(host.page, { press: false, waitPlaying: true, label: 'm10/host-playing' })
+await enterBattle(guest.page, { press: false, waitPlaying: true, expectPlayers: 2, label: 'm10/guest' })
+await enterBattle(host.page, { press: false, waitPlaying: true, expectPlayers: 2, label: 'm10/host-playing' })
 
 // --- a third player quick-matches into a different room -------------------
 const solo = await openAtMenu('cy')

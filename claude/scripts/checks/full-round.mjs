@@ -86,8 +86,8 @@ const dbg = (c) => c.page.evaluate('window.__game.debug()')
 const a = await openClient('ana')
 const b = await openClient('bo')
 console.log('  two clients joined')
-await enterBattle(a.page, { label: 'full-round/ana' })
-await enterBattle(b.page, { press: false, label: 'full-round/bo' })
+await enterBattle(a.page, { expectPlayers: 2, label: 'full-round/ana' })
+await enterBattle(b.page, { press: false, expectPlayers: 2, label: 'full-round/bo' })
 
 // --- play the round -------------------------------------------------------
 //

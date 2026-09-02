@@ -331,3 +331,43 @@ was explicitly rejected here.
   from 14:08:44 — about fifteen minutes unaccounted for. It does not threaten the alibi
   (every artifact at or before 13:53:18 predates the first spinner under either reading)
   but it is not explained, and it is recorded here rather than smoothed over.
+
+## From T19.14 — what the diff does not say
+
+- **The "join race" did not exist.** The reported `in battle (phase warmup, 0 players)` was
+  a stale variable, not a missing join, and every run carrying it **passed**. Measured over
+  10 `two-clients` runs: the stale value was 0 in 8, the fresh value was 2 in **10 of 10**,
+  at server tick 81–90. Nobody had re-read `d`. The lesson is the task file's, not the
+  code's: a symptom quoted from a log line is evidence about the log line until somebody
+  checks. **Task defect recorded** — its Tests section also demands the wait be pinned to
+  "the constant that governs it", and no constant governs a network round-trip plus a mask
+  decode; pinning one would have fabricated a tunable.
+- **`expectPlayers` defaults to 1 on purpose.** Every client appears in its own roster, so
+  the default is a no-op for the 19 single-client callers, and only
+  `e2e-two-clients.mjs:64,65`, `full-round.mjs:89,90` and `m10-checkpoint.mjs:118,119` opt
+  in to 2. Implementing the task's literal "wait for a roster that has the players in it"
+  as *wait for two* would have hung the other nineteen — the `standStill` shape again.
+- **`enterBattle`'s return value has no readers.** All 24 call sites discard it (`grep -rn
+  "= await enterBattle"` → nothing), so the staleness only ever reached the log. If a
+  future caller starts using the return, it is now fresh — that is new, and free.
+- **The roster throw names the right cause.** It distinguishes `playerCount === 0` ("no
+  snapshot has been applied at all") from a partial roster ("snapshots are arriving, so the
+  missing players never joined"). The first draft said the former in both cases and was
+  wrong on screen at tick 807 with 2 players — the same false-diagnosis-in-an-error-string
+  defect the T19.04 follow-up fixed in `standStill`.
+- **`acquireLock`'s wait loop is fully synchronous and cannot be interrupted.** `sleepSync`
+  blocks the thread, so the `SIGINT`/`SIGTERM` handlers registered above it never run while
+  waiting: `timeout 25 node scripts/wasm-build.mjs` on a held lock ignored SIGTERM and sat
+  for the full `LOCK_TIMEOUT_MS` of **10 minutes**. Use `timeout -s KILL` to test it, and
+  know that a developer pressing Ctrl-C on a waiting build will appear to be ignored.
+  **Not fixed — booked.** It is pre-existing to this task and the fix is a redesign of the
+  wait, not a patch.
+- **The empty-lock window is now a wait, not a steal**, and it is bounded by the same
+  10-minute deadline with its own error naming the cause, or a lock left empty forever by a
+  build killed between `openSync(wx)` and `writeSync` would spin until the heat death of
+  the repository. Falsified both ways: with the guard, 0 steals and no build starts; with
+  only the guard removed, `wasm-build: cleared a stale lock left by pid 0`.
+- **The vite half of T19.14 is untouched.** `vite did not report a port within 90 s under
+  sustained browser load` was not reproduced and not investigated — the task's own Done-when
+  is a serial loop, which is the idle-box case and cannot reproduce a load failure. Booked
+  rather than silently dropped.

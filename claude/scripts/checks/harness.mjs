@@ -261,7 +261,13 @@ export async function openClient({ browser, viteUrl }, { name = 'ana', query = '
  * NOT press — a second human waiting for the first one's round.
  */
 export async function enterBattle(page, opts = {}) {
-  const { press = true, waitPlaying = false, timeoutMs = 45_000, label = 'enterBattle' } = opts
+  const {
+    press = true,
+    waitPlaying = false,
+    expectPlayers = 1,
+    timeoutMs = 45_000,
+    label = 'enterBattle',
+  } = opts
   const dbg = () => page.evaluate('window.__game.debug()')
 
   let d = await dbg()
@@ -349,9 +355,48 @@ export async function enterBattle(page, opts = {}) {
     }
   }
 
+  // **The roster, waited on rather than read once.**
+  //
+  // `worldMirror` fills `players` from the **snapshot**, which is the full
+  // roster including self (`docs/40` §3) — not a delta. So an empty roster does
+  // not mean "a join has not arrived", it means **no snapshot has been applied
+  // yet**: the server starts the 20 Hz stream as soon as it seats you, so the
+  // first snapshots land while `map_init` is still decoding and wait in
+  // `pendingSnapshot` (`GameScene.ts:330-338`).
+  //
+  // Defaults to 1 — every client is in its own roster — so this is a no-op for
+  // the 19 single-client callers. Multi-client checks opt in with
+  // `expectPlayers: 2`, the same shape `waitPlaying` already has. Keyed to the
+  // observable effect and **not** to a constant, because no constant governs a
+  // network round-trip plus a mask decode; inventing one would be a tunable
+  // nobody chose (`CLAUDE.md`, and the same call T19.04 made for `standStill`).
+  const untilSeated = Date.now() + timeoutMs
+  while (Date.now() < untilSeated) {
+    d = await dbg()
+    if ((d.playerCount ?? 0) >= expectPlayers) break
+    await sleep(100)
+  }
+  // Fails **loudly**. A wait that times out silently into "0 players" is the bug
+  // being fixed wearing a different hat.
+  if ((d.playerCount ?? 0) < expectPlayers) {
+    throw new Error(
+      `${label}: the roster never reached ${expectPlayers} — still ` +
+        `${d.playerCount} after ${timeoutMs / 1000} s (phase ${d.phase}, ` +
+        `server tick ${d.lastServerTick})` +
+        ((d.playerCount ?? 0) === 0
+          ? ' — no snapshot has been applied at all'
+          : ' — snapshots are arriving, so the missing players never joined'),
+    )
+  }
+
   const still = await page.evaluate(() => !!document.querySelector('#lobby-panel'))
   if (still) throw new Error(`${label}: the round started but the lobby panel is still on screen`)
 
+  // `d` is re-read above, so this reports the roster **now** rather than the one
+  // captured before the simulating-wait. The stale read is what produced the
+  // reported `in battle (phase warmup, 0 players)`: measured over 10 runs, the
+  // stale value was 0 in 8 of them and the fresh value was 2 in **10 of 10**,
+  // with every run passing. The "join race" was a lying log line.
   console.log(`  in battle (phase ${d.phase}, ${d.playerCount} players)`)
   return d
 }

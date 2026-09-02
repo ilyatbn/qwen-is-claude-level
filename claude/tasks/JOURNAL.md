@@ -5121,3 +5121,17 @@ step. Two builds sharing one out-dir do fail: 3/6, plus a second face (`wasm-opt
 reading as a different bug. A lock in `wasm-build.mjs` gives 0/22; cutting only
 `acquireLock()` restores 3/6. **`backdrop-real` was attribution, not budget** — the chamfer
 (66/143/257 ms) was paid in a 5 s `it()` while a 120 s `beforeAll` already existed.
+**`hud-timer` is NOT fixed and the task's premise is wrong**: load is not the variable
+(idle 44.15, loaded 44.87, full suite 45.1; near-failures one in each arm), a repair
+attempt tripled the variance and was reverted. Box left unticked.
+
+## T19.14 — there is no join race; the log was lying
+
+**`in battle (… 0 players)` is a stale read.** `enterBattle` never reassigned `d` after the
+simulating-wait, so the `waitPlaying:false` path logged a roster captured before it — and
+those four checks are exactly the four reporting it. Over 10 runs stale was **0 in 8**,
+fresh **2 in 10 of 10**, all green. `players` comes from the snapshot, the full roster
+including self, so empty means *no snapshot yet*, never *a join is missing*. Now waits on
+`playerCount >= expectPlayers` (default 1 — a no-op for 19 of 24 callers; five multi-client
+sites opt in to 2) and **throws loudly**; falsified with `expectPlayers: 3`. **10/10.** Also
+hardened `acquireLock`: an empty lock read as `pid 0` let a waiter steal a **live** lock.

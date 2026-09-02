@@ -61,8 +61,8 @@ const b = await openClient('bo')
 // Into a running round. Ana asks; bo is already in the room and simply follows
 // it out of the lobby, which is also the assertion that a second client sees
 // the same start (`press: false` is not a shortcut — it is the other half).
-await enterBattle(a.page, { label: 'two-clients/ana' })
-await enterBattle(b.page, { press: false, label: 'two-clients/bo' })
+await enterBattle(a.page, { expectPlayers: 2, label: 'two-clients/ana' })
+await enterBattle(b.page, { press: false, expectPlayers: 2, label: 'two-clients/bo' })
 
 // Both joined and decoded the same map.
 const da0 = await dbg(a)
