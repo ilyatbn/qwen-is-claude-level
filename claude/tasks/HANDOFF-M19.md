@@ -61,6 +61,18 @@ tasks are `tasks/M19/`. This file is the rest.
 - `LOOK.bullet.r = 2` breaks the `r >= 3` rule on purpose: a bullet's visibility is
   `BULLET_LENGTH`, not its radius.
 
+## Environment
+
+- **A fresh git worktree has no `client/src/core/pkg/`** — it is generated and gitignored,
+  so `localInput-math.test.ts` fails to import until `wasm-build` has run *there*. Not a
+  defect; it has looked like one twice.
+- **`vitest run` does not typecheck.** Five strict-mode errors passed a green client suite
+  and were caught only by `tsc`. A green client run is not evidence the client compiles.
+- **`node scripts/wasm-build.mjs` fails on roughly alternate runs** (`invalid type:
+  sequence, expected a string at line 7 column 11`), and every client test hook runs it
+  first. That is T19.15. Until it lands, a red client suite deserves one re-run before you
+  believe it — and exactly one.
+
 ## Loose ends, standing and unclaimed
 
 - **`game-wasm/src/lib.rs:643`** — the sandbox's *generic* projectile fallback still
@@ -71,5 +83,13 @@ tasks are `tasks/M19/`. This file is the rest.
   renamed only the one.
 - **Bots do not lead a moving target** now that rounds fly. T19.04 re-runs the balance
   harness and should measure it.
+- **`GameScene.ts:~1281` — `stepRepeatFire(dt)` is fed the raw, unclamped frame delta**
+  while the simulation on the very next line clamps to `Math.min(this.acc + dt, 0.25)`. A
+  10 s `dt` — a backgrounded tab refocusing — emits **100 `sendFire()` calls in one
+  frame**, 99 refused. Same unbounded-payout shape as T19.03's banking bug, sourced from
+  `dt` rather than `since`, and latent in the original `while` loop rather than caused by
+  the fix. The codebase has already decided 0.25 s is the most one frame may advance; the
+  repeat clock should honour the same ceiling. **One line. Assigned to the coder to take
+  immediately after T19.04.**
 - `WEAPON_AIRBURST_PELLET` is still `Hitscan` — nine flying bodies per airburst is what
   `burst_pellets` exists to avoid.
