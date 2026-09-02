@@ -239,6 +239,48 @@ if (!bar) {
   }
 }
 
+// --- §F4.1: the right button opens the backpack and fires NOTHING ----------
+//
+// The mouse mapping was specified as both-buttons-fire and then withdrawn, so
+// this is the assertion that keeps the withdrawal honest. It matters more now
+// than it did: §F3 added a per-frame repeat driven by a held button, and the
+// obvious way to get that wrong is to read "a button" rather than "the left
+// button" — which would turn every backpack browse into a burst of gunfire.
+{
+  const shots = async () => (await dbg()).observed?.projectileSpawns ?? 0
+  const mid = { x: 640, y: 360 }
+  // Aim away from the feet so the control shot below cannot kill her.
+  await page.mouse.move(mid.x + 220, mid.y)
+  await sleep(150)
+  const before = await shots()
+  await page.mouse.down({ button: 'right' })
+  // Held for well over any weapon's cooldown: a repeat that keyed off the wrong
+  // button would have fired several times by now.
+  await sleep(1000)
+  await page.mouse.up({ button: 'right' })
+  await sleep(300)
+  const after = await shots()
+  if (after === before) {
+    ok(`holding the right button for 1s fired nothing (${before} shots before and after)`)
+  } else {
+    fail(`holding the right button fired ${after - before} rounds — right-click opens the backpack (§F4.1)`)
+  }
+
+  // **The control.** "Right fires nothing" is satisfied by a client that fires
+  // nothing at all — which is exactly what a broken repeat looks like — so the
+  // left button must demonstrably still work from the same position.
+  await page.mouse.down({ button: 'left' })
+  await sleep(400)
+  await page.mouse.up({ button: 'left' })
+  await sleep(300)
+  const afterLeft = await shots()
+  if (afterLeft > after) {
+    ok(`control: the left button from the same spot fired ${afterLeft - after}`)
+  } else {
+    fail('the left button fired nothing either — the right-button assertion above proves nothing')
+  }
+}
+
 if (pageErrors.length) fail(`page errors: ${pageErrors.slice(0, 3).join(' | ')}`)
 else ok('no page errors')
 

@@ -235,6 +235,7 @@ export interface Constants {
   GRENADE_BLAST_RADIUS: number
   SMG_BLAST_RADIUS: number
   SMG_RANGE: number
+  SMG_COOLDOWN: number
   /** Whether the renderer paints interior air with dark rock at all. */
   /** Registry ids for the two bird rewards (§C16). */
   ITEM_MEDKIT: number

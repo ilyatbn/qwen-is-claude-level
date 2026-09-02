@@ -1198,3 +1198,27 @@ that pay for the sweep. The rule:
 The sweep also returned three **clean** answers (T19.06, T19.09, T19.10 land as written),
 and a clean answer is worth having: it is the difference between a task nobody has checked
 and a task somebody has.
+
+## D-67 — A test that re-derives the answer does not test the thing that emits it  ·  M19
+T19.03's deliverable was two new fields on `item_registry_json`. Its two registry tests
+parse the **Rust source** through `__liveRegistry.ts` and compare — which is a good
+protection against a hand-copied table drifting, and is why that helper exists. It is not
+a test of the emitter. The reviewer made `item_registry_json` hand **every** item, medkit
+included, a bazooka's `auto` and `cooldown`, and **all twelve tests stayed green**. There
+is no Rust test of `item_registry_json` at all; the only thing standing between that break
+and production was one browser check.
+
+> **When you change a serialiser, assert on its output.** A test that re-derives the
+> expected value from the same source the serialiser reads will agree with a serialiser
+> that has stopped reading it.
+
+Two consequences worth naming:
+
+- It **weakens D-61**. The first half of every M19 pair gates on `check.sh --fast`, and
+  `--fast` skips the browser suite — so for this deliverable, `--fast` could not see a
+  total break. A pair-boundary policy is only as good as what the fast half can observe,
+  and that is a property of the *tests*, not of the policy.
+- `__liveRegistry.ts`'s own doc says a test carrying a copy of the cadence "would be the
+  same defect with a smaller blast radius". It is right, and it is also not the whole
+  defect surface: parsing from source protects the **table** and leaves the **emitter**
+  bare. Both need an assertion, and they are not the same assertion.

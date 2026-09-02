@@ -16,6 +16,17 @@ export interface ItemDefView {
   name: string
   sprite: string
   max_stack: number
+  /**
+   * Does holding fire keep this weapon firing? (§F3)
+   *
+   * **Absent for anything that is not a weapon**, and that is the point: a
+   * medkit is not "not automatic", it is a thing the question was never asked
+   * of. Emitting `false`/`0` for it would invite the first caller who reads a
+   * zero cooldown as "repeat as fast as you like".
+   */
+  auto?: boolean
+  /** Seconds between shots, from the weapon def. Absent for non-weapons. */
+  cooldown?: number
 }
 
 export interface WorldItemView {
@@ -116,6 +127,35 @@ export function spriteByRegistryKey(defs: Map<number, ItemDefView>): Map<string,
   return out
 }
 
+/** What automatic fire needs to know about one weapon (§F3). */
+export interface FireProfile {
+  auto: boolean
+  cooldown: number
+}
+
+/**
+ * `registry key → its firing cadence`, for §F3's hold-to-repeat.
+ *
+ * Built from the same parsed registry the art mapping is, and for the same
+ * reason: this is the one place `item_registry_json()` is read, so it is the one
+ * place a mapping off it is derived. A copy of five cooldowns in TypeScript is a
+ * second source of truth that fails silently — nothing goes red when a constant
+ * moves and the copy does not.
+ *
+ * **Only entries the registry gave a cadence for**, so a non-weapon is absent
+ * rather than present-and-zero.
+ */
+export function fireProfileByRegistryKey(
+  defs: Map<number, ItemDefView>,
+): Map<string, FireProfile> {
+  const out = new Map<string, FireProfile>()
+  for (const d of defs.values()) {
+    if (!d.key || typeof d.cooldown !== 'number') continue
+    out.set(d.key, { auto: d.auto === true, cooldown: d.cooldown })
+  }
+  return out
+}
+
 /** Where an item's art comes from, or nothing at all. */
 export type ItemArt =
   | { kind: 'atlas'; frame: string }
@@ -172,13 +212,18 @@ export function parseRegistry(json: string): Map<number, ItemDefView> {
     for (const raw of arr) {
       const d = raw as Partial<ItemDefView>
       if (typeof d.id !== 'number' || typeof d.sprite !== 'string') continue
-      out.set(d.id, {
+      const view: ItemDefView = {
         id: d.id,
         key: String(d.key ?? ''),
         name: String(d.name ?? d.key ?? `item ${d.id}`),
         sprite: d.sprite,
         max_stack: Number(d.max_stack ?? 1),
-      })
+      }
+      // Carried through only when the registry actually said so, so "no cadence"
+      // stays distinguishable from "a cadence of zero".
+      if (typeof d.auto === 'boolean') view.auto = d.auto
+      if (typeof d.cooldown === 'number') view.cooldown = d.cooldown
+      out.set(d.id, view)
     }
   } catch {
     // A broken registry means placeholder boxes, not a broken game.

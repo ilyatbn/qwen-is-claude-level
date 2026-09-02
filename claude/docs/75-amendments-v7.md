@@ -99,9 +99,19 @@ have caught this. `ordnance-visible` keeps its beam half, on a laser weapon.
 > **Holding fire on an automatic weapon keeps firing at the weapon's cooldown until the
 > button is released or the stack is empty.** Every other weapon fires once per press.
 
-`auto: true` on the `Bullet` delivery is what distinguishes them: SMG and machinegun,
-plus `LASER_SMG` on the beam path. It is a property of the weapon and not of the input,
-so a bot holding fire behaves identically to a human doing it.
+`auto: true` is what distinguishes them: SMG and machinegun, plus `LASER_SMG` on the beam
+path. It is a property of the weapon and not of the input, so a bot holding fire behaves
+identically to a human doing it.
+
+**The flag lives on both deliveries, and this section could not be implemented until it
+did.** As first written the flag was on `Bullet` alone — while `LASER_SMG`, named in the
+same sentence as automatic, is `Hitscan`. The set the spec asked for could not be
+expressed. `auto` is therefore a field on `Hitscan` as well, read through one
+`WeaponDef::is_auto()` that matches exhaustively; keying the repeat off a weapon *key*, or
+off "is it a projectile", is §B16 — the assumption that a delivery kind implies an
+identity. It also gives the check its control: the laser **pistol** is the same delivery
+as the laser SMG and differs in exactly this flag, so a repeat wired to the wrong question
+fails against it.
 
 The client is where the repeat lives — the server already refuses a shot inside
 `fire_ready_at` and that gate does not move. For the client to time the repeat it needs

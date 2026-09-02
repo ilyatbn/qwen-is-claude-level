@@ -19,10 +19,12 @@ import {
   diffItems,
   isFallingCrate,
   labelFor,
+  fireProfileByRegistryKey,
   parseRegistry,
   spriteByRegistryKey,
   spriteKeyFor,
   withinLabelRange,
+  type FireProfile,
   type ItemDefView,
   type WorldItemView,
 } from './itemSprites-math'
@@ -54,6 +56,7 @@ export class ItemLayer {
   private readonly chutes: Phaser.GameObjects.Graphics
   private defs: Map<number, ItemDefView> = new Map()
   private spriteByKey: Map<string, string> = new Map()
+  private fireByKey: Map<string, FireProfile> = new Map()
   private warned = new Set<string>()
   private t = 0
 
@@ -72,6 +75,20 @@ export class ItemLayer {
   setRegistry(json: string): void {
     this.defs = parseRegistry(json)
     this.spriteByKey = spriteByRegistryKey(this.defs)
+    this.fireByKey = fireProfileByRegistryKey(this.defs)
+  }
+
+  /**
+   * `smg` → `{ auto: true, cooldown: 0.10 }`, or null for anything the registry
+   * gave no cadence — every non-weapon, and a weapon on a build whose registry
+   * predates §F3.
+   *
+   * Asked here for the reason `spriteForKey` is: one parse of the registry, one
+   * place each mapping off it is derived.
+   */
+  fireProfileForKey(key: string | null): FireProfile | null {
+    if (!key) return null
+    return this.fireByKey.get(key) ?? null
   }
 
   /**

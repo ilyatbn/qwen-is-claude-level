@@ -68,6 +68,7 @@ import { WorldView } from '../render/worldView'
 import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
 import { Crosshair, LocalInput } from '../input/localInput'
+import { RepeatFire } from '../input/autoFire'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
@@ -172,6 +173,12 @@ export class GameScene extends Phaser.Scene {
   private invOpen = false
   private scoreboardOpen = false
   private selectedSlot = 0
+  /**
+   * §F3's hold-to-repeat. Repeats only — the first shot of a press is still
+   * `pointerdown`'s, so a click pressed and released between two frames is never
+   * lost.
+   */
+  private readonly repeatFire = new RepeatFire()
   /**
    * The whole inventory, quick bar then backpack (§C10).
    *
@@ -1229,6 +1236,41 @@ export class GameScene extends Phaser.Scene {
     return this.predictor?.renderPos ?? this.world?.rig.center ?? { x: 0, y: 0 }
   }
 
+  /**
+   * One frame of §F3's automatic fire.
+   *
+   * The cadence comes from the **registry** — `auto` and `cooldown` travel with
+   * `item_registry_json` — so this holds no table of its own. A local copy of
+   * five cooldowns would drift the day a constant moved and nothing would go red.
+   *
+   * The server's `fire_ready_at` remains the authority. This is a rate limit, not
+   * a permission: it exists so a 10-shots-a-second weapon sends ten requests a
+   * second instead of sixty, and if the two ever disagree the server refuses the
+   * shot, which is correct.
+   */
+  private stepRepeatFire(dt: number): void {
+    // Dead players do not fire, and a corpse holding the button must not bank a
+    // burst that arrives on respawn. Read from `meAlive` — the **server's** word
+    // (§B4) — rather than from whether the overlay happens to be drawn.
+    if (!this.meAlive) {
+      this.repeatFire.reset()
+      return
+    }
+    const held = this.input.activePointer.leftButtonDown()
+    const sel = this.slots[this.selectedSlot] ?? null
+    const profile = this.world?.items.fireProfileForKey(sel?.key ?? null) ?? null
+    const shots = this.repeatFire.update({
+      dt,
+      held,
+      weapon: profile,
+      // An empty stack stops the repeat here as well as at the server, so a
+      // player holding the button on a spent weapon is not sending refused
+      // requests at the weapon's cadence for as long as they hold it.
+      hasAmmo: (sel?.count ?? 0) > 0,
+    })
+    for (let i = 0; i < shots; i++) this.conn.sendFire()
+  }
+
   override update(_time: number, delta: number): void {
     // §C12's FPS counter, from real frame timestamps and not from Phaser's
     // smoothed average (§A38). Sampled every frame whether or not the mode is on,
@@ -1238,6 +1280,19 @@ export class GameScene extends Phaser.Scene {
     if (!this.ready) return
     const dt = delta / 1000
     if (!this.ready || !this.world || !this.predictor) return
+
+    // §F3: holding the **left** button empties the clip of an automatic weapon.
+    //
+    // Sampled here rather than driven from an event, for the reason
+    // `localInput.ts`'s header gives about held keys: `pointerdown` fires once,
+    // and "still held" is a state no event reports. An event-driven repeat stops
+    // the moment nothing changes, which is exactly when a player is holding the
+    // button down.
+    //
+    // **Left only.** The right button opens the backpack (§F4.1) and must not
+    // fire — `leftButtonDown()` is the whole guard, and holding right while left
+    // is up reads as not held.
+    this.stepRepeatFire(dt)
 
     // Fixed timestep. Stepping by the frame delta would make movement depend on
     // the frame rate, and the whole point of shipping game-core to the browser

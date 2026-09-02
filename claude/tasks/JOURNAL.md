@@ -5065,3 +5065,37 @@ rather than a smaller crater.
 tests, **e2e 41/41**, **net smoke 25/25**, assets. Net-smoke and the asset check ran for
 the first time this milestone (D-64: `set -e` had been exiting at e2e). `two-clients`
 5/5 green at 5983–13044 px; `bullets-visible` green under full-suite load.
+
+## T19.03 — hold to empty the clip, and a flag the spec could not express
+
+**§F3 named `laser_smg` as automatic and `laser_smg` is `Hitscan`**, which had no `auto`
+field — the set the spec asked for was inexpressible. The flag lives on both deliveries
+now, behind one exhaustive `WeaponDef::is_auto()`, because keying a repeat off a weapon
+*key* or off "is it a projectile" is §B16. It also bought the check its control: the laser
+**pistol** is the same delivery as the laser SMG and differs in exactly this flag.
+
+**A blocked hold banked unlimited cadence.** `since += dt` ran *before* the blocked
+checks, so holding fire for 3 s on a spent SMG — or a non-auto weapon, or nothing selected
+— and then switching without releasing fired **30 shots in a single frame**, all but one
+refused by `fire_ready_at`. That is the flood §F3 forbids, arriving faster than the 60
+msg/s it names. `since` clamps to one cooldown while blocked and shots per frame are
+bounded by `floor(dt / cooldown) + 1` — derived from elapsed time, so a genuinely long
+frame still pays what the wall clock earned. The test that pins the *other* half: a
+blocked hold of 1.5 cooldowns then an unblock fires exactly **1** immediately, so a lazy
+`since = 0` fix fails it.
+
+**The two registry tests could not see a total break of this task's deliverable.** They
+re-derive the answer by parsing the Rust source, which protects the table and leaves the
+**emitter** bare — handing every item a bazooka's `auto` and `cooldown` left all twelve
+green (D-67). There was no Rust test of `item_registry_json` at all. There is now, and it
+is exhaustive rather than spot-checked, because the failure mode is a blanket.
+
+**Two instrument findings.** One of the coder's own tests was vacuous — removing the
+release reset stayed green, because the rising edge already zeroes the clock — so the dead
+line went and the test was rewritten around ten taps. And **`vitest run` does not
+typecheck**: five strict-mode errors passed the suite and were caught only by `tsc`. A
+green client suite is not evidence the client compiles.
+
+Gate: `--fast` EXIT=0 (50 files / 777 tests), clippy clean, `e2e ordnance inventory-ui`
+3/3 — smg 6 rounds at ~10/s ideal, laser pistol exactly 1, right button 0 with a left
+control at 3.

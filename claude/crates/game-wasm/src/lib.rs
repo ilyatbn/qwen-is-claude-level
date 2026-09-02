@@ -25,7 +25,7 @@ use game_core::effects::lava::LavaBurst;
 use game_core::effects::meteor::MeteorShower;
 use game_core::effects::toxic::ToxicRain;
 use game_core::effects::{EffectKind, EffectPhase, EffectScheduler};
-use game_core::items::registry::{self, ItemId, WeaponId};
+use game_core::items::registry::{self, ItemId, ItemKind, WeaponId};
 use game_core::map::{generate, rle, CoarseGrid, Map};
 use game_core::math::Vec2;
 use game_core::physics::body::Body;
@@ -338,13 +338,31 @@ impl GameCore {
         let items: Vec<serde_json::Value> = registry::ITEMS
             .iter()
             .map(|d| {
-                serde_json::json!({
+                let mut v = serde_json::json!({
                     "id": d.id,
                     "key": d.key,
                     "name": d.name,
                     "sprite": d.sprite,
                     "max_stack": d.max_stack,
-                })
+                });
+                // §F3: the client times its repeat from the weapon's own cadence,
+                // so the cadence travels with the registry rather than being
+                // copied into TypeScript. A copy of five cooldowns is the second
+                // source of truth `CLAUDE.md` warns about, and it drifts silently
+                // — nothing fails when a constant moves and the copy does not.
+                //
+                // **Present only for weapons.** A medkit has no cooldown and is
+                // not automatic; emitting `0` and `false` for it would be an
+                // answer to a question it was never asked, and the first caller
+                // to read `cooldown === 0` as "repeat as fast as you like" would
+                // be right to.
+                if let ItemKind::Weapon(wid) = d.kind {
+                    if let Some(w) = defs::def(wid) {
+                        v["auto"] = serde_json::json!(w.is_auto());
+                        v["cooldown"] = serde_json::json!(w.cooldown);
+                    }
+                }
+                v
             })
             .collect();
         serde_json::to_string(&items).unwrap_or_else(|_| "[]".into())
@@ -1002,6 +1020,13 @@ pub fn constants_json() -> String {
         GRENADE_BLAST_RADIUS => c::GRENADE_BLAST_RADIUS,
         SMG_BLAST_RADIUS => c::SMG_BLAST_RADIUS,
         SMG_RANGE => c::SMG_RANGE,
+        // §F3: `ordnance` holds the button for a second and checks the shot
+        // count against the weapon's own cadence. Without this the check
+        // computed `1.0 / undefined` and asserted against **NaN** — every
+        // comparison false, so it failed loudly rather than passing silently,
+        // which is the only reason it was caught (`CLAUDE.md`: an assertion on a
+        // field that does not exist cannot fail).
+        SMG_COOLDOWN => c::SMG_COOLDOWN,
         // §F1: a bullet flies, so anything that aims at a moving target has to
         // lead it by the flight time. `birds` did exactly one tick of lead when
         // the round was hitscan and instant; a fixture that keeps that number
@@ -1084,6 +1109,79 @@ pub fn dequantize_angle(q: u16) -> f32 {
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// §F3 — `item_registry_json` really emits the cadence, for every item.
+    ///
+    /// **The test that was missing.** The TypeScript side asserts `auto` and
+    /// `cooldown` against a re-derivation of the same Rust *source*, so it
+    /// protects the weapon table and says nothing about the emitter: handing
+    /// every item — the medkit included — a bazooka's values left all twelve of
+    /// those tests green. This is the only thing in the gate that reads what the
+    /// function actually produces, and it matters under `--fast`, where the
+    /// browser check that would notice does not run at all.
+    ///
+    /// Exhaustive rather than spot-checked, because the failure it exists for is
+    /// a *blanket* — one wrong value applied to everything. Checking only the SMG
+    /// would pass a build that gave the SMG's cadence to a medkit.
+    #[test]
+    fn the_registry_json_carries_each_weapons_own_cadence_and_nothing_elses() {
+        let core = GameCore::new();
+        let json = core.item_registry_json();
+        let items: Vec<serde_json::Value> =
+            serde_json::from_str(&json).expect("item_registry_json is not valid JSON");
+        assert_eq!(
+            items.len(),
+            registry::ITEMS.len(),
+            "the registry lost items"
+        );
+
+        let mut weapons_seen = 0;
+        let mut others_seen = 0;
+        for (v, d) in items.iter().zip(registry::ITEMS.iter()) {
+            assert_eq!(
+                v["key"].as_str(),
+                Some(d.key),
+                "items came out in a different order"
+            );
+            match d.kind {
+                ItemKind::Weapon(wid) => {
+                    let w = defs::def(wid).expect("a weapon item with no weapon def");
+                    weapons_seen += 1;
+                    assert_eq!(
+                        v["auto"].as_bool(),
+                        Some(w.is_auto()),
+                        "{}: `auto` on the wire disagrees with its WeaponDef",
+                        d.key
+                    );
+                    let cooldown = v["cooldown"].as_f64().unwrap_or(f64::NAN) as f32;
+                    assert!(
+                        (cooldown - w.cooldown).abs() < 1e-6,
+                        "{}: cooldown on the wire is {cooldown}, the def says {}",
+                        d.key,
+                        w.cooldown
+                    );
+                }
+                _ => {
+                    others_seen += 1;
+                    // **Absent, not false-and-zero.** A medkit is not a weapon
+                    // that happens not to repeat; the question does not apply to
+                    // it, and emitting `0` invites a caller to read it as "repeat
+                    // as fast as you like".
+                    assert!(
+                        v.get("auto").is_none() && v.get("cooldown").is_none(),
+                        "{} is not a weapon but carries a firing cadence",
+                        d.key
+                    );
+                }
+            }
+        }
+        // The control on the loop itself: a zip that silently matched nothing
+        // would satisfy every assertion above.
+        assert!(
+            weapons_seen > 0 && others_seen > 0,
+            "the sweep saw no weapons or no non-weapons"
+        );
+    }
 
     /// §E13's poison in the **sandbox** core, which is a second damage path.
     ///

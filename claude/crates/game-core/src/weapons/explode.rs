@@ -245,7 +245,7 @@ pub fn fire_hitscan(
     rng: &mut ChaCha8Rng,
     _now: f32,
 ) -> Vec<HitscanShot> {
-    let Delivery::Hitscan { shots, spread } = weapon.delivery else {
+    let Delivery::Hitscan { shots, spread, .. } = weapon.delivery else {
         return Vec::new();
     };
 

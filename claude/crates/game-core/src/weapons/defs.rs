@@ -72,7 +72,14 @@ pub enum Delivery {
     /// An instant ray (§B7). **Energy weapons only, since §F1** — a laser is a
     /// beam and arrives the moment it is fired, which is the one thing that
     /// makes it different from a bullet.
-    Hitscan { shots: u8, spread: f32 },
+    ///
+    /// `auto` lives here as well as on `Bullet` because §F3's automatic set is
+    /// the SMG, the machinegun **and the laser SMG** — and the laser SMG is the
+    /// one of the three that never became a projectile. Without the field the
+    /// spec's own list could not be expressed, and the temptation would be a
+    /// special case keyed on the weapon's name, which is the §B16 bug waiting to
+    /// happen.
+    Hitscan { shots: u8, spread: f32, auto: bool },
     /// A round that **flies** (§F1).
     ///
     /// The ballistic guns were `Hitscan` for six milestones and the report never
@@ -190,6 +197,23 @@ impl WeaponDef {
     /// Energy weapons pierce shields and drain the victim's battery (§B5).
     pub fn is_energy(&self) -> bool {
         self.energy_cost > 0.0
+    }
+
+    /// Does holding the fire button keep this weapon firing? (§F3)
+    ///
+    /// One function for one question, matched exhaustively, so a new delivery is
+    /// a compile error here rather than a weapon that silently cannot repeat.
+    /// The alternative — `matches!(delivery, Bullet { auto: true, .. })` at each
+    /// call site — misses the laser SMG, which is the one automatic weapon that
+    /// is not a bullet.
+    pub fn is_auto(&self) -> bool {
+        match self.delivery {
+            Delivery::Bullet { auto, .. } | Delivery::Hitscan { auto, .. } => auto,
+            Delivery::Projectile { .. }
+            | Delivery::Melee { .. }
+            | Delivery::Cone { .. }
+            | Delivery::Placed { .. } => false,
+        }
     }
 
     /// Does firing spend a count from the inventory stack?
@@ -318,6 +342,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         delivery: Delivery::Hitscan {
             shots: 1,
             spread: LASER_PISTOL_SPREAD,
+            auto: false,
         },
         damage: LASER_PISTOL_DAMAGE,
         blast_radius: LASER_PISTOL_BLAST_RADIUS,
@@ -335,6 +360,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         delivery: Delivery::Hitscan {
             shots: 1,
             spread: LASER_SMG_SPREAD,
+            auto: true,
         },
         damage: LASER_SMG_DAMAGE,
         blast_radius: LASER_SMG_BLAST_RADIUS,
@@ -677,6 +703,9 @@ pub static WEAPONS: &[WeaponDef] = &[
         delivery: Delivery::Hitscan {
             shots: 1,
             spread: 0.0,
+            // Never fired by a player — `Burst::Pellets` spawns it — so there is
+            // no button to hold.
+            auto: false,
         },
         damage: AIRBURST_PELLET_DAMAGE,
         blast_radius: AIRBURST_PELLET_CARVE,

@@ -70,6 +70,87 @@ const stack = await startStack({
 const { page, dbg, pageErrors } = await stack.openClient({ name: 'ana' })
 await enterBattle(page, { waitPlaying: true, label: 'ordnance' })
 
+// ---------------------------------------------------------------- §F3: hold
+//
+// **First, before anything destructive.** This check later sets fire to the
+// ground it stands on and rockets its own feet to kill a mine; by the end the
+// player has died and `window.__game` is gone, so a phase appended after all
+// that reads `undefined` and reports it as a firing bug. Measured here the
+// player is alive, the loadout is full, and the only thing being asserted is
+// the cadence.
+//
+// **Holding the button empties the clip of an automatic weapon.** Asserted on
+// the count of shots the *server* announced, not on the client's intention: a
+// repeat clock that ticks and sends nothing looks identical from inside the
+// browser, which is the §A39 shape this project keeps paying for.
+//
+// The control is a **non-automatic weapon held exactly as long**. Without it,
+// "holding fired a lot" is satisfied by a client that fires every frame
+// regardless of the weapon — the bug this task's rate limit exists to prevent.
+{
+  // Shots the **server** announced, both kinds: a bullet arrives as
+  // `projectile_spawn` and a beam as `hitscan`, so a counter that watched only
+  // one would read zero for the control and call it a pass.
+  const shotsWhileHolding = async (weapon, seconds) => {
+    await selectWeapon(page, weapon)
+    await standStill(page)
+    // Aim flat and away, so nothing detonates at the player's feet.
+    await page.mouse.move(640 + 220, 360)
+    await sleep(150)
+    const d0 = await dbg()
+    const before = (d0.observed?.projectileSpawns ?? 0) + (d0.observed?.hitscans ?? 0)
+    await page.mouse.down({ button: 'left' })
+    await sleep(seconds * 1000)
+    await page.mouse.up({ button: 'left' })
+    // Let the last shots reach the wire before counting.
+    await sleep(400)
+    const d1 = await dbg()
+    return (d1.observed?.projectileSpawns ?? 0) + (d1.observed?.hitscans ?? 0) - before
+  }
+
+  const k = await page.evaluate(() => window.__game.constants())
+  const HOLD = 1.0
+  const smgShots = await shotsWhileHolding('smg', HOLD)
+  // **The control is a laser pistol, not a bazooka**, and the choice is the
+  // assertion. It is `Hitscan` like the automatic laser SMG and differs from it
+  // in exactly one field — `auto` — so a repeat that keyed off "is it a
+  // projectile" instead of off the flag would pass a bazooka control and fail
+  // this one. It also carves 4 px rather than a 42 px crater, which keeps the
+  // fixed-seed terrain the later phases assert on intact.
+  const laserShots = await shotsWhileHolding('laser_pistol', HOLD)
+
+  // The cadence, not a magic number: a second of holding at `SMG_COOLDOWN`
+  // should be in the neighbourhood of `HOLD / cooldown`. Bounded generously on
+  // both sides — a real browser on a loaded box — but the *floor* is what
+  // matters: several shots, not one.
+  // Guard the constant before dividing by it. This asserted against `NaN` on
+  // its first run — `SMG_COOLDOWN` was not in `constants_json` — and every
+  // comparison against NaN is false, so it reported "expected roughly NaN".
+  // It failed loudly, which is luck: the same shape with the inequality the
+  // other way round would have passed forever.
+  if (typeof k.SMG_COOLDOWN !== 'number' || !(k.SMG_COOLDOWN > 0)) {
+    fail(`SMG_COOLDOWN is not exposed to the client (got ${k.SMG_COOLDOWN}) — the cadence cannot be checked`)
+  }
+  const ideal = HOLD / k.SMG_COOLDOWN
+  if (smgShots >= Math.floor(ideal * 0.4) && smgShots <= Math.ceil(ideal * 1.5) + 1) {
+    ok(`holding the smg for ${HOLD}s fired ${smgShots} rounds (cadence would give ~${ideal.toFixed(0)})`)
+  } else {
+    fail(
+      `holding the smg for ${HOLD}s fired ${smgShots} rounds, expected roughly ${ideal.toFixed(0)} ` +
+        '— an automatic weapon must keep firing while the button is held (§F3)',
+    )
+  }
+  if (laserShots === 1) {
+    ok(`holding the laser pistol for the same ${HOLD}s fired exactly 1 — auto is a flag, not a delivery kind`)
+  } else {
+    fail(`holding the laser pistol for ${HOLD}s fired ${laserShots} shots, expected exactly 1`)
+  }
+  if (smgShots <= laserShots) {
+    fail(`the smg (${smgShots}) did not out-fire the laser pistol (${laserShots}) over the same hold`)
+  }
+}
+
+
 
 async function until(pred, deadlineMs, what) {
   const started = Date.now()
