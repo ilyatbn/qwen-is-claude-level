@@ -1,6 +1,6 @@
 # Master task list
 
-196 tasks across 20 milestones.
+197 tasks across 20 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added; it then read 169 against 183 rows. Counted with
 `grep -c '^- \[[ x]\]'`, not assumed.) Work them **in order**. See `README.md` for the
@@ -396,9 +396,9 @@ rain and watch a green health bar drain; look at a boulder and see it touching t
 
 ---
 
-## M19 — Guns you can see, and a game you can debug (13)
+## M19 — Guns you can see, and a game you can debug (14)
 
-Ten reports, thirteen tasks, and seven of them are one complaint said seven ways: **the
+Ten reports, fourteen tasks, and seven of them are one complaint said seven ways: **the
 simulation is right and the player cannot tell.** A tracer that lives 0.09 s, a fog that
 only shrinks a lightmap radius, rain that lands on nobody, fire that is an arc being
 checked rather than a thing on the ground, a firing gate that turns most clicks into
@@ -418,6 +418,7 @@ independent.
 - [ ] [T19.11](M19/T19.11-fire-is-an-object.md) — Fire is an object **(v7)**
 - [ ] [T19.12](M19/T19.12-what-lights-a-fire.md) — What lights a fire: the flamethrower, the molotov, the vent **(v7)**
 - [ ] [T19.13](M19/T19.13-flames-on-screen.md) — Flames on screen **(v7)**
+- [ ] [T19.14](M19/T19.14-the-join-race.md) — The join race, and a gate that fails on a coin flip **(v7)**
 
 **Checkpoint:** host a private game with bots off, All weapons and a 4-minute timer; run
 sideways while holding fire and watch a stream of bullets cross the screen; dig into a

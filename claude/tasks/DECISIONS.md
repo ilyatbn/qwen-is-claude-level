@@ -1141,3 +1141,29 @@ are SMG, and an SMG round now has to *fly* where it used to resolve instantly.
 > **A fixture that measures an effect with no travel time will not survive giving that
 > effect travel time.** Three checks have now been invalidated by the same one-line change
 > — `birds`, `m4-checkpoint`, `two-clients` — and each was found by a different mechanism.
+
+## D-65 — An A/B across commits must interleave, or run order becomes the finding  ·  M19
+`two-clients` was reported as a §F1 regression on this evidence: six runs at the pre-bullet
+commit, **6/6 green in a tight 8272–10240 px band**, then six at HEAD, **two of them zero**.
+It is a clean-looking result and it is an **artefact of run order**. All six controls ran
+first, on a fresh box; all six HEAD runs ran after, on a box that had been driving browser
+stacks for an hour. `CLAUDE.md` already says *a loaded box makes every wall-clock assertion
+a coin flip* — the same sentence explains the shape of this data.
+
+Interleaved, the two commits are indistinguishable: PRE 2 of 4, HEAD 1 of 4, **the same
+failure mode at both** — `in battle (phase warmup, 0 players)`, a client reading the roster
+while it is still empty, and a vite port that did not arrive inside 90 s. Neither is about
+firing.
+
+> **When you A/B two commits, interleave the runs.** A block of A followed by a block of B
+> measures the machine as much as the code, and it produces confident findings with no
+> failing mechanism behind them.
+
+And the second half, which matters as much: **the named mechanism was arithmetically
+impossible and nobody checked it before believing the numbers.** The story was "8 SMG
+rounds now fly and miss" — but 12 calls at 250 ms against `BAZOOKA_COOLDOWN` 0.9 s means
+only ~4 are accepted, `BAZOOKA_AMMO` is 4, `consume` never re-selects, and **the fixture
+never fires an SMG at all**. A plausible causal story that fits the symptom is not a
+diagnosis. The coder probed instead of repairing and found two latent defects; the reviewer
+conceded the mechanism outright. Both halves are the process working — but the cheaper path
+was ten seconds of arithmetic before six runs of evidence.
