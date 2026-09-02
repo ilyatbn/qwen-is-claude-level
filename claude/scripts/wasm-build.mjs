@@ -19,7 +19,16 @@
  * trusting the flag, because a skip that silently produces nothing is how §A22
  * happened in the first place.
  */
-import { existsSync, statSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -45,6 +54,126 @@ if (process.env.SKIP_WASM_BUILD === '1') {
   console.log('SKIP_WASM_BUILD=1 — using the wasm package already in client/src/core/pkg')
   process.exit(0)
 }
+
+/**
+ * **One build at a time, because two racing builds corrupt each other.**
+ *
+ * Four npm hooks — `predev`, `prebuild`, `pretest`, `pretypecheck` — all run this
+ * script into the **same** `--out-dir`. Two of them overlapping (a `make play`
+ * vite server beside a test run, a lingering dev server whose `predev` fires
+ * during the gate's `pretest`) is a genuine race with two faces, both reproduced
+ * on demand by running two builds concurrently:
+ *
+ *  - `invalid type: sequence, expected a string at line 7 column 11`.
+ *    `wasm-pack`'s `create_pkg_dir` deletes `pkg/package.json`, and its
+ *    `step_create_json` later reads whatever is at that path back as a
+ *    `HashMap<String, String>` to merge npm deps (`manifest/mod.rs:634`). Line 7
+ *    of the file it generates is `"files": [` — an array where that map demands a
+ *    string, so if the read ever happens it fails, and it fails *there*. The only
+ *    way it happens is the other process re-creating the file in the window
+ *    between one build's delete and its own read.
+ *  - `Optimizing wasm binaries with wasm-opt... No such file or directory`, when
+ *    the other build replaces the intermediate this one is holding.
+ *
+ * **Why the guard is here and not in the four hooks.** Serialising the callers is
+ * a guard the fifth caller forgets; this is the shared function, so this is where
+ * the invariant lives (`CLAUDE.md`). It also covers callers nobody has written.
+ *
+ * **Waiting, not skipping.** A caller that reaches this script needs a `pkg` that
+ * matches current source — that is the whole point of the hooks (§A22). Returning
+ * early because someone else is mid-build would hand it a half-written package,
+ * which is the failure being fixed wearing a quieter shirt. So we block until the
+ * other build is done and then do our own.
+ *
+ * **A killed build must not wedge the repository.** This project kills process
+ * *groups* for a living, so a lock holder dying mid-build is routine rather than
+ * exotic. The lock records the holder's pid and any waiter that finds it dead
+ * removes it and takes over; `process.kill(pid, 0)` is the liveness test, with
+ * `EPERM` counting as alive because it means the pid exists and is not ours.
+ */
+const lockPath = join(root, 'target', '.wasm-build.lock')
+const LOCK_TIMEOUT_MS = 10 * 60_000
+const LOCK_POLL_MS = 100
+
+const sleepSync = (ms) => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+const holderIsAlive = (pid) => {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    // EPERM: the pid exists, it just is not ours to signal. Alive.
+    return err.code === 'EPERM'
+  }
+}
+
+let lockHeld = false
+
+const releaseLock = () => {
+  if (!lockHeld) return
+  lockHeld = false
+  try {
+    // Only remove a lock we still own: if a waiter judged us dead and took over,
+    // the file is theirs now and deleting it would free a build still running.
+    if (Number(readFileSync(lockPath, 'utf8').trim()) === process.pid) unlinkSync(lockPath)
+  } catch {
+    /* already gone */
+  }
+}
+
+const acquireLock = () => {
+  mkdirSync(dirname(lockPath), { recursive: true })
+  const deadline = Date.now() + LOCK_TIMEOUT_MS
+  for (;;) {
+    try {
+      // `wx` is the atomic half: exactly one racer creates the file.
+      const fd = openSync(lockPath, 'wx')
+      writeSync(fd, String(process.pid))
+      closeSync(fd)
+      lockHeld = true
+      return
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err
+      let holder = 0
+      try {
+        holder = Number(readFileSync(lockPath, 'utf8').trim())
+      } catch {
+        // The holder released between our create and our read. Retry.
+        continue
+      }
+      if (!holderIsAlive(holder)) {
+        console.log(`wasm-build: clearing a stale lock left by pid ${holder}`)
+        try {
+          unlinkSync(lockPath)
+        } catch {
+          /* another waiter cleared it first */
+        }
+        continue
+      }
+      if (Date.now() > deadline) {
+        console.error(
+          `wasm-build: pid ${holder} has held ${lockPath} for ` +
+            `${LOCK_TIMEOUT_MS / 60_000} minutes and is still alive. Refusing to ` +
+            'build against a package another build is writing. If that pid is ' +
+            'wedged, kill its process group (scripts/proc-group.mjs) and re-run.',
+        )
+        process.exit(1)
+      }
+      sleepSync(LOCK_POLL_MS)
+    }
+  }
+}
+
+// `exit` covers `process.exit()` too, which this script uses on every error path.
+process.on('exit', releaseLock)
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => process.exit(1))
+}
+
+acquireLock()
 
 // **Absolute.** `wasm-pack` resolves a relative `--out-dir` against the CRATE
 // directory, not against `cwd` — so `client/src/core/pkg` here meant

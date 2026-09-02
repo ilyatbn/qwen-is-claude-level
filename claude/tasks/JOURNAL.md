@@ -5110,3 +5110,14 @@ again; settling needs `grounded`. **My instrument lied** — `check.sh | tail -8
 tail's status. Two of five new tests were vacuous on a stall; four `100.0` vs `WALK_SPEED`
 150 — pinned, falsified live. **`bullets-visible` red then green under load, but settled
 before `standStill` — no causal path, a load flake.** EXIT=0; 2366 Rust, 778 client, 41/41.
+
+## T19.15 — the wasm-build coin flip is a race; hud-timer's premise is wrong (PARTIAL)
+
+**`wasm-pack` parses the `package.json` it just generated** as `HashMap<String,String>`
+(`manifest/mod.rs:634`) and line 7 of that file is `"files": [`, so any read fails exactly
+there. `create_pkg_dir` deletes it first, so a lone build *cannot* fail — 18 serial runs
+did not, and the old "deleting it changes nothing" was a no-op duplicating wasm-pack's own
+step. Two builds sharing one out-dir do fail: 3/6, plus a second face (`wasm-opt` ENOENT)
+reading as a different bug. A lock in `wasm-build.mjs` gives 0/22; cutting only
+`acquireLock()` restores 3/6. **`backdrop-real` was attribution, not budget** — the chamfer
+(66/143/257 ms) was paid in a 5 s `it()` while a 120 s `beforeAll` already existed.

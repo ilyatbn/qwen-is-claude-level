@@ -230,3 +230,104 @@ The task landed green (`cargo test -p game-core && cargo test -p game-server &&
   both directly above a `standStill` call. Checks compensating by hand for the exact term
   the helper was missing is the evidence that `grounded` belongs *in* the helper. Written
   down so nobody later removes those waits as redundant without knowing why they existed.
+
+## IN PROGRESS — T19.15, two of three landed (coder retiring at ~360k)
+
+`TASKS.md` box is **unticked** deliberately. Two deliverables are done and proven; the
+third is not, and its task-file framing is wrong.
+
+### Landed 1: the wasm-build coin flip (fixed)
+
+`node scripts/wasm-build.mjs` failing on "roughly alternate runs" with
+`invalid type: sequence, expected a string at line 7 column 11` is a **concurrency bug**.
+
+- The document is `client/src/core/pkg/package.json` — wasm-pack's **own output**. It
+  re-reads it as `HashMap<String, String>` to merge npm deps
+  (`wasm-pack-0.15.0/src/manifest/mod.rs:634`). Line 7 is `  "files": [`, an array where
+  that map demands a string, so the parse fails *there* every time it happens at all.
+- **A lone build cannot hit it.** `create_pkg_dir` (`command/utils.rs:40`) does
+  `remove_file(out_dir/package.json)` and `step_create_dir` runs before `step_create_json`.
+  18 serial runs passed; planting deliberately unparseable JSON was silently overwritten,
+  `rc=0`. **The old "deleting `pkg/package.json` beforehand changes nothing" finding was a
+  no-op duplicating a step wasm-pack already performs** — it looked exculpatory and was not.
+- The only window is another process re-creating the file between those two steps. Two
+  concurrent builds: **3 of 6 failed**, first attempt, exact error string. It has a second
+  face — `Optimizing wasm binaries with wasm-opt... No such file or directory` — one build
+  losing the intermediate another replaced. **One cause, two error strings**; triaging them
+  separately chases two ghosts.
+- Fix: a lock in `wasm-build.mjs`, because four hooks (`predev`, `prebuild`, `pretest`,
+  `pretypecheck`) share one out-dir and serialising callers is a guard the fifth forgets.
+  It **waits** rather than skipping (a caller needs a fresh `pkg`, and half-written is the
+  bug being fixed), records the holder pid, and steals a dead holder's lock so a killed
+  process group cannot wedge the repo. Lock lives at `target/.wasm-build.lock` (gitignored).
+- **Proof, and how to re-prove it:** 2-way × 5 and 4-way × 3 both gave **0 failures**;
+  commenting out only `acquireLock()` restored **3 of 6**. The written Done-when
+  (`for i in $(seq 1 20)`) is **serial and passes against the broken tree** — it proves
+  nothing about this bug. Any future proof must be concurrent.
+
+### Landed 2: `backdrop-real` (attribution fixed, budget untouched)
+
+Not a budget problem. `distCache` was filled lazily by whichever `it()` asked first, so one
+test carried the chamfer against the default 5 s while `beforeAll` already had 120 s. The
+memoisation comment claimed "computed once per `build()`" and the code did not do it;
+`build()` now calls `distToSolid()` and the comment is true.
+
+**This is not a speed fix and not the cause of any timeout** — measured, the chamfer is
+66 ms / 143 ms / 257 ms (Small/Medium/Large 8.4 Mpx), under 1 % of a file whose individual
+tests run 20-33 s. The 33 s is the tests' own full-map scans crossing into WASM per pixel:
+legitimate work. **No budget was widened.**
+
+**The reported `Test timed out in 5000ms` never reproduced** — not alone idle (42/42,
+214.8 s), not alone under 8 CPU spinners (42/42, 317.8 s), not in the full client suite
+(50 files / 778 tests green, 213.2 s). Mechanism worth knowing: vitest's timeout is a
+timer, and these test bodies are **synchronous**, so the timer cannot fire until the body
+returns — which is why 33 s tests pass against a 5 s default.
+
+### NOT landed: `hud-timer` — the task's premise is wrong
+
+**Load is not the variable.** 20 interleaved runs (idle vs 8 CPU spinners), box verified
+idle before each and checked for leaked load after each:
+
+```
+idle    n=10  dr 40.1 .. 44.9  mean 44.15   0 failures
+loaded  n=10  dr 40.0 .. 45.9  mean 44.87   1 failure (at exactly 40.0)
+full 41-check e2e suite  n=1   dr 45.1
+```
+
+The loaded arm reads **higher** than idle, and the real browser suite — the condition under
+which the original "+38.4" was reported — sits at 45.1, above everything. The near-failures
+were one in *each* arm. The flake is an intermittent bimodal `after` sample (normally
++2.9..+3.7, twice −1.1 and −2.3) that **reproduces on a completely idle box**. The `before`
+reading is rock steady at −41.0..−42.3.
+
+**A repair attempt was made and reverted.** Keying the sample to settled pixels instead of
+the `hudTimer.warn` flag **tripled the variance**: `after` swung −4.1..+7.8 and failures
+went **1 → 6 of 20**. Reverted per "revert what you cannot explain". Do not re-try that
+shape without a theory for why it destabilised the sample.
+
+**For the next agent:** the threshold is `dr > 40` at `hud-timer.mjs:142`, one of four
+round numbers added together in T14.01 with no measurement cited (`git log -S"needs +40"`).
+It sits on the bottom tail of the real distribution, so it fails ~1 in 20 on an idle box.
+Two open questions, in order: *why* is the `after` sample occasionally ~5 low, and only
+then what the floor should be. **Do not lower it to a number that merely passes** — that
+was explicitly rejected here.
+
+### Standing hazards this task produced
+
+- **I leaked a load generator for 3 h 47 m.** Spinners started inside `LP=$(startload)` — a
+  command substitution subshell — reparent to `init` immediately, and the only cleanup was
+  a `kill` in a parent that later died. It saturated the box while I asserted it was idle.
+  `proc-group.mjs`'s own comment already records this costing three sessions.
+  **Check the box before any wall-clock number:** `ps -eo pcpu,args --sort=-pcpu | head`.
+- **`setsid` forks**, so `$!` is not the new group leader and `kill -TERM -$!` kills
+  nothing; a `trap "kill 0"` ceiling also failed to reap. The design that works is
+  `timeout --signal=KILL` **per spinner** — a ceiling that is a property of each process
+  needs no parent, session or trap to survive. `scratchpad/loadgen.sh` + `spinner.sh`.
+- **Two counting instruments gave opposite wrong answers**: `pgrep -f 'while :'` matched its
+  own command line and reported phantom survivors; `comm`-based counting reported zero while
+  12 spinners ran at 106 %, because a shebang script's `comm` is `bash`. Caught only by
+  printing raw `ps`. A metric with no control is a number.
+- **Unreconciled:** `hud-measure.sh` wrote its only line at 13:53:18 and its spinners date
+  from 14:08:44 — about fifteen minutes unaccounted for. It does not threaten the alibi
+  (every artifact at or before 13:53:18 predates the first spinner under either reading)
+  but it is not explained, and it is recorded here rather than smoothed over.

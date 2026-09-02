@@ -61,6 +61,18 @@ function build(scale: MapScale, seed: bigint, generator: MapGenerator) {
   h = core.height
   const c = C()
   bd = new BackdropMask(core, undefined, c.SKY_MARGIN, c.BACKDROP_RAYS, c.BACKDROP_RAY_LEN, c.BACKDROP_MIN_HITS, c.BACKDROP_MIN_UP, c.BACKDROP_MAX_DIST_TO_SOLID, c.BACKDROP_MIN_ROOF)
+  // **Pay the chamfer here, inside the budget sized for it.** `distCache` was
+  // filled lazily by whichever `it()` asked first, so that one test carried the
+  // whole cost against the default 5 s while this `beforeAll` already carries
+  // 120 s. The memoisation note below says "computed once per `build()`" — this
+  // is the line that makes that true.
+  //
+  // **This is attribution, not a speed fix, and it is not the cause of any
+  // timeout.** Measured: the chamfer is 66 ms at Small, 143 ms at Medium and
+  // 257 ms at Large (8.4 M px) — against tests that individually run 20-33 s.
+  // It is under 1 % of the file's runtime. The 33 s is the tests' own full-map
+  // scans crossing into WASM per pixel, which is legitimate work.
+  distToSolid()
 }
 
 beforeAll(async () => {
