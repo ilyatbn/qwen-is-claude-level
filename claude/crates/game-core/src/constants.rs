@@ -1055,19 +1055,6 @@ pub const MINIMAP_REVEAL_R: f32 = 260.0;
 pub const MAX_ROOMS: usize = 32;
 /// Seconds after the last **human** leaves before the room is dropped. Bots do
 /// not keep a room alive.
-/// §C20 — you cannot fire while moving under your own power.
-///
-/// Above this horizontal speed a **grounded** player is still walking (or still
-/// coasting off a walk through `GROUND_FRICTION`) and every fire is refused.
-/// Airborne speed does not count: being thrown by a blast must not stop you
-/// shooting, or knockback becomes a stun.
-///
-/// 8 px/s against a `WALK_SPEED` of 150 is "stopped, give or take the last
-/// pixel of friction" — small enough that a player who has let go and settled
-/// can shoot, large enough that a float that never quite reaches zero does not
-/// lock them out.
-pub const FIRE_MOVE_MAX_SPEED: f32 = 8.0;
-
 pub const ROOM_EMPTY_TTL: f32 = 30.0;
 /// How often the process-level sweep asks the registry what has expired.
 ///

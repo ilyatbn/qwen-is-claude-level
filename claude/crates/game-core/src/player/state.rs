@@ -43,11 +43,6 @@ pub enum UseError {
     WrongKind,
     OnCooldown,
     NoAmmo,
-    /// §C20 — you were moving under your own power. Silent and normal, like
-    /// every other fire rejection (`docs/30` §4); `docs/61` §3 row 6 is why it
-    /// is a distinct variant rather than a bare `false`: "my rocket did nothing"
-    /// has answers, and the server knows which one this was.
-    Moving,
 }
 
 #[derive(Clone, Debug)]

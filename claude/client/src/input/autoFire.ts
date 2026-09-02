@@ -23,6 +23,25 @@
  * server say no sixty times a second for a ten-shots-a-second weapon.
  */
 
+/**
+ * The longest frame anything paced by the render loop will act on, in seconds.
+ *
+ * The scene's fixed-timestep accumulator has always clamped to this: a tab that
+ * was backgrounded for ten seconds must not be simulated ten seconds forward in
+ * one frame. The repeat clock needs the **same** ceiling for the same reason and
+ * did not have it — fed the raw delta, a refocusing tab produced ~100
+ * `sendFire()` calls in a single frame, which is the refused-request flood §F3
+ * exists to prevent, arriving by a different route than the one already fixed.
+ *
+ * It lives **here** rather than in `GameScene` so the sharing is real. The scene
+ * cannot be loaded by vitest — there is no canvas — so a copy declared there is
+ * a copy no test can reach, and a test that then declares its own third copy is
+ * self-consistent whatever the scene does. One exported constant, imported by
+ * the scene and by the test, is the only version of "these cannot drift" that is
+ * actually checkable.
+ */
+export const MAX_FRAME_DT = 0.25
+
 /** What the clock needs to know about the selected weapon. */
 export interface AutoFireWeapon {
   /** Does holding the button keep it firing? From the registry, never a local table. */

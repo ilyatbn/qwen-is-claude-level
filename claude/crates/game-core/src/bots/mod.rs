@@ -11,8 +11,8 @@ use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 
 use crate::constants::{
-    BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, FIRE_MOVE_MAX_SPEED, FOV_DAY, INVENTORY_SLOTS,
-    JETPACK_MAX_FUEL, PICKUP_RADIUS, STEP_UP,
+    BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, FOV_DAY, INVENTORY_SLOTS, JETPACK_MAX_FUEL,
+    PICKUP_RADIUS, STEP_UP,
 };
 use crate::items::registry::{def, ItemId, ItemKind};
 use crate::math::{Vec2, TAU};
@@ -216,13 +216,6 @@ pub struct BotStats {
     /// `rej_blast_guard`, which refuses on the target's distance. Separate
     /// counters because they answer different questions.
     pub rej_impact_guard: u32,
-    /// Ticks the bot wanted to shoot and was still stopping (§C20).
-    ///
-    /// Separate from `fires`, which counts trigger pulls actually issued. A bot
-    /// that plants itself and then shoots spends a few ticks here first, and
-    /// without the split `fires` would count intent rather than shots — the
-    /// §A15 shape this project keeps paying for.
-    pub rej_moving: u32,
 }
 
 pub struct Bot {
@@ -381,9 +374,10 @@ impl Bot {
         // rather than adding to it matters: a bot that keeps its original
         // buttons set walks *through* the patch it is trying to leave, and the
         // hazards that hurt bots most are the ones they are standing on.
-        let mut fleeing = false;
+        // `fleeing` was tracked here and read only by the trigger-planting block
+        // §F4 deleted — it stopped a bot planting itself inside a burning patch.
+        // With nothing to plant, the flag has no second reader.
         if let Some(h) = self.hazard_at(world, pos, HAZARD_CLEARANCE) {
-            fleeing = true;
             buttons &= !(button::LEFT | button::RIGHT);
             buttons |= if pos.x >= h.pos.x {
                 button::RIGHT
@@ -444,60 +438,21 @@ impl Bot {
 
         // --- fire -------------------------------------------------------
         //
-        // §C20 applies to bots. They go through `World::fire` like everyone
-        // else, so the gate already refuses them — but a bot that keeps walking
-        // into a refused trigger pull simply never shoots again, which is worse
-        // than the behaviour being fixed. So it does what a player does: it
-        // **plants itself**, and pulls the trigger once it has actually stopped.
+        // **§C20 is repealed (§F4), so a bot simply shoots.** It no longer plants
+        // itself first: there is nothing to plant for, and the planting was only
+        // ever compensation for a gate that refused a moving shooter.
         //
-        // The condition mirrors `World::moving_under_own_power` exactly, reading
-        // the same velocity on the same tick, so the bot cannot believe it is
-        // allowed to shoot when the world disagrees.
-        //
-        // Standing in fire still beats taking the shot: `fleeing` keeps the
-        // hazard override above, or a bot would stop to aim in a burning patch.
+        // What went with it is worth recording, because it was the measured
+        // reason the planting existed at all. Over the balance harness's eight
+        // seeds at SKILL 0.85 the gate refused **910 of 1063** wanted trigger
+        // pulls — 86 % — and the refusal rate tracked airborne time almost
+        // exactly, because a bot in the air has no ground friction to slow it
+        // under the threshold. Bots are airborne most of the time, so for most of
+        // their lives they could not shoot at all.
         if let Goal::Enemy(_) = self.goal {
             if self.should_fire(world, me, pos, aim_at, now) {
-                if !fleeing {
-                    buttons &= !(button::LEFT | button::RIGHT);
-                    // **And come down.** Clearing the direction keys is not
-                    // planting if the bot is in the air: there is no ground
-                    // friction up there, so `AIR_DRAG` takes over a second to
-                    // bring a `WALK_SPEED` drift under `FIRE_MOVE_MAX_SPEED`,
-                    // and a bot that keeps jumping or thrusting never gets
-                    // under it at all.
-                    //
-                    // Measured before this line existed, over the balance
-                    // harness's eight seeds at SKILL 0.85: the gate refused
-                    // **910 of 1063** wanted trigger pulls (86 %), and the
-                    // refusal rate tracked airborne time almost exactly — the
-                    // worst seed had bots airborne 81 % of ticks and firing 15
-                    // times against 458 refusals. A bot that cannot shoot is a
-                    // worse outcome than a bot that shoots while walking, and it
-                    // silenced the arsenal measurement entirely (`balance`'s own
-                    // `fires > 0` control caught it).
-                    // Drop the thrust and let gravity do it. `button::DOWN` was
-                    // here too and is inert: its only consumer is
-                    // `jetpack::apply_thrust`, which runs only while the
-                    // jetpack is `active`, which requires JUMP — just cleared.
-                    // The whole of the measured improvement came from this line.
-                    buttons &= !(button::JUMP | button::UP);
-                }
-                // Mirrors `World::moving_under_own_power` term for term, in the
-                // same order. The first version read `!me.body.grounded ||
-                // slow`, which made a falling or jetpacking bot count as
-                // "stopped" at any speed — and bots are airborne most of the
-                // time, so §C20 applied to them only while they happened to be
-                // standing on something. Every balance number measured against
-                // that would have been measured against a gate that leaked.
-                let stopped = buttons & (button::LEFT | button::RIGHT) == 0
-                    && (me.was_knocked(now) || me.body.vel.x.abs() <= FIRE_MOVE_MAX_SPEED);
-                if stopped {
-                    buttons |= button::FIRE;
-                    self.stats.fires += 1;
-                } else {
-                    self.stats.rej_moving += 1;
-                }
+                buttons |= button::FIRE;
+                self.stats.fires += 1;
             }
         }
 
@@ -1575,16 +1530,30 @@ mod tests {
         let mut b = Bot::new(1, SEED, 0, 1.0);
         let inp = b.think(&w, 0.0, SIM_DT);
         // **It does not walk away** — which is what the name says and all the
-        // control needs. It used to demand a RIGHT press, and that is retired
-        // from both directions: §C20 makes an armed bot plant itself to shoot
-        // rather than close, and §E10 stops an unarmed one chasing at all. The
-        // claim being controlled for is the paired test's LEFT, so the absence
-        // of a LEFT here is exactly what attributes that one to the fire.
+        // control needs. The claim being controlled for is the paired test's
+        // LEFT, so the absence of a LEFT here is exactly what attributes that
+        // one to the fire.
         assert_eq!(
             inp.buttons & button::LEFT,
             0,
             "with no fire under it the bot walked away anyway, so `a_bot_steps_out_of_fire` \
              is not evidence that fire is what moved it"
+        );
+        // And it closes, which is the stronger form of the same control.
+        //
+        // The RIGHT press used to be asserted here and was dropped when §C20
+        // made an armed bot plant itself to shoot rather than close — so "does
+        // not walk away" was all that survived. **§F4 repealed §C20**: a bot
+        // fires on the move, this one is armed with a pistol whose `stand_off`
+        // is 40 px against a target 300 px away, and closing is once again the
+        // behaviour. Restored rather than left as prose, because a comment
+        // citing a repealed gate to justify a weaker assertion is how the
+        // weaker assertion becomes permanent.
+        assert_ne!(
+            inp.buttons & button::RIGHT,
+            0,
+            "the bot neither fled nor closed on an enemy 300 px away — with §C20 repealed \
+             there is nothing left to keep an armed bot standing still"
         );
     }
 
@@ -1792,13 +1761,10 @@ mod tests {
         if let Some(p) = w.player_mut(2) {
             p.body.pos = Vec2::new(at.x + 200.0, at.y);
         }
-        // §C20: a bot that can take the shot now **stands still** to take it,
-        // so with the trigger ready this measures the fire gate rather than the
-        // direction choice it is named for. Putting the weapon on cooldown asks
-        // the pathing question and only the pathing question.
-        if let Some(p) = w.player_mut(1) {
-            p.fire_ready_at = 1.0;
-        }
+        // The trigger is left **ready**, unlike under §C20. That gate made a bot
+        // stop dead to shoot, so this test had to put the weapon on cooldown to
+        // ask about pathing at all; §F4 repealed it, a bot shoots on the move,
+        // and the direction choice can now be read straight off a live tick.
         let mut b = Bot::new(1, SEED, 0, 1.0); // perfect skill: no reaction lag
         let inp = b.think(&w, 0.0, SIM_DT);
         assert!(
@@ -1808,13 +1774,16 @@ mod tests {
         assert!(inp.buttons & button::LEFT == 0);
     }
 
-    /// The other side of the same tick: with the trigger **ready**, the same bot
-    /// in the same place plants itself instead of closing (§C20).
+    /// The other side of the same tick: with the trigger ready, the same bot in
+    /// the same place **shoots without stopping** (§F4).
     ///
-    /// Paired with the test above deliberately — one fixture, one difference, so
-    /// what changed the behaviour is not in doubt.
+    /// **This replaces `a_bot_that_can_shoot_stands_still_instead_of_closing`**,
+    /// which asserted the opposite and was correct until §C20 was repealed. The
+    /// pairing survives: one fixture, one difference, so what changed the
+    /// behaviour is not in doubt — the bot presses the same direction as the
+    /// test above *and* pulls the trigger, where it used to have to choose.
     #[test]
-    fn a_bot_that_can_shoot_stands_still_instead_of_closing() {
+    fn a_bot_that_can_shoot_fires_without_breaking_stride() {
         let mut w = world_with(&[1, 2]);
         give(&mut w, 1, BAZOOKA, 4);
         let at = clear_line(&w);
@@ -1826,19 +1795,20 @@ mod tests {
         }
         let mut b = Bot::new(1, SEED, 0, 1.0);
         let inp = b.think(&w, 0.0, SIM_DT);
-        assert_eq!(
-            inp.buttons & (button::LEFT | button::RIGHT),
+        // It still closes on the target: the direction is not sacrificed.
+        assert_ne!(
+            inp.buttons & button::RIGHT,
             0,
-            "the bot kept walking into a shot §C20 would refuse"
+            "the bot stopped walking toward a target 200 px to its right — the \
+             planting behaviour §F4 removed is still there"
         );
-        // And it takes the shot. Without this half, a bot that neither moves nor
-        // fires — out of ammo, no line of sight, any unrelated reason — passes
-        // this test, which would make "bots plant themselves to shoot" mean
-        // "bots stopped shooting". §A26.
+        // And it takes the shot on the same tick. Without this half a bot that
+        // walks and never fires passes, which is the §A26 shape the test it
+        // replaces already guarded against.
         assert_ne!(
             inp.buttons & button::FIRE,
             0,
-            "the bot planted itself and then did not pull the trigger"
+            "the bot walked but did not pull the trigger"
         );
     }
 
@@ -2051,7 +2021,6 @@ pub(crate) mod harness {
             ticks_armed: a.ticks_armed + b.ticks_armed,
             fires: a.fires + b.fires,
             rej_cooldown: a.rej_cooldown + b.rej_cooldown,
-            rej_moving: a.rej_moving + b.rej_moving,
             rej_unarmed: a.rej_unarmed + b.rej_unarmed,
             rej_blast_guard: a.rej_blast_guard + b.rej_blast_guard,
             rej_range: a.rej_range + b.rej_range,

@@ -93,3 +93,134 @@ tasks are `tasks/M19/`. This file is the rest.
   immediately after T19.04.**
 - `WEAPON_AIRBURST_PELLET` is still `Hitscan` — nine flying bodies per airburst is what
   `burst_pellets` exists to avoid.
+
+## From the T19.04 coder, retiring at ~535k
+
+- **`standStill` is keyed to settling, not to a threshold.** It waited for
+  `|vel.x| < FIRE_MOVE_MAX_SPEED`; §F4 retired that constant, so it now releases the keys
+  and waits until the velocity **stops changing** (two equal readings, or zero). There is
+  no "stopped" constant any more and inventing one would be a tunable nobody chose — that
+  is why it is shaped this way, so please do not reintroduce a number. It also **no longer
+  throws**: failing to settle used to mean every following shot was refused, and now means
+  a slightly noisy measurement. Twelve checks call it.
+- **The §F4 balance numbers**: 8 seeds, `SKILL 0.85`, "before" measured in a control
+  worktree at `41233a1`, "after" in the working tree — `cargo test -p game-core --release
+  --test balance -- --ignored --nocapture`. Per-weapon damage/bot-s rose almost everywhere
+  (pistol 1.73→2.32, laser_smg 1.98→2.52); total bot `fires` **fell** in every
+  configuration while damage rose in four of six — fewer shots, better ones, because bots
+  no longer spend ticks planting. **`density_report` is `#[ignore]`d, so the gate never
+  runs it**; it was **red at the base commit** (15.9 of 24 against a 16 floor) and green
+  after. That is drift crossing a marginal threshold, **not** a fix, and must not be
+  reported as one.
+- **The `replay_run` guard rewrite — the piece to re-derive before trusting.**
+  `a_perturbed_command_is_localised_to_a_nearby_tick` corrupts 20 late commands and checks
+  each divergence is localised to within a `CHECKPOINT_STRIDE`. Two guards sit under the
+  loop: a floor (`diverged >= 5`, detection works) and a **straddle** — it required both
+  some divergences and some wash-outs, on the reasoning that if every sample goes the same
+  way the count has stopped measuring where the boundary is. §F4 deleted the boundary from
+  the recording: bots fire while moving, so a corrupted button becomes a shot and a shot
+  becomes a terrain difference within a tick or two, and no sampled tick has too little
+  round left to compound. Measured — **before 11/20 diverged, 9 washed out (the last nine
+  ticks); after 20/20, 0 washed out, and still 20/20 with the window slid to the final 20
+  candidates.** So its own advice, "move the window, not the floor", cannot work: it was
+  written for a terrain change and this is not one. The guard now fails only on
+  `diverged == 0` — the genuinely vacuous outcome, where every assertion above is skipped
+  in silence — and prints a note when the wash-out tail is absent. The floor is untouched
+  and the localisation assertions now run on 20 divergences instead of 11. Falsified by
+  forcing detection to collapse: red. **A reviewer should look at this specifically.**
+- **`was_knocked` now has no reader.** Its only callers were the §C20 gate and the bot
+  mirror. `knocked_until` is still written by all four throwing paths and folded into the
+  state hash, so it was left alone — removing it would change every golden hash for a
+  reason unrelated to knockback.
+- **`MAX_FRAME_DT` is shared, and the clamp is untested.** The repeat clock and the
+  fixed-timestep accumulator now read one named constant in `GameScene`, so they cannot
+  drift. But `GameScene` cannot be loaded by vitest (no canvas), so **deleting
+  `Math.min(dt, MAX_FRAME_DT)` at the call site leaves every unit test green.** The
+  sharing is the guard; the test describes the contract and says so.
+- **`backdrop-real` was green in T19.02's and T19.03's gates and is now red alone on an
+  idle box** — 11 failed, 216 s, `Test timed out in 5000ms` on tests that take 5–32 s, and
+  **identical at the base commit with the working tree stashed**. That combination is the
+  useful part: it is not a slow test and not a regression, it is environmental drift on
+  this machine. T19.15.
+- **Two more turn-eaters.** `cargo test --workspace` saturates the box, so the *next*
+  stage's wall-clock assertions run loaded — that is where `in_progress`'s join race and
+  `hud-timer`'s redness margin bite. And a doc-comment block above a constant belongs to
+  it: cutting a constant by walking backwards over `///` lines swallowed
+  `ROOM_EMPTY_TTL`'s comment and left it undocumented.
+
+## From the T19.04 reviewer/repair pass — what the fixes left standing
+
+The task landed green (`cargo test -p game-core && cargo test -p game-server &&
+./scripts/check.sh`, EXIT=0). What follows is what does not fit in a journal entry.
+
+- **The balance numbers, re-measured on a clear box, and they reproduce.** 8 seeds,
+  `SKILL 0.85`: pistol **2.32** dmg/bot-s, laser_smg **2.52**, revolver 2.60,
+  laser_pistol 2.18, machinegun 2.15, deagle 2.12, smg 1.93; bazooka 0.77, grenade 0.42.
+  Median **1.77**. These match the previous coder's "after" figures exactly, which is
+  worth knowing given that everything *else* they reported was measured against a tree
+  that could not pass `cargo test -p game-server`. **`density_report` passes — do not
+  report that as a fix.** It was red at the base commit at 15.9 of 24 against a 16 floor;
+  distinct coverage now reads 15.2 (Small), 15.2 (Medium), 16.8 (Large). That is drift
+  across a marginal threshold, and it will drift back.
+- **`balance.rs:275` — `WINDOW: f32 = 25.0` is a wait against a repealed tunable.** Its
+  comment says it was lengthened from 10 s *because* §C20 delayed the first shot to
+  t≈13 s. §F4 removed that delay. Measured this run: **first contact 1 s** in the shipping
+  config, encounters spread **0–43 s** by scale, first weapon pickup **12–14 s**. The test
+  runs the window twice, so the over-wait is paid twice. Somebody's next task — the
+  numbers to size it are here so nobody has to re-measure.
+- **Stale §C20 prose, left standing deliberately.** These assert a repealed gate is live
+  and **will mislead the next reader**: `quick-throw.mjs:63,153`, `teleport.mjs:154`,
+  `ordnance.mjs:171,485`, `death.mjs:82,282`, `bots/mod.rs:1137`, `world/mod.rs:4539`.
+  They were left because none of them changes behaviour and a prose sweep across six
+  files is not this task. `bots/mod.rs:1534` was the one that mattered — a control test
+  whose whole attribution argument was "§C20 makes an armed bot plant itself rather than
+  close" — and its RIGHT assertion is restored and passing. The three mentions in
+  `harness.mjs:364,368` and `world/mod.rs:3410` are *history* explaining the repeal and
+  should stay.
+- **`was_knocked` has no reader and survives on `pub`.** `dead_code` does not fire on a
+  public method, so nothing will tell you it is unused. `knocked_until` is still written
+  by all four throwing paths and folded into the state hash; removing it would churn
+  every golden hash for a reason unrelated to knockback. Carried forward from the
+  previous coder, still the right call.
+- **`MAX_FRAME_DT` moved into `client/src/input/autoFire.ts`.** That file is *not* new
+  and not out of scope — it is tracked, `RepeatFire` has lived there since T19.03
+  (`git log -1 -- client/src/input/autoFire.ts` → `73928bc`), and T19.04 has no **Touch
+  only** section to be outside of. It had to live somewhere vitest can load: `GameScene` cannot be imported
+  without a canvas, so a constant declared there is one no test can reach, and the test
+  had declared a third copy of `0.25` and was asserting against itself. The scene and the
+  test now import the same exported constant. The clamp at the call site is still
+  untestable from vitest — that is stated in the test rather than papered over.
+- **The `replay_run` guard has a narrow residual exposure.** It now fails only on
+  `diverged == 0`. Drift toward *all* wash-outs is no longer caught at the top: **19 of 20
+  uninformative would pass it**, where the old straddle assertion failed that end. The
+  `diverged >= 5` floor sits underneath and would catch it well before 19, so the window
+  is genuinely narrow — but it is real, it is new, and nobody had written it down.
+- **`bullets-visible` is a load-flake suspect.** Red inside the full suite, green alone in
+  20.5 s, green inside the full suite after the `standStill` repair. One red and one green
+  under load **cannot** distinguish a repair from a coin flip, so it is not claimed as
+  fixed. If it recurs: the handoff's standing advice is to lengthen the sampled region and
+  **never** loosen the movement rule, which is the only assertion a hitscan build fails.
+- **A harness trap that cost this session a red gate read as green.** `./scripts/check.sh
+  | tail -80` reports **tail's** exit status, not the gate's — D-64 one layer up, in the
+  invocation rather than in the script. Redirect to a file and read `$?` from the gate
+  itself.
+- **`standStill`'s throw has no retry, and that asymmetry is free to close.** The throw
+  sits *inside* the poll loop, so one transient malformed payload is fatal where the old
+  body would have polled on to the deadline. No live case exists today — the only null
+  window is before `addPlayer`, and `enterBattle` precedes every caller — but the fix is
+  to poll past a missing body and throw only if it is **still** missing at the deadline.
+  Not done here because it is a behaviour change in a helper twelve checks depend on, and
+  it would cost a fresh 20-minute gate to prove. Next task.
+- **The no-throw half has a known limit: nothing reads the return value.** A body that
+  never settles produces a `standStill: still drifting` line on stdout and nothing that
+  fails, so "did a check silently measure a drifting body?" is answerable only by reading
+  the log. That absence *is* the sound instrument, though — no such line across a green
+  suite is direct evidence no caller hit the deadline. Judge it on that, **not** on the
+  wall-clock deltas (teleport +3.3 s, birds −0.6 s, death +0.1 s): one sample each with a
+  negative in the set is noise, and cannot resolve a single 4 s timeout either way.
+- **Two checks were hand-rolling `grounded` immediately before calling `standStill`.**
+  `teleport.mjs:155` loops `for (let w = 0; w < 20 && !(await dbg()).player?.grounded; …)`
+  and `:394` runs `await until((d) => d.player?.grounded, 8_000, 'the jump to land')` —
+  both directly above a `standStill` call. Checks compensating by hand for the exact term
+  the helper was missing is the evidence that `grounded` belongs *in* the helper. Written
+  down so nobody later removes those waits as redundant without knowing why they existed.

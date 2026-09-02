@@ -68,7 +68,7 @@ import { WorldView } from '../render/worldView'
 import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
 import { Crosshair, LocalInput } from '../input/localInput'
-import { RepeatFire } from '../input/autoFire'
+import { MAX_FRAME_DT, RepeatFire } from '../input/autoFire'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
@@ -1292,13 +1292,13 @@ export class GameScene extends Phaser.Scene {
     // **Left only.** The right button opens the backpack (§F4.1) and must not
     // fire — `leftButtonDown()` is the whole guard, and holding right while left
     // is up reads as not held.
-    this.stepRepeatFire(dt)
+    this.stepRepeatFire(Math.min(dt, MAX_FRAME_DT))
 
     // Fixed timestep. Stepping by the frame delta would make movement depend on
     // the frame rate, and the whole point of shipping game-core to the browser
     // is that it runs the simulation the server runs.
     const step = C().SIM_DT
-    this.acc = Math.min(this.acc + dt, 0.25)
+    this.acc = Math.min(this.acc + dt, MAX_FRAME_DT)
     const batch = []
     while (this.acc >= step) {
       const body = this.core.playerState(this.me)

@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { RepeatFire, type AutoFireWeapon } from './autoFire'
+import { MAX_FRAME_DT, RepeatFire, type AutoFireWeapon } from './autoFire'
 import { fireProfileByRegistryKey, parseRegistry } from '../render/itemSprites-math'
 import { itemRegistryJson } from '../render/__liveRegistry'
 
@@ -208,6 +208,38 @@ describe('RepeatFire', () => {
       }
       expect(r.update({ dt: FRAME, held: true, weapon: smg, hasAmmo: true })).toBe(1)
     })
+  })
+
+  it('a single enormous frame cannot discharge a backgrounded tab', () => {
+    const smg = profiles.get('smg')!
+    const r = new RepeatFire()
+    r.update({ dt: FRAME, held: true, weapon: smg, hasAmmo: true })
+    // Ten seconds in one frame: a tab that was backgrounded and refocused.
+    //
+    // The clock itself is honest here — those shots *were* earned by elapsed
+    // time — so this is not a bug in `RepeatFire`, and the fix is not in it. The
+    // scene clamps `dt` to the same ceiling its fixed-timestep accumulator uses
+    // before calling in, because ten seconds of wall clock is not ten seconds of
+    // game the player was holding the button through. This asserts what arrives
+    // *after* that clamp, which is the contract the scene has to keep.
+    //
+    // **What this cannot catch, said plainly:** the clamp itself lives in
+    // `GameScene`, which vitest cannot load — there is no canvas — so deleting
+    // `Math.min(dt, MAX_FRAME_DT)` at the call site leaves every test here
+    // green. This is the description of the contract, not proof it is honoured.
+    //
+    // What it *does* pin is the number. `MAX_FRAME_DT` is imported from the
+    // module the scene imports it from, so the ceiling fed in here and the bound
+    // asserted against are the scene's own; an earlier version declared a local
+    // `0.25` and was therefore self-consistent whatever the scene did, which is
+    // a test agreeing with itself.
+    const shots = r.update({ dt: Math.min(10.0, MAX_FRAME_DT), held: true, weapon: smg, hasAmmo: true })
+    expect(shots).toBeLessThanOrEqual(Math.ceil(MAX_FRAME_DT / smg.cooldown) + 1)
+    // And the unclamped number, recorded so the size of what the clamp prevents
+    // is visible: ~100 calls in one frame.
+    const unclamped = new RepeatFire()
+    unclamped.update({ dt: FRAME, held: true, weapon: smg, hasAmmo: true })
+    expect(unclamped.update({ dt: 10.0, held: true, weapon: smg, hasAmmo: true })).toBeGreaterThan(50)
   })
 
   it('never spins on a zero cooldown', () => {

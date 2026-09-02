@@ -1616,37 +1616,14 @@ impl World {
         });
     }
 
-    /// Emit the cosmetic explosion, the authoritative carve, and any buried items
-    /// the carve exposed — all from one blast, in that order.
-    /// Detonate a blast at `at`, for tests that need a player genuinely thrown.
+    /// Stamp everyone a blast or a swing **threw** as recently knocked.
     ///
-    /// It goes through `explode` and `note_knocked` exactly as a rocket does, so
-    /// a test using it cannot accidentally reproduce the *state* of knockback
-    /// without its provenance — which is what made the first §C20 knockback test
-    /// vacuous.
-    #[cfg(test)]
-    pub(crate) fn blast_for_test(&mut self, at: Vec2, now: f32) {
-        let log: DamageLog = Default::default();
-        let bird_log: BirdLog = Default::default();
-        let (mut closures, meta, mut bird_vels) =
-            hit_targets(&self.players, &self.birds, &log, &bird_log, now);
-        let result = {
-            let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
-            crate::weapons::explode::explode(
-                &mut self.map,
-                &mut t,
-                at,
-                crate::constants::BAZOOKA_BLAST_RADIUS,
-                crate::constants::BAZOOKA_DAMAGE,
-                crate::weapons::explode::BlastSource::Weather(
-                    crate::weapons::explode::EffectKind::MeteorShower,
-                ),
-            )
-        };
-        self.note_knocked(&result.knocked, now);
-    }
-
-    /// Stamp everyone a blast or a swing **threw** as recently knocked (§C20).
+    /// §C20 read this to exempt a thrown player from its movement gate, and §F4
+    /// repealed that gate — so `was_knocked` currently has no reader in the
+    /// tree. `knocked_until` is still written by all four throwing paths and is
+    /// still folded into the state hash, so it is left alone rather than removed
+    /// as part of a task about firing: taking it out would change every golden
+    /// hash for a reason that has nothing to do with knockback.
     ///
     /// One function and one caller-visible rule, because four paths throw
     /// players — a rocket, a shotgun's pellets by way of its blast, a mine and a
@@ -2390,76 +2367,6 @@ impl World {
 
     // ------------------------------------------------------------ player acts
 
-    /// The input that governs **this** tick for `id`.
-    ///
-    /// Fire arrives as a command before `step` runs (`docs/30` §4), so the input
-    /// the player sent alongside it is still sitting in `pending`. This picks the
-    /// same one `apply_inputs` will: the lowest unconsumed `seq`, falling back to
-    /// the last input actually applied when the client sent nothing new — held
-    /// state persists, so the last packet is still the truth (`docs/40` §2).
-    ///
-    /// Shared rather than restated, so the gate below and the movement it gates
-    /// can never read different inputs.
-    fn input_for_tick(&self, id: PlayerId) -> Input {
-        self.pending
-            .iter()
-            .filter(|(i, _)| *i == id)
-            .min_by_key(|(_, inp)| inp.seq)
-            .map(|(_, inp)| *inp)
-            .or_else(|| {
-                self.prev_input
-                    .iter()
-                    .find(|(i, _)| *i == id)
-                    .map(|(_, inp)| *inp)
-            })
-            .unwrap_or_default()
-    }
-
-    /// §C20 — is this player moving under their own power?
-    ///
-    /// Two terms, and the second one is the reason this is not just a velocity
-    /// check:
-    ///
-    ///  - **a movement key held this tick.** Without it you can fire in the one
-    ///    tick between releasing a key and friction taking effect — and it is
-    ///    also the only term that catches walking into a wall, where the intent
-    ///    is full speed and `vel.x` is zero.
-    ///  - **still sliding.** `GROUND_FRICTION` takes about five ticks to bring a
-    ///    `WALK_SPEED` walk to rest, so the key check alone leaves four ticks of
-    ///    firing while gliding.
-    ///
-    /// §C20 is explicit that "being knocked around does not stop you firing —
-    /// this is about your own movement", and knockback IS velocity, so the two
-    /// rules cannot both be read off `vel.x`. The exemption therefore comes from
-    /// **provenance**: `knocked_until`, stamped where the impulse is applied.
-    ///
-    /// The first version used `grounded` instead, reasoning that a blast which
-    /// throws you also puts you in the air. That made the whole gate cosmetic:
-    /// hold D to `WALK_SPEED`, jump, release D, fire — no key held, not grounded,
-    /// shot allowed at 150 px/s. Stepping off a ledge did it without even
-    /// jumping, and bots, which are airborne constantly, were exempt most of the
-    /// time. `grounded` is a *consequence* of being thrown; it is equally a
-    /// consequence of jumping, and it cannot tell the two apart.
-    fn moving_under_own_power(&self, now: f32, idx: usize) -> bool {
-        let p = &self.players[idx];
-        // The key term comes FIRST, and knockback does not excuse it. §C20 says
-        // "check the input, not just the velocity", and the exemption it grants
-        // is for being *thrown* — which is a velocity, not an intention. Held
-        // the other way round, any blast in a firefight bought 0.6 s in which
-        // you could hold a direction, run at full speed and shoot; blasts are
-        // constant in a fight, so that is a recurring run-and-gun window rather
-        // than an edge case.
-        if self.input_for_tick(p.id).move_dir() != 0.0 {
-            return true;
-        }
-        // Being thrown is not your own movement — and this is the ONLY thing the
-        // velocity term exempts.
-        if p.was_knocked(now) {
-            return false;
-        }
-        p.body.vel.x.abs() > crate::constants::FIRE_MOVE_MAX_SPEED
-    }
-
     /// Fire the selected weapon. Validation lives in `PlayerState::try_fire`.
     pub fn fire(&mut self, id: PlayerId, now: f32) -> Result<(), UseError> {
         let Some(idx) = self.players.iter().position(|p| p.id == id) else {
@@ -2506,13 +2413,6 @@ impl World {
         slot: u8,
         now: f32,
     ) -> Result<(), UseError> {
-        // §C20, before `try_fire`: a refused shot must cost neither ammo nor
-        // cooldown, or standing still to shoot becomes a punishment for having
-        // tried. Guarded on `alive` so a corpse still reports `Dead`, which is
-        // the answer `docs/61` §3 expects.
-        if self.players[idx].alive && self.moving_under_own_power(now, idx) {
-            return Err(UseError::Moving);
-        }
         let weapon = self.players[idx].try_fire_slot(slot, now)?;
         let aim = crate::player::input::Input::new(0, 0, self.players[idx].aim).aim_angle();
         let centre = self.players[idx].body.pos;
@@ -3504,11 +3404,17 @@ mod crate_motion_tests {
     }
 }
 
-/// T13.06.3 / §C20 — you cannot fire while moving under your own power.
+/// §F4 — you fire while moving. §C20 is repealed.
+///
+/// **This module replaces the one that proved the opposite.** It asserted
+/// `Err(UseError::Moving)` from a walk, from the tick after a key release, and
+/// from mid-air; all of that is deleted, because it is a description of a design
+/// that no longer exists. An absence needs a presence (`CLAUDE.md`), and these
+/// are the presence: the shot that used to be refused now leaves the barrel.
 #[cfg(test)]
-mod fire_gate {
+mod fire_while_moving {
     use super::*;
-    use crate::constants::{MapScale, FIRE_MOVE_MAX_SPEED, GROUND_FRICTION, SIM_DT, WALK_SPEED};
+    use crate::constants::{MapScale, SIM_DT};
     use crate::items::registry::BAZOOKA;
     use crate::player::input::button;
 
@@ -3523,329 +3429,207 @@ mod fire_gate {
             BAZOOKA,
             crate::items::registry::max_stack(BAZOOKA),
         );
-        // Settle onto the ground: the gate reads `grounded`, and a player still
-        // falling from their spawn is airborne, which is a different case.
+        // Settle onto the ground, so "at a run" and "mid-air" are distinguishable
+        // rather than both being "still falling from spawn".
         for _ in 0..120 {
             w.queue_input(0, Input::new(0, 0, 0));
             w.step(SIM_DT);
         }
         assert!(
             w.player(0).expect("ana").body.grounded,
-            "the fixture never landed, so nothing below is testing the grounded rule"
+            "the fixture never landed, so nothing below distinguishes running from falling"
         );
         w
     }
 
-    fn walk_for(w: &mut World, ticks: u32) {
-        for _ in 0..ticks {
+    /// "Actually running", as a fraction of the walk the fixture is holding.
+    ///
+    /// Pinned to `WALK_SPEED` rather than written as a number: at 150.0 a literal
+    /// `100.0` is two thirds of a walk, but it is two thirds only until somebody
+    /// retunes the constant. Cut `WALK_SPEED` to 90 and a hardcoded 100 is
+    /// unreachable — `run_until_moving` spins its full 240 ticks, returns 0.0,
+    /// and every test built on it goes quietly vacuous rather than red
+    /// (`CLAUDE.md`: never hardcode a tunable in a test).
+    const RUNNING: f32 = crate::constants::WALK_SPEED * 2.0 / 3.0;
+
+    /// Walk right until actually moving, and report the speed reached.
+    ///
+    /// Waited on rather than counted: a spawn is not promised flat ground, and
+    /// how many ticks it takes to reach walk speed depends on where the
+    /// generator put you.
+    ///
+    /// Returns **0.0** if it never got going, which every caller must assert on
+    /// — see `RUNNING`.
+    fn run_until_moving(w: &mut World) -> f32 {
+        for _ in 0..240 {
             w.queue_input(0, Input::new(0, button::RIGHT, 0));
             w.step(SIM_DT);
-        }
-    }
-
-    /// Walk until the player is genuinely moving, or give up.
-    ///
-    /// **Waited on, not counted** — the same reason the second half of
-    /// `firing_one_tick_after_releasing_the_key_is_still_refused` already waits:
-    /// a spawn is not promised flat ground, and how many ticks it takes to reach
-    /// walk speed depends on where the generator put you. It was `walk_for(20)`,
-    /// which held until pass 6b moved spawn 0 and twenty ticks stopped being
-    /// enough. Capped so a player who can never move fails the caller's
-    /// assertion rather than hanging here.
-    fn walk_until_moving(w: &mut World, threshold: f32) -> bool {
-        for _ in 0..(1.0 / SIM_DT) as u32 {
-            w.queue_input(0, Input::new(0, button::RIGHT, 0));
-            w.step(SIM_DT);
-            if w.player(0).is_some_and(|p| p.body.vel.x.abs() > threshold) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// The subject: a walking player fires nothing.
-    ///
-    /// Asserted on the **effect** — the projectile count — not on the returned
-    /// error. A gate that returns `Moving` and spawns the rocket anyway would
-    /// pass an assertion on the `Result` alone.
-    #[test]
-    fn firing_while_walking_is_refused_and_spawns_nothing() {
-        let mut w = armed_world();
-        walk_for(&mut w, 20);
-        let speed = w.player(0).expect("ana").body.vel.x.abs();
-        assert!(
-            speed > FIRE_MOVE_MAX_SPEED,
-            "the fixture is not actually walking: vel.x {speed}"
-        );
-
-        // The key is still held on the tick the fire arrives, exactly as a
-        // client sends it (`docs/30` §4).
-        w.queue_input(0, Input::new(1, button::RIGHT, 0));
-        let before = w.projectiles.len();
-        assert_eq!(w.fire(0, 1.0), Err(UseError::Moving));
-        assert_eq!(
-            w.projectiles.len(),
-            before,
-            "a refused shot still spawned a projectile"
-        );
-        // And it cost nothing: ammo and cooldown are untouched, or standing
-        // still to shoot would punish having tried.
-        assert_eq!(
-            w.player(0).expect("ana").inventory.count_of(BAZOOKA),
-            crate::items::registry::max_stack(BAZOOKA) as u32
-        );
-        assert_eq!(w.player(0).expect("ana").fire_ready_at, 0.0);
-    }
-
-    /// The control. Without it, every assertion here is satisfied by a build
-    /// that can never fire at all.
-    #[test]
-    fn firing_while_standing_still_succeeds() {
-        let mut w = armed_world();
-        w.queue_input(0, Input::new(1, 0, 0));
-        let before = w.projectiles.len();
-        assert_eq!(w.fire(0, 1.0), Ok(()));
-        assert!(
-            w.projectiles.len() > before,
-            "a standing player fired and no projectile appeared"
-        );
-    }
-
-    /// The single tick between releasing a key and friction taking effect —
-    /// the case §C20 says the velocity term exists for.
-    #[test]
-    fn firing_one_tick_after_releasing_the_key_is_still_refused() {
-        let mut w = armed_world();
-        // Enough headroom that one tick of friction cannot drop the player under
-        // the threshold — the window this test exists to guard.
-        assert!(
-            walk_until_moving(&mut w, FIRE_MOVE_MAX_SPEED + GROUND_FRICTION * SIM_DT),
-            "the player never got moving, so there is no release window to test"
-        );
-        // One tick with nothing held. `GROUND_FRICTION` removes
-        // GROUND_FRICTION * SIM_DT px/s per tick, so a WALK_SPEED walk needs
-        // several ticks to stop — pinned to the constants rather than to a
-        // number read off one run.
-        let ticks_to_stop = (WALK_SPEED / (GROUND_FRICTION * SIM_DT)) as u32;
-        assert!(
-            ticks_to_stop > 1,
-            "friction stops a walk within one tick, so this test has no window to guard"
-        );
-        w.queue_input(0, Input::new(1, 0, 0));
-        w.step(SIM_DT);
-
-        let p = w.player(0).expect("ana");
-        assert!(
-            p.body.vel.x.abs() > FIRE_MOVE_MAX_SPEED,
-            "the player had already stopped, so the release window is not being tested"
-        );
-
-        w.queue_input(0, Input::new(2, 0, 0));
-        let before = w.projectiles.len();
-        assert_eq!(w.fire(0, 1.0), Err(UseError::Moving));
-        assert_eq!(w.projectiles.len(), before);
-
-        // ...and once friction has actually stopped them, the same player can
-        // shoot. The control for the control: otherwise "still refused" would
-        // pass for a player permanently locked out after one walk.
-        //
-        // **Waited on, not counted.** `ticks_to_stop` is friction against
-        // `WALK_SPEED` on flat ground, and a spawn is not promised flat ground —
-        // on a slope the body is still sliding when the count runs out and the
-        // assertion reports a fire gate that is working exactly as designed.
-        // Bounded at ten times the flat-ground figure so a genuinely stuck body
-        // still fails, and with the reached velocity in the message.
-        let mut seq = 3;
-        let deadline = 3 + ticks_to_stop * 10;
-        while seq < deadline {
             let vx = w.player(0).expect("ana").body.vel.x.abs();
-            if vx <= FIRE_MOVE_MAX_SPEED {
-                break;
+            if vx > RUNNING {
+                return vx;
             }
-            w.queue_input(0, Input::new(seq, 0, 0));
-            w.step(SIM_DT);
-            seq += 1;
         }
-        let settled = w.player(0).expect("ana").body.vel.x.abs();
-        assert!(
-            settled <= FIRE_MOVE_MAX_SPEED,
-            "the player never slowed below FIRE_MOVE_MAX_SPEED ({FIRE_MOVE_MAX_SPEED}): \
-             still {settled} after {} ticks",
-            seq - 3,
-        );
-        w.queue_input(0, Input::new(99, 0, 0));
-        assert_eq!(w.fire(0, 2.0), Ok(()));
+        0.0
     }
 
-    /// Walking into a wall: full intent, no velocity.
-    ///
-    /// This is the case the velocity term cannot see and the key term exists
-    /// for. Driven by holding a direction with the body pinned, so it is the
-    /// held key alone that refuses the shot.
     #[test]
-    fn holding_a_direction_refuses_even_at_zero_velocity() {
+    fn a_player_at_a_full_run_fires() {
         let mut w = armed_world();
-        if let Some(p) = w.player_mut(0) {
-            p.body.vel.x = 0.0;
-        }
-        w.queue_input(0, Input::new(1, button::RIGHT, 0));
-        assert_eq!(
-            w.player(0).expect("ana").body.vel.x.abs(),
-            0.0,
-            "the fixture has velocity, so this is not testing the key term"
-        );
-        let before = w.projectiles.len();
-        assert_eq!(w.fire(0, 1.0), Err(UseError::Moving));
-        assert_eq!(w.projectiles.len(), before);
-    }
-
-    /// Being knocked around does not stop you firing (§C20).
-    ///
-    /// The player is thrown by a **real blast**, not by hand-setting velocity.
-    /// The first version of this test wrote `vel.x = KNOCKBACK_MAX; grounded =
-    /// false` directly, and the gate it was validating exempted airborne
-    /// players — so the fixture was byte-identical to jump-and-shoot and the
-    /// test passed against a build where the gate did nothing for anyone in the
-    /// air. What separates the two cases is *provenance*, so the test has to
-    /// produce the provenance.
-    #[test]
-    fn firing_while_knocked_back_succeeds() {
-        let mut w = armed_world();
-        let at = w.player(0).expect("ana").body.pos;
-        // Detonate on top of them, through the same path a rocket takes.
-        w.blast_for_test(at, 1.0);
-
-        let p = w.player(0).expect("ana");
-        assert!(
-            p.was_knocked(1.0),
-            "the blast did not mark the player as thrown, so this proves nothing"
-        );
-
-        let before = w.projectiles.len();
+        let vx = run_until_moving(&mut w);
+        assert!(vx > RUNNING, "the fixture never got moving ({vx} px/s)");
+        // Still holding the key: this is the exact input §C20 refused.
+        w.queue_input(0, Input::new(0, button::RIGHT, 0));
         assert_eq!(
             w.fire(0, 1.0),
             Ok(()),
-            "knockback became a stun: a thrown player could not shoot"
+            "a player running at {vx} px/s could not fire"
         );
-        assert!(w.projectiles.len() > before);
     }
 
-    /// The discriminator: **jumping is not being thrown.**
+    /// **Jumping *while running*, not jumping on the spot.**
     ///
-    /// This is the test the `grounded`-based gate could not pass, and the reason
-    /// that gate was wrong. Walk up to speed, leave the ground, release the key:
-    /// no key is held and `grounded` is false, which is exactly the state a
-    /// blast leaves you in. Under §C20 the shot must still be refused, or the
-    /// gate is cosmetic — every player in this game is airborne constantly, and
-    /// rocket-jumping is a documented mechanic.
+    /// A straight-up jump holds no direction key and carries no horizontal
+    /// speed, so §C20 would have allowed that shot too — a test built on it
+    /// discriminates nothing. The reported complaint is firing while moving
+    /// through the air, so the fixture holds RIGHT throughout and the assertions
+    /// below prove it really is airborne *and* really is moving.
     #[test]
-    fn jumping_is_not_being_thrown_and_still_refuses_the_shot() {
+    fn a_player_jumping_while_running_fires() {
         let mut w = armed_world();
-        if let Some(p) = w.player_mut(0) {
-            p.body.vel.x = crate::constants::WALK_SPEED;
-            p.body.vel.y = -crate::constants::JUMP_VELOCITY;
-            p.body.grounded = false;
+        run_until_moving(&mut w);
+        for _ in 0..12 {
+            w.queue_input(0, Input::new(0, button::RIGHT | button::JUMP, 0));
+            w.step(SIM_DT);
         }
         let p = w.player(0).expect("ana");
         assert!(
-            !p.was_knocked(1.0),
-            "nothing threw this player, so the fixture is not a jump"
+            !p.body.grounded,
+            "the fixture never left the ground, so this is not the mid-air case"
         );
         assert!(
-            p.body.vel.x.abs() > FIRE_MOVE_MAX_SPEED && !p.body.grounded,
-            "the fixture is not airborne at speed, so it cannot tell the two apart"
+            p.body.vel.x.abs() > RUNNING,
+            "airborne but barely moving ({} px/s) — §C20 would have allowed this shot",
+            p.body.vel.x.abs()
         );
-
-        // No key held: the velocity term is the only thing that can refuse this.
-        w.queue_input(0, Input::new(1, 0, 0));
-        let before = w.projectiles.len();
+        // Still holding the direction key, which is the term §C20 checked first.
+        w.queue_input(0, Input::new(0, button::RIGHT | button::JUMP, 0));
         assert_eq!(
             w.fire(0, 1.0),
-            Err(UseError::Moving),
-            "a jumping player fired at walking speed — the gate is cosmetic"
+            Ok(()),
+            "a player running through the air could not fire"
         );
-        assert_eq!(w.projectiles.len(), before);
     }
 
-    /// And the exemption **expires**. A single rocket-jump must not license a
-    /// whole traverse of firing on the move.
+    /// Jetpacking **sideways** — the case the report named in as many words.
     #[test]
-    fn the_knockback_exemption_expires() {
+    fn a_player_under_jetpack_thrust_fires() {
         let mut w = armed_world();
-        let at = w.player(0).expect("ana").body.pos;
-        w.blast_for_test(at, 1.0);
-        if let Some(p) = w.player_mut(0) {
-            p.body.vel.x = crate::constants::WALK_SPEED;
-            p.body.grounded = false;
-        }
-        let after = 1.0 + crate::constants::KNOCKBACK_FIRE_GRACE + 0.01;
-        assert!(
-            !w.player(0).expect("ana").was_knocked(after),
-            "KNOCKBACK_FIRE_GRACE never expires"
-        );
-        w.queue_input(0, Input::new(1, 0, 0));
-        assert_eq!(
-            w.fire(0, after),
-            Err(UseError::Moving),
-            "the exemption outlived KNOCKBACK_FIRE_GRACE"
-        );
-    }
-
-    /// Bots respect it — and, crucially, still manage to shoot.
-    ///
-    /// A bot that walks into a refused trigger pull forever is worse than the
-    /// behaviour being fixed, so the assertion is two-sided: no fire is issued
-    /// while it is moving, and it does eventually fire once planted.
-    #[test]
-    fn a_bot_stands_still_to_shoot() {
-        use crate::bots::Bot;
-
-        let mut w = World::new(4242, MapScale::Small);
-        w.set_phase(RoundPhase::Playing);
-        w.add_player(0, 0, "bot".into());
-        w.add_player(1, 0, "prey".into());
-        give(
-            &mut w,
-            0,
-            BAZOOKA,
-            crate::items::registry::max_stack(BAZOOKA),
-        );
-
-        // Put the prey in sight but out of the blast guard.
-        let bot_pos = w.player(0).expect("bot").body.pos;
-        if let Some(p) = w.player_mut(1) {
-            p.body.pos = Vec2::new(bot_pos.x + 200.0, bot_pos.y);
-        }
-
-        let mut bot = Bot::new(0, 4242, 0, 1.0);
-        let mut fired = 0u32;
-        let mut fired_while_moving = 0u32;
-        for t in 0..600 {
-            let now = t as f32 * SIM_DT;
-            let inp = bot.think(&w, now, SIM_DT);
-            w.queue_input(0, inp);
-            if inp.buttons & button::FIRE != 0 {
-                let me = w.player(0).expect("bot");
-                // The bot's own view of the gate, checked against the world's.
-                if inp.move_dir() != 0.0
-                    || (me.body.grounded && me.body.vel.x.abs() > FIRE_MOVE_MAX_SPEED)
-                {
-                    fired_while_moving += 1;
-                }
-                if w.fire(0, now).is_ok() {
-                    fired += 1;
-                }
-            }
+        // Held JUMP past the jump itself is thrust (`jetpack::apply_thrust`
+        // requires JUMP), and RIGHT is what makes it movement rather than a
+        // hover §C20 would not have refused anyway.
+        for _ in 0..40 {
+            w.queue_input(
+                0,
+                Input::new(0, button::RIGHT | button::JUMP | button::UP, 0),
+            );
             w.step(SIM_DT);
         }
-
-        assert_eq!(
-            fired_while_moving, 0,
-            "the bot pulled the trigger {fired_while_moving} times while moving"
+        let p = w.player(0).expect("ana");
+        assert!(!p.body.grounded, "the fixture never left the ground");
+        assert!(
+            p.jetpack.fuel < crate::constants::JETPACK_MAX_FUEL,
+            "no fuel was spent, so the jetpack never engaged and this is not the thrust case"
         );
         assert!(
-            fired > 0,
-            "the bot never fired at all in 10 s — §C20 turned it into a spectator"
+            p.body.vel.x.abs() > RUNNING,
+            "thrusting but barely moving ({} px/s) — §C20 would have allowed this shot",
+            p.body.vel.x.abs()
+        );
+        w.queue_input(
+            0,
+            Input::new(0, button::RIGHT | button::JUMP | button::UP, 0),
+        );
+        assert_eq!(
+            w.fire(0, 1.0),
+            Ok(()),
+            "a player jetpacking sideways could not fire"
+        );
+    }
+
+    /// The repeal removes one gate and **only** one.
+    #[test]
+    fn firing_at_a_run_still_respects_the_cooldown() {
+        let mut w = armed_world();
+        // Asserted, not discarded. `run_until_moving` returns 0.0 when it never
+        // gets going, and without this the test degenerates into "a *standing*
+        // player's second shot is refused" — which `try_fire` did before §F4 and
+        // which rules nothing out about firing on the move.
+        let vx = run_until_moving(&mut w);
+        assert!(vx > RUNNING, "the fixture never got moving ({vx} px/s)");
+        w.queue_input(0, Input::new(0, button::RIGHT, 0));
+        assert_eq!(w.fire(0, 1.0), Ok(()), "the first shot was refused");
+        // Inside the weapon's own cooldown, pinned to the constant.
+        let second = w.fire(0, 1.0 + crate::constants::BAZOOKA_COOLDOWN * 0.5);
+        assert_eq!(
+            second,
+            Err(UseError::OnCooldown),
+            "a second shot inside BAZOOKA_COOLDOWN was allowed: the repeal removed \
+             more than the movement gate"
+        );
+    }
+
+    /// A moving player's shot goes where they aimed.
+    ///
+    /// The obvious way to "support firing while moving" is to add the body's
+    /// velocity to the muzzle velocity. Nobody asked for that, and it would make
+    /// a running player's rocket faster than a standing player's — so it is
+    /// asserted against rather than left to taste.
+    #[test]
+    fn a_moving_players_shot_does_not_inherit_their_velocity() {
+        let mut w = armed_world();
+        // Asserted, not discarded — a stalled fixture would make this compare a
+        // standing shot against a standing shot, which is a tautology that
+        // passes with the whole feature deleted.
+        let vx = run_until_moving(&mut w);
+        assert!(vx > RUNNING, "the fixture never got moving ({vx} px/s)");
+        w.queue_input(0, Input::new(0, button::RIGHT, 0));
+
+        // **The shot just fired, not the oldest one alive.** `.iter().next()`
+        // reads whichever projectile the collection yields first, which is the
+        // right answer only while nothing else is in flight — true here solely
+        // because `EFFECT_INTERVAL_MIN` is 30 s against a ~6 s fixture, so no
+        // meteor or rain drop can have spawned. That is a load-bearing tie to a
+        // tunable this test has nothing to do with; index past what was already
+        // there instead.
+        let before = w.projectiles.len();
+        assert_eq!(w.fire(0, 1.0), Ok(()));
+        assert_eq!(
+            w.projectiles.len(),
+            before + 1,
+            "the running shot did not add exactly one projectile"
+        );
+        let moving = w
+            .projectiles
+            .iter()
+            .nth(before)
+            .expect("the running shot spawned no projectile")
+            .vel;
+
+        // The control: the same weapon, the same aim, from a standstill.
+        let mut still = armed_world();
+        let still_before = still.projectiles.len();
+        assert_eq!(still.fire(0, 1.0), Ok(()));
+        let stationary = still
+            .projectiles
+            .iter()
+            .nth(still_before)
+            .expect("the standing shot spawned no projectile")
+            .vel;
+
+        assert!(
+            (moving.x - stationary.x).abs() < 1.0 && (moving.y - stationary.y).abs() < 1.0,
+            "a running player's shot left at {moving:?} against a standing player's \
+             {stationary:?} — the muzzle velocity inherited the body's"
         );
     }
 }

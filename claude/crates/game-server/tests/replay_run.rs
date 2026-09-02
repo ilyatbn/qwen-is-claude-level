@@ -581,21 +581,51 @@ fn a_perturbed_command_is_localised_to_a_nearby_tick() {
         washed_out.len()
     );
 
-    // **The window has to straddle the boundary, and a floor cannot tell that it
-    // does.** The count above is meaningful only while some of these ticks have
-    // round left to diverge in and some do not; if every one goes the same way,
-    // the window has slid off the boundary and the number has stopped measuring
-    // anything — which is D-29's failure, a green run that proves nothing. Both
-    // ends fail loudly, and the fix is to move the window, not the floor.
+    // **The uninformative direction is "nothing diverged", and only that.**
+    //
+    // This used to require the window to *straddle* the boundary — some ticks
+    // with round left to compound in, some without — and failed if every
+    // perturbation went the same way, in either direction. §F4 removed the
+    // boundary from this recording altogether, so the symmetric form now fails
+    // on a healthy system.
+    //
+    // Measured, with a control worktree at the commit before §F4 was repealed:
+    //
+    //   before  11/20 diverged, 9 washed out (the last nine ticks in the window)
+    //   after   20/20 diverged, 0 washed out — and still 20/20 when the window
+    //           is slid all the way to the final 20 candidates
+    //
+    // The cause is the feature: bots used to stop dead to shoot, and now they
+    // fire while moving, so a corrupted button becomes a shot — and a shot
+    // becomes a terrain difference — within a tick or two. There is no longer a
+    // tail of ticks with too little round left to compound in, which is why
+    // moving the window cannot restore the straddle and why the old assertion's
+    // own advice ("move the window, not the floor") no longer applies: it was
+    // written for a terrain change, and this is not one.
+    //
+    // What the straddle was guarding is untouched. The floor above still fails
+    // if detection collapses, the localisation assertions in the loop still ran
+    // — on **twenty** real divergences rather than eleven, which is more
+    // coverage, not less — and the genuinely vacuous outcome, where a corrupted
+    // command changes nothing and every assertion above is skipped in silence,
+    // is exactly what this still fails on.
     assert!(
-        diverged > 0 && !washed_out.is_empty(),
-        "all {} perturbations went the same way ({diverged} diverged, {} washed out) — the \
-         sampled window no longer straddles the point where a perturbation runs out of round \
-         to compound in, so this count is not evidence either way. Move the window \
-         (`n - 28 .. n - 8`), do not touch the floor.",
+        diverged > 0,
+        "not one of {} perturbed inputs diverged ({} washed out at {washed_out:?}) — the \
+         runner cannot detect a corrupted command at all, and every localisation \
+         assertion above was skipped in silence",
         sample.len(),
         washed_out.len()
     );
+    if washed_out.is_empty() {
+        // Not a failure, but worth saying out loud: the recording no longer
+        // contains a tick late enough to be immune, so this sample can no longer
+        // report where that boundary is.
+        println!(
+            "note: every sampled perturbation diverged — the recording has no wash-out \
+             tail since §F4, so this run measures detection but not the boundary"
+        );
+    }
 }
 
 #[test]

@@ -215,7 +215,6 @@ export interface Constants {
   ASSIST_WINDOW: number
   RESPAWN_DELAY: number
   PICKUP_RADIUS: number
-  FIRE_MOVE_MAX_SPEED: number
   JETPACK_MAX_SPEED: number
   LAVA_BURN_RADIUS: number
   TOXIC_POISON_DURATION: number

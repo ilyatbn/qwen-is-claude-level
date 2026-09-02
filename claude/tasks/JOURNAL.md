@@ -5099,3 +5099,14 @@ green client suite is not evidence the client compiles.
 Gate: `--fast` EXIT=0 (50 files / 777 tests), clippy clean, `e2e ordnance inventory-ui`
 3/3 — smg 6 rounds at ~10/s ideal, laser pistol exactly 1, right button 0 with a left
 control at 3.
+
+## T19.04 — §C20 repealed, and a falsification left in the tree
+
+**No pre-existing green-gate claim for T19.04 can be true**: a forced detection-collapse
+(`perturbed[*at] = *buttons;`) in `replay_run` fails `cargo test -p game-server` outright.
+Restored — 20/20 diverge. **Defusing the `standStill` landmine deleted its tripwire**: the
+retired constant was its liveness probe too, so `?? 0` read a dead page as settled. Throws
+again; settling needs `grounded`. **My instrument lied** — `check.sh | tail -80` reports
+tail's status. Two of five new tests were vacuous on a stall; four `100.0` against
+`WALK_SPEED` 150 — pinned, falsified live. **`bullets-visible` red under load, green after —
+but it is settled long before `standStill`: no causal path, so a suspect, not a fix.** EXIT=0; 2366 Rust, 778 client, e2e 41/41, net 25/25.

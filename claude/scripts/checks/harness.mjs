@@ -357,22 +357,57 @@ export async function enterBattle(page, opts = {}) {
 }
 
 /**
- * Come to a stop, so the next shot is allowed to leave the barrel (§C20).
+ * Release the movement keys and let the body **settle**.
  *
- * Firing, throwing and swinging are refused while the player is moving under
- * their own power — `|vel.x| > FIRE_MOVE_MAX_SPEED`, or a movement key held this
- * tick. Every check that walks and then fires has to stand still first, exactly
- * as a player does.
+ * ## What this used to be, and why it changed
  *
- * This is here and not in each check because three of them fire, and when §C20
- * landed all three broke in the same way and would have needed the same three
- * lines (§A24). The failures were also thoroughly misleading: `ordnance` timed
- * out "waiting for a melee swing to arrive", and `death` took 103 s instead of
- * 30, long enough for the weather to get there first — it reported the cause
- * line as `"Killed by weather"` rather than "the shot was refused".
+ * It waited for `|vel.x|` to fall below `FIRE_MOVE_MAX_SPEED`, because §C20
+ * refused every shot from a moving player and a check that walked and then
+ * fired had to stand still first. **§F4 repealed §C20** — you fire while
+ * running, jumping and jetpacking — and the constant is retired, so the old
+ * body would have thrown `FIRE_MOVE_MAX_SPEED is not exposed` in **twelve**
+ * checks the moment it went.
  *
- * Waits on the **effect** (the body's own velocity, read back through the core)
- * rather than sleeping a constant, so a loaded box changes nothing (§A28).
+ * It is kept rather than deleted because the *other* reason to call it survives:
+ * a check that measures a position, aims at a screen point, or photographs a
+ * frame wants the body to have stopped drifting first. That is settling, not
+ * permission.
+ *
+ * ## Keyed to the effect, not to a threshold
+ *
+ * There is no "stopped" constant any more and inventing one would be a tunable
+ * nobody chose (`CLAUDE.md`). So this waits until the velocity **stops
+ * changing** — two consecutive equal readings, or zero — which is the same
+ * question asked without a number, and works on a slope where the body never
+ * quite reaches zero.
+ *
+ * **On the ground, though.** "Unchanging" means "settled" only while something
+ * is slowing the body down. `AIR_DRAG` is a small fraction of
+ * `GROUND_FRICTION`, so a body in flat flight yields two bit-identical readings
+ * 50 ms apart and a bare equality test reports it as settled at walking speed —
+ * against `teleport`, `birds` and `death`, all of which call this where the body
+ * can be airborne. `grounded` is the term that separates "friction has finished
+ * with it" from "nothing is slowing it down", and it costs no new tunable.
+ *
+ * ## What it throws for, and what it does not
+ *
+ * Failing to settle is **not** fatal any more: it used to mean every following
+ * shot was refused, and now it means a slightly noisy measurement, so this
+ * reports and returns the speed it reached. A helper that aborts twelve checks
+ * for a condition that no longer breaks anything is the landmine this task
+ * exists to defuse.
+ *
+ * An **absent body** is the opposite case and still throws. `debug().player` is
+ * `core.playerState(me)`, which is null only before the scene has seated a local
+ * body — **not** while one is dead. `player_state` keys on `players.iter().find(|p|
+ * p.id == id)`: id presence, not `alive`. A dead player still has an entry, so this
+ * stays populated right through death and respawn, and nobody should skip a
+ * `standStill` after a death to dodge a throw that cannot fire there. Reading
+ * `?? 0` off a genuinely absent body and calling zero "settled" hands
+ * every caller a silent pass against a page that never started. That is §B15's
+ * shape ("an assertion on a field that does not exist cannot fail") arriving in
+ * a *wait* instead of an assertion, and it is what the retired
+ * `FIRE_MOVE_MAX_SPEED` probe used to catch on the way past.
  */
 export async function standStill(page, { keys = ['a', 'd', 'w', 's'], timeoutMs = 4000 } = {}) {
   for (const k of keys) {
@@ -382,24 +417,31 @@ export async function standStill(page, { keys = ['a', 'd', 'w', 's'], timeoutMs 
       /* never pressed */
     }
   }
-  const max = await page.evaluate(() => window.__game.constants().FIRE_MOVE_MAX_SPEED)
-  if (!Number.isFinite(max)) {
-    // An assertion built on `undefined` cannot fail (§B15), and a *wait* built
-    // on it cannot succeed. Say so rather than spinning to the deadline.
-    throw new Error('standStill: FIRE_MOVE_MAX_SPEED is not exposed to the client')
-  }
   const deadline = Date.now() + timeoutMs
   let vx = Infinity
+  let previous = Infinity
   while (Date.now() < deadline) {
     const d = await page.evaluate('window.__game.debug()')
-    vx = Math.abs(d.player?.vx ?? 0)
-    if (vx <= max) return vx
+    const body = d.player
+    // A missing body is a broken page, not a stopped one. Fail loudly rather
+    // than returning a settled-looking zero.
+    if (!body || typeof body.vx !== 'number' || typeof body.grounded !== 'boolean') {
+      throw new Error(
+        'standStill: window.__game.debug().player is absent or malformed ' +
+          `(${JSON.stringify(body)}) — there is no local player to settle, so the ` +
+          'scene is not ready, the player is dead, or the debug bridge is broken',
+      )
+    }
+    vx = Math.abs(body.vx)
+    // Settled: on the ground, and either at rest or no longer slowing.
+    // `previous` starts at Infinity so the first reading can never satisfy the
+    // equality by accident.
+    if (body.grounded && (vx === 0 || vx === previous)) return vx
+    previous = vx
     await sleep(50)
   }
-  throw new Error(
-    `standStill: still moving at ${vx.toFixed(1)} px/s after ${timeoutMs / 1000} s ` +
-      `(FIRE_MOVE_MAX_SPEED is ${max}) — every shot from here will be refused`,
-  )
+  console.log(`  standStill: still drifting at ${vx.toFixed(1)} px/s after ${timeoutMs / 1000} s`)
+  return vx
 }
 
 /**

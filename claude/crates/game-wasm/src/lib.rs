@@ -987,10 +987,6 @@ pub fn constants_json() -> String {
         // browser check that walks a player at a crate asserts against it, and
         // a check that hardcodes 20 stays green against a drifted sim (§A19).
         PICKUP_RADIUS => c::PICKUP_RADIUS,
-        // §C20's threshold. A browser check that walks and then fires has to
-        // know when it has actually stopped, and one carrying its own copy of
-        // this number would stay green against a drifted sim (§A19).
-        FIRE_MOVE_MAX_SPEED => c::FIRE_MOVE_MAX_SPEED,
         // The fastest a body moves under its own power. A browser check that
         // samples a position on a timer needs it to know how far the subject
         // could have travelled between two samples.
