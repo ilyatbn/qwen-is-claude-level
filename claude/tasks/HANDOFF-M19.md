@@ -443,3 +443,17 @@ The 200-seed sweep is an **absence with no control** as written — it passes ag
 where nothing spawns at all, which is exactly the re-weighting risk zeroing five weights
 creates. It needs a companion count asserting some other weapon still spawns at a rate the
 re-weighting predicts. I had not decided what that rate should be.
+
+### T19.05 status board — read this before touching anything
+
+| item | state |
+|---|---|
+| `melee.rs` hazard 1 — `:341-347` obtainability assert | **NOT handled.** Will fail: all six melee weapons now have zero weights. |
+| `melee.rs` hazard 2 — `:351-354` §B16 id resolution | **Handled, by design.** Passes because the five are placeholders, not deletions. |
+| `melee.rs` hazard 3 — `SPEC` at `:193-199` | **NOT handled.** Needs a shovel row; the five retired rows stay. |
+| `balance.rs:260` (`weapons().len() >= 20`) | **NOT touched, and must not be.** 22 placeholders + shovel = 23. The sweep predicted a break assuming deletion; under placeholders it does not fire. |
+| `PlayerState::new` grant | **NOT wired.** `respawn` calls `grant_starting_kit()`; join does not. **The most important missing line.** |
+| Client / `scripts/` / `REPLAY_VERSION` / density sweep / all Tests | **Not started.** |
+
+`cargo build -p game-core` passes. **No test has been run** — expect red from `melee.rs`
+until hazards 1 and 3 are handled.
