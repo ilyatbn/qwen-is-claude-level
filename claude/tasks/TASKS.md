@@ -409,6 +409,8 @@ independent.
 - [x] [T19.02](M19/T19.02-you-can-see-a-bullet.md) — You can see a bullet, without freezing the game **(v7)**
 - [x] [T19.03](M19/T19.03-fire-button.md) — Hold to empty the clip **(v7)**
 - [ ] [T19.04](M19/T19.04-fire-while-moving.md) — §C20 repealed: you fire while moving **(v7)**
+- [ ] [T19.15](M19/T19.15-the-client-run-is-a-coin-flip.md) — The client test run is a coin flip **(v7)**
+- [ ] [T19.14](M19/T19.14-the-join-race.md) — The join race, and a gate that fails on a coin flip **(v7)**
 - [ ] [T19.05](M19/T19.05-the-shovel.md) — The shovel, and the end of the melee cabinet **(v7)**
 - [ ] [T19.06](M19/T19.06-rain-that-hurts.md) — Rain that falls on you hurts **(v7)**
 - [ ] [T19.07](M19/T19.07-private-settings-server.md) — Private-game settings: the wire, and the match that honours them **(v7)**
@@ -418,8 +420,12 @@ independent.
 - [ ] [T19.11](M19/T19.11-fire-is-an-object.md) — Fire is an object **(v7)**
 - [ ] [T19.12](M19/T19.12-what-lights-a-fire.md) — What lights a fire: the flamethrower, the molotov, the vent **(v7)**
 - [ ] [T19.13](M19/T19.13-flames-on-screen.md) — Flames on screen **(v7)**
-- [ ] [T19.14](M19/T19.14-the-join-race.md) — The join race, and a gate that fails on a coin flip **(v7)**
-- [ ] [T19.15](M19/T19.15-the-client-run-is-a-coin-flip.md) — The client test run is a coin flip **(v7)**
+
+**Order note.** T19.15 and T19.14 were written mid-milestone and are **promoted ahead of
+the remaining feature work**: three of the four gate runs after T19.02 carried a
+non-deterministic red, and every one of those costs a human judgement about whether it is
+real. D-65 is what that judgement looks like when it is made from a confounded
+measurement.
 
 **Checkpoint:** host a private game with bots off, All weapons and a 4-minute timer; run
 sideways while holding fire and watch a stream of bullets cross the screen; dig into a
