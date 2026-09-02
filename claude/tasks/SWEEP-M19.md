@@ -16,10 +16,10 @@ defect is a valued outcome here; several are recorded below rather than worked a
   join has not arrived*. `GameScene.ts:330-338` documents the window: the server starts
   the 20 Hz stream as soon as it seats you, so first snapshots land while `map_init` is
   still decoding and wait in `pendingSnapshot`.
-- **CONFIRMED — the literal instruction kills 19 checks.** `enterBattle` has **24 call
+- **CONFIRMED — the literal instruction kills 18 checks.** `enterBattle` has **24 call
   sites in 21 files**; only `e2e-two-clients.mjs:64,65`, `full-round.mjs:89,90` and
   `m10-checkpoint.mjs:118,119` are multi-client. "Wait for a roster with the players in
-  it", implemented as *wait for two*, hangs the other 19 forever. Same shape as the
+  it", implemented as *wait for two*, hangs the other 18 forever. Same shape as the
   `standStill` landmine.
 - **CONFIRMED — the instrument is stale and overstates the problem.** `harness.mjs:299`
   assigns `d`; the simulating-wait at `:317-324` reads fresh data into locals **without

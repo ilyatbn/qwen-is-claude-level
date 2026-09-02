@@ -22,6 +22,7 @@
 import {
   closeSync,
   existsSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -130,10 +131,26 @@ const acquireLock = () => {
   const deadline = Date.now() + LOCK_TIMEOUT_MS
   for (;;) {
     try {
-      // `wx` is the atomic half: exactly one racer creates the file.
-      const fd = openSync(lockPath, 'wx')
+      // **Created atomically *with* its pid already in it.** `openSync(wx)` then
+      // `writeSync` is two syscalls, and a waiter arriving between them read an
+      // empty file — which used to be judged "stale" and stolen, and now waits.
+      // Writing to a private temp file and `linkSync`-ing it into place closes
+      // that window instead of handling it: `link` fails if the target exists,
+      // so it is exactly as exclusive as `wx`, and the content is there the
+      // instant the name is.
+      const tmp = `${lockPath}.${process.pid}.tmp`
+      const fd = openSync(tmp, 'w')
       writeSync(fd, String(process.pid))
       closeSync(fd)
+      try {
+        linkSync(tmp, lockPath)
+      } finally {
+        try {
+          unlinkSync(tmp)
+        } catch {
+          /* nothing to clean */
+        }
+      }
       lockHeld = true
       return
     } catch (err) {
@@ -210,9 +227,22 @@ const acquireLock = () => {
 
 // `exit` covers `process.exit()` too, which this script uses on every error path.
 process.on('exit', releaseLock)
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  process.on(sig, () => process.exit(1))
-}
+
+// **No SIGINT/SIGTERM handlers, deliberately.**
+//
+// They used to be here to release the lock on a kill, and they made a *waiting*
+// build unkillable: the wait loop is `sleepSync` in a `for(;;)`, which never
+// yields to the event loop, so a queued JS signal handler cannot run. Measured:
+// `timeout 25 node scripts/wasm-build.mjs` against a held lock ignored SIGTERM
+// and sat for the full LOCK_TIMEOUT_MS of ten minutes. Four npm hooks invoke
+// this script, so that reads as a hang, the natural answer is `kill -9`, and
+// that used to leave the empty lock file the next build then waited ten minutes
+// on. The two behaviours compounded.
+//
+// Registering nothing restores the default: the process dies at once on Ctrl-C.
+// The lock it abandons is safe because the pid in it is now dead, and a dead
+// holder's lock is stolen atomically by the next build — which is the same path
+// that already covers a crash, a `kill -9`, or a killed process group.
 
 acquireLock()
 

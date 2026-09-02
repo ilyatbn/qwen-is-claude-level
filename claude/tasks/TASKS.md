@@ -410,7 +410,8 @@ independent.
 - [x] [T19.03](M19/T19.03-fire-button.md) — Hold to empty the clip **(v7)**
 - [x] [T19.04](M19/T19.04-fire-while-moving.md) — §C20 repealed: you fire while moving **(v7)**
 - [ ] [T19.15](M19/T19.15-the-client-run-is-a-coin-flip.md) — The client test run is a coin flip **(v7)** — **PARTIAL: 2 of 3 landed** (wasm-build race fixed, `backdrop-real` attribution fixed; `hud-timer` unfinished — its premise is wrong, see `HANDOFF-M19.md`)
-- [x] [T19.14](M19/T19.14-the-join-race.md) — The join race, and a gate that fails on a coin flip **(v7)**
+- [x] [T19.14](M19/T19.14-the-join-race.md) — The join race, and a gate that fails on a coin flip **(v7)** — **roster half; there was no race. Vite half booked as T19.16**
+- [ ] [T19.16](M19/T19.16-vite-port-under-load.md) — `vite did not report a port within 90 s` under sustained load **(v7)**
 - [ ] [T19.05](M19/T19.05-the-shovel.md) — The shovel, and the end of the melee cabinet **(v7)**
 - [ ] [T19.06](M19/T19.06-rain-that-hurts.md) — Rain that falls on you hurts **(v7)**
 - [ ] [T19.07](M19/T19.07-private-settings-server.md) — Private-game settings: the wire, and the match that honours them **(v7)**

@@ -365,7 +365,8 @@ export async function enterBattle(page, opts = {}) {
   // `pendingSnapshot` (`GameScene.ts:330-338`).
   //
   // Defaults to 1 — every client is in its own roster — so this is a no-op for
-  // the 19 single-client callers. Multi-client checks opt in with
+  // the 18 single-client callers (24 sites, 6 opt-ins). Multi-client checks opt
+  // in with
   // `expectPlayers: 2`, the same shape `waitPlaying` already has. Keyed to the
   // observable effect and **not** to a constant, because no constant governs a
   // network round-trip plus a mask decode; inventing one would be a tunable

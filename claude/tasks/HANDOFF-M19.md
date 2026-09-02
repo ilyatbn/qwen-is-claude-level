@@ -343,10 +343,11 @@ was explicitly rejected here.
   "the constant that governs it", and no constant governs a network round-trip plus a mask
   decode; pinning one would have fabricated a tunable.
 - **`expectPlayers` defaults to 1 on purpose.** Every client appears in its own roster, so
-  the default is a no-op for the 19 single-client callers, and only
+  the default is a no-op for the **18** single-client callers — 24 sites, **six** opt-ins —
+  and only
   `e2e-two-clients.mjs:64,65`, `full-round.mjs:89,90` and `m10-checkpoint.mjs:118,119` opt
   in to 2. Implementing the task's literal "wait for a roster that has the players in it"
-  as *wait for two* would have hung the other nineteen — the `standStill` shape again.
+  as *wait for two* would have hung the other eighteen — the `standStill` shape again.
 - **`enterBattle`'s return value has no readers.** All 24 call sites discard it (`grep -rn
   "= await enterBattle"` → nothing), so the staleness only ever reached the log. If a
   future caller starts using the return, it is now fresh — that is new, and free.
@@ -371,3 +372,74 @@ was explicitly rejected here.
   sustained browser load` was not reproduced and not investigated — the task's own Done-when
   is a serial loop, which is the idle-box case and cannot reproduce a load failure. Booked
   rather than silently dropped.
+
+## IN PROGRESS — T19.05 sitting in the working tree (coder retiring at ~380k)
+
+`TASKS.md` box for T19.05 is **unticked**. What follows is on disk, uncommitted.
+
+### The design decision, which is forced and should not be re-litigated
+
+**The five weapons are retired as unobtainable placeholders, not deleted.** Both tables are
+indexed by id — `registry::def` is `ITEMS.get(id as usize)` and `WEAPONS[i].id ==
+WeaponId(i)` (asserted at `defs.rs:796,810`) — so removing five entries renumbers every id
+above them. That is §B16, the bug where a laser resolved as a bazooka. The task anticipated
+it ("if the table cannot hold holes then keep an explicit retired placeholder — the pinned
+test decides"), and `melee.rs:351-354` decides for placeholders by asserting all five ids
+still resolve.
+
+**Consequence the task did not foresee: their constants and art must stay too.** A
+placeholder that still resolves needs stats and a sprite. So "retire the constants and
+client art" in the deliverable **cannot be fully honoured**, and retirement here means
+*unobtainable* (all three weights zero), not *absent*. That is a task-file tension worth
+recording rather than quietly resolving.
+
+**Consequence 2: the sweep's `balance.rs:260` prediction does not fire.** `weapons()`
+filters `ITEMS` by `ItemKind::Weapon`, and 22 placeholders + the shovel is 23, over the
+floor of 20. The prediction assumed deletion. Do not "fix" that assertion.
+
+### File by file, exactly what is there
+
+- **`constants.rs`** — six `SHOVEL_*` constants added after `HAMMER_KNOCKBACK`, values from
+  `docs/75` §F11 (30.0 / 14.0 / 20.0 / 1.2 / 0.55 / 150.0). Done.
+- **`items/registry.rs`** — `WEAPON_SHOVEL = WeaponId(24)`, `SHOVEL: ItemId = 24`, a shovel
+  `ItemDef` appended at index 24 with **all three weights 0**, and the five retired
+  `ItemDef`s zeroed with a block comment explaining why they are not deleted. Done.
+- **`weapons/defs.rs`** — shovel `WeaponDef` appended last, `Delivery::Melee`, plus the two
+  import lines. Done. **Note:** doc comments (`///`) are not legal on array elements here —
+  both new blocks use `//`.
+- **`player/state.rs`** — `grant_starting_kit()` added above `respawn`, called from
+  `respawn` after `inventory.clear()`. **`PlayerState::new` does NOT call it yet — this is
+  the single most important unfinished line.** Join grants nothing; only respawn does.
+
+**State: `cargo build -p game-core` passed. No tests have been run.** Expect red.
+
+### The three `melee.rs` hazards: none handled yet
+
+1. `melee.rs:341-347` asserts every `SPEC` weapon has a non-zero weight. **All six now have
+   zero weights**, so this fails for all of them. Replace it — the presence is "every player
+   spawns holding a shovel, on join and on respawn"; do not delete it bare or the guard that
+   the *retired* five are unobtainable disappears too.
+2. `melee.rs:351-354` (the §B16 id check) **passes** under the placeholder design.
+3. `SPEC` at `melee.rs:193-199` needs a shovel row: `("shovel", 30.0, 14.0, 20.0, 1.2, 0.55,
+   150.0)`. Literals are correct there and §A19 does not apply — the table's job is to check
+   the code against the *document*, and pinning it to the constants would compare each value
+   to itself. The five retired rows stay, because they are still `Delivery::Melee` and
+   `:228` set-matches the melee roster against `SPEC`.
+
+### Not started
+
+Client `WEAPON_KEYS` + `'shovel'`; `weapon_shovel` art in `itemTextures.ts` (**four** dead
+procedural entries to consider, not the three the task lists — `weapon_axe:114` is the
+fourth, and under the placeholder design they should probably all stay); `ordnance.mjs:335`
+`'axe'` → `'shovel'`; the `Digit1/2/3` presses in `full-round.mjs:138/217/232` and
+`m10-checkpoint.mjs:179` that a slot-0 shovel shifts; `REPLAY_VERSION` (zeroing five weights
+reshuffles every `place_initial`/`assign_buried_items` draw, so an old replay loads and
+diverges silently — the task's pre-flight says bump it); the density sweep before/after; and
+every test in the Tests list.
+
+### Part-way through reasoning
+
+The 200-seed sweep is an **absence with no control** as written — it passes against a build
+where nothing spawns at all, which is exactly the re-weighting risk zeroing five weights
+creates. It needs a companion count asserting some other weapon still spawns at a rate the
+re-weighting predicts. I had not decided what that rate should be.
