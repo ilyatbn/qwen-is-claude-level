@@ -1167,3 +1167,34 @@ never fires an SMG at all**. A plausible causal story that fits the symptom is n
 diagnosis. The coder probed instead of repairing and found two latent defects; the reviewer
 conceded the mechanism outright. Both halves are the process working — but the cheaper path
 was ten seconds of arithmetic before six runs of evidence.
+
+## D-66 — Sweeping the unstarted tasks is cheaper than discovering their landmines  ·  M19
+The `standStill` landmine — a constant T19.04 retires, read by a browser helper that
+**throws** when it is absent, called by twelve checks — was found by accident during an
+unrelated review. That prompted a deliberate read-only sweep of every unstarted M19 task
+against the tree, and it returned four more of the same class:
+
+- **`room.rs:1192` gives an `AXE`** in `DEV_LOADOUT` — `game-server` stops compiling the
+  moment T19.05 retires that id.
+- **A shovel in slot 0 shifts every positional `Digit` press** in `full-round` and
+  `m10-checkpoint` — the §C24 bug whose scar is already written in `ordnance.mjs`.
+- **`REPLAY_VERSION` must be bumped by T19.05**, which no one would have guessed: the
+  commands carry slot indices and no item ids, so id retirement looks safe — but the
+  buried and initial item draws run over `spawn_weight` across the whole table, so
+  deleting five entries reshuffles every draw and an old replay **loads, runs and diverges
+  silently**.
+- **`bots/mod.rs:657` reads `world.burn.patches()`**, so T19.12 taking fire out of
+  `BurnField` makes **bots stop avoiding fire** while still avoiding toxic — with nothing
+  going red, because no test names that behaviour.
+
+Three of the five are compile errors or dead fixtures that the gate would have caught
+loudly. **Two are silent** — the replay divergence and the bots — and those are the ones
+that pay for the sweep. The rule:
+
+> **Before a task that retires something, grep for its readers across `scripts/`,
+> `client/`, `constants_json` and the bots — not just the crate that owns it.** A
+> retirement is a whole-repo edit wearing a single-file disguise.
+
+The sweep also returned three **clean** answers (T19.06, T19.09, T19.10 land as written),
+and a clean answer is worth having: it is the difference between a task nobody has checked
+and a task somebody has.
