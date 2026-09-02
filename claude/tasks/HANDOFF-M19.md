@@ -195,11 +195,17 @@ The task landed green (`cargo test -p game-core && cargo test -p game-server &&
   uninformative would pass it**, where the old straddle assertion failed that end. The
   `diverged >= 5` floor sits underneath and would catch it well before 19, so the window
   is genuinely narrow — but it is real, it is new, and nobody had written it down.
-- **`bullets-visible` is a load-flake suspect.** Red inside the full suite, green alone in
-  20.5 s, green inside the full suite after the `standStill` repair. One red and one green
-  under load **cannot** distinguish a repair from a coin flip, so it is not claimed as
-  fixed. If it recurs: the handoff's standing advice is to lengthen the sampled region and
-  **never** loosen the movement rule, which is the only assertion a hitscan build fails.
+- **`bullets-visible` is a load flake, and there is no causal path to the fixes.** Red
+  inside the full suite, green alone in 20.5 s, green inside the full suite after the
+  `standStill` repair — a sequence that on its own cannot tell a repair from a coin flip.
+  It is stronger than that: `bullets-visible:60` passes `waitPlaying: true`, so the body
+  has stood in the world through a 10 s `WARMUP_SECONDS` before `standStill` at `:143`,
+  with no keyboard input in between. It is already grounded and settled when the helper is
+  reached, so **`grounded` changed nothing for this check and the new throw cannot fire in
+  it**. Neither fix touches it; the redness is load. Do not re-open the question on the
+  strength of the timing coincidence. If it recurs, the standing advice above applies —
+  lengthen the sampled region and **never** loosen the movement rule, which is the only
+  assertion a hitscan build fails.
 - **A harness trap that cost this session a red gate read as green.** `./scripts/check.sh
   | tail -80` reports **tail's** exit status, not the gate's — D-64 one layer up, in the
   invocation rather than in the script. Redirect to a file and read `$?` from the gate

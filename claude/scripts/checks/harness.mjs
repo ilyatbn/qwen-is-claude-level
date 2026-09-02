@@ -428,8 +428,8 @@ export async function standStill(page, { keys = ['a', 'd', 'w', 's'], timeoutMs 
     if (!body || typeof body.vx !== 'number' || typeof body.grounded !== 'boolean') {
       throw new Error(
         'standStill: window.__game.debug().player is absent or malformed ' +
-          `(${JSON.stringify(body)}) — there is no local player to settle, so the ` +
-          'scene is not ready, the player is dead, or the debug bridge is broken',
+          `(${JSON.stringify(body)}) — there is no local player to settle, so it ` +
+          'has not been seated in the world yet, or the debug bridge is broken',
       )
     }
     vx = Math.abs(body.vx)

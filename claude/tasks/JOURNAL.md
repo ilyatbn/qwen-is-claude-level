@@ -5107,6 +5107,6 @@ control at 3.
 Restored — 20/20 diverge. **Defusing the `standStill` landmine deleted its tripwire**: the
 retired constant was its liveness probe too, so `?? 0` read a dead page as settled. Throws
 again; settling needs `grounded`. **My instrument lied** — `check.sh | tail -80` reports
-tail's status. Two of five new tests were vacuous on a stall; four `100.0` against
-`WALK_SPEED` 150 — pinned, falsified live. **`bullets-visible` red under load, green after —
-but it is settled long before `standStill`: no causal path, so a suspect, not a fix.** EXIT=0; 2366 Rust, 778 client, e2e 41/41, net 25/25.
+tail's status. Two of five new tests were vacuous on a stall; four `100.0` vs `WALK_SPEED`
+150 — pinned, falsified live. **`bullets-visible` red then green under load, but settled
+before `standStill` — no causal path, a load flake.** EXIT=0; 2366 Rust, 778 client, 41/41.
