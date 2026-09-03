@@ -448,17 +448,31 @@ is done. What follows is the part that is not recoverable from the diff.
   §F5's "floor of the arsenal" made literal and it is asserted in
   `combat::firing_respects_the_cooldown_and_the_ammo_count`, with a control that selects a
   genuinely empty slot so `EmptySlot` is still known to be reachable.
-### Booked, found by T19.05 and not its to fix: the host that never learns its inventory
+### Two findings from T19.05, booked as **T19.17** and **T19.18**
 
-`m10-checkpoint`'s host enters through the **menu** into a private lobby rather than
-through `enterBattle`, and `GameScene.slots` is filled *only* by the server's `inventory`
-event (`GameScene.ts:486`). For that host the event never arrives: measured, `debug().slots`
-was all-null for a full **30 s** while the room ticked at 60 Hz and every other assertion in
-the check passed. `harness.mjs::selectWeapon` reads exactly that array, so it cannot be used
-there — the check presses `Digit2` instead and says why. **An inventory the client never
-learns is a real defect**; every other check hides it because `enterBattle` seats them a
-different way. Reproduce with `node scripts/e2e.mjs m10-checkpoint` and a
-`waitForFunction` on `slots`.
+The crate that could not be picked up on seed 555, and the client that never learns its
+inventory. Both are measured, neither is explained, and each has a task file carrying the
+numbers and the repro. The short form:
+
+**T19.18 — the lobby client never learns its inventory.** `GameScene.slots` is filled
+*only* by the server's `inventory` event (`GameScene.ts:486`), and for a client that
+reaches a match through the **menu into a private lobby** it never arrives.
+`harness.mjs::selectWeapon` reads exactly that array, so no menu-entered check can select
+by name; `m10-checkpoint` presses `Digit2` and says so at the call site.
+
+**Settled, and not intermittent.** Three measurements, the last a probe on both clients in
+one run: `selectWeapon`'s own 2 s poll saw `(nothing)`; a 30 s `waitForFunction` timed out;
+and the probe printed `host slots = (nothing)` **and** `guest slots = (nothing)` after
+30.2 s, in a live match with `DEV_LOADOUT=1`. It is both clients, not just the host, and
+the **server** plainly has the loadout — the same check fires and the terrain changes
+(`m10-checkpoint.mjs:203`).
+
+**A reporting error to own.** `51c91f6`'s message said the gate was "red on `crates` and on
+nothing else". That was an *inference* from the previous gate plus the fixes made since, not
+a measured full-gate result; the next gate showed `m10-checkpoint` red as well. It should
+have read "red on `crates` in the last measured gate, the rest predicted fixed and
+unverified". The gate that finally passed enumerates its last two stages:
+**net smoke 25/25 joined, assets ok**, `all checks passed`, EXIT=0.
 
 ### `crates` — re-seeded, and what was measured getting there
 

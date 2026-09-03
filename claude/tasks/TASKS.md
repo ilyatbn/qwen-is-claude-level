@@ -1,9 +1,10 @@
 # Master task list
 
-198 tasks across 20 milestones.
+201 tasks across 20 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added; it then read 169 against 183 rows. Counted with
-`grep -c '^- \[[ x]\]'`, not assumed.) Work them **in order**. See `README.md` for the
+`grep -c '^- \[[ x]\]'`, not assumed — 201 after T19.05 booked T19.17 and T19.18.) Work
+them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
 
 Tasks marked **(v2)** come from `docs/70-amendments-v2.md`, **(v3)** from
@@ -421,6 +422,8 @@ independent.
 - [ ] [T19.11](M19/T19.11-fire-is-an-object.md) — Fire is an object **(v7)**
 - [ ] [T19.12](M19/T19.12-what-lights-a-fire.md) — What lights a fire: the flamethrower, the molotov, the vent **(v7)**
 - [ ] [T19.13](M19/T19.13-flames-on-screen.md) — Flames on screen **(v7)**
+- [ ] [T19.17](M19/T19.17-a-crate-you-cannot-pick-up.md) — A crate you cannot pick up — **found by T19.05**, measured and unexplained
+- [ ] [T19.18](M19/T19.18-the-lobby-client-never-learns-its-inventory.md) — The lobby client never learns its inventory — **found by T19.05**, reproduced three times
 
 **Order note.** T19.15 and T19.14 were written mid-milestone and are **promoted ahead of
 the remaining feature work**: three of the four gate runs after T19.02 carried a
