@@ -1292,6 +1292,48 @@ pub const FLAMETHROWER_AMMO: u8 = 200;
 /// How long one spray particle lives, for the client and for the burn trail.
 pub const FLAMETHROWER_PARTICLE_LIFE: f32 = 0.35;
 
+// --- F10: a flame is an object ---------------------------------------------
+//
+// Fire used to be two things and neither was a fire: an arc that was *checked*
+// each tick, and static discs of "burning ground". You could not see where fire
+// would go, you could not push it, and it did not behave like the thing on the
+// screen. A flame is now a projectile on the shared step — it flies, it falls
+// slowly, it bounces, it settles, it burns what it touches, and its only end is
+// `FLAME_LIFE`.
+//
+// **These are the flame's own numbers.** What *makes* flames — the flamethrower,
+// the molotov, the lava vent — is §F10.2 and carries its own counts and speeds.
+
+/// Seconds a flame burns before it goes out. Its **only** end: a flame does not
+/// die on contact, which is what makes it area denial rather than a hit.
+pub const FLAME_LIFE: f32 = 5.0;
+/// Health per second, to everyone inside one — including whoever lit it, once
+/// the owner grace has passed. Continuous, so two overlapping flames burn twice
+/// as fast; that is what makes a crowd of them dangerous.
+pub const FLAME_DPS: f32 = 12.0;
+/// Damage and collision radius, px.
+pub const FLAME_RADIUS: f32 = 10.0;
+/// Well under 1.0, so a flame drifts down and settles rather than dropping like
+/// a grenade.
+pub const FLAME_GRAVITY_SCALE: f32 = 0.35;
+/// Bounce, and bleed off speed until `GRENADE_REST_SPEED` puts it to rest.
+pub const FLAME_RESTITUTION: f32 = 0.25;
+pub const FLAME_FRICTION: f32 = 0.60;
+/// Seconds between a resting flame's terrain bites. **A timer, not a tick**: a
+/// flame that carved every tick would eat a crater in a second, and this is
+/// meant to be a slow burn.
+pub const FLAME_SCORCH_EVERY: f32 = 0.5;
+/// Radius of one such bite, px. Over five seconds a crowd of flames eats a real
+/// hole, which is the digging the fire weapons never had.
+pub const FLAME_SCORCH_R: f32 = 3.0;
+/// Global cap on live flames, oldest dropped first.
+///
+/// A molotov plus a held flamethrower trigger can otherwise put hundreds of
+/// objects on the wire: projectiles are broadcast **per object** at
+/// `SNAPSHOT_HZ`, so this number is a bandwidth ceiling as much as a gameplay
+/// one.
+pub const FLAME_MAX_LIVE: usize = 160;
+
 // Thrown ordnance (§B7). Four grenades that are not the grenade: one bursts
 // above you, one blinds, one burns, one poisons. Three of the four leave the
 // terrain untouched — what they deny is space, not rock.

@@ -5215,3 +5215,18 @@ delta by 0.2 and the canopy read 66 → 11-14. Fixed by `WEATHER=off`, a new `Co
 in the `DEV_POISONED` family; `WEATHER=fog` is the same switch pointed the other way and is
 what makes the new `fog-visible` check possible at all. With the game wiring falsified,
 `weather-visible` stayed **green** — §C0 live. EXIT=0, 42/42, net smoke 25/25, assets ok.
+
+## T19.11 — fire is an object
+
+`WEAPON_FLAME` (id 25, appended) is a `Delivery::Projectile` with a fuse, no contact
+explosion and a new `Burst::Flame` — a grenade that does not go off — so it bounces, rests
+and expires on the **shared** step. `weapons/flame.rs` holds only what a projectile step
+has no opinion about: the continuous burn, the scorch timer (derived from `spawned_at`, no
+new field) and the global cap. Three things the task file does not mention and one of them
+is a bug it would have shipped: a flame needs a `WeaponId` (so `WEAPON_KEYS` gains `flame`,
+two languages); **`Projectiles::step` stopped every projectile on a body**, so a flame died
+on the person it set on fire — now keyed on `Burst::Flame`; and `BurnField`'s
+`radius + w * 0.5` overlap test ignores `h`, which put a flame **resting at your feet** 4 px
+outside its own radius. `touching` is circle-vs-box. **Nothing emits a flame yet — the
+production-caller grep is T19.12's**, said in the module header. 160 flames = 3200
+`ProjectileMove`/s, ~50 kB/s. EXIT=0, 42/42, net smoke 25/25, assets ok.

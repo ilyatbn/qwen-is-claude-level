@@ -6,7 +6,8 @@
 //! (`docs/31-weapons-combat.md` §1, §8).
 
 use crate::constants::{
-    AIRBURST_AMMO, MOLOTOV_AMMO, SMOKE_AMMO, TOXIC_DROP_SPEED, TOXIC_GRENADE_AMMO,
+    AIRBURST_AMMO, FLAME_FRICTION, FLAME_GRAVITY_SCALE, FLAME_LIFE, FLAME_RESTITUTION,
+    MOLOTOV_AMMO, SMOKE_AMMO, TOXIC_DROP_SPEED, TOXIC_GRENADE_AMMO,
 };
 use crate::constants::{
     AIRBURST_FAN, AIRBURST_FUSE, AIRBURST_MUZZLE_SPEED, AIRBURST_PELLETS, AIRBURST_PELLET_CARVE,
@@ -56,7 +57,7 @@ use crate::constants::{
 };
 use crate::items::registry::{
     WeaponId, WEAPON_AIRBURST, WEAPON_AIRBURST_PELLET, WEAPON_AXE, WEAPON_BAT, WEAPON_BAZOOKA,
-    WEAPON_DEAGLE, WEAPON_FLAMETHROWER, WEAPON_GRENADE, WEAPON_HAMMER, WEAPON_KNIFE,
+    WEAPON_DEAGLE, WEAPON_FLAME, WEAPON_FLAMETHROWER, WEAPON_GRENADE, WEAPON_HAMMER, WEAPON_KNIFE,
     WEAPON_LASER_PISTOL, WEAPON_LASER_SMG, WEAPON_MACHINEGUN, WEAPON_METEOR, WEAPON_METEOR_FRAG,
     WEAPON_MINE, WEAPON_MOLOTOV, WEAPON_PISTOL, WEAPON_REVOLVER, WEAPON_SHOVEL, WEAPON_SMG,
     WEAPON_SMOKE, WEAPON_TOXIC_DROP, WEAPON_TOXIC_GRENADE, WEAPON_WHIP,
@@ -158,6 +159,15 @@ pub enum Burst {
     /// A cloud that blocks vision and does nothing else — the only weapon in the
     /// game with no damage at all.
     Smoke { radius: f32, duration: f32 },
+    /// It goes out, and that is all (§F10).
+    ///
+    /// A flame's whole effect happens *while it is alive* — `FLAME_DPS` to
+    /// anyone inside it and a `FLAME_SCORCH_R` bite out of the ground it rests
+    /// on — so the end of one is not an event, it is an absence. Spelled as a
+    /// variant rather than reusing `Blast` with zeroes because `detonate`
+    /// matches exhaustively: this way "nothing happens" is a decision somebody
+    /// made, and a future burst kind is still a compile error there.
+    Flame,
 }
 
 /// Mirrors `burn::BurnKind` without `weapons::defs` depending on the burn field's
@@ -771,6 +781,46 @@ pub static WEAPONS: &[WeaponDef] = &[
         energy_cost: 0.0,
         burst: Burst::Blast,
     },
+    // --- F10: one flame ---------------------------------------------------
+    //
+    // Nothing emits these yet — that is §F10.2, and T19.11's journal says the
+    // production-caller grep is deferred there rather than forgotten.
+    //
+    // It is a `Projectile` with a fuse and no contact explosion, which is a
+    // grenade that does not go off: `projectile.rs` already bounces, already
+    // rests below `GRENADE_REST_SPEED`, and already ends a projectile on its
+    // fuse. A second flight loop for fire would be the §A24 mistake this
+    // codebase has paid for twice.
+    WeaponDef {
+        id: WEAPON_FLAME,
+        key: "flame",
+        delivery: Delivery::Projectile {
+            fuse: Some(FLAME_LIFE),
+            restitution: FLAME_RESTITUTION,
+            friction: FLAME_FRICTION,
+            explode_on_contact: false,
+        },
+        // **Zero damage and zero blast on purpose.** A flame's damage is
+        // continuous — `FLAME_DPS` per second while you are inside it — and it
+        // is applied by `weapons::flame`, not by anything that reads these two
+        // fields. A non-zero `damage` here would be a number that never runs;
+        // a non-zero `blast_radius` would put a crater under every flame that
+        // went out.
+        damage: 0.0,
+        blast_radius: 0.0,
+        range: 0.0,
+        cooldown: 0.0,
+        // The emitters choose the speed — the flamethrower's muzzle speed and a
+        // molotov's burst speed are different numbers (§F10.2) — so they spawn
+        // with an explicit velocity rather than through `Projectiles::spawn`.
+        muzzle_speed: 0.0,
+        gravity_scale: FLAME_GRAVITY_SCALE,
+        // Fire is not blown about: §F10 does not give it a wind term, and 0.0 is
+        // not a tunable (§F1's reasoning about the bullets).
+        wind_scale: 0.0,
+        energy_cost: 0.0,
+        burst: Burst::Flame,
+    },
 ];
 
 /// Look a weapon up by id.
@@ -943,6 +993,14 @@ mod tests {
                     "{} makes a cloud that is not there",
                     w.key
                 ),
+                // §F10. A flame's effect is not on its def at all: it burns
+                // `FLAME_DPS` for `FLAME_LIFE` while alive, so the numbers that
+                // decide whether it does anything are constants rather than
+                // `w.damage` and `w.blast_radius` — which means a *runtime*
+                // assertion on them is one the compiler can answer, and clippy
+                // says so out loud. The guard is `weapons::flame`'s
+                // `const _: () = assert!(...)`, which fails the build instead.
+                Burst::Flame => {}
             }
         }
         // The exemption list must not outlive its members: a name here that is

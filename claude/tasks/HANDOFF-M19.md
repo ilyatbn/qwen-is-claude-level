@@ -921,6 +921,63 @@ alternated against a worktree at `4d58d20`, **8/8 green in both trees** for the 
 binary, and no causal path from a fog diff. And `perf`'s `chunk rebake 4.50 ms exceeds 4`,
 which read **2.90 ms** on the next gate. Neither is on any flaky list and neither should be.
 
+## T19.11 landed — what the diff does not say
+
+**Nothing emits a flame, and that is the deliverable.** §F10.2 is T19.12. The
+production-caller grep for `weapons::flame` is deferred there and said so in the module
+header, so a reader meeting a mechanism with no caller does not conclude it was forgotten.
+
+**Two real defects the task file does not mention, both found by a failing test.**
+
+1. **A flame died on contact with a body.** `Projectiles::step`'s player-AABB loop runs for
+   every delivery kind, so the first person a flame touched extinguished it — §F10.1 says
+   its only end is `FLAME_LIFE`. The guard is now `ends_only_on_its_timer`, keyed on
+   `Burst::Flame` rather than on the weapon id, so the property belongs to "its end is its
+   own timer" rather than to one row of the table. Terrain is unaffected: a flame bounces
+   there through `explode_on_contact: false`.
+2. **The shared overlap test ignores `h`.** `BurnField::tick` asks
+   `(pos - patch.pos).len() <= radius + target.w * 0.5` — a circle around the body's
+   *centre*, using its half-**width**. That works for it only because `LAVA_BURN_RADIUS` is
+   28 and a player's half-height is 14; the extra reach hides the missing term. A flame is
+   10 px, a body is 16x28, and a flame **resting at your feet** sits 22 px from your centre
+   — 4 px outside its own radius. Fire on the ground would have burned nobody standing in
+   it, and every table test would have stayed green. `flame::touching` is circle-vs-box.
+   **`BurnField` still has the old formula**; it is not wrong for a 28 px patch, but if a
+   small toxic zone is ever added it will be.
+
+**Design decisions worth not re-litigating.**
+
+- **The scorch is derived, not stored.** `interval(now) > interval(now - dt)` against
+  `spawned_at`, so there is no `last_scorched_at` field for every other projectile to carry
+  and never read. Falsified by scorching every tick: 121 bites in 2 s against 4.
+- **`tick` reports every crossing of the timer, empty carve included**, and `World` is
+  where "there was rock left" is decided. Filtering inside the module would make "the timer
+  fired" and "the ground had pixels" one number — and a flame resting in the hole it has
+  already eaten bites nothing, which is how the first draft measured 1 scorch where the
+  timer had fired 4 times.
+- **The cap runs in `World::step`, before the burn**, not at each emitter: three things
+  will make flames and a fourth is the one that forgets. Oldest is lowest id — ids are
+  monotonic, so id order *is* spawn order, and `spawned_at` would need a tie-break for the
+  two dozen a molotov spawns on one tick. Falsified by dropping the newest instead.
+- **`Burst::Flame`'s "it does something" guard is a `const _: () = assert!(...)`**, not a
+  line in `every_weapon_digs`. A flame's numbers are constants, so a runtime assertion on
+  them is one the compiler folds — clippy rejects it as `assertions_on_constants`. The
+  const version fails the build, which is strictly earlier.
+
+**Three fixture traps met, all previously recorded and all met anyway.**
+`set_phase(Playing)` lasts one tick **and leaves `round_time` at zero**, so the body is
+still inside `SPAWN_IFRAMES` and refuses every point of damage — the first draft of the
+warmup control reported that fire burns nobody in a live round. Wait the warmup out for
+real. A flame lit at a body's *spawn* position is not lit at the body after ten seconds of
+settling. And `FLAME_GRAVITY_SCALE` takes a flame out of its own radius in about a sixth of
+a second, so a dps fixture that drops one beside a standing body measures a quarter of what
+it should — put it on the floor.
+
+**The bandwidth number T19.11 asks for: 160 flames → 3200 `ProjectileMove`/s, about
+50 kB/s** at 16 bytes an entry (`world/mod.rs` emits one per live projectile every third
+tick). Printed by `a_full_flame_field_costs_what_the_cap_says_it_does` so a future change to
+`FLAME_MAX_LIVE` can be argued about with a figure. The cap looks right.
+
 ## Where the next agent picks up (this coder retiring at ~380k)
 
 **HEAD is `fbcdd87`. The tree is clean, `git stash` is empty, and the last full gate was

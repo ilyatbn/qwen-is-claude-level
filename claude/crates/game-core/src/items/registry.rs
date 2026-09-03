@@ -71,6 +71,18 @@ pub const WEAPON_TOXIC_DROP: WeaponId = WeaponId(23);
 /// mirrors that order in `WEAPON_KEYS` (§B16).
 pub const WEAPON_SHOVEL: WeaponId = WeaponId(24);
 
+/// One flame (§F10). **A weapon, and never an item** — like the meteor, the
+/// airburst pellet and the toxic drop, it exists so that fire can use the shared
+/// projectile step; nobody carries one and nothing spawns one on the ground.
+///
+/// It needs a `WeaponId` at all because `Projectile` carries one
+/// (`weapons/projectile.rs`), which is also what gets it onto the wire and into
+/// the client's `WEAPON_KEYS` so it can be drawn (§F10.3). Neither task file
+/// says so; it falls out of a flame being a projectile.
+///
+/// **Appended, never inserted** (§B16).
+pub const WEAPON_FLAME: WeaponId = WeaponId(25);
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UtilityId {
     Flashlight,

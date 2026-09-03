@@ -5,6 +5,7 @@ pub mod burn;
 pub mod cone;
 pub mod defs;
 pub mod explode;
+pub mod flame;
 pub mod melee;
 pub mod placed;
 pub mod projectile;

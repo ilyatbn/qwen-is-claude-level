@@ -257,6 +257,8 @@ impl Projectiles {
             // decided, for both terms — see its doc comment for why it is not
             // inline.
             let straight = matches!(w.delivery, Delivery::Bullet { .. });
+            // §F10.1. See the body test below.
+            let ends_only_on_its_timer = matches!(w.burst, Burst::Flame);
 
             p.rose |= p.vel.y < 0.0;
             // Gravity now; wind after the apex check, which is the order the
@@ -341,10 +343,22 @@ impl Projectiles {
                 let owned_by_shooter =
                     |id: &HitId| *id == HitId::Player(p.owner) && p.age_ticks <= grace_ticks;
                 let mut hit = None;
-                for (id, aabb) in players {
-                    if !owned_by_shooter(id) && aabb.contains_point(next) {
-                        hit = Some(*id);
-                        break;
+                // §F10.1: **a flame does not die on contact.** Its only end is
+                // `FLAME_LIFE`, which is what makes it area denial rather than a
+                // hit — so it flies *through* a body and keeps burning whoever
+                // is standing in it. Every other projectile stops on the first
+                // one it touches, and a flame that did too would be extinguished
+                // by the person it set on fire.
+                //
+                // Keyed on `Burst::Flame` rather than on the weapon id, so the
+                // property belongs to "its end is its own timer" rather than to
+                // one row of the table.
+                if !ends_only_on_its_timer {
+                    for (id, aabb) in players {
+                        if !owned_by_shooter(id) && aabb.contains_point(next) {
+                            hit = Some(*id);
+                            break;
+                        }
                     }
                 }
                 // §C16: a bird stops a bullet, and only a bullet.

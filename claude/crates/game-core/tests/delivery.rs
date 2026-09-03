@@ -716,3 +716,164 @@ fn a_mine_falls_when_the_ground_under_it_is_carved() {
         "the mine hung over the crater: {settled} → {after}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// F10 — a flame in a real world
+// ---------------------------------------------------------------------------
+//
+// `weapons::flame`'s own tests drive the module directly; these drive a `World`,
+// which is where the two things a module test cannot see live: the warmup gate
+// that every damage source in the game funnels through, and the state hash that
+// a replay has to reproduce.
+
+/// Light `n` flames on top of the player, and return the world.
+///
+/// `spawn_raw` because that is how every §F10.2 emitter will do it — the speed a
+/// flame leaves at is the emitter's choice, not the def's.
+fn world_with_flames(seed: u64, n: usize) -> (game_core::world::World, Vec2) {
+    let mut w = game_core::world::World::new(seed, MapScale::Small);
+    w.add_player(0, 0, "ana".to_string());
+    let at = w.players[0].body.pos;
+    for i in 0..n {
+        w.projectiles.spawn_raw(
+            game_core::items::registry::WEAPON_FLAME,
+            // Owner 7, who is not in the room: the flame must burn player 0 as a
+            // stranger's fire, not as their own.
+            7,
+            at + Vec2::new(i as f32 * 0.25, 0.0),
+            Vec2::ZERO,
+            w.round_time,
+        );
+    }
+    (w, at)
+}
+
+#[test]
+fn a_flame_cannot_burn_you_during_the_warmup_and_can_once_the_round_starts() {
+    // §E13's lesson, one milestone old: every damage source funnels through
+    // `apply_damage_log`, and the warmup gate lives there. A flame that
+    // subtracted health directly would be the one source that skips it, and
+    // nothing else in the suite would notice.
+    let (mut w, _) = world_with_flames(4242, 4);
+    assert_eq!(w.phase, game_core::world::RoundPhase::Warmup);
+    let before = w.players[0].health;
+    for _ in 0..30 {
+        w.step(SIM_DT);
+    }
+    assert_eq!(
+        w.players[0].health, before,
+        "a flame burned a player during the warmup"
+    );
+
+    // The control, and without it the assertion above is satisfied by a flame
+    // that burns nobody ever. Fresh flames, because the first four have been
+    // ageing through the warmup.
+    let (mut w2, at) = world_with_flames(4242, 4);
+    // **Not `set_phase(Playing)`.** It lasts exactly one tick — the round
+    // controller rewrites the phase from `round_time` every tick — and worse, it
+    // leaves `round_time` at zero, so the body is still inside its
+    // `SPAWN_IFRAMES` and refuses every point of damage. The first draft did
+    // exactly that and reported that fire burns nobody in a live round.
+    //
+    // So wait the warmup out for real, which is the only thing that clears both.
+    let mut guard = 0;
+    while (w2.phase != game_core::world::RoundPhase::Playing || w2.round_time <= SPAWN_IFRAMES)
+        && guard < 4000
+    {
+        w2.step(SIM_DT);
+        guard += 1;
+    }
+    assert_eq!(w2.phase, game_core::world::RoundPhase::Playing);
+    assert!(!w2.players[0].invulnerable(w2.round_time));
+    // Re-light **where the body is now**, not where it spawned: ten seconds of
+    // warmup is ten seconds of falling and settling, and the first draft of this
+    // lit four flames at the spawn point and reported that fire burns nobody.
+    // `SPAWN_IFRAMES` have also expired by here, which is the other way a fixture
+    // like this reads as "the damage path is broken" (the trap T19.05 recorded).
+    let here = w2.players[0].body.pos;
+    for i in 0..4 {
+        w2.projectiles.spawn_raw(
+            game_core::items::registry::WEAPON_FLAME,
+            7,
+            here + Vec2::new(i as f32 * 0.25, 0.0),
+            Vec2::ZERO,
+            w2.round_time,
+        );
+    }
+    let _ = at;
+    let hp = w2.players[0].health;
+    for _ in 0..30 {
+        w2.step(SIM_DT);
+    }
+    for pr in w2.projectiles.iter() {
+        println!("DBG p {:?} rest={}", pr.pos, pr.resting);
+    }
+    assert!(
+        w2.players[0].health < hp,
+        "a flame burned nobody in a live round either, so the warmup assertion proves nothing"
+    );
+}
+
+#[test]
+fn a_field_of_flames_is_deterministic_over_six_hundred_ticks() {
+    // §A34. A flame carves, damages and expires, and all three are in the state
+    // hash — but the field is a `Vec` the cap reorders, so "160 live flames do
+    // not make the hash order-dependent" is a claim worth a run rather than a
+    // reading. Twenty runs, because one run compares nothing.
+    let hash_of = || {
+        let (mut w, _) = world_with_flames(1234, FLAME_MAX_LIVE + 10);
+        for _ in 0..600 {
+            w.step(SIM_DT);
+        }
+        w.state_hash()
+    };
+    let first = hash_of();
+    for i in 1..20 {
+        assert_eq!(
+            hash_of(),
+            first,
+            "run {i} of a 600-tick round with {} flames alight diverged",
+            FLAME_MAX_LIVE + 10
+        );
+    }
+    // Not vacuous: a different seed must give a different hash, or this is
+    // twenty comparisons of a constant.
+    let (mut other, _) = world_with_flames(999, FLAME_MAX_LIVE + 10);
+    for _ in 0..600 {
+        other.step(SIM_DT);
+    }
+    assert_ne!(
+        other.state_hash(),
+        first,
+        "two different seeds hashed the same"
+    );
+}
+
+#[test]
+fn a_full_flame_field_costs_what_the_cap_says_it_does() {
+    // The bandwidth number T19.11 asks for, measured rather than estimated.
+    // Projectiles are broadcast **per object** — `world/mod.rs` emits a
+    // `ProjectileMove` for every live projectile every third tick — so a full
+    // field is `FLAME_MAX_LIVE` moves at `SNAPSHOT_HZ`, and the cap is a
+    // bandwidth ceiling as much as a gameplay one.
+    let (mut w, _) = world_with_flames(7, FLAME_MAX_LIVE + 40);
+    w.step(SIM_DT);
+    let live = w.projectiles.len();
+    assert_eq!(
+        live, FLAME_MAX_LIVE,
+        "the cap is not enforced inside `World::step` — {live} flames alive"
+    );
+    // 16 bytes an entry is the wire's own shape (id, x, y as f32 plus a tag);
+    // the point of the number is its order of magnitude, and it is printed so a
+    // future change to `FLAME_MAX_LIVE` can be argued about with a figure.
+    let moves_per_second = live as f32 * SIM_HZ as f32 / 3.0;
+    println!(
+        "F10 bandwidth: {live} flames -> {moves_per_second:.0} ProjectileMove/s, \
+         about {:.1} kB/s at 16 bytes each",
+        moves_per_second * 16.0 / 1024.0
+    );
+    assert!(
+        moves_per_second < 4000.0,
+        "a full flame field emits {moves_per_second:.0} move events a second"
+    );
+}

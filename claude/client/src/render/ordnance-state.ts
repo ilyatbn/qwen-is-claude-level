@@ -124,6 +124,11 @@ export const WEAPON_KEYS: string[] = [
   // shift everything after it — §B16 again. It has no `KIND_BY_WEAPON_KEY` entry
   // because a swing spawns no projectile.
   'shovel',
+  // §F10. A flame is a projectile, so it has a `WeaponId`, so it is here — the
+  // registry is positional and `weaponKeysMatchTheRustRegistry` pins this list
+  // to it. Its `KIND_BY_WEAPON_KEY` entry and its look arrive with T19.13; until
+  // then nothing emits one, so nothing reaches the layer that would draw it.
+  'flame',
 ]
 
 export const KIND_BY_WEAPON_KEY: Record<string, ProjectileKind> = {

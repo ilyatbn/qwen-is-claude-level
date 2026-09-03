@@ -1532,6 +1532,15 @@ impl World {
                 at, kind, radius, dps, duration, patches, scatter, source, now,
             ),
             Burst::Smoke { radius, duration } => self.burst_smoke(at, radius, duration, now),
+            // §F10. A flame that has burned for `FLAME_LIFE` goes out, and going
+            // out is not an event: no carve, no damage, no blast. Everything it
+            // ever did happened while it was alive, in `weapons::flame`.
+            //
+            // Reached through the fuse — `Projectiles::step` reports `Exploded`
+            // when `fuse_at` passes — which is why this arm exists at all rather
+            // than the flame being intercepted earlier: the fuse is what gives a
+            // flame its `FLAME_LIFE` and it is the same fuse a grenade uses.
+            Burst::Flame => {}
         }
     }
 
@@ -1886,19 +1895,52 @@ impl World {
         }
     }
 
-    /// Mines fall, arm, trigger; ground fire burns and goes out.
+    /// Mines fall, arm, trigger; ground fire burns and goes out; flames burn.
     fn step_placed(&mut self, now: f32, dt: f32) {
         let tick = self.tick;
         let log: DamageLog = Default::default();
         let bird_log: BirdLog = Default::default();
-        let ended = {
+        // §F10. **Before the burn**, so a flame that is over the cap this tick
+        // never gets to damage anyone: a cap applied afterwards would let an
+        // unbounded field deal unbounded damage for one tick each time, which is
+        // the shape T19.03's banking bug had.
+        crate::weapons::flame::enforce_cap(&mut self.projectiles);
+        let (ended, scorches) = {
             let (mut closures, meta, mut bird_vels) =
                 hit_targets(&self.players, &self.birds, &log, &bird_log, now);
             let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
             let ended = self.mines.step(&mut self.map, &mut t, now, dt);
             self.burn.tick(&mut t, now, dt);
-            ended
+            // Flames burn here rather than in `step_projectiles` because this is
+            // where the target slice already exists and where the warmup gate
+            // below already stands. A flame is a projectile that flies on the
+            // shared step and *damages* like a hazard.
+            let scorches =
+                crate::weapons::flame::tick(&self.projectiles, &mut self.map, &mut t, now, dt);
+            (ended, scorches)
         };
+        // A scorch changes the mask, so it has to reach the clients as a carve
+        // like any other — a hole that exists on the server and not on the screen
+        // is §C0's shape, and this module has no access to the sequence counter.
+        for sc in scorches {
+            // A bite that took nothing is a flame resting in the hole it has
+            // already eaten. `weapons::flame` reports every crossing of its
+            // timer and this is where "there was rock left" is decided, so a
+            // fire in a crater does not stream empty carves at `SNAPSHOT_HZ`.
+            if sc.carve.pixels_removed == 0 {
+                continue;
+            }
+            self.carve_seq += 1;
+            self.events.push(GameEvent::Carve {
+                tick,
+                seq: self.carve_seq,
+                x: sc.at.x.round() as i32,
+                y: sc.at.y.round() as i32,
+                r: crate::constants::FLAME_SCORCH_R.round() as i32,
+                kind: CarveKind::Weapon,
+            });
+            self.reveal(&sc.carve.revealed, now);
+        }
         self.apply_damage_log(&log, &bird_log, now);
 
         // A cloud that vanishes server-side and lingers on screen is worse than
