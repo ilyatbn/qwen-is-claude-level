@@ -5,7 +5,7 @@
 //!
 //! - **Arming.** A pad does nothing until you have moved `TELEPORT_ARM_DISTANCE`
 //!   from where you spawned. Respawn puts you *on* a pad, so without this the
-//!   first thing every death does is throw you somewhere else two seconds later.
+//!   first thing every death does is throw you somewhere else a charge later.
 //! - **Charge.** `TELEPORT_CHARGE` seconds of standing on the pad, and stepping
 //!   off resets it. A pad that fired on contact would be a trap, not a choice.
 //! - **Cooldown.** `TELEPORT_COOLDOWN` after arriving, or you ping-pong: the pad
@@ -118,7 +118,7 @@ pub fn step(
     let armed = state.observe(pos);
 
     // Standing, not brushing past in mid-air: a pad is ground, and a jetpack
-    // hovering through the rect for two seconds is not "standing on" it.
+    // hovering through the rect for a whole charge is not "standing on" it.
     let under = if grounded {
         pads.iter().find(|p| p.underfoot(pos)).map(|p| p.id)
     } else {
@@ -130,8 +130,8 @@ pub fn step(
         return TeleportStep::Idle;
     };
 
-    // Arming and cooldown reset the charge rather than freezing it, so the two
-    // seconds start when the pad actually becomes usable — a charge accumulated
+    // Arming and cooldown reset the charge rather than freezing it, so the
+    // charge starts when the pad actually becomes usable — a charge accumulated
     // while unusable would fire the instant it stopped being so.
     if !armed || now < state.ready_at {
         state.charging = None;
@@ -293,6 +293,51 @@ mod tests {
         assert!(
             s.observe(spawn),
             "walking back to the spawn point disarmed the player"
+        );
+    }
+
+    /// The charge is `TELEPORT_CHARGE` long — measured at **both** ends.
+    ///
+    /// Every other fixture here holds for a multiple of the constant and asks
+    /// only whether the pad fired, which is satisfied by any charge from one
+    /// tick to three seconds. This one pins the duration itself: strictly
+    /// nothing before the constant, and a `Fire` on the tick the constant names.
+    /// It is the fixture that fails if `step` ever reads a literal instead of
+    /// `TELEPORT_CHARGE`, and it is counted in **ticks** rather than seconds
+    /// because both clocks here are accumulated `f32`s and a fixture that
+    /// compares two drifting sums is a fixture that fails on a rounding change.
+    #[test]
+    fn the_charge_lasts_exactly_teleport_charge() {
+        let pads = pads();
+        let mut s = TeleportState::new(Vec2::new(0.0, 0.0), 0.0);
+        let here = on_pad(&pads[1]);
+
+        // `step` fires the first tick its accumulated hold reaches the charge,
+        // and the first tick contributes one `SIM_DT`.
+        let due = (TELEPORT_CHARGE / SIM_DT).ceil() as i32;
+        // One tick of slack on the far side, and only there: `step` sums `dt`
+        // the same way this loop does, so the sum can land a hair under the
+        // constant on the tick that arithmetic says is due.
+        let mut fired_on = None;
+        let mut now = 0.0;
+        for tick in 1..=due + 1 {
+            now += SIM_DT;
+            if let TeleportStep::Fire(id) = step(&mut s, &pads, here, true, now, SIM_DT) {
+                fired_on = Some((id, tick));
+                break;
+            }
+        }
+        let (id, tick) = fired_on.unwrap_or_else(|| {
+            panic!(
+                "the pad had not fired after {} ticks, past TELEPORT_CHARGE ({TELEPORT_CHARGE} s)",
+                due + 1
+            )
+        });
+        assert_eq!(id, 1, "the wrong pad fired");
+        assert!(
+            tick >= due,
+            "fired on tick {tick} of {due} — {:.3} s into a {TELEPORT_CHARGE} s charge",
+            tick as f32 * SIM_DT
         );
     }
 

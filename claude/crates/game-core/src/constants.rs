@@ -1374,7 +1374,10 @@ pub const PAD_H: i32 = 8;
 /// some ticks and false on others, which is a charge that never completes.
 pub const PAD_TOUCH_SLACK: f32 = 4.0;
 /// Seconds of standing still on a pad before it fires.
-pub const TELEPORT_CHARGE: f32 = 2.0;
+///
+/// 2.0 until §F8. Everyone can shoot while running now (§F4), so two seconds of
+/// standing on a lit pad was a long time to be a target.
+pub const TELEPORT_CHARGE: f32 = 1.5;
 /// Seconds after **arriving** before a pad will charge again.
 ///
 /// Without it the destination pad starts charging the instant you land on it and
@@ -1383,8 +1386,8 @@ pub const TELEPORT_COOLDOWN: f32 = 5.0;
 /// How far from where you spawned you must move before a pad arms.
 ///
 /// Respawn puts you **on** a pad, so without this rule the first thing every
-/// death does is teleport you somewhere else two seconds later — including when
-/// you are stationary because you are reading the map.
+/// death does is teleport you somewhere else a `TELEPORT_CHARGE` later —
+/// including when you are stationary because you are reading the map.
 pub const TELEPORT_ARM_DISTANCE: f32 = 32.0;
 
 // --- C14: a living background ---

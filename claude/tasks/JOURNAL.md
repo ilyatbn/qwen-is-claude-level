@@ -5189,3 +5189,16 @@ that both answers occur; breaking the link reddens two tests. **Enum settings wr
 timer clamps** (§F7's "ends disabled at each bound"), said in the code so it is not tidied
 away. **Task defect: `canChangeSettings` does not exist** — it is `ownsSettings`, moved
 inside `stepSetting`. EXIT=0, 41/41, 25/25, assets ok.
+
+## T19.09 — the teleport charge is 1.5 seconds
+
+`TELEPORT_CHARGE` 2.0 → 1.5 (§F8). The sweep was right that the task's stated worry is
+unfounded — the client has no copy and all 28 read sites were already pinned — and right
+that the real risk was the inverse, so the gate was the deliverable: **a shorter fuse
+teleported nobody by accident**, 41/41 e2e green. Added
+`the_charge_lasts_exactly_teleport_charge`, the only fixture that pins the *duration*
+rather than "it fired eventually"; falsified at the live binding site (`elapsed >=
+TELEPORT_CHARGE * 0.5` → red at tick 46 of 90). Counted in **ticks**, because both clocks
+are accumulated `f32`s. Four stale "two seconds" comments repointed. **Noted, not fixed:**
+`teleport.mjs:211`'s absence window is `TELEPORT_CHARGE * 2500`, so it falls 5.0 s → 3.75 s
+— correctly pinned, and proving less. EXIT=0, 41/41, net smoke 25/25, assets ok.

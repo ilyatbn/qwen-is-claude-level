@@ -422,7 +422,7 @@ if (!home) {
   // jump, the landing, `standStill` and the camera settle between the two — five
   // to eight seconds of lighting drift, and the control then legitimately
   // reported "something global changed" about once in six runs. Nothing between
-  // here and the sample below takes more than the charge's own two seconds.
+  // here and the sample below takes more than one `TELEPORT_CHARGE`.
   //
   // The property frame A needs is "the indicator is not drawn yet", not
   // "unarmed": the charge is still climbing from zero at this point.

@@ -8,7 +8,7 @@
  * byte — **not** from a timer this file runs.
  *
  * That last point is the whole design of this file. The client could watch its
- * own feet and count two seconds, and it would be wrong the moment the player is
+ * own feet and count the charge down, and it would be wrong the moment the player is
  * unarmed, on cooldown, or a pixel off the pad — three rules that live in
  * `world::teleport` and would have to be copied here to get the indicator right.
  * A byte on the wire is cheaper than three guards that drift.

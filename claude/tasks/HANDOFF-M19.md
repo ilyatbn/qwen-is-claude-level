@@ -822,6 +822,34 @@ half of the problem. **It has not been rewritten and no task has been booked on 
 the coordinator writes amendments, not a builder. This is the hypothesis, the evidence for
 and against, and the experiment; the scoping decision is not mine to make.
 
+## T19.09 landed — what the diff does not say
+
+**The sweep's suspected hazard did not appear, and that is a measured absence, not luck.**
+A shorter charge makes an *accidental* teleport likelier for any check that stands a body
+still on a pad, and only the full gate can see it. The gate ran green — 41/41 e2e — with
+`teleport`, `hud-bars` and `terrain-render` all inside it. If a future change moves
+`TELEPORT_CHARGE` again, this is the reason a crate-scoped Done-when is not enough.
+
+**`teleport.mjs:211`'s absence window shrank with the constant, and it was left that way.**
+It sleeps `TELEPORT_CHARGE * 2500` and then asserts no teleport happened, so the window
+fell from 5.0 s to 3.75 s. It is *correctly* pinned — 2.5 charges is the claim, and 2.5
+charges is what it waits — but the same code proves less than it did. Raising the
+multiplier to keep the wall-clock window at 5 s would be inventing a number nobody chose,
+which is why it was not done. Recorded so nobody reads the shorter wait as a regression.
+
+**The new fixture is counted in ticks on purpose.** `the_charge_lasts_exactly_teleport_charge`
+is the only one that pins the *duration* — every other fixture holds for a multiple of the
+constant and asks only whether the pad fired, which any charge from one tick to three
+seconds satisfies. A first draft compared two accumulated `f32` seconds and failed at
+exactly the boundary: `TELEPORT_CHARGE / SIM_DT` is 89.99999 in `f32`, so `floor` gives 89
+where arithmetic says 90, and `step`'s own `t + dt` sum lands a hair under 1.5 on the tick
+that is due. Ticks with one tick of slack on the far side only. Falsified at the live
+binding site (`elapsed >= TELEPORT_CHARGE * 0.5`): red, "fired on tick 46 of 90".
+
+**Four stale "two seconds" comments were repointed** (`constants.rs`, `teleport.rs` ×2,
+`pads.ts`, `teleport.mjs`). None changed behaviour; they are listed because a prose sweep
+is the kind of thing a reviewer wonders whether was deliberate.
+
 ## Where the next agent picks up (this coder retiring at ~380k)
 
 **HEAD is `fbcdd87`. The tree is clean, `git stash` is empty, and the last full gate was
