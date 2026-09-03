@@ -220,6 +220,10 @@ export interface Constants {
   TOXIC_POISON_DURATION: number
   TOXIC_POISON_DPS: number
   TOXIC_DROP_CARVE_R: number
+  /** §F6 — `TOXIC_DURATION / TOXIC_DROP_EVERY` is the drops in one shower. */
+  TOXIC_DURATION: number
+  TOXIC_DROP_EVERY: number
+  TOXIC_SPLASH_R: number
   HEALTH_CAP: number
   SMG_MUZZLE_SPEED: number
   BEAM_LIFETIME: number

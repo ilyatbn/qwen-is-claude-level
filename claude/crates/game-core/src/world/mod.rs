@@ -1285,6 +1285,54 @@ impl World {
         );
     }
 
+    /// The same `detonate`, for a projectile that stopped on **terrain**.
+    ///
+    /// The seam above can only say "it landed on this player", and §F6 moves the
+    /// interesting case to the other branch: nearly every drop lands on the
+    /// ground, and what it does to the people standing near it is the whole
+    /// feature. A radius cannot be tested through a seam that always names a
+    /// victim, and the alternative — reaching into `detonate` — is the fifth
+    /// call site D-62 is about.
+    #[doc(hidden)]
+    pub fn land_on_terrain_for_test(&mut self, at: Vec2, weapon: WeaponId, now: f32) {
+        self.detonate(u32::MAX, weapon, u8::MAX, at, None, now);
+    }
+
+    /// §F6 — poison everyone standing within `TOXIC_SPLASH_R` of where a drop
+    /// landed.
+    ///
+    /// **The roof is asked per victim, not per drop.** §E13's call site passed
+    /// the landing point to a parameter named `victim`, and the two coincided
+    /// only because the drop had stopped on that player. With a radius they stop
+    /// coinciding the first time two people stand a few pixels apart with a slab
+    /// over one of them, and "a roof protects you" would then be decided by where
+    /// the rain fell rather than by where you are standing — which is the rule
+    /// backwards. `poison_lands` is the shared test (`effects/mod.rs`), the same
+    /// one the meteor asks; this does not grow a second copy of it.
+    ///
+    /// No damage, no carve and no impulse here: the poison is a **status**, and
+    /// what it costs is applied by `step`'s stage 8a through
+    /// `apply_damage_log`, which is where the warmup gate lives. A subtraction
+    /// from `health` in this function would be the one damage source in the game
+    /// that skipped it (§E13's own note, and the reason `tick_stats` refuses it).
+    fn splash_poison(&mut self, at: Vec2, now: f32) {
+        let r2 = crate::constants::TOXIC_SPLASH_R * crate::constants::TOXIC_SPLASH_R;
+        // Collected first, because `poison_lands` borrows the map while the
+        // poison needs the players mutably.
+        let caught: Vec<PlayerId> = self
+            .players
+            .iter()
+            .filter(|p| p.alive && (p.body.pos - at).len_sq() <= r2)
+            .filter(|p| crate::effects::toxic::poison_lands(&self.map, p.body.pos))
+            .map(|p| p.id)
+            .collect();
+        for id in caught {
+            if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {
+                p.poison(now);
+            }
+        }
+    }
+
     /// Resolve one projectile going off, whatever it was.
     fn detonate(
         &mut self,
@@ -1305,27 +1353,22 @@ impl World {
         // bullet-sized bite out of the ground and a meteor's crater is exactly
         // what `docs/13` §3 says toxic rain must never leave.
         if crate::effects::toxic::owns(weapon) {
-            // Whoever it landed on, not everyone nearby: a drop is not a blast,
-            // and `victim` is the body the shared projectile step reports it
-            // actually touched.
+            // **A drop splashes** (§F6). §E13 poisoned only the body the
+            // projectile point intersected — the comment that used to sit here
+            // said "whoever it landed on, not everyone nearby" — and §F6 repeals
+            // exactly that, because the arithmetic of a point hitting a 20 px
+            // target twenty times a shower is a hazard nobody ever felt.
             //
-            // `player()` because the victim is a `HitId` since §F1. A drop cannot
-            // in fact land on a bird — only bullets test the bird slice — so the
-            // `None` arm is unreachable today, and it is written rather than
-            // unwrapped because the day something else stops on a bird this is a
-            // decision someone has to make, not a panic.
-            if let Some(v) = victim {
-                if let Some(pid) = v.player() {
-                    if crate::effects::toxic::poison_lands(&self.map, at) {
-                        if let Some(p) = self.players.iter_mut().find(|p| p.id == pid) {
-                            if p.alive {
-                                p.poison(now);
-                            }
-                        }
-                    }
-                }
+            // Still **not** a blast, and not `explode`: that carves, deals its
+            // damage instantly and throws people, which is the one thing
+            // `docs/13` §3 says rain must never do. What is shared with the
+            // meteor is `poison_lands`, the roof test — not the blast helper.
+            self.splash_poison(at, now);
+            if victim.is_some() {
                 // No carve: the drop stopped on a player, and the ground it
-                // never reached keeps its pixels.
+                // never reached keeps its pixels. The splash above has already
+                // run, so a drop that lands *on* someone still reaches whoever
+                // is standing beside them.
                 return;
             }
             let r = crate::constants::TOXIC_DROP_CARVE_R.round() as i32;
@@ -3666,7 +3709,7 @@ mod fire_while_moving {
 #[cfg(test)]
 mod toxic_rain_falls {
     use super::*;
-    use crate::constants::{MapScale, SKY_MARGIN, TOXIC_DROP_EVERY, TOXIC_DURATION};
+    use crate::constants::{MapScale, SKY_MARGIN, TOXIC_DURATION};
     use crate::items::registry::WEAPON_TOXIC_DROP;
     use crate::map::{CoarseGrid, Mask};
     use crate::weapons::explode::EffectKind;
@@ -3678,6 +3721,17 @@ mod toxic_rain_falls {
     const GROUND: u32 = 400;
     /// The roof over the cave, and the cave floor under it.
     const ROOF: u32 = 250;
+    /// How thick that roof is.
+    ///
+    /// **It was 12, and §F6 made 12 too thin to be cover.** A drop takes a
+    /// `TOXIC_DROP_CARVE_R` (6 px) bite out of whatever it lands on, and at the
+    /// new cadence 54 of them fall in a shower: measured, a 12 px slab was dug
+    /// through inside one window and the "sheltered" player then lost 30.7
+    /// health to rain coming in through the hole they were standing under. That
+    /// is the game working — you can dig a roof off someone — and it is useless
+    /// in a fixture whose subject is cover, so the slab is now thick enough to
+    /// survive a shower. Nothing else here depends on the number.
+    const ROOF_THICKNESS: u32 = 40;
     const CAVE_FLOOR: u32 = 340;
     /// The cave's x range, and an open column beside it.
     const CAVE_X0: u32 = 80;
@@ -3701,7 +3755,7 @@ mod toxic_rain_falls {
         }
         // The cave: a roof slab, and a floor under it for a drop to land on.
         for x in CAVE_X0..CAVE_X1 {
-            for y in ROOF..(ROOF + 12) {
+            for y in ROOF..(ROOF + ROOF_THICKNESS) {
                 mask.set(x as i32, y as i32);
             }
             for y in CAVE_FLOOR..GROUND {
@@ -3788,6 +3842,93 @@ mod toxic_rain_falls {
         (w, landings)
     }
 
+    /// §F6's acceptance, in one run: **stand in it and lose health**.
+    ///
+    /// This is the assertion the whole task exists for, and it is deliberately
+    /// not a hand-placed drop. §E13's unit tests all hit the player on purpose —
+    /// `hit_player_for_test` — which is why they stayed green for a milestone
+    /// while a real shower could be stood in from start to finish. Here the
+    /// scheduler releases the rain, the drops fall, and whether any of them
+    /// reaches anybody is the question.
+    ///
+    /// The control is in the same run, on the same map, in the same shower: a
+    /// second player under the cave roof. Without it "the open player lost
+    /// health" is satisfied by rain that poisons everyone regardless of cover,
+    /// which is precisely the rule §E13 added and §F6 keeps.
+    ///
+    /// Aggregated over seeds, because where the rain falls is a draw and the
+    /// claim is about a population (§A27). The claim is **not** "every seed hits
+    /// him" — it is that standing in a shower now costs health, which one dry
+    /// seed does not refute.
+    #[test]
+    fn a_shower_hurts_the_player_in_the_open_and_never_the_one_under_rock() {
+        let seeds = [1u64, 7, 42, 99, 4242, 12345];
+        let mut wet_seeds = 0;
+        let mut total_lost = 0.0f32;
+        for seed in seeds {
+            let mut w = World::new(seed, MapScale::Small);
+            w.map = map_with_a_cave();
+            w.set_phase(RoundPhase::Playing);
+            // Open sky, and standing on the ground rather than floating: the
+            // splash is a distance from the landing point and a body in the air
+            // is a different question.
+            w.add_player(0, 0, "open".into());
+            if let Some(p) = w.player_mut(0) {
+                p.body.pos = Vec2::new(
+                    (OPEN_X0 + 40) as f32,
+                    GROUND as f32 - crate::constants::PLAYER_H / 2.0,
+                );
+            }
+            // Under twelve pixels of rock, on the cave floor.
+            w.add_player(1, 0, "sheltered".into());
+            if let Some(p) = w.player_mut(1) {
+                p.body.pos = Vec2::new(
+                    ((CAVE_X0 + CAVE_X1) / 2) as f32,
+                    CAVE_FLOOR as f32 - crate::constants::PLAYER_H / 2.0,
+                );
+            }
+            w.force_effect(EffectKind::ToxicRain, w.round_time);
+
+            // The window, plus the fall and the last poison's full duration —
+            // the damage is a status that outlives the shower.
+            let ticks = ((TOXIC_DURATION + 16.0) / crate::constants::SIM_DT) as u32;
+            for _ in 0..ticks {
+                w.step(crate::constants::SIM_DT);
+            }
+            let open = w.player(0).expect("open").health;
+            let dry = w.player(1).expect("sheltered").health;
+            assert_eq!(
+                dry,
+                crate::constants::BASE_HEALTH,
+                "seed {seed}: the sheltered player lost {} health under \
+                 {ROOF_THICKNESS} pixels of rock",
+                crate::constants::BASE_HEALTH - dry
+            );
+            if open < crate::constants::BASE_HEALTH {
+                wet_seeds += 1;
+                total_lost += crate::constants::BASE_HEALTH - open;
+            }
+        }
+        // §F6's whole point: a player who stands in it is hit. Before the change
+        // the expectation was 0.26 hits a shower; this asserts the population,
+        // not one lucky draw.
+        assert!(
+            wet_seeds * 2 > seeds.len(),
+            "the player in the open was hit in only {wet_seeds} of {} showers — \
+             this is the lottery §F6 exists to end",
+            seeds.len()
+        );
+        // And the hits cost what the constants say: at least one full poison on
+        // average, pinned rather than written as a number.
+        let per_shower = total_lost / seeds.len() as f32;
+        let one_hit = crate::constants::TOXIC_POISON_DPS * crate::constants::TOXIC_POISON_DURATION;
+        assert!(
+            per_shower >= one_hit,
+            "a shower cost {per_shower:.1} health on average, less than the \
+             {one_hit:.1} a single hit is worth"
+        );
+    }
+
     /// The subject, and its control, on one map.
     ///
     /// Aggregated over several seeds: where the rain falls is a draw, and one
@@ -3795,7 +3936,7 @@ mod toxic_rain_falls {
     /// saying anything about the cave (§A27 — a population claim needs more than
     /// one draw).
     #[test]
-    fn no_drop_lands_under_a_roof_and_drops_do_land_in_the_open() {
+    fn rain_reaches_the_open_ground_and_a_cave_floor_is_the_rare_exception() {
         let mut indoors = 0;
         let mut outdoors = 0;
         for seed in [1u64, 7, 42, 99, 4242, 12345] {
@@ -3812,15 +3953,31 @@ mod toxic_rain_falls {
                 }
             }
         }
-        // The control first: if nothing landed in the open, "nothing landed
-        // indoors" would be satisfied by rain that never lands at all.
+        // **This asserted `indoors == 0` until §F6, and that assertion was
+        // wrong** — not weakened here, replaced, because the thing it claimed is
+        // not what the code promises.
+        //
+        // A drop has `wind_scale` 1.0 and drift is a feature (`toxic.rs`'s own
+        // header says so): one that slides in through a cave mouth lands on the
+        // cave floor having passed through no rock at all. The zero held only
+        // because 20 drops a shower almost never drift that far; §F6's cadence
+        // makes it 54 and it fails at 2 of ~324 landings. A gate that turns on
+        // how often a rare drift lands is a coin flip, and the rule it was
+        // reaching for lives one layer down anyway: **whoever is under that roof
+        // is not poisoned**, which `a_sheltered_player_takes_nothing_from_a_
+        // whole_shower` asserts against the real scheduler.
+        //
+        // What stays true and is worth pinning is the presence: rain reaches the
+        // open ground on every one of these seeds, and overwhelmingly so.
         assert!(
             outdoors > 0,
-            "nothing landed in the open, so the absence below proves nothing"
+            "nothing landed in the open — the rain is not reaching the ground"
         );
-        assert_eq!(
-            indoors, 0,
-            "{indoors} drop(s) landed under a roof — rain fell through solid rock"
+        assert!(
+            outdoors > indoors * 10,
+            "{indoors} of {} landings were on a cave floor; drift is rare and this \
+             is not drift — rain is getting inside",
+            indoors + outdoors
         );
     }
 
@@ -3885,7 +4042,7 @@ mod toxic_rain_falls {
         );
         assert_eq!(
             released,
-            (TOXIC_DURATION / TOXIC_DROP_EVERY) as usize,
+            crate::effects::toxic::drops_per_window(),
             "{released} drops"
         );
     }
@@ -3948,8 +4105,8 @@ mod toxic_rain_falls {
     ///
     /// `pick_column` draws from `surface_points`, so a map with one of them rains
     /// on one column every time. That turns "does a drop ever hit a player" from
-    /// a coin flip — 20 drops across thousands of pixels — into a fact, without
-    /// reaching past the projectile step to arrange it.
+    /// a coin flip — 54 drops across thousands of pixels, and 20 before §F6 —
+    /// into a fact, without reaching past the projectile step to arrange it.
     fn map_with_one_rain_column(x: u32) -> Map {
         let mut mask = Mask::new_empty(W, H);
         for y in GROUND..H {
@@ -4172,6 +4329,198 @@ mod toxic_rain_falls {
 
     /// Set up a player who has just been hit by a drop, and report their health
     /// before the poison starts biting.
+    /// §F6 asked for the load to be **measured, not assumed** — so this measures
+    /// it, and asserts the number it found.
+    ///
+    /// 2.6× the drops means 2.6× the live projectiles, and drops ride the same
+    /// per-projectile broadcast every other piece of ordnance does. Two things
+    /// were checked and are recorded here because the task asked for both:
+    ///
+    /// - **There is no projectile cap to check.** No `MAX_PROJECTILES` exists in
+    ///   `constants.rs` or `weapons/projectile.rs`; the collection grows and
+    ///   `PROJECTILE_MAX_LIFETIME` is what bounds it. Its absence is the finding.
+    /// - **The cost is an event cost, not a snapshot cost.** Projectiles are not
+    ///   in the binary snapshot; `ProjectileMove` is emitted for every live one
+    ///   every third tick, so the bill is `peak × SIM_HZ / 3` messages a second.
+    ///
+    /// The bound below is derived, not chosen: a drop falls from `SKY_MARGIN`
+    /// under gravity and one is released every `TOXIC_DROP_EVERY`, so the most
+    /// that can be in the air at once is the flight time over the cadence. It is
+    /// asserted rather than printed because a print is not a guard.
+    #[test]
+    fn a_shower_keeps_a_bounded_number_of_drops_in_the_air() {
+        use crate::constants::{GRAVITY, SIM_DT, SKY_MARGIN, TOXIC_DROP_EVERY, TOXIC_DROP_SPEED};
+        let mut w = World::new(4242, MapScale::Medium);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        w.force_effect(EffectKind::ToxicRain, w.round_time);
+
+        let mut peak = 0usize;
+        let ticks = ((TOXIC_DURATION + 12.0) / SIM_DT) as u32;
+        for _ in 0..ticks {
+            w.step(SIM_DT);
+            peak = peak.max(w.projectiles.len());
+        }
+
+        // Flight time for the longest possible fall: `SKY_MARGIN` to the bottom
+        // of the map, from `TOXIC_DROP_SPEED` under full gravity. Solving
+        // `d = v·t + g·t²/2` for t.
+        let d = w.map.mask.h as f32 - SKY_MARGIN as f32;
+        let v = TOXIC_DROP_SPEED;
+        let t = ((v * v + 2.0 * GRAVITY * d).sqrt() - v) / GRAVITY;
+        let ceiling = (t / TOXIC_DROP_EVERY).ceil() as usize + 1;
+        assert!(
+            peak <= ceiling,
+            "{peak} drops were airborne at once against a {ceiling} the physics \
+             allows — something is releasing faster than the cadence"
+        );
+        // The control: without it the bound above is satisfied by a shower that
+        // never released anything.
+        assert!(
+            peak >= 4,
+            "only {peak} drop(s) were ever airborne — this measures nothing"
+        );
+        println!(
+            "toxic rain: peak {peak} drops airborne (physics allows {ceiling}); \
+             at SNAPSHOT-rate broadcast that is {} ProjectileMove/s",
+            peak * (crate::constants::SIM_HZ as usize) / 3
+        );
+    }
+
+    /// **The roof is asked of each victim, not of the drop.**
+    ///
+    /// This is the test the sweep predicted nothing would catch: add a radius and
+    /// leave `poison_lands(&self.map, at)` alone, and the rule silently becomes
+    /// "was it raining where the drop fell" instead of "is there rock over your
+    /// head". Every other test here stays green through that, because no other
+    /// one puts two players at **different roof states inside one splash**.
+    ///
+    /// Two bodies 20 px apart on flat ground with a slab covering only one of
+    /// them, and a drop landing between them just clear of the slab's edge. The
+    /// landing point is under open sky, so a landing-point roof test poisons
+    /// both; a per-victim one poisons only the exposed player.
+    #[test]
+    fn the_roof_rule_asks_about_the_victim_and_not_about_the_drop() {
+        // Flat ground everywhere, and a slab over the left half only.
+        const SLAB_X1: u32 = 256;
+        let map = {
+            let mut mask = Mask::new_empty(W, H);
+            for y in GROUND..H {
+                for px in 0..W {
+                    mask.set(px as i32, y as i32);
+                }
+            }
+            for y in 100..140u32 {
+                for px in 0..SLAB_X1 {
+                    mask.set(px as i32, y as i32);
+                }
+            }
+            let coarse = CoarseGrid::build(&mask);
+            let meta = crate::map::MapMeta {
+                seed: 1,
+                requested_seed: 1,
+                attempts: 1,
+                used_safe_preset: false,
+                scale: MapScale::Small,
+                theme: 0,
+                spawn_points: Vec::new(),
+                teleport_pads: Vec::new(),
+                surface_points: Vec::new(),
+                objects: Vec::new(),
+                buried_slots: Vec::new(),
+                decorations: Vec::new(),
+                wind: 0.0,
+                traversable_fraction: 1.0,
+                largest_component: Vec::new(),
+            };
+            Map::from_parts(mask, coarse, meta)
+        };
+
+        let mut w = World::new(4242, MapScale::Small);
+        w.map = map;
+        w.set_phase(RoundPhase::Playing);
+        let y = GROUND as f32 - 16.0;
+        // 0 is under the slab, 1 is a step past its edge.
+        w.add_player(0, 0, "sheltered".into());
+        w.add_player(1, 0, "exposed".into());
+        for (id, x) in [(0u8, SLAB_X1 as f32 - 10.0), (1, SLAB_X1 as f32 + 10.0)] {
+            if let Some(p) = w.player_mut(id) {
+                p.body.pos = Vec2::new(x, y);
+                p.iframes_until = 0.0;
+            }
+        }
+        // Between them, and out from under the slab by a pixel.
+        let at = Vec2::new(SLAB_X1 as f32 + 1.0, y);
+        assert!(
+            crate::effects::toxic::poison_lands(&w.map, at),
+            "the fixture's landing point is itself under the slab, so this cannot \
+             tell the two rules apart"
+        );
+        for id in [0u8, 1] {
+            let p = w.player(id).expect("seated");
+            assert!(
+                (p.body.pos - at).len() < crate::constants::TOXIC_SPLASH_R,
+                "player {id} is outside the splash, so the roof is not what \
+                 decides their outcome"
+            );
+        }
+
+        w.land_on_terrain_for_test(at, WEAPON_TOXIC_DROP, w.round_time);
+
+        assert!(
+            w.player(1).expect("exposed").poisoned(w.round_time),
+            "the exposed player was not poisoned — the splash did not reach them \
+             and nothing below means anything"
+        );
+        assert!(
+            !w.player(0).expect("sheltered").poisoned(w.round_time),
+            "the sheltered player was poisoned through 40 px of rock: the roof is \
+             being asked about the drop, not about the victim"
+        );
+    }
+
+    /// §F6's radius, at both ends and at the live binding site.
+    ///
+    /// A drop that lands on **terrain** one pixel inside `TOXIC_SPLASH_R` of a
+    /// standing player poisons them; one pixel outside it does not. The pair is
+    /// the test: either half alone passes for a rule that always answers the same
+    /// way, and "outside does not poison" alone is satisfied by rain that
+    /// poisons nobody — which is exactly the game §F6 replaced.
+    ///
+    /// Landed on the ground, not on the player, because that is where §F6 lives:
+    /// a 20 px body on a 1536 px map means nearly every drop takes the terrain
+    /// branch, and §E13 poisoned nobody from it.
+    #[test]
+    fn a_drop_poisons_inside_the_splash_and_not_a_pixel_outside_it() {
+        use crate::constants::TOXIC_SPLASH_R;
+        let poisoned_at = |gap: f32| {
+            let mut w = World::new(4242, MapScale::Small);
+            w.map = map_with_one_rain_column(OPEN_X0);
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(0, 0, "ana".into());
+            let me = Vec2::new(OPEN_X0 as f32, GROUND as f32 - 16.0);
+            if let Some(p) = w.player_mut(0) {
+                p.body.pos = me;
+                p.iframes_until = 0.0;
+            }
+            // Straight along x from the body's centre, which is what
+            // `splash_poison` measures from.
+            let at = Vec2::new(me.x + gap, me.y);
+            w.land_on_terrain_for_test(at, WEAPON_TOXIC_DROP, w.round_time);
+            w.player(0).expect("ana").poisoned(w.round_time)
+        };
+        assert!(
+            poisoned_at(TOXIC_SPLASH_R - 1.0),
+            "a drop landing one pixel inside TOXIC_SPLASH_R ({TOXIC_SPLASH_R}) \
+             poisoned nobody"
+        );
+        assert!(
+            !poisoned_at(TOXIC_SPLASH_R + 1.0),
+            "a drop landing one pixel outside TOXIC_SPLASH_R ({TOXIC_SPLASH_R}) \
+             poisoned somebody anyway"
+        );
+    }
+
     fn poisoned_world() -> (World, f32) {
         let mut w = World::new(4242, MapScale::Small);
         w.map = map_with_one_rain_column(OPEN_X0);

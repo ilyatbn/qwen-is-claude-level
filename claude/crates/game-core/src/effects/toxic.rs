@@ -12,13 +12,26 @@
 //! is impossible by construction rather than by filtering, and the rain is
 //! visible for free, because the client draws every projectile (§C4/§C22).
 //!
-//! ## It poisons (§E13)
+//! ## It poisons (§E13, with §F6's numbers)
 //!
 //! Puddles are gone. Nobody ever saw one: a 40 px disc that lived three seconds
 //! on a map thousands of pixels wide, placed where no player had any reason to
-//! be. What a drop does now is land on someone — `TOXIC_POISON_DURATION` of
-//! `TOXIC_POISON_DPS`, **replacing** any poison already running rather than
+//! be. What a drop does now is land **near** someone — `TOXIC_POISON_DURATION`
+//! of `TOXIC_POISON_DPS`, **replacing** any poison already running rather than
 //! stacking with it.
+//!
+//! **Near, not on**, since §F6, and that word is the whole difference. §E13
+//! poisoned only the body the projectile point intersected, which read as a
+//! rule and behaved as a lottery: 20 drops a shower against a 20 px target on a
+//! 1536 px map is 0.26 expected hits, so a player could stand in a full downpour
+//! and statistically never be touched. §F6 shortens the cadence to
+//! `TOXIC_DROP_EVERY` 0.15 — 54 drops — and gives the landing a `TOXIC_SPLASH_R`
+//! reach, which is 2.6 expected hits. The mechanism did not change; the
+//! arithmetic did.
+//!
+//! The roof rule is asked **per victim** (`World::splash_poison`), not of the
+//! drop: with a radius the two stop coinciding, and "a roof protects you" has to
+//! mean the roof over *you*.
 //!
 //! The poison itself is `PlayerState`'s, not this module's. A status that
 //! outlives the weather that caused it cannot be owned by an effect the
@@ -46,6 +59,22 @@ pub struct ToxicRain {
 /// True when this projectile is a drop of rain this effect owns.
 pub fn owns(weapon: WeaponId) -> bool {
     weapon == WEAPON_TOXIC_DROP
+}
+
+/// How many drops one active window releases.
+///
+/// **`ceil`, not `as usize`, and the difference is a real off-by-one.** The
+/// cadence fires at `0, every, 2·every, …` for every one of those instants that
+/// falls inside `[0, TOXIC_DURATION)`, which is `ceil(duration / every)` — 54 at
+/// §F6's 0.15, not the 53 that truncation gives.
+///
+/// Three tests pinned this as `(TOXIC_DURATION / TOXIC_DROP_EVERY) as usize` and
+/// all three were right only because 8 / 0.4 divides exactly: truncation and
+/// `ceil` agree on 20 and disagree the moment the cadence stops dividing the
+/// window. It is a function so the three cannot drift apart again, and so the
+/// arithmetic is stated once where it can be read.
+pub fn drops_per_window() -> usize {
+    (crate::constants::TOXIC_DURATION / TOXIC_DROP_EVERY).ceil() as usize
 }
 
 impl ToxicRain {
@@ -199,7 +228,7 @@ mod tests {
         let map = generate(4242, MapScale::Small);
         let mut rain = ToxicRain::new(1, 0.0);
         let n = run(&mut rain, &map, &[100.0], TOXIC_DURATION, 0.0);
-        assert_eq!(n, (TOXIC_DURATION / TOXIC_DROP_EVERY) as usize, "{n} drops");
+        assert_eq!(n, drops_per_window(), "{n} drops");
     }
 
     #[test]
@@ -329,7 +358,7 @@ mod tests {
         let map = generate(4242, MapScale::Small);
         let mut rain = ToxicRain::new(1, 0.0);
         let n = run(&mut rain, &map, &[], TOXIC_DURATION, 0.0);
-        assert_eq!(n, (TOXIC_DURATION / TOXIC_DROP_EVERY) as usize);
+        assert_eq!(n, drops_per_window());
     }
 
     #[test]

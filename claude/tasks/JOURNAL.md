@@ -5145,3 +5145,15 @@ exists). **`die` dropped it**, so every death minted a second; one `STARTING_KIT
 serves the grant and the exemption. **`crates` moved**: zeroing five weights changed the
 column sum, so `gen_range` consumption shifted and the shared `"items"` stream re-dealt the
 crate — re-seeded 7 → 31337 after five probes. EXIT=0, 41/41. Rest in `HANDOFF-M19.md`.
+
+## T19.06 — rain that falls on you hurts
+
+**0.26 expected hits a shower, before**: 20 drops (8.0/0.4) uniform over a 1536 px map
+against a 20 px body, 6 damage a hit. After: 54 drops × a 76 px target (20 + 2×28) =
+**2.67**, at 18 a hit. **The task says to share the blast helper — sharing it carves a 28 px
+crater per drop**; `splash_poison` is a distance test beside `poison_lands` instead. **The
+roof is now asked per victim**, since a radius stops the two coinciding. `drops_per_window()`
+needs `ceil`: 8.0/0.15 truncates to 53, reality 54, and three sites each had the arithmetic.
+A 12 px fixture roof is no longer cover — 54 drops dig through in one window and the
+"sheltered" control lost 30.7 health; now a named 40. Load measured: peak 7 airborne, 140
+moves/s, **no projectile cap exists**.

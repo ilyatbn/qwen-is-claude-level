@@ -511,17 +511,30 @@ impl GameCore {
             // decision: `poison_lands` is the shared roof test, not a second copy
             // of one.
             if game_core::effects::toxic::owns(im.weapon) {
-                if let Some(v) = victim {
-                    if game_core::effects::toxic::poison_lands(&self.map, at) {
-                        if let Some(p) = self.players.iter_mut().find(|p| p.id == v) {
-                            if p.stats.alive {
-                                p.stats.poison(now);
-                                events.push(serde_json::json!({
-                                    "poisoned": { "id": v, "until": p.stats.poisoned_until }
-                                }));
-                            }
-                        }
+                // §F6: a drop **splashes**, and the roof is asked of each victim
+                // rather than of the landing point — the same two rules
+                // `World::splash_poison` runs, because this is the second place
+                // that decides what a landed drop means and the sandbox is where
+                // `weather-visible` photographs the rain. A copy that kept
+                // §E13's point test would make the sandbox a game where standing
+                // in the rain is safe.
+                let r2 =
+                    game_core::constants::TOXIC_SPLASH_R * game_core::constants::TOXIC_SPLASH_R;
+                for p in self.players.iter_mut() {
+                    if !p.stats.alive || (p.body.pos - at).len_sq() > r2 {
+                        continue;
                     }
+                    if !game_core::effects::toxic::poison_lands(&self.map, p.body.pos) {
+                        continue;
+                    }
+                    p.stats.poison(now);
+                    events.push(serde_json::json!({
+                        "poisoned": { "id": p.id, "until": p.stats.poisoned_until }
+                    }));
+                }
+                if victim.is_some() {
+                    // Landed on a body: the ground it never reached keeps its
+                    // pixels. The splash above has already run.
                     continue;
                 }
                 let r = game_core::constants::TOXIC_DROP_CARVE_R.round() as i32;
@@ -995,6 +1008,15 @@ pub fn constants_json() -> String {
         TOXIC_POISON_DURATION => c::TOXIC_POISON_DURATION,
         TOXIC_POISON_DPS => c::TOXIC_POISON_DPS,
         TOXIC_DROP_CARVE_R => c::TOXIC_DROP_CARVE_R,
+        // §F6. `m5-weather` bounds how much ground a shower may remove, and the
+        // bound is `drops × π·r²` — it had `(8 / 0.4)` written into it as two
+        // literals, so the day the cadence moved it went on checking a ceiling
+        // for a shower a third the size. A browser check carrying its own copy
+        // of a tunable is §A19; these are the two it needs to compute the number
+        // itself.
+        TOXIC_DURATION => c::TOXIC_DURATION,
+        TOXIC_DROP_EVERY => c::TOXIC_DROP_EVERY,
+        TOXIC_SPLASH_R => c::TOXIC_SPLASH_R,
         HEALTH_CAP => c::HEALTH_CAP,
         // §F2: the beam's life, and the bullet streak's shape. `TRACER_LIFETIME`
         // is retired — that path is the two lasers now.

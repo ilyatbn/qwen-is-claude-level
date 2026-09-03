@@ -618,10 +618,14 @@ pub const TOXIC_DURATION: f32 = 8.0;
 /// Seconds between drops while the rain is active.
 ///
 /// Was `TOXIC_PUDDLE_EVERY`. §E15 retires that name with the puddles, but the
-/// **cadence is not a puddle** — §E13 keeps the scheduler and the number of
-/// drops per window unchanged, so the value is carried over untouched under a
-/// name that says what it times.
-pub const TOXIC_DROP_EVERY: f32 = 0.4;
+/// **cadence is not a puddle** — §E13 kept the scheduler and the number of drops
+/// per window unchanged, so the value was carried over untouched under a name
+/// that says what it times.
+///
+/// **§F6 moved it, 0.4 → 0.15**, which is the one number in this family that
+/// changes how much rain there is: `TOXIC_DURATION / TOXIC_DROP_EVERY` goes from
+/// 20 drops a shower to 54. Anything that quotes 20 is stale.
+pub const TOXIC_DROP_EVERY: f32 = 0.15;
 /// Downward speed a toxic drop leaves its cloud at (§C21).
 ///
 /// Slow enough that the fall reads as rain rather than as artillery: from
@@ -634,7 +638,21 @@ pub const TOXIC_DROP_SPEED: f32 = 180.0;
 /// and for the same reason: a stacking status is a damage cliff nobody can read
 /// off the screen.
 pub const TOXIC_POISON_DURATION: f32 = 3.0;
-pub const TOXIC_POISON_DPS: f32 = 2.0;
+pub const TOXIC_POISON_DPS: f32 = 6.0;
+/// How far from a landed drop the poison reaches (§F6).
+///
+/// **This is what makes the rain a hazard rather than a lottery.** §E13 poisoned
+/// only the body the projectile point intersected, and the arithmetic of that is
+/// in §F6: one drop every 0.4 s scattered across the map, against a 20 px-wide
+/// player, is a shower you can stand in and statistically never be hit by.
+/// Widening the target from 20 px to 20 + 2×28 and shortening the cadence takes
+/// the expected hits per shower from **0.26 to 2.6** — measured as a count, not
+/// as a feeling.
+///
+/// It is **not** a blast. `explode` carves, deals its damage instantly and throws
+/// people; rain does none of those (`docs/13` §3), so this radius is used by a
+/// plain distance test beside the roof rule and nothing else.
+pub const TOXIC_SPLASH_R: f32 = 28.0;
 /// The hole a drop leaves in the ground: bullet-sized, not a crater (§E13).
 pub const TOXIC_DROP_CARVE_R: f32 = 6.0;
 

@@ -597,12 +597,24 @@ await shot('hud-bars-refilled')
 // every assertion above. The rect is captured here and the comparison happens
 // against a second stack below.
 //
-// Why a second stack rather than waiting for rain: `TOXIC_DROP_EVERY` puts ~20
-// drops on the whole map per window and a player is 16 px wide, so a check that
-// waited for one to land on them would be a coin flip, and a gate that fails on
-// a coin flip gates nothing. `DEV_POISONED` puts the player in the state; that a
-// **drop** is what causes it is proved in `game-core`, through the real
-// projectile step, in `a_drop_that_lands_on_a_player_poisons_them_...`.
+// Why a second stack rather than waiting for rain. Before §F6 the arithmetic was
+// decisive: ~20 drops on the whole map per window against a 16 px body is 0.26
+// expected hits, and a check that waited for one would have been a coin flip.
+// §F6 makes it 54 drops with a `TOXIC_SPLASH_R` reach — about 2.6 expected hits
+// — so waiting is no longer hopeless, but a check whose subject arrives 2.6
+// times on average still fails one run in fifteen, and a gate that fails on a
+// draw gates nothing. `DEV_POISONED` puts the player in the state deterministically.
+//
+// That a **shower** is what causes it is proved in `game-core` against the real
+// scheduler, with a sheltered control in the same run:
+// `a_shower_hurts_the_player_in_the_open_and_never_the_one_under_rock`.
+//
+// §F6's acceptance asks for "the health bar is green during the shower and not
+// green before". Both links are measured, and deliberately in the place each can
+// be measured without a draw: **shower → poison** in `game-core` above, and
+// **poison → green pixels** here, against a clean frame from an unpoisoned stack.
+// Photographing a real shower would put a 1-in-15 draw inside the gate to prove
+// a join between two things already proved.
 const healthRect = await page.evaluate(() => {
   const el = document.getElementById('hud-bar-health')
   if (!el) return null

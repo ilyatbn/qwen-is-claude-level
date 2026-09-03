@@ -503,3 +503,57 @@ see one end of it.
   swing at `now = 1.0` lands, is logged and deals **zero** — which reads exactly like a
   reach failure. `t1905_shovel::swing_damage` fires at `SPAWN_IFRAMES + 1.0` and says so.
 
+
+## T19.06 landed — what the diff does not say
+
+**The task file's "share the blast helper" instruction is wrong, and following it would
+have been a bug.** §F6's splash is a *poison radius*; `explode`/the blast helper carve
+terrain, so sharing it would give every one of 54 drops a 28 px crater and dissolve the map
+inside one shower. `World::splash_poison` (immediately above `detonate`) is a plain
+distance test that then calls the *shared* `effects::toxic::poison_lands` — the roof rule
+is shared, the carving is not. If a later task repeats the instruction, refuse it the same
+way.
+
+**The roof rule moved from the drop to the victim, and that is the whole point of the
+radius.** §E13 could ask at the landing point because landing point == victim. With
+`TOXIC_SPLASH_R` they separate: a drop can land in open sky one pixel outside a cave mouth
+and reach a player who is under solid rock. `splash_poison` asks `poison_lands(&self.map,
+p.body.pos)` per caught player. The falsifier is
+`the_roof_rule_asks_about_the_victim_and_not_about_the_drop` (a slab over the left half,
+the drop landing just outside it); swapping the argument back to `at` fails 2 tests.
+`TOXIC_SPLASH_R = 0.0` fails 4. Both were falsified at the live binding site.
+
+**54 drops, not 53 — and `ceil`, not truncation.** `TOXIC_DURATION / TOXIC_DROP_EVERY` is
+53.33; the scheduler emits 54 (it fires at t=0). `docs/75` says "≈53" and that
+approximation is fine, but three call sites had each written the division out and two would
+have been off by one. `effects::toxic::drops_per_window()` is now the single source; the
+e2e (`m5-weather.mjs`) computes it from `constants_json` rather than the old `(8 / 0.4)`
+literal pair.
+
+**The fixture roof had to be thickened, and that is real behaviour, not a test fudge.** The
+cave fixture used a 12 px slab. At 54 drops a shower, `TOXIC_DROP_CARVE_R` (6 px) bites dig
+straight through it inside one window and the "sheltered" control player lost 30.7 health
+to rain arriving through the hole above them. `ROOF_THICKNESS = 40` is named in the fixture
+with that measurement written beside it. **A thin roof is no longer cover in the real game
+either** — if anyone reports "I sheltered and still got poisoned", this is why, and it is
+§F6 working as specified, not a bug.
+
+**Load was measured, and the finding is an absence.** Peak **7** drops airborne (the
+scheduler's own ceiling is 10), **140 `ProjectileMove`/s** at `SNAPSHOT_HZ`. Neither is a
+concern. But **there is no `MAX_PROJECTILES` anywhere in the workspace** — the task said to
+"check the projectile cap"; there is none to check. Toxic rain is bounded only by its own
+cadence, and nothing bounds the sum of rain + every player firing. Not booked as a task; it
+is a latent ceiling, not a present bug.
+
+**On the pixel acceptance.** §F6 asks for "the health bar is green during the shower and
+not green before". It is proved as two measured links rather than one photographed shower:
+**shower → poison** in `game-core` against the real scheduler with a sheltered control in
+the same run (`a_shower_hurts_the_player_in_the_open_and_never_the_one_under_rock`), and
+**poison → green pixels** in `hud-bars.mjs` against a clean frame from an unpoisoned stack.
+Photographing a real shower would put a 1-in-15 draw inside the gate (2.67 expected hits is
+a Poisson tail, not a certainty) to join two things already proved. The reasoning is
+written into `hud-bars.mjs` beside the check so the next reader does not "fix" it.
+
+**A leaked `game-server` was found before this gate**, PGID 557788, ~3 h old, surviving
+from an earlier run. It did not fail anything, but check `pgrep -af "vite|game-server"`
+before any wall-clock measurement and kill the **group**, not the pid.

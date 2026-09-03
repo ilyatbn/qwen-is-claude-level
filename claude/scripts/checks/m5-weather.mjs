@@ -118,11 +118,18 @@ try {
         dug = before.solid - now.solid
       }
       check('toxic: drops landed and bit the ground', dug > 0, `${dug} px removed`)
-      // ...and it is a bite, not a crater. `TOXIC_DROP_CARVE_R` is 6 px, so 20
-      // drops can remove at most ~20·π·6² ≈ 2300 px; a meteor's 50 px crater
-      // clears that in a single impact. Both ends, against the constants.
+      // ...and it is a bite, not a crater. `TOXIC_DROP_CARVE_R` is 6 px, so a
+      // shower can remove at most `drops · π·r²`; a meteor's 50 px crater clears
+      // that in a single impact. Both ends, against the constants.
+      //
+      // **`(8 / 0.4)` used to be written here as two literals** — the duration
+      // and the cadence, copied. §F6 moved the cadence to 0.15 and this went on
+      // checking a ceiling for a shower a third the size, which is §A19 exactly:
+      // a fixture carrying its own number stays green against a drifted sim. The
+      // drops are computed from the two constants now.
       const c = await page.evaluate('window.__game.constants()')
-      const ceiling = 2 * Math.PI * c.TOXIC_DROP_CARVE_R ** 2 * (8 / 0.4)
+      const drops = Math.ceil(c.TOXIC_DURATION / c.TOXIC_DROP_EVERY)
+      const ceiling = 2 * Math.PI * c.TOXIC_DROP_CARVE_R ** 2 * drops
       check('toxic: bites, never craters', dug < ceiling, `${dug} px vs a ${ceiling.toFixed(0)} px ceiling`)
     }
     if (name === 'meteor') {
