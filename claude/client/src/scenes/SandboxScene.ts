@@ -57,6 +57,12 @@ export class SandboxScene extends Phaser.Scene {
   private lightmap!: Lightmap
   private overlay!: DebugOverlay
   private fogActive = false
+  /**
+   * §F9's veil strength, `0..1` — the effect's ramp, or 1 while the debug Fog
+   * button is held down. Kept as a field only so `debug()` can report it beside
+   * the alpha the layer actually drew; the layer is fed it directly.
+   */
+  private fogStrength = 0
   private hazardGfx!: Phaser.GameObjects.Graphics
   private lastWeather: WeatherState | null = null
   /**
@@ -627,6 +633,17 @@ export class SandboxScene extends Phaser.Scene {
           parallax: self.sky?.parallax.debug() ?? null,
           darkness: darknessAt(cycleU(self.roundTime), C().NIGHT_DARKNESS),
           fogMult: self.fogActive ? C().FOV_FOG_MULT : 1,
+          // §F9, counted at both ends (§A39): the strength the scene believes,
+          // and the alpha the layer actually filled with. A veil that is
+          // computed and never drawn reports 0 here while `fogStrength` climbs,
+          // which is the shape this whole task exists to make visible.
+          fogStrength: self.fogStrength,
+          fogAlpha: self.world.weather.fogAlpha,
+          // So a check can assert the ordering §F9 specifies — over the world,
+          // under the HUD — rather than only photographing one half of it.
+          fogDepth: DEPTH.fog,
+          hudDepth: DEPTH.hud,
+          lightmapDepth: DEPTH.lightmap,
           lightmapDraws: self.lightmap?.stats.drawsLastFrame ?? 0,
           lightmapFilled: self.lightmap?.stats.filled ?? false,
           fov: fovRadius({
@@ -860,8 +877,23 @@ export class SandboxScene extends Phaser.Scene {
       setParallaxClock(t: number | null) {
         self.sky?.parallax.setClock(t)
       },
-      /** Jump to a point in the day, for inspecting a phase. */
-      setTime(t: number) {
+      /**
+       * Jump to a point in the day, for inspecting a phase — or `null` to hand
+       * the clock back to the cycle, which is what the `Live` button does.
+       *
+       * The resume half exists because freezing the clock is not free for the
+       * *next* thing a check does: `weather-visible` freezes it so §F9's alpha
+       * composite is not raced by the sky, and a frozen sky then moved the toxic
+       * cast's own delta from 63 to 23 against a threshold of 16. Borrowing the
+       * clock has to be reversible or the borrower weakens its neighbours.
+       * Shaped like `setParallaxClock(t: number | null)`, which is the same idea.
+       */
+      setTime(t: number | null) {
+        if (t === null) {
+          self.timeScrub = false
+          self.syncTimeControl()
+          return
+        }
         self.timeScrub = true
         self.roundTime = t
         // Move the control with it. Setting roundTime alone left the slider and
@@ -1020,7 +1052,11 @@ export class SandboxScene extends Phaser.Scene {
     this.world.weather.setToxic(
       weather.active.some((a) => a.kind === 'toxic' && a.phase === 'active'),
     )
-    this.world.weather.update(dt, weather.vents, C().MAX_FALL_SPEED)
+    // §F9's veil. `weather.fog` is `fog.rs`'s own `strength()`, straight off the
+    // local world — **not** the `fogActive` boolean, which is a debug override
+    // and would make the veil a toggle that cannot ramp.
+    this.fogStrength = this.fogActive ? 1 : weather.fog
+    this.world.weather.update(dt, weather.vents, C().MAX_FALL_SPEED, this.fogStrength)
     // Fog from the effect ramps; the Fog button is a separate manual override so
     // visibility can be inspected without waiting for a burst.
     const fogMult = this.fogActive

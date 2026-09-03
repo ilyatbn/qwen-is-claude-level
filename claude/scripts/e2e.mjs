@@ -117,6 +117,10 @@ const CHECKS = [
   // real server, because crates come from the server's spawn schedule and there
   // is no sandbox path to one.
   { name: 'crates', file: 'scripts/checks/crates.mjs', standalone: true },
+  // §F9: the fog veil **in the game**, not only in the sandbox. Standalone — it
+  // needs a real server, because a networked client learns that fog exists from
+  // an `effect_start` event and the sandbox path never sends one.
+  { name: 'fog-visible', file: 'scripts/checks/fog-visible.mjs', standalone: true },
   // §C3: the round ends and you are told. Standalone — it drives a real phase
   // machine on a shortened ROUND_SECONDS, and there is no sandbox path to `Ended`.
   { name: 'round-end', file: 'scripts/checks/round-end.mjs', standalone: true },

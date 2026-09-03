@@ -144,6 +144,19 @@ const stack = await startStack({
     // recorded, while the failure message still said "our client flew at it".
     // One taker means the pickup asserted is the one performed.
     BOT_COUNT: '0',
+    // **No weather either, and for the same reason as `BOT_COUNT`.**
+    //
+    // A 140 s round is two or three effects long (`EFFECT_INTERVAL_MIN` 30 s),
+    // and one of the four is heavy fog, whose §F9 veil is a full-screen grey at
+    // `FOG_SCREEN_ALPHA` (0.8). That scales *every* colour difference in the
+    // frame by 0.2: the canopy assertion below measured **66** with no fog and
+    // **11-14** under one, three runs out of three. The parachute was still
+    // being drawn — it was 80 % less visible, which is fog working.
+    //
+    // The claim this check makes is about a canopy, not about the weather, and
+    // it already excludes bots so that the pickup it asserts is the one it
+    // performed. This is the same exclusion.
+    WEATHER: 'off',
   },
 })
 const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })

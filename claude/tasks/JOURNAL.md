@@ -5202,3 +5202,16 @@ TELEPORT_CHARGE * 0.5` → red at tick 46 of 90). Counted in **ticks**, because 
 are accumulated `f32`s. Four stale "two seconds" comments repointed. **Noted, not fixed:**
 `teleport.mjs:211`'s absence window is `TELEPORT_CHARGE * 2500`, so it falls 5.0 s → 3.75 s
 — correctly pinned, and proving less. EXIT=0, 41/41, net smoke 25/25, assets ok.
+
+## T19.10 — fog fills the screen
+
+A grey screen-space veil at `FOG_SCREEN_ALPHA × strength()`, `DEPTH.fog = 55` — in the
+50–60 gap the sweep named, so `terrain-render`'s pinned depth list is untouched, and above
+the lightmap so the acceptance is the alpha rather than the alpha times the night curve.
+Acceptance is an **alpha composite**, not a delta: measured error 0.6/2.0 (sandbox),
+0.6/3.5 (game). The strength comes from Rust through WASM (`fog_strength`), never a second
+smoothstep. **The veil broke `crates`** — measured, 3/3: a full fog scales every colour
+delta by 0.2 and the canopy read 66 → 11-14. Fixed by `WEATHER=off`, a new `Config` switch
+in the `DEV_POISONED` family; `WEATHER=fog` is the same switch pointed the other way and is
+what makes the new `fog-visible` check possible at all. With the game wiring falsified,
+`weather-visible` stayed **green** — §C0 live. EXIT=0, 42/42, net smoke 25/25, assets ok.

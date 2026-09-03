@@ -850,6 +850,77 @@ binding site (`elapsed >= TELEPORT_CHARGE * 0.5`): red, "fired on tick 46 of 90"
 `pads.ts`, `teleport.mjs`). None changed behaviour; they are listed because a prose sweep
 is the kind of thing a reviewer wonders whether was deliberate.
 
+## T19.10 landed — what the diff does not say
+
+**The veil is a suite-wide hazard and it has already bitten once, measured.** §F9's
+`FOG_SCREEN_ALPHA` is 0.8, so a full-strength fog multiplies **every** colour difference
+in a game frame by 0.2. `crates` runs a 140 s round — two or three effects at
+`EFFECT_INTERVAL_MIN` 30 s, one kind in four being fog — and its canopy assertion measured
+**66 with no fog and 11-14 under one, three standalone runs out of three**. It is not
+intermittent and it was not a load flake; the parachute was still drawn and was 80 % less
+visible, which is fog working. **Any future pixel check that runs a round longer than
+~35 s is exposed to this.** `teleport` (300 s), `ordnance` and `quick-throw` (180 s) all
+passed, but they are one seed away.
+
+**The fix is `WEATHER`, a new `Config` switch in the `DEV_POISONED` family** —
+`auto|off|fog|toxic|meteor|lava`, refused rather than defaulted on a typo. `crates` sets
+`off` for the same reason it already sets `BOT_COUNT=0`: its subject is a canopy, and it
+excludes anything else that can move the pixels it measures. `WeatherMode` lives on
+`World`; `Off` skips `EffectScheduler::tick` outright, `Always(kind)` calls the new
+`postpone_until` every tick so the scheduler cannot roll one of its own on top.
+
+**`Always` must emit `GameEvent::EffectStart` itself.** `EffectScheduler::force` emits no
+`Started` event by design — the sandbox installs effects locally and needs none — but a
+networked client learns fog exists from `effect_start` **alone**. Forcing without the event
+is a foggy world and a clear screen, which is the divergence §F9 exists to end.
+`a_forced_effect_is_announced_and_not_merely_installed` is the guard.
+
+**`WeatherMode` is deliberately not in the replay header**, following `dev_poisoned` and
+`dev_start_health`, which are equally simulation-changing and equally absent. A round
+recorded under a dev switch is already not reproducible; a version bump per debug flag is
+not the rule this codebase set.
+
+**The evidence that `fog-visible` had to exist, and it is the strongest §C0 demonstration
+in the tree.** With `GameScene`'s `fog:` argument forced to 0 — the game drawing no fog at
+all — **`weather-visible` passed, 1/1**. The sandbox owns a `HeavyFog` and reads its
+strength locally; the game has no weather and walks the ramp from an event. Two render
+paths, and the sandbox one cannot see the other's bug.
+
+**`fog-visible` costs 139 s and two servers, and the second one is load-bearing.** The
+day/night cycle moves fast around dawn: the sky at `roundTime` 2.5 is (109,116,141) and at
+15.0 it is (119,167,213). A one-server version taking its control frame from the warmup —
+the only fog-free window `WEATHER=fog` leaves — measured a composite error of **16.8**
+against a 16 tolerance. The two arms now align on `roundTime` (12.6 vs 13.0), and the error
+is **0.6/3.5**. Do not "simplify" it back to one server without re-reading this.
+
+**The acceptance is a composite, not a delta, in both checks.** `assertChanged` passes for
+any full-screen cast — the toxic rain's green vignette would pass it. What is asserted is
+that each patch lands where an alpha composite of `FOG_SCREEN_COLOUR` at
+`FOG_SCREEN_ALPHA × strength` puts it, and separately that the *predicted* move is large
+against the run's own measured noise floor. `FOG_SCREEN_ALPHA = 0` fails the second by the
+whole distance; commenting out the two `fillRect` lines fails the first at 49.4.
+
+**`weather-visible` freezes the day clock and hands it back.** `setTime` now takes `null`
+to resume, shaped like `setParallaxClock`. Freezing was needed because the control and the
+foggy frame are ~10 s apart; **not** returning it dropped the toxic cast's own delta from
+63 to 23 against a threshold of 16, which is a borrower weakening its neighbour.
+
+**The sandbox HUD control is a bound, not an equality, and the number is derived.** The
+strip is `rgba(12,16,22,.82)`, so 18 % of the canvas bleeds through it: a first draft
+asserted "unchanged" and failed at 9.5, which is exactly that bleed. It now reads the
+opacity off the live element and asserts the patch moved less than `(1-opacity) × world`.
+`fog-visible` makes **no** HUD claim — `DEPTH.hud` has one in-canvas occupant in either
+scene (the crosshair), so the game's HUD is DOM too and a patch there would restate the
+sandbox's claim more weakly. A first draft sampled the bars strip and read 14.9 against a
+world that moved 48.2: the strip is 31 % world by area, not a leak.
+
+**Two gate reds that were the box, both measured before being dismissed.**
+`game-server --test lobby::leaving_frees_the_seat_and_the_socket_can_join_again` panicked
+with `IncompleteResponseFromEngineIo(SendAfterClosing)` — a `rust_socketio` transport race;
+alternated against a worktree at `4d58d20`, **8/8 green in both trees** for the whole
+binary, and no causal path from a fog diff. And `perf`'s `chunk rebake 4.50 ms exceeds 4`,
+which read **2.90 ms** on the next gate. Neither is on any flaky list and neither should be.
+
 ## Where the next agent picks up (this coder retiring at ~380k)
 
 **HEAD is `fbcdd87`. The tree is clean, `git stash` is empty, and the last full gate was

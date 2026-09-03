@@ -15,6 +15,8 @@ use game_core::constants::{
     BOT_COUNT_DEFAULT, BOT_SKILL_DEFAULT, DEFAULT_MAP_GENERATOR, DEFAULT_MAP_SCALE,
     LOBBY_BOT_TIMEOUT, MAX_PLAYERS, ROOM_EMPTY_TTL, ROUND_SECONDS,
 };
+use game_core::weapons::explode::EffectKind;
+use game_core::world::WeatherMode;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -107,6 +109,35 @@ pub struct Config {
     /// drop is what poisons them is proved in `game-core`, end to end, through
     /// the real projectile step.
     pub dev_poisoned: bool,
+    /// Development only (`WEATHER=auto|off|fog|toxic|meteor|lava`): what the
+    /// weather does in this room.
+    ///
+    /// Same family as the three above, and it exists because §F9's veil made the
+    /// weather able to move *every* pixel in the game. `crates`'s parachute
+    /// assertion measured 66 with no fog and 11-14 under one, three runs out of
+    /// three: a check whose subject is a small delta cannot also be racing an
+    /// effect that greys the frame by `FOG_SCREEN_ALPHA`. It is the switch that
+    /// lets such a check say "not this, thanks", the way it already says
+    /// `BOT_COUNT=0` so that nobody shoots its subject.
+    ///
+    /// And pointed the other way it is the only thing in this codebase that can
+    /// make a **networked** round produce a chosen effect, which is what makes
+    /// §F9's acceptance provable in a real match rather than only in the sandbox
+    /// — the §C1 half-fix this project has already paid for four times.
+    pub weather_mode: WeatherMode,
+}
+
+/// Parse `WEATHER`. Unset is `Auto`; every other value must be spelled exactly.
+fn parse_weather(v: &str) -> Option<WeatherMode> {
+    Some(match v {
+        "auto" => WeatherMode::Auto,
+        "off" | "none" => WeatherMode::Off,
+        "fog" => WeatherMode::Always(EffectKind::HeavyFog),
+        "toxic" => WeatherMode::Always(EffectKind::ToxicRain),
+        "meteor" => WeatherMode::Always(EffectKind::MeteorShower),
+        "lava" => WeatherMode::Always(EffectKind::LavaBurst),
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +181,7 @@ impl Default for Config {
             dev_loadout: false,
             dev_start_health: 0.0,
             dev_poisoned: false,
+            weather_mode: WeatherMode::Auto,
             bot_skill: BOT_SKILL_DEFAULT,
         }
     }
@@ -316,6 +348,14 @@ impl Config {
                 .filter(|v| *v > 0.0)
                 .unwrap_or(0.0),
             dev_poisoned: matches!(get("DEV_POISONED").as_deref(), Some("1") | Some("true")),
+            weather_mode: match get("WEATHER") {
+                Some(v) => parse_weather(&v).ok_or_else(|| ConfigError {
+                    var: "WEATHER",
+                    value: v.clone(),
+                    expected: "one of: auto, off, fog, toxic, meteor, lava".to_string(),
+                })?,
+                None => d.weather_mode,
+            },
         })
     }
 
@@ -324,7 +364,7 @@ impl Config {
         format!(
             "bind={} scale={} generator={} max_players={} round_seconds={} \
              room_empty_ttl={} lobby_bot_timeout={} fixed_seed={} record_replay={} debug_dump={} bots={} \
-             bot_skill={} dev_start_health={} dev_poisoned={}",
+             bot_skill={} dev_start_health={} dev_poisoned={} weather={:?}",
             self.bind_addr,
             self.map_scale.as_str(),
             self.map_generator.as_str(),
@@ -341,6 +381,7 @@ impl Config {
             self.bot_skill,
             self.dev_start_health,
             self.dev_poisoned,
+            self.weather_mode,
         )
     }
 }
@@ -506,6 +547,36 @@ mod tests {
             assert!(!from(&[("DEBUG_DUMP", v)]).expect("ok").debug_dump, "{v}");
         }
         assert!(from(&[("DEBUG_DUMP", "maybe")]).is_err());
+    }
+
+    #[test]
+    fn weather_defaults_to_auto_and_names_every_spelling_it_takes() {
+        assert_eq!(
+            Config::from_source(empty).expect("ok").weather_mode,
+            WeatherMode::Auto,
+            "an unset WEATHER changed the shipping behaviour"
+        );
+        for (v, want) in [
+            ("auto", WeatherMode::Auto),
+            ("off", WeatherMode::Off),
+            ("none", WeatherMode::Off),
+            ("fog", WeatherMode::Always(EffectKind::HeavyFog)),
+            ("toxic", WeatherMode::Always(EffectKind::ToxicRain)),
+            ("meteor", WeatherMode::Always(EffectKind::MeteorShower)),
+            ("lava", WeatherMode::Always(EffectKind::LavaBurst)),
+        ] {
+            assert_eq!(
+                from(&[("WEATHER", v)]).expect("ok").weather_mode,
+                want,
+                "WEATHER={v}"
+            );
+        }
+        // Refused rather than silently defaulted. A check that sets `WEATHER=of`
+        // and gets the shipping weather is a check that fails somewhere else, an
+        // hour later, for a reason that is not in its own file.
+        for v in ["", "Off", "OFF", "no", "1", "true", "rain", "snow"] {
+            assert!(from(&[("WEATHER", v)]).is_err(), "WEATHER={v} was accepted");
+        }
     }
 
     #[test]

@@ -579,6 +579,38 @@ fn targets<'a>(
 // World
 // ---------------------------------------------------------------------------
 
+/// Whether this world runs the weather, and which weather.
+///
+/// **A development switch, in the shape `dev_poisoned` and `dev_start_health`
+/// already established** (`game-server/src/config.rs`), and for the same reason
+/// they exist: a browser check whose subject is a small pixel difference cannot
+/// also be racing an effect that changes the whole frame. §F9's veil is
+/// `FOG_SCREEN_ALPHA` — 0.8 — so a fog scales *every* colour delta in the game
+/// by 0.2, and `crates`'s parachute assertion measured 66 without fog and 11-14
+/// with it, three runs out of three. That check's claim is about a canopy, not
+/// about the weather.
+///
+/// `Always` is the same switch pointed the other way, and it is what makes the
+/// veil provable in a real match at all: nothing else in this codebase can make
+/// a *networked* round produce a chosen effect, which is why §F9's acceptance
+/// would otherwise have stopped at the sandbox — the §C1 half-fix this project
+/// has paid for four times.
+///
+/// **Deliberately not in the replay header**, following `dev_poisoned` and
+/// `dev_start_health`, which are also simulation-changing and also absent. A
+/// replay of a round recorded under a dev switch is already not reproducible;
+/// adding a fifth carrier for the fifth switch is a version bump per debug flag.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum WeatherMode {
+    /// The scheduler picks and times effects — the shipping behaviour.
+    #[default]
+    Auto,
+    /// No effect ever starts.
+    Off,
+    /// Only this kind, and it is restarted as soon as it ends.
+    Always(EffectKind),
+}
+
 pub struct World {
     pub map: Map,
     /// **Kept sorted by id and iterated directly.** Never a `HashMap`: two players
@@ -603,6 +635,8 @@ pub struct World {
     pub birds: Birds,
     pub spawn_schedule: SpawnSchedule,
     pub effects: EffectScheduler,
+    /// See [`WeatherMode`]. `Auto` everywhere but a development switch.
+    pub weather_mode: WeatherMode,
     pub buried_items: Vec<ItemId>,
     pub round_time: f32,
     pub tick: u32,
@@ -696,6 +730,7 @@ impl World {
             birds,
             spawn_schedule: SpawnSchedule::new(seed, 0.0, initial_draws),
             effects: EffectScheduler::new(seed, 0.0),
+            weather_mode: WeatherMode::Auto,
             buried_items,
             round_time: 0.0,
             tick: 0,
@@ -1928,7 +1963,41 @@ impl World {
 
     fn step_weather(&mut self, now: f32, dt: f32) {
         let ends = self.round_ends_at();
-        for ev in self.effects.tick(now, ends) {
+        // `Always` restarts its effect the moment nothing of that kind is on the
+        // scheduler's list — not `is_active`, which is false during the 3 s
+        // telegraph and would force a fresh effect every tick of it.
+        //
+        // Forced through `force_effect` **and** an `EffectStart` event, because
+        // `EffectScheduler::force` deliberately emits none: the sandbox installs
+        // its own effects locally and needs no event, but a networked client
+        // learns that fog exists from `effect_start` alone. Forcing without the
+        // event is the "correct simulation, nothing on the screen" shape twice
+        // over.
+        if let WeatherMode::Always(kind) = self.weather_mode {
+            // Keep the scheduler's own roll out of the way, or `Always(fog)` is
+            // "fog, plus whatever else the weather felt like" — which is exactly
+            // what a check using the switch is trying not to have.
+            self.effects
+                .postpone_until(now + crate::constants::EFFECT_INTERVAL_MAX);
+            if !self.effects.active().iter().any(|e| e.kind == kind) {
+                let tick = self.tick;
+                let id = self.force_effect(kind, now);
+                self.events.push(GameEvent::EffectStart {
+                    tick,
+                    id,
+                    kind,
+                    seed: 0,
+                    duration: crate::effects::scheduler::active_duration(kind),
+                });
+            }
+        }
+        // `Off` skips the scheduler outright rather than pausing it: nothing can
+        // have started, so there is no phase to advance and no end to deliver.
+        let scheduled = match self.weather_mode {
+            WeatherMode::Off => Vec::new(),
+            _ => self.effects.tick(now, ends),
+        };
+        for ev in scheduled {
             let tick = self.tick;
             match ev {
                 EffectEvent::Started {
@@ -3168,6 +3237,13 @@ mod state_hash_coverage {
             // every point a hash is taken.
             pending: _,
             prev_input: _,
+            // `weather_mode` is a development switch set once at construction
+            // and never written again (`WeatherMode`'s own doc says why it is
+            // not in the replay header either). It is an input like `seed`: two
+            // worlds that ran under different modes diverge in `effects`, which
+            // *is* hashed, so hashing this as well would only prove the switch
+            // was read.
+            weather_mode: _,
             // `respawn_fallbacks` counts a condition §C5 says cannot happen. It
             // is an assertion aid, not state: the choice it records is already
             // reflected in the respawned body's position, which *is* hashed, so
@@ -6115,5 +6191,117 @@ mod birds_in_a_round {
         w.birds
             .place_for_test(id, BirdKind::Normal, at + Vec2::new(17.0, 0.0));
         assert_ne!(before, w.state_hash(), "a bird moved and the hash did not");
+    }
+}
+
+#[cfg(test)]
+mod weather_mode_tests {
+    use super::*;
+    use crate::constants::{
+        MapScale, EFFECT_INTERVAL_MAX, EFFECT_TELEGRAPH, FOG_DURATION, SIM_DT, WARMUP_SECONDS,
+    };
+    use crate::weapons::explode::EffectKind;
+
+    struct Run {
+        started: Vec<(u32, EffectKind)>,
+        /// The **thickest** fog seen at any point in the window.
+        ///
+        /// Sampled every tick rather than read at the end, because the end of a
+        /// window is an arbitrary moment: a fog that has just been restarted is
+        /// three seconds of telegraph and two of `FOG_RAMP` away from being
+        /// thick, and the final tick has a one-in-four chance of landing there.
+        /// A single reading would be a coin flip dressed as an assertion.
+        min_fog_mult: f32,
+    }
+
+    /// Run a round past the warmup for `secs`, recording what the weather did.
+    fn run(mode: WeatherMode, secs: f32) -> Run {
+        let mut w = World::new(4242, MapScale::Small);
+        w.weather_mode = mode;
+        let mut r = Run {
+            started: Vec::new(),
+            min_fog_mult: 1.0,
+        };
+        let n = ((WARMUP_SECONDS + secs) / SIM_DT).ceil() as i32;
+        for _ in 0..n {
+            w.step(SIM_DT);
+            r.min_fog_mult = r.min_fog_mult.min(w.fog_multiplier());
+            for e in w.drain_events() {
+                if let GameEvent::EffectStart { id, kind, .. } = e {
+                    r.started.push((id, kind));
+                }
+            }
+        }
+        r
+    }
+
+    /// The window is longer than `EFFECT_INTERVAL_MAX`, so `Auto` is guaranteed
+    /// to have had the chance the other two are being denied.
+    const WINDOW: f32 = EFFECT_INTERVAL_MAX + EFFECT_TELEGRAPH + 5.0;
+
+    #[test]
+    fn off_never_starts_an_effect_and_auto_does() {
+        let none = run(WeatherMode::Off, WINDOW).started;
+        assert!(
+            none.is_empty(),
+            "WEATHER=off started {} effect(s): {none:?}",
+            none.len()
+        );
+        // The control, and it is the whole test: an assertion that nothing
+        // happened is satisfied by a scheduler that never works. Same seed, same
+        // window, only the mode differs.
+        let some = run(WeatherMode::Auto, WINDOW).started;
+        assert!(
+            !some.is_empty(),
+            "the control started nothing either, so the absence above proves nothing"
+        );
+    }
+
+    #[test]
+    fn always_runs_that_kind_immediately_and_only_that_kind() {
+        let started = run(WeatherMode::Always(EffectKind::HeavyFog), WINDOW).started;
+        assert!(!started.is_empty(), "WEATHER=fog started no effect at all");
+        for (_, kind) in &started {
+            assert_eq!(*kind, EffectKind::HeavyFog, "a forced fog let {kind:?} in");
+        }
+        // Immediately, not after `EFFECT_INTERVAL_MIN`: the point of the switch
+        // is that a check does not have to wait 30 s for its subject.
+        //
+        // And restarted: the window is longer than one `FOG_DURATION`, so a
+        // switch that forced a single fog and stopped would leave the second
+        // half of the window clear — which is exactly the state a check would
+        // sample and blame on the renderer.
+        assert!(
+            started.len() >= 2,
+            "the fog was not restarted: {} start(s) over {WINDOW} s of a {FOG_DURATION} s effect",
+            started.len()
+        );
+    }
+
+    #[test]
+    fn a_forced_effect_is_announced_and_not_merely_installed() {
+        // `EffectScheduler::force` emits no `Started` event by design — the
+        // sandbox installs its own effects and needs none. A networked client
+        // learns that fog exists from `effect_start` alone, so forcing without
+        // the event is a world that is foggy and a screen that is not: the exact
+        // divergence §F9 exists to end.
+        let r = run(WeatherMode::Always(EffectKind::HeavyFog), WINDOW);
+        assert!(!r.started.is_empty(), "no effect_start reached the room");
+        // Both ends: the events say fog started, and the world's own
+        // `fog_multiplier` — the number §F9's veil shares a `strength()` with —
+        // agrees it was foggy. Either alone is a number rather than evidence.
+        assert!(
+            r.min_fog_mult <= crate::constants::FOV_FOG_MULT + 0.01,
+            "the events announced a fog the world never had: thickest fog_multiplier \
+             was {} against FOV_FOG_MULT {}",
+            r.min_fog_mult,
+            crate::constants::FOV_FOG_MULT
+        );
+        // The control: with no forced fog the same window never gets there.
+        let clear = run(WeatherMode::Off, WINDOW);
+        assert_eq!(
+            clear.min_fog_mult, 1.0,
+            "the control was foggy too, so the assertion above is about nothing"
+        );
     }
 }

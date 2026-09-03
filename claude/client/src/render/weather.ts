@@ -12,7 +12,8 @@
  */
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
-import { EmberField, RainField } from './weather-math'
+import { EmberField, RainField, fogVeilAlpha } from './weather-math'
+import { C } from '../core'
 
 export interface VentView {
   x: number
@@ -29,6 +30,16 @@ export class WeatherLayer {
   private readonly rainGfx: Phaser.GameObjects.Graphics
   private readonly fireGfx: Phaser.GameObjects.Graphics
   private readonly vignette: Phaser.GameObjects.Graphics
+  /**
+   * §F9's heavy-fog veil: one screen-space rectangle over the whole view.
+   *
+   * Separate from `vignette` even though both are full-screen casts, because
+   * they sit at different depths and answer to different things — the toxic cast
+   * is a particle-layer tint that belongs *under* the rain, and this one is above
+   * everything in the world including the lightmap. Merging them would put fog
+   * behind the drops and force one alpha to mean two effects.
+   */
+  private readonly fogVeil: Phaser.GameObjects.Graphics
   private readonly rain: RainField
   private readonly embers = new EmberField(70, 260)
   private readonly cam: Phaser.Cameras.Scene2D.Camera
@@ -47,8 +58,19 @@ export class WeatherLayer {
     // Embers are world-space — they come out of a vent that is somewhere.
     this.fireGfx = scene.add.graphics().setDepth(DEPTH.particles)
     this.fireGfx.setBlendMode(Phaser.BlendModes.ADD)
+    // Above the lightmap, below the HUD — see `DEPTH.fog` for why both halves of
+    // that matter. Created with no fill: an effect that has not started must
+    // draw nothing at all, not a transparent rectangle whose alpha is a rounding
+    // error away from visible.
+    this.fogVeil = scene.add.graphics().setScrollFactor(0).setDepth(DEPTH.fog)
     this.rain = new RainField(260, this.cam.width, this.cam.height, 4242)
   }
+
+  /** The veil's current opacity, so a check can count at both ends (§A39). */
+  get fogAlpha(): number {
+    return this.lastFogAlpha
+  }
+  private lastFogAlpha = 0
 
   /** Toxic rain, on or off. The ramp lives in the field, not the caller. */
   setToxic(active: boolean): void {
@@ -75,7 +97,7 @@ export class WeatherLayer {
    * the spew looking like it belongs to this game rather than a tuned-by-eye
    * constant that drifts from it.
    */
-  update(dt: number, vents: VentView[], fallScale: number): void {
+  update(dt: number, vents: VentView[], fallScale: number, fog = 0): void {
     this.rain.resize(this.cam.width, this.cam.height)
     this.rain.update(dt, this.toxicTarget)
 
@@ -86,6 +108,35 @@ export class WeatherLayer {
 
     this.drawRain()
     this.drawFire(vents)
+    this.drawFog(fog)
+  }
+
+  /**
+   * The whole of §F9: a grey rectangle over the view, at `FOG_SCREEN_ALPHA ×
+   * strength`.
+   *
+   * `setScrollFactor(0)` and a rect sized from the camera rather than the world:
+   * fog is on the lens, so it must not scroll, and a world-sized fill would cost
+   * more on a large map for no visible difference.
+   *
+   * The simulation has been right about fog since M5 — `strength()` ramps, the
+   * FoV shrinks — and none of it was legible in daylight, which is when fog is
+   * meant to matter. This function is the entire fix; everything else about the
+   * effect was already correct.
+   */
+  private drawFog(strength: number): void {
+    const g = this.fogVeil
+    g.clear()
+    const a = fogVeilAlpha(strength)
+    this.lastFogAlpha = a
+    // Not `a <= 0`: Phaser will happily fill at 0.0001, and a veil that is
+    // technically drawn between effects is one nobody can assert the absence of.
+    if (a < 0.005) {
+      this.lastFogAlpha = 0
+      return
+    }
+    g.fillStyle(C().FOG_SCREEN_COLOUR, a)
+    g.fillRect(0, 0, this.cam.width, this.cam.height)
   }
 
   private drawRain(): void {
@@ -143,5 +194,6 @@ export class WeatherLayer {
     this.rainGfx.destroy()
     this.fireGfx.destroy()
     this.vignette.destroy()
+    this.fogVeil.destroy()
   }
 }

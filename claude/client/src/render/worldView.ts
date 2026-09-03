@@ -252,12 +252,15 @@ export class WorldView {
   update(
     near: { x: number; y: number },
     dt = 0,
-    weather?: { toxicActive: boolean; vents: VentView[]; fallScale: number },
+    weather?: { toxicActive: boolean; vents: VentView[]; fallScale: number; fog: number },
   ): void {
     if (dt > 0) this.ordnance.update(dt)
     if (dt > 0 && weather) {
       this.weather.setToxic(weather.toxicActive)
-      this.weather.update(dt, weather.vents, weather.fallScale)
+      // `fog` is required, not optional: both scenes have a fog strength to give
+      // and the whole of §F9 is that one of them never passed it on. A default
+      // here would let the next scene silently draw no fog and still typecheck.
+      this.weather.update(dt, weather.vents, weather.fallScale, weather.fog)
     }
     this.drainDirty()
     const pendingBefore = this.terrain.stats.pending

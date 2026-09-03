@@ -703,6 +703,18 @@ pub const LAVA_BURN_RADIUS: f32 = 28.0;
 pub const FOG_DURATION: f32 = 15.0;
 /// Fade in and out.
 pub const FOG_RAMP: f32 = 2.0;
+/// Opacity of the screen-space fog veil at `strength() == 1.0` (§F9).
+///
+/// 0.8 is a heavy veil by design: 80 % of visibility gone is the point of an
+/// effect whose whole complaint was that `FOV_FOG_MULT` alone is close to
+/// invisible in daylight, which is when fog is supposed to matter.
+pub const FOG_SCREEN_ALPHA: f32 = 0.8;
+/// The grey the veil is filled with, `0xRRGGBB` (§F9).
+///
+/// A colour rather than a black scrim: fog scatters light, so it *raises* the
+/// black point and flattens contrast. Darkening is night's job and it has its
+/// own layer.
+pub const FOG_SCREEN_COLOUR: u32 = 0x009A_A0A6;
 
 // ---------------------------------------------------------------------------
 // Networking

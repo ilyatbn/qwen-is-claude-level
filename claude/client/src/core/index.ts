@@ -17,6 +17,7 @@ import init, {
   constants_json,
   core_darkness_at,
   core_fov_radius,
+  fog_strength,
   quantize_angle,
   dequantize_angle,
   AttractCore,
@@ -205,6 +206,11 @@ export interface Constants {
   FOV_DAY: number
   FOV_NIGHT: number
   FOV_FOG_MULT: number
+  /** §F9 — the screen-space veil, and the ramp `fogStrength` walks. */
+  FOG_SCREEN_ALPHA: number
+  FOG_SCREEN_COLOUR: number
+  FOG_DURATION: number
+  FOG_RAMP: number
   FOV_HEALTH_MIN_MULT: number
   FOV_EDGE_SOFTNESS: number
   FLASHLIGHT_RANGE: number
@@ -341,6 +347,18 @@ export function C(): Constants {
  */
 export const coreFovRadius = core_fov_radius
 export const coreDarknessAt = core_darkness_at
+
+/**
+ * §F9's fog ramp, `seconds since the effect started` → `0.0..=1.0`.
+ *
+ * **This one *is* the render path**, unlike the two above. A networked client has
+ * no local `HeavyFog` — the server runs the weather and the client is told only
+ * that an effect started and when — so the veil's strength has to be computed on
+ * this side. It is a Rust call rather than a TypeScript smoothstep because
+ * `fov_multiplier` reads the same `strength()`: two copies would let the veil and
+ * the field-of-view disagree about how foggy it is.
+ */
+export const fogStrength = fog_strength
 
 export interface WeatherState {
   active: { id: number; kind: 'toxic' | 'meteor' | 'lava' | 'fog'; phase: string }[]

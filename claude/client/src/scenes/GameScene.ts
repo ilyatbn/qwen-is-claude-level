@@ -95,6 +95,7 @@ import { artFor } from '../render/itemSprites-math'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
+import { FogClock } from '../render/weather-math'
 
 interface RemoteView {
   view: PlayerView
@@ -193,6 +194,22 @@ export class GameScene extends Phaser.Scene {
   private me = -1
   /** FoV multiplier from the server: fog times the smoke I am standing in. */
   private vision = 1
+  /**
+   * Which heavy fog is running, for §F9's veil.
+   *
+   * **A networked client has no `HeavyFog`** — the server owns the weather and
+   * the snapshot carries only `vision`, which is fog *times the smoke you are
+   * standing in*. Deriving the veil from `vision` would cast a full-screen fog
+   * every time somebody threw a smoke grenade at you: a field that means two
+   * things, used for the one it does not mean. The effect lifecycle already
+   * arrives as events, and `fog.rs`'s header says the ramp is a pure timer *so
+   * that* a client can walk it locally.
+   *
+   * In `weather-math` rather than inline here because the id rule inside it —
+   * only *this* fog's `effect_end` clears it — is a branch vitest can reach
+   * there and cannot reach in a scene that needs a canvas.
+   */
+  private readonly fog = new FogClock()
   private seq = 0
   private acc = 0
   private roundTime = 0
@@ -614,10 +631,17 @@ export class GameScene extends Phaser.Scene {
             this.serverRoundTime,
             Number(p['duration'] ?? 0),
           )
+          // §F9. The server calls `HeavyFog::new(now)` on the same tick it emits
+          // this, so the round time carried by the last snapshot is the ramp's
+          // origin to within one snapshot interval — and the ramp is `FOG_RAMP`
+          // (2 s) long, so that lag is invisible.
+          this.fog.start(id, rec.kind, this.serverRoundTime)
         } else if (ev === 'effect_phase') {
           this.topHud?.setEffectPhase(id, String(p['phase'] ?? 'active') as EffectPhase)
         } else {
           this.topHud?.endEffect(id)
+          // Only *this* fog's end clears it — `FogClock` owns that rule.
+          this.fog.end(id)
         }
       })
     }
@@ -1403,6 +1427,7 @@ export class GameScene extends Phaser.Scene {
         toxicActive: toxic,
         vents: [],
         fallScale: C().MAX_FALL_SPEED,
+        fog: this.fog.strength(this.roundTime),
       })
     }
     // Mine visibility is distance to the *player*, not to the camera centre —
@@ -1857,6 +1882,12 @@ export class GameScene extends Phaser.Scene {
         return {
           ready: self.ready,
           me: self.me,
+          // §F9, at both ends (§A39): the strength the scene walked from the
+          // effect's start time, and the alpha the shared layer actually filled
+          // with. The pair is what tells a reader whether a fogless-looking
+          // frame is a dead effect or a dead renderer.
+          fogStrength: self.fog.strength(self.roundTime),
+          fogAlpha: self.world?.weather.fogAlpha ?? 0,
           // §B4. The overlay's own numbers, so the check reads what the player
           // sees rather than inferring it from health.
           death: {

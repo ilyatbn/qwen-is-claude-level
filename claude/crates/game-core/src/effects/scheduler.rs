@@ -229,6 +229,23 @@ impl EffectScheduler {
         &self.active
     }
 
+    /// Push the next *scheduled* effect out to `until`, if it is sooner.
+    ///
+    /// `WeatherMode::Always` calls this every tick so the scheduler never rolls
+    /// one of its own on top of the effect being forced. It moves `next_at`,
+    /// which is already part of the hashed state, rather than adding a `paused`
+    /// flag: a second field saying "do not schedule" beside a timestamp saying
+    /// when to schedule is two answers to one question, and the timestamp is the
+    /// one that was already there.
+    ///
+    /// It never brings the next effect *forward*, so a caller cannot use it to
+    /// make the weather come early.
+    pub fn postpone_until(&mut self, until: f32) {
+        if self.next_at < until {
+            self.next_at = until;
+        }
+    }
+
     /// True only during `Active` — a telegraphing effect is a warning, not a hazard.
     pub fn is_active(&self, kind: EffectKind) -> bool {
         self.active

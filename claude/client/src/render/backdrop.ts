@@ -54,6 +54,28 @@ export const DEPTH = {
   actors: 30,
   particles: 40,
   lightmap: 50,
+  /**
+   * §F9's heavy-fog veil — **above** the lightmap and below the HUD.
+   *
+   * Two reasons, and the second is a landmine that has already been paid for
+   * once elsewhere.
+   *
+   * *Above the lightmap* because §F9's acceptance is that the frame moves toward
+   * the grey **by the alpha the constant names**. The lightmap is a MULTIPLY
+   * pass; under it, the measured delta is the alpha times whatever the night
+   * curve happens to be, and the acceptance stops being pinnable to a constant.
+   * The FoV multiplier still compounds — it shrinks the lit circle underneath,
+   * which is the "at night the two compound" §F9 asks for.
+   *
+   * *Below the HUD* because fog is weather, not a disability — the same rule the
+   * death overlay follows.
+   *
+   * And the gap it sits in is load-bearing: `sceneDepths()` collects every layer
+   * at `depth <= DEPTH.lightmap`, and `terrain-render.mjs` compares that list to
+   * an exact string. Anything in 0..50 joins it. 55 is in the 50–60 gap, so the
+   * layer-parity check keeps meaning what it meant.
+   */
+  fog: 55,
   hud: 60,
 } as const
 

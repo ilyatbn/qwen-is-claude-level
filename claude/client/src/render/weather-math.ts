@@ -13,6 +13,8 @@
  * screen for the same reason: the puddles were drawn and the rain never was.
  */
 
+import { C, fogStrength } from '../core'
+
 export interface Drop {
   x: number
   y: number
@@ -154,5 +156,73 @@ export class EmberField {
 
   clear(): void {
     this.embers.length = 0
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Heavy fog's screen-space veil (§F9)
+// ---------------------------------------------------------------------------
+
+/**
+ * How opaque the fog veil is right now: `FOG_SCREEN_ALPHA × strength`.
+ *
+ * A function of one number rather than a field on the layer, because the layer
+ * must not hold a fade of its own. `strength` is `fog.rs`'s ramp — the same one
+ * `fov_multiplier` reads — so the veil and the shrinking field of view cannot
+ * disagree about how foggy it is, and `FOG_RAMP` is honoured without a second
+ * smoothstep anywhere in the client.
+ *
+ * Clamped, because the two callers get `strength` from different places: the
+ * sandbox reads its local world's `weather.fog`, and a networked client walks the
+ * ramp itself from the effect's start time, where a clock that has run past the
+ * end must read 0 rather than a negative alpha Phaser would silently treat as
+ * opaque.
+ */
+export function fogVeilAlpha(strength: number): number {
+  return C().FOG_SCREEN_ALPHA * Math.min(1, Math.max(0, strength))
+}
+
+/**
+ * Which heavy fog is running, and when it started — the networked client's half
+ * of §F9.
+ *
+ * A class rather than two fields on `GameScene` for one reason: **the id matters
+ * and it is easy to drop.** Weather effects overlap, so an `effect_end` for a
+ * toxic rain that began after the fog must not switch the veil off in the middle
+ * of it. That rule has exactly one branch, it lives in a scene vitest cannot
+ * load without a canvas, and it fails silently — the fog would simply stop
+ * looking foggy while the server still says it is foggy. Here it is testable.
+ *
+ * The sandbox does **not** use this: it owns a real `HeavyFog` and reads
+ * `weather.fog` off its own world. This exists because a match's weather runs on
+ * the server and the snapshot carries only `vision`, which is fog *times smoke*.
+ */
+export class FogClock {
+  private id = -1
+  private startedAt: number | null = null
+
+  /** An `effect_start` arrived. Anything that is not heavy fog is ignored. */
+  start(id: number, kind: string, roundTime: number): void {
+    if (kind !== 'HeavyFog') return
+    this.id = id
+    this.startedAt = roundTime
+  }
+
+  /** An `effect_end` arrived. Only the fog's own end clears it. */
+  end(id: number): void {
+    if (id !== this.id) return
+    this.id = -1
+    this.startedAt = null
+  }
+
+  /** `0..1` — `fog.rs`'s ramp, walked from the start time. */
+  strength(roundTime: number): number {
+    if (this.startedAt === null) return 0
+    return fogStrength(roundTime - this.startedAt)
+  }
+
+  /** For a debug handle: is a fog running at all, independent of its ramp? */
+  get running(): boolean {
+    return this.startedAt !== null
   }
 }

@@ -1003,12 +1003,14 @@ impl Room {
         let scale = self.config.map_scale;
         let generator = self.config.map_generator;
         let round_seconds = self.config.round_seconds;
+        let weather_mode = self.config.weather_mode;
         move || {
             let mut world = World::with_generator(seed, scale, secret, generator);
             // `ROUND_SECONDS` is an environment override for testing (`docs/41`
             // §5) and it was parsed and then dropped: the world used the
             // constant, so a shortened round never shortened.
             world.set_round_seconds(round_seconds);
+            world.weather_mode = weather_mode;
             world.set_phase(game_core::world::RoundPhase::Lobby);
             let _ = world.drain_events();
             // `docs/61` §3 row 1: the line a report of "the map was unplayable"
@@ -2410,6 +2412,10 @@ impl Room {
             self.config.map_generator,
         );
         world.set_round_seconds(self.config.round_seconds);
+        // Both construction sites, or a `WEATHER=off` room gets its weather back
+        // the moment the round restarts — which is the shape `set_round_seconds`
+        // was already fixed for once (§E4).
+        world.weather_mode = self.config.weather_mode;
         self.world = Some(world);
         // §E2/§E4, unconditionally. There are three assignments to `self.world`
         // and every one of them must leave the bit agreeing with it, or

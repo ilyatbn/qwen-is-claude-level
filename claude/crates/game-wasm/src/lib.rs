@@ -857,6 +857,21 @@ impl GameCore {
     }
 }
 
+/// §F9's fog strength, `seconds_since_the_effect_started` → `0.0..=1.0`.
+///
+/// **The networked client has no `HeavyFog`.** The sandbox reads `weather_json`'s
+/// `"fog"` off its own local world; a real match runs the weather on the server
+/// and the client learns only that an effect started, and when. `fog.rs`'s own
+/// header says the ramp is a pure timer *so that* the client can compute it
+/// locally — this is that seam, and it is a Rust call rather than a smoothstep
+/// rewritten in TypeScript so the veil and `fov_multiplier` cannot drift apart.
+///
+/// A fresh `HeavyFog` at t = 0 is the whole state, so no handle is needed.
+#[wasm_bindgen]
+pub fn fog_strength(elapsed: f32) -> f32 {
+    HeavyFog::new(0.0).strength(elapsed)
+}
+
 /// Every tunable the client needs, as JSON.
 ///
 /// The client must never re-declare one of these. A literal in TypeScript that
@@ -984,6 +999,13 @@ pub fn constants_json() -> String {
         FOV_DAY => c::FOV_DAY,
         FOV_NIGHT => c::FOV_NIGHT,
         FOV_FOG_MULT => c::FOV_FOG_MULT,
+        // §F9's veil. The client draws the fill and needs both halves; the
+        // *strength* it multiplies them by comes from `fog_strength` below, not
+        // from a second smoothstep written in TypeScript.
+        FOG_SCREEN_ALPHA => c::FOG_SCREEN_ALPHA,
+        FOG_SCREEN_COLOUR => c::FOG_SCREEN_COLOUR,
+        FOG_DURATION => c::FOG_DURATION,
+        FOG_RAMP => c::FOG_RAMP,
         FOV_HEALTH_MIN_MULT => c::FOV_HEALTH_MIN_MULT,
         FOV_EDGE_SOFTNESS => c::FOV_EDGE_SOFTNESS,
         FLASHLIGHT_RANGE => c::FLASHLIGHT_RANGE,
