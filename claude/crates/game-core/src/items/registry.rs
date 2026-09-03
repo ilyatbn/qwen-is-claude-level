@@ -527,6 +527,33 @@ pub fn is_weapon(id: ItemId) -> bool {
     matches!(def(id), Some(d) if matches!(d.kind, ItemKind::Weapon(_)))
 }
 
+/// A weapon nobody can find and nobody is issued: a placeholder kept only
+/// because `ITEMS` is indexed by id and deleting an entry renumbers every id
+/// above it (§B16, the bug where a laser resolved as a bazooka).
+///
+/// **Zero weights alone are not enough**, and that is the whole reason this is a
+/// function. §F5's shovel also has three zero columns — it is issued at spawn
+/// instead of spawning on the ground — so "no weights" names six weapons and
+/// only five of them are retired. Anything handing out "every weapon" (§F7's
+/// `all` kit) has to skip the placeholders and keep the shovel, and a second
+/// copy of that rule is a second place to get it wrong.
+pub fn is_retired(d: &ItemDef) -> bool {
+    matches!(d.kind, ItemKind::Weapon(_))
+        && d.spawn_weight == 0
+        && d.crate_weight == 0
+        && d.buried_weight == 0
+        && !crate::player::state::STARTING_KIT.contains(&d.id)
+}
+
+/// Every weapon a player can legitimately end up holding, retired placeholders
+/// excluded. The order is `ITEMS` order, which is id order (§B16).
+pub fn live_weapons() -> Vec<&'static ItemDef> {
+    ITEMS
+        .iter()
+        .filter(|d| matches!(d.kind, ItemKind::Weapon(_)) && !is_retired(d))
+        .collect()
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum WeightColumn {
     Spawn,

@@ -417,3 +417,106 @@ fn bots_survive_the_unready_sweep_and_humans_who_never_ready_do_not() {
         "the three bots must still be in the world after the sweep"
     );
 }
+
+/// §F7's three settings are in the file, and re-applying the file reproduces the
+/// room they made — **not** the room the header describes.
+///
+/// The header is the trap. `ReplayHeader` writes `round_seconds`, `bot_count`
+/// and `dev_loadout` when the room is *constructed* (`replay.rs`), which is
+/// before a host can touch anything; a runner that trusted it would rebuild the
+/// room the lobby started as and play a different match. The assertion below is
+/// deliberately on a value the header **contradicts**: `cfg` builds the room at
+/// `round_seconds: 8.0` and the recorded change moves it to
+/// `ROUND_SECONDS_MAX`, so a replay that honoured the header would come out at
+/// 8 and this test would say so.
+#[test]
+fn a_settings_change_is_recorded_and_replaying_it_reproduces_the_room() {
+    use game_core::constants::{StartKit, ROUND_SECONDS_MAX};
+
+    let s = Scratch::new("settings");
+    let mut room = Room::new(cfg(true));
+    room.apply_for_test(Command::SetIdentity {
+        code: Some("ABC123".into()),
+        private: true,
+    });
+    room.start_recording(s.path(), "000000000001");
+    let ana = seat(&mut room, "ana");
+    for cmd in settings_commands(ana) {
+        room.apply_for_test(cmd);
+    }
+    let live = room.lobby_state();
+    room.finish_recording();
+
+    let r = replay::read_file(&s.only_file()).expect("decode");
+    let recorded: Vec<&ReplayCommand> = r
+        .body
+        .iter()
+        .map(|(_, c)| c)
+        .filter(|c| {
+            matches!(
+                c,
+                ReplayCommand::SetBots(..)
+                    | ReplayCommand::SetStartKit(..)
+                    | ReplayCommand::SetRoundSeconds(..)
+            )
+        })
+        .collect();
+    assert_eq!(
+        recorded.len(),
+        3,
+        "all three settings changes must be in the file, got {recorded:?}"
+    );
+    assert_eq!(
+        r.header.round_seconds, 8.0,
+        "the header records the room's birth"
+    );
+
+    // Replay it into a fresh room built from the same config, through the
+    // library's `to_command` — the one the runner uses.
+    let mut replayed = Room::new(cfg(false));
+    replayed.apply_for_test(Command::SetIdentity {
+        code: Some("ABC123".into()),
+        private: true,
+    });
+    for (_, c) in &r.body {
+        if matches!(c, ReplayCommand::Checkpoint { .. }) {
+            continue;
+        }
+        replayed.apply_for_test(game_server::room::to_command(c));
+    }
+    let after = replayed.lobby_state();
+    assert_eq!(
+        (after.bots, after.start_kit, after.round_seconds),
+        (live.bots, live.start_kit, live.round_seconds),
+        "the replayed room does not hold the settings the live one did"
+    );
+    assert_eq!(
+        (after.bots, after.start_kit, after.round_seconds),
+        (false, StartKit::All, ROUND_SECONDS_MAX),
+        "the control: these are the values that were set, and none of them is \
+         what the room or its header started at"
+    );
+}
+
+/// The three changes, in one place so the live room and the assertion above
+/// cannot drift apart.
+fn settings_commands(by: u8) -> Vec<Command> {
+    use game_core::constants::{StartKit, ROUND_SECONDS_MAX};
+    vec![
+        Command::SetBots {
+            by,
+            on: false,
+            reply: tokio::sync::oneshot::channel().0,
+        },
+        Command::SetStartKit {
+            by,
+            kit: StartKit::All,
+            reply: tokio::sync::oneshot::channel().0,
+        },
+        Command::SetRoundSeconds {
+            by,
+            seconds: ROUND_SECONDS_MAX,
+            reply: tokio::sync::oneshot::channel().0,
+        },
+    ]
+}

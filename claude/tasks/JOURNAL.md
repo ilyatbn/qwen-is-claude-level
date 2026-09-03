@@ -5154,6 +5154,16 @@ against a 20 px body, 6 damage a hit. After: 54 drops × a 76 px target (20 + 2�
 crater per drop**; `splash_poison` is a distance test beside `poison_lands` instead. **The
 roof is now asked per victim**, since a radius stops the two coinciding. `drops_per_window()`
 needs `ceil`: 8.0/0.15 truncates to 53, reality 54, and three sites each had the arithmetic.
-A 12 px fixture roof is no longer cover — 54 drops dig through in one window and the
-"sheltered" control lost 30.7 health; now a named 40. Load measured: peak 7 airborne, 140
-moves/s, **no projectile cap exists**.
+A 12 px fixture roof is no longer cover at 54 drops, so `ROOF_THICKNESS` is a named 40 —
+measurement in the handoff, with the load numbers and the missing projectile cap.
+
+## T19.07 — private-game settings: the wire, and the match that honours them
+
+Wire keys `bots` / `start_kit` / `round_seconds`; replay tags **19, 20, 21 appended** — the
+header is fixed-layout and untouched. **The sweep's "contradiction" is not one**: §F7's last
+paragraph says the env var stays the default, so the setting writes `config.round_seconds`
+the way `SetScale` writes `map_scale` and the seven `ROUND_SECONDS` checks are untouched.
+**The task gap was real — nothing granted a kit on respawn.** `die` drops everything but the
+issued shovel, so a match-start-only grant means "for your first life"; deleting the new call
+leaves `[(24, 1)]`. `tick_inline` never returns `Death`/`Respawn`, and `cargo test -p
+game-wasm` runs **zero** `wasm_bindgen_test`s — both in the handoff. EXIT=0, 41/41, 25/25.

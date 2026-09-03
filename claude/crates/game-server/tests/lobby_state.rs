@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use game_core::constants::{MapScale, LOBBY_BOT_TIMEOUT, LOBBY_CAPACITY, SIM_DT};
+use game_core::constants::{MapScale, LOBBY_BOT_TIMEOUT, LOBBY_CAPACITY, ROUND_SECONDS, SIM_DT};
 use game_server::config::Config;
 use game_server::events::lobby_state_payload;
 use game_server::room::{Command, Room};
@@ -322,4 +322,59 @@ fn no_room_list_producer_survives() {
         session.contains("\"lobby_state\""),
         "the walk read session.rs but found no lobby_state either"
     );
+}
+
+/// §F7's three settings reach **every seat**, not just the host's.
+///
+/// Read off the emitted JSON, because the claim is about what a client receives
+/// — `lobby_state` is broadcast to the whole room, so a guest's copy is the
+/// same payload and the wire keys are the thing that can be wrong.
+#[test]
+fn the_payload_carries_the_three_private_settings() {
+    use game_core::constants::{StartKit, ROUND_SECONDS_MIN, ROUND_SECONDS_STEP};
+
+    let mut room = Room::new(cfg());
+    room.apply_for_test(Command::SetIdentity {
+        code: Some("ABC123".into()),
+        private: true,
+    });
+    let ana = seat(&mut room, "ana");
+    // A guest, so "every seat sees it" is not a claim about a lobby of one.
+    let _bo = seat(&mut room, "bo");
+
+    // The control frame: the defaults, before anything is changed.
+    let before = lobby_state_payload(&room.lobby_state());
+    assert_eq!(before["bots"], true);
+    assert_eq!(before["start_kit"], "none");
+    assert_eq!(before["round_seconds"], ROUND_SECONDS);
+
+    for cmd in [
+        Command::SetBots {
+            by: ana,
+            on: false,
+            reply: tokio::sync::oneshot::channel().0,
+        },
+        Command::SetStartKit {
+            by: ana,
+            kit: StartKit::Basic,
+            reply: tokio::sync::oneshot::channel().0,
+        },
+        Command::SetRoundSeconds {
+            by: ana,
+            seconds: ROUND_SECONDS_MIN + ROUND_SECONDS_STEP,
+            reply: tokio::sync::oneshot::channel().0,
+        },
+    ] {
+        room.apply_for_test(cmd);
+    }
+
+    let p = lobby_state_payload(&room.lobby_state());
+    assert_eq!(p["bots"], false);
+    assert_eq!(p["start_kit"], "basic");
+    assert_eq!(p["round_seconds"], ROUND_SECONDS_MIN + ROUND_SECONDS_STEP);
+    // Present, not merely equal to a default: a payload that dropped the keys
+    // would read `Value::Null` and compare unequal above, but say so poorly.
+    for key in ["bots", "start_kit", "round_seconds"] {
+        assert!(!p[key].is_null(), "{key} is missing from lobby_state");
+    }
 }

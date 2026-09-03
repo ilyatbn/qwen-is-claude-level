@@ -557,3 +557,69 @@ written into `hud-bars.mjs` beside the check so the next reader does not "fix" i
 **A leaked `game-server` was found before this gate**, PGID 557788, ~3 h old, surviving
 from an earlier run. It did not fail anything, but check `pgrep -af "vite|game-server"`
 before any wall-clock measurement and kill the **group**, not the pid.
+
+## T19.07 landed — what the diff does not say
+
+**Wire keys, for anyone writing the panel (T19.08):** socket events `set_bots`
+`{bots: bool}`, `set_start_kit` `{start_kit: "none"|"basic"|"all"}`,
+`set_round_seconds` `{round_seconds: number}`; `lobby_state` gains `bots`,
+`start_kit`, `round_seconds`, **always present, never omitted** (they have no "absent"
+meaning and `parseLobbyState` reads a missing key as a default). Refusals come back on
+`lobby_error`, not `join_error` — `set_scale`'s reason: `join_error` is guarded by
+`if (settled) return` at the client and a refusal sent after seating is dropped before
+anything sees it. `ROUND_SECONDS_MIN`/`_MAX`/`_STEP` now exist in all four places
+(`constants.rs`, `constants_json`, the TS `Constants` interface, and a test at the
+emitting end).
+
+**The sweep's "CONFIRMED contradiction" in the task file is not one.** The table says
+`round_seconds` defaults to `MIN` and the Notes say the env var stays the default;
+`docs/75` §F7's own last paragraph settles it — *"the env var stays and becomes the
+default for rooms that never set one"*. Implemented that way: the setting writes
+`config.round_seconds` exactly as `SetScale` writes `config.map_scale`, so a room that
+is never touched reports what the environment gave it. **The seven checks that shorten
+a round through `ROUND_SECONDS` are therefore untouched** — verified by the gate, not
+by reading. The two numbers agree only because `ROUND_SECONDS == ROUND_SECONDS_MIN` in
+the shipped configuration; a deployment that moves one does not move the other, and a
+private lobby under `ROUND_SECONDS=20` will honestly report 20 (below `MIN`) until
+someone sets it.
+
+**Task gap confirmed, and it was the real bug: there was no respawn call site.**
+`grant_dev_loadout` is called from `populate_world`, `seat_bots` and the late-join
+path, and nowhere else. `PlayerState::die` drops everything except the issued shovel
+(§F5), so a kit granted only at match start silently means *"for your first life"*.
+`grant_start_kit` is now called from those three **and** from the `GameEvent::Respawn`
+branch of the room's event scan, which until now only logged. Falsified: deleting the
+respawn call fails `each_kit_arms_a_player_at_spawn_and_again_after_a_respawn` with
+`got [(24, 1)]` — the shovel alone.
+
+**`tick_inline` does not return `Death` or `Respawn`.** The room drains the world's
+events into its broadcast path and hands back only what it re-emits — over 900 ticks a
+test watching for `Respawn` saw 14 events, all `RoundState`, while the player it was
+waiting for had died and come back. Any future test that waits on a world event through
+`tick_inline` will wait forever. Watch the state instead: dead-then-alive-at
+`BASE_HEALTH` is also the control the assertion needs.
+
+**Two more traps met while writing that test, both worth knowing.** `p.health = 0.0` is
+not a death — nothing calls `die`, no inventory is dropped, and the player stays
+`alive` on negative health; kill through a blast (`explode_for_test`) so `resolve_deaths`
+runs. And `World::set_phase(Playing)` lasts exactly **one tick**: the round controller
+rewrites the phase from `round_time` every tick, which is long enough for a blast to
+land and not long enough for the death to resolve. Wait for `room.phase()` to reach
+`Playing` on its own, bounded by `WARMUP_SECONDS`.
+
+**`cargo test -p game-wasm` runs zero `#[wasm_bindgen_test]`s**, which `lib.rs:1212`
+already records — so `constants_json_carries_the_viewport_and_camera_values` has never
+run in the gate, and neither would a new one written beside it. The §F7 bounds test is
+a plain `#[test]`. Fifteen `wasm_bindgen_test`s in that file are in the same position;
+not booked, but they are not evidence of anything today.
+
+**`registry::is_retired` is now shared, and the shovel is why it has to be a function.**
+Zero weights in all three columns names **six** weapons and only five are retired — the
+shovel has the same three zeros because it is issued at spawn (§F5). Anything handing
+out "every weapon" has to skip the placeholders and keep the shovel. `balance.rs` pins
+the predicate to the named five as an equality plus an explicit "the shovel is not
+retired".
+
+**`DEV_LOADOUT`'s contents did not change.** Its `give` calls became a `(item, count)`
+list handed to the same `give_all` the kits use — one granting path — and the gate's
+five sandbox/ordnance checks confirm the list is the same one.

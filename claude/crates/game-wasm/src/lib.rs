@@ -1079,6 +1079,12 @@ pub fn constants_json() -> String {
         // needs the same geometry and the same two seconds the sim uses — a
         // renderer carrying its own 40 and its own 2.0 would keep drawing the
         // old pad after either was tuned (§A19).
+        // §F7. The private-lobby panel draws its own bounds and its own step;
+        // a stepper carrying a local 240/600/60 would keep offering the old
+        // range after any of them was tuned (§A19).
+        ROUND_SECONDS_MIN => c::ROUND_SECONDS_MIN,
+        ROUND_SECONDS_MAX => c::ROUND_SECONDS_MAX,
+        ROUND_SECONDS_STEP => c::ROUND_SECONDS_STEP,
         TELEPORT_PADS => c::TELEPORT_PADS,
         PAD_W => c::PAD_W,
         PAD_H => c::PAD_H,
@@ -1391,6 +1397,34 @@ mod tests {
         assert_eq!(v["CAMERA_ZOOM"], 2.0);
         assert_eq!(v["PLAYER_W"], 16.0);
         assert_eq!(v["PLAYER_H"], 28.0);
+    }
+
+    /// §F7's bounds cross to the client, pinned to the constants.
+    ///
+    /// The panel that steps the round length draws its own range, and a stepper
+    /// carrying a local 240/600/60 would keep offering the old one after any of
+    /// them moved (§A19). Asserted at the emitting end because a missing key is
+    /// `undefined` in the browser and every comparison against it is `false`
+    /// forever — a bar that never fails rather than one that passes.
+    ///
+    /// A plain `#[test]`: `cargo test -p game-wasm` runs **zero**
+    /// `wasm_bindgen_test`s, so the neighbouring `constants_json` assertion has
+    /// never run in the gate and this one would not either.
+    #[test]
+    fn constants_json_carries_the_private_round_length_bounds() {
+        let v: serde_json::Value = serde_json::from_str(&constants_json()).expect("valid json");
+        assert_eq!(
+            v["ROUND_SECONDS_MIN"],
+            game_core::constants::ROUND_SECONDS_MIN
+        );
+        assert_eq!(
+            v["ROUND_SECONDS_MAX"],
+            game_core::constants::ROUND_SECONDS_MAX
+        );
+        assert_eq!(
+            v["ROUND_SECONDS_STEP"],
+            game_core::constants::ROUND_SECONDS_STEP
+        );
     }
 
     #[wasm_bindgen_test]

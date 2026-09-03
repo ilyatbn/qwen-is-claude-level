@@ -415,7 +415,7 @@ independent.
 - [ ] [T19.16](M19/T19.16-vite-port-under-load.md) — `vite did not report a port within 90 s` under sustained load **(v7)**
 - [x] [T19.05](M19/T19.05-the-shovel.md) — The shovel, and the end of the melee cabinet **(v7)** — every deliverable except the retired weapons' procedural art, which **must stay** (`itemSprites-math.test.ts` reads the live registry; see `HANDOFF-M19.md`). Done-when green, `./scripts/check.sh` EXIT=0, 41/41 e2e.
 - [x] [T19.06](M19/T19.06-rain-that-hurts.md) — Rain that falls on you hurts **(v7)** — every deliverable; the splash does **not** reuse the blast helper (it carves — see `HANDOFF-M19.md`) and the roof is asked per victim. Done-when green, `./scripts/check.sh` EXIT=0, 41/41 e2e, net smoke 25/25, assets ok.
-- [ ] [T19.07](M19/T19.07-private-settings-server.md) — Private-game settings: the wire, and the match that honours them **(v7)**
+- [x] [T19.07](M19/T19.07-private-settings-server.md) — Private-game settings: the wire, and the match that honours them **(v7)** — every deliverable. Wire keys `bots`/`start_kit`/`round_seconds`; replay tags 19-21 appended, header untouched. **Known follow-up: `bots` and `start_kit` are lost across a round restart in replay** — see `HANDOFF-M19.md`. Done-when green, `./scripts/check.sh` EXIT=0, 41/41 e2e, net smoke 25/25, assets ok.
 - [ ] [T19.08](M19/T19.08-private-settings-screen.md) — The private lobby's settings panel **(v7)**
 - [ ] [T19.09](M19/T19.09-teleport-charge.md) — The teleport charge is 1.5 seconds **(v7)**
 - [ ] [T19.10](M19/T19.10-fog-fills-the-screen.md) — Fog fills the screen **(v7)**

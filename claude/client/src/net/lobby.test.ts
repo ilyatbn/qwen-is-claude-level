@@ -133,6 +133,12 @@ const emptyLobby = {
   private: false,
   capacity: 5,
   scale: 'small' as const,
+  // §F7 fields. Values only: nothing here asserts on them, so they are not
+  // pinned to `ROUND_SECONDS` — a fixture that quoted it would be a second copy
+  // of a tunable in a test that does not read it.
+  bots: true,
+  startKit: 'none' as const,
+  roundSeconds: 0,
   players: [],
 }
 
@@ -229,6 +235,31 @@ describe('lobby_state (§E6)', () => {
     expect(parseLobbyState(raw).code).toBe('ABC234')
   })
 
+  it('reads §F7 settings, and falls back rather than inventing a value', () => {
+    // Present: the three keys the server always sends.
+    const s = parseLobbyState({
+      ...raw,
+      bots: false,
+      start_kit: 'all',
+      round_seconds: 300,
+    })
+    expect(s.bots).toBe(false)
+    expect(s.startKit).toBe('all')
+    expect(s.roundSeconds).toBe(300)
+
+    // The control: the same parser reads the other value too, so `false` above
+    // is not a parser that returns `false` for everything.
+    expect(parseLobbyState({ ...raw, bots: true, start_kit: 'basic' }).bots).toBe(true)
+    expect(parseLobbyState({ ...raw, start_kit: 'basic' }).startKit).toBe('basic')
+
+    // Absent or junk: the server's defaults, never a value off the wire.
+    const bare = parseLobbyState(raw)
+    expect(bare.bots).toBe(true)
+    expect(bare.startKit).toBe('none')
+    expect(bare.roundSeconds).toBe(0)
+    expect(parseLobbyState({ ...raw, start_kit: 'everything' }).startKit).toBe('none')
+  })
+
   it('survives a hostile payload without throwing', () => {
     for (const bad of [{}, { players: 'not an array' }, { players: [null, 7, {}] }]) {
       const s = parseLobbyState(bad as Record<string, unknown>)
@@ -251,6 +282,9 @@ describe('the roster (§E6)', () => {
     private: false,
     capacity: 5,
     scale: 'small' as const,
+    bots: true,
+    startKit: 'none' as const,
+    roundSeconds: 0,
     players: [
       { seat: 0, name: 'ana', skinId: 0, ready: true, bot: false },
       { seat: 1, name: 'Bot 1', skinId: 0, ready: true, bot: true },

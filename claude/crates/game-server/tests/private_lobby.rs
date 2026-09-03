@@ -9,7 +9,13 @@
 
 use std::sync::Arc;
 
-use game_core::constants::{MapScale, LOBBY_BOT_TIMEOUT, LOBBY_CAPACITY, SIM_DT};
+use game_core::constants::{
+    MapScale, StartKit, BASE_HEALTH, INVENTORY_SLOTS, LOBBY_BOT_TIMEOUT, LOBBY_CAPACITY,
+    PISTOL_AMMO, RESPAWN_DELAY, ROUND_SECONDS, ROUND_SECONDS_MAX, ROUND_SECONDS_MIN,
+    ROUND_SECONDS_STEP, SIM_DT, START_KIT_GRENADES, WARMUP_SECONDS,
+};
+use game_core::items::registry::WEAPON_BAZOOKA;
+use game_core::world::RoundPhase;
 use game_server::config::Config;
 use game_server::room::{Command, Room};
 
@@ -333,4 +339,360 @@ fn the_settings_pass_to_the_longest_seated_when_the_host_leaves() {
         state.private,
         "the lobby stopped being private when its host left"
     );
+}
+
+// ---------------------------------------------------------------------------
+// §F7 — the three private-lobby settings
+// ---------------------------------------------------------------------------
+
+fn set_bots(room: &mut Room, by: u8, on: bool) -> Result<(), &'static str> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    room.apply_for_test(Command::SetBots { by, on, reply });
+    rx.blocking_recv().expect("the room answered")
+}
+
+fn set_kit(room: &mut Room, by: u8, kit: StartKit) -> Result<(), &'static str> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    room.apply_for_test(Command::SetStartKit { by, kit, reply });
+    rx.blocking_recv().expect("the room answered")
+}
+
+fn set_round_seconds(room: &mut Room, by: u8, seconds: f32) -> Result<(), &'static str> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    room.apply_for_test(Command::SetRoundSeconds { by, seconds, reply });
+    rx.blocking_recv().expect("the room answered")
+}
+
+/// A room with a world, so inventories and the round clock can be read.
+///
+/// `tick_inline` rather than `tick_once`: §E1 split "ask for a world" from
+/// "build one", and every §F7 claim below is about what the built world holds.
+fn start(room: &mut Room) {
+    for _ in 0..2 {
+        let _ = room.tick_inline(SIM_DT);
+    }
+    assert!(
+        room.lobby_state().players.iter().any(|_| true),
+        "the room emptied itself before the match started"
+    );
+}
+
+/// Each setting: the host moves it, every seat sees it, every ready flag clears.
+///
+/// The ready half is asserted **after** setting both players ready, so a lobby
+/// that never sets the flag at all cannot pass — and the control is the
+/// non-host, who is refused and changes nothing.
+#[test]
+fn the_host_moves_each_setting_and_every_ready_flag_clears() {
+    for (name, apply) in [
+        (
+            "bots",
+            (&|r: &mut Room, by: u8| set_bots(r, by, false)) as &dyn Fn(&mut Room, u8) -> _,
+        ),
+        ("start_kit", &|r: &mut Room, by: u8| {
+            set_kit(r, by, StartKit::Basic)
+        }),
+        ("round_seconds", &|r: &mut Room, by: u8| {
+            set_round_seconds(r, by, ROUND_SECONDS_MIN + ROUND_SECONDS_STEP)
+        }),
+    ] {
+        let mut room = private_room();
+        let ana = seat(&mut room, "ana");
+        let bo = seat(&mut room, "bo");
+        ready(&mut room, ana, true);
+        ready(&mut room, bo, true);
+        assert!(
+            room.lobby_state().players.iter().all(|p| p.ready),
+            "{name}: the control failed — both players were set ready and the \
+             lobby does not show it, so 'the flags cleared' below proves nothing"
+        );
+
+        // The control, first: a non-host is refused and nothing moves.
+        let before = room.lobby_state();
+        assert_eq!(
+            apply(&mut room, bo),
+            Err("only the host can change the settings"),
+            "{name}: a non-host changed a setting"
+        );
+        let after = room.lobby_state();
+        assert_eq!(
+            (after.bots, after.start_kit, after.round_seconds),
+            (before.bots, before.start_kit, before.round_seconds),
+            "{name}: the refusal still moved the setting"
+        );
+        assert!(
+            after.players.iter().all(|p| p.ready),
+            "{name}: a refused change cleared the ready flags"
+        );
+
+        assert_eq!(
+            apply(&mut room, ana),
+            Ok(()),
+            "{name}: the host was refused"
+        );
+        let s = room.lobby_state();
+        match name {
+            "bots" => assert!(!s.bots, "bots did not move"),
+            "start_kit" => assert_eq!(s.start_kit, StartKit::Basic, "start_kit did not move"),
+            _ => assert_eq!(
+                s.round_seconds,
+                ROUND_SECONDS_MIN + ROUND_SECONDS_STEP,
+                "round_seconds did not move"
+            ),
+        }
+        assert!(
+            s.players.iter().all(|p| !p.ready),
+            "{name}: §E3 — a settings change must clear every ready flag, \
+             including the changer's"
+        );
+    }
+}
+
+/// Bots off means no bots, and stays that way. Control: the same room with bots
+/// on seats them.
+///
+/// Without the control this passes against a build whose bots never spawn at
+/// all, which is exactly the shape §F7 is trying to make optional.
+#[test]
+fn bots_off_seats_none_and_bots_on_seats_them() {
+    let with_bots = Arc::new(Config {
+        map_scale: MapScale::Small,
+        bot_count: 3,
+        ..Config::default()
+    });
+
+    let mut off = Room::new(with_bots.clone());
+    off.apply_for_test(Command::SetIdentity {
+        code: Some("ABC123".into()),
+        private: true,
+    });
+    let ana = seat(&mut off, "ana");
+    assert_eq!(set_bots(&mut off, ana, false), Ok(()));
+    ready(&mut off, ana, true);
+    start(&mut off);
+    // 30 s of real ticks: a bot seated late would still be caught.
+    for _ in 0..(30.0 / SIM_DT) as usize {
+        let _ = off.tick_inline(SIM_DT);
+    }
+    assert_eq!(
+        off.lobby_state().players.iter().filter(|p| p.bot).count(),
+        0,
+        "bots were off and the room seated some anyway"
+    );
+
+    let mut on = Room::new(with_bots);
+    on.apply_for_test(Command::SetIdentity {
+        code: Some("ABC124".into()),
+        private: true,
+    });
+    let ana = seat(&mut on, "ana");
+    ready(&mut on, ana, true);
+    start(&mut on);
+    assert_eq!(
+        on.lobby_state().players.iter().filter(|p| p.bot).count(),
+        3,
+        "the control failed: bots are on by default and the room seated none, \
+         so 'zero bots when off' above is not evidence of anything"
+    );
+}
+
+/// What each kit puts in a player's hands, at spawn **and** after a respawn.
+///
+/// The respawn half is the one that matters: `PlayerState::die` drops
+/// everything except the issued shovel, so a kit granted only at match start
+/// would silently mean "for your first life".
+#[test]
+fn each_kit_arms_a_player_at_spawn_and_again_after_a_respawn() {
+    for kit in StartKit::ALL {
+        let mut room = private_room();
+        let ana = seat(&mut room, "ana");
+        assert_eq!(set_kit(&mut room, ana, kit), Ok(()));
+        ready(&mut room, ana, true);
+        start(&mut room);
+
+        let held = |room: &Room| -> Vec<(u16, u8)> {
+            let w = room.world().expect("the match started");
+            (0..INVENTORY_SLOTS as u8)
+                .filter_map(|s| w.player(ana).and_then(|p| p.inventory.slot(s)))
+                .map(|st| (st.item, st.count))
+                .collect()
+        };
+
+        let at_spawn = held(&room);
+        assert_kit(kit, &at_spawn, "at spawn");
+
+        // Kill and respawn through the **real** path: a blast, resolved by
+        // `detonate`, during `Playing`. Writing `health = 0.0` looks like a
+        // death and is not one — nothing calls `die`, no `Respawn` is emitted,
+        // and the inventory is never dropped, so the assertion below would be
+        // reading the kit that was still sitting there from spawn.
+        // Wait for the **round controller** to reach `Playing` rather than
+        // writing the phase: it rewrites `World::phase` from `round_time` on
+        // every tick, so a hand-set phase lasts exactly one tick — long enough
+        // for the blast to land and not long enough for `resolve_deaths` to run,
+        // which is a player on -44 health who is still alive. Bounded by
+        // `WARMUP_SECONDS`, not by a hardcoded wait.
+        let mut playing = false;
+        for _ in 0..((WARMUP_SECONDS * 2.0) / SIM_DT) as usize {
+            let _ = room.tick_inline(SIM_DT);
+            if room.phase() == RoundPhase::Playing {
+                playing = true;
+                break;
+            }
+        }
+        assert!(playing, "{kit:?}: the round never left warmup");
+        let at = {
+            let p = room
+                .world_mut()
+                .and_then(|w| w.player_mut(ana))
+                .expect("seated");
+            p.health = 1.0;
+            p.body.pos
+        };
+        let now = room.world().expect("a world").round_time;
+        room.world_mut()
+            .expect("a world")
+            .explode_for_test(at, WEAPON_BAZOOKA, u8::MAX, now);
+        // **Watched through health, not through the event stream.** `Respawn`
+        // never reaches `tick_inline`'s return — the room drains the world's
+        // events into its broadcast path and hands back only what it re-emits —
+        // so a test waiting on the event waits forever while the respawn it is
+        // waiting for happens under it.
+        //
+        // Dead-then-alive is also the control the assertion needs: "they are on
+        // full health holding the kit" is satisfied by a blast that missed.
+        let vitals = |room: &Room| {
+            room.world()
+                .and_then(|w| w.player(ana))
+                .map(|p| (p.alive, p.health))
+                .expect("seated")
+        };
+        let mut saw_dead = false;
+        let mut respawned = false;
+        for _ in 0..(RESPAWN_DELAY * 3.0 / SIM_DT) as usize {
+            let _ = room.tick_inline(SIM_DT);
+            let (alive, health) = vitals(&room);
+            if !alive {
+                saw_dead = true;
+            } else if saw_dead && health == BASE_HEALTH {
+                respawned = true;
+                break;
+            }
+        }
+        assert!(saw_dead, "{kit:?}: the blast never killed them");
+        assert!(respawned, "{kit:?}: the player never came back");
+        assert_kit(kit, &held(&room), "after a respawn");
+    }
+}
+
+/// The shared expectation, so the spawn and respawn halves cannot drift.
+fn assert_kit(kit: StartKit, held: &[(u16, u8)], when: &str) {
+    let shovel = game_core::items::registry::SHOVEL;
+    let has = |id: u16| held.iter().find(|(i, _)| *i == id).map(|(_, n)| *n);
+    assert!(
+        has(shovel).is_some(),
+        "{kit:?} {when}: §F5 issues a shovel to everyone and it is not there"
+    );
+    match kit {
+        StartKit::None => assert_eq!(
+            held.len(),
+            1,
+            "{kit:?} {when}: 'none' is the shovel and nothing else, got {held:?}"
+        ),
+        StartKit::Basic => {
+            assert_eq!(
+                held.len(),
+                3,
+                "{kit:?} {when}: expected the shovel, a pistol and grenades, got {held:?}"
+            );
+            assert_eq!(
+                has(game_core::items::registry::PISTOL),
+                Some(PISTOL_AMMO),
+                "{kit:?} {when}: the pistol's ammo is not PISTOL_AMMO"
+            );
+            assert_eq!(
+                has(game_core::items::registry::GRENADE),
+                Some(START_KIT_GRENADES),
+                "{kit:?} {when}: the grenade count is not START_KIT_GRENADES"
+            );
+        }
+        StartKit::All => {
+            for d in game_core::items::registry::live_weapons() {
+                assert_eq!(
+                    has(d.id),
+                    Some(d.max_stack),
+                    "{kit:?} {when}: {} is missing or short of max_stack",
+                    d.key
+                );
+            }
+            // The other half: the retired placeholders stay unreachable.
+            for d in game_core::items::registry::ITEMS.iter() {
+                if game_core::items::registry::is_retired(d) {
+                    assert_eq!(
+                        has(d.id),
+                        None,
+                        "{kit:?} {when}: {} is retired and was handed out",
+                        d.key
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The bounds are refused, not clamped (`docs/61` §3), and a legal value is
+/// honoured by the round clock rather than only by the lobby.
+#[test]
+fn round_seconds_is_bounded_and_reaches_the_round_clock() {
+    let mut room = private_room();
+    let ana = seat(&mut room, "ana");
+
+    for (bad, why) in [
+        (ROUND_SECONDS_MIN - ROUND_SECONDS_STEP, "below the minimum"),
+        (ROUND_SECONDS_MAX + ROUND_SECONDS_STEP, "above the maximum"),
+        (ROUND_SECONDS_MIN + 1.0, "off the step"),
+    ] {
+        assert!(
+            set_round_seconds(&mut room, ana, bad).is_err(),
+            "{bad} is {why} and was accepted"
+        );
+        assert_eq!(
+            room.lobby_state().round_seconds,
+            ROUND_SECONDS,
+            "{bad} was refused but the setting moved anyway"
+        );
+    }
+    assert_eq!(
+        set_round_seconds(&mut room, ana, ROUND_SECONDS_MAX),
+        Ok(()),
+        "the control failed: the maximum itself must be accepted, or the \
+         refusals above are satisfied by a room that refuses everything"
+    );
+
+    // And the room's round is actually that long.
+    assert_eq!(set_round_seconds(&mut room, ana, ROUND_SECONDS_MIN), Ok(()));
+    ready(&mut room, ana, true);
+    start(&mut room);
+    let len = room.world().expect("the match started").round_seconds();
+    assert_eq!(
+        len, ROUND_SECONDS_MIN,
+        "the lobby's round length never reached the world"
+    );
+}
+
+/// §F7: "no settings on public lobbies. A public match is the game as shipped."
+#[test]
+fn a_public_lobby_refuses_all_three_settings() {
+    let mut room = Room::new(cfg());
+    let ana = seat(&mut room, "ana");
+    assert_eq!(
+        room.lobby_state().settings_owner,
+        Some(ana),
+        "the control failed: this player is not the settings owner, so the \
+         refusals below could be about the host check instead"
+    );
+    let want = Err("settings can only be changed in a private game");
+    assert_eq!(set_bots(&mut room, ana, false), want);
+    assert_eq!(set_kit(&mut room, ana, StartKit::All), want);
+    assert_eq!(set_round_seconds(&mut room, ana, ROUND_SECONDS_MAX), want);
 }

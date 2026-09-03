@@ -443,6 +443,14 @@ pub fn lobby_state_payload(state: &crate::room::LobbyState) -> serde_json::Value
         "private": state.private,
         "capacity": state.capacity,
         "scale": state.scale.as_str(),
+        // §F7's three settings. **Always present, never omitted**: unlike `code`
+        // and `settings_owner` these have no "absent" meaning — every room has a
+        // round length and a kit — and `parseLobbyState` reads a missing key as
+        // its default, so omitting one would show every seat the wrong setting
+        // rather than none.
+        "bots": state.bots,
+        "start_kit": state.start_kit.as_str(),
+        "round_seconds": state.round_seconds,
         "players": state
             .players
             .iter()

@@ -198,6 +198,26 @@ pub const CYCLE_TRANSITION: f32 = 8.0;
 pub const MAX_PLAYERS: usize = 6;
 pub const WARMUP_SECONDS: f32 = 10.0;
 pub const ROUND_SECONDS: f32 = 240.0;
+/// The bounds a **private lobby's** host may set the round length between, and
+/// the step the panel moves in (`docs/75-amendments-v7.md` §F7).
+///
+/// These bound the *setting*, not `ROUND_SECONDS`, and the distinction is the
+/// whole safety of §F7. `ROUND_SECONDS` is the room's default and the
+/// `ROUND_SECONDS` env var overrides it; seven browser checks set that env var
+/// to values far below `ROUND_SECONDS_MIN` (20 s in `round-end`, 90 s in
+/// `hud-timer`) and derive their assertions from it. A private host who never
+/// touches the setting keeps whatever the room was made with; only an explicit
+/// `set_round_seconds` is held to this range.
+///
+/// `MIN` equals `ROUND_SECONDS` in the shipped configuration, which is why the
+/// task table can call `MIN` the default — but they are two numbers and a
+/// deployment that changes one does not change the other.
+pub const ROUND_SECONDS_MIN: f32 = 240.0;
+pub const ROUND_SECONDS_MAX: f32 = 600.0;
+pub const ROUND_SECONDS_STEP: f32 = 60.0;
+/// Grenades in §F7's `basic` starting kit. The pistol's half of that kit is
+/// `PISTOL_AMMO`; this is the number that had nowhere else to live.
+pub const START_KIT_GRENADES: u8 = 2;
 pub const ENDED_SECONDS: f32 = 20.0;
 pub const KILL_POINTS: i16 = 1;
 /// Applies to self-kills and deaths to weather too.
@@ -1652,6 +1672,70 @@ pub const OBJECT_FOOTPRINT_SUPPORT: f32 = 0.6;
 /// height: a band that reads as "nestled" under a 42 px rock reads as "floating"
 /// under a 28 px bush and as "buried" under an 84 px ruin.
 pub const OBJECT_SEAT_BAND: f32 = 0.25;
+
+// ---------------------------------------------------------------------------
+// Starting kit (a private-lobby setting, §F7)
+// ---------------------------------------------------------------------------
+
+/// What a private lobby arms every player with at spawn **and respawn** (§F7).
+///
+/// It lives beside `MapScale` because it is the same kind of thing: a value the
+/// host picks in the lobby that crosses the socket, the replay and the client,
+/// so one spelling of each name has to be shared by all three. The *contents*
+/// of each kit are the server's (`room::kit_items`) — this is only the choice.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum StartKit {
+    /// The shovel every player is issued (§F5) and nothing else.
+    #[default]
+    None,
+    /// A pistol at `PISTOL_AMMO` and `START_KIT_GRENADES` grenades.
+    Basic,
+    /// Every weapon that is not retired, at `max_stack`, plus a full battery.
+    All,
+}
+
+impl StartKit {
+    /// Parse the wire value. `None` for anything else, so the caller can refuse
+    /// with a reason rather than clamping (§E6, `docs/61` §3).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(StartKit::None),
+            "basic" => Some(StartKit::Basic),
+            "all" => Some(StartKit::All),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            StartKit::None => "none",
+            StartKit::Basic => "basic",
+            StartKit::All => "all",
+        }
+    }
+
+    /// Wire encoding for the replay, which is bytes and not JSON.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            StartKit::None => 0,
+            StartKit::Basic => 1,
+            StartKit::All => 2,
+        }
+    }
+
+    pub const fn from_u8(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(StartKit::None),
+            1 => Some(StartKit::Basic),
+            2 => Some(StartKit::All),
+            _ => None,
+        }
+    }
+
+    /// Every value, in panel order — the list T19.08's stepper walks.
+    pub const ALL: [StartKit; 3] = [StartKit::None, StartKit::Basic, StartKit::All];
+}
 
 // ---------------------------------------------------------------------------
 // Map scale and its per-scale parameter table

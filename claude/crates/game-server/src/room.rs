@@ -97,6 +97,29 @@ pub enum Command {
         scale: game_core::constants::MapScale,
         reply: oneshot::Sender<Result<(), &'static str>>,
     },
+    /// The three §F7 settings a **private** lobby's host may change, alongside
+    /// `SetScale` and behaving exactly like it: host-only, refused with a reason
+    /// (§E6), recorded in the replay, and clearing every ready flag.
+    ///
+    /// Three commands rather than one `SetSetting(key, value)` because the
+    /// values have three different types and a single command would carry them
+    /// as strings — moving the parse from the socket boundary, where a bad value
+    /// can still be refused with a reason, into the room, where it cannot.
+    SetBots {
+        by: PlayerId,
+        on: bool,
+        reply: oneshot::Sender<Result<(), &'static str>>,
+    },
+    SetStartKit {
+        by: PlayerId,
+        kit: game_core::constants::StartKit,
+        reply: oneshot::Sender<Result<(), &'static str>>,
+    },
+    SetRoundSeconds {
+        by: PlayerId,
+        seconds: f32,
+        reply: oneshot::Sender<Result<(), &'static str>>,
+    },
     /// Tell the room who it is: its join code, and whether it is private.
     ///
     /// The registry owns identity — it mints codes and keeps the `code -> id`
@@ -153,6 +176,11 @@ impl std::fmt::Debug for Command {
                 write!(f, "SetIdentity({code:?}, private {private})")
             }
             Command::SetScale { by, scale, .. } => write!(f, "SetScale({by}, {scale:?})"),
+            Command::SetBots { by, on, .. } => write!(f, "SetBots({by}, {on})"),
+            Command::SetStartKit { by, kit, .. } => write!(f, "SetStartKit({by}, {kit:?})"),
+            Command::SetRoundSeconds { by, seconds, .. } => {
+                write!(f, "SetRoundSeconds({by}, {seconds})")
+            }
             Command::LobbyRead { .. } => f.write_str("LobbyRead"),
             Command::Inspect(_) => f.write_str("Inspect"),
         }
@@ -352,6 +380,56 @@ impl RoomHandle {
         rx.await.unwrap_or(Err("the room is gone"))
     }
 
+    /// Turn bots on or off for this private lobby, as `by` (§F7).
+    pub async fn set_bots(&self, by: PlayerId, on: bool) -> Result<(), &'static str> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::SetBots { by, on, reply: tx })
+            .await
+            .is_err()
+        {
+            return Err("the room is gone");
+        }
+        rx.await.unwrap_or(Err("the room is gone"))
+    }
+
+    /// Choose what every player spawns holding, as `by` (§F7).
+    pub async fn set_start_kit(
+        &self,
+        by: PlayerId,
+        kit: game_core::constants::StartKit,
+    ) -> Result<(), &'static str> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::SetStartKit { by, kit, reply: tx })
+            .await
+            .is_err()
+        {
+            return Err("the room is gone");
+        }
+        rx.await.unwrap_or(Err("the room is gone"))
+    }
+
+    /// Set the round length, as `by` (§F7). Out of range is refused, not clamped.
+    pub async fn set_round_seconds(&self, by: PlayerId, seconds: f32) -> Result<(), &'static str> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::SetRoundSeconds {
+                by,
+                seconds,
+                reply: tx,
+            })
+            .await
+            .is_err()
+        {
+            return Err("the room is gone");
+        }
+        rx.await.unwrap_or(Err("the room is gone"))
+    }
+
     /// This room's lobby, for the join handshake and for tests.
     pub async fn lobby_state(&self) -> Option<LobbyState> {
         let (tx, rx) = oneshot::channel();
@@ -408,6 +486,13 @@ pub struct LobbyState {
     pub private: bool,
     pub capacity: usize,
     pub scale: game_core::constants::MapScale,
+    /// §F7's three settings, carried here for the reason `scale` is: every seat
+    /// has to see what the host chose, not just the host who chose it.
+    pub bots: bool,
+    pub start_kit: game_core::constants::StartKit,
+    /// The room's round length **including** the environment default, so a seat
+    /// reading this never sees a value the match will not use.
+    pub round_seconds: f32,
     pub settings_owner: Option<PlayerId>,
     pub starts_in: Option<f32>,
     pub players: Vec<LobbySeat>,
@@ -626,6 +711,14 @@ pub struct Room {
     /// registry through `SetIdentity` right after the task is spawned.
     code: Option<String>,
     private: bool,
+    /// §F7. Whether this room seats bots at all.
+    ///
+    /// A `bool` rather than driving `config.bot_count` to zero, because "off"
+    /// has to be reversible: the count the room was made with is the count "on"
+    /// means, and overwriting it would make the switch one-way.
+    bots_enabled: bool,
+    /// §F7. What every player is armed with at spawn and respawn.
+    start_kit: game_core::constants::StartKit,
     /// Seconds until a public lobby fills its seats with bots (§E2).
     ///
     /// `None` until the **first** player is seated, and `None` forever in a
@@ -709,6 +802,27 @@ fn mix_seed(base: u64, room_id: u32) -> u64 {
     x ^ (x >> 33)
 }
 
+/// Is `seconds` a legal §F7 round length?
+///
+/// **Refused, never clamped** (`docs/61` §3): the server already knows which of
+/// the answers it was, and a clamp turns a client bug into a match nobody asked
+/// for. Integer arithmetic rather than a float remainder because
+/// `ROUND_SECONDS_MIN`/`_MAX`/`_STEP` are whole seconds and `240.0 % 60.0` is
+/// not reliably zero.
+pub fn validate_round_seconds(seconds: f32) -> Result<f32, &'static str> {
+    use game_core::constants::{ROUND_SECONDS_MAX, ROUND_SECONDS_MIN, ROUND_SECONDS_STEP};
+    if !seconds.is_finite() || seconds.fract() != 0.0 {
+        return Err("the round length must be a whole number of seconds");
+    }
+    if !(ROUND_SECONDS_MIN..=ROUND_SECONDS_MAX).contains(&seconds) {
+        return Err("the round length is out of range");
+    }
+    if (seconds as i32 - ROUND_SECONDS_MIN as i32) % ROUND_SECONDS_STEP as i32 != 0 {
+        return Err("the round length is not a whole number of steps");
+    }
+    Ok(seconds)
+}
+
 /// A recorded command, turned back into one the room can apply.
 ///
 /// **In the library, not in the `replay` binary, because a test cannot import a
@@ -742,6 +856,21 @@ pub fn to_command(c: &ReplayCommand) -> Command {
         ReplayCommand::SetScale(id, scale) => Command::SetScale {
             by: *id,
             scale: *scale,
+            reply: tokio::sync::oneshot::channel().0,
+        },
+        ReplayCommand::SetBots(id, on) => Command::SetBots {
+            by: *id,
+            on: *on,
+            reply: tokio::sync::oneshot::channel().0,
+        },
+        ReplayCommand::SetStartKit(id, kit) => Command::SetStartKit {
+            by: *id,
+            kit: *kit,
+            reply: tokio::sync::oneshot::channel().0,
+        },
+        ReplayCommand::SetRoundSeconds(id, secs) => Command::SetRoundSeconds {
+            by: *id,
+            seconds: *secs,
             reply: tokio::sync::oneshot::channel().0,
         },
         ReplayCommand::Input(id, v) => Command::Input(*id, v.clone()),
@@ -822,6 +951,10 @@ impl Room {
             lobby_tick: 0,
             code: None,
             private: false,
+            // §F7's defaults: bots on, no kit. `round_seconds` has no field —
+            // it is `config.round_seconds`, which the environment already sets.
+            bots_enabled: true,
+            start_kit: game_core::constants::StartKit::None,
             starts_in: None,
             starts_in_shown: None,
             // A freshly built lobby is worth announcing to the first socket that
@@ -961,6 +1094,7 @@ impl Room {
         }
         for (id, _, _, _) in &seated {
             self.grant_dev_loadout(*id);
+            self.grant_start_kit(*id);
         }
     }
 
@@ -995,6 +1129,13 @@ impl Room {
             private: self.private,
             capacity: game_core::constants::LOBBY_CAPACITY,
             scale: self.config.map_scale,
+            bots: self.bots_enabled,
+            start_kit: self.start_kit,
+            // Read off the config, exactly as `scale` is: `SetRoundSeconds`
+            // writes it there, so an untouched room reports the environment's
+            // value and a set room reports the host's, with no third field that
+            // can disagree with either.
+            round_seconds: self.config.round_seconds,
             settings_owner: self.settings_owner(),
             starts_in: self.starts_in,
             players: self
@@ -1069,6 +1210,13 @@ impl Room {
     /// Seat `BOT_COUNT` bots, up to the room's capacity.
     ///
     fn seat_bots(&mut self, seed: u64) {
+        // §F7: "no bots at all when off". The gate is here rather than at the
+        // two call sites because a third caller is what would reintroduce them.
+        // §E3's start rule is untouched — a bot-less private lobby still starts
+        // when every seated human is ready, and does not fall back to bots.
+        if !self.bots_enabled {
+            return;
+        }
         let want = self.config.bot_count.min(self.config.max_players);
         for _ in 0..want {
             let Some(id) = self.seats.alloc(self.config.max_players) else {
@@ -1094,6 +1242,7 @@ impl Room {
             self.bots
                 .push(Bot::new(id, seed, index, self.config.bot_skill));
             self.grant_dev_loadout(id);
+            self.grant_start_kit(id);
         }
         if !self.bots.is_empty() {
             tracing::info!(
@@ -1161,47 +1310,159 @@ impl Room {
                 p.heals = game_core::constants::MAX_HEALS;
             }
         }
+        // The dev list as `(item, count)` pairs, so it is handed out by the same
+        // `give_all` §F7's starting kits use. One granting path: a second one
+        // would be the place a rule earned here (§C24's refusal of a full stack,
+        // the missing-world guard) is dropped.
+        let items = [
+            (game_core::items::registry::BAZOOKA, 4),
+            (game_core::items::registry::SMG, 60),
+            // There used to be a **second** bazooka stack here, because `MAX_STACK`
+            // for a bazooka is 4 and four rockets is not enough to be "armed" for
+            // anything longer than a few seconds — T9.06's full round burns them in
+            // the first minute.
+            //
+            // §C24 ended that: a weapon occupies one slot ever, and a pickup of a
+            // weapon already held at full ammo is *refused*. The second grant became
+            // a silent no-op, and removing it is the honest version — but the
+            // consequence is real and is not a fixture detail: **`DEV_LOADOUT` now
+            // arms a player with 4 rockets, not 8.** Anything that assumed eight is
+            // now measuring a shorter fight.
+            //
+            // It also moved every slot after the smg by one, which is §B16 — the
+            // comment that used to sit here promised "appended, never inserted, so
+            // the hotkeys other checks press stay put", and that invariant was true
+            // right up until it was not. `ordnance` pressed Digit5 for the axe, got
+            // the flamethrower, and reported a missing melee *render*. Browser
+            // checks now select by weapon name (`harness.mjs::selectWeapon`), so the
+            // order here is free to change again.
+            //
+            // These four give T11.10 a mine to place, a swing to see, a jet to spray
+            // and a hazard to stand in.
+            (game_core::items::registry::MINE, 2),
+            // **No melee grant.** §F5 retired the axe to an unobtainable placeholder
+            // and issues every player a shovel at spawn, so the swing `ordnance`
+            // looks for is already in slot 0 — `give(AXE)` would hand out a weapon
+            // no round can contain.
+            (game_core::items::registry::FLAMETHROWER, 200),
+            (game_core::items::registry::MOLOTOV, 2),
+            // §F1 made the five ballistic guns projectiles, which leaves the two
+            // energy weapons as the only things in the game that still fire a
+            // **beam** — and `ordnance-visible` exists to prove a beam is drawn.
+            // Without one in the loadout that half of the check has nothing to point
+            // at. The battery above is what makes it fire; a laser with no charge is
+            // a paperweight (§B5).
+            (game_core::items::registry::LASER_PISTOL, 1),
+        ];
+        self.give_all(id, &items);
+    }
+
+    /// Hand `id` a list of `(item, count)` pairs.
+    ///
+    /// The one place items are put into a player's inventory at spawn, shared by
+    /// the `DEV_LOADOUT` switch and §F7's starting kits. Silently does nothing
+    /// in a lobby, which is the same answer `grant_dev_loadout` gives and for
+    /// the same reason: there is no world to put anything in yet, and the caller
+    /// runs again at match start.
+    fn give_all(&mut self, id: PlayerId, items: &[(game_core::items::registry::ItemId, u8)]) {
         let Some(world) = self.world.as_mut() else {
             return;
         };
-        game_core::world::give(world, id, game_core::items::registry::BAZOOKA, 4);
-        game_core::world::give(world, id, game_core::items::registry::SMG, 60);
-        // There used to be a **second** bazooka stack here, because `MAX_STACK`
-        // for a bazooka is 4 and four rockets is not enough to be "armed" for
-        // anything longer than a few seconds — T9.06's full round burns them in
-        // the first minute.
-        //
-        // §C24 ended that: a weapon occupies one slot ever, and a pickup of a
-        // weapon already held at full ammo is *refused*. The second grant became
-        // a silent no-op, and removing it is the honest version — but the
-        // consequence is real and is not a fixture detail: **`DEV_LOADOUT` now
-        // arms a player with 4 rockets, not 8.** Anything that assumed eight is
-        // now measuring a shorter fight.
-        //
-        // It also moved every slot after the smg by one, which is §B16 — the
-        // comment that used to sit here promised "appended, never inserted, so
-        // the hotkeys other checks press stay put", and that invariant was true
-        // right up until it was not. `ordnance` pressed Digit5 for the axe, got
-        // the flamethrower, and reported a missing melee *render*. Browser
-        // checks now select by weapon name (`harness.mjs::selectWeapon`), so the
-        // order here is free to change again.
-        //
-        // These four give T11.10 a mine to place, a swing to see, a jet to spray
-        // and a hazard to stand in.
-        game_core::world::give(world, id, game_core::items::registry::MINE, 2);
-        // **No melee grant.** §F5 retired the axe to an unobtainable placeholder
-        // and issues every player a shovel at spawn, so the swing `ordnance`
-        // looks for is already in slot 0 — `give(AXE)` would hand out a weapon
-        // no round can contain.
-        game_core::world::give(world, id, game_core::items::registry::FLAMETHROWER, 200);
-        game_core::world::give(world, id, game_core::items::registry::MOLOTOV, 2);
-        // §F1 made the five ballistic guns projectiles, which leaves the two
-        // energy weapons as the only things in the game that still fire a
-        // **beam** — and `ordnance-visible` exists to prove a beam is drawn.
-        // Without one in the loadout that half of the check has nothing to point
-        // at. The battery above is what makes it fire; a laser with no charge is
-        // a paperweight (§B5).
-        game_core::world::give(world, id, game_core::items::registry::LASER_PISTOL, 1);
+        for (item, count) in items {
+            game_core::world::give(world, id, *item, *count);
+        }
+    }
+
+    /// What each §F7 kit contains.
+    ///
+    /// Derived from the registry rather than listed, for `All`: a weapon added
+    /// to `ITEMS` next milestone joins the kit without anyone remembering to
+    /// come back here, and `registry::is_retired` is the one place that knows a
+    /// zero-weight weapon may be a placeholder (five of them) or the issued
+    /// shovel (one).
+    fn kit_items(
+        kit: game_core::constants::StartKit,
+    ) -> Vec<(game_core::items::registry::ItemId, u8)> {
+        use game_core::constants::StartKit;
+        match kit {
+            // Not empty by accident: §F5 issues a shovel in `PlayerState::new`,
+            // so "none" already means "the shovel and nothing else" without this
+            // function granting anything.
+            StartKit::None => Vec::new(),
+            StartKit::Basic => vec![
+                (
+                    game_core::items::registry::PISTOL,
+                    game_core::constants::PISTOL_AMMO,
+                ),
+                (
+                    game_core::items::registry::GRENADE,
+                    game_core::constants::START_KIT_GRENADES,
+                ),
+            ],
+            StartKit::All => game_core::items::registry::live_weapons()
+                .into_iter()
+                .map(|d| (d.id, d.max_stack))
+                .collect(),
+        }
+    }
+
+    /// Arm `id` with this room's starting kit (§F7).
+    ///
+    /// Called at match start, at a join into a running match, **and on every
+    /// respawn** — the third one is not optional: `PlayerState::die` drops
+    /// everything except the issued shovel (§F5), so a player who died with a
+    /// `basic` kit would come back holding only the shovel and the setting would
+    /// silently mean "for your first life".
+    ///
+    /// Deliberately not `grant_dev_loadout`: that is a development switch, off
+    /// by default, and folding the two would make a lobby setting turn on
+    /// `dev_start_health` and `dev_poisoned` with it.
+    fn grant_start_kit(&mut self, id: PlayerId) {
+        let kit = self.start_kit;
+        if matches!(kit, game_core::constants::StartKit::None) {
+            return;
+        }
+        self.give_all(id, &Self::kit_items(kit));
+        // §B5: an energy weapon with no charge is a paperweight, so the kit that
+        // grants every weapon grants what fires them. `basic` is two ballistic
+        // items and needs none.
+        if matches!(kit, game_core::constants::StartKit::All) {
+            if let Some(w) = self.world.as_mut() {
+                if let Some(p) = w.player_mut(id) {
+                    p.battery = game_core::constants::BATTERY_MAX;
+                }
+            }
+        }
+    }
+
+    /// May `by` change a **private** lobby setting right now (§F7)?
+    ///
+    /// One guard, three callers, in the order the errors matter: a public lobby
+    /// is refused before the host check, so a non-host on a public lobby is told
+    /// the true reason rather than one that would stop being true if they became
+    /// host. §F7: "no settings on public lobbies. A public match is the game as
+    /// shipped."
+    fn check_settings_change(&self, by: PlayerId) -> Result<(), &'static str> {
+        if self.world.is_some() {
+            Err("the match has already started")
+        } else if !self.private {
+            Err("settings can only be changed in a private game")
+        } else if self.settings_owner() != Some(by) {
+            Err("only the host can change the settings")
+        } else {
+            Ok(())
+        }
+    }
+
+    /// §E3: everyone agreed to the game they were shown, so a settings change
+    /// clears every ready flag — including the changer's — and announces the
+    /// lobby. Shared, because a fourth setting that forgot half of it would look
+    /// exactly like one that worked.
+    fn settings_changed(&mut self) {
+        for st in self.seats.seats.iter_mut() {
+            st.consent = false;
+        }
+        self.note_lobby_change();
     }
 
     /// Free a seat for a human by removing the newest bot.
@@ -1306,6 +1567,7 @@ impl Room {
                             p.tombstone_skin_id = tombstone_skin_id;
                         }
                         self.grant_dev_loadout(id);
+                        self.grant_start_kit(id);
                     }
                 }
                 let _ = reply.send(id);
@@ -1502,14 +1764,52 @@ impl Room {
                     self.note(R::SetScale(by, scale));
                     // §E3: everyone agreed to the game they were shown, so a
                     // settings change clears every ready flag — including the
-                    // changer's. T17.04 asserts that; the clearing lives here
-                    // because this is the one place a setting moves.
-                    for st in self.seats.seats.iter_mut() {
-                        st.consent = false;
-                    }
-                    self.note_lobby_change();
+                    // changer's. T17.04 asserts that. It is no longer "the one
+                    // place a setting moves" — §F7 added three more — so the
+                    // clearing is `settings_changed`, shared by all four.
+                    self.settings_changed();
                     Ok(())
                 };
+                let _ = reply.send(answer);
+            }
+            // The three §F7 settings. **Recorded**, for the reason `SetScale`
+            // is: each one changes what the match is built from, and a replay
+            // that skipped it would build a different match (§E1.2).
+            //
+            // **The header is not authoritative for any of them.**
+            // `ReplayHeader` writes `round_seconds`, `bot_count` and
+            // `dev_loadout` when the room is *constructed* (`replay.rs`), which
+            // is before a host can touch a setting — so the header describes the
+            // room's birth and the command stream describes the match. The
+            // runner applies the commands over a room built from the header, and
+            // the commands win.
+            Command::SetBots { by, on, reply } => {
+                let answer = self.check_settings_change(by).map(|()| {
+                    self.bots_enabled = on;
+                    self.note(R::SetBots(by, on));
+                    self.settings_changed();
+                });
+                let _ = reply.send(answer);
+            }
+            Command::SetStartKit { by, kit, reply } => {
+                let answer = self.check_settings_change(by).map(|()| {
+                    self.start_kit = kit;
+                    self.note(R::SetStartKit(by, kit));
+                    self.settings_changed();
+                });
+                let _ = reply.send(answer);
+            }
+            Command::SetRoundSeconds { by, seconds, reply } => {
+                let answer = self
+                    .check_settings_change(by)
+                    .and_then(|()| validate_round_seconds(seconds))
+                    .map(|seconds| {
+                        let mut config = (*self.config).clone();
+                        config.round_seconds = seconds;
+                        self.config = Arc::new(config);
+                        self.note(R::SetRoundSeconds(by, seconds));
+                        self.settings_changed();
+                    });
                 let _ = reply.send(answer);
             }
             // Not recorded: identity is registry bookkeeping, not simulation.
@@ -1843,6 +2143,11 @@ impl Room {
         // deliberate diagnostic lines, not verbosity: each one is the thing you
         // grep for when a player says something vague.
         let round_time = self.world.as_ref().map_or(0.0, |w| w.round_time);
+        // §F7's kit has to be re-granted here: `PlayerState::die` drops
+        // everything but the issued shovel, so without this the setting would
+        // mean "for your first life only". Collected rather than granted inside
+        // the loop because the loop holds the event list.
+        let mut respawned: Vec<PlayerId> = Vec::new();
         for e in self
             .world
             .as_ref()
@@ -1854,6 +2159,7 @@ impl Room {
                 // compared against the map.
                 game_core::world::GameEvent::Respawn { id, x, y, .. } => {
                     tracing::debug!(target: "game::player", player = id, x, y, "respawned");
+                    respawned.push(*id);
                 }
                 // "the item vanished" — TTL or eviction, which are different bugs.
                 game_core::world::GameEvent::ItemDespawn { world_item_id, .. } => {
@@ -1874,6 +2180,9 @@ impl Room {
                 }
                 _ => {}
             }
+        }
+        for id in respawned {
+            self.grant_start_kit(id);
         }
 
         // A state hash every CHECKPOINT_STRIDE ticks, so a failed verification can

@@ -285,6 +285,10 @@ export interface Constants {
   BACKDROP_MAX_DIST_TO_SOLID: number
   BACKDROP_MIN_ROOF: number
   TIMER_WARN_SECONDS: number
+  /** §F7 — the bounds and step a private lobby's round-length setting moves in. */
+  ROUND_SECONDS_MIN: number
+  ROUND_SECONDS_MAX: number
+  ROUND_SECONDS_STEP: number
   /** §C5 — the pads the client draws, and the timings it fills the ring over. */
   TELEPORT_PADS: number
   PAD_W: number

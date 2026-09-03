@@ -17,7 +17,7 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use game_core::constants::{MapGenerator, MapScale, SIM_HZ};
+use game_core::constants::{MapGenerator, MapScale, StartKit, SIM_HZ};
 use game_core::player::input::Input;
 use game_core::player::state::PlayerId;
 use game_core::world::World;
@@ -100,6 +100,23 @@ pub enum ReplayCommand {
     /// applies commands into a real `Room`, so the config it generates from is
     /// the one the live room had.
     SetScale(PlayerId, MapScale),
+    /// The host changed one of §F7's three private-lobby settings.
+    ///
+    /// **Appended tags, and that is why no version bump is needed**: no file
+    /// written before today contains tag 19, 20 or 21, so an old replay decodes
+    /// exactly as it did. Widening an existing tag instead would let those files
+    /// pass the version check and then read the rest of the round misaligned —
+    /// the reason `Unready` is tag 17 rather than a bool on `Ready`.
+    ///
+    /// They have to be recorded for `SetScale`'s reason, twice over: `bots`
+    /// changes how many players the round has, `start_kit` changes what every
+    /// one of them is holding on tick one, and `round_seconds` changes when it
+    /// ends. `ReplayHeader` carries `bot_count` and `round_seconds` — but it is
+    /// written when the room is *constructed*, so it describes the room's birth
+    /// and these describe the match. **The commands are authoritative.**
+    SetBots(PlayerId, bool),
+    SetStartKit(PlayerId, StartKit),
+    SetRoundSeconds(PlayerId, f32),
     /// Already filtered: duplicates and stale sequences are dropped before they
     /// reach here, so a replay applies exactly the input the live round did.
     Input(PlayerId, Vec<Input>),
@@ -163,6 +180,9 @@ impl ReplayCommand {
             ReplayCommand::MoveItem(..) => 16,
             ReplayCommand::Unready(_) => 17,
             ReplayCommand::SetScale(..) => 18,
+            ReplayCommand::SetBots(..) => 19,
+            ReplayCommand::SetStartKit(..) => 20,
+            ReplayCommand::SetRoundSeconds(..) => 21,
         }
     }
 }
@@ -277,6 +297,12 @@ pub enum ReplayError {
     BadTag(u8),
     BadScale(u8),
     BadGenerator(u8),
+    BadStartKit(u8),
+    /// A byte that is neither 0 nor 1 where a flag was written. Its own variant
+    /// rather than a lenient `!= 0`, because a corrupt file that decodes as
+    /// `true` replays a setting the round never had and then diverges somewhere
+    /// else entirely.
+    BadBool(&'static str, u8),
     BadUtf8,
 }
 
@@ -301,6 +327,8 @@ impl std::fmt::Display for ReplayError {
             ReplayError::BadTag(t) => write!(f, "unknown command tag {t}"),
             ReplayError::BadScale(s) => write!(f, "unknown map scale {s}"),
             ReplayError::BadGenerator(g) => write!(f, "unknown map generator {g}"),
+            ReplayError::BadStartKit(k) => write!(f, "unknown starting kit {k}"),
+            ReplayError::BadBool(field, b) => write!(f, "{field} is {b}, not 0 or 1"),
             ReplayError::BadUtf8 => f.write_str("player name is not valid utf-8"),
         }
     }
@@ -429,6 +457,18 @@ fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayErro
         ReplayCommand::SetScale(id, scale) => {
             w.write_all(&[*id])?;
             w.write_all(&[scale_byte(*scale)])?;
+        }
+        ReplayCommand::SetBots(id, on) => {
+            w.write_all(&[*id])?;
+            w.write_all(&[u8::from(*on)])?;
+        }
+        ReplayCommand::SetStartKit(id, kit) => {
+            w.write_all(&[*id])?;
+            w.write_all(&[kit.as_u8()])?;
+        }
+        ReplayCommand::SetRoundSeconds(id, secs) => {
+            w.write_all(&[*id])?;
+            put_f32(w, *secs)?;
         }
         ReplayCommand::Input(id, inputs) => {
             w.write_all(&[*id])?;
@@ -639,6 +679,21 @@ fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
         2 => ReplayCommand::Ready(c.u8()?),
         17 => ReplayCommand::Unready(c.u8()?),
         18 => ReplayCommand::SetScale(c.u8()?, scale_from_byte(c.u8()?)?),
+        // A byte that is not 0 or 1 is a corrupt file, not a `true`: decoding it
+        // leniently would replay a setting the round never had.
+        19 => ReplayCommand::SetBots(
+            c.u8()?,
+            match c.u8()? {
+                0 => false,
+                1 => true,
+                b => return Err(ReplayError::BadBool("bots", b)),
+            },
+        ),
+        20 => ReplayCommand::SetStartKit(c.u8()?, {
+            let b = c.u8()?;
+            StartKit::from_u8(b).ok_or(ReplayError::BadStartKit(b))?
+        }),
+        21 => ReplayCommand::SetRoundSeconds(c.u8()?, c.f32()?),
         3 => {
             let id = c.u8()?;
             let n = c.u8()? as usize;
@@ -738,6 +793,11 @@ mod tests {
             ReplayCommand::MoveItem(2, 3, 4),
             ReplayCommand::Unready(0),
             ReplayCommand::SetScale(0, MapScale::Large),
+            ReplayCommand::SetBots(0, false),
+            ReplayCommand::SetBots(0, true),
+            ReplayCommand::SetStartKit(0, StartKit::Basic),
+            ReplayCommand::SetStartKit(0, StartKit::All),
+            ReplayCommand::SetRoundSeconds(0, 300.0),
         ]
     }
 
@@ -759,6 +819,9 @@ mod tests {
                 | ReplayCommand::Ready(_)
                 | ReplayCommand::Unready(_)
                 | ReplayCommand::SetScale(..)
+                | ReplayCommand::SetBots(..)
+                | ReplayCommand::SetStartKit(..)
+                | ReplayCommand::SetRoundSeconds(..)
                 | ReplayCommand::Input(..)
                 | ReplayCommand::UseItem(..)
                 | ReplayCommand::SelectSlot(..)
@@ -790,8 +853,8 @@ mod tests {
         let tags: std::collections::BTreeSet<u8> = all.iter().map(|c| c.tag()).collect();
         assert_eq!(
             tags.len(),
-            18,
-            "`every_command` returns {} distinct tags, not 18 — a variant was \
+            21,
+            "`every_command` returns {} distinct tags, not 21 — a variant was \
              added to the match above without being added to the list: {tags:?}",
             tags.len()
         );

@@ -552,6 +552,141 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                 );
             }
 
+            // ------------------------------------------ private settings (§F7)
+            //
+            // Three handlers rather than one `set_setting { key, value }`,
+            // because the value is a bool, a string and a number: a single
+            // handler would carry all three as strings and the parse — the step
+            // that can still refuse a bad value with a reason at the boundary —
+            // would move into the room, which can only answer `Err`.
+            //
+            // The refusal is `lobby_error` for `set_scale`'s reason: `join_error`
+            // is guarded by `if (settled) return` at the client and a refusal
+            // sent after seating is dropped before anything sees it.
+            {
+                let ctx = ctx.clone();
+                socket.on(
+                    "set_bots",
+                    move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
+                        let ctx = ctx.clone();
+                        async move {
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
+                            let Some(id) = sessions.player_of(socket.id) else {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": "not seated" }),
+                                );
+                                return;
+                            };
+                            let Some(on) = payload.get("bots").and_then(|v| v.as_bool()) else {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": "bots must be true or false" }),
+                                );
+                                return;
+                            };
+                            if let Err(reason) = room.set_bots(id, on).await {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": reason }),
+                                );
+                            }
+                        }
+                    },
+                );
+            }
+
+            {
+                let ctx = ctx.clone();
+                socket.on(
+                    "set_start_kit",
+                    move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
+                        let ctx = ctx.clone();
+                        async move {
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
+                            let Some(id) = sessions.player_of(socket.id) else {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": "not seated" }),
+                                );
+                                return;
+                            };
+                            let Some(kit) = payload
+                                .get("start_kit")
+                                .and_then(|v| v.as_str())
+                                .and_then(game_core::constants::StartKit::parse)
+                            else {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": "unknown starting kit" }),
+                                );
+                                return;
+                            };
+                            if let Err(reason) = room.set_start_kit(id, kit).await {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": reason }),
+                                );
+                            }
+                        }
+                    },
+                );
+            }
+
+            {
+                let ctx = ctx.clone();
+                socket.on(
+                    "set_round_seconds",
+                    move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
+                        let ctx = ctx.clone();
+                        async move {
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
+                            let Some(id) = sessions.player_of(socket.id) else {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": "not seated" }),
+                                );
+                                return;
+                            };
+                            let Some(seconds) = payload
+                                .get("round_seconds")
+                                .and_then(|v| v.as_f64())
+                                .map(|v| v as f32)
+                            else {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({
+                                        "reason": "the round length must be a number"
+                                    }),
+                                );
+                                return;
+                            };
+                            if let Err(reason) = room.set_round_seconds(id, seconds).await {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": reason }),
+                                );
+                            }
+                        }
+                    },
+                );
+            }
+
             {
                 let ctx = ctx.clone();
                 socket.on(

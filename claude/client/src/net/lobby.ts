@@ -141,10 +141,18 @@ export interface LobbySeat {
  * private one has no `startsIn` because it has no timeout. `undefined` is the
  * one spelling of that.
  */
+/** §F7's starting-kit values, in the order the panel steps through them. */
+export const START_KITS = ['none', 'basic', 'all'] as const
+export type StartKit = (typeof START_KITS)[number]
+
 export interface LobbyStateMsg {
   private: boolean
   capacity: number
   scale: Scale
+  /** §F7. Always sent, so a seat that is not the host still sees the settings. */
+  bots: boolean
+  startKit: StartKit
+  roundSeconds: number
   players: LobbySeat[]
   code?: string
   settingsOwner?: number
@@ -152,6 +160,7 @@ export interface LobbyStateMsg {
 }
 
 const isScale = (v: unknown): v is Scale => SCALES.includes(v as Scale)
+const isKit = (v: unknown): v is StartKit => START_KITS.includes(v as StartKit)
 
 /**
  * Decode `lobby_state`, defensively.
@@ -162,10 +171,18 @@ const isScale = (v: unknown): v is Scale => SCALES.includes(v as Scale)
  */
 export function parseLobbyState(p: Record<string, unknown>): LobbyStateMsg {
   const rawScale = p['scale']
+  const rawKit = p['start_kit']
   const out: LobbyStateMsg = {
     private: p['private'] === true,
     capacity: typeof p['capacity'] === 'number' ? p['capacity'] : 0,
     scale: isScale(rawScale) ? rawScale : 'small',
+    // §F7. The fallbacks match the server's defaults, so a message from an older
+    // server reads as "bots on, no kit" rather than as something no room can be.
+    // `roundSeconds` has no such default — 0 is visibly wrong, and a plausible
+    // 240 here would hide a server that stopped sending the field.
+    bots: p['bots'] !== false,
+    startKit: isKit(rawKit) ? rawKit : 'none',
+    roundSeconds: typeof p['round_seconds'] === 'number' ? p['round_seconds'] : 0,
     players: Array.isArray(p['players'])
       ? (p['players'] as unknown[]).filter(isRecord).map((q) => ({
           seat: typeof q['seat'] === 'number' ? q['seat'] : -1,

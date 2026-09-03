@@ -270,6 +270,27 @@ fn every_weapon_is_obtainable_unless_it_is_issued_or_retired() {
         .filter(|d| d.spawn_weight == 0 && d.crate_weight == 0 && d.buried_weight == 0)
         .map(|d| d.key)
         .collect();
+    // `registry::is_retired` is the predicate §F7's `all` kit skips on, and this
+    // is the equality that pins it: five retired, and the shovel — which has the
+    // same three zero columns — is **not** one of them. Without this the kit
+    // could quietly stop handing out the shovel, or start handing out an axe,
+    // and the only test that would notice is one written next year.
+    let mut retired: Vec<_> = weapons()
+        .iter()
+        .filter(|d| game_core::items::registry::is_retired(d))
+        .map(|d| d.key)
+        .collect();
+    retired.sort_unstable();
+    let mut want = RETIRED.to_vec();
+    want.sort_unstable();
+    assert_eq!(
+        retired, want,
+        "`is_retired` names a different set than RETIRED"
+    );
+    assert!(
+        !retired.contains(&"shovel"),
+        "the issued shovel has three zero columns too and must not read as retired"
+    );
     orphans.sort_unstable();
     let mut expected: Vec<&str> = RETIRED.iter().chain(ISSUED.iter()).copied().collect();
     expected.sort_unstable();
