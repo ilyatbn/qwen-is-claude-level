@@ -537,6 +537,11 @@ fn settings_commands(by: u8) -> Vec<Command> {
 fn a_restart_carries_the_private_settings_into_the_second_file() {
     use game_core::constants::StartKit;
 
+    // One number, used as the room's round length and as the loop's bound. Two
+    // copies of it drift, and the loop then either exits before the restart or
+    // spins long after it.
+    const ROUND: f32 = 4.0;
+
     let s = Scratch::new("restart-settings");
     let mut room = Room::new(Arc::new(Config {
         map_scale: MapScale::Small,
@@ -545,7 +550,7 @@ fn a_restart_carries_the_private_settings_into_the_second_file() {
         // empty configuration.
         bot_count: 3,
         record_replay: true,
-        round_seconds: 4.0,
+        round_seconds: ROUND,
         // **`replay_dir` is deliberately left at its default.** `restart` used to
         // rebuild round two's path from it rather than from the directory
         // `start_recording` was handed, so this test wrote round one into the
@@ -579,7 +584,7 @@ fn a_restart_carries_the_private_settings_into_the_second_file() {
     // Round one, to its end, then vote it round again.
     let mut restarted = false;
     for _ in 0..((game_core::constants::WARMUP_SECONDS
-        + 4.0
+        + ROUND
         + game_core::constants::ENDED_SECONDS
         + 2.0)
         / SIM_DT) as usize

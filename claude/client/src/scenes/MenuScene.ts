@@ -24,18 +24,22 @@ import {
   codeError,
   joinErrorMessage,
   lobbyStatus,
-  ownsSettings,
   parseLobbyState,
   rosterRows,
   isRecord,
+  settingsControls,
+  stepSetting,
+  SCALES,
   type Identity,
   type LobbyStateMsg,
   type Scale,
+  type SettingId,
+  type StartKit,
+  type TimerBounds,
 } from '../net/lobby'
 import { Connection, type LobbyIntent, type Welcome } from '../net/connection'
 import { devSurface } from '../dev'
-
-const SCALES: Scale[] = ['small', 'medium', 'large']
+import { C } from '../core'
 
 
 export class MenuScene extends Phaser.Scene {
@@ -324,15 +328,20 @@ export class MenuScene extends Phaser.Scene {
 
       // Only the owner may touch it (§E3), and the wire says who that is by
       // seat id — which is why the field is a seat id rather than a bool.
-      const owner = ownsSettings(L, this.mySeat)
-      const stepper = L.private
-        ? `<div class="settings-row">
-             <span class="setting-name">Map size</span>
-             <button id="scale-prev" ${owner ? '' : 'disabled'}>‹</button>
-             <span class="setting-value" id="scale-value">${L.scale.toUpperCase()}</span>
-             <button id="scale-next" ${owner ? '' : 'disabled'}>›</button>
-           </div>`
-        : ''
+      // §F7: **a public lobby shows no panel at all.** Not a disabled one —
+      // every control on it would be refused by the server, and a row a player
+      // can see and never move is worse than no row.
+      const controls = L.private ? settingsControls(L, this.mySeat, this.timerBounds()) : []
+      const stepper = controls
+        .map(
+          (c) => `<div class="settings-row">
+             <span class="setting-name">${escapeHtml(c.name)}</span>
+             <button id="${c.id}-prev" ${c.prevDisabled ? 'disabled' : ''}>‹</button>
+             <span class="setting-value" id="${c.id}-value">${escapeHtml(c.value)}</span>
+             <button id="${c.id}-next" ${c.nextDisabled ? 'disabled' : ''}>›</button>
+           </div>`,
+        )
+        .join('')
 
       const me = L.players.find((p) => p.seat === this.mySeat)
       const ready = L.private
@@ -356,8 +365,10 @@ export class MenuScene extends Phaser.Scene {
       el.querySelector('#ready')?.addEventListener('click', () => {
         this.conn?.sendReady(!me?.ready)
       })
-      el.querySelector('#scale-prev')?.addEventListener('click', () => this.stepScale(-1))
-      el.querySelector('#scale-next')?.addEventListener('click', () => this.stepScale(1))
+      for (const c of controls) {
+        el.querySelector(`#${c.id}-prev`)?.addEventListener('click', () => this.step(c.id, -1))
+        el.querySelector(`#${c.id}-next`)?.addEventListener('click', () => this.step(c.id, 1))
+      }
       el.querySelector('#back')?.addEventListener('click', () => {
         this.leaveLobby()
         this.dispatch({ type: 'back' })
@@ -368,16 +379,30 @@ export class MenuScene extends Phaser.Scene {
   /** Whichever stepper the current screen owns. */
   private stepEither(delta: number): void {
     if (this.model.screen === 'private') this.stepMenuScale(delta)
-    else if (this.model.screen === 'lobby') this.stepScale(delta)
+    else if (this.model.screen === 'lobby') this.step('scale', delta)
+  }
+
+  /**
+   * §F7's bounds, from `game-core` (§A19).
+   *
+   * `Core.init()` runs before any scene (`main.ts`), so these are available the
+   * moment a lobby can exist. A panel carrying its own 240/600/60 would keep
+   * offering the old range after any of them was tuned.
+   */
+  private timerBounds(): TimerBounds {
+    const c = C()
+    return { min: c.ROUND_SECONDS_MIN, max: c.ROUND_SECONDS_MAX, step: c.ROUND_SECONDS_STEP }
   }
 
   /**
    * The menu's own stepper, before a lobby exists.
    *
-   * Same wrap, same order, same `SCALES` as `stepScale` — the difference is only
-   * where the answer goes: here into the model that `createRoom` will send, and
-   * there over the wire to a room that already exists. Both call `stepIndex` so
-   * "what is the next size" has one answer.
+   * Same wrap, same order, same `SCALES` as the lobby's `scale` row — the
+   * difference is only where the answer goes: here into the model that
+   * `createRoom` will send, and there over the wire to a room that already
+   * exists. Both go through `stepIndex` so "what is the next size" has one
+   * answer, and both read the one `SCALES` in `net/lobby` — this file used to
+   * declare a second copy of that list.
    */
   private stepMenuScale(delta: number): void {
     const next = SCALES[stepIndex(SCALES.indexOf(this.model.scale), delta, SCALES.length)]
@@ -385,16 +410,38 @@ export class MenuScene extends Phaser.Scene {
   }
 
   /**
-   * Move the map size one step, wrapping.
+   * Move one setting one step, over the wire.
    *
-   * The same stepper T17.08 puts on the main menu — built once, here, because a
-   * second copy would be a second answer to "what is the next size".
+   * **Nothing is applied locally.** The room answers with `lobby_state` and the
+   * panel redraws from that, so a guest sees the host's change and a refusal
+   * leaves the screen showing what the room actually holds. The Notes are
+   * explicit that these do not come from `localStorage` the way the main
+   * menu's map size does: a stale local timer overriding a lobby the player
+   * just joined is the bug that avoids.
+   *
+   * `stepSetting` owns both the host gate and the timer's bounds, and
+   * `settingsControls` disables exactly what it refuses — so a disabled arrow
+   * and a refused step cannot disagree.
    */
-  private stepScale(delta: number): void {
+  private step(id: SettingId, delta: number): void {
     const L = this.lobby
-    if (!L || !ownsSettings(L, this.mySeat)) return
-    const next = SCALES[stepIndex(SCALES.indexOf(L.scale), delta, SCALES.length)]
-    if (next) this.conn?.sendSetScale(next)
+    if (!L) return
+    const next = stepSetting(L, this.mySeat, id, delta, this.timerBounds())
+    if (next === undefined) return
+    switch (id) {
+      case 'scale':
+        this.conn?.sendSetScale(next as Scale)
+        break
+      case 'bots':
+        this.conn?.sendSetBots(next as boolean)
+        break
+      case 'kit':
+        this.conn?.sendSetStartKit(next as StartKit)
+        break
+      case 'timer':
+        this.conn?.sendSetRoundSeconds(next as number)
+        break
+    }
   }
 
   private quickMatch(): void {
@@ -439,6 +486,34 @@ export class MenuScene extends Phaser.Scene {
        */
       visibleCode: () =>
         self.root?.querySelector('#host-code')?.textContent?.trim() ?? '',
+      /**
+       * §F7's panel **as rendered**, value and arrow state, read from the DOM.
+       *
+       * Deliberately not from `this.model`: `debug()` returns the local
+       * `MenuModel`, which has never held any of these — for a guest it holds
+       * nothing at all — so a check reading settings from it would be
+       * meaningless on exactly the half that matters. This reads what a player
+       * can see, the way `visibleCode` and `roster` do.
+       *
+       * An empty object means no panel, which is the answer a public lobby
+       * must give.
+       */
+      settings: () => {
+        const out: Record<string, { value: string; prevDisabled: boolean; nextDisabled: boolean }> =
+          {}
+        for (const id of ['scale', 'bots', 'kit', 'timer'] as const) {
+          const value = self.root?.querySelector(`#${id}-value`)
+          if (!value) continue
+          out[id] = {
+            value: value.textContent?.trim() ?? '',
+            prevDisabled: !!self.root?.querySelector(`#${id}-prev`)?.hasAttribute('disabled'),
+            nextDisabled: !!self.root?.querySelector(`#${id}-next`)?.hasAttribute('disabled'),
+          }
+        }
+        return out
+      },
+      /** Press one of the panel's arrows, as a click would. */
+      step: (id: SettingId, delta: number) => self.step(id, delta),
       /** The roster as rendered, for a check that asserts who is on screen. */
       roster: () =>
         [...(self.root?.querySelectorAll('#roster li') ?? [])].map(

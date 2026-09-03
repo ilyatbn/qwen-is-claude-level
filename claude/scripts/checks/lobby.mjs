@@ -134,6 +134,133 @@ if (!seated.some((n) => n.startsWith('ana')) || !seated.some((n) => n.startsWith
   fail(`the roster is not the two players who joined: ${JSON.stringify(seated)}`)
 } else ok('and they are the two who joined, by name')
 
+// --- §F7's settings panel ------------------------------------------------
+//
+// **Read off the DOM, not off `__menu.debug()`.** `debug()` returns the local
+// `MenuModel`, which has never held any of these — for a guest it holds nothing
+// at all — so a check reading settings from it would be meaningless on exactly
+// the half that matters. `settings()` reads the rendered rows the way
+// `visibleCode` and `roster` do.
+const settings = (c) => c.page.evaluate('window.__menu.settings()')
+const anaPanel = await settings(ana)
+const boPanel = await settings(bo)
+const IDS = ['scale', 'bots', 'kit', 'timer']
+const missing = IDS.filter((id) => !anaPanel[id])
+if (missing.length) fail(`the host's panel is missing rows: ${JSON.stringify(missing)}`)
+else ok(`the host sees all four settings on screen: ${JSON.stringify(anaPanel)}`)
+
+// The guest sees the same rows and cannot touch any of them. Both halves: a
+// guest with no panel at all would satisfy "disabled" vacuously.
+const guestMissing = IDS.filter((id) => !boPanel[id])
+if (guestMissing.length) fail(`the guest's panel is missing rows: ${JSON.stringify(guestMissing)}`)
+else if (!IDS.every((id) => boPanel[id].prevDisabled && boPanel[id].nextDisabled)) {
+  fail(`a non-host can move a setting: ${JSON.stringify(boPanel)}`)
+} else ok('the guest sees every setting and every control is disabled')
+
+// The control: the host's are not disabled, so "disabled" above is about the
+// seat and not about the panel.
+const hostLocked = IDS.filter((id) => anaPanel[id].prevDisabled && anaPanel[id].nextDisabled)
+if (hostLocked.length) {
+  fail(`the host's controls are disabled too: ${JSON.stringify(hostLocked)}`)
+} else ok("control: the host's controls are enabled, so the guest's are locked by seat")
+
+// --- the host changes all three, and the guest sees it -------------------
+const before3 = { bots: anaPanel.bots.value, kit: anaPanel.kit.value, timer: anaPanel.timer.value }
+for (const id of ['bots', 'kit', 'timer']) {
+  await ana.page.evaluate((i) => window.__menu.step(i, 1), id)
+}
+await bo.page
+  .waitForFunction(
+    (b) => {
+      const s = window.__menu.settings()
+      return s.bots && s.bots.value !== b.bots && s.kit.value !== b.kit && s.timer.value !== b.timer
+    },
+    before3,
+    { timeout: 20_000 },
+  )
+  .catch(() => {})
+
+const anaAfter = await settings(ana)
+const boAfter = await settings(bo)
+for (const id of ['bots', 'kit', 'timer']) {
+  if (anaAfter[id].value === before3[id]) {
+    fail(`the host changed ${id} and the screen still reads "${before3[id]}"`)
+  } else if (boAfter[id].value !== anaAfter[id].value) {
+    fail(
+      `the guest's ${id} reads "${boAfter[id].value}" and the host's reads ` +
+        `"${anaAfter[id].value}" — the change did not reach the other seat`,
+    )
+  } else {
+    ok(`${id}: "${before3[id]}" -> "${anaAfter[id].value}", and the guest sees the same`)
+  }
+}
+
+// The timer is in minutes on screen, and seconds are what crossed the wire.
+if (!/^\d+ min$/.test(anaAfter.timer.value)) {
+  fail(`the timer is not shown in minutes: "${anaAfter.timer.value}"`)
+} else ok(`the timer reads in minutes: "${anaAfter.timer.value}"`)
+
+// §F7: it "ends disabled at each bound". Walk it down until the arrow goes
+// dead, then check it really is the bottom by pressing again and seeing no
+// change. Bounded by a step count, not by a wall-clock wait.
+//
+// **One press per step, and the wait is on the value changing.** Reading the
+// DOM straight after a press reads the frame *before* the room's `lobby_state`
+// arrives, so a naive loop fires eight presses to take one step and its final
+// "it did not move" read can land before the last one does.
+let panel = anaAfter
+let presses = 0
+while (!panel.timer.prevDisabled && presses < 40) {
+  const was = panel.timer.value
+  await ana.page.evaluate(() => window.__menu.step('timer', -1))
+  await ana.page
+    .waitForFunction((v) => window.__menu.settings().timer.value !== v, was, { timeout: 10_000 })
+    .catch(() => {})
+  panel = await settings(ana)
+  presses += 1
+  if (panel.timer.value === was) break
+}
+if (!panel.timer.prevDisabled) {
+  fail(`the timer never reached its lower bound after ${presses} steps`)
+} else {
+  const atBound = panel.timer.value
+  await ana.page.evaluate(() => window.__menu.step('timer', -1))
+  // Long enough for a `lobby_state` to arrive if one were coming: the claim is
+  // that nothing was sent, and an immediate read cannot tell that from a slow
+  // round trip.
+  await sleep(1000)
+  const still = (await settings(ana)).timer.value
+  if (still !== atBound) fail(`the timer moved below its disabled bound: ${atBound} -> ${still}`)
+  // The other end must still be live, or "disabled" is just a dead control.
+  else if (panel.timer.nextDisabled) fail('both timer arrows are disabled at the lower bound')
+  else ok(`the timer ends disabled at its lower bound (${atBound}, after ${presses} steps)`)
+}
+
+// --- a settings change clears the ready ticks (§E3) ----------------------
+//
+// Only ana readies: two ready humans start the match, and a match that has
+// started has no panel to change.
+await ana.page.evaluate(() => window.__menu.ready(true))
+await ana.page
+  .waitForFunction('window.__menu.roster().some((r) => r.endsWith("✓"))', null, { timeout: 20_000 })
+  .catch(async () => fail(`ana readied and no tick appeared: ${JSON.stringify(await roster(ana))}`))
+const ticked = await roster(ana)
+if (!ticked.some((r) => r.endsWith('✓'))) {
+  fail('control: no ready tick in the roster, so "the tick cleared" below proves nothing')
+} else {
+  ok(`control: the roster shows a ready tick: ${JSON.stringify(ticked.filter((r) => r.endsWith('✓')))}`)
+  await ana.page.evaluate(() => window.__menu.step('kit', 1))
+  await ana.page
+    .waitForFunction('!window.__menu.roster().some((r) => r.endsWith("✓"))', null, {
+      timeout: 20_000,
+    })
+    .catch(() => {})
+  const cleared = await roster(ana)
+  if (cleared.some((r) => r.endsWith('✓'))) {
+    fail(`a settings change did not clear the ready ticks: ${JSON.stringify(cleared)}`)
+  } else ok('a settings change cleared every ready tick in the roster (§E3)')
+}
+
 // --- the ready gate (§E3) ------------------------------------------------
 // Neither is ready, so nothing should start. Asserted as an absence **with the
 // presence half below it**: on its own this passes for a lobby that can never
@@ -200,6 +327,27 @@ const panels = await ana.page.evaluate(
 )
 if (panels) fail('GameScene is drawing a lobby panel or a code banner again (§E1)')
 else ok('no lobby panel or code banner is drawn over the world')
+
+// --- a public lobby has no panel at all (§F7) ----------------------------
+//
+// **Last, on purpose.** A quick-matching client opens a *second* room, and the
+// one-room assertion above is the check's guard against the socket being
+// reopened rather than handed over. Running this before it turned that
+// assertion red for a reason that had nothing to do with the handover.
+const cass = await openAtMenu('cass')
+await cass.page.evaluate(() => document.querySelector('#quick')?.click())
+await cass.page.waitForFunction('window.__menu.roster().length > 0', null, { timeout: 30_000 })
+const publicPanel = await settings(cass)
+if (Object.keys(publicPanel).length !== 0) {
+  fail(`a public lobby is showing a settings panel: ${JSON.stringify(publicPanel)}`)
+} else ok('control: a public lobby renders no settings panel at all (§F7)')
+if ((await roster(cass)).length === 0) {
+  fail('the public lobby rendered nothing, so "no panel" above is vacuous')
+} else ok('and it did render a lobby, so the absence above is about the panel')
+if (cass.errors.length) fail(`cass page errors: ${cass.errors.join(' | ')}`)
+const cassCtx = cass.page.context()
+await cass.page.close()
+await cassCtx.close()
 
 for (const c of [ana, bo]) {
   if (c.errors.length) fail(`${c.name} page errors: ${c.errors.join(' | ')}`)

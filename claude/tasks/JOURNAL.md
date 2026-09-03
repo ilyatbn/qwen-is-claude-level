@@ -5174,7 +5174,18 @@ game-wasm` runs **zero** `wasm_bindgen_test`s — both in the handoff. EXIT=0, 4
 header, and the host's `SetBots`/`SetStartKit` sit in round one's file, so round two
 replayed bots-on kit-none — bots the live round never seated. Both moved to `Config`,
 which is what `from_config` reads; `bots_enabled` stays its own flag so "off" is
-reversible. `REPLAY_VERSION` 3 → 4, two bytes **appended**, `HEADER_BYTES` 45. **`restart`
-rebuilt the path from `config.replay_dir` instead of the directory `start_recording` was
-given**, which is why two stray `.replay` binaries were in the crate root and why the
-anchored `/replays/` never matched them; `Room::replay_dir` fixes it. T19.19 booked.
+reversible. `REPLAY_VERSION` 3 → 4, two bytes **appended**, `HEADER_BYTES` 45. **`restart` rebuilt the
+path from `config.replay_dir` instead of the directory `start_recording` was given** — two
+stray `.replay` binaries in the crate root, missed by an anchored `/replays/`;
+`Room::replay_dir` fixes it. T19.19 booked. EXIT=0, 41/41, net smoke 25/25, assets ok.
+
+## T19.08 — the private lobby's settings panel
+
+**One pure function owns both halves.** `settingsControls` computes each arrow's disabled
+state by *calling* `stepSetting`, so the screen cannot disable one set while the wire
+refuses another — the failure that looks exactly like a working panel. A matrix test
+asserts that equivalence over every seat, timer value, kit and direction, with a control
+that both answers occur; breaking the link reddens two tests. **Enum settings wrap, the
+timer clamps** (§F7's "ends disabled at each bound"), said in the code so it is not tidied
+away. **Task defect: `canChangeSettings` does not exist** — it is `ownsSettings`, moved
+inside `stepSetting`. EXIT=0, 41/41, 25/25, assets ok.

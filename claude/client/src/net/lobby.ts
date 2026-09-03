@@ -4,6 +4,11 @@
  * Everything here is Phaser-free (§A8) so it is testable: the scene layer in
  * T10.04 imports this, never the other way round.
  */
+// `ui/menu`'s wrap, not a second copy of it — the one place that knows what
+// "next" means for a wrapping setting. Type-only in the other direction
+// (`menu.ts` imports `Scale` as a type), so this is not a runtime cycle.
+import { stepIndex } from '../ui/menu'
+
 
 /** The map sizes a player can ask for. */
 export type Scale = 'small' | 'medium' | 'large'
@@ -314,3 +319,125 @@ export function lobbyStatus(s: LobbyStateMsg): string {
 export function ownsSettings(s: LobbyStateMsg, mySeat: number | undefined): boolean {
   return mySeat !== undefined && s.settingsOwner === mySeat
 }
+
+// ---------------------------------------------------------------------------
+// §F7 — the private lobby's settings panel
+// ---------------------------------------------------------------------------
+
+/** Bots is two values, so a wrap in either direction is a toggle. */
+const BOTS_VALUES: readonly boolean[] = [false, true] as const
+
+/** How each starting kit reads on screen. §F7's words, not the wire's. */
+const KIT_LABELS: Record<StartKit, string> = {
+  none: 'None',
+  basic: 'Basic',
+  all: 'All',
+}
+
+/** The bounds the round-length stepper moves between, from `Constants`. */
+export interface TimerBounds {
+  min: number
+  max: number
+  step: number
+}
+
+/** Which setting a control drives. The element ids are built from these. */
+export type SettingId = 'scale' | 'bots' | 'kit' | 'timer'
+
+/** One row of the panel, as the screen should draw it. */
+export interface SettingControl {
+  id: SettingId
+  /** The label on the left. */
+  name: string
+  /** The value as the player reads it. */
+  value: string
+  prevDisabled: boolean
+  nextDisabled: boolean
+}
+
+/**
+ * Round length in whole minutes, for display.
+ *
+ * **One conversion, at the edge.** Everything below and every wire message is
+ * seconds; this is the only place minutes exist, because a second conversion
+ * is a second rounding rule.
+ */
+export function minutesLabel(seconds: number): string {
+  return `${Math.round(seconds / 60)} min`
+}
+
+/**
+ * The next value for a setting, or `undefined` if this seat may not move it.
+ *
+ * **The gate is here, not at four call sites.** §E3 gives the settings to one
+ * seat and §F7 adds three more of them; a stepper that carried its own check
+ * would be the one that forgot it. `settingsControls` disables exactly what
+ * this refuses, so the screen and the wire cannot disagree about what is
+ * allowed.
+ *
+ * **Two stepping behaviours, deliberately.** `scale`, `bots` and `kit` **wrap**
+ * — the map-size arrows always did, and `stepIndex` is why "next" has one
+ * answer. The timer **clamps**: §F7 says it "ends disabled at each bound", so
+ * wrapping from 10 minutes back to 4 would be a different rule. This is not an
+ * inconsistency to tidy away.
+ */
+export function stepSetting(
+  s: LobbyStateMsg,
+  mySeat: number | undefined,
+  id: SettingId,
+  delta: number,
+  b: TimerBounds,
+): Scale | boolean | StartKit | number | undefined {
+  if (!ownsSettings(s, mySeat)) return undefined
+  switch (id) {
+    case 'scale':
+      return SCALES[stepIndex(SCALES.indexOf(s.scale), delta, SCALES.length)]
+    // Two values, so either direction is a toggle — `stepIndex` rather than
+    // `!on` so the wrap rule stays in one place.
+    case 'bots':
+      return BOTS_VALUES[stepIndex(BOTS_VALUES.indexOf(s.bots), delta, BOTS_VALUES.length)]
+    case 'kit':
+      return START_KITS[stepIndex(START_KITS.indexOf(s.startKit), delta, START_KITS.length)]
+    case 'timer': {
+      const next = s.roundSeconds + delta * b.step
+      // Clamped, and then refused if it did not move: an arrow at its bound is
+      // disabled on screen, and a client that pressed it anyway must not send
+      // a message the server would refuse.
+      const clamped = Math.min(b.max, Math.max(b.min, next))
+      return clamped === s.roundSeconds ? undefined : clamped
+    }
+  }
+}
+
+/**
+ * The whole panel, as rows — including map size, so all four go through one
+ * host gate and one disabled rule.
+ *
+ * Pure, because `vite.config.ts` is `environment: 'node'` with no canvas: this
+ * is the half a unit test can reach. It is **not** the half that proves a
+ * control appears on screen (D-26), which is what `lobby.mjs` is for.
+ */
+export function settingsControls(
+  s: LobbyStateMsg,
+  mySeat: number | undefined,
+  b: TimerBounds,
+): SettingControl[] {
+  const owner = ownsSettings(s, mySeat)
+  const row = (id: SettingId, name: string, value: string): SettingControl => ({
+    id,
+    name,
+    value,
+    // An arrow is enabled when this seat owns the settings **and** pressing it
+    // would change something. For the three wrapping settings the second half
+    // is always true; for the timer it is the bound rule.
+    prevDisabled: !owner || stepSetting(s, mySeat, id, -1, b) === undefined,
+    nextDisabled: !owner || stepSetting(s, mySeat, id, 1, b) === undefined,
+  })
+  return [
+    row('scale', 'Map size', s.scale.toUpperCase()),
+    row('bots', 'Bots', s.bots ? 'Enabled' : 'Disabled'),
+    row('kit', 'Starting weapons', KIT_LABELS[s.startKit]),
+    row('timer', 'Timer', minutesLabel(s.roundSeconds)),
+  ]
+}
+

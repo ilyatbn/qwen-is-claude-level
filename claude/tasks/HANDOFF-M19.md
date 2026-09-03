@@ -714,3 +714,110 @@ process table looked clean.
 `checksum` is not on the known-flaky list with `bullets-visible`, `hud-timer` and
 `night-combat`, and this run is not evidence that it should be — it was measured green
 sixteen times on an idle box across two trees.
+
+## T19.08 landed — what the diff does not say
+
+**The panel is one pure function, and that is where the host gate lives.**
+`settingsControls(lobby, mySeat, bounds)` returns four rows — map size included, so all
+four share one gate and one disabled rule — and `stepSetting(lobby, mySeat, id, delta,
+bounds)` returns the next value or `undefined`. `settingsControls` disables *exactly* what
+`stepSetting` refuses, by calling it: a screen and a wire that computed "allowed"
+separately are two answers to one question, and the older map-size row had its own copy.
+`MenuScene` renders rows and sends messages; it decides nothing.
+
+**Two stepping behaviours, on purpose, and the code says so.** `scale`, `bots` and `kit`
+**wrap** through `stepIndex`; the timer **clamps**, because §F7 says it "ends disabled at
+each bound" and wrapping ten minutes back to four is a different rule. Anyone tidying that
+inconsistency away will break the bound test. `bots` has two values, so a wrap in either
+direction is a toggle — still `stepIndex`, so "next" has one definition.
+
+**Task defect, as the sweep predicted: `canChangeSettings` does not exist.** The Tests
+section names it; the function is `ownsSettings` (`lobby.ts`). Nothing was renamed — the
+gate moved into `stepSetting` instead, and the unit test that the task asked for is
+`gates all four settings on the host, not just the map size`.
+
+**`MenuScene` no longer declares its own `SCALES`.** It had a second copy of the list that
+`net/lobby` exports, beside a comment explaining that a second copy would be a second
+answer. `net/lobby` now imports `stepIndex` from `ui/menu`; that is not a runtime cycle,
+because `menu.ts` imports `Scale` from `lobby.ts` as a **type**, which is erased.
+
+**`__menu.settings()` reads the DOM, never `debug()`.** `debug()` returns the local
+`MenuModel`, which has never held any of these and for a guest holds nothing at all — a
+check reading settings from it would be meaningless on exactly the half that matters. An
+empty object means no panel, which is what a public lobby must render, and the check
+asserts the roster is non-empty in the same breath so the absence is not vacuous.
+
+**Ordering trap in `lobby.mjs`: the public-lobby client must come last.** A quick-matching
+third client opens a *second* room, and the check's `health.rooms !== 1` assertion is its
+guard against the socket being reopened rather than handed over. Putting the public-panel
+block before it turned that assertion red for a reason that had nothing to do with the
+handover — a false positive on the check's single most valuable claim.
+
+**A DOM read straight after a press reads the frame before the answer arrives.** Nothing
+is applied locally: `step` sends, the room replies with `lobby_state`, and the panel
+redraws from that. The first version of the bound walk fired **nine** presses to take one
+step, and its "it did not move" read could have landed before the last one did. It now
+waits on the value changing, and the after-the-bound read has a settle. Same shape as any
+"assert an absence over a network" — the wait has to be long enough for the thing you say
+did not happen.
+
+**Both e2e claims were falsified at the live binding site.** Applying the kit locally
+instead of sending it: *"the host changed kit and the screen still reads None"* — the
+local write is overwritten by the next `lobby_state`, which is itself the proof that the
+screen follows the room. Rendering the panel for a public lobby: the §F7 absence fails
+with the whole panel printed.
+
+**Done-when scope, minor:** `--run lobby menu` also matches `escapeMenu.test.ts`, and
+`node scripts/e2e.mjs lobby` also runs `lobby-start`. Both widen rather than narrow, so
+neither hides a failure.
+
+**`m10-checkpoint` has now been red twice in M19, both times inside a full gate, both
+times green on an immediate standalone re-run.** First during T19.05 (recorded above);
+again on T19.08's gate, failing at *"the two clients in one room disagree"* with two mask
+hashes — the two-client carve-agreement assertion, before it ever printed `host carved N
+px`. The standalone re-run carved 19246 px and agreed.
+
+**It is deliberately NOT being added to the known-flaky list** with `bullets-visible`,
+`hud-timer` and `night-combat`. Two sightings months apart is not a measurement, and that
+list is an excuse for a red — putting a carve-agreement check on it would excuse exactly
+the class of bug the check exists to catch. What is recorded here instead is the data: two
+reds, both under a loaded box, both unreproducible alone. If a third appears, that is the
+point to measure it properly — alternate a worktree at the previous commit against the
+working tree, N runs each, the way the `checksum` scare above was settled — rather than to
+assume either answer.
+
+## The suite-context hypothesis — four checks, one signature, and "load" is already falsified
+
+**Named because it may be the real finding behind T19.15 and T19.16, and nobody has
+written it down.** Four checks now share exactly one signature: **red inside the full
+suite, green standalone.**
+
+- `bullets-visible`, `hud-timer`, `night-combat` — the three carried as "known flaky".
+- `m10-checkpoint` — twice in M19, both times inside a full gate, both times green on an
+  immediate standalone re-run (see the section above).
+
+**The standing frame is "load flake". That frame is already falsified for one of them.**
+T19.15's own 20-round interleaved distribution on `hud-timer` measured **idle mean 44.15
+against loaded 44.87**, with the two near-failures landing **one in each arm**, and the
+failing sample was an anomalous `after` capture that **reproduced on a completely idle
+box**. Load was not the variable there. It is one hypothesis among several and it is the
+one with evidence against it.
+
+**What a check gets inside the full suite that it does not get alone** — the candidate
+variables, none yet excluded: accumulated browser and profile state across checks; port
+reuse; a vite or server instance older than the check that is using it; `target/` or
+`pkg/` artefacts left by a neighbouring stage; ordering effects; and file-descriptor or
+memory pressure, which is not CPU and which `uptime` does not show.
+
+**The measurement that would settle it**, and it is one experiment: run **one** of the
+four *inside a full suite on an otherwise idle box*, and again *inside a full suite under
+deliberate load*. If both are red, **load is exonerated and the variable is the suite
+context itself** — and every fix aimed at load is aimed at a symptom. If only the loaded
+arm is red, the frame survives for that check and the `hud-timer` result stays an
+exception needing its own explanation.
+
+**Consequence for T19.16, stated and not acted on.** That task is written about vite's
+90 s port timeout *under load*. If load is not the variable, T19.16 is scoped to the wrong
+half of the problem. **It has not been rewritten and no task has been booked on this** —
+the coordinator writes amendments, not a builder. This is the hypothesis, the evidence for
+and against, and the experiment; the scoping decision is not mine to make.

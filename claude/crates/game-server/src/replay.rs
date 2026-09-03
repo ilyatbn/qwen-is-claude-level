@@ -645,8 +645,23 @@ pub fn decode(bytes: &[u8]) -> Result<Replay, ReplayError> {
         min_players_to_start: c.u16()? as usize,
         bot_count: c.u16()? as usize,
         bot_skill: c.f32()?,
+        // **`dev_loadout` is lenient and everything added since is strict, and
+        // that is the rule rather than an oversight.** `!= 0` is the convention
+        // v1 shipped with; retrofitting it would reject files that are fine, to
+        // gain nothing. Fields added from v4 on are decoded strictly, because a
+        // corrupt byte that reads as `true` replays a setting the round never
+        // had and then diverges somewhere else entirely — and this header is
+        // the **authoritative** carrier for both of these from round two, so a
+        // wrong value here is not caught by anything downstream.
         dev_loadout: c.u8()? != 0,
-        bots_enabled: c.u8()? != 0,
+        bots_enabled: {
+            let b = c.u8()?;
+            match b {
+                0 => false,
+                1 => true,
+                _ => return Err(ReplayError::BadBool("bots_enabled", b)),
+            }
+        },
         start_kit: {
             let b = c.u8()?;
             StartKit::from_u8(b).ok_or(ReplayError::BadStartKit(b))?
@@ -1186,6 +1201,39 @@ mod format_tests {
         // `Default::default()` would read `true`/`None` and fail here.
         assert!(!h.bots_enabled, "bots_enabled did not read");
         assert_eq!(h.start_kit, StartKit::Basic, "start_kit did not read");
+    }
+
+    /// The v4 fields are decoded **strictly**, and `dev_loadout` is not.
+    ///
+    /// Both halves, because the point is the boundary rather than either rule:
+    /// a `2` in a v4 flag is a corrupt file and must say so, and a `2` in
+    /// `dev_loadout` is the convention v1 shipped with and must still parse.
+    /// Without the second half this passes for a decoder that rejected
+    /// everything, which would invalidate every file ever recorded.
+    #[test]
+    fn a_v4_flag_byte_that_is_not_zero_or_one_is_an_error_and_dev_loadout_is_not() {
+        let at = |i: usize, b: u8| {
+            let mut v = header_bytes(REPLAY_VERSION);
+            v[i] = b;
+            decode(&v)
+        };
+        // The three flag bytes are the last three of the header.
+        let n = HEADER_BYTES;
+        match at(n - 2, 2) {
+            Err(ReplayError::BadBool("bots_enabled", 2)) => {}
+            other => panic!("a bots_enabled of 2 must be refused, got {other:?}"),
+        }
+        match at(n - 1, 9) {
+            Err(ReplayError::BadStartKit(9)) => {}
+            other => panic!("a start_kit of 9 must be refused, got {other:?}"),
+        }
+        // The control, and the older convention: `dev_loadout` still takes any
+        // non-zero as true, so a file written before v4 keeps parsing.
+        let lenient = at(n - 3, 2).expect("a dev_loadout of 2 must still parse");
+        assert!(
+            lenient.header.dev_loadout,
+            "the lenient field read 2 as false"
+        );
     }
 
     /// **A pre-§F5 replay does not load, and that is the intended answer.**

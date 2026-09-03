@@ -234,6 +234,28 @@ export class Connection {
     this.sendRaw('set_scale', { scale })
   }
 
+  /**
+   * §F7's three private-lobby settings. Refused with `lobby_error` for
+   * `set_scale`'s reasons — host-only, private-only, and before the start.
+   *
+   * The payload keys are the wire's (`bots`, `start_kit`, `round_seconds`),
+   * spelled here rather than derived from the setting id: `parseLobbyState` has
+   * no unknown-key detection, so a mismatch would silently read as a default
+   * rather than as an error.
+   */
+  sendSetBots(bots: boolean): void {
+    this.sendRaw('set_bots', { bots })
+  }
+
+  sendSetStartKit(startKit: string): void {
+    this.sendRaw('set_start_kit', { start_kit: startKit })
+  }
+
+  /** Seconds, always. Minutes exist only on screen (`minutesLabel`). */
+  sendSetRoundSeconds(seconds: number): void {
+    this.sendRaw('set_round_seconds', { round_seconds: seconds })
+  }
+
   sendUseItem(slot: number): void {
     this.emit('use_item', { slot })
   }
