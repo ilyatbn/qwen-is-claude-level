@@ -5167,3 +5167,14 @@ the way `SetScale` writes `map_scale` and the seven `ROUND_SECONDS` checks are u
 issued shovel, so a match-start-only grant means "for your first life"; deleting the new call
 leaves `[(24, 1)]`. `tick_inline` never returns `Death`/`Respawn`, and `cargo test -p
 game-wasm` runs **zero** `wasm_bindgen_test`s — both in the handoff. EXIT=0, 41/41, 25/25.
+
+## T19.07 follow-up — a lobby setting belongs on `Config`, not on `Room`
+
+**`bots` and `start_kit` were lost across a round restart**: `restart()` writes a *new*
+header, and the host's `SetBots`/`SetStartKit` sit in round one's file, so round two
+replayed bots-on kit-none — bots the live round never seated. Both moved to `Config`,
+which is what `from_config` reads; `bots_enabled` stays its own flag so "off" is
+reversible. `REPLAY_VERSION` 3 → 4, two bytes **appended**, `HEADER_BYTES` 45. **`restart`
+rebuilt the path from `config.replay_dir` instead of the directory `start_recording` was
+given**, which is why two stray `.replay` binaries were in the crate root and why the
+anchored `/replays/` never matched them; `Room::replay_dir` fixes it. T19.19 booked.

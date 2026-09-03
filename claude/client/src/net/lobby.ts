@@ -180,7 +180,16 @@ export function parseLobbyState(p: Record<string, unknown>): LobbyStateMsg {
     // server reads as "bots on, no kit" rather than as something no room can be.
     // `roundSeconds` has no such default — 0 is visibly wrong, and a plausible
     // 240 here would hide a server that stopped sending the field.
-    bots: p['bots'] !== false,
+    //
+    // `bots` is checked for its **type**, matching `start_kit` and
+    // `roundSeconds` above rather than the `p['bots'] !== false` this was.
+    // **The two are extensionally identical** — the only value `!== false` can
+    // reject is `false` itself, so `"false"`, `0`, `null` and `{}` read as
+    // `true` under both — and swapping them changes no test, which was checked
+    // rather than assumed. This form is here because it survives the default
+    // changing: under `!== false` a missing key would go on reading `true` after
+    // someone made the server default `false`, and nothing would say so.
+    bots: typeof p['bots'] === 'boolean' ? p['bots'] : true,
     startKit: isKit(rawKit) ? rawKit : 'none',
     roundSeconds: typeof p['round_seconds'] === 'number' ? p['round_seconds'] : 0,
     players: Array.isArray(p['players'])

@@ -711,14 +711,6 @@ pub struct Room {
     /// registry through `SetIdentity` right after the task is spawned.
     code: Option<String>,
     private: bool,
-    /// §F7. Whether this room seats bots at all.
-    ///
-    /// A `bool` rather than driving `config.bot_count` to zero, because "off"
-    /// has to be reversible: the count the room was made with is the count "on"
-    /// means, and overwriting it would make the switch one-way.
-    bots_enabled: bool,
-    /// §F7. What every player is armed with at spawn and respawn.
-    start_kit: game_core::constants::StartKit,
     /// Seconds until a public lobby fills its seats with bots (§E2).
     ///
     /// `None` until the **first** player is seated, and `None` forever in a
@@ -762,6 +754,16 @@ pub struct Room {
     /// logs once rather than taking the round down: losing the debugging aid is
     /// bad, losing the round because the debugging aid failed is worse.
     replay: Option<crate::replay::ReplayWriter>,
+    /// The directory `start_recording` was handed, so `restart` can open round
+    /// two's file **in the same place**.
+    ///
+    /// It used to rebuild the path from `config.replay_dir` instead, which is a
+    /// different answer whenever the caller passed anything else: a test handing
+    /// over a tempdir got round one in the tempdir and round two written into
+    /// the repository's `crates/game-server/replays/`, where two stray binaries
+    /// were found. `start_recording(dir, ..)` takes a directory and its sibling
+    /// ignored it — "return what the caller needs", from the other side.
+    replay_dir: Option<std::path::PathBuf>,
     /// So a phase transition can flush the recorder without polling for one.
     last_recorded_phase: game_core::world::RoundPhase,
     /// Drained into `/metrics` by the loop; counted here because this is where
@@ -951,10 +953,6 @@ impl Room {
             lobby_tick: 0,
             code: None,
             private: false,
-            // §F7's defaults: bots on, no kit. `round_seconds` has no field —
-            // it is `config.round_seconds`, which the environment already sets.
-            bots_enabled: true,
-            start_kit: game_core::constants::StartKit::None,
             starts_in: None,
             starts_in_shown: None,
             // A freshly built lobby is worth announcing to the first socket that
@@ -971,6 +969,7 @@ impl Room {
             bot_seq: 0,
             round: crate::round::RoundController::new(seed),
             replay: None,
+            replay_dir: None,
             last_recorded_phase: game_core::world::RoundPhase::Lobby,
             dropped_inputs: 0,
             seed,
@@ -1129,8 +1128,8 @@ impl Room {
             private: self.private,
             capacity: game_core::constants::LOBBY_CAPACITY,
             scale: self.config.map_scale,
-            bots: self.bots_enabled,
-            start_kit: self.start_kit,
+            bots: self.config.bots_enabled,
+            start_kit: self.config.start_kit,
             // Read off the config, exactly as `scale` is: `SetRoundSeconds`
             // writes it there, so an untouched room reports the environment's
             // value and a set room reports the host's, with no third field that
@@ -1214,7 +1213,7 @@ impl Room {
         // two call sites because a third caller is what would reintroduce them.
         // §E3's start rule is untouched — a bot-less private lobby still starts
         // when every seated human is ready, and does not fall back to bots.
-        if !self.bots_enabled {
+        if !self.config.bots_enabled {
             return;
         }
         let want = self.config.bot_count.min(self.config.max_players);
@@ -1418,7 +1417,7 @@ impl Room {
     /// by default, and folding the two would make a lobby setting turn on
     /// `dev_start_health` and `dev_poisoned` with it.
     fn grant_start_kit(&mut self, id: PlayerId) {
-        let kit = self.start_kit;
+        let kit = self.config.start_kit;
         if matches!(kit, game_core::constants::StartKit::None) {
             return;
         }
@@ -1776,16 +1775,22 @@ impl Room {
             // is: each one changes what the match is built from, and a replay
             // that skipped it would build a different match (§E1.2).
             //
-            // **The header is not authoritative for any of them.**
-            // `ReplayHeader` writes `round_seconds`, `bot_count` and
-            // `dev_loadout` when the room is *constructed* (`replay.rs`), which
-            // is before a host can touch a setting — so the header describes the
-            // room's birth and the command stream describes the match. The
-            // runner applies the commands over a room built from the header, and
-            // the commands win.
+            // **Which of the header and the command is authoritative depends
+            // on which round you are replaying, and both carriers are needed.**
+            // Within round one the command wins: the header was written when the
+            // room was constructed, before a host could touch anything, so it
+            // describes the room's birth and the stream describes the match.
+            // From round two it is the reverse — `restart()` writes a *fresh*
+            // header and a fresh file, and the change the host made in the lobby
+            // is in the previous file, so the header is the **only** carrier. All
+            // three therefore live on `Config`, which is what the header is built
+            // from. `bots` and `start_kit` were `Room` fields first and round two
+            // replayed at the defaults; see `config.rs`.
             Command::SetBots { by, on, reply } => {
                 let answer = self.check_settings_change(by).map(|()| {
-                    self.bots_enabled = on;
+                    let mut config = (*self.config).clone();
+                    config.bots_enabled = on;
+                    self.config = Arc::new(config);
                     self.note(R::SetBots(by, on));
                     self.settings_changed();
                 });
@@ -1793,7 +1798,9 @@ impl Room {
             }
             Command::SetStartKit { by, kit, reply } => {
                 let answer = self.check_settings_change(by).map(|()| {
-                    self.start_kit = kit;
+                    let mut config = (*self.config).clone();
+                    config.start_kit = kit;
+                    self.config = Arc::new(config);
                     self.note(R::SetStartKit(by, kit));
                     self.settings_changed();
                 });
@@ -2295,6 +2302,7 @@ impl Room {
         if !self.config.record_replay {
             return;
         }
+        self.replay_dir = Some(dir.to_path_buf());
         let header =
             crate::replay::ReplayHeader::from_config(&self.config, self.seed, self.buried_secret);
         match crate::replay::ReplayWriter::create(dir, stamp, &header) {
@@ -2436,7 +2444,14 @@ impl Room {
         self.last_checksum_at = 0.0;
         tracing::info!(target: "game::round", seed, "round restarted");
         if recording {
-            let dir = std::path::PathBuf::from(self.config.replay_dir.clone());
+            // The directory round one was recorded into, not `config.replay_dir`
+            // — see the field. The fallback is only reachable if `restart` ran
+            // without a prior `start_recording`, which cannot happen because
+            // `recording` is read off the live writer.
+            let dir = self
+                .replay_dir
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from(self.config.replay_dir.clone()));
             self.start_recording(&dir, &stamp_for(seed));
         }
         self.world

@@ -258,6 +258,14 @@ describe('lobby_state (§E6)', () => {
     expect(bare.startKit).toBe('none')
     expect(bare.roundSeconds).toBe(0)
     expect(parseLobbyState({ ...raw, start_kit: 'everything' }).startKit).toBe('none')
+    // Junk for `bots`. This pins behaviour rather than discriminating: the type
+    // check and the `!== false` it replaced agree on every input, so no
+    // assertion here can tell them apart. What it does rule out is junk ever
+    // reading as `false` — a bots-off lobby conjured from a malformed payload.
+    for (const junk of ['false', 0, null, undefined, {}]) {
+      expect(parseLobbyState({ ...raw, bots: junk }).bots).toBe(true)
+    }
+    expect(parseLobbyState({ ...raw, round_seconds: '300' }).roundSeconds).toBe(0)
   })
 
   it('survives a hostile payload without throwing', () => {

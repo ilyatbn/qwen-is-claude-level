@@ -520,3 +520,119 @@ fn settings_commands(by: u8) -> Vec<Command> {
         },
     ]
 }
+
+/// §F7's settings survive a **round restart**, which is a second file.
+///
+/// `restart()` calls `finish_recording()` then `start_recording()` — one file
+/// per round, deliberately, so a single file never carries two seeds and two
+/// maps. That makes round two's header the **only** carrier of a setting the
+/// host chose in the lobby: the `SetBots`/`SetStartKit` commands are in round
+/// one's file and nothing re-sends them.
+///
+/// This shipped for exactly one commit with both settings on `Room` instead of
+/// `Config`: round two replayed at the defaults, seating bots the live round
+/// never had and arming players differently on tick one. Nothing caught it —
+/// `grep restart` over both replay test files returned nothing at all.
+#[test]
+fn a_restart_carries_the_private_settings_into_the_second_file() {
+    use game_core::constants::StartKit;
+
+    let s = Scratch::new("restart-settings");
+    let mut room = Room::new(Arc::new(Config {
+        map_scale: MapScale::Small,
+        fixed_seed: Some(4242),
+        // Bots *available*, so "no bots" below is the setting's doing and not an
+        // empty configuration.
+        bot_count: 3,
+        record_replay: true,
+        round_seconds: 4.0,
+        // **`replay_dir` is deliberately left at its default.** `restart` used to
+        // rebuild round two's path from it rather than from the directory
+        // `start_recording` was handed, so this test wrote round one into the
+        // scratch and round two into the repository's own
+        // `crates/game-server/replays/` — where two stray binaries were found —
+        // and then reported "the round never restarted". `Room::replay_dir` is
+        // the fix, and this line not being here is what proves it.
+        ..Config::default()
+    }));
+    room.apply_for_test(Command::SetIdentity {
+        code: Some("ABC123".into()),
+        private: true,
+    });
+    room.start_recording(s.path(), "000000000001");
+    let ana = seat(&mut room, "ana");
+    // Only the two settings under test: `settings_commands` also sets the round
+    // length to `ROUND_SECONDS_MAX`, and a ten-minute round never reaches the
+    // restart this test is about.
+    room.apply_for_test(Command::SetBots {
+        by: ana,
+        on: false,
+        reply: tokio::sync::oneshot::channel().0,
+    });
+    room.apply_for_test(Command::SetStartKit {
+        by: ana,
+        kit: StartKit::All,
+        reply: tokio::sync::oneshot::channel().0,
+    });
+    room.apply_for_test(Command::Ready(ana, true));
+
+    // Round one, to its end, then vote it round again.
+    let mut restarted = false;
+    for _ in 0..((game_core::constants::WARMUP_SECONDS
+        + 4.0
+        + game_core::constants::ENDED_SECONDS
+        + 2.0)
+        / SIM_DT) as usize
+    {
+        room.tick_inline(SIM_DT);
+        room.vote_for_test(ana, true);
+        if s.files().len() == 2 {
+            restarted = true;
+            break;
+        }
+    }
+    assert!(
+        restarted,
+        "the round never restarted, so there is no second file to check"
+    );
+    room.finish_recording();
+
+    // The live room still holds the settings — the control for what follows.
+    let live = room.lobby_state();
+    assert_eq!(
+        (live.bots, live.start_kit),
+        (false, StartKit::All),
+        "the live room lost the settings across its own restart"
+    );
+
+    let second = replay::read_file(&s.files()[1]).expect("decode the second file");
+    assert!(
+        !second.body.iter().any(|(_, c)| matches!(
+            c,
+            ReplayCommand::SetBots(..) | ReplayCommand::SetStartKit(..)
+        )),
+        "the second file contains the settings commands after all — then this \
+         test is not exercising the header path it exists for"
+    );
+    assert_eq!(
+        (second.header.bots_enabled, second.header.start_kit),
+        (false, StartKit::All),
+        "round two's header does not describe the room that played it"
+    );
+
+    // The effect, not just the field: a room rebuilt from that header seats no
+    // bots. The control is the same header with the default put back.
+    let replayed = Room::new(Arc::new(second.header.to_config()));
+    assert!(
+        !replayed.lobby_state().bots,
+        "a room rebuilt from round two's header would seat bots"
+    );
+    let mut defaulted = second.header.clone();
+    defaulted.bots_enabled = true;
+    assert!(
+        Room::new(Arc::new(defaulted.to_config()))
+            .lobby_state()
+            .bots,
+        "the control failed: `to_config` ignores `bots_enabled` either way"
+    );
+}

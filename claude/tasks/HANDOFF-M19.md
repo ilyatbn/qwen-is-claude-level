@@ -610,7 +610,8 @@ land and not long enough for the death to resolve. Wait for `room.phase()` to re
 **`cargo test -p game-wasm` runs zero `#[wasm_bindgen_test]`s**, which `lib.rs:1212`
 already records — so `constants_json_carries_the_viewport_and_camera_values` has never
 run in the gate, and neither would a new one written beside it. The §F7 bounds test is
-a plain `#[test]`. Fifteen `wasm_bindgen_test`s in that file are in the same position;
+a plain `#[test]`. **Fourteen** `wasm_bindgen_test`s in that file are in the same position — the count
+the gate log's `3 passed` implies and the one T19.19 is booked for;
 not booked, but they are not evidence of anything today.
 
 **`registry::is_retired` is now shared, and the shovel is why it has to be a function.**
@@ -623,3 +624,93 @@ retired".
 **`DEV_LOADOUT`'s contents did not change.** Its `give` calls became a `(item, count)`
 list handed to the same `give_all` the kits use — one granting path — and the gate's
 five sandbox/ordnance checks confirm the list is the same one.
+
+## T19.07 follow-up — the restart divergence, and where a lobby setting must live
+
+**`bots` and `start_kit` began as `Room` fields and that lost them across a restart.**
+`restart()` calls `finish_recording()` then `start_recording()` — one file per round,
+deliberately, so a single file never carries two seeds and two maps. Round two's header
+is therefore rebuilt from `Config`, and its command stream begins at the restart: the
+host's `SetBots`/`SetStartKit` are in **round one's** file and nothing re-sends them. A
+room replayed from round two came up at the defaults — bots on, kit none — seating bots
+the live round never had and arming players differently on tick one.
+
+**The rule this establishes: a lobby setting that changes the simulation goes on
+`Config`, not on `Room`.** `Config` is what `ReplayHeader::from_config` reads, and the
+header is the only carrier that survives a restart. `SetScale` and `SetRoundSeconds`
+already followed it; the two new ones now do. Reversibility is kept the way it was
+argued for — `bots_enabled` is its own flag rather than `bot_count` driven to zero, so
+"on" restores the count the room was made with.
+
+**Which carrier is authoritative depends on the round, and both are needed.** Round one:
+the command wins, because the header was written at construction before a host could
+touch anything. Round two onward: the header wins, because the command is in the previous
+file. The comment in `room.rs` said "the header is not authoritative for any of them",
+which was true for round one and wrong for every round after it.
+
+**`REPLAY_VERSION` is now 4** and `HEADER_BYTES` 45. The two fields are appended after
+`dev_loadout` — nothing already in the header moved, which is the failure `write_header`'s
+own note records having happened once. A v3 file is two bytes short and is refused;
+`a_replay_from_the_previous_version_is_refused_rather_than_replayed` covers that.
+
+**A trap for anyone writing a restart test: `restart()` opens round two's file in
+`config.replay_dir`, not in the directory `start_recording` was handed.** A test that
+passes a scratch path to `start_recording` alone writes round two into the repository's
+`replays/` and then reports "the round never restarted". Set `replay_dir` too.
+
+**Still open, and larger than this fix: round two's file carries no roster.** The `Join`
+commands are in round one's file, so replaying a second file alone reproduces a room with
+no players. `a_restart_carries_the_private_settings_into_the_second_file` therefore
+asserts on the header and on the *effect* (a room rebuilt from it seats no bots, with the
+default put back as the control) rather than on a state hash. A full round-two state-hash
+replay is not possible today. Not booked — it is a property of the one-file-per-round
+design, not a defect in it — but anyone who assumes a restart file is independently
+replayable is wrong.
+
+**Stray replay binaries, and the real cause.** Two 45-byte `.replay` files were sitting
+untracked in `crates/game-server/replays/`. `.gitignore` had `/replays/` — **anchored**,
+so it only ever matched `claude/replays/` — while `config.rs` defaults `replay_dir` to the
+relative `"replays"`, which under `cargo test -p game-server` resolves against the crate
+root. The ignore is now `replays/` as a belt, but the cause was the `restart` path above:
+`Room::replay_dir` remembers the directory `start_recording` was handed and `restart` uses
+it. `a_restart_carries_the_private_settings_into_the_second_file` deliberately leaves
+`config.replay_dir` at its default so that it is the fix being exercised — putting the old
+line back reproduces both symptoms at once: *"the round never restarted"* and a fresh
+binary in the repository.
+
+**Correction to a review finding, checked rather than argued.** `bots: p['bots'] !== false`
+was called weaker than the type check used for the other two fields. It is not: `!== false`
+can only reject `false` itself, so `"false"`, `0`, `null` and `{}` read as `true` under
+**both** forms — verified across twelve inputs, zero differ. The typed form is in anyway,
+because it is the one that survives the server default becoming `false`; but no test can
+separate them, and the new junk assertions say so in the comment rather than pretending to
+discriminate. Anything claiming this was a live parsing bug is wrong.
+
+**`the_payload_carries_the_three_private_settings` was renamed and given a real claim.**
+Its guest seat was decorative — every assertion passed with the seat deleted, because
+`broadcast_lobby_state` sends *one* payload to every socket and a room-level read cannot
+prove per-seat delivery. It is now
+`the_payload_carries_the_three_private_settings_once_for_the_whole_room` and asserts what
+is provable and worth guarding: `settings_owner` names the host and not the guest, both
+seats are in the payload, and **no seat entry carries a settings key**. That last one is
+the regression T19.08 could introduce — move a setting under a player entry and a guest
+sees nothing while the old assertions stayed green.
+
+**A gate red that was mine and was not the code: `checksum` under load.** The follow-up's
+first gate failed with `two_clients_agree_on_the_mask_after_a_hundred_carves` — *"expected
+the fires to produce carves; got 14"* — and `a_joiner_that_delays_ready_still_gets_every_carve`
+at *"got 5"*. **Measured before changing anything**: a worktree at the committed `f474f2d`
+and the working tree were run alternately, three times each, whole binary, on an idle box —
+**6/6 green, both trees**, plus 3/3 for the failing test alone. The counts in the red run
+swung 5 → 14 → 44, which no code defect in a carve path produces.
+
+The load was **self-inflicted**, and the lesson is CLAUDE.md's own: the previous gate had
+been stopped mid-run, and the post-kill sweep grepped `vite|game-server|check.sh|node
+scripts` — **a pattern that cannot match `cargo` or `rustc`**, which is what a killed
+`check.sh` leaves behind. Sweep for `cargo|rustc|node|vite|game-server` before any gate,
+and check `uptime`'s 15-minute load, not just the process list: it read 2.96 while the
+process table looked clean.
+
+`checksum` is not on the known-flaky list with `bullets-visible`, `hud-timer` and
+`night-combat`, and this run is not evidence that it should be — it was measured green
+sixteen times on an idle box across two trees.

@@ -34,12 +34,12 @@ pub const FOOTER_MAGIC: u32 = 0x5250_4C45;
 /// Bytes a header occupies on disk: magic 4, version 2, seed 8, buried secret 8,
 /// scale 1, generator 1, sim_hz 4, round_seconds 4, max_players 2,
 /// min_players_to_start 2 (retired §E2; still written, as 0), bot_count 2,
-/// bot_skill 4, dev_loadout 1.
+/// bot_skill 4, dev_loadout 1, bots_enabled 1, start_kit 1.
 ///
 /// Public because the body starts here, and a test that wants to corrupt the
 /// first command has to know where it is. Two of them used to carry the number
 /// inline and both broke the moment the header grew a field.
-pub const HEADER_BYTES: usize = 43;
+pub const HEADER_BYTES: usize = 45;
 
 /// **2**: the header gained `generator`. A v1 round replayed against v2 (or the
 /// reverse) rebuilds a different map and diverges on the first shot that touches
@@ -54,7 +54,16 @@ pub const HEADER_BYTES: usize = 43;
 /// picked up. The header does not record the registry, so the version is the only
 /// place that difference can live. Every player also now starts holding a shovel,
 /// which moves the slot every `SelectSlot` in an old file refers to.
-pub const REPLAY_VERSION: u16 = 3;
+///
+/// **4 (§F7)**: the header gained `bots_enabled` and `start_kit`. Appended after
+/// `dev_loadout`, so nothing already in the header moved — but a v3 file is two
+/// bytes short and the two new fields have to come from somewhere, and guessing
+/// the defaults is exactly the bug this fixes. They are header fields rather than
+/// commands because `restart()` writes a **new** header and a new file for round
+/// two: the host's lobby change is in round one's stream, so from round two the
+/// header is the only carrier. Recorded as `Room` fields first, and round two
+/// then replayed with bots the live round never seated.
+pub const REPLAY_VERSION: u16 = 4;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///
@@ -220,6 +229,10 @@ pub struct ReplayHeader {
     pub bot_count: usize,
     pub bot_skill: f32,
     pub dev_loadout: bool,
+    /// §F7's two private-lobby settings. See `REPLAY_VERSION` 4 for why they are
+    /// here and not only in the command stream.
+    pub bots_enabled: bool,
+    pub start_kit: StartKit,
 }
 
 impl ReplayHeader {
@@ -237,6 +250,8 @@ impl ReplayHeader {
             bot_count: config.bot_count,
             bot_skill: config.bot_skill,
             dev_loadout: config.dev_loadout,
+            bots_enabled: config.bots_enabled,
+            start_kit: config.start_kit,
         }
     }
 
@@ -252,6 +267,8 @@ impl ReplayHeader {
             bot_count: self.bot_count,
             bot_skill: self.bot_skill,
             dev_loadout: self.dev_loadout,
+            bots_enabled: self.bots_enabled,
+            start_kit: self.start_kit,
             record_replay: false,
             ..Config::default()
         }
@@ -429,6 +446,11 @@ fn write_header(w: &mut impl Write, h: &ReplayHeader) -> Result<(), ReplayError>
     put_u16(w, h.bot_count as u16)?;
     put_f32(w, h.bot_skill)?;
     w.write_all(&[u8::from(h.dev_loadout)])?;
+    // **Appended**, after every field that already existed. Inserting either of
+    // these earlier would move `bot_count`, `bot_skill` and `dev_loadout` — the
+    // failure the note above records having already happened once.
+    w.write_all(&[u8::from(h.bots_enabled)])?;
+    w.write_all(&[h.start_kit.as_u8()])?;
     Ok(())
 }
 
@@ -624,6 +646,11 @@ pub fn decode(bytes: &[u8]) -> Result<Replay, ReplayError> {
         bot_count: c.u16()? as usize,
         bot_skill: c.f32()?,
         dev_loadout: c.u8()? != 0,
+        bots_enabled: c.u8()? != 0,
+        start_kit: {
+            let b = c.u8()?;
+            StartKit::from_u8(b).ok_or(ReplayError::BadStartKit(b))?
+        },
     };
 
     let mut body = Vec::new();
@@ -749,6 +776,9 @@ mod tests {
             bot_count: 2,
             bot_skill: 0.6,
             dev_loadout: true,
+            // Both off the default, for the reason above.
+            bots_enabled: false,
+            start_kit: StartKit::All,
         }
     }
 
@@ -1120,6 +1150,8 @@ mod format_tests {
         v.extend_from_slice(&3u16.to_le_bytes()); // bot_count
         v.extend_from_slice(&0.6f32.to_le_bytes()); // bot_skill
         v.push(1); // dev_loadout
+        v.push(0); // bots_enabled — off, so it is not the default
+        v.push(1); // start_kit — Basic, so it is not the default
         v
     }
 
@@ -1149,6 +1181,11 @@ mod format_tests {
         assert_eq!(h.bot_count, 3, "bot_count shifted");
         assert_eq!(h.bot_skill, 0.6, "bot_skill shifted");
         assert!(h.dev_loadout, "dev_loadout shifted");
+        // §F7's two, appended after everything above. Both written off their
+        // defaults, so a decoder that stopped short and left them at
+        // `Default::default()` would read `true`/`None` and fail here.
+        assert!(!h.bots_enabled, "bots_enabled did not read");
+        assert_eq!(h.start_kit, StartKit::Basic, "start_kit did not read");
     }
 
     /// **A pre-§F5 replay does not load, and that is the intended answer.**

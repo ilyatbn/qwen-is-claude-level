@@ -3,7 +3,7 @@
 201 tasks across 20 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added; it then read 169 against 183 rows. Counted with
-`grep -c '^- \[[ x]\]'`, not assumed — 201 after T19.05 booked T19.17 and T19.18.) Work
+`grep -c '^- \[[ x]\]'`, not assumed — 202 after T19.07 booked T19.19.) Work
 them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
 
@@ -415,7 +415,7 @@ independent.
 - [ ] [T19.16](M19/T19.16-vite-port-under-load.md) — `vite did not report a port within 90 s` under sustained load **(v7)**
 - [x] [T19.05](M19/T19.05-the-shovel.md) — The shovel, and the end of the melee cabinet **(v7)** — every deliverable except the retired weapons' procedural art, which **must stay** (`itemSprites-math.test.ts` reads the live registry; see `HANDOFF-M19.md`). Done-when green, `./scripts/check.sh` EXIT=0, 41/41 e2e.
 - [x] [T19.06](M19/T19.06-rain-that-hurts.md) — Rain that falls on you hurts **(v7)** — every deliverable; the splash does **not** reuse the blast helper (it carves — see `HANDOFF-M19.md`) and the roof is asked per victim. Done-when green, `./scripts/check.sh` EXIT=0, 41/41 e2e, net smoke 25/25, assets ok.
-- [x] [T19.07](M19/T19.07-private-settings-server.md) — Private-game settings: the wire, and the match that honours them **(v7)** — every deliverable. Wire keys `bots`/`start_kit`/`round_seconds`; replay tags 19-21 appended, header untouched. **Known follow-up: `bots` and `start_kit` are lost across a round restart in replay** — see `HANDOFF-M19.md`. Done-when green, `./scripts/check.sh` EXIT=0, 41/41 e2e, net smoke 25/25, assets ok.
+- [x] [T19.07](M19/T19.07-private-settings-server.md) — Private-game settings: the wire, and the match that honours them **(v7)** — every deliverable. Wire keys `bots`/`start_kit`/`round_seconds`; replay tags 19-21 appended, header untouched. Done-when green, `./scripts/check.sh` EXIT=0, 41/41 e2e, net smoke 25/25, assets ok.
 - [ ] [T19.08](M19/T19.08-private-settings-screen.md) — The private lobby's settings panel **(v7)**
 - [ ] [T19.09](M19/T19.09-teleport-charge.md) — The teleport charge is 1.5 seconds **(v7)**
 - [ ] [T19.10](M19/T19.10-fog-fills-the-screen.md) — Fog fills the screen **(v7)**
@@ -424,6 +424,7 @@ independent.
 - [ ] [T19.13](M19/T19.13-flames-on-screen.md) — Flames on screen **(v7)**
 - [ ] [T19.17](M19/T19.17-a-crate-you-cannot-pick-up.md) — A crate you cannot pick up — **found by T19.05**, measured and unexplained
 - [ ] [T19.18](M19/T19.18-the-lobby-client-never-learns-its-inventory.md) — The lobby client never learns its inventory — **found by T19.05**, reproduced three times
+- [ ] [T19.19](M19/T19.19-the-wasm-tests-have-never-run.md) — Fourteen `wasm_bindgen_test`s have never run in any gate — **found by T19.07**, measured against the gate log
 
 **Order note.** T19.15 and T19.14 were written mid-milestone and are **promoted ahead of
 the remaining feature work**: three of the four gate runs after T19.02 carried a

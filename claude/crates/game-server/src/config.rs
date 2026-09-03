@@ -57,6 +57,25 @@ pub struct Config {
     /// v2 (`docs/70-amendments-v2.md` §A5)
     pub bot_count: usize,
     pub bot_skill: f32,
+    /// §F7. Whether this room seats bots at all — a **private lobby setting**,
+    /// not an environment one, and the only two settings on `Config` that no
+    /// env var writes.
+    ///
+    /// It is a separate flag rather than driving `bot_count` to zero because
+    /// "off" has to be reversible: the count the room was made with is the count
+    /// "on" means, and overwriting it would make the switch one-way.
+    ///
+    /// **On `Config` rather than on `Room`, and that is the whole point.**
+    /// `ReplayHeader` is built from `Config`, and `restart()` writes a *new*
+    /// header for round two — one file per round, so a single file never carries
+    /// two seeds. A setting that lived on `Room` would be in round one's command
+    /// stream and in no header at all, so replaying round two would rebuild the
+    /// room at the default and seat bots the live round never had. Measured as a
+    /// real divergence before it was moved here.
+    pub bots_enabled: bool,
+    /// §F7. What every player is armed with at spawn and respawn. On `Config`
+    /// for the reason above.
+    pub start_kit: game_core::constants::StartKit,
     /// Spawn every player with a weapon. **Development only, default off.**
     ///
     /// The game's design is that you find your weapons (`docs/32`), and that is
@@ -125,6 +144,9 @@ impl Default for Config {
             replay_dir: "replays".to_string(),
             debug_dump: false,
             bot_count: BOT_COUNT_DEFAULT,
+            // §F7's defaults: bots on, no kit.
+            bots_enabled: true,
+            start_kit: game_core::constants::StartKit::None,
             dev_loadout: false,
             dev_start_health: 0.0,
             dev_poisoned: false,
@@ -281,6 +303,11 @@ impl Config {
             record_replay,
             replay_dir,
             debug_dump,
+            // §F7's two lobby settings have no environment spelling on purpose:
+            // they are a private host's choice, and an env var for them would be
+            // a second way to set a value the lobby owns.
+            bots_enabled: d.bots_enabled,
+            start_kit: d.start_kit,
             bot_count,
             bot_skill,
             dev_loadout: matches!(get("DEV_LOADOUT").as_deref(), Some("1") | Some("true")),

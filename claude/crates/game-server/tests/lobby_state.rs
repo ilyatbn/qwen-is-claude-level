@@ -324,13 +324,21 @@ fn no_room_list_producer_survives() {
     );
 }
 
-/// §F7's three settings reach **every seat**, not just the host's.
+/// §F7's three settings are **room-level fields of the one broadcast payload**,
+/// not per-seat ones.
 ///
-/// Read off the emitted JSON, because the claim is about what a client receives
-/// — `lobby_state` is broadcast to the whole room, so a guest's copy is the
-/// same payload and the wire keys are the thing that can be wrong.
+/// The narrower title is the honest one: `broadcast_lobby_state` sends a single
+/// payload to every socket, so this cannot prove delivery to a guest — it can
+/// only prove that what is delivered carries the settings once, at the top
+/// level, for whoever receives it. That *is* the claim worth pinning, because
+/// T19.08 adds `ownsSettings` gating in this area: if the settings ever move
+/// under a player entry, a guest would see nothing and the top-level assertions
+/// below go null.
+///
+/// The second seat is load-bearing for that: `settings_owner` must name the host
+/// and not the guest, and neither seat entry may carry a settings key.
 #[test]
-fn the_payload_carries_the_three_private_settings() {
+fn the_payload_carries_the_three_private_settings_once_for_the_whole_room() {
     use game_core::constants::{StartKit, ROUND_SECONDS_MIN, ROUND_SECONDS_STEP};
 
     let mut room = Room::new(cfg());
@@ -339,8 +347,7 @@ fn the_payload_carries_the_three_private_settings() {
         private: true,
     });
     let ana = seat(&mut room, "ana");
-    // A guest, so "every seat sees it" is not a claim about a lobby of one.
-    let _bo = seat(&mut room, "bo");
+    let bo = seat(&mut room, "bo");
 
     // The control frame: the defaults, before anything is changed.
     let before = lobby_state_payload(&room.lobby_state());
@@ -376,5 +383,23 @@ fn the_payload_carries_the_three_private_settings() {
     // would read `Value::Null` and compare unequal above, but say so poorly.
     for key in ["bots", "start_kit", "round_seconds"] {
         assert!(!p[key].is_null(), "{key} is missing from lobby_state");
+    }
+
+    // Room-level, and the host is not the guest. Both halves fail the moment a
+    // setting is moved under a seat, which is the regression this guards.
+    assert_eq!(p["settings_owner"], ana, "the host must own the settings");
+    assert_ne!(
+        ana, bo,
+        "the two seats must be distinct for that to mean anything"
+    );
+    let players = p["players"].as_array().expect("players is an array");
+    assert_eq!(players.len(), 2, "both seats must be in the payload");
+    for seat in players {
+        for key in ["bots", "start_kit", "round_seconds"] {
+            assert!(
+                seat[key].is_null(),
+                "{key} is carried per seat — a guest would only see the host's copy"
+            );
+        }
     }
 }

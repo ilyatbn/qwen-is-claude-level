@@ -14,7 +14,7 @@ client/src/core/pkg/
 
 # Debug artifacts
 /debug/
-/replays/
+replays/
 target/mapdump/
 
 # Env
