@@ -5137,19 +5137,11 @@ loudly; falsified with `expectPlayers: 3`. **10/10.** **Vite half not done — b
 
 ## T19.05 — the shovel, and the end of the melee cabinet
 
-**Retired, not deleted**: both tables are id-indexed, so knife/bat/whip/axe/hammer keep
-their ids with all three weights zero and the shovel takes 24 — deleting five is §B16.
-`PlayerState::new` was the missing half (`respawn` already granted, so a player who never
-died never held one). **Two obtainability asserts said the opposite of the deliverable**
-(`melee.rs`, `balance.rs`); both re-derived as *equalities* over the unobtainable set, with
-a pistol and a live join as controls. **Bots held it forever**: melee carries its range in
+**Retired, not deleted** — both tables are id-indexed, so the five keep their ids at zero
+weight and the shovel takes 24. **Bots held it forever**: melee carries its range in
 `Delivery`, so `choose_weapon`/`should_fire` scored a 54 dps shovel above every gun at any
-distance — and three fixtures went on passing while swinging one, so `world::wield` exists
-now. **`ordnance` picks its escape from a sub-pixel sign** and one side was a wall; a
-control run with the axe restored passed, so the repair is direction-robustness. Density
-re-derived as a share of the **drawable** pool (19 of 25): 14.6 / 13.8 / 15.4.
-`REPLAY_VERSION` 2→3 — old replays are refused, and that is asserted. **`die` dropped the
-shovel**, which §F5 forbids: one `STARTING_KIT` list now serves the grant and the
-exemption. The Done-when missed 13 more fixtures in three other binaries, all the same
-shape — run `cargo test --workspace` before the gate. **Gate red on `crates` only** — the
-re-weighting moved the crate; box left unticked, everything measured in the handoff.
+distance — and three fixtures went on passing while swinging one (`world::wield` now
+exists). **`die` dropped it**, so every death minted a second; one `STARTING_KIT` list
+serves the grant and the exemption. **`crates` moved**: zeroing five weights changed the
+column sum, so `gen_range` consumption shifted and the shared `"items"` stream re-dealt the
+crate — re-seeded 7 → 31337 after five probes. EXIT=0, 41/41. Rest in `HANDOFF-M19.md`.

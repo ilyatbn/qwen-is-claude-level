@@ -65,9 +65,14 @@ defect is a valued outcome here; several are recorded below rather than worked a
   against 22 today; retire five, add one → 18. The Done-when catches it; **the repair is
   the trap.** Its comment says it is the control against a collapsed arsenal, so lowering
   20 to 18 is "the number that made it pass". Re-derive it as a control.
-- **Task omission — four dead procedural art entries, not three.** `itemTextures.ts` has
-  `weapon_knife:83`, `weapon_whip:105`, **`weapon_axe:114`**, `weapon_hammer:125`.
-  `weapon_bat` does not exist.
+- **CORRECTED AFTER IMPLEMENTATION — the painters must STAY, and there are five.**
+  This entry originally said the task named three dead procedural entries when there were
+  four, and that `weapon_bat` did not exist. Both halves were wrong. `weapon_bat` **does**
+  exist (`itemTextures.ts:117`), so it is five — and none of them may be deleted:
+  `itemSprites-math.test.ts` reads the **live registry**, where the five retired ids still
+  resolve under the placeholder design, so removing their art fails on five entries. The
+  task file's "the dead procedural entries go with the weapons" is a consequence of the
+  deletion it assumed and does not survive retire-not-delete.
 - `inventory.test.ts:93` is stale but stays **green** — `tileLabel` is a pure passthrough
   with no registry lookup. Journal note, not a blocker.
 - **Task defects:** the Done-when is a filtered two-file vitest run over a change that

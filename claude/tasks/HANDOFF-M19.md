@@ -425,9 +425,12 @@ is done. What follows is the part that is not recoverable from the diff.
   *newer* than the build.
 - **Not done, deliberately.** `inventory.test.ts:93` still says `tileLabel({key:'axe'})`; it
   is a pure passthrough with no registry lookup, so it stays green and stale (the sweep says
-  the same). The four dead procedural painters (`weapon_knife/whip/axe/hammer`) **must**
-  stay: `itemSprites-math.test.ts` reads the live registry, where the five placeholders
-  still resolve, so deleting their art fails on five entries.
+  the same). **The five dead procedural painters must stay** —
+  `weapon_knife:83`, `weapon_whip:105`, `weapon_axe:114`, `weapon_bat:117`,
+  `weapon_hammer:125`. `itemSprites-math.test.ts`'s "the live registry has art for
+  everything" reads the registry, where the five placeholders still resolve, so deleting
+  their art fails on five entries. **Both the task file and the sweep were wrong here**:
+  the task lists three, the sweep four and says `weapon_bat` does not exist. It does.
 - **Death was dropping the shovel, and the deliverable says it cannot be.** `die` returns
   `inventory.drain_all()` and the world scatters those as pickups, so every death minted a
   shovel: the corpse's copy stayed on the ground *and* `respawn` granted a fresh one. The
@@ -445,37 +448,43 @@ is done. What follows is the part that is not recoverable from the diff.
   §F5's "floor of the arsenal" made literal and it is asserted in
   `combat::firing_respects_the_cooldown_and_the_ammo_count`, with a control that selects a
   genuinely empty slot so `EmptySlot` is still known to be reachable.
-### The one red: `crates`, and everything measured about it
+### Booked, found by T19.05 and not its to fix: the host that never learns its inventory
 
-**`crates` is the only check the gate is red on, and it is not a flake — it reproduces on
-an idle box, alone, with identical numbers.**
+`m10-checkpoint`'s host enters through the **menu** into a private lobby rather than
+through `enterBattle`, and `GameScene.slots` is filled *only* by the server's `inventory`
+event (`GameScene.ts:486`). For that host the event never arrives: measured, `debug().slots`
+was all-null for a full **30 s** while the room ticked at 60 Hz and every other assertion in
+the check passed. `harness.mjs::selectWeapon` reads exactly that array, so it cannot be used
+there — the check presses `Digit2` instead and says why. **An inventory the client never
+learns is a real defect**; every other check hides it because `enterBattle` seats them a
+different way. Reproduce with `node scripts/e2e.mjs m10-checkpoint` and a
+`waitForFunction` on `slots`.
 
-- **Mechanism.** `roll_item` is `pick_weighted(rng, weights(col))`, and `pick_weighted`
-  calls `rng.gen_range(0..total)` where `total` is the **sum of the column**. §F5 zeroed
-  five weapons, so `total` changed, so the number of words each draw consumes changed, so
-  every later draw in the `"items"` sub-stream moved. `tick_crates` shares that stream
-  (`spawning.rs:289,295`), so **the crate's x and its contents both moved.** This is
-  exactly what §F5 predicted ("removing five entries reshuffles every draw"); it is the
-  fixture that has to follow, not the code.
-- **The check is built to be re-seeded** — `CRATE_SEED` is an env var and its header
-  records three previous re-probes (4242 → 555 → 7) with the procedure. Probed after this
-  change: **7** blocked lane at (767, 702); **555** reachable, closest approach **0 px**,
-  never picked up; **99** blocked lane at (1276, 784), and its crate is never framed in
-  flight. A fourth probe was running at hand-off.
-- **The 555 result is not understood and is written down rather than smoothed over.** With
-  the player standing **0 px** from the crate for the full 70 s: crate is
-  `{id:11, item:0, source:"Crate", grounded:true}` — item 0 is `MEDKIT` — and the player
-  had `heals=0 batteries=0` (so `bump` cannot refuse), one shovel and one molotov in 24
-  slots (so `Inventory::add` cannot return `Full`), and was alive with 100 health. Ground
-  pickups worked in the same run (the molotov appeared in slot 1 mid-walk). By
-  `items/world.rs:341-381` that pickup should have happened. Either `debug().player` is
-  not the position `resolve_pickups` measures from, or something else is. **A repair that
-  makes the counters empty (`Q`/`R` while close) was tried and reverted — it changed
-  nothing, and CLAUDE.md says revert what you cannot explain.**
-- **Where to start:** print the *server's* player position beside the mirror's crate
-  position for one run. `debug().player` is the client's; nothing in `debug()` exposes the
-  server's own copy of the local player, which is itself worth fixing — a check whose whole
-  claim is a distance cannot verify it from one end.
+### `crates` — re-seeded, and what was measured getting there
+
+**Fixed by re-seeding, which is the procedure the check documents for itself.**
+`tick_crates` draws the crate's x and its contents from the `"items"` sub-stream
+(`spawning.rs:289,295`), and `roll_item` is `pick_weighted(rng, weights(col))` — which calls
+`gen_range(0..total)` against the **sum of the column**. §F5 zeroed five weapons, the sum
+changed, the number of words each draw consumes changed, and every later draw moved. That
+is the reshuffle §F5 asks for, not a break.
+
+Probed on an idle box, one seed at a time: **7** lane blocked at (767, 702), closest 239 px;
+**555** reachable, closest approach **0 px**, and never picked up; **99** lane blocked at
+(1276, 784) and its crate is never framed in flight; **4242** lane blocked at (1251, 504);
+**31337** takes the crate. So `CRATE_SEED` is 31337 (was 4242 → 555 → 7).
+
+**The 555 result is not understood, and it is written down rather than smoothed over.** At
+0 px for the full 70 s: crate `{id:11, item:0, source:"Crate", grounded:true}` — item 0 is
+`MEDKIT` — with the player at `heals=0 batteries=0` (so `bump` cannot refuse), one shovel and
+one molotov in 24 slots (so `Inventory::add` cannot return `Full`), alive at 100 health, and
+ground pickups working in the same run. By `items/world.rs:341-381` that pickup should have
+happened. **Do not re-seed onto 555 without reading this.** A repair that emptied the
+counters with `Q`/`R` while close was tried and **reverted** — it changed nothing, and
+CLAUDE.md says revert what you cannot explain. Where to start: nothing in `debug()` exposes
+the *server's* copy of the local player, so a check whose whole claim is a distance can only
+see one end of it.
+
 - **`SPAWN_IFRAMES` catches melee fixtures.** `add_player` stamps them on every joiner, so a
   swing at `now = 1.0` lands, is logged and deals **zero** — which reads exactly like a
   reach failure. `t1905_shovel::swing_damage` fires at `SPAWN_IFRAMES + 1.0` and says so.

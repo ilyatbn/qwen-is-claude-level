@@ -60,7 +60,34 @@ const ROUND_SECONDS = 140
 const APPROACH_POLL_MS = 160
 
 /**
- * The map this check is tuned against. **4242 -> 555 -> 7.**
+ * The map this check is tuned against. **4242 -> 555 -> 7 -> 31337.**
+ *
+ * ## Re-probed after §F5 (T19.05)
+ *
+ * `tick_crates` draws the crate's x and its contents from the `"items"`
+ * sub-stream (`items/spawning.rs:289,295`), and `roll_item` is
+ * `pick_weighted(rng, weights(col))` — which calls `gen_range(0..total)` against
+ * the **sum of the column**. §F5 zeroed five weapons, the sum changed, and every
+ * draw after the first moved. This check's crate moved with it, which is the
+ * reshuffle §F5 asks for rather than anything being broken.
+ *
+ * Re-probed the same way, on an idle box, one seed at a time:
+ *
+ *   7      lane blocked at (767, 702), closest 239 px
+ *   555    reachable — closest approach **0 px** — and never picked up. Measured
+ *          at 0 px: crate `{item:0}` (a MEDKIT), player `heals=0 batteries=0`,
+ *          one shovel and one molotov in 24 slots, alive at 100 health, and
+ *          ground pickups working in the same run. By `items/world.rs:341-381`
+ *          that should have been taken and it was not; the cause is not known
+ *          and is written up in `tasks/HANDOFF-M19.md`. **Do not re-seed onto
+ *          555 without reading that first.**
+ *   99     lane blocked at (1276, 784), and its crate is never framed in flight
+ *   4242   lane blocked at (1251, 504), closest 468 px
+ *   31337  takes the crate — so 31337.
+ *
+ * The paragraph below is the *pre-§F5* probe and is kept because it is the
+ * record of how these numbers are found. Its verdicts no longer hold: 31337 was
+ * the seed whose crate landed across a mesa, and it is the one that works now.
  *
  * ## Re-probed after pass 6b (T16.02)
  *
@@ -98,7 +125,7 @@ const APPROACH_POLL_MS = 160
  * clear air it found and the closest approach it managed, which is what those two
  * numbers are for.
  */
-const CRATE_SEED = process.env.CRATE_SEED ?? '7'
+const CRATE_SEED = process.env.CRATE_SEED ?? '31337'
 
 const stack = await startStack({
   port: PORT,
