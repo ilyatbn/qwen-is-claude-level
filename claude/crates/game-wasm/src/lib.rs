@@ -509,7 +509,11 @@ impl GameCore {
         let wind = self.map.meta.wind;
         // §F10, before the step for the same reason `World::step_placed` does it
         // there: a field over the cap must not get one more tick of damage.
-        game_core::weapons::flame::enforce_cap(&mut self.projectiles);
+        // The dropped ids are discarded here and that is not an oversight: the
+        // sandbox re-reads `liveProjectiles()` every frame rather than following
+        // a spawn/despawn stream, so a flame the cap removes is gone from the
+        // next read. The networked path has to announce them, and does.
+        let _culled = game_core::weapons::flame::enforce_cap(&mut self.projectiles);
         {
             let hits: HitLog = Default::default();
             {
@@ -1107,6 +1111,11 @@ pub fn constants_json() -> String {
         FLAME_RADIUS => c::FLAME_RADIUS,
         FLAME_LIFE => c::FLAME_LIFE,
         MOLOTOV_FLAMES => c::MOLOTOV_FLAMES,
+        // §F10.3's worst case: `fire-visible` lays down a full field and reports
+        // what it costs to draw and to light. A browser check carrying its own
+        // copy of the cap is §A19 — it would go on measuring 160 the day the cap
+        // moved, and report a full field it never built.
+        FLAME_MAX_LIVE => c::FLAME_MAX_LIVE,
         TOXIC_POISON_DURATION => c::TOXIC_POISON_DURATION,
         TOXIC_POISON_DPS => c::TOXIC_POISON_DPS,
         TOXIC_DROP_CARVE_R => c::TOXIC_DROP_CARVE_R,

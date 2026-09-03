@@ -941,8 +941,13 @@ mod tests {
         //
         //   - `Melee` — an axe and a hammer dig (that is what makes melee a
         //     tunnelling tool as well as a last resort), a knife and a bat do not.
-        //   - `Cone`  — fire does not dig (§B6), which is what stops the
-        //     flamethrower being strictly better than what it competes with.
+        //   - `Flames` — fire does not dig on impact (§B6), which is what stops
+        //     the flamethrower being strictly better than what it competes with.
+        //     **This name is the mechanism**, so it is kept in step: it read
+        //     `Cone` until §F10.2 deleted `Delivery::Cone`, and a reader who
+        //     greps a name that no longer exists cannot tell an intended
+        //     exemption from a leftover one. What a flame *does* to the ground
+        //     is `FLAME_SCORCH_R`, applied while it burns, not here.
         //
         // This is stricter than the rule it replaces, not looser: the old version
         // passed a weapon that carved and did no damage at all.

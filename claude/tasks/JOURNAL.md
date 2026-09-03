@@ -5193,56 +5193,54 @@ inside `stepSetting`. EXIT=0, 41/41, 25/25, assets ok.
 ## T19.09 — the teleport charge is 1.5 seconds
 
 `TELEPORT_CHARGE` 2.0 → 1.5 (§F8). The sweep was right that the task's stated worry is
-unfounded — the client has no copy and all 28 read sites were already pinned — and right
-that the real risk was the inverse, so the gate was the deliverable: **a shorter fuse
-teleported nobody by accident**, 41/41 e2e green. Added
-`the_charge_lasts_exactly_teleport_charge`, the only fixture that pins the *duration*
-rather than "it fired eventually"; falsified at the live binding site (`elapsed >=
-TELEPORT_CHARGE * 0.5` → red at tick 46 of 90). Counted in **ticks**, because both clocks
-are accumulated `f32`s. Four stale "two seconds" comments repointed. **Noted, not fixed:**
-`teleport.mjs:211`'s absence window is `TELEPORT_CHARGE * 2500`, so it falls 5.0 s → 3.75 s
-— correctly pinned, and proving less. EXIT=0, 41/41, net smoke 25/25, assets ok.
+unfounded — the client has no copy, all 28 read sites were already pinned — and right that
+the real risk was the inverse, so the gate was the deliverable: **a shorter fuse teleported
+nobody by accident**. Added `the_charge_lasts_exactly_teleport_charge`, the only fixture
+pinning the *duration* rather than "it fired eventually"; falsified at the live binding site
+(red at tick 46 of 90), counted in **ticks** because both clocks are accumulated `f32`s.
+Four stale "two seconds" comments repointed. `teleport.mjs:211` noted, not fixed — HANDOFF.
+EXIT=0, 41/41, net smoke 25/25, assets ok.
 
 ## T19.10 — fog fills the screen
 
-A grey screen-space veil at `FOG_SCREEN_ALPHA × strength()`, `DEPTH.fog = 55` — in the
-50–60 gap the sweep named, so `terrain-render`'s pinned depth list is untouched, and above
-the lightmap so the acceptance is the alpha rather than the alpha times the night curve.
-Acceptance is an **alpha composite**, not a delta: measured error 0.6/2.0 (sandbox),
-0.6/3.5 (game). The strength comes from Rust through WASM (`fog_strength`), never a second
-smoothstep. **The veil broke `crates`** — measured, 3/3: a full fog scales every colour
-delta by 0.2 and the canopy read 66 → 11-14. Fixed by `WEATHER=off`, a new `Config` switch
-in the `DEV_POISONED` family; `WEATHER=fog` is the same switch pointed the other way and is
-what makes the new `fog-visible` check possible at all. With the game wiring falsified,
-`weather-visible` stayed **green** — §C0 live. EXIT=0, 42/42, net smoke 25/25, assets ok.
+A grey screen-space veil at `FOG_SCREEN_ALPHA × strength()`, `DEPTH.fog = 55` — the 50–60
+gap the sweep named, so `terrain-render`'s pinned depth list is untouched, and above the
+lightmap so the acceptance is the alpha rather than alpha × the night curve. Acceptance is
+an **alpha composite**, not a delta: error 0.6/2.0 (sandbox), 0.6/3.5 (game). The strength
+comes from Rust through WASM (`fog_strength`), never a second smoothstep. **The veil broke
+`crates`**, measured 3/3 — fixed by the new `WEATHER` switch, which is also what makes
+`fog-visible` possible at all (HANDOFF). Falsified: `weather-visible` stayed green, §C0 live.
+EXIT=0, 42/42, net smoke 25/25, assets ok.
 
 ## T19.11 — fire is an object
 
 `WEAPON_FLAME` (id 25, appended) is a `Delivery::Projectile` with a fuse, no contact
-explosion and a new `Burst::Flame` — a grenade that does not go off — so it bounces, rests
-and expires on the **shared** step. `weapons/flame.rs` holds only what a projectile step
-has no opinion about: the continuous burn, the scorch timer (derived from `spawned_at`, no
-new field) and the global cap. Three things the task file does not mention and one of them
-is a bug it would have shipped: a flame needs a `WeaponId` (so `WEAPON_KEYS` gains `flame`,
-two languages); **`Projectiles::step` stopped every projectile on a body**, so a flame died
-on the person it set on fire — now keyed on `Burst::Flame`; and `BurnField`'s
-`radius + w * 0.5` overlap test ignores `h`, which put a flame **resting at your feet** 4 px
-outside its own radius. `touching` is circle-vs-box. **Nothing emits a flame yet — the
-production-caller grep is T19.12's**, said in the module header. 160 flames = 3200
-`ProjectileMove`/s, ~50 kB/s. EXIT=0, 42/42, net smoke 25/25, assets ok.
+explosion and a new `Burst::BurnsOut` — a grenade that does not go off — so it bounces,
+rests and expires on the **shared** step. `weapons/flame.rs` holds only the continuous burn,
+the scorch timer (derived from `spawned_at`, no new field) and the global cap. Three things
+the task file does not mention, one of them a bug it would have shipped: a flame needs a
+`WeaponId` (two languages); `Projectiles::step` stopped every projectile on a body, so a
+flame died on the person it lit; `BurnField`'s overlap test ignores `h` — all three in
+HANDOFF. Nothing emits a flame yet; that grep is T19.12's. EXIT=0, 42/42, 25/25, assets ok.
 
 ## T19.12 — what lights a fire
 
 Three emitters, one `light_fan`: the flamethrower's `Delivery::Flames` (replacing
 `Delivery::Cone`, deleted with `cone.rs`), the molotov's `Burst::Flames` (replacing
 `Burst::Zone { Fire }`), and a vent's afterburn. `BurnKind::Fire` is retired; `BurnField`
-holds the toxic grenade's cloud alone. **The balance harness says §F10 was the fix T11.09
-was looking for**: flamethrower 0.37 → **1.33** dmg/bot-s and molotov 0.46 → **1.48**, with
-self-damage **1.68/1.79 → 0.00** — because `hazard_at` can now see fire, which is the
-reader that had to be re-pointed or bots would have walked into flames with every test
-green. **The measured reach is a finding**: 53 px level, 509 px lobbed, against a retired
-`FLAMETHROWER_RANGE` of 150 — the weapon changed character. Two shared bugs found: a
-derived timer double-fired on `f32` drift (a vent emitted 22 in a 3 s window, not 18) —
-`math::fired_this_tick` now owns it for both timers; and the molotov's bot stand-off had to
-be re-derived ballistically, not from `speed × FLAME_LIFE`, which was 2.7× too big and
-refused 120 throws of 120. EXIT=0, 42/42, net smoke 25/25, assets ok.
+holds the toxic cloud alone. **The balance harness says §F10 was the fix T11.09 wanted**:
+flamethrower 0.37 → **1.33** dmg/bot-s, molotov 0.46 → **1.48**, self-damage 1.68/1.79 →
+**0.00** — `hazard_at` can now see fire, the reader that had to be re-pointed or bots walk
+into flames with every test green. The measured reach, and two shared bugs found (a derived
+timer double-firing on `f32` drift; the stand-off re-derived) — HANDOFF. EXIT=0, 42/42.
+
+## T19.13 — flames on screen
+
+A flame is drawn per object — a flickering blob keyed to id + time, no trail once it rests
+— on its **own non-additive Graphics**: ten overlapping oranges summed past white, so fire
+read as steam *and* hid from the check (a saturated centre has `r-b = 0`; hot pixels 1551 →
+2952 once painted). Both burning-ground draws go, and the `'fire'` `HazardKind` with them.
+**Task defect: the ≥12 clusters asked for is arithmetically impossible** — 24 flames over
+~100 px with `FLAME_RADIUS` 10 touch — so `fire-visible` counts at both ends instead, and
+found a real bug: the cap culled flames **in silence**, 176 live on the client against 160.
+Falsified by drawing the disc §F10 replaced. EXIT=0, 43/43, net smoke 25/25, assets ok.

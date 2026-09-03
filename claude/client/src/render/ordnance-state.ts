@@ -34,6 +34,7 @@ export type ProjectileKind =
   | 'molotov'
   | 'toxic'
   | 'drop'
+  | 'flame'
 
 /**
  * How each projectile looks (§C4). Deliberately placeholder art — coloured dots
@@ -72,6 +73,12 @@ export const LOOK: Record<ProjectileKind, ProjectileLook> = {
   drop: { r: 3, colour: 0x9bf05a, trail: 8 },
   meteor: { r: 8, colour: 0xff4433, trail: 14 },
   fragment: { r: 3, colour: 0xff7755, trail: 5 },
+  // §F10.3. Drawn a little larger than `FLAME_RADIUS` (10) hurts, because a
+  // flame's *glow* is what you see and its damage circle is what you feel, and
+  // a blob smaller than the thing that burns you reads as a near miss. The
+  // trail is short: a flame flies for a fraction of its life and rests for the
+  // rest of it, and a long tail behind a resting flame is a smear.
+  flame: { r: 7, colour: 0xff8a2b, trail: 4 },
 }
 
 /**
@@ -150,6 +157,9 @@ export const KIND_BY_WEAPON_KEY: Record<string, ProjectileKind> = {
   smoke: 'smoke',
   molotov: 'molotov',
   toxic_grenade: 'toxic',
+  // §F10.3. Every fire in the game is one of these now — a flamethrower press,
+  // a molotov's crowd and a lava vent's afterburn all arrive as this weapon.
+  flame: 'flame',
 }
 
 export interface TrailPoint {
@@ -236,6 +246,10 @@ const GLOW: Record<ProjectileKind, { r: number; a: number }> = {
   // no more. A drop that lit the ground like a rocket would make a toxic storm
   // brighter than daylight — twenty of them are in the air at once.
   drop: { r: 24, a: 0.35 },
+  // §F10.3: "a fire lights the ground around it at night". Modest per flame and
+  // dim, because `FLAME_MAX_LIVE` is 160 and a molotov alone puts 24 down at
+  // once — a rocket's 90/0.85 repeated two dozen times would be daylight.
+  flame: { r: 44, a: 0.4 },
 }
 
 export class OrdnanceState {
@@ -357,4 +371,49 @@ export class OrdnanceState {
       impacts: this.impacts.length,
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// F10.3 — a flame flickers
+// ---------------------------------------------------------------------------
+
+/**
+ * A flame's brightness right now: `0.75 .. 1.0`, and **deterministic**.
+ *
+ * Keyed on the flame's id and the time, never on a per-frame draw. `CLAUDE.md`:
+ * a gate that fails on a coin flip gates nothing — and `fire-visible` counts
+ * *clusters of lit pixels across two frames*, so a flicker re-rolled each frame
+ * would make the count a dice throw. Two calls with the same id and the same
+ * time give the same number, which is what the unit test asserts.
+ *
+ * The id is folded in so a crowd does not pulse in unison: twenty-four flames
+ * breathing together reads as one object with a heartbeat, which is the decal
+ * §F10 exists to stop being.
+ */
+export function flameFlicker(id: number, timeMs: number): number {
+  // Two incommensurable rates so the pattern does not repeat visibly, and an
+  // id-derived phase so neighbours are out of step. `sin` rather than a hash:
+  // a flame's brightness has to move *smoothly*, or it strobes.
+  const phase = (id % 97) * 0.6180339887
+  const t = timeMs / 1000
+  const a = Math.sin(t * 11.0 + phase)
+  const b = Math.sin(t * 17.0 + phase * 2.3)
+  return 0.875 + 0.125 * (a * 0.6 + b * 0.4)
+}
+
+/**
+ * Is this flame at rest?
+ *
+ * Derived from the trail, not sent: `projectile_move` carries a position and
+ * nothing else, and adding a `resting` bit to the wire would put a rendering
+ * decision into the protocol — the same argument `bulletStreak` makes about
+ * velocity. Two samples in the same place is what resting looks like.
+ *
+ * A flame with fewer than two samples has not moved yet either, so it counts as
+ * at rest: it was spawned this frame and has no direction to draw a trail along.
+ */
+export function flameAtRest(p: { x: number; y: number; trail: TrailPoint[] }): boolean {
+  const prev = p.trail.length >= 2 ? p.trail[p.trail.length - 2] : undefined
+  if (!prev) return true
+  return Math.hypot(p.x - prev.x, p.y - prev.y) < 0.5
 }

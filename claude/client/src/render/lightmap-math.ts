@@ -82,7 +82,7 @@ export interface WorldLights {
   remotePlayers: readonly Omit<PlayerLight, 'health'>[]
   /** `age` in seconds since the blast. */
   explosions: readonly { x: number; y: number; age: number }[]
-  hazards: readonly { x: number; y: number; kind: 'lava' | 'burn' | 'meteor' | 'flame' }[]
+  hazards: readonly { x: number; y: number; kind: 'lava' | 'burn' | 'meteor' }[]
   darkness: number
   fogMult: number
 }
@@ -93,19 +93,20 @@ export const FLASH_DECAY = 0.2
 /**
  * How far each hazard lights the ground at night.
  *
- * `flame` is `FLAME_RADIUS` scaled up, not a fourth inline number: what a flame
- * *damages* is 10 px and what it *lights* is the glow around it, and tying the
- * two together is what stops a change to one silently moving the other. The
- * other three are still inline because the discs they belong to were never
- * constants (§F10.2 retired `LAVA_BURN_RADIUS`, which was the one that was).
+ * **No `flame` entry, deliberately, and the reason is worth reading once.**
+ * §F10.3 says a flame "lights the world through the existing lightmap hazard
+ * path". That path is `collectLightSources`, below — and **it has no production
+ * caller.** Grepped: the only callers in the tree are its own unit tests.
+ * `GameScene` builds its light list from `OrdnanceState.lights()` and
+ * `OrdnanceFxState.lights()` directly (`GameScene.ts:1498`), and the sandbox
+ * does not light at all. A `flame` row here would have lit nothing.
+ *
+ * So a flame lights the world the way every other projectile does, through
+ * `GLOW` in `ordnance-state.ts` and `OrdnanceState.lights()` — the path that is
+ * actually wired to the lightmap. The hazards this table is for are the
+ * server-announced zones, and §F10.2 stopped a flame being one of them.
  */
-const FLAME_LIGHT_MULT = 4
 const HAZARD_RADIUS: Record<string, number> = { lava: 150, burn: 90, meteor: 120 }
-
-/** The radius for kinds whose number lives in the shared constants. */
-function hazardRadius(kind: string): number {
-  return kind === 'flame' ? C().FLAME_RADIUS * FLAME_LIGHT_MULT : 100
-}
 
 /**
  * Every light that should erase darkness this frame.
@@ -171,7 +172,7 @@ export function collectLightSources(w: WorldLights): LightSourceSpec[] {
     out.push({
       x: h.x,
       y: h.y,
-      radius: (HAZARD_RADIUS[h.kind] ?? hazardRadius(h.kind)) * w.fogMult,
+      radius: (HAZARD_RADIUS[h.kind] ?? 100) * w.fogMult,
       kind: 'radial',
       intensity: 0.85,
     })

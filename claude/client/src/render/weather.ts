@@ -25,6 +25,17 @@ export interface VentView {
 
 const RAIN_COLOUR = 0x7fe04a
 const EMBER_COLOUR = 0xff7a1a
+/**
+ * The glowing mouth of a burning vent, px.
+ *
+ * It was 26 and it was the **burning-ground disc** — the decal §F10 replaced.
+ * A vent's afterburn is `LAVA_FLAMES_PER_SECOND` real flames now, each drawn as
+ * its own object by the ordnance layer and each on fire for `FLAME_LIFE`; a disc
+ * this wide sat *over* them and flattened a crowd back into one blob. Small
+ * enough to say "this vent is still going" and too small to stand in for the
+ * fire, which is the whole distinction.
+ */
+const VENT_MOUTH_R = 8
 
 export class WeatherLayer {
   private readonly rainGfx: Phaser.GameObjects.Graphics
@@ -170,13 +181,13 @@ export class WeatherLayer {
       g.fillStyle(EMBER_COLOUR, 0.8 * a)
       g.fillCircle(e.x, e.y, 1.5 + 3 * a)
     }
-    // Burning ground flickers rather than sitting still: a constant disc reads as
-    // a decal, and this is meant to look dangerous.
+    // §F10.2/§F10.3: what is left here is the vent's mouth, not its fire — see
+    // `VENT_MOUTH_R`.
     for (const v of vents) {
       if (!v.burning) continue
       const f = 0.35 + 0.15 * Math.sin(performance.now() * 0.02 + v.x)
       g.fillStyle(0xff4400, f)
-      g.fillCircle(v.x, v.y, 26)
+      g.fillCircle(v.x, v.y, VENT_MOUTH_R)
     }
   }
 

@@ -226,6 +226,8 @@ export interface Constants {
   FLAME_RADIUS: number
   FLAME_LIFE: number
   MOLOTOV_FLAMES: number
+  /** §F10.3 — the global cap, and the field `fire-visible` measures against. */
+  FLAME_MAX_LIVE: number
   TOXIC_POISON_DURATION: number
   TOXIC_POISON_DPS: number
   TOXIC_DROP_CARVE_R: number

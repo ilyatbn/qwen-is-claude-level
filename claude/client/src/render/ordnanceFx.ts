@@ -29,7 +29,6 @@ const MINE_NEAR = 40
 const MINE_FAR = 300
 
 const HAZARD_COLOUR: Record<HazardKind, number> = {
-  fire: 0xff7a1a,
   toxic: 0x7fe04a,
   smoke: 0xb9c0c8,
   other: 0xcccccc,
@@ -106,18 +105,15 @@ export class OrdnanceFxLayer {
           g.fillCircle(h.x + Math.cos(a) * h.r * 0.22, h.y + Math.sin(a) * h.r * 0.14, h.r * 0.78)
         }
       } else {
-        g.fillStyle(colour, (h.kind === 'fire' ? 0.4 : 0.3) * t)
+        // **The burning-ground disc is gone** (§F10.2/§F10.3). This branch used
+        // to have a `fire` arm with its own flickering dots, and it was the
+        // decal M19 exists to replace: a circle that damages you while you stand
+        // in it says nothing about where the fire is going. A toxic cloud is
+        // still a zone, because a zone is what it *is*.
+        g.fillStyle(colour, 0.3 * t)
         g.fillCircle(h.x, h.y, h.r)
         g.lineStyle(2, colour, 0.75 * t)
         g.strokeCircle(h.x, h.y, h.r)
-        if (h.kind === 'fire') {
-          // Flicker, so burning ground does not read as a painted decal.
-          for (let i = 0; i < 4; i++) {
-            const a = now * 0.006 + i * 1.57
-            g.fillStyle(0xffd070, 0.5 * t)
-            g.fillCircle(h.x + Math.cos(a) * h.r * 0.5, h.y + Math.sin(a) * h.r * 0.5, 3)
-          }
-        }
       }
     }
 

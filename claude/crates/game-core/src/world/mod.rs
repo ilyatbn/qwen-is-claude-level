@@ -435,6 +435,13 @@ pub enum DespawnReason {
     /// the projectile on any reason, so this costs nothing on the wire and keeps
     /// the log honest about why a round vanished.
     Spent,
+    /// A flame dropped by `FLAME_MAX_LIVE` (§F10). It did not burn out — the
+    /// budget did.
+    ///
+    /// Its own word for the same reason `Spent` is: this is the only despawn a
+    /// player can cause by holding a trigger too long, and a round where fire is
+    /// vanishing early should say so in its log rather than reading as `Expired`.
+    Culled,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -1964,7 +1971,18 @@ impl World {
         // never gets to damage anyone: a cap applied afterwards would let an
         // unbounded field deal unbounded damage for one tick each time, which is
         // the shape T19.03's banking bug had.
-        crate::weapons::flame::enforce_cap(&mut self.projectiles);
+        // **Announced, not just removed.** `Projectiles::remove` is silent, and a
+        // client only drops a projectile when it is told to — so before this,
+        // every flame the cap dropped went on burning on every screen for the
+        // rest of the round. Measured with `fire-visible`'s full field: 176 live
+        // flames on the client against a cap of 160, and the surplus stayed.
+        for id in crate::weapons::flame::enforce_cap(&mut self.projectiles) {
+            self.events.push(GameEvent::ProjectileDespawn {
+                tick,
+                id,
+                reason: DespawnReason::Culled,
+            });
+        }
         let (ended, scorches) = {
             let (mut closures, meta, mut bird_vels) =
                 hit_targets(&self.players, &self.birds, &log, &bird_log, now);

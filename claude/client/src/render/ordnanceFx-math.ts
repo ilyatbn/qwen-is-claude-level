@@ -47,9 +47,18 @@ export interface Mine {
   age: number
 }
 
-export type HazardKind = 'fire' | 'toxic' | 'smoke' | 'other'
+/**
+ * **No `fire` since §F10.2.** Burning ground was a `HazardSpawn` the client drew
+ * as a disc; a molotov bursts into `MOLOTOV_FLAMES` projectiles now and each one
+ * draws itself in the ordnance layer. `BurnZone` has a single variant left, so
+ * the only hazards a server still narrates are the toxic grenade's cloud and
+ * smoke — and a kind spelled `Fire` arriving here would be a *bug*, not a disc
+ * to draw, which is why it falls through to `other` rather than keeping a
+ * private renderer alive for nobody.
+ */
+export type HazardKind = 'toxic' | 'smoke' | 'other'
 
-/** A ground hazard: a molotov's fire, a toxic zone, or a smoke cloud. */
+/** A ground hazard: a toxic zone, or a smoke cloud. */
 export interface Hazard {
   id: number
   kind: HazardKind
@@ -72,8 +81,8 @@ export interface FxLight {
 }
 
 /**
- * The server sends `kind` as a Rust `Debug` string (`Fire`, `ToxicZone`,
- * `Smoke`, `LavaBurn`…). Match on substrings rather than exact values: the
+ * The server sends `kind` as a Rust `Debug` string (`ToxicZone`, `Smoke`…).
+ * Match on substrings rather than exact values: the
  * client must not break when a variant is renamed, and an unknown kind draws as
  * a neutral zone rather than throwing.
  *
@@ -85,7 +94,6 @@ export function hazardKind(raw: string): HazardKind {
   const s = raw.toLowerCase()
   if (s.includes('smoke')) return 'smoke'
   if (s.includes('toxic')) return 'toxic'
-  if (s.includes('fire') || s.includes('burn') || s.includes('lava')) return 'fire'
   return 'other'
 }
 
@@ -192,8 +200,11 @@ export class OrdnanceFxState {
       })
     }
     for (const h of this.hazards.values()) {
-      if (h.kind === 'fire') out.push({ x: h.x, y: h.y, r: h.r * 2.2, a: 0.65 })
-      else if (h.kind === 'toxic') out.push({ x: h.x, y: h.y, r: h.r * 1.4, a: 0.28 })
+      // §F10.2 took the fire zone's light with the fire zone. What lit the
+      // ground around a molotov now is the flames themselves, through
+      // `OrdnanceState.lights()` — one light per burning object rather than one
+      // per announced rectangle of rule.
+      if (h.kind === 'toxic') out.push({ x: h.x, y: h.y, r: h.r * 1.4, a: 0.28 })
     }
     return out
   }

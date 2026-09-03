@@ -932,7 +932,7 @@ header, so a reader meeting a mechanism with no caller does not conclude it was 
 1. **A flame died on contact with a body.** `Projectiles::step`'s player-AABB loop runs for
    every delivery kind, so the first person a flame touched extinguished it — §F10.1 says
    its only end is `FLAME_LIFE`. The guard is now `ends_only_on_its_timer`, keyed on
-   `Burst::Flame` rather than on the weapon id, so the property belongs to "its end is its
+   `Burst::BurnsOut` rather than on the weapon id, so the property belongs to "its end is its
    own timer" rather than to one row of the table. Terrain is unaffected: a flame bounces
    there through `explode_on_contact: false`.
 2. **The shared overlap test ignores `h`.** `BurnField::tick` asks
@@ -959,7 +959,7 @@ header, so a reader meeting a mechanism with no caller does not conclude it was 
   will make flames and a fourth is the one that forgets. Oldest is lowest id — ids are
   monotonic, so id order *is* spawn order, and `spawned_at` would need a tie-break for the
   two dozen a molotov spawns on one tick. Falsified by dropping the newest instead.
-- **`Burst::Flame`'s "it does something" guard is a `const _: () = assert!(...)`**, not a
+- **`Burst::BurnsOut`'s "it does something" guard is a `const _: () = assert!(...)`**, not a
   line in `every_weapon_digs`. A flame's numbers are constants, so a runtime assertion on
   them is one the compiler folds — clippy rejects it as `assertions_on_constants`. The
   const version fails the build, which is strictly earlier.
@@ -1046,7 +1046,94 @@ inside `SPAWN_IFRAMES` and refuses every point of damage — which reads exactly
 burns nobody". Wait the warmup out for real. It is now written into
 `a_molotov_that_lands_on_a_player_still_bursts_and_burns_them` beside the fixture.
 
-## Where the next agent picks up (this coder retiring at ~380k)
+## T19.13 landed — what the diff does not say
+
+**Task-file defect, and it is the headline.** T19.13's Tests ask for *"cluster count after a
+molotov is >= half `MOLOTOV_FLAMES`"* — twelve connected components of hot pixels. That is
+**arithmetically impossible**, not a shortfall in the drawing. Measured over two throws on
+`FIXED_SEED=4242`: 24 flames settle across **92-108 world px**, so neighbours average ~4 px
+apart, while `FLAME_RADIUS` is 10 and a flame is drawn about as wide. They touch whatever
+the renderer does; the connected-component count is 2-4 and no drawing can raise it.
+Lowering the floor to whatever came out would have been the number-that-made-it-pass trap,
+so **the count is reported and not asserted on**, and three assertions counted at both ends
+replaced it (see the check's header). The instrument is fine — it reports 0 with nothing
+lit — the target was wrong.
+
+**§F10.3 names a dead path.** *"It lights the world through the existing lightmap hazard
+path"* — that path is `collectLightSources` (`lightmap-math.ts:112`), and **it has no
+production caller**: grepped, the only callers in the tree are its own unit tests.
+`GameScene.ts:1498` builds its light list from `OrdnanceState.lights()` and
+`OrdnanceFxState.lights()` directly, and the sandbox does not light at all. T19.12 added a
+`flame` row to that table and it would have lit nothing; the row is gone and a flame lights
+the world through `GLOW` like every other projectile, which is the wired path. Said in the
+file so the next reader does not re-add it.
+
+**Two burning-ground draws, and the task names one.** T19.13's Read-first calls `weather.ts`
+`fireGfx` *"the burning-ground draw being removed"*; it is not — `drawFire` is vent embers
+plus a per-vent disc, and that disc is now `VENT_MOUTH_R` 8 rather than 26, a mouth and not
+a fire. The molotov's disc was `ordnanceFx.ts` drawing `state.hazards` of kind `fire`. With
+`BurnZone::Fire` retired, **no server narrates a fire hazard at all**, so the whole `'fire'`
+`HazardKind` is retired client-side: the disc, its flicker dots, its colour and its light.
+`hazardKind('Fire')` now answers `'other'`, and the two spellings are kept in the unit test
+as the falsification — if a fire zone ever returns, that test is where it is noticed.
+
+**A real bug the new check found: the cap culled flames in silence.** `enforce_cap` called
+`Projectiles::remove` and said nothing, and a client only drops a projectile when a
+`ProjectileDespawn` arrives — so **every flame the cap dropped went on burning on every
+screen for the rest of the round**. Measured: a full field read **176** live flames on the
+client against a cap of 160, and the surplus never came down. `enforce_cap` now returns the
+ids it dropped, `World::step_placed` announces each as `DespawnReason::Culled` (a new
+variant, for the reason `Spent` is one), and the same field now reads 130-158. The sandbox
+discards the ids deliberately — it re-reads `liveProjectiles()` every frame. Counted at both
+ends in `delivery.rs`: 40 over the cap, 40 announced.
+
+**Flames are painted, not summed, and that was measured.** The ordnance layer blends `ADD`,
+which is right for tracers and wrong for a crowd: ten overlapping oranges sum past white in
+every channel, and `shots/fire-crowd.png` showed a fire drawn as two pale bulbs that read as
+steam. It was also fooling the check — a saturated centre has `r - b == 0`, so the *hottest*
+part of the fire failed the "is this warm" test and only the rims were counted. Flames now
+draw on their own `Graphics` with no blend mode, created before the additive one so it sits
+underneath at the same depth. Same throw, same threshold: hot pixels **1551 -> 2952**. What
+makes a flame read at night is its light (`GLOW`), not its blend mode, and that is unchanged.
+
+**The picture is faithful; the crowd is not scattered — that is the simulation.** 24 flames
+settle into **2-4 piles**, not 24 points, because a flame slides downhill on every bounce
+(`bounce()` applies `FLAME_FRICTION` to the whole velocity, so a slope accelerates it until
+it reaches a flat spot) and nothing keeps two flames apart. Aimed into a valley: 2 spots.
+Aimed down-left: 3, of 8/7/9. This is a design observation for the coordinator, not a
+rendering bug — a molotov's area denial collapses to a few points, and §F10's picture of a
+crowd spreading along the ground is only half delivered. Flame-flame separation, or a static
+friction that stops a flame where it lands, would be the change; neither is a builder's.
+
+**Perf, as §F10.3 asks: a full field does not hold 60 fps, and the cost is the drawing.**
+On the real server (the sandbox has no flame emitter in its loadout, and granting one there
+would move the slots five other checks select from): **16.5 ms/frame quiet, 25.3 ms with
+~150 live flames — 40 fps**. With the falsification in place, which drew *one* flame and
+kept the same wire traffic, it was 17.9 ms. So it is the per-flame draw and light, not
+`ProjectileMove`, that costs. Reported, not capped: `fire-visible` gates only at 50 ms so a
+loaded box cannot trip it, and a `FLAME_MAX_LIVE` change is the coordinator's.
+
+**The flame field is deterministic**, which is what lets the check gate on structure:
+`FIXED_SEED=4242` with a fixed aim gave byte-identical resting positions across four runs
+(4 distinct spots, 108 px). It is pinned to the seed, so a map-generation change will move
+it — the failure would read "the crowd did not scatter", which is the honest message.
+
+**`checksum.rs` is wall-clock sensitive and flaked once under load.** The first gate run of
+this shift was started at load average 2.69 (decaying from the browser check that had just
+finished) and `two_clients_agree_on_the_mask_after_a_hundred_carves` and
+`a_joiner_that_delays_ready_still_gets_every_carve` failed with *"expected the fires to
+produce carves; got 13"* and *"got 5"* against floors of 50 and 6. Both are green 3/3
+standalone on the same tree, green at `51f6aec` 3/3, and green in a full `cargo test
+--workspace` on an idle box. **Not added to any known-flaky list** — one observation is not
+a population — but they are socket tests that fire 100 times on a 110 ms clock, so they are
+candidates. Wait for the load to fall before starting the gate; `until awk '{exit !($1 <
+0.6)}' /proc/loadavg; do sleep 15; done` is what this shift used.
+
+**Already done, despite the task file:** T19.13's deliverable list says `ordnance.mjs:348`
+and `:364` are repaired here. T19.12 repaired both — `d.jets` is gone and the molotov step
+counts `flamesSpawned` against `MOLOTOV_FLAMES`. Nothing to do.
+
+## Where the T19.08 coder handed over (retiring at ~380k; HEAD was `fbcdd87`)
 
 **HEAD is `fbcdd87`. The tree is clean, `git stash` is empty, and the last full gate was
 EXIT=0 — 41/41 e2e, net smoke 25/25 joined, assets ok.** The untracked `CLAUDE.md` symlink

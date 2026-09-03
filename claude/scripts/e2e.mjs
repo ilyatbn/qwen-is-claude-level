@@ -117,6 +117,11 @@ const CHECKS = [
   // real server, because crates come from the server's spawn schedule and there
   // is no sandbox path to one.
   { name: 'crates', file: 'scripts/checks/crates.mjs', standalone: true },
+  // §F10.3: **a molotov's fire, in the game, in pixels.** Standalone — it needs
+  // a real server, because a molotov's crowd is `Burst::Flames` narrated as 24
+  // `projectile_spawn` events and the sandbox has no molotov in its loadout. It
+  // also carries §F10.3's full-flame-field frame time, for the same reason.
+  { name: 'fire-visible', file: 'scripts/checks/fire-visible.mjs', standalone: true },
   // §F9: the fog veil **in the game**, not only in the sandbox. Standalone — it
   // needs a real server, because a networked client learns that fog exists from
   // an `effect_start` event and the sandbox path never sends one.

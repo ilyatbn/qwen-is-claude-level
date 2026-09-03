@@ -712,6 +712,28 @@ fn a_full_flame_field_costs_what_the_cap_says_it_does() {
         live, FLAME_MAX_LIVE,
         "the cap is not enforced inside `World::step` — {live} flames alive"
     );
+    // **And the clients are told.** A client drops a projectile only when a
+    // `ProjectileDespawn` arrives, so a flame the cap removes in silence burns on
+    // every screen for the rest of the round — measured through `fire-visible`,
+    // which read 176 live flames against this cap of 160 and never came back
+    // down. Counted at both ends: 40 over the cap, 40 announced.
+    let culled = w
+        .events_so_far()
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                game_core::world::GameEvent::ProjectileDespawn {
+                    reason: game_core::world::DespawnReason::Culled,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        culled, 40,
+        "the cap dropped 40 flames and announced {culled} of them"
+    );
     // 16 bytes an entry is the wire's own shape (id, x, y as f32 plus a tag);
     // the point of the number is its order of magnitude, and it is printed so a
     // future change to `FLAME_MAX_LIVE` can be argued about with a figure.

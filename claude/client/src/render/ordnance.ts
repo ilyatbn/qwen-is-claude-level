@@ -10,6 +10,8 @@ import Phaser from 'phaser'
 import { C } from '../core'
 import {
   bulletStreak,
+  flameAtRest,
+  flameFlicker,
   LOOK,
   OrdnanceState,
   type Light,
@@ -21,8 +23,24 @@ import { DEPTH } from './backdrop'
 // which is two sources of truth for one thing and the exact shape §B16 warns
 // about. `LOOK` is the only one now.
 
+/**
+ * The two colours a flame is *not* drawn in `LOOK`.
+ *
+ * `LOOK.flame.colour` is the body, and it is the one shared with the trail and
+ * with anything else that asks what a flame looks like. These two only exist
+ * inside the blob: a dark red edge, so a flame has a silhouette against bright
+ * terrain rather than dissolving into it, and a yellow heart, so it reads as
+ * burning rather than as a coloured dot. Deliberately **not** near-white: white
+ * is what an overlapping crowd used to sum to, and it is the thing that made a
+ * fire look like steam.
+ */
+const FLAME_EDGE = 0xc0350a
+const FLAME_HEART = 0xffd23c
+
 export class OrdnanceLayer {
   private readonly gfx: Phaser.GameObjects.Graphics
+  /** §F10.3 — fire, painted rather than summed. See the constructor. */
+  private readonly flameGfx: Phaser.GameObjects.Graphics
   readonly state: OrdnanceState
 
   constructor(scene: Phaser.Scene) {
@@ -31,6 +49,21 @@ export class OrdnanceLayer {
     // five ballistic guns fire objects that fly and are drawn below, with the
     // other projectiles.
     this.state = new OrdnanceState(c.BEAM_LIFETIME, c.PROJECTILE_TRAIL_LEN)
+    // §F10.3: **flames get their own Graphics, and it is not additive.**
+    //
+    // Created first, so it sits under the additive layer at the same depth. This
+    // is a measured change, not a preference: a molotov drops `MOLOTOV_FLAMES`
+    // objects into about 100 px of ground, so ten of them overlap — and under
+    // ADD ten overlapping oranges sum past white in every channel. The crop in
+    // `shots/fire-crowd.png` showed it: a fire drawn as two pale bulbs, which
+    // reads as steam. Worse for the check than for the eye — a saturated centre
+    // has `r - b == 0`, so the whitest part of the fire failed `fire-visible`'s
+    // own "is this warm" test and only the rims were being counted.
+    //
+    // Painted rather than summed, a crowd stays the colour of fire however deep
+    // it stacks. What makes a flame read at night is its **light** (`GLOW`), not
+    // its blend mode, and that path is unchanged.
+    this.flameGfx = scene.add.graphics().setDepth(DEPTH.particles)
     // One Graphics, cleared and redrawn: an object per tracer at 10 shots/s would
     // allocate constantly.
     this.gfx = scene.add.graphics().setDepth(DEPTH.particles)
@@ -81,8 +114,10 @@ export class OrdnanceLayer {
   update(dt: number): void {
     this.state.update(dt)
     const g = this.gfx
+    const fg = this.flameGfx
     const c = C()
     g.clear()
+    fg.clear()
     this.redraws += 1
     this.drawnProjectilesLastFrame = this.state.projectiles.size
 
@@ -115,13 +150,23 @@ export class OrdnanceLayer {
     }
 
     // Trails: a tapering polyline, oldest thinnest.
+    const nowMs = performance.now()
     for (const p of this.state.projectiles.values()) {
       const look = LOOK[p.kind]
-      const n = look.trail === 0 ? 0 : p.trail.length
+      // §F10.3: **a flame at rest draws no trail.** A tail behind something that
+      // is not moving is a smear, and worse, it says the fire is still travelling
+      // when it has settled — the exact class of "the picture and the simulation
+      // disagree" that M19 exists to fix.
+      const resting = p.kind === 'flame' && flameAtRest(p)
+      const n = look.trail === 0 || resting ? 0 : p.trail.length
+      // A flame's trail belongs on the flame layer, or a moving flame is a
+      // painted head behind an additive tail and the two do not look like one
+      // object.
+      const tg = p.kind === 'flame' ? fg : g
       for (let i = 1; i < n; i++) {
         const a = i / n
-        g.lineStyle(1 + 2 * a, look.colour, 0.6 * a)
-        g.lineBetween(p.trail[i - 1]!.x, p.trail[i - 1]!.y, p.trail[i]!.x, p.trail[i]!.y)
+        tg.lineStyle(1 + 2 * a, look.colour, 0.6 * a)
+        tg.lineBetween(p.trail[i - 1]!.x, p.trail[i - 1]!.y, p.trail[i]!.x, p.trail[i]!.y)
       }
 
       // §F2: a bullet is a **streak along its velocity**, not a disc.
@@ -140,6 +185,25 @@ export class OrdnanceLayer {
         // than a zero-length line.
         g.fillStyle(0xffffff, 1)
         g.fillCircle(p.x, p.y, c.BULLET_WIDTH * 0.6)
+        continue
+      }
+
+      // §F10.3: a flame is a flickering warm blob, and **it does not fade as it
+      // settles**. A resting flame still burns for the rest of `FLAME_LIFE`, so
+      // dimming one would put "the fire is over" on the screen while the damage
+      // continues — the divergence this milestone is about, in miniature.
+      //
+      // Three passes, so one flame reads as fire and not as a dot: a soft red
+      // edge, the orange body, and a yellow heart. Drawn on `flameGfx` — see the
+      // constructor for why that layer is not additive.
+      if (p.kind === 'flame') {
+        const f = flameFlicker(p.id, nowMs)
+        fg.fillStyle(FLAME_EDGE, 0.45 * f)
+        fg.fillCircle(p.x, p.y, look.r * 1.15 * f)
+        fg.fillStyle(look.colour, 0.95)
+        fg.fillCircle(p.x, p.y, look.r * 0.8 * f)
+        fg.fillStyle(FLAME_HEART, 0.95)
+        fg.fillCircle(p.x, p.y, look.r * 0.38 * f)
         continue
       }
 
@@ -164,6 +228,7 @@ export class OrdnanceLayer {
   }
 
   destroy(): void {
+    this.flameGfx.destroy()
     this.gfx.destroy()
   }
 }

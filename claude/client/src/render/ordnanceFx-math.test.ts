@@ -8,9 +8,18 @@ describe('hazardKind', () => {
   it('reads the kinds the server actually sends', () => {
     expect(hazardKind('Smoke')).toBe('smoke')
     expect(hazardKind('ToxicZone')).toBe('toxic')
+  })
+
+  it('no longer has a fire zone to read (§F10.2)', () => {
+    // `BurnZone::Fire` is retired and nothing on the server spells a hazard
+    // `Fire` or `LavaBurn` any more — burning ground is `MOLOTOV_FLAMES`
+    // projectiles now. These two strings are kept as the *falsification*: if a
+    // fire zone ever comes back, this test is where it is noticed, rather than
+    // a disc quietly reappearing under the flames.
+    expect(hazardKind('Fire')).toBe('other')
+    expect(hazardKind('LavaBurn')).toBe('other')
+    // The control, so this is not "everything maps to other".
     expect(hazardKind('ToxicZone')).toBe('toxic')
-    expect(hazardKind('Fire')).toBe('fire')
-    expect(hazardKind('LavaBurn')).toBe('fire')
   })
 
   it('falls back rather than throwing on a kind it has never seen', () => {
@@ -91,7 +100,7 @@ describe('OrdnanceFxState', () => {
   it('expires a hazard on its own clock and on demand', () => {
     const s = st()
     s.addHazard(1, 'smoke', 0, 0, 110, 8)
-    s.addHazard(2, 'fire', 0, 0, 28, 5)
+    s.addHazard(2, 'toxic', 0, 0, 28, 5)
     s.update(6)
     expect(s.hazards.has(1)).toBe(true)
     expect(s.hazards.has(2)).toBe(false)
@@ -99,7 +108,7 @@ describe('OrdnanceFxState', () => {
     expect(s.hazards.size).toBe(0)
   })
 
-  it('lights fire and toxic, and never smoke or mines', () => {
+  it('lights toxic, and never smoke or mines', () => {
     // A mine that lit itself up at night would defeat the point of hiding it,
     // and smoke is the opposite of a light.
     const s = st()
@@ -107,14 +116,12 @@ describe('OrdnanceFxState', () => {
     s.addMine(5, 0, 10, 10)
     expect(s.lights()).toHaveLength(0)
 
-    s.addHazard(2, 'fire', 50, 60, 28, 5)
+    // The control for the absence above: a hazard that *does* light.
     s.addHazard(3, 'toxic', 70, 80, 90, 8)
     const lights = s.lights()
-    expect(lights).toHaveLength(2)
-    // Fire is the brighter of the two — a burning patch reads at night.
-    const fireLight = lights.find((l) => l.x === 50)
-    const toxLight = lights.find((l) => l.x === 70)
-    expect(fireLight!.a).toBeGreaterThan(toxLight!.a)
+    expect(lights).toHaveLength(1)
+    expect(lights[0]!.x).toBe(70)
+    expect(lights[0]!.a).toBeGreaterThan(0)
   })
 
   it('puts a flame jet light along the aim, not at the muzzle', () => {

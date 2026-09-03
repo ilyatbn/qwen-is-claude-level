@@ -226,7 +226,15 @@ fn touching(at: Vec2, t: &HitTarget) -> bool {
     dx * dx + dy * dy <= FLAME_RADIUS * FLAME_RADIUS
 }
 
-/// Drop the oldest flames past `FLAME_MAX_LIVE`. Returns how many went.
+/// Drop the oldest flames past `FLAME_MAX_LIVE`. **Returns the ids it dropped**,
+/// oldest first.
+///
+/// The ids rather than a count, because a caller that announces its world has to
+/// tell the clients which projectiles left: `Projectiles::remove` is silent, and
+/// a flame removed here with nothing said about it stays on every screen for the
+/// rest of the round. Measured before it was fixed — a full field read **176**
+/// live flames on the client against a cap of 160, and the surplus never went
+/// away. `CLAUDE.md`: return what the caller needs, or it will be called wrong.
 ///
 /// **Global, and enforced in the step rather than at each emitter.** Three
 /// things make flames (§F10.2) and a fourth will be added one day; a cap each
@@ -238,21 +246,22 @@ fn touching(at: Vec2, t: &HitTarget) -> bool {
 /// Oldest is **lowest id**. `Projectiles` hands out ids from a monotonic
 /// counter, so id order is spawn order exactly, and using `spawned_at` instead
 /// would need a tie-break for the dozens a single molotov spawns on one tick.
-pub fn enforce_cap(projectiles: &mut Projectiles) -> usize {
+pub fn enforce_cap(projectiles: &mut Projectiles) -> Vec<crate::weapons::projectile::ProjectileId> {
     let mut ids: Vec<u32> = projectiles
         .iter()
         .filter(|p| is_flame(p.weapon))
         .map(|p| p.id)
         .collect();
     if ids.len() <= FLAME_MAX_LIVE {
-        return 0;
+        return Vec::new();
     }
     ids.sort_unstable();
     let excess = ids.len() - FLAME_MAX_LIVE;
-    for id in ids.into_iter().take(excess) {
-        projectiles.remove(id);
+    ids.truncate(excess);
+    for id in &ids {
+        projectiles.remove(*id);
     }
-    excess
+    ids
 }
 
 #[cfg(test)]
@@ -717,7 +726,16 @@ mod tests {
         );
 
         let dropped = enforce_cap(&mut ps);
-        assert_eq!(dropped, 10, "the cap dropped {dropped} flames, expected 10");
+        assert_eq!(
+            dropped.len(),
+            10,
+            "the cap dropped {} flames, expected 10",
+            dropped.len()
+        );
+        // The **ids**, and they are the oldest ten in order: the caller announces
+        // these to its clients, so a right count of the wrong ids would take ten
+        // live flames off every screen and leave ten ghosts burning on it.
+        assert_eq!(dropped, ids[..10], "the cap named the wrong flames");
         let live: Vec<u32> = ps
             .iter()
             .filter(|p| is_flame(p.weapon))
@@ -740,6 +758,6 @@ mod tests {
 
         // And it is a no-op under the cap, so the guard cannot quietly thin a
         // field that is within budget.
-        assert_eq!(enforce_cap(&mut ps), 0);
+        assert!(enforce_cap(&mut ps).is_empty());
     }
 }

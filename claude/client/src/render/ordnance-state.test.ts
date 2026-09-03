@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   bulletStreak,
+  flameAtRest,
+  flameFlicker,
   KIND_BY_WEAPON_KEY,
   LOOK,
   OrdnanceState,
@@ -220,5 +222,72 @@ describe('bulletStreak', () => {
     const s = bulletStreak(trailed([[0, 0], [100, 0], [100, 50]]), 10)
     expect(s.x1).toBeCloseTo(100, 6)
     expect(s.y1).toBeCloseTo(40, 6)
+  })
+})
+
+describe('a flame on screen (§F10.3)', () => {
+  it('resolves the flame weapon key to the flame look', () => {
+    // The whole chain, in one assertion: the registry order gives the key, the
+    // key gives the kind, the kind gives the look. §B16 is the bug where the
+    // middle step was assumed and a laser drew as a bazooka.
+    expect(KIND_BY_WEAPON_KEY['flame']).toBe('flame')
+    expect(LOOK.flame).toBeDefined()
+    expect(LOOK.flame.r).toBeGreaterThan(0)
+    // And it is not somebody else's look. A `KIND_BY_WEAPON_KEY` entry that
+    // pointed at `molotov` would satisfy every assertion above.
+    expect(LOOK.flame).not.toEqual(LOOK.molotov)
+  })
+
+  it('flickers the same way twice for the same flame at the same moment', () => {
+    // The requirement that makes `fire-visible` possible at all: it counts
+    // clusters of lit pixels across two frames, so a per-frame re-roll would
+    // make the count a coin flip, and a gate that fails on a coin flip gates
+    // nothing.
+    for (const [id, t] of [
+      [1, 0],
+      [7, 1234.5],
+      [160, 98765.25],
+    ] as const) {
+      expect(flameFlicker(id, t)).toBe(flameFlicker(id, t))
+    }
+  })
+
+  it('keeps every flame bright, and out of step with its neighbours', () => {
+    const t = 4321.0
+    const vals = Array.from({ length: 40 }, (_, i) => flameFlicker(i, t))
+    for (const v of vals) {
+      // Never dark: §F10.3 says a resting flame must not fade, and a flicker
+      // that reached zero would put "the fire is out" on the screen while it is
+      // still burning.
+      expect(v).toBeGreaterThan(0.6)
+      expect(v).toBeLessThanOrEqual(1.0)
+    }
+    // A crowd breathing in unison reads as one object with a heartbeat, which is
+    // the decal §F10 replaced. The control that this is really the *id* doing it
+    // is the identical-time sample: every value here shares `t`.
+    expect(new Set(vals.map((v) => v.toFixed(4))).size).toBeGreaterThan(20)
+  })
+
+  it('moves over time, so the flicker is a flicker', () => {
+    // Without this, "deterministic" is satisfied by a constant.
+    const a = flameFlicker(3, 0)
+    const b = flameFlicker(3, 130)
+    expect(Math.abs(a - b)).toBeGreaterThan(0.01)
+  })
+
+  it('calls a flame at rest only when it has stopped', () => {
+    const trail = (pts: [number, number][]) => ({
+      x: pts[pts.length - 1]![0],
+      y: pts[pts.length - 1]![1],
+      trail: pts.map(([x, y]) => ({ x, y })),
+    })
+    // Spawned this frame: no direction yet, so no trail to draw.
+    expect(flameAtRest({ x: 5, y: 5, trail: [{ x: 5, y: 5 }] })).toBe(true)
+    expect(flameAtRest(trail([[5, 5], [5, 5]]))).toBe(true)
+    // Moving — the control, without which "at rest" passes for everything.
+    expect(flameAtRest(trail([[5, 5], [12, 5]]))).toBe(false)
+    // Sub-pixel drift on a slope is still at rest: a resting flame reported one
+    // tick apart does not land on exactly the same float.
+    expect(flameAtRest(trail([[5, 5], [5.2, 5]]))).toBe(true)
   })
 })
