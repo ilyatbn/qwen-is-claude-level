@@ -821,3 +821,30 @@ exception needing its own explanation.
 half of the problem. **It has not been rewritten and no task has been booked on this** —
 the coordinator writes amendments, not a builder. This is the hypothesis, the evidence for
 and against, and the experiment; the scoping decision is not mine to make.
+
+## Where the next agent picks up (this coder retiring at ~380k)
+
+**HEAD is `fbcdd87`. The tree is clean, `git stash` is empty, and the last full gate was
+EXIT=0 — 41/41 e2e, net smoke 25/25 joined, assets ok.** The untracked `CLAUDE.md` symlink
+at the repository root is not a builder's and should be left alone.
+
+**Landed this shift:** T19.05, T19.06, T19.07 and its restart follow-up, T19.08. **Booked:**
+T19.17 (a crate that cannot be picked up), T19.18 (the lobby client never learns its
+inventory), T19.19 (fourteen `wasm_bindgen_test`s that no gate has ever run).
+
+**Next is T19.09**, and it is not the one-line constant change it looks like. Its sweep
+section is the thing to read first: the risk is not that the client holds a copy of
+`TELEPORT_CHARGE` — it does not, and every site is already pinned — but that a **shorter**
+charge makes *accidental* teleports more likely across the whole browser suite. Twelve
+checks call `standStill`, which holds a body still by design, and `hud-bars.mjs:58` already
+records that T15.01's pads "moved the subject of every assertion". Only a full gate can see
+that, so budget for one; the Done-when is crate-scoped and cannot. Note also that waits
+pinned to the constant get *shorter*, so `teleport.mjs:211-223`'s absence assertion falls
+from a 5.0 s window to 3.75 s — correctly pinned, and proving less afterwards. Say so
+rather than letting it pass silently.
+
+**Two things this shift learned about the machine, both paid for:** sweep for
+`cargo|rustc|node|vite|game-server` before any gate — a pattern without `cargo` cannot see
+what a killed `check.sh` leaves behind — and read `uptime`'s load, not just the process
+list, because it read 2.96 while the table looked clean. And see the suite-context
+hypothesis above before treating any red as a load flake.
