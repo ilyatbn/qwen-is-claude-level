@@ -11,11 +11,10 @@ use crate::constants::{
 };
 use crate::constants::{
     AIRBURST_FAN, AIRBURST_FUSE, AIRBURST_MUZZLE_SPEED, AIRBURST_PELLETS, AIRBURST_PELLET_CARVE,
-    AIRBURST_PELLET_DAMAGE, AIRBURST_PELLET_ENERGY, AIRBURST_PELLET_RANGE, LAVA_BURN_DPS,
-    LAVA_BURN_RADIUS, MOLOTOV_BURN_DURATION, MOLOTOV_MUZZLE_SPEED, MOLOTOV_PATCHES,
-    MOLOTOV_SCATTER, SMOKE_DURATION, SMOKE_FUSE, SMOKE_MUZZLE_SPEED, SMOKE_RADIUS,
-    TOXIC_GRENADE_DPS, TOXIC_GRENADE_DURATION, TOXIC_GRENADE_FUSE, TOXIC_GRENADE_MUZZLE_SPEED,
-    TOXIC_GRENADE_RADIUS,
+    AIRBURST_PELLET_DAMAGE, AIRBURST_PELLET_ENERGY, AIRBURST_PELLET_RANGE, MOLOTOV_FLAMES,
+    MOLOTOV_FLAME_SPEED, MOLOTOV_MUZZLE_SPEED, SMOKE_DURATION, SMOKE_FUSE, SMOKE_MUZZLE_SPEED,
+    SMOKE_RADIUS, TOXIC_GRENADE_DPS, TOXIC_GRENADE_DURATION, TOXIC_GRENADE_FUSE,
+    TOXIC_GRENADE_MUZZLE_SPEED, TOXIC_GRENADE_RADIUS,
 };
 use crate::constants::{
     AXE_ARC, AXE_CARVE, AXE_COOLDOWN, AXE_DAMAGE, AXE_KNOCKBACK, AXE_REACH, BAT_ARC, BAT_CARVE,
@@ -41,8 +40,8 @@ use crate::constants::{
     REVOLVER_MUZZLE_SPEED, REVOLVER_RANGE, REVOLVER_SPREAD,
 };
 use crate::constants::{
-    FLAMETHROWER_AMMO, FLAMETHROWER_ARC, FLAMETHROWER_COOLDOWN, FLAMETHROWER_DPS,
-    FLAMETHROWER_PARTICLE_LIFE, FLAMETHROWER_RANGE,
+    FLAMETHROWER_AMMO, FLAMETHROWER_COOLDOWN, FLAMETHROWER_FLAMES_PER_SHOT, FLAME_MUZZLE_SPEED,
+    FLAME_SPREAD,
 };
 use crate::constants::{
     LASER_PISTOL_BLAST_RADIUS, LASER_PISTOL_COOLDOWN, LASER_PISTOL_DAMAGE, LASER_PISTOL_ENERGY,
@@ -106,15 +105,14 @@ pub enum Delivery {
         arc: f32,
         knockback: f32,
     },
-    /// A sustained cone that damages per tick and leaves burning ground (§B6).
-    /// It carves nothing: fire does not dig, and that is what stops it being
-    /// strictly better than everything it competes with.
-    Cone {
-        range: f32,
-        arc: f32,
-        dps: f32,
-        particle_life: f32,
-    },
+    /// A press emits `count` flames (§F10.2). The flamethrower, and nothing else.
+    ///
+    /// **This replaces `Delivery::Cone`**, which damaged whatever was inside an
+    /// arc each tick and drew particles that meant nothing. The difference is
+    /// not cosmetic: a cone's reach was `FLAMETHROWER_RANGE`, a number, and a
+    /// flame's reach is `speed x FLAME_LIFE` under `FLAME_GRAVITY_SCALE` —
+    /// emergent, visible, and something you can walk around.
+    Flames { count: u32, speed: f32, spread: f32 },
     /// Placed, armed, then triggered by proximity (§B6). Destructible by
     /// explosions, which is what stops a map filling up with them.
     Placed {
@@ -159,7 +157,8 @@ pub enum Burst {
     /// A cloud that blocks vision and does nothing else — the only weapon in the
     /// game with no damage at all.
     Smoke { radius: f32, duration: f32 },
-    /// It goes out, and that is all (§F10).
+    /// It goes out, and that is all (§F10) — what a **flame itself** does at the
+    /// end of `FLAME_LIFE`.
     ///
     /// A flame's whole effect happens *while it is alive* — `FLAME_DPS` to
     /// anyone inside it and a `FLAME_SCORCH_R` bite out of the ground it rests
@@ -167,14 +166,30 @@ pub enum Burst {
     /// variant rather than reusing `Blast` with zeroes because `detonate`
     /// matches exhaustively: this way "nothing happens" is a decision somebody
     /// made, and a future burst kind is still a compile error there.
-    Flame,
+    ///
+    /// **Named `BurnsOut`, not `Flame`.** It sat beside `Flames` below for about
+    /// an hour and the singular/plural was the only thing distinguishing "this
+    /// projectile *is* a flame" from "this projectile *becomes* flames" — which
+    /// is exactly the shape of a mistake nobody notices in review.
+    BurnsOut,
+    /// Bursts into a crowd of `count` flames at `speed` (§F10.2). The molotov.
+    ///
+    /// **This replaces `Burst::Zone { Fire }`**, which lit `MOLOTOV_PATCHES`
+    /// static discs. A disc that damages you while you stand in it is a rule,
+    /// not a fire: you cannot see where it will go and you cannot push it.
+    Flames { count: u32, speed: f32 },
 }
 
 /// Mirrors `burn::BurnKind` without `weapons::defs` depending on the burn field's
 /// internals; `detonate` maps one to the other.
+///
+/// **One variant since §F10.2.** Fire left — a molotov bursts into flames now —
+/// and the toxic grenade stayed, because a toxic cloud that dug would be a
+/// second fire. It is still an enum rather than being folded away, because
+/// `BurnKind` on the other side of the mapping is still an enum and collapsing
+/// one of a matched pair is how a mapping stops being checked.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BurnZone {
-    Fire,
     Toxic,
 }
 
@@ -222,7 +237,7 @@ impl WeaponDef {
             Delivery::Bullet { auto, .. } | Delivery::Hitscan { auto, .. } => auto,
             Delivery::Projectile { .. }
             | Delivery::Melee { .. }
-            | Delivery::Cone { .. }
+            | Delivery::Flames { .. }
             | Delivery::Placed { .. } => false,
         }
     }
@@ -563,17 +578,20 @@ pub static WEAPONS: &[WeaponDef] = &[
     WeaponDef {
         id: WEAPON_FLAMETHROWER,
         key: "flamethrower",
-        delivery: Delivery::Cone {
-            range: FLAMETHROWER_RANGE,
-            arc: FLAMETHROWER_ARC,
-            dps: FLAMETHROWER_DPS,
-            particle_life: FLAMETHROWER_PARTICLE_LIFE,
+        delivery: Delivery::Flames {
+            count: FLAMETHROWER_FLAMES_PER_SHOT,
+            speed: FLAME_MUZZLE_SPEED,
+            spread: FLAME_SPREAD,
         },
-        damage: FLAMETHROWER_DPS,
+        // **Zero damage and zero blast, like the flame itself.** All of the
+        // flamethrower's damage is its flames' `FLAME_DPS`; a number here would
+        // be one that never runs. §F3: it is not `auto` — a per-press weapon
+        // whose cooldown is 0.05 s already streams.
+        damage: 0.0,
         blast_radius: 0.0,
-        range: FLAMETHROWER_RANGE,
+        range: 0.0,
         cooldown: FLAMETHROWER_COOLDOWN,
-        muzzle_speed: 0.0,
+        muzzle_speed: FLAME_MUZZLE_SPEED,
         gravity_scale: 0.0,
         wind_scale: 0.0,
         energy_cost: 0.0,
@@ -670,13 +688,9 @@ pub static WEAPONS: &[WeaponDef] = &[
         gravity_scale: 1.0,
         wind_scale: 0.5,
         energy_cost: 0.0,
-        burst: Burst::Zone {
-            kind: BurnZone::Fire,
-            radius: LAVA_BURN_RADIUS,
-            dps: LAVA_BURN_DPS,
-            duration: MOLOTOV_BURN_DURATION,
-            patches: MOLOTOV_PATCHES,
-            scatter: MOLOTOV_SCATTER,
+        burst: Burst::Flames {
+            count: MOLOTOV_FLAMES,
+            speed: MOLOTOV_FLAME_SPEED,
         },
     },
     WeaponDef {
@@ -819,7 +833,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         // not a tunable (§F1's reasoning about the bullets).
         wind_scale: 0.0,
         energy_cost: 0.0,
-        burst: Burst::Flame,
+        burst: Burst::BurnsOut,
     },
 ];
 
@@ -955,12 +969,18 @@ mod tests {
             // does something", and `Burst` says what — which is still stricter
             // than the original, because that one passed a weapon with neither
             // damage nor a carve.
-            if !matches!(w.burst, Burst::Blast) {
+            //
+            // §F10.2 adds the same exemption one level up, on the **delivery**:
+            // a flamethrower's damage is not its own either, it is its flames'
+            // `FLAME_DPS`. Its burst is still `Blast` because a *press* has no
+            // end to speak of, so without this it would be asked for a damage
+            // number that has nowhere to come from. The second loop below is
+            // what stops that being a free pass.
+            if matches!(w.delivery, Delivery::Flames { .. }) || !matches!(w.burst, Burst::Blast) {
                 continue;
             }
             assert!(w.damage > 0.0, "{} does no damage at all", w.key);
-            let exempt =
-                matches!(w.delivery, Delivery::Cone { .. }) || MAY_NOT_CARVE.contains(&w.key);
+            let exempt = MAY_NOT_CARVE.contains(&w.key);
             if !exempt {
                 assert!(
                     w.blast_radius > 0.0,
@@ -973,6 +993,18 @@ mod tests {
         // burst that actually does something. Without this, `Burst::Zone` with a
         // dps of zero and no patches would pass as "not a blast".
         for w in WEAPONS {
+            // §F10.2. The delivery's own opt-out has to be paid for too: a
+            // flamethrower that emitted no flames, or emitted them at zero
+            // speed, would be a weapon that fires nothing while passing every
+            // assertion above.
+            if let Delivery::Flames { count, speed, .. } = w.delivery {
+                assert!(
+                    count > 0 && speed > 0.0,
+                    "{} emits no flames when you press the trigger",
+                    w.key
+                );
+                continue;
+            }
             match w.burst {
                 Burst::Blast => {}
                 Burst::Pellets { count, .. } => {
@@ -993,6 +1025,13 @@ mod tests {
                     "{} makes a cloud that is not there",
                     w.key
                 ),
+                // §F10.2. A molotov's whole effect is the crowd it becomes, so
+                // "the burst does something" is "there is a crowd, and it is
+                // thrown". A count of zero or a speed of zero would be a bottle
+                // that breaks and leaves nothing.
+                Burst::Flames { count, speed } => {
+                    assert!(count > 0 && speed > 0.0, "{} bursts into no flames", w.key)
+                }
                 // §F10. A flame's effect is not on its def at all: it burns
                 // `FLAME_DPS` for `FLAME_LIFE` while alive, so the numbers that
                 // decide whether it does anything are constants rather than
@@ -1000,7 +1039,7 @@ mod tests {
                 // assertion on them is one the compiler can answer, and clippy
                 // says so out loud. The guard is `weapons::flame`'s
                 // `const _: () = assert!(...)`, which fails the build instead.
-                Burst::Flame => {}
+                Burst::BurnsOut => {}
             }
         }
         // The exemption list must not outlive its members: a name here that is

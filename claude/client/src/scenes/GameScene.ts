@@ -319,6 +319,15 @@ export class GameScene extends Phaser.Scene {
      */
     projectileSpawns: 0,
     /**
+     * `projectile_spawn` events whose weapon is the flame (§F10.2).
+     *
+     * **The replacement for `jets`**, which counted `cone` events from a
+     * delivery that no longer exists. Both are the server's word rather than the
+     * client's; what is *drawn* is T19.13's number, and keeping them separate is
+     * how "the server made fire and nothing drew it" stays visible (§A39).
+     */
+    flamesSpawned: 0,
+    /**
      * Spawns whose weapon has **no entry** in `FIRE_CUE` — not the ones entered
      * as deliberately silent.
      *
@@ -1210,6 +1219,12 @@ export class GameScene extends Phaser.Scene {
         // sound** rather than a rocket: a missing cue is a finding, and a
         // plausible wrong one hides it.
         const key = WEAPON_KEYS[Number(p['weapon'] ?? -1)]
+        // §F10.2, at the receiving end. `jets` used to count `cone` events; the
+        // flamethrower emits no cone any more, so this is what replaced the
+        // number rather than the number quietly going to zero. Cumulative, like
+        // `projectileSpawns` and for the same reason: a flame's whole life is
+        // `FLAME_LIFE` and a live count can miss a burst entirely between polls.
+        if (key === 'flame') this.observed.flamesSpawned += 1
         const cue = key === undefined ? undefined : FIRE_CUE[key]
         if (cue) this.audio.spatial(cue, x, y, ear)
         // `undefined` is a weapon nothing has decided about; `null` is one
@@ -2030,6 +2045,7 @@ export class GameScene extends Phaser.Scene {
           minesEnded: self.observed.minesEnded,
           swings: self.observed.swings,
           jets: self.observed.jets,
+          flamesSpawned: self.observed.flamesSpawned,
           minesDrawn: self.fx?.mineCount ?? 0,
           // Positions too, so a check can aim at a mine rather than guess a
           // screen point. A hardcoded screen coordinate is a test that expires

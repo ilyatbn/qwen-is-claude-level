@@ -32,8 +32,10 @@ use crate::constants::{
 use crate::items::registry::{WeaponId, WEAPON_FLAME};
 use crate::map::{CarveResult, Map};
 use crate::math::Vec2;
+use crate::rng::{range_f32, ChaCha8Rng};
+use crate::weapons::bullet::muzzle_angle;
 use crate::weapons::explode::{BlastSource, HitId, HitTarget};
-use crate::weapons::projectile::Projectiles;
+use crate::weapons::projectile::{PlayerId, Projectiles};
 
 /// A flame with no dps, no life or no radius is `Burst::Flame` meaning nothing,
 /// and §F10's whole claim is that fire is a thing that hurts you.
@@ -44,6 +46,71 @@ use crate::weapons::projectile::Projectiles;
 /// the optimiser can fold, which clippy rejects as `assertions_on_constants`.
 /// This fails the build instead of a test, which is strictly earlier.
 const _: () = assert!(FLAME_DPS > 0.0 && FLAME_LIFE > 0.0 && FLAME_RADIUS > 0.0);
+
+/// Light `count` flames at `at`, fanned around `aim` by `spread`.
+///
+/// **The one spawn function, for all three emitters** (§F10.2): the flamethrower
+/// presses, a molotov bursts, a lava vent smoulders. A second "spawn a fan of
+/// flames" written for the molotov is the §A24 mistake this codebase has paid
+/// for twice, and `burn.rs`'s own header used to say exactly that about the
+/// system this replaces.
+///
+/// The angles are **drawn**, not evenly spaced. `burst_pellets` fans its nine
+/// pellets deterministically on purpose — an even fan is what a shotgun wants —
+/// but a flamethrower emitting two flames forty times a second along an even fan
+/// lays down two perfectly straight lines, which is a laser with a fire palette.
+/// The draw is from the world's seeded `ChaCha8Rng`, so a replay reproduces it
+/// exactly; that is the same stream `bullet::muzzle_angle` already draws from.
+///
+/// Returns the ids, so a caller can announce them.
+/// Where a fan of flames comes from and where it is pointed.
+///
+/// A struct rather than five loose `f32`s, for the reason `burn::Zone` is one:
+/// `at`, `aim`, `spread` and `speed` are one description of a burst, and three
+/// call sites passing them positionally is three chances to put a spread where a
+/// speed goes.
+#[derive(Copy, Clone, Debug)]
+pub struct Fan {
+    pub at: Vec2,
+    /// Radians. Up is `-PI/2`.
+    pub aim: f32,
+    /// Half-width of the fan, radians.
+    pub spread: f32,
+    pub speed: f32,
+    pub count: u32,
+}
+
+pub fn light_fan(
+    projectiles: &mut Projectiles,
+    owner: PlayerId,
+    fan: Fan,
+    rng: &mut ChaCha8Rng,
+    now: f32,
+) -> Vec<crate::weapons::projectile::ProjectileId> {
+    let Fan {
+        at,
+        aim,
+        spread,
+        speed,
+        count,
+    } = fan;
+    let mut ids = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let a = muzzle_angle(rng, aim, spread);
+        // Speed varies as well as angle, or every flame in a burst lands on one
+        // arc and a molotov's "crowd scattered along the ground" is a crowd
+        // standing in a line. 60..100 % of the nominal speed.
+        let v = speed * range_f32(rng, 0.6, 1.0);
+        ids.push(projectiles.spawn_raw(
+            WEAPON_FLAME,
+            owner,
+            at,
+            Vec2::new(a.cos(), a.sin()) * v,
+            now,
+        ));
+    }
+    ids
+}
 
 /// Is this projectile a flame?
 ///
@@ -123,7 +190,7 @@ pub fn tick(
         //
         // Only while resting: a flame in mid-air scorches nothing, which is what
         // stops a flamethrower drilling a tunnel along its own stream.
-        if p.resting && interval(now, p.spawned_at) > interval(now - dt, p.spawned_at) {
+        if p.resting && crate::math::fired_this_tick(p.spawned_at, FLAME_SCORCH_EVERY, now, dt) {
             let carve = map.carve_circle(
                 p.pos.x.round() as i32,
                 p.pos.y.round() as i32,
@@ -157,13 +224,6 @@ fn touching(at: Vec2, t: &HitTarget) -> bool {
     let dx = ((at.x - t.pos.x).abs() - t.w * 0.5).max(0.0);
     let dy = ((at.y - t.pos.y).abs() - t.h * 0.5).max(0.0);
     dx * dx + dy * dy <= FLAME_RADIUS * FLAME_RADIUS
-}
-
-/// Which `FLAME_SCORCH_EVERY` window `now` falls in, for a flame spawned at
-/// `spawned_at`. Negative before the flame existed, which is harmless: the
-/// comparison in `tick` only ever asks whether it went **up**.
-fn interval(now: f32, spawned_at: f32) -> i32 {
-    ((now - spawned_at) / FLAME_SCORCH_EVERY).floor() as i32
 }
 
 /// Drop the oldest flames past `FLAME_MAX_LIVE`. Returns how many went.
@@ -366,7 +426,7 @@ mod tests {
         assert_eq!(w.blast_radius, 0.0, "a flame carves when it goes out");
         assert_eq!(w.damage, 0.0, "a flame deals its damage twice");
         assert!(
-            matches!(w.burst, crate::weapons::defs::Burst::Flame),
+            matches!(w.burst, crate::weapons::defs::Burst::BurnsOut),
             "a flame's burst is not Burst::Flame"
         );
     }

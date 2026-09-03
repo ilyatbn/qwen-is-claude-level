@@ -11,8 +11,8 @@ use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 
 use crate::constants::{
-    BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, FOV_DAY, INVENTORY_SLOTS, JETPACK_MAX_FUEL,
-    PICKUP_RADIUS, STEP_UP,
+    BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, FLAME_GRAVITY_SCALE, FLAME_RADIUS, FOV_DAY,
+    GRAVITY, INVENTORY_SLOTS, JETPACK_MAX_FUEL, PICKUP_RADIUS, STEP_UP,
 };
 use crate::items::registry::{def, ItemId, ItemKind};
 use crate::math::{Vec2, TAU};
@@ -610,19 +610,38 @@ impl Bot {
     /// would be cheating (§A5); a human sees the fire they are standing in.
     fn hazard_at(&self, world: &World, at: Vec2, margin: f32) -> Option<Hazard> {
         let mut best: Option<(f32, Hazard)> = None;
-        for p in world.burn.patches() {
-            let d = (p.pos - at).len();
+        let mut consider = |pos: Vec2, radius: f32, lit_by: Option<PlayerId>| {
+            let d = (pos - at).len();
             if d > FOV_DAY {
-                continue; // out of sight: not knowable, so not usable
+                return; // out of sight: not knowable, so not usable
             }
-            if d <= p.radius + margin && best.is_none_or(|(bd, _)| d < bd) {
-                let lit_by = match p.source {
-                    DamageSource::Player { id, .. } => Some(id),
-                    DamageSource::SelfInflicted { .. } => None,
-                    DamageSource::Weather(_) => None,
-                };
-                best = Some((d, Hazard { pos: p.pos, lit_by }));
+            if d <= radius + margin && best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, Hazard { pos, lit_by }));
             }
+        };
+        for p in world.burn.patches() {
+            let lit_by = match p.source {
+                DamageSource::Player { id, .. } => Some(id),
+                DamageSource::SelfInflicted { .. } | DamageSource::Weather(_) => None,
+            };
+            consider(p.pos, p.radius, lit_by);
+        }
+        // §F10.2. **Flames, or bots silently stop avoiding fire.** Every fire in
+        // the game left `BurnField` when the molotov, the flamethrower and the
+        // vent became flame emitters, and nothing in the suite names this
+        // behaviour — so without this loop a bot would keep dodging toxic clouds
+        // and walk straight into a burning floor, with every test green. It is
+        // the "mechanism wired to nothing" shape from the other direction: a
+        // reader wired to nothing.
+        //
+        // `u8::MAX` is the weather's owner (`detonate`), so a vent's fire is
+        // nobody's and cannot be excused as "my own".
+        for f in world.projectiles.iter() {
+            if !crate::weapons::flame::is_flame(f.weapon) {
+                continue;
+            }
+            let lit_by = (f.owner != u8::MAX).then_some(f.owner);
+            consider(f.pos, FLAME_RADIUS, lit_by);
         }
         best.map(|(_, h)| h)
     }
@@ -978,6 +997,27 @@ fn zone_reach(w: &crate::weapons::defs::WeaponDef) -> Option<f32> {
         crate::weapons::defs::Burst::Zone {
             radius, scatter, ..
         } => Some(radius + scatter),
+        // §F10.2. **The molotov's reach had to be re-derived or the regression
+        // is silent.** It used to be `Burst::Zone`'s `radius + scatter`; a
+        // molotov that is now `Burst::Flames` would fall through to
+        // `w.blast_radius`, which is **0.0** for it, and `stand_off`'s `.max(40)`
+        // floor would put a bot 40 px from a fire it had just thrown. That is
+        // exactly the bug the comment on `stand_off` records having already been
+        // fixed once.
+        //
+        // Derived from the burst and the flame's own physics, not from a new
+        // constant: flames leave the impact at `speed` into an upward half-turn
+        // and fall under `GRAVITY * FLAME_GRAVITY_SCALE`, so the crowd's spread
+        // is the ballistic range `v^2 / g` of the fastest of them.
+        //
+        // `speed * FLAME_LIFE / 2` was the first attempt and it is **wrong by
+        // 2.7x** — 560 px against a measured spread of about 100 — because a
+        // flame spends most of `FLAME_LIFE` on the ground, not in the air. A bot
+        // with that number refused every throw: the blast guard rejected 120
+        // ticks out of 120 at a target 260 px away.
+        crate::weapons::defs::Burst::Flames { speed, .. } => {
+            Some(speed * speed / (GRAVITY * FLAME_GRAVITY_SCALE) + FLAME_RADIUS)
+        }
         _ => None,
     }
 }
@@ -1625,7 +1665,19 @@ mod tests {
             if let Some(p) = w.player_mut(2) {
                 p.body.pos = Vec2::new(at.x + 300.0, at.y);
             }
-            w.burn.light(Vec2::new(at.x + 10.0, at.y), 0.0, lit_by);
+            // §F10.2: fire is flames now, so a fixture about standing in fire
+            // has to make one. `light_fan` is the same spawn every emitter uses.
+            let owner = match lit_by {
+                DamageSource::Player { id, .. } => id,
+                _ => u8::MAX,
+            };
+            w.projectiles.spawn_raw(
+                crate::items::registry::WEAPON_FLAME,
+                owner,
+                Vec2::new(at.x + 10.0, at.y),
+                Vec2::ZERO,
+                0.0,
+            );
             let mut b = Bot::new(1, SEED, 0, 1.0);
             b.think(&w, 0.0, SIM_DT);
             b.stats().ticks_hazard_evaded + b.stats().ticks_hazard_blocked
@@ -1667,10 +1719,14 @@ mod tests {
         }
         // Fire slightly to the RIGHT of the bot — the same side as the target,
         // so the target's pull and the hazard's push disagree.
-        w.burn.light(
+        // §F10.2: a flame, owned by the weather (`u8::MAX`), which is what a
+        // vent's fire is.
+        w.projectiles.spawn_raw(
+            crate::items::registry::WEAPON_FLAME,
+            u8::MAX,
             Vec2::new(at.x + 10.0, at.y),
+            Vec2::ZERO,
             0.0,
-            crate::weapons::explode::DamageSource::Weather(crate::effects::EffectKind::LavaBurst),
         );
         let mut b = Bot::new(1, SEED, 0, 1.0);
         let inp = b.think(&w, 0.0, SIM_DT);

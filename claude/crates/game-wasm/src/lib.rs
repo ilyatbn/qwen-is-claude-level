@@ -462,8 +462,34 @@ impl GameCore {
             defs::Delivery::Melee { .. } => {
                 serde_json::json!({"rejected": "melee_not_in_sandbox", "weapon": wid.0}).to_string()
             }
-            defs::Delivery::Cone { .. } => {
-                serde_json::json!({"rejected": "cone_not_in_sandbox", "weapon": wid.0}).to_string()
+            // §F10.2. **Implemented rather than rejected**, unlike melee and
+            // placed: flames are projectiles, and the sandbox already has a
+            // projectile list, so refusing here would be refusing a weapon that
+            // works — and the sandbox is where the fire is looked at.
+            defs::Delivery::Flames {
+                count,
+                speed,
+                spread,
+            } => {
+                let muzzle = centre
+                    + game_core::math::Vec2::new(aim.cos(), aim.sin())
+                        * game_core::constants::MUZZLE_OFFSET;
+                let mut rng = self.rng.clone();
+                let ids = game_core::weapons::flame::light_fan(
+                    &mut self.projectiles,
+                    id,
+                    game_core::weapons::flame::Fan {
+                        at: muzzle,
+                        aim,
+                        spread,
+                        speed,
+                        count,
+                    },
+                    &mut rng,
+                    now,
+                );
+                self.rng = rng;
+                serde_json::json!({"flames": ids}).to_string()
             }
             defs::Delivery::Placed { .. } => {
                 serde_json::json!({"rejected": "placed_not_in_sandbox", "weapon": wid.0})
@@ -481,6 +507,23 @@ impl GameCore {
             .map(|p| (HitId::Player(p.id), p.body.aabb()))
             .collect();
         let wind = self.map.meta.wind;
+        // §F10, before the step for the same reason `World::step_placed` does it
+        // there: a field over the cap must not get one more tick of damage.
+        game_core::weapons::flame::enforce_cap(&mut self.projectiles);
+        {
+            let hits: HitLog = Default::default();
+            {
+                let mut targets = build_targets(&mut self.players, &hits);
+                game_core::weapons::flame::tick(
+                    &self.projectiles,
+                    &mut self.map,
+                    &mut targets,
+                    now,
+                    dt,
+                );
+            }
+            apply_hits(&mut self.players, &hits.borrow(), now);
+        }
         // The sandbox has no birds, so the bullet-only slice is empty here.
         let outcomes = self.projectiles.step(&self.map, &boxes, &[], wind, now, dt);
 
@@ -541,6 +584,38 @@ impl GameCore {
                 self.map
                     .carve_circle(at.x.round() as i32, at.y.round() as i32, r);
                 continue;
+            }
+            // §F10. A flame that has burned out **goes out**. Left to the
+            // fallback below it would detonate as a bazooka — 42 px and 45
+            // damage — so every flame in the sandbox would end in a crater, and
+            // 160 of them would dissolve the map. Same shape as the toxic drop
+            // above: the second place that decides what an outcome means is the
+            // second place that has to know.
+            if game_core::weapons::flame::is_flame(im.weapon) {
+                continue;
+            }
+            // §F10.2. A molotov bursts into a crowd, here as in `World::detonate`
+            // — up and outward from the impact, through the one `light_fan`.
+            if let Some(w) = defs::def(im.weapon) {
+                if let defs::Burst::Flames { count, speed } = w.burst {
+                    let mut rng = self.rng.clone();
+                    let ids = game_core::weapons::flame::light_fan(
+                        &mut self.projectiles,
+                        im.owner,
+                        game_core::weapons::flame::Fan {
+                            at,
+                            aim: -std::f32::consts::FRAC_PI_2,
+                            spread: std::f32::consts::FRAC_PI_2,
+                            speed,
+                            count,
+                        },
+                        &mut rng,
+                        now,
+                    );
+                    self.rng = rng;
+                    events.push(serde_json::json!({ "flames": ids }));
+                    continue;
+                }
             }
             // §F1: a bullet stops, it does not go off — and this is the second
             // place that decides what an outcome means, so it is the second place
@@ -1026,7 +1101,12 @@ pub fn constants_json() -> String {
         // samples a position on a timer needs it to know how far the subject
         // could have travelled between two samples.
         JETPACK_MAX_SPEED => c::JETPACK_MAX_SPEED,
-        LAVA_BURN_RADIUS => c::LAVA_BURN_RADIUS,
+        // §F10.2 retired `LAVA_BURN_RADIUS` with the disc it sized. The client
+        // drew a hazard light at it; a vent's afterburn is flames now, and each
+        // one lights the map itself.
+        FLAME_RADIUS => c::FLAME_RADIUS,
+        FLAME_LIFE => c::FLAME_LIFE,
+        MOLOTOV_FLAMES => c::MOLOTOV_FLAMES,
         TOXIC_POISON_DURATION => c::TOXIC_POISON_DURATION,
         TOXIC_POISON_DPS => c::TOXIC_POISON_DPS,
         TOXIC_DROP_CARVE_R => c::TOXIC_DROP_CARVE_R,

@@ -6,16 +6,22 @@
 //! ```text
 //!   t=0                 t=3s              t=6s              t=9s
 //!   |---- telegraph ----|---- jet -------|---- burn -------|
-//!   (the scheduler's)    channel carved    ground on fire    out
-//!                        LAVA_JET_DPS      LAVA_BURN_DPS
+//!   (the scheduler's)    channel carved    flames spat out   out
+//!                        LAVA_JET_DPS      LAVA_FLAMES_PER_SECOND
 //! ```
+//!
+//! **§F10.2 changed the third column and nothing else.** The afterburn used to
+//! be a `LAVA_BURN_RADIUS` disc dealing `LAVA_BURN_DPS`; it is now a stream of
+//! flames, which is the same hazard made of objects you can see and walk around.
+//! The telegraph, the channel and the jet are untouched, and `LAVA_BURN_DURATION`
+//! still names the window.
 //!
 //! The scheduler owns the telegraph; this type's `active` flag goes true at t=3,
 //! so its own clock runs 0..LAVA_JET_DURATION+LAVA_BURN_DURATION.
 
 use crate::constants::{
-    LAVA_BURN_DPS, LAVA_BURN_DURATION, LAVA_BURN_RADIUS, LAVA_CHANNEL_R, LAVA_JET_DPS,
-    LAVA_JET_DURATION, LAVA_VENTS_MAX, LAVA_VENTS_MIN, PLAYER_H, PLAYER_W,
+    LAVA_BURN_DURATION, LAVA_CHANNEL_R, LAVA_FLAMES_PER_SECOND, LAVA_JET_DPS, LAVA_JET_DURATION,
+    LAVA_VENTS_MAX, LAVA_VENTS_MIN, PLAYER_H, PLAYER_W,
 };
 use crate::map::carve::CarveResult;
 use crate::map::Map;
@@ -89,6 +95,37 @@ impl LavaBurst {
     }
 
     /// Opens the channels on the first active tick, then damages each tick.
+    /// Where a venting mouth should spit flames this tick, and how fast.
+    ///
+    /// Returned rather than spawned, so this module keeps knowing nothing about
+    /// `Projectiles` — the same shape `tick` already uses for its carves. The
+    /// caller hands them to `flame::light_fan`, which is the single spawn point
+    /// all three emitters share (§F10.2).
+    ///
+    /// **A derived cadence, not a stored counter.** `LAVA_FLAMES_PER_SECOND`
+    /// flames a second is one every `1 / rate`, and which interval `now` falls
+    /// in is a function of the vent's own `burn_until` — so there is no
+    /// per-vent emitter state to keep in step with the clock, exactly as
+    /// `flame`'s scorch timer avoids a `last_scorched_at` field.
+    pub fn smoulder(&self, now: f32, dt: f32) -> Vec<Vec2> {
+        let mut out = Vec::new();
+        if LAVA_FLAMES_PER_SECOND <= 0.0 {
+            return out;
+        }
+        let every = 1.0 / LAVA_FLAMES_PER_SECOND;
+        for v in &self.vents {
+            // Only inside the burn window: the jet phase spits no flames, which
+            // is what keeps the two halves of the timeline distinguishable.
+            if now < v.jet_until || now >= v.burn_until {
+                continue;
+            }
+            if crate::math::fired_this_tick(v.jet_until, every, now, dt) {
+                out.push(v.pos);
+            }
+        }
+        out
+    }
+
     pub fn tick(
         &mut self,
         map: &mut Map,
@@ -125,7 +162,6 @@ impl LavaBurst {
                 continue;
             }
             let p = target.pos;
-            let half_w = target.w * 0.5;
             for v in &self.vents {
                 let dps = if now < v.jet_until {
                     if in_jet(v, p) {
@@ -133,16 +169,11 @@ impl LavaBurst {
                     } else {
                         0.0
                     }
-                } else if now < v.burn_until {
-                    // Burning ground: a disc at the vent, not a cone.
-                    // `t.w`, not `PLAYER_W` — see `HitTarget`: the slice holds
-                    // birds since §C16 and the box is carried, not assumed.
-                    if (p - v.pos).len() <= LAVA_BURN_RADIUS + half_w {
-                        LAVA_BURN_DPS
-                    } else {
-                        0.0
-                    }
                 } else {
+                    // §F10.2: the afterburn deals **no damage of its own** any
+                    // more. What it does is spit flames, which do the burning —
+                    // see `smoulder` below. A dps here as well would charge for
+                    // the fire twice.
                     0.0
                 };
                 if dps > 0.0 {
@@ -361,10 +392,15 @@ mod tests {
         assert_eq!(ds[1].health, 1000.0, "a player outside the cone was burned");
     }
 
+    /// The jet still burns, and **the afterburn no longer does** (§F10.2).
+    ///
+    /// It used to be `LAVA_JET_DPS x LAVA_JET_DURATION + LAVA_BURN_DPS x
+    /// LAVA_BURN_DURATION`. The second term is gone with the disc: the vent now
+    /// spits flames and *they* do the burning, so a dps here as well would
+    /// charge for the same fire twice. The flames themselves are asserted in
+    /// `the_afterburn_spits_flames_and_the_jet_does_not` below.
     #[test]
-    fn a_vent_deals_jet_then_burn_then_stops() {
-        // The whole timeline: 3 s of jet at 10/s, then 3 s of burning ground at
-        // 8/s, then nothing. 54 total for someone who never moves.
+    fn a_vent_deals_jet_damage_and_the_afterburn_deals_none_itself() {
         let mut map = lava_map();
         let mut lava = LavaBurst::new(3, &map, 0.0);
         let v = lava.vents()[0];
@@ -383,24 +419,66 @@ mod tests {
             }
         }
         let took = 1000.0 - ds[0].health;
-        let expected = LAVA_JET_DPS * LAVA_JET_DURATION + LAVA_BURN_DPS * LAVA_BURN_DURATION;
+        let expected = LAVA_JET_DPS * LAVA_JET_DURATION;
         assert!(
             (took - expected).abs() < 1.0,
-            "total {took}, expected {expected}"
+            "total {took}, expected the jet alone ({expected})"
         );
+        // The control the assertion above needs: the jet really did hurt, so
+        // "the afterburn adds nothing" is not "nothing hurts".
         assert!(
-            (at_jet_end - LAVA_JET_DPS * LAVA_JET_DURATION).abs() < 1.0,
-            "at the jet's end {at_jet_end}, expected {}",
-            LAVA_JET_DPS * LAVA_JET_DURATION
+            (at_jet_end - expected).abs() < 1.0,
+            "at the jet's end {at_jet_end}, expected {expected}"
         );
-        // And it is over: two more seconds cost nothing.
-        let health = ds[0].health;
-        for i in 0..120 {
-            let mut t = targets(&mut ds);
-            lava.tick(&mut map, &mut t, true, total + 1.0 + i as f32 * DT, DT);
-        }
-        assert_eq!(ds[0].health, health, "still burning after the burn ended");
         assert!(lava.finished(total + 1.0));
+    }
+
+    /// The afterburn's actual output, and the jet phase as its control.
+    #[test]
+    fn the_afterburn_spits_flames_and_the_jet_does_not() {
+        let mut map = lava_map();
+        let mut lava = LavaBurst::new(3, &map, 0.0);
+        let mut ds: Vec<Dummy> = Vec::new();
+        {
+            let mut t = targets(&mut ds);
+            lava.tick(&mut map, &mut t, true, 0.0, DT);
+        }
+        let vents = lava.vents().len();
+
+        let mut during_jet = 0;
+        let mut during_burn = 0;
+        let total = LAVA_JET_DURATION + LAVA_BURN_DURATION;
+        let ticks = ((total + 1.0) / DT) as u32;
+        for i in 1..ticks {
+            let now = i as f32 * DT;
+            {
+                let mut t = targets(&mut ds);
+                lava.tick(&mut map, &mut t, true, now, DT);
+            }
+            let n = lava.smoulder(now, DT).len();
+            if now < LAVA_JET_DURATION {
+                during_jet += n;
+            } else {
+                during_burn += n;
+            }
+        }
+        assert_eq!(
+            during_jet, 0,
+            "the jet phase spat {during_jet} flames — the two halves of the \
+             timeline are supposed to be different"
+        );
+        // `LAVA_FLAMES_PER_SECOND` per vent for `LAVA_BURN_DURATION`, and the
+        // window is walked in `DT` steps so the last interval may not close.
+        let want = (LAVA_FLAMES_PER_SECOND * LAVA_BURN_DURATION) as usize * vents;
+        assert!(
+            during_burn >= want.saturating_sub(vents) && during_burn <= want + vents,
+            "the afterburn spat {during_burn} flames from {vents} vent(s), expected about \
+             {want} (LAVA_FLAMES_PER_SECOND {LAVA_FLAMES_PER_SECOND} x \
+             LAVA_BURN_DURATION {LAVA_BURN_DURATION})"
+        );
+        // And it stops. Otherwise "it emits during the burn" is satisfied by a
+        // vent that emits forever.
+        assert_eq!(lava.smoulder(total + 1.0, DT).len(), 0);
     }
 
     #[test]

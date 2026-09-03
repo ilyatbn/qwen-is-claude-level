@@ -313,6 +313,30 @@ pub fn isqrt(n: i32) -> i32 {
     x as i32
 }
 
+/// Did a periodic event of period `every`, counted from `base`, fall inside the
+/// tick that ends at `now` and lasted `dt`?
+///
+/// **The derived alternative to a `last_fired_at` field.** `weapons::flame`'s
+/// scorch and a lava vent's smoulder are both "one every N seconds while some
+/// condition holds", and a stored deadline on each would be state to keep in
+/// step with a clock that already knows the answer.
+///
+/// The care is all in the arithmetic, and it was paid for: `now - dt` is the
+/// *previous* tick's `now` only up to `f32` rounding, so a boundary landing
+/// inside that error is reported on two consecutive ticks. Measured before this
+/// existed — a vent at `LAVA_FLAMES_PER_SECOND` 6 emitted **22** times in a
+/// three-second window instead of 18. Both ends are therefore snapped to whole
+/// ticks first, and the interval index is nudged by a ten-thousandth so a
+/// boundary that lands exactly on a tick falls the same way at both ends.
+pub fn fired_this_tick(base: f32, every: f32, now: f32, dt: f32) -> bool {
+    if every <= 0.0 || dt <= 0.0 {
+        return false;
+    }
+    let snap = |t: f32| (t / dt).round() * dt;
+    let idx = |t: f32| ((snap(t) - base) / every + 1e-4).floor() as i32;
+    idx(now) > idx(now - dt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

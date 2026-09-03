@@ -978,6 +978,74 @@ it should — put it on the floor.
 tick). Printed by `a_full_flame_field_costs_what_the_cap_says_it_does` so a future change to
 `FLAME_MAX_LIVE` can be argued about with a figure. The cap looks right.
 
+## T19.12 landed — what the diff does not say
+
+**Task-file contradiction, resolved deliberately.** T19.12's Notes say *"the client will
+break on the retired events — that is T19.13's half; leave it compiling, not working, and
+say so"*, and its **Done-when runs `./scripts/check.sh`**. Those cannot both hold:
+`ordnance.mjs` waited on `d.jets`, a count of `cone` events, and `Delivery::Cone` is gone.
+Repaired here, because a red gate is not a deliverable — and because the counter left in
+place would have gone *vacuous*, not red, which is worse. `GameEvent::Cone` itself **is**
+left standing and unemitted, with a comment saying so, which is the "compiling, not
+working" the note asks for; removing the variant, the client's `'cone'` subscription and
+`ordnanceFx::addJet` is T19.13's.
+
+**The balance numbers say §F10 was the fix T11.09 was looking for.** T11.09 measured the
+flamethrower at 0.37 dmg/bot-s with 0.28 self, and the molotov at 0.46 against 1.68 self —
+three times more harm to their user than to anyone else — and concluded the cause was that
+a bot's guard reads a *blast radius* and knows nothing about a hazard that lingers. Now:
+**flamethrower 1.33 / 0.00, molotov 1.48 / 0.00** (8 seeds, release, `--ignored`). The
+zeroes are not a broken instrument — `a_burn_kill_credits_whoever_lit_it` proves flame
+attribution, and the bots simply avoid fire now, because `hazard_at` was re-pointed at the
+flame field. **That reader was the sweep's warning and it was right**: leave it reading
+`world.burn.patches()` and bots stop avoiding fire entirely, with nothing red.
+
+**The flamethrower's measured reach is a finding, and the numbers are here so nobody
+re-measures.** Swept over aim angles from a standing body: **0 deg → 53 px, −15 → 52,
+−30 → 93, −45 → 509**, against a retired `FLAMETHROWER_RANGE` of **150**. Point-blank it is
+a *third* of what it was; lobbed it goes three times further than the cone ever could. That
+is §F10's "reach is emergent" working as specified, and it is a real change of character —
+worth the coordinator's eye, not a bug to fix in a builder's task. §F10.2's own suggested
+bound (`FLAME_MUZZLE_SPEED × FLAME_LIFE` = 1600) is **vacuous** — it holds with the weapon
+deleted — so the test asserts a band.
+
+**Two shared bugs, both now fixed once rather than twice.**
+
+1. **A derived periodic timer double-fires on `f32` drift.** `now - dt` is the previous
+   tick's `now` only up to rounding, so a boundary landing inside that error is reported on
+   two consecutive ticks: measured, a vent at `LAVA_FLAMES_PER_SECOND` 6 emitted **22**
+   times in a three-second window instead of 18. `math::fired_this_tick` snaps both ends to
+   whole ticks and nudges the index; `flame`'s scorch and the vent's smoulder both use it.
+   The flame scorch had the same latent bug and nothing had caught it.
+2. **The molotov's bot stand-off had to be re-derived, and the obvious derivation is
+   wrong.** `speed × FLAME_LIFE / 2` gives 560 px against a measured crowd spread of about
+   100, because a flame spends most of its life *on the ground*. A bot with that number
+   refused every throw — `rej_blast_guard` 120 of 120 ticks at a target 260 px away. It is
+   now the ballistic range `v² / (GRAVITY × FLAME_GRAVITY_SCALE)`.
+
+**A flame's `Burst` was renamed `Flame` → `BurnsOut`.** It sat beside the new
+`Burst::Flames { count, speed }` for about an hour, and singular-versus-plural as the only
+thing distinguishing "this projectile *is* a flame" from "this projectile *becomes* flames"
+is a mistake nobody catches in review.
+
+**`light_fan` takes a `Fan` struct** because clippy's seven-argument limit bit — but the
+reason to keep it is `burn::Zone`'s: `at`, `aim`, `spread` and `speed` are one description
+of a burst, and five call sites passing them positionally is five chances to put a spread
+where a speed goes.
+
+**The sandbox implements flames rather than rejecting them.** `game-wasm` used to answer
+`cone_not_in_sandbox`; flames are projectiles and the sandbox has a projectile list, so
+refusing would refuse a weapon that works — and the sandbox is where fire gets looked at.
+It also had to learn that a flame's `Exploded` is a **no-op**: left to the generic
+fallback, every flame would have detonated as a 42 px bazooka blast and 160 of them would
+dissolve the map.
+
+**Three fixtures met the same trap for the third and fourth time.** `playing()` seats
+nobody and `set_phase(Playing)` leaves `round_time` at zero, so a body added to it is
+inside `SPAWN_IFRAMES` and refuses every point of damage — which reads exactly like "fire
+burns nobody". Wait the warmup out for real. It is now written into
+`a_molotov_that_lands_on_a_player_still_bursts_and_burns_them` beside the fixture.
+
 ## Where the next agent picks up (this coder retiring at ~380k)
 
 **HEAD is `fbcdd87`. The tree is clean, `git stash` is empty, and the last full gate was

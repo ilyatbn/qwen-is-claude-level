@@ -258,7 +258,7 @@ impl Projectiles {
             // inline.
             let straight = matches!(w.delivery, Delivery::Bullet { .. });
             // §F10.1. See the body test below.
-            let ends_only_on_its_timer = matches!(w.burst, Burst::Flame);
+            let ends_only_on_its_timer = matches!(w.burst, Burst::BurnsOut);
 
             p.rose |= p.vel.y < 0.0;
             // Gravity now; wind after the apex check, which is the order the
@@ -312,12 +312,12 @@ impl Projectiles {
                         } => {
                             outcome = ProjectileOutcome::Exploded { at: next };
                         }
-                        // Melee, Cone and Placed never become projectiles, so
+                        // Melee, Flames and Placed never become projectiles, so
                         // nothing here can be reached by them. Named rather than
                         // caught by `_` so adding a delivery is a compile error
                         // at every site that decides what a weapon does.
                         Delivery::Melee { .. }
-                        | Delivery::Cone { .. }
+                        | Delivery::Flames { .. }
                         | Delivery::Placed { .. } => {
                             outcome = ProjectileOutcome::Exploded { at: next };
                         }
@@ -587,11 +587,11 @@ pub fn predict_impact(
                     } => {
                         bounce(map, &mut p, next, restitution, friction);
                     }
-                    // Melee, Cone, Placed and Hitscan never fly. Named rather
+                    // Melee, Flames, Placed and Hitscan never fly. Named rather
                     // than caught by `_` so a new delivery is a compile error
                     // here too.
                     Delivery::Melee { .. }
-                    | Delivery::Cone { .. }
+                    | Delivery::Flames { .. }
                     | Delivery::Placed { .. }
                     | Delivery::Hitscan { .. }
                     | Delivery::Bullet { .. } => return Some(next),

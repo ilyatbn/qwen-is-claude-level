@@ -5230,3 +5230,19 @@ on the person it set on fire — now keyed on `Burst::Flame`; and `BurnField`'s
 outside its own radius. `touching` is circle-vs-box. **Nothing emits a flame yet — the
 production-caller grep is T19.12's**, said in the module header. 160 flames = 3200
 `ProjectileMove`/s, ~50 kB/s. EXIT=0, 42/42, net smoke 25/25, assets ok.
+
+## T19.12 — what lights a fire
+
+Three emitters, one `light_fan`: the flamethrower's `Delivery::Flames` (replacing
+`Delivery::Cone`, deleted with `cone.rs`), the molotov's `Burst::Flames` (replacing
+`Burst::Zone { Fire }`), and a vent's afterburn. `BurnKind::Fire` is retired; `BurnField`
+holds the toxic grenade's cloud alone. **The balance harness says §F10 was the fix T11.09
+was looking for**: flamethrower 0.37 → **1.33** dmg/bot-s and molotov 0.46 → **1.48**, with
+self-damage **1.68/1.79 → 0.00** — because `hazard_at` can now see fire, which is the
+reader that had to be re-pointed or bots would have walked into flames with every test
+green. **The measured reach is a finding**: 53 px level, 509 px lobbed, against a retired
+`FLAMETHROWER_RANGE` of 150 — the weapon changed character. Two shared bugs found: a
+derived timer double-fired on `f32` drift (a vent emitted 22 in a 3 s window, not 18) —
+`math::fired_this_tick` now owns it for both timers; and the molotov's bot stand-off had to
+be re-derived ballistically, not from `speed × FLAME_LIFE`, which was 2.7× too big and
+refused 120 throws of 120. EXIT=0, 42/42, net smoke 25/25, assets ok.

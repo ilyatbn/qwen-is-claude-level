@@ -695,10 +695,14 @@ pub const LAVA_VENTS_MAX: u32 = 6;
 pub const LAVA_CHANNEL_R: f32 = 24.0;
 pub const LAVA_JET_DURATION: f32 = 3.0;
 pub const LAVA_JET_DPS: f32 = 10.0;
-/// Ground fire left behind.
+/// How long a vent keeps making flames after its jet stops (§F10.2).
+///
+/// Kept while `LAVA_BURN_DPS` and `LAVA_BURN_RADIUS` are retired: the afterburn
+/// is now a stream of flames rather than a disc, so the *window* still means
+/// something and the disc's numbers do not. `effects::scheduler` reads it.
 pub const LAVA_BURN_DURATION: f32 = 3.0;
-pub const LAVA_BURN_DPS: f32 = 8.0;
-pub const LAVA_BURN_RADIUS: f32 = 28.0;
+/// Flames a venting mouth emits per second during that window.
+pub const LAVA_FLAMES_PER_SECOND: f32 = 6.0;
 
 pub const FOG_DURATION: f32 = 15.0;
 /// Fade in and out.
@@ -1272,25 +1276,30 @@ pub const SHOVEL_ARC: f32 = 1.2;
 pub const SHOVEL_COOLDOWN: f32 = 0.55;
 pub const SHOVEL_KNOCKBACK: f32 = 150.0;
 
-// Cone (§B7). Area denial: it carves nothing — fire does not dig (§B6) — and
-// what it leaves behind is the *existing* LAVA_BURN_* hazard, not a second fire
-// system. `damage` on the def mirrors the dps so the shared field means
-// something; the cone reads its dps from the delivery.
-pub const FLAMETHROWER_DPS: f32 = 14.0;
-/// T11.09 tried 200 here and **measured it worse**: 0.37 -> 0.30 dmg/bot-s with
-/// self-damage rising 0.28 -> 0.44. Range is not what holds the flamethrower
-/// back. It leaves burning ground (§B6) and its user walks into it — the same
-/// root cause as molotov and toxic, whose self-damage is 3x what they deal. The
-/// bot blast-guard checks a blast radius and knows nothing about a hazard that
-/// lingers for seconds, so a longer reach only spreads more fire to stand in.
-/// A weapon-side fix would be treating the fix as the balance problem.
-pub const FLAMETHROWER_RANGE: f32 = 150.0;
-pub const FLAMETHROWER_ARC: f32 = 0.55;
+// The flamethrower (§F10.2). **No longer a cone.** It emits flames — objects
+// that fly, fall, settle and burn — so `FLAMETHROWER_DPS`, `_ARC`, `_RANGE` and
+// `_PARTICLE_LIFE` are all retired: there is no arc to check, no dps on the
+// weapon, and reach is now emergent from speed x life rather than a number.
+//
+// T11.09's finding survives the change and is worth keeping: it tried a range of
+// 200 and **measured it worse** (0.37 -> 0.30 dmg/bot-s, self-damage 0.28 ->
+// 0.44), because the flamethrower's problem was never reach — it was that its
+// user walks into the fire it leaves. §F10 is that finding's actual fix: fire
+// you can see, at a place you chose, that a bot's hazard guard can read.
 pub const FLAMETHROWER_COOLDOWN: f32 = 0.05;
 /// Fuel, spent per trigger tick — 200 at 0.05 s is 10 s of continuous fire.
 pub const FLAMETHROWER_AMMO: u8 = 200;
-/// How long one spray particle lives, for the client and for the burn trail.
-pub const FLAMETHROWER_PARTICLE_LIFE: f32 = 0.35;
+/// Flames per press. At `FLAMETHROWER_COOLDOWN` 0.05 that is 40 a second, which
+/// is what makes a held trigger a *stream* rather than a burst.
+pub const FLAMETHROWER_FLAMES_PER_SHOT: u32 = 2;
+/// How fast a flame leaves the flamethrower, px/s.
+pub const FLAME_MUZZLE_SPEED: f32 = 320.0;
+/// Radians of jitter either side of the aim.
+///
+/// A draw, not an even fan: two flames a press at 20 presses a second would
+/// otherwise lay down two perfectly straight lines. The draw is from the world's
+/// seeded `ChaCha8Rng`, so a replay reproduces it exactly.
+pub const FLAME_SPREAD: f32 = 0.18;
 
 // --- F10: a flame is an object ---------------------------------------------
 //
@@ -1366,13 +1375,12 @@ pub const SMOKE_MUZZLE_SPEED: f32 = 470.0;
 pub const SMOKE_AMMO: u8 = 2;
 
 /// Six patches, scattered — a molotov denies an area, not a point.
-pub const MOLOTOV_PATCHES: u32 = 6;
-/// **Must stay below `LAVA_BURN_RADIUS` (28).** The patches sit on a ring of this
-/// radius, so a scatter wider than one patch leaves the impact point itself
-/// unburnt — a molotov that lands on you and does nothing. It was 46, and the
-/// control half of `smoke_deals_no_damage_...` caught it: fire that could not burn.
-pub const MOLOTOV_SCATTER: f32 = 24.0;
-pub const MOLOTOV_BURN_DURATION: f32 = 5.0;
+/// How many flames a molotov becomes (§F10.2). It is a *crowd*, not a disc: the
+/// picture the M19 brief asks for is individual flames scattering along the
+/// ground so you can see the shape of the area that has become dangerous.
+pub const MOLOTOV_FLAMES: u32 = 24;
+/// How fast they leave the impact, px/s — outward and up.
+pub const MOLOTOV_FLAME_SPEED: f32 = 220.0;
 pub const MOLOTOV_MUZZLE_SPEED: f32 = 470.0;
 pub const MOLOTOV_AMMO: u8 = 2;
 

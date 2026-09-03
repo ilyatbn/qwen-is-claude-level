@@ -1,12 +1,22 @@
-//! Burning ground (`docs/71-amendments-v3.md` §B6, §B7).
+//! Damaging ground zones (`docs/71-amendments-v3.md` §B6, §B7 — **and §F10.2**).
 //!
-//! One fire system, not three. The flamethrower's trail, a molotov's patches and
-//! a lava vent's afterburn are the same thing — a disc that damages anyone
-//! standing in it for a while — and they use the same `LAVA_BURN_*` numbers from
-//! `docs/13` §5. Writing a second one per weapon is the §A24 mistake this project
-//! has already paid for twice.
+//! This used to be one fire system for three weapons: the flamethrower's trail,
+//! a molotov's patches and a lava vent's afterburn were all the same disc, and
+//! writing a second one per weapon would have been the §A24 mistake this project
+//! has paid for twice.
+//!
+//! **§F10.2 took the fire out of it.** All three of those are flames now —
+//! objects that fly, fall, settle and burn, in `weapons::flame` — because a disc
+//! that damages you while you stand in it is a rule and not a fire. What is left
+//! here is the **toxic grenade's cloud**, deliberately: a toxic zone that dug
+//! into the ground and drifted would be a second fire, and §F12 says the toxic
+//! grenade is unchanged.
+//!
+//! So this file is now one weapon's mechanism rather than three's. It keeps its
+//! shape — `Zone`, `light_zone`, a `kind` — because collapsing it into "the
+//! toxic cloud" would have to be undone by the next zone weapon, and because
+//! `BurnKind` is one half of a mapping `defs::BurnZone` still checks.
 
-use crate::constants::{LAVA_BURN_DPS, LAVA_BURN_DURATION, LAVA_BURN_RADIUS};
 use crate::math::Vec2;
 use crate::weapons::explode::DamageSource;
 use crate::weapons::explode::HitTarget;
@@ -17,7 +27,6 @@ use crate::weapons::explode::HitTarget;
 /// burning ground with different numbers and a different colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BurnKind {
-    Fire,
     Toxic,
 }
 
@@ -61,18 +70,6 @@ impl BurnField {
         &self.patches
     }
 
-    /// Light a patch with the standard numbers.
-    pub fn light(&mut self, pos: Vec2, now: f32, source: DamageSource) {
-        self.light_for(
-            pos,
-            LAVA_BURN_RADIUS,
-            LAVA_BURN_DPS,
-            LAVA_BURN_DURATION,
-            now,
-            source,
-        );
-    }
-
     /// A zone of a stated kind — a molotov's fire, a toxic grenade's fallout.
     ///
     /// The numbers travel together as a `Zone` because they *are* one thing: a
@@ -89,29 +86,8 @@ impl BurnField {
         });
     }
 
-    /// Light a patch with its own radius, rate and life — a flamethrower's trail
-    /// is smaller and shorter-lived than a molotov's.
-    pub fn light_for(
-        &mut self,
-        pos: Vec2,
-        radius: f32,
-        dps: f32,
-        duration: f32,
-        now: f32,
-        source: DamageSource,
-    ) {
-        self.patches.push(BurnPatch {
-            kind: BurnKind::Fire,
-            pos,
-            radius,
-            dps,
-            until: now + duration,
-            source,
-        });
-    }
-
-    /// Hash the burning ground (§A34). Fire is state: a patch that should have
-    /// gone out is damage a replay would not reproduce.
+    /// Hash the zones (§A34). A zone is state: one that should have gone out is
+    /// damage a replay would not reproduce.
     pub fn hash_into(&self, h: &mut blake3::Hasher) {
         h.update(&(self.patches.len() as u32).to_le_bytes());
         for p in &self.patches {
@@ -124,11 +100,18 @@ impl BurnField {
         }
     }
 
-    /// Damage anyone standing in fire, then drop the patches that have gone out.
+    /// Damage anyone standing in a zone, then drop the ones that have gone out.
     ///
-    /// Damage is per-patch, so overlapping fire genuinely burns faster. That is
-    /// the behaviour a player expects from walking into the middle of a molotov,
-    /// and capping it would make the centre of a fire no worse than its edge.
+    /// Damage is per-patch, so overlapping zones genuinely burn faster — the
+    /// same rule `weapons::flame` makes for overlapping flames.
+    ///
+    /// **The overlap test is a circle around the body's centre plus its
+    /// half-*width*, which ignores `h`.** That is safe here and only here:
+    /// `TOXIC_GRENADE_RADIUS` is far larger than a body's half-height, so the
+    /// extra reach hides the missing term. It is **not** safe for anything
+    /// small — a 10 px flame tested this way misses a body it is resting at the
+    /// feet of, which is why `flame::touching` is circle-against-box. If a
+    /// tighter zone weapon is ever added, this is the line to change.
     pub fn tick(&mut self, players: &mut [HitTarget], now: f32, dt: f32) {
         for target in players.iter_mut() {
             if !target.alive {

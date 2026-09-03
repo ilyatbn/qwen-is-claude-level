@@ -147,7 +147,8 @@ if (molotovBefore === 0) {
     // A clear lane is not enough and the third run proved it: a molotov arcs
     // under gravity at `gravity_scale` 1.0, so a lane that is clear in a straight
     // line still ends with the bottle on the ground a short hop away — and
-    // `explode_on_contact` lays a fire zone `LAVA_BURN_RADIUS` wide right there.
+    // `explode_on_contact` bursts it into `MOLOTOV_FLAMES` right there (§F10.2;
+    // it used to be a `LAVA_BURN_RADIUS` disc, and the lesson is the same).
     // Standing in it is what killed the player. `ordnance` learned the same
     // lesson on the same weapon and leaves while the bottle is airborne; this
     // does too. The walk is after the press, so §C20's moving-shooter rule has

@@ -1136,8 +1136,12 @@ export class SandboxScene extends Phaser.Scene {
         g.closePath()
         g.fillPath()
       } else if (v.burning) {
+        // §F10.2: the afterburn is **flames**, drawn per object by the ordnance
+        // layer, so the disc that stood in for it is gone with
+        // `LAVA_BURN_RADIUS`. What is left is a mouth that is still glowing —
+        // small, at the vent, so a vent in its burn phase still reads as one.
         g.fillStyle(0xff4400, 0.45)
-        g.fillCircle(v.x, v.y, C().LAVA_BURN_RADIUS)
+        g.fillCircle(v.x, v.y, 10)
       } else {
         // Telegraph: cracks at the points that are about to open.
         g.lineStyle(2, 0xff8800, 0.9)

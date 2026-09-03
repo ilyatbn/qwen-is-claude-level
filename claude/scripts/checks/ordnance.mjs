@@ -318,11 +318,12 @@ async function holding(where) {
 // "a mine is drawn after placing one" also passes for a layer that draws a mine
 // unconditionally (§A26).
 const before = await dbg()
-if (before.minesDrawn === 0 && before.swings === 0 && before.jets === 0) {
+if (before.minesDrawn === 0 && before.swings === 0 && before.flamesSpawned === 0) {
   ok('control: nothing drawn before anything is fired')
 } else {
   fail(
-    `something was already drawn: mines ${before.minesDrawn}, swings ${before.swings}, jets ${before.jets}`,
+    `something was already drawn: mines ${before.minesDrawn}, swings ${before.swings}, ` +
+      `flames ${before.flamesSpawned}`,
   )
 }
 
@@ -341,15 +342,27 @@ await settle(400)
 const swung = await until((d) => d.swings > 0, 8000, 'a melee swing to arrive')
 if (swung) ok(`melee: ${swung.swings} swing(s) received and drawn`)
 
-// --- flamethrower: a jet, and a light ---------------------------------------
+// --- flamethrower: a stream of flames ---------------------------------------
+//
+// **§F10.2 changed what this measures.** It used to wait for `d.jets`, a count
+// of `cone` events — and `Delivery::Cone` is retired, so that number is now zero
+// forever and the assertion would have gone quietly vacuous rather than red if
+// the counter had merely been left in place. A press emits
+// `FLAMETHROWER_FLAMES_PER_SHOT` flames, each of which is a real projectile and
+// arrives as `projectile_spawn`; that is what is counted here.
+//
+// *Drawing* them is T19.13's, and deliberately not asserted yet: this is the
+// server's word, and keeping the two numbers apart is what makes "the server
+// made fire and nothing drew it" a visible state rather than one green check.
 await holding('melee')
 await selectWeapon(page, 'flamethrower')
+const beforeFlames = (await dbg()).flamesSpawned ?? 0
 for (let i = 0; i < 6; i++) {
   await fireAt(900, 420)
   await settle(120)
 }
-const sprayed = await until((d) => d.jets > 0, 8000, 'a flame jet to arrive')
-if (sprayed) ok(`cone: ${sprayed.jets} jet(s) received and drawn`)
+const sprayed = await until((d) => (d.flamesSpawned ?? 0) > beforeFlames, 8000, 'flames to arrive')
+if (sprayed) ok(`flamethrower: ${sprayed.flamesSpawned} flame(s) received from the server`)
 
 // --- a hazard on the ground -------------------------------------------------
 //
@@ -412,7 +425,15 @@ await fireAt(1060, 180)
 // walk, because it appears the moment the bottle lands and this walk outlasts
 // the flames.
 await page.keyboard.down('a')
-const burnt = await until((d) => d.hazardsDrawn > 0, 10_000, 'a hazard to be drawn')
+// §F10.2: a molotov leaves **flames**, not a `hazard_spawn` zone, so the thing
+// to wait for changed with it. `MOLOTOV_FLAMES` of them arrive at once, and the
+// count is cumulative, so a burst cannot fall between two polls.
+const beforeBottle = (await dbg()).flamesSpawned ?? 0
+const burnt = await until(
+  (d) => (d.flamesSpawned ?? 0) > beforeBottle,
+  10_000,
+  "a molotov's flames to arrive",
+)
 await settle(1500)
 await page.keyboard.up('a')
 await settle(300)
@@ -431,13 +452,17 @@ if (burnt) {
   // "server announced undefined". A log line is forgiving about that; an
   // assertion is not, because every comparison against `undefined` is quietly
   // false and reads exactly like a pass.
-  const announced = burnt.observed?.hazards
-  if (typeof announced !== 'number') {
-    fail(`observed.hazards is ${announced} — the check is reading a field that does not exist`)
-  } else if (burnt.hazardsDrawn > announced) {
-    fail(`drew ${burnt.hazardsDrawn} hazards but the server only announced ${announced}`)
+  const kf = await page.evaluate(() => window.__game.constants())
+  const lit = (burnt.flamesSpawned ?? 0) - beforeBottle
+  if (typeof burnt.flamesSpawned !== 'number') {
+    fail(`flamesSpawned is ${burnt.flamesSpawned} — reading a field that does not exist`)
+  } else if (lit < kf.MOLOTOV_FLAMES) {
+    // The exact count, not "more than none": §F10.2 says a molotov becomes
+    // `MOLOTOV_FLAMES`, and a burst that lit one flame would satisfy a
+    // greater-than-zero test while being the disc this change replaced.
+    fail(`the molotov lit ${lit} flame(s), expected MOLOTOV_FLAMES (${kf.MOLOTOV_FLAMES})`)
   } else {
-    ok(`hazard: ${burnt.hazardsDrawn} zone(s) drawn of ${announced} announced`)
+    ok(`molotov: ${lit} flame(s) lit, MOLOTOV_FLAMES is ${kf.MOLOTOV_FLAMES}`)
   }
 }
 

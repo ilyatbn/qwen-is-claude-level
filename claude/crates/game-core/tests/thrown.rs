@@ -308,25 +308,103 @@ fn smoke_dims_vision_where_it_is_and_clears_when_it_disperses() {
 // Molotov and toxic
 // ---------------------------------------------------------------------------
 
+/// §F10.2: a molotov bursts into a **crowd of flames**, not `MOLOTOV_PATCHES`
+/// discs, and they spread along the ground rather than stacking at the impact.
 #[test]
-fn a_molotov_scatters_the_stated_number_of_patches_and_they_expire() {
+fn a_molotov_bursts_into_a_crowd_of_flames_that_spread_and_burn_out() {
     let mut w = playing();
     let at = ground_point(&w);
     burst(&mut w, WEAPON_MOLOTOV, at, 0);
+    let flames: Vec<_> = w
+        .projectiles
+        .iter()
+        .filter(|p| game_core::weapons::flame::is_flame(p.weapon))
+        .collect();
     assert_eq!(
-        w.burn.len(),
-        MOLOTOV_PATCHES as usize,
-        "one patch per §B7's count"
+        flames.len(),
+        MOLOTOV_FLAMES as usize,
+        "one flame per §F10.2's count"
     );
     assert!(
-        w.burn.patches().iter().all(|p| p.kind == BurnKind::Fire),
-        "a molotov leaves fire"
+        w.burn.is_empty(),
+        "a molotov left a burn zone — fire is not `BurnField`'s any more"
     );
 
-    for _ in 0..(MOLOTOV_BURN_DURATION / SIM_DT) as usize + 2 {
+    // Let them fly and settle, then measure the spread. **The control is one
+    // flame in the same place**: a burst that spawned everything at the impact
+    // point with no velocity would pass a count assertion and would be the disc
+    // this change replaces, wearing 24 hats.
+    for _ in 0..(FLAME_LIFE / SIM_DT) as usize / 2 {
         w.step(SIM_DT);
     }
-    assert!(w.burn.is_empty(), "molotov fire should burn out");
+    let xs: Vec<f32> = w
+        .projectiles
+        .iter()
+        .filter(|p| game_core::weapons::flame::is_flame(p.weapon))
+        .map(|p| p.pos.x)
+        .collect();
+    assert!(!xs.is_empty(), "every flame was gone before FLAME_LIFE / 2");
+    let lo = xs.iter().cloned().fold(f32::INFINITY, f32::min);
+    let hi = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        hi - lo > FLAME_RADIUS * 4.0,
+        "the flames spread only {:.1} px across ({lo:.1}..{hi:.1}) — a molotov is \
+         supposed to deny an area, not a point",
+        hi - lo
+    );
+
+    // And they go out on their own timer, so the fire is not permanent.
+    for _ in 0..(FLAME_LIFE / SIM_DT) as usize + 4 {
+        w.step(SIM_DT);
+    }
+    assert!(
+        !w.projectiles
+            .iter()
+            .any(|p| game_core::weapons::flame::is_flame(p.weapon)),
+        "a molotov's flames outlived FLAME_LIFE"
+    );
+}
+
+/// A molotov that lands **on a player** still bursts, and burns them.
+#[test]
+fn a_molotov_that_lands_on_a_player_still_bursts_and_burns_them() {
+    // **A real player, and a real round.** `playing()` seats nobody and
+    // `set_phase(Playing)` lasts one tick with `round_time` still at zero, so a
+    // body added to it is inside `SPAWN_IFRAMES` and refuses every point of
+    // damage — which reads as "fire burns nobody". Both traps are recorded in
+    // `HANDOFF-M19.md`; this is the third fixture to meet them.
+    let mut w = World::new(SEED, MapScale::Small);
+    w.add_player(0, 0, "ana".to_string());
+    let mut guard = 0;
+    while (w.phase != RoundPhase::Playing || w.round_time <= SPAWN_IFRAMES) && guard < 4000 {
+        w.step(SIM_DT);
+        guard += 1;
+    }
+    assert_eq!(w.phase, RoundPhase::Playing);
+
+    let at = w.player(0).map(|p| p.body.pos).expect("no player");
+    let hp = w.player(0).map(|p| p.health).unwrap_or(0.0);
+    // Owner 3, so this is somebody else's bottle and the burn is not a
+    // self-inflicted special case.
+    burst(&mut w, WEAPON_MOLOTOV, at, 3);
+    assert_eq!(
+        w.projectiles
+            .iter()
+            .filter(|p| game_core::weapons::flame::is_flame(p.weapon))
+            .count(),
+        MOLOTOV_FLAMES as usize,
+        "a contact burst on a body spawned no flames"
+    );
+    // A whole `FLAME_LIFE`: the crowd is thrown outward and up, so most of it
+    // spends the first half-second leaving. What is asserted is that standing
+    // where a molotov broke costs you health, not that it costs you it instantly.
+    for _ in 0..(FLAME_LIFE / SIM_DT) as usize {
+        w.step(SIM_DT);
+    }
+    assert!(
+        w.player(0).map(|p| p.health).unwrap_or(0.0) < hp,
+        "a molotov burst at a player's feet burned nobody"
+    );
 }
 
 #[test]
@@ -346,7 +424,6 @@ fn every_zone_announces_itself_so_a_client_can_draw_it() {
     // Count at both ends (§A39): a hazard the server simulates and never tells
     // anyone about is a zone that damages you out of thin air.
     for (weapon, kind, want) in [
-        (WEAPON_MOLOTOV, HazardKind::Fire, MOLOTOV_PATCHES as usize),
         (WEAPON_TOXIC_GRENADE, HazardKind::Toxic, 1),
         (WEAPON_SMOKE, HazardKind::Smoke, 1),
     ] {
@@ -410,9 +487,11 @@ fn the_four_thrown_weapons_have_the_bursts_b7_describes() {
         def(WEAPON_SMOKE).expect("def").burst,
         Burst::Smoke { .. }
     ));
+    // §F10.2: a molotov became a crowd of flames rather than a zone. The toxic
+    // grenade below is the control that `Burst::Zone` is still a live variant.
     assert!(matches!(
         def(WEAPON_MOLOTOV).expect("def").burst,
-        Burst::Zone { .. }
+        Burst::Flames { .. }
     ));
     assert!(matches!(
         def(WEAPON_TOXIC_GRENADE).expect("def").burst,
@@ -528,5 +607,137 @@ fn prediction_agrees_with_the_simulation() {
     assert!(
         checked >= 10,
         "only {checked} throws actually landed — the comparison proved nothing"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F10.2 — the flamethrower
+// ---------------------------------------------------------------------------
+
+/// A round with one armed player, past the warmup and the spawn i-frames.
+fn armed_round(weapon: game_core::items::registry::ItemId, count: u8) -> World {
+    let mut w = World::new(SEED, MapScale::Small);
+    w.add_player(0, 0, "ana".to_string());
+    let mut guard = 0;
+    while (w.phase != RoundPhase::Playing || w.round_time <= SPAWN_IFRAMES) && guard < 4000 {
+        w.step(SIM_DT);
+        guard += 1;
+    }
+    // `wield`, not `give`: §F5 puts a shovel in slot 0, so a fixture that only
+    // gives a weapon is holding a shovel and measuring a swing.
+    game_core::world::give(&mut w, 0, weapon, count);
+    game_core::world::wield(&mut w, 0, weapon);
+    w
+}
+
+/// Point the player and pull the trigger. `World::fire` reads the aim off the
+/// player, so a fixture that wants a direction has to set it there.
+fn fire_at(w: &mut World, aim: f32) {
+    if let Some(p) = w.player_mut(0) {
+        p.aim = game_core::math::quantize_angle(aim);
+    }
+    let now = w.round_time;
+    let _ = w.fire(0, now);
+}
+
+#[test]
+fn one_flamethrower_press_emits_the_stated_flames_along_the_aim() {
+    let mut w = armed_round(game_core::items::registry::FLAMETHROWER, 50);
+    let before = w.projectiles.len();
+    let aim = 0.0; // straight right
+    fire_at(&mut w, aim);
+    let flames: Vec<_> = w
+        .projectiles
+        .iter()
+        .filter(|p| game_core::weapons::flame::is_flame(p.weapon))
+        .collect();
+    assert_eq!(
+        flames.len(),
+        FLAMETHROWER_FLAMES_PER_SHOT as usize,
+        "one press emitted {} flames, expected FLAMETHROWER_FLAMES_PER_SHOT ({}); \
+         the list held {before} projectiles before",
+        flames.len(),
+        FLAMETHROWER_FLAMES_PER_SHOT
+    );
+    for f in &flames {
+        let a = f.vel.y.atan2(f.vel.x);
+        assert!(
+            (a - aim).abs() <= FLAME_SPREAD + 1e-4,
+            "a flame left at {a} rad, more than FLAME_SPREAD ({FLAME_SPREAD}) off the aim"
+        );
+        // Speed is drawn in a band below the nominal, so the crowd does not all
+        // land on one arc — asserted as a band rather than an equality, and the
+        // upper bound is what stops the band quietly becoming a multiplier.
+        let v = f.vel.len();
+        assert!(
+            (FLAME_MUZZLE_SPEED * 0.5..=FLAME_MUZZLE_SPEED + 1e-3).contains(&v),
+            "a flame left at {v} px/s against FLAME_MUZZLE_SPEED {FLAME_MUZZLE_SPEED}"
+        );
+    }
+}
+
+/// §F10.2 asks for the reach to be **measured** and reported against the retired
+/// `FLAMETHROWER_RANGE` of 150.
+#[test]
+fn the_flamethrowers_reach_is_measured_and_bounded_by_speed_times_life() {
+    // Swept over aim angles, because "the reach" of a weapon whose rounds fall
+    // is a function of how you hold it — a level shot from a standing body puts
+    // the stream into the ground almost at once, and a shot angled up arcs.
+    // Measuring one angle and calling it the reach is the mistake this sweep
+    // avoids.
+    let mut furthest: f32 = 0.0;
+    for deg in [0.0f32, -15.0, -30.0, -45.0] {
+        let aim = deg.to_radians();
+        let mut w = armed_round(game_core::items::registry::FLAMETHROWER, 200);
+        let origin = w.player(0).map(|p| p.body.pos).expect("no player");
+        for _ in 0..10 {
+            fire_at(&mut w, aim);
+            w.step(SIM_DT);
+        }
+        let mut best: f32 = 0.0;
+        for _ in 0..(FLAME_LIFE / SIM_DT) as usize {
+            w.step(SIM_DT);
+            for p in w.projectiles.iter() {
+                if game_core::weapons::flame::is_flame(p.weapon) {
+                    best = best.max((p.pos - origin).len());
+                }
+            }
+        }
+        println!("F10.2 flamethrower reach at {deg:>4} deg: {best:.0} px");
+        furthest = furthest.max(best);
+    }
+    println!(
+        "F10.2 flamethrower reach: {furthest:.0} px over the sweep \
+         (retired FLAMETHROWER_RANGE was 150)"
+    );
+    // The upper bound §F10.2 names, so a future speed change cannot silently
+    // double the weapon's reach.
+    assert!(
+        furthest <= FLAME_MUZZLE_SPEED * FLAME_LIFE,
+        "the crowd reached {furthest:.0} px, past FLAME_MUZZLE_SPEED x FLAME_LIFE ({})",
+        FLAME_MUZZLE_SPEED * FLAME_LIFE
+    );
+    // And a lower one, which is the half the task's own bound cannot do: 320 x 5
+    // is 1600 px and holds with the feature deleted. A band is the assertion.
+    assert!(
+        furthest > FLAME_RADIUS * 4.0,
+        "the crowd reached only {furthest:.0} px — the flamethrower throws nothing"
+    );
+}
+
+#[test]
+fn a_toxic_grenade_still_leaves_a_zone_and_no_flames() {
+    // The control for the whole of §F10.2: fire left `BurnField` and toxic did
+    // not, because a toxic cloud that dug into the ground would be a second
+    // fire (§F12).
+    let mut w = playing();
+    let at = ground_point(&w);
+    burst(&mut w, WEAPON_TOXIC_GRENADE, at, 0);
+    assert_eq!(w.burn.len(), 1, "the toxic grenade stopped leaving a zone");
+    assert!(
+        !w.projectiles
+            .iter()
+            .any(|p| game_core::weapons::flame::is_flame(p.weapon)),
+        "a toxic grenade lit flames"
     );
 }

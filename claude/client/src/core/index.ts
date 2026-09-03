@@ -222,7 +222,10 @@ export interface Constants {
   RESPAWN_DELAY: number
   PICKUP_RADIUS: number
   JETPACK_MAX_SPEED: number
-  LAVA_BURN_RADIUS: number
+  /** §F10.2 — the flame that replaced the burning-ground disc. */
+  FLAME_RADIUS: number
+  FLAME_LIFE: number
+  MOLOTOV_FLAMES: number
   TOXIC_POISON_DURATION: number
   TOXIC_POISON_DPS: number
   TOXIC_DROP_CARVE_R: number

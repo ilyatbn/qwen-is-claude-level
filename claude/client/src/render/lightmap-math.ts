@@ -82,7 +82,7 @@ export interface WorldLights {
   remotePlayers: readonly Omit<PlayerLight, 'health'>[]
   /** `age` in seconds since the blast. */
   explosions: readonly { x: number; y: number; age: number }[]
-  hazards: readonly { x: number; y: number; kind: 'lava' | 'burn' | 'meteor' }[]
+  hazards: readonly { x: number; y: number; kind: 'lava' | 'burn' | 'meteor' | 'flame' }[]
   darkness: number
   fogMult: number
 }
@@ -90,7 +90,22 @@ export interface WorldLights {
 /** Explosion flash decay, seconds. */
 export const FLASH_DECAY = 0.2
 
+/**
+ * How far each hazard lights the ground at night.
+ *
+ * `flame` is `FLAME_RADIUS` scaled up, not a fourth inline number: what a flame
+ * *damages* is 10 px and what it *lights* is the glow around it, and tying the
+ * two together is what stops a change to one silently moving the other. The
+ * other three are still inline because the discs they belong to were never
+ * constants (§F10.2 retired `LAVA_BURN_RADIUS`, which was the one that was).
+ */
+const FLAME_LIGHT_MULT = 4
 const HAZARD_RADIUS: Record<string, number> = { lava: 150, burn: 90, meteor: 120 }
+
+/** The radius for kinds whose number lives in the shared constants. */
+function hazardRadius(kind: string): number {
+  return kind === 'flame' ? C().FLAME_RADIUS * FLAME_LIGHT_MULT : 100
+}
 
 /**
  * Every light that should erase darkness this frame.
@@ -156,7 +171,7 @@ export function collectLightSources(w: WorldLights): LightSourceSpec[] {
     out.push({
       x: h.x,
       y: h.y,
-      radius: (HAZARD_RADIUS[h.kind] ?? 100) * w.fogMult,
+      radius: (HAZARD_RADIUS[h.kind] ?? hazardRadius(h.kind)) * w.fogMult,
       kind: 'radial',
       intensity: 0.85,
     })

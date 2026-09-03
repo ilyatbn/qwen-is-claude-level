@@ -170,6 +170,15 @@ pub enum GameEvent {
         hits: u8,
     },
     /// One tick of cone spray (§B6).
+    ///
+    /// **Nothing emits this since §F10.2.** `Delivery::Cone` is retired and the
+    /// flamethrower spawns flames, which travel as ordinary `ProjectileSpawn`s.
+    /// The variant and its client handler are left standing deliberately —
+    /// T19.12's own note says to leave the client *compiling, not working*, and
+    /// T19.13 is the task that removes the drawing. It is recorded here rather
+    /// than left to be discovered, because a producer-less event is the
+    /// "mechanism wired to nothing" shape and the next reader deserves to know
+    /// it is on somebody's list.
     Cone {
         tick: u32,
         owner: PlayerId,
@@ -1540,7 +1549,56 @@ impl World {
             // when `fuse_at` passes — which is why this arm exists at all rather
             // than the flame being intercepted earlier: the fuse is what gives a
             // flame its `FLAME_LIFE` and it is the same fuse a grenade uses.
-            Burst::Flame => {}
+            Burst::BurnsOut => {}
+            // §F10.2. A molotov is a contact weapon that becomes a crowd.
+            //
+            // `at` and **up**: the fan is centred on straight up with a half-turn
+            // of spread, which is what "outward and up from the impact" means as
+            // an angle range. A fan centred on the throw direction would put
+            // every flame on the far side of the impact and leave the ground the
+            // bottle actually broke on clear.
+            Burst::Flames { count, speed } => {
+                let ids = crate::weapons::flame::light_fan(
+                    &mut self.projectiles,
+                    owner,
+                    crate::weapons::flame::Fan {
+                        at,
+                        aim: -std::f32::consts::FRAC_PI_2,
+                        spread: std::f32::consts::FRAC_PI_2,
+                        speed,
+                        count,
+                    },
+                    &mut self.rng,
+                    now,
+                );
+                self.announce_flames(&ids, now);
+            }
+        }
+    }
+
+    /// Tell the clients about flames that have just been lit.
+    ///
+    /// The same `ProjectileSpawn` every other projectile gets — a flame is one,
+    /// and this is what puts it on the wire and therefore on the screen. Without
+    /// it the server would be full of fire nobody could see, which is the exact
+    /// failure §F10.3 exists to end.
+    fn announce_flames(&mut self, ids: &[crate::weapons::projectile::ProjectileId], _now: f32) {
+        let tick = self.tick;
+        for id in ids {
+            let Some(p) = self.projectiles.get(*id) else {
+                continue;
+            };
+            let (pos, vel, weapon, owner) = (p.pos, p.vel, p.weapon, p.owner);
+            self.events.push(GameEvent::ProjectileSpawn {
+                tick,
+                id: *id,
+                weapon,
+                owner,
+                x: pos.x,
+                y: pos.y,
+                vx: vel.x,
+                vy: vel.y,
+            });
         }
     }
 
@@ -1640,12 +1698,14 @@ impl World {
         source: BlastSource,
         now: f32,
     ) {
+        // One arm each since §F10.2 — fire left and became flames. The match
+        // stays rather than collapsing to a constant, because `BurnZone` and
+        // `BurnKind` are two enums that mirror each other and a mapping written
+        // as an assignment is a mapping nobody checks.
         let bk = match kind {
-            BurnZone::Fire => BurnKind::Fire,
             BurnZone::Toxic => BurnKind::Toxic,
         };
         let hazard = match kind {
-            BurnZone::Fire => HazardKind::Fire,
             BurnZone::Toxic => HazardKind::Toxic,
         };
         let tick = self.tick;
@@ -2115,6 +2175,31 @@ impl World {
                 l.tick(&mut self.map, &mut tg, lava_on, now, dt)
             };
             self.apply_damage_log(&log, &bird_log, now);
+            // §F10.2: the afterburn is flames. `lava` decides *where and when*
+            // and this decides *what*, through the one `light_fan` the
+            // flamethrower and the molotov also use — a second spawn site for
+            // the vent is how three emitters become three fire systems again.
+            //
+            // Owner `u8::MAX`, which is what `detonate` already reads as "the
+            // weather": a vent's fire kills nobody's kill.
+            if lava_on {
+                for at in l.smoulder(now, dt) {
+                    let ids = crate::weapons::flame::light_fan(
+                        &mut self.projectiles,
+                        u8::MAX,
+                        crate::weapons::flame::Fan {
+                            at,
+                            aim: -std::f32::consts::FRAC_PI_2,
+                            spread: crate::constants::FLAME_SPREAD * 3.0,
+                            speed: crate::constants::FLAME_MUZZLE_SPEED * 0.5,
+                            count: 1,
+                        },
+                        &mut self.rng,
+                        now,
+                    );
+                    self.announce_flames(&ids, now);
+                }
+            }
             // Channels open once, on the first active tick, one per vent in vent
             // order — so the carves zip onto the vents that produced them.
             let vents: Vec<Vec2> = l.vents().iter().map(|v| v.pos).collect();
@@ -2677,42 +2762,33 @@ impl World {
                     self.reveal(&c.revealed, now);
                 }
             }
-            // Cone: one tick of spray. It carves nothing — fire does not dig.
-            Delivery::Cone {
-                range, arc, dps, ..
+            // §F10.2. One press, `count` flames, along the aim.
+            //
+            // The muzzle offset is the same one `Projectiles::spawn` uses, so a
+            // flame does not start inside its own thrower — `light_fan` takes an
+            // explicit position because a molotov's burst and a vent's smoulder
+            // have no muzzle at all.
+            Delivery::Flames {
+                count,
+                speed,
+                spread,
             } => {
-                let log: DamageLog = Default::default();
-                let bird_log: BirdLog = Default::default();
-                {
-                    let (mut closures, meta, mut bird_vels) =
-                        hit_targets(&self.players, &self.birds, &log, &bird_log, now);
-                    let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
-                    crate::weapons::cone::spray(
-                        &self.map,
-                        &mut t,
-                        &mut self.burn,
-                        centre,
+                let muzzle =
+                    centre + Vec2::new(aim.cos(), aim.sin()) * crate::constants::MUZZLE_OFFSET;
+                let ids = crate::weapons::flame::light_fan(
+                    &mut self.projectiles,
+                    id,
+                    crate::weapons::flame::Fan {
+                        at: muzzle,
                         aim,
-                        w,
-                        range,
-                        arc,
-                        dps,
-                        now,
-                        crate::constants::SIM_DT,
-                        BlastSource::Fired { owner: id, weapon },
-                    );
-                }
-                self.apply_damage_log(&log, &bird_log, now);
-                self.events.push(GameEvent::Cone {
-                    tick,
-                    owner: id,
-                    weapon,
-                    x: centre.x,
-                    y: centre.y,
-                    aim,
-                    range,
-                    arc,
-                });
+                        spread,
+                        speed,
+                        count,
+                    },
+                    &mut self.rng,
+                    now,
+                );
+                self.announce_flames(&ids, now);
             }
             // Placed: drop it at your feet, armed shortly.
             Delivery::Placed {

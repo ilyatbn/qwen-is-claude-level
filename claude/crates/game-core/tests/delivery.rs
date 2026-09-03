@@ -1,4 +1,8 @@
-//! T11.01 — melee, cone and placed delivery (`docs/71-amendments-v3.md` §B6).
+//! T11.01 — melee and placed delivery (`docs/71-amendments-v3.md` §B6).
+//!
+//! **The cone is gone** (§F10.2): the flamethrower emits flames now, so
+//! `weapons::cone` and its tests went with it. What replaced them lives in
+//! `weapons::flame` and, for the emitters, in `tests/thrown.rs`.
 //!
 //! Every one of these resolves through the same `apply_damage` closure that
 //! explosions and hitscan use, so what is tested here is the *geometry* and the
@@ -10,8 +14,6 @@ use game_core::items::registry::WeaponId;
 use game_core::map::gen::silhouette::force_borders;
 use game_core::map::{CoarseGrid, Map, MapMeta, Mask};
 use game_core::math::Vec2;
-use game_core::weapons::burn::BurnField;
-use game_core::weapons::cone::spray;
 use game_core::weapons::defs::{Delivery, WeaponDef};
 use game_core::weapons::explode::{BlastSource, DamageSource, HitId, HitTarget};
 use game_core::weapons::melee::swing;
@@ -77,28 +79,6 @@ fn melee_def(damage: f32, carve: f32) -> WeaponDef {
         blast_radius: carve,
         range: 0.0,
         cooldown: 0.5,
-        muzzle_speed: 0.0,
-        gravity_scale: 0.0,
-        wind_scale: 0.0,
-        energy_cost: 0.0,
-        burst: game_core::weapons::defs::Burst::Blast,
-    }
-}
-
-fn cone_def() -> WeaponDef {
-    WeaponDef {
-        id: WeaponId(901),
-        key: "test_cone",
-        delivery: Delivery::Cone {
-            range: 150.0,
-            arc: 0.55,
-            dps: 14.0,
-            particle_life: 0.3,
-        },
-        damage: 0.0,
-        blast_radius: 0.0,
-        range: 150.0,
-        cooldown: 0.05,
         muzzle_speed: 0.0,
         gravity_scale: 0.0,
         wind_scale: 0.0,
@@ -440,137 +420,6 @@ fn a_carving_melee_digs_and_a_knife_does_not() {
         before,
         "a knife with no carve radius dug a hole"
     );
-}
-
-// ----------------------------------------------------------------- cone
-
-#[test]
-fn cone_damage_accumulates_with_time_in_it() {
-    let def = cone_def();
-    let map = flat_map(400);
-    let origin = Vec2::new(400.0, 380.0);
-    let mut burn = BurnField::default();
-
-    let mut v = [Victim::at(480.0, 380.0)];
-    with_targets(&mut v, |t| {
-        for i in 0..10 {
-            spray(
-                &map,
-                t,
-                &mut burn,
-                origin,
-                0.0,
-                &def,
-                150.0,
-                0.55,
-                14.0,
-                i as f32 * SIM_DT,
-                SIM_DT,
-                OWNER,
-            );
-        }
-    });
-    let want = 14.0 * SIM_DT * 10.0;
-    assert!(
-        (v[0].taken - want).abs() < 0.01,
-        "ten ticks in the cone dealt {} not {want}",
-        v[0].taken
-    );
-}
-
-#[test]
-fn cone_stops_at_its_range_and_at_a_wall() {
-    let def = cone_def();
-    let origin = Vec2::new(400.0, 380.0);
-    let mut burn = BurnField::default();
-
-    // Beyond range.
-    let map = flat_map(400);
-    let mut far = [Victim::at(origin.x + 151.0, 380.0)];
-    with_targets(&mut far, |t| {
-        spray(
-            &map, t, &mut burn, origin, 0.0, &def, 150.0, 0.55, 14.0, 0.0, SIM_DT, OWNER,
-        )
-    });
-    assert_eq!(far[0].taken, 0.0, "a target past the range was burned");
-
-    // The control: the same distance, inside range, does burn.
-    let mut near = [Victim::at(origin.x + 140.0, 380.0)];
-    with_targets(&mut near, |t| {
-        spray(
-            &map, t, &mut burn, origin, 0.0, &def, 150.0, 0.55, 14.0, 0.0, SIM_DT, OWNER,
-        )
-    });
-    assert!(near[0].taken > 0.0, "the control must burn");
-
-    // Behind a wall, in range and in the arc.
-    let walled = walled_map(400, 450);
-    let mut hidden = [Victim::at(480.0, 380.0)];
-    with_targets(&mut hidden, |t| {
-        spray(
-            &walled, t, &mut burn, origin, 0.0, &def, 150.0, 0.55, 14.0, 0.0, SIM_DT, OWNER,
-        )
-    });
-    assert_eq!(hidden[0].taken, 0.0, "the flame reached through a wall");
-}
-
-#[test]
-fn cone_leaves_burning_ground_that_goes_out() {
-    let def = cone_def();
-    let map = flat_map(400);
-    let mut burn = BurnField::default();
-    let mut none: [Victim; 1] = [Victim::at(-999.0, -999.0)];
-    with_targets(&mut none, |t| {
-        spray(
-            &map,
-            t,
-            &mut burn,
-            Vec2::new(400.0, 380.0),
-            0.0,
-            &def,
-            150.0,
-            0.55,
-            14.0,
-            0.0,
-            SIM_DT,
-            OWNER,
-        )
-    });
-    assert!(!burn.is_empty(), "the flame left no burning ground");
-
-    // It expires. Ticking with no players still has to retire the patch, or
-    // fire would burn for the rest of the round.
-    let mut none2: [Victim; 1] = [Victim::at(-999.0, -999.0)];
-    with_targets(&mut none2, |t| burn.tick(t, 60.0, SIM_DT));
-    assert!(burn.is_empty(), "burning ground never went out");
-}
-
-#[test]
-fn a_cone_carves_nothing() {
-    // Fire does not dig (§B6). This is what keeps the flamethrower from being
-    // strictly better than the arsenal it competes with.
-    let def = cone_def();
-    let map = flat_map(400);
-    let before = map.mask.count_solid();
-    let mut burn = BurnField::default();
-    let mut none: [Victim; 1] = [Victim::at(-999.0, -999.0)];
-    with_targets(&mut none, |t| {
-        spray(
-            &map,
-            t,
-            &mut burn,
-            Vec2::new(400.0, 380.0),
-            std::f32::consts::FRAC_PI_2,
-            &def,
-            150.0,
-            0.55,
-            14.0,
-            0.0,
-            SIM_DT,
-            OWNER,
-        )
-    });
-    assert_eq!(map.mask.count_solid(), before);
 }
 
 // ---------------------------------------------------------------- mines
