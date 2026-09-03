@@ -934,9 +934,15 @@ mod tests {
         );
         let slots = p["slots"].as_array().expect("slots array");
         assert_eq!(slots.len(), game_core::constants::INVENTORY_SLOTS);
-        assert_eq!(slots[0]["key"], "bazooka");
-        assert_eq!(slots[0]["count"], 4);
-        assert!(slots[1].is_null(), "empty slots are null, not omitted");
+        // Slot 0 is the shovel every player is issued (§F5), so `give` puts the
+        // bazooka in slot 1. Both are asserted: the payload has to carry the
+        // starting kit as well as what was picked up, and a payload that only
+        // reported slot 0 would still satisfy a one-slot assertion.
+        assert_eq!(slots[0]["key"], "shovel");
+        assert_eq!(slots[0]["count"], 1);
+        assert_eq!(slots[1]["key"], "bazooka");
+        assert_eq!(slots[1]["count"], 4);
+        assert!(slots[2].is_null(), "empty slots are null, not omitted");
     }
 
     #[test]

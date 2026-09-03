@@ -45,7 +45,16 @@ pub const HEADER_BYTES: usize = 43;
 /// reverse) rebuilds a different map and diverges on the first shot that touches
 /// terrain, so the generator is simulation state and belongs here. Version 1 files
 /// are rejected rather than silently assumed to be v1 terrain.
-pub const REPLAY_VERSION: u16 = 2;
+///
+/// **3 (§F5)**: the item registry changed shape. Commands carry `SelectSlot(u8)`
+/// and no item ids, so retiring five weapons *looks* safe — but `place_initial`
+/// and `assign_buried_items` draw over the `spawn_weight`/`buried_weight` columns
+/// across the whole of `ITEMS`, and zeroing five of them reshuffles every draw.
+/// A v2 file would load, run, and diverge silently on the first item anybody
+/// picked up. The header does not record the registry, so the version is the only
+/// place that difference can live. Every player also now starts holding a shovel,
+/// which moves the slot every `SelectSlot` in an old file refers to.
+pub const REPLAY_VERSION: u16 = 3;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///
@@ -1026,10 +1035,17 @@ mod format_tests {
     /// `REPLAY_VERSION` would shift `bot_count`, `bot_skill` and `dev_loadout`
     /// two bytes each while the version check still passed. The field was kept
     /// for exactly that reason, and this asserts it stayed.
-    fn v2_header_bytes() -> Vec<u8> {
+    ///
+    /// **The version field is the one value taken from the constant** (§F5 moved
+    /// it to 3). Everything after it is still a hand-written literal, which is
+    /// what this fixture is for: a shift in `bot_count`/`bot_skill`/`dev_loadout`
+    /// is exactly what it catches, and the version is not one of those fields —
+    /// it is the gate in front of them, and a fixture pinned to an old version
+    /// only ever tests the gate.
+    fn header_bytes(version: u16) -> Vec<u8> {
         let mut v = Vec::new();
         v.extend_from_slice(&REPLAY_MAGIC.to_le_bytes());
-        v.extend_from_slice(&2u16.to_le_bytes()); // version
+        v.extend_from_slice(&version.to_le_bytes()); // version
         v.extend_from_slice(&0x0123_4567_89AB_CDEFu64.to_le_bytes()); // seed
         v.extend_from_slice(&0xFEDC_BA98_7654_3210u64.to_le_bytes()); // buried_secret
         v.push(0); // scale: Small
@@ -1045,8 +1061,8 @@ mod format_tests {
     }
 
     #[test]
-    fn a_v2_header_written_by_hand_still_parses_field_for_field() {
-        let bytes = v2_header_bytes();
+    fn a_header_written_by_hand_still_parses_field_for_field() {
+        let bytes = header_bytes(REPLAY_VERSION);
         assert_eq!(
             bytes.len(),
             HEADER_BYTES,
@@ -1056,9 +1072,9 @@ mod format_tests {
 
         // Header plus an empty body: `decode` tolerates a file with no commands
         // and no footer, which is what a round killed at tick 0 leaves.
-        let r = decode(&bytes).expect("a v2 header must parse");
+        let r = decode(&bytes).expect("a current header must parse");
         let h = r.header;
-        assert_eq!(h.version, 2);
+        assert_eq!(h.version, REPLAY_VERSION);
         assert_eq!(h.seed, 0x0123_4567_89AB_CDEF);
         assert_eq!(h.buried_secret, 0xFEDC_BA98_7654_3210);
         assert_eq!(h.sim_hz, 60);
@@ -1070,5 +1086,33 @@ mod format_tests {
         assert_eq!(h.bot_count, 3, "bot_count shifted");
         assert_eq!(h.bot_skill, 0.6, "bot_skill shifted");
         assert!(h.dev_loadout, "dev_loadout shifted");
+    }
+
+    /// **A pre-§F5 replay does not load, and that is the intended answer.**
+    ///
+    /// The task's rule is "a replay that no longer loads is acceptable; a replay
+    /// that loads and resolves a knife as something else is not". Nothing in the
+    /// header records the item registry, so a v2 file has no way to say that its
+    /// round was drawn from a table with five more weighted entries in it —
+    /// `place_initial` and `assign_buried_items` would deal a different hand and
+    /// the divergence would be silent. The version is where that difference is
+    /// declared, and this is the assertion that it is declared at all: the
+    /// existing `a_version_mismatch_is_a_clear_error_not_a_misparse` only tests a
+    /// version *newer* than this build, which no shipped file ever is.
+    #[test]
+    fn a_replay_from_the_previous_version_is_refused_rather_than_replayed() {
+        let old = REPLAY_VERSION - 1;
+        match decode(&header_bytes(old)) {
+            Err(ReplayError::BadVersion { found, expected }) => {
+                assert_eq!((found, expected), (old, REPLAY_VERSION));
+            }
+            other => panic!("a v{old} replay was accepted by a v{REPLAY_VERSION} build: {other:?}"),
+        }
+        // The control: the same bytes at the current version do parse, so the
+        // refusal above is about the version and not about the fixture.
+        assert!(
+            decode(&header_bytes(REPLAY_VERSION)).is_ok(),
+            "the fixture does not parse at any version"
+        );
     }
 }

@@ -478,7 +478,20 @@ export class SandboxScene extends Phaser.Scene {
     this.core.give(0, 3 /* bazooka */, 4)
     this.core.give(0, 4 /* grenade */, 3)
     this.core.give(0, 5 /* smg */, 60)
-    this.core.selectSlot(0, 0)
+    // **The bazooka, found rather than assumed to be slot 0.**
+    //
+    // §F5 issues every player a shovel at spawn and `give` appends to the first
+    // *free* slot, so slot 0 is the shovel now — and the sandbox's local fire
+    // path has never carried `Delivery::Melee` (`game-wasm` answers
+    // `melee_not_in_sandbox`, deliberately and by name). Selecting 0 therefore
+    // put an unusable weapon in the hand of every sandbox session and took five
+    // browser checks with it: `m4-checkpoint`, `night-combat`, `feel`, `audio`
+    // and `m9-checkpoint` all fire here and all reported a refusal.
+    //
+    // Found by key so it survives the next change to the loadout or the kit.
+    const inv = this.core.inventory(0)
+    const armed = inv?.slots.findIndex((s) => s && s.key === 'bazooka') ?? -1
+    this.core.selectSlot(0, armed >= 0 ? armed : 0)
     this.refreshHud()
   }
 

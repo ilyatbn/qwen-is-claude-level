@@ -63,7 +63,16 @@ export default async function ({ page, shot, log }) {
   // asserted after stepping the sim rather than on the next line — a check that
   // measured the mask immediately would read 0 px and call it a regression.
   await page.evaluate(() => window.__game.toggleInventory())
-  await page.evaluate(() => window.__game.selectSlot(2))
+  // **By key, not by index.** §F5 puts a shovel in slot 0 of every player, which
+  // moved the sandbox loadout one slot along: `selectSlot(2)` was the smg and is
+  // now the grenade — which is also a projectile, so the assertion below would
+  // have gone on passing while measuring the wrong weapon.
+  await page.evaluate(() => {
+    const inv = window.__game.inventory()
+    const i = inv.slots.findIndex((s) => s && s.key === 'smg')
+    if (i < 0) throw new Error(`no smg in the sandbox loadout: ${JSON.stringify(inv.slots)}`)
+    window.__game.selectSlot(i)
+  })
   // **Aim sideways first.** The bazooka above fires at the player's own feet —
   // that is the rocket-jump case it is testing — and the mouse was never moved
   // afterwards, so the SMG fired into the ground 18 px below the muzzle. A

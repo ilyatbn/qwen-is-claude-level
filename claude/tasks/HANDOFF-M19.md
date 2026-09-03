@@ -373,87 +373,110 @@ was explicitly rejected here.
   is a serial loop, which is the idle-box case and cannot reproduce a load failure. Booked
   rather than silently dropped.
 
-## IN PROGRESS — T19.05 sitting in the working tree (coder retiring at ~380k)
+## T19.05 landed — what the diff does not say
 
-`TASKS.md` box for T19.05 is **unticked**. What follows is on disk, uncommitted.
+The `IN PROGRESS` section that used to sit here is gone: everything it listed as unfinished
+is done. What follows is the part that is not recoverable from the diff.
 
-### The design decision, which is forced and should not be re-litigated
+- **The placeholder design held, and the two *other* obtainability asserts did not.** The
+  predecessor found `melee.rs:341`; there is a second, `balance.rs::every_weapon_can_be_obtained`,
+  which the sweep did not predict because it predicted `weapons().len()` instead. Both now
+  assert the unobtainable set as an **equality** — these six and no others — rather than
+  filtering by a property, because "has no weights" is the bug the test exists to catch and
+  a predicate excusing it excuses the next one too. `balance.rs` also builds a real world
+  and asserts the join grants a shovel, so the "issued" exemption is not a free pass.
+- **The shovel broke bot weapon choice, and the task file does not mention bots at all.**
+  `choose_weapon` penalises a weapon that "cannot reach the target" using `w.range`, which
+  is **0.0 for melee** — the reach lives in `Delivery::Melee`. A 30/0.55 = 54 dps shovel
+  therefore outscored every gun in the arsenal from any distance, and `should_fire`'s
+  `blast_radius` self-blast guard refused every swing inside 21 px while allowing one at
+  300. Both were already wrong for the axe and hammer; §F5 made it universal by issuing one
+  to everybody. `has_firable_weapon` also had to stop counting melee, or **no bot ever goes
+  shopping for a gun again** — "arm yourself first" is satisfied forever by the starting kit.
+- **Three bot fixtures were passing while measuring a swing.** `give` appends to the first
+  *free* slot, so slot 0 is the shovel and `give(BAZOOKA)` + `w.fire()` swings. It is silent:
+  a swing sets the same FIRE bit. `a_bot_does_throw_a_molotov_from_a_safe_distance` reported
+  a throw it never made. `world::wield(w, id, item)` is the companion to `give` and panics
+  rather than returning false. **Grep for `give(` before trusting any fixture that fires.**
+- **`ordnance`'s mine approach chooses its escape direction from a sub-pixel sign.** The
+  mine lands at the player's feet, so `dx` is ±0.5 px of noise: measured, 0.5 px left with
+  the axe and 0.1 px right with the shovel, which flipped the escape from `d` to `a` — and
+  `a` was into a rise it could not climb. Twelve bursts moved it six pixels and all four
+  rockets were then fired from the muzzle, reported as "the stack is empty". **A control run
+  with the axe grant restored passed**, which is what says this is the check and not the
+  shovel. It now flips direction when the body does not move. Side effect: 74.9 s → 24.6 s.
+- **`density_report`'s floors were re-derived, and this one deserves a reviewer.** They were
+  absolute counts (12.5/14.5/16.0) against a 24-entry registry in which everything could be
+  drawn. §F5 leaves 25 entries of which **six can never be drawn**, so the same absolute
+  number demands a much larger share of a pool of 19: Medium measured **13.8 against 14.5**
+  with nothing about the spawn machinery changed. They are now the same *fractions* of the
+  drawable pool, written as `12.5 / 24.0 * pool` so the derivation is checkable. Measured
+  after: Small 14.6, Medium 13.8, Large 15.4 of 19 (77/72/81 %) — against 15.2/15.2/16.8 of
+  24 (63/63/70 %) recorded at the base commit. The *share* of what a round can show you went
+  **up**; the absolute count fell because five items left the table. It is still ignored, so
+  the gate never runs it.
+- **`REPLAY_VERSION` is 3 and an old file is refused.** Commands carry `SelectSlot(u8)` and
+  no item ids, so retirement looks safe — but zeroing five weights reshuffles every
+  `place_initial`/`assign_buried_items` draw, and the header records nothing about the
+  registry. `a_v2_header_written_by_hand_still_parses_field_for_field` was pinned to the
+  literal 2 and is now `header_bytes(REPLAY_VERSION)`; the byte layout it guards is
+  unchanged and every field after the version is still a literal. A new sibling asserts a
+  v2 file is rejected, which the existing skew test could not — it only ever tried a version
+  *newer* than the build.
+- **Not done, deliberately.** `inventory.test.ts:93` still says `tileLabel({key:'axe'})`; it
+  is a pure passthrough with no registry lookup, so it stays green and stale (the sweep says
+  the same). The four dead procedural painters (`weapon_knife/whip/axe/hammer`) **must**
+  stay: `itemSprites-math.test.ts` reads the live registry, where the five placeholders
+  still resolve, so deleting their art fails on five entries.
+- **Death was dropping the shovel, and the deliverable says it cannot be.** `die` returns
+  `inventory.drain_all()` and the world scatters those as pickups, so every death minted a
+  shovel: the corpse's copy stayed on the ground *and* `respawn` granted a fresh one. The
+  200-seed sweep could never have caught it — that asks about the spawn **tables**. The
+  exemption is `player::state::STARTING_KIT`, one list read by both `grant_starting_kit`
+  and `die`, because "you always have one" and "it cannot be dropped" are one rule.
+- **The Done-when is three test binaries short of the blast radius.** It runs
+  `--lib shovel` and `--test balance`; the shovel in slot 0 also broke
+  `game-core --test combat` (4), `game-core --test world_step` (4) and
+  `game-server --lib`/`--test inventory` (5). All the same shape — a fixture that gives a
+  weapon and then fires. **`cargo test --workspace` before the gate**, or you find them
+  one stage at a time, twenty minutes apart.
+- **`try_fire` on an emptied stack now returns the shovel, not `EmptySlot`.** When a stack
+  empties the selection moves to the next occupied slot, which is always the kit. That is
+  §F5's "floor of the arsenal" made literal and it is asserted in
+  `combat::firing_respects_the_cooldown_and_the_ammo_count`, with a control that selects a
+  genuinely empty slot so `EmptySlot` is still known to be reachable.
+### The one red: `crates`, and everything measured about it
 
-**The five weapons are retired as unobtainable placeholders, not deleted.** Both tables are
-indexed by id — `registry::def` is `ITEMS.get(id as usize)` and `WEAPONS[i].id ==
-WeaponId(i)` (asserted at `defs.rs:796,810`) — so removing five entries renumbers every id
-above them. That is §B16, the bug where a laser resolved as a bazooka. The task anticipated
-it ("if the table cannot hold holes then keep an explicit retired placeholder — the pinned
-test decides"), and `melee.rs:351-354` decides for placeholders by asserting all five ids
-still resolve.
+**`crates` is the only check the gate is red on, and it is not a flake — it reproduces on
+an idle box, alone, with identical numbers.**
 
-**Consequence the task did not foresee: their constants and art must stay too.** A
-placeholder that still resolves needs stats and a sprite. So "retire the constants and
-client art" in the deliverable **cannot be fully honoured**, and retirement here means
-*unobtainable* (all three weights zero), not *absent*. That is a task-file tension worth
-recording rather than quietly resolving.
+- **Mechanism.** `roll_item` is `pick_weighted(rng, weights(col))`, and `pick_weighted`
+  calls `rng.gen_range(0..total)` where `total` is the **sum of the column**. §F5 zeroed
+  five weapons, so `total` changed, so the number of words each draw consumes changed, so
+  every later draw in the `"items"` sub-stream moved. `tick_crates` shares that stream
+  (`spawning.rs:289,295`), so **the crate's x and its contents both moved.** This is
+  exactly what §F5 predicted ("removing five entries reshuffles every draw"); it is the
+  fixture that has to follow, not the code.
+- **The check is built to be re-seeded** — `CRATE_SEED` is an env var and its header
+  records three previous re-probes (4242 → 555 → 7) with the procedure. Probed after this
+  change: **7** blocked lane at (767, 702); **555** reachable, closest approach **0 px**,
+  never picked up; **99** blocked lane at (1276, 784), and its crate is never framed in
+  flight. A fourth probe was running at hand-off.
+- **The 555 result is not understood and is written down rather than smoothed over.** With
+  the player standing **0 px** from the crate for the full 70 s: crate is
+  `{id:11, item:0, source:"Crate", grounded:true}` — item 0 is `MEDKIT` — and the player
+  had `heals=0 batteries=0` (so `bump` cannot refuse), one shovel and one molotov in 24
+  slots (so `Inventory::add` cannot return `Full`), and was alive with 100 health. Ground
+  pickups worked in the same run (the molotov appeared in slot 1 mid-walk). By
+  `items/world.rs:341-381` that pickup should have happened. Either `debug().player` is
+  not the position `resolve_pickups` measures from, or something else is. **A repair that
+  makes the counters empty (`Q`/`R` while close) was tried and reverted — it changed
+  nothing, and CLAUDE.md says revert what you cannot explain.**
+- **Where to start:** print the *server's* player position beside the mirror's crate
+  position for one run. `debug().player` is the client's; nothing in `debug()` exposes the
+  server's own copy of the local player, which is itself worth fixing — a check whose whole
+  claim is a distance cannot verify it from one end.
+- **`SPAWN_IFRAMES` catches melee fixtures.** `add_player` stamps them on every joiner, so a
+  swing at `now = 1.0` lands, is logged and deals **zero** — which reads exactly like a
+  reach failure. `t1905_shovel::swing_damage` fires at `SPAWN_IFRAMES + 1.0` and says so.
 
-**Consequence 2: the sweep's `balance.rs:260` prediction does not fire.** `weapons()`
-filters `ITEMS` by `ItemKind::Weapon`, and 22 placeholders + the shovel is 23, over the
-floor of 20. The prediction assumed deletion. Do not "fix" that assertion.
-
-### File by file, exactly what is there
-
-- **`constants.rs`** — six `SHOVEL_*` constants added after `HAMMER_KNOCKBACK`, values from
-  `docs/75` §F11 (30.0 / 14.0 / 20.0 / 1.2 / 0.55 / 150.0). Done.
-- **`items/registry.rs`** — `WEAPON_SHOVEL = WeaponId(24)`, `SHOVEL: ItemId = 24`, a shovel
-  `ItemDef` appended at index 24 with **all three weights 0**, and the five retired
-  `ItemDef`s zeroed with a block comment explaining why they are not deleted. Done.
-- **`weapons/defs.rs`** — shovel `WeaponDef` appended last, `Delivery::Melee`, plus the two
-  import lines. Done. **Note:** doc comments (`///`) are not legal on array elements here —
-  both new blocks use `//`.
-- **`player/state.rs`** — `grant_starting_kit()` added above `respawn`, called from
-  `respawn` after `inventory.clear()`. **`PlayerState::new` does NOT call it yet — this is
-  the single most important unfinished line.** Join grants nothing; only respawn does.
-
-**State: `cargo build -p game-core` passed. No tests have been run.** Expect red.
-
-### The three `melee.rs` hazards: none handled yet
-
-1. `melee.rs:341-347` asserts every `SPEC` weapon has a non-zero weight. **All six now have
-   zero weights**, so this fails for all of them. Replace it — the presence is "every player
-   spawns holding a shovel, on join and on respawn"; do not delete it bare or the guard that
-   the *retired* five are unobtainable disappears too.
-2. `melee.rs:351-354` (the §B16 id check) **passes** under the placeholder design.
-3. `SPEC` at `melee.rs:193-199` needs a shovel row: `("shovel", 30.0, 14.0, 20.0, 1.2, 0.55,
-   150.0)`. Literals are correct there and §A19 does not apply — the table's job is to check
-   the code against the *document*, and pinning it to the constants would compare each value
-   to itself. The five retired rows stay, because they are still `Delivery::Melee` and
-   `:228` set-matches the melee roster against `SPEC`.
-
-### Not started
-
-Client `WEAPON_KEYS` + `'shovel'`; `weapon_shovel` art in `itemTextures.ts` (**four** dead
-procedural entries to consider, not the three the task lists — `weapon_axe:114` is the
-fourth, and under the placeholder design they should probably all stay); `ordnance.mjs:335`
-`'axe'` → `'shovel'`; the `Digit1/2/3` presses in `full-round.mjs:138/217/232` and
-`m10-checkpoint.mjs:179` that a slot-0 shovel shifts; `REPLAY_VERSION` (zeroing five weights
-reshuffles every `place_initial`/`assign_buried_items` draw, so an old replay loads and
-diverges silently — the task's pre-flight says bump it); the density sweep before/after; and
-every test in the Tests list.
-
-### Part-way through reasoning
-
-The 200-seed sweep is an **absence with no control** as written — it passes against a build
-where nothing spawns at all, which is exactly the re-weighting risk zeroing five weights
-creates. It needs a companion count asserting some other weapon still spawns at a rate the
-re-weighting predicts. I had not decided what that rate should be.
-
-### T19.05 status board — read this before touching anything
-
-| item | state |
-|---|---|
-| `melee.rs` hazard 1 — `:341-347` obtainability assert | **NOT handled.** Will fail: all six melee weapons now have zero weights. |
-| `melee.rs` hazard 2 — `:351-354` §B16 id resolution | **Handled, by design.** Passes because the five are placeholders, not deletions. |
-| `melee.rs` hazard 3 — `SPEC` at `:193-199` | **NOT handled.** Needs a shovel row; the five retired rows stay. |
-| `balance.rs:260` (`weapons().len() >= 20`) | **NOT touched, and must not be.** 22 placeholders + shovel = 23. The sweep predicted a break assuming deletion; under placeholders it does not fire. |
-| `PlayerState::new` grant | **NOT wired.** `respawn` calls `grant_starting_kit()`; join does not. **The most important missing line.** |
-| Client / `scripts/` / `REPLAY_VERSION` / density sweep / all Tests | **Not started.** |
-
-`cargo build -p game-core` passes. **No test has been run** — expect red from `melee.rs`
-until hazards 1 and 3 are handled.

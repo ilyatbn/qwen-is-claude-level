@@ -332,7 +332,10 @@ if (before.minesDrawn === 0 && before.swings === 0 && before.jets === 0) {
 // flamethrower / molotov and this pressed Digit5; §C24 merged the two bazooka
 // stacks and every index after the smg moved, so Digit5 became the flamethrower
 // and this assertion timed out on a swing that was never asked for.
-await selectWeapon(page, 'axe')
+// §F5: the axe is retired and every player spawns holding a shovel, so this is
+// now the melee weapon a round can actually contain — and it is in slot 0
+// without any DEV_LOADOUT grant behind it.
+await selectWeapon(page, 'shovel')
 await fireAt(900, 400)
 await settle(400)
 const swung = await until((d) => d.swings > 0, 8000, 'a melee swing to arrive')
@@ -544,17 +547,44 @@ if (placed) {
    * platforming, which the comment above says it must not be.
    */
   const approachMine = async () => {
-    for (let i = 0; i < 12; i++) {
+    // Which way to step **off** the mine, and it is not decided by the sign of
+    // `dx`.
+    //
+    // The mine is placed at the player's feet, so at the first reading that sign
+    // is sub-pixel noise: measured across two builds of the same fixture, the
+    // mine landed 0.5 px to the player's left on one and 0.1 px to its right on
+    // the next, which flipped this from 'd' to 'a'. 'a' was into a rise the
+    // player could not climb — twelve bursts moved it six pixels and then every
+    // rocket was fired from the muzzle, exactly the failure `STANDOFF` exists to
+    // prevent, reported as "the stack is empty". The lane on the *other* side
+    // was clear the whole time.
+    //
+    // So: pick a side, and if the body does not move, take the other one. Mines
+    // ignore their owner (§B6), so walking over the mine is safe and both sides
+    // are legitimate. Compared on the player's own x, not on the gap — a gap
+    // that stays put because the *mine* moved is a different story.
+    let escape = null
+    let lastX = null
+    for (let i = 0; i < 16; i++) {
       const d = await dbg()
       const m = (d.mines ?? [])[0]
       if (!m || !d.player) return
       const dx = m.x - d.player.x
       const gap = Math.abs(dx)
       if (gap <= NEAR && gap >= STANDOFF) return
-      // Too close as well as too far: back away when standing on top of it.
-      const toward = dx > 0 ? 'd' : 'a'
-      const away = dx > 0 ? 'a' : 'd'
-      const key = gap < STANDOFF ? away : toward
+      let key
+      if (gap < STANDOFF) {
+        // Too close as well as too far: back away when standing on top of it.
+        if (escape === null) escape = dx > 0 ? 'a' : 'd'
+        else if (lastX !== null && Math.abs(d.player.x - lastX) < 1) {
+          escape = escape === 'a' ? 'd' : 'a'
+        }
+        lastX = d.player.x
+        key = escape
+      } else {
+        key = dx > 0 ? 'd' : 'a'
+        lastX = null
+      }
       await page.keyboard.down(key)
       await sleep(160)
       await page.keyboard.up(key)

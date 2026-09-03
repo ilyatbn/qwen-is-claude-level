@@ -25,7 +25,7 @@
  * one-player room that had no round at all.
  */
 import { join } from 'node:path'
-import { startStack, enterBattle, sleep, shotsDir } from './harness.mjs'
+import { startStack, enterBattle, sleep, shotsDir, selectWeapon } from './harness.mjs'
 
 const PORT = 3114
 const shots = shotsDir
@@ -176,7 +176,20 @@ const soloSolidBefore = (await dbg(solo)).solid
 // Fire the way full-round does: select the rocket stack, aim below mid-screen
 // (the camera follows the player, so that is below the body in world space
 // whatever the camera has done) and shoot.
-await host.page.keyboard.press('Digit1')
+// By name: §F5's shovel in slot 0 moved every DEV_LOADOUT weapon one digit along,
+// so `Digit1` now selects the shovel.
+//
+// **Waited for first.** `selectWeapon` polls for 2 s, and this check has three
+// rooms ticking in one process by the time it gets here: the first run after the
+// change reported `"bazooka" is not in the inventory after 2 s. Held: (nothing)`
+// — an inventory event that had not arrived yet, not a loadout that was never
+// granted. Wait on the thing itself, then select it.
+await host.page.waitForFunction(
+  "(window.__game.debug().slots || []).some((s) => s && s.key === 'bazooka')",
+  null,
+  { timeout: 30_000 },
+)
+await selectWeapon(host.page, 'bazooka')
 await sleep(300)
 await host.page.mouse.move(640, 700)
 for (let i = 0; i < 4; i++) {

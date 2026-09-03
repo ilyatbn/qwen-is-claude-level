@@ -8,7 +8,12 @@ use game_core::constants::{MapScale, BASE_HEALTH, SIM_DT};
 use game_core::items::registry::{BAZOOKA, MEDKIT};
 use game_core::math::Vec2;
 use game_core::player::input::{button, Input};
-use game_core::world::{give, GameEvent, RoundPhase, World};
+// `wield` alongside `give`: §F5 seats a shovel in slot 0 of every player, and
+// `give` appends to the first *free* slot, so a fixture that only gives a
+// bazooka and then fires is swinging. Four tests here went red on that; the
+// others fire nothing and are unaffected, but the pairing is applied uniformly
+// so the next one added does not have to rediscover it.
+use game_core::world::{give, wield, GameEvent, RoundPhase, World};
 
 const SEED: u64 = 4242;
 
@@ -202,6 +207,7 @@ fn self_rocket(phase: RoundPhase) -> f32 {
         w.step(SIM_DT);
     }
     give(&mut w, 1, BAZOOKA, 4);
+    wield(&mut w, 1, BAZOOKA);
     if let Some(p) = w.player_mut(1) {
         p.aim = (0.25f32 * 65536.0) as u16; // +y is down: into the ground underfoot
     }
@@ -267,6 +273,7 @@ fn firing_a_bazooka_produces_spawn_then_explosion_and_carve() {
     let mut w = playing();
     spawn_at(&mut w, 1);
     give(&mut w, 1, BAZOOKA, 4);
+    wield(&mut w, 1, BAZOOKA);
     if let Some(p) = w.player_mut(1) {
         p.aim = (0.25f32 * 65536.0) as u16; // down, so it hits quickly
     }
@@ -302,6 +309,7 @@ fn an_explosion_emits_both_an_explosion_and_a_carve_never_one_merged() {
     let mut w = playing();
     spawn_at(&mut w, 1);
     give(&mut w, 1, BAZOOKA, 4);
+    wield(&mut w, 1, BAZOOKA);
     if let Some(p) = w.player_mut(1) {
         p.aim = (0.25f32 * 65536.0) as u16;
     }
@@ -331,6 +339,7 @@ fn carve_sequence_numbers_are_monotonic_with_no_gaps() {
     let mut w = playing();
     spawn_at(&mut w, 1);
     give(&mut w, 1, BAZOOKA, 4);
+    wield(&mut w, 1, BAZOOKA);
     let mut seqs = Vec::new();
     for shot in 0..4 {
         if let Some(p) = w.player_mut(1) {
@@ -358,6 +367,7 @@ fn a_death_produces_a_death_event_and_drops_every_stack() {
     let mut w = playing();
     spawn_at(&mut w, 1);
     give(&mut w, 1, BAZOOKA, 4);
+    wield(&mut w, 1, BAZOOKA);
     give(&mut w, 1, MEDKIT, 2);
     if let Some(p) = w.player_mut(1) {
         p.health = 1.0;
@@ -402,6 +412,7 @@ fn every_event_carries_the_tick_it_happened_on() {
     let mut w = playing();
     spawn_at(&mut w, 1);
     give(&mut w, 1, BAZOOKA, 4);
+    wield(&mut w, 1, BAZOOKA);
     if let Some(p) = w.player_mut(1) {
         p.aim = (0.25f32 * 65536.0) as u16;
     }
@@ -429,6 +440,7 @@ fn six_players_and_twenty_projectiles_step_under_two_milliseconds() {
     for id in 1..=6u8 {
         spawn_at(&mut w, id);
         give(&mut w, id, BAZOOKA, 4);
+        wield(&mut w, id, BAZOOKA);
     }
     for id in 1..=6u8 {
         if let Some(p) = w.player_mut(id) {
@@ -711,6 +723,7 @@ fn a_rocket_at_your_own_feet_is_a_self_kill_and_not_the_weather() {
         p.aim = (0.25f32 * 65536.0) as u16;
     }
     give(&mut w, 1, BAZOOKA, 4);
+    wield(&mut w, 1, BAZOOKA);
     w.fire(1, w.round_time).expect("armed");
 
     let mut death = None;

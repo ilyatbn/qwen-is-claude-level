@@ -1,7 +1,7 @@
 //! M4 part B: projectiles, explosions, hitscan, stats, death and scoring.
 
 use game_core::constants::*;
-use game_core::items::registry::{self, WEAPON_BAZOOKA, WEAPON_GRENADE, WEAPON_SMG};
+use game_core::items::registry::{self, WEAPON_BAZOOKA, WEAPON_GRENADE, WEAPON_SHOVEL, WEAPON_SMG};
 use game_core::map::gen::silhouette::force_borders;
 use game_core::map::{CoarseGrid, Map, MapMeta, Mask};
 use game_core::math::{Aabb, Point, Vec2};
@@ -980,6 +980,19 @@ fn the_assist_window_credits_at_four_point_nine_and_not_at_five_point_one() {
     assert_eq!(q.killer(DeathCause::Weather, 105.1), DeathCause::Weather);
 }
 
+/// Which slot an item landed in.
+///
+/// §F5 issues a shovel into slot 0 of every `PlayerState`, so `add` puts the next
+/// item in slot 1 and every fixture here that said `select(0)` / `use_item(0, ..)`
+/// was operating on the shovel. Four of them did, and none failed loudly: firing
+/// a shovel returns `Ok`, and `use_item` on it returns the same `WrongKind` a
+/// bazooka does.
+fn slot_of(p: &PlayerState, item: registry::ItemId) -> u8 {
+    (0..INVENTORY_SLOTS as u8)
+        .find(|s| p.inventory.slot(*s).is_some_and(|st| st.item == item))
+        .unwrap_or_else(|| panic!("item {item} is not in the inventory"))
+}
+
 #[test]
 fn death_drops_every_stack_and_respawn_clears_the_inventory() {
     let mut p = PlayerState::new(0, Vec2::ZERO, 0);
@@ -1003,6 +1016,18 @@ fn death_drops_every_stack_and_respawn_clears_the_inventory() {
     );
 
     let dropped = p.die(DeathCause::Weather, 0.0);
+    // **The starting kit is not among them** (§F5): a shovel that dropped would
+    // be re-granted on respawn while the corpse's copy stayed on the ground, so
+    // every death would mint one. Asserted here rather than only in
+    // `melee::t1905_shovel`, because `die` is where the drop list is built.
+    assert_eq!(
+        dropped
+            .iter()
+            .filter(|s| s.item == registry::SHOVEL)
+            .count(),
+        0,
+        "death dropped the issued shovel"
+    );
     assert_eq!(
         dropped
             .iter()
@@ -1019,7 +1044,11 @@ fn death_drops_every_stack_and_respawn_clears_the_inventory() {
         2,
         "the consumable stopped spilling, so the weapon assertion above proves nothing"
     );
-    assert_eq!(dropped.len(), 3, "one grenade stack and two medkit stacks");
+    assert_eq!(
+        dropped.len(),
+        3,
+        "one grenade stack and two medkit stacks, and no shovel"
+    );
     assert!(p.inventory.is_empty());
     assert!(!p.flashlight_on, "the light dies with the item");
 }
@@ -1028,7 +1057,11 @@ fn death_drops_every_stack_and_respawn_clears_the_inventory() {
 fn the_verb_and_the_kind_must_agree() {
     let mut p = PlayerState::new(0, Vec2::ZERO, 0);
     p.inventory.add(registry::MEDKIT, 1);
-    p.inventory.select(0);
+    // **Found, not slot 0.** §F5 issues a shovel into slot 0 at construction, so
+    // a hardcoded 0 here fires *that* — `Ok(WeaponId(24))` where the test says
+    // "cannot fire a medkit", which is the assertion passing over the wrong item.
+    let slot = slot_of(&p, registry::MEDKIT);
+    p.inventory.select(slot);
     assert_eq!(
         p.try_fire(0.0),
         Err(UseError::WrongKind),
@@ -1037,8 +1070,9 @@ fn the_verb_and_the_kind_must_agree() {
 
     let mut q = PlayerState::new(0, Vec2::ZERO, 0);
     q.inventory.add(registry::BAZOOKA, 1);
+    let slot = slot_of(&q, registry::BAZOOKA);
     assert_eq!(
-        q.use_item(0, 0.0),
+        q.use_item(slot, 0.0),
         Err(UseError::WrongKind),
         "cannot use a bazooka"
     );
@@ -1048,26 +1082,46 @@ fn the_verb_and_the_kind_must_agree() {
 fn firing_respects_the_cooldown_and_the_ammo_count() {
     let mut p = PlayerState::new(0, Vec2::ZERO, 0);
     p.inventory.add(registry::BAZOOKA, 2);
-    p.inventory.select(0);
+    // Not slot 0 — that is the §F5 shovel, which fires happily and forever.
+    let slot = slot_of(&p, registry::BAZOOKA);
+    p.inventory.select(slot);
     assert_eq!(p.try_fire(0.0), Ok(WEAPON_BAZOOKA));
     assert_eq!(p.try_fire(0.1), Err(UseError::OnCooldown));
     assert_eq!(p.try_fire(BAZOOKA_COOLDOWN), Ok(WEAPON_BAZOOKA));
-    // Out of rockets: the slot is gone, so firing reports an empty slot.
-    assert_eq!(p.try_fire(BAZOOKA_COOLDOWN * 2.0), Err(UseError::EmptySlot));
+    // Out of rockets: the stack is gone, and **the selection falls back to the
+    // §F5 shovel** rather than to nothing. That is the floor of the arsenal made
+    // literal — "what you still have when you have nothing" — and it is asserted
+    // rather than routed around, because `Err(EmptySlot)` here is precisely what
+    // a living player is no longer meant to be able to reach.
+    assert!(
+        p.inventory.slot(slot).is_none(),
+        "the emptied rocket stack survived"
+    );
+    assert_eq!(p.try_fire(BAZOOKA_COOLDOWN * 2.0), Ok(WEAPON_SHOVEL));
+    // The control: `EmptySlot` is still reachable, by selecting a slot that
+    // holds nothing. Without it the assertion above would also be satisfied by a
+    // build that had stopped reporting empty slots at all.
+    p.inventory.select(slot);
+    assert_eq!(
+        p.try_fire(BAZOOKA_COOLDOWN * 4.0),
+        Err(UseError::EmptySlot),
+        "an empty slot stopped reporting itself"
+    );
 }
 
 #[test]
 fn the_flashlight_toggles_without_being_consumed() {
     let mut p = PlayerState::new(0, Vec2::ZERO, 0);
     p.inventory.add(registry::FLASHLIGHT, 1);
-    assert_eq!(p.use_item(0, 0.0), Ok(registry::FLASHLIGHT));
+    let slot = slot_of(&p, registry::FLASHLIGHT);
+    assert_eq!(p.use_item(slot, 0.0), Ok(registry::FLASHLIGHT));
     assert!(p.flashlight_on);
     assert_eq!(
         p.inventory.count_of(registry::FLASHLIGHT),
         1,
         "the item was consumed"
     );
-    p.use_item(0, 0.0).expect("toggle back");
+    p.use_item(slot, 0.0).expect("toggle back");
     assert!(!p.flashlight_on);
 }
 

@@ -119,6 +119,11 @@ export const WEAPON_KEYS: string[] = [
   // projectile is also what makes it visible, because this is the layer that
   // draws them.
   'toxic_drop',
+  // §F5. Appended last, and the five melee keys above it stay: retiring a weapon
+  // does not free its id (`WEAPONS[i].id == WeaponId(i)`), so a hole here would
+  // shift everything after it — §B16 again. It has no `KIND_BY_WEAPON_KEY` entry
+  // because a swing spawns no projectile.
+  'shovel',
 ]
 
 export const KIND_BY_WEAPON_KEY: Record<string, ProjectileKind> = {

@@ -25,6 +25,15 @@ pub type PlayerId = u8;
 /// them. Without it, shooting someone off a ledge into lava rewards nobody.
 pub const ASSIST_WINDOW: f32 = 5.0;
 
+/// What every player is issued at spawn (§F5).
+///
+/// **One list, two readers, because they are one rule.** `grant_starting_kit`
+/// puts it in the inventory and `die` refuses to drop it: "you always have a
+/// shovel" and "a shovel cannot be dropped" are the same sentence, and a kit that
+/// dropped would be re-granted on respawn while the corpse's copy stayed on the
+/// ground — a shovel minted per death. Two lists would eventually disagree.
+pub const STARTING_KIT: [ItemId; 1] = [crate::items::registry::SHOVEL];
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DeathCause {
     Player(PlayerId),
@@ -106,7 +115,7 @@ pub struct PlayerState {
 
 impl PlayerState {
     pub fn new(id: PlayerId, pos: Vec2, skin_id: u16) -> Self {
-        PlayerState {
+        let mut p = PlayerState {
             id,
             body: Body::new(pos),
             jump: JumpState::default(),
@@ -131,7 +140,11 @@ impl PlayerState {
             skin_id,
             fire_ready_at: 0.0,
             teleport: crate::world::teleport::TeleportState::new(pos, 0.0),
-        }
+        };
+        // §F5 — join is the other route into the world. `respawn` grants the same
+        // kit; both must, or a player who never dies never gets one.
+        p.grant_starting_kit();
+        p
     }
 
     pub fn shield_active(&self, now: f32) -> bool {
@@ -410,11 +423,37 @@ impl PlayerState {
         // effect.
         self.heals = 0;
         self.batteries = 0;
-        self.inventory.drain_all()
+        // **Except the starting kit** (§F5): "no ammo, and it cannot be dropped
+        // or lost". Dropped, a shovel would scatter with everything else, be
+        // re-granted on respawn anyway, and the map would fill with shovels
+        // nobody can use — every death minting one more. Filtered here rather
+        // than skipped in `drain_all`, because the inventory has no business
+        // knowing which items are issued; that list lives beside the grant.
+        self.inventory
+            .drain_all()
+            .into_iter()
+            .filter(|s| !STARTING_KIT.contains(&s.item))
+            .collect()
     }
 
     pub fn credit_kill(&mut self) {
         self.score += KILL_POINTS;
+    }
+
+    /// §F5 — the starting kit: a shovel in the first quick-bar slot.
+    ///
+    /// **One function, two callers**, because a player arrives in the world by
+    /// two routes — `PlayerState::new` on join and `respawn` after death — and a
+    /// kit granted on only one of them is the half-wired shape this project keeps
+    /// paying for. `respawn` clears the inventory, so it must re-grant rather than
+    /// inherit.
+    ///
+    /// Slot 0 by construction: the inventory is empty at both call sites, and
+    /// `add` takes the first free slot.
+    fn grant_starting_kit(&mut self) {
+        for item in STARTING_KIT {
+            self.inventory.add(item, 1);
+        }
     }
 
     pub fn respawn(&mut self, pos: Vec2, now: f32) {
@@ -428,6 +467,9 @@ impl PlayerState {
         self.jetpack = JetpackState::default();
         self.jump = JumpState::default();
         self.inventory.clear();
+        // Re-granted, not inherited: `clear()` above took the last life's shovel
+        // with everything else.
+        self.grant_starting_kit();
         self.alive = true;
         self.iframes_until = now + SPAWN_IFRAMES;
         self.poisoned_until = 0.0;
@@ -652,10 +694,24 @@ mod battery_tests {
     fn a_battery_pack_charges_and_is_consumed() {
         let mut p = player();
         p.inventory.add(BATTERY_PACK, 1);
-        p.inventory.select(0);
-        assert!(p.use_item(0, 0.0).is_ok());
+        // **Not slot 0.** §F5 seats a shovel there on `PlayerState::new`, so the
+        // pack lands in the first free slot after it and a hardcoded 0 used the
+        // shovel — which `use_item` correctly refuses. Found, not assumed, so
+        // this does not break again the next time the starting kit grows.
+        let slot = (0..crate::constants::INVENTORY_SLOTS as u8)
+            .find(|s| {
+                p.inventory
+                    .slot(*s)
+                    .is_some_and(|st| st.item == BATTERY_PACK)
+            })
+            .expect("the pack went nowhere");
+        p.inventory.select(slot);
+        assert!(p.use_item(slot, 0.0).is_ok());
         assert_eq!(p.battery, BATTERY_PACK_AMOUNT);
-        assert!(p.inventory.slot(0).is_none(), "the pack was not consumed");
+        assert!(
+            p.inventory.slot(slot).is_none(),
+            "the pack was not consumed"
+        );
     }
 
     #[test]

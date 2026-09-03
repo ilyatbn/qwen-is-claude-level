@@ -2905,6 +2905,29 @@ pub fn give(world: &mut World, id: PlayerId, item: ItemId, count: u8) {
     }
 }
 
+/// Put an item a player is already carrying **in their hand**.
+///
+/// The companion to `give`, and §F5 is why it exists. Every player now spawns
+/// holding a shovel in slot 0 and `give` appends to the first *free* slot, so
+/// `give(w, 0, BAZOOKA, 4)` followed by `w.fire(0, t)` swings a shovel. That does
+/// not fail loudly — a swing sets the same FIRE bit, spawns no projectile and
+/// hits nothing at range — so three bot fixtures went on passing while measuring
+/// the wrong weapon, one of them reporting a molotov throw it never made.
+///
+/// Panics rather than returning a bool: a fixture that wields something it was
+/// never given is broken, and a silent `false` is how it stays broken.
+pub fn wield(world: &mut World, id: PlayerId, item: ItemId) {
+    let slot = (0..crate::constants::INVENTORY_SLOTS as u8)
+        .find(|s| {
+            world
+                .player(id)
+                .and_then(|p| p.inventory.slot(*s))
+                .is_some_and(|st| st.item == item)
+        })
+        .unwrap_or_else(|| panic!("player {id} is not carrying item {item}"));
+    world.select_slot(id, slot);
+}
+
 #[cfg(test)]
 mod state_hash_tests {
     use super::*;
@@ -3429,6 +3452,10 @@ mod fire_while_moving {
             BAZOOKA,
             crate::items::registry::max_stack(BAZOOKA),
         );
+        // In hand, not merely in the bag: §F5 seats a shovel in slot 0, and a
+        // fixture called `armed_world` that fires a shovel is measuring nothing
+        // it claims to.
+        wield(&mut w, 0, BAZOOKA);
         // Settle onto the ground, so "at a run" and "mid-air" are distinguishable
         // rather than both being "still falling from spawn".
         for _ in 0..120 {
@@ -5690,6 +5717,8 @@ mod birds_in_a_round {
         // version called `fire_hitscan` directly and would now pass or fail for
         // reasons that have nothing to do with a real shot.
         crate::world::give(&mut w, 0, crate::items::registry::SMG, 10);
+        // §F5: slot 0 is the shovel now, and `fire` uses the selected slot.
+        crate::world::wield(&mut w, 0, crate::items::registry::SMG);
         w.players[0].aim = crate::math::quantize_angle(aim);
         w.fire(0, w.round_time).expect("the shot was refused");
         // Fly it. The bird is 200 px away and an SMG round covers 800 px/s, so a

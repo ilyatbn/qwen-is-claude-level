@@ -55,7 +55,13 @@ defect is a valued outcome here; several are recorded below rather than worked a
   Know both exist before choosing.
 - **CONFIRMED — `SPEC` (`melee.rs:193-199`) drives four tests**, `:205 :228 :242 :341`.
   `:228` set-matches the whole melee roster and will not tolerate a partial edit.
-- **CONFIRMED — `balance.rs:260` fails on landing.** `assert!(weapons().len() >= 20)`
+- **SUPERSEDED by the chosen design — read this before touching `balance.rs`.** The
+  prediction below assumed the five weapons would be *deleted*. They are not: both tables
+  are id-indexed and removing entries is §B16, so retired weapons stay as **placeholders**
+  and `weapons().len()` remains 23. **`balance.rs:260` is therefore untouched and must stay
+  untouched** — "fixing" a control that is not broken is exactly the number-that-made-it-pass
+  trap. See `HANDOFF-M19.md`'s T19.05 status board.
+- **CONFIRMED under deletion only — `balance.rs:260` would fail on landing.** `assert!(weapons().len() >= 20)`
   against 22 today; retire five, add one → 18. The Done-when catches it; **the repair is
   the trap.** Its comment says it is the control against a collapsed arsenal, so lowering
   20 to 18 is "the number that made it pass". Re-derive it as a control.
@@ -68,6 +74,14 @@ defect is a valued outcome here; several are recorded below rather than worked a
   touches three languages; and the 200-seed "no map spawns a shovel" sweep is an
   **absence with no control** — it passes against a build where nothing spawns at all,
   which is the re-weighting risk the task itself warns about two bullets earlier.
+- **MISSED BY THIS SWEEP, found on landing** (recorded so the next sweep looks for it):
+  `balance.rs::every_weapon_can_be_obtained` is a **second** obtainability assert with the
+  same inversion as `melee.rs:341` — the sweep predicted `weapons().len() >= 20` in that
+  file and stopped there. And nothing here mentions **bots**: `choose_weapon` and
+  `should_fire` read `w.range`/`w.blast_radius`, both of which mean something else for
+  `Delivery::Melee`, so issuing a shovel to every player made every bot hold one forever.
+  Three bot fixtures also went on passing while measuring a swing, because `give` appends
+  to the first *free* slot and slot 0 is now the kit.
 - **CLEAR, do not spend time:** `is_auto()` matches `Delivery` variants not ids, so
   arsenal size cannot break it. `FIRE_CUE` is consulted only on projectile spawns and a
   `Melee` weapon spawns nothing — the shovel needs **no** entry. `scripts/` holds exactly

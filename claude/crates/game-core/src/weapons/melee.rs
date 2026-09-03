@@ -196,6 +196,12 @@ mod t1105 {
         ("whip", 22.0, 0.0, 44.0, 0.8, 0.60, 120.0),
         ("axe", 55.0, 10.0, 16.0, 1.2, 0.90, 140.0),
         ("hammer", 70.0, 16.0, 14.0, 1.1, 1.20, 340.0),
+        // §F5 — the shovel, from `docs/75`'s constants table. The five rows above
+        // are **retired but not deleted**: their weapons are still
+        // `Delivery::Melee` and `:228` set-matches the melee roster against this
+        // table, so removing a row here would fail that assertion rather than
+        // describe the game.
+        ("shovel", 30.0, 14.0, 20.0, 1.2, 0.55, 150.0),
     ];
 
     /// The table is the test, and the set must match — a melee weapon with no
@@ -336,19 +342,42 @@ mod t1105 {
         }
     }
 
+    /// **This assertion was inverted by §F5 and the inversion is the deliverable.**
+    ///
+    /// Until T19.05 it read "every melee weapon can be found on the ground, in a
+    /// crate or buried". §F5 retires knife, bat, whip, axe and hammer and gives
+    /// every player a shovel at spawn, so *no* melee weapon is findable any more:
+    /// the five are unobtainable on purpose and the shovel would be litter on a
+    /// map where everyone already has one.
+    ///
+    /// The presence that replaces the old obtainability check is
+    /// `t1905::every_player_spawns_holding_a_shovel` — deleting this one bare
+    /// would have dropped the guard that the retired five stay unreachable, and
+    /// keeping it unchanged would have asserted the opposite of the spec.
     #[test]
-    fn every_melee_weapon_is_an_item_you_can_find() {
+    fn no_melee_weapon_is_findable_and_the_retired_five_still_resolve() {
         for &(key, ..) in SPEC {
             let w = defs::by_key(key).expect("weapon");
             let d = registry::by_key(key).unwrap_or_else(|| panic!("{key} is not an item"));
             assert_eq!(d.kind, ItemKind::Weapon(w.id), "{key} points elsewhere");
-            assert!(
-                d.spawn_weight > 0 || d.crate_weight > 0 || d.buried_weight > 0,
-                "{key} can never be obtained"
+            assert_eq!(
+                (d.spawn_weight, d.crate_weight, d.buried_weight),
+                (0, 0, 0),
+                "{key} is still obtainable from the world (§F5 retires melee pickups)"
             );
             assert_eq!(d.max_stack, 1, "{key} has no ammo, so it does not stack");
         }
-        // Ids appended, never inserted (§B16).
+        // Control for the three zeroes above: a build that zeroed *every* weight
+        // would satisfy them. The guns are what the retired weight went to, so at
+        // least one of them must still be findable.
+        let pistol = registry::by_key("pistol").expect("pistol is an item");
+        assert!(
+            pistol.spawn_weight > 0 || pistol.crate_weight > 0 || pistol.buried_weight > 0,
+            "the whole spawn table is zeroed — the melee assertion above proves nothing"
+        );
+        // Ids appended, never inserted (§B16). The five are retired placeholders,
+        // not deletions: `registry::def` is `ITEMS.get(id as usize)`, so removing
+        // them renumbers every id above and a laser resolves as a bazooka.
         for id in [KNIFE, BAT, WHIP, AXE, HAMMER] {
             assert!(registry::def(id).is_some(), "item {id} does not resolve");
         }
@@ -510,5 +539,424 @@ mod t130602 {
                 "{key} reaches {reach} px in front of a {PLAYER_W} px body — not proximity"
             );
         }
+    }
+}
+
+/// T19.05 / §F5 — the shovel: the one melee weapon, and the one everybody has.
+///
+/// Named so `cargo test -p game-core --lib shovel` runs the whole module.
+#[cfg(test)]
+mod t1905_shovel {
+    use super::*;
+    use crate::constants::{
+        MapScale, BASE_HEALTH, INVENTORY_SLOTS, RESPAWN_DELAY, SHOVEL_CARVE, SHOVEL_DAMAGE,
+        SHOVEL_REACH, SIM_DT,
+    };
+    use crate::items::registry::{
+        self, WeightColumn, AXE, BAT, HAMMER, ITEMS, KNIFE, SHOVEL, WHIP,
+    };
+    use crate::items::spawning::{assign_buried_items, place_initial, roll_item};
+    use crate::items::world::WorldItems;
+    use crate::map::generate;
+    use crate::player::state::{DeathCause, PlayerState};
+    use crate::rng::substream;
+    use crate::weapons::defs;
+    use crate::world::{RoundPhase, World};
+
+    /// The six ids no map may ever place: the five §F5 retired, and the shovel,
+    /// which everybody already has.
+    const NEVER_SPAWNS: [crate::items::registry::ItemId; 6] =
+        [KNIFE, BAT, WHIP, AXE, HAMMER, SHOVEL];
+
+    fn held(p: &PlayerState) -> Vec<(u8, u16, u8)> {
+        (0..INVENTORY_SLOTS as u8)
+            .filter_map(|s| p.inventory.slot(s).map(|st| (s, st.item, st.count)))
+            .collect()
+    }
+
+    // ------------------------------------------------------------ the kit
+
+    /// §F5: "every player spawns holding it, in the first quick-bar slot".
+    ///
+    /// This is the **presence** that replaced the obtainability assertion in
+    /// `t1105` — the shovel has all three spawn weights at zero, so nothing else
+    /// in the suite would notice if joining granted nothing. That was the state
+    /// of the tree when this task was picked up: `respawn` granted the kit and
+    /// `PlayerState::new` did not, so a player who never died never held one.
+    #[test]
+    fn every_player_spawns_holding_a_shovel() {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+
+        let p = w.player(0).expect("ana");
+        assert_eq!(
+            held(p),
+            vec![(0u8, SHOVEL, 1u8)],
+            "a fresh player's inventory is not exactly one shovel in slot 0"
+        );
+        assert_eq!(
+            p.inventory.selected(),
+            0,
+            "the shovel is not the selected quick-bar slot"
+        );
+
+        // The control the task asks for: death clears the inventory, so the kit
+        // has to be re-granted rather than inherited. Through the world's own
+        // respawn path, not `PlayerState::respawn` — the seam is what was already
+        // wired and the join was not.
+        w.player_mut(0).expect("ana").die(DeathCause::Void, 0.0);
+        for _ in 0..((RESPAWN_DELAY / SIM_DT) as i32 + 20) {
+            w.step(SIM_DT);
+        }
+        let p = w.player(0).expect("ana");
+        assert!(p.alive, "the fixture never respawned");
+        assert_eq!(
+            held(p),
+            vec![(0u8, SHOVEL, 1u8)],
+            "after a death and respawn the inventory is not exactly one shovel"
+        );
+    }
+
+    /// The falsifier for the assertion above: `add` is what puts it in slot 0,
+    /// and a kit granted into a full inventory would silently grant nothing.
+    ///
+    /// Without this, "slot 0 holds a shovel" is also satisfied by an inventory
+    /// that cannot hold anything else.
+    #[test]
+    fn the_shovel_does_not_occupy_the_whole_inventory() {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        crate::world::give(&mut w, 0, registry::PISTOL, 1);
+        let p = w.player(0).expect("ana");
+        assert_eq!(
+            held(p).len(),
+            2,
+            "a shovel plus a pistol is not two slots: {:?}",
+            held(p)
+        );
+        assert_eq!(held(p)[0].1, SHOVEL, "the shovel left slot 0");
+    }
+
+    /// §F5: "it cannot be dropped or lost".
+    ///
+    /// `die` returns the stacks a corpse scatters and the world turns them into
+    /// pickups. Without the exemption the shovel goes with them **and** is
+    /// re-granted on respawn, so every death mints one and the floor slowly fills
+    /// with shovels nobody can use. The control is in the same call: what you
+    /// picked up *is* dropped, so this is an exemption and not a build that
+    /// stopped dropping anything.
+    #[test]
+    fn death_does_not_drop_the_shovel_but_does_drop_what_was_picked_up() {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        crate::world::give(&mut w, 0, registry::BAZOOKA, 1);
+        let dropped = w
+            .player_mut(0)
+            .expect("ana")
+            .die(crate::player::state::DeathCause::Void, 0.0);
+        assert_eq!(
+            dropped.iter().filter(|s| s.item == SHOVEL).count(),
+            0,
+            "the issued shovel was dropped on death"
+        );
+        assert_eq!(
+            dropped
+                .iter()
+                .filter(|s| s.item == registry::BAZOOKA)
+                .count(),
+            1,
+            "nothing was dropped at all, so the exemption above proves nothing"
+        );
+    }
+
+    // ------------------------------------------------------------ digging
+
+    /// A world with a clear horizontal lane at `at`, and both players in it.
+    ///
+    /// The lane is carved rather than searched for: every assertion below is
+    /// about reach or about the carve, and whatever the generator happened to put
+    /// between two bodies answers a different question.
+    fn lane(gap: f32) -> (World, Vec2) {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        w.add_player(1, 0, "bo".into());
+        let at = Vec2::new(300.0, 300.0);
+        w.map.carve_capsule(
+            at.x as i32 - 60,
+            at.y as i32,
+            (at.x + gap) as i32 + 60,
+            at.y as i32,
+            48,
+        );
+        w.players[0].body.pos = at;
+        w.players[1].body.pos = Vec2::new(at.x + gap, at.y);
+        w.players[0].aim = crate::math::quantize_angle(0.0);
+        (w, at)
+    }
+
+    fn solid_in(map: &Map, cx: i32, cy: i32, r: i32) -> u32 {
+        let mut n = 0;
+        for y in (cy - r)..=(cy + r) {
+            for x in (cx - r)..=(cx + r) {
+                if solid_at(map, x, y) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    /// A swing at a wall digs; a swing at open air does not.
+    ///
+    /// Through `World::fire` at the player's own aim angle, not through `swing`:
+    /// the task asks for the carve to be reachable from a real swing, and the
+    /// unit seam cannot tell you whether `fire_from_slot` ever reaches it.
+    #[test]
+    fn a_shovel_swing_digs_a_wall_and_leaves_open_air_alone() {
+        let reach = effective_reach(SHOVEL_REACH);
+        // Wall
+        let (mut w, at) = lane(400.0);
+        let tip = at + Vec2::new(reach, 0.0);
+        // A block comfortably wider than the carve, so the crater is bounded by
+        // SHOVEL_CARVE and not by how much rock was there.
+        let block = (SHOVEL_CARVE * 2.0).ceil() as i32;
+        w.map
+            .fill_circle(tip.x.round() as i32, tip.y.round() as i32, block);
+        let probe = block + 4;
+        let before = solid_in(&w.map, tip.x as i32, tip.y as i32, probe);
+        w.fire(0, 1.0).expect("the swing was refused");
+        let after = solid_in(&w.map, tip.x as i32, tip.y as i32, probe);
+        let removed = before - after;
+
+        // Area of the carve disc, pinned to the constant. Generous bounds: the
+        // rasteriser is not a circle and the block is not infinite.
+        let area = std::f32::consts::PI * SHOVEL_CARVE * SHOVEL_CARVE;
+        assert!(
+            removed as f32 > area * 0.6 && (removed as f32) < area * 1.6,
+            "a swing at a wall removed {removed} px, not the ~{area:.0} px a \
+             SHOVEL_CARVE ({SHOVEL_CARVE}) disc is"
+        );
+
+        // Control: the same swing where there is nothing to dig removes nothing.
+        // Without it "the wall lost pixels" is also true of a build that carves
+        // the whole map on every fire.
+        let (mut w2, at2) = lane(400.0);
+        let tip2 = at2 + Vec2::new(reach, 0.0);
+        let before2 = solid_in(&w2.map, tip2.x as i32, tip2.y as i32, probe);
+        assert_eq!(before2, 0, "the lane was not clear, so this proves nothing");
+        w2.fire(0, 1.0).expect("the swing was refused");
+        let after2 = solid_in(&w2.map, tip2.x as i32, tip2.y as i32, probe);
+        assert_eq!(after2, 0, "a swing at open air created rock");
+    }
+
+    // ------------------------------------------------------------ hitting
+
+    /// Damage dealt to player 1 by one swing across `gap`, centre to centre.
+    fn swing_damage(gap: f32, wall: bool) -> f32 {
+        let (mut w, at) = lane(gap);
+        if wall {
+            let mid = at.x + gap * 0.5;
+            for dy in -40..40 {
+                w.map.fill_circle(mid as i32, at.y as i32 + dy, 3);
+            }
+        }
+        // **Past `SPAWN_IFRAMES`.** `add_player` stamps them on every joiner, so a
+        // swing at t=1 lands, is logged, and deals nothing — which reads exactly
+        // like a reach failure and is not one.
+        let before = w.players[1].health;
+        w.fire(0, crate::constants::SPAWN_IFRAMES + 1.0)
+            .expect("the swing was refused");
+        before - w.players[1].health
+    }
+
+    #[test]
+    fn a_shovel_hits_for_shovel_damage_inside_its_reach_and_nothing_outside_it() {
+        let reach = effective_reach(SHOVEL_REACH);
+        assert_eq!(
+            swing_damage(reach - 1.0, false),
+            SHOVEL_DAMAGE,
+            "a target one pixel inside the reach took the wrong damage"
+        );
+        assert_eq!(
+            swing_damage(reach + 1.0, false),
+            0.0,
+            "a target one pixel beyond the reach was hit anyway"
+        );
+        assert_eq!(
+            swing_damage(reach - 1.0, true),
+            0.0,
+            "a target in reach but behind a wall was hit through it"
+        );
+        // The victim starts at full health, or "took nothing" would be true of a
+        // fixture that was already dead.
+        let (w, _) = lane(reach - 1.0);
+        assert_eq!(
+            w.players[1].health, BASE_HEALTH,
+            "the fixture's victim did not start at full health"
+        );
+    }
+
+    /// §F5: "no ammo, and it cannot leave the inventory".
+    #[test]
+    fn a_shovel_is_never_consumed_however_many_times_it_is_swung() {
+        let stack = registry::def(SHOVEL).expect("shovel").max_stack;
+        let (mut w, _) = lane(400.0);
+        let swings = stack as u32 * 10 + 20;
+        let mut t = 1.0f32;
+        for _ in 0..swings {
+            w.fire(0, t).expect("the swing was refused");
+            t += crate::constants::SHOVEL_COOLDOWN * 2.0;
+        }
+        assert_eq!(
+            held(w.player(0).expect("ana")),
+            vec![(0u8, SHOVEL, 1u8)],
+            "{swings} swings changed the inventory (max_stack is {stack})"
+        );
+    }
+
+    // ------------------------------------------------------------ spawning
+
+    /// The task's 200-seed sweep — **with the control it is missing.**
+    ///
+    /// "No map spawns a knife, bat, whip, axe, hammer or shovel" is an assertion
+    /// of absence, and an absence passes against a build where nothing spawns at
+    /// all. That is not a hypothetical here: zeroing five weights is exactly the
+    /// edit that could break the draw. So every column is also counted for the
+    /// *presence*, against the share its own weight predicts — the guns and
+    /// grenades that inherited the retired weight must come up at the new rate.
+    ///
+    /// At the draw rather than through 200 generated maps: `roll_item` is the
+    /// only thing that decides *which* item a map places (the map decides where),
+    /// it is what `place_initial`, the crate roll and `assign_buried_items` all
+    /// call, and 200 map generations would add minutes to the suite for a weaker
+    /// answer. `a_generated_map_places_items_and_none_of_them_is_melee` is the
+    /// arm that ties this to a real map.
+    #[test]
+    fn two_hundred_seeds_never_roll_a_retired_weapon_and_still_roll_everything_else() {
+        const SEEDS: u64 = 200;
+        const DRAWS: u32 = 200;
+        for col in [
+            WeightColumn::Spawn,
+            WeightColumn::Crate,
+            WeightColumn::Buried,
+        ] {
+            let mut counts = vec![0u32; ITEMS.len()];
+            for seed in 0..SEEDS {
+                let mut rng = substream(seed, "items");
+                for _ in 0..DRAWS {
+                    counts[roll_item(&mut rng, col) as usize] += 1;
+                }
+            }
+            let total: u32 = counts.iter().sum();
+            assert_eq!(total, SEEDS as u32 * DRAWS, "draws went missing");
+
+            for id in NEVER_SPAWNS {
+                assert_eq!(
+                    counts[id as usize],
+                    0,
+                    "{col:?} rolled {} {} times in {SEEDS} seeds",
+                    registry::def(id).expect("retired item still resolves").key,
+                    counts[id as usize]
+                );
+            }
+
+            let w = registry::weights(col);
+            let wsum: f64 = w.iter().map(|&x| x as f64).sum();
+            let mut present = 0;
+            for (i, d) in ITEMS.iter().enumerate() {
+                if w[i] == 0 {
+                    continue;
+                }
+                present += 1;
+                let expect = total as f64 * w[i] as f64 / wsum;
+                let got = counts[i] as f64;
+                assert!(
+                    got > expect * 0.7 && got < expect * 1.3,
+                    "{col:?}: {} came up {got:.0} times against the {expect:.0} its \
+                     weight {} of {wsum} predicts",
+                    d.key,
+                    w[i]
+                );
+            }
+            // The control on the control: a column that lost every weight would
+            // satisfy the loop above vacuously.
+            assert!(
+                present >= 10,
+                "{col:?} has only {present} items with any weight left"
+            );
+        }
+    }
+
+    /// The arm that ties the draw to a real map: three generated maps place items
+    /// and bury items, and none of them is melee.
+    ///
+    /// Three seeds and one scale, because this is the *wiring* check — that
+    /// `place_initial` and `assign_buried_items` draw from the columns the sweep
+    /// above exhausted. Two hundred maps here would cost minutes and add nothing.
+    #[test]
+    fn a_generated_map_places_items_and_none_of_them_is_melee() {
+        for seed in [1u64, 4242, 31337] {
+            let map = generate(seed, MapScale::Small);
+            let mut items = WorldItems::new();
+            place_initial(&mut items, &map, seed, 0.0);
+            assert!(
+                !items.is_empty(),
+                "seed {seed} placed no items at all, so the absence below is vacuous"
+            );
+            for it in items.iter() {
+                assert!(
+                    !NEVER_SPAWNS.contains(&it.item),
+                    "seed {seed} put {} on the ground",
+                    registry::def(it.item).map_or("?", |d| d.key)
+                );
+            }
+            let buried = assign_buried_items(&map, seed);
+            assert!(
+                !buried.is_empty(),
+                "seed {seed} buried nothing, so the absence below is vacuous"
+            );
+            for b in buried {
+                assert!(
+                    !NEVER_SPAWNS.contains(&b),
+                    "seed {seed} buried {}",
+                    registry::def(b).map_or("?", |d| d.key)
+                );
+            }
+        }
+    }
+
+    /// §B16, from the other end: the shovel took the **next free** id, and the
+    /// five retired ones still resolve to themselves.
+    ///
+    /// `t1105` asserts they resolve; this asserts they resolve *to what they
+    /// were*, which is the property §B16 is actually about — a table that
+    /// renumbered would still pass an `is_some()` check.
+    #[test]
+    fn retiring_five_weapons_renumbered_nothing() {
+        for (key, id) in [
+            ("knife", KNIFE),
+            ("bat", BAT),
+            ("whip", WHIP),
+            ("axe", AXE),
+            ("hammer", HAMMER),
+            ("shovel", SHOVEL),
+        ] {
+            let d = registry::def(id).unwrap_or_else(|| panic!("item {id} does not resolve"));
+            assert_eq!(d.key, key, "item id {id} now resolves to {}", d.key);
+            let crate::items::registry::ItemKind::Weapon(wid) = d.kind else {
+                panic!("{key} is no longer a weapon");
+            };
+            let w = defs::def(wid).unwrap_or_else(|| panic!("{key} has no weapon def"));
+            assert_eq!(w.key, key, "weapon id {wid:?} now resolves to {}", w.key);
+        }
+        assert_eq!(
+            SHOVEL as usize,
+            ITEMS.len() - 1,
+            "the shovel is not the last entry, so it was inserted rather than appended"
+        );
     }
 }

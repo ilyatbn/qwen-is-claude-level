@@ -20,8 +20,9 @@ use crate::constants::{
     AXE_ARC, AXE_CARVE, AXE_COOLDOWN, AXE_DAMAGE, AXE_KNOCKBACK, AXE_REACH, BAT_ARC, BAT_CARVE,
     BAT_COOLDOWN, BAT_DAMAGE, BAT_KNOCKBACK, BAT_REACH, HAMMER_ARC, HAMMER_CARVE, HAMMER_COOLDOWN,
     HAMMER_DAMAGE, HAMMER_KNOCKBACK, HAMMER_REACH, KNIFE_ARC, KNIFE_CARVE, KNIFE_COOLDOWN,
-    KNIFE_DAMAGE, KNIFE_KNOCKBACK, KNIFE_REACH, WHIP_ARC, WHIP_CARVE, WHIP_COOLDOWN, WHIP_DAMAGE,
-    WHIP_KNOCKBACK, WHIP_REACH,
+    KNIFE_DAMAGE, KNIFE_KNOCKBACK, KNIFE_REACH, SHOVEL_ARC, SHOVEL_CARVE, SHOVEL_COOLDOWN,
+    SHOVEL_DAMAGE, SHOVEL_KNOCKBACK, SHOVEL_REACH, WHIP_ARC, WHIP_CARVE, WHIP_COOLDOWN,
+    WHIP_DAMAGE, WHIP_KNOCKBACK, WHIP_REACH,
 };
 use crate::constants::{
     BAZOOKA_AMMO, BAZOOKA_BLAST_RADIUS, BAZOOKA_COOLDOWN, BAZOOKA_DAMAGE, BAZOOKA_GRAVITY_SCALE,
@@ -57,8 +58,8 @@ use crate::items::registry::{
     WeaponId, WEAPON_AIRBURST, WEAPON_AIRBURST_PELLET, WEAPON_AXE, WEAPON_BAT, WEAPON_BAZOOKA,
     WEAPON_DEAGLE, WEAPON_FLAMETHROWER, WEAPON_GRENADE, WEAPON_HAMMER, WEAPON_KNIFE,
     WEAPON_LASER_PISTOL, WEAPON_LASER_SMG, WEAPON_MACHINEGUN, WEAPON_METEOR, WEAPON_METEOR_FRAG,
-    WEAPON_MINE, WEAPON_MOLOTOV, WEAPON_PISTOL, WEAPON_REVOLVER, WEAPON_SMG, WEAPON_SMOKE,
-    WEAPON_TOXIC_DROP, WEAPON_TOXIC_GRENADE, WEAPON_WHIP,
+    WEAPON_MINE, WEAPON_MOLOTOV, WEAPON_PISTOL, WEAPON_REVOLVER, WEAPON_SHOVEL, WEAPON_SMG,
+    WEAPON_SMOKE, WEAPON_TOXIC_DROP, WEAPON_TOXIC_GRENADE, WEAPON_WHIP,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -743,6 +744,30 @@ pub static WEAPONS: &[WeaponDef] = &[
         muzzle_speed: TOXIC_DROP_SPEED,
         gravity_scale: 1.0,
         wind_scale: 1.0,
+        energy_cost: 0.0,
+        burst: Burst::Blast,
+    },
+    // §F5 — the shovel. **Appended last** (§B16): `WEAPONS[i].id ==
+    // WeaponId(i)`, and the client mirrors this order in `WEAPON_KEYS`.
+    //
+    // The only melee weapon anybody carries — every player spawns holding one —
+    // so it is the arsenal's floor rather than one option among five. It digs the
+    // widest of any melee weapon because tunnelling is half its job.
+    WeaponDef {
+        id: WEAPON_SHOVEL,
+        key: "shovel",
+        delivery: Delivery::Melee {
+            reach: SHOVEL_REACH,
+            arc: SHOVEL_ARC,
+            knockback: SHOVEL_KNOCKBACK,
+        },
+        damage: SHOVEL_DAMAGE,
+        blast_radius: SHOVEL_CARVE,
+        range: 0.0,
+        cooldown: SHOVEL_COOLDOWN,
+        muzzle_speed: 0.0,
+        gravity_scale: 0.0,
+        wind_scale: 0.0,
         energy_cost: 0.0,
         burst: Burst::Blast,
     },

@@ -67,6 +67,10 @@ pub const WEAPON_AIRBURST_PELLET: WeaponId = WeaponId(22);
 /// **Appended, never inserted** (§B16): `defs::def` indexes by array position.
 pub const WEAPON_TOXIC_DROP: WeaponId = WeaponId(23);
 
+/// §F5. Appended, never inserted — `WEAPONS[i].id == WeaponId(i)` and the client
+/// mirrors that order in `WEAPON_KEYS` (§B16).
+pub const WEAPON_SHOVEL: WeaponId = WeaponId(24);
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UtilityId {
     Flashlight,
@@ -125,6 +129,9 @@ pub const AIRBURST: ItemId = 20;
 pub const SMOKE: ItemId = 21;
 pub const MOLOTOV: ItemId = 22;
 pub const TOXIC_GRENADE: ItemId = 23;
+/// §F5. `ITEMS` is indexed by id (`registry::def` is `ITEMS.get(id as usize)`),
+/// so this is appended at index 24 and nothing before it may move.
+pub const SHOVEL: ItemId = 24;
 pub const BAZOOKA: ItemId = 3;
 pub const GRENADE: ItemId = 4;
 pub const SMG: ItemId = 5;
@@ -317,6 +324,21 @@ pub static ITEMS: &[ItemDef] = &[
         crate_weight: 12,
         buried_weight: 8,
     },
+    // **Retired (§F5): knife, bat, whip, axe and hammer.**
+    //
+    // All three weights are zero, so no map places them, no crate holds them and
+    // nothing digs them up — they are unobtainable. They are **not deleted**,
+    // because `ITEMS` is indexed by id (`registry::def` is `ITEMS.get(id as
+    // usize)`) and `WEAPONS[i].id == WeaponId(i)`: removing five entries
+    // renumbers every id above them, which is §B16 — the bug where a laser
+    // resolved as a bazooka. The task anticipated this ("if the table cannot hold
+    // holes then keep an explicit retired placeholder — the pinned test
+    // decides"), and the pinned tests decide for placeholders.
+    //
+    // Their constants and art therefore stay too: a placeholder that still
+    // resolves needs stats and a sprite. Retirement here means **unobtainable**,
+    // not absent.
+    //
     // Melee (§B7). **No ammo** — `max_stack` is 1 and it is never spent, because
     // a weapon with a cooldown and no magazine is the floor of the arsenal: it is
     // what you still have when you have nothing, and it must never be worthless.
@@ -331,9 +353,9 @@ pub static ITEMS: &[ItemDef] = &[
         kind: ItemKind::Weapon(WEAPON_KNIFE),
         max_stack: 1,
         sprite: "weapon_knife",
-        spawn_weight: 16,
-        crate_weight: 4,
-        buried_weight: 10,
+        spawn_weight: 0,
+        crate_weight: 0,
+        buried_weight: 0,
     },
     ItemDef {
         id: BAT,
@@ -342,9 +364,9 @@ pub static ITEMS: &[ItemDef] = &[
         kind: ItemKind::Weapon(WEAPON_BAT),
         max_stack: 1,
         sprite: "weapon_bat",
-        spawn_weight: 12,
-        crate_weight: 4,
-        buried_weight: 8,
+        spawn_weight: 0,
+        crate_weight: 0,
+        buried_weight: 0,
     },
     ItemDef {
         id: WHIP,
@@ -353,9 +375,9 @@ pub static ITEMS: &[ItemDef] = &[
         kind: ItemKind::Weapon(WEAPON_WHIP),
         max_stack: 1,
         sprite: "weapon_whip",
-        spawn_weight: 8,
-        crate_weight: 6,
-        buried_weight: 8,
+        spawn_weight: 0,
+        crate_weight: 0,
+        buried_weight: 0,
     },
     ItemDef {
         id: AXE,
@@ -366,9 +388,9 @@ pub static ITEMS: &[ItemDef] = &[
         sprite: "weapon_axe",
         // Digs 10 px a swing, so it is a tunnelling tool as well as a weapon —
         // which is why it is worth burying.
-        spawn_weight: 8,
-        crate_weight: 8,
-        buried_weight: 14,
+        spawn_weight: 0,
+        crate_weight: 0,
+        buried_weight: 0,
     },
     ItemDef {
         id: HAMMER,
@@ -377,9 +399,9 @@ pub static ITEMS: &[ItemDef] = &[
         kind: ItemKind::Weapon(WEAPON_HAMMER),
         max_stack: 1,
         sprite: "weapon_hammer",
-        spawn_weight: 8,
-        crate_weight: 8,
-        buried_weight: 12,
+        spawn_weight: 0,
+        crate_weight: 0,
+        buried_weight: 0,
     },
     // Area denial (§B7). Rare on the ground and likelier in a crate: burning
     // ground shapes where people can walk for seconds afterwards, which is worth
@@ -455,6 +477,22 @@ pub static ITEMS: &[ItemDef] = &[
         spawn_weight: 8,
         crate_weight: 10,
         buried_weight: 7,
+    },
+    // §F5. Appended at index 24; `registry::def` is `ITEMS.get(id as usize)`.
+    //
+    // **All three weights are zero and that is the point.** Everybody spawns
+    // holding one, so a shovel on the ground would be litter — and the 200-seed
+    // sweep asserts no map ever places it.
+    ItemDef {
+        id: SHOVEL,
+        key: "shovel",
+        name: "Shovel",
+        kind: ItemKind::Weapon(WEAPON_SHOVEL),
+        max_stack: 1,
+        sprite: "weapon_shovel",
+        spawn_weight: 0,
+        crate_weight: 0,
+        buried_weight: 0,
     },
 ];
 

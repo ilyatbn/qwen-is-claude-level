@@ -18,7 +18,7 @@
  * that expires (§A32), and `enterBattle` is where that decision lives now.
  */
 import { join } from 'node:path'
-import { startStack, enterBattle, sleep, shotsDir } from './checks/harness.mjs'
+import { startStack, enterBattle, sleep, shotsDir, selectWeapon } from './checks/harness.mjs'
 
 const PORT = 3112
 const shots = shotsDir
@@ -238,6 +238,11 @@ const k = await a.page.evaluate('window.__game.constants()')
 // the blast, and three point-blank rocket jumps would kill her before the
 // inventory assertions below ever ran.
 await a.page.mouse.move(640 + 200, 360 + 200)
+// **The bazooka in hand.** §F5 seats a shovel in slot 0 of every player, so
+// without this every `fire()` below is a swing: `projectileSpawns` stays 0 and
+// the failure reads "0 rockets left the muzzle", which is true and says nothing
+// about the muzzle.
+await selectWeapon(a.page, 'bazooka')
 await sleep(200)
 const solidBeforeA = (await dbg(a)).solid
 const solidBeforeB = (await dbg(b)).solid

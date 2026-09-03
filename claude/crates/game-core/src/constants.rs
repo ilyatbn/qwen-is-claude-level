@@ -1207,6 +1207,21 @@ pub const HAMMER_ARC: f32 = 1.1;
 pub const HAMMER_COOLDOWN: f32 = 1.20;
 pub const HAMMER_KNOCKBACK: f32 = 340.0;
 
+/// §F5 — the shovel. The one melee weapon anybody actually carries: every player
+/// spawns holding it and it can never leave the inventory, so these six numbers
+/// are the melee floor of the whole arsenal rather than one option among five.
+///
+/// It **digs** — `SHOVEL_CARVE` is the largest melee carve in the table — because
+/// its job is tunnelling as much as fighting. Damage sits between the bat and the
+/// axe: it must be a real answer at touching distance without making the guns
+/// pointless for anyone who closes.
+pub const SHOVEL_DAMAGE: f32 = 30.0;
+pub const SHOVEL_CARVE: f32 = 14.0;
+pub const SHOVEL_REACH: f32 = 20.0;
+pub const SHOVEL_ARC: f32 = 1.2;
+pub const SHOVEL_COOLDOWN: f32 = 0.55;
+pub const SHOVEL_KNOCKBACK: f32 = 150.0;
+
 // Cone (§B7). Area denial: it carves nothing — fire does not dig (§B6) — and
 // what it leaves behind is the *existing* LAVA_BURN_* hazard, not a second fire
 // system. `damage` on the def mirrors the dps so the shared field means

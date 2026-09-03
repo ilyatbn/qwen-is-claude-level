@@ -19,6 +19,7 @@ use crate::math::{Vec2, TAU};
 use crate::player::input::{button, Input};
 use crate::player::state::PlayerId;
 use crate::rng::substream;
+use crate::weapons::defs::Delivery;
 use crate::weapons::explode::DamageSource;
 use crate::world::World;
 
@@ -675,6 +676,15 @@ impl Bot {
     /// sent it looking for a weapon it already had. Measured against the laser
     /// fixture, that read as 12583 shots refused for being unarmed against 474
     /// fired.
+    ///
+    /// **Melee does not count (§F5).** Every player now spawns holding a shovel,
+    /// so a slot-counting answer is `true` for every bot for the whole round and
+    /// "arm yourself first" stops meaning anything — no bot ever walks to a gun
+    /// again. The question this function is asked at its one call site is "do I
+    /// need to go shopping?", and the honest answer for someone holding only the
+    /// thing everybody is issued is yes. The shovel is still *fired* — it is
+    /// `choose_weapon`'s best option inside its reach — it just is not what being
+    /// armed means.
     fn has_firable_weapon(&self, world: &World) -> bool {
         let Some(me) = world.player(self.player) else {
             return false;
@@ -683,8 +693,13 @@ impl Bot {
             me.inventory.slot(slot).is_some_and(|stack| {
                 def(stack.item).is_some_and(|d| match d.kind {
                     ItemKind::Weapon(wid) => {
-                        let cost = crate::weapons::defs::def(wid).map_or(0.0, |w| w.energy_cost);
-                        cost <= 0.0 || me.battery >= cost
+                        let Some(w) = crate::weapons::defs::def(wid) else {
+                            return false;
+                        };
+                        if matches!(w.delivery, Delivery::Melee { .. }) {
+                            return false;
+                        }
+                        w.energy_cost <= 0.0 || me.battery >= w.energy_cost
                     }
                     _ => false,
                 })
@@ -759,16 +774,33 @@ impl Bot {
                 Some(_) => {}
             }
         }
-        // Never fire at something inside our own blast radius: a bot that
-        // rockets its own feet is not a difficulty setting, it is a bug that
-        // looks like one.
-        if w.blast_radius > 0.0 && dist < w.blast_radius * 1.5 {
-            self.stats.rej_blast_guard += 1;
-            return false;
-        }
-        if w.range > 0.0 && dist > w.range {
-            self.stats.rej_range += 1;
-            return false;
+        // **Melee is not a blast and its range is not `range`.** For a swing,
+        // `blast_radius` is the carve at the *tip* of the arc — `melee::swing`
+        // skips the owner outright, so no swing can ever hurt the swinger — and
+        // the distance it can hit from lives in `Delivery::Melee`, leaving
+        // `range` at 0.0. Run the two guards below unchanged on a shovel and a
+        // bot refuses everything inside 21 px as a self-blast and accepts
+        // everything outside 28 px as in range: it swings at air across the map
+        // and never at anyone it could actually hit. §F5 made that universal by
+        // issuing one to every player. Both are `blast_radius`/`range` meaning a
+        // second thing for one delivery kind.
+        if let Delivery::Melee { reach, .. } = w.delivery {
+            if dist > crate::weapons::melee::effective_reach(reach) {
+                self.stats.rej_range += 1;
+                return false;
+            }
+        } else {
+            // Never fire at something inside our own blast radius: a bot that
+            // rockets its own feet is not a difficulty setting, it is a bug that
+            // looks like one.
+            if w.blast_radius > 0.0 && dist < w.blast_radius * 1.5 {
+                self.stats.rej_blast_guard += 1;
+                return false;
+            }
+            if w.range > 0.0 && dist > w.range {
+                self.stats.rej_range += 1;
+                return false;
+            }
         }
 
         // Line of sight. A weapon that carves 42 px treats a hill as cover to
@@ -850,10 +882,27 @@ impl Bot {
             // penalised but not disqualified — it is still better than nothing.
             let dps = w.damage / w.cooldown.max(0.01);
             let mut score = dps;
-            if w.range > 0.0 && dist > w.range {
+            // How far this weapon can actually hit from. **Melee carries its
+            // range in `Delivery`, not in `range`** (§F5): `w.range` is 0.0 for a
+            // swing, so before the shovel existed the penalty below never applied
+            // to melee and a bot scored a 54 dps shovel above every gun in the
+            // game from any distance. It cost nothing while melee was a rare
+            // pickup; every player spawning with one made it the default.
+            // `effective_reach` because that is the number the hit test uses.
+            let reach = match w.delivery {
+                Delivery::Melee { reach, .. } => crate::weapons::melee::effective_reach(reach),
+                _ => w.range,
+            };
+            if reach > 0.0 && dist > reach {
                 score *= 0.25;
             }
-            if w.blast_radius > 0.0 && dist < w.blast_radius * 1.5 {
+            // The self-blast penalty, and **not for melee**: a swing's
+            // `blast_radius` is the carve at the tip of the arc and `swing` skips
+            // the owner, so it can never catch the swinger. `should_fire` makes
+            // the same distinction, for the same reason — the two must agree, or
+            // a bot selects a weapon it will then refuse to use.
+            let self_blast = !matches!(w.delivery, Delivery::Melee { .. });
+            if self_blast && w.blast_radius > 0.0 && dist < w.blast_radius * 1.5 {
                 score *= 0.1;
             }
             if best.is_none_or(|(bs, _)| score > bs) {
@@ -938,7 +987,10 @@ mod tests {
     use super::*;
     use crate::constants::{MapScale, PLAYER_H, SIM_DT};
     use crate::items::registry::{BAZOOKA, MEDKIT, MOLOTOV, PISTOL};
-    use crate::world::{give, RoundPhase, World};
+    // `wield` because §F5 puts a shovel in slot 0 of every player: `give` appends
+    // to the first free slot, so a fixture that only gives a weapon is holding a
+    // shovel and measuring a swing. See `world::wield`.
+    use crate::world::{give, wield, RoundPhase, World};
 
     const SEED: u64 = 4242;
 
@@ -1637,6 +1689,7 @@ mod tests {
     fn a_bot_does_not_throw_a_molotov_at_its_own_feet() {
         let mut w = world_with(&[1, 2]);
         give(&mut w, 1, MOLOTOV, 2);
+        wield(&mut w, 1, MOLOTOV);
         let at = clear_line(&w);
         if let Some(p) = w.player_mut(1) {
             p.body.pos = at;
@@ -1674,6 +1727,7 @@ mod tests {
     fn a_bot_does_not_throw_a_molotov_into_a_wall_in_front_of_it() {
         let mut w = world_with(&[1, 2]);
         give(&mut w, 1, MOLOTOV, 2);
+        wield(&mut w, 1, MOLOTOV);
         let at = clear_line(&w);
         if let Some(p) = w.player_mut(1) {
             p.body.pos = at;
@@ -1712,6 +1766,7 @@ mod tests {
     fn a_bot_does_throw_a_molotov_from_a_safe_distance() {
         let mut w = world_with(&[1, 2]);
         give(&mut w, 1, MOLOTOV, 2);
+        wield(&mut w, 1, MOLOTOV);
         let at = clear_line(&w);
         if let Some(p) = w.player_mut(1) {
             p.body.pos = at;
@@ -1754,6 +1809,7 @@ mod tests {
         // Armed, or it correctly goes shopping instead of hunting — which is
         // what the first version of this test actually measured.
         give(&mut w, 1, BAZOOKA, 4);
+        wield(&mut w, 1, BAZOOKA);
         let at = clear_line(&w);
         if let Some(p) = w.player_mut(1) {
             p.body.pos = at;
@@ -1786,6 +1842,7 @@ mod tests {
     fn a_bot_that_can_shoot_fires_without_breaking_stride() {
         let mut w = world_with(&[1, 2]);
         give(&mut w, 1, BAZOOKA, 4);
+        wield(&mut w, 1, BAZOOKA);
         let at = clear_line(&w);
         if let Some(p) = w.player_mut(1) {
             p.body.pos = at;
@@ -1822,6 +1879,7 @@ mod tests {
     fn a_bot_fires_at_an_armed_clear_shot_at_a_sane_range() {
         let mut w = world_with(&[1, 2]);
         give(&mut w, 1, BAZOOKA, 4);
+        wield(&mut w, 1, BAZOOKA);
         let at = clear_line(&w);
         if let Some(p) = w.player_mut(1) {
             p.body.pos = at;
@@ -1903,6 +1961,7 @@ mod tests {
     fn a_bot_holds_at_a_range_it_can_actually_shoot_from() {
         let mut w = world_with(&[1, 2]);
         give(&mut w, 1, BAZOOKA, 4);
+        wield(&mut w, 1, BAZOOKA);
         let b = Bot::new(1, SEED, 0, 0.6);
         let stand = b.stand_off(&w);
         let blast = crate::weapons::defs::def(match def(BAZOOKA).map(|d| d.kind) {
@@ -1923,6 +1982,7 @@ mod tests {
     fn a_bot_does_not_fire_at_a_target_inside_its_own_blast_radius() {
         let mut w = world_with(&[1, 2]);
         give(&mut w, 1, BAZOOKA, 4);
+        wield(&mut w, 1, BAZOOKA);
         let at = clear_line(&w);
         if let Some(p) = w.player_mut(1) {
             p.body.pos = at;
@@ -2256,6 +2316,9 @@ mod lethality {
 mod energy {
     use super::*;
     use crate::items::registry::{self, ItemKind, LASER_PISTOL, PISTOL};
+    // No `wield` here: these fixtures select their own slots explicitly — a flat
+    // laser *in hand* is the whole premise — so §F5's shovel in slot 0 is stepped
+    // past by the test itself.
     use crate::world::{give, RoundPhase, World};
 
     /// Two bots, each **holding a flat laser** with a loaded pistol in the bag.
@@ -2388,6 +2451,9 @@ mod bots_already_throw_what_they_carry {
     use super::*;
     use crate::constants::{MapScale, SIM_DT};
     use crate::items::registry::GRENADE;
+    // No `wield` here on purpose: this module is about what the bot *asks* to
+    // select, so the shovel §F5 puts in slot 0 is part of the question rather
+    // than something the fixture should reach past.
     use crate::world::{give, RoundPhase, World};
 
     /// T14.04 asks whether bots need §C11's quick-throw "or they carry grenades

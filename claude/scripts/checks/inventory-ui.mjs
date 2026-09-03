@@ -218,6 +218,73 @@ if (!bar) {
   await shot('inventory-art')
 }
 
+// --- the shovel's own tile (T19.05, §F5) ------------------------------------
+//
+// The block above takes whichever filled tile resolves art *first*, so it proves
+// that art resolution works for something. §F5 issues a shovel to every player at
+// spawn, which makes its tile the one tile in the game every player sees every
+// round — and `weapon_shovel` is a brand-new procedural key that nothing else
+// here would notice was missing: an unregistered key falls back to the name text,
+// silently, which is the T18.06 bug all over again.
+{
+  const slots = await page.evaluate('window.__game.debug().slots')
+  const held = Array.isArray(slots) ? slots.find((x) => x.key === 'shovel') : null
+  if (!held) {
+    const names = Array.isArray(slots)
+      ? slots.filter((x) => x.key).map((x) => `${x.slot + 1}:${x.key}`).join(' ')
+      : '(no slots)'
+    fail(`no slot holds a shovel — §F5 issues one at spawn. Held: ${names || '(nothing)'}`)
+  } else {
+    const found = await page.evaluate((slot) => {
+      const rect = (el) => {
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        if (r.width < 1 || r.height < 1) return null
+        return {
+          x: Math.round(r.x),
+          y: Math.round(r.y),
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+        }
+      }
+      const art = (t) => t && t.querySelector('[data-art]')
+      const tile = document.querySelector(`[data-slot="${slot}"]`)
+      const empty = [...document.querySelectorAll('[data-slot]')].find(
+        (t) => t.dataset.filled === '0',
+      )
+      return {
+        url: art(tile) ? art(tile).style.backgroundImage : '',
+        artRect: rect(art(tile)),
+        emptyArtRect: rect(art(empty)),
+      }
+    }, held.slot)
+
+    const m = /^url\("data:image\/png;base64,([^"]+)"\)$/.exec(found.url)
+    if (!m) {
+      fail(`the shovel's tile has no art: background is ${found.url || '(empty)'}`)
+    } else {
+      const bytes = Buffer.from(m[1], 'base64').length
+      if (bytes > 100) ok(`the shovel's tile draws a ${bytes}-byte PNG`)
+      else fail(`the shovel's art is ${bytes} bytes — too small to be an icon`)
+    }
+    // Pixels, with an empty tile in the same frame as the control (docs/72 §C2).
+    if (!found.artRect || !found.emptyArtRect) {
+      fail('the shovel tile or the empty control has no rect to sample')
+    } else {
+      const a = await samplePatch(page, found.artRect)
+      const b = await samplePatch(page, found.emptyArtRect)
+      if (a.digest !== b.digest) {
+        ok(
+          `the shovel's art layer renders pixels an empty tile's does not ` +
+            `(lum ${a.lum.toFixed(1)} vs ${b.lum.toFixed(1)})`,
+        )
+      } else {
+        fail("the shovel's art layer is pixel-identical to an empty tile")
+      }
+    }
+  }
+}
+
 // --- and a backpack slot cannot be selected (§C10) -----------------------
   const selBefore = (await dbg()).selectedSlot
   await page.click(`[data-slot="${TOTAL - 1}"]`)

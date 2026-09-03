@@ -275,6 +275,13 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
                     for _ in 0..40 {
                         game_core::world::give(w, id, game_core::items::registry::SMG, 60);
                     }
+                    // **In hand.** §F5 seats a shovel in slot 0 of every player
+                    // and `fire` uses the selected slot, so without this the
+                    // hundred "shots" below are shovel swings: they carve too,
+                    // which is why this failed as `got 28` — a real carve count,
+                    // from the wrong weapon, throttled by a 0.55 s melee
+                    // cooldown — rather than as an obvious zero.
+                    game_core::world::wield(w, id, game_core::items::registry::SMG);
                 }
             }))
             .expect("room alive");
@@ -642,6 +649,10 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
                     for _ in 0..10 {
                         game_core::world::give(w, id, game_core::items::registry::SMG, 60);
                     }
+                    // §F5's shovel is slot 0; without this the "firefight" below
+                    // is a melee swing. It carves, so this fixture would still
+                    // have passed — measuring the wrong weapon.
+                    game_core::world::wield(w, id, game_core::items::registry::SMG);
                 }
             }))
             .expect("room alive");

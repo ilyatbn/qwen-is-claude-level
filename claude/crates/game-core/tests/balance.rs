@@ -241,20 +241,72 @@ fn median(mut v: Vec<f32>) -> f32 {
     v[v.len() / 2]
 }
 
-/// Every weapon must be obtainable *somehow*. Cheap and structural: a weight of
-/// zero in all three columns is a weapon nothing can ever give you, which is a
-/// registry bug and not a balance result.
+/// Every weapon must be reachable by *some* route. A weight of zero in all three
+/// columns is a weapon nothing can ever give you, which is a registry bug and not
+/// a balance result.
+///
+/// **§F5 gave this two exceptions, and they are named rather than derived.** A
+/// predicate — "unless it is melee", "unless its weights are zero" — would excuse
+/// the next weapon that acquires the same shape by accident, which is precisely
+/// the bug this test exists to catch. So the unobtainable set is asserted as an
+/// *equality*: these six and no others.
+///
+/// - **Retired**: knife, bat, whip, axe and hammer are kept as placeholders
+///   because `ITEMS` is indexed by id and deleting five entries renumbers every
+///   id above them (§B16, the bug where a laser resolved as a bazooka). They are
+///   deliberately unreachable.
+/// - **Issued**: everybody spawns holding a shovel, so a ground spawn would be
+///   litter. That exemption is only honest if the issue actually happens, which
+///   is why it is asserted here as well as in
+///   `melee::t1905_shovel::every_player_spawns_holding_a_shovel` — without it,
+///   "the shovel needs no weights" excuses a weapon nobody can ever hold.
 #[test]
-fn every_weapon_can_be_obtained() {
-    let orphans: Vec<_> = weapons()
+fn every_weapon_is_obtainable_unless_it_is_issued_or_retired() {
+    const RETIRED: [&str; 5] = ["knife", "bat", "whip", "axe", "hammer"];
+    const ISSUED: [&str; 1] = ["shovel"];
+
+    let mut orphans: Vec<_> = weapons()
         .iter()
         .filter(|d| d.spawn_weight == 0 && d.crate_weight == 0 && d.buried_weight == 0)
         .map(|d| d.key)
         .collect();
-    assert!(
-        orphans.is_empty(),
-        "weapons with no way into a player's hands: {orphans:?}"
+    orphans.sort_unstable();
+    let mut expected: Vec<&str> = RETIRED.iter().chain(ISSUED.iter()).copied().collect();
+    expected.sort_unstable();
+    assert_eq!(
+        orphans, expected,
+        "the set of weapons with no way into a player's hands changed"
     );
+
+    // The issued half, at the live binding site: a player who joins is holding
+    // one. `World::new` + `add_player` is the production route, not
+    // `PlayerState::new` — the tree this landed in had `respawn` granting the kit
+    // and the join not, and only the join is checked here.
+    let mut w = World::new(4242, MapScale::Small);
+    w.set_phase(RoundPhase::Playing);
+    w.add_player(0, 0, "ana".into());
+    let holds = |key: &str| {
+        let id = ITEMS.iter().find(|d| d.key == key).map(|d| d.id);
+        (0..INVENTORY_SLOTS as u8).any(|s| {
+            w.player(0)
+                .and_then(|p| p.inventory.slot(s))
+                .map(|st| st.item)
+                == id
+        })
+    };
+    for key in ISSUED {
+        assert!(
+            holds(key),
+            "{key} is exempt from the weights but is not issued"
+        );
+    }
+    for key in RETIRED {
+        assert!(
+            !holds(key),
+            "{key} is retired but a fresh player is holding one"
+        );
+    }
+
     // Control: without this the assertion above passes for an empty arsenal.
     assert!(
         weapons().len() >= 20,
@@ -563,8 +615,26 @@ fn density(seed: u64, seconds: f32, scale: MapScale) -> Density {
 #[test]
 #[ignore = "measurement: minutes in release"]
 fn density_report() {
+    // **The pool, not the registry.** §F5 leaves six entries that can never be
+    // drawn — five retired melee placeholders (kept because `ITEMS` is
+    // id-indexed and deleting them renumbers everything above, §B16) and the
+    // shovel, which everybody is issued at spawn. A round cannot show you an
+    // item that has no weight in any column, so a "distinct of `ITEMS.len()`"
+    // reading now has an unreachable ceiling.
+    let pool = ITEMS
+        .iter()
+        .filter(|d| d.spawn_weight > 0 || d.crate_weight > 0 || d.buried_weight > 0)
+        .count();
     println!("\n== DENSITY — {} seeds x {POOL_SECONDS}s ==", SEEDS.len());
-    println!("   registry holds {} item types", ITEMS.len());
+    println!(
+        "   registry holds {} item types, {pool} of them drawable",
+        ITEMS.len()
+    );
+    assert!(
+        pool >= 15,
+        "only {pool} items can spawn at all — the measurement below is about a \
+         collapsed table, not about density"
+    );
     // Every scale the game can ship, not just the fast one. §A19: a threshold
     // measured on one scale is tuned to that scale, and `DEFAULT_MAP_SCALE` is
     // Large — measuring only Small would tune the number where it does not
@@ -573,10 +643,27 @@ fn density_report() {
     // registry changes (§B17), so pinning a number here would make adding an
     // item a test failure. These are the T11.09 baselines the tuning had to beat
     // — Small 51%, Medium 58%, Large 64% of a 24-item registry.
+    //
+    // **Re-derived by §F5, and it is the denominator that moved.** The three
+    // numbers were absolute counts — 12.5, 14.5 and 16.0 — set against a
+    // 24-entry registry in which every entry could be drawn. §F5 takes five
+    // weapons out of the draw and adds a sixth that is issued rather than found,
+    // so the same absolute count now demands a much larger share of a pool of
+    // 19: Medium measured 13.8 against a floor of 14.5 the moment the weights
+    // were zeroed, with nothing about the spawn machinery changed. Holding the
+    // absolute number would have been a floor that tracks the size of the
+    // registry rather than the health of a round.
+    //
+    // So they are held as the **same fractions of the drawable pool**, written
+    // as the original count over the original pool so the derivation is visible
+    // rather than a decimal nobody can check. Measured after this change:
+    // Small 14.6, Medium 13.8, Large 15.4 of 19.
+    const DERIVED_FROM_POOL: f32 = 24.0;
+    let share = |old: f32| old / DERIVED_FROM_POOL * pool as f32;
     let floors = [
-        (MapScale::Small, 12.5_f32),
-        (MapScale::Medium, 14.5),
-        (MapScale::Large, 16.0),
+        (MapScale::Small, share(12.5)),
+        (MapScale::Medium, share(14.5)),
+        (MapScale::Large, share(16.0)),
     ];
     for (scale, floor) in floors {
         let ds: Vec<_> = SEEDS
@@ -591,16 +678,15 @@ fn density_report() {
         println!(
             "\n   {scale:?}: distinct {mean_distinct:.1}/{} ({:.0}%)  spawns {mean_spawn:.1}  \
              peak live {peak}/{}  despawns {evict}  1st weapon {:.0}s",
-            ITEMS.len(),
-            100.0 * mean_distinct / ITEMS.len() as f32,
+            pool,
+            100.0 * mean_distinct / pool as f32,
             game_core::constants::MAX_WORLD_ITEMS,
             first.iter().sum::<f32>() / first.len().max(1) as f32,
         );
         assert!(
             mean_distinct >= floor,
-            "{scale:?}: a round shows {mean_distinct:.1} of {} item types, below the {floor} \
-             this task raised it to — density regressed",
-            ITEMS.len()
+            "{scale:?}: a round shows {mean_distinct:.1} of {pool} drawable item types, below \
+             the {floor:.1} that is T11.09's share of the pool — density regressed"
         );
         // Density is turnover, not accumulation. If raising the rate ever pushes
         // the live count into `MAX_WORLD_ITEMS`, the cap starts evicting the

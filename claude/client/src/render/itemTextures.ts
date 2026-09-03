@@ -79,7 +79,29 @@ const ART: Record<string, (c: Ctx) => void> = {
     c.fillRect(4, 4, 5, 2) // coil
   },
 
-  // --- melee: five clearly different outlines -------------------------------
+  // --- melee ----------------------------------------------------------------
+  //
+  // §F5 retired knife, bat, whip, axe and hammer, and their painters **stay**:
+  // the registry keeps them as placeholders (removing an `ItemDef` renumbers
+  // every id above it, which is §B16), and `itemSprites-math.test.ts`'s "the
+  // live registry has art for everything" reads that registry, so deleting the
+  // art here fails on five entries that still resolve. They are unobtainable,
+  // not absent.
+  //
+  // The shovel is the one anybody sees: everyone spawns holding it.
+  weapon_shovel: (c) => {
+    c.fillStyle = '#6b4a2c'
+    c.fillRect(7, 2, 2, 8) // haft
+    c.fillRect(5, 1, 6, 2) // T-grip — no other melee icon has one
+    c.fillStyle = '#b9c2cc'
+    c.beginPath() // a wide scoop, where the axe has a bit off one side
+    c.moveTo(4, 9)
+    c.lineTo(12, 9)
+    c.lineTo(10, 15)
+    c.lineTo(6, 15)
+    c.closePath()
+    c.fill()
+  },
   weapon_knife: (c) => {
     c.fillStyle = '#d6dde6'
     c.beginPath()

@@ -32,7 +32,7 @@
  * The stack and the route into a battle are `harness.mjs` (§C18).
  */
 import { join } from 'node:path'
-import { startStack, enterBattle, sleep, shotsDir } from './harness.mjs'
+import { startStack, enterBattle, sleep, shotsDir, selectWeapon } from './harness.mjs'
 
 const shots = shotsDir
 const PORT = 3113
@@ -134,8 +134,12 @@ const drive = async (c, dir) => {
 // hitscan excluded its owner (`docs/31` §4); it is now that a bullet spawns
 // `MUZZLE_OFFSET` outside the body and is immune to its owner for
 // `PROJECTILE_OWNER_GRACE_TICKS`, by which point it is 50+ px away.
+// **By name, not by digit.** §F5 seats a shovel in slot 0 of every player, which
+// moved every `DEV_LOADOUT` weapon one slot along — `Digit2` selected the SMG
+// before and the bazooka after, and nothing here would have said so. This is the
+// §C24 scar at `ordnance.mjs`, repeated for the same reason.
 for (const c of [a, b]) {
-  await c.page.keyboard.press('Digit2')
+  await selectWeapon(c.page, 'smg')
   await sleep(200)
 }
 const drivers = [drive(a, 'd'), drive(b, 'a')]
@@ -214,7 +218,7 @@ let effectShot = false
 async function selfKill(c) {
   pauseA = true
   await sleep(400)
-  await c.page.keyboard.press('Digit1') // the first rocket stack
+  await selectWeapon(c.page, 'bazooka')
   await sleep(300)
   const before = (await dbg(c)).health
   let switched = false
@@ -224,12 +228,14 @@ async function selfKill(c) {
   for (let i = 0; i < 12; i++) {
     const d = await dbg(c)
     if (!d.health) break
-    // When the first stack empties, selection moves to the next occupied slot,
-    // which is the smg — and an SMG round cannot hurt its owner (§F1: it leaves
-    // the body before the owner grace ends). Take the second rocket stack.
+    // When a stack empties, selection moves to the next occupied slot — and an
+    // SMG round cannot hurt its owner (§F1: it leaves the body before the owner
+    // grace ends), so a self-kill that has drifted onto one stops doing damage.
+    // Re-take the bazooka by name; if it is genuinely spent, `selectWeapon`
+    // throws with the slot list rather than silently firing something else.
     if (!switched && i >= 4) {
       switched = true
-      await c.page.keyboard.press('Digit3')
+      await selectWeapon(c.page, 'bazooka')
       await sleep(300)
     }
     // Step onto fresh ground, then fire from it.

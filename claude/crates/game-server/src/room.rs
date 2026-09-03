@@ -1189,7 +1189,10 @@ impl Room {
         // These four give T11.10 a mine to place, a swing to see, a jet to spray
         // and a hazard to stand in.
         game_core::world::give(world, id, game_core::items::registry::MINE, 2);
-        game_core::world::give(world, id, game_core::items::registry::AXE, 1);
+        // **No melee grant.** §F5 retired the axe to an unobtainable placeholder
+        // and issues every player a shovel at spawn, so the swing `ordnance`
+        // looks for is already in slot 0 — `give(AXE)` would hand out a weapon
+        // no round can contain.
         game_core::world::give(world, id, game_core::items::registry::FLAMETHROWER, 200);
         game_core::world::give(world, id, game_core::items::registry::MOLOTOV, 2);
         // §F1 made the five ballistic guns projectiles, which leaves the two

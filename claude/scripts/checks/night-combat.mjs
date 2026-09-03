@@ -66,7 +66,16 @@ export default async function ({ page, shot, log }) {
   // the thing that carries the light is a round in flight rather than a decaying
   // line. That it no longer needs freezing to be seen is the point of §F1.
   await page.waitForTimeout(1000)
-  await page.evaluate(() => window.__game.selectSlot(2))
+  // **By key, not by index.** §F5 puts a shovel in slot 0 of every player, which
+  // moved the sandbox loadout one slot along: `selectSlot(2)` was the smg and is
+  // now the grenade — which is also a projectile, so the assertion below would
+  // have gone on passing while measuring the wrong weapon.
+  await page.evaluate(() => {
+    const inv = window.__game.inventory()
+    const i = inv.slots.findIndex((s) => s && s.key === 'smg')
+    if (i < 0) throw new Error(`no smg in the sandbox loadout: ${JSON.stringify(inv.slots)}`)
+    window.__game.selectSlot(i)
+  })
   const first = await page.evaluate(() => window.__game.fire())
   if (!first.projectile) throw new Error(`the smg did not fire: ${JSON.stringify(first)}`)
   await page.waitForFunction('window.__game.ordnance().projectiles > 0', null, { timeout: 5000 })
