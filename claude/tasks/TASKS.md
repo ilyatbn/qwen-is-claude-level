@@ -475,6 +475,7 @@ right-button decision rather than around it. **Amendments are the coordinator's.
 - [ ] [T20.12](M20/T20.12-hats-and-sunglasses.md) — Hats and sunglasses **(v8)** — depends on T20.04
 - [ ] [T20.13](M20/T20.13-two-rooms-one-of-them-dead.md) — Two rooms, and one of them never starts **(v8)**
 - [ ] [T20.14](M20/T20.14-the-whole-thing-at-once.md) — The whole thing at once: an exploratory load test **(v8)**
+- [ ] [T20.15](M20/T20.15-a-check-that-waits-without-a-deadline.md) — A browser check that waits without a deadline **(v8)** — **found by T20.01**, pre-existing
 
 **Order note.** T20.04 before T20.12 (accessories are invisible until skins reach the
 renderer at all) and T20.01 before T20.03 (they share a cause). T20.14 is deliberately early
