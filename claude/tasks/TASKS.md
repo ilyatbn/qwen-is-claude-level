@@ -442,3 +442,47 @@ sideways while holding fire and watch a stream of bullets cross the screen; dig 
 hill with the shovel; throw a molotov and watch a crowd of flames scatter along the
 ground, burn it and go out five seconds later; stand in toxic rain and lose health; wait
 for fog and lose the far side of the map.
+
+## M20 — What a player noticed, and what the milestone found under it (14)
+
+Ilya played the game and reported six defects and seven wanted features; the investigation
+found more than the brief did. **Four tasks turned out to be about something other than what
+was reported**: the host is not losing permission, it is being *swept out of its own lobby*
+(T20.01); the flashlight does not need rebalancing, it is **wired to nothing** in four places
+(T20.07); the shield already drains battery, so the wanted rule is a *generalisation of code
+already there* (T20.08); and battery packs are already 5th of 19 by spawn share, so the
+complaint is likely the **HUD**, not the table (T20.06).
+
+**Three tasks conflict with a live doc clause and cannot be started on a builder's say-so.**
+T20.11 (fall damage) is refused outright by `docs/20` §9 — *"deliberately absent in v1 so the
+jetpack stays forgiving"* — with no override in `docs/70`–`75`. T20.05 sits between two
+clauses of `docs/72` that contradict each other (§C6 says the rain is a particle emitter,
+§C21 makes drops projectiles *for the same visual reason*), and neither retires the other.
+T20.07 reverses §C13's flashlight trade, and T20.09 must be written against §F4.1's
+right-button decision rather than around it. **Amendments are the coordinator's.**
+
+- [ ] [T20.01](M20/T20.01-the-host-is-swept-out-of-its-own-lobby.md) — The host is swept out of its own lobby **(v8)**
+- [ ] [T20.02](M20/T20.02-a-nickname-you-choose-once.md) — A nickname you choose once **(v8)**
+- [ ] [T20.03](M20/T20.03-host-promotion-is-invisible.md) — Host promotion works and nobody is told **(v8)** — depends on T20.01
+- [ ] [T20.04](M20/T20.04-skins-never-reach-the-game.md) — Skins never reach the game **(v8)**
+- [ ] [T20.05](M20/T20.05-two-toxic-rains.md) — Two toxic rains that do not know about each other **(v8)** — **needs a spec ruling**
+- [ ] [T20.06](M20/T20.06-battery-packs-you-never-see.md) — Battery packs you never see **(v8)**
+- [ ] [T20.07](M20/T20.07-the-flashlight-is-wired-to-nothing.md) — The flashlight is wired to nothing, and the new one is passive **(v8)**
+- [ ] [T20.08](M20/T20.08-the-shield-becomes-a-carried-thing.md) — The shield generator becomes a carried thing **(v8)**
+- [ ] [T20.09](M20/T20.09-drop-an-item.md) — Right-click an inventory tile to drop it **(v8)**
+- [ ] [T20.10](M20/T20.10-animals-on-the-ground.md) — Animals on the ground **(v8)**
+- [ ] [T20.11](M20/T20.11-fall-damage.md) — Fall damage **(v8)** — **BLOCKED on overriding `docs/20` §9**
+- [ ] [T20.12](M20/T20.12-hats-and-sunglasses.md) — Hats and sunglasses **(v8)** — depends on T20.04
+- [ ] [T20.13](M20/T20.13-two-rooms-one-of-them-dead.md) — Two rooms, and one of them never starts **(v8)**
+- [ ] [T20.14](M20/T20.14-the-whole-thing-at-once.md) — The whole thing at once: an exploratory load test **(v8)**
+
+**Order note.** T20.04 before T20.12 (accessories are invisible until skins reach the
+renderer at all) and T20.01 before T20.03 (they share a cause). T20.14 is deliberately early
+if you want its findings to shape T20.13 rather than the other way round. Everything else is
+independent.
+
+**Checkpoint:** host a private game and still be able to change its settings two minutes
+later; join under a name you chose once and see it on the roster; look different from the
+player beside you; pick up a flashlight and watch the fog thin; carry a shield generator and
+watch a hit cost you a quarter less health and one energy; right-click a rocket out of your
+pack and pick it back up; shoot a spider and take the medkit it drops.
