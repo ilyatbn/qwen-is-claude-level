@@ -245,3 +245,94 @@ present and non-blank", not "is it the default". And `<b>` is **not** blank — 
   keys did not change in this task precisely because three browser fixtures spell them out,
   and a rename that missed them would seed a value nobody reads while every "the roster names
   the player" assertion went on passing against the default.
+
+## T20.04 landed — the id was known everywhere and drawn nowhere
+
+The task file's diagnosis is exact and needs no restating. What follows is what the
+diff does not say.
+
+### The three writers, and why `skinId` is required rather than optional
+
+`scores` had three writers in three idioms — `lobby_state` **merges**, `player_join`
+**clobbers**, `score` **reconstructs field by field from a two-field payload** — and `score`
+fires on every kill. `skinId?: number` compiles at all three and resets everybody to Recruit
+on the next death; required means the compiler names the writer you forgot. That is the whole
+reason the field is not optional, and it is worth not "tidying".
+
+**Recorded, not fixed, as the task asks:** the merge/clobber split is *already* a live defect
+for **scores**. `player_join` writes `score: 0` unconditionally, so a `player_join` arriving
+after a `score` event resets that player's tally — the same shape `:493-507`'s own comment
+records being found once before (T9.06).
+
+### The client half
+
+`PlayerView.skinId` is `private readonly` and consumed in the constructor: there is **no
+setter**. So "what if a remote is drawn before its `player_join` arrives" has no free answer —
+either the view is rebuilt when the skin becomes known, or a body drawn one frame early stays
+Recruit until it next leaves the sampled set. `renderRemotes` already destroys and rebuilds
+routinely, so the shape is: read `scores.get(id)?.skinId ?? 0` **at the construction site**,
+and rebuild when the drawn skin and the wanted one disagree. The local body gets the same
+treatment through `buildLocalView`/`syncLocalSkin` — and note the local seat has **no
+`player_join` of its own** (that event is broadcast to everybody except the joiner), so
+`lobby_state` is the only thing that ever names this client's own skin.
+
+`SandboxScene.ts:153` was the third hardcoded `0` and is **fixed**, not left: it is the one
+scene you look at your own character in outside a match.
+
+### The harness seam: a query parameter, not `addInitScript`
+
+`openClient` navigates to the **dev path**, where the skin is read at scene create — the
+frame after `goto` — so the `page.evaluate(localStorage.setItem)` pattern `lobby.mjs` uses
+runs too late and both clients come up skin 0 with their frames matching. `openClient` already
+threads `query` through *before* `goto`, `GameScene` already reads `name` from the same
+params, and `addInitScript` appears nowhere in `scripts/`. So `?skin=` it is, parsed through
+`readId` (a `NaN` here would be the T20.02 bug again) and winning over storage for the same
+reason `?name=` does: on that path the URL **is** the identity.
+
+### The check took four versions, and three of them passed with the bug restored
+
+**This is the part worth reading.** Each version was killed only by actually running the
+falsification — putting `new PlayerView(this, 0)` back at the remote construction site — and
+watching the pixel assertion go green anyway.
+
+1. **A background patch 60 px above the head is not the background *behind* the body.** Two
+   bodies on different ground differ by **36.7** with both on skin 0, against 90.1 with one
+   on skin 4. It was measuring position.
+2. **A remote is drawn from the interpolation buffer** (§C7). Framing bo with the position
+   *bo's own page* reports lands off the sprite: measured, that rect caught 36 % as much body
+   as the local player's did. `debug().drawnPlayers` now reports where each body is **drawn**,
+   as its centre — the same distinction `birdsDrawnAt` and `drawnItems` already make.
+3. **A fixed 16x16 screen rect is a stamp on a 32x56 sprite.** How much sprite it contains
+   varies per body, and the inequality below needs that share to be a property of the sprite:
+   two bodies on the **same** skin gave 101.8 and 33.6 for body-versus-ground. The rect is now
+   `PLAYER_W x PLAYER_H` scaled by the live camera.
+4. **A sprite is mirrored by its owner's aim.** Each page's pointer is moved to the same
+   screen point, so all three face the same way. This alone took the same-skin control from
+   13.8 to **2.1**.
+
+**What makes the final version an assertion rather than a threshold** is `setActorsVisible`, a
+new e2e-only hook beside `setBirdsVisible` and for its stated reason. Each rect is read twice
+in one frozen frame — bodies drawn, bodies hidden — so the ground behind each body is
+*measured*. A rect is `α·sprite + (1−α)·ground`, so two rects of **identical** sprites differ
+by `(1−α)(groundA − groundB)`, strictly less than the ground difference; two different sprites
+have no such bound. "The bodies differ by more than the ground does" is therefore a property
+only different skins can have. `cy` wears ana's skin and asserts the other half: identical
+sprites must **fail** that bar.
+
+Measured, with the fix: bodies **61.0** against ground 26.9 (2.3x), control 2.1 against 32.3.
+With the bug: bodies **0.6** against ground 28.5.
+
+`setActorsVisible` only holds while the scene is frozen — `renderRemotes` rewrites every
+remote's visibility every frame — and the doc comment says so.
+
+### Two smaller things
+
+- **`skins-ingame` does not walk anybody anywhere.** The obvious way to get two bodies into
+  one frame is an approach loop; measured, ana closed 240 px of 1544 in sixty seconds of a
+  held key with jetpack hops, because the ground between two spawn points is not a corridor.
+  `__game.watch(x, y)` — `crates`'s hook for photographing a falling crate — frames each body
+  in turn with one camera instead. What that gives up against a single shot is ~200 ms
+  between two screenshots of a world in which every body is standing still.
+- **It asserts daylight first.** `renderRemotes` culls a remote outside the local player's
+  field of view at night (`docs/14` §5), and a culled body is an invisible one — which reads
+  exactly like the bug.

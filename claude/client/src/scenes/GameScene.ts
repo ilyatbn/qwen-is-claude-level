@@ -96,7 +96,7 @@ import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { FogClock } from '../render/weather-math'
-import { loadIdentity } from '../ui/skins'
+import { loadIdentity, readId } from '../ui/skins'
 
 interface RemoteView {
   view: PlayerView
@@ -271,7 +271,18 @@ export class GameScene extends Phaser.Scene {
    * re-broadcast on every displayed second, and `Playing` once a second.
    */
   private phaseEndsAt = 0
-  private scores = new Map<number, { name: string; score: number; deaths: number }>()
+  /**
+   * Who is in the room, as the two JSON events describe them.
+   *
+   * **`skinId` is required and not optional, and that is the guard.** There are
+   * three writers — `lobby_state` merges, `player_join` clobbers, and `score`
+   * reconstructs field by field from a two-field payload — written in three
+   * different idioms, and `score` fires on every kill. A `skinId?: number` would
+   * let all three compile while the third silently reset everybody to skin 0 on
+   * the next death, which is this bug again one layer down. Required means the
+   * compiler names the writer you forgot.
+   */
+  private scores = new Map<number, { name: string; score: number; deaths: number; skinId: number }>()
   private ready = false
   private lastServerTick = 0
   private serverDarkness = 0
@@ -445,8 +456,12 @@ export class GameScene extends Phaser.Scene {
           name: p.name || `p${p.seat}`,
           score: had?.score ?? 0,
           deaths: had?.deaths ?? 0,
+          // §B9's other half. This has been parsed into `LobbySeat.skinId` all
+          // along and thrown away here, which is why everybody was a Recruit.
+          skinId: p.skinId,
         })
       }
+      this.syncLocalSkin()
     })
     this.conn.on('map_init', (p) => this.onMapInit(typeof p === 'string' ? p : ''))
     this.conn.on('snapshot', (p) => this.onSnapshot(typeof p === 'string' ? p : ''))
@@ -503,6 +518,12 @@ export class GameScene extends Phaser.Scene {
             name: prev?.name ?? `p${id}`,
             score: Number(r['score'] ?? 0),
             deaths: Number(r['deaths'] ?? 0),
+            // **Carried, not defaulted.** A `score` event carries two fields and
+            // is rebuilt field by field from them, so anything not carried
+            // forward here is reset — and this one fires on every kill. The
+            // comment above records the same shape costing the scoreboard a
+            // whole round once (T9.06).
+            skinId: prev?.skinId ?? 0,
           })
         }
       }
@@ -551,7 +572,14 @@ export class GameScene extends Phaser.Scene {
       const p = asRecord(raw)
       const id = Number(p['id'] ?? -1)
       if (id >= 0) {
-        this.scores.set(id, { name: String(p['name'] ?? `p${id}`), score: 0, deaths: 0 })
+        this.scores.set(id, {
+          name: String(p['name'] ?? `p${id}`),
+          score: 0,
+          deaths: 0,
+          // `session.rs` puts it here as `skin_id`; it was never read.
+          skinId: Number(p['skin_id'] ?? 0) || 0,
+        })
+        this.syncLocalSkin()
       }
     })
     this.conn.on('player_leave', (raw) => this.dropRemote(Number(asRecord(raw)['id'] ?? -1)))
@@ -947,12 +975,23 @@ export class GameScene extends Phaser.Scene {
       const w = await this.conn.connect(
       undefined,
       name,
-      // The **id** does join the shared path, unlike the name above: there is no
-      // URL parameter competing with it, and `Number("banana")` is `NaN` — which
+      // **`?skin=` first, storage second** (T20.04). Two clients on the dev path
+      // need two different skins for any check to see a skin at all, and
+      // `openClient` builds its URL and *then* navigates — so `page.evaluate`
+      // on `localStorage` runs after `GameScene.create()` has already read it
+      // and is too late. `ctx.addInitScript` would work and appears nowhere in
+      // `scripts/`; a query parameter sits beside the `name` one this path
+      // already reads, is visible in a failing check's URL, and needs no new
+      // mechanism. It wins over storage for the same reason `?name=` does: on
+      // this path the URL *is* the identity, and two sources that can disagree
+      // is the argument the name half already settled.
+      //
+      // Parsed through `readId`, not `Number`: `?skin=banana` is `NaN`, which
       // `JSON.stringify` sends as `null` and which this client then hands to its
-      // own atlas. `loadIdentity` reads the same key through `readId`; a valid
-      // stored id passes through unchanged, so no fixture moves.
-      loadIdentity(localStorage).skinId,
+      // own atlas. Unbounded for the same reason `loadIdentity` is.
+      params.get('skin') !== null
+        ? readId({ getItem: () => params.get('skin') }, 'skin', Number.POSITIVE_INFINITY)
+        : loadIdentity(localStorage).skinId,
       // `?game=1` skips the front end entirely, so there is no lobby to adopt
       // and a plain `join` happens — which is what every check written before
       // the menu expects. The menu path never reaches here.
@@ -1031,9 +1070,7 @@ export class GameScene extends Phaser.Scene {
     this.core.addPlayer(this.me, spawn.x, spawn.y - C().PLAYER_H / 2)
     this.predictor = new Predictor(this.core, this.me)
 
-    this.localView?.destroy()
-    this.localView = new PlayerView(this, 0)
-    this.localView.container.setDepth(DEPTH.actors)
+    this.buildLocalView()
 
     this.world.rig.follow(spawn)
     this.world.rig.snapTo(spawn)
@@ -1557,6 +1594,36 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
+   * Build the local body at whatever skin the room says this seat chose.
+   *
+   * A function rather than three lines at the call site because there are now
+   * two callers — the map arriving, and the skin becoming known afterwards — and
+   * the depth is the part a second copy would forget.
+   */
+  private buildLocalView(): void {
+    this.localView?.destroy()
+    this.localView = new PlayerView(this, this.scores.get(this.me)?.skinId ?? 0)
+    this.localView.container.setDepth(DEPTH.actors)
+  }
+
+  /**
+   * Rebuild the local body if the room has just told us it is a different skin.
+   *
+   * **The local seat has no `player_join` of its own** — that event is broadcast
+   * to everybody *except* the player who joined — so `lobby_state` is the only
+   * thing that ever names this client's own skin. It normally lands well before
+   * `map_init`, and this is what covers the case where it does not, for the same
+   * reason the remotes are rebuilt: there is no setter.
+   *
+   * Cheap: `skin` is the id the view was built with, so this is a comparison and
+   * not a rebuild on every message.
+   */
+  private syncLocalSkin(): void {
+    const want = this.scores.get(this.me)?.skinId ?? 0
+    if (this.localView && this.localView.skin !== want) this.buildLocalView()
+  }
+
+  /**
    * Remote players come from the interpolation buffer, never from
    * `apply_input`: there are no remote inputs to run, and interpolating
    * transmitted positions is both cheaper and more accurate (`docs/42` §4).
@@ -1574,8 +1641,24 @@ export class GameScene extends Phaser.Scene {
 
     for (const [id, p] of sampled) {
       let r = this.remotes.get(id)
+      // **Read at the construction site, every rebuild.** `:1592` destroys a
+      // remote that leaves the sampled set and this rebuilds it on return, so
+      // the skin is not read once — it is read from whatever `scores` holds at
+      // that moment, which is exactly why the three writers above had to agree.
+      const want = this.scores.get(id)?.skinId ?? 0
+      // A remote can be drawn a frame before anyone says who it is: the snapshot
+      // is binary and `player_join`/`lobby_state` are JSON, so the body can
+      // arrive first. The answer to "what happens then" is **not** a default
+      // that sticks — `PlayerView` takes its skin in the constructor and has no
+      // setter (`playerView.ts:116`), so the only way to change it is to build
+      // another one, which is what already happens routinely below.
+      if (r && r.view.skin !== want) {
+        r.view.destroy()
+        this.remotes.delete(id)
+        r = undefined
+      }
       if (!r) {
-        r = { view: new PlayerView(this, 0), lastSeen: now }
+        r = { view: new PlayerView(this, want), lastSeen: now }
         r.view.container.setDepth(DEPTH.actors)
         this.remotes.set(id, r)
       }
@@ -1899,6 +1982,28 @@ export class GameScene extends Phaser.Scene {
       setBirdsVisible(on: boolean) {
         self.birds?.setVisible(on)
       },
+      /**
+       * e2e only (§C2): hide every player body, so a check can photograph the
+       * ground they are standing on **through the same rect** it photographed
+       * them in.
+       *
+       * `setBirdsVisible`'s shape and its reason. Without it, comparing two
+       * players' pixels compares two hillsides as well: measured, two bodies on
+       * the *same* skin standing 1500 px apart differ by 74 in a rect that is
+       * mostly sprite, because a character sprite is transparent around its
+       * outline and the terrain shows through. With the bodies hidden the same
+       * rect gives that background alone, and the difference between the two
+       * readings is the part the skin is responsible for.
+       *
+       * **Only holds while the scene is frozen.** `renderRemotes` writes
+       * `setVisible` on every remote every frame, so a caller must `freeze(true)`
+       * first — which is what makes this one frame diffed against itself rather
+       * than two instants of a moving world.
+       */
+      setActorsVisible(on: boolean) {
+        self.localView?.container.setVisible(on)
+        for (const [, r] of self.remotes) r.view.container.setVisible(on)
+      },
       freeze(on: boolean) {
         if (on) self.scene.pause()
         else self.scene.resume()
@@ -1968,6 +2073,52 @@ export class GameScene extends Phaser.Scene {
           roundSeed: self.roundSeed,
           phase: self.phase,
           players: [...self.mirror.players.keys()],
+          /**
+           * §B9 at both ends (§A39): the id each **drawn** body was built with,
+           * keyed by seat.
+           *
+           * `PlayerView.skinId` is read off the views, not off `scores` — the
+           * whole T20.04 bug was that `scores` knew and the views did not, so a
+           * field reporting `scores` would have been green throughout it. It is
+           * a control for the pixel check and never its assertion: an id that
+           * arrived and was not drawn is exactly this bug.
+           */
+          /**
+           * Where each body is **drawn**, as the body's centre in world
+           * coordinates — §C7, the same distinction `birdsDrawnAt` and
+           * `drawnItems` already make.
+           *
+           * A remote is drawn from the **interpolation buffer**, which lags that
+           * client's own predicted position by design. A check that framed a
+           * remote using the position its *own* page reports lands off the
+           * sprite: measured, a rect built that way caught 36 % as much of the
+           * body as one on the local player, and the check then compared a
+           * sprite with a hillside and called the difference a skin.
+           *
+           * The container sits at the feet (`setState` adds `PLAYER_H / 2`), so
+           * the centre is what comes back — the caller wants the body, not the
+           * anchor.
+           */
+          drawnPlayers: [
+            ...(self.localView
+              ? [
+                  {
+                    id: self.me,
+                    x: self.localView.container.x,
+                    y: self.localView.container.y - C().PLAYER_H / 2,
+                  },
+                ]
+              : []),
+            ...[...self.remotes].map(([id, r]) => ({
+              id,
+              x: r.view.container.x,
+              y: r.view.container.y - C().PLAYER_H / 2,
+            })),
+          ],
+          drawnSkins: Object.fromEntries([
+            ...(self.localView ? [[self.me, self.localView.skin] as const] : []),
+            ...[...self.remotes].map(([id, r]) => [id, r.view.skin] as const),
+          ]),
           // Items the server says exist, and items actually on screen. Two
           // numbers rather than one, because they were silently different for
           // three milestones: the mirror tracked them and nothing drew them.

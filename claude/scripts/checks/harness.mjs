@@ -209,14 +209,23 @@ export async function startStack({ port, env = {}, label = 'check' } = {}) {
  * Returns the page plus the two helpers every check writes anyway, so a check
  * body is assertions and nothing else.
  */
-export async function openClient({ browser, viteUrl }, { name = 'ana', query = '', code } = {}) {
+export async function openClient(
+  { browser, viteUrl },
+  { name = 'ana', query = '', code, skin } = {},
+) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } })
   const page = await ctx.newPage()
   const pageErrors = []
   page.on('pageerror', (e) => pageErrors.push(String(e)))
+  // **`skin` is a URL parameter and has to be** (T20.04). `GameScene` reads its
+  // skin at scene create, which is the frame after `goto` — so the
+  // `page.evaluate(localStorage.setItem)` pattern `lobby.mjs` uses runs too late
+  // on this path, and two clients built that way both come up skin 0 with their
+  // frames matching. That is the shape that gets a threshold loosened at 2am.
   const url =
     `${viteUrl}/?e2e=1&game=1&name=${encodeURIComponent(name)}` +
     (code ? `&code=${encodeURIComponent(code)}` : '') +
+    (skin === undefined ? '' : `&skin=${encodeURIComponent(String(skin))}`) +
     query
   await page.goto(url)
   // **Seated, not ready** (§E1).

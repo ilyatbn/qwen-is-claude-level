@@ -179,6 +179,11 @@ const CHECKS = [
   // narration (placed − ended); one number would have passed for the whole
   // period the bug existed (§A39).
   { name: 'ordnance', file: 'scripts/checks/ordnance.mjs', standalone: true },
+  // §B9's gate, and the only assertion in the tree about a **rendered** player's
+  // skin (T20.04). Standalone: two clients on two different skins, in one frame,
+  // on a real server — `skins.mjs` never enters a game, which is why everybody
+  // was a Recruit for four milestones with a green suite.
+  { name: 'skins-ingame', file: 'scripts/checks/skins-ingame.mjs', standalone: true },
   // The M6 checkpoint: two browser contexts, one server, one round. Standalone
   // because it needs a real game-server and two clients rather than the sandbox.
   { name: 'two-clients', file: 'scripts/e2e-two-clients.mjs', standalone: true },

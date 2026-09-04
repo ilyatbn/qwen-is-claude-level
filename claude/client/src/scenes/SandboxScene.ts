@@ -28,6 +28,7 @@ import { cloudTint, cycleU, darknessAt, skyPhase } from '../render/sky-math'
 import { cloudSpriteTint } from '../render/clouds-math'
 import { dequantizeAngle } from '../core'
 import { devSurface } from '../dev'
+import { loadIdentity } from '../ui/skins'
 
 const SCALES: Record<string, MapScale> = {
   small: MapScale.Small,
@@ -150,7 +151,12 @@ export class SandboxScene extends Phaser.Scene {
     // Hazards sit just under the ordnance layer: both are world-space FX, and
     // a vent's flame should never draw over a rocket.
     this.hazardGfx = this.add.graphics().setDepth(38)
-    this.player = new PlayerView(this, 0)
+    // **Fixed, not left** (T20.04): the sandbox is the one scene you look at
+    // your own character in outside a match, and it was the third hardcoded 0.
+    // `loadIdentity` rather than `loadChoice` for the same reason `MenuScene`
+    // uses it — no atlas count is needed to read an id, and `PlayerView` already
+    // falls back for one past the end of the registry.
+    this.player = new PlayerView(this, loadIdentity(localStorage).skinId)
     this.player.container.setDepth(DEPTH.actors)
     this.localInput = new LocalInput(this)
     this.crosshair = new Crosshair(this, DEPTH.hud)

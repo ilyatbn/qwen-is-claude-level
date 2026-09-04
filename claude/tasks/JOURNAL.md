@@ -5340,3 +5340,18 @@ verbs, and `nameOrNull` is one predicate for "is a name stored", "is this typed 
 and "what do we send" — three questions that must not disagree. Found on the way:
 `SkinsScene` interpolated the name into an HTML **attribute** unescaped, and `cleanName`
 strips `<>` and not quotes. EXIT=0, 43/43, 25/25, assets ok.
+
+## T20.04 — the id was known everywhere and drawn nowhere
+
+Menu, storage, wire, seat and both re-broadcasts all worked; `GameScene` discarded `skin_id`
+in three writers and built every body with `new PlayerView(this, 0)`. `skinId` is now
+**required** on the `scores` value type so the compiler names the writer you forget — `score`
+rebuilds from a two-field payload and fires on every kill. `PlayerView` has no setter, so the
+id is read at the **construction site** and the view rebuilt when it disagrees. The check took
+**four versions and three of them passed with the bug restored**: a background patch above the
+head is not the background behind the body (36.7 with both on skin 0); a remote is drawn from
+the interpolation buffer, not its own client's position (§C7 → `drawnPlayers`); a 16x16 stamp
+on a 32x56 sprite has a per-body sprite share; and a sprite is mirrored by its owner's aim.
+The final form measures the ground through the same rect (`setActorsVisible`, frozen frame),
+which turns it into an inequality identical sprites provably cannot satisfy: **61.0 vs ground
+26.9 with the fix, 0.6 with the bug.** EXIT=0, 44/44, 25/25, assets ok.
