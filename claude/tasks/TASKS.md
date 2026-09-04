@@ -428,6 +428,8 @@ independent.
 - [x] [T19.19](M19/T19.19-the-wasm-tests-have-never-run.md) — Fourteen `wasm_bindgen_test`s have never run in any gate — **thirteen, and now they do.** The fourteenth grep hit is a doc comment. None needs a browser (the crate mentions neither `js_sys` nor `web_sys`), so all thirteen became plain `#[test]`s and `wasm-bindgen-test` left `Cargo.toml`, which makes the attribute fail to compile; `no_test_in_this_crate_is_invisible_to_the_gate` is the second half of that guard. **3 passed -> 17 passed.** Nine were duplicated by `client/src/core/index.test.ts` (which drives the real `pkg`); the genuinely dark ones are named in the journal. Falsified both ways. `./scripts/check.sh` EXIT=0, 43/43 e2e, net smoke 25/25, assets ok.
 - [ ] [T19.20](M19/T19.20-the-lightmap-hazard-path-has-no-caller.md) — `collectLightSources` has no production caller — **found by T19.13's review**, confirmed by grep; it is the only producer of `kind: 'cone'`, so flashlight cones light nothing
 - [ ] [T19.21](M19/T19.21-the-join-catch-up-leaks-crate-contents.md) — The join catch-up tells a late joiner what every crate holds — **found by T19.17's review**, verified; `docs/40` has no catch-up rule at all
+- [ ] [T19.22](M19/T19.22-night-combat-sleeps-against-nothing.md) — `night-combat` waits against nothing, seven times — **split from the retired suite-context hypothesis**
+- [ ] [T19.23](M19/T19.23-bullets-visible-window-is-the-screenshot.md) — `bullets-visible`'s window is the screenshot itself — **split from the same**; not the same problem as T19.22
 
 **Order note.** T19.15 and T19.14 were written mid-milestone and are **promoted ahead of
 the remaining feature work**: three of the four gate runs after T19.02 carried a

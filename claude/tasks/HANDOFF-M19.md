@@ -786,7 +786,42 @@ point to measure it properly — alternate a worktree at the previous commit aga
 working tree, N runs each, the way the `checksum` scare above was settled — rather than to
 assume either answer.
 
-## The suite-context hypothesis — now three checks, and its main support has been withdrawn
+## RETIRED — the suite-context hypothesis. There was no common bug, so there was no common cause.
+
+**Final position, written by the coordinator after `dcde926`. Do not re-scope this a fourth
+time; investigate the two survivors separately.** The section below is kept in full because
+the way it failed is more instructive than the hypothesis ever was.
+
+Four checks were grouped by the symptom *red inside the full suite, green standalone*. Every
+time somebody actually looked at a member, it turned out to have its own unrelated cause:
+
+- **`hud-timer`** — a broken metric: a mean over a right-anchored rectangle whose width
+  follows its text, differenced against a drifting sky. **Never a flake.**
+- **`m10-checkpoint`** — weather carves continuously so the carve stream never went quiet,
+  plus a read-order artefact (the guest is read second and is one carve ahead). **Never a
+  flake.**
+- **`night-combat`** — 7 bare fixed `waitForTimeout` calls against 2 condition polls.
+- **`bullets-visible`** — essentially no waits; its window is **inherent to the
+  measurement**, a ~150 ms screenshot against a round crossing the screen in ~475 ms. It has
+  *already* had the instrument audit `hud-timer` just received, and is still timing-sensitive.
+
+**Four members, four explanations, and the two survivors share only "is timing-sensitive" —
+which is a property, not a cause.** Grouping by symptom is exactly what kept one explanation
+plausible for a whole milestone: the family was an artefact of not having looked yet, and
+each look dissolved a member rather than confirming the group.
+
+The lesson worth keeping is not about flakes. **A set of failures that share a symptom is a
+list of things to investigate, not a phenomenon.** Naming it early made it feel explained,
+and three successive corrections to this section were all attempts to save a grouping that
+should have been dissolved at the first member that got a real cause.
+
+Booked separately: **T19.22** (`night-combat`'s fixed sleeps) and **T19.23**
+(`bullets-visible`'s inherent screenshot window). They need different work and must not be
+approached as one problem.
+
+---
+
+## (Superseded) The suite-context hypothesis — now three checks, and its main support has been withdrawn
 
 **Named because it may be the real finding behind T19.15 and T19.16, and nobody has
 written it down.** Four checks now share exactly one signature: **red inside the full
@@ -1728,3 +1763,21 @@ rather than reasoning about the layer that reports it — an `eprintln!` inside
 `resolve_pickups` for one, four already-existing `debug()` fields on the failure line for the
 other. Both had been theorised about across multiple sessions from a client-side number that
 was itself wrong. Neither took more than one run once the print was in the right place.
+
+**Eighth instance, and it was the reviewer's own.** T19.19 was booked as *fourteen* dark
+`wasm_bindgen_test`s. It is **thirteen**: the 14th hit was a doc comment reading
+`/// A plain #[test], not #[wasm_bindgen_test]: …`, and `grep -c` counted the prose
+describing the attribute as an instance of it. The number was quoted in four reports and in
+a task file before anyone looked at what the hits *were*. Correct instrument for "does this
+string appear"; read as answering "how many tests are there". `grep -c '^\s*#\[wasm_bindgen_test\]'`
+is the fix, and the discipline is that **a count is a measurement and measurements get
+controls**. Also retracted with it: the claim that §A19's constant-crossing rested on a test
+that never ran — `client/src/core/index.test.ts:21-28` pins the same six values through the
+real `pkg`, so that exposure was narrower than asserted. What was genuinely dark and now
+runs: mask RLE round-tripping, malformed-`load_mask` rejection, duplicate-join idempotence,
+and `set_player_state`'s velocity.
+
+**The line worth carrying out of M19:** eight instrument failures, and **not one was found
+by a test going red.** Every one surfaced because somebody changed something nearby and
+looked at the measurement itself. A measurement that has been green for a long time is not
+thereby trustworthy — it is merely unexamined.
