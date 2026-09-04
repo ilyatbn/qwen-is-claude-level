@@ -1,4 +1,4 @@
-# Deep Cut — task runner.
+# SHRED — task runner.
 #
 # The one non-obvious thing in here: `start` launches each service with `setsid`
 # and records its **process group** id, and `stop` kills the group. `vite`,
@@ -22,7 +22,7 @@ CLIENT_LOG:= $(RUN_DIR)/client.log
 # ---------------------------------------------------------------- help
 
 help:
-	@echo "Deep Cut"
+	@echo "SHRED"
 	@echo
 	@echo "  make build      wasm + server (release) + client bundle"
 	@echo "  make start      run server (:3000) and client dev server in the background"
