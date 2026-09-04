@@ -74,16 +74,31 @@ const APPROACH_POLL_MS = 160
  * Re-probed the same way, on an idle box, one seed at a time:
  *
  *   7      lane blocked at (767, 702), closest 239 px
- *   555    reachable — closest approach **0 px** — and never picked up. Measured
- *          at 0 px: crate `{item:0}` (a MEDKIT), player `heals=0 batteries=0`,
- *          one shovel and one molotov in 24 slots, alive at 100 health, and
- *          ground pickups working in the same run. By `items/world.rs:341-381`
- *          that should have been taken and it was not; the cause is not known
- *          and is written up in `tasks/HANDOFF-M19.md`. **Do not re-seed onto
- *          555 without reading that first.**
+ *   555    reachable — closest approach 0 px — and correctly **refused**. See
+ *          below; it is a fine seed for the flight and a useless one for the
+ *          pickup.
  *   99     lane blocked at (1276, 784), and its crate is never framed in flight
  *   4242   lane blocked at (1251, 504), closest 468 px
  *   31337  takes the crate — so 31337.
+ *
+ * ## Seed 555's refusal, explained (T19.17)
+ *
+ * The 0 px non-pickup on 555 was booked as a defect and is **not one**. The
+ * crate holds `item 22` × 2 — two molotovs, `MOLOTOV_AMMO` being 2 — and by the
+ * time the walker reaches it the player has already picked a molotov stack off
+ * the ground and is at the cap. §C24 gives a weapon **one slot, ever**: an
+ * already-held weapon at full stack makes `Inventory::add` return `Full`, and a
+ * refused pickup leaves the item on the ground. Measured from inside
+ * `resolve_pickups` on the server, 3863 samples with the player's own body
+ * within 60 px and 0.17 px at the closest.
+ *
+ * **The "MEDKIT, heals=0" in the original report was the instrument.**
+ * `crate_spawn` carries no `item_id`, and the client's mirror was defaulting the
+ * missing field to 0 — which is `MEDKIT`. That is fixed (`net/worldMirror.ts`),
+ * so `mirrorItems[].item` is now `null` for a crate this client watched arrive
+ * rather than a fabricated id. A check that wants to know what is in a crate
+ * cannot ask the client at all, which is why the diagnostic below reports the
+ * player's own slots instead.
  *
  * The paragraph below is the *pre-§F5* probe and is kept because it is the
  * record of how these numbers are found. Its verdicts no longer hold: 31337 was
@@ -871,9 +886,24 @@ if (!seen) {
       ? `terrain blocked the lane at (${lane.firstHit?.x}, ${lane.firstHit?.y}), clearable ` +
         `from y=${lane.topOfBlock}`
       : 'the lane was clear, so this is the approach or the pickup, not the map'
+    // **What the player is carrying, on the failure line.** A crate whose
+    // contents the inventory has no room for is *correctly* refused (§C24: a
+    // weapon already held at full stack makes `add` return `Full`), and that is
+    // exactly what seed 555 does — a whole task went on diagnosing it as a
+    // broken pickup path. The client is never told what is in a crate, so the
+    // only half of the comparison it can print is its own bag; printing it turns
+    // "never picked up" from a mystery into a two-line read.
+    const k0 = await page.evaluate(() => window.__game.constants())
+    const bag = (await dbg()).slots ?? []
+    const carried = bag
+      .filter((sl) => sl.key)
+      .map((sl) => `${sl.key}x${sl.count}`)
+      .join(' ')
     fail(
       `our client flew at the crate for 70 s and never picked it up — closest ` +
-        `approach ${closest.toFixed(0)} px, PICKUP_RADIUS is 20; ${why}`,
+        `approach ${closest.toFixed(0)} px, PICKUP_RADIUS is ${k0.PICKUP_RADIUS}; ${why}. ` +
+        `Carrying: ${carried || '(nothing)'} — a crate holding a weapon already ` +
+        'held at full stack is refused by §C24 and is not a bug',
     )
   } else if (!(gone.pickups > 0)) {
     fail(

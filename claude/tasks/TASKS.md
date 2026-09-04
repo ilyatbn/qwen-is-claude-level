@@ -1,9 +1,10 @@
 # Master task list
 
-201 tasks across 20 milestones.
+203 tasks across 20 milestones.
 (The header read 102 while only 101 rows ever existed — an off-by-one introduced
 when the v2 tasks were added; it then read 169 against 183 rows. Counted with
-`grep -c '^- \[[ x]\]'`, not assumed — 202 after T19.07 booked T19.19.) Work
+`grep -c '^- \[[ x]\]'`, not assumed — 202 after T19.07 booked T19.19, and 203
+after T19.13's review booked T19.20.) Work
 them **in order**. See `README.md` for the
 loop and `../CLAUDE.md` for the rules.
 
@@ -422,9 +423,10 @@ independent.
 - [x] [T19.11](M19/T19.11-fire-is-an-object.md) — Fire is an object **(v7)** — every deliverable. Two defects found on landing that no task file names: a flame died on contact with a body, and the shared overlap test ignores `h` so a flame at your feet burned nobody. **Nothing emits a flame yet, by design** — the production-caller grep is T19.12's. Done-when green, `./scripts/check.sh` EXIT=0, 42/42 e2e, net smoke 25/25, assets ok.
 - [x] [T19.12](M19/T19.12-what-lights-a-fire.md) — What lights a fire: the flamethrower, the molotov, the vent **(v7)** — every deliverable. **Task-file contradiction resolved in favour of a green gate:** it says to leave the client broken for T19.13, but its own Done-when runs `check.sh`, so `ordnance.mjs`'s two dead assertions are repaired here (`GameEvent::Cone` is left standing, unemitted, for T19.13). Balance re-measured: flamethrower and molotov roughly **3x** their damage with self-harm at **0.00**. Done-when green, `./scripts/check.sh` EXIT=0, 42/42 e2e, net smoke 25/25, assets ok.
 - [x] [T19.13](M19/T19.13-flames-on-screen.md) — Flames on screen **(v7)** — every deliverable, plus a **new `fire-visible` check** that photographs a molotov's crowd in a real match and is falsified by drawing the disc §F10 replaced. **Task defect: its ≥ half `MOLOTOV_FLAMES` cluster floor is arithmetically impossible** (24 flames settle across ~100 px and `FLAME_RADIUS` is 10, so they touch) — three both-ends assertions replace it, and they found a real bug: `enforce_cap` removed flames **without telling the clients**, so 176 burned on screen against a cap of 160. Flames are now painted rather than summed (they read as steam under `ADD`). Done-when green, `./scripts/check.sh` EXIT=0, 43/43 e2e, net smoke 25/25, assets ok.
-- [ ] [T19.17](M19/T19.17-a-crate-you-cannot-pick-up.md) — A crate you cannot pick up — **found by T19.05**, measured and unexplained
+- [x] [T19.17](M19/T19.17-a-crate-you-cannot-pick-up.md) — A crate you cannot pick up — **explained: the refusal is correct.** Reproduced on seed 555 and measured from inside `resolve_pickups` — 3863 samples, closest **0.17 px** — the crate holds `item 22 x2` (two molotovs) and the player is already at `MOLOTOV_AMMO`, so §C24's one-slot-per-weapon rule returns `Full`. **The "MEDKIT, heals=0" was the instrument**: `crate_spawn` carries no `item_id` and the mirror coerced the absent field to `0` = `MEDKIT`, which also labelled every crate "Medkit" on screen. Fixed and falsified both ends. `./scripts/check.sh` EXIT=0, 43/43 e2e, net smoke 25/25, assets ok.
 - [ ] [T19.18](M19/T19.18-the-lobby-client-never-learns-its-inventory.md) — The lobby client never learns its inventory — **found by T19.05**, reproduced three times
 - [ ] [T19.19](M19/T19.19-the-wasm-tests-have-never-run.md) — Fourteen `wasm_bindgen_test`s have never run in any gate — **found by T19.07**, measured against the gate log
+- [ ] [T19.20](M19/T19.20-the-lightmap-hazard-path-has-no-caller.md) — `collectLightSources` has no production caller — **found by T19.13's review**, confirmed by grep; it is the only producer of `kind: 'cone'`, so flashlight cones light nothing
 
 **Order note.** T19.15 and T19.14 were written mid-milestone and are **promoted ahead of
 the remaining feature work**: three of the four gate runs after T19.02 carried a

@@ -705,7 +705,12 @@ fn a_full_flame_field_costs_what_the_cap_says_it_does() {
     // `ProjectileMove` for every live projectile every third tick — so a full
     // field is `FLAME_MAX_LIVE` moves at `SNAPSHOT_HZ`, and the cap is a
     // bandwidth ceiling as much as a gameplay one.
-    let (mut w, _) = world_with_flames(7, FLAME_MAX_LIVE + 40);
+    /// How far over the cap this field is built. Named once, because it is the
+    /// same number at both ends of the count — the overshoot asked for, and the
+    /// number of `Culled` announcements expected — and two literals that must
+    /// agree are two literals that will eventually not.
+    const OVER_CAP: usize = 40;
+    let (mut w, _) = world_with_flames(7, FLAME_MAX_LIVE + OVER_CAP);
     w.step(SIM_DT);
     let live = w.projectiles.len();
     assert_eq!(
@@ -731,8 +736,8 @@ fn a_full_flame_field_costs_what_the_cap_says_it_does() {
         })
         .count();
     assert_eq!(
-        culled, 40,
-        "the cap dropped 40 flames and announced {culled} of them"
+        culled, OVER_CAP,
+        "the cap dropped {OVER_CAP} flames and announced {culled} of them"
     );
     // 16 bytes an entry is the wire's own shape (id, x, y as f32 plus a tag);
     // the point of the number is its order of magnitude, and it is printed so a

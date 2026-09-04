@@ -31,8 +31,15 @@ export interface ItemDefView {
 
 export interface WorldItemView {
   id: number
-  item: number
-  count: number
+  /**
+   * The registry id, or `null` when the server has not said which — which is
+   * every crate the client watched arrive (`crate_spawn` carries no `item_id`).
+   * See the same field on `net/worldMirror`'s `WorldItemView` for why this is
+   * nullable and what it cost when it was not.
+   */
+  item: number | null
+  /** Stack size, or `null` when the server has not said. */
+  count: number | null
   x: number
   y: number
   source: string
@@ -106,6 +113,7 @@ export function spriteKeyFor(
   defs: Map<number, ItemDefView>,
 ): string | null {
   if (item.source === 'Crate') return 'crate'
+  if (item.item === null) return null
   return defs.get(item.item)?.sprite ?? null
 }
 
@@ -185,13 +193,28 @@ export function artFor(
   return null
 }
 
+/**
+ * The name that floats over an item on the ground (`docs/30` §5).
+ *
+ * **A crate is labelled by what it is, not by what is in it.** `crate_spawn`
+ * does not carry the contents, and the old body read `defs.get(item.item)` with
+ * `item` defaulted to 0 — so every supply crate on the map wore the name of
+ * registry item 0, `Medkit`, whatever it actually held. That mislabelling is
+ * also what sent T19.17 looking for a broken pickup path: the crate on seed 555
+ * held two molotovs and was refused by §C24 exactly as specified.
+ *
+ * The unknown case is asked as `item === null` rather than as
+ * `source === 'Crate'` so that the *joiner's* copy of the same crate — which
+ * does carry an id, from the `item_spawn` catch-up — still names its contents.
+ */
 export function labelFor(
   item: WorldItemView,
   defs: Map<number, ItemDefView>,
 ): string {
+  if (item.item === null) return item.source === 'Crate' ? 'Supply crate' : 'Item'
   const def = defs.get(item.item)
   const name = def?.name ?? `item ${item.item}`
-  return item.count > 1 ? `${name} x${item.count}` : name
+  return item.count !== null && item.count > 1 ? `${name} x${item.count}` : name
 }
 
 /** Items close enough to the listener to be worth labelling. */

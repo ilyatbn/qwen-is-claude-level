@@ -152,6 +152,24 @@ describe('labelFor', () => {
   it('names an unknown item by id rather than showing "undefined"', () => {
     expect(labelFor(item({ item: 42 }), defs)).toBe('item 42')
   })
+
+  /**
+   * T19.17. A crate the client *watched arrive* has no contents on the wire
+   * (`crate_spawn` carries `{tick, world_item_id, x, y}`), and the mirror
+   * reports that as `null`. It used to report 0, so every crate on the map wore
+   * the name of registry item 0 — `Medkit` — whatever it held.
+   *
+   * The second expectation is the control, and it is the reason this asks
+   * `item === null` and not `source === 'Crate'`: the join catch-up re-sends
+   * live items as `item_spawn` with the id, so a client that joined late knows
+   * the contents of the very same crate and must still name them.
+   */
+  it('a crate with unknown contents is named as a crate, and a known one names its contents', () => {
+    expect(labelFor(item({ source: 'Crate', item: null, count: null }), defs)).toBe(
+      'Supply crate',
+    )
+    expect(labelFor(item({ source: 'Crate', item: 3, count: 4 }), defs)).toBe('Bazooka x4')
+  })
 })
 
 describe('withinLabelRange', () => {

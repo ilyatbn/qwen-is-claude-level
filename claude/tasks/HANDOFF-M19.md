@@ -786,7 +786,7 @@ point to measure it properly — alternate a worktree at the previous commit aga
 working tree, N runs each, the way the `checksum` scare above was settled — rather than to
 assume either answer.
 
-## The suite-context hypothesis — four checks, one signature, and "load" is already falsified
+## The suite-context hypothesis — now three checks, and its main support has been withdrawn
 
 **Named because it may be the real finding behind T19.15 and T19.16, and nobody has
 written it down.** Four checks now share exactly one signature: **red inside the full
@@ -796,12 +796,56 @@ suite, green standalone.**
 - `m10-checkpoint` — twice in M19, both times inside a full gate, both times green on an
   immediate standalone re-run (see the section above).
 
-**The standing frame is "load flake". That frame is already falsified for one of them.**
-T19.15's own 20-round interleaved distribution on `hud-timer` measured **idle mean 44.15
-against loaded 44.87**, with the two near-failures landing **one in each arm**, and the
-failing sample was an anomalous `after` capture that **reproduced on a completely idle
-box**. Load was not the variable there. It is one hypothesis among several and it is the
-one with evidence against it.
+**CORRECTION, written by the coordinator after `f0da51c` landed. Read this before using
+the section below.** As first written, this hypothesis rested on one load-bearing claim:
+that the "load flake" frame was **already falsified** for `hud-timer`, because its failing
+sample reproduced on a completely idle box. **T19.15 has since explained that result away,
+and it takes the falsification with it.**
+
+`hud-timer` reproduced on an idle box because its metric was a **mean over a moving
+rectangle against a moving background** — `#hud-timer` is right-anchored, so the control
+frame's "1:29" is 111 px and the warn frame's "0:59" is 121 px, and the extra ten pixels of
+sky is worth about 5.4 points of mean redness against a sky that itself drifts −14.7 to
+−16.9 over the 30 s between frames. Two confounds, **neither of them load and neither of
+them suite context**. `hud-timer` was never a flake of any kind; it was a broken
+instrument, and it now reads 27.23 % inside the full suite and standalone alike.
+
+**SECOND CORRECTION, same author, after `5ff8969`. The family widened out of the browser,
+and that is decisive.** Three **Rust socket tests** now show the same signature — red in a
+workspace run, green 3/3 standalone on the same tree and at `51f6aec`: `checksum.rs`'s two
+(*"got 13"* and *"got 5"* against floors of 50 and 6) and `bots.rs::bots_actually_move`
+(*"no bot moved in two seconds: [1440.0, 112.0] -> [1440.0, 112.0]"*). None was accommodated
+— no `#[ignore]`, no `serial`, no list entry.
+
+**This rules out every browser-specific candidate as the *common* cause.** A Rust socket
+test shares none of the browser suite's context: no Chromium profile carried between
+checks, no vite instance, no port reuse, no page memory. So the list of candidate variables
+below — accumulated profile state, port reuse, an older vite, `pkg/` artefacts — cannot
+explain a family that includes `checksum.rs`.
+
+**What the two groups do share is a shape, not a context:** a wall-clock window of a couple
+of seconds in which a real server, a real socket and a real client must complete something,
+while the machine is doing other work. That is narrower and far more testable than "suite
+context", and it points at scheduling pressure on real sockets rather than at anything
+about suites. **Rename the hypothesis accordingly when someone takes it**: it is not that
+the suite poisons its checks, it is that a short wall-clock window over a real socket is
+the thing that fails under concurrency, wherever it appears.
+
+**So the family is three, not four** — `bullets-visible`, `night-combat`, `m10-checkpoint`
+— and **nothing currently falsifies the load frame for any of them.** Do not read the
+paragraph below as standing evidence against load; it is not. Equally, do not swing back to
+"it is load", which is just as unmeasured. The honest position is that the common cause of
+the remaining three is **unknown**, the candidate variables below are still unexcluded, and
+the experiment below is still the one that would settle it. The old text is kept as
+written, immediately below, because it is what T19.15's numbers were read to mean at the
+time and the reasoning is worth seeing next to its own retraction.
+
+**Superseded text, retained:** *"The standing frame is 'load flake'. That frame is already
+falsified for one of them.* T19.15's own 20-round interleaved distribution on `hud-timer`
+measured **idle mean 44.15 against loaded 44.87**, with the two near-failures landing **one
+in each arm**, and the failing sample was an anomalous `after` capture that **reproduced on
+a completely idle box**. *Load was not the variable there."* — That distribution was real;
+what was wrong was reading it as evidence about load rather than about the instrument.
 
 **What a check gets inside the full suite that it does not get alone** — the candidate
 variables, none yet excluded: accumulated browser and profile state across checks; port
@@ -1349,3 +1393,127 @@ unexplained" — then T19.18 and T19.19. None was started.
 gates on the new instrument, reading identically inside the suite and alone. Two more
 agreeing gates and it should come off the known-red-in-suite list; one green run is one draw.
 
+
+## The instrument was the bug — six times in M19, and why they survive
+
+Counted from the journal rather than from memory. Every one of these looked like a defect
+in the system and was a defect in the measurement:
+
+1. **`hud-timer`'s moving rectangle** — a mean over a right-anchored element whose width
+   follows its text ("1:29" 111 px, "0:59" 121 px), differenced against a sky drifting
+   −14.7…−16.9 over the 30 s between frames. Two confounds, neither of them load. This is
+   the one that had been blamed on load for a whole milestone.
+2. **`fire-visible`, four separate defects in one check (T19.13)** — the sampled rect ran
+   into the quick bar and counted the **inventory**; base frames captured before
+   `mouse.move` counted the player's **arm**; an absolute threshold scored 11 clusters on
+   an **unlit** control frame because this map's terrain is brown; and additive blending
+   summed the fire's centre past white, where `r − b` is 0, so the **hottest** pixels
+   failed the check's own "is this warm" test.
+3. **The vite deadline that never timed vite (T19.16)** — 11.6 s of an 11.7 s window was a
+   `predev` Rust build, under an error message naming vite. Vite's own contribution was
+   0.1 s in all five measured rows.
+4. **`check.sh | tail -80` returning `tail`'s exit status (T19.04)** — the gate's own
+   result laundered by a pipe, reporting a red gate as green.
+5. **`enterBattle` never reassigning `d` (T19.14)** — "in battle (0 players)" was a stale
+   read from before the wait, and the four checks reporting it were exactly the four that
+   took that path. Hence that entry's title: *the log was lying*.
+6. **`backdrop-real` was attribution, not budget (T19.15)** — the cost was real and charged
+   to the wrong `it()`, inside a 5 s default while a 120 s `beforeAll` already existed.
+
+**The through-line is not carelessness.** Every one of these instruments was correct **when
+written**, and each was invalidated by something that moved underneath it — a glyph width,
+a blend mode, an npm hook, a pipe, a wait added later, a timing block that grew. That is
+why they survive: a measurement is written once, passes, and is trusted permanently, while
+the thing it measures keeps moving.
+
+**So the rule this milestone actually paid for is not "check your instruments" but: an
+instrument is only valid for the code it was written against, and nothing re-validates it.**
+Every one of the six was found by somebody changing something else nearby and looking.
+**None was found by a test going red.**
+
+## The remaining three flakes are not one population
+
+Profiled after the hypothesis was renamed (a *shape* — a short wall-clock window over a
+real socket — rather than a *context*). Wait shapes differ, so one experiment aimed at "the
+family" would blur three mechanisms together:
+
+    night-combat     7 bare wall-clock waits, 2 condition polls
+    m10-checkpoint   5 bare wall-clock waits, 5 condition polls
+    bullets-visible  1 bare wall-clock wait,  0 condition polls
+
+- **`night-combat`** is almost entirely fixed `waitForTimeout`s — 500, 400, 200, 60, 1000,
+  400, 400 ms — bare sleeps against nothing. That is the named shape undiluted, and it is
+  cheap to settle: replace the seven with condition polls, and either it stops failing or
+  the sleeps are exonerated.
+- **`m10-checkpoint`** is half condition-polled with generous timeouts (60 s, 90 s, 30 s,
+  20 s) plus one bare `sleep(1500)`.
+- **`bullets-visible`** has almost no waits: its wall-clock dependence is **inherent to the
+  measurement** — a ~150 ms screenshot against a round that crosses the screen in ~475 ms.
+  It cannot be fixed by replacing sleeps, because its window *is* the screenshot cost.
+
+**Caveat, stated rather than buried: this is a profile of wait shapes, not a measurement of
+failures.** It says where to look; it is not evidence that sleeps cause the reds. And note
+that **`bullets-visible` has already had the audit `hud-timer` just got** — brightest-column
+rather than a mean, every reading differenced against a control frame, and a control region
+the round provably never enters (added after a streak once travelled 219 px across an
+earlier "control" that was not one). Its instrument is hardened and it is *still* in the
+family. So "audit the instruments" is not the general answer here.
+
+## T19.17 landed — the refusal was correct, and the report was the instrument
+
+**Reproduced first, theorised second, and the first theory was wrong.** The written-up
+symptom — "crate `{item:0}`, a MEDKIT, player `heals=0 batteries=0`, so `bump` cannot
+refuse" — is a client-side reading of a field the server never sent.
+
+- **The task file's own starting point was a dead end, and it is worth saying so.** It
+  points at the distance being measured from one end (the client's predicted position
+  against the server's crate) and asks for both. That was measured: a `serverPlayer` field
+  was added to `debug()` carrying the snapshot's `p.body.pos`, and over ~430 polls the two
+  ends agreed — **client closest 0.1 px, server closest 0.9 px**. The distance was never
+  the problem. The field is kept because §A39 wants both ends of any distance claim, but
+  it did not find this.
+- **What found it was an `eprintln!` inside `resolve_pickups`**, printing the item, its
+  count, both positions and both counters whenever a crate was within 60 px. 3863 samples,
+  closest **0.17 px**: `crate id=11 item=22 count=2 grounded=true lock=0 heals=0 bat=0`.
+  `item 22` is `MOLOTOV`, and `MOLOTOV_AMMO` is 2. The walker picks a molotov stack off the
+  ground at poll 8 (`pickups` goes 0 -> 1, `slotsUsed` 1 -> 2) and is at the cap from then
+  on; §C24 gives a weapon **one slot, ever**, so `Inventory::add` finds no room to merge
+  into, refuses to open a second slot, returns `Full`, and the item stays on the ground.
+  That is `items/world.rs:341-381` working exactly as written. The diagnostic was reverted.
+- **The client is the defect, and it is player-facing.** `crate_spawn`'s payload is
+  `{tick, world_item_id, x, y}` (`docs/40`, and the server matches it). `worldMirror`
+  handled `item_spawn` and `crate_spawn` in **one arm** and coerced the missing fields with
+  `n(p['item_id'])` = **0** and `n(p['count'], 1)` = 1. Registry id 0 is `MEDKIT`, so
+  `labelFor` put the name **"Medkit"** over every supply crate in the game, whatever it
+  held. `item` and `count` are now `number | null`; `labelFor` answers "Supply crate" for
+  the unknown case. Falsified at the live binding site: restoring the coercion fails both
+  new tests (`expected +0 to be null`, `expected 'item null' to be 'Supply crate'`).
+- **A genuine wire asymmetry, reported rather than fixed.** The mid-round/reconnect
+  catch-up re-sends every live item as `item_spawn` **with `item_id` and `count`**
+  (`session.rs:1265`), crates included. So a client that *joins after* a crate lands knows
+  its contents and a client that *watched it fall* does not. The unknown case is therefore
+  keyed on `item === null` and not on `source === 'Crate'`, so the joiner's copy still names
+  what it holds. Whether contents should be public at all is a spec question — `docs/40`
+  pins `crate_spawn` to four fields and pins `item_spawn` to seven, and the catch-up reuses
+  the second for crates — so it is **the coordinator's**, not a builder's. Nothing was
+  invented on the wire.
+- **`crates.mjs` was carrying a false claim** ("By `items/world.rs:341-381` that pickup
+  should have happened") in the header every future re-seeder would read. Replaced with the
+  measurement. Its non-pickup failure line now prints **what the player is carrying**,
+  because the client cannot be asked what is in a crate and the bag is the only half of the
+  comparison it has. `CRATE_SEED` stays 31337; 555 is a fine seed for the flight and a
+  useless one for the pickup, and the header now says which.
+- **What a future reader should take from this**: the client's copy of a server-side value
+  is evidence about the client. Two independent measurements agreeing (`d.player` and
+  `d.serverPlayer` both reading ~0 px) still said nothing about the third number nobody had
+  looked at. Print from the layer that owns the state.
+
+**Also folded in from the T19.13 review, at the coordinator's request:**
+`tasks/M19/T19.20` books `collectLightSources` — confirmed dead by grep (14 references in
+its own test file, 2 in the defining file, zero elsewhere). The exposure named in the task
+is not the function: it is the **only** producer of `kind: 'cone'` in the client, so
+`lightmap.ts`'s `eraseCone` has no live producer either and **no flashlight cone, local or
+remote, lights anything** — against `docs/14` §4, which makes a flashlight at night a
+trade. Explosion flashes and `HAZARD_RADIUS` are the other two orphaned sources.
+`TASKS.md`'s count is re-derived at 203. And `delivery.rs`'s duplicated `40` is now
+`const OVER_CAP`.

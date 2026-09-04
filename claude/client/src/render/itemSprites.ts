@@ -254,12 +254,12 @@ export class ItemLayer {
       sprite = this.scene.add.image(item.x, item.y, art.key).setOrigin(0.5, 0.5)
     } else {
       // docs/50 §8: the game starts with no art, and every fallback logs once.
-      const key = `item:${item.item}`
+      const key = `item:${item.item ?? 'unknown'}`
       if (!this.warned.has(key)) {
         this.warned.add(key)
-        console.info(`[items] no sprite for item ${item.item} — drawing a box`)
+        console.info(`[items] no sprite for item ${item.item ?? 'unknown'} — drawing a box`)
       }
-      const tint = FALLBACK_TINTS[item.item % FALLBACK_TINTS.length] ?? 0xffffff
+      const tint = FALLBACK_TINTS[(item.item ?? 0) % FALLBACK_TINTS.length] ?? 0xffffff
       sprite = this.scene.add.rectangle(item.x, item.y, 14, 14, tint).setStrokeStyle(1, 0x101418)
     }
     this.container.add(sprite)

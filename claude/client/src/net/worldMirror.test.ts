@@ -341,6 +341,46 @@ describe('roster and entities', () => {
     expect(mirror.items.has(7)).toBe(false)
   })
 
+  /**
+   * T19.17. `crate_spawn`'s payload is `{tick, world_item_id, x, y}` — no
+   * `item_id`, no `count` — and the arm that handles it is shared with
+   * `item_spawn`. It used to coerce the missing fields with `n(p['item_id'])`,
+   * which is **0**, and 0 is `MEDKIT`.
+   *
+   * The two halves are asserted together on purpose: the `item_spawn` case is
+   * the control that says the field is still read when it is there, so "the
+   * crate reports null" cannot be satisfied by a mirror that stopped decoding
+   * item ids altogether.
+   */
+  it('a crate reports unknown contents, and a real item_spawn still reports its id', () => {
+    const { mirror } = freshMirror()
+    mirror.applyEvent('crate_spawn', { world_item_id: 11, x: 306, y: 69 }, 0)
+    const crate = mirror.items.get(11)
+    expect(crate?.source).toBe('Crate')
+    // Not 0 — 0 is a real registry id (MEDKIT), so a crate reporting 0 is
+    // indistinguishable from a crate holding a medkit.
+    expect(crate?.item).toBeNull()
+    expect(crate?.count).toBeNull()
+
+    // The control: the same arm, with the fields present.
+    mirror.applyEvent(
+      'item_spawn',
+      { world_item_id: 12, item_id: 22, count: 2, x: 1, y: 2, source: 'Crate' },
+      0,
+    )
+    expect(mirror.items.get(12)?.item).toBe(22)
+    expect(mirror.items.get(12)?.count).toBe(2)
+
+    // And an id that really is 0 survives, which is the case `null` exists to
+    // be told apart from.
+    mirror.applyEvent(
+      'item_spawn',
+      { world_item_id: 13, item_id: 0, count: 1, x: 1, y: 2, source: 'Periodic' },
+      0,
+    )
+    expect(mirror.items.get(13)?.item).toBe(0)
+  })
+
   it('tracks projectile spawn and despawn', () => {
     const { mirror } = freshMirror()
     mirror.applyEvent(

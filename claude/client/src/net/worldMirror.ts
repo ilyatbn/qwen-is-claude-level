@@ -30,8 +30,29 @@ export interface RemotePlayerState {
 
 export interface WorldItemView {
   id: number
-  item: number
-  count: number
+  /**
+   * The registry id of what is lying there, or **`null` when the server has not
+   * said**.
+   *
+   * `crate_spawn` carries only `{tick, world_item_id, x, y}` (`docs/40` §
+   * "Server -> client events"), so a client that watches a crate arrive is never
+   * told its contents. This used to read `n(p['item_id'])` for both arms, which
+   * is **0** for a crate — and 0 is `MEDKIT`. Every crate was therefore
+   * labelled "Medkit" on the client that saw it land, and T19.17 spent a whole
+   * task on "a MEDKIT crate that could not be picked up" before the server's own
+   * copy turned out to hold two molotovs. A field that means both "medkit" and
+   * "nobody told me" is the §A39 shape CLAUDE.md names; `null` is the honest
+   * answer and forces every reader to decide what to do about it.
+   *
+   * A client that joins *after* the crate landed does learn the contents — the
+   * join catch-up re-sends every live item as `item_spawn`, item id and all
+   * (`session.rs:1265`). So this is `null` for the watcher and a number for the
+   * joiner, which is a genuine asymmetry on the wire and is written up as a
+   * finding rather than papered over here.
+   */
+  item: number | null
+  /** Stack size, or `null` when the server has not said — see `item`. */
+  count: number | null
   x: number
   y: number
   source: string
@@ -271,10 +292,18 @@ export class WorldMirror {
       case 'item_spawn':
       case 'crate_spawn': {
         const id = n(p['world_item_id'])
+        // **Only what the payload actually carries.** `crate_spawn` has no
+        // `item_id` and no `count`, and defaulting them to `n(undefined)` = 0
+        // and 1 fabricated a MEDKIT holding one of itself — see `item` on
+        // `WorldItemView`. `undefined` is the one value that distinguishes "the
+        // server did not say" from a real id of 0, so it is tested for rather
+        // than coerced.
+        const rawItem = p['item_id']
+        const rawCount = p['count']
         this.items.set(id, {
           id,
-          item: n(p['item_id']),
-          count: n(p['count'], 1),
+          item: rawItem === undefined || rawItem === null ? null : n(rawItem),
+          count: rawCount === undefined || rawCount === null ? null : n(rawCount, 1),
           x: n(p['x']),
           y: n(p['y']),
           source: String(p['source'] ?? (name === 'crate_spawn' ? 'Crate' : 'Initial')),

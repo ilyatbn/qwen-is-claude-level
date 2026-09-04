@@ -5266,3 +5266,14 @@ lock; 93.3 s with twelve queued. **Reproduced through the real path**: 24 queued
 `e2e.mjs title` → the exact string, with vite never asked to do anything. The build now runs
 *before* the clock and vite starts with hook-free `npx vite`, so the untouched 90 s bounds a
 0.1 s step. Same queue: 1/1 in 66.8 s. EXIT=0, 43/43, 25/25, assets ok.
+
+## T19.17 — the crate you cannot pick up is a crate you may not pick up
+
+Reproduced on 555 (crate 11, ~430 polls, closest 0.1 px), then measured **inside
+`resolve_pickups`**: 3863 samples with the server's own `p.body.pos` under 60 px and **0.17 px**
+at the closest, so both ends are inside `PICKUP_RADIUS`. The crate holds `item 22 x2` — **two
+molotovs**, not a medkit — and the walker is already at `MOLOTOV_AMMO` (2) from a ground
+pickup, so §C24's one-slot-per-weapon rule makes `add` return `Full` and the item correctly
+stays on the ground. **The "MEDKIT, heals=0" was the instrument**: `crate_spawn` carries no
+`item_id` and the mirror coerced the absent field to `0`, which is `MEDKIT` — so every crate
+was also labelled "Medkit" on screen. Now `null`; falsified both ends. EXIT=0, 43/43, 25/25.

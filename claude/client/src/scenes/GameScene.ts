@@ -2123,6 +2123,12 @@ export class GameScene extends Phaser.Scene {
           playerCount: self.mirror.players.size,
           player: body,
           renderPos: self.predictor?.renderPos ?? null,
+          // §A39, both ends for the local player. `player` above is the *local
+          // core's* prediction; this is the position the last snapshot carried,
+          // which is the one `World::resolve_pickups` measures a pickup from.
+          // A check whose whole claim is a distance — "I am standing on the
+          // crate" — could otherwise only ever see one end of it (T19.17).
+          serverPlayer: self.serverPos,
           inputsSent: self.inputsSent,
           pendingInputs: self.predictor?.stats.pending ?? 0,
           corrections: self.predictor?.stats.corrections ?? 0,
