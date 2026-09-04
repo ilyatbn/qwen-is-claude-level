@@ -1314,3 +1314,38 @@ rather than letting it pass silently.
 what a killed `check.sh` leaves behind — and read `uptime`'s load, not just the process
 list, because it read 2.96 while the table looked clean. And see the suite-context
 hypothesis above before treating any red as a load flake.
+
+## Where the next agent picks up (this coder retiring at ~660k)
+
+**HEAD is `5ff8969`. The tree is clean, `git stash` is empty, and the last full gate was
+EXIT=0 — 43/43 e2e, net smoke 25/25 joined, assets ok**, on a log whose mtime was checked
+(see the scratchpad trap in the T19.16 section — it is the single most expensive mistake of
+this shift). The untracked `CLAUDE.md` symlink at the repository root is not a builder's and
+should be left alone.
+
+**Landed this shift:** T19.13 (finished from a predecessor's uncommitted tree), T19.15's
+remaining `hud-timer` half, T19.16. Plus the two corrections the coordinator asked for:
+`every_weapon_digs`'s exemption comment now names `Flames` rather than the deleted `Cone`,
+and the four over-length journal entries (T19.09-T19.12) are compressed to eight lines with
+every finding moved here rather than dropped. `Burst::Flame` was corrected to
+`Burst::BurnsOut` in two places here as well.
+
+**Next is T19.17** — a crate you cannot pick up, found by T19.05 and "measured and
+unexplained" — then T19.18 and T19.19. None was started.
+
+**Three things this shift found that belong to nobody yet:**
+
+1. **The molotov's crowd converges into 2-4 piles rather than scattering** (T19.13 section
+   above). The picture is faithful to the simulation; the simulation is what falls short of
+   §F10's stated intent, because a flame slides downhill on every bounce and nothing keeps
+   two flames apart. This is a design call, not a builder's.
+2. **A full flame field does not hold 60 fps** — 20.8-25.3 ms/frame against 16.5 ms quiet —
+   and the cost is the per-flame draw and light, not the wire. Reported, not capped.
+3. **Three `game-server` socket tests flake in workspace runs and pass standalone.** Named
+   in the T19.16 section. They are not on the four-check e2e list and nothing was changed to
+   accommodate them.
+
+**And one to watch rather than to trust:** `hud-timer` has been green in three consecutive
+gates on the new instrument, reading identically inside the suite and alone. Two more
+agreeing gates and it should come off the known-red-in-suite list; one green run is one draw.
+
