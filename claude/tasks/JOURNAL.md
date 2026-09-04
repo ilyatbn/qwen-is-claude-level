@@ -5255,3 +5255,14 @@ is the recorded "the `after` sample is occasionally ~5 low", exactly. Replaced b
 **fraction of pixels above redness 100** — 0.00% → 27.2%, spread 0.02 over 8 runs — plus the
 control **region** §C2 asks for and this check never had. Falsified at `hud.ts:189`. 20/20
 wasm, 12 concurrent, 5×800 suite + 800 at load 11.6. EXIT=0, 43/43, 25/25, assets ok.
+
+## T19.16 — the vite deadline was never timing vite
+
+`e2e.mjs` started vite with `npm run dev`, whose **`predev` hook is the wasm build** — so
+the 90 s window whose message says "vite did not report a port" was timing a release Rust
+build, then a lock wait, then vite. Measured on the identical spawn: **11.7 s to the port
+line, 11.6 of it `predev` and 0.1 s vite**; 19.9 s with one other build holding T19.15's
+lock; 93.3 s with twelve queued. **Reproduced through the real path**: 24 queued builds, then
+`e2e.mjs title` → the exact string, with vite never asked to do anything. The build now runs
+*before* the clock and vite starts with hook-free `npx vite`, so the untouched 90 s bounds a
+0.1 s step. Same queue: 1/1 in 66.8 s. EXIT=0, 43/43, 25/25, assets ok.

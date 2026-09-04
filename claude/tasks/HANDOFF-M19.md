@@ -1046,6 +1046,89 @@ inside `SPAWN_IFRAMES` and refuses every point of damage — which reads exactly
 burns nobody". Wait the warmup out for real. It is now written into
 `a_molotov_that_lands_on_a_player_still_bursts_and_burns_them` beside the fixture.
 
+## T19.16 landed — the vite deadline was never timing vite
+
+**Reproduced, on the first branch the task offers.** The failure is real, it is not the box,
+and it is not vite being slow to bind.
+
+**What the 90 s was actually timing.** `scripts/e2e.mjs` started its shared vite with
+`npm --prefix client run dev`, and `client/package.json`'s **`predev` hook runs
+`scripts/wasm-build.mjs`**. So the window whose failure message reads *"vite did not report
+a port within 90 s"* covered a release Rust build, plus a lock wait, and then vite. Measured
+on an idle box with the identical spawn and the identical `matchVitePort` parse:
+
+```
+warm, idle                          11.7 s to the port line   (predev 11.6 s, vite 0.1 s)
+after touching game-core, idle      12.6 s                    (predev 12.5 s)
+under `cargo test --workspace`,
+  load average 8.9                  12.8 s                    (predev 12.4 s)
+one other wasm build holding
+  T19.15's lock                     19.9 s                    (predev 19.8 s)
+twelve queued builds                93.3 s                    (predev 93.2 s)
+```
+
+**Vite's own contribution is 0.1 s in every row.** The deadline was 99 % a build timer
+wearing vite's name, which is why three sessions looked for a slow browser and found nothing.
+
+**The reproduction, through the real path.** T19.15's lock serialises builds and waits up to
+**ten minutes**, so every concurrent `wasm-build.mjs` adds one build to the queue in front of
+`predev`. With 24 of them queued and then `node scripts/e2e.mjs title`:
+
+```
+  FAIL (startup)                    0.0s
+  (startup): vite did not report a port within 90 s
+```
+
+— with vite never asked to do anything. That is the named, measured load model the task
+requires, and it is a load model made of this repository's own build step rather than of
+synthetic spinners, so it cannot leak (every process exits on its own).
+
+**The fix moves the wrong work out of the window; no deadline was raised.** `e2e.mjs` now
+runs `wasm-build.mjs` itself, synchronously, **before** starting the clock, then starts vite
+with `npx vite --strictPort=false` — which runs no npm hooks — exactly as every standalone
+check in `harness.mjs` already does. The 90 s is untouched and now bounds a step measured at
+0.1 s, so no queue depth can trip it: this is true by construction, not by sampling. Proof
+anyway: the same 24-build queue that produced the failure above now gives `1/1 passed` in
+66.8 s, against 65.9 s on an idle box.
+
+**Two things a future reader should know.**
+
+- **`vite-url.mjs`'s exported `startVite` has no caller.** Grepped: `shot.mjs` has its own
+  local function of the same name, and nothing imports the exported one. It carries the same
+  `npm run dev` + 90 s shape, so if it is ever wired up it will bring this bug with it. It is
+  the shared `matchVitePort` in that file that everything actually uses, and that is fine.
+- **The remaining startup cost is the server, not the client.** `title` takes ~66 s either
+  way; `startStack` waits on `cargo run --release -p game-server` becoming healthy, and that
+  is where the time goes. Nothing here changed it.
+
+**This is not `hud-timer`'s family.** T19.16's Notes offer them as possibly the same; they
+are not. `hud-timer` had no load term at all (T19.15, above). This one has no vite term.
+
+**Three `game-server` socket tests went red in workspace runs this shift and green
+standalone, and they are a family worth naming.** All three reds are from logs verified as
+this session's by mtime (see the scratchpad trap below). `checksum.rs`'s
+`two_clients_agree_on_the_mask_after_a_hundred_carves` ("expected the fires to produce
+carves; got 13" against a floor of 50) and `a_joiner_that_delays_ready_still_gets_every_carve`
+("got 5" against 6), and `bots.rs`'s `bots_actually_move` ("no bot moved in two seconds:
+[1440.0, 112.0] -> [1440.0, 112.0]"). Every one is green 3/3 standalone on the same tree, and
+`checksum.rs` is green 3/3 at `51f6aec` too. All three are the same shape: a **wall-clock
+window of a couple of seconds** in which a real server, a real socket and a real client have
+to make progress. They are not on the four-check e2e flaky list and **nothing was changed to
+accommodate them** — but they belong in the same conversation, and a gate that carries a
+non-deterministic red is exactly what T19.15 and T19.16 exist to remove. Whoever picks that
+up: the discriminating measurement is not "loaded vs idle" (T19.15 showed that arm reads
+backwards) but *what else `cargo test --workspace` is doing in the same second*.
+
+**A trap that cost this shift an hour, and it is not in `CLAUDE.md` yet: the scratchpad
+already had `gate1.log` … `gate14.log` in it from the previous session.** Redirecting a fresh
+gate to `gate4.log` and then reading `tail`/`grep` on it *before that run reaches the same
+point* returns **yesterday's run**, complete with its own `EXIT=`, its own summary and its own
+red. Three conclusions were drawn from those files before an `ls -l --time-style` showed the
+mtimes were the day before — including a "regression" in which two e2e checks had vanished
+from the suite (they had not: that log predates the commit that registered them) and an
+`m10-checkpoint` failure that was never this tree's. **Timestamp the log or name it after the
+commit**, and check `ls -l` before believing a log you did not watch being written.
+
 ## T19.15 completed — `hud-timer`'s open question, answered
 
 The two open questions the previous coder left were, in order: *why* is the `after` sample

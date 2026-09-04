@@ -29,7 +29,7 @@
  * Chromium **once** for all of them, instead of once per check, is what makes
  * putting it in the gate affordable.
  */
-import { spawn, execSync } from 'node:child_process'
+import { spawn, spawnSync, execSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -214,14 +214,49 @@ if (!selected.length) {
 const require = createRequire(join(root, 'client/package.json'))
 const { chromium } = require('playwright-core')
 
-// `detached` so this gets its own process group. `npm run dev` forks `vite` as a
-// grandchild, and killing npm leaves that grandchild running — ten orphaned vite
-// servers were found accumulating on this box, which is itself the "loaded
+/**
+ * **Build the wasm before the clock starts, not inside it** (T19.16).
+ *
+ * This used to be `npm --prefix client run dev`, whose `predev` hook runs
+ * `scripts/wasm-build.mjs` — so the 90 s budget below, whose failure message
+ * says *"vite did not report a port"*, was in fact a budget for **a release
+ * Rust build plus a lock wait plus vite**. Measured on an idle box: 11.7 s to
+ * the port line, of which **11.6 s was `predev` and 0.1 s was vite**. The
+ * deadline was 99 % a build timer wearing vite's name.
+ *
+ * That is not academic. `wasm-build.mjs` takes a lock (T19.15) whose wait is
+ * bounded at ten minutes, and every concurrent build adds one build to the
+ * queue. Reproduced, exactly: 24 queued `wasm-build.mjs` processes, then
+ * `node scripts/e2e.mjs title` →
+ * `(startup): vite did not report a port within 90 s`, with vite never asked to
+ * do anything. A single blocking build put a straight run at 19.9 s and a
+ * twelve-deep queue at 93.3 s.
+ *
+ * So the build happens here, synchronously and **outside** the deadline, and
+ * vite is then started the way every standalone check starts it — `npx vite`,
+ * which runs no npm hooks. The 90 s is untouched and now measures what it
+ * names: a step that takes 0.1 s. Nothing was widened; the wrong work was
+ * moved out.
+ */
+console.log('building wasm before starting the clock (T19.16)')
+const built = spawnSync('node', [join(root, 'scripts/wasm-build.mjs')], {
+  cwd: root,
+  stdio: 'inherit',
+  env: process.env,
+})
+if (built.status !== 0) {
+  console.error(`wasm-build failed (${built.status}) — vite would serve a stale or missing pkg`)
+  process.exit(1)
+}
+
+// `detached` so this gets its own process group. `npx vite` forks the real vite
+// as a grandchild, and killing npx leaves that grandchild running — ten orphaned
+// vite servers were found accumulating on this box, which is itself the "loaded
 // machine" that has been blamed for three separate flakes. Killing the group
 // kills the grandchild too.
-const vite = spawn('npm', ['--prefix', 'client', 'run', 'dev'], {
+const vite = spawn('npx', ['vite', '--strictPort=false'], {
   detached: true,
-  cwd: root,
+  cwd: join(root, 'client'),
   env: { ...process.env, LD_LIBRARY_PATH: libDir },
 })
 
@@ -241,6 +276,9 @@ const portReady = new Promise((res, rej) => {
   }
   vite.stdout.on('data', onData)
   vite.stderr.on('data', onData)
+  // 90 s for a step measured at 0.1 s. It is generous because it is now only
+  // about vite: see the comment above the build for why it used to be a
+  // coin flip and what it was really timing.
   setTimeout(() => rej(new Error('vite did not report a port within 90 s')), 90_000)
 })
 
