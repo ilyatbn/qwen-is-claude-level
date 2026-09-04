@@ -1688,3 +1688,43 @@ Not a divergence. Two rounds of repair, and the first one was wrong:
   reds (T19.05, T19.08) happened only inside full gates: a slower box widens the gap between
   the two `dbg()` round trips, which fits, but nobody measured it and this section is not
   claiming it. **`bullets-visible` and `night-combat` are untouched by this.**
+
+## Where this coder handed over (T19.17–T19.19, retiring at a clean boundary)
+
+**HEAD is `450d44f`. The tree is clean, `git stash` is empty, and the last full gate was
+EXIT=0 — 43/43 e2e, net smoke 25/25 joined, assets ok**, on a log whose mtime was checked.
+The untracked `CLAUDE.md` symlink at the repository root is not a builder's; it was left
+alone. **`tasks/HANDOFF-M19.md` was being edited concurrently by the coordinator during this
+shift** (the suite-context section, rewritten around 05:02); everything added here is
+appended at the end so nothing of theirs was overwritten, and their edits went in with the
+T19.17 commit because git stages whole files.
+
+**Landed:** T19.17, T19.18, T19.19, plus the two things the coordinator asked for mid-shift
+(T19.20 booked, `delivery.rs`'s duplicated `40` bound to a const).
+
+**Next is T19.20**, the only unticked row. Read its "Where to start" first: the decision is
+not tidying, it is whether flashlight cones, explosion flashes and hazard lights belong in
+the game at all — `docs/14` §4 appears to have answered that for the flashlight already, and
+whichever way it goes the answer needs pixels rather than a grep.
+
+**Three things this shift found that belong to nobody yet:**
+
+1. **`crate_spawn` and the join catch-up disagree about whether a crate's contents are
+   public.** The spawn event carries four fields; the catch-up re-sends the same crate as
+   `item_spawn` with `item_id` and `count`. So one client knows what is in a crate and
+   another does not, and `docs/40` pins both payloads. A spec question, not a builder's.
+2. **`m10-checkpoint` was reading two clients at two instants** and that is fixed, but the
+   *same shape* is worth a sweep: any check that compares two clients with two sequential
+   `dbg()` calls is exposed the moment something in the world changes continuously. Nobody
+   has looked for the others.
+3. **The `LATCHED_EVENTS` set has one member.** `map_init` and `lobby_state` still have
+   bespoke buffers in `MenuScene` because they drive the scene handover as well as carrying a
+   value. If a fourth current-value event appears, it goes in the set — that is what the set
+   is for, and the comment says so.
+
+**One method note, because it is what actually solved two of the three.** T19.17 and the
+`m10-checkpoint` flake were both diagnosed by printing from **the layer that owns the state**
+rather than reasoning about the layer that reports it — an `eprintln!` inside
+`resolve_pickups` for one, four already-existing `debug()` fields on the failure line for the
+other. Both had been theorised about across multiple sessions from a client-side number that
+was itself wrong. Neither took more than one run once the print was in the right place.
