@@ -74,9 +74,33 @@ export type LobbyIntent =
   | { kind: 'create'; scale: string; tombstoneSkinId?: number }
   | { kind: 'code'; code: string; tombstoneSkinId?: number }
 
+/**
+ * Events whose payload is a **current value**, not a change — so a subscriber
+ * that arrives late still needs the last one.
+ *
+ * `inventory` is the whole 24-slot array on every change (`docs/30` §6), and the
+ * server sends it once at match start (`broadcast_inventories`) immediately after
+ * `map_init`. But `map_init` is what moves the player from `MenuScene` to
+ * `GameScene`, and `GameScene` registers its `inventory` handler in `create()` —
+ * a frame later. So for **every** client that reaches a match through the menu,
+ * the one `inventory` it will get for its first life landed on a socket with no
+ * listener and was dropped: `debug().slots` stayed all-null for the whole round,
+ * `harness.mjs::selectWeapon` could not select by name, and a player's quick bar
+ * had nothing to draw until they happened to pick something up (T19.18).
+ *
+ * A set rather than a fourth bespoke buffer. `MenuScene` already hand-buffers
+ * `map_init` and `lobby_state` through the scene registry; those two also *drive*
+ * the handover, so they keep their own path. Anything that is purely a current
+ * value belongs here, where the next one is a one-line addition rather than a
+ * fourth thing to remember.
+ */
+const LATCHED_EVENTS = new Set(['inventory'])
+
 export class Connection {
   private socket: SocketLike | null = null
   private readonly handlers = new Map<string, EventHandler[]>()
+  /** The last payload seen for each `LATCHED_EVENTS` name. */
+  private readonly latched = new Map<string, unknown>()
   private _state: ConnectionState = 'closed'
   private readonly opts: ConnectionOptions
   private stateCbs: Array<(s: ConnectionState) => void> = []
@@ -114,6 +138,10 @@ export class Connection {
    * so what it exercises is the production path — it only skips the wire.
    */
   emitLocal(event: string, payload: unknown): void {
+    // Latched here too: this is "as if it had arrived", and a locally injected
+    // `inventory` that a later subscriber could not see would be a second
+    // delivery rule for the same event.
+    if (LATCHED_EVENTS.has(event)) this.latched.set(event, payload)
     for (const h of this.handlers.get(event) ?? []) h(payload)
   }
 
@@ -135,6 +163,11 @@ export class Connection {
     // Attach every registered handler, plus the ones we own.
     for (const [event, list] of this.handlers) {
       for (const h of list) socket.on(event, (...a: unknown[]) => h(a[0]))
+    }
+    // The latch listens whether or not anybody has subscribed yet — which is the
+    // whole point, since the case it exists for is nobody having subscribed.
+    for (const event of LATCHED_EVENTS) {
+      socket.on(event, (...a: unknown[]) => this.latched.set(event, a[0]))
     }
 
     socket.on('connect', () => {
@@ -187,12 +220,25 @@ export class Connection {
     })
   }
 
-  /** Safe before `connect()`: queued and attached when the socket is made. */
+  /**
+   * Safe before `connect()`: queued and attached when the socket is made.
+   *
+   * For a `LATCHED_EVENTS` name that has **already arrived**, the last payload is
+   * replayed to this handler — see that set for why. Replayed on a microtask
+   * rather than inline: a handler that runs *inside* `on()` re-enters whatever is
+   * registering it, and every caller here registers from a scene's `create()`
+   * with half its fields still unbuilt. The microtask runs once `create()` has
+   * returned, which is the state the handler was written against.
+   */
   on(event: string, cb: EventHandler): void {
     const list = this.handlers.get(event) ?? []
     list.push(cb)
     this.handlers.set(event, list)
     if (this.socket) this.socket.on(event, (...a: unknown[]) => cb(a[0]))
+    if (LATCHED_EVENTS.has(event) && this.latched.has(event)) {
+      const payload = this.latched.get(event)
+      queueMicrotask(() => cb(payload))
+    }
   }
 
   /**

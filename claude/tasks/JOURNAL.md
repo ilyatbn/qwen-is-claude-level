@@ -5277,3 +5277,14 @@ pickup, so §C24's one-slot-per-weapon rule makes `add` return `Full` and the it
 stays on the ground. **The "MEDKIT, heals=0" was the instrument**: `crate_spawn` carries no
 `item_id` and the mirror coerced the absent field to `0`, which is `MEDKIT` — so every crate
 was also labelled "Medkit" on screen. Now `null`; falsified both ends. EXIT=0, 43/43, 25/25.
+
+## T19.18 — the client subscribed a frame after its own inventory arrived
+
+`broadcast_inventories` fires at match start immediately after `map_init`, and `map_init` is
+what moves a client out of `MenuScene`; `GameScene` registers `on('inventory')` in `create()`,
+a frame later. So the one `inventory` a menu-entered client gets for its first life landed on
+a socket with no listener — `debug().slots` all-null for the round, on **every** such client.
+`Connection` now latches current-value events (a **set**, not a fourth bespoke buffer beside
+`pendingMapInit`/`pendingLobbyState`/`pendingSnapshot`) and replays the last one to a late
+subscriber on a **microtask**, so no scene is re-entered mid-`create()`. `m10-checkpoint`
+selects by name again; the crater is the second end. EXIT=0, 43/43, 25/25, assets ok.

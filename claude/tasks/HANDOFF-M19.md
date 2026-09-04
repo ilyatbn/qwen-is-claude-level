@@ -1517,3 +1517,72 @@ remote, lights anything** — against `docs/14` §4, which makes a flashlight at
 trade. Explosion flashes and `HAZARD_RADIUS` are the other two orphaned sources.
 `TASKS.md`'s count is re-derived at 203. And `delivery.rs`'s duplicated `40` is now
 `const OVER_CAP`.
+
+## T19.18 landed — the client subscribed one frame too late
+
+**The task file's hypothesis was right and its pointer was not.** It suggested `events.rs`
+delivery scoping and "the event being emitted before that client's scene exists". The
+scoping is fine (`Scope::Only(player_id)`, and `broadcast_inventories` is called at match
+start exactly where it should be, `room.rs:2741`). The window is one frame wide and it is
+entirely on the client.
+
+- **The sequence.** `map_init` and `inventory` go out back to back from the same tick.
+  `MenuScene` holds the socket and buffers `map_init` in its own handler, then calls
+  `scene.start('Game')` — which Phaser defers to the next update. `GameScene.create()`
+  registers `conn.on('inventory', …)` there. `inventory` arrived in between, on a
+  `Connection` whose only listeners were `MenuScene`'s three. Dropped, with no error.
+- **It is every menu-entered client, not just the host.** Measured on all three of
+  `m10-checkpoint`'s (`ana`, `bo` in the private lobby, `cy` through quick match); the task
+  file recorded two.
+- **The fix is a set, not a fourth buffer.** `MenuScene` already hand-buffers `map_init`
+  and `lobby_state` through the scene registry, and `GameScene` hand-buffers `snapshot` in
+  `pendingSnapshot`. A fourth would be the one the fifth person forgets.
+  `LATCHED_EVENTS` in `connection.ts` names the events whose payload is a *current value*
+  rather than a change; `connect()` attaches a recorder for each **whether or not anybody
+  has subscribed**, which is the whole point, and `on()` replays the last one to a late
+  subscriber. `map_init` and `lobby_state` keep their bespoke path because they also drive
+  the handover — they are not merely values.
+- **The replay is a microtask, deliberately.** Inline, `on()` would run the handler *inside*
+  the `create()` that is registering it, with half the scene's fields unbuilt — every caller
+  here registers from `create()`. `refreshHud` happens to guard on `!this.hud`, so inline
+  would have worked today; that is luck, not a contract. The unit test asserts the handler
+  has **not** fired before the first `await`, so the ordering is pinned rather than assumed.
+- **Falsified at the live binding site**: deleting the four-line replay in `on()` fails 3 of
+  the 5 new `connection.test.ts` tests. The control in the same test is `score` — a change,
+  not a value — which must *not* be replayed, so "the latch works" cannot be satisfied by a
+  `Connection` that replays everything.
+- **`m10-checkpoint` selects by name again** and prints both clients' slots
+  (`0:shovel 1:bazooka 2:smg 3:mine 4:flamethrower 5:molotov 6:laser_pistol`). The two ends
+  (§A39) are the name the *client* believes it holds and the crater the *server* makes when
+  that slot fires: a slot list that disagreed with the server's would carve differently or
+  not at all. `Digit2` proved only that a key was pressed.
+- **`Connection` had no test file at all** before this. `socket.test.ts` covers `Net`
+  (`BootScene`'s transport), which is a different class.
+
+### `m10-checkpoint`'s mask disagreement — a third sighting, and a mechanism to check
+
+**It went red once, standalone, on the first run after this change, and 6/6 green
+immediately afterwards** (plus one green before those, so 7 of 8). Recorded rather than
+smoothed over, because HANDOFF already carries two sightings inside full gates and says the
+third is the point to measure properly.
+
+- **This change is not exonerated by 7 of 8** — a ~1-in-8 event needs far more runs to
+  attribute — but it is not implicated either, and the two earlier reds predate it. The
+  failing run had already passed `ah.solid < dh.solid`, so the fire path worked and only the
+  guest's mask was behind.
+- **The mechanism worth testing first**: `MASK_CHECKSUM_INTERVAL` is **5.0 s**, and
+  `verifyChecksum` responds to any mismatch with a **full resync** (`worldMirror.ts:264`) —
+  which is exactly what a client mid-way through applying a burst of carves looks like. The
+  check fires four rockets over ~2.3 s, sleeps a fixed **1500 ms**, and samples the two
+  hashes **once**. Whether a checksum lands inside that window is a function of where the
+  burst falls in a 5 s cycle, which nothing in the check controls.
+- **Deliberately not changed.** Replacing the fixed sleep and single sample with a bounded
+  convergence poll is the obvious repair and is probably right — the property the check is
+  about is that the two clients *agree*, not that they agree at one arbitrary instant — but
+  HANDOFF's own rule is not to touch this family without measuring, and an A/B of that
+  change is a task, not a paragraph.
+- **What did change is the diagnosis.** The failure line now prints `solid`,
+  `carvesApplied`, `pendingCarves` and `resyncs` for both clients. Three reds in M19 have
+  each reported two hashes and nothing else, so nobody could tell a dropped carve from a
+  resync in flight. On the fourth sighting the log will say which — and a non-zero `resyncs`
+  on the guest confirms the mechanism above in one line.

@@ -25,7 +25,7 @@
  * one-player room that had no round at all.
  */
 import { join } from 'node:path'
-import { startStack, enterBattle, sleep, shotsDir } from './harness.mjs'
+import { startStack, enterBattle, selectWeapon, sleep, shotsDir } from './harness.mjs'
 
 const PORT = 3114
 const shots = shotsDir
@@ -173,22 +173,41 @@ log(`three rounds ticking at once: ${before.join('/')} → ${after.join('/')}`)
 
 // --- the negative: rooms do not leak into each other ----------------------
 const soloSolidBefore = (await dbg(solo)).solid
+// --- the menu-entered clients know what they are holding (T19.18) ---------
+//
+// **This is the only check in the suite that reaches a match through the menu**,
+// and until T19.18 it was the only one whose `debug().slots` was all-null for the
+// whole round: the server sends `inventory` once at match start, straight after
+// `map_init`, and `map_init` is what moves the client out of `MenuScene` — so
+// `GameScene` subscribed a frame after its own inventory had been delivered and
+// dropped. Every other check hides it, because `enterBattle` seats them another
+// way. Asserted on **both** menu-entered clients, because it was measured on both.
+const heldBy = (d) => (d.slots ?? []).filter((sl) => sl.key).map((sl) => `${sl.slot}:${sl.key}`)
+for (const [c, d] of [
+  [host, await dbg(host)],
+  [guest, await dbg(guest)],
+]) {
+  const held = heldBy(d)
+  if (!held.length) {
+    die(
+      `${c.name} reached a match through the menu and its client never learned its ` +
+        'inventory — `slots` is all null with DEV_LOADOUT=1 (T19.18)',
+    )
+  }
+  log(`${c.name} holds ${held.join(' ')}`)
+}
+
 // Fire the way full-round does: select the rocket stack, aim below mid-screen
 // (the camera follows the player, so that is below the body in world space
 // whatever the camera has done) and shoot.
-// `Digit2`, not `Digit1`: §F5 issues a shovel into slot 0 of every player, so
-// every `DEV_LOADOUT` weapon moved one digit along and the bazooka is slot 1.
 //
-// **By digit here and by name everywhere else, and that is deliberate.**
-// `harness.mjs::selectWeapon` reads `window.__game.debug().slots`, which this
-// scene fills *only* from the server's `inventory` event — and for this host it
-// never arrives: measured, `slots` was all-null for a full 30 s while the room
-// ticked and the rest of the check passed. Every other check enters through
-// `enterBattle`; this one comes through the menu into a private lobby, and the
-// loadout is granted at match start. **Booked in `HANDOFF-M19.md`** — an
-// inventory the client never learns is a real defect, not a fixture detail — but
-// it is not this task's, and a digit does not depend on it.
-await host.page.keyboard.press('Digit2')
+// **By name, like every other check.** It used to press `Digit2` blind, because
+// `selectWeapon` reads `debug().slots` and this client never had any. Selecting
+// by name is also the second end of the assertion above (§A39): the crater below
+// is the server firing the slot the *client* believes holds a bazooka, so a slot
+// list that disagreed with the server's would carve differently or not at all.
+// A digit proves only that some key was pressed.
+await selectWeapon(host.page, 'bazooka')
 await sleep(300)
 await host.page.mouse.move(640, 700)
 for (let i = 0; i < 4; i++) {
@@ -202,7 +221,18 @@ await sleep(1500)
 const [ah, ag, as_] = [await dbg(host), await dbg(guest), await dbg(solo)]
 if (ah.solid >= dh.solid) die('the host fired and its own terrain did not change')
 if (ag.maskChecksum !== ah.maskChecksum) {
-  die(`the two clients in one room disagree: ${ah.maskChecksum} vs ${ag.maskChecksum}`)
+  // **Say what the disagreement is made of.** Two hashes are not a diagnosis:
+  // this check has now gone red on this line three times in M19 and every report
+  // was "the two clients disagree" and nothing else, so nobody could tell a
+  // dropped carve from a resync in flight from a genuine divergence. All four
+  // numbers are already in `debug()`; printing them costs nothing and is the
+  // difference between a fourth sighting and a cause.
+  const state = (d) =>
+    `solid=${d.solid} applied=${d.carvesApplied} pending=${d.pendingCarves} resyncs=${d.resyncs}`
+  die(
+    `the two clients in one room disagree: ${ah.maskChecksum} vs ${ag.maskChecksum}\n` +
+      `    host  ${state(ah)}\n    guest ${state(ag)}`,
+  )
 }
 log(`host carved ${dh.solid - ah.solid} px; guest agrees (${ah.maskChecksum})`)
 
