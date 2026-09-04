@@ -5326,3 +5326,17 @@ missing is about the *telling* — `the_promotion_is_broadcast_and_not_merely_de
 when `Leave`'s `note_lobby_change()` is removed. `ROOM_EMPTY_TTL` untouched: measured, an
 emptied lobby closes within `TTL + REAP_INTERVAL` = 32 s and `reap.rs` already watches it.
 EXIT=0, 43/43, 25/25, assets ok.
+
+## T20.02 — there is no "dude"; there were four copies of one read
+
+The default is `Player`, and the defect is that `MenuScene.identity()` re-spelled the three
+`deepcut.*` keys and read them **raw** — the live binding site for all four lobby verbs. A
+stored `"  "` went on the wire as a name the server refuses; `"banana"` went as
+`Number("banana")` = `NaN`, which `JSON.stringify` sends as `null` and which the client then
+hands to its own atlas. `loadIdentity` is `loadChoice` with the **bound** removed rather than
+the menu growing an atlas dependency (the server clamps to u16::MAX and every lookup falls
+back; only `NaN` is unsafe). The prompt is **one gate in `enterLobby`**, in front of all three
+verbs, and `nameOrNull` is one predicate for "is a name stored", "is this typed name a name"
+and "what do we send" — three questions that must not disagree. Found on the way:
+`SkinsScene` interpolated the name into an HTML **attribute** unescaped, and `cleanName`
+strips `<>` and not quotes. EXIT=0, 43/43, 25/25, assets ok.

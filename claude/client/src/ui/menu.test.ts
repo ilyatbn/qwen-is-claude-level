@@ -10,7 +10,26 @@ import {
   type Screen,
 } from './menu'
 
-const ALL: Screen[] = ['menu', 'private', 'create', 'join', 'matching', 'lobby', 'skins']
+/**
+ * Every screen, and **exhaustive by type**.
+ *
+ * This was a hand-written array, which meant a new screen was silently untested
+ * — the back-reaches-menu test would go on passing while the one screen that
+ * could trap you was not in the list. As a `Record<Screen, …>` a missing entry
+ * is a compile error, which is the same trick `BACK` in `menu.ts` uses and for
+ * the same reason. T20.02's `name` is the screen that found it.
+ */
+const SCREENS: Record<Screen, true> = {
+  menu: true,
+  private: true,
+  create: true,
+  join: true,
+  matching: true,
+  lobby: true,
+  skins: true,
+  name: true,
+}
+const ALL = Object.keys(SCREENS) as Screen[]
 
 describe('menu navigation', () => {
   it('back reaches the menu from every screen — no screen is a trap', () => {
@@ -30,6 +49,13 @@ describe('menu navigation', () => {
         'menu',
       )
     }
+  })
+
+  it('the nickname prompt is not a trap either, and Back abandons the join', () => {
+    // §T20.02. The prompt stands in front of a join, so its Back is `menu` and
+    // not the screen it interrupted: pressing Back has said no to *this* game,
+    // which is why `MenuScene` clears the pending intent on any navigation away.
+    expect(menuReducer({ ...DEFAULT_MODEL, screen: 'name' }, { type: 'back' }).screen).toBe('menu')
   })
 
   it('and every nested screen goes up one level, not straight to the top', () => {

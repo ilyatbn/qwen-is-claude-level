@@ -172,3 +172,76 @@ the screen.
   when `dan` presses Leave: `leaveLobby` sends `leave_room` and closes the socket, and the
   server's `room_left` reply races the close. Pre-existing shape, unrelated to this task, and
   named here so the next reader does not chase it.
+
+## T20.02 landed — there was no "dude", and the bug was one function with four copies
+
+**The default is `Player`, not "dude"** — nothing in the repo ever called anybody that. The
+real defect is the one the task file names: `MenuScene.identity()` re-spelled all three
+`deepcut.*` keys and read them **raw**, bypassing `loadChoice`, `cleanName` and `readId`.
+That is the live binding site for all four lobby verbs, so a stored `"   "` reached the wire
+as a name the server refuses and a stored `"banana"` reached it as `Number("banana")` —
+`NaN`, which `JSON.stringify` sends as `null` and which **this client then hands to its own
+atlas**. The server degrades safely; the client does not.
+
+### The two open decisions, and how they were settled
+
+**"Route it through `loadChoice`" is not executable, and the way out is `loadIdentity`.**
+`loadChoice` needs a skin count, `SkinsScene` gets it from `skins()?.players.length` *after
+the atlas loads*, and `MenuScene` imports no registry at all. Giving the menu the atlas
+lookup would make the menu wait on an image to know its own name, so the split is the other
+way: `loadIdentity(store)` is `loadChoice(store, Infinity, Infinity)` — the same function
+with the **bound** removed, because the bound is the only part the atlas is needed for.
+Unbounded is safe at both ends and neither end is an accident: the server clamps to
+`u16::MAX` and never validates an id against a list (`docs/50` §1), and every client lookup
+falls back for an id past the end. What is *not* safe is `NaN`, and `readId` stops that with
+or without a count. There is a test for exactly this: `loadChoice(s, 5, 5).skinId` is 0 for a
+stored `7` and `loadIdentity(s).skinId` is 7 — clamping to 0 would silently draw a
+**different real skin** where falling back draws the fallback.
+
+**The dev path stays dev-only for the name and joins the shared path for the id.** Eight
+browser checks name their client through `?name=`; routing that through `localStorage` would
+make the URL inert and every one of them anonymous, and a check that set `deepcut.name` and
+one that passed `?name=` would then disagree about which wins. The **skin** has no competing
+parameter, so `GameScene.ts:935`'s `Number(localStorage.getItem('deepcut.skin') ?? 0)` — the
+same `NaN` bug, on the same key — now reads `loadIdentity(localStorage).skinId`. A valid
+stored id passes through unchanged, so no fixture moves.
+
+**Who owns `<>`, since the task asks:** every HTML sink, through `escapeHtml` —
+`results.ts`, `deathOverlay.ts`, `MenuScene`'s roster, and now `SkinsScene`'s name input.
+`sanitise_name` on the server strips control characters and neither brackets nor quotes, and
+`cleanName` strips brackets and **not quotes** — so reading `cleanName` as the injection
+guard is a mistake. **A real hole was found and closed on the way:**
+`SkinsScene.ts:189` interpolated `value="${this.choice.name}"` into `innerHTML` unescaped,
+and a name containing `"` breaks out of the attribute. It is self-inflicted (the name is the
+player's own storage) rather than an attack surface, and it is still an injection.
+
+### The prompt
+
+**One gate, in `enterLobby`, in front of all three verbs.** `quickMatch`, `createRoom` and
+`joinByCode` all converge there, so a guard in each would be three copies of one rule and the
+fourth entry point would forget it. The interrupted join is remembered on the **scene** as
+`{ intent, screen }` — on the scene because `MenuModel` is the Phaser-free half and a
+`LobbyIntent` is a wire payload, and *with its screen* so resuming does not have to know
+which verb was pressed.
+
+**`nameOrNull` is one predicate answering three questions** — is a name stored (the trigger),
+is what was just typed a name (the prompt's own validation), and what do we send. They must
+not be allowed to disagree: a prompt that appears for a name the game would have accepted, or
+a box that accepts one the game then replaces with `Player`, is worse than no prompt.
+`cleanName` and `storedName` are that function with two different endings.
+
+**A player who types `Player` is never asked again**, deliberately: the test is "is the key
+present and non-blank", not "is it the default". And `<b>` is **not** blank — it strips to
+`b`, a name somebody can have — which is asserted as the control beside the blank cases.
+
+### Two things worth knowing
+
+- **`ui/menu.test.ts`'s `ALL` was a hand-written array and is now `Record<Screen, true>`.**
+  A screen added without a row was silently untested — the "back reaches the menu from every
+  screen" test would go on passing while the one screen that could trap you was not in the
+  list. `name` is the screen that found it. Same trick `BACK` in `menu.ts` already uses.
+- **`lobby.mjs`'s `openAtMenu` takes a second argument now**, `seed`, so one client can
+  arrive with nothing stored. The `deepcut.name` literal is still spelled out there — the
+  keys did not change in this task precisely because three browser fixtures spell them out,
+  and a rename that missed them would seed a value nobody reads while every "the roster names
+  the player" assertion went on passing against the default.

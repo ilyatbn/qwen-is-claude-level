@@ -96,6 +96,7 @@ import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { FogClock } from '../render/weather-math'
+import { loadIdentity } from '../ui/skins'
 
 interface RemoteView {
   view: PlayerView
@@ -903,6 +904,20 @@ export class GameScene extends Phaser.Scene {
     // body it reaches are deleted rather than merely unreachable.
     if (devSurface() && params.get('e2e') === '1') this.exposeDebugHandle()
 
+    // **The dev path stays dev-only, and that is the answer to T20.02's
+    // question.** `?game=1` skips the menu entirely and eight browser checks
+    // name their client through this parameter; routing it through
+    // `localStorage` would make the URL inert and every one of them anonymous.
+    // The stored name is deliberately not consulted here — a check that sets
+    // `deepcut.name` and one that passes `?name=` would then disagree about
+    // which wins.
+    //
+    // **Who owns `<>`:** every HTML sink, through `escapeHtml` — `results.ts`,
+    // `deathOverlay.ts`, `MenuScene`'s roster and `SkinsScene`'s input. The
+    // server strips control characters and neither brackets nor quotes
+    // (`sanitise_name`), and `cleanName`'s strip is a second layer at the
+    // storage boundary that this path skips. It is skipped safely because the
+    // sinks escape, not because the name is clean.
     const name = params.get('name') ?? `player${Math.floor(Math.random() * 1000)}`
 
     // Handed over from the lobby: already connected, already seated, and its
@@ -932,7 +947,12 @@ export class GameScene extends Phaser.Scene {
       const w = await this.conn.connect(
       undefined,
       name,
-      Number(localStorage.getItem('deepcut.skin') ?? 0),
+      // The **id** does join the shared path, unlike the name above: there is no
+      // URL parameter competing with it, and `Number("banana")` is `NaN` — which
+      // `JSON.stringify` sends as `null` and which this client then hands to its
+      // own atlas. `loadIdentity` reads the same key through `readId`; a valid
+      // stored id passes through unchanged, so no fixture moves.
+      loadIdentity(localStorage).skinId,
       // `?game=1` skips the front end entirely, so there is no lobby to adopt
       // and a plain `join` happens — which is what every check written before
       // the menu expects. The menu path never reaches here.

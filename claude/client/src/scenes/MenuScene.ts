@@ -17,6 +17,7 @@ import {
   saveScale,
   type MenuAction,
   type MenuModel,
+  type Screen,
   stepIndex,
 } from '../ui/menu'
 import {
@@ -38,6 +39,7 @@ import {
   type TimerBounds,
 } from '../net/lobby'
 import { Connection, type LobbyIntent, type Welcome } from '../net/connection'
+import { MAX_NAME, loadIdentity, nameOrNull, saveName, storedName } from '../ui/skins'
 import { devSurface } from '../dev'
 import { C } from '../core'
 
@@ -52,6 +54,16 @@ export class MenuScene extends Phaser.Scene {
   private mySeat: number | undefined = undefined
   private pendingMapInit = ''
   private lastLobbyState: Record<string, unknown> | null = null
+  /**
+   * The join the nickname prompt interrupted, and the screen it came from.
+   *
+   * On the scene rather than in `MenuModel`, because `MenuModel` is the
+   * Phaser-free half and a `LobbyIntent` is a wire payload. The screen is kept
+   * with it so resuming does not have to know *which* verb was pressed —
+   * `enterLobby` is one gate for all three, and reconstructing "was that quick
+   * or create" would be a second copy of that knowledge.
+   */
+  private pendingEntry: { intent: Record<string, unknown>; screen: Screen } | null = null
   constructor() {
     super('Menu')
   }
@@ -103,6 +115,20 @@ export class MenuScene extends Phaser.Scene {
    * `map_init` is what moves the player across.
    */
   private enterLobby(intent: Record<string, unknown>): void {
+    // **The prompt stands here, once, in front of all three verbs** (T20.02).
+    // `quickMatch`, `createRoom` and `joinByCode` all converge on this function,
+    // so a gate in each of them would be three copies of one rule and the fourth
+    // entry point would forget it.
+    //
+    // Asked only when nothing is stored: `storedName` is the same strip
+    // `cleanName` uses, so the prompt cannot appear for a name the game would
+    // have accepted, and cannot fail to appear for one it would have replaced
+    // with `Player`.
+    if (storedName(localStorage) === null) {
+      this.pendingEntry = { intent, screen: this.model.screen }
+      this.dispatch({ type: 'go', screen: 'name' })
+      return
+    }
     const id = this.identity()
     const conn = new Connection()
     this.conn = conn
@@ -190,17 +216,28 @@ export class MenuScene extends Phaser.Scene {
   }
 
 
+  /**
+   * Who this browser says it is, on all four lobby verbs.
+   *
+   * **One reader.** This used to spell the three `deepcut.*` keys out again and
+   * read them raw, which meant a stored `"  "` reached the wire as a name the
+   * server refuses and a stored `"banana"` reached it as `Number("banana")` —
+   * `NaN`, which `JSON.stringify` sends as `null` and which this client then
+   * hands to its own atlas. `loadIdentity` is `loadChoice` without the count the
+   * menu has no atlas to supply; see its comment for why unbounded is the right
+   * shape here rather than a second inline read.
+   */
   private identity(): Identity {
-    return {
-      name: localStorage.getItem('deepcut.name') || 'Player',
-      skinId: Number(localStorage.getItem('deepcut.skin') ?? 0),
-      tombstoneSkinId: Number(localStorage.getItem('deepcut.stone') ?? 0),
-    }
+    return loadIdentity(localStorage)
   }
 
   private dispatch(a: MenuAction): void {
     this.model = menuReducer(this.model, a)
     if (a.type === 'setScale') saveScale(localStorage, this.model.scale)
+    // Leaving the prompt by any route — the button, `Esc`, or a navigation from
+    // elsewhere — abandons the join it was standing in front of. Cleared here
+    // rather than on the Back button, because `Esc` does not go through it.
+    if (this.model.screen !== 'name') this.pendingEntry = null
     this.render()
   }
 
@@ -298,6 +335,45 @@ export class MenuScene extends Phaser.Scene {
       el.querySelector('#back')?.addEventListener('click', () =>
         this.dispatch({ type: 'back' }),
       )
+      input?.focus()
+      return
+    }
+
+    if (m.screen === 'name') {
+      // §T20.02: asked once, on the first join or host, and never again.
+      //
+      // `escapeHtml` on an attribute value, not only on text: a stored name goes
+      // straight back into `value="…"`, and `cleanName` strips `<>` and **not**
+      // quotes — so without this a name containing `"` breaks out of the
+      // attribute. The same interpolation exists in `SkinsScene`.
+      const current = storedName(localStorage) ?? ''
+      el.innerHTML = `
+        <h2>Pick a nickname</h2>
+        <p class="hint">Up to ${MAX_NAME} characters. You will only be asked once.</p>
+        <input id="nickname" maxlength="${MAX_NAME}" autocomplete="off" spellcheck="false"
+               value="${escapeHtml(current)}" aria-label="Nickname" autofocus>
+        <div class="actions">
+          <button id="go-name">Continue</button>
+          <button id="back">Back</button>
+        </div>
+        ${err}`
+      const input = el.querySelector<HTMLInputElement>('#nickname')
+      const submit = (): void => {
+        const typed = input?.value ?? ''
+        // Refused locally rather than stored and then bounced by the server's
+        // `bad_name`: an empty box is a question the player can still answer,
+        // and `cleanName` would have quietly turned it into `Player`.
+        if (nameOrNull(typed) === null) {
+          this.dispatch({ type: 'error', message: 'Pick a nickname with at least one character.' })
+          return
+        }
+        this.confirmName(typed)
+      }
+      input?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') submit()
+      })
+      el.querySelector('#go-name')?.addEventListener('click', () => submit())
+      el.querySelector('#back')?.addEventListener('click', () => this.dispatch({ type: 'back' }))
       input?.focus()
       return
     }
@@ -470,6 +546,25 @@ export class MenuScene extends Phaser.Scene {
   private createRoom(): void {
     this.dispatch({ type: 'go', screen: 'create' })
     this.enterLobby({ kind: 'create', scale: this.model.scale })
+  }
+
+  /**
+   * Take the name and resume the join it interrupted.
+   *
+   * The screen is restored first so the player lands where they would have been
+   * — `matching` for a quick game, `create` for a host — rather than watching the
+   * prompt until `welcome` arrives.
+   */
+  private confirmName(raw: string): void {
+    const p = this.pendingEntry
+    saveName(localStorage, raw)
+    this.pendingEntry = null
+    if (!p) {
+      this.dispatch({ type: 'back' })
+      return
+    }
+    this.dispatch({ type: 'go', screen: p.screen })
+    this.enterLobby(p.intent)
   }
 
   private joinByCode(): void {

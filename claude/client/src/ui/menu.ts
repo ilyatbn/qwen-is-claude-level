@@ -7,7 +7,16 @@
  */
 import type { Scale } from '../net/lobby'
 
-export type Screen = 'menu' | 'private' | 'create' | 'join' | 'matching' | 'lobby' | 'skins'
+export type Screen =
+  | 'menu'
+  | 'private'
+  | 'create'
+  | 'join'
+  | 'matching'
+  | 'lobby'
+  | 'skins'
+  /** First run only: the nickname prompt that stands in front of the first join (T20.02). */
+  | 'name'
 
 export interface MenuModel {
   screen: Screen
@@ -54,6 +63,10 @@ const BACK: Record<Screen, Screen> = {
   matching: 'menu',
   lobby: 'menu',
   skins: 'menu',
+  // Backing out of the prompt abandons the join it interrupted, which is why
+  // the pending intent lives on the scene and is cleared there: a player who
+  // presses Esc has said no to *this* game, not chosen a name.
+  name: 'menu',
 }
 
 export function menuReducer(m: MenuModel, a: MenuAction): MenuModel {

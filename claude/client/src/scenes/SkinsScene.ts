@@ -21,9 +21,17 @@ import {
   loadChoice,
   saveChoice,
   weaponSlots,
+  NAME_KEY,
+  SKIN_KEY,
+  STONE_KEY,
   type Choice,
   type WeaponSlot,
 } from '../ui/skins'
+// The exported, tested escaper — a name goes back into an HTML **attribute**
+// here, and `cleanName` strips `<>` and not quotes, so a name containing `"`
+// would break out of `value="…"`. Storage is the player's own, so this is
+// self-inflicted rather than an attack surface; it is still an injection.
+import { escapeHtml } from '../ui/results-math'
 
 /** Walking speed fed to the preview, so the cycle runs at its natural rate. */
 const PREVIEW_VX = 90
@@ -183,7 +191,7 @@ export class SkinsScene extends Phaser.Scene {
       <h2>Skins</h2>
       <label class="field">Name
         <input id="name" maxlength="16" autocomplete="off" spellcheck="false"
-               value="${this.choice.name}" aria-label="Player name">
+               value="${escapeHtml(this.choice.name)}" aria-label="Player name">
       </label>
       <div class="picker" id="pick-skin">
         <button data-d="-1" aria-label="Previous character">◀</button>
@@ -233,10 +241,15 @@ export class SkinsScene extends Phaser.Scene {
         previewFrame: self.preview?.currentFrame ?? '',
         /** The section must be present *and* inert, so report both. */
         weaponsDisabled: !!self.root?.querySelector('fieldset.coming-soon[disabled]'),
+        // **Raw on purpose** — reporting what is literally in storage is this
+        // probe's whole job, so it must not go through `loadChoice`. But the
+        // *keys* are imported rather than re-typed: three browser fixtures spell
+        // them out as literals too, and a fourth copy here is the one that would
+        // go on reading an old key in silence after a rename.
         stored: {
-          skin: localStorage.getItem('deepcut.skin'),
-          stone: localStorage.getItem('deepcut.stone'),
-          name: localStorage.getItem('deepcut.name'),
+          skin: localStorage.getItem(SKIN_KEY),
+          stone: localStorage.getItem(STONE_KEY),
+          name: localStorage.getItem(NAME_KEY),
         },
       }),
       step: (field: 'skinId' | 'tombstoneSkinId', d: number) => self.step(field, d),

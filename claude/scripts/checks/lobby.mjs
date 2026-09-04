@@ -35,14 +35,26 @@ const stack = await startStack({
 })
 const { browser, viteUrl } = stack
 
-async function openAtMenu(name) {
+// **`deepcut.*`, spelled out.** Three browser fixtures do this, and the keys did
+// not change in T20.02 for exactly that reason — a rename here that missed them
+// would seed a value nobody reads and every "the roster names the player" check
+// would go on passing against the default. If they are ever renamed, this line
+// is part of the rename.
+const NAME_KEY = 'deepcut.name'
+
+/**
+ * @param name the nickname to seed, or `null` to arrive with **nothing stored**
+ *   — which is the state T20.02's prompt exists for.
+ */
+async function openAtMenu(name, seed = true) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } })
   const page = await ctx.newPage()
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
   await page.goto(`${viteUrl}/?e2e=1&menu=1&name=${name}`)
   await page.waitForFunction('!!window.__menu', null, { timeout: 60_000 })
-  await page.evaluate((n) => localStorage.setItem('deepcut.name', n), name)
+  if (seed) await page.evaluate((k) => localStorage.setItem(k[0], k[1]), [NAME_KEY, name])
+  else await page.evaluate((k) => localStorage.removeItem(k), NAME_KEY)
   return { page, errors, name }
 }
 
@@ -521,6 +533,67 @@ for (const c of [dan, eve]) {
   if (c.errors.length) fail(`${c.name} page errors: ${c.errors.join(' | ')}`)
   const ctx = c.page.context()
   await c.page.close()
+  await ctx.close()
+}
+
+// --- T20.02: a nickname you are asked for once ----------------------------
+//
+// **Last, with the other room-making blocks**, for the reason the public-lobby
+// section above gives.
+//
+// The control for "the prompt appears" is every client above: `ana`, `bo`,
+// `cass`, `dan` and `eve` all had a name in storage and every one of them walked
+// straight into a lobby. This client has nothing stored.
+const zed = await openAtMenu('zed', false)
+await zed.page.evaluate(() => document.querySelector('#private')?.click())
+await zed.page.evaluate(() => document.querySelector('#host')?.click())
+await zed.page
+  .waitForFunction('!!document.querySelector("#nickname")', null, { timeout: 20_000 })
+  .catch(() => {})
+if (!(await zed.page.evaluate('!!document.querySelector("#nickname")'))) {
+  fail('a player with no stored nickname was not asked for one before hosting')
+} else ok('a player with no stored nickname is asked for one before hosting')
+// And the join really is held: the prompt is a gate, not a banner over a lobby
+// that opened anyway.
+if (await zed.page.evaluate('!!document.querySelector("#roster")')) {
+  fail('the nickname prompt is on screen and the lobby opened behind it')
+} else ok('control: the lobby did not open behind the prompt')
+
+await zed.page.evaluate(() => {
+  const input = document.querySelector('#nickname')
+  input.value = 'zed'
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  document.querySelector('#go-name')?.click()
+})
+await zed.page
+  .waitForFunction('window.__menu.visibleCode().length === 6', null, { timeout: 30_000 })
+  .catch(() => fail('the nickname was accepted and the host never reached a lobby'))
+
+// **Read off the roster, not out of `localStorage`.** The claim is that the name
+// crossed the wire and came back in `lobby_state`, which a storage read cannot
+// see: the old `identity()` sent `Number("banana")` as `null` from a storage
+// that looked perfectly fine.
+const zedRoster = (await roster(zed)).filter((r) => r !== 'empty')
+if (!zedRoster.some((r) => r.startsWith('zed'))) {
+  fail(`the name typed at the prompt is not on the roster: ${JSON.stringify(zedRoster)}`)
+} else ok(`the typed nickname came back off the roster: ${JSON.stringify(zedRoster)}`)
+
+// **Once.** Leave and host again: no prompt the second time.
+await zed.page.evaluate(() => document.querySelector('#back')?.click())
+await zed.page.waitForFunction('!document.querySelector("#roster")', null, { timeout: 20_000 })
+await zed.page.evaluate(() => document.querySelector('#private')?.click())
+await zed.page.evaluate(() => document.querySelector('#host')?.click())
+await zed.page
+  .waitForFunction('window.__menu.visibleCode().length === 6', null, { timeout: 30_000 })
+  .catch(() => {})
+if (await zed.page.evaluate('!!document.querySelector("#nickname")')) {
+  fail('the nickname prompt came back for a player who had already answered it')
+} else ok('and it is asked once: the second host went straight to a lobby')
+
+if (zed.errors.length) fail(`zed page errors: ${zed.errors.join(' | ')}`)
+{
+  const ctx = zed.page.context()
+  await zed.page.close()
   await ctx.close()
 }
 
