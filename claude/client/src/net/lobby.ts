@@ -82,6 +82,36 @@ export function joinErrorMessage(reason: string): string {
   }
 }
 
+/**
+ * Reasons a **lobby action** can be refused — §E6's map size and §F7's three
+ * settings — mapped to something a person can read.
+ *
+ * Separate from `joinErrorMessage` because the two answer different questions,
+ * and routing one through the other is the T20.01 defect: a host whose settings
+ * change was refused was told *"Could not join (only the host can change the
+ * settings)."* about a game they were already sitting in.
+ *
+ * **Mostly a pass-through, and deliberately so.** Every `lobby_error` reason the
+ * server sends is already a full sentence written for a player — *"only the host
+ * can change the settings"*, *"the round length is out of range"* — unlike
+ * `join_error`'s wire enums (`unknown_code`, `in_progress`), which is why that
+ * function is a table and this one is not. Adding a case per reason here would be
+ * a second copy of the server's wording, and the copy is what goes stale.
+ */
+export function lobbyErrorMessage(reason: string): string {
+  switch (reason) {
+    // The one reason that is a state and not a sentence: it means this socket
+    // has lost its seat, which is not something to restate in the server's
+    // words.
+    case 'not seated':
+      return 'You are no longer seated in this game.'
+    case '':
+      return 'That change was refused.'
+    default:
+      return `${reason.charAt(0).toUpperCase()}${reason.slice(1)}.`
+  }
+}
+
 export type LobbyState =
   | { kind: 'idle' }
   | { kind: 'creating'; scale: Scale }

@@ -211,8 +211,29 @@ d = await dbg()
 if (d.phase === 'lobby') fail('the timeout fired and the phase is still lobby')
 else ok(`a solo lobby started itself after ~${waited.toFixed(1)}s (phase ${d.phase})`)
 // Bots, not an empty match: §E2 fills the seats when the timeout fires.
+//
+// **Waited for, not read on the spot, and T20.01 is why.** `phase` comes from
+// `round_state`, which is broadcast to every socket; `playerCount` is
+// `mirror.players`, which is filled from **snapshots**, and snapshots are gated
+// on this client having decoded `map_init` and sent `ready`. So the phase flips
+// one broadcast before the roster can exist, and an instantaneous read races it.
+//
+// It read `3` before T20.01 and it was a **ghost**: `sweep_unready` evicted the
+// only human at t=30 s of a 45 s lobby, its seat id went onto the free list,
+// `seat_bots` handed that id to a bot, and `SessionMap` still pointed it at the
+// human's socket — so this browser was being sent a bot's snapshots for a match
+// it had no seat in. The count was real and the seat behind it was not.
+await page
+  .waitForFunction('window.__game.debug().playerCount >= 2', null, { timeout: 30_000 })
+  .catch(() => {})
+d = await dbg()
 if ((d.playerCount ?? 0) < 2) fail(`the timeout started a match with no bots: ${d.playerCount}`)
 else ok(`and it seated bots: ${d.playerCount} players`)
+// **And this client is in it.** The ghost above satisfied the count without a
+// seat, so the count alone is not the claim.
+if (!(d.me >= 0) || !d.player) {
+  fail(`the human who waited out the lobby is not in the match it started: me=${d.me} player=${JSON.stringify(d.player)}`)
+} else ok(`and the human who waited is in it (seat ${d.me})`)
 
 // **The panel is gone, and its absence is the assertion now** (§E1, T17.07).
 //

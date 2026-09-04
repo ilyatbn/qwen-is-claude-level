@@ -461,7 +461,7 @@ clauses of `docs/72` that contradict each other (§C6 says the rain is a particl
 T20.07 reverses §C13's flashlight trade, and T20.09 must be written against §F4.1's
 right-button decision rather than around it. **Amendments are the coordinator's.**
 
-- [ ] [T20.01](M20/T20.01-the-host-is-swept-out-of-its-own-lobby.md) — The host is swept out of its own lobby **(v8)**
+- [x] [T20.01](M20/T20.01-the-host-is-swept-out-of-its-own-lobby.md) — The host is swept out of its own lobby **(v8)**
 - [ ] [T20.02](M20/T20.02-a-nickname-you-choose-once.md) — A nickname you choose once **(v8)**
 - [ ] [T20.03](M20/T20.03-host-promotion-is-invisible.md) — Host promotion works and nobody is told **(v8)** — depends on T20.01
 - [ ] [T20.04](M20/T20.04-skins-never-reach-the-game.md) — Skins never reach the game **(v8)**

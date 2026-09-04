@@ -5299,3 +5299,16 @@ back. **3 passed → 17 passed.** Nine are duplicated by `client/src/core/index.
 drives the real `pkg` in the gate — including `constants_json`'s six values, so §A19's
 crossing was pinned after all. Genuinely dark: `buried_slots`, the seed's **high half**,
 duplicate `add_player`, `set_player_state`'s velocity, two `load_mask` rejections. EXIT=0.
+
+## T20.01 — the host was not losing permission, it was losing its seat
+
+`settings_owner()` is derived from the seat list, so the 30 s failure was `sweep_unready`
+freeing the host's seat: a private-lobby client sends `ready` only when it presses the
+tick-box. `docs/74:110` forbids that ("No timeout, ever"), and the same eviction with no §E3
+clause to name it was happening in **public** lobbies too — so the sweep now runs only where
+a map has gone out, and its window runs from `map_init`, **not** `joined_at` (a 45 s lobby
+made every seat stale on the tick the world appeared). `lobby-start` was green on a **ghost**:
+the swept human's id was recycled to a bot and its socket kept receiving that bot's
+snapshots — `3 players`, all bots. It reads 4 now. Plus `lobbyErrorMessage` and the
+`SessionMap` half of leaving; `ctx.detach` is unreachable from the room task and untouched.
+EXIT=0, 43/43, 25/25, assets ok. Detail in `tasks/HANDOFF-M20.md`.

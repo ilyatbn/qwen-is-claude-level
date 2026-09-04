@@ -1406,7 +1406,28 @@ fn emit(socket: &SocketRef, ev: &'static str, payload: &serde_json::Value) {
 /// Scoped through the room's `SessionMap` rather than `io.sockets()`, for the
 /// reason in [`SessionMap::sids`]: with more than one room, a process-wide
 /// iteration announces every join to every game.
-fn broadcast_except(
+/// Release the socket of a player the unready sweep just dropped, and say which
+/// one it was so the caller can announce it.
+///
+/// **This is the socket-layer half of leaving, which the sweep never did.**
+/// `Room::sweep_unready` frees the seat and pushes its id onto `Seats::free`, so
+/// the next joiner is handed that id — and `SessionMap::insert` retains by *both*
+/// player and sid, which means the new seating silently evicts the swept
+/// socket's mapping instead of the swept socket's mapping having gone on its
+/// own. That socket then has no player id and every verb it sends is answered
+/// "not seated" (T20.01).
+///
+/// `ctx.detach` — the registry's `humans` count, and therefore reaping — is **not**
+/// done here and is not reachable from the room task: every `ctx.detach` is in a
+/// socket handler, and `room::run` holds `io` and an `Arc<SessionMap>` and no
+/// registry handle.
+pub(crate) fn release_swept_socket(sessions: &SessionMap, player: PlayerId) -> Option<Sid> {
+    let sid = sessions.sid_of(player)?;
+    sessions.remove_sid(sid);
+    Some(sid)
+}
+
+pub(crate) fn broadcast_except(
     io: &SocketIo,
     sessions: &SessionMap,
     except: Sid,
@@ -1548,6 +1569,51 @@ mod tests {
         );
         m.mark_ready(sid);
         assert!(m.is_ready(sid));
+    }
+
+    /// The swept socket loses its mapping, and the next joiner cannot take it
+    /// away from it first.
+    ///
+    /// **The failure this is about is silent.** `insert` retains by both player
+    /// *and* sid, so the seat the sweep freed being handed to a new joiner
+    /// evicts the swept socket's row — at which point the swept socket has no
+    /// player id and every verb it sends is answered "not seated", which is a
+    /// second face of T20.01's bug rather than a second bug.
+    #[test]
+    fn a_swept_socket_is_released_before_its_seat_id_is_reissued() {
+        let m = SessionMap::default();
+        let ghost = Sid::new();
+        m.insert(3, ghost);
+        m.mark_ready(ghost);
+
+        assert_eq!(release_swept_socket(&m, 3), Some(ghost));
+        assert_eq!(m.sid_of(3), None, "the swept player still has a socket");
+        assert_eq!(
+            m.player_of(ghost),
+            None,
+            "the swept socket still has a seat"
+        );
+        assert!(
+            !m.is_ready(ghost),
+            "the swept socket is still ready for snapshots"
+        );
+
+        // The recycled id goes to somebody else, and the ghost is not disturbed
+        // by it — because it was already gone.
+        let fresh = Sid::new();
+        m.insert(3, fresh);
+        assert_eq!(m.sid_of(3), Some(fresh));
+        assert_eq!(m.player_of(ghost), None);
+    }
+
+    /// The control: a player who was never seated releases nothing, so the
+    /// caller has nothing to announce and does not broadcast a phantom leave.
+    #[test]
+    fn releasing_a_player_with_no_socket_answers_none() {
+        let m = SessionMap::default();
+        m.insert(1, Sid::new());
+        assert_eq!(release_swept_socket(&m, 2), None);
+        assert!(m.sid_of(1).is_some(), "the wrong socket was released");
     }
 
     /// A disconnect must not leave a queue behind for a dead socket.

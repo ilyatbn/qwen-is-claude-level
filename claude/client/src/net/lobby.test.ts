@@ -10,6 +10,7 @@ import {
   createRoomPayload,
   identityPayload,
   joinErrorMessage,
+  lobbyErrorMessage,
   rosterRows,
   lobbyStatus,
   ownsSettings,
@@ -121,6 +122,67 @@ describe('join errors', () => {
 
   it('an unknown reason still says something rather than nothing', () => {
     expect(joinErrorMessage('meteor')).toContain('meteor')
+  })
+})
+
+describe('lobby errors', () => {
+  // Every reason the server emits on `lobby_error`, copied from
+  // `session.rs` (`set_scale`/`set_bots`/`set_start_kit`/`set_round_seconds`)
+  // and `room.rs` (`check_settings_change`, `set_round_seconds`).
+  const REASONS = [
+    'only the host can change the settings',
+    'settings can only be changed in a private game',
+    'the match has already started',
+    'the round length is out of range',
+    'the round length must be a whole number of seconds',
+    'the round length is not a whole number of steps',
+    'unknown map size',
+    'unknown starting kit',
+    'bots must be true or false',
+    'the round length must be a number',
+    'the room is gone',
+  ]
+
+  it('never tells a seated player they could not join', () => {
+    for (const r of REASONS) {
+      const m = lobbyErrorMessage(r)
+      // The reported bug, verbatim: `Could not join (only the host can change
+      // the settings).` to a host sitting in their own lobby.
+      expect(m).not.toContain('Could not join')
+      expect(m).not.toContain(`(${r})`)
+      expect(m.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('carries the server sentence rather than a second copy of it', () => {
+    // Pass-through is the design: the reason *is* the message, capitalised and
+    // stopped. A table here would be a client-side copy of the server's wording.
+    expect(lobbyErrorMessage('only the host can change the settings')).toBe(
+      'Only the host can change the settings.',
+    )
+    expect(lobbyErrorMessage('the round length is out of range')).toBe(
+      'The round length is out of range.',
+    )
+  })
+
+  it('the one reason that is a state and not a sentence gets its own words', () => {
+    expect(lobbyErrorMessage('not seated')).not.toContain('Not seated')
+    expect(lobbyErrorMessage('not seated').length).toBeGreaterThan(0)
+  })
+
+  it('an empty reason still says something', () => {
+    expect(lobbyErrorMessage('').length).toBeGreaterThan(0)
+  })
+
+  // **The control.** These two functions must stay different: if
+  // `lobbyErrorMessage` were `joinErrorMessage` under a new name, every
+  // assertion above would still pass except this one.
+  it('is not joinErrorMessage under another name', () => {
+    const r = 'only the host can change the settings'
+    expect(joinErrorMessage(r)).toContain('Could not join')
+    expect(lobbyErrorMessage(r)).not.toBe(joinErrorMessage(r))
+    // And the join table is untouched: a wire enum still reads as English.
+    expect(joinErrorMessage('in_progress')).not.toContain('in_progress')
   })
 })
 

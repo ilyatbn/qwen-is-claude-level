@@ -737,6 +737,18 @@ pub struct Room {
     started: Arc<std::sync::atomic::AtomicBool>,
     seats: Seats,
     config: Arc<Config>,
+    /// When the map went out, and therefore when the handshake became due.
+    ///
+    /// `sweep_unready` measures against `max(joined_at, this)`. **`joined_at`
+    /// alone is wrong and it shipped that way**: a player who waits out a lobby
+    /// longer than `READY_TIMEOUT` is already stale on the tick the world is
+    /// installed, so the sweep drops them *before* `map_init` can reach the
+    /// browser, let alone be decoded. Measured against
+    /// `scripts/checks/lobby-start.mjs` (`LOBBY_BOT_TIMEOUT=45`): the round
+    /// starts with `players 1 -> 3` — three bots and the human gone, one tick
+    /// after the map it was waiting for. `None` while the room is a lobby, which
+    /// is also the guard that keeps the sweep out of one.
+    world_installed_at: Option<Instant>,
     lag_warned_at: u32,
     last_checksum_at: f32,
     /// Seated AI players (`docs/70-amendments-v2.md` §A5).
@@ -963,6 +975,7 @@ impl Room {
             started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             seats: Seats::default(),
             config,
+            world_installed_at: None,
             lag_warned_at: 0,
             last_checksum_at: 0.0,
             bots: Vec::new(),
@@ -1069,6 +1082,10 @@ impl Room {
         // skipped the lobby seated its human *after* the bots instead of before.
         world.tick = self.lobby_tick;
         self.world = Some(world);
+        // The handshake is due from **here**, not from when each player sat
+        // down: this is the tick `map_init` goes out on, and the timeout is the
+        // window to decode it.
+        self.world_installed_at = Some(Instant::now());
         self.starting = false;
         self.populate_world();
         self.debug_dump();
@@ -1861,12 +1878,51 @@ impl Room {
     ///
     /// Without this a client that fails to decode the map holds a slot forever,
     /// and on a six-player room that is noticeable (`docs/40` §1).
+    ///
+    /// **Never in a lobby** — the room has to have a world (T20.01).
+    ///
+    /// `docs/74` §E3: *"No timeout, ever. A private lobby waits as long as its
+    /// players do."* A thirty-second eviction is precisely that timeout, and it
+    /// was firing: `Seat.ready` is the handshake latch set only by
+    /// `Command::Ready`, the only `ready` a private-lobby client sends is the
+    /// tick-box it may never press, and so the **host** was swept out of its own
+    /// lobby at t=30 s. `settings_owner()` is the longest-seated human and then
+    /// answered `None`, which is how every arrow came back *"only the host can
+    /// change the settings"* while the screen still drew them enabled, because
+    /// the sweep told nobody.
+    ///
+    /// **The scope is `world.is_some()`, and not §E3's "private" — measured.**
+    /// The ruling said "a started match, **or a non-private room**", on the
+    /// finding that a public lobby cannot reach 30 s: `starts_in` is set to
+    /// `LOBBY_BOT_TIMEOUT` (10.0) the moment the first player is seated. That is
+    /// true at the shipped configuration and false wherever the override exists
+    /// — `scripts/checks/lobby-start.mjs` runs `LOBBY_BOT_TIMEOUT=45`, and there
+    /// the public branch is reachable and **wrong**: measured at the base commit,
+    /// the sole human is swept at t=30 s and the round starts at t=42.7 s with
+    /// `3 players`, all of them bots. It passed only because the socket kept its
+    /// `SessionMap` entry and went on receiving a match it had no seat in.
+    ///
+    /// So the public branch was never a case the sweep was built for; it was the
+    /// same bug with no §E3 clause to name it. What is left is exactly what the
+    /// paragraph above describes: *"a client that fails to decode the map"* — a
+    /// client that has been **sent** one. `a_player_who_never_readies_is_dropped`
+    /// and `withdrawing_ready_does_not_arm_the_unready_sweep` are that case and
+    /// still fire.
     fn sweep_unready(&mut self, timeout: Duration) -> Vec<PlayerId> {
+        // `None` exactly when there is no world, which is the guard above in one
+        // value rather than two that can disagree.
+        let Some(sent) = self.world_installed_at else {
+            return Vec::new();
+        };
         let stale: Vec<PlayerId> = self
             .seats
             .seats
             .iter()
-            .filter(|s| !s.ready && s.joined_at.elapsed() > timeout)
+            // `max(joined_at, sent)`: whichever came later is when this seat was
+            // last asked for something. A late joiner is measured from its own
+            // arrival; everybody who waited out the lobby is measured from the
+            // map.
+            .filter(|s| !s.ready && s.joined_at.max(sent).elapsed() > timeout)
             .map(|s| s.id)
             .collect();
         for id in &stale {
@@ -1879,7 +1935,18 @@ impl Room {
             if let Some(world) = self.world.as_mut() {
                 world.remove_player(*id);
             }
+            // The third divergence from `Leave`, and there is no reason for it:
+            // a seat that is gone cannot hold a restart vote, and leaving one
+            // behind means a two-player room can sit waiting on a vote from a
+            // player who is not in it.
+            self.round.forget(*id);
         }
+        // **No `note_lobby_change()` here, and that is deliberate.** It would
+        // read as the notification this sweep was missing and be a no-op:
+        // `take_lobby_update()` answers `None` whenever there is a world (§E6 —
+        // the message describes a lobby), and after the guard above the sweep
+        // only ever runs when there is one. What actually tells the other
+        // clients is the `player_leave` the call site broadcasts.
         stale
     }
 
@@ -1968,6 +2035,11 @@ impl Room {
         // effect and what stops a second round replaying the first one's map.
         self.lobby_tick = self.world.as_ref().map_or(self.lobby_tick, |w| w.tick);
         self.world = None;
+        // Beside the assignment, for the reason `restart` gives about
+        // `self.started`: there are three writes to `self.world` and each one has
+        // to leave this agreeing with it, or `sweep_unready` measures a lobby
+        // against a map that is no longer on anybody's screen.
+        self.world_installed_at = None;
         self.starting = false;
         // No world, no match: the room is joinable again. Without this a room
         // whose round ended sat in `Lobby` refusing every join with
@@ -2377,6 +2449,21 @@ impl Room {
         self.apply(cmd);
     }
 
+    /// Backdate a seat's join time. Test hook, for the same reason
+    /// `sweep_unready_for_test` exists: the alternative is a test that sleeps for
+    /// `READY_TIMEOUT`. Unlike a shorter timeout, this can age one clock and
+    /// leave the other alone, which is what the map-versus-seat window needs.
+    pub fn age_seat_for_test(&mut self, id: PlayerId, by: Duration) {
+        if let Some(s) = self.seats.get_mut(id) {
+            s.joined_at -= by;
+        }
+    }
+
+    /// Backdate when the map went out. The companion to `age_seat_for_test`.
+    pub fn age_world_for_test(&mut self, by: Duration) {
+        self.world_installed_at = self.world_installed_at.map(|t| t - by);
+    }
+
     /// Run the unready sweep with an explicit timeout. Test hook: the production
     /// caller passes `READY_TIMEOUT`, and a test that had to wait 30 s to see a
     /// sweep would not be written.
@@ -2417,6 +2504,9 @@ impl Room {
         // was already fixed for once (§E4).
         world.weather_mode = self.config.weather_mode;
         self.world = Some(world);
+        // A restart sends a fresh `map_init`, so the handshake window restarts
+        // with it — see the field's own comment.
+        self.world_installed_at = Some(Instant::now());
         // §E2/§E4, unconditionally. There are three assignments to `self.world`
         // and every one of them must leave the bit agreeing with it, or
         // `has_started` describes a room that no longer exists.
@@ -2762,7 +2852,26 @@ async fn run(
                     }
                 }
                 was_lobby = in_lobby;
-                room.sweep_unready(READY_TIMEOUT);
+                for id in room.sweep_unready(READY_TIMEOUT) {
+                    // The socket-layer half of leaving, which the sweep never
+                    // did — see `session::release_swept_socket` for what it is
+                    // and what it deliberately is not (the registry's `humans`
+                    // count is unreachable from here, so the "room is never
+                    // reaped" knock-on is **not** fixed).
+                    if let Some(sid) = crate::session::release_swept_socket(&sessions, id) {
+                        // A match sends no `lobby_state` (`take_lobby_update`
+                        // returns `None` once there is a world), so during a
+                        // round this is the only thing that tells the other
+                        // clients the player is gone.
+                        crate::session::broadcast_except(
+                            &io,
+                            &sessions,
+                            sid,
+                            "player_leave",
+                            &serde_json::json!({ "id": id, "reason": "unready" }),
+                        );
+                    }
+                }
 
                 // §E6: one lobby broadcast per tick, when something changed.
                 if let Some(state) = room.take_lobby_update() {
@@ -3196,9 +3305,24 @@ mod tests {
         );
     }
 
+    /// The case `sweep_unready` exists for, and after T20.01 the only one it
+    /// still covers: a client that has been sent a map and never comes back.
+    ///
+    /// **The room has to be in a match.** T20.01 scoped the sweep to
+    /// `world.is_some()` — a lobby has sent nothing that a client could have
+    /// failed to decode, and the version of this test that ran on a bare
+    /// `Room::new` was asserting the eviction `docs/74` §E3 forbids.
     #[test]
     fn a_player_who_never_readies_is_dropped() {
         let mut room = Room::new(cfg());
+        // §E1 splits "ask for a world" from "build one"; `tick_inline` does both.
+        room.request_start();
+        room.tick_inline(SIM_DT);
+        assert!(
+            room.world().is_some(),
+            "the match never started, so the sweep below is being asked about a lobby"
+        );
+
         let (reply, _rx) = oneshot::channel();
         room.apply(Command::Join {
             name: "a".into(),
@@ -3206,22 +3330,120 @@ mod tests {
             tombstone_skin_id: 0,
             reply,
         });
-        // Nothing is dropped while the timeout has not elapsed.
-        assert!(room.sweep_unready(Duration::from_secs(30)).is_empty());
+        let a = room.player_count() - 1;
+        // Nothing is dropped while the timeout has not elapsed. `READY_TIMEOUT`
+        // rather than a literal 30 s: it is derived from `READY_TIMEOUT_SECS` in
+        // this very file, and a fixture pinned to a copy of a tunable goes green
+        // against a drifted one.
+        assert!(room.sweep_unready(READY_TIMEOUT).is_empty());
         // A zero timeout is "everything unready is stale".
         let dropped = room.sweep_unready(Duration::from_millis(0));
-        assert_eq!(dropped, vec![0]);
-        assert_eq!(room.player_count(), 0);
+        assert_eq!(dropped.len(), 1, "the unready human was not swept");
+        assert_eq!(room.player_count(), a, "the seat was not freed");
 
         // A ready player is never swept.
-        let (reply, _rx) = oneshot::channel();
+        let (reply, rx) = oneshot::channel();
         room.apply(Command::Join {
             name: "b".into(),
             skin_id: 0,
             tombstone_skin_id: 0,
             reply,
         });
-        room.apply(Command::Ready(0, true));
+        let b = rx.blocking_recv().ok().flatten().expect("seated");
+        room.apply(Command::Ready(b, true));
         assert!(room.sweep_unready(Duration::from_millis(0)).is_empty());
+    }
+
+    /// **The window runs from the map, not from the seat.**
+    ///
+    /// The bug this is written against was invisible until the lobby lasted
+    /// longer than `READY_TIMEOUT`: `joined_at.elapsed()` for a player who sat in
+    /// a lobby for 45 s is already 45 s on the tick the world is installed, so
+    /// the sweep dropped them on that same tick — before `map_init` could reach
+    /// the browser, let alone be decoded. Measured against
+    /// `scripts/checks/lobby-start.mjs` (`LOBBY_BOT_TIMEOUT=45`, `BOT_COUNT=3`):
+    /// the gauge went `players 1 -> 3` as the round began, three bots and no
+    /// human, and the client sat in a lobby forever.
+    ///
+    /// Fabricating a 45-second-old seat rather than waiting for one: the seat's
+    /// clock is `Instant`, so the test moves the room's stamp instead —
+    /// `joined_at` is already far older than the freshly installed world, which
+    /// is precisely the shape that was broken.
+    #[test]
+    fn the_handshake_window_starts_when_the_map_does_not_when_the_seat_did() {
+        let mut room = Room::new(cfg());
+        let (reply, rx) = oneshot::channel();
+        room.apply(Command::Join {
+            name: "waited".into(),
+            skin_id: 0,
+            tombstone_skin_id: 0,
+            reply,
+        });
+        let waited = rx.blocking_recv().ok().flatten().expect("seated");
+        room.request_start();
+        room.tick_inline(SIM_DT);
+
+        // A timeout of `READY_TIMEOUT` against a seat that has existed for a
+        // fraction of a second and a map that is a fraction of a second old.
+        assert!(
+            room.sweep_unready(READY_TIMEOUT).is_empty(),
+            "the player was swept on the tick their map was sent"
+        );
+
+        // Now age the *seat* past the timeout while the map stays fresh. That is
+        // the long-lobby case, and nothing about it should be sweepable.
+        room.age_seat_for_test(waited, READY_TIMEOUT * 2);
+        assert!(
+            room.sweep_unready(READY_TIMEOUT).is_empty(),
+            "a seat older than READY_TIMEOUT was swept although its map is new"
+        );
+
+        // The control: age the **map** too, and the same call drops them. Without
+        // it this passes for a sweep that has stopped firing.
+        room.age_world_for_test(READY_TIMEOUT * 2);
+        assert_eq!(
+            room.sweep_unready(READY_TIMEOUT).len(),
+            1,
+            "the sweep no longer fires at all, so the two claims above are vacuous"
+        );
+    }
+
+    /// The other half, and the reported bug: **a lobby is never swept.**
+    ///
+    /// `private_lobby.rs` owns the §E3 (private) case in full. This one is the
+    /// **public** lobby, which the ruling left in scope on the finding that it
+    /// cannot reach 30 s — true at the shipped `LOBBY_BOT_TIMEOUT` of 10 s, and
+    /// false under the override `scripts/checks/lobby-start.mjs` uses (45 s),
+    /// where the base commit swept the only human and then ran a round of three
+    /// bots at t=42.7 s with that human still watching from outside it.
+    #[test]
+    fn a_lobby_is_never_swept_however_long_it_has_waited() {
+        let mut room = Room::new(cfg());
+        let (reply, _rx) = oneshot::channel();
+        room.apply(Command::Join {
+            name: "waiting".into(),
+            skin_id: 0,
+            tombstone_skin_id: 0,
+            reply,
+        });
+        assert!(
+            room.world().is_none(),
+            "this must be a lobby to mean anything"
+        );
+        assert!(
+            room.sweep_unready(Duration::from_millis(0)).is_empty(),
+            "a player waiting in a lobby was swept out of it"
+        );
+        assert_eq!(room.player_count(), 1, "the lobby lost its only seat");
+
+        // The control: the same room, the same seat, once the match has started.
+        // Without it this passes for a sweep that no longer fires at all.
+        room.request_start();
+        room.tick_inline(SIM_DT);
+        assert_eq!(
+            room.sweep_unready(Duration::from_millis(0)).len(),
+            1,
+            "the sweep no longer fires in a match either, so the claim above is vacuous"
+        );
     }
 }

@@ -17,6 +17,7 @@
  */
 import { startStack, sleep, shotsDir } from './harness.mjs'
 import { samplePatch } from './pixels.mjs'
+import { constants as rustConstants } from '../lib/rust-constants.mjs'
 import { join } from 'node:path'
 
 const PORT = 3126
@@ -63,6 +64,11 @@ await ana.page.waitForFunction('window.__menu.visibleCode().length === 6', null,
   timeout: 30_000,
 })
 const code = await ana.page.evaluate('window.__menu.visibleCode()')
+// When the host took its seat, for the §E3 wait far below. `sweep_unready`
+// measures `joined_at.elapsed()`, so the clock the assertion needs is this one
+// and not the one that starts when the wait does — everything between here and
+// there counts, which is most of the thirty seconds.
+const hostSeatedAt = Date.now()
 if (!/^[A-HJ-NP-Z2-9]{6}$/.test(code)) fail(`the code on screen is not a code: "${code}"`)
 else ok(`the host sees a join code on screen: ${code}`)
 
@@ -235,6 +241,74 @@ if (!panel.timer.prevDisabled) {
   else if (panel.timer.nextDisabled) fail('both timer arrows are disabled at the lower bound')
   else ok(`the timer ends disabled at its lower bound (${atBound}, after ${presses} steps)`)
 }
+
+// --- §E3: no timeout, ever (T20.01) --------------------------------------
+//
+// **The only assertion in the tree that can see the reported bug**, because it
+// is the only one that sits in a lobby long enough. `sweep_unready` freed every
+// seat that had not sent `ready` after `READY_TIMEOUT_SECS`, lobby or match —
+// and a private-lobby host never sends one, since the tick-box is the only
+// `ready` a lobby has. The host was swept out of its own lobby at t≈30 s,
+// `settings_owner()` (the longest-seated human) answered `None`, and every arrow
+// came back *"only the host can change the settings"* on a screen that still
+// drew them enabled, because the sweep told nobody.
+//
+// It has to be a **real** wait: the sweep reads `joined_at.elapsed()`, so
+// nothing but the wall clock reaches it. `docs/74:110` — *"No timeout, ever. A
+// private lobby waits as long as its players do."*
+const READY_TIMEOUT_SECS = rustConstants().get('READY_TIMEOUT_SECS')
+// The margin is slack for the tick that notices, not a tunable: the sweep runs
+// once a frame and `>` is strict, so landing exactly on the boundary would be a
+// coin flip.
+const MARGIN_MS = 2_000
+const sat = Date.now() - hostSeatedAt
+const remaining = READY_TIMEOUT_SECS * 1000 + MARGIN_MS - sat
+if (remaining > 0) await sleep(remaining)
+const satFor = (Date.now() - hostSeatedAt) / 1000
+if (satFor <= READY_TIMEOUT_SECS) {
+  fail(`the lobby was only open ${satFor.toFixed(1)} s, under the ${READY_TIMEOUT_SECS} s timeout: the wait proves nothing`)
+} else {
+  ok(`the host sat in its own lobby for ${satFor.toFixed(1)} s, past READY_TIMEOUT_SECS=${READY_TIMEOUT_SECS}`)
+}
+
+// Nobody was swept: the roster still seats both.
+const stillSeated = (await roster(ana)).filter((n) => n !== 'empty')
+if (stillSeated.length !== 2) {
+  fail(`after ${satFor.toFixed(1)} s in the lobby the roster seats ${stillSeated.length}: ${JSON.stringify(stillSeated)} — §E3 says a private lobby has no timeout`)
+} else ok(`both players are still seated after the timeout: ${JSON.stringify(stillSeated)}`)
+
+// And the host still owns the settings — on the screen **and** on the wire. The
+// panel being drawn enabled is exactly what the bug did; the discriminator is
+// whether a press actually moves the value, which only the room can grant.
+const aged = await settings(ana)
+if (!aged.kit || aged.kit.nextDisabled) {
+  fail(`the host's settings went dead after ${satFor.toFixed(1)} s: ${JSON.stringify(aged)}`)
+} else {
+  const was = aged.kit.value
+  await ana.page.evaluate(() => window.__menu.step('kit', 1))
+  await ana.page
+    .waitForFunction((v) => window.__menu.settings().kit.value !== v, was, { timeout: 10_000 })
+    .catch(() => {})
+  const now = (await settings(ana)).kit.value
+  if (now === was) {
+    fail(`the host was refused its own setting after ${satFor.toFixed(1)} s: kit is still "${was}" — the host was swept out of its own lobby`)
+  } else ok(`the host still changes settings after the timeout: kit "${was}" -> "${now}"`)
+}
+
+// The reported error text, asserted where a player would read it.
+const banner = await ana.page.evaluate(
+  '(document.querySelector(".menu-screen .error") || {}).textContent || ""',
+)
+if (banner.includes('Could not join')) {
+  fail(`the host is being told it could not join the lobby it is sitting in: "${banner}"`)
+} else ok(`no join refusal on the host's screen${banner ? ` (banner reads "${banner}")` : ''}`)
+
+// The control: the guest's controls are still locked, so "enabled" above is
+// about the seat and not about a panel that never disables anything.
+const boAged = await settings(bo)
+if (!boAged.kit || !boAged.kit.nextDisabled) {
+  fail(`the guest can move a setting after the timeout: ${JSON.stringify(boAged)}`)
+} else ok('control: the guest is still locked out, so the host is enabled by seat')
 
 // --- a settings change clears the ready ticks (§E3) ----------------------
 //

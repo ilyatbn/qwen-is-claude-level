@@ -199,6 +199,11 @@ fn an_unready_sweep_is_recorded_because_a_replay_has_no_clock() {
     let mut room = Room::new(cfg(true));
     room.start_recording(s.path(), "000000000001");
     let _id = seat(&mut room, "ghost");
+    // **The match has to be running.** T20.01 scoped `sweep_unready` to
+    // `world.is_some()`: a lobby has sent no map, so there is nothing a seat can
+    // have failed to decode and `docs/74` §E3 forbids the eviction outright.
+    room.request_start();
+    room.tick_inline(game_core::constants::SIM_DT);
     // Zero timeout: everyone unready is stale immediately.
     let dropped = room.sweep_unready_for_test(std::time::Duration::from_secs(0));
     assert_eq!(dropped.len(), 1, "the unready player was swept");

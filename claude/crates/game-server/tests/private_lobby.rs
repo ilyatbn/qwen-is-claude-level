@@ -27,6 +27,12 @@ fn cfg() -> Arc<Config> {
     })
 }
 
+/// A room as quick match makes one: no code, not private, so §E2's public rules
+/// apply — including the unready sweep, which §E3 keeps out of a private lobby.
+fn public_room() -> Room {
+    Room::new(cfg())
+}
+
 /// A private room, as `create_room` makes one.
 fn private_room() -> Room {
     let mut room = Room::new(cfg());
@@ -247,20 +253,34 @@ fn a_rejoiner_with_a_recycled_seat_id_does_not_inherit_the_settings() {
 ///
 /// `sweep_unready` drops seats that never finished their handshake, and it reads
 /// `Seat.ready`. If consent and the handshake latch were one field — as they were
-/// until T17.04 — un-readying in a private lobby would arm a thirty-second
-/// eviction, which is exactly the timeout §E3 says a private lobby does not have.
+/// until T17.04 — un-readying would arm a thirty-second eviction on a player who
+/// is sitting right there.
 ///
 /// **Written because the falsification found nothing.** Collapsing the two fields
 /// back into one passed every other test in this file, so the split was carrying
 /// no assertion at all.
+///
+/// **It runs on a started public room, and that is T20.01's doing.** It used to
+/// sit in a private lobby — but the sweep no longer fires in *any* lobby, so both
+/// halves would pass for a room whose sweep is simply switched off, and
+/// collapsing the two fields would once again prove nothing. Falsified the way
+/// the doc comment above demands: with `s.ready = on` in `Command::Ready` this is
+/// **red**; on a private lobby, with the same collapse, it was green.
 #[test]
 fn withdrawing_ready_does_not_arm_the_unready_sweep() {
-    let mut room = private_room();
+    let mut room = public_room();
     let ana = seat(&mut room, "ana");
     let bo = seat(&mut room, "bo");
     ready(&mut room, ana, true);
     ready(&mut room, bo, true);
     ready(&mut room, bo, false);
+    // The sweep only runs once there is a map to have failed to decode (T20.01).
+    room.request_start();
+    room.tick_inline(SIM_DT);
+    assert!(
+        room.world_for_test().players.len() >= 2,
+        "the match never started, so the sweep below never runs and proves nothing"
+    );
 
     // Zero timeout: everyone who is sweepable at all is swept now. The control
     // is that this is the same call that *would* drop a player who never sent
@@ -268,8 +288,8 @@ fn withdrawing_ready_does_not_arm_the_unready_sweep() {
     let dropped = room.sweep_unready_for_test(std::time::Duration::ZERO);
     assert!(
         dropped.is_empty(),
-        "un-readying armed the sweep: {dropped:?} would be evicted from a lobby \
-         §E3 says has no timeout"
+        "un-readying armed the sweep: {dropped:?} would be evicted for having \
+         changed their mind about a game that has not started"
     );
 
     // Control: a seat that never handshook at all *is* swept, so the assertion
@@ -280,6 +300,108 @@ fn withdrawing_ready_does_not_arm_the_unready_sweep() {
         dropped,
         vec![never],
         "the sweep did not drop a player who never sent ready, so it proves nothing"
+    );
+}
+
+/// §E3, `docs/74:110`: **"No timeout, ever. A private lobby waits as long as its
+/// players do."**
+///
+/// The bug this is written against, in the words it was reported in: *"about 30 s
+/// to a minute into hosting a private match, the host stops being able to change
+/// the settings"*. `settings_owner()` is the longest-seated human and is not
+/// time-based; what changed at 30 s was the **seat list**. The host never sends
+/// `ready` — the only one a private lobby has is the tick-box — so `sweep_unready`
+/// evicted them from their own lobby and the owner became `None`.
+///
+/// **The scope that landed is wider than §E3 asks for**: the sweep does not run
+/// in *any* lobby, private or public. Measured — see `room.rs::sweep_unready`'s
+/// doc comment and `a_lobby_is_never_swept_however_long_it_has_waited`.
+///
+/// A zero timeout rather than a real 30 s wait: the production caller passes
+/// `READY_TIMEOUT`, and *"even a timeout of zero sweeps nobody"* is strictly
+/// stronger than *"the shipped one does not"*. The wall-clock half — a browser
+/// that actually sits past `READY_TIMEOUT_SECS` and then moves a setting — is
+/// `scripts/checks/lobby.mjs`.
+#[test]
+fn a_private_lobby_is_never_swept_and_the_host_keeps_the_settings() {
+    let mut room = private_room();
+    let ana = seat(&mut room, "ana");
+    let bo = seat(&mut room, "bo");
+
+    // Nobody has handshaken, and the timeout is zero: this is the harshest form
+    // of the sweep there is.
+    let dropped = room.sweep_unready_for_test(std::time::Duration::ZERO);
+    assert!(
+        dropped.is_empty(),
+        "§E3 says a private lobby has no timeout and {dropped:?} was evicted from one"
+    );
+    assert_eq!(
+        room.lobby_state().players.len(),
+        2,
+        "the private lobby lost a seat to the sweep"
+    );
+
+    // The reported symptom, asserted directly: the host can still change a
+    // setting, and the room still names them as the owner.
+    assert_eq!(room.lobby_state().settings_owner, Some(ana));
+    set_scale(&mut room, ana, MapScale::Large)
+        .expect("the host was refused their own settings after the sweep ran");
+    // And it is still *only* the host: a sweep that spared everybody must not
+    // have handed the settings to the guest as well.
+    assert!(
+        set_scale(&mut room, bo, MapScale::Medium).is_err(),
+        "the guest inherited the settings"
+    );
+
+    // **The control.** This asserts an absence, and an absence needs a presence:
+    // the same call, on a room that has a map out. Without it the test above
+    // passes for a sweep that has stopped working at all.
+    let mut started = public_room();
+    let never = seat(&mut started, "never");
+    started.request_start();
+    started.tick_inline(SIM_DT);
+    assert_eq!(
+        started.sweep_unready_for_test(std::time::Duration::ZERO),
+        vec![never],
+        "the sweep dropped nobody in a running match either, so the claim above is vacuous"
+    );
+}
+
+/// A private lobby that has **started** is swept like anything else.
+///
+/// The scope §E3 buys is "a private lobby", not "a private room forever": once
+/// the map is on the wire, a client that never decodes it is exactly the case
+/// `sweep_unready` was built for, private or not.
+#[test]
+fn a_private_match_that_has_started_is_swept_again() {
+    let mut room = private_room();
+    let ana = seat(&mut room, "ana");
+    ready(&mut room, ana, true);
+    let ghost = seat(&mut room, "ghost");
+    ready(&mut room, ghost, true);
+
+    // §E3 starts a private match when every seated human consents. `tick_inline`
+    // asks for a world and builds one, the way the room task does across a tick
+    // and a blocking thread.
+    for _ in 0..3 {
+        room.tick_inline(SIM_DT);
+        if room.world_for_test().players.len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(
+        room.world_for_test().players.len(),
+        2,
+        "the private match never started, so the sweep below is being asked about a lobby"
+    );
+
+    // Now a seat that never handshakes. In a lobby §E3 protects it; in a match
+    // nothing does.
+    let late = seat(&mut room, "late");
+    assert_eq!(
+        room.sweep_unready_for_test(std::time::Duration::ZERO),
+        vec![late],
+        "a started private match stopped sweeping a client that never decoded its map"
     );
 }
 

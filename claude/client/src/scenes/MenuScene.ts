@@ -22,7 +22,7 @@ import {
 import {
   checkCode,
   codeError,
-  joinErrorMessage,
+  lobbyErrorMessage,
   lobbyStatus,
   parseLobbyState,
   rosterRows,
@@ -132,7 +132,11 @@ export class MenuScene extends Phaser.Scene {
     // client listened for this at all, so a refused change was silently ignored.
     conn.on('lobby_error', (raw) => {
       const reason = isRecord(raw) && typeof raw['reason'] === 'string' ? raw['reason'] : 'refused'
-      this.dispatch({ type: 'error', message: joinErrorMessage(reason) })
+      // **`lobbyErrorMessage`, not `joinErrorMessage`.** A refusal to move a
+      // setting is not a refusal to join, and routing it through the join table
+      // put the wire's sentence inside "Could not join (…)" — a host being told
+      // they could not join the lobby they were sitting in (T20.01).
+      this.dispatch({ type: 'error', message: lobbyErrorMessage(reason) })
     })
 
     conn
@@ -212,7 +216,8 @@ export class MenuScene extends Phaser.Scene {
     if (!el) return
     const m = this.model
     // Escaped like the other three interpolations: `m.error` carries
-    // `joinErrorMessage`, whose default branch echoes a server-supplied reason.
+    // `lobbyErrorMessage`, which passes a server-supplied sentence through, and
+    // `joinErrorMessage` (via `reduce`), whose default branch echoes a reason.
     // Every reason is a fixed literal today, so this is not exploitable — it is
     // the one interpolation here carrying network-derived text, and it goes live
     // the first time a reason echoes anything a player typed.
