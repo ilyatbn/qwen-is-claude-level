@@ -1243,7 +1243,55 @@ pub fn dequantize_angle(q: u16) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// **Every test in this crate is a plain `#[test]`, and that is the fix for
+    /// T19.19.**
+    ///
+    /// Thirteen of them were `#[wasm_bindgen_test]`, which `cargo test -p
+    /// game-wasm` compiles and never runs — the gate log's `3 passed` against
+    /// sixteen test functions. They had not executed since M3.
+    ///
+    /// **Nothing here needs a browser.** The crate depends on `wasm-bindgen`,
+    /// `serde_json` and `game-core` and mentions neither `js_sys` nor `web_sys`
+    /// anywhere, so every method these call runs natively. Wiring `wasm-pack
+    /// test --node` into a ~35 minute gate to buy assertions that cost nothing
+    /// natively was the wrong half of T19.19's choice.
+    ///
+    /// **The wasm target is exercised, and not from here.**
+    /// `client/src/core/index.test.ts` drives the real compiled `pkg` through
+    /// vitest and duplicates nine of the thirteen outright. What it does *not*
+    /// cover — the assertions that were genuinely dark, listed so nobody deletes
+    /// them as redundant — is `meta_json`'s `buried_slots` key, the seed's
+    /// **high half** mattering (every TypeScript seed is under 2^32, so `hi` is
+    /// 0 in all of them), `add_player` ignoring a duplicate id,
+    /// `set_player_state`'s **velocity** round-tripping, and two of
+    /// `load_mask`'s four malformed inputs (an empty slice, and 0x0).
+    ///
+    /// `wasm-bindgen-test` is out of `Cargo.toml`, so a future
+    /// `#[wasm_bindgen_test]` here does not compile. The test below is the
+    /// second half of that guard, for the day somebody adds the dependency back.
+    #[test]
+    fn no_test_in_this_crate_is_invisible_to_the_gate() {
+        // The needle is split so this assertion does not match its own source.
+        let needle = concat!("#[wasm_bindgen", "_test]");
+        let src = include_str!("lib.rs");
+        // Doc comments discuss the attribute in prose; only an attribute on its
+        // own line is one the compiler acts on.
+        let offenders: Vec<usize> = src
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.trim_start().starts_with(needle))
+            .map(|(i, _)| i + 1)
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "`cargo test --workspace` runs no {needle} — the gate has no wasm runner \
+             (`scripts/check.sh`). A test written with that attribute compiles, reports \
+             nothing and is never executed, which is how thirteen of them sat dark from \
+             M3 to M19. Make these plain `#[test]`s, or wire a runner into the gate and \
+             delete this guard. Lines: {offenders:?}"
+        );
+    }
 
     /// §F3 — `item_registry_json` really emits the cadence, for every item.
     ///
@@ -1320,9 +1368,9 @@ mod tests {
 
     /// §E13's poison in the **sandbox** core, which is a second damage path.
     ///
-    /// A plain `#[test]`, not `#[wasm_bindgen_test]`: the ones below need
-    /// `wasm-pack test` and `cargo test -p game-wasm` runs **zero** of them, so a
-    /// `wasm_bindgen_test` here would not run in the gate either. This one does.
+    /// Written as a plain `#[test]` when the ones below it were not, because
+    /// `cargo test -p game-wasm` ran zero of those. T19.19 converted the other
+    /// thirteen; every test in this module runs in the gate now.
     ///
     /// The claim is the one `a_shielded_player_takes_half_and_iframes_take_none`
     /// used to make about puddles, asserted where this build actually broke it:
@@ -1373,7 +1421,7 @@ mod tests {
         );
     }
 
-    #[wasm_bindgen_test]
+    #[test]
     fn generate_sets_the_requested_dimensions() {
         let mut core = GameCore::new();
         core.generate(4242, 0, 1);
@@ -1384,7 +1432,7 @@ mod tests {
         assert_eq!(core.height(), 2048);
     }
 
-    #[wasm_bindgen_test]
+    #[test]
     fn mask_byte_len_covers_every_pixel() {
         let mut core = GameCore::new();
         core.generate(1, 0, 0);
@@ -1393,7 +1441,7 @@ mod tests {
         assert!(!core.mask_ptr().is_null());
     }
 
-    #[wasm_bindgen_test]
+    #[test]
     fn carving_dirties_chunks_once() {
         let mut core = GameCore::new();
         core.generate(4242, 0, 0);
@@ -1406,7 +1454,7 @@ mod tests {
         assert!(core.take_dirty_chunks().is_empty(), "the set must clear");
     }
 
-    #[wasm_bindgen_test]
+    #[test]
     fn a_carve_actually_removes_terrain() {
         let mut core = GameCore::new();
         core.generate(4242, 0, 0);
@@ -1416,7 +1464,7 @@ mod tests {
         assert!(!core.solid_at(x, y));
     }
 
-    #[wasm_bindgen_test]
+    #[test]
     fn load_mask_round_trips_through_rle() {
         let mut core = GameCore::new();
         core.generate(4242, 0, 0);
@@ -1429,7 +1477,7 @@ mod tests {
         assert_eq!(other.mask_hash(), before);
     }
 
-    #[wasm_bindgen_test]
+    #[test]
     fn load_mask_rejects_malformed_bytes_without_panicking() {
         let mut core = GameCore::new();
         assert!(!core.load_mask(256, 256, &[0xFF; 32]));
@@ -1439,7 +1487,7 @@ mod tests {
         assert!(!core.load_mask(100, 100, &[0]));
     }
 
-    #[wasm_bindgen_test]
+    #[test]
     fn apply_input_moves_a_player() {
         let mut core = GameCore::new();
         core.generate(4242, 0, 0);
@@ -1457,7 +1505,7 @@ mod tests {
         assert_ne!(after[0], before[0], "the player did not move");
     }
 
-    #[wasm_bindgen_test]
+    #[test]
     fn player_state_round_trips() {
         let mut core = GameCore::new();
         core.add_player(2, 0.0, 0.0);
@@ -1471,13 +1519,13 @@ mod tests {
         assert_eq!(s[5], 2.5);
     }
 
-    #[wasm_bindgen_test]
+    #[test]
     fn an_unknown_player_id_is_empty_not_a_panic() {
         let core = GameCore::new();
         assert_eq!(core.player_state(99).len(), 0);
     }
 
-    #[wasm_bindgen_test]
+    #[test]
     fn duplicate_add_player_is_ignored() {
         let mut core = GameCore::new();
         core.add_player(1, 10.0, 10.0);
@@ -1486,7 +1534,7 @@ mod tests {
         assert_eq!(s[0], 10.0, "the second add must not move the player");
     }
 
-    #[wasm_bindgen_test]
+    #[test]
     fn meta_json_parses_and_carries_the_map() {
         let mut core = GameCore::new();
         core.generate(4242, 0, 1);
@@ -1499,7 +1547,7 @@ mod tests {
         assert!(!v["surface_points"].as_array().expect("array").is_empty());
     }
 
-    #[wasm_bindgen_test]
+    #[test]
     fn constants_json_carries_the_viewport_and_camera_values() {
         let v: serde_json::Value = serde_json::from_str(&constants_json()).expect("valid json");
         assert_eq!(v["VIEWPORT_W"], 1280);
@@ -1518,9 +1566,10 @@ mod tests {
     /// `undefined` in the browser and every comparison against it is `false`
     /// forever — a bar that never fails rather than one that passes.
     ///
-    /// A plain `#[test]`: `cargo test -p game-wasm` runs **zero**
-    /// `wasm_bindgen_test`s, so the neighbouring `constants_json` assertion has
-    /// never run in the gate and this one would not either.
+    /// Written as a plain `#[test]` because the neighbouring `constants_json`
+    /// assertion was a `wasm_bindgen_test` and had never run. T19.19 converted
+    /// it; both run now, and `no_test_in_this_crate_is_invisible_to_the_gate`
+    /// keeps it that way.
     #[test]
     fn constants_json_carries_the_private_round_length_bounds() {
         let v: serde_json::Value = serde_json::from_str(&constants_json()).expect("valid json");
@@ -1538,7 +1587,7 @@ mod tests {
         );
     }
 
-    #[wasm_bindgen_test]
+    #[test]
     fn the_seed_is_reassembled_from_two_halves() {
         let mut a = GameCore::new();
         a.generate(0x1234_5678, 0x9ABC_DEF0, 0);

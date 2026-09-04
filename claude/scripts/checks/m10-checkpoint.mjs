@@ -43,6 +43,26 @@ const stack = await startStack({
     // No bots: this counts players, and a bot is a player (§A5).
     BOT_COUNT: '0',
     DEV_LOADOUT: '1',
+    // **No weather, and it is the fix for a four-sighting flake (T19.19's gate).**
+    //
+    // Every assertion below compares terrain across two clients, or one client
+    // against itself a few seconds earlier. Weather carves *continuously* and
+    // asynchronously in every room: a toxic drop bites `TOXIC_DROP_CARVE_R`
+    // every `TOXIC_DROP_EVERY` (0.15 s) for a whole shower, and a meteor does the
+    // same. So the carve stream never goes quiet, and two `debug()` reads taken
+    // tens of milliseconds apart are two different instants of it.
+    //
+    // That is not a theory. The fourth red printed
+    // `host solid=1730650 applied=36 pending=0 resyncs=0` against
+    // `guest solid=1730587 applied=37 pending=0 resyncs=0` — nothing buffered,
+    // nothing resynced, the guest simply **one carve ahead** because it was read
+    // second. Thirty-six carves, from four rockets.
+    //
+    // It also puts the check's most valuable claim at risk: "the quick-match
+    // room is untouched" compares `solid` before and after, and a meteor in
+    // *that* room during the window would report a room leak that never
+    // happened. Same exclusion `crates` makes, for the same reason.
+    WEATHER: 'off',
   },
 })
 const { browser, viteUrl } = stack
@@ -218,7 +238,52 @@ for (let i = 0; i < 4; i++) {
 }
 await sleep(1500)
 
-const [ah, ag, as_] = [await dbg(host), await dbg(guest), await dbg(solo)]
+// **Sampled once the carve stream has gone quiet, not at an arbitrary instant.**
+//
+// `dbg(host)` and `dbg(guest)` are separate round trips, so a carve landing
+// between them makes the two clients disagree for a reason that has nothing to
+// do with either of them — measured on the fourth red of this line:
+// `host applied=36 pending=0 resyncs=0` against `guest applied=37 pending=0
+// resyncs=0`, the guest simply one carve ahead because it was read second.
+//
+// So wait for **quiescence** — two consecutive samples in which neither client's
+// `carvesApplied` moved and neither has anything buffered — and then compare.
+// With `WEATHER` off (see the env above) the stream really does stop once the
+// last rocket has landed, so this settles in a couple of hundred milliseconds.
+//
+// **A wait for quiet, not a search for agreement.** The difference matters: a
+// loop that polled until the hashes matched would hand a genuine divergence the
+// whole of `MASK_CHECKSUM_INTERVAL` to repair itself through a resync and then
+// report a pass — measured, by carving the guest's own mask directly, which such
+// a loop swallowed. This grants no more settling time than the `sleep(1500)`
+// above already did, so the assertion below is the same one it always was, taken
+// at a defined moment instead of a random one.
+let ah = await dbg(host)
+let ag = await dbg(guest)
+let quietFor = 0
+const settleBy = Date.now() + 8_000
+while (quietFor < 2 && Date.now() < settleBy) {
+  await sleep(120)
+  const nh = await dbg(host)
+  const ng = await dbg(guest)
+  const still =
+    nh.carvesApplied === ah.carvesApplied &&
+    ng.carvesApplied === ag.carvesApplied &&
+    nh.pendingCarves === 0 &&
+    ng.pendingCarves === 0
+  quietFor = still ? quietFor + 1 : 0
+  ah = nh
+  ag = ng
+}
+if (quietFor < 2) {
+  // Not fatal, but not silent either: the comparison below is being made on a
+  // moving stream, which is the condition this wait exists to avoid.
+  log(
+    `note: the carve stream never went quiet in 8 s ` +
+      `(host ${ah.carvesApplied}/${ah.pendingCarves}, guest ${ag.carvesApplied}/${ag.pendingCarves})`,
+  )
+}
+const as_ = await dbg(solo)
 if (ah.solid >= dh.solid) die('the host fired and its own terrain did not change')
 if (ag.maskChecksum !== ah.maskChecksum) {
   // **Say what the disagreement is made of.** Two hashes are not a diagnosis:

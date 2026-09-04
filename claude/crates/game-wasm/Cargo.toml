@@ -14,5 +14,10 @@ wasm-bindgen.workspace = true
 serde_json.workspace = true
 console_error_panic_hook = "0.1"
 
-[dev-dependencies]
-wasm-bindgen-test = "0.3"
+# **No `wasm-bindgen-test`, deliberately (T19.19).** `scripts/check.sh` runs
+# `cargo test --workspace` and no wasm runner, so a `#[wasm_bindgen_test]` in
+# this crate compiles, reports nothing and never executes — which is how
+# thirteen of them sat dark from M3 to M19. Without the dependency the attribute
+# does not compile, and `no_test_in_this_crate_is_invisible_to_the_gate` says
+# why for anyone who adds it back. Nothing here needs a browser: the crate
+# mentions neither `js_sys` nor `web_sys`.

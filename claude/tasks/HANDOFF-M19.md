@@ -1586,3 +1586,105 @@ third is the point to measure properly.
   each reported two hashes and nothing else, so nobody could tell a dropped carve from a
   resync in flight. On the fourth sighting the log will say which — and a non-zero `resyncs`
   on the guest confirms the mechanism above in one line.
+
+## T19.19 landed — and `m10-checkpoint`'s flake was diagnosed on the way
+
+### The count is thirteen, and the fourteenth is a doc comment
+
+`grep -c '#\[wasm_bindgen_test\]' crates/game-wasm/src/lib.rs` returns **14**. Thirteen are
+attributes; the fourteenth is `lib.rs:1322`, a doc comment reading *"A plain `#[test]`, not
+`#[wasm_bindgen_test]`"*. The task file, its source note in the T19.07 section above, and
+`TASKS.md`'s row all carried the 14. **Task-file defect**, and it is the instrument again:
+the number came from a grep that could not tell code from prose. 13 attributes + 3 plain
+`#[test]`s = 16 functions, of which the gate ran 3. It now runs **17** (the 16 plus the new
+guard).
+
+### Nothing in the crate needs a browser, and that decided the trade
+
+`game-wasm` depends on `wasm-bindgen`, `serde_json`, `game-core` and
+`console_error_panic_hook`, and the whole crate mentions neither `js_sys` nor `web_sys` —
+grepped, the only hits are the two comments this task wrote. Every method the thirteen call
+runs natively. Wiring `wasm-pack test --node` into a ~35 minute gate to buy assertions that
+cost nothing natively was the wrong half of T19.19's choice, so it was not done.
+
+**The guard is two-layered, and that is deliberate.** `wasm-bindgen-test` is out of
+`Cargo.toml`, so `#[wasm_bindgen_test]` no longer compiles — that is the structural half, and
+it means the text-scanning test can only fire if somebody adds the dependency back. It is
+kept for exactly that person: it names what will happen (compiles, reports nothing, never
+runs) and where the runner would have to go. **Falsified by doing it**: re-adding the
+dev-dependency and converting one test back gave `running 16 tests` — the converted test
+vanished from the harness *silently*, which is the failure mode itself — and the guard failed
+naming line 1529.
+
+### What the thirteen alone covered, which is the answer the task asked for first
+
+`client/src/core/index.test.ts` drives the **real compiled `pkg`** through vitest, in the
+gate, and duplicates nine of the thirteen: `generate` dimensions, `meta_json` spawn/surface
+points, `solid_at` against a carve, dirty chunks, the RLE round trip, malformed-mask
+rejection, player-state round trip, unknown player, and `apply_input` moving a player. It
+also covers something the Rust side does not — a view held across WASM heap growth.
+
+**So the wasm target was never untested, and T19.19's stated headline is wrong.** It says
+"§A19's whole claim — that a renderer cannot drift from a constant because a test pins the
+crossing — rests on a test that does not execute". It does not:
+`index.test.ts:21` asserts the **same six values** (`VIEWPORT_W/H`, `CHUNK_SIZE`,
+`CAMERA_ZOOM`, `PLAYER_W/H`) through the real wasm and has been running all along. Breaking
+`CAMERA_ZOOM => 3.0` was still worth doing as the task's falsification, and the wasm crate's
+own assertion now catches it (`left: Number(3.0), right: 2.0`).
+
+**What was genuinely dark**, and is the real exposure this task closes — listed so nobody
+later deletes them as redundant:
+
+- `meta_json`'s **`buried_slots`** key. `index.test.ts` checks `spawn_points`,
+  `surface_points`, `traversable_fraction` and `wind`, and never this one.
+- **The seed's high half.** `Core.generate(seed: bigint)` splits into `lo`/`hi`
+  (`index.ts:431`), and every seed the TypeScript suite passes (4242n, 1n, 2n, 31337n) is
+  under 2^32 — so `hi` is 0 in all of them and "the high half must matter" was untested.
+- **`add_player` ignoring a duplicate id.** Nothing on the TS side adds the same id twice.
+- **`set_player_state`'s velocity round-tripping.** TS asserts x, y, grounded and fuel; the
+  Rust test is the only one that reads back `vx`/`vy`.
+- **Two of `load_mask`'s four malformed inputs** — an empty slice, and a 0x0 mask. TS tries
+  the other two.
+
+### `m10-checkpoint` — the fourth sighting, and it was the instrument
+
+The T19.19 gate went red on `m10-checkpoint`'s carve-agreement line. **The diagnostic added
+in T19.18 answered it on the first try**, which is the whole argument for adding it:
+
+```
+host  solid=1730650 applied=36 pending=0 resyncs=0
+guest solid=1730587 applied=37 pending=0 resyncs=0
+```
+
+Nothing buffered, nothing resynced, and the **guest one carve ahead** — because
+`[await dbg(host), await dbg(guest)]` are two round trips and a carve landed between them.
+Not a divergence. Two rounds of repair, and the first one was wrong:
+
+- **Thirty-six carves from four rockets is the tell.** The carve stream never goes quiet,
+  because **weather carves**: a toxic drop bites `TOXIC_DROP_CARVE_R` every
+  `TOXIC_DROP_EVERY` (0.15 s) for a whole shower (`world/mod.rs:1436`), and meteors do the
+  same. `m10-checkpoint` never set `WEATHER`. With `WEATHER: 'off'` the same run reads
+  `applied=2`. That also removes a live hazard to the check's *most valuable* claim — "the
+  quick-match room is untouched" compares `solid` before and after, and a meteor in that room
+  during the window would report a room leak that never happened. Same exclusion `crates`
+  makes, for the same reason.
+- **The first repair was a loop that polled until the hashes matched, and it was wrong.**
+  Falsified by carving the guest's own client mask directly (`core.carve` is client-only —
+  the trap already recorded at the top of this file): the check **passed**. A search for
+  agreement hands a genuine divergence the whole of `MASK_CHECKSUM_INTERVAL` (5 s) to repair
+  itself through a resync and then reports success. Reverted.
+- **What landed is a wait for quiescence, not for agreement**: two consecutive samples in
+  which neither client's `carvesApplied` moved and neither has anything pending, then the
+  same single hash comparison as before. It grants no more settling time than the existing
+  `sleep(1500)` did, so the assertion is the one it always was — taken at a defined moment
+  instead of a random one. Re-falsified the same way: **red**, with
+  `host applied=2 ... guest applied=2` and different hashes, which is the signature of a real
+  divergence and is now distinguishable at a glance from the skew signature (unequal counts).
+- **Green afterwards**: 3 standalone runs plus the full gate. Combined with T19.18's 6/6,
+  `m10-checkpoint` is 10 of 10 since the cause was removed.
+- **It should come off the suite-context list once two more gates agree** — the same standard
+  `hud-timer` is being held to. Its cause is understood and removed, and the removal is
+  falsified; one green gate is still one draw. What is *not* explained is why the two earlier
+  reds (T19.05, T19.08) happened only inside full gates: a slower box widens the gap between
+  the two `dbg()` round trips, which fits, but nobody measured it and this section is not
+  claiming it. **`bullets-visible` and `night-combat` are untouched by this.**

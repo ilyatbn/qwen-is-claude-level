@@ -5288,3 +5288,14 @@ a socket with no listener — `debug().slots` all-null for the round, on **every
 `pendingMapInit`/`pendingLobbyState`/`pendingSnapshot`) and replays the last one to a late
 subscriber on a **microtask**, so no scene is re-entered mid-`create()`. `m10-checkpoint`
 selects by name again; the crater is the second end. EXIT=0, 43/43, 25/25, assets ok.
+
+## T19.19 — thirteen, not fourteen, and none of them needed a browser
+
+`grep -c` says 14 because `lib.rs:1322` spells the attribute in a **doc comment**; there are
+13. The crate mentions neither `js_sys` nor `web_sys`, so all 13 run natively: converted to
+`#[test]`, `wasm-bindgen-test` dropped from `Cargo.toml` so the attribute no longer compiles,
+and `no_test_in_this_crate_is_invisible_to_the_gate` scans the source for whoever adds it
+back. **3 passed → 17 passed.** Nine are duplicated by `client/src/core/index.test.ts`, which
+drives the real `pkg` in the gate — including `constants_json`'s six values, so §A19's
+crossing was pinned after all. Genuinely dark: `buried_slots`, the seed's **high half**,
+duplicate `add_player`, `set_player_state`'s velocity, two `load_mask` rejections. EXIT=0.
