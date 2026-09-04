@@ -5244,3 +5244,14 @@ read as steam *and* hid from the check (a saturated centre has `r-b = 0`; hot pi
 ~100 px with `FLAME_RADIUS` 10 touch — so `fire-visible` counts at both ends instead, and
 found a real bug: the cap culled flames **in silence**, 176 live on the client against 160.
 Falsified by drawing the disc §F10 replaced. EXIT=0, 43/43, net smoke 25/25, assets ok.
+
+## T19.15 — the `hud-timer` sample was a moving rectangle
+
+The last open half. `dr` differenced the mean redness of **two different rectangles** —
+`#hud-timer` is right-anchored, so "1:29" measures 111 px and "0:59" measures 121 — against
+a sky that drifts −15..−17 over the 30 s between the two frames. Forcing both samples onto
+the narrow rect reproduced the failure **8 of 8** (39.3–39.9 against a floor of 40), which
+is the recorded "the `after` sample is occasionally ~5 low", exactly. Replaced by the
+**fraction of pixels above redness 100** — 0.00% → 27.2%, spread 0.02 over 8 runs — plus the
+control **region** §C2 asks for and this check never had. Falsified at `hud.ts:189`. 20/20
+wasm, 12 concurrent, 5×800 suite + 800 at load 11.6. EXIT=0, 43/43, 25/25, assets ok.

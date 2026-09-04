@@ -60,6 +60,80 @@ const rectOf = (id) =>
 /** How red a patch is, relative to its other channels. Negative when it is not. */
 const redness = (p) => p.r - (p.g + p.b) / 2
 
+/**
+ * A pixel is "warn red" above this redness.
+ *
+ * Derived, not chosen: the warning colour is `#ff3b30`, whose redness is
+ * `255 - (59 + 48) / 2 = 201`. Everything else that can be in this rect is far
+ * below — white digits are 0 by construction, and the sky behind them measures
+ * about -80. 100 is the middle of a gap 200 wide, so no anti-aliased edge and no
+ * weather decides the answer.
+ */
+const RED_MIN = 100
+
+/**
+ * The **fraction of pixels that are warn-red**, which is what this check asserts
+ * on now. `samplePatch`'s mean is still logged, and it is no longer trusted.
+ *
+ * ## Why the mean had to go, measured rather than guessed
+ *
+ * The old assertion was `mean redness rose by more than 40` between a frame taken
+ * at the start of the round and the frame the timer went red in. It has two
+ * confounds and both are large enough to decide it:
+ *
+ * 1. **It is not the same rectangle.** `#hud-timer` is `right:14px`, so it is
+ *    right-anchored and its width follows its text: "1:29" measures 111 px and
+ *    "0:59" measures 121, because `1` is a narrow glyph. The before-frame rect
+ *    and the after-frame rect differ by 10 px of background. Forcing the two
+ *    samples onto the narrow rect reproduced the failure **8 times out of 8**
+ *    (39.3-39.9 against a floor of 40), and it is exactly the "after sample is
+ *    occasionally ~5 low" that `HANDOFF-M19.md` records as unexplained.
+ * 2. **The background moves under it.** The two frames are ~30 s apart and the
+ *    timer sits over the sky, which animates (§A4) and darkens on the day/night
+ *    curve. Measured on a same-sized patch of pure sky beside the timer: it
+ *    drifts -14.7 to -16.9 over that gap, and where it starts depends on how long
+ *    the lobby lasted, so the drift is not even constant between runs.
+ *
+ * A mean over a moving rectangle against a moving background is an instrument
+ * with two variables in it, and `dr` measured 39.3-48.0 across runs on one idle
+ * box. The red-pixel fraction has neither variable: 8 consecutive runs read
+ * **0.00% before and 27.21-27.23% after**, and the background control read 0.00%
+ * in both frames. That is a gap of 27 points with a spread of 0.02.
+ */
+async function redFraction(page, { x, y, w, h }) {
+  const b64 = (await page.screenshot({ clip: { x, y, width: w, height: h } })).toString('base64')
+  return page.evaluate(
+    async ({ src, min }) => {
+      const img = new Image()
+      img.src = `data:image/png;base64,${src}`
+      await img.decode()
+      const cv = document.createElement('canvas')
+      cv.width = img.width
+      cv.height = img.height
+      const ctx = cv.getContext('2d')
+      ctx.drawImage(img, 0, 0)
+      const d = ctx.getImageData(0, 0, img.width, img.height).data
+      let n = 0
+      for (let i = 0; i < d.length; i += 4) if (d[i] - (d[i + 1] + d[i + 2]) / 2 > min) n++
+      return n / (d.length / 4)
+    },
+    { src: b64, min: RED_MIN },
+  )
+}
+
+/**
+ * The floor the assertion uses, as a fraction.
+ *
+ * Measured 27.2% for a red timer and 0.00% for a white one, eight runs each. 5%
+ * is a fifth of the signal and infinitely above the noise, which is what a
+ * threshold on a **bimodal** measurement should look like — the number that
+ * merely passes would be 27, and this is deliberately not that.
+ */
+const RED_FLOOR = 0.05
+
+/** A same-sized patch of background beside the timer: §C2's control region. */
+const besideThe = (r) => ({ x: r.x - r.w - 24, y: r.y, w: r.w, h: r.h })
+
 // --- the timer is there, and it says what the server says -------------------
 const white = await rectOf('hud-timer')
 if (!white) {
@@ -67,6 +141,8 @@ if (!white) {
 } else {
   const d0 = await dbg()
   const before = await samplePatch(page, white)
+  const redBefore = await redFraction(page, white)
+  const bgBefore = await redFraction(page, besideThe(white))
   ok(`timer rect ${white.w}x${white.h} at (${white.x}, ${white.y}), reading "${d0.hudTimer.text}"`)
 
   // Both ends (§A39): the digits on screen against **the server's own
@@ -92,10 +168,16 @@ if (!white) {
   // timer that was red for the whole round (§A26).
   if (d0.hudTimer.warn) {
     fail(`the timer is already in its warning state with ${left.toFixed(0)}s left`)
-  } else if (redness(before) > 20) {
-    fail(`the timer patch is already red (redness ${redness(before).toFixed(1)}) before the boundary`)
+  } else if (redBefore > RED_FLOOR) {
+    fail(
+      `the timer patch is already ${(redBefore * 100).toFixed(2)}% warn-red before the ` +
+        'boundary — "it turned red" would pass for a timer that was red all round',
+    )
   } else {
-    ok(`control: not red above the boundary — redness ${redness(before).toFixed(1)}`)
+    ok(
+      `control: not red above the boundary — ${(redBefore * 100).toFixed(2)}% warn-red ` +
+        `(mean redness ${redness(before).toFixed(1)})`,
+    )
   }
   await shot('hud-timer-white')
 
@@ -117,7 +199,18 @@ if (!white) {
   while (Date.now() < deadline && (!sawWarn || !sawBanner)) {
     const d = await dbg()
     if (!sawWarn && d.hudTimer.warn) {
-      sawWarn = { d, patch: await samplePatch(page, (await rectOf('hud-timer')) ?? white) }
+      // The rect **as it is now**: the element is right-anchored and its width
+      // follows its text, so the before-frame rect is not this rect. That is why
+      // the assertion below counts red pixels instead of differencing two means
+      // over two different rectangles — see `redFraction`.
+      const wr = (await rectOf('hud-timer')) ?? white
+      sawWarn = {
+        d,
+        rect: wr,
+        patch: await samplePatch(page, wr),
+        red: await redFraction(page, wr),
+        bg: await redFraction(page, besideThe(wr)),
+      }
       await shot('hud-timer-red')
     }
     if (!sawBanner && d.hudBanner.shown) {
@@ -137,14 +230,36 @@ if (!white) {
     } else {
       ok(`the timer went red at ${left2.toFixed(1)}s left (threshold ${warnAt}s)`)
     }
-    // The pixels, against the control frame: the SAME rect, earlier, not red.
-    const dr = redness(sawWarn.patch) - redness(before)
-    if (dr > 40) {
-      ok(`the timer's own rect turned red — redness ${redness(before).toFixed(1)} → ${redness(sawWarn.patch).toFixed(1)}`)
+    // The pixels, against the control frame: the same rect earlier had none.
+    console.log(
+      `  timer rect ${white.w}px → ${sawWarn.rect.w}px, mean redness ` +
+        `${redness(before).toFixed(1)} → ${redness(sawWarn.patch).toFixed(1)} (logged, not asserted)`,
+    )
+    if (sawWarn.red > RED_FLOOR) {
+      ok(
+        `the timer's own rect turned red — ${(redBefore * 100).toFixed(2)}% → ` +
+          `${(sawWarn.red * 100).toFixed(2)}% warn-red pixels`,
+      )
     } else {
       fail(
-        `the timer says it is warning but its pixels did not turn red: redness ` +
-          `${redness(before).toFixed(1)} → ${redness(sawWarn.patch).toFixed(1)} (needs +40)`,
+        `the timer says it is warning but its pixels did not turn red: ` +
+          `${(redBefore * 100).toFixed(2)}% → ${(sawWarn.red * 100).toFixed(2)}% warn-red ` +
+          `(needs ${(RED_FLOOR * 100).toFixed(0)}%)`,
+      )
+    }
+    // §C2's control **region**, which this check has never had: the same-sized
+    // patch of sky beside the timer, in the same two frames. Without it, "red
+    // pixels appeared" also passes for a frame that went red everywhere — a
+    // fullscreen damage flash would do it.
+    if (sawWarn.bg > RED_FLOOR) {
+      fail(
+        `the control patch beside the timer also went ${(sawWarn.bg * 100).toFixed(2)}% ` +
+          'warn-red — the frame turned red everywhere, so the timer proves nothing',
+      )
+    } else {
+      ok(
+        `control region: the sky beside the timer stayed ${(bgBefore * 100).toFixed(2)}% → ` +
+          `${(sawWarn.bg * 100).toFixed(2)}% warn-red`,
       )
     }
   }

@@ -1046,6 +1046,78 @@ inside `SPAWN_IFRAMES` and refuses every point of damage — which reads exactly
 burns nobody". Wait the warmup out for real. It is now written into
 `a_molotov_that_lands_on_a_player_still_bursts_and_burns_them` beside the fixture.
 
+## T19.15 completed — `hud-timer`'s open question, answered
+
+The two open questions the previous coder left were, in order: *why* is the `after` sample
+occasionally ~5 low, and only then what the floor should be. **The first one has an answer,
+and it makes the second one moot.**
+
+**The instrument was measuring two things that move.** `dr` was
+`mean redness(warn frame) - mean redness(a frame ~30 s earlier)`, over the rect
+`#hud-timer` occupies. Both terms drift:
+
+1. **It is not the same rectangle.** The element is `right:14px`, so it is right-anchored
+   and its width follows its text. Measured every run: the control frame reads `"1:29"` and
+   is **111 px** wide; the warn frame reads `"0:59"` and is **121 px**, because `1` is a
+   narrow glyph. The check sampled the before-frame with the first rect and the warn frame
+   with `(await rectOf(...)) ?? white` — the second. Ten pixels of extra background is worth
+   about **5.4** points of mean redness, and forcing both samples onto the narrow rect
+   reproduced the failure **8 runs out of 8** (39.34, 39.44, 39.67, 39.67, 39.67, 39.81,
+   39.92, 39.92 against a floor of 40). That is exactly the recorded "`after` normally
+   +2.9..+3.7, twice -1.1 and -2.3", to the decimal.
+2. **The background moves under it.** The timer sits over the sky, which animates (§A4) and
+   walks the day/night curve. Measured on a same-sized patch of pure sky beside the timer,
+   over the same 30 s gap: **-14.7 to -16.9**. Where it starts depends on how long the lobby
+   lasted before the match, so the drift is not constant between runs either — which is why
+   the same box gave 39.3-45.9 on one afternoon and 44.4-48.0 on another.
+
+**The fix is a better instrument, not a different number.** The assertion is now the
+**fraction of pixels in the rect whose redness exceeds 100** — derived, not chosen: the warn
+colour `#ff3b30` has redness 201, white digits have 0 by construction and the sky measures
+about -80, so 100 is the middle of a gap 200 wide. Eight consecutive runs: **0.00% before,
+27.21-27.23% after**, and a background control patch beside the timer read **0.00% in both
+frames**. The floor is 5% — a fifth of the signal, against a noise floor that is literally
+zero. It cannot be moved by the rect changing width, by the sky, or by load, because none of
+those puts a pixel above redness 100.
+
+**Two things went in with it.** The check had a control *frame* and no control **region**
+(§C2): the sky patch beside the timer is now sampled in both frames and asserted to stay
+below the same floor, so "red pixels appeared" cannot pass for a frame that went red
+everywhere. And the old mean is still **printed** every run, labelled "logged, not asserted",
+so anyone reading a future failure can see both numbers.
+
+**Falsified at the live binding site:** `hud.ts:189` `style.color = warn ? '#ff3b30' :
+'#ffffff'` changed to always white. Red: *"0.00% → 0.00% warn-red (needs 5%)"*, with the
+timer still reporting `warn` and still going red at 60.5 s — which is the point, because the
+DOM half of the check passed while the pixels failed.
+
+**Inside the full suite it now reads the same as standalone**: 0.00% → **27.23%**, against
+27.21-27.23% alone. That is the sharpest evidence available that the suite context was never
+acting on this check — the old instrument moved with the frame and the new one does not.
+
+**`hud-timer` should come off the known-red-in-suite list once two more gates agree.** It is
+one of the four that `HANDOFF-M19.md` lists as red inside the suite and green standalone.
+Its cause is now understood and removed, so the honest next step is to watch it rather than
+to declare it fixed — one green gate is one draw. The other three (`bullets-visible`,
+`night-combat`, `m10-checkpoint`) are untouched by this and the suite-context hypothesis
+still stands for them.
+
+**The other two halves were re-proven, not taken on trust.** The written Done-when
+(20 serial `wasm-build`s, 5 client suite runs) is green — 20/20 and 5x800 — but it is
+serial, and the previous coder is right that it proves nothing about a concurrency bug. The
+proof that does: **4-way concurrent x 3 rounds = 12 builds, 0 failures**, against the 3-of-6
+the same shape gave with the lock commented out. And the suite ran once under deliberate
+load — `cargo test --workspace` alongside it, load average peaking at **11.6** — 800/800 in
+267 s. That load model is a bounded real job rather than spinners: it exits on its own, so
+it cannot become the 3 h 47 m leak this task already paid for. Checked after: nothing left
+running.
+
+**T19.16 should be re-read in this light.** Its Notes say *"`hud-timer` fails ~1 in 20 on an
+idle box with the cause unfound"* and offers it as possibly the same family as the vite-port
+failure. It is not the same family: this one was a measurement artefact with no load term in
+it at all, which is also why the previous coder's 20-run idle/loaded interleave found the
+**loaded** arm reading higher.
+
 ## T19.13 landed — what the diff does not say
 
 **Task-file defect, and it is the headline.** T19.13's Tests ask for *"cluster count after a
