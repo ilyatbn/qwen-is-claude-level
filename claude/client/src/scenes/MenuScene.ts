@@ -318,11 +318,24 @@ export class MenuScene extends Phaser.Scene {
 
       const rows = rosterRows(L, this.mySeat)
         .map((r) => {
-          const cls = ['seat', r.ready ? 'ready' : '', r.you ? 'you' : '', r.bot ? 'bot' : '']
+          const cls = [
+            'seat',
+            r.ready ? 'ready' : '',
+            r.you ? 'you' : '',
+            r.bot ? 'bot' : '',
+            r.host ? 'host' : '',
+          ]
             .filter(Boolean)
             .join(' ')
           const tick = r.seat >= 0 && r.ready ? ' ✓' : ''
-          return `<li class="${cls}">${escapeHtml(r.label)}${tick}</li>`
+          // **In the text, not only in the class.** A promoted player otherwise
+          // gets working arrows and no idea why, and the demoted one gets dead
+          // arrows with no explanation (T20.03). It is also what makes the
+          // marker assertable: `__menu.roster()` reads `textContent`, so a
+          // CSS-only crown would be invisible to the browser check that has to
+          // prove it moved.
+          const host = r.host ? ' (host)' : ''
+          return `<li class="${cls}">${escapeHtml(r.label)}${host}${tick}</li>`
         })
         .join('')
 

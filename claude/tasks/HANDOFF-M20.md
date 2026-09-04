@@ -124,3 +124,51 @@ not fixed here** — the coordinator's ruling is that the deliverable is the *gr
   the next two full runs. It is the family HANDOFF-M19 names in the T19.16 section — a short
   wall-clock window over a real socket, under concurrency. Nothing was changed to accommodate
   it and it is not on any list.
+
+## T20.03 landed — promotion already worked; nothing on screen said so
+
+**Almost everything the report asks for was already true, and the task file says so.**
+`settings_owner()` is derived per call, both departure paths (`leave_room` and disconnect)
+free the seat and rebroadcast, and `the_settings_pass_to_the_longest_seated_when_the_host_leaves`
+already pinned the ordering. What was missing was one boolean on a roster row and a marker on
+the screen.
+
+- **`RosterRow.host` is derived, never stored.** `settings_owner` has no `host` flag beside it
+  on the server precisely because two flags can disagree about who the host is; a field here
+  would be the third copy. It is `s.private && p.seat === s.settingsOwner`.
+- **Private lobbies only, and that is not a presentation choice.** `settings_owner()` derives
+  on every room and `events.rs` emits it for public lobbies too, but `check_settings_change`
+  refuses a public lobby **before** it looks at the owner. On a Quick game the field means
+  "longest-seated human" and nothing more, so a crown there names somebody who owns nothing
+  and cannot be given anything. The settings *panel* was already gated this way; the roster
+  was not. Both halves are asserted in `lobby.mjs` — absent on `cass`'s public lobby, present
+  on `dan`'s private one.
+- **The marker is in the row's *text*, not only in its class.** `__menu.roster()` reads
+  `textContent`, so a CSS-only crown would be invisible to the only check that can prove it
+  moves. Falsified by deleting `${host}` from the rendered string: **two reds**,
+  `["dan","eve"]` before and `["eve"]` after.
+- **The server test that was missing is about the *telling*, not the promotion.**
+  `settings_owner()` is computed per call, so every server-side assertion about it passes
+  whether or not a client was ever sent the new answer.
+  `the_promotion_is_broadcast_and_not_merely_derivable` drains the queue first (or the joins'
+  own pending update satisfies it for free) and then asserts `take_lobby_update()` produces a
+  payload naming the new host. Falsified by commenting out `note_lobby_change()` in the
+  `Leave` arm: red.
+- **The T20.01 path is confirmed by absence, and that is the honest form.** "Promotion
+  survives the sweep" no longer has a live case: the sweep cannot reach a lobby at all, so it
+  cannot promote anybody. `private_lobby.rs::a_private_lobby_is_never_swept_and_the_host_keeps_the_settings`
+  asserts the host still owns the settings after the harshest sweep there is, which is that
+  claim in the only form it still has.
+- **`ROOM_EMPTY_TTL` was not touched, and here is the measurement the task asked for.**
+  "Close the lobby" already works: the registry stamps `empty_since` on the last detach and
+  `reap` drops the room after `room_empty_ttl`, noticed every `ROOM_REAP_INTERVAL` — so a room
+  lives at most `ROOM_EMPTY_TTL + ROOM_REAP_INTERVAL` = **32 s** after the last human leaves.
+  `reap.rs::an_abandoned_lobby_is_reaped_before_it_ever_starts` watches a real socket create a
+  private room, disconnect, and the room disappear — at `TTL_S = 1.0` from **config**, which
+  `registry.rs:430-433` says exists so a test need not sleep for the shipped value. 30 s is
+  the right meaning: it is the reconnection window §E4 leaves open, and shortening it would
+  close that seam for a lobby nobody is waiting on. No constant changed.
+- **One warning in the log that is not a failure.** `room_left emit failed: … Closed` appears
+  when `dan` presses Leave: `leaveLobby` sends `leave_room` and closes the socket, and the
+  server's `room_left` reply races the close. Pre-existing shape, unrelated to this task, and
+  named here so the next reader does not chase it.

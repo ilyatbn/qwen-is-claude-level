@@ -5312,3 +5312,17 @@ the swept human's id was recycled to a bot and its socket kept receiving that bo
 snapshots — `3 players`, all bots. It reads 4 now. Plus `lobbyErrorMessage` and the
 `SessionMap` half of leaving; `ctx.detach` is unreachable from the room task and untouched.
 EXIT=0, 43/43, 25/25, assets ok. Detail in `tasks/HANDOFF-M20.md`.
+
+## T20.03 — promotion already worked; nothing on screen said so
+
+`settings_owner()` is derived per call and both departure paths already rebroadcast, so the
+report's "promote the next player" was true and invisible: the promoted player got working
+arrows with no explanation and the old host got dead ones. `RosterRow.host` is a one-line
+derivation off `settingsOwner` — no fourth flag — and **private only**, because
+`check_settings_change` refuses a public lobby *before* it looks at the owner, so a crown on
+a Quick game names somebody who owns nothing. The marker is in the row's **text**: the
+browser check reads `textContent`, and deleting it goes red twice. The server test that was
+missing is about the *telling* — `the_promotion_is_broadcast_and_not_merely_derivable` fails
+when `Leave`'s `note_lobby_change()` is removed. `ROOM_EMPTY_TTL` untouched: measured, an
+emptied lobby closes within `TTL + REAP_INTERVAL` = 32 s and `reap.rs` already watches it.
+EXIT=0, 43/43, 25/25, assets ok.

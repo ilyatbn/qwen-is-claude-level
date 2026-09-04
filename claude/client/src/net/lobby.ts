@@ -297,6 +297,23 @@ export interface RosterRow {
   ready: boolean
   bot: boolean
   you: boolean
+  /**
+   * This seat owns the settings, and the roster should say so (T20.03).
+   *
+   * **Derived, never stored.** `settingsOwner` is itself derived on the server
+   * from the seat list — the whole reason `settings_owner()` has no `host` flag
+   * beside it is that two flags can disagree about who the host is — so adding
+   * one here would put the third copy on the screen.
+   *
+   * **Private lobbies only**, and that is not a presentation choice.
+   * `settings_owner()` derives on *every* room and the server emits it for
+   * public lobbies too, but `check_settings_change` refuses a public lobby
+   * **before** it looks at the owner. So on a Quick game the field means
+   * "longest-seated human" and nothing else: a crown there would name somebody
+   * who owns nothing and cannot be given anything. The settings *panel* is
+   * already gated this way in `MenuScene`; the roster was not.
+   */
+  host: boolean
 }
 
 /**
@@ -316,9 +333,14 @@ export function rosterRows(s: LobbyStateMsg, mySeat: number | undefined): Roster
     ready: p.ready,
     bot: p.bot,
     you: p.seat === mySeat,
+    // A room with no host at all reads as `undefined`, and `p.seat === undefined`
+    // is false for every row — so nobody is marked rather than everybody. The
+    // padding rows below cannot collide with it either: `settingsOwner` is a
+    // `u8` on the wire and they use `-1`.
+    host: s.private && p.seat === s.settingsOwner,
   }))
   for (let i = rows.length; i < s.capacity; i += 1) {
-    rows.push({ seat: -1, label: 'empty', ready: false, bot: false, you: false })
+    rows.push({ seat: -1, label: 'empty', ready: false, bot: false, you: false, host: false })
   }
   return rows
 }

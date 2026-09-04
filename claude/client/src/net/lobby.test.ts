@@ -392,6 +392,56 @@ describe('the roster (§E6)', () => {
     expect(rosterRows(base, undefined).some((r) => r.you)).toBe(false)
   })
 
+  // T20.03: the roster names the host, and the mark moves when the host does.
+  describe('the host marker', () => {
+    const priv = { ...base, private: true, settingsOwner: 0 }
+
+    it('marks exactly one host, and it is the settings owner', () => {
+      const rows = rosterRows(priv, 0)
+      expect(rows.filter((r) => r.host).map((r) => r.seat)).toEqual([0])
+    })
+
+    it('moves when the host leaves, rather than sticking to seat 0', () => {
+      // ana is gone; bo is the longest-seated human and the server says so.
+      const promoted = {
+        ...priv,
+        settingsOwner: 3,
+        players: [
+          { seat: 3, name: 'bo', skinId: 0, ready: false, bot: false },
+          { seat: 1, name: 'Bot 1', skinId: 0, ready: true, bot: true },
+        ],
+      }
+      const rows = rosterRows(promoted, 3)
+      expect(rows.filter((r) => r.host).map((r) => r.seat)).toEqual([3])
+      // **The control.** Seat 3 is deliberately not the first row's old id and
+      // not 0: a marker hardcoded to "the first seat" or to "seat 0" passes the
+      // test above and fails here.
+      expect(rows.find((r) => r.seat === 1)?.host).toBe(false)
+    })
+
+    it('marks nobody on a public lobby, however the server derives the owner', () => {
+      // `settings_owner` is derived on every room and emitted for public ones
+      // too, but `check_settings_change` refuses a public lobby before it looks
+      // at the owner — so a crown there names somebody who owns nothing.
+      const rows = rosterRows({ ...base, settingsOwner: 0 }, 0)
+      expect(rows.some((r) => r.host)).toBe(false)
+      // The control: the identical state, private, does mark one. Without it
+      // this passes for a `host` field that is never true.
+      expect(rosterRows({ ...base, private: true, settingsOwner: 0 }, 0).some((r) => r.host)).toBe(
+        true,
+      )
+    })
+
+    it('marks nobody when the room has no host, and no padding row is marked', () => {
+      const rows = rosterRows({ ...base, private: true }, 0)
+      expect(rows.some((r) => r.host)).toBe(false)
+      // Padding rows use seat -1 and `settings_owner` is a u8, so they cannot
+      // collide — asserted rather than assumed, because `undefined === -1` being
+      // false is the only thing standing between this and five crowns.
+      expect(rows.filter((r) => r.seat === -1).every((r) => !r.host)).toBe(true)
+    })
+  })
+
   it('says something different for a private lobby than a public one', () => {
     const pub = lobbyStatus({ ...base, startsIn: 4 })
     expect(pub).toContain('4s')

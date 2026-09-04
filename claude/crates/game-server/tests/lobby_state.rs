@@ -270,6 +270,48 @@ fn the_owner_moves_on_when_the_host_leaves() {
     assert_eq!(room.lobby_state().players.len(), 1);
 }
 
+/// **Promotion is announced, not merely derived** (T20.03).
+///
+/// The task's title is "host promotion works and nobody is told", and the half
+/// that could silently rot is the telling: `settings_owner()` is computed per
+/// call, so every server-side assertion about it passes whether or not a single
+/// client was ever sent the new answer. This asserts the message.
+///
+/// The sibling failure is T20.01's: `sweep_unready` freed seats without
+/// `note_lobby_change()`, so promotion happened and no client heard. That path
+/// can no longer reach a lobby at all — `private_lobby.rs::a_private_lobby_is_never_swept_and_the_host_keeps_the_settings`
+/// is where that is pinned.
+#[test]
+fn the_promotion_is_broadcast_and_not_merely_derivable() {
+    let mut room = Room::new(cfg());
+    let ana = seat(&mut room, "ana");
+    let ben = seat(&mut room, "ben");
+    // Drain what the two joins queued, or a pending update satisfies this for
+    // free and the assertion is about `Join` rather than about `Leave`.
+    let _ = room.take_lobby_update();
+    assert!(
+        room.take_lobby_update().is_none(),
+        "the lobby is still dirty before the host leaves, so the claim below is vacuous"
+    );
+
+    room.apply_for_test(Command::Leave(ana));
+    let state = room
+        .take_lobby_update()
+        .expect("the host left and no lobby_state was queued");
+    let p = lobby_state_payload(&state);
+    assert_eq!(
+        p["settings_owner"], ben,
+        "the broadcast still names the host who left"
+    );
+    let names: Vec<&str> = p["players"]
+        .as_array()
+        .expect("players is an array")
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert_eq!(names, vec!["ben"], "the payload still carries the old host");
+}
+
 /// A running match is past needing a lobby broadcast.
 #[test]
 fn a_match_stops_producing_lobby_updates() {

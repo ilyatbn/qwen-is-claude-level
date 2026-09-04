@@ -415,13 +415,114 @@ const publicPanel = await settings(cass)
 if (Object.keys(publicPanel).length !== 0) {
   fail(`a public lobby is showing a settings panel: ${JSON.stringify(publicPanel)}`)
 } else ok('control: a public lobby renders no settings panel at all (§F7)')
-if ((await roster(cass)).length === 0) {
+const cassRoster = await roster(cass)
+if (cassRoster.length === 0) {
   fail('the public lobby rendered nothing, so "no panel" above is vacuous')
 } else ok('and it did render a lobby, so the absence above is about the panel')
+// T20.03: and no crown either. `settings_owner` is derived on **every** room and
+// the server sends it for public lobbies too, but `check_settings_change`
+// refuses a public lobby before it ever looks at the owner — so a marker here
+// would name somebody who owns nothing. The presence half is asserted on the
+// private lobby below.
+if (cassRoster.some((r) => r.includes('(host)'))) {
+  fail(`a public lobby is marking a host: ${JSON.stringify(cassRoster)}`)
+} else ok('control: no host marker on a public lobby (§F7 gates the panel; the roster too)')
 if (cass.errors.length) fail(`cass page errors: ${cass.errors.join(' | ')}`)
 const cassCtx = cass.page.context()
 await cass.page.close()
 await cassCtx.close()
+
+// --- T20.03: the host leaves and the survivor is told ---------------------
+//
+// **Last, after the one-room assertion**, for the reason the public-lobby block
+// above gives: a new lobby is a new room, and `health.rooms !== 1` is this
+// check's guard on the socket handover.
+//
+// Reported: *"if the host leaves the waiting room, the next active player should
+// be promoted to host."* Promotion itself already worked — `settings_owner()` is
+// derived from the seat list and moves on its own — and **nothing on screen said
+// so**: the promoted player got working arrows with no explanation and the old
+// host got dead ones. So the assertion is on the rendered roster text, through
+// `__menu.roster()`, which reads `textContent`.
+const dan = await openAtMenu('dan')
+await dan.page.evaluate(() => document.querySelector('#private')?.click())
+await dan.page.evaluate(() => document.querySelector('#host')?.click())
+await dan.page.waitForFunction('window.__menu.visibleCode().length === 6', null, {
+  timeout: 30_000,
+})
+const danCode = await dan.page.evaluate('window.__menu.visibleCode()')
+
+const eve = await openAtMenu('eve')
+await eve.page.evaluate(() => document.querySelector('#private')?.click())
+await eve.page.evaluate(() => document.querySelector('#join')?.click())
+await eve.page.evaluate((c) => {
+  const input = document.querySelector('#code')
+  input.value = c
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  document.querySelector('#go')?.click()
+}, danCode)
+await eve.page
+  .waitForFunction('window.__menu.roster().some((r) => r.startsWith("dan"))', null, {
+    timeout: 30_000,
+  })
+  .catch(async () => fail(`eve never saw dan's lobby: ${JSON.stringify(await roster(eve))}`))
+
+// The control frame: dan is marked, eve is not, on eve's own screen.
+const seatedRows = (rows) => rows.filter((r) => r !== 'empty')
+const hostBefore = seatedRows(await roster(eve))
+const hostedBefore = hostBefore.filter((r) => r.includes('(host)'))
+if (hostedBefore.length !== 1 || !hostedBefore[0].startsWith('dan')) {
+  fail(`the roster does not mark the host before anyone leaves: ${JSON.stringify(hostBefore)}`)
+} else ok(`control: exactly one host on screen and it is the host: ${JSON.stringify(hostedBefore)}`)
+const eveLocked = await settings(eve)
+if (!eveLocked.kit || !eveLocked.kit.nextDisabled) {
+  fail(`the guest's controls are live before promotion: ${JSON.stringify(eveLocked)}`)
+} else ok("control: eve's controls are disabled while dan is host")
+
+// dan leaves the waiting room, by the button a player would press.
+await dan.page.evaluate(() => document.querySelector('#back')?.click())
+
+await eve.page
+  .waitForFunction('window.__menu.roster().some((r) => r.startsWith("eve") && r.includes("(host)"))', null, {
+    timeout: 20_000,
+  })
+  .catch(() => {})
+const hostAfter = seatedRows(await roster(eve))
+const hostedAfter = hostAfter.filter((r) => r.includes('(host)'))
+if (hostedAfter.length !== 1 || !hostedAfter[0].startsWith('eve')) {
+  fail(
+    `the host left and the marker did not move to the survivor: ${JSON.stringify(hostAfter)} ` +
+      `(was ${JSON.stringify(hostBefore)})`,
+  )
+} else ok(`the marker moved to the promoted player: ${JSON.stringify(hostedAfter)}`)
+if (hostAfter.some((r) => r.startsWith('dan'))) {
+  fail(`dan left and is still on eve's roster: ${JSON.stringify(hostAfter)}`)
+} else ok('and the player who left is off the roster')
+
+// **The screen and the wire must agree.** A marker that moved while the arrows
+// stayed dead would be a decoration; a working arrow with no marker is the bug
+// as reported. Both, and the arrow proved by the value actually moving — only
+// the room can grant that.
+const evePanel = await settings(eve)
+if (!evePanel.kit || evePanel.kit.nextDisabled) {
+  fail(`eve is marked host and her controls are still disabled: ${JSON.stringify(evePanel)}`)
+} else {
+  const was = evePanel.kit.value
+  await eve.page.evaluate(() => window.__menu.step('kit', 1))
+  await eve.page
+    .waitForFunction((v) => window.__menu.settings().kit.value !== v, was, { timeout: 10_000 })
+    .catch(() => {})
+  const now = (await settings(eve)).kit.value
+  if (now === was) fail(`eve was marked host and the room refused her change: kit stayed "${was}"`)
+  else ok(`the promoted player can actually change a setting: kit "${was}" -> "${now}"`)
+}
+
+for (const c of [dan, eve]) {
+  if (c.errors.length) fail(`${c.name} page errors: ${c.errors.join(' | ')}`)
+  const ctx = c.page.context()
+  await c.page.close()
+  await ctx.close()
+}
 
 for (const c of [ana, bo]) {
   if (c.errors.length) fail(`${c.name} page errors: ${c.errors.join(' | ')}`)
