@@ -140,6 +140,13 @@ export interface PlayerState {
  */
 export interface Constants {
   MINE_ARM_TIME: number
+  /** T20.10's ground animals — drawn size **is** the hit box. */
+  SPIDER_W: number
+  SPIDER_H: number
+  BEETLE_W: number
+  BEETLE_H: number
+  ANIMAL_MAX: number
+  ANIMAL_INTERVAL: number
   /** Live toxic drops during a full-rate shower — the emitter's divisor (T20.05). */
   TOXIC_DROPS_IN_FLIGHT: number
   TOMBSTONE_W: number

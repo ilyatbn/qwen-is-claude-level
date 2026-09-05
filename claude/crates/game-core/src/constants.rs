@@ -1737,6 +1737,69 @@ pub const BIRD_EDGE_MARGIN: f32 = 48.0;
 /// legible (§C16: "the drop must visibly fall to a place you can reach").
 pub const BIRD_DROP_VELOCITY: f32 = 40.0;
 
+// ---------------------------------------------------------------------------
+// Ground animals (T20.10)
+// ---------------------------------------------------------------------------
+//
+// **No doc governs these.** `grep -i "animal|spider|wildlife|creature"` over
+// `docs/` and `tasks/` returns nothing — birds are `docs/72` §C16 and this has no
+// counterpart. The task file says so and asks that the gap be flagged: **an
+// amendment would be the durable home for this block.**
+//
+// The shape follows the birds' constants deliberately, so the two read as one
+// family: a cadence, a cap, a size, a health, and relationship guards below.
+
+/// Seconds between spawn attempts. Slower than `BIRD_INTERVAL` on purpose:
+/// ground animals persist — they do not cross the map and leave — so the cadence
+/// only has to refill what players shoot.
+pub const ANIMAL_INTERVAL: f32 = 12.0;
+/// How many may be alive at once.
+pub const ANIMAL_MAX: usize = 5;
+/// Chance a spawn is a spider rather than a beetle.
+pub const ANIMAL_SPIDER_CHANCE: f32 = 0.6;
+
+/// A spider's hit box, px. Small: it is a thing you notice and have to aim at.
+pub const SPIDER_W: f32 = 12.0;
+pub const SPIDER_H: f32 = 8.0;
+/// One shot from anything.
+pub const SPIDER_HEALTH: f32 = 1.0;
+/// Seconds between hops.
+pub const SPIDER_HOP_EVERY: f32 = 1.6;
+/// Upward and sideways impulse of a hop, px/s.
+pub const SPIDER_HOP_UP: f32 = 170.0;
+pub const SPIDER_HOP_SIDE: f32 = 60.0;
+
+/// A beetle is bigger, slower and tougher — the other end of the same trade.
+pub const BEETLE_W: f32 = 16.0;
+pub const BEETLE_H: f32 = 10.0;
+pub const BEETLE_HEALTH: f32 = 12.0;
+/// Ground speed, px/s. Walks rather than hops.
+pub const BEETLE_SPEED: f32 = 26.0;
+/// Seconds before a beetle reconsiders which way it is walking.
+pub const BEETLE_TURN_EVERY: f32 = 4.0;
+
+/// Kept clear of the map edges, like `BIRD_EDGE_MARGIN`.
+pub const ANIMAL_EDGE_MARGIN: f32 = 40.0;
+/// An animal that ends up below this many px of the world bottom is removed:
+/// a void map can swallow one, and a corpse falling forever is a leak.
+pub const ANIMAL_DESPAWN_BELOW: f32 = 64.0;
+
+// The relationships, in the shape `BIRD_METAL_HEALTH > BIRD_HEALTH` established.
+// A spider that outlived a beetle, or a beetle smaller than a spider, would make
+// the two kinds the same decision with different art.
+const _: () = assert!(BEETLE_HEALTH > SPIDER_HEALTH);
+const _: () = assert!(BEETLE_W > SPIDER_W && BEETLE_H > SPIDER_H);
+// The spider must actually leave the ground, or "jumping spiders" is a name.
+const _: () = assert!(SPIDER_HOP_UP > 0.0);
+// And it must not out-run the beetle sideways *and* hop: the beetle's only
+// advantage is being harder to kill.
+const _: () = assert!(SPIDER_HOP_SIDE > BEETLE_SPEED);
+// A cap of zero would make every assertion about animals vacuous.
+const _: () = assert!(ANIMAL_MAX > 1);
+const _: () = assert!(ANIMAL_INTERVAL > 0.0);
+// Both kinds must be reachable, or one of them is unreachable art.
+const _: () = assert!(ANIMAL_SPIDER_CHANCE > 0.0 && ANIMAL_SPIDER_CHANCE < 1.0);
+
 // ---- v5 amendments ----  mirrors docs/73-amendments-v5.md
 
 // --- D1: a sprite's alpha becomes terrain ---

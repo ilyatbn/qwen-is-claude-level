@@ -58,6 +58,9 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         | GameEvent::BirdSpawn { .. }
         | GameEvent::BirdMove { .. }
         | GameEvent::BirdDespawn { .. }
+        | GameEvent::AnimalSpawn { .. }
+        | GameEvent::AnimalMove { .. }
+        | GameEvent::AnimalDespawn { .. }
         | GameEvent::ItemSpawn { .. }
         | GameEvent::ItemMove { .. }
         | GameEvent::ItemPickup { .. }
@@ -97,6 +100,9 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::BirdSpawn { .. } => "bird_spawn",
         GameEvent::BirdMove { .. } => "bird_move",
         GameEvent::BirdDespawn { .. } => "bird_despawn",
+        GameEvent::AnimalSpawn { .. } => "animal_spawn",
+        GameEvent::AnimalMove { .. } => "animal_move",
+        GameEvent::AnimalDespawn { .. } => "animal_despawn",
         GameEvent::ItemSpawn { .. } => "item_spawn",
         GameEvent::ItemMove { .. } => "item_move",
         GameEvent::ItemPickup { .. } => "item_pickup",
@@ -234,6 +240,27 @@ pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
             json!({"tick": tick, "id": id, "x": x, "y": y})
         }
         GameEvent::BirdDespawn { id, killed, .. } => {
+            json!({"tick": tick, "id": id, "killed": killed})
+        }
+        GameEvent::AnimalSpawn {
+            id,
+            kind,
+            x,
+            y,
+            right,
+            ..
+        } => json!({
+            "tick": tick, "id": id, "kind": kind, "x": x, "y": y, "right": right
+        }),
+        // **`right` on the move too**, unlike a bird's. A bird flies one way for
+        // its whole life; a beetle turns and a spider hops both ways, so facing is
+        // state the client cannot derive from the spawn.
+        GameEvent::AnimalMove {
+            id, x, y, right, ..
+        } => {
+            json!({"tick": tick, "id": id, "x": x, "y": y, "right": right})
+        }
+        GameEvent::AnimalDespawn { id, killed, .. } => {
             json!({"tick": tick, "id": id, "killed": killed})
         }
         GameEvent::ItemSpawn {

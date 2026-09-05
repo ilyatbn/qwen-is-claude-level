@@ -60,6 +60,7 @@ const EXEMPT: Record<string, string> = {
   debugHud: 'new DebugHud, every create()',
   tombstones: 'new TombstoneLayer, every create()',
   birds: 'new BirdLayer, every create()',
+  animals: 'new AnimalLayer, every create()',
   results: 'new ResultsScreen, every create()',
   // Deliberately outlives a round.
   audio: 'the Mixer keeps its decoded buffers; initAudio() reassigns it and SHUTDOWN stops it',

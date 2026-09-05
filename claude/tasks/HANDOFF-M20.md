@@ -1114,3 +1114,384 @@ because the file is outside this task:
 Until then: a gate that exits 1 with `Tests N passed (N)` and two `onTaskUpdate` errors is
 this, and re-running is the correct response — but *only* after reading the summary line,
 because "the assertions all passed" is the whole of what distinguishes it from a real red.
+
+## Journal overflow — the M20 entries as they were written
+
+`CLAUDE.md` caps a journal entry at **8 lines** and M20's had crept to 10–17; every M19
+entry is exactly 8. All twelve were compressed in one pass with T20.10, and **nothing was
+deleted** — each entry's original text is reproduced verbatim below, newest last. The limit
+exists because the journal is what the next agent reads first, and at 17 lines it stops being
+a handoff and becomes a second one.
+
+**Two things about the gate lines in those entries.** The last two stages stopped being
+enumerated at `8e218cd` — `assets` first, net smoke's `25/25` joining it at T20.07 — which is
+exactly the habit `set -e` has twice defeated by letting the gate look complete while those
+stages never ran. They are restored above. For T20.07, T20.08, T20.12 and T20.13 the stage
+results were **not recorded at the time** and are inferred from `check.sh` exiting 0: the
+script is `set -euo pipefail` and prints `all checks passed` only after `verify-assets.mjs`
+returns, so an EXIT=0 means every stage ran. `25/25` is not a measurement either — check.sh
+invokes `node scripts/net-smoke.mjs 25`, so 25/25 is what a pass *is*. Both are reconstructions
+and are marked as such here rather than presented as fresh readings.
+
+
+### T20.01 — the host was not losing permission, it was losing its seat
+
+`settings_owner()` is derived from the seat list, so the 30 s failure was `sweep_unready`
+freeing the host's seat: a private-lobby client sends `ready` only when it presses the
+tick-box. `docs/74:110` forbids that ("No timeout, ever"), and the same eviction with no §E3
+clause to name it was happening in **public** lobbies too — so the sweep now runs only where
+a map has gone out, and its window runs from `map_init`, **not** `joined_at` (a 45 s lobby
+made every seat stale on the tick the world appeared). `lobby-start` was green on a **ghost**:
+the swept human's id was recycled to a bot and its socket kept receiving that bot's
+snapshots — `3 players`, all bots. It reads 4 now. Plus `lobbyErrorMessage` and the
+`SessionMap` half of leaving; `ctx.detach` is unreachable from the room task and untouched.
+EXIT=0, 43/43, 25/25, assets ok. Detail in `tasks/HANDOFF-M20.md`.
+
+
+### T20.03 — promotion already worked; nothing on screen said so
+
+`settings_owner()` is derived per call and both departure paths already rebroadcast, so the
+report's "promote the next player" was true and invisible: the promoted player got working
+arrows with no explanation and the old host got dead ones. `RosterRow.host` is a one-line
+derivation off `settingsOwner` — no fourth flag — and **private only**, because
+`check_settings_change` refuses a public lobby *before* it looks at the owner, so a crown on
+a Quick game names somebody who owns nothing. The marker is in the row's **text**: the
+browser check reads `textContent`, and deleting it goes red twice. The server test that was
+missing is about the *telling* — `the_promotion_is_broadcast_and_not_merely_derivable` fails
+when `Leave`'s `note_lobby_change()` is removed. `ROOM_EMPTY_TTL` untouched: measured, an
+emptied lobby closes within `TTL + REAP_INTERVAL` = 32 s and `reap.rs` already watches it.
+EXIT=0, 43/43, 25/25, assets ok.
+
+
+### T20.02 — there is no "dude"; there were four copies of one read
+
+The default is `Player`, and the defect is that `MenuScene.identity()` re-spelled the three
+`deepcut.*` keys and read them **raw** — the live binding site for all four lobby verbs. A
+stored `"  "` went on the wire as a name the server refuses; `"banana"` went as
+`Number("banana")` = `NaN`, which `JSON.stringify` sends as `null` and which the client then
+hands to its own atlas. `loadIdentity` is `loadChoice` with the **bound** removed rather than
+the menu growing an atlas dependency (the server clamps to u16::MAX and every lookup falls
+back; only `NaN` is unsafe). The prompt is **one gate in `enterLobby`**, in front of all three
+verbs, and `nameOrNull` is one predicate for "is a name stored", "is this typed name a name"
+and "what do we send" — three questions that must not disagree. Found on the way:
+`SkinsScene` interpolated the name into an HTML **attribute** unescaped, and `cleanName`
+strips `<>` and not quotes. EXIT=0, 43/43, 25/25, assets ok.
+
+
+### T20.04 — the id was known everywhere and drawn nowhere
+
+Menu, storage, wire, seat and both re-broadcasts all worked; `GameScene` discarded `skin_id`
+in three writers and built every body with `new PlayerView(this, 0)`. `skinId` is now
+**required** on the `scores` value type so the compiler names the writer you forget — `score`
+rebuilds from a two-field payload and fires on every kill. `PlayerView` has no setter, so the
+id is read at the **construction site** and the view rebuilt when it disagrees. The check took
+**four versions and three of them passed with the bug restored**: a background patch above the
+head is not the background behind the body (36.7 with both on skin 0); a remote is drawn from
+the interpolation buffer, not its own client's position (§C7 → `drawnPlayers`); a 16x16 stamp
+on a 32x56 sprite has a per-body sprite share; and a sprite is mirrored by its owner's aim.
+The final form measures the ground through the same rect (`setActorsVisible`, frozen frame),
+which turns it into an inequality identical sprites provably cannot satisfy: **61.0 vs ground
+26.9 with the fix, 0.6 with the bug.** EXIT=0, 44/44, 25/25, assets ok.
+
+
+### T20.06 — the table was never the problem, and now an instrument says so
+
+`item_population_report` (8 seeds x 3 scales) is the standing-population measurement T20.06
+says does not exist, and it settles three of the four causes: a battery pack is **2nd of 19**
+by time on the ground on Small and 5th on Medium/Large; **`expired` is 0.0 everywhere**, so
+`WORLD_ITEM_TTL` removes nothing; and `live_peak` is 15/20/22 against a cap of 40, now
+asserted rather than described. Item-seconds is the quantity the complaint is about — a draw
+share is blind to everything after the draw. Free findings on the way: the atlas has **no**
+`item_battery` frame but `itemTextures.ts` paints one, so the ground icon is fine; what a
+pickup got you was one digit in 13 px monospace. So the fix is pips — `MAX_HEALS` and
+`MAX_BATTERIES` blocks, the row's length being the cap the digit never showed. The pixel check
+took four versions and three of them passed with every pip forced empty; the final form reads
+**201.3 lit against 0.3 dark**. EXIT=0, 44/44, 25/25, assets ok — on the sixth gate; see
+HANDOFF for the four reds, all in the wall-clock family, and the green baseline that rules
+this tree out.
+
+
+### T20.09 — five layers, and the gesture settled rather than discovered
+
+`DropItem` follows `MoveItem` term for term through handler → sender → socket
+(`unwrap_or(255)`, because a default of 0 is the slot the starting kit lives in) → command →
+`World::drop_item` → `Inventory` + `ItemSpawn`. Tag **22 and no `REPLAY_VERSION` bump**: the
+header is untouched and a v4 file simply has no tag-22 commands, so it replays byte for byte,
+while a bump would reject every existing recording. The geometry decision: tiles were
+`pointer-events:auto` and the root `none`, so a drop on tiles made the gesture mean two things
+four pixels apart — the root takes events **while open** now and shares `toggleBackpack` with
+the canvas. `DROP_PICKUP_LOCK` goes in `constants.rs`, not beside `DEATH_DROP_LOCK`, which is
+a pre-existing violation rather than a precedent. The kit is refused through `STARTING_KIT`,
+falsified red both ways. **Out of scope and done anyway:** `night-combat` sampled `lights`
+once after two bare sleeps and went red in three of this shift's gates — it polls now, with
+the threshold untouched. EXIT=0, 44/44, 25/25, assets ok.
+
+
+### T20.13 — the server was never the subject; one throw kills Phaser's render loop
+
+Phaser builds a `Scene` **once** and `create()`s it per `scene.start`, so ~30 `GameScene`
+fields outlive a round. `update`'s three guards are among them, so an exit drives a destroyed
+camera and throws — and `RequestAnimationFrame.step` calls its callback *before* re-arming, so
+**one** throw ends rendering for the life of the page. `scores` is another, which is *"they
+both appear on the list"* literally. `resetForNewRound()` is now one list, called from the top
+of `create()` **before its first await** (create is async and Phaser does not await it) and
+from SHUTDOWN; a source-walking vitest fails on any field named in neither it nor an exemption
+table. `?game=1` had the sibling defect — a missing `scene.start` key leaves *no* running scene
+— and `escape-menu.mjs` was green over it because Phaser's canvas outlives every scene; both
+are fixed structurally (`SCENE_GRAPH` + `closeOverStarts`, guarded by `scene-graph.test.ts`).
+`rematch.mjs` asserts **pixels**, because `debug().phase` read `playing` over a dead loop in
+the falsification run. Falsified red both ways. **Reported, not fixed:** `Room::restart` leaves
+the lag baseline unrebased, so a replayed room logs `tick overrun lagging=2987` forever —
+`tick_overruns` is permanently wrong for T20.14 to read. EXIT=0, 45/45, 840/840, 25/25.
+
+
+### T20.15 — the grep found three more seams, and exporting the constant was the wrong fix
+
+`lobby-start.mjs` read `constants().LOBBY_BOT_TIMEOUT`, which is not in `constants_json`:
+`undefined`, then `NaN`, then a `waitForFunction` with **no deadline**. **The task's first
+option does not survive contact** — this check spawns its server with
+`LOBBY_BOT_TIMEOUT=45`, so `constants_json` would hand back the shipped 10.0 and the deadline
+would be 18 s against an event 45 s away. The governing value is the override, which now has
+one name feeding both the env block and the wait. The grep, which was the real deliverable,
+found the one missing name **and** three constants in `constants_json` that the `Constants`
+interface never declared (`GRAVITY`, `BIRD_DROP_VELOCITY`, `CHUNK_REBAKE_MS`) — readable from
+a check, invisible to TypeScript. Three guards now, at the three seams: `strictConstants()`
+throws on an absent SCREAMING_CASE key and is what **both** dev handles return (asserted, not
+assumed); `deadlineMs()` refuses anything that is not a positive finite number of seconds;
+and `constants-parity.test.ts` asserts the two tables are the same set in both directions and
+that no `.mjs` reads a constant that does not exist. Each falsified at its live site.
+EXIT=0 first run, 45/45, 853/853, 25/25.
+
+
+### T20.05 — one rain, and the number that joins them was measured
+
+The ruling holds without a rule change: §C6 keeps its particle emitter, §C21's projectiles
+decide how much of it is drawn. `setToxic` takes a **live drop count** now, not a boolean —
+and whether it is raining is derived from the same number, so the sheet stops when the last
+drop **lands** rather than when the server's phase flips. `TOXIC_DROPS_IN_FLIGHT = 7` is
+**measured**, not the task's suspected figure: three seeds x three scales put a shower's peak
+at 6..=10 (`toxic_drops_in_flight_matches_what_a_shower_actually_puts_in_the_air`), and the
+same test proves a shower never has an empty frame, which is what the derived "is it raining"
+rests on. `density` is a **separate** scalar from `intensity` — one is how hard, the other is
+whether, and the green cast stays on the second. **The BLOCKER was real and the answer was a
+new check**: every weather assertion in the tree drives `?sandbox=1`, so `toxic-rain-game.mjs`
+walks the six hops in a real round under `WEATHER=toxic`. Falsified at both live sites — the
+sandbox one via `weather-visible`, the shared `WorldView` one via the new check.
+EXIT=0 first run, 46/46, 859/859, 25/25.
+
+
+### T20.07 — six literals, four dead mechanisms, and a spec clause reversed
+
+**`docs/72` §C13 is reversed and `docs/` is untouched**: the coordinator asked for a passive
+flashlight, so `FLASHLIGHT_AMBIENT_MULT` (0.65, a trade) becomes `FLASHLIGHT_FOV_MULT` 1.5
+gated on `night > 0`, and `FLASHLIGHT_FOG_VEIL_MULT` 0.8 lightens §F9's veil — chosen over
+`−0.2` (it inverts at light fog) and over the transmitted-light reading (3.2 units against a
+noise floor near 5: **a rule nobody can measure**). All **six** `flashlightOn: false` literals
+are gone, four of them in `SandboxScene`, which is why the falsification is split — a
+sandbox site through `night-combat`, a `GameScene` site through `fog-visible`, both named and
+both red when broken. `Player::flashlight_on` is **deleted** and bit 4 derived from the
+inventory at the encode site, so **`REPLAY_VERSION` 4 → 5 and T20.08 must not bump again**;
+`ToggleFlashlight` retires with it and tag 7 is left a hole. `DEV_FLASHLIGHT=1` is the new
+switch, sibling of `DEV_POISONED`, because the torch is the commonest *buried* item and a
+gate that waits on a draw gates nothing. Along the way `debug().fov` stopped recomputing the
+formula and now reports the radius the lightmap drew with. EXIT=0 first run, 46/46, 859/859.
+
+
+### T20.08 — a pool, not a timer, and the bubble nobody could see on themselves
+
+**`docs/21` §2/§4 reversed, `docs/` untouched, discrepancy journalled**: `shield_until` is
+deleted, `shield_active` is derived as *"holds a generator and has charge"*, `use_item` on a
+generator is refused, and `SHIELD_DURATION`/`SHIELD_DRAIN` are gone rather than left as
+tunables nothing reads. `SHIELD_DAMAGE_MULT` 0.5 → 0.75 keeps `docs/21:82`'s name honest.
+**It rode T20.07's `REPLAY_VERSION` 5 — no second bump**, which is what the two task files
+warned about. The bit-3 problem is settled by **partial payment**: `min(battery, cost)` with
+the multiplier lerped by the fraction funded, so the wire bit is exactly true whenever any
+absorption happens, at either cost. **A flat per-hit charge was wrong and measured so**:
+poison is `DPS * dt` every tick, so 3 s of it billed 180 energy for 4.5 damage stopped and
+left the reduction at 14 % instead of 25 % — the generator never spends more charge than the
+damage it stopped, which leaves a real hit at exactly 1. The bot's "pop a shield" branch is
+deleted as meaningless. **Two more hardcoded literals found**: `shield: false` on the local
+`PlayerView` in *both* scenes, so the bubble has never appeared on your own body — now wired
+through the Rust rule and asserted on rendered pixels (9.9 against 1.3 falsified).
+EXIT=0 first run, 46/46, 856/856.
+
+
+### T20.12 — five hats, three glasses, and a second identity payload nobody had noticed
+
+New fields, per the ruling, following `tombstone_skin_id` term for term — **and not in the
+replay**, which is what that precedent actually decided. One deviation, argued from the
+task's own reasoning about `loadChoice`: `Look { skin_id, tombstone_skin_id, hat_id,
+glasses_id }` groups the **argument list** so `join` does not take six positionals, while
+every id keeps its own name and JSON key. `loadChoice` takes a `Counts` object for the same
+reason. The predicted trap was real and is closed with `Appearance` + `sameAppearance`: the
+rebuild guard compares one value, so the next accessory cannot be added to the map and the
+constructor and forgotten in the `if`. **Found on the way**: `Connection.connect` built its
+own three-field join payload beside `identityPayload`'s four verbs — it would have carried
+the accessories on the menu path and dropped them on `?game=1`, silently; it goes through the
+one builder now. The art is procedural (`tombstoneTextures`' precedent and its silhouette
+rule, made mechanical by a test that strips `fillStyle` and compares geometry). **The picture
+was wrong twice and the screenshot is what said so**: a hat floating over an untouched head,
+then a patch sampling 120 px above the character. Pixels: head +43.5 with a hat against a
+control region of 0.0, hats 1→2 apart by 26.7, face +102.2 for the shades.
+EXIT=0, 46/46, 875/875 — on the second gate; the first was `backdrop-real`'s worker-RPC
+timeout again, 833 assertions passed and no test failure. See HANDOFF.
+
+
+### Two corrections to entries above, made when the journal was compressed
+
+**T20.15 — the wait's timeout is a substitution, and this is the part that is not held.**
+The task asked that *"the wait fails loudly and on time — assert on the timeout itself, with
+a control that it still passes when the condition does become true."* What landed asserts
+`deadlineMs()`'s **arithmetic**: that it refuses `undefined`, `NaN`, a negative and a
+non-finite, and that it multiplies a positive finite number of seconds correctly. **The wait
+itself is not asserted.** Nothing in the tree proves that a `waitForFunction` built on that
+number actually rejects at the deadline, and nothing proves the control half either. The
+trade was deliberate — a real timeout assertion is a wall-clock test, and this repo's
+wall-clock assertions are where five of its six flakes have lived (`docs/70` §A16, and the
+five reds under T20.06) — but it is a **substitution and was not flagged as one at the time.**
+If it is ever wanted properly, the honest form is a unit test against a fake clock, not a
+browser check that sleeps.
+
+**T20.07 — the TS↔Rust parity test did run against a fresh wasm build, and structurally must.**
+`lightmap-math.test.ts` compares the TypeScript formula against the built binary, and `pkg/`
+is gitignored, so a stale build would make it a comparison of TS against itself from an older
+commit. Confirmed rather than assumed: `client/package.json` has **`"pretest": "node
+../scripts/wasm-build.mjs"`**, so `npm test` cannot run without rebuilding first, and the gate
+additionally runs `typecheck` (which has the same `pretypecheck` hook) before the tests. The
+build line is visible at the head of the gate log for every run.
+
+## T20.10 landed — the positional seam was closed by deleting it, not by splitting it three ways
+
+**No doc governs ground animals.** `grep -iE 'animal|spider|wildlife|creature'` over `docs/`
+returns nothing; birds are `docs/72` §C16 and this has no counterpart. The task said so and
+asked that the gap be flagged rather than papered over: **an amendment is the durable home
+for `animals.rs` and for its constants block**, and until one exists the only statement of
+what these are is a module doc comment and this section. `docs/` is untouched.
+
+### The BLOCKER, and why the answer is one split rather than three
+
+`hit_targets` and `targets` shared an untyped positional contract — players then birds, split
+at `players.len()` — documented at both ends and enforced by nothing. The task's warning was
+that a third entity class turns that into a three-way split, and that getting it wrong zips
+the animals' damage closures onto the **birds'** velocity slots with no compile error.
+
+It was not split three ways. **From `targets`' point of view a bird and an animal are the
+same thing: a non-player whose velocity goes to a scratch.** So the contract became "players
+first, then everything else", `bird_vels` became `scratch_vels` sized
+`birds.len() + animals.len()`, and there is still exactly **one** `split_at_mut(players.len())`.
+A fourth class cannot get it wrong either. Both ends now carry a `debug_assert_eq!` that the
+scratch count equals `meta.len() - players.len()` — count the thing at both ends, with the
+count actually asserted rather than described.
+
+**What that design does to the test that guards it.** `shooting_an_animal_leaves_the_birds_…`
+was originally written as "the birds did not move", which is **near-vacuous under this
+design**: both classes' velocities go to the same discarded scratch, so a misaligned zip does
+not move anything. What it *does* is send the rocket's damage to the wrong entity. The test
+compares `(id, x, y, health)` and asserts no `BirdDespawn { killed: true }`, and the claim is
+asserted **before** its control: measured with `other_closures.rotate_left(1)` at the live
+site, the bird-health assertion is the honest red (`left: [(0, 20.8, 417.4, 1.0)] right: []`
+— the bird was killed by the animal's rocket) while the `killed` precondition reds first with
+"the rocket missed", which is the opposite of what happened.
+
+### Loot: the function is shared, not the guard copied
+
+`resolve_bird_kills` matches on `BirdKind` and cannot be made generic over `AnimalKind`, so
+`resolve_animal_kills` exists beside it — but the **drop** is one function,
+`drop_wildlife_loot`, and that is the half carrying the guard: `make_room()` *before*
+`spawn`, because `cull` only enforces `len <= MAX` and has nothing to do when you are exactly
+at it. The kind→item table is the only thing that differs (spider → `MEDKIT`, beetle →
+`BATTERY_PACK`). Both go through `apply_damage_log`, so both sit behind the one warmup gate.
+
+### The rest of the "you get it free" list, checked rather than assumed
+
+- **State hash**: `World` grew a field, so `every_field_of_world_has_been_considered_for_the_state_hash`
+  stopped compiling until `animals: _` was added — the one compiler-backed guard this task
+  had. Animals are hashed like birds (count, id, kind, position, health) **plus velocity**,
+  which a bird's is not: an animal's position is *integrated*, so two worlds can agree on
+  where one is and disagree about where it is going.
+- **Own RNG substream** (`substream(seed, "animals")`), so the animals' rolls are not a
+  function of how many bullets have been fired. `replay_run.rs` (15) and `checksum.rs` (5)
+  are green.
+- **`subscription.test.ts`** is generic over the mirror's `case` arms and `GameScene`'s list,
+  so the three `animal_*` events had to be added at both ends; it passed once they were.
+
+### Where the bird template does not carry, and what that cost
+
+A bird's `y` is a sampled sine with no terrain collision. An animal owns a `Body` and goes
+through `physics::resolve::integrate`, like `tombstones.rs`, `placed.rs` and `items/world.rs`.
+Consequently the layer is at `DEPTH.actors` (30), **in front** of terrain — a bird is drawn
+behind it, which is what "no collision" looks like on screen, and an animal drawn there would
+be inside the hill it is standing on.
+
+**`hatch` had an early-return bug and it is fixed**: `(0..h).find(...)?` gave up on the whole
+eight-try loop the first time a column had no ground in it, contradicting its own comment.
+It `continue`s now. **Measured before claiming it mattered**: across three scales x four
+seeds, **0 of 2048/3072/4096 columns have no ground**, so the bug was unreachable on the
+shipped generator and no test can see the difference. Recorded here rather than presented as
+a fix that changed a picture; the measurement was a throwaway test and was removed (28 s of
+map generation is too much to keep for a claim about a comment).
+
+### The check, and the instrument that makes its verdict attributable
+
+**The gate caught a real regression in this task, and it is the "field that means two things"
+rule.** The first draft folded the animals into `setBirdsVisible`, because one handle looked
+tidier than two. `birds.mjs` went red on the next gate: *"hiding the bird layer changed a
+981x403 region against a bird's own 40x28"*, with the changed pixels centred **495 px** from
+the bird — an animal on the other side of the frame had vanished in the same toggle. There is
+a `setAnimalsVisible` now, `birds.mjs` is back to a 39x39 region and 382 px, and the reason is
+written at the handle so the next person does not re-merge them. **Neither Done-when would
+have caught this**; only the full suite did.
+
+`scripts/checks/animals.mjs` is standalone (`BOT_COUNT=0`: a bot's stray rocket killing one
+changes the counts it compares). Its verdict is pixels — hide the layer inside a **frozen**
+frame, with a same-frame control region 300 px away that is skipped when another animal is in
+it. Measured **34.7 against a control of 0.0**, and **0.0** when `make()` stops adding the
+container to the layer.
+
+The failure mode that check has on a loaded box is not a wrong answer, it is a *confident*
+wrong answer: `samplePatch` reads the last rasterised frame, so a stalled renderer makes
+hiding anything move nothing — which reads exactly like an animal that was never drawn. So
+there is a **calibration** first, in `rematch.mjs`'s shape: freeze on the player, who is on
+screen by construction, hide the actors, and confirm that patch moves (63.4). The two failure
+messages are different sentences and the check says which one it is.
+
+Header names the three instruments deliberately **not** used as the verdict: the mirror's
+count (as green for an announced-and-undrawn feature as for a working one), a control *frame*
+from before the animals arrive (there is no such window on the ground), and counting heals
+after a kill (`step_item_spawns` puts them out on a timer of its own — the drop is asserted in
+Rust from the events at the killing tick, the only place that tick is visible).
+
+### Deliberately not done
+
+`animals-math.ts` had an exported `airborne()` with no caller — the built-and-wired-to-nothing
+shape. **Deleted** rather than wired, and `animals-math.test.ts` covers what is left, pinning
+the drawn size to `C()` with a control that the two kinds differ.
+
+### The gate went red twice on the way, and neither red was T20.10's code
+
+**1. `birds.mjs`, and it was a real defect** — the `setBirdsVisible` merge described above.
+
+**2. `checksum.rs::a_client_flooding_inputs_does_not_outrun_one_sending_normally`**, panicking
+`emit join: IllegalActionBeforeOpen`. **Measured before touching anything**: 8/8 passes on an
+idle box in isolation, one failure inside a full `cargo test --workspace` where every test
+binary in the repository runs at once. `connect` already blocks on `open` — that is §A28's
+fix and it is still necessary — but it is **not sufficient**: the `open` callback is
+dispatched from the poll thread and `emit` can still return `IllegalActionBeforeOpen` for a
+few milliseconds afterwards. `emit_when_ready` waits that window out and then panics with the
+error it got, so no assertion is relaxed and a server that never accepts a join still fails on
+`wait_for("welcome")`'s own deadline.
+
+**The same shape is in the other seven server test binaries** — `integration.rs`, `join.rs`,
+`rooms.rs`, `lobby.rs`, `reap.rs`, `in_progress.rs` and `round.rs` each carry their own copy of
+`connect`, each blocking on `open` and each emitting straight afterwards. Only `checksum.rs`
+has been seen to fail, and only that one is fixed. **A shared `tests/common` module holding one
+`connect` and one `emit_when_ready` is the durable answer and it is a task, not a side effect
+of this one** — eight copies of a helper is the "share the guard, or share the function" rule
+with seven copies still outstanding.
+
+**One red that was my own tooling, recorded so it is not read as a flake.** A later
+`cargo test -p game-core && cargo test -p game-server` run reported `replay_run` FAILED. It
+was killed: the shell wrapper hit a ten-minute timeout and SIGTERM'd the **process group**
+mid-run (exit 143), and `replay_run` is the binary that spawns the server and tests signal
+handling. It passes 15/15 on its own and inside the gate. `CLAUDE.md`'s "kill process groups"
+rule cuts both ways.

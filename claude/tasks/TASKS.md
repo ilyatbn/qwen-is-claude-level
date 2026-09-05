@@ -470,7 +470,7 @@ right-button decision rather than around it. **Amendments are the coordinator's.
 - [x] [T20.07](M20/T20.07-the-flashlight-is-wired-to-nothing.md) — The flashlight is wired to nothing, and the new one is passive **(v8)** — **reverses `docs/72` §C13**, on the coordinator's instruction; `REPLAY_VERSION` 4 → 5, **shared with T20.08 — do not bump again**
 - [x] [T20.08](M20/T20.08-the-shield-becomes-a-carried-thing.md) — The shield generator becomes a carried thing **(v8)** — **reverses `docs/21` §2/§4**, on the coordinator's instruction; rode T20.07's `REPLAY_VERSION` 5, **no second bump**
 - [x] [T20.09](M20/T20.09-drop-an-item.md) — Right-click an inventory tile to drop it **(v8)**
-- [ ] [T20.10](M20/T20.10-animals-on-the-ground.md) — Animals on the ground **(v8)**
+- [x] [T20.10](M20/T20.10-animals-on-the-ground.md) — Animals on the ground **(v8)** — **no doc governs ground animals**; an amendment is the durable home for `animals.rs` and its constants block
 - [ ] [T20.11](M20/T20.11-fall-damage.md) — Fall damage **(v8)** — **BLOCKED on overriding `docs/20` §9**
 - [x] [T20.12](M20/T20.12-hats-and-sunglasses.md) — Hats and sunglasses **(v8)** — depends on T20.04
 - [x] [T20.13](M20/T20.13-two-rooms-one-of-them-dead.md) — Two rooms, and one of them never starts **(v8)**

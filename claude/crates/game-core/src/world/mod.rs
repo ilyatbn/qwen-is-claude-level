@@ -7,11 +7,13 @@
 //!
 //! See `docs/41-server-loop-rooms.md` §2 for the tick order, which is a contract.
 
+pub mod animals;
 pub mod birds;
 pub mod cycle;
 pub mod teleport;
 pub mod tombstones;
 
+use animals::{AnimalId, AnimalKind, Animals};
 use birds::{BirdId, BirdKind, Birds};
 use tombstones::Tombstones;
 
@@ -232,6 +234,34 @@ pub enum GameEvent {
         id: BirdId,
         killed: bool,
     },
+    /// A ground animal appeared (T20.10).
+    ///
+    /// `kind` rides on the spawn for the reason `BirdSpawn`'s does: the two kinds
+    /// carry different rewards and are worth different ammunition, and a player
+    /// who cannot tell them apart cannot decide.
+    AnimalSpawn {
+        tick: u32,
+        id: AnimalId,
+        kind: u8,
+        x: f32,
+        y: f32,
+        right: bool,
+    },
+    /// Where a live animal is now, at `SNAPSHOT_HZ` like every other moving thing.
+    AnimalMove {
+        tick: u32,
+        id: AnimalId,
+        x: f32,
+        y: f32,
+        right: bool,
+    },
+    /// An animal left the world. `killed` separates "shot" from "fell out of the
+    /// map", which is the difference between a drop and nothing at all.
+    AnimalDespawn {
+        tick: u32,
+        id: AnimalId,
+        killed: bool,
+    },
     ItemSpawn {
         tick: u32,
         world_item_id: WorldItemId,
@@ -387,6 +417,9 @@ impl GameEvent {
             | GameEvent::BirdSpawn { tick, .. }
             | GameEvent::BirdMove { tick, .. }
             | GameEvent::BirdDespawn { tick, .. }
+            | GameEvent::AnimalSpawn { tick, .. }
+            | GameEvent::AnimalMove { tick, .. }
+            | GameEvent::AnimalDespawn { tick, .. }
             | GameEvent::ItemSpawn { tick, .. }
             | GameEvent::ItemMove { tick, .. }
             | GameEvent::ItemPickup { tick, .. }
@@ -480,6 +513,8 @@ type TargetMeta = (HitId, Vec2, bool, f32, f32);
 /// `DamageSource` to care about — folding it in would give `PlayerState`'s damage
 /// path a second meaning.
 type BirdLog = std::rc::Rc<std::cell::RefCell<Vec<(BirdId, f32)>>>;
+/// The animals' half of the same deferral (T20.10), shaped exactly like `BirdLog`.
+type AnimalLog = std::rc::Rc<std::cell::RefCell<Vec<(AnimalId, f32)>>>;
 
 /// Everything a weapon call needs to see, players **and** birds.
 ///
@@ -492,8 +527,10 @@ type BirdLog = std::rc::Rc<std::cell::RefCell<Vec<(BirdId, f32)>>>;
 fn hit_targets(
     players: &[PlayerState],
     birds: &Birds,
+    animals: &Animals,
     log: &DamageLog,
     bird_log: &BirdLog,
+    animal_log: &AnimalLog,
     now: f32,
 ) -> (Vec<Box<DamageFn>>, Vec<TargetMeta>, Vec<Vec2>) {
     let mut meta: Vec<TargetMeta> = players
@@ -536,29 +573,63 @@ fn hit_targets(
         }) as Box<DamageFn>);
     }
 
-    // A bird is never thrown: §C16 gives it a fixed sine path, so knockback has
-    // nowhere to go. These exist because `HitTarget` needs a `&mut Vec2` and
-    // writing into a scratch is honest about the value being discarded — the
-    // alternative is a bird whose velocity a blast has quietly edited.
-    let bird_vels = vec![Vec2::new(0.0, 0.0); birds.len()];
-    (closures, meta, bird_vels)
+    // Animals after the birds — and **the only contract is "players first"**.
+    //
+    // T20.10 was warned that a third class turns `targets`' two-way split into a
+    // three-way one, silently zipping animal closures onto bird velocities. It
+    // does not, and the reason is worth keeping: from `targets`' point of view a
+    // bird and an animal are the same thing — a non-player whose velocity goes to
+    // a scratch. So there is one split, at `players.len()`, and appending a fourth
+    // class cannot get it wrong either.
+    for a in animals.iter() {
+        let (w, h) = a.size();
+        meta.push((HitId::Animal(a.id), a.pos(), true, w, h));
+        let id = a.id;
+        let log = animal_log.clone();
+        closures.push(Box::new(move |amount: f32, _src: DamageSource| {
+            log.borrow_mut().push((id, amount));
+            true
+        }) as Box<DamageFn>);
+    }
+
+    // Neither is ever thrown: §C16 gives a bird a fixed sine path, and an animal
+    // owns a `Body` this slice must not reach into mid-resolution. These exist
+    // because `HitTarget` needs a `&mut Vec2`, and writing into a scratch is
+    // honest about the value being discarded — the alternative is wildlife whose
+    // velocity a blast has quietly edited.
+    let scratch_vels = vec![Vec2::new(0.0, 0.0); birds.len() + animals.len()];
+    // Count the thing at both ends: one scratch per non-player target, which is
+    // the invariant `targets` splits on. Both ends documented it and neither
+    // enforced it (T20.10's BLOCKER); this is the enforcement.
+    debug_assert_eq!(
+        scratch_vels.len(),
+        meta.len() - players.len(),
+        "one scratch velocity per non-player target"
+    );
+    (closures, meta, scratch_vels)
 }
 
 type DamageFn = dyn FnMut(f32, DamageSource) -> bool;
 
-/// Zip the deferred closures back onto the players' velocities.
 /// Zip the deferred closures back onto the velocities they may knock.
 ///
-/// `meta` and `closures` are players-then-birds, exactly as `hit_targets` built
-/// them; the split point is `players.len()`.
+/// `meta` and `closures` are **players first, then everything else**, exactly as
+/// `hit_targets` built them; the split point is `players.len()`. That is one rule
+/// rather than one per entity class, which is what stops a third class (T20.10's
+/// animals) from being zipped onto the second's velocities.
 fn targets<'a>(
     players: &'a mut [PlayerState],
     closures: &'a mut [Box<DamageFn>],
     meta: &[TargetMeta],
-    bird_vels: &'a mut [Vec2],
+    scratch_vels: &'a mut [Vec2],
 ) -> Vec<HitTarget<'a>> {
     let n = players.len();
-    let (player_closures, bird_closures) = closures.split_at_mut(n);
+    debug_assert_eq!(
+        scratch_vels.len(),
+        meta.len() - n,
+        "one scratch velocity per non-player target"
+    );
+    let (player_closures, other_closures) = closures.split_at_mut(n);
     let mut out: Vec<HitTarget<'a>> = players
         .iter_mut()
         .zip(player_closures.iter_mut())
@@ -574,9 +645,9 @@ fn targets<'a>(
         })
         .collect();
     out.extend(
-        bird_vels
+        scratch_vels
             .iter_mut()
-            .zip(bird_closures.iter_mut())
+            .zip(other_closures.iter_mut())
             .zip(meta[n..].iter())
             .map(|((v, c), (id, pos, alive, w, h))| HitTarget {
                 id: *id,
@@ -649,6 +720,11 @@ pub struct World {
     /// §C16. Public because the server serialises them and the state hash covers
     /// them; nothing outside this module mutates one.
     pub birds: Birds,
+    /// T20.10's ground animals. Public for the same reasons the birds are: the
+    /// server serialises them and the state hash covers them, because killing one
+    /// spawns an item and a replay that disagreed about which animals existed
+    /// would disagree about the loot on the ground.
+    pub animals: Animals,
     pub spawn_schedule: SpawnSchedule,
     pub effects: EffectScheduler,
     /// See [`WeatherMode`]. `Auto` everywhere but a development switch.
@@ -732,6 +808,7 @@ impl World {
         let initial_draws = place_initial(&mut items, &map, seed, 0.0);
 
         let birds = Birds::new(seed, &map);
+        let animals = Animals::new(seed);
         World {
             burn: Default::default(),
             respawn_fallbacks: 0,
@@ -744,6 +821,7 @@ impl World {
             projectiles: Projectiles::new(),
             tombstones: Tombstones::default(),
             birds,
+            animals,
             spawn_schedule: SpawnSchedule::new(seed, 0.0, initial_draws),
             effects: EffectScheduler::new(seed, 0.0),
             weather_mode: WeatherMode::Auto,
@@ -1005,6 +1083,7 @@ impl World {
         // is not integrated twice, and before the pickups so one that lands on
         // a player's head can be taken on the same tick it arrives.
         self.step_birds(now, dt, playing);
+        self.step_animals(now, dt, playing);
 
         // 7. pickups, ascending PlayerId.
         self.resolve_pickups(now);
@@ -1034,7 +1113,8 @@ impl World {
                 }
             }
             let bird_log: BirdLog = Default::default();
-            self.apply_damage_log(&log, &bird_log, now);
+            let animal_log: AnimalLog = Default::default();
+            self.apply_damage_log(&log, &bird_log, &animal_log, now);
         }
 
         // 8b. the void (§C15). **Before the deaths**, because it works by putting
@@ -1106,6 +1186,59 @@ impl World {
                     id: b.id,
                     x: b.pos.x,
                     y: b.pos.y,
+                })
+                .collect();
+            self.events.extend(moves);
+        }
+    }
+
+    /// Walk the animals, and announce the ones that arrived or left (T20.10).
+    ///
+    /// The bird function's shape, with one difference stated in `animals.rs`: an
+    /// animal owns a `Body` and goes through `integrate`, so its position is
+    /// simulated rather than sampled. Movement is broadcast at `SNAPSHOT_HZ` for
+    /// the same reason everything else is.
+    fn step_animals(&mut self, now: f32, dt: f32, playing: bool) {
+        let step = {
+            let map = &self.map;
+            self.animals.tick(map, playing, now, dt)
+        };
+        let tick = self.tick;
+
+        for id in &step.spawned {
+            let Some(a) = self.animals.get(*id) else {
+                continue;
+            };
+            self.events.push(GameEvent::AnimalSpawn {
+                tick,
+                id: *id,
+                kind: a.kind.to_u8(),
+                x: a.pos().x,
+                y: a.pos().y,
+                right: a.facing_right(),
+            });
+        }
+        // Fell out of the world. `killed: false` — nothing drops, and the client
+        // must not spray gore for an animal that simply left.
+        for id in &step.gone {
+            self.events.push(GameEvent::AnimalDespawn {
+                tick,
+                id: *id,
+                killed: false,
+            });
+        }
+
+        let every = (crate::constants::SIM_HZ / crate::constants::SNAPSHOT_HZ).max(1);
+        if tick.is_multiple_of(every) {
+            let moves: Vec<GameEvent> = self
+                .animals
+                .iter()
+                .map(|a| GameEvent::AnimalMove {
+                    tick,
+                    id: a.id,
+                    x: a.pos().x,
+                    y: a.pos().y,
+                    right: a.facing_right(),
                 })
                 .collect();
             self.events.extend(moves);
@@ -1449,10 +1582,18 @@ impl World {
             let is_frag = MeteorShower::is_fragment(weapon);
             let log: DamageLog = Default::default();
             let bird_log: BirdLog = Default::default();
-            let (mut closures, meta, mut bird_vels) =
-                hit_targets(&self.players, &self.birds, &log, &bird_log, now);
+            let animal_log: AnimalLog = Default::default();
+            let (mut closures, meta, mut scratch_vels) = hit_targets(
+                &self.players,
+                &self.birds,
+                &self.animals,
+                &log,
+                &bird_log,
+                &animal_log,
+                now,
+            );
             let (result, fragments) = {
-                let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
+                let mut t = targets(&mut self.players, &mut closures, &meta, &mut scratch_vels);
                 MeteorShower::on_impact(
                     &mut self.projectiles,
                     &mut self.map,
@@ -1471,7 +1612,7 @@ impl World {
             };
             self.note_knocked(&result.knocked, now);
             self.emit_blast(at, r, CarveKind::Meteor, &result.carve, now);
-            self.apply_damage_log(&log, &bird_log, now);
+            self.apply_damage_log(&log, &bird_log, &animal_log, now);
             return;
         }
 
@@ -1491,13 +1632,21 @@ impl World {
         if crate::weapons::bullet::is_bullet(w) {
             let log: DamageLog = Default::default();
             let bird_log: BirdLog = Default::default();
+            let animal_log: AnimalLog = Default::default();
             let impact = {
-                let (mut closures, meta, mut bird_vels) =
-                    hit_targets(&self.players, &self.birds, &log, &bird_log, now);
-                let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
+                let (mut closures, meta, mut scratch_vels) = hit_targets(
+                    &self.players,
+                    &self.birds,
+                    &self.animals,
+                    &log,
+                    &bird_log,
+                    &animal_log,
+                    now,
+                );
+                let mut t = targets(&mut self.players, &mut closures, &meta, &mut scratch_vels);
                 crate::weapons::bullet::resolve(&mut self.map, &mut t, w, at, victim, source)
             };
-            self.apply_damage_log(&log, &bird_log, now);
+            self.apply_damage_log(&log, &bird_log, &animal_log, now);
             if let Some(c) = impact.carve {
                 if c.pixels_removed > 0 {
                     self.carve_seq += 1;
@@ -1524,15 +1673,23 @@ impl World {
             Burst::Blast => {
                 let log: DamageLog = Default::default();
                 let bird_log: BirdLog = Default::default();
-                let (mut closures, meta, mut bird_vels) =
-                    hit_targets(&self.players, &self.birds, &log, &bird_log, now);
+                let animal_log: AnimalLog = Default::default();
+                let (mut closures, meta, mut scratch_vels) = hit_targets(
+                    &self.players,
+                    &self.birds,
+                    &self.animals,
+                    &log,
+                    &bird_log,
+                    &animal_log,
+                    now,
+                );
                 let result = {
-                    let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
+                    let mut t = targets(&mut self.players, &mut closures, &meta, &mut scratch_vels);
                     explode(&mut self.map, &mut t, at, w.blast_radius, w.damage, source)
                 };
                 self.note_knocked(&result.knocked, now);
                 self.emit_blast(at, w.blast_radius, CarveKind::Weapon, &result.carve, now);
-                self.apply_damage_log(&log, &bird_log, now);
+                self.apply_damage_log(&log, &bird_log, &animal_log, now);
             }
             Burst::Pellets { count, fan, pellet } => {
                 self.burst_pellets(at, count, fan, pellet, owner, now)
@@ -1627,11 +1784,19 @@ impl World {
         let tick = self.tick;
         let log: DamageLog = Default::default();
         let bird_log: BirdLog = Default::default();
+        let animal_log: AnimalLog = Default::default();
         let mut shots = Vec::new();
         {
-            let (mut closures, meta, mut bird_vels) =
-                hit_targets(&self.players, &self.birds, &log, &bird_log, now);
-            let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
+            let (mut closures, meta, mut scratch_vels) = hit_targets(
+                &self.players,
+                &self.birds,
+                &self.animals,
+                &log,
+                &bird_log,
+                &animal_log,
+                now,
+            );
+            let mut t = targets(&mut self.players, &mut closures, &meta, &mut scratch_vels);
             for i in 0..count {
                 // Spread evenly across the fan, centred on straight down. A random
                 // fan would make the same throw behave differently twice and would
@@ -1654,7 +1819,7 @@ impl World {
                 ));
             }
         }
-        self.apply_damage_log(&log, &bird_log, now);
+        self.apply_damage_log(&log, &bird_log, &animal_log, now);
 
         self.events.push(GameEvent::Explosion {
             tick,
@@ -1885,33 +2050,70 @@ impl World {
                 BirdKind::Normal => crate::items::registry::MEDKIT,
                 BirdKind::Metal => crate::items::registry::BATTERY_PACK,
             };
-            // Room first: at `MAX_WORLD_ITEMS` the spawn would be the one thing
-            // that pushes the world over its cap, and `cull` only enforces
-            // `len <= MAX` — it has nothing to do when you are exactly at it.
-            if let Some(evicted) = self.items.make_room() {
-                self.events.push(GameEvent::ItemDespawn {
-                    tick,
-                    world_item_id: evicted,
-                });
-            }
-            let id = self.items.spawn(
-                item_id,
-                1,
-                kill.at,
-                Vec2::new(0.0, crate::constants::BIRD_DROP_VELOCITY),
-                SpawnSource::Periodic,
-                now,
-            );
-            self.events.push(GameEvent::ItemSpawn {
+            self.drop_wildlife_loot(item_id, kill.at, now);
+        }
+    }
+
+    /// What a killed animal leaves, through the **same** drop as a bird's.
+    ///
+    /// Separate from `resolve_bird_kills` because the kind→item table is the only
+    /// thing that differs and `BirdKind`/`AnimalKind` are different enums — but
+    /// the *drop* is shared, which is the half that carries a guard. See
+    /// `drop_wildlife_loot`.
+    fn resolve_animal_kills(&mut self, log: &[(AnimalId, f32)], now: f32) {
+        if log.is_empty() {
+            return;
+        }
+        for kill in self.animals.apply_damage(log) {
+            let tick = self.tick;
+            self.events.push(GameEvent::AnimalDespawn {
                 tick,
-                world_item_id: id,
-                item_id,
-                count: 1,
-                x: kill.at.x,
-                y: kill.at.y,
-                source: SpawnSource::Periodic,
+                id: kill.id,
+                killed: true,
+            });
+            let item_id = match kill.kind {
+                AnimalKind::Spider => crate::items::registry::MEDKIT,
+                AnimalKind::Beetle => crate::items::registry::BATTERY_PACK,
+            };
+            self.drop_wildlife_loot(item_id, kill.at, now);
+        }
+    }
+
+    /// Put one item on the ground where a bird or an animal died.
+    ///
+    /// **Shared, and the task asked which of the two it would be** (T20.10): the
+    /// *function*, not just the guard. The guard is the `make_room()` **before**
+    /// `spawn` — at `MAX_WORLD_ITEMS` the spawn is the one thing that pushes the
+    /// world over its cap, and `cull` only enforces `len <= MAX`, so it has
+    /// nothing to do when you are exactly at it. A second loot function written
+    /// beside this one would be the place that guard gets dropped, and the
+    /// symptom — one silently missing drop at a cap nobody reaches in a test —
+    /// is the kind nothing catches.
+    fn drop_wildlife_loot(&mut self, item_id: ItemId, at: Vec2, now: f32) {
+        let tick = self.tick;
+        if let Some(evicted) = self.items.make_room() {
+            self.events.push(GameEvent::ItemDespawn {
+                tick,
+                world_item_id: evicted,
             });
         }
+        let id = self.items.spawn(
+            item_id,
+            1,
+            at,
+            Vec2::new(0.0, crate::constants::BIRD_DROP_VELOCITY),
+            SpawnSource::Periodic,
+            now,
+        );
+        self.events.push(GameEvent::ItemSpawn {
+            tick,
+            world_item_id: id,
+            item_id,
+            count: 1,
+            x: at.x,
+            y: at.y,
+            source: SpawnSource::Periodic,
+        });
     }
 
     /// Drain both logs: players, and the birds §C16 lets every weapon hit.
@@ -1921,9 +2123,16 @@ impl World {
     /// most of them would forget, and the failure would be silent — a bird that
     /// absorbs a rocket and flies on. Taking it as a parameter makes forgetting a
     /// compile error.
-    fn apply_damage_log(&mut self, log: &DamageLog, bird_log: &BirdLog, now: f32) {
+    fn apply_damage_log(
+        &mut self,
+        log: &DamageLog,
+        bird_log: &BirdLog,
+        animal_log: &AnimalLog,
+        now: f32,
+    ) {
         let entries = std::mem::take(&mut *log.borrow_mut());
         let bird_entries = std::mem::take(&mut *bird_log.borrow_mut());
+        let animal_entries = std::mem::take(&mut *animal_log.borrow_mut());
         // THE warmup damage gate (`docs/41-server-loop-rooms.md` §3). Every source
         // of damage in the game — weapons, explosions, hitscan, toxic, lava —
         // funnels through this one function, so gating here gates all of them.
@@ -1938,6 +2147,8 @@ impl World {
         // the ten seconds nobody can be hurt. Both logs were taken before that
         // return, so neither leaks into the next tick.
         self.resolve_bird_kills(&bird_entries, now);
+        // And the animals, on identical terms — same gate, same drop (T20.10).
+        self.resolve_animal_kills(&animal_entries, now);
 
         for (victim, amount, src) in entries {
             let tick = self.tick;
@@ -1967,6 +2178,7 @@ impl World {
         let tick = self.tick;
         let log: DamageLog = Default::default();
         let bird_log: BirdLog = Default::default();
+        let animal_log: AnimalLog = Default::default();
         // §F10. **Before the burn**, so a flame that is over the cap this tick
         // never gets to damage anyone: a cap applied afterwards would let an
         // unbounded field deal unbounded damage for one tick each time, which is
@@ -1984,9 +2196,16 @@ impl World {
             });
         }
         let (ended, scorches) = {
-            let (mut closures, meta, mut bird_vels) =
-                hit_targets(&self.players, &self.birds, &log, &bird_log, now);
-            let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
+            let (mut closures, meta, mut scratch_vels) = hit_targets(
+                &self.players,
+                &self.birds,
+                &self.animals,
+                &log,
+                &bird_log,
+                &animal_log,
+                now,
+            );
+            let mut t = targets(&mut self.players, &mut closures, &meta, &mut scratch_vels);
             let ended = self.mines.step(&mut self.map, &mut t, now, dt);
             self.burn.tick(&mut t, now, dt);
             // Flames burn here rather than in `step_projectiles` because this is
@@ -2019,7 +2238,7 @@ impl World {
             });
             self.reveal(&sc.carve.revealed, now);
         }
-        self.apply_damage_log(&log, &bird_log, now);
+        self.apply_damage_log(&log, &bird_log, &animal_log, now);
 
         // A cloud that vanishes server-side and lingers on screen is worse than
         // one that never appeared, because you will trust it.
@@ -2186,13 +2405,21 @@ impl World {
         if let Some((eid, mut l)) = self.lava.take() {
             let log: DamageLog = Default::default();
             let bird_log: BirdLog = Default::default();
+            let animal_log: AnimalLog = Default::default();
             let carves = {
-                let (mut closures, meta, mut bird_vels) =
-                    hit_targets(&self.players, &self.birds, &log, &bird_log, now);
-                let mut tg = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
+                let (mut closures, meta, mut scratch_vels) = hit_targets(
+                    &self.players,
+                    &self.birds,
+                    &self.animals,
+                    &log,
+                    &bird_log,
+                    &animal_log,
+                    now,
+                );
+                let mut tg = targets(&mut self.players, &mut closures, &meta, &mut scratch_vels);
                 l.tick(&mut self.map, &mut tg, lava_on, now, dt)
             };
-            self.apply_damage_log(&log, &bird_log, now);
+            self.apply_damage_log(&log, &bird_log, &animal_log, now);
             // §F10.2: the afterburn is flames. `lava` decides *where and when*
             // and this decides *what*, through the one `light_fan` the
             // flamethrower and the molotov also use — a second spawn site for
@@ -2736,10 +2963,18 @@ impl World {
                 let reach = crate::weapons::melee::effective_reach(reach);
                 let log: DamageLog = Default::default();
                 let bird_log: BirdLog = Default::default();
+                let animal_log: AnimalLog = Default::default();
                 let result = {
-                    let (mut closures, meta, mut bird_vels) =
-                        hit_targets(&self.players, &self.birds, &log, &bird_log, now);
-                    let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
+                    let (mut closures, meta, mut scratch_vels) = hit_targets(
+                        &self.players,
+                        &self.birds,
+                        &self.animals,
+                        &log,
+                        &bird_log,
+                        &animal_log,
+                        now,
+                    );
+                    let mut t = targets(&mut self.players, &mut closures, &meta, &mut scratch_vels);
                     crate::weapons::melee::swing(
                         &mut self.map,
                         &mut t,
@@ -2753,7 +2988,7 @@ impl World {
                     )
                 };
                 self.note_knocked(&result.knocked, now);
-                self.apply_damage_log(&log, &bird_log, now);
+                self.apply_damage_log(&log, &bird_log, &animal_log, now);
                 self.events.push(GameEvent::Melee {
                     tick,
                     owner: id,
@@ -2829,10 +3064,18 @@ impl World {
             Delivery::Hitscan { .. } => {
                 let log: DamageLog = Default::default();
                 let bird_log: BirdLog = Default::default();
+                let animal_log: AnimalLog = Default::default();
                 let shots = {
-                    let (mut closures, meta, mut bird_vels) =
-                        hit_targets(&self.players, &self.birds, &log, &bird_log, now);
-                    let mut t = targets(&mut self.players, &mut closures, &meta, &mut bird_vels);
+                    let (mut closures, meta, mut scratch_vels) = hit_targets(
+                        &self.players,
+                        &self.birds,
+                        &self.animals,
+                        &log,
+                        &bird_log,
+                        &animal_log,
+                        now,
+                    );
+                    let mut t = targets(&mut self.players, &mut closures, &meta, &mut scratch_vels);
                     fire_hitscan(
                         &mut self.map,
                         &mut t,
@@ -2844,7 +3087,7 @@ impl World {
                         now,
                     )
                 };
-                self.apply_damage_log(&log, &bird_log, now);
+                self.apply_damage_log(&log, &bird_log, &animal_log, now);
 
                 for s in shots {
                     self.events.push(GameEvent::Hitscan {
@@ -3082,6 +3325,22 @@ impl World {
             h.update(&b.pos.x.to_le_bytes());
             h.update(&b.pos.y.to_le_bytes());
             h.update(&b.health.to_le_bytes());
+        }
+
+        // T20.10's animals, hashed for exactly the reason the birds above are:
+        // killing one spawns an item, so a client whose animals have drifted will
+        // disagree about what is on the ground. Velocity is included where a
+        // bird's is not — an animal's position is *integrated*, so two worlds can
+        // agree on where one is and disagree about where it is going.
+        h.update(&(self.animals.len() as u32).to_le_bytes());
+        for a in self.animals.iter() {
+            h.update(&a.id.to_le_bytes());
+            h.update(&[a.kind.to_u8()]);
+            h.update(&a.body.pos.x.to_le_bytes());
+            h.update(&a.body.pos.y.to_le_bytes());
+            h.update(&a.body.vel.x.to_le_bytes());
+            h.update(&a.body.vel.y.to_le_bytes());
+            h.update(&a.health.to_le_bytes());
         }
 
         h.update(&(self.players.len() as u32).to_le_bytes());
@@ -3403,6 +3662,7 @@ mod state_hash_coverage {
             projectiles: _,
             tombstones: _,
             birds: _,
+            animals: _,
             mines: _,
             burn: _,
             smoke: _,
@@ -6584,5 +6844,302 @@ mod weather_mode_tests {
             clear.min_fog_mult, 1.0,
             "the control was foggy too, so the assertion above is about nothing"
         );
+    }
+}
+
+/// Ground animals in a real round (T20.10), following `birds_in_a_round`.
+///
+/// The module boundary matters: these go through `World::step`, so they exercise
+/// `hit_targets`/`targets`, the shared loot drop and the warmup gate rather than
+/// `Animals` in isolation — which `world::animals`' own tests already cover.
+#[cfg(test)]
+mod animals_in_a_round {
+    use super::*;
+    use crate::constants::{ANIMAL_MAX, SIM_DT};
+    use crate::items::registry::{BATTERY_PACK, MEDKIT};
+    use crate::world::animals::{AnimalId, AnimalKind};
+
+    fn world() -> World {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w
+    }
+
+    fn run(w: &mut World, seconds: f32) {
+        for _ in 0..(seconds / SIM_DT) as u32 {
+            w.step(SIM_DT);
+        }
+    }
+
+    /// Put one animal of a known kind on the ground under a known point.
+    fn plant(w: &mut World, kind: AnimalKind, x: f32) -> (AnimalId, Vec2) {
+        let col = x as i32;
+        let top = (0..w.map.mask.h as i32)
+            .find(|y| w.map.mask.get(col, *y))
+            .expect("a column with ground in it");
+        let (_, h) = kind.size();
+        let at = Vec2::new(x, top as f32 - h / 2.0 - 1.0);
+        let id = w.animals.place_for_test(kind, at, w.round_time);
+        (id, at)
+    }
+
+    #[test]
+    fn animals_appear_in_an_ordinary_round() {
+        // From the world, not from the event buffer (§B25/§A15).
+        let mut w = world();
+        run(&mut w, crate::constants::ANIMAL_INTERVAL + 1.0);
+        assert!(!w.animals.is_empty(), "a round grew no animals");
+    }
+
+    #[test]
+    fn an_animal_announces_itself_and_is_told_to_move() {
+        // Both ends (§A39): the world has animals, and the client was told.
+        let mut w = world();
+        run(&mut w, crate::constants::ANIMAL_INTERVAL + 1.0);
+        let spawned: Vec<AnimalId> = w
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::AnimalSpawn { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            spawned.len(),
+            w.animals.len(),
+            "the world holds {} animals and announced {}",
+            w.animals.len(),
+            spawned.len()
+        );
+        assert!(
+            w.events
+                .iter()
+                .any(|e| matches!(e, GameEvent::AnimalMove { .. })),
+            "no animal was ever told to move — one drawn frozen at its spawn point"
+        );
+    }
+
+    #[test]
+    fn the_population_never_exceeds_the_cap() {
+        let mut w = world();
+        let mut peak = 0;
+        for _ in 0..((crate::constants::ANIMAL_INTERVAL * 10.0) / SIM_DT) as u32 {
+            w.step(SIM_DT);
+            peak = peak.max(w.animals.len());
+        }
+        assert!(peak <= ANIMAL_MAX, "{peak} animals alive, cap {ANIMAL_MAX}");
+        // ...and more than one was alive, or the bound is vacuous.
+        assert!(peak >= 2, "only ever {peak} animal(s) alive at once");
+    }
+
+    /// Shoot the planted animal and return **its own** drop.
+    ///
+    /// Identified from the events at the killing tick, not by counting heals on
+    /// the ground: `step_item_spawns` puts medkits and batteries out on a timer
+    /// too, and that measurement error is recorded next door in
+    /// `birds_in_a_round`.
+    fn shoot_and_take_the_drop(w: &mut World, at: Vec2) -> (ItemId, WorldItemId) {
+        let before = w.events.len();
+        w.explode_for_test(
+            at,
+            crate::weapons::defs::by_key("bazooka").expect("bazooka").id,
+            0,
+            w.round_time,
+        );
+        let killed_tick = w.events[before..]
+            .iter()
+            .find_map(|e| match e {
+                GameEvent::AnimalDespawn {
+                    tick, killed: true, ..
+                } => Some(*tick),
+                _ => None,
+            })
+            .expect("no animal was reported killed");
+        w.events[before..]
+            .iter()
+            .find_map(|e| match e {
+                GameEvent::ItemSpawn {
+                    tick,
+                    world_item_id,
+                    item_id,
+                    ..
+                } if *tick == killed_tick => Some((*item_id, *world_item_id)),
+                _ => None,
+            })
+            .expect("the animal died and dropped nothing")
+    }
+
+    #[test]
+    fn shooting_a_spider_drops_exactly_one_heal_and_it_lands() {
+        let mut w = world();
+        let x = w.map.mask.w as f32 / 2.0;
+        let (id, at) = plant(&mut w, AnimalKind::Spider, x);
+        assert!(w.animals.get(id).is_some(), "the plant did not take");
+
+        let before_items = w.items.iter().count();
+        let (item, world_id) = shoot_and_take_the_drop(&mut w, at);
+        assert_eq!(item, MEDKIT, "a spider dropped {item} rather than a heal");
+        assert!(w.animals.get(id).is_none(), "the spider survived a rocket");
+        assert_eq!(
+            w.items.iter().count(),
+            before_items + 1,
+            "one kill put more than one thing on the ground"
+        );
+
+        // And it lands rather than falling through the world.
+        run(&mut w, 3.0);
+        let landed = w.items.iter().find(|i| i.id == world_id);
+        assert!(landed.is_some(), "the drop vanished before it landed");
+    }
+
+    #[test]
+    fn shooting_a_beetle_drops_a_battery() {
+        // The control for the test above: the two kinds are worth different
+        // ammunition, so "a kill drops something" is not the claim.
+        let mut w = world();
+        let x = w.map.mask.w as f32 / 2.0;
+        let (_, at) = plant(&mut w, AnimalKind::Beetle, x);
+        let (item, _) = shoot_and_take_the_drop(&mut w, at);
+        assert_eq!(item, BATTERY_PACK, "a beetle dropped {item}");
+    }
+
+    /// **They never attack**, and the control is that one can itself be killed.
+    ///
+    /// Without the control this passes for a build where animals do not exist:
+    /// an empty hillside damages nobody.
+    #[test]
+    fn an_animal_standing_on_a_player_never_hurts_them() {
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        let x = w.map.mask.w as f32 / 2.0;
+        let (id, at) = plant(&mut w, AnimalKind::Spider, x);
+        // The player, in the same place — overlapping, which is the worst case
+        // any contact rule would fire on.
+        if let Some(p) = w.player_mut(0) {
+            p.body.pos = at;
+            p.iframes_until = 0.0;
+        }
+        let before = w.player(0).expect("seated").health;
+
+        // Long enough for many hops, and for a contact rule to have fired.
+        run(&mut w, crate::constants::SPIDER_HOP_EVERY * 4.0);
+        let after = w.player(0).expect("seated").health;
+        assert_eq!(
+            after,
+            before,
+            "an animal took {} health from a player it was standing on",
+            before - after
+        );
+
+        // The control: the same animal, in the same round, dies to a rocket. So
+        // "it never attacks" is about the damage direction and not about an
+        // animal that was never there.
+        assert!(
+            w.animals.get(id).is_some(),
+            "the spider left before the control"
+        );
+        let now_at = w.animals.get(id).expect("alive").pos();
+        let (item, _) = shoot_and_take_the_drop(&mut w, now_at);
+        assert_eq!(item, MEDKIT);
+    }
+
+    /// Shooting an animal must not move a bird.
+    ///
+    /// T20.10's BLOCKER, asserted: `hit_targets` appends animals after birds and
+    /// `targets` splits once, at `players.len()`. A three-way split done wrong
+    /// zips the animals' closures onto the **birds'** velocity slots, silently.
+    #[test]
+    fn shooting_an_animal_leaves_the_birds_untouched() {
+        let mut w = world();
+        run(&mut w, 1.0);
+        assert!(!w.birds.is_empty(), "no bird to be wrongly hit");
+        // **Health, not only position.** A misaligned zip is not visible as
+        // movement: both classes' velocities go to the same scratch, so a bird
+        // that took an animal's rocket stays exactly where it was and dies. The
+        // observable is the bird's health, and the id list, and that nothing
+        // reported a bird killed on this tick.
+        let before: Vec<(BirdId, f32, f32, f32)> = w
+            .birds
+            .iter()
+            .map(|b| (b.id, b.pos.x, b.pos.y, b.health))
+            .collect();
+
+        let x = w.map.mask.w as f32 / 2.0;
+        let (_, at) = plant(&mut w, AnimalKind::Beetle, x);
+        let killed = {
+            let before_events = w.events.len();
+            w.explode_for_test(
+                at,
+                crate::weapons::defs::by_key("bazooka").expect("bazooka").id,
+                0,
+                w.round_time,
+            );
+            w.events[before_events..]
+                .iter()
+                .any(|e| matches!(e, GameEvent::AnimalDespawn { killed: true, .. }))
+        };
+        // **The claim first, the control after.** A misaligned zip sends the
+        // beetle's own closure to some other target, so `killed` goes false at
+        // the same moment a bird takes the rocket — and asserting the control
+        // first would report "the rocket missed" for a bug that is the opposite
+        // of a miss. Measured: with `other_closures` rotated by one, the
+        // bird-health assertion below is the honest red and `killed` is the
+        // misleading one.
+        //
+        // Same tick, so nothing has flown anywhere on its own.
+        let after: Vec<(BirdId, f32, f32, f32)> = w
+            .birds
+            .iter()
+            .map(|b| (b.id, b.pos.x, b.pos.y, b.health))
+            .collect();
+        assert_eq!(before, after, "killing an animal moved or hurt a bird");
+        assert!(
+            !w.events
+                .iter()
+                .any(|e| matches!(e, GameEvent::BirdDespawn { killed: true, .. })),
+            "an animal's rocket shot down a bird"
+        );
+        assert!(
+            killed,
+            "no animal was reported killed — the rocket missed, or its damage went elsewhere"
+        );
+    }
+
+    #[test]
+    fn nothing_drops_during_warmup() {
+        // The one damage gate. An animal shot before the round starts must not
+        // open a supply line early — the rule `resolve_bird_kills` sits behind.
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Warmup);
+        let x = w.map.mask.w as f32 / 2.0;
+        let (id, at) = plant(&mut w, AnimalKind::Beetle, x);
+        let before = w.items.iter().count();
+        w.explode_for_test(
+            at,
+            crate::weapons::defs::by_key("bazooka").expect("bazooka").id,
+            0,
+            w.round_time,
+        );
+        assert!(w.animals.get(id).is_some(), "warmup killed an animal");
+        assert_eq!(w.items.iter().count(), before, "warmup dropped loot");
+    }
+
+    /// The hash covers them, for the reason it covers the birds: they drop items.
+    #[test]
+    fn the_state_hash_notices_an_animal() {
+        let mut a = world();
+        let mut b = world();
+        assert_eq!(a.state_hash(), b.state_hash(), "two fresh worlds differ");
+        let x = a.map.mask.w as f32 / 2.0;
+        plant(&mut a, AnimalKind::Spider, x);
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "an animal appeared and the hash did not move"
+        );
+        // The control: planting the same animal in the other world brings them
+        // back together, so the difference is the animal and not the planting.
+        plant(&mut b, AnimalKind::Spider, x);
+        assert_eq!(a.state_hash(), b.state_hash());
     }
 }

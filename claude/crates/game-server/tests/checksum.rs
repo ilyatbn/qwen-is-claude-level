@@ -118,6 +118,43 @@ fn connect(
     (client, inbox, rx)
 }
 
+/// Emit, waiting out the window in which the client is open but not yet sendable.
+///
+/// `connect` blocks on `open`, which is §A28's fix and is still necessary — **but
+/// it is not sufficient under load.** The `open` callback is dispatched from the
+/// poll thread, and for a few milliseconds after it `emit` still returns
+/// `IllegalActionBeforeOpen`. Measured: 8/8 passes on an idle box in isolation,
+/// and one failure inside a full `cargo test --workspace`, where every test
+/// binary in the repository is running at once — `a_client_flooding_inputs…`
+/// panicked with `emit join: IllegalActionBeforeOpen`.
+///
+/// **This does not weaken anything.** It relaxes no assertion and swallows no
+/// server behaviour: if the server never accepts the join, `wait_for("welcome")`
+/// still fails on its own deadline, and every emit that is not accepted inside
+/// `EMIT_READY_WINDOW` still panics with the error it got.
+///
+/// The same shape exists in the other seven test binaries, each with its own copy
+/// of `connect` — see `tasks/HANDOFF-M20.md`; a shared `tests/common` module is
+/// the durable fix and is a task, not a side effect of this one.
+fn emit_when_ready(c: &rust_socketio::client::Client, ev: &str, payload: serde_json::Value) {
+    let deadline = std::time::Instant::now() + EMIT_READY_WINDOW;
+    loop {
+        match c.emit(ev, payload.clone()) {
+            Ok(()) => return,
+            Err(e) => {
+                if std::time::Instant::now() >= deadline {
+                    panic!("emit {ev}: {e}");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
+/// How long `emit_when_ready` will wait for a client that reported `open` to
+/// become sendable. Generous, because it only elapses when something is wrong.
+const EMIT_READY_WINDOW: Duration = Duration::from_secs(5);
+
 fn wait_for(rx: &mpsc::Receiver<String>, want: &str, secs: u64) {
     let deadline = std::time::Instant::now() + Duration::from_secs(secs);
     let mut seen = Vec::new();
@@ -245,21 +282,18 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
         // once they are in. `map_init` arrives at match start, not at join, so
         // waiting for it before starting would wait forever.
         let (c1, i1, r1) = connect(addr, &evs);
-        c1.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit join");
+        emit_when_ready(&c1, "join", serde_json::json!({ "name": "ana" }));
         wait_for(&r1, "welcome", 15);
 
         let (c2, i2, r2) = connect(addr, &evs);
-        c2.emit("join", serde_json::json!({ "name": "bo" }))
-            .expect("emit join");
+        emit_when_ready(&c2, "join", serde_json::json!({ "name": "bo" }));
         wait_for(&r2, "welcome", 15);
 
-        c1.emit("start_with_bots", serde_json::json!({}))
-            .expect("start");
+        emit_when_ready(&c1, "start_with_bots", serde_json::json!({}));
         wait_for(&r1, "map_init", 30);
         wait_for(&r2, "map_init", 30);
-        c1.emit("ready", serde_json::json!({})).expect("emit ready");
-        c2.emit("ready", serde_json::json!({})).expect("emit ready");
+        emit_when_ready(&c1, "ready", serde_json::json!({}));
+        emit_when_ready(&c2, "ready", serde_json::json!({}));
 
         // Give player 0 plenty of rockets, through the room's own command
         // channel — the same serialisation point every other mutation uses.
@@ -543,11 +577,10 @@ async fn a_client_flooding_inputs_does_not_outrun_one_sending_normally() {
 
     let travelled = tokio::task::spawn_blocking(move || {
         let (c1, _i1, r1) = connect(addr, &["welcome", "map_init"]);
-        c1.emit("join", serde_json::json!({ "name": "flood" }))
-            .expect("emit join");
+        emit_when_ready(&c1, "join", serde_json::json!({ "name": "flood" }));
         wait_for(&r1, "welcome", 15);
         wait_for(&r1, "map_init", 15);
-        c1.emit("ready", serde_json::json!({})).expect("emit ready");
+        emit_when_ready(&c1, "ready", serde_json::json!({}));
         std::thread::sleep(Duration::from_millis(200));
 
         // Eight inputs in one batch, repeatedly — the maximum the queue accepts.
@@ -626,20 +659,17 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
         // does not ready. Seated, mapped, not ready: the same three conditions,
         // reached the way §E2 lets a player reach them.
         let (c1, _i1, r1) = connect(addr, &evs);
-        c1.emit("join", serde_json::json!({ "name": "ana" }))
-            .expect("emit join");
+        emit_when_ready(&c1, "join", serde_json::json!({ "name": "ana" }));
         wait_for(&r1, "welcome", 15);
 
         let (c2, i2, r2) = connect(addr, &evs);
-        c2.emit("join", serde_json::json!({ "name": "bo" }))
-            .expect("emit join");
+        emit_when_ready(&c2, "join", serde_json::json!({ "name": "bo" }));
         wait_for(&r2, "welcome", 15);
 
-        c1.emit("start_with_bots", serde_json::json!({}))
-            .expect("start");
+        emit_when_ready(&c1, "start_with_bots", serde_json::json!({}));
         wait_for(&r1, "map_init", 30);
         wait_for(&r2, "map_init", 30);
-        c1.emit("ready", serde_json::json!({})).expect("emit ready");
+        emit_when_ready(&c1, "ready", serde_json::json!({}));
 
         let handle = tokio::runtime::Handle::current();
         handle
@@ -689,7 +719,7 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
             fire(i);
             std::thread::sleep(Duration::from_millis(110));
         }
-        c2.emit("ready", serde_json::json!({})).expect("emit ready");
+        emit_when_ready(&c2, "ready", serde_json::json!({}));
 
         // Wait for the carve stream to **settle**, not for a fixed duration.
         //

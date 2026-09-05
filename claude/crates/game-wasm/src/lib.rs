@@ -1004,6 +1004,15 @@ pub fn constants_json() -> String {
         // range and subtle at distance"), so the client needs the same number
         // the sim arms on rather than a second copy of it.
         MINE_ARM_TIME => c::MINE_ARM_TIME,
+        // T20.10's ground animals. The client draws them at exactly the hit box
+        // the sim tests against, so the sizes cross the boundary rather than
+        // being spelled in `animals-math.ts`.
+        SPIDER_W => c::SPIDER_W,
+        SPIDER_H => c::SPIDER_H,
+        BEETLE_W => c::BEETLE_W,
+        BEETLE_H => c::BEETLE_H,
+        ANIMAL_MAX => c::ANIMAL_MAX,
+        ANIMAL_INTERVAL => c::ANIMAL_INTERVAL,
         // §C6 x §C21: what the weather layer divides the **live** drop count by
         // to get the emitter's density (T20.05). Exported rather than spelled in
         // `weather.ts` — the client had a 260-droplet sheet on a seed of its own

@@ -189,6 +189,10 @@ const CHECKS = [
   // that hid a broken `ordnance.update` for three milestones. Standalone: it needs
   // `WEATHER=toxic` on a real server and a real round.
   { name: 'toxic-rain-game', file: 'scripts/checks/toxic-rain-game.mjs', standalone: true },
+  // T20.10: ground animals, counted at both ends and then photographed.
+  // Standalone: it needs a real round on a fixed seed with no bots, because a
+  // bot's stray rocket killing one changes the counts it compares.
+  { name: 'animals', file: 'scripts/checks/animals.mjs', standalone: true },
   // §B9's gate, and the only assertion in the tree about a **rendered** player's
   // skin (T20.04). Standalone: two clients on two different skins, in one frame,
   // on a real server — `skins.mjs` never enters a game, which is why everybody

@@ -54,14 +54,19 @@ pub enum DamageSource {
 pub enum HitId {
     Player(PlayerId),
     Bird(BirdId),
+    /// A ground animal (T20.10). Damage flows **into** one and never out.
+    Animal(u32),
 }
 
 impl HitId {
-    /// The player, or `None` for a bird. The only way back to a `PlayerId`.
+    /// The player, or `None` for anything else. The only way back to a
+    /// `PlayerId`, and the one exhaustive match on this enum in the workspace —
+    /// every other use is an `==` asking "is this the owner?", which wildlife
+    /// never is.
     pub fn player(self) -> Option<PlayerId> {
         match self {
             HitId::Player(id) => Some(id),
-            HitId::Bird(_) => None,
+            HitId::Bird(_) | HitId::Animal(_) => None,
         }
     }
 }

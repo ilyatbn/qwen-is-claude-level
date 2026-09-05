@@ -73,6 +73,15 @@ export interface BirdView {
   right: boolean
 }
 
+/** T20.10's ground animals. Same shape as a bird; the server simulates both. */
+export interface AnimalView {
+  id: number
+  kind: number
+  x: number
+  y: number
+  right: boolean
+}
+
 export interface ProjectileView {
   id: number
   weapon: number
@@ -108,6 +117,8 @@ export class WorldMirror {
   readonly projectiles = new Map<number, ProjectileView>()
   /** §C16. Server-simulated; the client only draws what it is told. */
   readonly birds = new Map<number, BirdView>()
+  /** T20.10, on the same terms as the birds. */
+  readonly animals = new Map<number, AnimalView>()
 
   private readonly core: Core
   private nextCarveSeq = 0
@@ -352,6 +363,32 @@ export class WorldMirror {
       }
       case 'bird_despawn':
         this.birds.delete(n(p['id']))
+        break
+      case 'animal_spawn': {
+        const id = n(p['id'])
+        this.animals.set(id, {
+          id,
+          kind: n(p['kind']),
+          x: n(p['x']),
+          y: n(p['y']),
+          right: p['right'] === true,
+        })
+        break
+      }
+      case 'animal_move': {
+        const a = this.animals.get(n(p['id']))
+        if (!a) break
+        a.x = n(p['x'])
+        a.y = n(p['y'])
+        // **Read from the wire, not derived from travel** — unlike a bird's. A
+        // bird flies one way for its whole life, so `x >= prev` is its facing; a
+        // beetle turns and a spider hops both ways and rests between hops, where
+        // that rule would flip the sprite every time it stopped.
+        a.right = p['right'] === true
+        break
+      }
+      case 'animal_despawn':
+        this.animals.delete(n(p['id']))
         break
       case 'tombstone_spawn': {
         const id = n(p['id'])

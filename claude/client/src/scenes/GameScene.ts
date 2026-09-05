@@ -15,6 +15,7 @@ import Phaser from 'phaser'
 import { loadAssetManifest, runLoader } from '../render/assets'
 import { DeathOverlay } from '../ui/deathOverlay'
 import { TombstoneLayer } from '../render/tombstones'
+import { AnimalLayer } from '../render/animals'
 import { BirdLayer } from '../render/birds'
 import { padUnderfoot, type PadView } from '../render/pads'
 import { atlasArt } from '../render/objects'
@@ -347,6 +348,8 @@ export class GameScene extends Phaser.Scene {
   private readonly death = new DeathOverlay()
   private tombstones!: TombstoneLayer
   private birds!: BirdLayer
+  /** T20.10, beside the birds and for the same reasons. */
+  private animals!: AnimalLayer
   /** §C5's pads, as `map_init` gave them. The layer lives in `WorldView` (§C1). */
   private padViews: PadView[] = []
   /** §D6's scenery, straight off the wire — the count the index is checked against. */
@@ -590,6 +593,7 @@ export class GameScene extends Phaser.Scene {
     // coupling than the parity is worth. `PadLayer` reads map meta, which it can
     // already see, which is why that one does belong there.
     this.birds = new BirdLayer(this)
+    this.animals = new AnimalLayer(this)
     this.results = new ResultsScreen({
       onPlayAgain: () => this.conn.sendVoteRestart(true),
       // Close the socket, do not merely change scene: the seat stays occupied
@@ -783,6 +787,10 @@ export class GameScene extends Phaser.Scene {
       // these have to be asked for or the sky stays empty with every test green.
       // `subscription.test.ts` caught this omission before the browser did.
       'bird_spawn', 'bird_move', 'bird_despawn',
+      // T20.10, same shape a third time. `subscription.test.ts` walks this list
+      // against the mirror's handlers, so an omission here is a red test rather
+      // than an empty hillside.
+      'animal_spawn', 'animal_move', 'animal_despawn',
       'projectile_despawn', 'mask_checksum',
       // §B8. The mirror handles these; this list is what actually subscribes,
       // and a handler with no subscription is the §A39 shape one layer down.
@@ -1696,6 +1704,7 @@ export class GameScene extends Phaser.Scene {
     this.world?.items.update(dt, [...this.mirror.items.values()], this.ear())
     this.tombstones.update([...this.mirror.tombstones.values()])
     this.birds.update(this.mirror.birds.values(), this.time.now)
+    this.animals.update(this.mirror.animals.values(), this.time.now)
     if (this.world) {
       const me = this.core.playerState(this.me)
       const on = me ? padUnderfoot(this.padViews, me.x, me.y) : null
@@ -2227,6 +2236,22 @@ export class GameScene extends Phaser.Scene {
         self.birds?.setVisible(on)
       },
       /**
+       * The same handle for T20.10's ground animals, and **a second function
+       * rather than a second body in `setBirdsVisible`.**
+       *
+       * That is not a style preference, it was measured. Folding the animals
+       * into the birds' toggle made one name mean two things, and `birds.mjs`
+       * went red on the next gate: hiding "the bird layer" changed a 981x403
+       * region against a bird's own 40x28 box, with the changed pixels centred
+       * 495 px from the bird, because an animal on the other side of the frame
+       * vanished in the same toggle. The check was right and the handle was
+       * wrong — a field that means two things is a bug waiting for the first
+       * caller that wants one of them.
+       */
+      setAnimalsVisible(on: boolean) {
+        self.animals?.setVisible(on)
+      },
+      /**
        * e2e only (§C2): hide every player body, so a check can photograph the
        * ground they are standing on **through the same rect** it photographed
        * them in.
@@ -2388,6 +2413,13 @@ export class GameScene extends Phaser.Scene {
           // Both ends (§A39): what the server said, and what is on screen. A
           // bird nobody can see is a supply line nobody can open.
           birds: self.mirror.birds.size,
+          // Both ends (§A39): what the server says exists, and what the layer
+          // drew. `animalsDrawnAt` is the drawn positions, for the reason
+          // `birdsDrawnAt` exists — a patch computed from mirror coordinates and
+          // then screenshotted compares two different instants.
+          animals: self.mirror.animals.size,
+          animalsDrawn: self.animals?.count ?? 0,
+          animalsDrawnAt: self.animals?.drawn ?? [],
           birdsDrawn: self.birds?.count ?? 0,
           // The DRAWN positions, for a check that photographs a bird. The
           // mirror's coordinates below describe a different instant whenever the
