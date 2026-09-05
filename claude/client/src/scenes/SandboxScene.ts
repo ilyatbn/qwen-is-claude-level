@@ -9,7 +9,7 @@
  */
 
 import Phaser from 'phaser'
-import { C, Core, MapScale, type WeatherState } from '../core'
+import { C, Core, MapScale, strictConstants, type WeatherState } from '../core'
 import { DEPTH } from '../render/backdrop'
 import { WorldView } from '../render/worldView'
 import { caveBackdropDefault, setCaveBackdropDefault } from '../render/terrain'
@@ -834,7 +834,11 @@ export class SandboxScene extends Phaser.Scene {
       },
       /** §C14's constants, so a check pins to them rather than to a literal. */
       constants() {
-        return C()
+        // **Strict** (T20.15): the browser checks are untyped `.mjs`, so a read of
+        // a constant that is not in `constants_json` came back `undefined` and any
+        // arithmetic on it `NaN` — which is how `lobby-start` built a
+        // `waitForFunction` with no deadline. This throws instead.
+        return strictConstants()
       },
       /**
        * Hide the parallax band, for the control frame `living-sky` needs.

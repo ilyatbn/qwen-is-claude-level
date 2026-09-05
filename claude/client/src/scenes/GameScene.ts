@@ -19,7 +19,7 @@ import { BirdLayer } from '../render/birds'
 import { padUnderfoot, type PadView } from '../render/pads'
 import { atlasArt } from '../render/objects'
 import type { MapObject } from '../net/codec'
-import { C, Core, dequantizeAngle } from '../core'
+import { C, Core, dequantizeAngle, strictConstants } from '../core'
 import { asRecord, Connection, type Welcome } from '../net/connection'
 import { parseLobbyState } from '../net/lobby'
 import { WorldMirror, hex } from '../net/worldMirror'
@@ -2604,7 +2604,11 @@ export class GameScene extends Phaser.Scene {
        * milestones.
        */
       constants() {
-        return C()
+        // **Strict** (T20.15): the browser checks are untyped `.mjs`, so a read of
+        // a constant that is not in `constants_json` came back `undefined` and any
+        // arithmetic on it `NaN` — which is how `lobby-start` built a
+        // `waitForFunction` with no deadline. This throws instead.
+        return strictConstants()
       },
       debugHud() {
         return self.debugHud.stats()

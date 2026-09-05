@@ -166,7 +166,15 @@ export interface Constants {
   WALK_SPEED: number
   MAX_FALL_SPEED: number
   EDGE_BAND_PX: number
+  /**
+   * The three below were in `constants_json` and **not** in this interface
+   * (T20.15), so a browser check could read them and TypeScript could not.
+   * `constants-parity.test.ts` now fails on either direction of that gap.
+   */
+  GRAVITY: number
+  BIRD_DROP_VELOCITY: number
   CHUNK_REBAKE_BUDGET: number
+  CHUNK_REBAKE_MS: number
   PARALLAX_FACTOR: number
   CAMERA_LERP: number
   CAMERA_ZOOM: number
@@ -343,6 +351,42 @@ export function C(): Constants {
     throw new Error('constants read before Core.init() — call it first')
   }
   return constantsCache
+}
+
+/**
+ * `C()`, but a read of a constant that is not there **throws** (T20.15).
+ *
+ * For the **dev handles only**. `scripts/checks/lobby-start.mjs` read
+ * `constants().LOBBY_BOT_TIMEOUT`, which is not in `constants_json`; the read was
+ * `undefined`, the arithmetic that built a `waitForFunction` timeout from it was
+ * `NaN`, and **a wait with a `NaN` timeout has no deadline at all**. It did not
+ * fail when the thing it waited for never happened — it waited, and something
+ * further up eventually killed it, and the failure was reported as whatever that
+ * was. `CLAUDE.md`'s *"an assertion on a field that does not exist cannot fail"*,
+ * in its other form.
+ *
+ * TypeScript already catches this inside `client/`; the browser checks are `.mjs`
+ * and untyped, and they are the only callers of the dev handles. So the type
+ * guard is replaced by a runtime one at exactly the seam that has none.
+ *
+ * **Only `SCREAMING_CASE` string keys are policed.** `JSON.stringify` asks for
+ * `toJSON`, a `Promise` resolution asks for `then`, and Playwright's serialiser
+ * walks the object — none of those are constants, and throwing on them would
+ * break every caller that returns the whole table.
+ */
+export function strictConstants(c: Constants = C()): Constants {
+  return new Proxy(c, {
+    get(target, prop, receiver) {
+      if (typeof prop === 'string' && /^[A-Z][A-Z0-9_]*$/.test(prop) && !(prop in target)) {
+        throw new Error(
+          `constants().${prop} is not in constants_json — a read of it is \`undefined\`, ` +
+            `and any arithmetic on it is NaN. Add it to game-wasm's \`put!\` table and to ` +
+            `the \`Constants\` interface, or read the value from wherever it really lives.`,
+        )
+      }
+      return Reflect.get(target, prop, receiver)
+    },
+  })
 }
 
 /**

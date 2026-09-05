@@ -690,3 +690,57 @@ deliberately: the obvious one-line fix (give `restart` the `world.tick = self.lo
   spelled in full — it is the shipped path and should not depend on the table being right; the
   closure is a no-op over it, and stays one only while the table is complete.
 
+
+## T20.15 landed — and the task's first option is the one that had to be refused
+
+The defect is as reported: `scripts/checks/lobby-start.mjs` built a `waitForFunction` timeout
+from `constants().LOBBY_BOT_TIMEOUT`, which is not in `constants_json`. `undefined`, then
+`(undefined + 8) * 1000` → `NaN`, and **Playwright treats a `NaN` timeout as no deadline** —
+so the wait could not fail when the thing it waited for never happened.
+
+### Exporting the constant would have made the check red, for the wrong reason
+
+The task offered two repairs and named the four-place export first. **It is wrong at this
+site.** `lobby-start.mjs` spawns its own server with `LOBBY_BOT_TIMEOUT=45` (its own comment
+says why: at the shipped 10 s a cold page has not reached `ready` before §E2 fires, so the
+lobby cannot be observed at all). `constants_json` would have handed back the shipped **10.0**,
+giving an 18 s deadline against an event **45 s** away. Measured in this shift's run: *"a solo
+lobby started itself after ~44.5s"*.
+
+So the deadline comes from the value that actually governs it. `LOBBY_BOT_TIMEOUT_S` is
+declared once and feeds both the env block and the wait — it is the check's own configuration,
+not a shipped tunable, and reading it from `constants.rs` would be reading the number this
+check exists to *replace*. `LOBBY_BOT_TIMEOUT` is deliberately **not** added to
+`constants_json`: a constant exported for one caller that must not use it is a mechanism wired
+to nothing.
+
+### The grep was the deliverable, and it found three more
+
+Every `window.__game.constants().NAME` in `scripts/`, against `constants_json`:
+
+- `LOBBY_BOT_TIMEOUT` — the known site, the only genuinely missing name.
+- **`GRAVITY`, `BIRD_DROP_VELOCITY`, `CHUNK_REBAKE_MS` are in `constants_json` and were not in
+  the `Constants` interface.** So a browser check could read them and TypeScript could not —
+  the same drift one layer up, and the direction that produces the next `undefined`. Added.
+- Nothing in the interface was missing from the table.
+
+### Three guards, at the three seams, each falsified at its live site
+
+1. **The read.** `strictConstants()` (`client/src/core/index.ts`) returns a `Proxy` over `C()`
+   that throws on a `SCREAMING_CASE` key that is not there. Both dev handles —
+   `GameScene.exposeDebugHandle` and `SandboxScene` — return it instead of `C()`, and the test
+   asserts that from the source, because *a test calling `strictConstants` is not a caller*.
+   Only SCREAMING_CASE keys are policed: `JSON.stringify` asks for `toJSON`, promise resolution
+   asks for `then`, and Playwright's serialiser walks the object.
+2. **The arithmetic.** `scripts/lib/deadline.mjs`'s `deadlineMs(seconds, label)` throws unless
+   `seconds` is a positive finite number, and names the wait. It survives a deadline derived
+   from anything else — an env override, a response body, a parsed log line — which the read
+   guard does not.
+3. **The tables.** `constants-parity.test.ts` asserts `constants_json` and the `Constants`
+   interface are the same set **in both directions**, and that no `.mjs` reads a constant that
+   is not in the table. Falsified by deleting `GRAVITY` from the interface and by putting
+   `return C()` back in `GameScene`'s handle; both go red and name what they caught.
+
+The control the task asked for is in the same file: the same read on plain `C()` is `undefined`
+and silent, and `undefined + 8` is asserted to be `NaN` — the defect itself, kept as the thing
+the guard is measured against.

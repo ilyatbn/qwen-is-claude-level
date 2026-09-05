@@ -5404,3 +5404,21 @@ are fixed structurally (`SCENE_GRAPH` + `closeOverStarts`, guarded by `scene-gra
 the falsification run. Falsified red both ways. **Reported, not fixed:** `Room::restart` leaves
 the lag baseline unrebased, so a replayed room logs `tick overrun lagging=2987` forever —
 `tick_overruns` is permanently wrong for T20.14 to read. EXIT=0, 45/45, 840/840, 25/25.
+
+
+## T20.15 — the grep found three more seams, and exporting the constant was the wrong fix
+
+`lobby-start.mjs` read `constants().LOBBY_BOT_TIMEOUT`, which is not in `constants_json`:
+`undefined`, then `NaN`, then a `waitForFunction` with **no deadline**. **The task's first
+option does not survive contact** — this check spawns its server with
+`LOBBY_BOT_TIMEOUT=45`, so `constants_json` would hand back the shipped 10.0 and the deadline
+would be 18 s against an event 45 s away. The governing value is the override, which now has
+one name feeding both the env block and the wait. The grep, which was the real deliverable,
+found the one missing name **and** three constants in `constants_json` that the `Constants`
+interface never declared (`GRAVITY`, `BIRD_DROP_VELOCITY`, `CHUNK_REBAKE_MS`) — readable from
+a check, invisible to TypeScript. Three guards now, at the three seams: `strictConstants()`
+throws on an absent SCREAMING_CASE key and is what **both** dev handles return (asserted, not
+assumed); `deadlineMs()` refuses anything that is not a positive finite number of seconds;
+and `constants-parity.test.ts` asserts the two tables are the same set in both directions and
+that no `.mjs` reads a constant that does not exist. Each falsified at its live site.
+EXIT=0 first run, 45/45, 853/853, 25/25.

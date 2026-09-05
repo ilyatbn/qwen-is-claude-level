@@ -29,6 +29,16 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { matchVitePort } from '../vite-url.mjs'
 import { killGroup } from '../proc-group.mjs'
+import { deadlineMs } from '../lib/deadline.mjs'
+
+// **This check's own configuration, not a shipped tunable.** `LOBBY_BOT_TIMEOUT_S`
+// is an override handed to the server it spawns, so it is not read from
+// `constants.rs` — it *replaces* what is there. One name, two uses: the env block
+// below and the deadline of the wait that watches it expire. They cannot disagree.
+const LOBBY_BOT_TIMEOUT_S = 45
+/** Slack on top, for the round trip between the server starting and the client seeing it. */
+const LOBBY_START_GRACE_S = 8
+
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const shots = join(root, 'shots')
@@ -66,7 +76,7 @@ const server = spawn('cargo', ['run', '-q', '-p', 'game-server', '--release'], {
     // before §E2's timeout fires, so the match has always started by the first
     // sample. T17.07 measured ~0.0 s of waiting and retired this claim; making
     // the timeout config-driven is what brings it back.
-    LOBBY_BOT_TIMEOUT: '45',
+    LOBBY_BOT_TIMEOUT: String(LOBBY_BOT_TIMEOUT_S),
     BOT_COUNT: '3',
     GAME_LOG: 'warn',
   },
@@ -195,17 +205,27 @@ else ok(`nothing simulating while waiting (server round time ${r0} -> ${r1})`)
 // The waiting half above still holds and is what §C18's principle survives as:
 // you arrive in a lobby and nothing simulates while you sit in it. What changed
 // is only how that ends.
-// From the shipped constants, not a literal: a test that spells a tunable
-// stays green against a drifted implementation.
-const LOBBY_BOT_TIMEOUT = await page.evaluate(
-  'window.__game.constants().LOBBY_BOT_TIMEOUT',
-)
+// **The value this check is running, not the shipped one** (T20.15).
+//
+// This line used to read `constants().LOBBY_BOT_TIMEOUT`, which is not in
+// `constants_json`: the read was `undefined`, `(undefined + 8) * 1000` is `NaN`,
+// and a `NaN` timeout is **no deadline** — the wait could not fail.
+//
+// The obvious repair is to export the constant, and it is **wrong here**. The
+// server this check spawned runs `LOBBY_BOT_TIMEOUT=45` from the env block above;
+// `constants_json` would hand back the shipped 10.0, so the deadline would be 18 s
+// against an event 45 s away and the check would go red for the wrong reason. The
+// value that governs this wait is the override, and it now has one name feeding
+// both the server and the deadline. `deadlineMs` refuses anything that is not a
+// positive number of seconds, so the NaN cannot come back by another route.
 const startedBy = Date.now()
 await page
   .waitForFunction('window.__game.debug().phase !== "lobby"', null, {
-    timeout: (LOBBY_BOT_TIMEOUT + 8) * 1000,
+    timeout: deadlineMs(LOBBY_BOT_TIMEOUT_S + LOBBY_START_GRACE_S, 'a solo lobby starting itself'),
   })
-  .catch(() => fail(`a solo lobby never started, ${LOBBY_BOT_TIMEOUT}s timeout notwithstanding`))
+  .catch(() =>
+    fail(`a solo lobby never started, ${LOBBY_BOT_TIMEOUT_S}s timeout notwithstanding`),
+  )
 const waited = (Date.now() - startedBy) / 1000
 d = await dbg()
 if (d.phase === 'lobby') fail('the timeout fired and the phase is still lobby')
