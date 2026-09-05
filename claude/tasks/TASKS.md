@@ -487,3 +487,52 @@ later; join under a name you chose once and see it on the roster; look different
 player beside you; pick up a flashlight and watch the fog thin; carry a shield generator and
 watch a hit cost you a quarter less health and one energy; right-click a rocket out of your
 pack and pick it back up; shoot a spider and take the medkit it drops.
+
+## M21 — Special items, and a match you can reshape (8)
+
+Two headline asks, **split into eight tasks** because each half needs its own gate and
+`CLAUDE.md` caps a task at roughly one file and 250 lines. The split, and why:
+
+**"Special items" → T21.01–03.** Vampire fangs is a *damage-path* change; ironman boots and
+unicorn wings are *movement* changes that must survive client-side prediction. Different code,
+different risks, different tests — one task would have hidden the movement problem behind the
+easy one.
+
+**"New match settings" → T21.04–08.** The day/night toggle is a fourth setting on T20.07's
+established path and is genuinely small. Gravity is not one setting with three values: `low`
+is a constant multiplier, while `none` is **a different movement model plus a second map
+generator plus a forced skin** — three tasks wearing one word. Building them as one value of
+one enum is how it lands half-finished.
+
+**The recurring hazard across T21.01–03, T21.05 and T21.06** is that `apply_input` runs on the
+server *and* in `prediction.ts` dozens of times per frame, and its purity is what makes
+prediction correct. **Any movement modifier the client does not know about ships as
+rubber-banding, not as a wrong speed.** T20.07's conclusion — derive a bit at the encode site
+rather than storing a hashed field — is the cheap answer, and it is written into each file.
+
+- [ ] [T21.01](M21/T21.01-vampire-fangs.md) — Vampire fangs **(v9)** — depends on T20.08
+- [ ] [T21.02](M21/T21.02-ironman-boots.md) — Ironman boots **(v9)** — depends on T20.08, T20.04, T20.12
+- [ ] [T21.03](M21/T21.03-unicorn-wings.md) — Unicorn wings **(v9)** — **hard-depends on T20.09**: dropping is the only off switch
+- [ ] [T21.04](M21/T21.04-day-night-setting.md) — A day/night setting, and a randomisation hook **(v9)** — depends on T20.07
+- [ ] [T21.05](M21/T21.05-low-gravity.md) — Low gravity **(v9)** — the `standard | low` half only
+- [ ] [T21.06](M21/T21.06-zero-g-movement.md) — Zero gravity: the movement model **(v9)**
+- [ ] [T21.07](M21/T21.07-zero-g-map.md) — Zero gravity: the map **(v9)** — a second generator
+- [ ] [T21.08](M21/T21.08-spacesuits.md) — Spacesuits, with a visor colour you choose **(v9)**
+
+**Order note.** T21.04 first — it is small and it re-walks T20.07's path, which is the pattern
+the rest copy. Then T21.01–03 as T20.08/T20.09 land. T21.05 before T21.06. **T21.06 and T21.07
+are unplayable apart** — zero-g movement without its map has nothing to float between, and the
+map without the movement is a level nobody can traverse; sequence them together or build both
+behind one flag.
+
+**Two things the coordinator owes a ruling on before T21.05 and T21.06 start.** *"Everything a
+bit slower, including projectiles"* — less gravity makes a lobbed weapon travel **further**,
+not slower, and bullets have `gravity_scale = 0.0` so gravity does not touch them at all. Is
+this a gravity change or a time-scale change? And in zero-g, what happens on **contact** —
+stop, or bounce? *"Constant until they hit something"* does not say, and the two feel entirely
+different to play.
+
+**Checkpoint:** host a private match in low gravity and watch a grenade hang; pick up ironman
+boots and see them on your legs; hold unicorn wings and be unable to stop flying until you
+drop them; land a rocket on someone holding a shield generator and watch your battery rise
+instead of your health.
