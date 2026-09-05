@@ -88,7 +88,7 @@ import { EscapeMenu, handleEscape } from '../ui/escapeMenu'
 import { DebugMode } from '../ui/debugMode'
 import { devSurface } from '../dev'
 import { DebugOverlay } from '../render/debugOverlay'
-import { energyBar, healthBar, inRefillDelay, jetpackBar, shieldRing } from '../ui/bars-math'
+import { energyBar, healthBar, inRefillDelay, jetpackBar } from '../ui/bars-math'
 import { DebugHud } from '../ui/debugHud'
 import { ITEM_ATLAS } from '../render/itemSprites'
 import { artFor } from '../render/itemSprites-math'
@@ -236,7 +236,7 @@ export class GameScene extends Phaser.Scene {
   /** §C9's counters, straight from the snapshot. Not inventory. */
   private heals = 0
   private batteries = 0
-  /** Whether the server says the shield is up, and when it went up. */
+  /** Whether the server says damage against me is being reduced (bit 3). */
   private shieldOn = false
   /** §E13: is toxic rain still working on me? Snapshot flag, never predicted. */
   private poisoned = false
@@ -250,7 +250,6 @@ export class GameScene extends Phaser.Scene {
    * flicker the whole field of view.
    */
   private hasFlashlight = false
-  private shieldSince = 0
   private jetReadout: HTMLDivElement | null = null
   /** The private room's join code, once the server has told us (§B9). */
   private joinCode: string | null = null
@@ -474,7 +473,6 @@ export class GameScene extends Phaser.Scene {
     this.heals = 0
     this.batteries = 0
     this.shieldOn = false
-    this.shieldSince = 0
     this.poisoned = false
     this.hasFlashlight = false
     this.fuel = 0
@@ -1279,9 +1277,10 @@ export class GameScene extends Phaser.Scene {
       // The shield is a timer and the snapshot carries only the *flag*, so the
       // start is the edge: the first tick it is up. Derived rather than sent,
       // because a second field would be a second thing that can disagree.
-      const up = flag(mine.flags, FLAG.shield)
-      if (up && !this.shieldOn) this.shieldSince = this.serverRoundTime
-      this.shieldOn = up
+      // **The edge is gone with the timer** (T20.08). `shieldSince` existed only
+      // to give `shieldRing` a start time for a 20 s window; a held generator has
+      // no start, so the boolean is the whole of it.
+      this.shieldOn = flag(mine.flags, FLAG.shield)
       // §E13. The snapshot carries the boolean, like the shield above: the
       // client colours a bar off it and never predicts a status.
       this.poisoned = flag(mine.flags, FLAG.poisoned)
@@ -1582,7 +1581,15 @@ export class GameScene extends Phaser.Scene {
         alive: true,
         grounded: body.grounded,
         jetpack: body.moveState === 2,
-        shield: false,
+        // **`false` was hardcoded here** (T20.08), so the bubble has never
+        // appeared on your own body — the same wired-to-nothing shape T20.07
+        // found six of, one layer over. Every remote player has been drawing it
+        // from bit 3 all along; the one player who needs to know they are
+        // protected was the one who could not see it.
+        shield: this.shieldOn,
+        // `iframes` is still a literal. Left alone deliberately: the spawn
+        // invulnerability has no visual in `PlayerView` beyond this flag, and
+        // giving it one is a design decision, not this task's. **Worth booking.**
         iframes: false,
       })
       this.crosshair.update(rp.x, rp.y, aim)
@@ -2043,14 +2050,13 @@ export class GameScene extends Phaser.Scene {
         maxHeals: C().MAX_HEALS,
         maxBatteries: C().MAX_BATTERIES,
       },
-      shield: shieldRing(
-        this.shieldOn,
-        this.shieldSince,
-        this.serverRoundTime,
-        c.SHIELD_DURATION,
-        this.battery,
-        c.SHIELD_DRAIN,
-      ),
+      // **No `shield` view** (T20.08). `shieldRing` returned a 0..1 fraction of a
+      // 20 s window, and there is no window: a generator is held and pays per
+      // hit. The two things a player needs are *whether* they are protected and
+      // *how much longer* — the first is the bubble on their own body, wired at
+      // last (see `localView.setState`), and the second is the energy bar that
+      // was already on this cluster. A second widget for the battery would be a
+      // second answer that can disagree with it.
     })
     const banner = phaseBanner(this.phase, secondsLeft)
     // Readability matters here: the previous format rendered as

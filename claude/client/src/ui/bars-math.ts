@@ -130,28 +130,15 @@ export function inRefillDelay(prev: number, now: number, max: number, jetting: b
   return now <= prev + 1e-4
 }
 
-/**
- * How much of the shield's ring is left, 0..1, or null when there is no shield.
- *
- * The shield is a **timer**, not a pool (`docs/21` §2), so it is drawn as a ring
- * around the cluster and not as part of the health bar. §B5 makes the battery
- * end it early — the battery drains at `SHIELD_DRAIN` while it is up — so the
- * remaining time is whichever of the two runs out first, and that is the whole
- * point of showing them together.
- */
-export function shieldRing(
-  active: boolean,
-  startedAt: number,
-  now: number,
-  duration: number,
-  battery: number,
-  drain: number,
-): number | null {
-  if (!active || duration <= 0) return null
-  const byTime = duration - (now - startedAt)
-  const byBattery = drain > 0 ? battery / drain : Infinity
-  return Math.max(0, Math.min(1, Math.min(byTime, byBattery) / duration))
-}
+// **`shieldRing` is deleted** (T20.08). It returned a 0..1 fraction of
+// `SHIELD_DURATION` — `duration - (now - startedAt)`, floored by `battery / drain`
+// — and every one of those inputs went with the timer: a shield generator is
+// carried and spends `SHIELD_HIT_COST` per hit. What is left is
+// `floor(battery / cost)`, a **count of absorptions with no denominator**, which
+// is a different widget and not a fraction of anything. It was not adapted into
+// one: the energy bar on the same cluster already shows the battery, and the
+// bubble on the player shows whether it is doing anything, so a third widget
+// would be a second answer to a question already on screen.
 
 /**
  * A consumable counter as a row of pips: `true` for one you hold (§C9, T20.06).

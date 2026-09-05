@@ -892,7 +892,6 @@ mod tests {
             p.alive = false;
             p.body.grounded = false;
             p.jetpack.active = false;
-            p.shield_until = None;
             p.inventory.clear();
             p.iframes_until = 0.0;
             p.poisoned_until = 0.0;
@@ -908,7 +907,14 @@ mod tests {
             (0, |p, _| p.alive = true),
             (1, |p, _| p.body.grounded = true),
             (2, |p, _| p.jetpack.active = true),
-            (3, |p, n| p.shield_until = Some(n + 10.0)),
+            // Bit 3 is `shield_active`, and that is derived from the bag and the
+            // battery now (T20.08) — so the setter fills both. The wire did not
+            // move; what feeds it did.
+            (3, |p, _| {
+                p.inventory
+                    .add(game_core::items::registry::SHIELD_GENERATOR, 1);
+                p.battery = game_core::constants::BATTERY_MAX;
+            }),
             // **The one bit that is not a field** (T20.07): it is
             // `inventory.count_of(FLASHLIGHT) > 0`, so the setter has to put the
             // item in the bag. Everything else about this case is unchanged, which
@@ -925,7 +931,6 @@ mod tests {
                 p.alive = false;
                 p.body.grounded = false;
                 p.jetpack.active = false;
-                p.shield_until = None;
                 p.inventory.clear();
                 p.iframes_until = 0.0;
                 p.poisoned_until = 0.0;

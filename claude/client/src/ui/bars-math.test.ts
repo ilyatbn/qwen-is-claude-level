@@ -9,7 +9,6 @@ import {
   inRefillDelay,
   jetpackBar,
   mix,
-  shieldRing,
 } from './bars-math'
 
 // Pinned to the shipped constants (§A19), never to literals.
@@ -17,8 +16,6 @@ let BASE = 0
 let CAP = 0
 let BATT = 0
 let FUEL = 0
-let DUR = 0
-let DRAIN = 0
 
 beforeAll(async () => {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
@@ -28,8 +25,6 @@ beforeAll(async () => {
   CAP = c.HEALTH_CAP
   BATT = c.BATTERY_MAX
   FUEL = c.JETPACK_MAX_FUEL
-  DUR = c.SHIELD_DURATION
-  DRAIN = c.SHIELD_DRAIN
 })
 
 describe('healthBar', () => {
@@ -137,29 +132,16 @@ describe('inRefillDelay', () => {
   })
 })
 
-describe('shieldRing', () => {
-  it('is absent with no shield', () => {
-    expect(shieldRing(false, 0, 5, DUR, BATT, DRAIN)).toBeNull()
-  })
-
-  it('counts down with time while the battery is deep', () => {
-    expect(shieldRing(true, 0, 0, DUR, BATT, DRAIN)).toBeCloseTo(1, 5)
-    expect(shieldRing(true, 0, DUR / 2, DUR, BATT, DRAIN)).toBeCloseTo(0.5, 5)
-    expect(shieldRing(true, 0, DUR, DUR, BATT, DRAIN)).toBe(0)
-  })
-
-  /**
-   * §B5's payoff: a flat battery ends the shield before its timer does. Without
-   * this the ring would promise time the player does not have.
-   */
-  it('is governed by the battery once that is the shorter of the two', () => {
-    // Enough battery for a quarter of the duration.
-    const thin = (DUR / 4) * DRAIN
-    expect(shieldRing(true, 0, 0, DUR, thin, DRAIN)).toBeCloseTo(0.25, 5)
-    // ...and an empty battery is no shield at all, whatever the timer says.
-    expect(shieldRing(true, 0, 0, DUR, 0, DRAIN)).toBe(0)
-  })
-})
+// **The `shieldRing` block is gone** (T20.08), and its five assertions with it:
+// every one described a 20 s window (`counts down with time`, `is governed by the
+// battery once that is the shorter of the two`) and there is no window. A shield
+// generator is carried and pays `SHIELD_HIT_COST` per hit, so the remaining
+// protection is `floor(battery / cost)` — a count, not a fraction — and the HUD
+// shows the battery it is drawn from rather than a second copy of it. The
+// behaviour these tests guarded is asserted where it now lives, in
+// `player/state.rs`: `a_shield_is_carrying_one_with_charge_and_nothing_else`,
+// `a_held_generator_takes_a_quarter_off_each_hit_for_one_energy` and
+// `the_reduction_stops_at_zero_charge_and_resumes_after_a_pack`.
 
 describe('mix', () => {
   it('returns the endpoints exactly and clamps outside them', () => {

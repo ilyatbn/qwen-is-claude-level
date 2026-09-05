@@ -957,6 +957,25 @@ export class SandboxScene extends Phaser.Scene {
        * Returns what the scene now believes, so a caller asserts on the effect
        * rather than on having asked.
        */
+      /**
+       * Put a shield generator in the bag (T20.08), the sibling of
+       * `giveFlashlight` and for the same reason: the generator is found, not
+       * granted, so a check that waited for one would be waiting on the map.
+       *
+       * Returns whether the player is now shielded — the **effect**, read through
+       * the Rust rule, rather than a confirmation that the ask happened.
+       */
+      giveShieldGenerator() {
+        self.core.give(0, 1 /* SHIELD_GENERATOR */, 1)
+        // **And the charge to run it.** A sandbox player starts at 0 battery and
+        // the generator is inert without one, so granting the item alone would
+        // return `false` and a check would blame the bubble. Through
+        // `add_battery`, which is `PlayerState::add_battery` and therefore
+        // clamped at `BATTERY_MAX` like any pack.
+        self.core.addBattery(0, C().BATTERY_MAX)
+        self.refreshHud()
+        return self.core.shieldActive(0)
+      },
       giveFlashlight() {
         // Grant only: `Core` exposes no take, and the control this needs is the
         // **before** state rather than a removal — a check reads the radius with
@@ -1038,7 +1057,12 @@ export class SandboxScene extends Phaser.Scene {
         alive: true,
         grounded: body.grounded,
         jetpack: body.moveState === 2,
-        shield: false,
+        // **`false` was hardcoded here too** (T20.08). Both scenes drew the
+        // shield bubble on every *remote* player and on the local one never —
+        // which is the one player who needs to know they are protected. The rule
+        // comes from Rust rather than being restated: `Core.shieldActive` calls
+        // `PlayerState::shield_active`.
+        shield: this.core.shieldActive(0),
         iframes: false,
       })
       this.crosshair.update(body.x, body.y, aim)

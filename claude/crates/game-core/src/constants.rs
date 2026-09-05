@@ -135,8 +135,27 @@ pub const HEALTH_CAP: f32 = 150.0;
 /// Health/s decayed while above `BASE_HEALTH`.
 pub const OVERHEAL_DECAY: f32 = 2.0;
 pub const MEDKIT_HEAL: f32 = 50.0;
-pub const SHIELD_DURATION: f32 = 20.0;
-pub const SHIELD_DAMAGE_MULT: f32 = 0.5;
+/// Damage multiplier while a shield generator is **held and paying** (T20.08).
+///
+/// **`docs/21` is reversed here and `docs/` is not amended** — the coordinator
+/// asked for it directly and the discrepancy is journalled, not edited away:
+/// `:16` declares `shield_until`, `:46` describes the 20 s timer a use starts,
+/// `:51` says the shield is *"a flat damage reduction, **not a pool** — it has no
+/// hit points"*, and `:158` describes re-application replacing the timer. A
+/// generator that is carried and spends energy per hit is exactly a pool.
+/// **`:129` is unaffected**: knockback still applies through a shield.
+///
+/// `docs/21:82` — *"Multiply by `SHIELD_DAMAGE_MULT` if the shield is active"* —
+/// stays true, so the **name** is honest and only the value moves, 0.5 → 0.75.
+/// That is the brief's *"reduces damage by 25 % for each hit"*.
+pub const SHIELD_DAMAGE_MULT: f32 = 0.75;
+/// Energy spent by a held generator to absorb **one** hit (T20.08).
+///
+/// The old shield was a 20 s timer draining `SHIELD_DRAIN`/s, so its cost was a
+/// function of how long you kept it up. The cost is per **hit** now, which is
+/// what makes it a pool: `BATTERY_MAX` of 100 buys a hundred absorptions, and
+/// every one of them is a laser shot you cannot fire.
+pub const SHIELD_HIT_COST: f32 = 1.0;
 /// §B4 raised this from 3.0. It is a **felt** number and the one constant in
 /// this file most likely to want playtesting: five seconds of watching the fight
 /// continue is a long time, and the overlay deliberately does not pause the
@@ -1219,12 +1238,23 @@ pub const BATTERY_MAX: f32 = 100.0;
 pub const MAX_HEALS: u8 = 2;
 pub const MAX_BATTERIES: u8 = 4;
 pub const BATTERY_PACK_AMOUNT: f32 = 50.0;
-/// Battery per second while a shield is up. The shield ends early at zero, so
-/// every laser shot is a shield you are not going to have.
-pub const SHIELD_DRAIN: f32 = 2.0;
+// `SHIELD_DURATION` and `SHIELD_DRAIN` are **gone** (T20.08). One was the timer's
+// length and the other its per-second cost, and there is no timer: a generator is
+// held, and it spends `SHIELD_HIT_COST` per hit. Left in place they would be
+// tunables nothing reads, which is the shape this file exists to prevent.
 /// Energy weapons pierce: this replaces `SHIELD_DAMAGE_MULT` for them.
 pub const LASER_SHIELD_MULT: f32 = 0.85;
-/// Drained from the victim on an energy hit, which cuts a shield's life directly.
+/// Energy the generator spends absorbing **one energy hit** (§B5, T20.08).
+///
+/// Eight times a normal hit, which is what "energy weapons pierce" costs the
+/// victim beyond the weaker multiplier above.
+///
+/// **This is the number that made bit 3 lie**, and the fix is in `apply_damage`
+/// rather than here. `shield_active` is "holds a generator with charge", so a
+/// player with 4 energy reads as shielded and the client draws the bubble — and
+/// then a laser hit finds the battery cannot pay 8. Charging `min(battery, cost)`
+/// and scaling the reduction by the fraction paid makes the boolean exactly true
+/// whenever *any* absorption happens, at either cost.
 pub const LASER_BATTERY_DRAIN: f32 = 8.0;
 
 // --- B7: the arsenal ---

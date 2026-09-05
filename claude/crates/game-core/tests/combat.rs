@@ -876,17 +876,46 @@ fn a_medkit_clamps_rather_than_overshooting() {
     assert_eq!(p.health, HEALTH_CAP, "130 + 50 must clamp to 150, not 180");
 }
 
+/// **Replaces `the_shield_halves_damage_replaces_rather_than_stacks_and_expires`**
+/// (T20.08). There is no timer to expire and no re-application to replace:
+/// `docs/21:46,:158` describe both and are reversed here on the coordinator's
+/// instruction, journalled rather than edited. What survives is the reduction, at
+/// the constant's new value, and it is asserted against a control that did not
+/// exist — the old test's `BASE_HEALTH - 20.0` was a literal that would have
+/// passed unchanged for a shield that was a timer, a pool, or nothing at all as
+/// long as the number happened to match.
 #[test]
-fn the_shield_halves_damage_replaces_rather_than_stacks_and_expires() {
+fn a_held_generator_reduces_damage_and_a_second_one_does_not_stack() {
     let mut p = PlayerState::new(0, Vec2::ZERO, 0);
-    p.apply_shield(0.0);
+    p.add_battery(registry_battery_max());
+    p.inventory.add(registry::SHIELD_GENERATOR, 1);
     p.apply_damage(40.0, DamageSource::Weather(EffectKind::ToxicRain), 1.0);
-    assert_eq!(p.health, BASE_HEALTH - 20.0, "the shield must halve damage");
+    assert!(
+        (p.health - (BASE_HEALTH - 40.0 * SHIELD_DAMAGE_MULT)).abs() < 0.01,
+        "health {}",
+        p.health
+    );
 
-    // Re-applying at 2 s left gives a fresh 20 s, not 38.
-    p.apply_shield(SHIELD_DURATION - 2.0);
-    assert!(p.shield_active(SHIELD_DURATION + 17.0));
-    assert!(!p.shield_active(SHIELD_DURATION + 19.0));
+    // **Two generators are not a stronger shield.** The old rule said re-applying
+    // replaced the timer; the new one has to say something about carrying two, and
+    // it is the same answer: the multiplier is a property of being shielded, not a
+    // count of what is in the bag.
+    let mut q = PlayerState::new(0, Vec2::ZERO, 0);
+    q.add_battery(registry_battery_max());
+    q.inventory.add(registry::SHIELD_GENERATOR, 2);
+    q.apply_damage(40.0, DamageSource::Weather(EffectKind::ToxicRain), 1.0);
+    assert!((q.health - p.health).abs() < 0.01, "two generators stacked");
+
+    // The control: same hit, no generator, no reduction and no charge spent.
+    let mut r = PlayerState::new(0, Vec2::ZERO, 0);
+    r.add_battery(registry_battery_max());
+    r.apply_damage(40.0, DamageSource::Weather(EffectKind::ToxicRain), 1.0);
+    assert!((r.health - (BASE_HEALTH - 40.0)).abs() < 0.01);
+    assert!(r.health < p.health, "the generator did nothing");
+}
+
+fn registry_battery_max() -> f32 {
+    game_core::constants::BATTERY_MAX
 }
 
 #[test]

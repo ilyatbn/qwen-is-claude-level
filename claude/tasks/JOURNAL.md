@@ -5456,3 +5456,22 @@ inventory at the encode site, so **`REPLAY_VERSION` 4 → 5 and T20.08 must not 
 switch, sibling of `DEV_POISONED`, because the torch is the commonest *buried* item and a
 gate that waits on a draw gates nothing. Along the way `debug().fov` stopped recomputing the
 formula and now reports the radius the lightmap drew with. EXIT=0 first run, 46/46, 859/859.
+
+
+## T20.08 — a pool, not a timer, and the bubble nobody could see on themselves
+
+**`docs/21` §2/§4 reversed, `docs/` untouched, discrepancy journalled**: `shield_until` is
+deleted, `shield_active` is derived as *"holds a generator and has charge"*, `use_item` on a
+generator is refused, and `SHIELD_DURATION`/`SHIELD_DRAIN` are gone rather than left as
+tunables nothing reads. `SHIELD_DAMAGE_MULT` 0.5 → 0.75 keeps `docs/21:82`'s name honest.
+**It rode T20.07's `REPLAY_VERSION` 5 — no second bump**, which is what the two task files
+warned about. The bit-3 problem is settled by **partial payment**: `min(battery, cost)` with
+the multiplier lerped by the fraction funded, so the wire bit is exactly true whenever any
+absorption happens, at either cost. **A flat per-hit charge was wrong and measured so**:
+poison is `DPS * dt` every tick, so 3 s of it billed 180 energy for 4.5 damage stopped and
+left the reduction at 14 % instead of 25 % — the generator never spends more charge than the
+damage it stopped, which leaves a real hit at exactly 1. The bot's "pop a shield" branch is
+deleted as meaningless. **Two more hardcoded literals found**: `shield: false` on the local
+`PlayerView` in *both* scenes, so the bubble has never appeared on your own body — now wired
+through the Rust rule and asserted on rendered pixels (9.9 against 1.3 falsified).
+EXIT=0 first run, 46/46, 856/856.

@@ -5,7 +5,7 @@
 use crate::constants::{
     BASE_HEALTH, BATTERY_MAX, DEATH_POINTS, HEALTH_CAP, HEALTH_SPEED_MIN, KILL_POINTS,
     LASER_BATTERY_DRAIN, LASER_SHIELD_MULT, OVERHEAL_DECAY, RESPAWN_DELAY, SHIELD_DAMAGE_MULT,
-    SHIELD_DRAIN, SHIELD_DURATION, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST, TOXIC_POISON_DURATION,
+    SHIELD_HIT_COST, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST, TOXIC_POISON_DURATION,
 };
 use crate::items::inventory::{Inventory, Stack};
 use crate::items::registry::{def, ItemId, ItemKind, WeaponId};
@@ -62,7 +62,10 @@ pub struct PlayerState {
     pub jetpack: JetpackState,
     pub aim: u16,
     pub health: f32,
-    pub shield_until: Option<f32>,
+    // **No `shield_until`** (T20.08). It was the timer a `use` started; a
+    // generator is *carried* now and pays per hit, so "is the shield up" is a
+    // derived question with two inputs that are already state — the inventory and
+    // the battery. A field beside them would be a third answer that can disagree.
     /// Shared by shields and energy weapons (§B5): every laser shot is a shield
     /// you are not going to have.
     pub battery: f32,
@@ -126,7 +129,6 @@ impl PlayerState {
             jetpack: JetpackState::default(),
             aim: 0,
             health: BASE_HEALTH,
-            shield_until: None,
             battery: 0.0,
             heals: 0,
             batteries: 0,
@@ -150,14 +152,40 @@ impl PlayerState {
         p
     }
 
+    /// Is damage against this player being reduced right now? (T20.08)
+    ///
+    /// **Derived, not stored.** It used to be `shield_until > now`; it is now
+    /// *"holds a generator, and has charge to spend"*. Both inputs are already
+    /// player state, and deriving is what keeps them from disagreeing — the rule
+    /// this repo has paid for as *"derive, do not add a fourth flag"*.
+    ///
+    /// **The threshold is `battery > 0`, not `>= SHIELD_HIT_COST`, and that is
+    /// deliberate.** `apply_damage` charges `min(battery, cost)` and scales the
+    /// reduction by the fraction it could pay, so *any* charge buys *some*
+    /// absorption. Bit 3 on the wire is this boolean, so it is exactly true
+    /// whenever an absorption happens — including against a laser, whose cost is
+    /// eight times a normal hit. That equality is the whole point: the earlier
+    /// design would have had bit 3 say "shielded" at 4 energy and then found the
+    /// battery could not pay `LASER_BATTERY_DRAIN`, and the wire would have lied.
+    ///
+    /// `now` is unused and kept: bit 3's encoder passes it, every caller has it,
+    /// and a signature that loses it would have to grow it back the first time
+    /// the rule wants a clock again.
     pub fn shield_active(&self, now: f32) -> bool {
-        self.shield_until.is_some_and(|t| now < t)
+        let _ = now;
+        self.battery > 0.0 && self.holds_shield_generator()
     }
 
-    /// Replaces the timer rather than stacking it: re-applying at 2 s left gives a
-    /// fresh 20 s, and never a stronger multiplier.
-    pub fn apply_shield(&mut self, now: f32) {
-        self.shield_until = Some(now + SHIELD_DURATION);
+    /// Is a shield generator anywhere in the bag? (T20.08)
+    ///
+    /// *"Not the active one"* is the brief, so this scans every slot rather than
+    /// asking about the selection. By `ItemKind`, never by naming
+    /// `SHIELD_GENERATOR`: identical today and divergent the day a second
+    /// generator exists — the same rule `drop_item` follows for `STARTING_KIT`.
+    pub fn holds_shield_generator(&self) -> bool {
+        self.inventory
+            .iter()
+            .any(|(_, s)| matches!(def(s.item).map(|d| d.kind), Some(ItemKind::Shield)))
     }
 
     /// Take a heal into the counter. **False when already at `MAX_HEALS`** — the
@@ -291,25 +319,23 @@ impl PlayerState {
     /// gate lives (`docs/41` §3). A subtraction from `health` in this function
     /// would be the one source that skipped it, and "toxic rain hurt me during
     /// warmup" would be a bug with no single place to fix.
+    ///
+    /// `now` is unused since T20.08 took the shield's timer out and kept: every
+    /// caller has it, it is the natural signature for a per-tick stats hook, and
+    /// the next status effect with a clock would have to grow it back.
     pub fn tick_stats(&mut self, now: f32, dt: f32) {
+        let _ = now;
         if self.health > BASE_HEALTH {
             // A stacked medkit is ~25 s of extra buffer, not a permanent upgrade.
             self.health = (self.health - OVERHEAL_DECAY * dt).max(BASE_HEALTH);
         }
-        if let Some(t) = self.shield_until {
-            if now >= t {
-                self.shield_until = None;
-            } else {
-                // An active shield runs off the battery (§B5). `SHIELD_DURATION`
-                // stays the maximum; the battery is what usually ends it first,
-                // and that is the whole tension — the charge keeping you alive is
-                // the charge your laser wants.
-                self.battery = (self.battery - SHIELD_DRAIN * dt).max(0.0);
-                if self.battery <= 0.0 {
-                    self.shield_until = None;
-                }
-            }
-        }
+        // **No shield block here any more** (T20.08). It expired a timer and
+        // subtracted `SHIELD_DRAIN * dt` while it ran; a held generator costs
+        // nothing per second and `SHIELD_HIT_COST` per hit, so the whole of the
+        // shield's cost now lives in `apply_damage` — one place, charged at the
+        // moment it does its work. The tension §B5 wanted is unchanged and
+        // sharper: the charge keeping you alive is the charge your laser wants.
+        let _ = dt;
     }
 
     /// Returns true when the damage was actually applied.
@@ -327,19 +353,55 @@ impl PlayerState {
             }
             DamageSource::Weather(_) => false,
         };
+        // §B5 and T20.08: a held generator spends energy **per hit** and reduces
+        // what gets through. This is the only place the shield costs anything.
+        //
+        // **Partial payment, proportional effect.** The two costs differ by 8x, so
+        // an all-or-nothing charge would make `shield_active` — and bit 3, and the
+        // bubble — true at 4 energy and then do nothing against a laser. Paying
+        // what the battery has and lerping the multiplier toward 1.0 by the
+        // fraction paid keeps the boolean and the charge in agreement at both
+        // costs, and degrades a dying generator smoothly instead of cutting it off
+        // at a threshold nobody can see.
         let mult = if self.shield_active(now) {
-            if energy {
-                // Drains the victim's charge as well as piercing, which cuts the
-                // shield's remaining life directly — that is the payoff, not a
-                // side effect.
-                self.battery = (self.battery - LASER_BATTERY_DRAIN).max(0.0);
-                if self.battery <= 0.0 {
-                    self.shield_until = None;
-                }
+            let full = if energy {
                 LASER_SHIELD_MULT
             } else {
                 SHIELD_DAMAGE_MULT
-            }
+            };
+            // What the generator would stop if it paid in full.
+            let absorbed = amount * (1.0 - full);
+            let cost = if energy {
+                // **Flat, and not capped by the damage.** The energy drain is the
+                // *weapon's* effect on the battery, not the generator's fee —
+                // `docs/21`/§B5 make it the payoff for firing a laser at someone
+                // charged, and a laser that drained less against a glancing hit
+                // would make that payoff a function of the damage roll.
+                LASER_BATTERY_DRAIN
+            } else {
+                // **The generator never spends more charge than the damage it
+                // stopped** (T20.08). The brief says one energy per hit, and a
+                // flat charge per call is not the same thing: poison is applied as
+                // `TOXIC_POISON_DPS * dt` **every tick** (`world/mod.rs`), so 3 s
+                // of it is 180 calls absorbing 0.025 damage each. A flat cost
+                // charged 180 energy for 4.5 damage stopped, flattened a full
+                // battery on one drop, and — measured — left the reduction at 14 %
+                // instead of 25 % because the shield died halfway. Capping by the
+                // absorption leaves a real hit at exactly `SHIELD_HIT_COST` (a
+                // 20-damage hit stops 5) and makes a trickle cost a trickle.
+                SHIELD_HIT_COST.min(absorbed)
+            };
+            // **Partial payment, proportional effect.** The two costs differ by
+            // 8x, so an all-or-nothing charge would leave `shield_active` — and
+            // bit 3, and the bubble — true at 4 energy while a laser landed in
+            // full. Paying what there is and scaling toward 1.0 by the fraction
+            // funded keeps the boolean and the charge in agreement at both costs,
+            // and lets a dying generator fade instead of cutting out at a
+            // threshold nobody can see.
+            let paid = self.battery.min(cost);
+            self.battery -= paid;
+            let funded = if cost > 0.0 { paid / cost } else { 0.0 };
+            1.0 + (full - 1.0) * funded
         } else {
             1.0
         };
@@ -404,7 +466,8 @@ impl PlayerState {
         self.respawn_at = now + RESPAWN_DELAY;
         self.score += DEATH_POINTS;
         self.deaths += 1;
-        self.shield_until = None;
+        // Nothing to clear for the shield (T20.08): the generator drops with the
+        // rest of the bag below, and a corpse has no battery to spend.
         // Death clears it, like the shield: a corpse is not poisoned, and a
         // status that survived into the next life would tick down against a
         // player who was never rained on.
@@ -465,7 +528,6 @@ impl PlayerState {
         // two seconds later (§C5).
         self.teleport = crate::world::teleport::TeleportState::new(pos, now);
         self.health = BASE_HEALTH;
-        self.shield_until = None;
         self.jetpack = JetpackState::default();
         self.jump = JumpState::default();
         self.inventory.clear();
@@ -476,12 +538,17 @@ impl PlayerState {
         self.iframes_until = now + SPAWN_IFRAMES;
         self.poisoned_until = 0.0;
         self.last_damaged_by = None;
-        // Nothing to clear for the flashlight: it is the *item* now, and `clear()`
-        // above took it with the rest of the inventory (T20.07).
+        // Nothing to clear for the flashlight or the shield: both are *items* now,
+        // and `clear()` above took them with the rest of the inventory
+        // (T20.07, T20.08).
     }
 
     /// Validated item use, in the documented order.
     pub fn use_item(&mut self, slot: u8, now: f32) -> Result<ItemId, UseError> {
+        // `now` became unused when the shield stopped starting a timer (T20.08).
+        // Kept for the same reason `tick_stats` keeps its own: this is the item
+        // verb, and the next timed item wants the clock back.
+        let _ = now;
         if !self.alive {
             return Err(UseError::Dead);
         }
@@ -498,10 +565,12 @@ impl PlayerState {
                 self.heal(amount);
                 self.inventory.consume(slot, 1);
             }
-            ItemKind::Shield { .. } => {
-                self.apply_shield(now);
-                self.inventory.consume(slot, 1);
-            }
+            // **A generator is held, not used** (T20.08). Refused for the same
+            // reason a `Utility` is: it protects you while it is in the bag, so
+            // there is no verb, and a no-op `Ok` would consume the press and tell
+            // the client something happened. `docs/21:46` describes the use this
+            // removes; the discrepancy is journalled, not edited away.
+            ItemKind::Shield => return Err(UseError::WrongKind),
             ItemKind::Battery { amount } => {
                 self.add_battery(amount);
                 self.inventory.consume(slot, 1);
@@ -651,7 +720,8 @@ fn choose_surface_point(map: &Map, living: &[Vec2], rng: &mut ChaCha8Rng) -> Vec
 #[cfg(test)]
 mod battery_tests {
     use super::*;
-    use crate::constants::{BATTERY_MAX, BATTERY_PACK_AMOUNT, SHIELD_DRAIN, SIM_DT};
+    use crate::constants::{BATTERY_MAX, BATTERY_PACK_AMOUNT, SIM_DT};
+    use crate::items::registry;
     use crate::items::registry::BATTERY_PACK;
     use crate::items::registry::{WEAPON_LASER_PISTOL, WEAPON_SMG};
     use crate::weapons::explode::EffectKind;
@@ -717,51 +787,167 @@ mod battery_tests {
         );
     }
 
+    /// Carrying one, and having charge, **is** the shield (T20.08).
+    ///
+    /// **Replaces `a_full_battery_lets_a_shield_run_its_whole_duration` and
+    /// `a_shield_on_ten_charge_dies_at_five_seconds`**, which timed a 20 s window
+    /// and a 5 s early death. There is no window: `docs/21`'s timer is reversed
+    /// here on the coordinator's instruction, journalled rather than edited.
     #[test]
-    fn a_full_battery_lets_a_shield_run_its_whole_duration() {
+    fn a_shield_is_carrying_one_with_charge_and_nothing_else() {
         let mut p = player();
         p.add_battery(BATTERY_MAX);
-        p.apply_shield(0.0);
-        let mut t = 0.0;
-        while t < SHIELD_DURATION - SIM_DT {
-            t += SIM_DT;
-            p.tick_stats(t, SIM_DT);
+        // A full battery and no generator is **not** a shield. The control that
+        // stops every assertion below passing for a player who is simply charged.
+        assert!(!p.shield_active(0.0), "a battery alone shielded a player");
+
+        p.inventory.add(registry::SHIELD_GENERATOR, 1);
+        assert!(p.shield_active(0.0), "carrying a generator did not shield");
+
+        // **Not the active slot** — the brief is explicit. Selecting something
+        // else must change nothing.
+        p.inventory.select(0);
+        assert!(
+            p.shield_active(0.0),
+            "the generator only worked while it was selected"
+        );
+
+        // And it costs nothing per second, which is the whole of the timer's
+        // removal: ten seconds of standing still spends no charge.
+        for i in 0..600 {
+            p.tick_stats(i as f32 * SIM_DT, SIM_DT);
+        }
+        assert_eq!(p.battery, BATTERY_MAX, "a held generator drained over time");
+        assert!(p.shield_active(10.0));
+    }
+
+    /// The brief, in one test: **25 % off each hit, one energy each time.**
+    #[test]
+    fn a_held_generator_takes_a_quarter_off_each_hit_for_one_energy() {
+        let mut p = player();
+        p.add_battery(BATTERY_MAX);
+        p.inventory.add(registry::SHIELD_GENERATOR, 1);
+
+        let hits = 5;
+        for _ in 0..hits {
+            p.apply_damage(20.0, ballistic_source(), 1.0);
+        }
+        // Both ends, against each other: energy spent versus hits absorbed.
+        assert!(
+            (p.battery - (BATTERY_MAX - SHIELD_HIT_COST * hits as f32)).abs() < 0.01,
+            "{hits} absorbed hits cost {} energy, not {}",
+            BATTERY_MAX - p.battery,
+            SHIELD_HIT_COST * hits as f32
+        );
+        assert!(
+            (p.health - (BASE_HEALTH - 20.0 * SHIELD_DAMAGE_MULT * hits as f32)).abs() < 0.01,
+            "health {}",
+            p.health
+        );
+
+        // **The control**: the same hits, no generator, full damage and no charge
+        // spent. Without it the reduction above is satisfied by any multiplier.
+        let mut q = player();
+        q.add_battery(BATTERY_MAX);
+        for _ in 0..hits {
+            q.apply_damage(20.0, ballistic_source(), 1.0);
         }
         assert!(
-            p.shield_active(t),
-            "the shield died early on a full battery"
+            (q.health - (BASE_HEALTH - 20.0 * hits as f32)).abs() < 0.01,
+            "an unshielded player did not take the whole hit: {}",
+            q.health
+        );
+        assert_eq!(
+            q.battery, BATTERY_MAX,
+            "a player with no generator paid for one"
+        );
+        assert!(q.health < p.health, "the generator did not help at all");
+    }
+
+    /// **A trickle costs a trickle** (T20.08), and this is the test that pins it.
+    ///
+    /// Poison is `TOXIC_POISON_DPS * dt` applied **every tick**, so a flat
+    /// `SHIELD_HIT_COST` per call charged 180 energy for the 4.5 damage a 3 s
+    /// poisoning stops. Measured before the cap: the shielded player lost 15.5
+    /// where the unprotected one lost 18.0 — a 14 % reduction against the 25 % the
+    /// constant promises, because the generator died halfway through.
+    #[test]
+    fn a_generator_never_spends_more_charge_than_the_damage_it_stopped() {
+        let mut p = player();
+        p.add_battery(BATTERY_MAX);
+        p.inventory.add(registry::SHIELD_GENERATOR, 1);
+
+        // One poison tick's worth of damage, 180 times over.
+        let tick = crate::constants::TOXIC_POISON_DPS * SIM_DT;
+        let ticks = (crate::constants::TOXIC_POISON_DURATION / SIM_DT) as usize;
+        for _ in 0..ticks {
+            p.apply_damage(tick, ballistic_source(), 1.0);
+        }
+        let stopped = tick * ticks as f32 * (1.0 - SHIELD_DAMAGE_MULT);
+        let spent = BATTERY_MAX - p.battery;
+        assert!(
+            (spent - stopped).abs() < 0.01,
+            "a whole poisoning cost {spent} energy to stop {stopped} damage"
+        );
+        // And the reduction held for all of it, which is the thing the flat cost
+        // broke: the generator must not run dry on a trickle.
+        assert!(p.shield_active(1.0), "a trickle exhausted a full battery");
+        assert!(
+            (p.health - (BASE_HEALTH - tick * ticks as f32 * SHIELD_DAMAGE_MULT)).abs() < 0.01,
+            "health {}",
+            p.health
+        );
+
+        // **The control: a real hit still costs exactly one energy.** Without it
+        // the cap above is satisfied by a generator that is free.
+        let mut q = player();
+        q.add_battery(BATTERY_MAX);
+        q.inventory.add(registry::SHIELD_GENERATOR, 1);
+        q.apply_damage(20.0, ballistic_source(), 1.0);
+        assert!(
+            (BATTERY_MAX - q.battery - SHIELD_HIT_COST).abs() < 0.01,
+            "a 20-damage hit cost {} energy, not {SHIELD_HIT_COST}",
+            BATTERY_MAX - q.battery
         );
     }
 
-    /// The early end is the point, not the duration.
+    /// At zero charge the generator is inert, and a battery pack revives it.
     #[test]
-    fn a_shield_on_ten_charge_dies_at_five_seconds() {
+    fn the_reduction_stops_at_zero_charge_and_resumes_after_a_pack() {
         let mut p = player();
-        p.add_battery(10.0);
-        p.apply_shield(0.0);
-        let mut t = 0.0;
-        let mut died_at = None;
-        while t < SHIELD_DURATION {
-            t += SIM_DT;
-            p.tick_stats(t, SIM_DT);
-            if died_at.is_none() && !p.shield_active(t) {
-                died_at = Some(t);
-            }
-        }
-        let died = died_at.expect("the shield never ran out of charge");
-        let want = 10.0 / SHIELD_DRAIN;
+        p.inventory.add(registry::SHIELD_GENERATOR, 1);
+        p.add_battery(SHIELD_HIT_COST);
+        assert!(p.shield_active(0.0));
+
+        p.apply_damage(20.0, ballistic_source(), 1.0);
+        assert_eq!(p.battery, 0.0);
         assert!(
-            (died - want).abs() < 0.1,
-            "shield died at {died}, expected about {want}"
+            !p.shield_active(0.0),
+            "a flat battery still read as shielded"
         );
+
+        let before = p.health;
+        p.apply_damage(20.0, ballistic_source(), 1.0);
+        assert!(
+            (p.health - (before - 20.0)).abs() < 0.01,
+            "damage at zero charge was still reduced"
+        );
+
+        // The control on the control: it comes back. Without this, "the shield
+        // stops" would also pass for a generator that never worked again.
+        p.add_battery(BATTERY_PACK_AMOUNT);
+        assert!(p.shield_active(0.0));
+        let before = p.health;
+        p.apply_damage(20.0, ballistic_source(), 1.0);
+        assert!((p.health - (before - 20.0 * SHIELD_DAMAGE_MULT)).abs() < 0.01);
     }
 
     #[test]
     fn energy_pierces_a_shield_and_ballistic_does_not() {
-        // Energy: 0.85x through the shield, and it drains the victim.
+        // Energy: 0.85x through the shield, and it drains the victim harder.
         let mut p = player();
         p.add_battery(BATTERY_MAX);
-        p.apply_shield(0.0);
+        p.inventory.add(registry::SHIELD_GENERATOR, 1);
         p.apply_damage(20.0, energy_source(), 5.0);
         assert!(
             (p.health - (BASE_HEALTH - 20.0 * LASER_SHIELD_MULT)).abs() < 0.01,
@@ -774,27 +960,61 @@ mod battery_tests {
             p.battery
         );
 
-        // Ballistic: 0.5x, and the battery is untouched. The control that makes
-        // the above mean something — without it, "energy is special" would also
-        // pass for a build where every hit pierces.
+        // Ballistic: `SHIELD_DAMAGE_MULT`, and one energy rather than eight. The
+        // control that makes the above mean something — without it, "energy is
+        // special" would also pass for a build where every hit pierces.
         let mut q = player();
         q.add_battery(BATTERY_MAX);
-        q.apply_shield(0.0);
+        q.inventory.add(registry::SHIELD_GENERATOR, 1);
         q.apply_damage(20.0, ballistic_source(), 5.0);
         assert!(
             (q.health - (BASE_HEALTH - 20.0 * SHIELD_DAMAGE_MULT)).abs() < 0.01,
-            "ballistic damage was not halved: health {}",
+            "ballistic damage was not reduced: health {}",
             q.health
         );
-        assert_eq!(q.battery, BATTERY_MAX, "a bullet drained the battery");
+        assert!(
+            (q.battery - (BATTERY_MAX - SHIELD_HIT_COST)).abs() < 0.01,
+            "a bullet cost {} energy, not {SHIELD_HIT_COST}",
+            BATTERY_MAX - q.battery
+        );
     }
 
-    /// The payoff: drain someone's charge and their shield dies with it.
+    /// **The bit-3 problem, settled.** `shield_active` is `battery > 0`, and a
+    /// laser costs eight. An all-or-nothing charge would leave the wire saying
+    /// "shielded" at 4 energy while the hit landed in full; paying what there is
+    /// and scaling the reduction by the fraction paid keeps the two in agreement.
+    #[test]
+    fn a_laser_against_a_nearly_flat_battery_is_paid_for_in_part() {
+        let mut p = player();
+        p.inventory.add(registry::SHIELD_GENERATOR, 1);
+        p.add_battery(LASER_BATTERY_DRAIN / 2.0);
+        assert!(
+            p.shield_active(1.0),
+            "bit 3 must be true if anything is absorbed"
+        );
+
+        p.apply_damage(20.0, energy_source(), 1.0);
+        // Half the cost paid, so half the reduction: the multiplier sits midway
+        // between `LASER_SHIELD_MULT` and taking it whole.
+        let want = 1.0 + (LASER_SHIELD_MULT - 1.0) * 0.5;
+        assert!(
+            (p.health - (BASE_HEALTH - 20.0 * want)).abs() < 0.01,
+            "health {} against a half-funded absorption",
+            p.health
+        );
+        assert_eq!(p.battery, 0.0, "the partial payment left charge behind");
+        assert!(
+            !p.shield_active(1.0),
+            "bit 3 must be false once there is nothing left to spend"
+        );
+    }
+
+    /// The payoff: drain someone's charge and their shield goes with it.
     #[test]
     fn draining_a_victims_battery_to_zero_ends_their_shield() {
         let mut p = player();
+        p.inventory.add(registry::SHIELD_GENERATOR, 1);
         p.add_battery(LASER_BATTERY_DRAIN * 2.0);
-        p.apply_shield(0.0);
         assert!(p.shield_active(1.0));
 
         p.apply_damage(5.0, energy_source(), 1.0);
@@ -821,9 +1041,10 @@ mod battery_tests {
         // Weather has no weapon, so it must take the ordinary shield rule.
         let mut p = player();
         p.add_battery(BATTERY_MAX);
-        p.apply_shield(0.0);
+        p.inventory.add(registry::SHIELD_GENERATOR, 1);
         p.apply_damage(20.0, DamageSource::Weather(EffectKind::ToxicRain), 5.0);
-        assert_eq!(p.battery, BATTERY_MAX, "weather drained the battery");
+        // One energy, the ordinary cost — not `LASER_BATTERY_DRAIN` (T20.08).
+        assert!((p.battery - (BATTERY_MAX - SHIELD_HIT_COST)).abs() < 0.01);
         assert!((p.health - (BASE_HEALTH - 20.0 * SHIELD_DAMAGE_MULT)).abs() < 0.01);
     }
 
@@ -835,10 +1056,17 @@ mod battery_tests {
     fn respawn_keeps_the_battery_and_clears_the_shield() {
         let mut p = player();
         p.add_battery(BATTERY_MAX);
-        p.apply_shield(0.0);
+        p.inventory.add(registry::SHIELD_GENERATOR, 1);
+        assert!(
+            p.shield_active(0.0),
+            "the fixture is not shielded to begin with"
+        );
         p.respawn(Vec2::new(10.0, 10.0), 0.0);
         assert_eq!(p.battery, BATTERY_MAX, "respawn wiped the charge");
-        assert!(p.shield_until.is_none(), "the shield survived death");
+        // The generator went with the inventory, so the shield went with it
+        // (T20.08) — one fact, not two.
+        assert!(!p.shield_active(0.0), "the shield survived death");
+        assert!(!p.holds_shield_generator());
     }
 }
 

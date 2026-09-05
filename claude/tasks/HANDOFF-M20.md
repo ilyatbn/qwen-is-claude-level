@@ -921,3 +921,101 @@ veil fills at `0.640` against `0.800`, and the pixels move `48.1 → 38.1` (sky)
 gate that fails on a draw. The two-sided comparison against the predicted gap is both stronger
 and stable — a flashlight that does nothing gives a gap of 0 and fails by the whole distance,
 which is what the falsification measured (0.6 and 0.3 against 9.5 and 7.0).
+
+## T20.08 landed — the shield is a pool, and `REPLAY_VERSION` did **not** move again
+
+### `docs/21` is reversed and untouched, clause by clause
+
+The coordinator asked for this directly; `docs/` is not amended by a builder, so the
+discrepancy is recorded here, in `constants.rs` and at each site:
+
+- **`:16`** `pub shield_until: Option<f32>` — **deleted**.
+- **`:46`** *"Using it sets `shield_until = round_time + SHIELD_DURATION`"* — `use_item` on a
+  generator now returns `Err(UseError::WrongKind)`, the same refusal a weapon gets.
+- **`:51`** *"a flat damage reduction, **not a pool** — it has no hit points"* — it is a pool.
+- **`:158`** *"Re-applying a shield replaces rather than stacks the timer"* — there is no
+  timer; the replacement test became *"two generators are not a stronger shield"*.
+- **`:129` is unaffected** and was not touched: knockback still applies through a shield.
+- **`:82`** *"Multiply by `SHIELD_DAMAGE_MULT` if the shield is active"* is still true, so the
+  **name** stays honest and only the value moves, 0.5 → 0.75.
+
+`SHIELD_DURATION` and `SHIELD_DRAIN` are **removed**, not orphaned, and so is
+`ItemKind::Shield`'s `duration` payload.
+
+### It rode T20.07's bump. `REPLAY_VERSION` is 5 and stays 5.
+
+Both tasks deleted a hashed field in the same release. `replay.rs`'s v5 note already said this
+one shares it; nothing here bumps again, and `HEAD` was checked before assuming so.
+
+### The bit-3 problem, settled: partial payment
+
+`shield_active` is *"holds a generator and `battery > 0`"* — **not** `>= SHIELD_HIT_COST`.
+`apply_damage` charges `min(battery, cost)` and lerps the multiplier from 1.0 toward the full
+value by the fraction it could pay. That makes the wire bit **exactly** true whenever any
+absorption happens, at either cost, which is what the task asked for: the alternative had bit
+3 saying "shielded" at 4 energy and then finding the battery could not pay
+`LASER_BATTERY_DRAIN`'s 8. It also lets a dying generator fade instead of cutting out at a
+threshold nobody can see. `a_laser_against_a_nearly_flat_battery_is_paid_for_in_part` pins it.
+
+### ⚠ A flat per-hit cost was wrong, and it was **measured** wrong
+
+The brief says *"1 energy per hit"*. Implemented as a flat charge per `apply_damage` call, it
+went red on `poison_respects_the_shield_and_i_frames` with **shielded lost 15.5, unprotected
+18.0** — a 14 % reduction where the constant promises 25 %.
+
+The cause is structural and predates this task: **poison is applied as
+`TOXIC_POISON_DPS * dt` every tick** (`world/mod.rs`), so a 3 s poisoning is 180 calls
+absorbing 0.025 damage each. A flat cost billed 180 energy for 4.5 damage stopped and flattened
+a full battery on one toxic drop.
+
+The rule is now *"the generator never spends more charge than the damage it stopped"*:
+`cost = min(SHIELD_HIT_COST, absorbed)` on the ordinary branch. A 20-damage hit stops 5, so it
+costs exactly 1 and the brief is honoured literally; a trickle costs a trickle.
+`a_generator_never_spends_more_charge_than_the_damage_it_stopped` pins both halves.
+
+**The energy branch is deliberately *not* capped.** `LASER_BATTERY_DRAIN` is the *weapon's*
+effect on the battery, not the generator's fee — §B5 makes it the payoff for shooting someone
+charged — and capping it by the damage would make that payoff a function of the damage roll.
+
+### Two more `shield: false` literals, and the bubble nobody could see
+
+`GameScene.ts` and `SandboxScene.ts` both hardcode the local player's flags, and **both passed
+`shield: false`**. Every *remote* player has drawn the bubble from bit 3 all along; the one
+player who needs to know they are protected is the one who never saw it. Both are wired now,
+the sandbox through `Core.shieldActive` → `PlayerState::shield_active` rather than a
+TypeScript copy of the rule.
+
+**Asserted on rendered pixels** in `m4-checkpoint`, with a control frame (the same patch
+before the generator) and a control region (a far patch over the same window): the player
+patch moves **9.9** with the bubble and **1.3** without it, which is why the threshold is 4
+rather than the 2 a first draft used.
+
+**`iframes: false` is still a literal at both sites** and is left alone: spawn invulnerability
+has no visual in `PlayerView` beyond that flag, so giving it one is a design decision rather
+than a wiring fix. **Worth booking.**
+
+### The HUD: `shieldRing` deleted, nothing put in its place
+
+`shieldRing` returned a 0..1 fraction of `SHIELD_DURATION` floored by `battery / SHIELD_DRAIN`,
+and every input went with the timer. What remains is `floor(battery / SHIELD_HIT_COST)` — a
+**count of absorptions with no denominator** — so it was not adapted into a fraction. The two
+questions a player has are answered by things already on screen: *whether* by the bubble on
+their own body (new), and *how much longer* by the energy bar on the same cluster. A third
+widget would be a second answer to the battery. `#hud-shield` and its five duration-shaped
+vitests are gone, with a pointer to where the behaviour is asserted now.
+
+### The bot
+
+`bots/mod.rs`'s *"threatened and my shield is down → select the generator and use it"* branch
+is **deleted**, and the reason is stated in place: under the new rule using a generator does
+nothing and selecting one puts an unarmed slot in a bot's hand mid-fight. A bot carrying one
+is already shielded, and the charge branch above it — *"use a battery pack when low"* — is now
+the shield behaviour as well as the laser one. Picking generators up is `wants_item`'s job and
+is unchanged.
+
+### Two new sandbox affordances
+
+`Core.addBattery` (wasm `add_battery`, through `PlayerState::add_battery` so `BATTERY_MAX`'s
+clamp applies) and `__game.giveShieldGenerator()`, which grants the item **and** the charge —
+a sandbox player starts at 0 battery, so granting the item alone returns `false` and a check
+would blame the bubble. It returns `core.shieldActive(0)`: the effect, not the ask.

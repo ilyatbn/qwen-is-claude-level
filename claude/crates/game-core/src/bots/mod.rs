@@ -972,17 +972,23 @@ impl Bot {
                 }
             }
         }
-        if threatened && me.shield_until.is_none_or(|t| t <= world.round_time) {
-            for slot in 0..INVENTORY_SLOTS as u8 {
-                let Some(stack) = me.inventory.slot(slot) else {
-                    continue;
-                };
-                let Some(d) = def(stack.item) else { continue };
-                if matches!(d.kind, ItemKind::Shield { .. }) {
-                    return Some(slot);
-                }
-            }
-        }
+        // **No shield branch** (T20.08), and the decision is worth stating rather
+        // than leaving as a deletion. This used to be "am I threatened and is my
+        // shield down? then select the generator and use it". Under the new rule
+        // a generator protects you **while it is in the bag** and `use_item`
+        // refuses it, so the branch was not merely broken by the field going
+        // away — it was meaningless: a bot that "used" a generator would spend a
+        // decision doing nothing, and selecting it would put an unarmed slot in
+        // its hand in the middle of a fight.
+        //
+        // **A bot with a generator is already shielded**, and the charge branch
+        // above is what keeps it that way — the battery is the shield's ammunition
+        // now, so "charge when low" is the shield behaviour as well as the laser
+        // one. Picking generators up is `wants_item`'s business and is unchanged;
+        // there is nothing left to do with one once it is held.
+        //
+        // `threatened` is still read by the caller above.
+        let _ = threatened;
         None
     }
 }

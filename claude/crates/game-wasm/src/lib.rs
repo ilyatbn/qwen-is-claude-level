@@ -312,6 +312,35 @@ impl GameCore {
         ])
     }
 
+    /// Put charge in a player's battery. Sandbox only, like `give` (T20.08).
+    ///
+    /// Through `PlayerState::add_battery`, so `BATTERY_MAX`'s clamp applies here
+    /// exactly as it does to a pack picked up in a real round.
+    pub fn add_battery(&mut self, id: u8, amount: f32) {
+        if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {
+            p.stats.add_battery(amount);
+        }
+    }
+
+    /// Is damage against this player being reduced right now? (T20.08)
+    ///
+    /// A dedicated call rather than an eighth float on `player_state`: that array
+    /// is read as `a.length < 7` on the TS side and every reader indexes it
+    /// positionally, so growing it is a change with more blast radius than a
+    /// boolean deserves.
+    ///
+    /// **It calls `PlayerState::shield_active`, it does not restate it.** The
+    /// sandbox draws the same bubble the networked client draws from bit 3, and
+    /// the two must not be able to disagree — a second copy of "holds a generator
+    /// and has charge" in TypeScript is exactly the divergence `docs/01` exists to
+    /// prevent.
+    pub fn shield_active(&self, id: u8) -> bool {
+        self.players
+            .iter()
+            .find(|p| p.id == id)
+            .is_some_and(|p| p.stats.shield_active(0.0))
+    }
+
     // ---- metadata --------------------------------------------------------
 
     /// JSON, because this is called once per round and the cost is irrelevant.
@@ -1221,8 +1250,11 @@ pub fn constants_json() -> String {
         MEDKIT_HEAL => c::MEDKIT_HEAL,
         MAX_BATTERIES => c::MAX_BATTERIES,
         BATTERY_PACK_AMOUNT => c::BATTERY_PACK_AMOUNT,
-        SHIELD_DRAIN => c::SHIELD_DRAIN,
-        SHIELD_DURATION => c::SHIELD_DURATION,
+        // `SHIELD_DRAIN` and `SHIELD_DURATION` are gone (T20.08) — the shield is
+        // held and pays per hit, so there is no per-second cost and no window.
+        // `SHIELD_HIT_COST` is what the client needs instead: the HUD reads the
+        // battery as a count of absorptions rather than a fraction of a timer.
+        SHIELD_HIT_COST => c::SHIELD_HIT_COST,
         DAY_DURATION => c::DAY_DURATION,
         NIGHT_DURATION => c::NIGHT_DURATION,
         CYCLE_TRANSITION => c::CYCLE_TRANSITION,

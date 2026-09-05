@@ -328,8 +328,8 @@ export interface Constants {
   MEDKIT_HEAL: number
   MAX_BATTERIES: number
   BATTERY_PACK_AMOUNT: number
-  SHIELD_DRAIN: number
-  SHIELD_DURATION: number
+  /** Energy a held generator spends per absorbed hit (T20.08). */
+  SHIELD_HIT_COST: number
 }
 
 /**
@@ -612,6 +612,23 @@ export class Core {
 
   setPlayerState(id: number, s: PlayerState): void {
     this.inner.set_player_state(id, s.x, s.y, s.vx, s.vy, s.grounded, s.fuel)
+  }
+
+  /**
+   * Is damage against this player being reduced? (T20.08)
+   *
+   * The Rust rule, called — not a TypeScript copy of "holds a generator and has
+   * charge". The sandbox draws the same bubble a networked client draws from the
+   * snapshot's bit 3, and two copies of the rule is how those two pictures come
+   * to disagree.
+   */
+  /** Sandbox only, like `give`: charge for a shield generator or a laser. */
+  addBattery(id: number, amount: number): void {
+    this.inner.add_battery(id, amount)
+  }
+
+  shieldActive(id: number): boolean {
+    return this.inner.shield_active(id)
   }
 
   playerState(id: number): PlayerState | null {

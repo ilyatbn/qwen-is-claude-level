@@ -3111,7 +3111,12 @@ impl World {
             h.update(&p.jetpack.idle_ticks.to_le_bytes());
             h.update(&p.jetpack.ticks_since_jump.to_le_bytes());
             h.update(&p.jump.buffered_ticks.to_le_bytes());
-            h.update(&p.shield_until.unwrap_or(f32::NAN).to_le_bytes());
+            // `shield_until` was hashed here and is gone (T20.08) — the other half
+            // of `REPLAY_VERSION` 5, shared with T20.07's `flashlight_on`. The
+            // shield is derived from the inventory and the battery, both of which
+            // are already hashed, so the hash lost nothing: it stopped hashing the
+            // same fact twice.
+
             h.update(&p.respawn_at.to_le_bytes());
             h.update(&p.iframes_until.to_le_bytes());
             // §A34, §E13. **Hashed, deliberately.** It is a timer that changes
@@ -3295,9 +3300,10 @@ mod state_hash_tests {
         w.players[0].jetpack.locked_out = !w.players[0].jetpack.locked_out;
         changed.push(("jetpack lockout", w.state_hash()));
 
-        let mut w = world();
-        w.players[0].shield_until = Some(12.0);
-        changed.push(("shield", w.state_hash()));
+        // **The shield is not a hashed field any more** (T20.08). It was
+        // `shield_until`; it is now "holds a generator and has charge", and both
+        // of those are already hashed — the `inventory` case below, and `battery`.
+        // The hash stopped carrying the same fact twice.
 
         let mut w = world();
         w.players[0].iframes_until = 9.0;
@@ -4629,8 +4635,13 @@ mod toxic_rain_falls {
                 let p = w.player_mut(id).expect("seated");
                 p.body.pos = at;
                 p.iframes_until = 0.0;
+                let _ = now;
                 match id {
-                    1 => p.shield_until = Some(now + TOXIC_POISON_DURATION * 4.0),
+                    // A **held generator** is the shield now (T20.08); the battery
+                    // that pays for it is set below.
+                    1 => {
+                        p.inventory.add(crate::items::registry::SHIELD_GENERATOR, 1);
+                    }
                     // Longer than the run, so it is i-frames and not their
                     // expiry that decides.
                     2 => p.iframes_until = now + TOXIC_POISON_DURATION * 4.0,

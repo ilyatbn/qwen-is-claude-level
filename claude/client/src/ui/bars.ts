@@ -1,5 +1,5 @@
 /**
- * §C8's bottom-left cluster: health, energy and jetpack, with the shield ring.
+ * §C8's bottom-left cluster: health, energy and jetpack.
  *
  * DOM, like every other screen-space element (§A35). The arithmetic is in
  * `bars-math.ts` so it can be driven under node; what is here is the elements and
@@ -167,7 +167,6 @@ export class Bars {
   readonly energy: HTMLDivElement
   readonly jetpack: HTMLDivElement
   private readonly bars: { health: Bar; energy: Bar; jetpack: Bar }
-  private readonly ring: HTMLDivElement
   /** §C9's counters, beside the health bar rather than in a slot. */
   readonly counters: HTMLDivElement
   private readonly pipRows: { heals: PipRow; batteries: PipRow }
@@ -180,19 +179,10 @@ export class Bars {
     this.root.style.cssText =
       'position:fixed;left:10px;bottom:56px;z-index:12;pointer-events:none;'
 
-    // The ring lives above the bars rather than inside one of them: the shield is
-    // a *timer*, not a pool (`docs/21` §2), and drawing it as part of the health
-    // bar would say it is hit points.
-    this.ring = doc.createElement('div')
-    this.ring.id = 'hud-shield'
-    this.ring.style.cssText =
-      `width:${width}px;height:6px;margin-bottom:3px;border-radius:3px;` +
-      'background:rgba(0,0,0,.5);overflow:hidden;display:none;'
-    const ringFill = doc.createElement('div')
-    ringFill.dataset['fill'] = ''
-    ringFill.style.cssText = 'height:100%;width:0;background:#7ad7ff;'
-    this.ring.appendChild(ringFill)
-    this.root.appendChild(this.ring)
+    // **No shield ring** (T20.08). It drew `shieldRing`'s 0..1 fraction of a 20 s
+    // window, and the shield is a held generator paying per hit now — there is no
+    // window and no denominator. Whether it is protecting you is the bubble on
+    // your own body; how much is left is the energy bar three lines down.
 
     this.bars = {
       health: new Bar(doc, 'hud-bar-health', 'HP', width),
@@ -238,7 +228,6 @@ export class Bars {
     health: BarView
     energy: BarView
     jetpack: BarView
-    shield: number | null
     /**
      * The two caps ride with the counts (T20.06).
      *
@@ -259,13 +248,6 @@ export class Bars {
     this.pipRows.heals.set('♥', views.consumables.heals, views.consumables.maxHeals)
     this.pipRows.batteries.set('⚡', views.consumables.batteries, views.consumables.maxBatteries)
 
-    const fill = this.ring.querySelector<HTMLElement>('[data-fill]')
-    if (views.shield === null) {
-      this.ring.style.display = 'none'
-    } else {
-      this.ring.style.display = 'block'
-      if (fill) fill.style.width = `${(views.shield * 100).toFixed(2)}%`
-    }
   }
 
   destroy(): void {

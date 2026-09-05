@@ -1,7 +1,17 @@
 /**
  * The M4 checkpoint, driven headlessly: pick up a bazooka, fire it, watch the
  * crater form, take self-damage, and open the inventory on right-click.
+ *
+ * **Plus the shield bubble** (T20.08), which lives here because this is the
+ * sandbox check that already has a player standing still on known ground and a
+ * screenshot habit. It is a **rendered-pixel** assertion for a reason: the bubble
+ * was drawn for every remote player and hardcoded `shield: false` for the local
+ * one in *both* scenes, so the one player who needs to know they are protected
+ * has never seen it — an "I cannot see it" bug that no simulation assertion could
+ * have caught.
  */
+import { samplePatch, colourDelta } from './pixels.mjs'
+
 export default async function ({ page, shot, log }) {
   const inv = () => page.evaluate(() => window.__game.inventory())
   const solid = () =>
@@ -110,4 +120,67 @@ export default async function ({ page, shot, log }) {
   }
   log(`smg: dug ${beforeSmg - afterSmg} px after flight`)
   if (beforeSmg - afterSmg <= 0) throw new Error('the smg round left no mark')
+
+  await shieldBubble({ page, shot, log })
+}
+
+// --- the shield bubble, on your own body (T20.08) ---------------------------
+//
+// Its own function, called from the end of the default export, so the crater half
+// above is untouched and a failure here names itself.
+async function shieldBubble({ page, shot, log }) {
+  await page.evaluate(() => window.__game.regenerate('12345', 'medium'))
+  await page.waitForTimeout(500)
+
+  // Where the player is drawn, in screen space, so the patch follows the camera
+  // rather than a coordinate that expires the next time the spawn moves.
+  const rect = await page.evaluate(() => {
+    const g = window.__game
+    const me = g.core.playerState(0)
+    const raw = g.debug().worldView
+    const v = { x: raw.x, y: raw.y, w: raw.width ?? raw.w, h: raw.height ?? raw.h }
+    const cv = document.querySelector('canvas')
+    const r = cv.getBoundingClientRect()
+    const sx = r.left + ((me.x - v.x) / v.w) * r.width
+    const sy = r.top + ((me.y - v.y) / v.h) * r.height
+    return { x: Math.round(sx - 40), y: Math.round(sy - 60), w: 80, h: 80 }
+  })
+
+  // **The control frame**: the same patch with no generator. Without it "there
+  // are blue pixels here" is satisfied by the sky.
+  const before = await samplePatch(page, rect)
+  const shieldedBefore = await page.evaluate(() => window.__game.core.shieldActive(0))
+  if (shieldedBefore) throw new Error('the sandbox player starts shielded — the control is void')
+
+  const on = await page.evaluate(() => window.__game.giveShieldGenerator())
+  if (!on) throw new Error('a granted generator and a full battery did not shield the player')
+  await page.waitForTimeout(200)
+  const after = await samplePatch(page, rect)
+  await shot('shield-bubble')
+
+  const moved = colourDelta(before, after)
+  // A far patch of the same frame over the same window: if that moved too, the
+  // scene is animating under the measurement and the delta proves nothing.
+  const controlRect = { x: rect.x + 320, y: rect.y, w: rect.w, h: rect.h }
+  const cBefore = await samplePatch(page, controlRect)
+  await page.waitForTimeout(200)
+  const cAfter = await samplePatch(page, controlRect)
+  const controlMoved = colourDelta(cBefore, cAfter)
+
+  log(`shield bubble: the player patch moved ${moved.toFixed(1)}, control ${controlMoved.toFixed(1)}`)
+  if (controlMoved >= moved) {
+    throw new Error(
+      `the control region moved ${controlMoved.toFixed(1)} against the player's ` +
+        `${moved.toFixed(1)} — the frame is changing everywhere, so nothing is attributable`,
+    )
+  }
+  // 4, not 2: the falsification measured **1.3** of idle animation over the same
+  // window with the bubble off, against 9.9 with it on. A threshold at 2 sits two
+  // units from the noise; this one has margin in both directions.
+  if (moved < 4) {
+    throw new Error(
+      `carrying a shield generator changed the player by ${moved.toFixed(1)} pixels — the ` +
+        'bubble is not drawn on your own body (it was hardcoded `shield: false`)',
+    )
+  }
 }

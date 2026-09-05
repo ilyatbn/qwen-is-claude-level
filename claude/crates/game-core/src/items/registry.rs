@@ -8,8 +8,8 @@
 
 use crate::constants::{
     AIRBURST_AMMO, BATTERY_PACK_AMOUNT, BAZOOKA_AMMO, DEAGLE_AMMO, FLAMETHROWER_AMMO, GRENADE_AMMO,
-    MACHINEGUN_AMMO, MEDKIT_HEAL, MINE_AMMO, MOLOTOV_AMMO, PISTOL_AMMO, REVOLVER_AMMO,
-    SHIELD_DURATION, SMG_AMMO, SMOKE_AMMO, TOXIC_GRENADE_AMMO,
+    MACHINEGUN_AMMO, MEDKIT_HEAL, MINE_AMMO, MOLOTOV_AMMO, PISTOL_AMMO, REVOLVER_AMMO, SMG_AMMO,
+    SMOKE_AMMO, TOXIC_GRENADE_AMMO,
 };
 
 pub type ItemId = u16;
@@ -94,9 +94,10 @@ pub enum ItemKind {
     Heal {
         amount: f32,
     },
-    Shield {
-        duration: f32,
-    },
+    /// A shield generator. **No payload** (T20.08): it used to carry the
+    /// `duration` a use would set, and there is no use and no timer — carrying one
+    /// is what protects you, and the cost is `SHIELD_HIT_COST` per hit.
+    Shield,
     Utility(UtilityId),
     /// Charge for shields and energy weapons (§B5).
     Battery {
@@ -172,9 +173,7 @@ pub static ITEMS: &[ItemDef] = &[
         id: SHIELD_GENERATOR,
         key: "shield_generator",
         name: "Shield Generator",
-        kind: ItemKind::Shield {
-            duration: SHIELD_DURATION,
-        },
+        kind: ItemKind::Shield,
         max_stack: 2,
         sprite: "item_shield",
         spawn_weight: 12,
@@ -651,7 +650,7 @@ mod tests {
             other => panic!("medkit is not a heal: {other:?}"),
         }
         match def(SHIELD_GENERATOR).map(|d| d.kind) {
-            Some(ItemKind::Shield { duration }) => assert_eq!(duration, SHIELD_DURATION),
+            Some(ItemKind::Shield) => {}
             other => panic!("shield generator is not a shield: {other:?}"),
         }
         assert_eq!(max_stack(BAZOOKA), BAZOOKA_AMMO);
