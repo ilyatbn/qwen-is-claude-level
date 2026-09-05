@@ -471,10 +471,13 @@ right-button decision rather than around it. **Amendments are the coordinator's.
 - [x] [T20.08](M20/T20.08-the-shield-becomes-a-carried-thing.md) — The shield generator becomes a carried thing **(v8)** — **reverses `docs/21` §2/§4**, on the coordinator's instruction; rode T20.07's `REPLAY_VERSION` 5, **no second bump**
 - [x] [T20.09](M20/T20.09-drop-an-item.md) — Right-click an inventory tile to drop it **(v8)**
 - [x] [T20.10](M20/T20.10-animals-on-the-ground.md) — Animals on the ground **(v8)** — **no doc governs ground animals**; an amendment is the durable home for `animals.rs` and its constants block
-- [ ] [T20.11](M20/T20.11-fall-damage.md) — Fall damage **(v8)** — **BLOCKED on overriding `docs/20` §9**
+- [ ] [T20.11](M20/T20.11-fall-damage.md) — Fall damage **(v8)** — **unblocked by ruling**; `docs/20` §9 still refuses it and is the coordinator's to amend
 - [x] [T20.12](M20/T20.12-hats-and-sunglasses.md) — Hats and sunglasses **(v8)** — depends on T20.04
 - [x] [T20.13](M20/T20.13-two-rooms-one-of-them-dead.md) — Two rooms, and one of them never starts **(v8)**
 - [ ] [T20.14](M20/T20.14-the-whole-thing-at-once.md) — The whole thing at once: an exploratory load test **(v8)**
+- [ ] [T20.16](M20/T20.16-the-balance-control-was-never-sound.md) — Replace the balance control's shape **(v8)** — **the test is knowingly red**; booked by ruling
+- [ ] [T20.17](M20/T20.17-the-tests-that-never-run.md) — The tests that never run **(v8)** — nine milestones of invisible erosion; **survey first**
+- [ ] [T20.18](M20/T20.18-seven-copies-of-connect.md) — Seven copies of `connect` **(v8)** — from T20.10's handoff
 - [x] [T20.15](M20/T20.15-a-check-that-waits-without-a-deadline.md) — A browser check that waits without a deadline **(v8)** — **found by T20.01**, pre-existing
 
 **Order note.** T20.04 before T20.12 (accessories are invisible until skins reach the
