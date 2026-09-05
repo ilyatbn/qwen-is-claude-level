@@ -744,3 +744,87 @@ Every `window.__game.constants().NAME` in `scripts/`, against `constants_json`:
 The control the task asked for is in the same file: the same read on plain `C()` is `undefined`
 and silent, and `undefined + 8` is asserted to be `NaN` — the defect itself, kept as the thing
 the guard is measured against.
+
+## T20.05 landed — the ruling holds, and the number that joins the two rains is measured
+
+Both `docs/72` clauses stay satisfied. §C6 keeps its particle emitter — the pool is still a
+fixed 260 screen-space droplets on seed 4242, and it is still `setScrollFactor(0)`. §C21 gets
+a rain whose **visible density is the rain that actually falls on you**: `WeatherLayer.setToxic`
+takes a live drop count instead of a boolean, and `RainField` draws that share of the pool.
+
+### Constraint (a): the naive figure was 37x out, and the real one was measured
+
+The task's SUSPECTED ~7 is right, and it now rests on a measurement rather than on
+`TOXIC_DROP_SPEED`'s *"roughly a second of visible descent"*.
+`toxic_drops_in_flight_matches_what_a_shower_actually_puts_in_the_air` (`world/mod.rs`) runs a
+forced shower on three seeds x three scales and records the peak count of live
+`WEAPON_TOXIC_DROP` projectiles: **6 on small, 7 on medium, 9-10 on large**, mean 3.9/4.3/5.8
+while it is raining. `TOXIC_DROPS_IN_FLIGHT = 7.0` is asserted to sit **inside that band**
+rather than pinned to one draw — a constant pinned to seed 4242's maximum would be a fact
+about seed 4242. Falsified at 20: the test names the band.
+
+Not `TOXIC_DURATION / TOXIC_DROP_EVERY` = 54, which the Deliverable quotes: that is the
+cumulative count for a whole shower, against a *live* on-screen figure.
+
+### The second thing that test proves, and the design that rests on it
+
+**A shower never has a frame with no drop in the air** — asserted directly, across every
+seed and scale. That is what lets the client derive *"is it raining"* from `liveDrops > 0`
+instead of carrying a separate `active` flag, and deriving it is strictly better: the sheet
+now stops when the **last drop lands** rather than when the server's effect phase flips.
+`TOXIC_DROP_EVERY` (0.15 s) against a descent of about a second is what buys that; if the
+cadence ever grows past the descent the test goes red before the sheet strobes.
+
+### `density` and `intensity` are two scalars, deliberately
+
+`intensity` is *whether* — it ramps the fade and drives the green vignette. `density` is *how
+hard* — it drives the count. One field for both would make a shower fading in at full rate
+indistinguishable from one fully present and nearly dry, which is the "a field that means two
+things" rule. Both ride the same 1.5 s ramp, so a drop landing does not pop 37 droplets off
+the screen; `RainField.update`'s `density` argument is **required**, not defaulted, because a
+default of 1 is exactly the old bug and would let an unwired caller compile and reproduce it.
+
+### Constraint (c) and the BLOCKER: the count comes from `WorldView`, and both sites read it
+
+`WorldView.liveToxicDrops` counts `drop`-kind projectiles in the ordnance layer that
+`syncProjectiles` already fills, so neither scene computes it. `worldView.update`'s weather
+block reads it; `SandboxScene` reads it too, because that scene calls `world.update(...)` with
+no `dt` and so skips the shared block entirely. `toxicActive` is **gone** from the weather
+parameter — it came from the effect lifecycle while the damage came from the projectile
+stream, which is the whole defect.
+
+### The BLOCKER was real, and the answer was a check that is not a sandbox check
+
+Every weather assertion in this tree drives `?sandbox=1` — `weather-visible.mjs` and
+`m5-weather.mjs` both. **So nothing could see the shared `WorldView` path**, which is the §C0
+shape that hid a broken `ordnance.update` for three milestones. Under the new derivation the
+game path depends on six hops nobody had ever asserted end to end (server spawn →
+`announce_projectiles` → `projectile_spawn` → mirror → `syncProjectiles` → `WEAPON_KEYS[23]` →
+`KIND_BY_WEAPON_KEY`), **and every one of them fails to a count of zero, which now reads as a
+dry sky rather than an error.**
+
+`scripts/checks/toxic-rain-game.mjs` walks it in a real round under `WEATHER=toxic`, with a dry
+control before the shower. It passed first time — 1 real drop, density 0.14, then 196 of 260
+droplets a ramp later — and the falsification (removing `setToxic` from the shared block)
+turns it red on both halves while `weather-visible` stays green. That pair is the evidence
+that the two scenes are now wired the same way.
+
+### Where the assertions are, and why two of them
+
+`weather-visible.mjs` asserts the **derivation exactly** (`toxicDensityAsked === live / full`)
+and, separately, that the drawn count is a slice of the pool. The first is exact because it
+reads the pre-ramp target; the drawn count lags by design and is the wrong thing to compare a
+formula against. The pixel assertion is untouched and still passes: the sky delta moved from
+~63 to **44.5** against a 4.9 noise floor, because the vignette stays on `intensity`.
+
+`weather-visible.mjs:293`'s fragility, which the task predicted, did not materialise — the
+drawn count is 229 of 260 at the sample point, not 0. The reason is the ramp: `density` is a
+smoothed average of the live count, not the instantaneous one.
+
+### Smaller things
+
+- `EmberField.update(dt, gravity)` had picked up a stray third argument in the test file from a
+  bulk edit; corrected.
+- The `Constants` interface gained `TOXIC_DROPS_IN_FLIGHT`, and **T20.15's parity test caught
+  the missing `constants_json` entry before any check ran** — the guard doing its job on the
+  next task after it landed.

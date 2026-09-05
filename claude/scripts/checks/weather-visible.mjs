@@ -280,19 +280,75 @@ export default async function ({ page, shot, log }) {
   // the renderer.
   await page.waitForTimeout(6500)
 
-  const state = await page.evaluate(() => {
-    const g = window.__game
-    return { intensity: g.debug().toxicIntensity, drops: g.debug().rainDrops }
-  })
+  const sample = () =>
+    page.evaluate(() => {
+      const g = window.__game
+      const d = g.debug()
+      return {
+        intensity: d.toxicIntensity,
+        drops: d.rainDrops,
+        pool: d.rainPool,
+        real: d.toxicDrops,
+        asked: d.toxicDensityAsked,
+        full: g.constants().TOXIC_DROPS_IN_FLIGHT,
+      }
+    })
+  const state = await sample()
   const wet = await samplePatch(page, sky)
   await shot('weather-toxic-rain')
 
   // Count at both ends before looking at a pixel (§A39): if the layer is drawing
   // nothing, say so plainly rather than reporting a colour delta.
-  log(`toxic intensity ${state.intensity.toFixed(2)}, drops drawn ${state.drops}`)
+  log(
+    `toxic intensity ${state.intensity.toFixed(2)}, drops drawn ${state.drops} of ` +
+      `${state.pool}, real drops in the air ${state.real}`,
+  )
   if (state.drops === 0) {
     throw new Error('the rain layer is drawing no drops — nothing about visibility has been tested')
   }
+
+  // --- the two rains are one rain (T20.05) ---------------------------------
+  //
+  // §C6's emitter and §C21's projectiles both ran, and neither knew about the
+  // other: a fixed 260-droplet sheet on seed 4242, and an unrelated set of real
+  // drops doing the carving and the poisoning. Every assertion in this block was
+  // satisfied by that — `drops` was the constant pool size, so "the rain is
+  // visible" passed while the visible rain was unrelated to the one that hits you.
+  //
+  // **The derivation, exactly.** `toxicDensityAsked` is what the layer was asked
+  // for this frame, before its ramp; the drawn count lags by design and is the
+  // wrong thing to compare a formula against.
+  {
+    const d = await page.evaluate(() => {
+      const g = window.__game
+      const x = g.debug()
+      return { real: x.toxicDrops, asked: x.toxicDensityAsked }
+    })
+    const want = Math.max(0, Math.min(1, d.real / state.full))
+    if (Math.abs(d.asked - want) > 1e-6) {
+      throw new Error(
+        `the emitter asked for a density of ${d.asked} with ${d.real} real drops in the ` +
+          `air and TOXIC_DROPS_IN_FLIGHT ${state.full} — expected ${want}. The sheet is ` +
+          `not derived from the rain that falls on you (T20.05)`,
+      )
+    }
+    log(`density asked ${d.asked.toFixed(2)} from ${d.real} real drops (full = ${state.full})`)
+  }
+
+  // **And it reaches the screen.** The derivation being right is not the same as
+  // the sheet being drawn from it — that is §B21's whole lesson, and this file is
+  // where it was learnt. The pool is untouched (§C6 keeps its emitter); the drawn
+  // count is a slice of it.
+  if (state.real <= 0) {
+    throw new Error('no real toxic drop was in the air, so the density above proves nothing')
+  }
+  if (state.drops >= state.pool && state.real < state.full) {
+    throw new Error(
+      `the whole ${state.pool}-droplet pool is drawn while only ${state.real} real drops ` +
+        `are falling — the sheet is still a constant, not a density`,
+    )
+  }
+  log(`the sheet is a slice of the pool: ${state.drops} of ${state.pool}, from ${state.real} real drops`)
 
   const r = assertChanged(dry, wet, {
     label: 'toxic rain over the sky',

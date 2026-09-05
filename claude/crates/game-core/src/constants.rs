@@ -693,6 +693,28 @@ pub const TOXIC_POISON_DPS: f32 = 6.0;
 pub const TOXIC_SPLASH_R: f32 = 28.0;
 /// The hole a drop leaves in the ground: bullet-sized, not a crater (§E13).
 pub const TOXIC_DROP_CARVE_R: f32 = 6.0;
+/// Drops in the air at once during a **full-rate** shower (§C6 × §C21, T20.05).
+///
+/// **The number that makes one rain out of two.** §C6 says the droplets are "a
+/// particle emitter, not per-drop entities" and §C21 makes a drop a projectile
+/// *"so that the rain is visible"* — two live clauses, and for five milestones
+/// the game satisfied both separately: a 260-droplet screen-space sheet on a seed
+/// of its own, and an unrelated set of real drops that did the carving and the
+/// poisoning. A player saw a downpour and was hit by a drizzle.
+///
+/// The emitter's density is derived from the live drop count now, and this is
+/// what that count is divided by. It is **not** `TOXIC_DURATION /
+/// TOXIC_DROP_EVERY` — 54 is the cumulative count for a whole shower, against a
+/// *live* on-screen figure. What is comparable is how many are in the air at one
+/// instant, which is the cadence times the descent.
+///
+/// **Measured** (`toxic_drops_in_flight_matches_what_a_shower_actually_puts_in_the_air`),
+/// three seeds x three scales: peaks run **6..=10**, with a mean of 3.9/4.3/5.8
+/// while it is raining on small/medium/large at seed 4242. 7 is the medium-map
+/// peak, and the test asserts the constant stays inside the measured band rather
+/// than pinning one draw. `TOXIC_DROP_SPEED`'s "roughly a second of visible descent" is where this
+/// number used to be guessed from; a sentence is not a measurement.
+pub const TOXIC_DROPS_IN_FLIGHT: f32 = 7.0;
 
 pub const METEOR_DURATION: f32 = 10.0;
 pub const METEOR_EVERY: f32 = 0.5;

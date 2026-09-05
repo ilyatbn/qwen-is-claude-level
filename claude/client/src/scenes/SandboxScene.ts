@@ -667,6 +667,15 @@ export class SandboxScene extends Phaser.Scene {
           // Weather at both ends: the sim's ramp, and how many drops are drawn.
           toxicIntensity: self.world.weather.toxicIntensity,
           rainDrops: self.world.weather.rainDrops,
+          // **The other end of the rain** (T20.05). `rainDrops` is what the
+          // emitter draws; this is how many real drops are in the air, and until
+          // now nothing compared them — the sheet was a constant 260 whatever the
+          // weather did. `rainPool` is the emitter's size, so "thinned" can be
+          // told from "off", and `toxicDensityAsked` is the derivation itself,
+          // before the ramp.
+          toxicDrops: self.world.liveToxicDrops,
+          rainPool: self.world.weather.rainPool,
+          toxicDensityAsked: self.world.weather.toxicDensityAsked,
           embers: self.world.weather.emberCount,
           // Jetting vents, so "the layer drew nothing" can be told apart from
           // "the simulation never jetted" — different bugs, same silence.
@@ -1059,9 +1068,13 @@ export class SandboxScene extends Phaser.Scene {
     this.drawHazards(weather)
     // The rain, the spew and the green cast. The discs above say *where* the
     // hazards are; this is what makes an 8-second downpour look like one.
-    this.world.weather.setToxic(
-      weather.active.some((a) => a.kind === 'toxic' && a.phase === 'active'),
-    )
+    // **The real drops, not the effect's phase** (T20.05). This scene pokes the
+    // sub-layers by hand because `this.world.update(...)` above is called with no
+    // `dt`, so `worldView`'s shared weather block is skipped — which is exactly
+    // why the fix has to live in `WeatherLayer` and be fed the same number at both
+    // call sites. `liveToxicDrops` reads the projectiles `syncProjectiles` put in
+    // the ordnance layer a few lines up, so both scenes count one thing one way.
+    this.world.weather.setToxic(this.world.liveToxicDrops)
     // §F9's veil. `weather.fog` is `fog.rs`'s own `strength()`, straight off the
     // local world — **not** the `fogActive` boolean, which is a debug override
     // and would make the veil a toggle that cannot ramp.

@@ -5422,3 +5422,20 @@ assumed); `deadlineMs()` refuses anything that is not a positive finite number o
 and `constants-parity.test.ts` asserts the two tables are the same set in both directions and
 that no `.mjs` reads a constant that does not exist. Each falsified at its live site.
 EXIT=0 first run, 45/45, 853/853, 25/25.
+
+
+## T20.05 — one rain, and the number that joins them was measured
+
+The ruling holds without a rule change: §C6 keeps its particle emitter, §C21's projectiles
+decide how much of it is drawn. `setToxic` takes a **live drop count** now, not a boolean —
+and whether it is raining is derived from the same number, so the sheet stops when the last
+drop **lands** rather than when the server's phase flips. `TOXIC_DROPS_IN_FLIGHT = 7` is
+**measured**, not the task's suspected figure: three seeds x three scales put a shower's peak
+at 6..=10 (`toxic_drops_in_flight_matches_what_a_shower_actually_puts_in_the_air`), and the
+same test proves a shower never has an empty frame, which is what the derived "is it raining"
+rests on. `density` is a **separate** scalar from `intensity` — one is how hard, the other is
+whether, and the green cast stays on the second. **The BLOCKER was real and the answer was a
+new check**: every weather assertion in the tree drives `?sandbox=1`, so `toxic-rain-game.mjs`
+walks the six hops in a real round under `WEATHER=toxic`. Falsified at both live sites — the
+sandbox one via `weather-visible`, the shared `WorldView` one via the new check.
+EXIT=0 first run, 46/46, 859/859, 25/25.

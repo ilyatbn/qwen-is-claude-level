@@ -1604,10 +1604,6 @@ export class GameScene extends Phaser.Scene {
     // lifecycle is already tracked for the e2e; nothing consumed it visually,
     // which is §B21 exactly — the number was right and never reached the screen.
     if (this.world) {
-      let toxic = false
-      for (const e of this.observed.effects.values()) {
-        if (e.kind === 'ToxicRain' && e.phases.has('active') && !e.phases.has('end')) toxic = true
-      }
       // **With `dt`.** `WorldView.update(near, dt = 0, weather?)` gates its
       // ordnance and weather work on `dt > 0`, and this scene called it with the
       // camera centre alone — so `WorldView.ordnance.update()` never ran in a
@@ -1623,8 +1619,12 @@ export class GameScene extends Phaser.Scene {
       // The weather arguments move in here too. Passing them separately was the
       // same workaround one step earlier — this scene reaching past the shared
       // update to poke a sub-layer it could not reach through it.
+      // **No `toxicActive`** (T20.05). It was scanned out of `observed.effects`
+      // — the effect lifecycle — while the drops that carve and poison came from
+      // the projectile stream, so the sheet and the hazard were two rains that did
+      // not know about each other. `WorldView.liveToxicDrops` counts the real ones
+      // it is already tracking.
       this.world.update(this.world.rig.center, dt, {
-        toxicActive: toxic,
         vents: [],
         fallScale: C().MAX_FALL_SPEED,
         fog: this.fog.strength(this.roundTime),
@@ -2411,6 +2411,17 @@ export class GameScene extends Phaser.Scene {
           // rather than of the set this scene fills, so it reports effect and
           // not intent (§A15).
           projectilesLive: self.mirror.projectiles.size,
+          // **Weather at both ends, in the scene a player is in** (T20.05).
+          // Every weather assertion in the tree was a `?sandbox=1` check, and
+          // this is the §C0 shape that keeps costing this project a milestone:
+          // the sandbox pokes the sub-layers by hand, so a rain wired only there
+          // is a rain nobody plays. `toxicDrops` is what the server put in the
+          // air, `rainDrops` is what the emitter drew from it.
+          toxicDrops: self.world?.liveToxicDrops ?? 0,
+          rainDrops: self.world?.weather.rainDrops ?? 0,
+          rainPool: self.world?.weather.rainPool ?? 0,
+          toxicDensityAsked: self.world?.weather.toxicDensityAsked ?? 0,
+          toxicIntensity: self.world?.weather.toxicIntensity ?? 0,
           // Positions too, so a check can aim a patch at a projectile rather
           // than guess a screen point — a hardcoded coordinate is a test that
           // expires the moment the camera, the zoom or the spawn moves.

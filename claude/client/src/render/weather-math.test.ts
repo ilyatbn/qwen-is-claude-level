@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core, fogStrength } from '../core'
-import { EmberField, FogClock, RainField, fogVeilAlpha } from './weather-math'
+import { EmberField, FogClock, RainField, fogVeilAlpha, toxicDensity } from './weather-math'
 
 beforeAll(async () => {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
@@ -12,29 +12,29 @@ beforeAll(async () => {
 describe('RainField', () => {
   it('keeps a fixed pool however long it rains — an emitter, not entities', () => {
     const r = new RainField(120, 800, 600)
-    r.update(0.016, 1)
+    r.update(0.016, 1, 1)
     const n = r.drops.length
-    for (let i = 0; i < 600; i++) r.update(0.016, 1) // ~10 s of downpour
+    for (let i = 0; i < 600; i++) r.update(0.016, 1, 1) // ~10 s of downpour
     expect(r.drops.length).toBe(n)
   })
 
   it('ramps in and out rather than appearing whole', () => {
     const r = new RainField(20, 800, 600)
     expect(r.intensity).toBe(0)
-    r.update(0.5, 1)
+    r.update(0.5, 1, 1)
     // Mid-ramp: neither off nor fully on. A layer that snaps to 1 reads as a
     // toggle, not as weather.
     expect(r.intensity).toBeGreaterThan(0)
     expect(r.intensity).toBeLessThan(1)
-    for (let i = 0; i < 20; i++) r.update(0.1, 1)
+    for (let i = 0; i < 20; i++) r.update(0.1, 1, 1)
     expect(r.intensity).toBe(1)
-    for (let i = 0; i < 40; i++) r.update(0.1, 0)
+    for (let i = 0; i < 40; i++) r.update(0.1, 0, 1)
     expect(r.intensity).toBe(0)
   })
 
   it('wraps every drop back inside the view', () => {
     const r = new RainField(200, 400, 300)
-    for (let i = 0; i < 300; i++) r.update(0.016, 1)
+    for (let i = 0; i < 300; i++) r.update(0.016, 1, 1)
     for (const d of r.drops) {
       expect(d.y).toBeGreaterThanOrEqual(0)
       expect(d.y).toBeLessThanOrEqual(300)
@@ -48,8 +48,56 @@ describe('RainField', () => {
     // active" would pass for a field that always rains.
     const r = new RainField(10, 400, 300)
     const y0 = r.drops.map((d) => d.y)
-    for (let i = 0; i < 50; i++) r.update(0.016, 0)
+    for (let i = 0; i < 50; i++) r.update(0.016, 0, 1)
     expect(r.drops.map((d) => d.y)).toEqual(y0)
+  })
+
+  it('draws a slice of the pool, sized by the real drops (T20.05)', () => {
+    // §C6's emitter and §C21's projectiles were two rains that did not know about
+    // each other: this pool was a constant 260 whatever the weather did. The pool
+    // is still fixed — that is §C6 — but how much of it is drawn is the rain that
+    // is actually falling on you.
+    const r = new RainField(100, 800, 600)
+    // Ramped up at full density: the whole sheet.
+    for (let i = 0; i < 40; i++) r.update(0.1, 1, 1)
+    expect(r.density).toBe(1)
+    expect(r.visibleDrops).toBe(100)
+
+    // Half the rain, and the pool has not changed size.
+    for (let i = 0; i < 40; i++) r.update(0.1, 1, 0.5)
+    expect(r.visibleDrops).toBe(50)
+    expect(r.drops.length).toBe(100)
+
+    // None of it, while the effect is still notionally on: nothing is drawn, and
+    // that is the honest picture of a shower whose last drop has landed.
+    for (let i = 0; i < 40; i++) r.update(0.1, 1, 0)
+    expect(r.visibleDrops).toBe(0)
+    expect(r.intensity).toBe(1)
+  })
+
+  it('ramps the density instead of popping droplets off the screen', () => {
+    const r = new RainField(100, 800, 600)
+    for (let i = 0; i < 40; i++) r.update(0.1, 1, 1)
+    // One frame at zero must not empty the sheet — a drop landing changes the
+    // live count by one, and 37 droplets vanishing on that frame is a flicker.
+    r.update(0.016, 1, 0)
+    expect(r.density).toBeGreaterThan(0.9)
+    expect(r.visibleDrops).toBeGreaterThan(90)
+  })
+
+  it('density and intensity are not the same number', () => {
+    // The control for treating them as one field: a shower that is fading in at
+    // full rate and one that is fully present but nearly dry must not be the same
+    // state. `intensity` drives the green cast, `density` drives the count.
+    const a = new RainField(100, 800, 600)
+    a.update(0.75, 1, 1) // half a ramp, both climbing together
+    expect(a.intensity).toBeCloseTo(a.density, 6)
+
+    const b = new RainField(100, 800, 600)
+    for (let i = 0; i < 40; i++) b.update(0.1, 1, 1)
+    for (let i = 0; i < 40; i++) b.update(0.1, 1, 0.2)
+    expect(b.intensity).toBe(1)
+    expect(b.density).toBeCloseTo(0.2, 6)
   })
 
   it('is deterministic from its seed, so a screenshot of rain reproduces', () => {
@@ -224,5 +272,31 @@ describe('FogClock — the networked client\'s half of §F9', () => {
     // be cancelled by the first one's cleanup event.
     f.end(1)
     expect(f.running).toBe(true)
+  })
+})
+
+describe('toxicDensity — the join between the two rains (T20.05)', () => {
+  it('is the live drop count over a full-rate shower, clamped', () => {
+    const full = C().TOXIC_DROPS_IN_FLIGHT
+    expect(toxicDensity(0, full)).toBe(0)
+    expect(toxicDensity(full, full)).toBe(1)
+    expect(toxicDensity(full / 2, full)).toBeCloseTo(0.5, 6)
+    // A heavier-than-full instant saturates rather than overdrawing the pool.
+    expect(toxicDensity(full * 3, full)).toBe(1)
+    // And never negative, whatever a caller hands it.
+    expect(toxicDensity(-4, full)).toBe(0)
+  })
+
+  it('takes the constant from Rust, and it is a real number there', () => {
+    // The T20.15 shape: a constant that is not in `constants_json` reads as
+    // `undefined` and every division by it is `NaN`, silently.
+    const full = C().TOXIC_DROPS_IN_FLIGHT
+    expect(Number.isFinite(full)).toBe(true)
+    expect(full).toBeGreaterThan(0)
+  })
+
+  it('a divisor of zero is nothing rather than Infinity', () => {
+    expect(toxicDensity(5, 0)).toBe(0)
+    expect(toxicDensity(5, NaN)).toBe(0)
   })
 })

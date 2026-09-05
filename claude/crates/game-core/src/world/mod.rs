@@ -4119,6 +4119,82 @@ mod toxic_rain_falls {
         (w, landings)
     }
 
+    /// How many toxic drops are in the air at once, measured rather than assumed.
+    ///
+    /// **`TOXIC_DROPS_IN_FLIGHT` is a client-side number with a server-side
+    /// meaning** (T20.05): §C6's particle emitter draws a fixed pool of 260
+    /// screen-space droplets, and §C21 makes the real drops projectiles *so that
+    /// the rain is visible*. Both clauses are live, and the shape that satisfies
+    /// both is an emitter whose density is derived from the real rain. The
+    /// derivation needs to know what a full-rate shower looks like, and the only
+    /// honest source for that is this measurement — `TOXIC_DROP_SPEED`'s doc
+    /// comment says "roughly a second of visible descent", which is a sentence,
+    /// not a number.
+    ///
+    /// Across seeds and scales, because a population claim needs more than one
+    /// draw. The assertion is a **band**, not the peak of one run: the constant
+    /// has to be a fair description of a full-rate shower, and pinning it to a
+    /// single seed's maximum would make it a fact about seed 4242.
+    #[test]
+    fn toxic_drops_in_flight_matches_what_a_shower_actually_puts_in_the_air() {
+        let mut peaks = Vec::new();
+        let mut ever_dry_mid_shower = false;
+        for seed in [1u64, 4242, 90210] {
+            for scale in [MapScale::Small, MapScale::Medium, MapScale::Large] {
+                let mut w = World::new(seed, scale);
+                w.set_phase(RoundPhase::Playing);
+                w.add_player(0, 0, "ana".into());
+                w.force_effect(EffectKind::ToxicRain, w.round_time);
+                // The shower plus enough for the last drop to land: descent is
+                // about a second, and a longer tail is only empty sky.
+                let ticks = ((TOXIC_DURATION + 3.0) / crate::constants::SIM_DT) as u32;
+                let mut live = Vec::new();
+                for _ in 0..ticks {
+                    w.step(crate::constants::SIM_DT);
+                    live.push(
+                        w.projectiles
+                            .iter()
+                            .filter(|p| p.weapon == crate::items::registry::WEAPON_TOXIC_DROP)
+                            .count(),
+                    );
+                }
+                let peak = live.iter().copied().max().unwrap_or(0);
+                peaks.push(peak);
+
+                // The property the client's `liveDrops > 0` ramp target rests on:
+                // once the rain starts there is no frame with an empty sky until
+                // it is over. `TOXIC_DROP_EVERY` (0.15 s) against a fall of about
+                // a second is what buys that, and if the cadence ever grows past
+                // the descent the sheet would strobe.
+                let first = live.iter().position(|n| *n > 0).unwrap_or(0);
+                let last = live.iter().rposition(|n| *n > 0).unwrap_or(0);
+                if live[first..=last].contains(&0) {
+                    ever_dry_mid_shower = true;
+                }
+            }
+        }
+
+        let lo = *peaks.iter().min().unwrap_or(&0);
+        let hi = *peaks.iter().max().unwrap_or(&0);
+        assert!(
+            lo > 0,
+            "no drop was ever in the air — the measurement is of nothing"
+        );
+        assert!(
+            !ever_dry_mid_shower,
+            "a shower had a frame with no drop in the air, so a client deriving \
+             \"is it raining\" from the live count would strobe"
+        );
+        let full = crate::constants::TOXIC_DROPS_IN_FLIGHT as usize;
+        assert!(
+            (lo..=hi).contains(&full),
+            "TOXIC_DROPS_IN_FLIGHT is {full}, and a shower's peak is {lo}..={hi} across \
+             three seeds and three scales. The constant is what the client calls a \
+             full-rate shower; outside that band the emitter is either a drizzle or \
+             saturated before the rain is."
+        );
+    }
+
     /// §F6's acceptance, in one run: **stand in it and lose health**.
     ///
     /// This is the assertion the whole task exists for, and it is deliberately

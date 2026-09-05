@@ -249,14 +249,34 @@ export class WorldView {
   }
 
   /** Re-bake the chunks a carve dirtied, within the per-frame budget. */
+  /**
+   * Toxic drops in the air **right now**, from the layer that already tracks them.
+   *
+   * `syncProjectiles` puts every projectile the server (or the sandbox's local
+   * world) reports into `ordnance`, and `toxic_drop` maps to the `drop` kind — so
+   * the count the weather emitter needs is already here and neither scene has to
+   * carry it. That matters because the two scenes wire the weather differently:
+   * `SandboxScene` calls `weather.setToxic` itself, and a count passed in by the
+   * caller would have to be computed twice, identically, forever (T20.05).
+   */
+  get liveToxicDrops(): number {
+    let n = 0
+    for (const p of this.ordnance.state.projectiles.values()) if (p.kind === 'drop') n++
+    return n
+  }
+
   update(
     near: { x: number; y: number },
     dt = 0,
-    weather?: { toxicActive: boolean; vents: VentView[]; fallScale: number; fog: number },
+    weather?: { vents: VentView[]; fallScale: number; fog: number },
   ): void {
     if (dt > 0) this.ordnance.update(dt)
     if (dt > 0 && weather) {
-      this.weather.setToxic(weather.toxicActive)
+      // **Not a `toxicActive` boolean** (T20.05). The flag came from the effect
+      // lifecycle and the drops came from the projectile stream, and the emitter
+      // believed the first while the damage came from the second. One source now,
+      // and it is the one the player is actually standing under.
+      this.weather.setToxic(this.liveToxicDrops)
       // `fog` is required, not optional: both scenes have a fog strength to give
       // and the whole of §F9 is that one of them never passed it on. A default
       // here would let the next scene silently draw no fog and still typecheck.

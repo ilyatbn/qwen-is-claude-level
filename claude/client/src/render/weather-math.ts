@@ -50,9 +50,40 @@ function rng(seed: number): () => number {
  * `intensity` ramps 0..1 so the rain fades in and out rather than appearing whole,
  * which is what makes it read as weather rather than as a layer being toggled.
  */
+/**
+ * Live real drops → the fraction of the emitter's pool to draw (T20.05).
+ *
+ * §C6 gave the rain a particle emitter; §C21 made a drop a projectile *"so that
+ * the rain is visible"*. Both clauses are live, and for five milestones the game
+ * satisfied them **separately**: a 260-droplet sheet on seed 4242 that knew
+ * nothing about the weather, and an unrelated set of real drops that did the
+ * carving and the poisoning. A player saw a downpour and was hit by a drizzle.
+ *
+ * This is the join. It is a **scalar**, deliberately: the emitter is
+ * `setScrollFactor(0)` screen-space and the drops are world-space projectiles, so
+ * drawing a particle *at* a drop is a different renderer, not this one.
+ *
+ * `full` is `TOXIC_DROPS_IN_FLIGHT` — measured, not the 54 drops a whole shower
+ * releases, which is a cumulative figure against a live one.
+ */
+export function toxicDensity(liveDrops: number, full: number): number {
+  if (!(full > 0)) return 0
+  return Math.max(0, Math.min(1, liveDrops / full))
+}
+
 export class RainField {
   readonly drops: Drop[] = []
   intensity = 0
+  /**
+   * `0..1`, ramped like `intensity` — the share of the pool that is drawn.
+   *
+   * **Separate from `intensity` on purpose.** `intensity` is "is this effect
+   * happening", and it drives the fade and the green cast; this is "how hard",
+   * and it drives the count. One scalar meaning both would make a shower that is
+   * merely starting indistinguishable from one that is nearly dry — a field that
+   * means two things, which is the shape this repo keeps paying for.
+   */
+  density = 0
 
   constructor(
     count: number,
@@ -77,13 +108,26 @@ export class RainField {
     this.h = h
   }
 
-  /** `target` is 1 while the effect is active, 0 otherwise; the ramp is 1/`ramp` s. */
-  update(dt: number, target: number, ramp = 1.5): void {
+  /**
+   * `target` is 1 while the effect is active, 0 otherwise; the ramp is 1/`ramp` s.
+   *
+   * `density` is `toxicDensity(liveDrops, TOXIC_DROPS_IN_FLIGHT)` and is
+   * **required**, not defaulted (T20.05). A default of 1 would mean "draw the
+   * whole sheet", which is exactly the behaviour this task removed — a caller
+   * that forgot to wire the real drops would compile, run, and reproduce the bug.
+   * It rides the same ramp so a drop landing does not pop 37 droplets off the
+   * screen.
+   */
+  update(dt: number, target: number, density: number, ramp = 1.5): void {
     const step = dt / ramp
     this.intensity =
       target > this.intensity
         ? Math.min(target, this.intensity + step)
         : Math.max(target, this.intensity - step)
+    this.density =
+      density > this.density
+        ? Math.min(density, this.density + step)
+        : Math.max(density, this.density - step)
 
     if (this.intensity <= 0) return
     for (const d of this.drops) {
@@ -98,6 +142,18 @@ export class RainField {
       if (d.x < 0) d.x += this.w
       else if (d.x > this.w) d.x -= this.w
     }
+  }
+
+  /**
+   * How many of the pool to draw right now.
+   *
+   * A prefix of the pool rather than a random subset: the drops' x are already
+   * uniform over the width, so the first N are spread as evenly as any N, and a
+   * stable prefix means a thinning shower fades out droplets instead of
+   * reshuffling the whole sheet every frame.
+   */
+  get visibleDrops(): number {
+    return Math.round(this.density * this.drops.length)
   }
 }
 

@@ -975,6 +975,11 @@ pub fn constants_json() -> String {
         // range and subtle at distance"), so the client needs the same number
         // the sim arms on rather than a second copy of it.
         MINE_ARM_TIME => c::MINE_ARM_TIME,
+        // §C6 x §C21: what the weather layer divides the **live** drop count by
+        // to get the emitter's density (T20.05). Exported rather than spelled in
+        // `weather.ts` — the client had a 260-droplet sheet on a seed of its own
+        // and the number it should have been derived from was in Rust all along.
+        TOXIC_DROPS_IN_FLIGHT => c::TOXIC_DROPS_IN_FLIGHT,
         TOMBSTONE_W => c::TOMBSTONE_W,
         TOMBSTONE_H => c::TOMBSTONE_H,
         MAX_TOMBSTONES => c::MAX_TOMBSTONES,

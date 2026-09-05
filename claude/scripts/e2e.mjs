@@ -183,6 +183,12 @@ const CHECKS = [
   // exits and quick-matches. Standalone: it needs two clients and a real round
   // driven to `Ended`, which is the sequence nothing else in the suite reaches.
   { name: 'rematch', file: 'scripts/checks/rematch.mjs', standalone: true },
+  // T20.05: the one weather assertion that is **not** a sandbox check. Every
+  // other one drives `?sandbox=1`, which pokes the weather sub-layers by hand and
+  // therefore cannot see whether the shared `WorldView` path works — the §C0 shape
+  // that hid a broken `ordnance.update` for three milestones. Standalone: it needs
+  // `WEATHER=toxic` on a real server and a real round.
+  { name: 'toxic-rain-game', file: 'scripts/checks/toxic-rain-game.mjs', standalone: true },
   // §B9's gate, and the only assertion in the tree about a **rendered** player's
   // skin (T20.04). Standalone: two clients on two different skins, in one frame,
   // on a real server — `skins.mjs` never enters a game, which is why everybody

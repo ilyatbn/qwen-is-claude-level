@@ -12,7 +12,7 @@
  */
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
-import { EmberField, RainField, fogVeilAlpha } from './weather-math'
+import { EmberField, RainField, fogVeilAlpha, toxicDensity } from './weather-math'
 import { C } from '../core'
 
 export interface VentView {
@@ -83,15 +83,53 @@ export class WeatherLayer {
   }
   private lastFogAlpha = 0
 
-  /** Toxic rain, on or off. The ramp lives in the field, not the caller. */
-  setToxic(active: boolean): void {
-    this.toxicTarget = active ? 1 : 0
+  /**
+   * Toxic rain, at the density the **real** drops justify (T20.05).
+   *
+   * Takes a live drop count rather than a boolean, and that is the whole of this
+   * task. §C6's emitter and §C21's projectiles were two rains that did not know
+   * about each other: a fixed 260-droplet sheet on seed 4242, and an unrelated
+   * set of real drops that did the carving and the poisoning. The player saw a
+   * downpour and was hit by a drizzle.
+   *
+   * **Whether it is raining is derived from the same number**, rather than from a
+   * separate `active` flag. The cadence is `TOXIC_DROP_EVERY` (0.15 s) against a
+   * descent of about a second, so a shower never has an empty frame in the middle
+   * — asserted in game-core by
+   * `toxic_drops_in_flight_matches_what_a_shower_actually_puts_in_the_air`, because
+   * a client deriving "is it raining" from a count that can hit zero would strobe.
+   * Deriving it here also means the sheet stops when the last drop **lands**
+   * rather than when the server's phase flips, which is the honest moment.
+   *
+   * The ramp lives in the field, not the caller.
+   */
+  setToxic(liveDrops: number): void {
+    this.toxicTarget = liveDrops > 0 ? 1 : 0
+    this.toxicDensityTarget = toxicDensity(liveDrops, C().TOXIC_DROPS_IN_FLIGHT)
   }
   private toxicTarget = 0
+  private toxicDensityTarget = 0
+
+  /**
+   * The density this layer was **asked** for, before the ramp.
+   *
+   * Exposed so a check can assert the derivation exactly — the drawn count below
+   * is the ramped effect of it and lags by design, which makes it the wrong thing
+   * to compare a formula against. Both are asserted: this one says the join is
+   * wired, `rainDrops` says something reached the screen.
+   */
+  get toxicDensityAsked(): number {
+    return this.toxicDensityTarget
+  }
 
   /** How many drops are actually being drawn — for counting at both ends. */
   get rainDrops(): number {
-    return this.rain.intensity > 0.02 ? this.rain.drops.length : 0
+    return this.rain.intensity > 0.02 ? this.rain.visibleDrops : 0
+  }
+
+  /** The pool's size, so a check can tell "thinned" from "off". */
+  get rainPool(): number {
+    return this.rain.drops.length
   }
 
   get emberCount(): number {
@@ -110,7 +148,7 @@ export class WeatherLayer {
    */
   update(dt: number, vents: VentView[], fallScale: number, fog = 0): void {
     this.rain.resize(this.cam.width, this.cam.height)
-    this.rain.update(dt, this.toxicTarget)
+    this.rain.update(dt, this.toxicTarget, this.toxicDensityTarget)
 
     for (const v of vents) {
       if (v.jetting) this.embers.emit(dt, v.x, v.y, v.lean, 260)
@@ -159,7 +197,13 @@ export class WeatherLayer {
       return
     }
     g.lineStyle(2, RAIN_COLOUR, 0.9 * t)
-    for (const d of this.rain.drops) {
+    // **A slice, not the pool** (T20.05): how many droplets are drawn is the real
+    // rain's density. The green cast below stays on `intensity` — "it is raining
+    // acid" is a fact about the effect, not about how hard it is falling, and
+    // tying the wash to the count would make a thinning shower look like a
+    // brightening one.
+    const n = this.rain.visibleDrops
+    for (const d of this.rain.drops.slice(0, n)) {
       // Streak length follows fall speed, so the sheet has depth rather than
       // reading as a field of identical ticks.
       const len = d.len + d.vy * 0.03

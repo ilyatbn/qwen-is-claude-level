@@ -140,6 +140,8 @@ export interface PlayerState {
  */
 export interface Constants {
   MINE_ARM_TIME: number
+  /** Live toxic drops during a full-rate shower — the emitter's divisor (T20.05). */
+  TOXIC_DROPS_IN_FLIGHT: number
   TOMBSTONE_W: number
   TOMBSTONE_H: number
   MAX_TOMBSTONES: number
