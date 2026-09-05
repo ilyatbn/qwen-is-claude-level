@@ -840,14 +840,7 @@ export class GameScene extends Phaser.Scene {
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       if (p.rightButtonDown()) {
-        // docs/30 §3: right-click toggles the inventory panel. It is client-side
-        // and sends nothing; the round keeps running while it is open.
-        // §C10: right-click reveals the backpack's two rows. Client-side, sends
-        // nothing, and **not a pause** — the round runs behind it, exactly as
-        // §B4 established for the death screen.
-        this.invOpen = this.inventory?.toggle() ?? !this.invOpen
-        this.audio.play('ui_click', { volume: 0.5 })
-        this.refreshHud()
+        this.toggleBackpack()
         return
       }
       this.conn.sendFire()
@@ -1600,6 +1593,20 @@ export class GameScene extends Phaser.Scene {
    * two callers — the map arriving, and the skin becoming known afterwards — and
    * the depth is the part a second copy would forget.
    */
+  /**
+   * Open or close the backpack (§C10, §F4.1's right button).
+   *
+   * A method because there are two callers now: the canvas's `pointerdown`, and
+   * the panel itself for the pixels between its tiles (T20.09). It is
+   * client-side and sends nothing, and it is **not a pause** — the round runs
+   * behind it, exactly as §B4 established for the death screen.
+   */
+  private toggleBackpack(): void {
+    this.invOpen = this.inventory?.toggle() ?? !this.invOpen
+    this.audio.play('ui_click', { volume: 0.5 })
+    this.refreshHud()
+  }
+
   private buildLocalView(): void {
     this.localView?.destroy()
     this.localView = new PlayerView(this, this.scores.get(this.me)?.skinId ?? 0)
@@ -1731,6 +1738,12 @@ export class GameScene extends Phaser.Scene {
         // The drag is **intent**. Nothing moves here; the server answers with an
         // `inventory` event and that is what gets rendered (§C10).
         moveItem: (from, to) => this.conn.sendRaw('move_item', { from, to }),
+        // T20.09. Intent, like the drag: the server refuses an empty slot, an
+        // out-of-range one and the starting kit, and answers with `inventory`.
+        dropItem: (slot) => this.conn.sendRaw('drop_item', { slot }),
+        // The panel's own right-click, in its gaps and padding, does what the
+        // canvas's does — one action, not a second copy of it.
+        toggleBackpack: () => this.toggleBackpack(),
         selectSlot: (slot) => {
           this.selectedSlot = slot
           this.conn.sendSelectSlot(slot)

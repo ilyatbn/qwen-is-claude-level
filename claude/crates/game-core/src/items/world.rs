@@ -29,6 +29,18 @@ pub enum SpawnSource {
     Crate,
     Buried,
     Death,
+    /// Dropped on purpose by the player carrying it (T20.09).
+    ///
+    /// Its own variant rather than reusing `Death`, because the two differ in
+    /// what they mean to a reader of a log and to anything that later wants to
+    /// draw them apart — and because `Death`'s lock exists so a killer cannot
+    /// hoover a corpse, which is a different rule from "do not hand me back the
+    /// thing I just put down".
+    ///
+    /// **No client change is required by this variant.** Every client read of
+    /// `source` is a `=== 'Crate'` comparison and the parse is untyped with a
+    /// fallback, so a new variant flows through and draws as an ordinary item.
+    Dropped,
 }
 
 #[derive(Clone, Debug)]
@@ -143,10 +155,13 @@ impl WorldItems {
             vel,
             grounded: false,
             spawned_at: now,
-            pickup_locked_until: if source == SpawnSource::Death {
-                now + DEATH_DROP_LOCK
-            } else {
-                0.0
+            pickup_locked_until: match source {
+                SpawnSource::Death => now + DEATH_DROP_LOCK,
+                // Without this the drop lands inside `PICKUP_RADIUS` of the
+                // player who dropped it and `resolve_pickups` takes it straight
+                // back on the same tick — the gesture would do nothing at all.
+                SpawnSource::Dropped => now + crate::constants::DROP_PICKUP_LOCK,
+                _ => 0.0,
             },
             source,
         });

@@ -853,3 +853,190 @@ fn the_graveyard_is_capped_and_evictions_are_announced() {
     assert_eq!(w.tombstones.len(), cap, "the cap holds");
     assert_eq!(despawns, 3, "three over the cap, three evictions announced");
 }
+
+// ---------------------------------------------------------------------------
+// T20.09 — dropping a slot on the ground
+// ---------------------------------------------------------------------------
+
+/// The tile empties, the world gains the item, **counted at both ends**.
+///
+/// The stack that leaves the inventory and the one that appears on the ground
+/// are asserted against each other rather than each against a literal: a drop
+/// that halved a count, or dropped a different item, satisfies "the slot is
+/// empty" and "something is on the ground" separately.
+#[test]
+fn dropping_a_slot_moves_the_whole_stack_to_the_ground_at_your_feet() {
+    let mut w = playing();
+    let at = spawn_at(&mut w, 0);
+    give(&mut w, 0, BAZOOKA, 2);
+    let slot = (0..game_core::constants::INVENTORY_SLOTS as u8)
+        .find(|s| {
+            w.player(0)
+                .and_then(|p| p.inventory.slot(*s))
+                .is_some_and(|st| st.item == BAZOOKA)
+        })
+        .expect("the bazooka is in a slot");
+    let held = w
+        .player(0)
+        .and_then(|p| p.inventory.slot(slot))
+        .expect("a stack to drop");
+    let before = w.items.iter().count();
+    let _ = w.drain_events();
+
+    assert!(w.drop_item(0, slot), "the drop was refused");
+
+    assert!(
+        w.player(0).and_then(|p| p.inventory.slot(slot)).is_none(),
+        "the tile still holds something"
+    );
+    assert_eq!(
+        w.items.iter().count(),
+        before + 1,
+        "nothing reached the ground"
+    );
+    let dropped = w.items.iter().last().expect("the dropped item");
+    assert_eq!(
+        dropped.item, held.item,
+        "a different item reached the ground"
+    );
+    assert_eq!(
+        dropped.count, held.count,
+        "the count changed on the way down"
+    );
+    assert!(
+        (dropped.pos - at).len() < 1.0,
+        "the drop landed {:.0} px from the player, not at their feet",
+        (dropped.pos - at).len()
+    );
+    // The client is told twice, and both are needed: `Inventory` redraws the
+    // bag, `ItemSpawn` draws the thing on the floor. A drop that emitted only
+    // the first would leave an invisible item to walk into.
+    let evs = w.drain_events();
+    assert!(
+        evs.iter()
+            .any(|e| matches!(e, GameEvent::Inventory { player_id, .. } if *player_id == 0)),
+        "no inventory event: the bag on screen still shows the item"
+    );
+    assert!(
+        evs.iter().any(|e| matches!(e, GameEvent::ItemSpawn { .. })),
+        "no item_spawn event: nothing is drawn where it landed"
+    );
+}
+
+/// It is not picked straight back up — **with the control that it can be
+/// afterwards.**
+///
+/// `resolve_pickups` collects anything inside `PICKUP_RADIUS` and a drop lands
+/// at the player's feet, so without `DROP_PICKUP_LOCK` the gesture does nothing
+/// at all. The second half is what stops this passing for an item that has
+/// become permanently uncollectable.
+#[test]
+fn a_dropped_item_is_not_hoovered_back_up_and_can_be_taken_once_the_lock_expires() {
+    let mut w = playing();
+    spawn_at(&mut w, 0);
+    give(&mut w, 0, MEDKIT, 1);
+    let slot = (0..game_core::constants::INVENTORY_SLOTS as u8)
+        .find(|s| {
+            w.player(0)
+                .and_then(|p| p.inventory.slot(*s))
+                .is_some_and(|st| st.item == MEDKIT)
+        })
+        .expect("the medkit is in a slot");
+    assert!(w.drop_item(0, slot));
+    // **By id, not by count.** A live world keeps spawning periodic items, so
+    // `items.len()` is about the spawn schedule and not about this drop — it
+    // read 9 the first time this was written that way.
+    let dropped = w.items.iter().last().expect("the dropped medkit").id;
+    let still_there = |w: &World| w.items.iter().any(|i| i.id == dropped);
+
+    // Stand still on top of it for the whole lock.
+    let ticks = (game_core::constants::DROP_PICKUP_LOCK / SIM_DT) as u32;
+    for _ in 0..ticks {
+        w.step(SIM_DT);
+    }
+    assert!(
+        still_there(&w),
+        "the item was picked back up inside DROP_PICKUP_LOCK — the drop did nothing"
+    );
+
+    // The control: keep standing there, past the lock.
+    for _ in 0..ticks {
+        w.step(SIM_DT);
+    }
+    assert!(
+        !still_there(&w),
+        "the item was never collectable again, so the assertion above is about a \
+         broken pickup rather than about the lock"
+    );
+}
+
+/// The **starting kit** cannot be dropped, and the control is a stack that can.
+///
+/// §F5: "no ammo, and it cannot be dropped or lost". Refused through
+/// `STARTING_KIT`, not by naming the shovel — the list is what `die` filters on,
+/// and §F7's `all` start kit makes "the kit grows" a live possibility.
+#[test]
+fn the_starting_kit_cannot_be_dropped_and_an_ordinary_stack_can() {
+    let mut w = playing();
+    spawn_at(&mut w, 0);
+    let kit = *game_core::player::state::STARTING_KIT
+        .first()
+        .expect("a starting kit");
+    let kit_slot = (0..game_core::constants::INVENTORY_SLOTS as u8)
+        .find(|s| {
+            w.player(0)
+                .and_then(|p| p.inventory.slot(*s))
+                .is_some_and(|st| st.item == kit)
+        })
+        .expect("the kit is issued at spawn");
+
+    let before = w.items.iter().count();
+    assert!(!w.drop_item(0, kit_slot), "the starting kit was dropped");
+    assert!(
+        w.player(0)
+            .and_then(|p| p.inventory.slot(kit_slot))
+            .is_some_and(|st| st.item == kit),
+        "the kit left the inventory even though the drop reported a refusal"
+    );
+    assert_eq!(w.items.iter().count(), before, "the kit reached the ground");
+
+    // The control, in the same fixture: an ordinary stack in the same player's
+    // bag **is** droppable, so the refusal above is about the kit and not about
+    // a drop path that refuses everything.
+    give(&mut w, 0, BAZOOKA, 2);
+    let other = (0..game_core::constants::INVENTORY_SLOTS as u8)
+        .find(|s| {
+            w.player(0)
+                .and_then(|p| p.inventory.slot(*s))
+                .is_some_and(|st| st.item == BAZOOKA)
+        })
+        .expect("the bazooka is in a slot");
+    assert!(w.drop_item(0, other), "nothing at all could be dropped");
+}
+
+/// An empty slot, an out-of-range one and a dead player are all refused, and
+/// none of them puts anything on the ground.
+///
+/// The index comes off the wire (`unwrap_or(255)` at the socket), so "out of
+/// range" is a real input rather than a hypothetical.
+#[test]
+fn a_drop_is_refused_for_an_empty_slot_an_impossible_one_and_a_corpse() {
+    let mut w = playing();
+    spawn_at(&mut w, 0);
+    let before = w.items.iter().count();
+
+    let empty = (0..game_core::constants::INVENTORY_SLOTS as u8)
+        .find(|s| w.player(0).and_then(|p| p.inventory.slot(*s)).is_none())
+        .expect("an empty slot");
+    assert!(!w.drop_item(0, empty), "an empty slot dropped something");
+    assert!(!w.drop_item(0, 255), "slot 255 was accepted");
+    assert!(
+        !w.drop_item(9, 0),
+        "a player who is not here dropped something"
+    );
+    assert_eq!(
+        w.items.iter().count(),
+        before,
+        "a refused drop still spawned an item"
+    );
+}

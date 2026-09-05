@@ -523,6 +523,24 @@ pub const INVENTORY_SLOTS: usize = QUICK_SLOTS + BACKPACK_SLOTS;
 pub const MAX_STACK: u8 = 9;
 /// From player centre to pickup centre.
 pub const PICKUP_RADIUS: f32 = 20.0;
+/// A deliberately dropped item cannot be picked up again for this long (T20.09).
+///
+/// **Not optional, and not a nicety.** `resolve_pickups` collects anything within
+/// `PICKUP_RADIUS` and a drop lands at the player's feet, so without a lock the
+/// item is back in the bag on the same tick and the gesture does nothing at all.
+///
+/// Longer than `DEATH_DROP_LOCK`, and for a different reason: a death lock stops
+/// the *killer* hoovering a corpse, while this one has to outlast the player
+/// walking away from what they just put down. A second is long enough to get
+/// clear at `WALK_SPEED` and short enough that a fight over a dropped weapon is
+/// still a fight.
+///
+/// It lives **here** rather than beside `DEATH_DROP_LOCK` in `items/world.rs`,
+/// which is where a new constant would naturally have gone: that one is a
+/// pre-existing violation of "every numeric tunable lives in `constants.rs`"
+/// (`STARTING_KIT` at `player/state.rs` is the same class), and putting a second
+/// one next to it would have replicated it rather than noticed it.
+pub const DROP_PICKUP_LOCK: f32 = 1.5;
 /// Periodic ground spawns. **20.0 → 14.0** (T11.13).
 ///
 /// With a 24-item registry a round was showing 51 % / 58 % / 64 % of the arsenal

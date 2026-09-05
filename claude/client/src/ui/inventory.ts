@@ -23,6 +23,23 @@ import {
 export interface InventoryDeps {
   /** Send the drag. The server validates and answers with `inventory`. */
   moveItem(from: number, to: number): void
+  /**
+   * Right-click a tile to put its stack on the ground (T20.09).
+   *
+   * Intent, like `moveItem`: nothing leaves the panel here. The server refuses
+   * an empty slot, an out-of-range one and the starting kit, and answers with
+   * `inventory` — which is what gets rendered.
+   */
+  dropItem(slot: number): void
+  /**
+   * Open or close the backpack, from the panel's own area (T20.09).
+   *
+   * The **same** thing the canvas's right-click does, and it is a dep rather
+   * than a local `toggle()` so it stays one action: `GameScene` also plays the
+   * click, updates its own `invOpen` and refreshes the HUD, and a second copy
+   * of the gesture here would drift from all three.
+   */
+  toggleBackpack(): void
   /** Select a quick-bar slot. */
   selectSlot(slot: number): void
   /**
@@ -82,6 +99,22 @@ export class InventoryPanel {
       // 34 px clears `#game-hud`, the full-width text strip pinned to bottom:0.
       'position:fixed;left:50%;bottom:34px;transform:translateX(-50%);z-index:13;' +
       'pointer-events:none;display:flex;flex-direction:column;align-items:center;gap:6px;'
+
+    // **The browser menu, suppressed here rather than in `main.ts`** (T20.09).
+    // `main.ts` suppresses `contextmenu` on `game.canvas` and `#game`, and this
+    // root is appended to `body` — so a right-click on a tile bubbles
+    // tile → `#inventory` → `body` and never passes through either of them. The
+    // menu popped over the panel, and the existing checks could not see it:
+    // `inventory-ui.mjs` right-clicks at a hardcoded viewport centre, which
+    // lands on the canvas where suppression already worked.
+    this.root.addEventListener('contextmenu', (e) => {
+      e.preventDefault()
+      // Reached only for the panel's own gaps and padding — a tile stops it
+      // above. Closing is what the canvas would have done with this click
+      // before the panel started taking events, so the gesture keeps the
+      // meaning it had everywhere except on a tile.
+      this.deps.toggleBackpack()
+    })
 
     this.backpack = doc.createElement('div')
     this.backpack.id = 'inventory-backpack'
@@ -148,6 +181,18 @@ export class InventoryPanel {
       tile.addEventListener('click', () => {
         if (regionOf(i, quickSlots) === 'quick') this.deps.selectSlot(i)
       })
+      // T20.09: right-click a tile to drop what is in it.
+      //
+      // **This does not fight §F4.1.** That clause says the right button opens
+      // the backpack, and it still does — everywhere except on a tile, which is
+      // a DOM element above the canvas that the canvas never sees the event
+      // for. `stopPropagation` keeps it off the root's own handler below, so
+      // one gesture has one meaning per thing it lands on.
+      tile.addEventListener('contextmenu', (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        this.deps.dropItem(i)
+      })
 
       this.tiles.push(tile)
       ;(i < quickSlots ? this.bar : this.backpack).appendChild(tile)
@@ -165,6 +210,26 @@ export class InventoryPanel {
   toggle(open = !this.open): boolean {
     this.open = open
     this.backpack.style.display = open ? 'grid' : 'none'
+    // **The panel owns its own area while it is open** (T20.09), and this is a
+    // decision rather than a tidy-up.
+    //
+    // The tiles have always been `pointer-events: auto` and the root `none`, so
+    // with a drop on the tiles the gesture's meaning changed **inside the
+    // panel**: on a tile it drops, and in the 4 px gap between two tiles or on
+    // the backpack's 6 px padding it fell through to the canvas and *closed the
+    // backpack*. Two outcomes four pixels apart, on a panel the player is
+    // deliberately aiming at — a bug report written before the bug exists.
+    //
+    // Delegating from the root was the other option and it cannot work:
+    // `pointer-events: none` means the root is not an event target at all, so a
+    // click in a gap never reaches it to be delegated. Taking the events is the
+    // only way to make the answer depend on what was aimed at.
+    //
+    // Only **while open**, because the reason the root was `none` is real: it is
+    // as wide as the bar and a transparent block over the play field would
+    // swallow shots meant for it. Closed, the root is the quick bar's row and
+    // the world keeps every pixel it had.
+    this.root.style.pointerEvents = open ? 'auto' : 'none'
     return this.open
   }
 

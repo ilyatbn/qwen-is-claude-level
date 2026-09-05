@@ -469,7 +469,7 @@ right-button decision rather than around it. **Amendments are the coordinator's.
 - [x] [T20.06](M20/T20.06-battery-packs-you-never-see.md) — Battery packs you never see **(v8)**
 - [ ] [T20.07](M20/T20.07-the-flashlight-is-wired-to-nothing.md) — The flashlight is wired to nothing, and the new one is passive **(v8)**
 - [ ] [T20.08](M20/T20.08-the-shield-becomes-a-carried-thing.md) — The shield generator becomes a carried thing **(v8)**
-- [ ] [T20.09](M20/T20.09-drop-an-item.md) — Right-click an inventory tile to drop it **(v8)**
+- [x] [T20.09](M20/T20.09-drop-an-item.md) — Right-click an inventory tile to drop it **(v8)**
 - [ ] [T20.10](M20/T20.10-animals-on-the-ground.md) — Animals on the ground **(v8)**
 - [ ] [T20.11](M20/T20.11-fall-damage.md) — Fall damage **(v8)** — **BLOCKED on overriding `docs/20` §9**
 - [ ] [T20.12](M20/T20.12-hats-and-sunglasses.md) — Hats and sunglasses **(v8)** — depends on T20.04

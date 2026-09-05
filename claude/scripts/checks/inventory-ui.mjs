@@ -306,6 +306,127 @@ if (!bar) {
   }
 }
 
+// --- T20.09: right-click a tile to drop what is in it -----------------------
+//
+// **By selector, never by coordinate.** The panel is `position: fixed;
+// left: 50%; bottom: 34px`, so a coordinate-based drop is distinguishable from
+// the backpack toggle only by arithmetic the next layout change breaks — and
+// the two right-click gestures in this file already aim at a hardcoded
+// `{x: 640, y: 360}`, which is the canvas.
+{
+  // The viewport centre, which is **canvas** — clear of the panel, which is
+  // `bottom: 34px`. Its own constant because the one above is scoped to the
+  // quick-bar block, and because what matters here is that it is *not* a tile.
+  const canvasCentre = { x: 640, y: 360 }
+  const bagOf = (d) => (d.slots ?? []).filter((s) => s.key).length
+  const worldItems = async () => (await dbg()).worldItems ?? 0
+
+  const before = await dbg()
+  // A quick-bar slot holding something that is **not** the starting kit: §F5
+  // issues a shovel in slot 0 and it is refusable by design, so dropping that
+  // would measure the refusal rather than the drop.
+  const kit = 'shovel'
+  const row = (before.slots ?? []).find((s) => s.key && s.key !== kit && s.slot < QUICK)
+  if (!row) {
+    fail(`no droppable quick-bar slot: ${JSON.stringify((before.slots ?? []).map((s) => s.key))}`)
+  } else {
+    const bagBefore = bagOf(before)
+    const groundBefore = await worldItems()
+    await page.click(`[data-slot="${row.slot}"]`, { button: 'right' })
+    await page
+      .waitForFunction(
+        (s) => (window.__game.debug().slots ?? [])[s]?.key === null,
+        row.slot,
+        { timeout: 10_000 },
+      )
+      .catch(() => {})
+    const after = await dbg()
+
+    // **Both ends** (§A39): the tile emptied *and* the world gained an item.
+    // Either alone passes for a client that redrew without the server agreeing,
+    // or for a server that spawned something nobody dropped.
+    if ((after.slots ?? [])[row.slot]?.key !== null) {
+      fail(`right-clicking slot ${row.slot} ("${row.key}") did not empty the tile`)
+    } else if (bagOf(after) !== bagBefore - 1) {
+      fail(`the bag went ${bagBefore} -> ${bagOf(after)} slots, not one fewer`)
+    } else if ((after.worldItems ?? 0) <= groundBefore) {
+      fail(
+        `the tile emptied and the world still holds ${after.worldItems} items ` +
+          `(was ${groundBefore}) — the stack went nowhere`,
+      )
+    } else {
+      ok(
+        `right-clicking a tile dropped "${row.key}": bag ${bagBefore} -> ${bagOf(after)}, ` +
+          `ground ${groundBefore} -> ${after.worldItems}`,
+      )
+    }
+
+    // **It is not picked straight back up.** The drop lands at the player's
+    // feet, inside `PICKUP_RADIUS`, so without `DROP_PICKUP_LOCK` the gesture
+    // does nothing at all. Sampled after a beat, so this is about the lock and
+    // not about the tick the drop happened on.
+    await sleep(400)
+    const settled = await dbg()
+    if ((settled.worldItems ?? 0) <= groundBefore) {
+      fail('the dropped item was hoovered straight back up — the drop did nothing')
+    } else {
+      ok(`and it is still on the ground a moment later (${settled.worldItems} items)`)
+    }
+
+    // **The starting kit is refused**, and the drop above is the control that
+    // makes this about the kit rather than about a gesture that does nothing.
+    const kitRow = (settled.slots ?? []).find((s) => s.key === kit)
+    if (!kitRow) {
+      fail(`§F5 issues a ${kit} at spawn and there is none in the bag, so the refusal below is vacuous`)
+    } else {
+      // **The bag, not the ground.** `worldItems` counts everything in the
+      // world and `ITEM_SPAWN_INTERVAL` keeps adding to it, so "the ground did
+      // not grow" over a window with a wait in it is a claim about the spawn
+      // schedule. The bag only changes when this client changes it.
+      const kitBag = bagOf(settled)
+      // The kit is not always in the quick bar — the drag steps above move
+      // things — and a backpack tile is `display:none` while the bag is shut,
+      // which Playwright refuses to click. Open it the way a player would.
+      const inBackpack = kitRow.slot >= QUICK
+      if (inBackpack) {
+        await page.mouse.click(canvasCentre.x, canvasCentre.y, { button: 'right' })
+        await page.waitForSelector('#inventory-backpack', { state: 'visible', timeout: 10_000 })
+      }
+      await page.click(`[data-slot="${kitRow.slot}"]`, { button: 'right' })
+      await sleep(600)
+      const afterKit = await dbg()
+      if ((afterKit.slots ?? [])[kitRow.slot]?.key !== kit) {
+        fail(`the ${kit} was dropped — §F5 says it cannot be dropped or lost`)
+      } else if (bagOf(afterKit) !== kitBag) {
+        fail(
+          `the ${kit} is still in slot ${kitRow.slot} and the bag went ${kitBag} -> ` +
+            `${bagOf(afterKit)} slots — something else was dropped instead`,
+        )
+      } else {
+        ok(`the starting kit (${kit}) is refused, and stays in slot ${kitRow.slot}`)
+      }
+      if (inBackpack) {
+        await page.mouse.click(canvasCentre.x, canvasCentre.y, { button: 'right' })
+        await sleep(250)
+      }
+    }
+
+    // **The browser menu does not pop.** `main.ts` suppresses `contextmenu` on
+    // the canvas and `#game`; this panel is appended to `body`, so it never
+    // passed through either — and the two right-clicks above aim at the canvas,
+    // where suppression already worked. Asserted through `defaultPrevented`,
+    // which is the thing that decides whether a menu appears.
+    const prevented = await page.evaluate(() => {
+      const tile = document.querySelector('#inventory [data-slot]')
+      const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+      tile.dispatchEvent(e)
+      return e.defaultPrevented
+    })
+    if (!prevented) fail('a right-click on an inventory tile leaves the browser menu to open')
+    else ok('the browser context menu is suppressed over the inventory')
+  }
+}
+
 // --- §F4.1: the right button opens the backpack and fires NOTHING ----------
 //
 // The mouse mapping was specified as both-buttons-fire and then withdrawn, so

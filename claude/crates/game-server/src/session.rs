@@ -815,6 +815,34 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                     },
                 );
             }
+            {
+                let ctx = ctx.clone();
+                // T20.09's drop. **Untrusted, exactly as `move_item` is**:
+                // `unwrap_or(255)` makes a missing field a refusal rather than a
+                // default of 0 — which would silently mean "drop the first slot"
+                // for any client that sent a malformed payload, and the first
+                // slot is where the starting kit lives. `World::drop_item` bounds
+                // the index and decides the rest.
+                socket.on(
+                    "drop_item",
+                    move |socket: SocketRef, Data::<serde_json::Value>(p)| {
+                        let ctx = ctx.clone();
+                        async move {
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
+                            if let Some(id) = sessions.player_of(socket.id) {
+                                let slot = p
+                                    .get("slot")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(255)
+                                    .min(255) as u8;
+                                room.send(Command::DropItem(id, slot));
+                            }
+                        }
+                    },
+                );
+            }
             // §C9: `Q` and `R`. Slotless — heals and batteries are counters, not
             // inventory, so unlike `use_item` there is nothing to index and
             // nothing an attacker can point out of range.

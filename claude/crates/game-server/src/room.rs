@@ -68,6 +68,8 @@ pub enum Command {
     QuickThrow(PlayerId),
     /// §C10's drag. Both indices are attacker-controlled and both are checked.
     MoveItem(PlayerId, u8, u8),
+    /// T20.09: put one slot's stack on the ground at the player's feet.
+    DropItem(PlayerId, u8),
     Fire(PlayerId),
     ToggleFlashlight(PlayerId),
     VoteRestart(PlayerId, bool),
@@ -163,6 +165,7 @@ impl std::fmt::Debug for Command {
             Command::UseBatteryPack(id) => write!(f, "UseBatteryPack({id})"),
             Command::QuickThrow(id) => write!(f, "QuickThrow({id})"),
             Command::MoveItem(id, a, b) => write!(f, "MoveItem({id}, {a} -> {b})"),
+            Command::DropItem(id, slot) => write!(f, "DropItem({id}, {slot})"),
             Command::Fire(id) => write!(f, "Fire({id})"),
             Command::ToggleFlashlight(id) => write!(f, "ToggleFlashlight({id})"),
             Command::VoteRestart(id, v) => write!(f, "VoteRestart({id}, {v})"),
@@ -894,6 +897,7 @@ pub fn to_command(c: &ReplayCommand) -> Command {
         ReplayCommand::UseBatteryPack(id) => Command::UseBatteryPack(*id),
         ReplayCommand::QuickThrow(id) => Command::QuickThrow(*id),
         ReplayCommand::MoveItem(id, f, t) => Command::MoveItem(*id, *f, *t),
+        ReplayCommand::DropItem(id, slot) => Command::DropItem(*id, *slot),
         ReplayCommand::Fire(id) => Command::Fire(*id),
         ReplayCommand::ToggleFlashlight(id) => Command::ToggleFlashlight(*id),
         ReplayCommand::VoteRestart(id, v) => Command::VoteRestart(*id, *v),
@@ -1686,6 +1690,18 @@ impl Room {
                 if let Some(world) = self.world.as_mut() {
                     if !world.move_item(id, from, to) {
                         tracing::debug!(target: "game::items", player = id, from, to, "move refused");
+                    }
+                }
+            }
+            Command::DropItem(id, slot) => {
+                // Recorded before it is applied, like every other command here:
+                // it changes the simulation — an item leaves an inventory and
+                // appears in the world — so a replay that skipped it diverges on
+                // the next pickup.
+                self.note(R::DropItem(id, slot));
+                if let Some(world) = self.world.as_mut() {
+                    if !world.drop_item(id, slot) {
+                        tracing::debug!(target: "game::items", player = id, slot, "drop refused");
                     }
                 }
             }

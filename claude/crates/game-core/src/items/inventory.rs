@@ -190,6 +190,29 @@ impl Inventory {
         true
     }
 
+    /// Take a whole stack out of one slot (T20.09's drop).
+    ///
+    /// **Whole, not partial.** A drop that split a stack would need a count on
+    /// the wire and a rule for what a client may claim about it; §C24 already
+    /// makes a weapon one slot ever, so "drop the tile" is the gesture and the
+    /// tile is the unit.
+    ///
+    /// Bounds and emptiness are decided here rather than by the caller, the way
+    /// `move_stack` decides them — the client shows intent, this decides — and
+    /// the selection is moved off a slot this empties for the same reason
+    /// `move_stack` does it: a selection on an empty slot fires into nothing.
+    pub fn take_slot(&mut self, slot: u8) -> Option<Stack> {
+        let i = slot as usize;
+        if i >= INVENTORY_SLOTS {
+            return None;
+        }
+        let taken = self.slots[i].take()?;
+        if self.slots[self.selected as usize].is_none() {
+            self.select_next_non_empty();
+        }
+        Some(taken)
+    }
+
     /// Fold the inventory into a world hash. Private slots, so it lives here.
     pub fn hash_into(&self, h: &mut blake3::Hasher) {
         for s in &self.slots {

@@ -91,9 +91,23 @@ export default async function ({ page, shot, log }) {
   // for the whole capture. The assertion is the same one the tracer half made —
   // ordnance emits light — read off a body that is genuinely there.
   await page.waitForFunction('window.__game.ordnance().projectiles > 0', null, { timeout: 10000 })
-  await page.waitForTimeout(400)
+  // **Polled, not slept for**, and the threshold is untouched (T19.22's shape,
+  // repaired here because it went red in three of this shift's gates and green
+  // 3/3 standalone). The smg is firing every 40 ms for this whole window, so
+  // how many rounds are alive *at one instant* is a lottery the sample used to
+  // enter after two bare `waitForTimeout`s: it reads 3 on an idle box and 2
+  // under gate load. Giving the condition a bounded window to be observed in
+  // does not lower the bar — a client that genuinely emits fewer than 3 never
+  // satisfies the poll, and fails below with the same message and the same
+  // number.
+  const NEEDED = 3
+  await page
+    .waitForFunction((n) => window.__game.ordnance().lights >= n, NEEDED, { timeout: 10_000 })
+    .catch(() => {})
   const lit = await page.evaluate(() => window.__game.ordnance().lights)
-  if (lit < 3) throw new Error(`gunfire emits only ${lit} lights — it will be lost in the dark`)
+  if (lit < NEEDED) {
+    throw new Error(`gunfire emits only ${lit} lights — it will be lost in the dark`)
+  }
   await shot('night-tracers')
   const during = await page.evaluate(() => window.__game.ordnance())
   await page.evaluate(() => clearInterval(window.__smg))

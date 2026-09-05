@@ -448,3 +448,92 @@ supports is narrow and worth keeping: **a long session degrades this machine for
 family of checks that live on a two-second wall-clock margin**, the reds move around within
 that family rather than repeating, and a single red gate on one of them is not evidence about
 the tree. Five gates earlier the same night, on progressively larger trees, were green.
+
+## T20.09 landed — five layers, and the two decisions the task asked for
+
+The command follows `MoveItem` term for term: `inventory.ts` handler →
+`connection.ts`'s `sendRaw` → `session.rs` socket handler (`unwrap_or(255)`, so a missing
+field is a refusal rather than a default of 0 — and slot 0 is where the starting kit lives)
+→ `Command::DropItem` → `World::drop_item` beside `move_item` → `GameEvent::Inventory` +
+`ItemSpawn`. What follows is what the diff does not say.
+
+### `REPLAY_VERSION` did **not** move, and the reasoning is the repo's own
+
+Tag 22. `replay.rs`'s doc comment gives the policy across all three prior bumps: bump when
+the **header layout** changes (v2, v4) or when an old file *"would load, run, and diverge
+silently"* (v3). A new tag does neither — the header is untouched and a v4 file simply
+contains no tag-22 commands, so it replays byte for byte. Bumping "to be safe" would reject
+every recording anyone already has, because `decode` refuses any version mismatch outright.
+`every_command_really_is_every_command`'s count moved 21 → 22 and the `match` beside it made
+the addition a compile error, which is what it is for.
+
+**T20.07 and T20.08 are the opposite case and must not copy this.** Both delete a field that
+is in the state hash, so an old file would load and diverge — that is the v3 precedent, and
+they share **one** bump between them rather than taking one each.
+
+### Two decisions the task said to settle rather than discover
+
+**The gesture's geometry.** Tiles were `pointer-events: auto` and the root `none`, so with a
+drop on the tiles the meaning changed *inside the panel*: on a tile it drops, and in the 4 px
+gap between two tiles or on the backpack's 6 px padding it fell through to the canvas and
+**closed the backpack**. Two outcomes four pixels apart, on a panel the player is aiming at.
+Delegating from the root — the other option the task offers — cannot work: `pointer-events:
+none` means the root is not an event target at all, so a click in a gap never reaches it to be
+delegated. So the root takes the events **while open** and owns its own close gesture, which
+is the same `toggleBackpack` the canvas calls rather than a second copy of it. Only while
+open, because the reason the root was `none` is real: it is as wide as the bar and a
+transparent block over the play field would swallow shots meant for it.
+
+**The lock.** `DROP_PICKUP_LOCK = 1.5` is in `constants.rs`, **not** beside `DEATH_DROP_LOCK`
+in `items/world.rs` where a new constant would naturally have gone — that one is a
+pre-existing violation of "every numeric tunable lives in `constants.rs`" (`STARTING_KIT` in
+`player/state.rs` is the same class), and putting a second one next to it would replicate the
+violation rather than notice it. Longer than `DEATH_DROP_LOCK` and for a different reason: a
+death lock stops the *killer* hoovering a corpse, this one has to outlast the player walking
+away from what they put down.
+
+### Smaller things
+
+- **`SpawnSource::Dropped` needs no client change**, and that was checked rather than
+  assumed: every client read of `source` is a `=== 'Crate'` comparison and the parse is
+  untyped with a fallback, so a new variant draws as an ordinary item.
+- **The starting kit is refused through `STARTING_KIT`**, never by naming the shovel. Writing
+  `item == SHOVEL` is identical today and divergent the day the kit grows, which §F7's `all`
+  start kit makes live. `drop_item` also **reads the slot before taking it**: refusing after
+  the stack is out of the inventory means putting it back, and the put-back is the step a
+  later edit forgets.
+- **A drop falls straight down with no velocity**, unlike a death scatter. A death throws a
+  pile apart so it is readable; a drop is a placement, and an item that skittered away from
+  where you put it would be a worse gesture than the one that did nothing.
+- **`contextmenu` is suppressed on the panel root**, because `main.ts` suppresses it on
+  `game.canvas` and `#game` and the panel is appended to `body` — so a right-click on a tile
+  bubbles tile → `#inventory` → `body` and passes through neither. The existing checks were
+  structurally unable to see it: they right-click at a hardcoded viewport centre, which lands
+  on the canvas where suppression already worked.
+- **`round.forget`-shaped trap avoided in the check.** The kit-refusal assertion first
+  compared `worldItems` before and after — and went red, because `ITEM_SPAWN_INTERVAL` keeps
+  adding to the world and the window has a wait in it. It compares the **bag** now, which
+  only this client changes. The same mistake had already been made and fixed in the Rust
+  test, where `items.len()` read 9.
+- **The starting kit is not always in the quick bar.** The drag steps earlier in
+  `inventory-ui` move things, and a backpack tile is `display:none` while the bag is shut,
+  which Playwright refuses to click. The check opens the bag the way a player would.
+
+### Out of scope and done anyway: `night-combat`'s light sample (T19.22)
+
+**Say so plainly: this is T19.22's file, not T20.09's.** It went red in **three** of this
+shift's gates with "gunfire emits only 2 lights" and green 3/3 standalone, and it blocks every
+remaining task, so it was repaired rather than worked around.
+
+The defect is the documented one. `night-combat.mjs` starts an interval firing an smg every
+40 ms, waits **400 ms bare**, waits for `projectiles > 0`, waits **another 400 ms bare**, and
+then samples `ordnance().lights` **once**, requiring 3. How many rounds are alive at one
+instant of a continuous stream is a lottery: 3 on an idle box, 2 under gate load. The sleep is
+now a `waitForFunction` on `lights >= 3` with the **threshold untouched** — a client that
+genuinely emits fewer never satisfies the poll and fails below with the same message and the
+same number. It is not a weakening; it is a window in which to observe the condition.
+
+**And it exposed something T19.22 should know.** On the very run that passed, the later
+`during sustained fire` read printed `lights: 2` — so the true count oscillates between 2 and
+3 against a floor of 3. The sampling is fixed; the **margin** is thin, and re-deriving that
+floor is still T19.22's question.

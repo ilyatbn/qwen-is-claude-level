@@ -160,6 +160,16 @@ pub enum ReplayCommand {
     QuickThrow(PlayerId),
     /// §C10's drag.
     MoveItem(PlayerId, u8, u8),
+    /// T20.09: one slot's stack put on the ground.
+    ///
+    /// **Tag 22, and `REPLAY_VERSION` does not move.** The policy this file
+    /// records across all three prior bumps is: bump when the *header layout*
+    /// changes (v2, v4) or when an old file "would load, run, and diverge
+    /// silently" (v3). A new tag does neither — the header is untouched, and a
+    /// v4 file simply contains no tag-22 commands, so it replays byte for byte.
+    /// Bumping "to be safe" would reject every recording anyone already has,
+    /// because `decode` refuses any version mismatch outright.
+    DropItem(PlayerId, u8),
     /// A player pressed "Start with bots" (§C18).
     ///
     /// It has to be recorded: it seats bots and begins the round, so a replay
@@ -192,6 +202,7 @@ impl ReplayCommand {
             ReplayCommand::SetBots(..) => 19,
             ReplayCommand::SetStartKit(..) => 20,
             ReplayCommand::SetRoundSeconds(..) => 21,
+            ReplayCommand::DropItem(..) => 22,
         }
     }
 }
@@ -506,6 +517,7 @@ fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayErro
             w.write_all(&[*id, *slot])?
         }
         ReplayCommand::MoveItem(id, from, to) => w.write_all(&[*id, *from, *to])?,
+        ReplayCommand::DropItem(id, slot) => w.write_all(&[*id, *slot])?,
         ReplayCommand::VoteRestart(id, v) => w.write_all(&[*id, u8::from(*v)])?,
         ReplayCommand::Checkpoint { tick, hash } => {
             put_u32(w, *tick)?;
@@ -767,6 +779,7 @@ fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
         14 => ReplayCommand::UseBatteryPack(c.u8()?),
         15 => ReplayCommand::QuickThrow(c.u8()?),
         16 => ReplayCommand::MoveItem(c.u8()?, c.u8()?, c.u8()?),
+        22 => ReplayCommand::DropItem(c.u8()?, c.u8()?),
         other => return Err(ReplayError::BadTag(other)),
     })
 }
@@ -836,6 +849,7 @@ mod tests {
             ReplayCommand::UseBatteryPack(1),
             ReplayCommand::QuickThrow(2),
             ReplayCommand::MoveItem(2, 3, 4),
+            ReplayCommand::DropItem(2, 5),
             ReplayCommand::Unready(0),
             ReplayCommand::SetScale(0, MapScale::Large),
             ReplayCommand::SetBots(0, false),
@@ -880,7 +894,8 @@ mod tests {
                 | ReplayCommand::UseHeal(_)
                 | ReplayCommand::UseBatteryPack(_)
                 | ReplayCommand::QuickThrow(_)
-                | ReplayCommand::MoveItem(..) => {}
+                | ReplayCommand::MoveItem(..)
+                | ReplayCommand::DropItem(..) => {}
             }
         }
         let all = every_command();
@@ -898,8 +913,8 @@ mod tests {
         let tags: std::collections::BTreeSet<u8> = all.iter().map(|c| c.tag()).collect();
         assert_eq!(
             tags.len(),
-            21,
-            "`every_command` returns {} distinct tags, not 21 — a variant was \
+            22,
+            "`every_command` returns {} distinct tags, not 22 — a variant was \
              added to the match above without being added to the list: {tags:?}",
             tags.len()
         );

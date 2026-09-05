@@ -2929,6 +2929,71 @@ impl World {
         true
     }
 
+    /// Put the stack in `slot` on the ground at the player's feet (T20.09).
+    ///
+    /// Beside `move_item` and shaped like it: the client shows intent, this
+    /// decides, and the `bool` says whether anything happened so the caller
+    /// emits `inventory` only when it did.
+    ///
+    /// **The starting kit is refused through `STARTING_KIT`, not by naming the
+    /// shovel.** `PlayerState::die` already filters on that list because "you
+    /// always have one" and "it cannot be dropped or lost" are one rule (§F5);
+    /// writing `item == SHOVEL` here would be identical today and divergent the
+    /// day the kit grows, which §F7's `all` start kit makes a live possibility.
+    ///
+    /// Dropped straight down with no velocity, unlike a death scatter: a death
+    /// throws a pile apart so it is readable, and a drop is a placement — an
+    /// item that skittered away from where you put it would be a worse gesture
+    /// than the one that does nothing.
+    pub fn drop_item(&mut self, id: PlayerId, slot: u8) -> bool {
+        let tick = self.tick;
+        let now = self.round_time;
+        let Some(p) = self.players.iter().find(|p| p.id == id) else {
+            return false;
+        };
+        if !p.alive {
+            return false;
+        }
+        // Read before taking: refusing after the stack is out of the inventory
+        // means putting it back, and the put-back is the step a later edit
+        // forgets.
+        let Some(peek) = p.inventory.slot(slot) else {
+            return false;
+        };
+        if crate::player::state::STARTING_KIT.contains(&peek.item) {
+            return false;
+        }
+        let pos = p.body.pos;
+        let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
+            return false;
+        };
+        let Some(stack) = p.inventory.take_slot(slot) else {
+            return false;
+        };
+        let world_item_id = self.items.spawn(
+            stack.item,
+            stack.count,
+            pos,
+            Vec2::ZERO,
+            SpawnSource::Dropped,
+            now,
+        );
+        self.events.push(GameEvent::ItemSpawn {
+            tick,
+            world_item_id,
+            item_id: stack.item,
+            count: stack.count,
+            x: pos.x,
+            y: pos.y,
+            source: SpawnSource::Dropped,
+        });
+        self.events.push(GameEvent::Inventory {
+            tick,
+            player_id: id,
+        });
+        true
+    }
+
     pub fn select_slot(&mut self, id: PlayerId, slot: u8) {
         let tick = self.tick;
         if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {

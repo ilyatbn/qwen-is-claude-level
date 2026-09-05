@@ -5371,3 +5371,18 @@ took four versions and three of them passed with every pip forced empty; the fin
 **201.3 lit against 0.3 dark**. EXIT=0, 44/44, 25/25, assets ok — on the sixth gate; see
 HANDOFF for the four reds, all in the wall-clock family, and the green baseline that rules
 this tree out.
+
+## T20.09 — five layers, and the gesture settled rather than discovered
+
+`DropItem` follows `MoveItem` term for term through handler → sender → socket
+(`unwrap_or(255)`, because a default of 0 is the slot the starting kit lives in) → command →
+`World::drop_item` → `Inventory` + `ItemSpawn`. Tag **22 and no `REPLAY_VERSION` bump**: the
+header is untouched and a v4 file simply has no tag-22 commands, so it replays byte for byte,
+while a bump would reject every existing recording. The geometry decision: tiles were
+`pointer-events:auto` and the root `none`, so a drop on tiles made the gesture mean two things
+four pixels apart — the root takes events **while open** now and shares `toggleBackpack` with
+the canvas. `DROP_PICKUP_LOCK` goes in `constants.rs`, not beside `DEATH_DROP_LOCK`, which is
+a pre-existing violation rather than a precedent. The kit is refused through `STARTING_KIT`,
+falsified red both ways. **Out of scope and done anyway:** `night-combat` sampled `lights`
+once after two bare sleeps and went red in three of this shift's gates — it polls now, with
+the threshold untouched. EXIT=0, 44/44, 25/25, assets ok.
