@@ -65,6 +65,12 @@ green suite and a working game.
 
 - **Ask what a passing assertion rules out.** If the property would hold with your
   code deleted, you are testing the framework, not your code.
+- **A proposed guard is a claim, and it needs the same falsification as the code it guards.**
+  Ask it of the *remedy*, not only of the bug. This has now been missed three times in one
+  milestone from three different roles: a coder shipping a falsification that edited a path
+  its test never used; a reviewer proposing `set -e` as the fix for the one idiom `set -e`
+  cannot see; and a coordinator writing a rule about instruments while citing a commit sha
+  it had never read back.
 - **Falsify at the *live* binding site.** Seven falsifications here proved nothing
   because they edited a default, a constructor argument or a path the test never
   used. Break the thing the test actually calls.
@@ -122,7 +128,8 @@ green suite and a working game.
 - **Do not run the gate while another vite or cargo run is active.** A loaded box
   makes every wall-clock assertion a coin flip.
 - **Never chain file authoring behind `cd X &&` — and know that `set -e` will not save you.**
-  Measured, not argued:
+  Measured, not argued — **in an empty scratch dir**, or `nonexistent/` may exist and you
+  will get four different answers and conclude the rule is wrong:
 
       ( cd nonexistent && echo hi > a.txt ); echo $?            → 1   a.txt missing
       bash -c 'cd nonexistent && echo hi > a.txt
