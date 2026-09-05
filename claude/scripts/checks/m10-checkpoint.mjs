@@ -26,6 +26,7 @@
  */
 import { join } from 'node:path'
 import { startStack, enterBattle, selectWeapon, sleep, shotsDir } from './harness.mjs'
+import { key as clientKey } from '../lib/client-keys.mjs'
 
 const PORT = 3114
 const shots = shotsDir
@@ -75,7 +76,7 @@ async function openAtMenu(name) {
   page.on('pageerror', (e) => errors.push(String(e)))
   await page.goto(`${viteUrl}/?e2e=1&menu=1&name=${name}`)
   await page.waitForFunction('!!window.__menu', null, { timeout: 60_000 })
-  await page.evaluate((n) => localStorage.setItem('deepcut.name', n), name)
+  await page.evaluate((kv) => localStorage.setItem(kv[0], kv[1]), [clientKey('NAME_KEY'), name])
   return { page, errors, name }
 }
 

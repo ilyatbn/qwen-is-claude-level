@@ -192,6 +192,28 @@ describe('FogClock — the networked client\'s half of §F9', () => {
     expect(f.running).toBe(false)
   })
 
+  it('clear() forgets a running fog that end() would refuse (T20.13)', () => {
+    // A round ends with the fog still up. The scene has no `effect_end` and no id
+    // to quote, and `end()` is deliberately id-checked — so without `clear()` the
+    // veil rode into the next match, on a `GameScene` Phaser reuses.
+    const c = C()
+    const f = new FogClock()
+    f.start(7, 'HeavyFog', 0)
+    const mid = c.FOG_DURATION / 2
+    expect(f.strength(mid)).toBeCloseTo(1, 6)
+    // The control: this is exactly the call the scene cannot make, and it is
+    // refused. Without it, `clear()` would look like a synonym for `end`.
+    f.end(-1)
+    expect(f.running).toBe(true)
+
+    f.clear()
+    expect(f.running).toBe(false)
+    expect(f.strength(mid)).toBe(0)
+    // And it does not wedge the class: the next round's fog still starts.
+    f.start(9, 'HeavyFog', 1000)
+    expect(f.strength(1000 + c.FOG_DURATION / 2)).toBeCloseTo(1, 6)
+  })
+
   it('a second fog re-bases the clock rather than stacking', () => {
     const c = C()
     const f = new FogClock()

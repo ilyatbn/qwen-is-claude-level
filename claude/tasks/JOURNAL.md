@@ -5386,3 +5386,21 @@ a pre-existing violation rather than a precedent. The kit is refused through `ST
 falsified red both ways. **Out of scope and done anyway:** `night-combat` sampled `lights`
 once after two bare sleeps and went red in three of this shift's gates — it polls now, with
 the threshold untouched. EXIT=0, 44/44, 25/25, assets ok.
+
+
+## T20.13 — the server was never the subject; one throw kills Phaser's render loop
+
+Phaser builds a `Scene` **once** and `create()`s it per `scene.start`, so ~30 `GameScene`
+fields outlive a round. `update`'s three guards are among them, so an exit drives a destroyed
+camera and throws — and `RequestAnimationFrame.step` calls its callback *before* re-arming, so
+**one** throw ends rendering for the life of the page. `scores` is another, which is *"they
+both appear on the list"* literally. `resetForNewRound()` is now one list, called from the top
+of `create()` **before its first await** (create is async and Phaser does not await it) and
+from SHUTDOWN; a source-walking vitest fails on any field named in neither it nor an exemption
+table. `?game=1` had the sibling defect — a missing `scene.start` key leaves *no* running scene
+— and `escape-menu.mjs` was green over it because Phaser's canvas outlives every scene; both
+are fixed structurally (`SCENE_GRAPH` + `closeOverStarts`, guarded by `scene-graph.test.ts`).
+`rematch.mjs` asserts **pixels**, because `debug().phase` read `playing` over a dead loop in
+the falsification run. Falsified red both ways. **Reported, not fixed:** `Room::restart` leaves
+the lag baseline unrebased, so a replayed room logs `tick overrun lagging=2987` forever —
+`tick_overruns` is permanently wrong for T20.14 to read. EXIT=0, 45/45, 840/840, 25/25.

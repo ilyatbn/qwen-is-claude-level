@@ -103,6 +103,91 @@ interface RemoteView {
   lastSeen: number
 }
 
+/**
+ * What actually happened during the round, accumulated as it arrives.
+ *
+ * T9.06 needs to assert on a four-minute round, and the things worth asserting
+ * are **events**, not states: a weather telegraph lasts `EFFECT_TELEGRAPH` (3 s)
+ * and a death is instantaneous. A check that polls `debug()` once a second sees
+ * neither, and would pass on a round where nothing ever happened — so the scene
+ * records them at the moment they land instead of the check sampling for them.
+ *
+ * Every field here is a count or a set of things seen. None of it feeds
+ * rendering; removing it changes nothing the player sees.
+ *
+ * It is a **factory**, not a literal in the field list, because
+ * `resetForNewRound` needs the same shape a fresh scene has. Two copies of a
+ * sixty-line object literal would agree on the day they were written and
+ * disagree on the first counter anybody adds.
+ */
+function freshObserved() {
+  return {
+    phases: new Set<string>(),
+    dayPhases: new Set<string>(),
+    /** effect id -> the lifecycle phases seen for it, so "ran start to finish" is checkable. */
+    effects: new Map<number, { kind: string; phases: Set<string> }>(),
+    hazards: 0,
+    /** What the *server* said about mines, to assert against what is drawn. */
+    minesPlaced: 0,
+    minesEnded: 0,
+    swings: 0,
+    jets: 0,
+    /**
+     * `hitscan` events received — what the SERVER said about gunfire.
+     *
+     * There was no counter for this at all, at either end, which is the reason
+     * §C23 could not be answered by reading the debug handle: `ordnance-visible`
+     * fired a bazooka and never once fired a gun, so "you must be able to see
+     * what you fired" was tested for one of the two delivery kinds.
+     */
+    hitscans: 0,
+    /**
+     * `projectile_spawn` events received — a **cumulative** count.
+     *
+     * `projectilesLive` is the mirror's current size, and a live count is the
+     * wrong instrument for "did a throw happen": a molotov detonates on contact,
+     * so its whole life can fall between two polls and the check then reports an
+     * empty sky about a throw that plainly occurred. That is §B25's lesson in the
+     * other direction — a count that misses what has already gone. This only ever
+     * goes up, so an assertion on it cannot be raced.
+     */
+    projectileSpawns: 0,
+    /**
+     * `projectile_spawn` events whose weapon is the flame (§F10.2).
+     *
+     * **The replacement for `jets`**, which counted `cone` events from a
+     * delivery that no longer exists. Both are the server's word rather than the
+     * client's; what is *drawn* is T19.13's number, and keeping them separate is
+     * how "the server made fire and nothing drew it" stays visible (§A39).
+     */
+    flamesSpawned: 0,
+    /**
+     * Spawns whose weapon has **no entry** in `FIRE_CUE` — not the ones entered
+     * as deliberately silent.
+     *
+     * Counted rather than defaulted: the previous code played the bazooka for
+     * anything it did not recognise, which is why every grenade in the game
+     * launched with a rocket's roar and nobody noticed for eight milestones. A
+     * silent shot is visible in this number; a plausible wrong sound is not.
+     *
+     * **Assertable at zero**, which is the whole point: weather ordnance spawns
+     * projectiles too and is silent by design, so counting that as a gap would
+     * make this a number nobody could ever check.
+     */
+    unmappedFireCues: 0,
+    /** Where the most recent hazard landed, so a screenshot can frame one. */
+    lastHazard: null as { x: number; y: number } | null,
+    deaths: [] as Array<{ victim: number; attacker: number | null; cause: string }>,
+    respawns: 0,
+    itemSpawns: 0,
+    itemPickups: 0,
+    darknessMin: 1,
+    darknessMax: 0,
+    /** Largest gap between the server's tick and the last one we applied. */
+    maxTickLag: 0,
+  }
+}
+
 export class GameScene extends Phaser.Scene {
   private core!: Core
   private conn!: Connection
@@ -188,7 +273,8 @@ export class GameScene extends Phaser.Scene {
    * only has to be non-empty, because every read is bounds-checked.
    */
   private slots: Array<{ key: string; count: number } | null> = []
-  private health = 100
+  /** Set from `BASE_HEALTH` in `resetForNewRound`; 0 until the scene starts. */
+  private health = 0
   private rttSamples = 0
   private rttAcc = 0
 
@@ -287,83 +373,7 @@ export class GameScene extends Phaser.Scene {
   private lastServerTick = 0
   private serverDarkness = 0
 
-  /**
-   * What actually happened during the round, accumulated as it arrives.
-   *
-   * T9.06 needs to assert on a four-minute round, and the things worth asserting
-   * are **events**, not states: a weather telegraph lasts `EFFECT_TELEGRAPH` (3 s)
-   * and a death is instantaneous. A check that polls `debug()` once a second sees
-   * neither, and would pass on a round where nothing ever happened — so the scene
-   * records them at the moment they land instead of the check sampling for them.
-   *
-   * Every field here is a count or a set of things seen. None of it feeds
-   * rendering; removing it changes nothing the player sees.
-   */
-  private observed = {
-    phases: new Set<string>(),
-    dayPhases: new Set<string>(),
-    /** effect id -> the lifecycle phases seen for it, so "ran start to finish" is checkable. */
-    effects: new Map<number, { kind: string; phases: Set<string> }>(),
-    hazards: 0,
-    /** What the *server* said about mines, to assert against what is drawn. */
-    minesPlaced: 0,
-    minesEnded: 0,
-    swings: 0,
-    jets: 0,
-    /**
-     * `hitscan` events received — what the SERVER said about gunfire.
-     *
-     * There was no counter for this at all, at either end, which is the reason
-     * §C23 could not be answered by reading the debug handle: `ordnance-visible`
-     * fired a bazooka and never once fired a gun, so "you must be able to see
-     * what you fired" was tested for one of the two delivery kinds.
-     */
-    hitscans: 0,
-    /**
-     * `projectile_spawn` events received — a **cumulative** count.
-     *
-     * `projectilesLive` is the mirror's current size, and a live count is the
-     * wrong instrument for "did a throw happen": a molotov detonates on contact,
-     * so its whole life can fall between two polls and the check then reports an
-     * empty sky about a throw that plainly occurred. That is §B25's lesson in the
-     * other direction — a count that misses what has already gone. This only ever
-     * goes up, so an assertion on it cannot be raced.
-     */
-    projectileSpawns: 0,
-    /**
-     * `projectile_spawn` events whose weapon is the flame (§F10.2).
-     *
-     * **The replacement for `jets`**, which counted `cone` events from a
-     * delivery that no longer exists. Both are the server's word rather than the
-     * client's; what is *drawn* is T19.13's number, and keeping them separate is
-     * how "the server made fire and nothing drew it" stays visible (§A39).
-     */
-    flamesSpawned: 0,
-    /**
-     * Spawns whose weapon has **no entry** in `FIRE_CUE` — not the ones entered
-     * as deliberately silent.
-     *
-     * Counted rather than defaulted: the previous code played the bazooka for
-     * anything it did not recognise, which is why every grenade in the game
-     * launched with a rocket's roar and nobody noticed for eight milestones. A
-     * silent shot is visible in this number; a plausible wrong sound is not.
-     *
-     * **Assertable at zero**, which is the whole point: weather ordnance spawns
-     * projectiles too and is silent by design, so counting that as a gap would
-     * make this a number nobody could ever check.
-     */
-    unmappedFireCues: 0,
-    /** Where the most recent hazard landed, so a screenshot can frame one. */
-    lastHazard: null as { x: number; y: number } | null,
-    deaths: [] as Array<{ victim: number; attacker: number | null; cause: string }>,
-    respawns: 0,
-    itemSpawns: 0,
-    itemPickups: 0,
-    darknessMin: 1,
-    darknessMax: 0,
-    /** Largest gap between the server's tick and the last one we applied. */
-    maxTickLag: 0,
-  }
+  private observed = freshObserved()
 
   /**
    * Snapshots that arrived before the mask did.
@@ -380,7 +390,132 @@ export class GameScene extends Phaser.Scene {
     super('Game')
   }
 
+  /**
+   * Everything that must not outlive a round, in **one** list.
+   *
+   * **Phaser constructs a `Scene` once and runs `create()` every
+   * `scene.start('Game')`.** Every field above with a `= value` initializer is
+   * therefore initialised exactly once, for the life of the tab — so a player who
+   * exits to the title and starts another match re-enters carrying the previous
+   * round's `scores`, `phase`, `health`, `slots`, seeds and counters, and a
+   * `world` and `ready` that describe a scene Phaser has already destroyed.
+   *
+   * That is T20.13's report in both of its halves:
+   *
+   *  - **"an empty screen"** — `update` guards on `this.ready && this.world &&
+   *    this.predictor`, all three stale, so it drives a destroyed camera and
+   *    throws. Phaser's `RequestAnimationFrame.step` calls its callback *before*
+   *    re-arming itself, so **one** throw out of `update` ends the render loop for
+   *    the life of the page. The socket keeps running on the event loop, so
+   *    `debug().phase` reads `playing` over a frozen canvas — which is exactly why
+   *    `rematch.mjs` asserts on pixels and not on phase. A refresh works because a
+   *    refresh builds a new `Scene`.
+   *  - **"they both appear on the list"** — `scores` is one of these fields, and
+   *    the Tab scoreboard and the results screen are both fed from it. The
+   *    `lobby_state` handler seeds rather than overwrites and only `dropRemote`
+   *    ever removes an id, so the previous room's players, scores and deaths ride
+   *    into the new match's roster.
+   *
+   * **Called from `create()` before its first `await`**, which is the load-bearing
+   * detail: `create()` is `async` and Phaser does not await it, so `update()` runs
+   * against these fields while `loadAssetManifest`/`runLoader` are still pending.
+   * A reset after the awaits would leave the crashing window wide open. It is
+   * called from `SHUTDOWN` as well, for the frame between the teardown and the
+   * scene going inactive.
+   *
+   * **One list, two callers** — the teardown block below used to null four fields
+   * by hand out of the thirty-odd that needed it, which is how this was missed.
+   * `resetForNewRound.test.ts` fails if a new initialised field is added to the
+   * class and named in neither this method nor its exemption list.
+   */
+  private resetForNewRound(): void {
+    // `update`'s three guards, and the view they drive.
+    this.ready = false
+    this.world = null
+    this.predictor = null
+    this.localView = null
+
+    // Who is in the room. `remotes` holds `PlayerView`s, so it is emptied rather
+    // than dropped — the sprites belong to a scene that is going away.
+    for (const r of this.remotes.values()) r.view.destroy()
+    this.remotes.clear()
+    this.scores.clear()
+    this.me = -1
+
+    // The round's identity and its clocks.
+    this.mapSeed = 0
+    this.roundSeed = ''
+    this.phase = 'lobby'
+    this.roundTime = 0
+    this.serverRoundTime = 0
+    this.timeLeft = 0
+    this.phaseEndsAt = 0
+    this.lastServerTick = 0
+    this.serverDarkness = 0
+    this.vision = 1
+    this.pendingSnapshot = null
+    this.observed = freshObserved()
+
+    // The local body, as the snapshot will describe it. `BASE_HEALTH` rather
+    // than a literal 100 — the field's own initializer is 0 for this reason.
+    this.health = C().BASE_HEALTH
+    this.meAlive = true
+    this.battery = 0
+    this.heals = 0
+    this.batteries = 0
+    this.shieldOn = false
+    this.shieldSince = 0
+    this.poisoned = false
+    this.fuel = 0
+    this.fuelShown = 0
+    this.teleportCharge = 0
+    this.slots = []
+    this.selectedSlot = 0
+    this.serverPos = null
+    this.watchPoint = null
+
+    // Input bookkeeping and the send clock.
+    this.seq = 0
+    this.acc = 0
+    this.stepAcc = 0
+    this.inputsSent = 0
+    this.lastRtt = 0
+    this.rttSamples = 0
+    this.rttAcc = 0
+    this.wasGrounded = true
+    this.wasJetting = false
+
+    // UI that `create()` rebuilds and `SHUTDOWN` destroys. Nulled here too so the
+    // two paths cannot disagree about which of them owns the field.
+    this.topHud = null
+    this.bars = null
+    this.inventory = null
+    this.escapeMenu = null
+    this.debugMode = null
+    this.overlay = null
+    this.jetReadout = null
+    this.minimap = null
+    this.codeBanner = null
+    this.joinCode = null
+    this.invOpen = false
+    this.scoreboardOpen = false
+
+    // Map payload. Reassigned by `onMapInit`, but not before `update` can read
+    // them, and last round's scenery is not this round's.
+    this.padViews = []
+    this.mapObjects = []
+
+    // The two helpers that carry state of their own.
+    this.fog.clear()
+    this.death.cleared()
+  }
+
   async create(): Promise<void> {
+    // **First, and before the first `await`.** See `resetForNewRound`: Phaser
+    // does not await `create`, so `update` runs against these fields while the
+    // two loads below are still pending.
+    this.resetForNewRound()
+
     await loadAssetManifest(this)
     await runLoader(this)
 
@@ -896,19 +1031,12 @@ export class GameScene extends Phaser.Scene {
       this.results?.destroy()
       this.hud?.remove()
       this.topHud?.destroy()
-      this.topHud = null
       this.bars?.destroy()
-      this.bars = null
       this.inventory?.destroy()
-      this.inventory = null
       this.escapeMenu?.destroy()
-      this.escapeMenu = null
       this.debugMode?.destroy()
-      this.debugMode = null
       this.overlay?.destroy()
-      this.overlay = null
       this.jetReadout?.remove()
-      this.jetReadout = null
       this.hideJoinCodeBanner()
       this.feel?.destroy()
       this.minimap?.destroy()
@@ -917,7 +1045,14 @@ export class GameScene extends Phaser.Scene {
       this.lightmap.destroy()
       this.sky.destroy()
       this.fx?.destroy()
-      for (const r of this.remotes.values()) r.view.destroy()
+      // **Destroyed, then forgotten.** This block used to null seven of its
+      // fields by hand and leave the rest — including `world` and `ready`, the
+      // two `update` guards on — so the next frame drove a destroyed camera and
+      // killed the render loop (§T20.13). `resetForNewRound` is the one list,
+      // shared with `create()`, so the two cannot disagree about what a round
+      // owns; the `destroy()` calls stay here because only the teardown knows
+      // the objects are going away.
+      this.resetForNewRound()
     })
 
     // §C17: the handle is a **development** surface. `devSurface()` folds to a

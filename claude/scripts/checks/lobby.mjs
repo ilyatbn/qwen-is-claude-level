@@ -19,6 +19,7 @@ import { startStack, sleep, shotsDir } from './harness.mjs'
 import { samplePatch } from './pixels.mjs'
 import { constants as rustConstants } from '../lib/rust-constants.mjs'
 import { join } from 'node:path'
+import { key as clientKey } from '../lib/client-keys.mjs'
 
 const PORT = 3126
 const { fail, ok, finish } = (await import('./harness.mjs')).tally('lobby')
@@ -35,12 +36,12 @@ const stack = await startStack({
 })
 const { browser, viteUrl } = stack
 
-// **`deepcut.*`, spelled out.** Three browser fixtures do this, and the keys did
-// not change in T20.02 for exactly that reason — a rename here that missed them
-// would seed a value nobody reads and every "the roster names the player" check
-// would go on passing against the default. If they are ever renamed, this line
-// is part of the rename.
-const NAME_KEY = 'deepcut.name'
+// **Read out of `skins.ts`, not spelled here** (T20.13). Three browser fixtures
+// used to spell `deepcut.name` by hand, and a rename that missed one would seed a
+// value nobody reads while every "the roster names the player" check went on
+// passing against the default name — silent and green. `client-keys.mjs` throws
+// if the export is gone, so the rename cannot be silent.
+const NAME_KEY = clientKey('NAME_KEY')
 
 /**
  * @param name the nickname to seed, or `null` to arrive with **nothing stored**

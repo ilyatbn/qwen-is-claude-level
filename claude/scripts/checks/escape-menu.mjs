@@ -150,10 +150,19 @@ if (!(await shown('escape-menu'))) {
   await sleep(200)
 }
 await page.click('#escape-quit')
-await sleep(1200)
 
-const back = await page.evaluate(() => document.querySelector('canvas') !== null)
-if (!back) fail('the page lost its canvas after quitting')
+// **Not `querySelector('canvas')`** (T20.13). Phaser's canvas element is created
+// by the `Game`, not by a `Scene`, and it outlives every scene — so that probe was
+// true over the blank page it was written to catch, and it stayed green while
+// `?game=1` registered `GameScene` alone and `scene.start('Title')` left the page
+// with **no running scene at all**. The title screen's own button is the thing
+// that is absent when the quit fails, so wait for it.
+const back = await page
+  .waitForSelector('#start-game', { timeout: 15_000 })
+  .then(() => true)
+  .catch(() => false)
+if (!back) fail('quitting did not reach the title screen — #start-game never appeared')
+else ok('quit to title brought up the title screen')
 
 // The room should now have nobody in it. Polled: the disconnect is a round trip,
 // and `players` is refreshed on the room's own tick.

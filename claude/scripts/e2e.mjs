@@ -179,6 +179,10 @@ const CHECKS = [
   // narration (placed − ended); one number would have passed for the whole
   // period the bug existed (§A39).
   { name: 'ordnance', file: 'scripts/checks/ordnance.mjs', standalone: true },
+  // T20.13: what happens *after* a round ends — one player votes to replay, one
+  // exits and quick-matches. Standalone: it needs two clients and a real round
+  // driven to `Ended`, which is the sequence nothing else in the suite reaches.
+  { name: 'rematch', file: 'scripts/checks/rematch.mjs', standalone: true },
   // §B9's gate, and the only assertion in the tree about a **rendered** player's
   // skin (T20.04). Standalone: two clients on two different skins, in one frame,
   // on a real server — `skins.mjs` never enters a game, which is why everybody

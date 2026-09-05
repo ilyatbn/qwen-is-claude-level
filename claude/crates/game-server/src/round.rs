@@ -97,11 +97,21 @@ impl RoundController {
         z ^ (z >> 31)
     }
 
-    /// Majority of **connected** players.
+    /// Majority of the votes **cast**, not of the players connected.
     ///
     /// Non-voters abstain; they do not count as "no". A player who alt-tabs
     /// during the scoreboard should not veto the next round, and making silence
     /// a veto is how a lobby dies.
+    ///
+    /// So `connected` is deliberately unread, and the parameter is kept for what
+    /// it lets a caller *say*: `non_voters_abstain_rather_than_veto` passes 6
+    /// with two yes votes, and that number is the whole scenario. T20.13 asked
+    /// whether the omission was an oversight — it is not. The consequence is
+    /// real and intended: **one remaining player can restart a round for a room
+    /// everyone else has left**, which is the same rule seen from the other end.
+    /// Requiring a majority of connected would not change that case either (one
+    /// yes of one connected still wins); it would only turn silence into a veto
+    /// for the many-player case, which is the outcome this rule exists to avoid.
     fn restart_wins(&self, connected: usize) -> bool {
         let yes = self.votes.values().filter(|v| **v).count();
         let cast = self.votes.len();

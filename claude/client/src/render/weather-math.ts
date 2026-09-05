@@ -215,6 +215,20 @@ export class FogClock {
     this.startedAt = null
   }
 
+  /**
+   * Forget the fog entirely, whatever its id.
+   *
+   * Distinct from `end`, which is the **event** and refuses an id that is not
+   * this fog's — the rule this class exists to hold. A scene tearing down at the
+   * end of a round has no `effect_end` to hand it and no id to quote, and it is
+   * not ending an effect: it is discarding a round. `GameScene.resetForNewRound`
+   * is the caller (T20.13); a fog left running here veiled the **next** match.
+   */
+  clear(): void {
+    this.id = -1
+    this.startedAt = null
+  }
+
   /** `0..1` — `fog.rs`'s ramp, walked from the start time. */
   strength(roundTime: number): number {
     if (this.startedAt === null) return 0

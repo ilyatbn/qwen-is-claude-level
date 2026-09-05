@@ -538,29 +538,155 @@ same number. It is not a weakening; it is a window in which to observe the condi
 3 against a floor of 3. The sampling is fixed; the **margin** is thin, and re-deriving that
 floor is still T19.22's question.
 
-## T20.13 IN PROGRESS — the coder was cut off by a rate limit mid-task
+## T20.13 landed — the server was never the subject, and Phaser kills the loop on one throw
 
-**Uncommitted in the working tree:** `client/src/main.ts`, `client/src/scenes/GameScene.ts`,
-`scripts/e2e.mjs`, and a new untracked `scripts/checks/rematch.mjs`. `git stash` is empty.
-Nothing here has been gated. HEAD is `03f14ec`.
+The reporter's guess (*"maybe the backend tries to start 2 matches at the same time"*) is wrong,
+and so was the in-flight diff's own header, which said the bug *"does not reproduce"*. It
+reproduces. It is one client-side defect with two visible halves, and both halves are now
+asserted in `scripts/checks/rematch.mjs`, each falsified at the live binding site.
 
-**Its last words, which are a real finding and the reason for the diff:**
+### The mechanism, in the order it has to be read
 
-> **SHUTDOWN destroys `world` but never nulls it, and never clears `ready` — while every
-> other teardown in that block nulls its field. So `update` runs against a destroyed
-> camera.**
+1. **Phaser constructs a `Scene` once and `create()`s it on every `scene.start('Game')`.** So
+   every `GameScene` field with a `= value` initializer is initialised **once for the life of
+   the tab** — about thirty of them.
+2. `update()` guards on `this.ready && this.world && this.predictor`. After an exit, `ready` is
+   still `true` and `world` still points at a `WorldView` whose camera Phaser has destroyed, so
+   `CameraRig.update` → `Camera.clampX` throws `Cannot read properties of null (reading 'x')`.
+3. **`RequestAnimationFrame.step` calls `_this.callback(time)` and only then re-arms itself**
+   (`client/node_modules/.vite/deps/phaser.js`, the `RequestAnimationFrame` class). One throw
+   out of `update` means `requestAnimationFrame` is never called again: **the render loop is
+   dead for the life of the page.** That is *"an empty screen… but if I refresh the stuck page
+   it starts fine"* — a refresh builds a new `Scene`.
+4. `create()` is `async` and **Phaser does not await it**, so `update()` also runs against the
+   stale fields during `loadAssetManifest`/`runLoader`. Any reset placed after those awaits
+   would leave the window open.
+5. `scores` is one of those fields, the Tab scoreboard and `ResultsScreen` are both fed from it,
+   the `lobby_state` handler **seeds rather than overwrites**, and the only removal is
+   `dropRemote` on a `player_leave` — **the path where the *other* player leaves.** So the
+   previous room's players ride into the next match's roster. That is *"they both appear on the
+   list"*, literally, and the coordinator's reopening of it was correct.
 
-That is the shape T20.13 was hunting: the stuck player is the one who **left from the
-results screen**, and `ResultsScreen.onExit` closes the socket without sending `leave_room`
-(`GameScene.ts:415-418`), unlike `EscapeMenu.onQuit` (`:1660-1663`). A scene torn down with a
-live-but-destroyed `world` and a stale `ready` latch is exactly how the next match renders
-an empty screen while a refresh works.
+**Measured, both directions.** With `resetForNewRound()` in place `rematch` is green; with the
+five field-clears removed it fails on `pageerror` with the `Camera.clampX` stack, and with only
+`this.scores.clear()` replaced by a no-op mention it fails with
+`the leaver's new match lists a player from the room she left: ["ana","bo"]`.
 
-**Verify before building on it** — it is one line from an agent that was terminated
-mid-sentence, and nobody has reproduced it since. The reproduction harness is
-`scripts/checks/lobby.mjs:353-388` (see the task file), and `rematch.mjs` appears to be an
-attempt at one; read it before writing another.
+### The instrument that was the bug, and it was in the in-flight check
 
-**Also note:** every other teardown in that block nulling its field while this one does not
-is the *"share the guard, or share the function"* shape. If the fix is to null it, ask why
-the block has five hand-written teardowns rather than one.
+`started()` polls `debug().phase`. **That field is written by the websocket handler, which runs
+on the event loop and knows nothing about rendering** — so on a page whose render loop was dead
+it read `playing` while the canvas held its last frame. Measured: in the falsification run
+`the player who left and quick-matched is in a running round` printed **ok** on the broken
+build. `rematch.mjs` therefore asserts on **pixels**: a 320x240 patch of the leaver's canvas
+before and after 600 ms of held `d`, with **bo's canvas over the same window as the control**
+(if his frame is frozen too, the box stalled and the leaver's frame proves nothing). The
+discriminator is the digest, not the mean — a dead loop produces two byte-identical frames,
+which is why the small means (0.7 vs 15.4 in one run) never decide anything.
+
+### The fix is one list, not five more hand-written nulls
+
+`GameScene.resetForNewRound()` is called from the **top of `create()`, before its first
+`await`**, and from `SHUTDOWN`. The teardown keeps its `destroy()` calls — only the teardown
+knows the objects are going away — and no longer nulls seven fields by hand while leaving
+twenty-three. `observed` moved to a module-level `freshObserved()` factory so the sixty-line
+literal has one copy.
+
+`client/src/scenes/gameScene-reset.test.ts` is the guard: it walks the source for every
+`private` field declaration and fails if one is named neither in `resetForNewRound` nor in an
+exemption table that carries a reason per name (the `!` fields `create()` rebuilds; the `Mixer`
+and its unlock closure, which keep decoded buffers on purpose; `RepeatFire`, which self-heals on
+the first frame the button is not held). It includes its own falsification — a synthetic
+`private carriedOver = 0` is caught and named.
+
+**`FogClock.clear()` is new** and is not a synonym for `end()`: `end` is the *event* and
+refuses an id that is not this fog's, which is the rule the class exists to hold. A scene
+discarding a round has no `effect_end` and no id to quote. Without it a fog running at the
+final whistle veiled the **next** match. Tested with `f.end(-1)` as the control that shows the
+refusal is real.
+
+### `?game=1` had the same defect and its check could not see it
+
+`ScenePlugin.start` queues a stop of the current scene and a start of the key; **a missing key
+makes the stop happen and the start do nothing, leaving no running scene at all.** Silent. No
+warning, no exception. `?menu=1` shipped `[Menu, Skins, Game]` and `?game=1` shipped `[Game]`
+alone, and `GameScene` has two `scene.start('Title')` callers.
+
+`escape-menu.mjs` reaches the game through `?e2e=1&game=1`, clicks `#escape-quit` and asserted
+`document.querySelector('canvas') !== null`. **Phaser's canvas belongs to the `Game`, not to a
+`Scene`, and outlives every scene** — so it was green over exactly the blank page it was written
+to catch. It now waits for `#start-game`, the title screen's own button.
+
+Rather than patch two lists, `main.ts` declares `SCENE_GRAPH` (who starts whom) and
+`closeOverStarts()` appends every reachable scene to any dev list; additions go on the **end**,
+because Phaser starts the array's first scene and only adds the rest, so each flag still lands
+where it says. `client/src/scene-graph.test.ts` walks `src/scenes/*Scene.ts` for
+`scene.start('X')` and fails if the table has fallen behind — with comments stripped first,
+because `GameScene`'s own prose says the words `scene.start('Game')` and made the scene an edge
+to itself.
+
+### `restart_wins` ignoring `connected` is intended, and now says so
+
+The doc's first line claimed *"Majority of **connected** players"* while the body is a majority
+of the votes **cast** and discards the argument. The second paragraph and
+`non_voters_abstain_rather_than_veto` (two yes of six connected, asserted to restart) both
+describe the shipped behaviour, so the first line was the stale half and is corrected. The
+parameter stays: it is what lets that test *say* "six connected". The consequence the task asked
+to state: **one remaining player can restart a round for a room everyone else has left.** That
+is intended — and requiring a majority of connected would not change it (one yes of one
+connected still wins), it would only turn silence into a veto in the many-player case, which is
+what the rule exists to avoid.
+
+### `deepcut.name` had three hand-spelled copies; now it has none
+
+`scripts/lib/client-keys.mjs` reads the `*_KEY` exports out of `client/src/ui/skins.ts` — the
+same argument `rust-constants.mjs` makes about tunables. It **throws** on a name that is not
+exported, because a reader returning `undefined` would leave `localStorage.setItem(undefined, …)`
+succeeding forever and every "the roster names the player" assertion passing against the default
+name. `lobby.mjs`, `m10-checkpoint.mjs` and `rematch.mjs` all go through it.
+
+### Two rooms is correct, and is asserted as such
+
+`quick_match` skips `e.private || e.handle.has_started() || e.humans >= max_players`, and room #1
+is `has_started()` for the whole of its 20 s `Ended` window and again the moment it restarts. So
+the sequence yields two rooms by design; `rematch.mjs` asserts `health.rooms === 2` so a change
+that silently merged them is noticed, not because two rooms is a fault. `/healthz`'s `players` is
+**not** used: it is a gauge every room overwrites on its own tick, so with two rooms it is
+whichever ticked last.
+
+### ⚠ Found on this path and **not fixed** — a phantom `tick overrun`, once a second, forever
+
+`rematch` logs `WARN game::sim: tick overrun lagging=2987` once a second from the moment the
+restarted room is about a second old, and it never stops. It is not load. The mechanism is
+complete:
+
+- `room.rs:2954` computes `expected` from `start.elapsed()`, and `start` is re-based only at
+  `was_lobby && !in_lobby` (`:2852`) — the Lobby→round transition.
+- `begin_round` carries the tick across that boundary (`room.rs:1087`, `world.tick =
+  self.lobby_tick`). **`Room::restart` does not**: it installs a `World::with_generator` at tick
+  0 (`:2510-2515`) and nothing re-bases `start`.
+- So after a restart `expected` counts from the *first* round's start while `room.tick()` counts
+  from 0. 2987 ticks ÷ `SIM_HZ` 60 = 49.8 s = `ROUND_SECONDS 20 + WARMUP 10 + ENDED 20`, exactly
+  the elapsed round. `lag_warned_at` is 0 because round 1 was healthy, so the once-a-second
+  throttle arms at tick 61 and fires forever after.
+
+**Effect: `tick_overruns` and the `game::sim` warning are permanently wrong for any room that
+has replayed** — an operational instrument that will lie to T20.14's load test. Left alone
+deliberately: the obvious one-line fix (give `restart` the `world.tick = self.lobby_tick` line
+`begin_round` already has) changes the tick numbers written into replay recordings, and
+"measure before changing" says that needs its own task with `replay_run.rs` in front of it.
+**Booking it is recommended.**
+
+### Smaller things
+
+- **Four `?.click()` calls became `mustClick`** (Playwright's `page.click`). A silent no-op on a
+  missing `#quick` cost the whole of the next 120 s timeout and then reported "never got a
+  match" about a click that never happened.
+- **Two bare sleeps are gone.** The 300 ms between the replay vote and the exit is now a wait on
+  `.results-again[disabled]` — `ResultsScreen` disables the button and relabels it `Voted` when
+  the vote is sent, so the check waits on the **effect**; the 400 ms before `#quick` is what
+  `mustClick` already waits for.
+- **`?skins=1` and the player list also go through `closeOverStarts`.** The player list is still
+  spelled in full — it is the shipped path and should not depend on the table being right; the
+  closure is a no-op over it, and stays one only while the table is complete.
+
