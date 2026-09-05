@@ -234,6 +234,13 @@ export class EmberField {
  * end must read 0 rather than a negative alpha Phaser would silently treat as
  * opaque.
  *
+ * **And it is required, not defaulted.** T20.05 argued — correctly — that
+ * `RainField`'s density argument must be required because *"a default of 1 is
+ * the old bug and would let an unwired caller reproduce it silently"*. `false`
+ * here is the old bug in exactly that sense: it is the pre-T20.07 behaviour, a
+ * veil that never lightens. Two commits in one family applied opposite rules to
+ * the same hazard; this is the one rule, applied to both.
+ *
  * **`hasFlashlight` is a second argument, not a pre-scale of `strength`** (T20.07,
  * and the task file is explicit). `strength` is stored as `debug().fogStrength`
  * and asserted by `weather-visible.mjs` and `fog-visible.mjs`; discounting it here
@@ -245,7 +252,7 @@ export class EmberField {
  * *"20 % more visible"* are weighed in its doc comment. It defaults to off so the
  * sandbox's fog path, which has no player inventory in scope, keeps its meaning.
  */
-export function fogVeilAlpha(strength: number, hasFlashlight = false): number {
+export function fogVeilAlpha(strength: number, hasFlashlight: boolean): number {
   const lit = hasFlashlight ? C().FLASHLIGHT_FOG_VEIL_MULT : 1
   return C().FOG_SCREEN_ALPHA * Math.min(1, Math.max(0, strength)) * lit
 }

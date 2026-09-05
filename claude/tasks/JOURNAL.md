@@ -5442,3 +5442,14 @@ animal are both "a non-player whose velocity goes to a scratch", so one split re
 `make_room()`-before-`spawn`. Own substream, hashed with velocity. **The gate caught folding
 animals into `setBirdsVisible`** — 981x403 against a bird's 40x28. Pixels 34.9 vs 0.0.
 EXIT=0, 47/47, 881/881, 25/25, assets ok. M20's twelve entries compressed to 8; see HANDOFF.
+
+## M20 tidy-up — six review findings, and a control with one seed of margin left
+
+**Two comments were false.** `world/mod.rs` cited a `battery` case in the hash-sensitivity
+list that did not exist (added, falsified); `bots/mod.rs` said `threatened` was "still read by
+the caller above" when nothing read it — a dead O(players) scan per bot tick, gone with
+`SHIELD_WITHIN`. `accessoryTextures`' falsification tested `Set`; it mutates the real source
+now. The parity scanner sees ~115 aliased reads, not 11, and `flashlight_pressed` is kept as
+a documented reserved bit. **`balance.rs` settled by A/B at `9bcc655`**: shipping 7/8 both
+sides, the Large-4 control 6/8 → 7/8 so its guard fires — 1/8 at T11.16, so nine ignored
+milestones ate the margin and T20.10 spent the last seed. EXIT=0, 47/47, 882/882, 25/25.

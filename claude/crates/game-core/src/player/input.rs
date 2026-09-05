@@ -25,6 +25,11 @@ pub mod button {
     pub const DOWN: u8 = 1 << 3;
     pub const JUMP: u8 = 1 << 4;
     pub const FIRE: u8 = 1 << 5;
+    /// **Set by the client's `F` key and read by nothing** since T20.07 made the
+    /// torch passive. Kept, not deleted: this bit is part of the recorded `Input`
+    /// encoding that `codec.rs` round-trips into replay files, so the name is what
+    /// stops a future feature from claiming a bit old recordings already use. See
+    /// `InputEdges::flashlight_pressed`.
     pub const FLASHLIGHT: u8 = 1 << 6;
     /// Bit 7 is reserved. T6.06 packs this struct onto the wire and the layout is
     /// fixed in `docs/40-net-protocol.md` — do not use it.
@@ -79,6 +84,25 @@ pub struct InputEdges {
     pub jump_pressed: bool,
     pub jump_released: bool,
     pub fire_pressed: bool,
+    /// **Nothing in the simulation reads this, and that is deliberate.**
+    ///
+    /// T20.07's commit message said the toggle path was "deleted end to end". It
+    /// was not: `Player::flashlight_on`, `ToggleFlashlight` and tag 7 are gone,
+    /// but `button::FLASHLIGHT` survives — and so does this edge, derived from it
+    /// by the same uniform rule as every other bit.
+    ///
+    /// It stays because **the bit is part of the recorded `Input` encoding**.
+    /// `buttons` is a `u8` that `codec.rs` round-trips verbatim into replay files,
+    /// and `RESERVED` is what says which bits a future feature may claim. Removing
+    /// the name would leave bit 6 (`1 << 6`) looking free while v5 recordings still carry it
+    /// set, and the next feature to claim it would silently inherit whatever a
+    /// player's `F` key did in an old round.
+    ///
+    /// So it is a **reserved bit and its edge**, not a mechanism waiting for a
+    /// caller. The cost is honest and small: the client still packs `F` into it
+    /// (`localInput-math.ts`) and the server still ignores it, so pressing `F`
+    /// does nothing — which is correct, because T20.07 made the torch passive and
+    /// there is nothing left to toggle.
     pub flashlight_pressed: bool,
 }
 

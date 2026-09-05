@@ -889,9 +889,26 @@ fn the_shipping_configuration_produces_a_fight() {
         ship.len(),
     );
 
-    // The control. Large with 4 players is what shipped before this task, and it
-    // produced zero fights in eight rounds. If it clears these floors, the
-    // floors are measuring nothing.
+    // The control. Large with 4 players is what shipped before T11.16, and at
+    // T11.16 it produced **1/8** against the shipping configuration's 7/8.
+    // If it clears these floors, the floors are measuring nothing.
+    //
+    // **It very nearly does, and this comment used to claim it produced zero.**
+    // Measured on an idle box, `--release`, the same eight seeds: at `9bcc655`
+    // (before T20.10) the control is **6/8** against a shipping 7/8 — one seed of
+    // margin left out of the seven it had — and T20.10's animals take the last
+    // one, putting the control at **7/8** and tripping the assertion below.
+    //
+    // The animals do not corrupt the instrument: `r.damage` counts only
+    // `GameEvent::Damage` with an attacker who is not the victim, and an animal
+    // never emits one. What they change is where bots *go* — a kill drops a
+    // medkit or a battery and `wants_item` chases it — which on a sparse Large
+    // map is enough to bring two bots together in one more seed.
+    //
+    // **Left as a red measurement on purpose.** Loosening `before_fought <
+    // fought` would delete the only thing that stops these floors passing for any
+    // configuration at all, and choosing a new control configuration is a balance
+    // decision, not a builder's. See `tasks/HANDOFF-M20.md`.
     let before: Vec<_> = SEEDS
         .iter()
         .map(|s| encounters(*s, MapScale::Large, 4, ROUND_SECONDS))

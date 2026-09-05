@@ -51,8 +51,6 @@ const HEAL_BELOW: f32 = 40.0;
 /// Top up below this fraction of a full battery — enough that a laser is
 /// usable and a shield is worth raising.
 const CHARGE_BELOW: f32 = 0.4;
-/// An enemy this close justifies burning a shield.
-const SHIELD_WITHIN: f32 = 200.0;
 /// A bot that has not moved this far in `STUCK_WINDOW` jumps.
 /// Margin around a burning patch a bot treats as unsafe, on top of its radius.
 /// One player-width, so a bot standing at the rim is already leaving.
@@ -458,7 +456,7 @@ impl Bot {
         }
 
         // --- items ------------------------------------------------------
-        self.want_use = self.choose_item(world, me, pos);
+        self.want_use = self.choose_item(me);
         self.want_select = self.choose_weapon(me, aim_at, pos);
 
         Input {
@@ -933,17 +931,11 @@ impl Bot {
         best.and_then(|(_, slot)| (slot != me.inventory.selected()).then_some(slot))
     }
 
-    fn choose_item(
-        &self,
-        world: &World,
-        me: &crate::player::state::PlayerState,
-        pos: Vec2,
-    ) -> Option<u8> {
+    /// **Takes only what it reads.** It used to take `world` and `pos` for a
+    /// threat scan that had no reader; keeping them "in case" is how the scan
+    /// stayed alive through a review.
+    fn choose_item(&self, me: &crate::player::state::PlayerState) -> Option<u8> {
         let hurt = me.health < HEAL_BELOW;
-        let threatened = world
-            .players
-            .iter()
-            .any(|p| p.id != self.player && p.alive && (p.body.pos - pos).len() < SHIELD_WITHIN);
 
         for slot in 0..INVENTORY_SLOTS as u8 {
             let Some(stack) = me.inventory.slot(slot) else {
@@ -987,8 +979,12 @@ impl Bot {
         // one. Picking generators up is `wants_item`'s business and is unchanged;
         // there is nothing left to do with one once it is held.
         //
-        // `threatened` is still read by the caller above.
-        let _ = threatened;
+        // **And `threatened` is gone with it.** That comment used to say it was
+        // "still read by the caller above"; it was not read anywhere, so what it
+        // guarded was a `let _ =` over an O(players) distance scan running on
+        // every bot decision tick. `SHIELD_WITHIN` went with it — a constant
+        // named for a mechanic that no longer exists is the same shape this
+        // commit's parent correctly refused to leave behind for `SHIELD_DURATION`.
         None
     }
 }

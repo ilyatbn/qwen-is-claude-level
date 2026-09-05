@@ -3561,8 +3561,19 @@ mod state_hash_tests {
 
         // **The shield is not a hashed field any more** (T20.08). It was
         // `shield_until`; it is now "holds a generator and has charge", and both
-        // of those are already hashed — the `inventory` case below, and `battery`.
-        // The hash stopped carrying the same fact twice.
+        // of those are already hashed — the `inventory` case below, and the
+        // `battery` case immediately here. The hash stopped carrying the same
+        // fact twice.
+        //
+        // **That comment named `battery` before there was a case for it**, which
+        // is precisely the gap this test exists to close: `state_hash` does cover
+        // `p.battery` (`:3403`), but nothing in *this* list did, so half of the
+        // shield's derived state could have been dropped from the hash with
+        // nothing going red — and removing the `("shield", …)` case was argued on
+        // the strength of that half-true sentence.
+        let mut w = world();
+        w.players[0].battery -= 1.0;
+        changed.push(("battery", w.state_hash()));
 
         let mut w = world();
         w.players[0].iframes_until = 9.0;

@@ -28,7 +28,51 @@ const root = resolve(here, '../../..')
 // bundler to resolve `pkg/game_wasm_bg.wasm` by URL.
 await Core.init(readFileSync(join(here, 'pkg/game_wasm_bg.wasm')))
 
-/** Every `constants().NAME` read in the browser checks and build scripts. */
+/** Reads of the inline form only: `window.__game.constants().NAME`. */
+function inlineReads(src: string, file: string): Array<{ file: string; name: string }> {
+  const out: Array<{ file: string; name: string }> = []
+  for (const m of src.matchAll(/window\.__(?:game|sandbox)\.constants\(\)\.([A-Z][A-Z0-9_]*)/g)) {
+    if (m[1]) out.push({ file, name: m[1] })
+  }
+  return out
+}
+
+/**
+ * Reads through a **local alias** of the table: `const c = … constants()`, then
+ * `c.CHUNK_SIZE`.
+ *
+ * **This is where nine tenths of the reads live**, and until it existed the
+ * scanner covered 9 % of the sites its own header claims. Measured across
+ * `scripts/`: 11 reads are the inline form, 115 are aliased, across 20 files.
+ *
+ * And the aliased ones are not the safer half. 97 of the 115 are read on the
+ * **Node** side, where the table has already crossed `page.evaluate` and arrived
+ * as a plain serialised object — the `strictConstants` Proxy is gone, so
+ * `k.LOBBY_BOT_TIMEOUT` there is `undefined` exactly as `constants().LOBBY_BOT_TIMEOUT`
+ * was, and produces the same `NaN` deadline. The two-directional parity assertion
+ * below is the stronger guard, but it only catches a name absent from *both*
+ * tables; the next `LOBBY_BOT_TIMEOUT`-shaped name read as `k.FOO` reproduces
+ * T20.15 exactly, and this is what makes it red.
+ */
+function aliasedReads(src: string, file: string): Array<{ file: string; name: string }> {
+  const out: Array<{ file: string; name: string }> = []
+  const aliases = new Set<string>()
+  // `const c = await page.evaluate(() => window.__game.constants())`, and every
+  // shape of it that fits on one line. Lower-case `constants(` only, so
+  // `strictConstants()` — which returns the Proxy, not a serialised copy — does
+  // not masquerade as one of these.
+  for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=[^\n]*[^A-Za-z]constants\(\)/g)) {
+    if (m[1]) aliases.add(m[1])
+  }
+  for (const a of aliases) {
+    for (const m of src.matchAll(new RegExp(`\\b${a}\\.([A-Z][A-Z0-9_]*)\\b`, 'g'))) {
+      if (m[1]) out.push({ file, name: m[1] })
+    }
+  }
+  return out
+}
+
+/** Every constant read in the browser checks and build scripts, both forms. */
 function constantReadsInScripts(): Array<{ file: string; name: string }> {
   const out: Array<{ file: string; name: string }> = []
   const walk = (dir: string) => {
@@ -37,10 +81,24 @@ function constantReadsInScripts(): Array<{ file: string; name: string }> {
       if (statSync(p).isDirectory()) walk(p)
       else if (e.endsWith('.mjs')) {
         const src = readFileSync(p, 'utf8')
-        for (const m of src.matchAll(/window\.__game\.constants\(\)\.([A-Z][A-Z0-9_]*)/g)) {
-          const name = m[1]
-          if (name) out.push({ file: p.slice(root.length + 1), name })
-        }
+        const file = p.slice(root.length + 1)
+        out.push(...inlineReads(src, file), ...aliasedReads(src, file))
+      }
+    }
+  }
+  walk(join(root, 'scripts'))
+  return out
+}
+
+/** The inline half alone, for the control that the alias half is doing work. */
+function inlineReadsInScripts(): Array<{ file: string; name: string }> {
+  const out: Array<{ file: string; name: string }> = []
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir)) {
+      const p = join(dir, e)
+      if (statSync(p).isDirectory()) walk(p)
+      else if (e.endsWith('.mjs')) {
+        out.push(...inlineReads(readFileSync(p, 'utf8'), p.slice(root.length + 1)))
       }
     }
   }
@@ -57,6 +115,20 @@ describe('a constant a check reads is a constant that exists (T20.15)', () => {
     expect(reads.length).toBeGreaterThan(5)
     const missing = reads.filter((r) => !(r.name in table)).map((r) => `${r.file}: ${r.name}`)
     expect([...new Set(missing)]).toEqual([])
+  })
+
+  it('sees the aliased form, not only the inline one', () => {
+    // The control for the widening. Without it the scanner can quietly go back to
+    // covering 9 % of the sites and every assertion here stays green.
+    const all = constantReadsInScripts()
+    const inline = inlineReadsInScripts()
+    expect(inline.length).toBeGreaterThan(0)
+    expect(all.length).toBeGreaterThan(inline.length * 3)
+    // And a named one, so "it found more" cannot be satisfied by noise: this file
+    // reads its sizes off an alias, on the Node side, where the Proxy is gone.
+    const animals = all.filter((r) => r.file.endsWith('animals.mjs')).map((r) => r.name)
+    expect(animals).toContain('ANIMAL_MAX')
+    expect(inlineReadsInScripts().filter((r) => r.file.endsWith('animals.mjs'))).toEqual([])
   })
 
   it('names the file and the constant when one is missing — the falsification', () => {

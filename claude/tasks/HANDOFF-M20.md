@@ -1495,3 +1495,74 @@ was killed: the shell wrapper hit a ten-minute timeout and SIGTERM'd the **proce
 mid-run (exit 143), and `replay_run` is the binary that spawns the server and tests signal
 handling. It passes 15/15 on its own and inside the gate. `CLAUDE.md`'s "kill process groups"
 rule cuts both ways.
+
+## The tidy-up commit — six findings closed, and one measurement that is now red on purpose
+
+Six items the coordinator raised across the M20 reviews, folded into one commit after T20.10.
+
+### `balance.rs` — SETTLED, and the answer is that the control had almost no margin left
+
+The task file warned `the_shipping_configuration_produces_a_fight` would move. It did, and it
+is now **red when run** — so here is the A/B, both `--release`, both on an idle box, same eight
+seeds:
+
+| | shipping (Medium, 6, 240 s) | control (Large, 4, 240 s) |
+|---|---|---|
+| `9bcc655` (before T20.10) | fought **7/8**, 1st contact 1 s, seen 8/8 | fought **6/8** |
+| `97154a6` (after) | fought **7/8**, 1st contact 1 s, seen 8/8 | fought **7/8** |
+
+The shipping numbers do not move at all. What moves is the **control**, by exactly one seed,
+which trips `assert!(before_fought < fought)` — *"these floors do not measure the change"*.
+
+**Two things follow, and the second is the important one.**
+
+1. The animals do not corrupt the instrument. `encounters()` accumulates `r.damage` only from
+   `GameEvent::Damage` with `attacker: Some(a)` where `a != victim`; an animal emits no such
+   event, ever. What the animals change is where bots *go*: a kill drops a medkit or a battery
+   and `wants_item` chases it, and on a sparse Large map that is enough to bring two bots
+   together in one more seed.
+2. **The control had been eroding for nine milestones and nobody could see it, because the
+   test is `#[ignore]`d.** Its own comment said Large-with-4 *"produced zero fights in eight
+   rounds"*; at T11.16 it was 1/8, and at `9bcc655` — before this task touched anything — it
+   was already **6/8 against a shipping 7/8**. One seed of margin out of seven. T20.10 spent
+   the last one; it did not create the problem.
+
+**Left red deliberately, and not weakened.** Relaxing `before_fought < fought` would delete the
+only assertion stopping these floors from passing for any configuration at all — the exact
+"§B15 assertions passed against nothing" failure the control was written to prevent. Picking a
+new control configuration is a balance decision and belongs to the coordinator, not to a
+builder finishing an unrelated task. The false comment **is** fixed, with the measured numbers
+in it, so the next person to run it reads the situation rather than rediscovering it.
+
+### The other five
+
+- **`bots/mod.rs`** — `threatened` had no reader at all; the `let _ = threatened;` was
+  suppressing a warning over an O(players) distance scan on every bot decision tick.
+  Deleted, with `SHIELD_WITHIN` (a constant named for a mechanic that no longer exists) and
+  with `choose_item`'s now-unused `world` and `pos` parameters, because a function that takes
+  what it does not read is how the scan survived a review.
+- **`world/mod.rs`** — the state-hash sensitivity list now has a `battery` case. The comment
+  claiming one existed was false, and removing `("shield", …)` was argued on it. Falsified:
+  dropping `h.update(&p.battery…)` reds with *"changing `battery` did not change the state
+  hash"*.
+- **`accessoryTextures.test.ts`** — the falsification builds two identical string literals no
+  longer. It mutates a **copy of the real source** (hat 2 given hat 1's geometry, hat 2's own
+  header line kept so the extractor still finds it) and runs the real extractor over it, the
+  way `gameScene-reset.test.ts` and `scene-graph.test.ts` do. Verified both ways: with the
+  swap applied to the **real** file, that test and the rule test both go red.
+- **`constants-parity.test.ts`** — the scanner resolves `const c = … constants()` aliases, so
+  it sees the ~115 aliased reads and not only the 11 inline ones. It has its own control (the
+  widened count must exceed the inline count several times over, and a named aliased read must
+  be found) so it cannot silently narrow again. Falsified with an aliased `c.MADE_UP_CONSTANT`
+  in `animals.mjs`: red, and it names the file.
+- **`input.rs`** — `flashlight_pressed` and `button::FLASHLIGHT` are **kept and justified in
+  place**, which is the other half of the coordinator's "delete it or write down why not".
+  The bit is part of the recorded `Input` encoding that `codec.rs` round-trips into replay
+  files; deleting the name would leave bit 6 looking free while v5 recordings carry it set.
+  Both doc comments now say plainly that nothing in the simulation reads it, that pressing
+  `F` therefore does nothing, and that this is correct because T20.07 made the torch passive.
+  T20.07's commit message said "deleted end to end"; that was wrong, and this is the record.
+- **`m4-checkpoint.mjs`** — the shield control region really is *"over the same window"* now.
+  Both control samples were taken **after** the grant, 200 ms apart, so the control measured a
+  different 200 ms from the one the subject spanned. Both endpoints straddle the grant;
+  re-measured at 9.9 against a control of 0.0.

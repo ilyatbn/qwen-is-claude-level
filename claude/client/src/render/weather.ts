@@ -150,13 +150,18 @@ export class WeatherLayer {
     dt: number,
     vents: VentView[],
     fallScale: number,
-    fog = 0,
+    // **Both required, neither defaulted.** `fog = 0` and `hasFlashlight = false`
+    // are each the pre-fix behaviour — no veil, and a veil that never lightens —
+    // so a default is a caller that silently reproduces the bug and still
+    // typechecks. That is `RainField`'s density rule (T20.05) applied here too;
+    // both live call sites already pass all five, so it costs nothing.
+    fog: number,
     // **Carrying a flashlight lightens §F9's veil** (T20.07). Threaded through
     // `update` rather than held as a setter beside `setToxic`, because unlike the
     // rain it has no ramp of its own: the veil is recomputed from `strength` every
     // frame and the flashlight is a multiplier on that, so a stored copy would be
     // a second place the answer could go stale.
-    hasFlashlight = false,
+    hasFlashlight: boolean,
   ): void {
     this.rain.resize(this.cam.width, this.cam.height)
     this.rain.update(dt, this.toxicTarget, this.toxicDensityTarget)

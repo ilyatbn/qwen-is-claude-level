@@ -19,16 +19,31 @@ import { GLASSES_ART, HAT_ART, glassesArt, hatArt } from './accessoryTextures'
 
 const source = readFileSync(fileURLToPath(new URL('./accessoryTextures.ts', import.meta.url)), 'utf8')
 
-/** The geometry inside one `draw(textures, ART[n]!, ...)` block. */
-function paintOf(list: 'HAT_ART' | 'GLASSES_ART', id: number): string {
-  const head = source.indexOf(`draw(textures, ${list}[${id}]!,`)
+/** One whole `draw(textures, ART[n]!, ...)` block, as it appears in the source. */
+function blockOf(src: string, list: 'HAT_ART' | 'GLASSES_ART', id: number): string {
+  const head = src.indexOf(`draw(textures, ${list}[${id}]!,`)
   if (head < 0) throw new Error(`${list}[${id}] is never drawn`)
-  const end = source.indexOf('\n  })', head)
-  return source
-    .slice(head, end)
+  const end = src.indexOf('\n  })', head)
+  return src.slice(head, end)
+}
+
+/**
+ * The geometry inside one such block, `fillStyle` lines stripped.
+ *
+ * **Takes the source as an argument.** The falsification below runs the real
+ * extractor over a mutated *copy* of the real file, which it cannot do if the
+ * source is baked in — and a falsification that builds its own two strings and
+ * watches `Set` deduplicate them tests `Set`, not this file.
+ */
+function paintIn(src: string, list: 'HAT_ART' | 'GLASSES_ART', id: number): string {
+  return blockOf(src, list, id)
     .split('\n')
     .filter((l) => /c\.(fillRect|arc|beginPath|fill)\(/.test(l))
     .join('\n')
+}
+
+function paintOf(list: 'HAT_ART' | 'GLASSES_ART', id: number): string {
+  return paintIn(source, list, id)
 }
 
 describe('accessory registries (T20.12)', () => {
@@ -85,11 +100,28 @@ describe('accessory registries (T20.12)', () => {
     }
   })
 
-  it('catches a colour-only variant — the falsification', () => {
-    // Two entries whose paint differs only in `fillStyle` are what the rule
-    // forbids; `paintOf` drops those lines, so this is what the check sees.
-    const a = 'c.fillRect(0, 0, 5, 3)'
-    const b = 'c.fillRect(0, 0, 5, 3)'
-    expect(new Set([a, b]).size).toBe(1)
+  it('catches a colour-only variant — the falsification, on the real source', () => {
+    // **Mutate the real file and run the real extractor over it**, the way
+    // `gameScene-reset.test.ts` inserts a synthetic field and `scene-graph.test.ts`
+    // strips a real edge. The previous version of this test built two identical
+    // string literals and asserted that `Set` deduplicated them: it never called
+    // `paintOf`, never touched `HAT_ART`, and would have passed with
+    // `accessoryTextures.ts` deleted from the repository.
+    //
+    // Give hat 2 hat 1's geometry, keeping hat 2's own header line so the
+    // extractor still finds it. The two now differ only in `fillStyle`, which is
+    // exactly what the rule forbids.
+    const target = blockOf(source, 'HAT_ART', 2)
+    const donor = blockOf(source, 'HAT_ART', 1)
+    const swapped = [target.split('\n')[0], ...donor.split('\n').slice(1)].join('\n')
+    const mutated = source.replace(target, () => swapped)
+
+    // The controls: the mutation took, and the two were distinct before it.
+    expect(mutated).not.toBe(source)
+    expect(paintOf('HAT_ART', 1)).not.toBe(paintOf('HAT_ART', 2))
+
+    expect(paintIn(mutated, 'HAT_ART', 2)).toBe(paintIn(mutated, 'HAT_ART', 1))
+    const paints = HAT_ART.filter((a) => a.key).map((a) => paintIn(mutated, 'HAT_ART', a.id))
+    expect(new Set(paints).size).toBe(paints.length - 1)
   })
 })

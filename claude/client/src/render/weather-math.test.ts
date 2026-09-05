@@ -157,7 +157,7 @@ describe('the heavy-fog veil (§F9)', () => {
     let sawFull = 0
     for (let t = 0; t <= c.FOG_DURATION; t += 0.1) {
       const s = fogStrength(t)
-      expect(fogVeilAlpha(s)).toBeCloseTo(c.FOG_SCREEN_ALPHA * s, 6)
+      expect(fogVeilAlpha(s, false)).toBeCloseTo(c.FOG_SCREEN_ALPHA * s, 6)
       if (s > 0.01 && s < 0.99) sawPartial++
       if (s >= 0.999) sawFull++
     }
@@ -171,21 +171,21 @@ describe('the heavy-fog veil (§F9)', () => {
 
   it('is FOG_SCREEN_ALPHA at full strength and nothing at all outside the effect', () => {
     const c = C()
-    expect(fogVeilAlpha(1)).toBeCloseTo(c.FOG_SCREEN_ALPHA, 6)
+    expect(fogVeilAlpha(1, false)).toBeCloseTo(c.FOG_SCREEN_ALPHA, 6)
     // Before it starts and after it ends. Both come off the real ramp, so this
     // fails if `strength()` ever stops closing at its ends.
-    expect(fogVeilAlpha(fogStrength(-1))).toBe(0)
-    expect(fogVeilAlpha(fogStrength(0))).toBe(0)
-    expect(fogVeilAlpha(fogStrength(c.FOG_DURATION))).toBe(0)
-    expect(fogVeilAlpha(fogStrength(c.FOG_DURATION + 1))).toBe(0)
+    expect(fogVeilAlpha(fogStrength(-1), false)).toBe(0)
+    expect(fogVeilAlpha(fogStrength(0), false)).toBe(0)
+    expect(fogVeilAlpha(fogStrength(c.FOG_DURATION), false)).toBe(0)
+    expect(fogVeilAlpha(fogStrength(c.FOG_DURATION + 1), false)).toBe(0)
   })
 
   it('clamps, because a networked client walks the clock itself', () => {
     // `GameScene` computes `roundTime - fogStartedAt`, and a resync can hand it
     // a value outside the window. Phaser treats a negative alpha as opaque, so
     // an unclamped veil would black the screen out on a clock correction.
-    expect(fogVeilAlpha(-0.5)).toBe(0)
-    expect(fogVeilAlpha(2)).toBeCloseTo(C().FOG_SCREEN_ALPHA, 6)
+    expect(fogVeilAlpha(-0.5, false)).toBe(0)
+    expect(fogVeilAlpha(2, false)).toBeCloseTo(C().FOG_SCREEN_ALPHA, 6)
   })
 })
 

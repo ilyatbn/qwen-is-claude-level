@@ -146,9 +146,18 @@ async function shieldBubble({ page, shot, log }) {
     return { x: Math.round(sx - 40), y: Math.round(sy - 60), w: 80, h: 80 }
   })
 
+  // A far patch, which must be sampled **over the same window as the subject** —
+  // both endpoints straddling the grant. It was not: `cBefore` and `cAfter` were
+  // both taken *after* the generator was handed over, 200 ms apart, so the
+  // "control" measured a different 200 ms from the one the subject spans. The
+  // 9.9-vs-1.3 margin made it moot in practice and the code still did not do what
+  // its own comment said, which is a drift this repo has been bitten by six times.
+  const controlRect = { x: rect.x + 320, y: rect.y, w: rect.w, h: rect.h }
+
   // **The control frame**: the same patch with no generator. Without it "there
   // are blue pixels here" is satisfied by the sky.
   const before = await samplePatch(page, rect)
+  const cBefore = await samplePatch(page, controlRect)
   const shieldedBefore = await page.evaluate(() => window.__game.core.shieldActive(0))
   if (shieldedBefore) throw new Error('the sandbox player starts shielded — the control is void')
 
@@ -156,15 +165,10 @@ async function shieldBubble({ page, shot, log }) {
   if (!on) throw new Error('a granted generator and a full battery did not shield the player')
   await page.waitForTimeout(200)
   const after = await samplePatch(page, rect)
+  const cAfter = await samplePatch(page, controlRect)
   await shot('shield-bubble')
 
   const moved = colourDelta(before, after)
-  // A far patch of the same frame over the same window: if that moved too, the
-  // scene is animating under the measurement and the delta proves nothing.
-  const controlRect = { x: rect.x + 320, y: rect.y, w: rect.w, h: rect.h }
-  const cBefore = await samplePatch(page, controlRect)
-  await page.waitForTimeout(200)
-  const cAfter = await samplePatch(page, controlRect)
   const controlMoved = colourDelta(cBefore, cAfter)
 
   log(`shield bubble: the player patch moved ${moved.toFixed(1)}, control ${controlMoved.toFixed(1)}`)
