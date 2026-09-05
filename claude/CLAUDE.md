@@ -86,6 +86,12 @@ green suite and a working game.
 - **An assertion on a field that does not exist cannot fail** — `undefined <=
   undefined` is false forever. Print a debug field once before trusting it.
 - **A wait hardcoded against a tunable is a test that expires.**
+- **The recurring shape, under most of the above: a claim reported through something other
+  than the thing it claims.** `EXIT=0` standing in for "assets ok"; `debug().phase` standing
+  in for a rendered frame; `attacker.is_some()` standing in for damage dealt; a `Set` of two
+  literals standing in for a check of the real source; `ls | tail` standing in for a file
+  count. When you write an assertion, ask what it would report if the thing it names had not
+  happened at all.
 
 **On code**
 
@@ -115,6 +121,14 @@ green suite and a working game.
   and the digits. Use `scripts/vite-url.mjs`. Six copies, six identical breaks.
 - **Do not run the gate while another vite or cargo run is active.** A loaded box
   makes every wall-clock assertion a coin flip.
+- **Never chain file authoring behind `cd X &&`.** `cd claude && cat > tasks/…` fails
+  silently with a **success exit** whenever the shell is already in `claude/`: the `cd`
+  errors, `&&` short-circuits, the file is never written, and the commit reports success.
+  This was hit twice in one session by two different agents within twenty minutes — it is a
+  property of the idiom, not a slip. Use an absolute `cd` on its own line, or `;`.
+- **Count a listing, do not read its tail.** The tell for the above was `ls` showing sixteen
+  files where seventeen were expected, and it was missed by looking at `tail -4`. `ls | wc -l`
+  is the assertion; `ls | tail` is a glance.
 - **Interactive debugging is headed, not headless.** This box has WSLg; `make play`
   opens a real Chrome with CDP and `make probe` reads it without closing it. When a
   person is watching, they take the controls.
