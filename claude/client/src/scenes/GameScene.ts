@@ -1870,7 +1870,15 @@ export class GameScene extends Phaser.Scene {
       health: healthBar(this.health, c.BASE_HEALTH, c.HEALTH_CAP, this.poisoned),
       energy: energyBar(this.battery, c.BATTERY_MAX),
       jetpack: jetpackBar(this.fuel, c.JETPACK_MAX_FUEL, waiting),
-      consumables: { heals: this.heals, batteries: this.batteries },
+      consumables: {
+        heals: this.heals,
+        batteries: this.batteries,
+        // From the constants, never spelled here: the row's length **is** the
+        // cap `bump` enforces, and a HUD holding its own copy would show a
+        // fifth socket the game refuses to fill.
+        maxHeals: C().MAX_HEALS,
+        maxBatteries: C().MAX_BATTERIES,
+      },
       shield: shieldRing(
         this.shieldOn,
         this.shieldSince,

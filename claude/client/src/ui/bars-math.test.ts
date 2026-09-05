@@ -2,7 +2,15 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core } from '../core'
-import { energyBar, healthBar, inRefillDelay, jetpackBar, mix, shieldRing } from './bars-math'
+import {
+  consumablePips,
+  energyBar,
+  healthBar,
+  inRefillDelay,
+  jetpackBar,
+  mix,
+  shieldRing,
+} from './bars-math'
 
 // Pinned to the shipped constants (§A19), never to literals.
 let BASE = 0
@@ -160,5 +168,32 @@ describe('mix', () => {
     expect(mix('#000000', '#ffffff', -1)).toBe('#000000')
     expect(mix('#000000', '#ffffff', 2)).toBe('#ffffff')
     expect(mix('#000000', '#ffffff', 0.5)).toBe('#808080')
+  })
+})
+
+// T20.06 — the consumable pip rows.
+describe('consumablePips', () => {
+  it('lights one pip per item held and leaves the rest as sockets', () => {
+    expect(consumablePips(0, C().MAX_BATTERIES)).toEqual([false, false, false, false])
+    expect(consumablePips(1, C().MAX_BATTERIES)).toEqual([true, false, false, false])
+    expect(consumablePips(C().MAX_BATTERIES, C().MAX_BATTERIES)).toEqual([true, true, true, true])
+  })
+
+  it('is as long as the cap, which is the thing the digit never showed', () => {
+    // Pinned to the shipped constants (§A19). `bump` refuses a fifth pack, and
+    // the row is the only place a player is told that.
+    expect(consumablePips(0, C().MAX_BATTERIES)).toHaveLength(C().MAX_BATTERIES)
+    expect(consumablePips(0, C().MAX_HEALS)).toHaveLength(C().MAX_HEALS)
+    // The control: the two caps are different, so "as long as the cap" is not
+    // satisfied by a row of a fixed length that happens to match one of them.
+    expect(C().MAX_HEALS).not.toBe(C().MAX_BATTERIES)
+  })
+
+  it('clamps rather than trusting a count off the wire', () => {
+    // `heals` and `batteries` are `u8` in the snapshot, and a HUD that grew a
+    // row because the server said 9 would push the cluster across the screen.
+    expect(consumablePips(99, C().MAX_BATTERIES)).toEqual([true, true, true, true])
+    expect(consumablePips(-1, C().MAX_BATTERIES)).toEqual([false, false, false, false])
+    expect(consumablePips(1.7, C().MAX_BATTERIES)).toEqual([true, false, false, false])
   })
 })

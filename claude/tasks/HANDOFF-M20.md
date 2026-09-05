@@ -336,3 +336,115 @@ remote's visibility every frame — and the doc comment says so.
 - **It asserts daylight first.** `renderRemotes` culls a remote outside the local player's
   field of view at night (`docs/14` §5), and a culled body is an invisible one — which reads
   exactly like the bug.
+
+## T20.06 landed — the table was never the problem, and now there is an instrument that says so
+
+**Every one of the four candidate causes is now settled by measurement rather than by
+argument**, and three of them are settled by an instrument that did not exist. The report is
+`balance.rs::item_population_report`, run as
+`cargo test -p game-core --release --test balance -- --ignored --nocapture`.
+
+### The measurement, 8 seeds x 3 scales
+
+```
+   Small:  peak live 15/40   battery_pack 104 item-s (9.1% of the ground)  2.0 spawned  0.4 picked  0.0 expired
+   Medium: peak live 20/40   battery_pack 113 item-s (7.5%)                2.2 spawned  0.5 picked  0.0 expired
+   Large:  peak live 22/40   battery_pack 140 item-s (7.4%)                3.5 spawned  1.5 picked  0.0 expired
+```
+
+- **Cause 2 (volume) — dead.** A battery pack is **2nd of 19** by time on the ground on Small
+  and 5th on Medium and Large. Only the medkit beats it everywhere. No weight change can make
+  it more present than the item that is already ahead of it, and the task's own warning
+  applies: raising the rate produces churn that measures like density.
+- **Cause 3 (`WORLD_ITEM_TTL`) — dead.** `expired` is **0.0 at every scale for every item.**
+  Nothing times out at all in a 150 s round, because the bots pick things up or blow them up
+  first. The 70 s TTL is not what a player is failing to see.
+- **Cause 4 (`MAX_WORLD_ITEMS`) — dead**, and now asserted rather than described:
+  `live_peak` is 15/20/22 against a cap of 40, and the report fails if it ever reaches it.
+  `ITEM_SPAWN_INTERVAL`'s doc comment claimed "well clear of the cap"; that claim is a test now.
+
+**Item-seconds is the quantity the complaint is actually about.** An item that spawns and is
+picked up in two seconds and one that lies untouched for seventy are one draw each and
+thirty-five times apart in how often anybody walks past one. The share tables in this file and
+in `melee.rs` measure `roll_item` — no map, no clock, no TTL, no cap — so they are blind to
+everything that happens after the draw.
+
+**One limit, stated rather than buried:** the `picked` column is **bots** picking things up,
+not a player. It measures bot appetite, not human perception, and it should not be read as
+"players ignore batteries". What it *is* good for is the comparison — batteries are picked up
+at 20 % of their spawns on Small against the pistol's 44 % and the flashlight's 58 %, by the
+same bots on the same runs.
+
+### So it is cause 1, and two things were free to check on the way
+
+- **The item is drawn distinctly.** `assets/atlas/items.json` has **no `item_battery` frame**
+  — only 8 frames, and the battery is not among them — so it falls back per `docs/50` §8. But
+  the fallback is not a blank: `render/itemTextures.ts:27` paints one procedurally, a dark
+  body with a green charge bar. "It has no art" is not the cause.
+- **What picking one up got you was one digit.** `⚡ 0 R` becoming `⚡ 1 R`, 13 px monospace, at
+  the edge of the screen, and `♥`/`⚡` are the only things distinguishing the two rows.
+
+### The fix, and why it is pips
+
+`MAX_HEALS` (2) and `MAX_BATTERIES` (4) rows of 9 px blocks, filled when held and a dark
+socket when not, with the digit kept beside them. It is a change a rect mean can see — the
+task's own constraint, and the reason a bigger digit was not an option — and the row's
+**length is the cap**, which the digit never showed and which `bump` silently enforces when
+it refuses a fifth pack.
+
+**Recorded, not acted on:** `BATTERY_PACK` carries `max_stack: 3` in the registry while the
+pickup path routes it to a counter capped at `MAX_BATTERIES = 4`. The item is *defined*
+inventory-shaped and *behaves* as a counter, and the two numbers disagree about how many you
+can hold. The pip row now shows the one the game actually enforces.
+
+### The pixel check took four versions, and the control is free
+
+`DEV_LOADOUT` grants `heals = MAX_HEALS` and **no** batteries, so the same HUD in the same
+frame holds one full row and one empty one — same font, same place, same lighting, one
+variable. Getting a valid comparison out of that took three corrections, each caught by
+forcing every pip to the empty style and watching the assertion pass anyway:
+
+1. the whole **row** dilutes the pips with an icon, a digit and a key letter (13.2);
+2. the whole **pips container** still differs because `MAX_HEALS` is 2 and `MAX_BATTERIES` is
+   4, so the two rects are different widths — **9.6 apart with nothing lit at all**;
+3. one pip against one pip *still* read 9.6, because a socket drawn at
+   `rgba(255,255,255,.10)` is the world showing through it and the two rows sit over
+   different parts of the world.
+
+The socket is opaque now — for the player as much as for the check, since a translucent
+socket over bright sky is invisible — and filled and empty are the same 9 px box, so the row
+does not jitter as it fills. Measured: **201.3 lit, 0.3 with every pip forced empty.**
+
+### A defect this shift introduced and removed
+
+The first `PipRow.set` rewrote `cssText` on six elements **every frame**, where the counter it
+replaced wrote one `textContent`. It now returns early unless the count or the cap changed.
+Found by asking what could make `night-combat` and `perf` — both frame-time sensitive — go red
+on a tree whose only client change is a HUD row; the answer did not exculpate the change, so
+it was fixed. See the gate section below for why that turned out not to be the cause.
+
+### Five gates, four reds, and a green baseline in the middle
+
+Worth writing down because it cost two hours and the conclusion is *not* "the box was tired".
+
+| gate | tree | result |
+|---|---|---|
+| 1 | T20.06 | red — `backdrop-real`, `[vitest-worker]: Timeout calling "onTaskUpdate"` |
+| 2 | T20.06 | red — `night-combat`, "only 2 lights" |
+| 3 | T20.06 (before the per-frame fix) | red — `night-combat` + `perf` 4.10 ms vs 4 |
+| 4 | T20.06 (after it) | red — `checksum::two_clients_agree…`, "got 49" against a floor of 50 |
+| 5 | **`fc7f276`, stashed** | **green** |
+| 6 | T20.06 | **green** — 44/44, 25/25, assets ok |
+
+Every red is on the wall-clock-margin list `HANDOFF-M19` already keeps, and each was measured
+standalone on an idle box: `backdrop-real` **51/51 with an identical 217.7 s duration** (so the
+work completed and only the worker's RPC report timed out — its test bodies are synchronous
+and cannot service RPC for 12 s at a stretch), `night-combat` **3/3 with `lights: 3`**, and
+`checksum` **3/3**. Gate 4's red is the decisive one: `checksum` is a Rust socket test with no
+browser and no client code in it at all, and **nothing in this task's six files can reach it**.
+
+The baseline green at gate 5 is one draw and does not clear the box either. What the sequence
+supports is narrow and worth keeping: **a long session degrades this machine for exactly the
+family of checks that live on a two-second wall-clock margin**, the reds move around within
+that family rather than repeating, and a single red gate on one of them is not evidence about
+the tree. Five gates earlier the same night, on progressively larger trees, were green.

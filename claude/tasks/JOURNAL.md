@@ -5355,3 +5355,19 @@ on a 32x56 sprite has a per-body sprite share; and a sprite is mirrored by its o
 The final form measures the ground through the same rect (`setActorsVisible`, frozen frame),
 which turns it into an inequality identical sprites provably cannot satisfy: **61.0 vs ground
 26.9 with the fix, 0.6 with the bug.** EXIT=0, 44/44, 25/25, assets ok.
+
+## T20.06 — the table was never the problem, and now an instrument says so
+
+`item_population_report` (8 seeds x 3 scales) is the standing-population measurement T20.06
+says does not exist, and it settles three of the four causes: a battery pack is **2nd of 19**
+by time on the ground on Small and 5th on Medium/Large; **`expired` is 0.0 everywhere**, so
+`WORLD_ITEM_TTL` removes nothing; and `live_peak` is 15/20/22 against a cap of 40, now
+asserted rather than described. Item-seconds is the quantity the complaint is about — a draw
+share is blind to everything after the draw. Free findings on the way: the atlas has **no**
+`item_battery` frame but `itemTextures.ts` paints one, so the ground icon is fine; what a
+pickup got you was one digit in 13 px monospace. So the fix is pips — `MAX_HEALS` and
+`MAX_BATTERIES` blocks, the row's length being the cap the digit never showed. The pixel check
+took four versions and three of them passed with every pip forced empty; the final form reads
+**201.3 lit against 0.3 dark**. EXIT=0, 44/44, 25/25, assets ok — on the sixth gate; see
+HANDOFF for the four reds, all in the wall-clock family, and the green baseline that rules
+this tree out.

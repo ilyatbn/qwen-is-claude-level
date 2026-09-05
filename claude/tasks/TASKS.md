@@ -466,7 +466,7 @@ right-button decision rather than around it. **Amendments are the coordinator's.
 - [x] [T20.03](M20/T20.03-host-promotion-is-invisible.md) — Host promotion works and nobody is told **(v8)** — depends on T20.01
 - [x] [T20.04](M20/T20.04-skins-never-reach-the-game.md) — Skins never reach the game **(v8)**
 - [ ] [T20.05](M20/T20.05-two-toxic-rains.md) — Two toxic rains that do not know about each other **(v8)** — **needs a spec ruling**
-- [ ] [T20.06](M20/T20.06-battery-packs-you-never-see.md) — Battery packs you never see **(v8)**
+- [x] [T20.06](M20/T20.06-battery-packs-you-never-see.md) — Battery packs you never see **(v8)**
 - [ ] [T20.07](M20/T20.07-the-flashlight-is-wired-to-nothing.md) — The flashlight is wired to nothing, and the new one is passive **(v8)**
 - [ ] [T20.08](M20/T20.08-the-shield-becomes-a-carried-thing.md) — The shield generator becomes a carried thing **(v8)**
 - [ ] [T20.09](M20/T20.09-drop-an-item.md) — Right-click an inventory tile to drop it **(v8)**

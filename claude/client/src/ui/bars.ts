@@ -11,7 +11,7 @@
  * over the round clock.
  */
 
-import type { BarView } from './bars-math'
+import { consumablePips, type BarView } from './bars-math'
 
 /** One labelled track. */
 class Bar {
@@ -63,6 +63,103 @@ class Bar {
   }
 }
 
+/** Heals are the health bar's red; batteries are the energy bar's blue. */
+const HEAL_COLOUR = '#ff6b6b'
+const BATTERY_COLOUR = '#3aa0ff'
+
+/**
+ * One consumable, as an icon, a row of pips and the number.
+ *
+ * The pips are `display:inline-block` blocks rather than glyphs, and that is the
+ * point: T20.06's trap is that a rect mean cannot see one digit change in 13 px
+ * monospace, so a fix that made the digit bigger would be unassertable *and*
+ * would still not be noticeable. A filled block is both.
+ */
+class PipRow {
+  readonly root: HTMLDivElement
+  private readonly icon: HTMLSpanElement
+  private readonly pips: HTMLDivElement
+  private readonly value: HTMLSpanElement
+  private readonly colour: string
+  private built = -1
+  private lastCount = -1
+  private lastMax = -1
+
+  constructor(doc: Document, id: string, key: string, colour: string) {
+    this.colour = colour
+    this.root = doc.createElement('div')
+    this.root.id = id
+    this.root.style.cssText = 'display:flex;align-items:center;gap:4px;'
+    this.icon = doc.createElement('span')
+    this.pips = doc.createElement('div')
+    // Its own id, so a pixel check can sample the pips alone. Sampling the whole
+    // row dilutes them with the icon, the digit and the key letter — measured, a
+    // full row against an empty one read 13.1 that way and 40+ on the pips.
+    this.pips.id = `${id}-pips`
+    this.pips.style.cssText = 'display:flex;gap:2px;align-items:center;height:11px;'
+    this.value = doc.createElement('span')
+    const keyEl = doc.createElement('span')
+    keyEl.textContent = key
+    keyEl.style.cssText = 'opacity:.75;'
+    this.root.appendChild(this.icon)
+    this.root.appendChild(this.pips)
+    this.root.appendChild(this.value)
+    this.root.appendChild(keyEl)
+  }
+
+  set(icon: string, count: number, max: number): void {
+    // **Nothing is written unless something changed**, and that is not a
+    // micro-optimisation. `update` runs every frame, and the first version of
+    // this restyled six elements with `cssText` sixty times a second where the
+    // old counter wrote one `textContent`. A consumable count changes a handful
+    // of times a round; the frame in between should cost nothing. `Bar.set`
+    // above writes two properties for the same reason.
+    if (count === this.lastCount && max === this.lastMax) return
+    this.lastCount = count
+    this.lastMax = max
+    this.icon.textContent = icon
+    const pips = consumablePips(count, max)
+    // Rebuilt only when the cap changes — which it does not at runtime, but a
+    // row that rebuilt every frame would throw away the elements a check has
+    // just measured.
+    if (this.built !== pips.length) {
+      this.pips.textContent = ''
+      for (let i = 0; i < pips.length; i += 1) {
+        const pip = this.pips.ownerDocument.createElement('i')
+        pip.dataset['pip'] = String(i)
+        this.pips.appendChild(pip)
+      }
+      this.built = pips.length
+    }
+    const kids = this.pips.children
+    for (let i = 0; i < pips.length; i += 1) {
+      const el = kids[i] as HTMLElement | undefined
+      if (!el) continue
+      // An empty pip is a dark socket rather than nothing: a row that shrank
+      // when you spent one would move the whole cluster, and the point of the
+      // row is that its length is the cap.
+      //
+      // **Filled and empty are the same size**, and that is not only taste: a
+      // socket a pixel smaller makes the row jitter as it fills, and it makes
+      // the two states differ in geometry as well as colour — which is a check
+      // that passes for a row where nothing ever lights up. `border-box` is what
+      // keeps the bordered socket the same 9 px as the solid pip.
+      el.style.cssText =
+        'box-sizing:border-box;width:9px;height:9px;border-radius:2px;' +
+        'box-shadow:0 1px 2px rgba(0,0,0,.9);' +
+        (pips[i]
+          ? `background:${this.colour};border:1px solid ${this.colour};`
+          : // **Opaque, not translucent.** A socket at `rgba(255,255,255,.10)`
+            // is the world showing through, so an empty pip over bright sky and
+            // an empty pip over rock are two different colours — which is a
+            // player who cannot read the row against a light background, and a
+            // check whose two "identical" sockets measured 9.6 apart.
+            'background:#1b2028;border:1px solid rgba(255,255,255,.30);')
+    }
+    this.value.textContent = String(count)
+  }
+}
+
 /** The cluster. One element tree, torn down with the scene. */
 export class Bars {
   readonly root: HTMLDivElement
@@ -73,6 +170,7 @@ export class Bars {
   private readonly ring: HTMLDivElement
   /** §C9's counters, beside the health bar rather than in a slot. */
   readonly counters: HTMLDivElement
+  private readonly pipRows: { heals: PipRow; batteries: PipRow }
 
   constructor(doc: Document = document, width = 168) {
     this.root = doc.createElement('div')
@@ -111,12 +209,25 @@ export class Bars {
     // §C9: heals and batteries, **beside** the bars and not among them. They are
     // counters, not a resource with a range, so a track with a fill would be
     // saying something untrue about them.
+    //
+    // **Pips, not just a digit** (T20.06). The battery pack was reported as "I
+    // have never seen any", and the measurement says the spawn table is not the
+    // problem — it is 2nd of 19 by time on the ground. What picking one up got
+    // you was `⚡ 0 R` becoming `⚡ 1 R`: one glyph, 13 px, at the edge of the
+    // screen. A filled block is a change you can see without reading, and the
+    // row's length says what the cap is, which the digit never did.
     this.counters = doc.createElement('div')
     this.counters.id = 'hud-consumables'
     this.counters.style.cssText =
       'position:absolute;left:100%;bottom:0;margin-left:8px;white-space:nowrap;' +
       'font:700 13px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;' +
       'color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.95);'
+    this.pipRows = {
+      heals: new PipRow(doc, 'hud-heals', 'Q', HEAL_COLOUR),
+      batteries: new PipRow(doc, 'hud-batteries', 'R', BATTERY_COLOUR),
+    }
+    this.counters.appendChild(this.pipRows.heals.root)
+    this.counters.appendChild(this.pipRows.batteries.root)
     this.root.style.position = 'fixed'
     this.root.appendChild(this.counters)
 
@@ -128,17 +239,25 @@ export class Bars {
     energy: BarView
     jetpack: BarView
     shield: number | null
-    consumables: { heals: number; batteries: number }
+    /**
+     * The two caps ride with the counts (T20.06).
+     *
+     * `MAX_HEALS` and `MAX_BATTERIES` are `game-core` constants and this file is
+     * the DOM half — it imports no core. Passing them in keeps the one source of
+     * truth on the caller's side, where `C()` already is, rather than giving the
+     * HUD a second copy of two numbers `bump` enforces.
+     */
+    consumables: { heals: number; batteries: number; maxHeals: number; maxBatteries: number }
   }): void {
     this.bars.health.set(views.health)
     this.bars.energy.set(views.energy)
     this.bars.jetpack.set(views.jetpack)
 
     // `Q` and `R` are on the labels, because a counter whose key you cannot
-    // remember is a counter you do not use.
-    this.counters.textContent =
-      `♥ ${views.consumables.heals} Q\n⚡ ${views.consumables.batteries} R`
-    this.counters.style.whiteSpace = 'pre'
+    // remember is a counter you do not use. The digit stays beside the pips: the
+    // pips are what you see, the number is what you read.
+    this.pipRows.heals.set('♥', views.consumables.heals, views.consumables.maxHeals)
+    this.pipRows.batteries.set('⚡', views.consumables.batteries, views.consumables.maxBatteries)
 
     const fill = this.ring.querySelector<HTMLElement>('[data-fill]')
     if (views.shield === null) {

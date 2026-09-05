@@ -578,6 +578,93 @@ await shot('hud-bars-refilled')
             `${d2.hudBars.batteries} pack(s), at (${cr.x}, ${cr.y})`,
         )
       }
+      // --- T20.06: the pips, in pixels, with a control built into the run ---
+      //
+      // Reported: *"spawn more battery packs. I've never seen any so far."*
+      // `balance.rs::item_population_report` (8 seeds x 3 scales) says the table
+      // is not the cause — a battery pack is 2nd of 19 by time on the ground on
+      // Small and 5th on Medium and Large, **nothing** expires to
+      // `WORLD_ITEM_TTL`, and the live count peaks at 22 against a cap of 40. So
+      // the fix is on screen, and this is the assertion that it is *on* the
+      // screen rather than merely computed.
+      //
+      // **The control is free and it is exact.** `DEV_LOADOUT` grants
+      // `heals = MAX_HEALS` and no batteries at all, so the same HUD in the same
+      // frame holds one full row and one empty one — same font, same place, same
+      // lighting, one variable. A "the pips are drawn" check with no empty row
+      // would pass for a row that is always lit.
+      // **One pip from each row, not the rows.** Three versions of this
+      // comparison were wrong before this one and each was caught by running the
+      // falsification (all pips forced to the empty style) rather than reasoning
+      // about it: the whole *row* dilutes the pips with an icon, a digit and a
+      // key letter (13.2); the whole *pips container* still differs because
+      // `MAX_HEALS` is 2 and `MAX_BATTERIES` is 4, so the two rects are different
+      // widths and read 9.6 apart **with nothing lit at all**; and one pip
+      // against one pip *still* read 9.6, because an empty socket drawn at
+      // `rgba(255,255,255,.10)` is the world showing through it and the two rows
+      // sit over different parts of the world. The socket is opaque now — for
+      // the player as much as for this check — and one 9x9 box against another
+      // leaves only whether it is filled. Measured: **201.3 lit, 0.3 with every
+      // pip forced empty.**
+      const pipRect = (row) =>
+        page.evaluate((sel) => {
+          const el = document.querySelector(sel)
+          if (!el) return null
+          const r = el.getBoundingClientRect()
+          if (r.width < 1 || r.height < 1) return null
+          return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }
+        }, `#${row}-pips [data-pip="0"]`)
+      const healRect = await pipRect('hud-heals')
+      const battRect = await pipRect('hud-batteries')
+      const dPips = await dbg()
+      if (!healRect || !battRect) {
+        fail(
+          `the consumable pip rows are not laid out (heals ${JSON.stringify(healRect)}, ` +
+            `batteries ${JSON.stringify(battRect)}) — the counter is a digit again`,
+        )
+      } else if (dPips.hudBars.heals === dPips.hudBars.batteries) {
+        fail(
+          `both counters read ${dPips.hudBars.heals}, so the full-versus-empty control ` +
+            `below has no variable — DEV_LOADOUT is meant to grant heals and no batteries`,
+        )
+      } else {
+        const full = await samplePatch(page, healRect)
+        const empty = await samplePatch(page, battRect)
+        const delta = Math.hypot(full.r - empty.r, full.g - empty.g, full.b - empty.b)
+        // The threshold is the one `pixels.mjs` uses for "this region changed",
+        // and it is met by a wide margin because the fix is coloured blocks
+        // rather than a digit — which is the whole reason it is not a digit.
+        const MIN = 8
+        if (delta < MIN) {
+          fail(
+            `the full heal row and the empty battery row render the same (delta ` +
+              `${delta.toFixed(1)}, needs ${MIN}): ${dPips.hudBars.heals} of ` +
+              `${dPips.hudBars.heals} against ${dPips.hudBars.batteries} — holding a ` +
+              `consumable does not change the pixels`,
+          )
+        } else {
+          ok(
+            `a full pip row and an empty one differ by ${delta.toFixed(1)} on the frame ` +
+              `(${dPips.hudBars.heals} heals lit, ${dPips.hudBars.batteries} batteries)`,
+          )
+        }
+        // Both ends (§A39): the DOM says as many pips as the cap, and the cap is
+        // the constant the server enforces — not a length the HUD chose.
+        const counts = await page.evaluate(() => ({
+          heals: document.querySelectorAll('#hud-heals [data-pip]').length,
+          batteries: document.querySelectorAll('#hud-batteries [data-pip]').length,
+        }))
+        const c = await page.evaluate('window.__game.constants()')
+        if (counts.heals !== c.MAX_HEALS || counts.batteries !== c.MAX_BATTERIES) {
+          fail(
+            `the rows are ${counts.heals}/${counts.batteries} pips against caps of ` +
+              `${c.MAX_HEALS}/${c.MAX_BATTERIES} — the row length is not the cap`,
+          )
+        } else {
+          ok(`each row is as long as its cap: ${counts.heals} heals, ${counts.batteries} batteries`)
+        }
+      }
+
       // Beside, not on top: §C8 puts them next to the health bar.
       if (cr.x < rects['hud-bar-health'].x + rects['hud-bar-health'].w) {
         fail(`the counters overlap the bars — counters at x=${cr.x}, bars end at ${rects['hud-bar-health'].x + rects['hud-bar-health'].w}`)

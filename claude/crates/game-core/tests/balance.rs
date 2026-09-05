@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use game_core::bots::Bot;
 use game_core::constants::{
     MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, DEFAULT_MAP_SCALE, FOV_DAY, INVENTORY_SLOTS,
-    ROUND_SECONDS, SIM_DT, SURFACE_SAMPLE_STEP,
+    MAX_WORLD_ITEMS, ROUND_SECONDS, SIM_DT, SURFACE_SAMPLE_STEP, WORLD_ITEM_TTL,
 };
 use game_core::items::registry::{ItemDef, ItemId, ItemKind, ITEMS, PISTOL};
 use game_core::math::Vec2;
@@ -969,5 +969,237 @@ fn encounter_report() {
                 rs.len(),
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T20.06 — standing population (`tasks/M20/T20.06`)
+// ---------------------------------------------------------------------------
+
+/// How much of a round each item is **on the ground for**, and what removes it.
+///
+/// **The instrument T20.06 says does not exist, and it did not.** The share
+/// tables in this file and in `melee.rs` measure `roll_item` — no map, no clock,
+/// no TTL, no cap — and every remaining candidate cause acts *after* the draw:
+/// `WORLD_ITEM_TTL` evaporates a ground item after 70 s and `MAX_WORLD_ITEMS`
+/// evicts the oldest non-crate. A draw-share instrument is blind to both and
+/// cannot separate volume from either.
+///
+/// So: **item-seconds**, which is the quantity a player's "I have never seen
+/// any" is actually about. An item that spawns and is picked up in two seconds
+/// and one that lies untouched for seventy are one draw each and thirty-five
+/// times apart in how often anybody walks past one.
+///
+/// The three removals are counted **separately**, because they say different
+/// things and the world's own `ItemDespawn` event carries neither a reason nor
+/// an item id — it cannot tell them apart, so this reconstructs them from the
+/// item table each tick. Merging them is how "churn that measures like density"
+/// (`ITEM_SPAWN_INTERVAL`'s own doc comment) hides.
+#[derive(Debug, Default, Clone)]
+struct Population {
+    /// item id -> seconds that item spent lying in the world, summed over copies.
+    alive_s: BTreeMap<ItemId, f64>,
+    spawned: BTreeMap<ItemId, u32>,
+    picked: BTreeMap<ItemId, u32>,
+    /// Removed by `WORLD_ITEM_TTL`.
+    expired: BTreeMap<ItemId, u32>,
+    /// Removed by neither a pickup nor the TTL: the `MAX_WORLD_ITEMS` cap, a
+    /// blast, or falling out of the bottom of the map (§C15).
+    ///
+    /// **Not "evicted", because those three are not the same thing** and the
+    /// world does not say which: `ItemDespawn` carries no reason and no item id.
+    /// What separates them here is `live_peak` — the cap can only fire at
+    /// `MAX_WORLD_ITEMS` live, so a peak well under it rules eviction out for the
+    /// whole run, and what is left is the void and the blasts.
+    removed_other: BTreeMap<ItemId, u32>,
+    live_peak: usize,
+}
+
+fn bump_map<K: Ord>(m: &mut BTreeMap<K, u32>, k: K) {
+    *m.entry(k).or_default() += 1;
+}
+
+fn population(seed: u64, seconds: f32, scale: MapScale) -> Population {
+    let mut w = World::new(seed, scale);
+    w.set_phase(RoundPhase::Playing);
+    for i in 0..BOTS {
+        w.add_player(i as u8, 0, format!("Bot {i}"));
+    }
+    let mut bots: Vec<_> = (0..BOTS)
+        .map(|i| Bot::new(i as u8, seed, i as u32, SKILL))
+        .collect();
+    let _ = w.drain_events();
+
+    let mut p = Population::default();
+    // Initial placement happens inside `World::new`, before any event buffer
+    // exists, so it is read off the table rather than counted from events — the
+    // same fact `density` records above.
+    let mut live: BTreeMap<game_core::items::world::WorldItemId, (ItemId, f32)> = BTreeMap::new();
+    for it in w.items.iter() {
+        bump_map(&mut p.spawned, it.item);
+        live.insert(it.id, (it.item, it.spawned_at));
+    }
+
+    let ticks = (seconds / SIM_DT) as u32;
+    for t in 0..ticks {
+        let now = t as f32 * SIM_DT;
+        for b in bots.iter_mut() {
+            let inp = b.think(&w, now, SIM_DT);
+            w.queue_input(b.player, inp);
+            if let Some(slot) = b.wants_select() {
+                w.select_slot(b.player, slot);
+            }
+            if inp.buttons & button::FIRE != 0 {
+                let _ = w.fire(b.player, now);
+            }
+        }
+        w.step(SIM_DT);
+
+        // Who was picked up this tick, so a pickup is not attributed to the cap.
+        let mut picked_ids = Vec::new();
+        for e in w.drain_events() {
+            if let GameEvent::ItemPickup { world_item_id, .. } = e {
+                picked_ids.push(world_item_id);
+            }
+        }
+
+        let mut now_live: BTreeMap<game_core::items::world::WorldItemId, (ItemId, f32)> =
+            BTreeMap::new();
+        for it in w.items.iter() {
+            now_live.insert(it.id, (it.item, it.spawned_at));
+            *p.alive_s.entry(it.item).or_default() += SIM_DT as f64;
+            if !live.contains_key(&it.id) {
+                bump_map(&mut p.spawned, it.item);
+            }
+        }
+        p.live_peak = p.live_peak.max(now_live.len());
+
+        for (id, (item, spawned_at)) in &live {
+            if now_live.contains_key(id) {
+                continue;
+            }
+            if picked_ids.contains(id) {
+                bump_map(&mut p.picked, *item);
+            } else if now - *spawned_at >= WORLD_ITEM_TTL {
+                // The same test `cull` applies, evaluated on the same clock.
+                bump_map(&mut p.expired, *item);
+            } else {
+                // Not picked up and not old enough to time out.
+                bump_map(&mut p.removed_other, *item);
+            }
+        }
+        live = now_live;
+    }
+    p
+}
+
+/// `cargo test -p game-core --release --test balance -- --ignored --nocapture`
+///
+/// **Reported: "spawn more battery packs. They are useful but I've never seen
+/// any so far."** T20.06's four candidate causes are (1) the pickup is invisible
+/// on the HUD, (2) volume, (3) `WORLD_ITEM_TTL`, (4) `MAX_WORLD_ITEMS`. This
+/// separates 2, 3 and 4; cause 1 is settled on the screen, in
+/// `scripts/checks/hud-bars.mjs`.
+#[test]
+#[ignore = "measurement: minutes in release"]
+fn item_population_report() {
+    println!(
+        "\n== POPULATION — {} seeds x {POOL_SECONDS}s ==",
+        SEEDS.len()
+    );
+    let battery = game_core::items::registry::BATTERY_PACK;
+    for scale in [MapScale::Small, MapScale::Medium, MapScale::Large] {
+        let ps: Vec<_> = SEEDS
+            .iter()
+            .map(|s| population(*s, POOL_SECONDS, scale))
+            .collect();
+        let n = ps.len() as f64;
+        let mean = |f: &dyn Fn(&Population) -> f64| ps.iter().map(f).sum::<f64>() / n;
+        let per_item = |m: &dyn Fn(&Population) -> &BTreeMap<ItemId, u32>, id: ItemId| {
+            ps.iter()
+                .map(|p| *m(p).get(&id).unwrap_or(&0) as f64)
+                .sum::<f64>()
+                / n
+        };
+
+        // Every item, ranked by how long it is on the ground — the number the
+        // report exists for. Printed rather than asserted: it is a description
+        // of the round, and a floor per item would pin the whole table.
+        let mut rows: Vec<(ItemId, f64)> = ITEMS
+            .iter()
+            .map(|d| {
+                (
+                    d.id,
+                    ps.iter()
+                        .map(|p| *p.alive_s.get(&d.id).unwrap_or(&0.0))
+                        .sum::<f64>()
+                        / n,
+                )
+            })
+            .filter(|(_, s)| *s > 0.0)
+            .collect();
+        rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let total: f64 = rows.iter().map(|r| r.1).sum();
+
+        println!(
+            "\n   {scale:?}: peak live {}/{}   total item-seconds {:.0}",
+            ps.iter().map(|p| p.live_peak).max().unwrap_or(0),
+            MAX_WORLD_ITEMS,
+            total,
+        );
+        println!(
+            "     {:<16} {:>9} {:>7} {:>7} {:>7} {:>7}",
+            "item", "item-s", "%", "spawns", "picked", "expired"
+        );
+        for (id, s) in rows.iter().take(8) {
+            let name = ITEMS
+                .iter()
+                .find(|d| d.id == *id)
+                .map(|d| d.key)
+                .unwrap_or("?");
+            println!(
+                "     {:<16} {:>9.0} {:>6.1}% {:>7.1} {:>7.1} {:>7.1}",
+                name,
+                s,
+                100.0 * s / total,
+                per_item(&|p| &p.spawned, *id),
+                per_item(&|p| &p.picked, *id),
+                per_item(&|p| &p.expired, *id),
+            );
+        }
+        let bs = ps
+            .iter()
+            .map(|p| *p.alive_s.get(&battery).unwrap_or(&0.0))
+            .sum::<f64>()
+            / n;
+        println!(
+            "     battery_pack: {:.0} item-s ({:.1}% of the ground), {:.1} spawned, \
+             {:.1} picked up, {:.1} expired, {:.1} otherwise removed",
+            bs,
+            100.0 * bs / total,
+            per_item(&|p| &p.spawned, battery),
+            per_item(&|p| &p.picked, battery),
+            per_item(&|p| &p.expired, battery),
+            per_item(&|p| &p.removed_other, battery),
+        );
+
+        // **Cause 4, asserted rather than assumed.** `ITEM_SPAWN_INTERVAL`'s doc
+        // comment says the live count is "well clear" of the cap; this is that
+        // claim as a test, on the same run that produces the table.
+        let peak = ps.iter().map(|p| p.live_peak).max().unwrap_or(0);
+        assert!(
+            peak < MAX_WORLD_ITEMS,
+            "{scale:?}: {peak} items alive against a cap of {MAX_WORLD_ITEMS} — eviction is \
+             routine, and a higher spawn rate would delete old items rather than add new ones"
+        );
+        // Reported, not asserted: with the peak that far under the cap these are
+        // items that fell into the void or were destroyed by a blast, and both
+        // are the game working. A floor on them would be a floor on how much the
+        // bots blow up.
+        let other: f64 = mean(&|p| p.removed_other.values().sum::<u32>() as f64);
+        println!(
+            "     {other:.1} items per round removed by neither pickup nor TTL — void or \
+             blast, since the cap never fires at a peak of {peak}/{MAX_WORLD_ITEMS}"
+        );
     }
 }

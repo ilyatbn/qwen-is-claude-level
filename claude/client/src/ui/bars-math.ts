@@ -152,3 +152,25 @@ export function shieldRing(
   const byBattery = drain > 0 ? battery / drain : Infinity
   return Math.max(0, Math.min(1, Math.min(byTime, byBattery) / duration))
 }
+
+/**
+ * A consumable counter as a row of pips: `true` for one you hold (§C9, T20.06).
+ *
+ * **Why a row and not a digit.** The battery pack was reported as *"I've never
+ * seen any"*, and the measurement (`balance.rs::item_population_report`, 8 seeds
+ * x 3 scales) says the table is not the problem: it is 2nd of 19 by time on the
+ * ground on Small and 5th on Medium and Large, **nothing** expires to
+ * `WORLD_ITEM_TTL`, and the live count peaks at 22 against a cap of 40. What a
+ * player actually got for picking one up was one digit changing in 13 px
+ * monospace at the edge of the screen.
+ *
+ * A pip row also shows the **cap**, which the digit never did — and the cap is
+ * the thing `bump` silently enforces when it refuses a fifth pack.
+ *
+ * Clamped at both ends: the count is a `u8` off the wire and a row cannot be
+ * negative or longer than its cap.
+ */
+export function consumablePips(count: number, max: number): boolean[] {
+  const n = Math.max(0, Math.min(max, Math.floor(count)))
+  return Array.from({ length: Math.max(0, Math.floor(max)) }, (_, i) => i < n)
+}
