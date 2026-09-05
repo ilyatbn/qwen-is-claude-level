@@ -121,11 +121,31 @@ green suite and a working game.
   and the digits. Use `scripts/vite-url.mjs`. Six copies, six identical breaks.
 - **Do not run the gate while another vite or cargo run is active.** A loaded box
   makes every wall-clock assertion a coin flip.
-- **Never chain file authoring behind `cd X &&`.** `cd claude && cat > tasks/…` fails
-  silently with a **success exit** whenever the shell is already in `claude/`: the `cd`
-  errors, `&&` short-circuits, the file is never written, and the commit reports success.
-  This was hit twice in one session by two different agents within twenty minutes — it is a
-  property of the idiom, not a slip. Use an absolute `cd` on its own line, or `;`.
+- **Never chain file authoring behind `cd X &&` — and know that `set -e` will not save you.**
+  Measured, not argued:
+
+      ( cd nonexistent && echo hi > a.txt ); echo $?            → 1   a.txt missing
+      bash -c 'cd nonexistent && echo hi > a.txt
+               echo second > b.txt'                             → 0   a.txt missing, b.txt written
+      bash -c 'set -e
+               cd nonexistent && echo hi > a.txt
+               echo second > c.txt'                             → 0   c.txt STILL written
+      bash -c 'set -e
+               cd nonexistent
+               echo second > d.txt'                             → 1   d.txt missing
+
+  So: the chain **does** signal failure in isolation (exit 1). What swallows it is being one
+  line among many, where the invocation's status is the last command's. And **`set -e` does
+  not help**, because POSIX exempts every command of an AND-OR list except the last from
+  errexit — line 3 above proves it. Only a **bare** `cd` on its own line under `set -e`, or an
+  explicit `cd X || exit 1`, actually stops.
+
+  Hit twice in one session by two different agents twenty minutes apart, so it is a property
+  of the idiom rather than a slip. **Use an absolute path, or a bare `cd` on its own line, or
+  `cd X || exit 1`.**
+- **Put `set -e` on any multi-line Bash that authors files** — it catches the *other* ways a
+  middle line dies quietly (an unterminated heredoc, a `mkdir` into a read-only path, a
+  `git add` of a path that does not exist). It just does not catch the one above.
 - **Count a listing, do not read its tail.** The tell for the above was `ls` showing sixteen
   files where seventeen were expected, and it was missed by looking at `tail -4`. `ls | wc -l`
   is the assertion; `ls | tail` is a glance.
