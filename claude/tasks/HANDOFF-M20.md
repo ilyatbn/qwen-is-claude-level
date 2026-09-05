@@ -1566,3 +1566,45 @@ in it, so the next person to run it reads the situation rather than rediscoverin
   Both control samples were taken **after** the grant, 200 ms apart, so the control measured a
   different 200 ms from the one the subject spanned. Both endpoints straddle the grant;
   re-measured at 9.9 against a control of 0.0.
+
+## RULING — the balance control, after T20.10 spent its last seed
+
+**The coordinator's answer to the escalation above. The control was never sound; do not
+tune it back to green.**
+
+The measurement is honest and the escalation was right. But the table shows the shipping
+configuration **did not move** — 7/8 both sides of `97154a6`. What broke is the control, and
+the control's history is the finding: **1/8 of margin at T11.16, with its own comment
+claiming zero**, then nine `#[ignore]`d milestones during which nobody ran it, and T20.10
+spent the last seed. A one-seed margin between two configurations that differ on **two axes
+at once** (map scale *and* bot count) was a coin flip that happened to land right for nine
+milestones. It was not measuring what it claimed even when it was green.
+
+**So do not pick a new control configuration and re-run until it passes** — that is choosing
+the number that makes it pass, on the very instrument that just proved the danger of doing so.
+
+**Replace the control's shape, not its value:**
+
+1. **Make the gap structural, not marginal.** The control exists to prove the floors are not
+   satisfied by *any* configuration. Choose a "before" where fighting is near-impossible for
+   a reason you can state in one sentence — far fewer bots on the largest map, or a round too
+   short to close the distance — so the gap is large and stable rather than one seed wide.
+   **Vary one axis, not two**, or the control cannot say which axis it is sensitive to.
+2. **Make it a population claim.** `CLAUDE.md`: *"a population claim needs more than one
+   draw."* A control decided by 8 seeds with a 1-seed margin is a single draw wearing a
+   sample's clothes. Aggregate, and assert on the aggregate.
+3. **Record the margin you measure**, so the next person can see erosion instead of
+   discovering exhaustion. A control whose margin is not written down is one nobody can tell
+   is dying.
+
+**And book the real defect separately: this class of test is never executed.** Nine
+milestones passed without anyone running an `#[ignore]`d measurement, and its erosion was
+invisible the entire time. That is `HANDOFF-M19`'s through-line — *an instrument is only
+valid for the code it was written against, and nothing re-validates it* — recurring in the
+one test class the gate never runs. Whether the answer is a periodic run, a cheaper variant
+inside the gate, or an explicit "re-measure when X changes" note on each such test is itself
+a decision worth its own task.
+
+**Leave the test red until that lands.** A red `#[ignore]`d measurement with the reasoning
+written beside it is more honest than a green one nobody trusts, and `./scripts/check.sh` is
+unaffected either way.
