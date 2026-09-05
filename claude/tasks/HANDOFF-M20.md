@@ -537,3 +537,30 @@ same number. It is not a weakening; it is a window in which to observe the condi
 `during sustained fire` read printed `lights: 2` — so the true count oscillates between 2 and
 3 against a floor of 3. The sampling is fixed; the **margin** is thin, and re-deriving that
 floor is still T19.22's question.
+
+## T20.13 IN PROGRESS — the coder was cut off by a rate limit mid-task
+
+**Uncommitted in the working tree:** `client/src/main.ts`, `client/src/scenes/GameScene.ts`,
+`scripts/e2e.mjs`, and a new untracked `scripts/checks/rematch.mjs`. `git stash` is empty.
+Nothing here has been gated. HEAD is `03f14ec`.
+
+**Its last words, which are a real finding and the reason for the diff:**
+
+> **SHUTDOWN destroys `world` but never nulls it, and never clears `ready` — while every
+> other teardown in that block nulls its field. So `update` runs against a destroyed
+> camera.**
+
+That is the shape T20.13 was hunting: the stuck player is the one who **left from the
+results screen**, and `ResultsScreen.onExit` closes the socket without sending `leave_room`
+(`GameScene.ts:415-418`), unlike `EscapeMenu.onQuit` (`:1660-1663`). A scene torn down with a
+live-but-destroyed `world` and a stale `ready` latch is exactly how the next match renders
+an empty screen while a refresh works.
+
+**Verify before building on it** — it is one line from an agent that was terminated
+mid-sentence, and nobody has reproduced it since. The reproduction harness is
+`scripts/checks/lobby.mjs:353-388` (see the task file), and `rematch.mjs` appears to be an
+attempt at one; read it before writing another.
+
+**Also note:** every other teardown in that block nulling its field while this one does not
+is the *"share the guard, or share the function"* shape. If the fix is to null it, ask why
+the block has five hand-written teardowns rather than one.
