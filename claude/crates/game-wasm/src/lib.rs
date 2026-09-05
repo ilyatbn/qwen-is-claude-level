@@ -1094,7 +1094,12 @@ pub fn constants_json() -> String {
         FOV_EDGE_SOFTNESS => c::FOV_EDGE_SOFTNESS,
         FLASHLIGHT_RANGE => c::FLASHLIGHT_RANGE,
         FLASHLIGHT_CONE_DEG => c::FLASHLIGHT_CONE_DEG,
-        FLASHLIGHT_AMBIENT_MULT => c::FLASHLIGHT_AMBIENT_MULT,
+        // T20.07 replaced `FLASHLIGHT_AMBIENT_MULT` (0.65, a trade) with these
+        // two: carrying a flashlight widens the night radius and lightens §F9's
+        // veil. Both are read by `lightmap-math.ts` and `weather-math.ts`, which
+        // are the live copies — `cycle.rs::fov_radius` has no production caller.
+        FLASHLIGHT_FOV_MULT => c::FLASHLIGHT_FOV_MULT,
+        FLASHLIGHT_FOG_VEIL_MULT => c::FLASHLIGHT_FOG_VEIL_MULT,
         BASE_HEALTH => c::BASE_HEALTH,
         // How long an environmental death still credits a recent attacker
         // (`docs/21` §4). Exported for §C15's browser check, which has to wait
@@ -1614,8 +1619,8 @@ mod tests {
 /// test can sweep both and fail if they diverge, which is the drift the shared-core
 /// architecture exists to stop.
 #[wasm_bindgen]
-pub fn core_fov_radius(darkness: f32, fog_mult: f32, health: f32, flashlight_on: bool) -> f32 {
-    game_core::world::cycle::fov_radius(darkness, fog_mult, health, flashlight_on)
+pub fn core_fov_radius(darkness: f32, fog_mult: f32, health: f32, has_flashlight: bool) -> f32 {
+    game_core::world::cycle::fov_radius(darkness, fog_mult, health, has_flashlight)
 }
 
 /// The Rust darkness curve (§A13), exposed for the same reason.

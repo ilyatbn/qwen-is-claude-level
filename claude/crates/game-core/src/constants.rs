@@ -178,7 +178,38 @@ pub const FOV_HEALTH_MIN_MULT: f32 = 0.80;
 pub const FOV_EDGE_SOFTNESS: f32 = 0.35;
 pub const FLASHLIGHT_RANGE: f32 = 260.0;
 pub const FLASHLIGHT_CONE_DEG: f32 = 55.0;
-pub const FLASHLIGHT_AMBIENT_MULT: f32 = 0.65;
+/// What **carrying** a flashlight does to your sight radius at night (T20.07).
+///
+/// **This reverses `docs/72` §C13 and the task file records the override.** The
+/// old `FLASHLIGHT_AMBIENT_MULT` was 0.65: the light *shrank* ambient sight and
+/// bought a cone, a trade. The coordinator asked for the opposite and for it to
+/// be passive — *"when picked up, it increases your view/light radius by 50 % at
+/// night… It doesn't have to be the active item, just in the inventory."*
+///
+/// **Gated on night.** `fov_radius` lerps `FOV_DAY` → `FOV_NIGHT` by darkness, and
+/// this multiplies only where that lerp has somewhere to go: a torch at noon is
+/// not a telescope, and an unconditional 1.5x would make the flashlight the
+/// strongest item in the game during the phase it is least needed.
+pub const FLASHLIGHT_FOV_MULT: f32 = 1.5;
+/// What carrying one does to §F9's fog veil (T20.07).
+///
+/// The brief says *"makes the heavy fog background 20 % more visible"*, which is
+/// three different pictures, and the task file asks for a choice with a reason.
+/// `FOG_SCREEN_ALPHA` is 0.8, so:
+///
+///  - **alpha x 0.8 → 0.64.** The veil is 20 % less opaque. **Chosen.**
+///  - alpha − 0.2 → 0.6. Additive, and it inverts: at a light fog of alpha 0.15 a
+///    flashlight would erase the effect entirely, and below that go negative. A
+///    rule that can cancel the thing it modifies is the wrong rule.
+///  - 20 % more *transmitted* light (`1 − a`: 0.2 → 0.24, alpha 0.76). Defensible
+///    in optics and **unassertable here**: the fog arm of `fog-visible` measures a
+///    sky delta of ~64 for a full veil, so 0.04 of alpha is ~3.2 units against a
+///    noise floor near 5. A rule nobody can measure is a rule that breaks quietly,
+///    which is the §A15 failure this project keeps paying for.
+///
+/// Multiplicative also keeps the benefit proportional as the fog's own ramp
+/// climbs, rather than being everything at the start and nothing at the peak.
+pub const FLASHLIGHT_FOG_VEIL_MULT: f32 = 0.8;
 pub const NIGHT_DARKNESS: f32 = 0.82;
 pub const DAY_DARKNESS: f32 = 0.0;
 

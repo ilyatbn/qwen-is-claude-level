@@ -75,7 +75,11 @@ pub struct PlayerState {
     /// Battery packs carried, 0..=`MAX_BATTERIES` (§C9).
     pub batteries: u8,
     pub inventory: Inventory,
-    pub flashlight_on: bool,
+    // **No `flashlight_on`** (T20.07). It was a latch that only `use_item` set
+    // and that nothing outside the snapshot's bit 4 ever read, and the flashlight
+    // is passive now: carrying one is the whole state, and the encode site derives
+    // the bit from `inventory`. Keeping the field would have left a second answer
+    // to "does this player have light" that could disagree with the first.
     pub alive: bool,
     pub respawn_at: f32,
     pub iframes_until: f32,
@@ -127,7 +131,6 @@ impl PlayerState {
             heals: 0,
             batteries: 0,
             inventory: Inventory::new(),
-            flashlight_on: false,
             alive: true,
             respawn_at: 0.0,
             iframes_until: 0.0,
@@ -406,7 +409,6 @@ impl PlayerState {
         // status that survived into the next life would tick down against a
         // player who was never rained on.
         self.poisoned_until = 0.0;
-        self.flashlight_on = false;
         // **Heals and batteries are dropped too, and deliberately.**
         //
         // §C9 asks for the decision to be made and written down. They are not
@@ -474,8 +476,8 @@ impl PlayerState {
         self.iframes_until = now + SPAWN_IFRAMES;
         self.poisoned_until = 0.0;
         self.last_damaged_by = None;
-        // The item is gone with the inventory, so the light goes with it.
-        self.flashlight_on = false;
+        // Nothing to clear for the flashlight: it is the *item* now, and `clear()`
+        // above took it with the rest of the inventory (T20.07).
     }
 
     /// Validated item use, in the documented order.
@@ -504,11 +506,12 @@ impl PlayerState {
                 self.add_battery(amount);
                 self.inventory.consume(slot, 1);
             }
-            ItemKind::Utility(_) => {
-                // The flashlight is a toggle, not a consumable: the stack is
-                // untouched.
-                self.flashlight_on = !self.flashlight_on;
-            }
+            // **A utility is not usable** (T20.07). The flashlight used to toggle
+            // here; it is passive now — carrying one is what does the work, so
+            // there is nothing for `use` to do. Refused rather than silently
+            // succeeding: a no-op `Ok` would tell the client the press landed and
+            // leave the player pressing `G` at a torch forever.
+            ItemKind::Utility(_) => return Err(UseError::WrongKind),
             // You cannot `use` a bazooka.
             ItemKind::Weapon(_) => return Err(UseError::WrongKind),
         }

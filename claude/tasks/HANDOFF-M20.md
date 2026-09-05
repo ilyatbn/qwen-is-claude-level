@@ -828,3 +828,96 @@ smoothed average of the live count, not the instantaneous one.
 - The `Constants` interface gained `TOXIC_DROPS_IN_FLIGHT`, and **T20.15's parity test caught
   the missing `constants_json` entry before any check ran** — the guard doing its job on the
   next task after it landed.
+
+## T20.07 landed — a spec clause reversed, and `REPLAY_VERSION` moved once for two tasks
+
+### ⚠ THE THING THE NEXT CODER MUST READ: `REPLAY_VERSION` is now 5
+
+**T20.08 must NOT bump it again.** The bump is recorded in `replay.rs`'s doc comment as
+covering both tasks, and it names the trap: T20.09 added a *command* in the same window and
+correctly did not bump, because a new tag leaves an old file replaying byte for byte.
+Same-sounding question, opposite answers. If T20.08 lands after this, it deletes
+`shield_until` from the same hashed block and rides this bump.
+
+### The reversal, and what it is not
+
+`docs/72` §C13 specifies the trade — the flashlight *shrinks* ambient sight and buys a cone —
+and the coordinator asked for the opposite. **`docs/` is untouched**; the override is recorded
+in the task file, in `constants.rs`, and in `cycle.rs`'s and `lightmap-math.ts`'s doc comments.
+
+- **`FLASHLIGHT_AMBIENT_MULT` (0.65) → `FLASHLIGHT_FOV_MULT` (1.5)**, applied only where
+  `night > 0`. A torch at noon is not a telescope, and an unconditional 1.5x would make the
+  flashlight the strongest item in the game during the phase it is least needed.
+- **`FLASHLIGHT_FOG_VEIL_MULT` = 0.8**, and the choice is argued in its doc comment. The brief
+  said *"20 % more visible"*, which is three pictures. `alpha − 0.2` **inverts**: at a light
+  fog of alpha 0.15 a flashlight erases the effect and below that goes negative. The
+  transmitted-light reading (alpha 0.8 → 0.76) is defensible in optics and **unassertable
+  here** — `fog-visible` measures a sky delta of ~48 for a full veil, so 0.04 of alpha is ~2.4
+  units against a measured noise floor of 5.4. A rule nobody can measure breaks quietly.
+  Multiplicative also keeps the benefit proportional as the fog's own ramp climbs.
+
+### The four dead mechanisms, and what happened to each
+
+1. **Six hardcoded `flashlightOn: false`** — two in `GameScene`, **four in `SandboxScene`**.
+   All six now read a real value. That split is why the falsification is split: `night-combat`
+   drives the sandbox, `fog-visible` drives `GameScene`, and fixing one pair would leave the
+   other check staring at unchanged literals. **Named, per the task's instruction**: the
+   sandbox falsification broke `SandboxScene`'s lightmap site (the `lastFov` branch), giving
+   `110.0 -> 110.0, not 165.0`; the `GameScene` one broke the `world.update(...)` weather
+   argument, giving `filled at 0.800, not 0.640` plus both pixel patches.
+2. **`FLAG.flashlight` had no production reader.** `GameScene` now reads bit 4 into
+   `hasFlashlight`, beside `shieldOn` and `poisoned`, and never predicts it.
+3. **`collectLightSources` still has no production caller** — left alone, as the task says, so
+   T19.20 is not duplicated. **The cone is kept, deliberately**: the brief adds a passive
+   radius and says nothing about removing the cone, and deleting it in passing would be a
+   design change beyond it. **The consequence needs a decision from whoever wires it**: a
+   carried flashlight now emits a cone that cannot be switched off. That is recorded on
+   `PlayerLight.hasFlashlight` where T19.20 will read it.
+4. **The toggle path is deleted**: `Player::flashlight_on`, `World::toggle_flashlight`,
+   `Command::ToggleFlashlight`, `ReplayCommand::ToggleFlashlight` (tag 7), the
+   `toggle_flashlight` socket handler and `Connection.sendToggleFlashlight`. `use_item` on a
+   `Utility` is now `Err(UseError::WrongKind)` rather than a silent `Ok` — a no-op success
+   would tell the client the press landed.
+
+**`button::FLASHLIGHT` and `flashlight_pressed` are deliberately left**, and this is a
+reported gap rather than an oversight: they are a bit in the **input bitfield**, removing one
+renumbers the rest, and `docs/40` §3 describes that layout. That is a wire change a builder
+should not make unilaterally. Nothing sets the bit (`keydown-F` is bound to `sendFire`), so it
+is inert — **worth booking**.
+
+### Tag 7 is a hole, not a reuse
+
+`every_command_really_is_every_command` now expects 21 tags and **asserts 7 is absent**, with
+the reason: renumbering would make every later command's encoding depend on this one's
+removal, for nothing, and no file that could contain a 7 gets past the version check.
+
+### `DEV_FLASHLIGHT=1`, and why a knob rather than the dev loadout
+
+The flashlight is the **commonest buried item by design** — "dig for it before nightfall" is a
+strategy `registry.rs` protects with a weight — so a check that waited for one to be dug up
+would be waiting on the generator and the shovel. Adding it to `DEV_LOADOUT` would have given
+every existing check a torch and changed their night radius. So it is a sibling of
+`DEV_POISONED`: off by default (asserted), applied independently of `dev_loadout`, in the
+startup summary, and **not in the replay header** — only `dev_loadout` is recorded there, and
+adding a field is a header layout change with its own version consequence.
+
+### An instrument defect found and fixed on the way
+
+**`SandboxScene`'s `debug().fov` recomputed `fovRadius` itself** — a third copy of the
+formula, and an *intention*: it would have reported a widened radius from a scene whose
+lightmap was still rendering the old one, and it silently ignored `fovOverride`. It reports
+`lastFov`, the radius the lightmap actually drew with, so `night-combat`'s assertion is about
+the effect. That change is what makes the sandbox falsification meaningful — against the old
+handle, breaking the render site would have left the number green.
+
+### Numbers, for the next person who touches these constants
+
+Night radius `110.0 → 165.0` with a torch; day radius `320.0` unchanged (the control). The
+veil fills at `0.640` against `0.800`, and the pixels move `48.1 → 38.1` (sky) and
+`35.3 → 27.9` (ground) against predictions of 9.6 and 7.1 of removed travel.
+
+**One assertion was deliberately dropped as a coin flip.** A first draft failed when
+`gap <= noiseFloor`; the ground gap is 7.4 against a noise floor that runs 4.9-5.6, which is a
+gate that fails on a draw. The two-sided comparison against the predicted gap is both stronger
+and stable — a flashlight that does nothing gives a gap of 0 and fails by the whole distance,
+which is what the falsification measured (0.6 and 0.3 against 9.5 and 7.0).

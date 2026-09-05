@@ -71,7 +71,6 @@ pub enum Command {
     /// T20.09: put one slot's stack on the ground at the player's feet.
     DropItem(PlayerId, u8),
     Fire(PlayerId),
-    ToggleFlashlight(PlayerId),
     VoteRestart(PlayerId, bool),
     ResyncMap(PlayerId),
     Leave(PlayerId),
@@ -167,7 +166,6 @@ impl std::fmt::Debug for Command {
             Command::MoveItem(id, a, b) => write!(f, "MoveItem({id}, {a} -> {b})"),
             Command::DropItem(id, slot) => write!(f, "DropItem({id}, {slot})"),
             Command::Fire(id) => write!(f, "Fire({id})"),
-            Command::ToggleFlashlight(id) => write!(f, "ToggleFlashlight({id})"),
             Command::VoteRestart(id, v) => write!(f, "VoteRestart({id}, {v})"),
             Command::ResyncMap(id) => write!(f, "ResyncMap({id})"),
             Command::Leave(id) => write!(f, "Leave({id})"),
@@ -899,7 +897,6 @@ pub fn to_command(c: &ReplayCommand) -> Command {
         ReplayCommand::MoveItem(id, f, t) => Command::MoveItem(*id, *f, *t),
         ReplayCommand::DropItem(id, slot) => Command::DropItem(*id, *slot),
         ReplayCommand::Fire(id) => Command::Fire(*id),
-        ReplayCommand::ToggleFlashlight(id) => Command::ToggleFlashlight(*id),
         ReplayCommand::VoteRestart(id, v) => Command::VoteRestart(*id, *v),
         // A sweep and a leave have the same effect on the world; the distinction
         // is only in why it happened, which the recorder keeps for the reader.
@@ -1306,6 +1303,14 @@ impl Room {
                     p.poison(now);
                 }
             }
+        }
+        // Also independent of the loadout, and for the same reason `dev_poisoned`
+        // is: what T20.07's checks need is a player carrying a flashlight, and the
+        // item is the commonest *buried* find by design — waiting for one to be
+        // dug up would make the gate a draw. `give_all` rather than a direct
+        // `inventory.add`, so §C24's refusals apply to it like anything else.
+        if self.config.dev_flashlight {
+            self.give_all(id, &[(game_core::items::registry::FLASHLIGHT, 1)]);
         }
         if !self.config.dev_loadout {
             return;
@@ -1714,12 +1719,6 @@ impl Room {
                     if let Err(e) = world.fire(id, now) {
                         tracing::debug!(target: "game::weapons", player = id, reason = ?e, "fire rejected");
                     }
-                }
-            }
-            Command::ToggleFlashlight(id) => {
-                self.note(R::ToggleFlashlight(id));
-                if let Some(world) = self.world.as_mut() {
-                    world.toggle_flashlight(id)
                 }
             }
             Command::VoteRestart(id, v) => {
@@ -3217,7 +3216,6 @@ mod tests {
         room.apply(Command::UseItem(200, 99));
         room.apply(Command::SelectSlot(200, 200));
         room.apply(Command::Fire(200));
-        room.apply(Command::ToggleFlashlight(200));
         room.apply(Command::Ready(200, true));
         room.apply(Command::Leave(200));
         let _ = room.tick_inline(SIM_DT);

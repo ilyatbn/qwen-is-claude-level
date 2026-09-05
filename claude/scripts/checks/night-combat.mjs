@@ -113,4 +113,74 @@ export default async function ({ page, shot, log }) {
   await page.evaluate(() => clearInterval(window.__smg))
   log(`during sustained fire: ${JSON.stringify(during)}`)
   if (during.projectiles < 1) throw new Error('sustained fire puts no rounds in the air')
+
+  // --- a carried flashlight widens the night radius (T20.07) -----------------
+  //
+  // **This scene, deliberately.** Six production sites hardcoded
+  // `flashlightOn: false` and **four of them are in `SandboxScene`** — this check
+  // drives the sandbox, `fog-visible` drives `GameScene`, and a fix applied to
+  // only one pair leaves the other check looking at unchanged literals. So this
+  // is the sandbox half of the falsification, and `fog-visible` is the other.
+  //
+  // The design here **reverses `docs/72` §C13**, which specifies the opposite
+  // trade; the coordinator asked for it explicitly and `tasks/M20/T20.07` records
+  // the override. Carrying one is enough — not toggled, not the active slot.
+  //
+  // `debug().fov` is the radius the **lightmap last rendered with** — the same
+  // number it hands the minimap. It used to be recomputed inside the debug handle,
+  // a third copy of the formula that would have reported a widened radius from a
+  // scene still drawing the old one; T20.07 made it report the drawn value.
+  {
+    const k = await page.evaluate(() => window.__game.constants())
+    const fovNow = () => page.evaluate(() => window.__game.debug().fov)
+
+    // Night, from the same `setTime` the tracer half above used.
+    await page.evaluate(() => window.__game.setTime(90))
+    await page.waitForTimeout(200)
+    const darkBefore = await page.evaluate(() => window.__game.debug().darkness)
+    const nightOff = await fovNow()
+
+    const held = await page.evaluate(() => window.__game.giveFlashlight())
+    if (!held) throw new Error('giveFlashlight() did not put one in the bag')
+    await page.waitForTimeout(200)
+    const nightOn = await fovNow()
+    const darkAfter = await page.evaluate(() => window.__game.debug().darkness)
+
+    // The control on the *instrument*: the two reads must be at the same time of
+    // day, or the darkness lerp explains the difference and the flashlight is
+    // credited with the clock.
+    if (Math.abs(darkAfter - darkBefore) > 1e-6) {
+      throw new Error(
+        `darkness moved between the two samples (${darkBefore} -> ${darkAfter}), so the ` +
+          'radius difference is not attributable to the flashlight',
+      )
+    }
+    const want = nightOff * k.FLASHLIGHT_FOV_MULT
+    if (Math.abs(nightOn - want) > 0.5) {
+      throw new Error(
+        `a carried flashlight took the night radius ${nightOff.toFixed(1)} -> ` +
+          `${nightOn.toFixed(1)}, not ${want.toFixed(1)} (x${k.FLASHLIGHT_FOV_MULT})`,
+      )
+    }
+    log(`night radius ${nightOff.toFixed(1)} -> ${nightOn.toFixed(1)} with a flashlight`)
+
+    // **And nothing by day** — the control that stops "it widens the view" being
+    // satisfied by a torch that widens it always. Same bag, same map, only the
+    // clock moves.
+    await page.evaluate(() => window.__game.setTime(30))
+    await page.waitForTimeout(200)
+    const dayDark = await page.evaluate(() => window.__game.debug().darkness)
+    if (dayDark > 0.001) {
+      throw new Error(`setTime(30) is not daylight (darkness ${dayDark}) — the control is void`)
+    }
+    const dayOn = await fovNow()
+    if (Math.abs(dayOn - k.FOV_DAY) > 0.5) {
+      throw new Error(
+        `a flashlight changed the daytime radius: ${dayOn.toFixed(1)} against ` +
+          `FOV_DAY ${k.FOV_DAY} — it is meant to do nothing at noon`,
+      )
+    }
+    log(`day radius ${dayOn.toFixed(1)} with the same flashlight — unchanged (control)`)
+    await page.evaluate(() => window.__game.setTime(null))
+  }
 }

@@ -146,7 +146,18 @@ export class WeatherLayer {
    * the spew looking like it belongs to this game rather than a tuned-by-eye
    * constant that drifts from it.
    */
-  update(dt: number, vents: VentView[], fallScale: number, fog = 0): void {
+  update(
+    dt: number,
+    vents: VentView[],
+    fallScale: number,
+    fog = 0,
+    // **Carrying a flashlight lightens §F9's veil** (T20.07). Threaded through
+    // `update` rather than held as a setter beside `setToxic`, because unlike the
+    // rain it has no ramp of its own: the veil is recomputed from `strength` every
+    // frame and the flashlight is a multiplier on that, so a stored copy would be
+    // a second place the answer could go stale.
+    hasFlashlight = false,
+  ): void {
     this.rain.resize(this.cam.width, this.cam.height)
     this.rain.update(dt, this.toxicTarget, this.toxicDensityTarget)
 
@@ -157,7 +168,7 @@ export class WeatherLayer {
 
     this.drawRain()
     this.drawFire(vents)
-    this.drawFog(fog)
+    this.drawFog(fog, hasFlashlight)
   }
 
   /**
@@ -173,10 +184,10 @@ export class WeatherLayer {
    * meant to matter. This function is the entire fix; everything else about the
    * effect was already correct.
    */
-  private drawFog(strength: number): void {
+  private drawFog(strength: number, hasFlashlight: boolean): void {
     const g = this.fogVeil
     g.clear()
-    const a = fogVeilAlpha(strength)
+    const a = fogVeilAlpha(strength, hasFlashlight)
     this.lastFogAlpha = a
     // Not `a <= 0`: Phaser will happily fill at 0.0001, and a veil that is
     // technically drawn between effects is one nobody can assert the absence of.

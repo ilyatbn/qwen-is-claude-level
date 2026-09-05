@@ -281,7 +281,11 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
         flags |= u8::from(p.body.grounded) << 1;
         flags |= u8::from(p.jetpack.active) << 2;
         flags |= u8::from(p.shield_active(now)) << 3;
-        flags |= u8::from(p.flashlight_on) << 4;
+        // **Derived, not stored** (T20.07). The flashlight is passive: carrying
+        // one is the whole state, so bit 4 means "has one in the bag" and there is
+        // no `flashlight_on` latch behind it to disagree. `count_of` rather than
+        // naming a slot — it is held anywhere, not in the active one.
+        flags |= u8::from(p.inventory.count_of(game_core::items::registry::FLASHLIGHT) > 0) << 4;
         flags |= u8::from(p.invulnerable(now)) << 5;
         // §E13. **The boolean, not the timer.** The client's only use for it is
         // the colour of one bar, and it does not predict status any more than it
@@ -838,7 +842,8 @@ mod tests {
         if let Some(p) = w.player_mut(1) {
             p.health = 137.0;
             p.aim = 40_000;
-            p.flashlight_on = true;
+            // Bit 4 is derived from the bag now, not from a latch (T20.07).
+            p.inventory.add(game_core::items::registry::FLASHLIGHT, 1);
         }
         let b = encode_snapshot(&w, 0, 99);
         let s = decode_snapshot(&b).expect("round trip");
@@ -888,7 +893,7 @@ mod tests {
             p.body.grounded = false;
             p.jetpack.active = false;
             p.shield_until = None;
-            p.flashlight_on = false;
+            p.inventory.clear();
             p.iframes_until = 0.0;
             p.poisoned_until = 0.0;
         }
@@ -904,7 +909,13 @@ mod tests {
             (1, |p, _| p.body.grounded = true),
             (2, |p, _| p.jetpack.active = true),
             (3, |p, n| p.shield_until = Some(n + 10.0)),
-            (4, |p, _| p.flashlight_on = true),
+            // **The one bit that is not a field** (T20.07): it is
+            // `inventory.count_of(FLASHLIGHT) > 0`, so the setter has to put the
+            // item in the bag. Everything else about this case is unchanged, which
+            // is the point — the wire did not move, only what feeds it.
+            (4, |p, _| {
+                p.inventory.add(game_core::items::registry::FLASHLIGHT, 1);
+            }),
             (5, |p, n| p.iframes_until = n + 10.0),
             (6, |p, n| p.poisoned_until = n + 10.0),
         ];
@@ -915,7 +926,7 @@ mod tests {
                 p.body.grounded = false;
                 p.jetpack.active = false;
                 p.shield_until = None;
-                p.flashlight_on = false;
+                p.inventory.clear();
                 p.iframes_until = 0.0;
                 p.poisoned_until = 0.0;
                 set(p, now);

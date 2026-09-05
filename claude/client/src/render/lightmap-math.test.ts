@@ -15,7 +15,7 @@ describe('fovRadius', () => {
   it('is FOV_DAY in daylight, full health, no fog, no flashlight', () => {
     const c = C()
     expect(
-      fovRadius({ darkness: 0, fogMult: 1, health: c.BASE_HEALTH, flashlightOn: false }),
+      fovRadius({ darkness: 0, fogMult: 1, health: c.BASE_HEALTH, hasFlashlight: false }),
     ).toBeCloseTo(c.FOV_DAY, 4)
   })
 
@@ -26,7 +26,7 @@ describe('fovRadius', () => {
         darkness: c.NIGHT_DARKNESS,
         fogMult: 1,
         health: c.BASE_HEALTH,
-        flashlightOn: false,
+        hasFlashlight: false,
       }),
     ).toBeCloseTo(c.FOV_NIGHT, 4)
   })
@@ -37,7 +37,7 @@ describe('fovRadius', () => {
       darkness: c.NIGHT_DARKNESS,
       fogMult: C().FOV_FOG_MULT,
       health: c.BASE_HEALTH,
-      flashlightOn: false,
+      hasFlashlight: false,
     })
     expect(v).toBeCloseTo(c.FOV_NIGHT * c.FOV_FOG_MULT, 4)
     // The worst case the game reaches, restated for §A16's radii: roughly
@@ -52,21 +52,37 @@ describe('fovRadius', () => {
   it('applies the health multiplier at 0 health and not above BASE_HEALTH', () => {
     const c = C()
     expect(
-      fovRadius({ darkness: 0, fogMult: 1, health: 0, flashlightOn: false }),
+      fovRadius({ darkness: 0, fogMult: 1, health: 0, hasFlashlight: false }),
     ).toBeCloseTo(c.FOV_DAY * c.FOV_HEALTH_MIN_MULT, 4)
     // Overheal does not buy extra sight — the ratio is clamped at 1.
     expect(
-      fovRadius({ darkness: 0, fogMult: 1, health: 150, flashlightOn: false }),
+      fovRadius({ darkness: 0, fogMult: 1, health: 150, hasFlashlight: false }),
     ).toBeCloseTo(c.FOV_DAY, 4)
   })
 
-  it('shrinks ambient sight when the flashlight is on', () => {
+  /**
+   * **Replaces "shrinks ambient sight when the flashlight is on"** (T20.07).
+   *
+   * That test asserted `docs/72` §C13's trade — `on ≈ off × 0.65` — and the
+   * coordinator reversed the design: carrying one *widens* the night radius and
+   * is passive. The old test is not deleted so much as inverted, and its control
+   * is the half that had none.
+   */
+  it('widens sight at night when a flashlight is carried, and not by day', () => {
     const c = C()
-    const off = fovRadius({ darkness: 0, fogMult: 1, health: 100, flashlightOn: false })
-    const on = fovRadius({ darkness: 0, fogMult: 1, health: 100, flashlightOn: true })
-    // It is a trade for the cone, not an upgrade.
-    expect(on).toBeCloseTo(off * c.FLASHLIGHT_AMBIENT_MULT, 4)
-    expect(on).toBeLessThan(off)
+    const at = (darkness: number, hasFlashlight: boolean) =>
+      fovRadius({ darkness, fogMult: 1, health: 100, hasFlashlight })
+
+    const nightOff = at(c.NIGHT_DARKNESS, false)
+    const nightOn = at(c.NIGHT_DARKNESS, true)
+    expect(nightOn).toBeCloseTo(nightOff * c.FLASHLIGHT_FOV_MULT, 4)
+    // The direction, separately from the ratio: 0.65 satisfies "on ≈ off × k" as
+    // exactly as 1.5 does, and the direction is the whole change.
+    expect(nightOn).toBeGreaterThan(nightOff)
+
+    // **The control.** Without it "a flashlight widens the view" is satisfied by
+    // one that widens it always, and the gate on `night > 0` would be untested.
+    expect(at(0, true)).toBeCloseTo(at(0, false), 4)
   })
 
   it('is monotonic in darkness', () => {
@@ -77,7 +93,7 @@ describe('fovRadius', () => {
         darkness: (i / 20) * c.NIGHT_DARKNESS,
         fogMult: 1,
         health: 100,
-        flashlightOn: false,
+        hasFlashlight: false,
       })
       expect(v).toBeLessThanOrEqual(prev + 1e-4)
       prev = v
@@ -105,7 +121,7 @@ describe('collectLightSources', () => {
     x: 100,
     y: 200,
     health: 100,
-    flashlightOn: false,
+    hasFlashlight: false,
     aim: 0,
     ...over,
   })
@@ -129,14 +145,14 @@ describe('collectLightSources', () => {
     expect(ls[0]!.kind).toBe('radial')
     expect(ls[0]!.x).toBe(100)
     expect(ls[0]!.radius).toBeCloseTo(
-      fovRadius({ darkness: 0.82, fogMult: 1, health: 100, flashlightOn: false }),
+      fovRadius({ darkness: 0.82, fogMult: 1, health: 100, hasFlashlight: false }),
       3,
     )
   })
 
-  it('adds a cone at the aim angle when the flashlight is on', () => {
+  it('adds a cone at the aim angle when one is carried', () => {
     const ls = collectLightSources(
-      world({ localPlayer: player({ flashlightOn: true, aim: 1.25 }) }),
+      world({ localPlayer: player({ hasFlashlight: true, aim: 1.25 }) }),
     )
     const cone = ls.find((l) => l.kind === 'cone')
     expect(cone).toBeDefined()
@@ -145,19 +161,22 @@ describe('collectLightSources', () => {
     expect(cone!.radius).toBeCloseTo(C().FLASHLIGHT_RANGE, 3)
   })
 
-  it('shrinks the ambient radius when the flashlight is on — it is a trade', () => {
+  it('widens the ambient radius when one is carried — no longer a trade', () => {
+    // The `world()` fixture is at darkness 0.82, i.e. night, which is where the
+    // multiplier applies (T20.07).
     const off = collectLightSources(world())[0]!.radius
     const on = collectLightSources(
-      world({ localPlayer: player({ flashlightOn: true }) }),
+      world({ localPlayer: player({ hasFlashlight: true }) }),
     ).find((l) => l.kind === 'radial')!.radius
-    expect(on).toBeCloseTo(off * C().FLASHLIGHT_AMBIENT_MULT, 3)
+    expect(on).toBeCloseTo(off * C().FLASHLIGHT_FOV_MULT, 3)
+    expect(on).toBeGreaterThan(off)
   })
 
-  it('draws a remote player’s cone — the whole point of the trade', () => {
+  it('draws a remote player’s cone', () => {
     // Omitting this silently removes the reason a flashlight is a decision: it
     // is meant to be a beacon that gets you seen first.
     const ls = collectLightSources(
-      world({ remotePlayers: [{ x: 700, y: 300, flashlightOn: true, aim: -0.5 }] }),
+      world({ remotePlayers: [{ x: 700, y: 300, hasFlashlight: true, aim: -0.5 }] }),
     )
     const cones = ls.filter((l) => l.kind === 'cone')
     expect(cones).toHaveLength(1)
@@ -167,7 +186,7 @@ describe('collectLightSources', () => {
 
   it('ignores a remote player without one', () => {
     const ls = collectLightSources(
-      world({ remotePlayers: [{ x: 700, y: 300, flashlightOn: false, aim: 0 }] }),
+      world({ remotePlayers: [{ x: 700, y: 300, hasFlashlight: false, aim: 0 }] }),
     )
     expect(ls.filter((l) => l.kind === 'cone')).toHaveLength(0)
   })
@@ -199,11 +218,11 @@ describe('collectLightSources', () => {
 
   it('shrinks every radius in fog', () => {
     const clear = collectLightSources(
-      world({ localPlayer: player({ flashlightOn: true }), hazards: [{ x: 1, y: 1, kind: 'lava' }] }),
+      world({ localPlayer: player({ hasFlashlight: true }), hazards: [{ x: 1, y: 1, kind: 'lava' }] }),
     )
     const foggy = collectLightSources(
       world({
-        localPlayer: player({ flashlightOn: true }),
+        localPlayer: player({ hasFlashlight: true }),
         hazards: [{ x: 1, y: 1, kind: 'lava' }],
         fogMult: C().FOV_FOG_MULT,
       }),
@@ -230,12 +249,12 @@ describe('the TypeScript FoV matches the Rust authority', () => {
     for (const darkness of [0, 0.1, 0.4, c.NIGHT_DARKNESS * 0.5, c.NIGHT_DARKNESS]) {
       for (const fogMult of [1, 0.7, c.FOV_FOG_MULT]) {
         for (const health of [0, 1, 37, c.BASE_HEALTH, c.HEALTH_CAP]) {
-          for (const flashlightOn of [false, true]) {
-            const ts = fovRadius({ darkness, fogMult, health, flashlightOn })
-            const rs = coreFovRadius(darkness, fogMult, health, flashlightOn)
+          for (const hasFlashlight of [false, true]) {
+            const ts = fovRadius({ darkness, fogMult, health, hasFlashlight })
+            const rs = coreFovRadius(darkness, fogMult, health, hasFlashlight)
             expect(
               Math.abs(ts - rs),
-              `darkness=${darkness} fog=${fogMult} health=${health} torch=${flashlightOn}: ts=${ts} rs=${rs}`,
+              `darkness=${darkness} fog=${fogMult} health=${health} torch=${hasFlashlight}: ts=${ts} rs=${rs}`,
             ).toBeLessThan(0.01)
             checked++
           }

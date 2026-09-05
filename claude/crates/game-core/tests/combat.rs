@@ -1007,7 +1007,7 @@ fn death_drops_every_stack_and_respawn_clears_the_inventory() {
     // build that had capped every item at one slot.
     let medkit_stack = registry::max_stack(registry::MEDKIT);
     p.inventory.add(registry::MEDKIT, medkit_stack + 1);
-    p.flashlight_on = true;
+    p.inventory.add(registry::FLASHLIGHT, 1);
 
     assert_eq!(
         p.inventory.count_of(registry::GRENADE),
@@ -1044,13 +1044,32 @@ fn death_drops_every_stack_and_respawn_clears_the_inventory() {
         2,
         "the consumable stopped spilling, so the weapon assertion above proves nothing"
     );
+    // **Four now, and the fourth is the flashlight** (T20.07). It used to be a
+    // latch this fixture set to true and `die` cleared; it is an ordinary item, so
+    // it lands with everything else and whoever killed you can pick your light up.
+    assert_eq!(
+        dropped
+            .iter()
+            .filter(|s| s.item == registry::FLASHLIGHT)
+            .count(),
+        1,
+        "the flashlight did not drop with the rest of the bag"
+    );
     assert_eq!(
         dropped.len(),
-        3,
-        "one grenade stack and two medkit stacks, and no shovel"
+        4,
+        "one grenade stack, two medkit stacks and a flashlight, and no shovel"
     );
     assert!(p.inventory.is_empty());
-    assert!(!p.flashlight_on, "the light dies with the item");
+    // **The light dies with the item**, and it is the same assertion it always
+    // was — one layer down. It used to read `!p.flashlight_on`, a latch `die`
+    // cleared by hand; there is no latch now, so "has light" is "has the item"
+    // and an empty inventory is the whole of it (T20.07).
+    assert_eq!(
+        p.inventory.count_of(registry::FLASHLIGHT),
+        0,
+        "the light did not die with the item"
+    );
 }
 
 #[test]
@@ -1109,20 +1128,31 @@ fn firing_respects_the_cooldown_and_the_ammo_count() {
     );
 }
 
+/// **Replaces `the_flashlight_toggles_without_being_consumed`** (T20.07).
+///
+/// The flashlight is passive: carrying one is the whole state, so there is no
+/// verb. `use` is refused rather than quietly succeeding — a no-op `Ok` would
+/// tell the client the press landed and leave the player pressing `G` at a torch
+/// forever. The half of the old test that still matters is kept: the stack is
+/// untouched either way.
 #[test]
-fn the_flashlight_toggles_without_being_consumed() {
+fn a_flashlight_cannot_be_used_and_is_not_consumed_by_trying() {
     let mut p = PlayerState::new(0, Vec2::ZERO, 0);
     p.inventory.add(registry::FLASHLIGHT, 1);
     let slot = slot_of(&p, registry::FLASHLIGHT);
-    assert_eq!(p.use_item(slot, 0.0), Ok(registry::FLASHLIGHT));
-    assert!(p.flashlight_on);
+    assert_eq!(p.use_item(slot, 0.0), Err(UseError::WrongKind));
     assert_eq!(
         p.inventory.count_of(registry::FLASHLIGHT),
         1,
-        "the item was consumed"
+        "a refused use consumed the item"
     );
-    p.use_item(slot, 0.0).expect("toggle back");
-    assert!(!p.flashlight_on);
+    // The control: a consumable in the same fixture still uses and still spends,
+    // so "refused" is about the kind and not about a broken `use_item`.
+    p.inventory.add(registry::MEDKIT, 1);
+    let med = slot_of(&p, registry::MEDKIT);
+    p.health = 1.0;
+    assert_eq!(p.use_item(med, 0.0), Ok(registry::MEDKIT));
+    assert_eq!(p.inventory.count_of(registry::MEDKIT), 0);
 }
 
 #[test]

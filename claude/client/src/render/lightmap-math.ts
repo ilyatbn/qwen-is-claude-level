@@ -21,7 +21,16 @@ export interface FovOpts {
   fogMult: number
   /** 0 .. HEALTH_CAP */
   health: number
-  flashlightOn: boolean
+  /**
+   * **Carrying one**, not "switched on" (T20.07).
+   *
+   * `docs/72` §C13 specified a trade — the light shrank ambient sight and bought
+   * a cone — and the coordinator reversed it: a flashlight in the bag widens the
+   * night radius by `FLASHLIGHT_FOV_MULT` and is not toggled, not the active slot
+   * and free of energy. `Player::flashlight_on` is gone from the simulation; this
+   * comes from the snapshot's bit 4, which the server derives from the inventory.
+   */
+  hasFlashlight: boolean
 }
 
 function lerp(a: number, b: number, t: number): number {
@@ -35,8 +44,16 @@ function clamp01(x: number): number {
 /**
  * All four modifiers are multiplicative on one radius, exactly as the doc states.
  *
- * The flashlight *reduces* ambient sight — it is a trade for the cone, not an
- * upgrade.
+ * **This is the live copy.** `game_core::world::cycle::fov_radius` has no
+ * production caller — only the wasm bridge, which exists so
+ * `lightmap-math.test.ts` can pin the two together. Change one and the other must
+ * move, and the wasm must be **rebuilt** before that test means anything: it
+ * compares against the built binary, so an unrebuilt artifact makes it fail
+ * against code that no longer exists.
+ *
+ * The flashlight **widens** the night radius (T20.07), reversing §C13's trade on
+ * the coordinator's instruction, and does nothing by day — `night` is 0 there, so
+ * the base has not moved off `FOV_DAY` and a torch at noon is not a telescope.
  */
 export function fovRadius(o: FovOpts): number {
   const c = C()
@@ -45,7 +62,7 @@ export function fovRadius(o: FovOpts): number {
     lerp(c.FOV_DAY, c.FOV_NIGHT, night) *
     o.fogMult *
     lerp(c.FOV_HEALTH_MIN_MULT, 1, clamp01(o.health / c.BASE_HEALTH)) *
-    (o.flashlightOn ? c.FLASHLIGHT_AMBIENT_MULT : 1)
+    (o.hasFlashlight && night > 0 ? c.FLASHLIGHT_FOV_MULT : 1)
   )
 }
 
@@ -72,7 +89,18 @@ export interface PlayerLight {
   x: number
   y: number
   health: number
-  flashlightOn: boolean
+  /**
+   * Carrying one (T20.07), for the reason `FovOpts.hasFlashlight` gives.
+   *
+   * **The cone below is kept, deliberately.** The brief adds a passive radius and
+   * says nothing about removing the cone, and deleting it in passing would be a
+   * design change beyond it. The consequence is worth stating: a carried
+   * flashlight now emits a cone it cannot be switched off — which is invisible
+   * today, because `collectLightSources` still has **no production caller**
+   * (`GameScene` builds `lights` by hand). T19.20 owns the wiring; when it lands,
+   * confirm that a permanently-on cone is wanted before it reaches a screen.
+   */
+  hasFlashlight: boolean
   /** Radians. */
   aim: number
 }
@@ -131,13 +159,13 @@ export function collectLightSources(w: WorldLights): LightSourceSpec[] {
       darkness: w.darkness,
       fogMult: w.fogMult,
       health: w.localPlayer.health,
-      flashlightOn: w.localPlayer.flashlightOn,
+      hasFlashlight: w.localPlayer.hasFlashlight,
     }),
     kind: 'radial',
     intensity: 1,
   })
 
-  if (w.localPlayer.flashlightOn) {
+  if (w.localPlayer.hasFlashlight) {
     out.push({
       x: w.localPlayer.x,
       y: w.localPlayer.y,
@@ -150,7 +178,7 @@ export function collectLightSources(w: WorldLights): LightSourceSpec[] {
   }
 
   for (const r of w.remotePlayers) {
-    if (!r.flashlightOn) continue
+    if (!r.hasFlashlight) continue
     out.push({
       x: r.x,
       y: r.y,

@@ -233,9 +233,21 @@ export class EmberField {
  * ramp itself from the effect's start time, where a clock that has run past the
  * end must read 0 rather than a negative alpha Phaser would silently treat as
  * opaque.
+ *
+ * **`hasFlashlight` is a second argument, not a pre-scale of `strength`** (T20.07,
+ * and the task file is explicit). `strength` is stored as `debug().fogStrength`
+ * and asserted by `weather-visible.mjs` and `fog-visible.mjs`; discounting it here
+ * would make that number mean "the effect's strength, less whatever the player is
+ * carrying" — one field, two meanings — and those checks would silently start
+ * measuring something else while still passing.
+ *
+ * The multiplier is `FLASHLIGHT_FOG_VEIL_MULT`, and the three readings of
+ * *"20 % more visible"* are weighed in its doc comment. It defaults to off so the
+ * sandbox's fog path, which has no player inventory in scope, keeps its meaning.
  */
-export function fogVeilAlpha(strength: number): number {
-  return C().FOG_SCREEN_ALPHA * Math.min(1, Math.max(0, strength))
+export function fogVeilAlpha(strength: number, hasFlashlight = false): number {
+  const lit = hasFlashlight ? C().FLASHLIGHT_FOG_VEIL_MULT : 1
+  return C().FOG_SCREEN_ALPHA * Math.min(1, Math.max(0, strength)) * lit
 }
 
 /**

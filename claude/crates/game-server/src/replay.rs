@@ -63,7 +63,23 @@ pub const HEADER_BYTES: usize = 45;
 /// two: the host's lobby change is in round one's stream, so from round two the
 /// header is the only carrier. Recorded as `Room` fields first, and round two
 /// then replayed with bots the live round never seated.
-pub const REPLAY_VERSION: u16 = 4;
+///
+/// **5 (T20.07, and T20.08 shares it)**: `Player::flashlight_on` left the state
+/// hash. It was hashed in `world/mod.rs`'s per-player block, and the flashlight is
+/// passive now — carrying one is the whole state and the snapshot's bit 4 is
+/// derived from the inventory at the encode site. A v4 recording of anyone who
+/// picked up a torch would load, run, and **diverge silently** at the first
+/// checkpoint after the pickup, which is precisely the v3 case above. Tag 7,
+/// `ToggleFlashlight`, retires with it and its number is left as a hole: no file
+/// that could contain a 7 will ever get past the version check.
+///
+/// **One bump, two tasks.** T20.08 removes `shield_until` from the same hashed
+/// block for the same reason, and a version is not a changelog — bumping twice for
+/// one release would reject every recording twice over for a single break in
+/// compatibility. **Check `HEAD` before bumping**: T20.09 landed a new *command*
+/// in this window and correctly did **not** bump, because a new tag leaves an old
+/// file replaying byte for byte. Same-sounding question, opposite answers.
+pub const REPLAY_VERSION: u16 = 5;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///
@@ -132,7 +148,6 @@ pub enum ReplayCommand {
     UseItem(PlayerId, u8),
     SelectSlot(PlayerId, u8),
     Fire(PlayerId),
-    ToggleFlashlight(PlayerId),
     VoteRestart(PlayerId, bool),
     Leave(PlayerId),
     /// A periodic state hash written by the recorder.
@@ -187,7 +202,6 @@ impl ReplayCommand {
             ReplayCommand::UseItem(..) => 4,
             ReplayCommand::SelectSlot(..) => 5,
             ReplayCommand::Fire(_) => 6,
-            ReplayCommand::ToggleFlashlight(_) => 7,
             ReplayCommand::VoteRestart(..) => 8,
             ReplayCommand::Leave(_) => 9,
             ReplayCommand::DropUnready(_) => 10,
@@ -480,7 +494,6 @@ fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayErro
         ReplayCommand::Ready(id)
         | ReplayCommand::Unready(id)
         | ReplayCommand::Fire(id)
-        | ReplayCommand::ToggleFlashlight(id)
         | ReplayCommand::Leave(id)
         | ReplayCommand::DropUnready(id)
         | ReplayCommand::StartWithBots(id)
@@ -764,7 +777,11 @@ fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
         4 => ReplayCommand::UseItem(c.u8()?, c.u8()?),
         5 => ReplayCommand::SelectSlot(c.u8()?, c.u8()?),
         6 => ReplayCommand::Fire(c.u8()?),
-        7 => ReplayCommand::ToggleFlashlight(c.u8()?),
+        // 7 was `ToggleFlashlight`, retired with the toggle in T20.07. The tag is
+        // left as a hole rather than reused: `REPLAY_VERSION` moved in the same
+        // change, so no file that could contain a 7 will ever reach this match,
+        // and renumbering the tags below it would make every other command's
+        // encoding depend on this one's removal.
         8 => ReplayCommand::VoteRestart(c.u8()?, c.u8()? != 0),
         9 => ReplayCommand::Leave(c.u8()?),
         10 => ReplayCommand::DropUnready(c.u8()?),
@@ -835,7 +852,6 @@ mod tests {
             ReplayCommand::UseItem(2, 7),
             ReplayCommand::SelectSlot(2, 0),
             ReplayCommand::Fire(3),
-            ReplayCommand::ToggleFlashlight(4),
             ReplayCommand::VoteRestart(5, true),
             ReplayCommand::VoteRestart(5, false),
             ReplayCommand::Leave(5),
@@ -885,7 +901,6 @@ mod tests {
                 | ReplayCommand::UseItem(..)
                 | ReplayCommand::SelectSlot(..)
                 | ReplayCommand::Fire(_)
-                | ReplayCommand::ToggleFlashlight(_)
                 | ReplayCommand::VoteRestart(..)
                 | ReplayCommand::Leave(_)
                 | ReplayCommand::DropUnready(_)
@@ -911,12 +926,23 @@ mod tests {
         // read 18 against a returned 18 and pass. Sitting here, the number is in
         // front of the person holding the error.
         let tags: std::collections::BTreeSet<u8> = all.iter().map(|c| c.tag()).collect();
+        // 21, and **tag 7 is a hole**: `ToggleFlashlight` retired with the toggle
+        // in T20.07, and its number was not reused. The count is a coverage check
+        // on `every_command`, not an assertion that the tags are contiguous —
+        // renumbering would have made every later command's encoding depend on
+        // this one's removal, for nothing.
         assert_eq!(
             tags.len(),
-            22,
-            "`every_command` returns {} distinct tags, not 22 — a variant was \
+            21,
+            "`every_command` returns {} distinct tags, not 21 — a variant was \
              added to the match above without being added to the list: {tags:?}",
             tags.len()
+        );
+        assert!(
+            !tags.contains(&7),
+            "tag 7 came back: it is `ToggleFlashlight`'s retired number (T20.07) \
+             and reusing it would make a v5 file's 7 mean something a reader of \
+             this code would not expect"
         );
     }
 

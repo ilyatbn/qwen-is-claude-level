@@ -867,7 +867,6 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                 });
             }
             {
-                let ctx = ctx.clone();
                 // RTT. `docs/42` §7 says it comes from "socket.io's own ping/pong",
                 // but the client library does not surface that measurement, so the
                 // client's rtt was hardcoded to 0 and the debug HUD reported 0 ms
@@ -881,17 +880,11 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                         let _ = socket.emit("pong_rtt", &t);
                     },
                 );
-                socket.on("toggle_flashlight", move |socket: SocketRef| {
-                    let ctx = ctx.clone();
-                    async move {
-                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
-                            return;
-                        };
-                        if let Some(id) = sessions.player_of(socket.id) {
-                            room.send(Command::ToggleFlashlight(id));
-                        }
-                    }
-                });
+                // **No `toggle_flashlight`** (T20.07). The flashlight is passive
+                // now — carrying one is the whole state — so there is nothing to
+                // toggle, and this block no longer needs a `ctx` clone. The
+                // handler had no client caller anyway: `sendToggleFlashlight` was
+                // never called and `keydown-F` is bound to `sendFire`.
             }
             {
                 let ctx = ctx.clone();

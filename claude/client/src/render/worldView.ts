@@ -268,7 +268,7 @@ export class WorldView {
   update(
     near: { x: number; y: number },
     dt = 0,
-    weather?: { vents: VentView[]; fallScale: number; fog: number },
+    weather?: { vents: VentView[]; fallScale: number; fog: number; hasFlashlight: boolean },
   ): void {
     if (dt > 0) this.ordnance.update(dt)
     if (dt > 0 && weather) {
@@ -280,7 +280,16 @@ export class WorldView {
       // `fog` is required, not optional: both scenes have a fog strength to give
       // and the whole of §F9 is that one of them never passed it on. A default
       // here would let the next scene silently draw no fog and still typecheck.
-      this.weather.update(dt, weather.vents, weather.fallScale, weather.fog)
+      // `hasFlashlight` is required rather than optional, for the reason `fog`
+      // above is: both scenes know whether the local player is carrying one, and
+      // §F9's whole history here is one scene silently passing nothing (T20.07).
+      this.weather.update(
+        dt,
+        weather.vents,
+        weather.fallScale,
+        weather.fog,
+        weather.hasFlashlight,
+      )
     }
     this.drainDirty()
     const pendingBefore = this.terrain.stats.pending

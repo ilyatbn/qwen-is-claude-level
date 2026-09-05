@@ -329,10 +329,6 @@ export class Connection {
     this.emit('quick_throw', {})
   }
 
-  sendToggleFlashlight(): void {
-    this.emit('toggle_flashlight', {})
-  }
-
   sendVoteRestart(restart: boolean): void {
     this.emit('vote_restart', { restart })
   }

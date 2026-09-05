@@ -240,6 +240,16 @@ export class GameScene extends Phaser.Scene {
   private shieldOn = false
   /** §E13: is toxic rain still working on me? Snapshot flag, never predicted. */
   private poisoned = false
+  /**
+   * Is a flashlight in my bag? Snapshot bit 4 (§T20.07).
+   *
+   * The server derives it from the inventory, so this is *carrying one* and not a
+   * toggle — there is no toggle any more. Read like `shieldOn` and `poisoned`
+   * above: a snapshot boolean the client never predicts, because the item can be
+   * picked up or dropped between two frames and a locally guessed answer would
+   * flicker the whole field of view.
+   */
+  private hasFlashlight = false
   private shieldSince = 0
   private jetReadout: HTMLDivElement | null = null
   /** The private room's join code, once the server has told us (§B9). */
@@ -466,6 +476,7 @@ export class GameScene extends Phaser.Scene {
     this.shieldOn = false
     this.shieldSince = 0
     this.poisoned = false
+    this.hasFlashlight = false
     this.fuel = 0
     this.fuelShown = 0
     this.teleportCharge = 0
@@ -1274,6 +1285,10 @@ export class GameScene extends Phaser.Scene {
       // §E13. The snapshot carries the boolean, like the shield above: the
       // client colours a bar off it and never predicts a status.
       this.poisoned = flag(mine.flags, FLAG.poisoned)
+      // §T20.07. `FLAG.flashlight` had **no production reader at all** — it was
+      // written by the server, exported by `codec.ts` and consumed only by two
+      // tests, which is why the flashlight did nothing in a real game.
+      this.hasFlashlight = flag(mine.flags, FLAG.flashlight)
       // Authoritative, because smoke is positional: what you can see depends on
       // which cloud you are standing in. This replaced a hardcoded 1, which is
       // why heavy fog changed nothing in the real game for four milestones.
@@ -1628,6 +1643,7 @@ export class GameScene extends Phaser.Scene {
         vents: [],
         fallScale: C().MAX_FALL_SPEED,
         fog: this.fog.strength(this.roundTime),
+        hasFlashlight: this.hasFlashlight,
       })
     }
     // Mine visibility is distance to the *player*, not to the camera centre —
@@ -1666,7 +1682,7 @@ export class GameScene extends Phaser.Scene {
       darkness,
       fogMult: this.vision,
       health: C().BASE_HEALTH,
-      flashlightOn: false,
+      hasFlashlight: this.hasFlashlight,
     })
     if (this.minimap) {
       const dots = [...this.remotes.entries()].map(([id, r]) => ({
@@ -1778,7 +1794,7 @@ export class GameScene extends Phaser.Scene {
       darkness,
       fogMult: this.vision,
       health: C().BASE_HEALTH,
-      flashlightOn: false,
+      hasFlashlight: this.hasFlashlight,
     })
 
     for (const [id, p] of sampled) {
@@ -2417,6 +2433,10 @@ export class GameScene extends Phaser.Scene {
           // the sandbox pokes the sub-layers by hand, so a rain wired only there
           // is a rain nobody plays. `toxicDrops` is what the server put in the
           // air, `rainDrops` is what the emitter drew from it.
+          // T20.07, and both ends again: what the *server* says is in the bag
+          // (snapshot bit 4, derived from the inventory) and what the veil was
+          // actually filled with. `fogAlpha` below is the second half.
+          hasFlashlight: self.hasFlashlight,
           toxicDrops: self.world?.liveToxicDrops ?? 0,
           rainDrops: self.world?.weather.rainDrops ?? 0,
           rainPool: self.world?.weather.rainPool ?? 0,

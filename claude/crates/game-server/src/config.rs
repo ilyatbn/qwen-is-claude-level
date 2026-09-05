@@ -109,6 +109,20 @@ pub struct Config {
     /// drop is what poisons them is proved in `game-core`, end to end, through
     /// the real projectile step.
     pub dev_poisoned: bool,
+    /// Development only (`DEV_FLASHLIGHT=1`): spawn carrying a flashlight
+    /// (T20.07).
+    ///
+    /// Sibling of `dev_poisoned`, and for the same reason it exists. The
+    /// flashlight is the commonest **buried** item by design — "dig for it before
+    /// nightfall" — so a browser check that waited for one to be dug up would be
+    /// waiting on the map generator and the shovel, and a gate that depends on a
+    /// draw gates nothing. That a flashlight can be found is proved in
+    /// `game-core`; what a check needs is a player who has one.
+    ///
+    /// **Not in the replay header**, like `dev_poisoned` and `dev_start_health`:
+    /// only `dev_loadout` is recorded there, and adding a field would be a header
+    /// layout change with its own version consequence.
+    pub dev_flashlight: bool,
     /// Development only (`WEATHER=auto|off|fog|toxic|meteor|lava`): what the
     /// weather does in this room.
     ///
@@ -181,6 +195,7 @@ impl Default for Config {
             dev_loadout: false,
             dev_start_health: 0.0,
             dev_poisoned: false,
+            dev_flashlight: false,
             weather_mode: WeatherMode::Auto,
             bot_skill: BOT_SKILL_DEFAULT,
         }
@@ -348,6 +363,7 @@ impl Config {
                 .filter(|v| *v > 0.0)
                 .unwrap_or(0.0),
             dev_poisoned: matches!(get("DEV_POISONED").as_deref(), Some("1") | Some("true")),
+            dev_flashlight: matches!(get("DEV_FLASHLIGHT").as_deref(), Some("1") | Some("true")),
             weather_mode: match get("WEATHER") {
                 Some(v) => parse_weather(&v).ok_or_else(|| ConfigError {
                     var: "WEATHER",
@@ -364,7 +380,7 @@ impl Config {
         format!(
             "bind={} scale={} generator={} max_players={} round_seconds={} \
              room_empty_ttl={} lobby_bot_timeout={} fixed_seed={} record_replay={} debug_dump={} bots={} \
-             bot_skill={} dev_start_health={} dev_poisoned={} weather={:?}",
+             bot_skill={} dev_start_health={} dev_poisoned={} dev_flashlight={} weather={:?}",
             self.bind_addr,
             self.map_scale.as_str(),
             self.map_generator.as_str(),
@@ -381,6 +397,7 @@ impl Config {
             self.bot_skill,
             self.dev_start_health,
             self.dev_poisoned,
+            self.dev_flashlight,
             self.weather_mode,
         )
     }
@@ -547,6 +564,25 @@ mod tests {
             assert!(!from(&[("DEBUG_DUMP", v)]).expect("ok").debug_dump, "{v}");
         }
         assert!(from(&[("DEBUG_DUMP", "maybe")]).is_err());
+    }
+
+    /// T20.07's switch, and the thing that makes its checks not be a lottery.
+    #[test]
+    fn dev_flashlight_is_off_unless_asked_for_and_shows_in_the_summary() {
+        // The control: shipping behaviour is unchanged. A dev knob that defaults
+        // on is a dev knob that ships.
+        assert!(
+            !Config::from_source(empty).expect("ok").dev_flashlight,
+            "an unset DEV_FLASHLIGHT armed every player with a torch"
+        );
+        assert!(from(&[("DEV_FLASHLIGHT", "1")]).expect("ok").dev_flashlight);
+        assert!(!from(&[("DEV_FLASHLIGHT", "0")]).expect("ok").dev_flashlight);
+        // In the startup line, because a dev knob nobody can see in the log is a
+        // dev knob nobody knows is on — `docs/61` §2.
+        assert!(from(&[("DEV_FLASHLIGHT", "1")])
+            .expect("ok")
+            .summary()
+            .contains("dev_flashlight=true"));
     }
 
     #[test]

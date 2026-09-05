@@ -19,7 +19,7 @@ use crate::constants::{
     MapScale, ENDED_SECONDS, MAX_INPUT_QUEUE, MAX_PLAYERS, ROUND_SECONDS, TELEPORT_PADS,
     WARMUP_SECONDS,
 };
-use crate::items::registry::{def, ItemId, ItemKind, WeaponId};
+use crate::items::registry::{ItemId, WeaponId};
 use crate::items::spawning::{assign_buried_items, place_initial, reveal_buried, SpawnSchedule};
 use crate::items::world::{SpawnSource, WorldItemId, WorldItems};
 use crate::map::gen::surface::is_standable;
@@ -3006,19 +3006,6 @@ impl World {
         }
     }
 
-    pub fn toggle_flashlight(&mut self, id: PlayerId) {
-        if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {
-            // Only if they actually have one — it is found, not owned.
-            let has = p
-                .inventory
-                .iter()
-                .any(|(_, s)| matches!(def(s.item).map(|d| d.kind), Some(ItemKind::Utility(_))));
-            if has && p.alive {
-                p.flashlight_on = !p.flashlight_on;
-            }
-        }
-    }
-
     // ----------------------------------------------------------------- events
 
     /// The events accumulated this tick, without taking them.
@@ -3109,9 +3096,14 @@ impl World {
             h.update(&p.health.to_le_bytes());
             h.update(&p.score.to_le_bytes());
             h.update(&p.deaths.to_le_bytes());
+            // `flashlight_on` was hashed here and is gone (T20.07) — which is why
+            // `REPLAY_VERSION` moved: `replay.rs`'s own rule is that a change an
+            // old file would "load, run, and diverge silently" on is a bump, and a
+            // recording of anyone who picked up a torch diverges at the first
+            // checkpoint after the pickup. Carrying one is now read off the
+            // inventory, which is already hashed below.
             h.update(&[
                 p.alive as u8,
-                p.flashlight_on as u8,
                 p.jetpack.active as u8,
                 p.jetpack.locked_out as u8,
             ]);
@@ -3319,9 +3311,10 @@ mod state_hash_tests {
         w.players[0].knocked_until = 9.0;
         changed.push(("knockback grace", w.state_hash()));
 
-        let mut w = world();
-        w.players[0].flashlight_on = true;
-        changed.push(("flashlight", w.state_hash()));
+        // **The flashlight is not a hashed field any more** (T20.07). It was
+        // `flashlight_on`, a latch; carrying one is inventory state, and the
+        // `inventory` case below already covers that — which is the point: the
+        // hash lost nothing, it stopped hashing the same fact twice.
 
         let mut w = world();
         w.players[0].deaths += 1;

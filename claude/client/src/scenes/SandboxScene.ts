@@ -483,9 +483,36 @@ export class SandboxScene extends Phaser.Scene {
 
   /** Keep the time slider and its label showing what `roundTime` actually is. */
   /**
+   * Is the sandbox player carrying a flashlight? (T20.07)
+   *
+   * **Four sites hardcoded `flashlightOn: false` in this file** and two more in
+   * `GameScene`, which is why the flashlight did nothing at all: the item existed,
+   * the wire bit existed, and every consumer passed a literal. Six, not the two an
+   * earlier draft named — and `night-combat` drives *this* scene, so fixing only
+   * the pair in `GameScene` would have left the gating check looking at four
+   * unchanged literals.
+   *
+   * Read from the local world rather than mirrored into a field: this scene owns
+   * the core, so the inventory is the truth and a cached copy would be a second
+   * answer that goes stale on the next `give`. By key, not by id — the same rule
+   * `grantSandboxLoadout` learnt when slot 0 stopped being the bazooka.
+   */
+  private hasFlashlight(): boolean {
+    return (this.core.inventory(0)?.slots ?? []).some((s) => s?.key === 'flashlight')
+  }
+
+  /**
    * Sandbox only — the real game makes you find these. It exists so the M4
    * checkpoint (fire, crater, self-damage, inventory) can be driven headlessly.
    */
+  /**
+   * The FoV radius the lightmap last drew with, for `debug().fov`.
+   *
+   * 0 until the first render, which is the honest answer: before a frame there is
+   * no radius on screen to report.
+   */
+  private lastFov = 0
+
   private grantSandboxLoadout(): void {
     this.core.give(0, 3 /* bazooka */, 4)
     this.core.give(0, 4 /* grenade */, 3)
@@ -652,12 +679,9 @@ export class SandboxScene extends Phaser.Scene {
           lightmapDepth: DEPTH.lightmap,
           lightmapDraws: self.lightmap?.stats.drawsLastFrame ?? 0,
           lightmapFilled: self.lightmap?.stats.filled ?? false,
-          fov: fovRadius({
-            darkness: darknessAt(cycleU(self.roundTime), C().NIGHT_DARKNESS),
-            fogMult: self.fogActive ? C().FOV_FOG_MULT : 1,
-            health: C().BASE_HEALTH,
-            flashlightOn: false,
-          }),
+          // The radius the lightmap **last rendered with**, not a fresh
+          // computation (T20.07) — see `lastFov`.
+          fov: self.lastFov,
           overlays: self.overlay?.enabled ?? false,
           // Both ends of the same number (§A39). The server/core knows how many
           // projectiles are alive; the layer knows how many it draws. They were
@@ -814,7 +838,7 @@ export class SandboxScene extends Phaser.Scene {
               ? C().FOV_FOG_MULT
               : 1 - (1 - C().FOV_FOG_MULT) * (w?.fog ?? 0),
             health: C().BASE_HEALTH,
-            flashlightOn: false,
+            hasFlashlight: self.hasFlashlight(),
           }),
         }
       },
@@ -919,6 +943,28 @@ export class SandboxScene extends Phaser.Scene {
         // its label reading "morning" on a night screenshot, which cost a
         // reviewer real time and produced a wrong diagnosis.
         self.syncTimeControl()
+      },
+      /**
+       * Put a flashlight in the bag (T20.07).
+       *
+       * The item is the commonest **buried** find by design — "dig for it before
+       * nightfall" — so a check that waited for one to be dug up would be waiting
+       * on the generator and the shovel. The server's side of this is
+       * `DEV_FLASHLIGHT=1`; this is the sandbox's, and `night-combat` needs it
+       * because that check drives *this* scene and four of the six hardcoded
+       * `flashlightOn: false` sites were in this file.
+       *
+       * Returns what the scene now believes, so a caller asserts on the effect
+       * rather than on having asked.
+       */
+      giveFlashlight() {
+        // Grant only: `Core` exposes no take, and the control this needs is the
+        // **before** state rather than a removal — a check reads the radius with
+        // no torch, grants one, and reads it again on the same map at the same
+        // time of day. `regenerate()` is how it gets back to nothing.
+        if (!self.hasFlashlight()) self.core.give(0, 2 /* FLASHLIGHT */, 1)
+        self.refreshHud()
+        return self.hasFlashlight()
       },
       /** Teleport, so a movement check can start from known ground. */
       place(x: number, y: number) {
@@ -1079,7 +1125,13 @@ export class SandboxScene extends Phaser.Scene {
     // local world — **not** the `fogActive` boolean, which is a debug override
     // and would make the veil a toggle that cannot ramp.
     this.fogStrength = this.fogActive ? 1 : weather.fog
-    this.world.weather.update(dt, weather.vents, C().MAX_FALL_SPEED, this.fogStrength)
+    this.world.weather.update(
+      dt,
+      weather.vents,
+      C().MAX_FALL_SPEED,
+      this.fogStrength,
+      this.hasFlashlight(),
+    )
     // Fog from the effect ramps; the Fog button is a separate manual override so
     // visibility can be inspected without waiting for a burst.
     const fogMult = this.fogActive
@@ -1095,8 +1147,14 @@ export class SandboxScene extends Phaser.Scene {
           darkness,
           fogMult,
           health: C().BASE_HEALTH,
-          flashlightOn: false,
+          hasFlashlight: this.hasFlashlight(),
         })
+      // **The number that was drawn**, kept for the debug handle (T20.07). It
+      // recomputed `fovRadius` itself — a third copy of the formula, and an
+      // *intention*: it would report a widened radius from a scene whose lightmap
+      // was still rendering the old one, which is §A15's whole lesson. It also
+      // silently ignored `fovOverride`, which this branch honours.
+      this.lastFov = fov
       lights.push({ x: body.x, y: body.y, radius: fov, kind: 'radial', intensity: 1 })
       // The same `fov` the lightmap uses, not a second copy of the formula —
       // two of them would let the minimap and the screen disagree (§A6).
@@ -1126,7 +1184,7 @@ export class SandboxScene extends Phaser.Scene {
                 darkness,
                 fogMult: this.fogActive ? C().FOV_FOG_MULT : 1,
                 health: C().BASE_HEALTH,
-                flashlightOn: false,
+                hasFlashlight: this.hasFlashlight(),
               }),
             },
           ]

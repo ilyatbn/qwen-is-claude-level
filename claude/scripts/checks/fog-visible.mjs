@@ -76,7 +76,13 @@ async function frames(page) {
 function fogState(page) {
   return page.evaluate(() => {
     const d = window.__game.debug()
-    return { s: d.fogStrength ?? 0, a: d.fogAlpha ?? 0, phase: d.phase ?? '', t: d.roundTime ?? 0 }
+    return {
+      s: d.fogStrength ?? 0,
+      a: d.fogAlpha ?? 0,
+      phase: d.phase ?? '',
+      t: d.roundTime ?? 0,
+      torch: d.hasFlashlight ?? false,
+    }
   })
 }
 
@@ -92,6 +98,9 @@ const common = {
 let k = null
 let s = null
 let wet = null
+/** The clear frames and the measured noise floor, for the flashlight arm below. */
+let clear0 = null
+let noiseFloor = 0
 
 const fogStack = await startStack({ port: PORT, label: 'fog-visible/fog', env: { ...common, WEATHER: 'fog' } })
 try {
@@ -223,8 +232,109 @@ try {
 
   if (pageErrors.length) fail(`page errors on the clear client: ${pageErrors.join(' | ')}`)
   else ok('no page errors')
+  clear0 = clear
+  noiseFloor = noise
 } finally {
   await clearStack.close()
+}
+
+// --- the flashlight arm: same fog, one item, a lighter veil (T20.07) ---------
+//
+// **`GameScene`, deliberately.** Six production sites hardcoded
+// `flashlightOn: false`; two are here and four are in `SandboxScene`, which is
+// what `night-combat` drives. Fixing one pair leaves the other check looking at
+// unchanged literals, so the falsification is split: `night-combat` breaks the
+// sandbox's lightmap site, and this breaks `GameScene`'s.
+//
+// This is also §C13 reversed on the coordinator's instruction — the flashlight
+// used to be a trade and is now passive and free — and `tasks/M20/T20.07` records
+// the override.
+//
+// Three frames of the same patch, at the same point in the same seeded round:
+// clear (no veil), foggy (full veil), and foggy-with-a-torch. The middle one is
+// the control that stops "lighter than nothing" passing, and the first is the
+// control that stops "the layer draws nothing" passing.
+const litStack = await startStack({
+  port: PORT + 2,
+  label: 'fog-visible/flashlight',
+  env: { ...common, WEATHER: 'fog', DEV_FLASHLIGHT: '1' },
+})
+try {
+  const { page, shot, pageErrors } = await litStack.openClient({ name: 'ana' })
+  await enterBattle(page, { waitPlaying: true, label: 'fog-visible/flashlight' })
+
+  let lit = { s: 0, a: 0, phase: '', t: 0, torch: false }
+  for (let i = 0; i < 90; i++) {
+    lit = await fogState(page)
+    if (lit.s >= 0.99 && lit.t >= (wet?.at ?? 0)) break
+    await sleep(500)
+  }
+
+  // **Both ends, and this end first.** If the server never put a torch in the
+  // bag, every pixel below is a measurement of nothing — and `DEV_FLASHLIGHT` is
+  // exactly the kind of switch that fails silently.
+  if (!lit.torch) {
+    fail('DEV_FLASHLIGHT=1 did not put a flashlight in the bag — bit 4 never reached the client')
+  } else ok('the server put a flashlight in the bag and bit 4 reached the client')
+
+  const want = k.FOG_SCREEN_ALPHA * lit.s * k.FLASHLIGHT_FOG_VEIL_MULT
+  if (lit.s < 0.99) {
+    fail(`the flashlight arm never reached full fog (peaked ${lit.s.toFixed(3)})`)
+  } else if (Math.abs(lit.a - want) > 0.01) {
+    fail(
+      `the veil filled at ${lit.a.toFixed(3)} with a flashlight held, not ` +
+        `${want.toFixed(3)} (FOG_SCREEN_ALPHA x strength x FLASHLIGHT_FOG_VEIL_MULT)`,
+    )
+  } else {
+    ok(`a carried flashlight thinned the veil to ${lit.a.toFixed(3)} from ${s.a.toFixed(3)}`)
+  }
+
+  const litFrames = await frames(page)
+  await shot('fog-game-flashlight')
+
+  // **The pixels.** The lit frame must sit between the clear one and the foggy
+  // one — closer to clear than the full veil is, by more than the noise floor,
+  // in both patches. A layer that ignored the flashlight lands on top of the
+  // foggy frame; one that switched the veil off entirely lands on the clear one,
+  // and the lower bound catches that.
+  for (const label of ['sky', 'ground']) {
+    const toClearFog = colourDelta(clear0[label], wet[label])
+    const toClearLit = colourDelta(clear0[label], litFrames[label])
+    const gap = toClearFog - toClearLit
+    // What the constants say the gap should be: the veil moved the frame
+    // `toClearFog` at alpha `s.a`, and alpha is linear in the composite, so a
+    // multiplier of `FLASHLIGHT_FOG_VEIL_MULT` predicts this much less travel.
+    const predictedGap = toClearFog * (1 - k.FLASHLIGHT_FOG_VEIL_MULT)
+    console.log(
+      `  ${label}: veil moved the frame ${toClearFog.toFixed(1)} without a torch and ` +
+        `${toClearLit.toFixed(1)} with one — a gap of ${gap.toFixed(1)}, predicted ` +
+        `${predictedGap.toFixed(1)}, noise ${noiseFloor.toFixed(1)}`,
+    )
+    // **The prediction is the assertion, not `gap > noise`.** A bare
+    // "it moved more than the noise" branch is a coin flip here: the measured gap
+    // on the ground patch is 7.4 against a noise floor that runs 4.9-5.4, and a
+    // gate that fails on a draw gates nothing. The two-sided comparison below is
+    // both stronger and stable — a flashlight that did nothing gives a gap of 0
+    // and fails by the whole predicted distance, with the number in the message.
+    if (toClearLit < noiseFloor) {
+      fail(
+        `${label}: the lit frame is indistinguishable from the clear one — the flashlight ` +
+          'removed the veil rather than thinning it',
+      )
+    } else if (Math.abs(gap - predictedGap) > Math.max(6, noiseFloor)) {
+      fail(
+        `${label}: the gap is ${gap.toFixed(1)} where FLASHLIGHT_FOG_VEIL_MULT predicts ` +
+          `${predictedGap.toFixed(1)}`,
+      )
+    } else {
+      ok(`${label}: the veil is thinner with a flashlight (${gap.toFixed(1)} of travel removed)`)
+    }
+  }
+
+  if (pageErrors.length) fail(`page errors on the flashlight client: ${pageErrors.join(' | ')}`)
+  else ok('no page errors (flashlight arm)')
+} finally {
+  await litStack.close()
 }
 
 if (failures.length) {

@@ -5439,3 +5439,20 @@ new check**: every weather assertion in the tree drives `?sandbox=1`, so `toxic-
 walks the six hops in a real round under `WEATHER=toxic`. Falsified at both live sites — the
 sandbox one via `weather-visible`, the shared `WorldView` one via the new check.
 EXIT=0 first run, 46/46, 859/859, 25/25.
+
+
+## T20.07 — six literals, four dead mechanisms, and a spec clause reversed
+
+**`docs/72` §C13 is reversed and `docs/` is untouched**: the coordinator asked for a passive
+flashlight, so `FLASHLIGHT_AMBIENT_MULT` (0.65, a trade) becomes `FLASHLIGHT_FOV_MULT` 1.5
+gated on `night > 0`, and `FLASHLIGHT_FOG_VEIL_MULT` 0.8 lightens §F9's veil — chosen over
+`−0.2` (it inverts at light fog) and over the transmitted-light reading (3.2 units against a
+noise floor near 5: **a rule nobody can measure**). All **six** `flashlightOn: false` literals
+are gone, four of them in `SandboxScene`, which is why the falsification is split — a
+sandbox site through `night-combat`, a `GameScene` site through `fog-visible`, both named and
+both red when broken. `Player::flashlight_on` is **deleted** and bit 4 derived from the
+inventory at the encode site, so **`REPLAY_VERSION` 4 → 5 and T20.08 must not bump again**;
+`ToggleFlashlight` retires with it and tag 7 is left a hole. `DEV_FLASHLIGHT=1` is the new
+switch, sibling of `DEV_POISONED`, because the torch is the commonest *buried* item and a
+gate that waits on a draw gates nothing. Along the way `debug().fov` stopped recomputing the
+formula and now reports the radius the lightmap drew with. EXIT=0 first run, 46/46, 859/859.

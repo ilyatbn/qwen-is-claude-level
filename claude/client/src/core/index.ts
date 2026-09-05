@@ -225,7 +225,9 @@ export interface Constants {
   FOV_EDGE_SOFTNESS: number
   FLASHLIGHT_RANGE: number
   FLASHLIGHT_CONE_DEG: number
-  FLASHLIGHT_AMBIENT_MULT: number
+  /** T20.07 replaced `FLASHLIGHT_AMBIENT_MULT` (a trade) with these two. */
+  FLASHLIGHT_FOV_MULT: number
+  FLASHLIGHT_FOG_VEIL_MULT: number
   BASE_HEALTH: number
   /** Seconds an environmental death still credits a recent attacker. */
   ASSIST_WINDOW: number

@@ -7,7 +7,7 @@
 //! (`docs/14-daynight-visibility.md` §3, `docs/70-amendments-v2.md` §A13).
 
 use crate::constants::{
-    BASE_HEALTH, DAY_DURATION, FLASHLIGHT_AMBIENT_MULT, FOV_DAY, FOV_HEALTH_MIN_MULT, FOV_NIGHT,
+    BASE_HEALTH, DAY_DURATION, FLASHLIGHT_FOV_MULT, FOV_DAY, FOV_HEALTH_MIN_MULT, FOV_NIGHT,
     NIGHT_DARKNESS, NIGHT_DURATION,
 };
 use crate::math::{clamp01, lerp, smoothstep};
@@ -80,12 +80,24 @@ pub fn cycle_at(round_time: f32) -> CycleState {
 /// Note §A16: `FOV_DAY` and `FOV_NIGHT` were restated for `CAMERA_ZOOM` 2.0. They
 /// are world-pixel radii governing a *perceptual* effect, so they are meaningful
 /// only relative to what is on screen.
-pub fn fov_radius(darkness: f32, fog_mult: f32, health: f32, flashlight_on: bool) -> f32 {
+/// `has_flashlight` is **carrying one**, not a toggle (T20.07).
+///
+/// The parameter used to mean "the light is switched on" and the multiplier used
+/// to be `FLASHLIGHT_AMBIENT_MULT` (0.65) — the light shrank ambient sight and
+/// bought a cone. `docs/72` §C13 specifies that trade and this reverses it, on the
+/// coordinator's explicit instruction; the task file records the override. There
+/// is no toggle any more: `Player::flashlight_on` is gone, and the snapshot's bit
+/// 4 is derived from the inventory at the encode site.
+///
+/// **The multiplier applies only at night**, which is where `base` has moved off
+/// `FOV_DAY`. An unconditional 1.5x would make a torch the strongest item in the
+/// game at noon.
+pub fn fov_radius(darkness: f32, fog_mult: f32, health: f32, has_flashlight: bool) -> f32 {
     let night = clamp01(darkness / NIGHT_DARKNESS);
     let base = lerp(FOV_DAY, FOV_NIGHT, night);
     let health_mult = lerp(FOV_HEALTH_MIN_MULT, 1.0, clamp01(health / BASE_HEALTH));
-    let light_mult = if flashlight_on {
-        FLASHLIGHT_AMBIENT_MULT
+    let light_mult = if has_flashlight && night > 0.0 {
+        FLASHLIGHT_FOV_MULT
     } else {
         1.0
     };
@@ -198,18 +210,47 @@ mod tests {
             "{hurt}"
         );
 
-        let torch = fov_radius(0.0, 1.0, BASE_HEALTH, true);
+        // **A torch does nothing by day, and that is the control** (T20.07).
+        // Darkness 0 means `base` is `FOV_DAY` with nowhere to go, so the
+        // multiplier is not applied — without this assertion "carrying one widens
+        // the view" would be satisfied by a flashlight that widens it always.
+        let torch_by_day = fov_radius(0.0, 1.0, BASE_HEALTH, true);
         assert!(
-            (torch - FOV_DAY * FLASHLIGHT_AMBIENT_MULT).abs() < 1e-3,
-            "{torch}"
+            (torch_by_day - FOV_DAY).abs() < 1e-3,
+            "a flashlight changed the daytime radius: {torch_by_day}"
         );
+    }
+
+    /// The new §C13, and the old one it replaces.
+    #[test]
+    fn carrying_a_flashlight_widens_the_night_radius_and_leaves_the_day_alone() {
+        let night_dark = fov_radius(NIGHT_DARKNESS, 1.0, BASE_HEALTH, false);
+        let night_lit = fov_radius(NIGHT_DARKNESS, 1.0, BASE_HEALTH, true);
+        assert!(
+            (night_lit - night_dark * FLASHLIGHT_FOV_MULT).abs() < 1e-3,
+            "{night_lit} is not {FLASHLIGHT_FOV_MULT}x {night_dark}"
+        );
+        // It is an increase, not the trade §C13 specified. Asserted as a
+        // direction as well as a ratio, because a multiplier of 0.65 satisfies
+        // the ratio test above just as exactly as 1.5 does.
+        assert!(night_lit > night_dark, "the flashlight shrank the view");
+
+        let day_dark = fov_radius(0.0, 1.0, BASE_HEALTH, false);
+        let day_lit = fov_radius(0.0, 1.0, BASE_HEALTH, true);
+        assert!((day_lit - day_dark).abs() < 1e-4, "a torch worked at noon");
+
+        // And it scales with the night rather than switching on at full dark: at
+        // half darkness the lerp has moved partway and the multiplier still bites.
+        let dusk_dark = fov_radius(NIGHT_DARKNESS / 2.0, 1.0, BASE_HEALTH, false);
+        let dusk_lit = fov_radius(NIGHT_DARKNESS / 2.0, 1.0, BASE_HEALTH, true);
+        assert!((dusk_lit - dusk_dark * FLASHLIGHT_FOV_MULT).abs() < 1e-3);
     }
 
     #[test]
     fn all_four_modifiers_multiply() {
         let fog = crate::constants::FOV_FOG_MULT;
         let got = fov_radius(NIGHT_DARKNESS, fog, 0.0, true);
-        let want = FOV_NIGHT * fog * FOV_HEALTH_MIN_MULT * FLASHLIGHT_AMBIENT_MULT;
+        let want = FOV_NIGHT * fog * FOV_HEALTH_MIN_MULT * FLASHLIGHT_FOV_MULT;
         assert!((got - want).abs() < 1e-3, "{got} vs {want}");
     }
 
