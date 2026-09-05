@@ -1019,3 +1019,98 @@ is unchanged.
 clamp applies) and `__game.giveShieldGenerator()`, which grants the item **and** the charge —
 a sandbox player starts at 0 battery, so granting the item alone returns `false` and a check
 would blame the bubble. It returns `core.shieldActive(0)`: the effect, not the ask.
+
+## T20.12 landed — and it found a second identity payload
+
+### The ruling was followed, with one deviation the task's own reasoning supports
+
+New fields, not packing, and **not in the replay** — which is what the
+`tombstone_skin_id` precedent actually decided: `grep -c tombstone replay.rs` is still 0, and
+`ReplayCommand::Join` still carries `skin_id` alone. Every id keeps its own name, its own JSON
+key and its own client-side meaning.
+
+**The deviation is `Look`.** `Command::Join`, `RoomHandle::join` and `Seats::set_identity` take
+one `Look { skin_id, tombstone_skin_id, hat_id, glasses_id }` instead of four positional
+`u16`s. That is the rule the task itself applies to `loadChoice` — *"two counts became four,
+and that is how a function ends up with five positional arguments — pass an object instead"* —
+and it is a grouping of the **argument list**, not of the wire: nothing about a field means two
+things. `loadChoice` took the same treatment with a `Counts` object.
+
+### The predicted trap, closed structurally
+
+The task warned that accessories inherit `skinId`'s whole problem: `PlayerView` is destroyed
+and rebuilt during a round, every appearance field is `readonly` with no setter, and the ids
+live in a map with three writers. So:
+
+- `Appearance { skinId, hatId, glassesId }` is one value, carried by `scores`, returned by
+  `PlayerView.look`, and compared by **`sameAppearance`** at both rebuild sites.
+- The `PlayerView` constructor takes all three as **required** parameters. Optional ones would
+  let every existing call site compile unchanged and draw a bare head.
+- `SkinsScene.step` rebuilds the preview for **any** appearance change, not only the skin.
+
+With three `!==`s instead, the next accessory is added to the map and to the constructor and
+forgotten in the `if` — correct on first draw, reverting on the next rebuild.
+
+### ⚠ Found on the way: `Connection.connect` built its own join payload
+
+`lobby.ts::identityPayload` builds the identity for `create_room`, `join_room` and
+`quick_match`. **`Connection.connect` spelled three fields by hand** for the plain `join` the
+`?game=1` path uses. It would have carried the accessories on the menu path and dropped them
+on the dev path, silently — the exact shape `lobby.test.ts` now has an assertion against, one
+line below the one that already guarded `tombstone_skin_id`. It goes through the one builder,
+and `connect` takes an `Appearance` rather than a bare `skinId`.
+
+`session.rs` grew the same shape and was given a single `cosmetic(key)` reader for all four
+ids rather than a fourth copy of the clamp.
+
+### The art, and the rule that makes a picker worth opening
+
+Procedural, following `tombstoneTextures.ts`, because there is none to borrow: `chars.json` is
+5 characters x 10 poses, Kenney's pack has no headwear, and `../sprite_packs` is scenery.
+Five hats (Cap, Top hat, Helmet, Crown, Cowboy) and three glasses (Shades, Round, Visor),
+**id 0 is "None"** in both — load-bearing, because `readId` falls back to 0 and a head does not
+always have a hat the way a grave always has a marker.
+
+`accessoryTextures.test.ts` makes the silhouette rule mechanical: it reads the source, strips
+every `fillStyle` line, and asserts no two entries have the same geometry. Two options that
+differed only in colour collapse to one string and fail.
+
+### The picture was wrong twice, and a screenshot is what said so
+
+Both were invisible to every non-pixel assertion:
+
+1. **The hat floated above the head.** Kenney's frames carry transparent padding, so the
+   sprite's top edge is not the top of the character — `HAT_LIFT` went 0.10 → 0.23 and
+   `GLASSES_DROP` 0.16 → 0.38, measured off the screenshot rather than derived.
+2. **The check sampled 120 px above the character.** `hatBottom` is measured from the
+   container origin, and the first draft added the sprite's top offset to it as well, counting
+   it twice — and reported "the hat is not drawn" about a hat that was plainly in the frame.
+
+Both offsets and the scale now come from `PlayerView.accessoryBands`, so `skins.mjs` aims at
+the band the renderer chose. The bands are **disjoint by assertion**
+(`skins-math.test.ts`), which is what lets the face patch be the hat's control region.
+
+Numbers: head +43.5 with a hat against a control region of 0.0; hats 1→2 apart by 26.7; face
++102.2 for the shades. Falsified by making `PlayerView` stop drawing the hat: 0.0 and the
+message names the cause.
+
+### ⚠ RECOMMEND BOOKING: `backdrop-real.test.ts` fails the gate without failing a test
+
+**Twice this shift, and three times the shift before.** Gate 1 and gate 7 both exited 1 with
+`[vitest-worker]: Timeout calling "onTaskUpdate"` and **every assertion passing** — gate 7 read
+`54 passed (55)` / `833 passed (875)`, gate 8 read `55 (55)` / `875 (875)` on an identical tree.
+Each false red costs a full ~20-minute gate re-run.
+
+The mechanism is documented and is not load: the file's test bodies are **synchronous** scans
+of a full map grid, one of them 12 s at a stretch and the file 210 s in total, so the worker
+cannot service the reporter's RPC inside its timeout. Two candidate fixes, neither taken here
+because the file is outside this task:
+
+- **Yield inside the scans** — a `setImmediate` every N rows lets the worker answer. Smallest
+  change, keeps the coverage identical.
+- **Give the file its own pool** (`poolOptions` / `pool: 'forks'` for that file), so the RPC
+  is not competing with the scan.
+
+Until then: a gate that exits 1 with `Tests N passed (N)` and two `onTaskUpdate` errors is
+this, and re-running is the correct response — but *only* after reading the summary line,
+because "the assertions all passed" is the whole of what distinguishes it from a real red.

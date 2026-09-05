@@ -71,7 +71,10 @@ async fn the_room_ticks_at_approximately_sim_hz() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn join_seats_a_player_and_leave_removes_them() {
     let (room, _shut) = room();
-    let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    let id = room
+        .join("ana".into(), Default::default())
+        .await
+        .expect("seated");
     // §E1.1: the seats **are** the roster in a lobby — there is no world holding
     // a player list to count. `status` answers in both states.
     let (n, _bots) = room.status().await.expect("alive");
@@ -88,11 +91,16 @@ async fn a_seventh_join_is_refused() {
     let (room, _shut) = room();
     for i in 0..6 {
         assert!(
-            room.join(format!("p{i}"), 0, 0).await.is_some(),
+            room.join(format!("p{i}"), Default::default())
+                .await
+                .is_some(),
             "player {i} should be seated"
         );
     }
-    assert!(room.join("seventh".into(), 0, 0).await.is_none());
+    assert!(room
+        .join("seventh".into(), Default::default())
+        .await
+        .is_none());
 }
 
 /// Get a room out of `Lobby` and into a running round.
@@ -128,7 +136,10 @@ async fn start_round(room: &RoomHandle, id: u8) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn commands_sent_between_ticks_are_all_applied() {
     let (room, _shut) = room();
-    let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    let id = room
+        .join("ana".into(), Default::default())
+        .await
+        .expect("seated");
     start_round(&room, id).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     let before = room
@@ -159,7 +170,10 @@ async fn commands_sent_between_ticks_are_all_applied() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_flood_of_commands_does_not_stall_the_tick_loop() {
     let (room, _shut) = room();
-    let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    let id = room
+        .join("ana".into(), Default::default())
+        .await
+        .expect("seated");
     let before = room.join_info().await.expect("alive").tick;
 
     for seq in 1..=10_000u32 {
@@ -201,7 +215,9 @@ async fn the_world_is_reachable_only_through_the_channel() {
     let state = AppState::new(Config::default());
     assert_eq!(state.players(), 0);
     let (room, _shut) = room();
-    room.join("ana".into(), 0, 0).await.expect("seated");
+    room.join("ana".into(), Default::default())
+        .await
+        .expect("seated");
     // AppState is untouched by a join: the room is the authority, and the count is
     // maintained by the socket layer (T6.03), not by the room.
     assert_eq!(state.players(), 0);

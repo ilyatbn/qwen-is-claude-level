@@ -1037,21 +1037,30 @@ async fn seat(
         );
         return;
     };
-    // Never validated against a list — the server does not
-    // know what skins exist (`docs/50` §1) — but bounded.
-    let skin_id = payload
-        .get("skin_id")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0)
-        .min(u16::MAX as u64) as u16;
-    // §B9. Like `skin_id`, never validated against a list: the server does not
-    // know what any skin looks like (`docs/50` §1). Echoed so other clients can
-    // draw this player's grave with their chosen stone.
-    let tombstone_skin_id = payload
-        .get("tombstone_skin_id")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0)
-        .min(u16::MAX as u64) as u16;
+    // Never validated against a list — the server does not know what skins exist
+    // (`docs/50` §1) — but bounded. One reader for all four ids, because they are
+    // the same rule four times and a second copy is a second place to forget the
+    // clamp: `NaN` and a negative both have to become 0 rather than reaching a
+    // client's atlas (T20.12).
+    let cosmetic = |key: &str| {
+        payload
+            .get(key)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            .min(u16::MAX as u64) as u16
+    };
+    let skin_id = cosmetic("skin_id");
+    // §B9 and T20.12. Echoed so other clients can draw this player's grave with
+    // their chosen stone, and their head with their chosen hat.
+    let tombstone_skin_id = cosmetic("tombstone_skin_id");
+    let hat_id = cosmetic("hat_id");
+    let glasses_id = cosmetic("glasses_id");
+    let look = crate::room::Look {
+        skin_id,
+        tombstone_skin_id,
+        hat_id,
+        glasses_id,
+    };
 
     // §E4: once a match has begun, nobody new is seated.
     //
@@ -1082,7 +1091,7 @@ async fn seat(
         );
         return;
     }
-    let Some(id) = room.join(name.clone(), skin_id, tombstone_skin_id).await else {
+    let Some(id) = room.join(name.clone(), look).await else {
         // Distinct from `in_progress` above: a full lobby will have room later
         // and a started match will not, and the client says different things
         // about them. **Both are bare string literals on the wire**, not
@@ -1383,6 +1392,7 @@ async fn seat(
     let joined = serde_json::json!({
         "tick": tick, "id": id, "name": name,
         "skin_id": skin_id, "tombstone_skin_id": tombstone_skin_id,
+        "hat_id": hat_id, "glasses_id": glasses_id,
     });
     broadcast_except(&io, &sessions, socket.id, "player_join", &joined);
     tracing::info!(target: "game::net", player = id, %name, "joined");

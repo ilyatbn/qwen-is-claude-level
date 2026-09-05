@@ -156,7 +156,10 @@ export class SandboxScene extends Phaser.Scene {
     // `loadIdentity` rather than `loadChoice` for the same reason `MenuScene`
     // uses it — no atlas count is needed to read an id, and `PlayerView` already
     // falls back for one past the end of the registry.
-    this.player = new PlayerView(this, loadIdentity(localStorage).skinId)
+    // T20.12's accessories ride the same read: the sandbox draws *your* character
+    // outside a match, so it must show the whole of what you chose.
+    const look = loadIdentity(localStorage)
+    this.player = new PlayerView(this, look.skinId, look.hatId, look.glassesId)
     this.player.container.setDepth(DEPTH.actors)
     this.localInput = new LocalInput(this)
     this.crosshair = new Crosshair(this, DEPTH.hud)

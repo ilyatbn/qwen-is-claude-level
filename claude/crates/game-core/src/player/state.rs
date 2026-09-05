@@ -112,6 +112,11 @@ pub struct PlayerState {
     /// The grave they leave (§B8). Like `skin_id`, the server never knows what
     /// it looks like (`docs/50` §1) — it is one `u16` carried for the client.
     pub tombstone_skin_id: u16,
+    /// T20.12's accessories. Cosmetic `u16`s exactly like the two above: the
+    /// server carries them and never interprets them, and they are **not** in the
+    /// snapshot or the replay — appearance arrives once, on join.
+    pub hat_id: u16,
+    pub glasses_id: u16,
     pub fire_ready_at: f32,
     /// Pad arming, charge and cooldown for **this life** (§C5).
     ///
@@ -139,6 +144,8 @@ impl PlayerState {
             poisoned_until: 0.0,
             knocked_until: 0.0,
             tombstone_skin_id: 0,
+            hat_id: 0,
+            glasses_id: 0,
             score: 0,
             deaths: 0,
             last_damaged_by: None,

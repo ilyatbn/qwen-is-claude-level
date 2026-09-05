@@ -29,7 +29,7 @@ function fakeSocket() {
 async function connected() {
   const f = fakeSocket()
   const conn = new Connection({ factory: () => f.socket })
-  const welcome = conn.connect(undefined, 'ana', 0)
+  const welcome = conn.connect(undefined, 'ana', { skinId: 0, hatId: 0, glassesId: 0 })
   f.deliver('connect', undefined)
   f.deliver('welcome', {
     player_id: 1,
@@ -51,7 +51,7 @@ describe('Connection', () => {
     const conn = new Connection({ factory: () => f.socket })
     const seen: unknown[] = []
     conn.on('score', (p) => seen.push(p))
-    const welcome = conn.connect(undefined, 'ana', 0)
+    const welcome = conn.connect(undefined, 'ana', { skinId: 0, hatId: 0, glassesId: 0 })
     f.deliver('connect', undefined)
     f.deliver('welcome', {
       player_id: 1,

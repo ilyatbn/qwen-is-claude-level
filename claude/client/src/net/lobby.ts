@@ -124,12 +124,17 @@ export interface Identity {
   name: string
   skinId: number
   tombstoneSkinId: number
+  /** T20.12's accessories, on the same terms as the two above. */
+  hatId: number
+  glassesId: number
 }
 
 export interface IdentityPayload {
   name: string
   skin_id: number
   tombstone_skin_id: number
+  hat_id: number
+  glasses_id: number
 }
 
 /** The payload every lobby verb carries, so the server has one seating path. */
@@ -138,6 +143,8 @@ export function identityPayload(id: Identity): IdentityPayload {
     name: id.name,
     skin_id: id.skinId,
     tombstone_skin_id: id.tombstoneSkinId,
+    hat_id: id.hatId,
+    glasses_id: id.glassesId,
   }
 }
 
@@ -165,6 +172,10 @@ export interface LobbySeat {
   seat: number
   name: string
   skinId: number
+  /** T20.12. Carried for the reason `skinId` is: this is where a client learns
+   *  what everybody in the room looks like. */
+  hatId: number
+  glassesId: number
   ready: boolean
   bot: boolean
 }
@@ -232,6 +243,8 @@ export function parseLobbyState(p: Record<string, unknown>): LobbyStateMsg {
           seat: typeof q['seat'] === 'number' ? q['seat'] : -1,
           name: typeof q['name'] === 'string' ? q['name'] : '',
           skinId: typeof q['skin_id'] === 'number' ? q['skin_id'] : 0,
+          hatId: typeof q['hat_id'] === 'number' ? q['hat_id'] : 0,
+          glassesId: typeof q['glasses_id'] === 'number' ? q['glasses_id'] : 0,
           ready: q['ready'] === true,
           bot: q['bot'] === true,
         }))

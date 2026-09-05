@@ -458,6 +458,8 @@ pub fn lobby_state_payload(state: &crate::room::LobbyState) -> serde_json::Value
                 "seat": p.seat,
                 "name": p.name,
                 "skin_id": p.skin_id,
+                "hat_id": p.hat_id,
+                "glasses_id": p.glasses_id,
                 "ready": p.ready,
                 "bot": p.bot,
             }))
@@ -772,15 +774,18 @@ pub fn emit_player_join(
     tick: u32,
     id: game_core::player::state::PlayerId,
     name: &str,
-    skin_id: u16,
-    tombstone_skin_id: u16,
+    look: crate::room::Look,
 ) {
     let payload = serde_json::json!({
         "tick": tick,
         "id": id,
         "name": name,
-        "skin_id": skin_id,
-        "tombstone_skin_id": tombstone_skin_id,
+        "skin_id": look.skin_id,
+        "tombstone_skin_id": look.tombstone_skin_id,
+        // T20.12. Zero for a bot, which is the honest answer: bots have no
+        // stored choice, and `hatArt(0)` is "none" rather than an arbitrary hat.
+        "hat_id": look.hat_id,
+        "glasses_id": look.glasses_id,
     });
     for sid in sessions.sids() {
         if let Some(s) = io.get_socket(sid) {

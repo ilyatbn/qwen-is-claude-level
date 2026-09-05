@@ -35,14 +35,34 @@ const DRAIN_CAP: usize = 256;
 /// catches up silently, so without this a server running slow looks healthy.
 const LAG_WARN_TICKS: u32 = 10;
 
+/// Everything cosmetic a player joins with (T20.12).
+///
+/// **Grouped, and the task's own reasoning is why.** It ruled that accessories
+/// take new fields rather than being packed into `skin_id` — one field must not
+/// mean two things — and that stands: every id here keeps its own name, its own
+/// JSON key and its own client-side meaning. What is grouped is the **argument
+/// list**, which is the rule the same file applies to `loadChoice`: two counts
+/// became four and *"that is how a function ends up with five positional
+/// arguments — pass an object instead."* `join` would otherwise take six.
+///
+/// None of it reaches the simulation, the snapshot or the replay. `docs/50` §1:
+/// the server never knows what any of it looks like.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Look {
+    pub skin_id: u16,
+    /// The grave they leave (§B8).
+    pub tombstone_skin_id: u16,
+    pub hat_id: u16,
+    pub glasses_id: u16,
+}
+
 pub enum Command {
     /// Seat a player. The reply carries the assigned id, or `None` when full.
     Join {
         name: String,
-        skin_id: u16,
-        /// The grave they leave (§B8). Meaningless to the server, carried for
-        /// the clients that draw it.
-        tombstone_skin_id: u16,
+        /// Skin, grave and accessories. Meaningless to the server, carried for
+        /// the clients that draw them.
+        look: Look,
         reply: oneshot::Sender<Option<PlayerId>>,
     },
     /// Ready, or no longer ready (§E3).
@@ -155,7 +175,9 @@ pub enum Command {
 impl std::fmt::Debug for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Command::Join { name, skin_id, .. } => write!(f, "Join({name:?}, skin {skin_id})"),
+            Command::Join { name, look, .. } => {
+                write!(f, "Join({name:?}, skin {})", look.skin_id)
+            }
             Command::Ready(id, on) => write!(f, "Ready({id}, {on})"),
             Command::Input(id, v) => write!(f, "Input({id}, {} inputs)", v.len()),
             Command::UseItem(id, s) => write!(f, "UseItem({id}, slot {s})"),
@@ -294,21 +316,11 @@ impl RoomHandle {
     }
 
     /// Await a reply. Used by `join`, which needs the assigned id.
-    pub async fn join(
-        &self,
-        name: String,
-        skin_id: u16,
-        tombstone_skin_id: u16,
-    ) -> Option<PlayerId> {
+    pub async fn join(&self, name: String, look: Look) -> Option<PlayerId> {
         let (reply, rx) = oneshot::channel();
         if self
             .tx
-            .send(Command::Join {
-                name,
-                skin_id,
-                tombstone_skin_id,
-                reply,
-            })
+            .send(Command::Join { name, look, reply })
             .await
             .is_err()
         {
@@ -472,6 +484,11 @@ pub struct LobbySeat {
     pub seat: PlayerId,
     pub name: String,
     pub skin_id: u16,
+    /// T20.12's accessories, carried for the reason `skin_id` is: `lobby_state`
+    /// is where a client learns what everyone in the room looks like, and a seat
+    /// that carried the skin and not the hat would draw half a player.
+    pub hat_id: u16,
+    pub glasses_id: u16,
     pub ready: bool,
     pub bot: bool,
 }
@@ -549,6 +566,8 @@ struct Seat {
     /// the match starts and `populate_world` adds everyone at once.
     skin_id: u16,
     tombstone_skin_id: u16,
+    hat_id: u16,
+    glasses_id: u16,
     /// Bots are seated in the same table as humans and must be distinguishable
     /// without consulting `Room::bots` — `human_count` used to subtract one list
     /// length from another, which is a derived answer that two lists can
@@ -594,11 +613,13 @@ impl Seats {
     }
 
     /// Record who a seat is, for a world that does not exist yet (§E1).
-    fn set_identity(&mut self, id: PlayerId, name: &str, skin_id: u16, tombstone_skin_id: u16) {
+    fn set_identity(&mut self, id: PlayerId, name: &str, look: Look) {
         if let Some(s) = self.seats.iter_mut().find(|s| s.id == id) {
             s.name = name.to_string();
-            s.skin_id = skin_id;
-            s.tombstone_skin_id = tombstone_skin_id;
+            s.skin_id = look.skin_id;
+            s.tombstone_skin_id = look.tombstone_skin_id;
+            s.hat_id = look.hat_id;
+            s.glasses_id = look.glasses_id;
         }
     }
 
@@ -645,6 +666,8 @@ impl Seats {
             name: String::new(),
             skin_id: 0,
             tombstone_skin_id: 0,
+            hat_id: 0,
+            glasses_id: 0,
             bot: false,
             ready: false,
             consent: false,
@@ -854,12 +877,15 @@ pub fn to_command(c: &ReplayCommand) -> Command {
             let (reply, _rx) = tokio::sync::oneshot::channel();
             Command::Join {
                 name: name.clone(),
-                skin_id: *skin_id,
-                // Not recorded, and not needed: a grave's skin is cosmetic and
-                // is excluded from `state_hash` for the same reason
+                // Only `skin_id` is recorded, and the rest are not needed: a
+                // grave's marker and T20.12's accessories are cosmetic and are
+                // excluded from `state_hash` for the same reason
                 // `PlayerState.skin_id` is. A replay reproduces the simulation,
                 // not the palette.
-                tombstone_skin_id: 0,
+                look: Look {
+                    skin_id: *skin_id,
+                    ..Look::default()
+                },
                 reply,
             }
         }
@@ -1165,6 +1191,8 @@ impl Room {
                     seat: s.id,
                     name: s.name.clone(),
                     skin_id: s.skin_id,
+                    hat_id: s.hat_id,
+                    glasses_id: s.glasses_id,
                     // The consent flag, not the handshake latch: "ready" on
                     // screen is the tick-box a player pressed, and §E3 starts
                     // the match on it.
@@ -1556,12 +1584,8 @@ impl Room {
     fn apply(&mut self, cmd: Command) {
         use crate::replay::ReplayCommand as R;
         match cmd {
-            Command::Join {
-                name,
-                skin_id,
-                tombstone_skin_id,
-                reply,
-            } => {
+            Command::Join { name, look, reply } => {
+                let skin_id = look.skin_id;
                 let mut id = self.seats.alloc(self.config.max_players);
                 if id.is_none() && self.kick_newest_bot() {
                     id = self.seats.alloc(self.config.max_players);
@@ -1575,8 +1599,7 @@ impl Room {
                     // put a player in, so who they are waits here until
                     // `populate_world` adds everyone at match start. A player who
                     // joins a running match is still added immediately, below.
-                    self.seats
-                        .set_identity(id, &name, skin_id, tombstone_skin_id);
+                    self.seats.set_identity(id, &name, look);
                     self.note_lobby_change();
                     // §E2: the bot timeout runs from the **first** seating and
                     // does not reset. A private lobby never gets one (§E3).
@@ -1591,7 +1614,9 @@ impl Room {
                         // §B8. Parsed from `join` and, until now, dropped on the
                         // floor — the §A39 shape again, in the join path itself.
                         if let Some(p) = world.player_mut(id) {
-                            p.tombstone_skin_id = tombstone_skin_id;
+                            p.tombstone_skin_id = look.tombstone_skin_id;
+                            p.hat_id = look.hat_id;
+                            p.glasses_id = look.glasses_id;
                         }
                         self.grant_dev_loadout(id);
                         self.grant_start_kit(id);
@@ -2069,7 +2094,7 @@ impl Room {
     /// `events::emit_player_join`. It returns what the caller needs rather than
     /// exposing `bots` and making every caller reach into the world for the
     /// name (CLAUDE.md: "return what the caller needs").
-    pub fn seated_bots(&self) -> Vec<(PlayerId, String, u16, u16)> {
+    pub fn seated_bots(&self) -> Vec<(PlayerId, String, Look)> {
         self.bots
             .iter()
             .filter_map(|b| {
@@ -2088,7 +2113,18 @@ impl Room {
                 self.world
                     .as_ref()
                     .and_then(|w| w.player(b.player))
-                    .map(|p| (b.player, name, p.skin_id, p.tombstone_skin_id))
+                    .map(|p| {
+                        (
+                            b.player,
+                            name,
+                            Look {
+                                skin_id: p.skin_id,
+                                tombstone_skin_id: p.tombstone_skin_id,
+                                hat_id: p.hat_id,
+                                glasses_id: p.glasses_id,
+                            },
+                        )
+                    })
             })
             .collect()
     }
@@ -2854,15 +2890,14 @@ async fn run(
                     // the bots — with humans already connected. Their `welcome`
                     // was sent to an empty lobby, so this is the only thing that
                     // ever tells them who they are playing against.
-                    for (id, name, skin, grave) in room.seated_bots() {
+                    for (id, name, look) in room.seated_bots() {
                         crate::events::emit_player_join(
                             &io,
                             &sessions,
                             room.tick(),
                             id,
                             &name,
-                            skin,
-                            grave,
+                            look,
                         );
                     }
                 }
@@ -3162,8 +3197,7 @@ mod tests {
         let (reply, _rx) = oneshot::channel();
         room.apply(Command::Join {
             name: "a".into(),
-            skin_id: 0,
-            tombstone_skin_id: 0,
+            look: Default::default(),
             reply,
         });
         let id = 0;
@@ -3192,8 +3226,7 @@ mod tests {
         let (reply, _rx) = oneshot::channel();
         room.apply(Command::Join {
             name: "a".into(),
-            skin_id: 0,
-            tombstone_skin_id: 0,
+            look: Default::default(),
             reply,
         });
         room.seats.begin_tick();
@@ -3227,8 +3260,7 @@ mod tests {
         let (reply, _rx) = oneshot::channel();
         room.apply(Command::Join {
             name: "a".into(),
-            skin_id: 0,
-            tombstone_skin_id: 0,
+            look: Default::default(),
             reply,
         });
         // §E1.1: the seat is the roster. In a lobby there is no world for a
@@ -3307,8 +3339,7 @@ mod tests {
         let (reply, _rx) = oneshot::channel();
         room.apply(Command::Join {
             name: "human".into(),
-            skin_id: 0,
-            tombstone_skin_id: 0,
+            look: Default::default(),
             reply,
         });
         assert_eq!(room.bot_count(), 5, "no bot was kicked");
@@ -3340,8 +3371,7 @@ mod tests {
         let (reply, _rx) = oneshot::channel();
         room.apply(Command::Join {
             name: "a".into(),
-            skin_id: 0,
-            tombstone_skin_id: 0,
+            look: Default::default(),
             reply,
         });
         let a = room.player_count() - 1;
@@ -3359,8 +3389,7 @@ mod tests {
         let (reply, rx) = oneshot::channel();
         room.apply(Command::Join {
             name: "b".into(),
-            skin_id: 0,
-            tombstone_skin_id: 0,
+            look: Default::default(),
             reply,
         });
         let b = rx.blocking_recv().ok().flatten().expect("seated");
@@ -3389,8 +3418,7 @@ mod tests {
         let (reply, rx) = oneshot::channel();
         room.apply(Command::Join {
             name: "waited".into(),
-            skin_id: 0,
-            tombstone_skin_id: 0,
+            look: Default::default(),
             reply,
         });
         let waited = rx.blocking_recv().ok().flatten().expect("seated");
@@ -3436,8 +3464,7 @@ mod tests {
         let (reply, _rx) = oneshot::channel();
         room.apply(Command::Join {
             name: "waiting".into(),
-            skin_id: 0,
-            tombstone_skin_id: 0,
+            look: Default::default(),
             reply,
         });
         assert!(

@@ -19,8 +19,7 @@ fn seat(room: &mut Room, name: &str) -> game_core::player::state::PlayerId {
     let (reply, rx) = tokio::sync::oneshot::channel();
     room.apply_for_test(Command::Join {
         name: name.into(),
-        skin_id: 0,
-        tombstone_skin_id: 0,
+        look: Default::default(),
         reply,
     });
     rx.blocking_recv().ok().flatten().expect("seated")

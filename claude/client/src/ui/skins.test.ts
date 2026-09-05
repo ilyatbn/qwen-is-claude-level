@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   cleanName,
   cycle,
+  GLASSES_KEY,
+  HAT_KEY,
   DEFAULT_CHOICE,
   loadChoice,
   loadIdentity,
@@ -77,22 +79,59 @@ describe('cleanName', () => {
 describe('loadChoice / saveChoice', () => {
   it('round-trips through storage', () => {
     const s = store()
-    saveChoice(s, { name: 'ana', skinId: 2, tombstoneSkinId: 3 })
-    expect(loadChoice(s, 5, 5)).toEqual({ name: 'ana', skinId: 2, tombstoneSkinId: 3 })
+    saveChoice(s, { name: 'ana', skinId: 2, tombstoneSkinId: 3, hatId: 0, glassesId: 0 })
+    expect(loadChoice(s, { skins: 5, stones: 5, hats: 5, glasses: 5 })).toEqual({ name: 'ana', skinId: 2, tombstoneSkinId: 3, hatId: 0, glassesId: 0 })
   })
 
   it('saves the cleaned name, not the raw one', () => {
     // Otherwise the stored value differs from what every later read produces,
     // and the menu shows one name while the server is sent another.
     const s = store()
-    saveChoice(s, { name: '  <script>  ', skinId: 0, tombstoneSkinId: 0 })
+    saveChoice(s, { name: '  <script>  ', skinId: 0, tombstoneSkinId: 0, hatId: 0, glassesId: 0 })
     expect(s.raw.get(NAME_KEY)).toBe('script')
+  })
+
+  /**
+   * T20.12's two keys, on the same terms as the two above.
+   *
+   * **The junk case is the point.** `readId`'s `String(n) === raw` round-trip is
+   * what stops a hand-edited `" 2 "`, `"0x2"` or `"1e9"` reaching an art array —
+   * and a new key that skipped it would be the one place `NaN` gets through,
+   * which `JSON.stringify` then puts on the wire as `null`.
+   */
+  it('round-trips the accessories, and refuses junk in either key', () => {
+    const s = store()
+    saveChoice(s, { name: 'ana', skinId: 0, tombstoneSkinId: 0, hatId: 3, glassesId: 2 })
+    expect(s.raw.get(HAT_KEY)).toBe('3')
+    expect(s.raw.get(GLASSES_KEY)).toBe('2')
+    const back = loadChoice(s, { skins: 5, stones: 5, hats: 5, glasses: 5 })
+    expect(back.hatId).toBe(3)
+    expect(back.glassesId).toBe(2)
+
+    for (const raw of ['banana', '-1', ' 2 ', '0x2', '1e9', '2.0', '']) {
+      const junk = store({ [HAT_KEY]: raw, [GLASSES_KEY]: raw })
+      const c = loadChoice(junk, { skins: 5, stones: 5, hats: 5, glasses: 5 })
+      expect(c.hatId, `hat from ${JSON.stringify(raw)}`).toBe(0)
+      expect(c.glassesId, `glasses from ${JSON.stringify(raw)}`).toBe(0)
+    }
+    // The control: a legal value in the same shape of store still reads back, so
+    // the loop above is not satisfied by a reader that always returns 0.
+    expect(loadChoice(store({ [HAT_KEY]: '4' }), { hats: 5 }).hatId).toBe(4)
+  })
+
+  it('an id past a shrunken accessory list falls back rather than bricking', () => {
+    const s = store({ [HAT_KEY]: '4', [GLASSES_KEY]: '4' })
+    const c = loadChoice(s, { skins: 5, stones: 5, hats: 2, glasses: 2 })
+    expect([c.hatId, c.glassesId]).toEqual([0, 0])
+    // ...and unbounded, `loadIdentity` keeps them: the menu has no registry, and
+    // every lookup falls back for an id past the end (`docs/50` §8).
+    expect(loadIdentity(s).hatId).toBe(4)
   })
 
   it('survives a registry that shrank under a stored id', () => {
     // Removing a skin must not brick the menu for whoever had it selected.
     const s = store({ [SKIN_KEY]: '4', [STONE_KEY]: '4' })
-    expect(loadChoice(s, 2, 2)).toEqual({ name: 'Player', skinId: 0, tombstoneSkinId: 0 })
+    expect(loadChoice(s, { skins: 2, stones: 2, hats: 2, glasses: 2 })).toEqual({ name: 'Player', skinId: 0, tombstoneSkinId: 0, hatId: 0, glassesId: 0 })
   })
 })
 
@@ -192,7 +231,7 @@ describe('the stored identity', () => {
 
   it('passes a stored identity through unchanged, so the guards above are not a floor', () => {
     const good = store({ [NAME_KEY]: 'ana', [SKIN_KEY]: '7', [STONE_KEY]: '3' })
-    expect(loadIdentity(good)).toEqual({ name: 'ana', skinId: 7, tombstoneSkinId: 3 })
+    expect(loadIdentity(good)).toEqual({ name: 'ana', skinId: 7, tombstoneSkinId: 3, hatId: 0, glassesId: 0 })
   })
 
   it('does not need a skin count, and does not invent one', () => {
@@ -201,16 +240,21 @@ describe('the stored identity', () => {
     // every client lookup falls back — an id past the end draws the fallback
     // skin, where 0 would silently draw a *different real* one.
     const s = store({ [SKIN_KEY]: '7' })
-    expect(loadChoice(s, 5, 5).skinId).toBe(0)
+    expect(loadChoice(s, { skins: 5, stones: 5, hats: 5, glasses: 5 }).skinId).toBe(0)
     expect(loadIdentity(s).skinId).toBe(7)
   })
 
   it('stores a name without disturbing the ids', () => {
-    const s = store({ [SKIN_KEY]: '4', [STONE_KEY]: '2' })
+    const s = store({ [SKIN_KEY]: '4', [STONE_KEY]: '2', [HAT_KEY]: '3', [GLASSES_KEY]: '1' })
     saveName(s, '  bo  ')
     expect(storedName(s)).toBe('bo')
     expect(s.raw.get(SKIN_KEY)).toBe('4')
     expect(s.raw.get(STONE_KEY)).toBe('2')
+    // T20.12: `saveName` goes through `saveChoice`, which writes every key — so
+    // a new key not read back by `loadIdentity` would be silently zeroed by the
+    // next name change.
+    expect(s.raw.get(HAT_KEY)).toBe('3')
+    expect(s.raw.get(GLASSES_KEY)).toBe('1')
   })
 
   it('normalises a junk id on the way through rather than writing it back', () => {

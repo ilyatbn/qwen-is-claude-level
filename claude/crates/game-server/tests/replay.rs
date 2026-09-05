@@ -74,8 +74,7 @@ fn seat(room: &mut Room, name: &str) -> u8 {
     let (tx, rx) = tokio::sync::oneshot::channel();
     room.apply_for_test(Command::Join {
         name: name.to_string(),
-        skin_id: 0,
-        tombstone_skin_id: 0,
+        look: Default::default(),
         reply: tx,
     });
     rx.blocking_recv()

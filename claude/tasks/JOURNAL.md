@@ -5475,3 +5475,24 @@ deleted as meaningless. **Two more hardcoded literals found**: `shield: false` o
 `PlayerView` in *both* scenes, so the bubble has never appeared on your own body — now wired
 through the Rust rule and asserted on rendered pixels (9.9 against 1.3 falsified).
 EXIT=0 first run, 46/46, 856/856.
+
+
+## T20.12 — five hats, three glasses, and a second identity payload nobody had noticed
+
+New fields, per the ruling, following `tombstone_skin_id` term for term — **and not in the
+replay**, which is what that precedent actually decided. One deviation, argued from the
+task's own reasoning about `loadChoice`: `Look { skin_id, tombstone_skin_id, hat_id,
+glasses_id }` groups the **argument list** so `join` does not take six positionals, while
+every id keeps its own name and JSON key. `loadChoice` takes a `Counts` object for the same
+reason. The predicted trap was real and is closed with `Appearance` + `sameAppearance`: the
+rebuild guard compares one value, so the next accessory cannot be added to the map and the
+constructor and forgotten in the `if`. **Found on the way**: `Connection.connect` built its
+own three-field join payload beside `identityPayload`'s four verbs — it would have carried
+the accessories on the menu path and dropped them on `?game=1`, silently; it goes through the
+one builder now. The art is procedural (`tombstoneTextures`' precedent and its silhouette
+rule, made mechanical by a test that strips `fillStyle` and compares geometry). **The picture
+was wrong twice and the screenshot is what said so**: a hat floating over an untouched head,
+then a patch sampling 120 px above the character. Pixels: head +43.5 with a hat against a
+control region of 0.0, hats 1→2 apart by 26.7, face +102.2 for the shades.
+EXIT=0, 46/46, 875/875 — on the second gate; the first was `backdrop-real`'s worker-RPC
+timeout again, 833 assertions passed and no test failure. See HANDOFF.

@@ -29,7 +29,7 @@ import {
   type TimerBounds,
 } from './lobby'
 
-const me: Identity = { name: 'ana', skinId: 2, tombstoneSkinId: 7 }
+const me: Identity = { name: 'ana', skinId: 2, tombstoneSkinId: 7, hatId: 4, glassesId: 1 }
 
 describe('join codes', () => {
   it('accepts a well-formed code and upper-cases it', () => {
@@ -189,7 +189,13 @@ describe('lobby errors', () => {
 describe('payloads', () => {
   it('every verb carries the same identity, so the server has one seating path', () => {
     const base = identityPayload(me)
-    expect(base).toEqual({ name: 'ana', skin_id: 2, tombstone_skin_id: 7 })
+    expect(base).toEqual({
+      name: 'ana',
+      skin_id: 2,
+      tombstone_skin_id: 7,
+      hat_id: 4,
+      glasses_id: 1,
+    })
     expect(createRoomPayload(me, 'small', true)).toMatchObject(base)
     expect(joinRoomPayload(me, 'ABC234')).toMatchObject(base)
     expect(quickMatchPayload(me, 'large')).toMatchObject(base)
@@ -197,6 +203,25 @@ describe('payloads', () => {
 
   it('carries the tombstone skin, which is new in v3', () => {
     expect(quickMatchPayload(me, 'small').tombstone_skin_id).toBe(7)
+  })
+
+  /**
+   * T20.12's accessories, on the same verb-by-verb terms.
+   *
+   * Asserted on **every** verb rather than on `identityPayload` alone: the three
+   * builders spread the base object, and a fourth that spelled its own fields
+   * would compile and drop these two silently — which is the shape this suite
+   * already checks for `tombstone_skin_id` one line up.
+   */
+  it('carries the hat and the glasses on every verb', () => {
+    for (const p of [
+      createRoomPayload(me, 'small', true),
+      joinRoomPayload(me, 'ABC234'),
+      quickMatchPayload(me, 'large'),
+    ]) {
+      expect(p.hat_id).toBe(4)
+      expect(p.glasses_id).toBe(1)
+    }
   })
 })
 
@@ -291,7 +316,7 @@ describe('lobby_state (§E6)', () => {
     expect(s.settingsOwner).toBe(3)
     expect(s.startsIn).toBeCloseTo(7.25)
     expect(s.players).toHaveLength(2)
-    expect(s.players[0]).toEqual({ seat: 3, name: 'ana', skinId: 2, ready: true, bot: false })
+    expect(s.players[0]).toEqual({ seat: 3, name: 'ana', skinId: 2, hatId: 0, glassesId: 0, ready: true, bot: false })
     expect(s.players[1]!.bot).toBe(true)
   })
 
@@ -365,8 +390,8 @@ describe('the roster (§E6)', () => {
     startKit: 'none' as const,
     roundSeconds: 0,
     players: [
-      { seat: 0, name: 'ana', skinId: 0, ready: true, bot: false },
-      { seat: 1, name: 'Bot 1', skinId: 0, ready: true, bot: true },
+      { seat: 0, name: 'ana', skinId: 0, hatId: 0, glassesId: 0, ready: true, bot: false },
+      { seat: 1, name: 'Bot 1', skinId: 0, hatId: 0, glassesId: 0, ready: true, bot: true },
     ],
   }
 
@@ -407,8 +432,8 @@ describe('the roster (§E6)', () => {
         ...priv,
         settingsOwner: 3,
         players: [
-          { seat: 3, name: 'bo', skinId: 0, ready: false, bot: false },
-          { seat: 1, name: 'Bot 1', skinId: 0, ready: true, bot: true },
+          { seat: 3, name: 'bo', skinId: 0, hatId: 0, glassesId: 0, ready: false, bot: false },
+          { seat: 1, name: 'Bot 1', skinId: 0, hatId: 0, glassesId: 0, ready: true, bot: true },
         ],
       }
       const rows = rosterRows(promoted, 3)
@@ -449,8 +474,8 @@ describe('the roster (§E6)', () => {
       ...base,
       private: true,
       players: [
-        { seat: 0, name: 'ana', skinId: 0, ready: true, bot: false },
-        { seat: 1, name: 'bo', skinId: 0, ready: false, bot: false },
+        { seat: 0, name: 'ana', skinId: 0, hatId: 0, glassesId: 0, ready: true, bot: false },
+        { seat: 1, name: 'bo', skinId: 0, hatId: 0, glassesId: 0, ready: false, bot: false },
       ],
     })
     // A private lobby has no timeout, so a countdown would be a lie.
@@ -503,8 +528,8 @@ function lobby(over: Partial<LobbyStateMsg> = {}): LobbyStateMsg {
     roundSeconds: bounds.min + bounds.step,
     settingsOwner: HOST,
     players: [
-      { seat: HOST, name: 'ana', skinId: 0, ready: false, bot: false },
-      { seat: GUEST, name: 'bo', skinId: 0, ready: false, bot: false },
+      { seat: HOST, name: 'ana', skinId: 0, hatId: 0, glassesId: 0, ready: false, bot: false },
+      { seat: GUEST, name: 'bo', skinId: 0, hatId: 0, glassesId: 0, ready: false, bot: false },
     ],
     ...over,
   }

@@ -49,7 +49,10 @@ async fn settle() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_move_item_command_moves_the_stack_and_the_server_agrees() {
     let (room, _shut) = room();
-    let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    let id = room
+        .join("ana".into(), Default::default())
+        .await
+        .expect("seated");
     // §E1: a lobby has no world, so an inventory test has to start the match
     // before there is anywhere to put an item.
     assert!(
@@ -104,7 +107,10 @@ async fn a_move_item_command_moves_the_stack_and_the_server_agrees() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_malformed_move_is_refused_and_does_not_kill_the_room() {
     let (room, _shut) = room();
-    let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    let id = room
+        .join("ana".into(), Default::default())
+        .await
+        .expect("seated");
     // §E1: a lobby has no world, so an inventory test has to start the match
     // before there is anywhere to put an item.
     assert!(
@@ -157,7 +163,10 @@ async fn a_malformed_move_is_refused_and_does_not_kill_the_room() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn select_slot_cannot_reach_the_backpack() {
     let (room, _shut) = room();
-    let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    let id = room
+        .join("ana".into(), Default::default())
+        .await
+        .expect("seated");
     // §E1: a lobby has no world, so an inventory test has to start the match
     // before there is anywhere to put an item.
     assert!(
@@ -194,7 +203,10 @@ async fn select_slot_cannot_reach_the_backpack() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn what_is_given_fills_the_quick_bar_before_the_backpack() {
     let (room, _shut) = room();
-    let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    let id = room
+        .join("ana".into(), Default::default())
+        .await
+        .expect("seated");
     // §E1: a lobby has no world, so an inventory test has to start the match
     // before there is anywhere to put an item.
     assert!(
@@ -240,7 +252,10 @@ async fn what_is_given_fills_the_quick_bar_before_the_backpack() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_world_keeps_ticking_while_the_inventory_is_being_rearranged() {
     let (room, _shut) = room();
-    let id = room.join("ana".into(), 0, 0).await.expect("seated");
+    let id = room
+        .join("ana".into(), Default::default())
+        .await
+        .expect("seated");
     // §E1: a lobby has no world, so an inventory test has to start the match
     // before there is anywhere to put an item.
     assert!(

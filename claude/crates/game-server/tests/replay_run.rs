@@ -70,8 +70,7 @@ fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
     let (tx, rx) = tokio::sync::oneshot::channel();
     room.apply_for_test(Command::Join {
         name: "ana".into(),
-        skin_id: 0,
-        tombstone_skin_id: 0,
+        look: Default::default(),
         reply: tx,
     });
     let id = rx.blocking_recv().ok().flatten().expect("seat");
@@ -231,8 +230,7 @@ fn empty_ticks_are_simulated_not_skipped() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     room.apply_for_test(Command::Join {
         name: "ana".into(),
-        skin_id: 0,
-        tombstone_skin_id: 0,
+        look: Default::default(),
         reply: tx,
     });
     let id = rx.blocking_recv().ok().flatten().expect("seat");
@@ -832,8 +830,7 @@ fn a_recorded_settings_change_rebuilds_the_map_that_was_played() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     room.apply_for_test(Command::Join {
         name: "ana".into(),
-        skin_id: 0,
-        tombstone_skin_id: 0,
+        look: Default::default(),
         reply: tx,
     });
     let id = rx.blocking_recv().ok().flatten().expect("seat");

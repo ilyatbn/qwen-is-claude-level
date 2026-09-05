@@ -166,7 +166,7 @@ export class MenuScene extends Phaser.Scene {
     })
 
     conn
-      .connect(undefined, id.name, id.skinId, {
+      .connect(undefined, id.name, { skinId: id.skinId, hatId: id.hatId, glassesId: id.glassesId }, {
         ...intent,
         tombstoneSkinId: id.tombstoneSkinId,
       } as unknown as LobbyIntent)

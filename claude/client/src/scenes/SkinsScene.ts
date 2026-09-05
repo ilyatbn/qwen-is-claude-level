@@ -21,12 +21,28 @@ import {
   loadChoice,
   saveChoice,
   weaponSlots,
+  DEFAULT_CHOICE,
+  GLASSES_KEY,
+  HAT_KEY,
   NAME_KEY,
   SKIN_KEY,
   STONE_KEY,
   type Choice,
   type WeaponSlot,
 } from '../ui/skins'
+import {
+  ensureAccessoryTextures,
+  glassesArt,
+  hatArt,
+  GLASSES_ART,
+  HAT_ART,
+} from '../render/accessoryTextures'
+
+/** The four things this screen picks. Named so `step` cannot take a fifth by accident. */
+type PickField = 'skinId' | 'tombstoneSkinId' | 'hatId' | 'glassesId'
+
+/** The preview's zoom. Named because `skins.mjs` needs the same number. */
+const PREVIEW_SCALE = 3
 // The exported, tested escaper — a name goes back into an HTML **attribute**
 // here, and `cleanName` strips `<>` and not quotes, so a name containing `"`
 // would break out of `value="…"`. Storage is the player's own, so this is
@@ -47,7 +63,7 @@ function arsenalKeys(): string[] {
 }
 
 export class SkinsScene extends Phaser.Scene {
-  private choice: Choice = { name: 'Player', skinId: 0, tombstoneSkinId: 0 }
+  private choice: Choice = { ...DEFAULT_CHOICE }
   private root: HTMLElement | null = null
   private preview: PlayerView | null = null
   private stone: Phaser.GameObjects.Image | null = null
@@ -72,7 +88,13 @@ export class SkinsScene extends Phaser.Scene {
     ensureWeaponTextures(this.textures)
 
     this.skinCount = Math.max(1, skins()?.players.length ?? 1)
-    this.choice = loadChoice(localStorage, this.skinCount, TOMBSTONE_ART.length)
+    ensureAccessoryTextures(this.textures)
+    this.choice = loadChoice(localStorage, {
+      skins: this.skinCount,
+      stones: TOMBSTONE_ART.length,
+      hats: HAT_ART.length,
+      glasses: GLASSES_ART.length,
+    })
     this.slots = weaponSlots(arsenalKeys())
 
     this.cameras.main.setBackgroundColor('#141922')
@@ -85,6 +107,12 @@ export class SkinsScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-RIGHT', () => this.step('skinId', 1))
     this.input.keyboard?.on('keydown-UP', () => this.step('tombstoneSkinId', -1))
     this.input.keyboard?.on('keydown-DOWN', () => this.step('tombstoneSkinId', 1))
+    // T20.12's two pickers get `[`/`]` and `,`/`.` — the arrows are taken, and a
+    // picker reachable only by mouse is a picker half the checks cannot drive.
+    this.input.keyboard?.on('keydown-OPEN_BRACKET', () => this.step('hatId', -1))
+    this.input.keyboard?.on('keydown-CLOSED_BRACKET', () => this.step('hatId', 1))
+    this.input.keyboard?.on('keydown-COMMA', () => this.step('glassesId', -1))
+    this.input.keyboard?.on('keydown-PERIOD', () => this.step('glassesId', 1))
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.root?.remove()
@@ -131,9 +159,13 @@ export class SkinsScene extends Phaser.Scene {
 
   private rebuildCharacter(x: number, y: number): void {
     this.preview?.container.destroy()
-    const view = new PlayerView(this, this.choice.skinId)
+    // **Through `PlayerView`** (§B12): rendering the preview any other way would
+    // make this screen advertise a character the game does not draw — and with
+    // accessories that is not a slogan, it is the only place the offsets are
+    // computed.
+    const view = new PlayerView(this, this.choice.skinId, this.choice.hatId, this.choice.glassesId)
     view.container.setPosition(x, y)
-    view.container.setScale(3)
+    view.container.setScale(PREVIEW_SCALE)
     this.preview = view
   }
 
@@ -156,14 +188,23 @@ export class SkinsScene extends Phaser.Scene {
     this.preview?.container.setPosition(cam.width * 0.34, cam.height * 0.46)
   }
 
-  private step(field: 'skinId' | 'tombstoneSkinId', delta: number): void {
-    const count = field === 'skinId' ? this.skinCount : TOMBSTONE_ART.length
-    this.choice = { ...this.choice, [field]: cycle(this.choice[field], delta, count) }
+  private step(field: PickField, delta: number): void {
+    const counts: Record<PickField, number> = {
+      skinId: this.skinCount,
+      tombstoneSkinId: TOMBSTONE_ART.length,
+      hatId: HAT_ART.length,
+      glassesId: GLASSES_ART.length,
+    }
+    this.choice = { ...this.choice, [field]: cycle(this.choice[field], delta, counts[field]) }
     saveChoice(localStorage, this.choice)
-    if (field === 'skinId') {
-      this.rebuildCharacter(this.cameras.main.width * 0.34, this.cameras.main.height * 0.46)
-    } else {
+    if (field === 'tombstoneSkinId') {
       this.stone?.setTexture(tombstoneArt(this.choice.tombstoneSkinId).key)
+    } else {
+      // **Any appearance change rebuilds**, not just the skin. `PlayerView` has
+      // no setter for any of the three — they are `readonly`, set once in the
+      // constructor — so a hat change that only re-rendered the DOM would leave
+      // the preview advertising the previous hat (T20.12).
+      this.rebuildCharacter(this.cameras.main.width * 0.34, this.cameras.main.height * 0.46)
     }
     this.render()
   }
@@ -203,6 +244,16 @@ export class SkinsScene extends Phaser.Scene {
         <span class="pick-label">Tombstone<b id="stone-name">${tombstoneArt(this.choice.tombstoneSkinId).name}</b></span>
         <button data-d="1" aria-label="Next tombstone">▶</button>
       </div>
+      <div class="picker" id="pick-hat">
+        <button data-d="-1" aria-label="Previous hat">◀</button>
+        <span class="pick-label">Hat<b id="hat-name">${hatArt(this.choice.hatId).name}</b></span>
+        <button data-d="1" aria-label="Next hat">▶</button>
+      </div>
+      <div class="picker" id="pick-glasses">
+        <button data-d="-1" aria-label="Previous glasses">◀</button>
+        <span class="pick-label">Glasses<b id="glasses-name">${glassesArt(this.choice.glassesId).name}</b></span>
+        <button data-d="1" aria-label="Next glasses">▶</button>
+      </div>
       <fieldset class="coming-soon" disabled aria-label="Weapon skins, coming soon">
         <legend>Weapon skins</legend>
         <p>Coming soon</p>
@@ -217,6 +268,8 @@ export class SkinsScene extends Phaser.Scene {
     for (const [id, field] of [
       ['#pick-skin', 'skinId'],
       ['#pick-stone', 'tombstoneSkinId'],
+      ['#pick-hat', 'hatId'],
+      ['#pick-glasses', 'glassesId'],
     ] as const) {
       for (const b of el.querySelectorAll<HTMLButtonElement>(`${id} button`)) {
         b.addEventListener('click', () => this.step(field, Number(b.dataset.d)))
@@ -232,11 +285,26 @@ export class SkinsScene extends Phaser.Scene {
         ...self.choice,
         skinCount: self.skinCount,
         stoneCount: TOMBSTONE_ART.length,
+        // T20.12. Counts as well as names, because a picker with one option is
+        // the failure `tombstoneTextures` names and a check has to be able to ask.
+        hatCount: HAT_ART.length,
+        glassesCount: GLASSES_ART.length,
         skinName: self.skinName(),
         stoneName: tombstoneArt(self.choice.tombstoneSkinId).name,
+        hatName: hatArt(self.choice.hatId).name,
+        glassesName: glassesArt(self.choice.glassesId).name,
         /** Drawn, not intended (§A15): what the canvas actually holds. */
         weaponsShown: self.weaponRow.length,
         previewIsAtlas: self.preview?.usesAtlas ?? false,
+        // T20.12: where the accessories landed, so a pixel check aims at the band
+        // the renderer chose rather than at a rect typed into the check.
+        previewScale: PREVIEW_SCALE,
+        previewDrawnH: self.preview?.accessoryBands.drawnH ?? 0,
+        previewAnchorY: self.preview?.accessoryBands.anchorY ?? 0,
+        hatBottom: self.preview?.accessoryBands.hatBottom ?? 0,
+        hatH: self.preview?.accessoryBands.hatH ?? 0,
+        glassesMid: self.preview?.accessoryBands.glassesMid ?? 0,
+        glassesH: self.preview?.accessoryBands.glassesH ?? 0,
         /** §B3 wants the walk cycle; a still frame is the failure it names. */
         previewFrame: self.preview?.currentFrame ?? '',
         /** The section must be present *and* inert, so report both. */
@@ -250,9 +318,11 @@ export class SkinsScene extends Phaser.Scene {
           skin: localStorage.getItem(SKIN_KEY),
           stone: localStorage.getItem(STONE_KEY),
           name: localStorage.getItem(NAME_KEY),
+          hat: localStorage.getItem(HAT_KEY),
+          glasses: localStorage.getItem(GLASSES_KEY),
         },
       }),
-      step: (field: 'skinId' | 'tombstoneSkinId', d: number) => self.step(field, d),
+      step: (field: PickField, d: number) => self.step(field, d),
     }
   }
 }

@@ -138,3 +138,67 @@ export function spriteScale(artHeight: number, bodyHeight: number, overshoot = 1
   if (artHeight <= 0) return 1
   return (bodyHeight * overshoot) / artHeight
 }
+
+/**
+ * Where an accessory sits, and how big it is drawn (T20.12).
+ *
+ * **Here rather than in a `playerView-math.ts`, and that is deliberate.** These
+ * and `spriteScale` above answer the same question — how big is the drawn figure
+ * against its 28 px hitbox — and putting the two halves in different files is how
+ * they drift. A hat placed against a scale computed elsewhere ends up on a
+ * forehead the day `overshoot` moves.
+ *
+ * `PlayerView` draws the body with origin `(0.5, anchorY)` at container `(0, 0)`,
+ * so the sprite's top edge is `-drawnHeight * anchorY`. Both offsets are
+ * fractions of the **drawn** height, not of `PLAYER_H`: the art overshoots the
+ * hitbox by `overshoot`, and an accessory pinned to the hitbox would sit in the
+ * middle of the character's face.
+ *
+ * **The two must not overlap**, and the origins are what buys that. A hat is
+ * anchored by its *bottom* just below the sprite's top edge, so it perches above
+ * the head; the glasses are centred a little further down, across the face. Two
+ * accessories that shared a band would be one region on screen, and no check
+ * could attribute a change to either.
+ */
+
+/**
+ * Fraction of the drawn height, from the sprite's top edge, where the hat's
+ * **bottom** sits — and the glasses' **centre**.
+ *
+ * **Bigger than the geometry alone suggests, and measured rather than derived.**
+ * The sprite's top edge is not the top of the character's head: Kenney's frames
+ * carry transparent padding, and a hat placed at the frame's edge floats a
+ * visible gap above the hair. A first draft used 0.10/0.16 and the screenshot
+ * showed a red block hovering over an untouched head — *"a fix that changes the
+ * code without changing the picture looks exactly like a fix that worked"*, which
+ * is why this was screenshotted rather than reasoned about.
+ */
+export const HAT_LIFT = 0.23
+export const GLASSES_DROP = 0.38
+
+export function accessoryY(
+  drawnHeight: number,
+  anchorY: number,
+  kind: 'hat' | 'glasses',
+): number {
+  const top = -drawnHeight * anchorY
+  return top + drawnHeight * (kind === 'hat' ? HAT_LIFT : GLASSES_DROP)
+}
+
+/**
+ * Scale for an accessory `artWidth` px wide on a body `bodyWidth` px wide.
+ *
+ * **Width, not height**, and that is the point: a hat has to match the head it
+ * sits on, and the five hats differ in *height* by design — matching heights
+ * would make the top hat as squat as the cap and delete the silhouette the picker
+ * exists to show. `fraction` is how much of the body's width the accessory
+ * spans; a hat is a little wider than the head, glasses a little narrower.
+ */
+export function accessoryScale(artWidth: number, bodyWidth: number, fraction: number): number {
+  if (artWidth <= 0) return 1
+  return (bodyWidth * fraction) / artWidth
+}
+
+/** A hat is slightly wider than the body; sunglasses slightly narrower. */
+export const HAT_WIDTH_FRACTION = 1.15
+export const GLASSES_WIDTH_FRACTION = 0.85

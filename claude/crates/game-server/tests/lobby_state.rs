@@ -24,8 +24,14 @@ fn seat(room: &mut Room, name: &str) -> u8 {
     let (reply, rx) = tokio::sync::oneshot::channel();
     room.apply_for_test(Command::Join {
         name: name.into(),
-        skin_id: 7,
-        tombstone_skin_id: 0,
+        // A non-zero id in every cosmetic field, so a payload that dropped one
+        // shows up as a 0 rather than matching the default (T20.12).
+        look: game_server::room::Look {
+            skin_id: 7,
+            tombstone_skin_id: 0,
+            hat_id: 3,
+            glasses_id: 2,
+        },
         reply,
     });
     rx.blocking_recv().ok().flatten().expect("seated")

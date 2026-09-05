@@ -13,17 +13,49 @@
 export const SKIN_KEY = 'deepcut.skin'
 export const STONE_KEY = 'deepcut.stone'
 export const NAME_KEY = 'deepcut.name'
+/** T20.12's accessories, stored the same way and read through the same `readId`. */
+export const HAT_KEY = 'deepcut.hat'
+export const GLASSES_KEY = 'deepcut.glasses'
 
 /** Longest name the server accepts (`docs/40` §2: 1–16 chars). */
 export const MAX_NAME = 16
 
-export interface Choice {
-  name: string
+/**
+ * Everything about how a player looks in the world (T20.12).
+ *
+ * **Grouped, not three loose ids.** `GameScene.scores` has three writers and
+ * `PlayerView` is destroyed and rebuilt during a round; a set of parallel fields
+ * would have to be carried, compared and defaulted correctly in each of those
+ * places, and §B9 already cost a milestone to exactly that shape one field wide.
+ * One value moves as one thing.
+ *
+ * The tombstone is **not** here: it is drawn by `TombstoneLayer` from the corpse,
+ * not by `PlayerView` from the player, so a type that meant "how a player looks"
+ * would be answering two questions.
+ */
+export interface Appearance {
   skinId: number
+  hatId: number
+  glassesId: number
+}
+
+export interface Choice extends Appearance {
+  name: string
   tombstoneSkinId: number
 }
 
-export const DEFAULT_CHOICE: Choice = { name: 'Player', skinId: 0, tombstoneSkinId: 0 }
+export const DEFAULT_CHOICE: Choice = {
+  name: 'Player',
+  skinId: 0,
+  tombstoneSkinId: 0,
+  hatId: 0,
+  glassesId: 0,
+}
+
+/** Two appearances are the same picture. */
+export function sameAppearance(a: Appearance, b: Appearance): boolean {
+  return a.skinId === b.skinId && a.hatId === b.hatId && a.glassesId === b.glassesId
+}
 
 /**
  * Read a stored id, falling back to 0.
@@ -96,15 +128,31 @@ export function storedName(store: Pick<Storage, 'getItem'>): string | null {
   return raw === null ? null : nameOrNull(raw)
 }
 
-export function loadChoice(
-  store: Pick<Storage, 'getItem'>,
-  skinCount: number,
-  stoneCount: number,
-): Choice {
+/**
+ * How many of each thing exist, for `readId`'s range test.
+ *
+ * **An object, not four positional counts** (T20.12). This function already took
+ * two, T20.02 routed the menu's identity through it and T20.04 needs the skin out
+ * of it, and this task adds two more — which is how a function ends up with five
+ * positional arguments nobody can read at the call site. Every field is optional
+ * and defaults to unbounded, because `loadIdentity` genuinely has no registry and
+ * `readId` is safe without one (see its comment).
+ */
+export interface Counts {
+  skins?: number
+  stones?: number
+  hats?: number
+  glasses?: number
+}
+
+export function loadChoice(store: Pick<Storage, 'getItem'>, counts: Counts = {}): Choice {
+  const inf = Number.POSITIVE_INFINITY
   return {
     name: storedName(store) ?? DEFAULT_CHOICE.name,
-    skinId: readId(store, SKIN_KEY, skinCount),
-    tombstoneSkinId: readId(store, STONE_KEY, stoneCount),
+    skinId: readId(store, SKIN_KEY, counts.skins ?? inf),
+    tombstoneSkinId: readId(store, STONE_KEY, counts.stones ?? inf),
+    hatId: readId(store, HAT_KEY, counts.hats ?? inf),
+    glassesId: readId(store, GLASSES_KEY, counts.glasses ?? inf),
   }
 }
 
@@ -127,7 +175,7 @@ export function loadChoice(
  * count. `Infinity` disables only the range test.
  */
 export function loadIdentity(store: Pick<Storage, 'getItem'>): Choice {
-  return loadChoice(store, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY)
+  return loadChoice(store)
 }
 
 /**
@@ -146,6 +194,8 @@ export function saveChoice(store: Pick<Storage, 'setItem'>, c: Choice): void {
   store.setItem(NAME_KEY, cleanName(c.name))
   store.setItem(SKIN_KEY, String(c.skinId))
   store.setItem(STONE_KEY, String(c.tombstoneSkinId))
+  store.setItem(HAT_KEY, String(c.hatId))
+  store.setItem(GLASSES_KEY, String(c.glassesId))
 }
 
 /** Step through a list of ids, wrapping — the arrow buttons and the arrow keys. */

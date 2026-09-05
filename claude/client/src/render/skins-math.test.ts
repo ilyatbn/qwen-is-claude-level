@@ -7,6 +7,10 @@ import {
   framesFor,
   parseTint,
   resolveWeaponSkin,
+  accessoryScale,
+  accessoryY,
+  GLASSES_WIDTH_FRACTION,
+  HAT_WIDTH_FRACTION,
   spriteScale,
   animKey,
   FALLBACK_SKIN_ID,
@@ -170,5 +174,61 @@ describe('spriteScale', () => {
   })
   it('is 1 for degenerate art rather than dividing by zero', () => {
     expect(spriteScale(0, 28)).toBe(1)
+  })
+})
+
+describe('accessory placement (T20.12)', () => {
+  // `PLAYER_H` 28 x the 1.55 overshoot, and `PlayerView`'s fallback anchor.
+  const drawn = 43.4
+  const anchorY = 0.9
+  const top = -drawn * anchorY
+
+  it('puts the hat above the glasses, both inside the drawn figure', () => {
+    const bottom = drawn * (1 - anchorY)
+    const hat = accessoryY(drawn, anchorY, 'hat')
+    const glasses = accessoryY(drawn, anchorY, 'glasses')
+    expect(hat).toBeGreaterThan(top)
+    expect(glasses).toBeLessThan(bottom)
+    expect(hat).toBeLessThan(glasses)
+  })
+
+  /**
+   * **The bands must not overlap**, and this is the assertion that keeps them
+   * apart. `PlayerView` anchors the hat by its bottom and the glasses by their
+   * centre, so their extents are computable here — and if they ever share a strip
+   * of the sprite, `skins.mjs` loses its control region and can no longer say
+   * which accessory moved a pixel.
+   */
+  it('a drawn hat ends above where the glasses begin', () => {
+    const hatH = 9 * accessoryScale(14, 16, HAT_WIDTH_FRACTION)
+    const glassesH = 4 * accessoryScale(12, 16, GLASSES_WIDTH_FRACTION)
+    const hatBottom = accessoryY(drawn, anchorY, 'hat')
+    const glassesTop = accessoryY(drawn, anchorY, 'glasses') - glassesH / 2
+    expect(hatBottom).toBeLessThanOrEqual(glassesTop)
+    // The presence half: both are actually drawn something, so "they do not
+    // overlap" is not satisfied by two accessories of zero height.
+    expect(hatH).toBeGreaterThan(2)
+    expect(glassesH).toBeGreaterThan(2)
+  })
+
+  it('scales with the drawn height, not with the hitbox', () => {
+    // The art overshoots the hitbox, so an offset pinned to `PLAYER_H` would put
+    // a hat in the middle of the character's face the day `overshoot` moves.
+    const small = accessoryY(20, anchorY, 'hat')
+    const large = accessoryY(60, anchorY, 'hat')
+    expect(large).toBeLessThan(small)
+    expect(large / small).toBeCloseTo(3, 5)
+  })
+
+  it('the two kinds are not the same offset — the control', () => {
+    expect(accessoryY(40, 0.9, 'hat')).not.toBeCloseTo(accessoryY(40, 0.9, 'glasses'), 3)
+  })
+
+  it('sizes an accessory by width, so silhouettes keep their heights', () => {
+    // A top hat is tall and a cap is not; matching heights would flatten both to
+    // the same outline, which is the one thing the picker exists to show.
+    const s = accessoryScale(14, 16, HAT_WIDTH_FRACTION)
+    expect(14 * s).toBeCloseTo(16 * HAT_WIDTH_FRACTION, 6)
+    expect(accessoryScale(0, 16, 1)).toBe(1)
   })
 })

@@ -19,13 +19,19 @@ import {
 import { skins } from './assets'
 import { ensureWeaponTextures, weaponArt } from './weaponTextures'
 import {
+  accessoryScale,
+  accessoryY,
   animKey,
+  GLASSES_WIDTH_FRACTION,
+  HAT_WIDTH_FRACTION,
   framesFor,
   parseTint,
   resolveSkin,
   spriteScale,
   type SkinDef,
 } from './skins-math'
+import { ensureAccessoryTextures, glassesArt, hatArt } from './accessoryTextures'
+import type { Appearance } from '../ui/skins'
 
 export type { AnimState, AnimInputs }
 export { deriveAnimState, facingLeft }
@@ -114,6 +120,11 @@ export class PlayerView {
   private readonly shieldBubble: Phaser.GameObjects.Arc
   private readonly nameLabel: Phaser.GameObjects.Text
   private readonly skinId: number
+  /** §T20.12's accessories. `readonly` like `skinId`, for the same reason. */
+  private readonly hatId: number
+  private readonly glassesId: number
+  private readonly hat: Phaser.GameObjects.Image | null
+  private readonly glasses: Phaser.GameObjects.Image | null
   private animState: AnimState = 'idle'
   private readonly skinDef: SkinDef | null
   /** Null when running on placeholders — every draw path checks it. */
@@ -147,9 +158,23 @@ export class PlayerView {
 
   private readonly scene: Phaser.Scene
 
-  constructor(scene: Phaser.Scene, skinId: number) {
+  /**
+   * `hatId` and `glassesId` are **required**, not optional, and that is the guard
+   * (T20.12).
+   *
+   * They inherit `skinId`'s whole problem: this class is destroyed and rebuilt
+   * repeatedly during a round — `GameScene` drops every remote absent from the
+   * sampled set and reconstructs it on return — and every appearance field is
+   * `readonly` with no setter, so a rebuild reads whatever the caller passes at
+   * that moment. Optional parameters would let every existing call site compile
+   * unchanged and draw a bare head, which is the same defect §B9 already cost a
+   * milestone. Required means the compiler names the caller that forgot.
+   */
+  constructor(scene: Phaser.Scene, skinId: number, hatId: number, glassesId: number) {
     const c = C()
     this.skinId = skinId
+    this.hatId = hatId
+    this.glassesId = glassesId
     this.skinDef = resolveSkin(skins(), skinId)
 
     // The registry can resolve while the atlas never loaded — a 404, or a
@@ -186,9 +211,34 @@ export class PlayerView {
       .text(0, -c.PLAYER_H - 6, '', { fontSize: '9px', color: '#dfe6ee' })
       .setOrigin(0.5, 1)
 
+    // Accessories, over the body and under the label (T20.12). Positioned from
+    // the **drawn** height through `accessoryY`, which lives beside
+    // `spriteScale` because the two answer the same question — see its comment.
+    ensureAccessoryTextures(scene.textures)
+    const drawn = this.body.displayHeight || c.PLAYER_H
+    const hatDef = hatArt(hatId)
+    const glassesDef = glassesArt(glassesId)
+    // A hat is anchored by its **bottom** so it perches above the head; the
+    // glasses are centred across the face. See `accessoryY` for why the two must
+    // not share a band.
+    this.hat = hatDef.key
+      ? scene.add
+          .image(0, accessoryY(drawn, anchorY, 'hat'), hatDef.key)
+          .setOrigin(0.5, 1)
+          .setScale(accessoryScale(hatDef.w, c.PLAYER_W, HAT_WIDTH_FRACTION))
+      : null
+    this.glasses = glassesDef.key
+      ? scene.add
+          .image(0, accessoryY(drawn, anchorY, 'glasses'), glassesDef.key)
+          .setOrigin(0.5, 0.5)
+          .setScale(accessoryScale(glassesDef.w, c.PLAYER_W, GLASSES_WIDTH_FRACTION))
+      : null
+
     this.container = scene.add.container(0, 0, [
       this.shieldBubble,
       this.body,
+      ...(this.hat ? [this.hat] : []),
+      ...(this.glasses ? [this.glasses] : []),
       this.weapon,
       this.nameLabel,
     ])
@@ -227,6 +277,12 @@ export class PlayerView {
 
     const left = facingLeft(aim)
     this.body.setFlipX(left)
+    // **The accessories flip with the head** (T20.12). The cap's brim and the
+    // crown's points are asymmetric on purpose — that asymmetry is what makes a
+    // turn readable — and a hat that kept facing right on a body facing left
+    // would be the one thing on screen that never turns around.
+    this.hat?.setFlipX(left)
+    this.glasses?.setFlipX(left)
 
     // The weapon rotates to the aim angle and is flipped **vertically** when
     // pointing left, not horizontally — the standard trick for a side-view aimed
@@ -240,6 +296,9 @@ export class PlayerView {
     // reads as a player during the respawn delay.
     const alpha = !flags.alive ? 0.35 : flags.iframes ? (Date.now() % 200 < 100 ? 0.4 : 1) : 1
     this.body.setAlpha(alpha)
+    // The accessories fade with the body, or a corpse wears a solid hat.
+    this.hat?.setAlpha(alpha)
+    this.glasses?.setAlpha(alpha)
   }
 
   /**
@@ -289,5 +348,46 @@ export class PlayerView {
 
   get skin(): number {
     return this.skinId
+  }
+
+  /**
+   * Everything about how this player looks, as one value (T20.12).
+   *
+   * **The rebuild guard reads this, not three fields.** `GameScene` compares what
+   * a view is drawing against what `scores` now says and rebuilds on a mismatch;
+   * with three separate comparisons the next accessory is added to the map, to
+   * the constructor, and forgotten in the `if` — and the symptom is a hat that is
+   * correct on first draw and reverts on the next rebuild, which is exactly the
+   * failure this task was told to expect.
+   */
+  get look(): Appearance {
+    return { skinId: this.skinId, hatId: this.hatId, glassesId: this.glassesId }
+  }
+
+  /**
+   * Where the accessories actually landed, in container units (T20.12).
+   *
+   * **For a check to aim a patch with, and it has to come from here.** `skins.mjs`
+   * samples the band a hat occupies; a rect typed into the check would expire the
+   * next time `overshoot`, `anchor.y` or the art size moved, and — worse — would
+   * go on passing while sampling the wrong strip of a correct picture.
+   */
+  get accessoryBands(): {
+    drawnH: number
+    anchorY: number
+    hatBottom: number
+    hatH: number
+    glassesMid: number
+    glassesH: number
+  } {
+    const drawnH = this.body.displayHeight || C().PLAYER_H
+    return {
+      drawnH,
+      anchorY: this.skinDef?.anchor.y ?? PlayerView.ANCHOR_Y,
+      hatBottom: this.hat?.y ?? 0,
+      hatH: this.hat?.displayHeight ?? 0,
+      glassesMid: this.glasses?.y ?? 0,
+      glassesH: this.glasses?.displayHeight ?? 0,
+    }
   }
 }
