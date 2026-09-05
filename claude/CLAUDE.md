@@ -65,6 +65,13 @@ green suite and a working game.
 
 - **Ask what a passing assertion rules out.** If the property would hold with your
   code deleted, you are testing the framework, not your code.
+- **Cite the symbol, not the line.** `world/mod.rs::apply_damage_log`, not
+  `world/mod.rs:1924`. A line number is a claim with nothing re-validating it, and it rots
+  fast: `world/mod.rs` gained ~700 lines in one task and `player/state.rs` ~380 in another,
+  so **four of five citations in a task file written two weeks earlier pointed 200–400 lines
+  early**. A `grep -n "fn apply_damage_log"` is right today and stays right through any
+  amount of growth. Line numbers are fine for a *review* of a fixed commit; they are wrong in
+  anything meant to be read later.
 - **A proposed guard is a claim, and it needs the same falsification as the code it guards.**
   Ask it of the *remedy*, not only of the bug. This has now been missed three times in one
   milestone from three different roles: a coder shipping a falsification that edited a path
