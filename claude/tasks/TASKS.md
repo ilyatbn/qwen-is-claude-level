@@ -515,6 +515,17 @@ prediction correct. **Any movement modifier the client does not know about ships
 rubber-banding, not as a wrong speed.** T20.07's conclusion — derive a bit at the encode site
 rather than storing a hashed field — is the cheap answer, and it is written into each file.
 
+**M21 build order, computed from the eight `Depends on:` headers 2026-09-06** (after
+`0eb0355` broke the T21.06 ↔ T21.07 cycle — the graph is acyclic, verified by walking it):
+
+- **Startable now, in any order:** T21.01, T21.02, T21.03, T21.04. All four depend only on
+  landed M20/M19 work (T19.07, T20.04, T20.08, T20.09, T20.11, T20.12 — all ticked).
+- **Then:** T21.05 (needs T21.04) → T21.06 and T21.07 (both need only T21.05, and are
+  independent of *each other*; take T21.07 first if both are open) → **T21.08 last**.
+- **T21.08 is three hops deep** — `T21.08 ← T21.07 ← T21.05 ← T21.04` — and is the only task
+  at that depth. Nothing else in M21 is more than two. If M21 is ever cut short, T21.08 is the
+  piece that will not have a foundation.
+
 - [ ] [T21.01](M21/T21.01-vampire-fangs.md) — Vampire fangs **(v9)** — depends on T20.08
 - [ ] [T21.02](M21/T21.02-ironman-boots.md) — Ironman boots **(v9)** — depends on T20.08, T20.04, T20.12
 - [ ] [T21.03](M21/T21.03-unicorn-wings.md) — Unicorn wings **(v9)** — **hard-depends on T20.09**: dropping is the only off switch
