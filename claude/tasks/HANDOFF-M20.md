@@ -1936,9 +1936,22 @@ not run.** Twice this session, both times inside text arguing for rigour.
   observation falls, the mechanism stands: **any fixture walking a player on an unseeded map
   is exposed.**
 - **T20.16 re-validated clean** — and it is the counterexample that proves the citation rule.
-  Every citation there names the symbol *as well as* the line; the lines drifted by one and it
-  did not matter. Elsewhere a bare `session.rs:1284-1286` was ~30 lines out and a bare
-  `src/room.rs` named the wrong file entirely.
+  Its one original citation, `capacity.rs:335 max_rooms_carries_its_basis`, **lands exactly**;
+  it points at `#[test]` because the prose there is about that test *not* being `#[ignore]`d,
+  which is the right line to cite. The rule it demonstrates is not that symbol-plus-line
+  survives drift — it is that **symbol-plus-line is checkable, and someone checked**.
+  Elsewhere a bare `session.rs:1284-1286` was ~30 lines out and a bare `src/room.rs` named the
+  wrong file entirely; neither could be checked without already knowing the answer.
+
+  **This entry previously said "the lines drifted by one and it did not matter", which was
+  false**, and it is left visible here because of how it failed rather than that it did.
+  **An uncorrected error does not sit still.** It was raised against T20.16, not yet fixed
+  there, and in that window got copied into this handoff — the durable record — and promoted
+  from an aside into *the evidence for a rule*. A reader checking it would have found no drift
+  and been unable to tell whether the rule was wrong or the example was. Six claims-reported-
+  through-the-wrong-thing were caught today; this is the only one that **propagated**, and it
+  propagated in the twenty minutes between being flagged and being fixed. **Fix a flagged
+  claim before writing anything that could quote it.**
 
 ## State
 
