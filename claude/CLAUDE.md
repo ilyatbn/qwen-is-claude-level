@@ -64,7 +64,10 @@ green suite and a working game.
 **On tests**
 
 - **Ask what a passing assertion rules out.** If the property would hold with your
-  code deleted, you are testing the framework, not your code.
+  code deleted, you are testing the framework, not your code. **This applies to a task's
+  Done-when, not only to its tests** — run the Done-when *before* you start and watch it fail.
+  A Done-when that is already green is a task nobody has to do, and it is how a requirement
+  gets added without anything being able to report its violation.
 - **Cite a rule by its invariant, not by its slogan — a rule cited by its wording is a line
   number by another name.** These rules get sharpened; three were reworded this week, and each
   rewording orphans whatever cited the old phrasing. A task file once pointed at
