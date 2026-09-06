@@ -156,6 +156,12 @@ green suite and a working game.
   work in flight, so the habitual field crowded out the informative one. When you report
   state, ask what would have to appear in it to change your next decision — and check that
   your report is capable of showing it.
+  **The lapse lives in the register, not the subject.** All three of one reviewer's errors in a
+  single day — a carried dirty-path count, load read as process liveness, and a milestone
+  comparison that was backwards — were *closing* sentences, added after the verified body, in a
+  voice that felt like summary rather than assertion. The analysis was measured; the prose
+  around it was not. **Any sentence carrying a comparison, a count, or a claim about current
+  state gets a command before it gets written, wherever it sits in the message.**
 
 **On code**
 
