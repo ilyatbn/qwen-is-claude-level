@@ -1608,3 +1608,161 @@ a decision worth its own task.
 **Leave the test red until that lands.** A red `#[ignore]`d measurement with the reasoning
 written beside it is more honest than a green one nobody trusts, and `./scripts/check.sh` is
 unaffected either way.
+
+## T20.11 landed — the number is destroyed inside `move_y`, and that is the whole task
+
+### `docs/20` §9 refuses this feature and `docs/` is untouched
+
+`docs/20-player-movement.md:235`, under **§9 Future work**: *"Fall damage — deliberately
+absent in v1 so the jetpack stays forgiving."* An explicit, reasoned spec decision, and
+`docs/70`–`75` contain **no override** — all six grepped. It is built on the coordinator's
+direct ruling of 2026-09-04; **a builder does not amend `docs/`**, so the clause still stands
+in the repository contradicting the code, and an amendment is the durable home for that and
+for `constants.rs`'s new block. The other four §9 bullets are untouched and remain future
+work — including *"knockback interacting with the jetpack"*, which this task deliberately did
+**not** solve.
+
+The part of §9's reasoning that is honoured rather than overruled is written into a constant
+guard: `(MAX_FALL_SPEED - FALL_SAFE_SPEED) * FALL_DAMAGE_PER_SPEED < BASE_HEALTH`. **The
+deepest possible fall costs 63 of 100 and can never kill from full health.** A fall that is
+instantly lethal is the version of this feature §9 was right about.
+
+### Why a field on `Body` and not only a return value
+
+The task preferred a return value, and `integrate` and `apply_input` do return one. But
+`Body.landing_impact` exists as well, and it is the **single source** — the return is a
+read-back of the field, not a second copy, so there is nothing here that can disagree with
+itself.
+
+The reason for the field is the client. The landing sound needs the same number, and the only
+route from `integrate` to `GameScene` is `player_state()`, which reads fields off the body.
+Without it the impact would have to be plumbed through `Core.apply_input`'s return value and
+stored beside the body in TypeScript — a second place holding a fact the body already has,
+which is the shape §A24 keeps catching.
+
+`Body` is `Copy` and prediction compares whole bodies. That is safe: `landing_impact` is a
+pure function of the tick that just ran, computed identically on both sides from state they
+already agree on, so it can make an equality *more* sensitive and never divergent. It is
+**not** in the state hash, deliberately — it is recomputed from hashed state every tick and is
+zero on all but the landing one, and hashing it would change every recorded checkpoint, which
+is a `REPLAY_VERSION` question this task does not need to ask.
+
+### The detector, and the trap the task named
+
+`move_y` sets `vel.y = 0.0` **and then** `grounded`; `ground_snap` sets `grounded` and never
+touches `vel.y`. So the obvious rule — *"the body is grounded and still moving down, so it
+just hit something"* — is **false on every real landing and true on every downhill step**.
+Measured and locked in `the_obvious_detector_reads_exactly_the_wrong_one`.
+
+**One correction to the task file's statement of it.** The task describes the naive detector
+as *"grounded went true this tick, then read `vel.y`"*. That edge-triggered form does not fire
+on `ground_snap` at all: a downhill walker is grounded at the end of every tick, so the edge
+never occurs, and `ground_snap` is invisible to it. The form that reproduces **both** halves
+of the warning is the un-edged `grounded && vel.y > 0`. The inversion is real; the sentence
+naming it was one variant off, and the test now pins the version that is actually inverted.
+
+The impact is captured **before** `move_y` and stored only when `move_y` reported a block,
+`grounded` is now true and `was_grounded` was false — three conditions, all from state that
+already exists. `ground_snap` cannot produce one because it only runs when `was_grounded` was
+already true.
+
+### The exemption is `was_knocked`, reused unchanged
+
+Per the ruling, and nothing was added: no `fall_exempt_until`, no new field, no second timer.
+`knocked_until` was already stored, already hashed, already in the destructure — and T20.11 is
+its **first reader**, which `world/mod.rs:1942` records as a thirteenth built-and-wired-to-
+nothing mechanism. `constants.rs` carries the arithmetic as a guard:
+`2 * KNOCKBACK_MAX / GRAVITY` = 0.457 s against `KNOCKBACK_FIRE_GRACE` 0.6.
+
+**The test for it needed a 200 px drop, not a 400 px one, and the height is the ruling
+restated as arithmetic.** The grace is 0.6 s; a fall must both exceed `FALL_SAFE_SPEED` (0.34 s
+from rest) *and* land inside the grace for the exemption to be what is under test. 200 px
+takes 0.53 s and lands at a measured 747 px/s; 400 px takes 0.75 s and expires the grace on
+the way down — which is exactly *"a rocket-jump that also drops you off a ledge is not exempt
+from the ledge"*, and the first draft of the test would have proved nothing.
+
+### Credit: a fall defers to a live claim
+
+`DamageSource::Fall` is a new variant — **not** `SelfInflicted { weapon }`, because a fall has
+no weapon and three rules read that field. The four exhaustive matches were surfaced by the
+compiler, which is the one guard this half of the task gets free.
+
+Neither obvious arm in `apply_damage` is right. Writing yourself into `last_damaged_by`
+unconditionally overwrites whoever blasted you off the ledge, and `docs/21` §4 says knocking
+someone into a hazard must reward the knocker. Writing nothing leaves a solo fall with an
+empty `last_damaged_by`, and `resolve_deaths` narrates it as `Weather` — *"the map killed
+you"* for a player who walked off a cliff. So the rule is **defer to a live claim, take the
+blame when there is none**, and both halves are asserted. No fifth `DeathCause`: the kill feed
+and `docs/21` §6's scoring are untouched, and a fall death reads *"You killed yourself"*.
+
+### The landing sound, fixed in the same breath because it is the same number
+
+The task said not to book it separately, and it is the better half of the evidence.
+`GameScene` and `SandboxScene` both scaled the `land` cue by `Math.abs(body.vy) /
+MAX_FALL_SPEED + 0.25`, read on the frame the body grounded — where `vy` is **0 by
+construction**. **Measured, with the old expression restored: 0.250 and 0.250 for a 28 px hop
+and a 120 px fall.** The floor, always, since M6.
+
+Three things now stand behind it. `landingVolume` is **one** function in `feel-math.ts`
+instead of two copies of an expression, unit-tested. `SandboxScene`'s cue log records the
+**gain** as well as the name — a landing that is always the same loudness was as green as a
+correct one while the log held names only. And `audio.mjs` asserts a **prediction**, not
+`big > small`: a drop of `h` lands at `sqrt(2gh)`, so the expected gain is computable from
+`GRAVITY` and `MAX_FALL_SPEED`, and both readings are checked against it. Measured 0.561
+against a predicted 0.561, and 0.898 against 0.894. The heights are chosen so neither reading
+is at the clamp — `landingVolume` saturates at 675 px/s, which a 163 px drop already reaches,
+and a saturated reading agrees with every impact above it.
+
+### Two things found on the way, neither fixed here
+
+- **A player whose client stops sending input is not simulated at all.** `apply_inputs`
+  iterates `this_tick`, which holds only players with a queued input, and `integrate` is
+  called from inside `apply_input`. A body with no input hangs in the air. This is
+  pre-existing and every real client sends every tick, but it is why `fall_damage`'s helpers
+  queue a neutral input each tick — a test that just called `step` watched a body not fall and
+  would have concluded that falling costs nothing.
+- **`balance.rs` will move again.** Bots jetpack and fall constantly, so every encounter
+  number now includes fall damage. The measurement is already red under the coordinator's
+  ruling and is not re-run here.
+
+## T20.11 IN PROGRESS — coder lost to a session rate limit, tree verified sound
+
+**Written by the coordinator, not the builder.** The T20.11 coder was terminated by a session
+rate limit mid-task. Its last words were *"Now record cue gains so a check can assert on the
+effect, not the call."*
+
+**The tree compiles and typechecks — verified, not assumed:**
+
+    cargo build -p game-core   → EXIT=0
+    cargo build --workspace    → EXIT=0
+    npx tsc --noEmit           → EXIT=0
+
+**Uncommitted, 19 paths, +1174/−26.** Nine Rust files, six client files, `scripts/checks/audio.mjs`
+(+78), and the three task documents. `git stash` is empty.
+
+**What appears built** (read from the diff, not from the builder — verify before trusting):
+- `Body::landing_impact`, documented as *"the downward speed at the moment the body touched
+  down, or `0.0` on any tick that is not a landing"* — and `integrate` now **returns** it.
+  That is the task's prescribed shape: return the value rather than make the caller preserve
+  state it is about to destroy.
+- `DamageSource::Fall` exists at `explode.rs:53` — the variant T21.01's sweep predicted would
+  arrive and widen its boundary.
+- `FALL_SAFE_SPEED = 480.0` and `FALL_DAMAGE_PER_SPEED = 0.15` in `constants.rs`.
+- `scripts/checks/audio.mjs` rewritten, consistent with the landing-cue half the task said
+  falls out of this work for free.
+- A ~116-line `HANDOFF-M20.md` entry is **already written** by the builder, above this one.
+  **Read it first — it is the builder's own account and outranks this reconstruction.**
+
+**No `JOURNAL.md` entry for T20.11 yet**, and `TASKS.md` is not ticked. The one uncommitted
+journal line is the missing `assets ok` being restored on the tidy-up entry.
+
+**T20.19's two sites re-measured at this moment, and the innocent reading holds:** the TS
+`PlayerState` still has **no health field**. So T20.11 did **not** silently fix or half-fix
+the prediction divergence; the dirty client files are the landing cue. T20.19 stands as
+booked.
+
+**What is left:** run the Done-when and the full gate, tick or annotate `TASKS.md`, write the
+≤8-line journal entry with the gate's last two stages enumerated, and confirm the
+`docs/20` §9 discrepancy is journalled with `docs/` untouched. Also confirm the
+`KNOCKBACK_MAX / GRAVITY` const assert landed in the shape `tasks/M21/T21.06` now tells its
+reader to grep for.
