@@ -525,6 +525,15 @@ rather than storing a hashed field — is the cheap answer, and it is written in
 - **T21.08 is three hops deep** — `T21.08 ← T21.07 ← T21.05 ← T21.04` — and is the only task
   at that depth. Nothing else in M21 is more than two. If M21 is ever cut short, T21.08 is the
   piece that will not have a foundation.
+- **Wide fan-out, narrow chain.** Four of eight start immediately and only one path exceeds two
+  hops, so M21 parallelises well and no single blocked task can stall more than T21.08. That is
+  a healthier shape than M20's, where T20.04's identity work gated several others.
+
+**Two claims here, with different shelf lives — do not trust them equally.** The wave structure
+is a property of the eight `Depends on:` headers and cannot change unless a header does; re-derive
+it by walking them. **"Startable now" is a claim about tick state** and goes stale silently the
+moment a prerequisite is unticked or a new dependency is added. Re-check the six ticks before
+relying on it, not the waves.
 
 - [ ] [T21.01](M21/T21.01-vampire-fangs.md) — Vampire fangs **(v9)** — depends on T20.08
 - [ ] [T21.02](M21/T21.02-ironman-boots.md) — Ironman boots **(v9)** — depends on T20.08, T20.04, T20.12
