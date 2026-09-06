@@ -1864,3 +1864,93 @@ Two full Done-when runs went red in `game-server` before the third came green, e
     net smoke      25/25 joined
     assets         assets: ok
     all checks passed                                              DONEWHEN_EXIT=0
+
+---
+
+# 2026-09-06 — the re-validation sweep: every open follow-up checked at HEAD
+
+**Why this happened.** M19's bookings were written before M20 landed fifteen tasks on top,
+and M20's own follow-ups were written across a long session. Claims of that vintage rot. So
+before assigning any of them, every claim in every open task was re-checked at the code.
+**Seven of the nine had at least one defect.** None of the defects was in the reasoning; all
+were in citations, counts, or premises that the tree had moved out from under.
+
+## The one that changed from "tidy-up" to "live bug"
+
+**T19.21 — the join catch-up.** Booked as a live information leak; I downgraded it to
+*latent* on the strength of a comment in the catch-up block saying it is unreachable in
+production since §E4. **That downgrade was wrong and is withdrawn.** The comment is an
+intention. `session.rs::seat` reads `if room.has_started()` as a bare `AtomicBool` load taken
+**outside the room task**, then makes two `oneshot` round-trips (`room.join`,
+`room.join_info`) before the catch-up's `inspect`.
+
+The room task is a `select!` loop whose ticker arm drains commands with `try_recv` **and calls
+`install_world` in that same arm** — and between the drain and the install sits
+`spawn_blocking(blueprint).await`, the map generation, whose own comment says **"the generator
+is 0.3–1.1 s and this loop has 16.7 ms."** So the window is 18×–66× a tick, opened on every
+lobby start, and any join in flight walks through it. `Command::Join` does not re-guard
+either: it adds the player to `self.world` if one exists. A socket clearing the outer guard
+during generation is **seated into the running match**, not merely told what the crates hold.
+
+A sibling comment above `install_world` claims the ordering means *"no socket can be seated
+into a match that is already handing out its map"* — true for a guard-read landing after
+`install_world`, false for one already past it. **It must be corrected in the same change**,
+because it is the comment a builder meets while implementing the fix and it says the fix is
+unnecessary.
+
+## The instrument was the bug, five times in one day
+
+Every one returned a **clean, confident, wrong answer** with nothing announcing it was the
+wrong question:
+
+| the grep | returned | truth |
+|---|---|---|
+| `grep -c waitForTimeout bullets-visible.mjs` | 0 → "file rewritten, booking stale" | 1 bare `sleep(160)`; the check uses harness `sleep`/`standStill` |
+| `grep started.store room.rs` | nothing → "reviewer's ordering claim unverified" | rustfmt splits `self.started` from `.store(...)` |
+| `grep -c assert` in `thousand_seed_playability_sweep` | 0 → "it is a report" | it fails via `panic!`; it is the strongest guard in the set |
+| `grep -rn "#\[ignore" \| wc -l` | 14 | 13 — the 14th is a module doc comment containing the string as prose |
+| `grep -rn fixed_seed tests/` | **written as 0 without being run** | 6 |
+
+The last is the worst kind and now has its own rule: **never write a command's output you did
+not run.** Twice this session, both times inside text arguing for rigour.
+
+## Findings that outlived their corrections
+
+- **T20.17 — 13 ignored tests, no runner, no CI.** `--ignored` and `--include-ignored` both
+  return 0 across `scripts/` and `Makefile`; a human typing `./scripts/check.sh` is the entire
+  gate. **At least four are real regression guards, not reports.** The one nobody had counted,
+  `map_sweep.rs::thousand_seed_playability_sweep`, makes the broadest correctness claim in the
+  repository — 1000 seeds across all three map scales, `panic!` on failure, plus a guard on
+  its own metric — and has not run in nine milestones. **Classify by whether a test can fail,
+  never by assert density.**
+- **T20.18 + T20.20 are one fact from two sides.** The eight files sharing a `test_config` all
+  inherit `fixed_seed: None` (verified per body). The files that pin a seed —
+  `replay.rs` ×4, `replay_run.rs` ×2 — define no `test_config` at all; they pin inline, which
+  is why they never needed one. **The fixture is what made the seed invisible.** T20.18's
+  Done-when could not see this new requirement, so it gained a second command that reads each
+  fixture body and must be **red (0 for all eight) before the work starts**.
+- **T20.20's mechanism is verified; its instance is not.** `clamp_to_world` computes
+  `min_x = WALL_W + half_w = 16` and `max_x = mask.w - WALL_W - half_w = 2032` — the same
+  expression at opposite ends, with `max(0.0)`/`min(0.0)` mirrored. The T20.19 coder
+  independently hit the left-wall form twice while building unrelated fixtures. Even if that
+  observation falls, the mechanism stands: **any fixture walking a player on an unseeded map
+  is exposed.**
+- **T20.16 re-validated clean** — and it is the counterexample that proves the citation rule.
+  Every citation there names the symbol *as well as* the line; the lines drifted by one and it
+  did not matter. Elsewhere a bare `session.rs:1284-1286` was ~30 lines out and a bare
+  `src/room.rs` named the wrong file entirely.
+
+## State
+
+**T20.19 implemented, Done-when green, gate in flight at time of writing.** Route 1 —
+health carried through `setPlayerState` on the reconciliation path, not a side channel.
+Falsified at both live binding sites. **Unreviewed hazard for whoever picks this up:**
+`player_state` grew from an 8- to a 9-element array. TS decoding is centralised through
+`Core.playerState`, which names fields, so nothing destructures positionally — the exposure is
+length checks and any raw `inner.player_state` read.
+
+**`CLAUDE.md` grew 126 → 226 lines today across twelve commits**, and it opens by saying it is
+short on purpose. Every line was paid for by a real error this session, so none was removed
+unilaterally. **A compression pass is the coordinator's call** — a rules file that gets
+skimmed produces exactly the failure recorded this morning: rules cited by slogan rather than
+by invariant.
