@@ -141,6 +141,12 @@ green suite and a working game.
   literals standing in for a check of the real source; `ls | tail` standing in for a file
   count. When you write an assertion, ask what it would report if the thing it names had not
   happened at all.
+  **Its commonest form when checking someone's work: verifying against the artifact as it
+  stands rather than as they wrote it.** Three times in one day, by two people in both
+  directions — a survey "named all thirteen" in the message but nine in the file, and a
+  re-validation's own added citations counted as evidence that the original's citations were
+  maintained. `git show <commit>^:<path>` is the artifact under review; the working tree is
+  the artifact after everyone's corrections, including yours.
 - **A status line is a measurement, and it is only valid at the moment it was taken.** Three
   consecutive reviews here closed with "one dirty path" while the tree had five — a value read
   once and restated as though re-read, by the reviewer who had spent those same three reviews
