@@ -166,9 +166,12 @@ green suite and a working game.
 - **Put `set -e` on any multi-line Bash that authors files** — it catches the *other* ways a
   middle line dies quietly (an unterminated heredoc, a `mkdir` into a read-only path, a
   `git add` of a path that does not exist). It just does not catch the one above.
-- **Count a listing, do not read its tail.** The tell for the above was `ls` showing sixteen
-  files where seventeen were expected, and it was missed by looking at `tail -4`. `ls | wc -l`
-  is the assertion; `ls | tail` is a glance.
+- **Never read a filtered listing as a population.** `tail -4`, `head -12`, `| head -N` and a
+  terminal that truncated the output are all one failure. It has happened twice here: sixteen
+  files read as seventeen off `tail -4`, and eight `test_config` copies read as five off
+  `grep | head -12` — the second by the person who had just written this rule. **Any claim of
+  the form "there are N of these" gets `| wc -l`.** `ls | wc -l` is the assertion; `ls | tail`
+  is a glance.
 - **Interactive debugging is headed, not headless.** This box has WSLg; `make play`
   opens a real Chrome with CDP and `make probe` reads it without closing it. When a
   person is watching, they take the controls.
