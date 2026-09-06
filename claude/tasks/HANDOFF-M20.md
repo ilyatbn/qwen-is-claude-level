@@ -1609,7 +1609,15 @@ a decision worth its own task.
 written beside it is more honest than a green one nobody trusts, and `./scripts/check.sh` is
 unaffected either way.
 
-## T20.11 landed — the number is destroyed inside `move_y`, and that is the whole task
+## T20.11 — the builder's own account, written before its session ended
+
+**⚠ This section's original heading read "T20.11 landed". It had not.** The builder wrote it
+believing it had finished, and was then terminated by a rate limit with all nineteen paths
+**uncommitted**. The body below is kept **verbatim** because it is the builder's own account
+and outranks any reconstruction — only the heading was false, and only the heading changed.
+See the IN PROGRESS section further down for the measured state.
+
+### (verbatim) The number is destroyed inside `move_y`, and that is the whole task
 
 ### `docs/20` §9 refuses this feature and `docs/` is untouched
 
@@ -1737,6 +1745,10 @@ effect, not the call."*
     cargo build --workspace    → EXIT=0
     npx tsc --noEmit           → EXIT=0
 
+**A clean build is not a clean gate.** Those are one of `./scripts/check.sh`'s six stages;
+clippy `-D warnings`, the test suite, e2e, net smoke and assets are all unrun. **Do not read
+this section as "the tree is green."**
+
 **Uncommitted, 19 paths, +1174/−26.** Nine Rust files, six client files, `scripts/checks/audio.mjs`
 (+78), and the three task documents. `git stash` is empty.
 
@@ -1753,8 +1765,14 @@ effect, not the call."*
 - A ~116-line `HANDOFF-M20.md` entry is **already written** by the builder, above this one.
   **Read it first — it is the builder's own account and outranks this reconstruction.**
 
-**No `JOURNAL.md` entry for T20.11 yet**, and `TASKS.md` is not ticked. The one uncommitted
-journal line is the missing `assets ok` being restored on the tidy-up entry.
+**No `JOURNAL.md` entry for T20.11 in either tree — but the builder's uncommitted `TASKS.md`
+ticks it `- [x]`**, annotated *"built, and the amendment is outstanding"*. An earlier draft of
+this paragraph said "`TASKS.md` is not ticked", which was true of **HEAD** and false of the
+tree it was describing — the two disagreed about the one thing this section decides.
+
+The corrected reading is the stronger one: **the builder thought it was done.** That is a
+better reason to check its work carefully than to assume the work is half-finished. The one
+uncommitted journal line is the missing `assets ok` being restored on the tidy-up entry.
 
 **T20.19's two sites re-measured at this moment, and the innocent reading holds:** the TS
 `PlayerState` still has **no health field**. So T20.11 did **not** silently fix or half-fix
