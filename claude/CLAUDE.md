@@ -65,6 +65,13 @@ green suite and a working game.
 
 - **Ask what a passing assertion rules out.** If the property would hold with your
   code deleted, you are testing the framework, not your code.
+- **Cite a rule by its invariant, not by its title — a rule cited by its wording is a line
+  number by another name.** These rules get sharpened; three were reworded this week, and each
+  rewording orphans whatever cited the old phrasing. A task file once pointed at
+  "count-a-listing-do-not-read-its-tail" after that rule had been renamed, so a reader
+  following it found nothing and would have concluded it was retired. **Before rewording a
+  rule, `grep -rn "<old phrase>" tasks/ CLAUDE.md`** — the same check the `TASKS.md` link guard
+  performs for links.
 - **Cite the symbol, not the line.** `world/mod.rs::apply_damage_log`, not
   `world/mod.rs:1924`. A line number is a claim with nothing re-validating it, and it rots
   fast: `world/mod.rs` gained ~700 lines in one task and `player/state.rs` ~380 in another,
