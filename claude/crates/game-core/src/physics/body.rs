@@ -26,6 +26,29 @@ pub struct Body {
     /// through terrain a player cannot walk through is a confusing bug, and two
     /// collision paths guarantee it eventually.
     pub size: Vec2,
+    /// **How fast this body was falling at the moment it touched down**, px/s,
+    /// or 0 on every tick that is not a landing (T20.11).
+    ///
+    /// It exists because the number is otherwise **destroyed inside `move_y`**:
+    /// `resolve.rs` sets `vel.y = 0.0` and *then* `grounded = true`, so by the
+    /// time `integrate` returns, the impact speed a caller wants is gone. That is
+    /// `CLAUDE.md`'s *"return what the caller needs — an API that makes the caller
+    /// preserve state it is about to destroy will be called wrong"*, and the
+    /// caller was in fact calling it wrong: `GameScene` scaled its landing sound
+    /// by `Math.abs(body.vy)` read **after** the zeroing, so the "how hard did I
+    /// land" volume has been a constant since M6.
+    ///
+    /// **One writer, one field.** `integrate` sets it, every tick, for every body
+    /// that goes through the resolver; `integrate` and `apply_input` also *return*
+    /// it, but that return is a read-back of this field and not a second copy —
+    /// there is nothing here that can disagree with itself.
+    ///
+    /// **Not in the state hash, deliberately.** It is a pure function of this
+    /// tick's collision against hashed state, recomputed from scratch every tick
+    /// and zero on all but the landing one, so it cannot carry a divergence the
+    /// hash would otherwise miss — and hashing it would change every recorded
+    /// checkpoint, which is a `REPLAY_VERSION` question this does not need to ask.
+    pub landing_impact: f32,
 }
 
 /// Coyote window in ticks: 0.10 s × 60 Hz = 6.
@@ -39,6 +62,7 @@ impl Body {
             grounded: false,
             airborne_ticks: 0,
             size: Vec2::new(PLAYER_W, PLAYER_H),
+            landing_impact: 0.0,
         }
     }
 

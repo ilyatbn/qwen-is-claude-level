@@ -5452,4 +5452,15 @@ the caller above" when nothing read it — a dead O(players) scan per bot tick, 
 now. The parity scanner sees ~115 aliased reads, not 11, and `flashlight_pressed` is kept as
 a documented reserved bit. **`balance.rs` settled by A/B at `9bcc655`**: shipping 7/8 both
 sides, the Large-4 control 6/8 → 7/8 so its guard fires — 1/8 at T11.16, so nine ignored
-milestones ate the margin and T20.10 spent the last seed. EXIT=0, 47/47, 882/882, 25/25.
+milestones ate the margin, T20.10 spent the last seed. EXIT=0, 47/47, 882/882, 25/25, assets ok.
+
+## T20.11 — the impact is destroyed inside `move_y`, and `docs/20` §9 still refuses it
+
+**`docs/20` §9 still refuses fall damage** (`:235`); built on the 2026-09-04 ruling, no
+override in `docs/70`–`75`, **`docs/` untouched and the amendment outstanding**. `integrate`
+**returns** the impact, captured before `move_y` zeroes `vel.y`; the naive `grounded &&
+vel.y > 0` is false on every landing and true on every downhill step, and both halves are
+pinned. Exemption is `was_knocked` reused unchanged — 0.457 s arc < 0.6 s grace, a `const _`
+assert; credit defers to a live claim. **The landing sound has been the 0.25 floor since
+M6** — falsified live at 0.250 against 0.561/0.894, and the check reads that floor from the
+page. Two `game-server` reds were D-58. EXIT=0, 47/47, 886/886, 25/25, assets ok.

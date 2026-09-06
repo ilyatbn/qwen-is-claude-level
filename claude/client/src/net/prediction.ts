@@ -24,7 +24,12 @@ export interface PredictorStats {
 /** What a snapshot tells us about ourselves. */
 export interface LocalSnapshotView {
   lastInputSeq: number
-  state: PlayerState
+  /**
+   * **Minus `landingImpact`**, which no snapshot carries (T20.11): it is
+   * measured locally by `integrate` on the tick the body touches down, and a
+   * caller asked for one here would have to invent it.
+   */
+  state: Omit<PlayerState, 'landingImpact'>
 }
 
 /**

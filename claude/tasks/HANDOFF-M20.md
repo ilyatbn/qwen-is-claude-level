@@ -1784,3 +1784,83 @@ booked.
 `docs/20` §9 discrepancy is journalled with `docs/` untouched. Also confirm the
 `KNOCKBACK_MAX / GRAVITY` const assert landed in the shape `tasks/M21/T21.06` now tells its
 reader to grep for.
+
+## T20.11 finished — the builder's account holds; here is only what the finisher added
+
+**Read the two sections above first.** The ~116-line builder account is accurate against the
+diff as re-read: `Body::landing_impact`, `integrate` returning it, `DamageSource::Fall`,
+`FALL_SAFE_SPEED`/`FALL_DAMAGE_PER_SPEED`, the `was_knocked` reuse and the rewritten
+`checks/audio.mjs` were all on disk and all do what it says. The predecessor's last words —
+*"now record cue gains so a check can assert on the effect, not the call"* — were **already
+carried out**: `SandboxScene.cueLog` is `{name, gain}` and `audio()` exports `cueGains`.
+
+### The one code change this shift made: the check's floor was a hardcoded `0.25`
+
+`checks/audio.mjs`'s `predicted()` spelled the floor out as `0.25` — a tunable hardcoded in a
+fixture, which is the one rule the rest of that check was written to honour (it derives its
+fall time from `GRAVITY` precisely so it does not expire). `SandboxScene`'s `debug().audio()`
+now exports `landingFloor: LANDING_VOLUME_FLOOR` and the check reads it, refusing to run if it
+is absent. One literal removed; nothing else in the check moved.
+
+### Falsified at the live binding sites, not at a default
+
+- **The landing volume.** `SandboxScene`'s live cue call changed to
+  `landingVolume(0, C().MAX_FALL_SPEED)` — the exact old bug, since `vy` was 0 there. The
+  check went red with *"the hop from 28 px played at 0.250 against a predicted 0.561"*, and
+  both readings collapsed onto the floor, which is the shape it exists to name. Restored.
+- **The credit rule.** `PlayerState::apply_damage`'s `Fall` arm made unconditional
+  (`self.last_damaged_by = Some((self.id, now))`) — the obvious wrong arm.
+  `being_blasted_off_a_ledge_still_credits_the_blast` failed with
+  `left: Some(SelfInflicted), right: Some(Player(1))`. Restored; `state.rs` back to +27/−1.
+
+### ⚠ Found and deliberately **not** changed: a hitching frame drops the number
+
+Both scenes run `while (this.acc >= step)` and call `movementCues` **once per frame with the
+last tick's body**, while `integrate` zeroes `landing_impact` at the top of every tick. A
+frame that runs two ticks with the landing on the first therefore reports 0, and the cue
+falls back to the floor — the bug this task fixed, returning under load.
+
+**Measured before deciding, and the measurement says leave it alone: 25 consecutive 120 px
+drops in the sandbox all read 0.898 against a predicted 0.894, none at the floor**, plus four
+whole-check runs at 0.561/0.898. So the hazard is structural but does not fire here, and
+*"measure before changing"* points at recording it rather than restructuring two update
+loops inside a task that is already done. **Worth booking**: latch the max `landingImpact`
+across the ticks of a frame, in `GameScene.update` and `SandboxScene.update`.
+
+### ⚠ D-58 gained a fifth member, and this one has a mechanism
+
+Two full Done-when runs went red in `game-server` before the third came green, each on a
+**different** test — exactly D-58's shape, and neither touching anything T20.11 changed.
+
+- `replay_run.rs::sigterm_leaves_a_verifiable_file_and_sigkill_does_not` — *"never seated:
+  Timeout"*, already named in D-58's table. **Re-run alone: 15/15 pass.**
+- `room.rs::commands_sent_between_ticks_are_all_applied` — *"held right moved the player from
+  2032 to 2032"*. **Re-run alone 20 times: 20 passes.** This one is **not** load: `room()`
+  builds `test_config()` with `fixed_seed: None`, so the map and the spawn are random, and
+  **2032.0 is exactly `MAP_SMALL_W − WALL_W − PLAYER_W/2`** — the player spawned against the
+  world's right wall, where `clamp_to_world` also clamps `vel.x` to ≤ 0, so holding RIGHT is a
+  no-op by construction. A fixture that assumes a direction has room. `checks/audio.mjs`
+  already learned this exact lesson and answers it with `roomFor(dir)`; the Rust fixture has
+  not. **Worth booking** — and it is a fixture defect, not a flake to be waited out.
+
+### Confirmed on request, so the next reader need not re-derive it
+
+- `docs/20-player-movement.md:235` still reads *"Fall damage — deliberately absent in v1 so
+  the jetpack stays forgiving"*, and `grep` over `docs/70`–`75` finds no override. **`docs/`
+  is untouched in this commit** — verify with `git show --stat`. The amendment is outstanding.
+- `tasks/M21/T21.06`'s premise holds exactly as written:
+  `git show HEAD:…/constants.rs | grep -c "KNOCKBACK_MAX / GRAVITY"` → **0**, the same grep
+  against this tree → **2**, and the assert is
+  `const _: () = assert!(2.0 * KNOCKBACK_MAX / GRAVITY < KNOCKBACK_FIRE_GRACE);`.
+- `balance.rs` is **not** red in the gate: its five measurements are `#[ignore]`d
+  (*"measurement: minutes in release"*), so the suite reports `2 passed; 5 ignored`. The
+  knowingly-red control stands as the RULING above leaves it, untouched and untuned.
+
+### The gate, stage by stage, including the two that `set -e` has twice let skip
+
+    cargo fmt --check · clippy -D warnings · cargo test --workspace · client typecheck
+    client tests   56 files, 886 passed
+    e2e suite      47/47 passed
+    net smoke      25/25 joined
+    assets         assets: ok
+    all checks passed                                              DONEWHEN_EXIT=0

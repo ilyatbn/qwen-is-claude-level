@@ -17,6 +17,7 @@ import { DeathOverlay } from '../ui/deathOverlay'
 import { TombstoneLayer } from '../render/tombstones'
 import { AnimalLayer } from '../render/animals'
 import { BirdLayer } from '../render/birds'
+import { landingVolume } from '../render/feel-math'
 import { padUnderfoot, type PadView } from '../render/pads'
 import { atlasArt } from '../render/objects'
 import type { MapObject } from '../net/codec'
@@ -1377,7 +1378,10 @@ export class GameScene extends Phaser.Scene {
    * there is no `footstep` message and there should not be one — it is the local
    * player's own body and the client already knows it exactly.
    */
-  private movementCues(dt: number, body: { vx: number; vy: number; grounded: boolean; moveState: number }): void {
+  private movementCues(
+    dt: number,
+    body: { vx: number; grounded: boolean; moveState: number; landingImpact: number },
+  ): void {
     const jetting = body.moveState === 2
     if (jetting !== this.wasJetting) {
       this.audio.hold('jetpack', jetting, 0.35)
@@ -1387,7 +1391,12 @@ export class GameScene extends Phaser.Scene {
     if (body.grounded && !this.wasGrounded) {
       // Land, scaled by how hard: a step off a ledge and a fall from a jetpack
       // burn should not sound the same.
-      const force = Math.min(1, Math.abs(body.vy) / C().MAX_FALL_SPEED + 0.25)
+      // **`landingImpact`, not `vy`** (T20.11). `move_y` zeroes the velocity
+      // *before* it marks the body grounded, so on this exact frame `vy` is 0 —
+      // this expression has evaluated to the constant 0.25 floor since M6, and
+      // the comment above it described something that could not happen. The
+      // impact speed is measured inside `integrate`, where it still exists.
+      const force = landingVolume(body.landingImpact, C().MAX_FALL_SPEED)
       this.audio.play('land', { volume: force })
       this.stepAcc = 0
     }

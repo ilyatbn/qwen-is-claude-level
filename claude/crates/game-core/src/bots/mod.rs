@@ -620,7 +620,12 @@ impl Bot {
         for p in world.burn.patches() {
             let lit_by = match p.source {
                 DamageSource::Player { id, .. } => Some(id),
-                DamageSource::SelfInflicted { .. } | DamageSource::Weather(_) => None,
+                // A fall lights no fires, so this arm is unreachable — but it is
+                // spelled out rather than defaulted, because a `_ =>` here is
+                // what would swallow the next source that *can* light one.
+                DamageSource::SelfInflicted { .. }
+                | DamageSource::Weather(_)
+                | DamageSource::Fall => None,
             };
             consider(p.pos, p.radius, lit_by);
         }

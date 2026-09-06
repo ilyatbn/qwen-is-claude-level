@@ -176,14 +176,50 @@ pub fn clamp_to_world(map: &Map, body: &mut Body) {
 /// 5. ground snap;
 /// 6. world clamp;
 /// 7. airborne bookkeeping.
-pub fn integrate(map: &Map, body: &mut Body, gravity_scale: f32, dt: f32) {
+///
+/// **Returns the landing impact** (T20.11): the downward speed at the moment the
+/// body touched down, or `0.0` on any tick that is not a landing. Also written to
+/// `body.landing_impact`; the return is a read-back of that field, for a caller
+/// that has the return value in hand and should not have to know where it lives.
+///
+/// ## The naive detector is exactly inverted, and this is why
+///
+/// A caller cannot compute this itself from what `integrate` leaves behind,
+/// because the two ways a body becomes grounded have **opposite** velocity
+/// semantics:
+///
+///  - `move_y` — a real landing — sets `vel.y = 0.0` **and then** `grounded`, so
+///    the tick ends at `vel.y == 0`;
+///  - `ground_snap` — walking downhill, which must never hurt — sets `grounded`
+///    and **does not touch `vel.y`**, so the tick ends at one tick of gravity,
+///    small but **nonzero**.
+///
+/// So "grounded went true this tick, read `vel.y`" reads **zero on every real
+/// landing and nonzero on every downhill step**. It does not merely leak into
+/// `ground_snap`; it reads *only* `ground_snap`. The impact has to be captured
+/// before `move_y` runs, which is what happens below, and `ground_snap` cannot
+/// produce one because it only fires when `was_grounded` was already true.
+pub fn integrate(map: &Map, body: &mut Body, gravity_scale: f32, dt: f32) -> f32 {
     let was_grounded = body.grounded;
     body.grounded = false;
+    body.landing_impact = 0.0;
 
     apply_gravity(body, gravity_scale, dt);
 
     move_x(map, body, body.vel.x * dt);
-    move_y(map, body, body.vel.y * dt);
+
+    // Captured **before** `move_y`, which is the whole trick: this is the speed
+    // the body is actually travelling at when it meets the ground, and `move_y`
+    // is about to overwrite it with zero.
+    let falling_at = body.vel.y;
+    let blocked = move_y(map, body, body.vel.y * dt);
+    // `move_y` sets `grounded` only on a *downward* block, so `body.grounded`
+    // here distinguishes a floor from a ceiling without a second flag; and
+    // `!was_grounded` is what makes this a landing rather than a body resting on
+    // the floor, which is blocked downward on every tick of its life.
+    if blocked && body.grounded && !was_grounded {
+        body.landing_impact = falling_at.max(0.0);
+    }
 
     ground_snap(map, body, was_grounded);
     clamp_to_world(map, body);
@@ -193,12 +229,14 @@ pub fn integrate(map: &Map, body: &mut Body, gravity_scale: f32, dt: f32) {
     } else {
         body.airborne_ticks = body.airborne_ticks.saturating_add(1);
     }
+    body.landing_impact
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{PLAYER_H, PLAYER_W, SIM_DT, WALK_SPEED};
+    use crate::constants::{GRAVITY, PLAYER_H, PLAYER_W, SIM_DT, STEP_DOWN, WALK_SPEED};
+    use crate::map::Mask;
     use crate::physics::collide::tests::{floor_at, test_map};
 
     const W: u32 = 512;
@@ -208,6 +246,181 @@ mod tests {
         let mut b = Body::new(Vec2::new(x, floor_y as f32 - PLAYER_H / 2.0));
         b.grounded = true;
         b
+    }
+
+    // ---- landing impact (T20.11) ----------------------------------------
+    //
+    // `integrate` is the only place that can measure this, because `move_y`
+    // destroys `vel.y` on the way past. These tests pin the number and, more
+    // importantly, pin the **two paths apart**: a real landing and a downhill
+    // snap both end the tick grounded, and the obvious way to tell them apart
+    // reads exactly the wrong one.
+
+    /// A staircase descending to the right: `drop_per` px every `run` columns.
+    fn slope_down(top: i32, run: i32, drop_per: i32) -> impl FnOnce(&mut Mask) {
+        move |m: &mut Mask| {
+            let cols = m.w as i32;
+            for x in 0..cols {
+                let y = top + (x / run) * drop_per;
+                for fy in y.min(m.h as i32 - 1)..m.h as i32 {
+                    m.set(x, fy);
+                }
+            }
+        }
+    }
+
+    /// Drop a body from `h` px up and return the impact `integrate` reported.
+    fn drop_from(h: f32) -> (f32, u32) {
+        let map = test_map(W, H, floor_at(400));
+        let mut b = Body::new(Vec2::new(256.0, 400.0 - PLAYER_H / 2.0 - h));
+        for t in 0..600 {
+            let got = integrate(&map, &mut b, 1.0, SIM_DT);
+            if got > 0.0 {
+                return (got, t);
+            }
+        }
+        (0.0, u32::MAX)
+    }
+
+    #[test]
+    fn a_landing_reports_the_speed_it_was_falling_at() {
+        // Against the closed form, not against a recorded number: `v = sqrt(2gh)`
+        // with one tick of discretisation slack either side. A hardcoded 537
+        // would go stale the day `GRAVITY` moves.
+        for h in [64.0f32, 128.0, 256.0] {
+            let want = (2.0 * GRAVITY * h).sqrt();
+            let (got, _) = drop_from(h);
+            let slack = GRAVITY * SIM_DT;
+            assert!(
+                (got - want).abs() <= slack,
+                "a {h} px drop reported {got:.1} px/s against {want:.1} +/- {slack:.1}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_impact_is_reported_on_exactly_one_tick_and_is_zero_on_the_others() {
+        // The control the test above needs: a number that is correct on the
+        // landing tick and *also* nonzero while falling would make every
+        // airborne tick a landing.
+        let map = test_map(W, H, floor_at(400));
+        let mut b = Body::new(Vec2::new(256.0, 400.0 - PLAYER_H / 2.0 - 200.0));
+        let mut reports = 0;
+        let mut airborne_reports = 0;
+        for _ in 0..600 {
+            let before = b.grounded;
+            let got = integrate(&map, &mut b, 1.0, SIM_DT);
+            if got > 0.0 {
+                reports += 1;
+                if before {
+                    airborne_reports += 1;
+                }
+            }
+            assert_eq!(got, b.landing_impact, "the return disagreed with the field");
+        }
+        assert_eq!(reports, 1, "one fall reported {reports} landings");
+        assert_eq!(airborne_reports, 0);
+        assert_eq!(
+            b.landing_impact, 0.0,
+            "the last tick still claims a landing"
+        );
+    }
+
+    #[test]
+    fn a_body_resting_on_the_floor_never_reports_a_landing() {
+        // It is blocked downward on **every** tick of its life, so a detector
+        // that only looked at `move_y` returning true would charge it rent.
+        let map = test_map(W, H, floor_at(400));
+        let mut b = body_resting_on(400, 256.0);
+        for _ in 0..120 {
+            assert_eq!(integrate(&map, &mut b, 1.0, SIM_DT), 0.0);
+        }
+    }
+
+    #[test]
+    fn walking_downhill_reports_no_landing_although_it_is_descending() {
+        // **The `ground_snap` path**, which must never hurt. The control is the
+        // descent itself: without it this passes for a body that walked into a
+        // wall and never went anywhere, which is what a first draft of this test
+        // actually did on a generated map.
+        let map = test_map(W, H, slope_down(300, 8, STEP_DOWN - 2));
+        let mut b = body_resting_on(300, 16.0);
+        let y0 = b.pos.y;
+        let x0 = b.pos.x;
+        let mut reports = 0;
+        for _ in 0..240 {
+            b.vel.x = WALK_SPEED;
+            if integrate(&map, &mut b, 1.0, SIM_DT) > 0.0 {
+                reports += 1;
+            }
+        }
+        assert!(
+            b.pos.x - x0 > PLAYER_W * 4.0,
+            "the body only travelled {:.0} px, so it never walked downhill",
+            b.pos.x - x0
+        );
+        assert!(
+            b.pos.y - y0 > PLAYER_H,
+            "the body only descended {:.0} px",
+            b.pos.y - y0
+        );
+        assert_eq!(reports, 0, "walking downhill reported {reports} landing(s)");
+    }
+
+    /// **The naive detector is inverted, and this is the proof.**
+    ///
+    /// The obvious rule — *"the body is on the ground and still moving down, so it
+    /// just hit something"* — is `grounded && vel.y > 0` at the end of a tick.
+    /// Measured, it is exactly backwards:
+    ///
+    ///  - on a **real landing** `move_y` sets `vel.y = 0.0` and *then* `grounded`,
+    ///    so the tick ends at `vel.y == 0` and the rule is **false**;
+    ///  - while **walking downhill** `ground_snap` sets `grounded` and never
+    ///    touches `vel.y`, so the tick ends at one tick of gravity and the rule is
+    ///    **true**.
+    ///
+    /// Zero damage on every fall, damage on every downhill step. Locked here so
+    /// nobody re-derives it the wrong way round — and note that the edge-triggered
+    /// variant (*"grounded went true this tick"*) is no better in the other
+    /// direction: a downhill walker is grounded at the end of every tick, so the
+    /// edge never fires at all and `ground_snap` is invisible to it.
+    #[test]
+    fn the_obvious_detector_reads_exactly_the_wrong_one() {
+        let flat = test_map(W, H, floor_at(400));
+        let mut falling = Body::new(Vec2::new(256.0, 400.0 - PLAYER_H / 2.0 - 200.0));
+        let mut landing_says = None;
+        for _ in 0..600 {
+            let real = integrate(&flat, &mut falling, 1.0, SIM_DT) > 0.0;
+            if real {
+                landing_says = Some(falling.grounded && falling.vel.y > 0.0);
+                break;
+            }
+        }
+        assert_eq!(
+            landing_says,
+            Some(false),
+            "the naive rule fired on a real landing — then it is not inverted after all"
+        );
+
+        let hill = test_map(W, H, slope_down(300, 8, STEP_DOWN - 2));
+        let mut walking = body_resting_on(300, 16.0);
+        let mut naive_fired = 0;
+        let mut real_landings = 0;
+        for _ in 0..240 {
+            walking.vel.x = WALK_SPEED;
+            if integrate(&hill, &mut walking, 1.0, SIM_DT) > 0.0 {
+                real_landings += 1;
+            }
+            if walking.grounded && walking.vel.y > 0.0 {
+                naive_fired += 1;
+            }
+        }
+        assert_eq!(real_landings, 0, "walking downhill is not a landing");
+        assert!(
+            naive_fired > 0,
+            "the naive rule never fired walking downhill — then this test is not \
+             demonstrating the inversion and the slope is wrong"
+        );
     }
 
     // ---- substeps --------------------------------------------------------

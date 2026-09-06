@@ -37,6 +37,20 @@ pub enum DamageSource {
         weapon: WeaponId,
     },
     Weather(EffectKind),
+    /// Hitting the ground too hard (T20.11).
+    ///
+    /// **No weapon, which is why it is a variant and not a `SelfInflicted`.**
+    /// `SelfInflicted { weapon }` is read by three rules — `SELF_DAMAGE_MULT`, the
+    /// energy-pierce test, and the flame attribution — all of which ask what the
+    /// weapon was. A fall has no answer, and inventing one would make each of
+    /// those three rules quietly wrong about a fall.
+    ///
+    /// It is **not** a fifth `DeathCause`: `docs/21` §6's kill feed and scoring
+    /// stay as they are, and who gets the credit is decided by the rule
+    /// `PlayerState::apply_damage` states — the fall names you as your own
+    /// attacker only when nobody else has a claim inside `ASSIST_WINDOW`, so
+    /// blasting someone off a cliff still credits the blast (`docs/21` §4).
+    Fall,
 }
 
 /// Who a blast, ray, swing or cone hit.

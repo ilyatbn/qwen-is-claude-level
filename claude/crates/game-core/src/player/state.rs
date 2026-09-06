@@ -358,7 +358,10 @@ impl PlayerState {
             DamageSource::Player { weapon, .. } | DamageSource::SelfInflicted { weapon } => {
                 defs::def(weapon).is_some_and(|w| w.is_energy())
             }
-            DamageSource::Weather(_) => false,
+            // Neither has a weapon, so neither can pierce a shield. A fall is
+            // stopped by a generator exactly as a rocket is, which is the
+            // answer that needs no new rule.
+            DamageSource::Weather(_) | DamageSource::Fall => false,
         };
         // §B5 and T20.08: a held generator spends energy **per hit** and reduces
         // what gets through. This is the only place the shield costs anything.
@@ -426,6 +429,29 @@ impl PlayerState {
             DamageSource::Player { id, .. } => self.last_damaged_by = Some((id, now)),
             DamageSource::SelfInflicted { .. } => self.last_damaged_by = Some((self.id, now)),
             DamageSource::Weather(_) => {}
+            // **A fall names you only when nobody else has a claim** (T20.11).
+            //
+            // Neither of the two obvious arms is right on its own. Writing
+            // yourself in unconditionally would overwrite the player who blasted
+            // you off the ledge, and `docs/21` §4 says in as many words that
+            // knocking someone into a hazard must reward the knocker — the ledge
+            // is the hazard here and the ruling is deliberate that a rocket-jump
+            // does **not** exempt you from it. Writing nothing would leave a solo
+            // fall with an empty `last_damaged_by`, and `resolve_deaths` would
+            // narrate it as `Weather`: "the map killed you" for a player who
+            // walked off a cliff under their own power.
+            //
+            // So: defer to a live claim, and take the blame when there is none.
+            // One rule, derived from the field that already exists, and it needs
+            // no fifth `DeathCause` and no second timer.
+            DamageSource::Fall => {
+                let claimed = self
+                    .last_damaged_by
+                    .is_some_and(|(_, when)| now - when <= ASSIST_WINDOW);
+                if !claimed {
+                    self.last_damaged_by = Some((self.id, now));
+                }
+            }
         }
         true
     }

@@ -6,7 +6,9 @@ import {
   DamageNumbers,
   HIT_MARKER_LIFETIME,
   HitMarkers,
+  LANDING_VOLUME_FLOOR,
   VIGNETTE_MAX_ALPHA,
+  landingVolume,
   Vignette,
 } from './feel-math'
 
@@ -88,5 +90,38 @@ describe('phase banner', () => {
     expect(b.live()!.alpha).toBe(1)
     b.update(BANNER_LIFETIME * 0.9)
     expect(b.live()).toBeNull()
+  })
+})
+
+describe('landingVolume (T20.11)', () => {
+  // `MAX_FALL_SPEED`, passed in rather than imported, because this file is
+  // Phaser-free and `C()` needs the wasm. The scenes pass `C().MAX_FALL_SPEED`.
+  const MAX = 900
+
+  it('a landing at rest is the floor, and only the floor', () => {
+    expect(landingVolume(0, MAX)).toBe(LANDING_VOLUME_FLOOR)
+  })
+
+  it('scales with the impact speed', () => {
+    // The property the old code could not have: two different falls, two
+    // different volumes. `Math.abs(vy)` on the grounding frame was 0 for both.
+    const soft = landingVolume(MAX * 0.2, MAX)
+    const hard = landingVolume(MAX * 0.5, MAX)
+    expect(hard).toBeGreaterThan(soft)
+    expect(soft).toBeCloseTo(0.2 + LANDING_VOLUME_FLOOR, 6)
+    expect(hard).toBeCloseTo(0.5 + LANDING_VOLUME_FLOOR, 6)
+  })
+
+  it('clamps at 1 rather than blowing the mixer past unity', () => {
+    expect(landingVolume(MAX, MAX)).toBe(1)
+    expect(landingVolume(MAX * 10, MAX)).toBe(1)
+  })
+
+  it('survives the degenerate inputs a caller can actually produce', () => {
+    // A negative impact cannot happen — `integrate` clamps at 0 — but a volume
+    // below the floor would be an inaudible landing, which is worse than a
+    // loud one, so the floor holds regardless.
+    expect(landingVolume(-50, MAX)).toBe(LANDING_VOLUME_FLOOR)
+    expect(landingVolume(100, 0)).toBe(LANDING_VOLUME_FLOOR)
   })
 })

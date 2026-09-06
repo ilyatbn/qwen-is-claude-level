@@ -153,3 +153,30 @@ export class BannerQueue {
     return { ...this.current, alpha }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Landing (T20.11)
+// ---------------------------------------------------------------------------
+
+/** Quietest a landing can be, so a step off a kerb is still audible. */
+export const LANDING_VOLUME_FLOOR = 0.25
+
+/**
+ * How loud a landing is, from the speed the body was falling at.
+ *
+ * **One function because there were two copies of the expression**, in
+ * `GameScene` and `SandboxScene`, and both were wrong in the same way: they read
+ * `Math.abs(vy)` on the frame the body grounded, and `move_y` zeroes `vel.y`
+ * *before* it marks the body grounded — so both evaluated to the floor, always,
+ * from M6 until T20.11. Two copies of a rule is how they came to be wrong
+ * together and would have been fixed apart.
+ *
+ * `impact` is `PlayerState.landingImpact`, measured inside `integrate` where the
+ * number still exists; `maxFall` is `MAX_FALL_SPEED`, from `C()`, never a
+ * literal here.
+ */
+export function landingVolume(impact: number, maxFall: number): number {
+  if (!(maxFall > 0)) return LANDING_VOLUME_FLOOR
+  const hard = Math.max(0, impact) / maxFall
+  return Math.min(1, hard + LANDING_VOLUME_FLOOR)
+}

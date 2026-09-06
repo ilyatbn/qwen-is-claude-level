@@ -288,7 +288,16 @@ impl GameCore {
         p.jet.fuel = fuel;
     }
 
-    /// `[x, y, vx, vy, grounded, fuel, move_state]`, or empty for an unknown id.
+    /// `[x, y, vx, vy, grounded, fuel, move_state, landing_impact]`, or empty for
+    /// an unknown id.
+    ///
+    /// **`landing_impact` is the eighth element and it exists because `vy` cannot
+    /// do its job** (T20.11). `move_y` zeroes `vel.y` before it grounds the body,
+    /// so on the one frame a client cares about — the frame it landed — `vy` is
+    /// exactly 0. `GameScene` and `SandboxScene` both scaled their landing sound
+    /// by `Math.abs(vy) / MAX_FALL_SPEED`, which has therefore been the constant
+    /// 0.25 floor since M6: a step off a kerb and a fall from a jetpack burn have
+    /// sounded identical for fifteen milestones.
     ///
     /// A flat `f32` array rather than a struct: crossing the boundary with a struct
     /// costs a serialisation step per call, and this is read every frame.
@@ -309,6 +318,7 @@ impl GameCore {
             if p.body.grounded { 1.0 } else { 0.0 },
             p.jet.fuel,
             state,
+            p.body.landing_impact,
         ])
     }
 

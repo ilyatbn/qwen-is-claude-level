@@ -129,6 +129,15 @@ export interface PlayerState {
   fuel: number
   /** 0 grounded, 1 airborne, 2 jetpack */
   moveState: number
+  /**
+   * How fast this body was falling at the moment it touched down, px/s, and 0
+   * on every frame that is not a landing (T20.11).
+   *
+   * **Not derivable from `vy`.** `move_y` zeroes the velocity *before* it marks
+   * the body grounded, so on the landing frame `vy` is 0 — which is why the
+   * landing sound has been a constant since M6.
+   */
+  landingImpact: number
 }
 
 /**
@@ -617,7 +626,15 @@ export class Core {
     this.inner.apply_input(id, seq, buttons, aim, dt)
   }
 
-  setPlayerState(id: number, s: PlayerState): void {
+  /**
+   * Overwrite a body from an authoritative snapshot.
+   *
+   * **`landingImpact` is not settable, and the type says so** (T20.11). It is
+   * measured by `integrate` from the tick it just ran, not carried on the wire —
+   * a snapshot has no landing in it — so accepting one here would be a parameter
+   * this function silently drops, and the caller would have to invent a value.
+   */
+  setPlayerState(id: number, s: Omit<PlayerState, 'landingImpact'>): void {
     this.inner.set_player_state(id, s.x, s.y, s.vx, s.vy, s.grounded, s.fuel)
   }
 
@@ -640,7 +657,7 @@ export class Core {
 
   playerState(id: number): PlayerState | null {
     const a = this.inner.player_state(id)
-    if (a.length < 7) return null
+    if (a.length < 8) return null
     return {
       x: a[0]!,
       y: a[1]!,
@@ -649,6 +666,7 @@ export class Core {
       grounded: a[4]! !== 0,
       fuel: a[5]!,
       moveState: a[6]!,
+      landingImpact: a[7]!,
     }
   }
 

@@ -1034,7 +1034,7 @@ impl World {
         }
 
         // 2. player inputs, in ascending PlayerId, always.
-        self.apply_inputs(dt);
+        self.apply_inputs(now, dt);
 
         // 3. players are integrated inside apply_input (force then move, once).
 
@@ -1245,7 +1245,7 @@ impl World {
         }
     }
 
-    fn apply_inputs(&mut self, dt: f32) {
+    fn apply_inputs(&mut self, now: f32, dt: f32) {
         // Ascending id, and **exactly one input per player per tick**.
         //
         // Applying every queued input in one tick, each with a full `dt`, makes
@@ -1294,6 +1294,9 @@ impl World {
         }
         self.pending = backlog;
 
+        // Collected rather than applied in the loop: `apply_damage_log` takes
+        // `&mut self` and the loop holds a `&mut` borrow of one player.
+        let mut falls: Vec<(PlayerId, f32)> = Vec::new();
         for (id, input) in this_tick {
             let Some(idx) = self.players.iter().position(|p| p.id == id) else {
                 continue;
@@ -1309,7 +1312,7 @@ impl World {
                 .unwrap_or_default();
             let speed = self.players[idx].speed_multiplier();
             let p = &mut self.players[idx];
-            apply_input(
+            let impact = apply_input(
                 &self.map,
                 &mut p.body,
                 &mut p.jump,
@@ -1319,10 +1322,45 @@ impl World {
                 speed,
                 dt,
             );
+            // **The exemption is `was_knocked`, reused unchanged** (T20.11's
+            // ruling, and the arithmetic is in `constants.rs`): a rocket-jump's
+            // round trip is 0.457 s against a 0.6 s `KNOCKBACK_FIRE_GRACE`, so
+            // the grace already covers the arc and a second timer would be a
+            // fourth flag that can disagree with the three.
+            //
+            // A blast that also drops you off a **ledge** is not exempt from the
+            // ledge: the knockback bought you 36 px of arc and the cliff gave you
+            // the other 250, and by then the grace has expired on its own.
+            if impact > 0.0 && !p.was_knocked(now) {
+                let hurt = (impact - crate::constants::FALL_SAFE_SPEED)
+                    * crate::constants::FALL_DAMAGE_PER_SPEED;
+                if hurt > 0.0 {
+                    falls.push((id, hurt));
+                }
+            }
             p.aim = input.aim;
             if let Some(slot) = self.prev_input.iter_mut().find(|(i, _)| *i == id) {
                 slot.1 = input;
             }
+        }
+
+        // **Through `apply_damage_log`, not through `p.health -=`** — that is the
+        // one warmup gate (`docs/41` §3), and it is also what buys the `Damage`
+        // event, the i-frame check, the shield and the death bookkeeping. A
+        // subtraction here would be the only damage in the game that skipped all
+        // of it, which is the shape §E13's poison is written the long way to
+        // avoid two hundred lines above.
+        if !falls.is_empty() {
+            let log: DamageLog = Default::default();
+            {
+                let mut entries = log.borrow_mut();
+                for (id, amount) in falls {
+                    entries.push((id, amount, DamageSource::Fall));
+                }
+            }
+            let bird_log: BirdLog = Default::default();
+            let animal_log: AnimalLog = Default::default();
+            self.apply_damage_log(&log, &bird_log, &animal_log, now);
         }
     }
 
@@ -2162,6 +2200,11 @@ impl World {
                 DamageSource::Player { id, .. } => (Some(id), DeathCause::Player(id)),
                 DamageSource::SelfInflicted { .. } => (Some(victim), DeathCause::SelfInflicted),
                 DamageSource::Weather(_) => (None, DeathCause::Weather),
+                // The `Damage` **event**'s attribution. A fall is always your own
+                // doing as far as this event is concerned; whether the *death* is
+                // credited to you or to whoever put you in the air is decided by
+                // `apply_damage`'s precedence rule and `killer()`, not here.
+                DamageSource::Fall => (Some(victim), DeathCause::SelfInflicted),
             };
             self.events.push(GameEvent::Damage {
                 tick,
@@ -7152,5 +7195,434 @@ mod animals_in_a_round {
         // back together, so the difference is the animal and not the planting.
         plant(&mut b, AnimalKind::Spider, x);
         assert_eq!(a.state_hash(), b.state_hash());
+    }
+}
+
+/// Fall damage in a real round (T20.11).
+///
+/// **`docs/20` §9 refuses this feature** — *"Fall damage — deliberately absent in
+/// v1 so the jetpack stays forgiving"*, `docs/20-player-movement.md:235` — and
+/// `docs/70`–`75` contain no override. It is built on the coordinator's direct
+/// ruling of 2026-09-04; the doc is **not** amended here, because a builder does
+/// not amend `docs/`. The discrepancy is journalled.
+///
+/// These go through `World::step`, so they exercise the warmup gate, the `Damage`
+/// event and the death attribution rather than `integrate` in isolation —
+/// `physics::resolve`'s own tests cover the detector.
+#[cfg(test)]
+mod fall_damage {
+    use super::*;
+    use crate::constants::{
+        FALL_DAMAGE_PER_SPEED, FALL_SAFE_SPEED, KNOCKBACK_FIRE_GRACE, MAX_FALL_SPEED, PLAYER_H,
+        PLAYER_W, SIM_DT,
+    };
+    use crate::player::input::button;
+
+    fn world() -> World {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w
+    }
+
+    /// A column with flat ground either side, so a 16 px body is not embedded in
+    /// a neighbour's hillside — which a first draft of the measurement was, and
+    /// it reported a 50 px drop landing at one tick of gravity.
+    fn flat_spot(w: &World) -> (f32, f32) {
+        let surface = |c: i32| (0..w.map.mask.h as i32).find(|y| w.map.mask.get(c, *y));
+        for col in 200..(w.map.mask.w as i32 - 200) {
+            let Some(t) = surface(col) else { continue };
+            if t < 300 {
+                continue;
+            }
+            if (-10..=10).all(|d| surface(col + d) == Some(t)) {
+                return (col as f32, t as f32);
+            }
+        }
+        panic!("no flat spot on this map")
+    }
+
+    /// Drop player 0 from `h` px above the ground and return the health it lost.
+    ///
+    /// Placed and then stepped through the **world**, not through `integrate`, so
+    /// everything between the two — the warmup gate, i-frames, the shield — is in
+    /// the path exactly as it is in a real round.
+    fn drop_player(w: &mut World, h: f32) -> f32 {
+        let (x, top) = flat_spot(w);
+        let Some(p) = w.player_mut(0) else {
+            panic!("no player 0")
+        };
+        p.body.pos = Vec2::new(x, top - PLAYER_H / 2.0 - h);
+        p.body.vel = Vec2::ZERO;
+        p.body.grounded = false;
+        p.iframes_until = 0.0;
+        let before = p.health;
+        // **An input every tick, because `apply_inputs` only integrates players
+        // who sent one.** A player whose client goes quiet is not simulated at
+        // all, so a test that just called `step` would watch a body hang in the
+        // air and then assert that falling costs nothing.
+        for t in 0..600u32 {
+            w.queue_input(0, crate::player::input::Input::new(t + 1, 0, 0));
+            w.step(SIM_DT);
+            if w.player(0).is_some_and(|p| p.body.grounded) {
+                break;
+            }
+        }
+        before - w.player(0).expect("alive").health
+    }
+
+    /// The start of a stretch of ground that **descends** to the right, gently
+    /// enough for `ground_snap` to hold on: `(x, surface_y)`.
+    fn downhill(w: &World) -> (f32, f32) {
+        let surface = |c: i32| (0..w.map.mask.h as i32).find(|y| w.map.mask.get(c, *y));
+        let run = 90;
+        for col in 200..(w.map.mask.w as i32 - 200 - run) {
+            let Some(t0) = surface(col) else { continue };
+            if t0 < 200 {
+                continue;
+            }
+            let ok = (0..run).all(|d| match (surface(col + d), surface(col + d + 1)) {
+                (Some(a), Some(b)) => b >= a && b - a < crate::constants::STEP_DOWN,
+                _ => false,
+            });
+            if ok && surface(col + run) > Some(t0 + PLAYER_H as i32) {
+                return (col as f32, t0 as f32);
+            }
+        }
+        panic!("no descending stretch on this map")
+    }
+
+    /// What the constants say a landing at `speed` costs. Never a literal.
+    fn expected(speed: f32) -> f32 {
+        ((speed - FALL_SAFE_SPEED) * FALL_DAMAGE_PER_SPEED).max(0.0)
+    }
+
+    #[test]
+    fn a_long_fall_hurts_and_a_short_one_does_not() {
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        // The control first, and it is the half `docs/20` §9 was protecting: a
+        // drop inside the free height must cost **exactly** nothing, or every
+        // ledge in the game becomes a trap.
+        let free_height = FALL_SAFE_SPEED * FALL_SAFE_SPEED / (2.0 * crate::constants::GRAVITY);
+        assert_eq!(
+            drop_player(&mut w, free_height * 0.5),
+            0.0,
+            "a drop of half the free height cost health"
+        );
+        // And the claim.
+        let hurt = drop_player(&mut w, free_height * 4.0);
+        assert!(hurt > 0.0, "a fall of four times the free height was free");
+    }
+
+    #[test]
+    fn the_damage_is_the_constants_arithmetic_and_not_a_number_someone_liked() {
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        let (x, top) = flat_spot(&w);
+        // 200, not 400: at 400 the fall is at `MAX_FALL_SPEED` when it lands and
+        // the comparison below would be against a clamp rather than against the
+        // speed the body was actually travelling at.
+        let h = 200.0;
+        if let Some(p) = w.player_mut(0) {
+            p.body.pos = Vec2::new(x, top - PLAYER_H / 2.0 - h);
+            p.body.vel = Vec2::ZERO;
+            p.body.grounded = false;
+            p.iframes_until = 0.0;
+        }
+        let before = w.player(0).expect("seated").health;
+        let mut impact = 0.0f32;
+        for t in 0..600u32 {
+            let vy = w.player(0).expect("alive").body.vel.y;
+            w.queue_input(0, crate::player::input::Input::new(t + 1, 0, 0));
+            w.step(SIM_DT);
+            let p = w.player(0).expect("alive");
+            if p.body.landing_impact > 0.0 {
+                impact = p.body.landing_impact;
+                // `vy` is read **before** `step`, and `integrate` applies one
+                // tick of gravity before it meets the ground — so one tick of
+                // gravity is the whole permissible gap, and anything wider would
+                // be a different number wearing this one's name.
+                let slack = crate::constants::GRAVITY * SIM_DT + 0.01;
+                assert!(
+                    (impact - vy).abs() <= slack,
+                    "the reported impact {impact} is not the speed it was falling at \
+                     {vy} (+/- {slack:.1})"
+                );
+                break;
+            }
+        }
+        assert!(impact > FALL_SAFE_SPEED, "the drop was not hard enough");
+        let lost = before - w.player(0).expect("alive").health;
+        assert!(
+            (lost - expected(impact)).abs() < 0.01,
+            "a {impact:.0} px/s landing cost {lost:.2}, not {:.2}",
+            expected(impact)
+        );
+    }
+
+    #[test]
+    fn a_harder_landing_costs_more() {
+        // A single height proves the formula was applied once; two prove it
+        // scales, which is the property the player is actually judging.
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        let free_height = FALL_SAFE_SPEED * FALL_SAFE_SPEED / (2.0 * crate::constants::GRAVITY);
+        let near = drop_player(&mut w, free_height * 2.0);
+        if let Some(p) = w.player_mut(0) {
+            p.health = crate::constants::BASE_HEALTH;
+        }
+        let far = drop_player(&mut w, free_height * 6.0);
+        assert!(near > 0.0 && far > near, "{near} then {far}");
+    }
+
+    #[test]
+    fn the_deepest_possible_fall_is_survivable_from_full_health() {
+        // `docs/20` §9 refused fall damage so the jetpack would stay forgiving.
+        // This is the part of that objection which stays honoured: terminal
+        // velocity is a serious cost and never an instant death.
+        assert!(
+            expected(MAX_FALL_SPEED) < crate::constants::BASE_HEALTH,
+            "a terminal-velocity landing costs {:.0} of {:.0}",
+            expected(MAX_FALL_SPEED),
+            crate::constants::BASE_HEALTH
+        );
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        let hurt = drop_player(&mut w, 900.0);
+        assert!(
+            w.player(0).expect("alive").alive,
+            "a fall killed a full bar"
+        );
+        assert!(hurt > 0.0);
+    }
+
+    #[test]
+    fn walking_downhill_never_costs_anything() {
+        // The `ground_snap` path, through the world this time: `physics::resolve`
+        // proves the detector ignores it, and this proves nothing between the
+        // detector and `health` reintroduces it.
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        let (x, top) = downhill(&w);
+        if let Some(p) = w.player_mut(0) {
+            p.body.pos = Vec2::new(x, top - PLAYER_H / 2.0);
+            p.body.grounded = true;
+        }
+        let before = w.player(0).expect("seated").health;
+        let start = w.player(0).expect("seated").body.pos;
+        let mut seq = 0u32;
+        for _ in 0..600 {
+            seq += 1;
+            w.queue_input(0, crate::player::input::Input::new(seq, button::RIGHT, 0));
+            w.step(SIM_DT);
+        }
+        let end = w.player(0).expect("alive").body.pos;
+        // The control, in both axes: it actually walked, and the ground it walked
+        // over actually fell away. Without them the assertion below passes for a
+        // player who hit a wall on the second tick — which a first draft did, on a
+        // flat spot 21 columns wide, and it reported 30 px travelled.
+        assert!(
+            (end.x - start.x).abs() > PLAYER_W * 4.0,
+            "the player only travelled {:.0} px",
+            end.x - start.x
+        );
+        assert!(
+            end.y - start.y > PLAYER_H,
+            "the ground only fell {:.0} px, so this is not a downhill test",
+            end.y - start.y
+        );
+        assert_eq!(
+            w.player(0).expect("alive").health,
+            before,
+            "walking cost health"
+        );
+    }
+
+    #[test]
+    fn a_knocked_player_lands_free_and_the_exemption_expires() {
+        // **`was_knocked`, reused unchanged** — the ruling. Both halves, because
+        // an exemption with no expiry test is an exemption that never ends and an
+        // expiry with no control is satisfied by a fall that never hurt anyone.
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        let (x, top) = flat_spot(&w);
+        // **200 px, and the height is the point.** The grace is 0.6 s and a fall
+        // has to both exceed `FALL_SAFE_SPEED` *and* land inside it for the
+        // exemption to be the thing under test: from rest a body passes 480 px/s
+        // at 0.34 s and 200 px takes 0.53 s, landing at a measured 747. A 400 px
+        // drop takes 0.75 s, expires the grace on the way down, and would test
+        // nothing — which is the ruling restated as arithmetic: a blast that also
+        // drops you off a real ledge is not exempt from the ledge.
+        let high = 200.0;
+
+        let place = |w: &mut World| {
+            if let Some(p) = w.player_mut(0) {
+                p.body.pos = Vec2::new(x, top - PLAYER_H / 2.0 - high);
+                p.body.vel = Vec2::ZERO;
+                p.body.grounded = false;
+                p.iframes_until = 0.0;
+                p.health = crate::constants::BASE_HEALTH;
+            }
+        };
+
+        // Exempt: knocked at the moment the fall starts.
+        place(&mut w);
+        let now = w.round_time;
+        if let Some(p) = w.player_mut(0) {
+            p.knocked_until = now + KNOCKBACK_FIRE_GRACE;
+        }
+        let before = w.player(0).expect("seated").health;
+        for t in 0..600u32 {
+            w.queue_input(0, crate::player::input::Input::new(t + 1, 0, 0));
+            w.step(SIM_DT);
+            if w.player(0).is_some_and(|p| p.body.grounded) {
+                break;
+            }
+        }
+        let landed_at = w.player(0).expect("alive").body.landing_impact;
+        assert_eq!(
+            w.player(0).expect("alive").health,
+            before,
+            "a knocked player was charged for the landing"
+        );
+
+        // And the control: the same fall with the grace expired.
+        place(&mut w);
+        let now = w.round_time;
+        if let Some(p) = w.player_mut(0) {
+            p.knocked_until = now - 0.001;
+        }
+        let before = w.player(0).expect("seated").health;
+        for t in 0..600u32 {
+            w.queue_input(0, crate::player::input::Input::new(t + 1, 0, 0));
+            w.step(SIM_DT);
+            if w.player(0).is_some_and(|p| p.body.grounded) {
+                break;
+            }
+        }
+        assert!(
+            w.player(0).expect("alive").health < before,
+            "the exemption never expires"
+        );
+        // And the control the *first* half needs: the exempt landing was one that
+        // would otherwise have been charged. Without it "no damage while knocked"
+        // is satisfied by a drop too soft to hurt anybody.
+        assert!(
+            landed_at > FALL_SAFE_SPEED,
+            "the exempt fall landed at {landed_at:.0} px/s, under the {FALL_SAFE_SPEED:.0} \
+             threshold — it was free for the wrong reason"
+        );
+    }
+
+    #[test]
+    fn no_fall_damage_during_warmup() {
+        // It goes through `apply_damage_log`, which is the one warmup gate. The
+        // control is the same fall in `Playing`, above.
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Warmup);
+        w.add_player(0, 0, "ana".into());
+        assert_eq!(drop_player(&mut w, 600.0), 0.0, "warmup charged for a fall");
+    }
+
+    #[test]
+    fn a_fall_emits_a_damage_event_rather_than_editing_health_behind_everyones_back() {
+        // Assert on the effect the rest of the game reads, not on the subtraction.
+        // A `health -=` in `apply_inputs` would pass every test above and leave
+        // the client's health bar, the kill feed and the hit marker with nothing.
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        let _ = w.drain_events();
+        let hurt = drop_player(&mut w, 600.0);
+        assert!(hurt > 0.0);
+        let fall_damage: Vec<f32> = w
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::Damage {
+                    victim: 0, amount, ..
+                } => Some(*amount),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fall_damage.len(), 1, "{fall_damage:?}");
+        assert!((fall_damage[0] - hurt).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_fall_you_caused_yourself_is_a_self_kill_and_not_the_weather() {
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        if let Some(p) = w.player_mut(0) {
+            p.health = 1.0;
+        }
+        let _ = w.drain_events();
+        drop_player(&mut w, 600.0);
+        let death = w.events.iter().find_map(|e| match e {
+            GameEvent::Death { cause, .. } => Some(*cause),
+            _ => None,
+        });
+        assert_eq!(
+            death,
+            Some(DeathCause::SelfInflicted),
+            "a solo fall was narrated as something else"
+        );
+    }
+
+    #[test]
+    fn being_blasted_off_a_ledge_still_credits_the_blast() {
+        // `docs/21` §4: knocking someone into a hazard rewards the knocker, and a
+        // ledge is a hazard. The fall must not overwrite a live claim — which is
+        // the whole reason `apply_damage`'s `Fall` arm defers rather than writing
+        // itself in unconditionally.
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        w.add_player(1, 0, "bo".into());
+        if let Some(p) = w.player_mut(0) {
+            p.health = 1.0;
+        }
+        let now = w.round_time;
+        // Player 1 damaged them a moment ago, and the knockback grace is already
+        // over — so the fall is charged and the credit is still 1's.
+        if let Some(p) = w.player_mut(0) {
+            p.last_damaged_by = Some((1, now));
+            p.knocked_until = now - 0.001;
+        }
+        let _ = w.drain_events();
+        drop_player(&mut w, 600.0);
+        let death = w.events.iter().find_map(|e| match e {
+            GameEvent::Death {
+                victim: 0, cause, ..
+            } => Some(*cause),
+            _ => None,
+        });
+        assert_eq!(
+            death,
+            Some(DeathCause::Player(1)),
+            "the blast lost its kill"
+        );
+    }
+
+    #[test]
+    fn the_state_hash_is_unmoved_by_a_landing_and_moved_by_the_health_it_cost() {
+        // `landing_impact` is deliberately **not** hashed: it is recomputed from
+        // hashed state every tick and is zero on all but one. What must be hashed
+        // is the health it took, and that already is.
+        let mut a = world();
+        let mut b = world();
+        a.add_player(0, 0, "ana".into());
+        b.add_player(0, 0, "ana".into());
+        assert_eq!(a.state_hash(), b.state_hash());
+        if let Some(p) = a.player_mut(0) {
+            p.body.landing_impact = 123.0;
+        }
+        assert_eq!(
+            a.state_hash(),
+            b.state_hash(),
+            "landing_impact reached the hash"
+        );
+        if let Some(p) = a.player_mut(0) {
+            p.health -= 1.0;
+        }
+        assert_ne!(a.state_hash(), b.state_hash());
     }
 }

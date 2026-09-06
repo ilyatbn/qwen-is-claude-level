@@ -33,6 +33,13 @@ use crate::physics::resolve::integrate;
 ///    moves once. Moving between force applications would make the result depend on
 ///    the order of the forces, which is exactly what diverges between server and
 ///    client under reordering.
+///
+/// **Returns `integrate`'s landing impact** (T20.11), and does nothing with it.
+/// Fall damage must not happen in here: the purity above is what makes prediction
+/// correct, and `prediction.ts` replays this dozens of times per frame. Health is
+/// not predicted client-side — it arrives in the binary snapshot — so the *effect*
+/// belongs to `World::apply_inputs`, on the server, and only the measurement
+/// belongs here.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_input(
     map: &Map,
@@ -43,7 +50,7 @@ pub fn apply_input(
     prev: &Input,
     speed_multiplier: f32,
     dt: f32,
-) {
+) -> f32 {
     let e = edges(input, prev);
     let dir = input.move_dir();
 
@@ -64,7 +71,7 @@ pub fn apply_input(
         jetpack::apply_thrust(body, input, dt);
     }
 
-    integrate(map, body, jetpack::gravity_scale(jet), dt);
+    integrate(map, body, jetpack::gravity_scale(jet), dt)
 }
 
 /// The complete per-player movement state, so a caller can snapshot and restore it
@@ -85,7 +92,14 @@ impl MovementState {
         }
     }
 
-    pub fn step(&mut self, map: &Map, input: &Input, prev: &Input, speed_multiplier: f32, dt: f32) {
+    pub fn step(
+        &mut self,
+        map: &Map,
+        input: &Input,
+        prev: &Input,
+        speed_multiplier: f32,
+        dt: f32,
+    ) -> f32 {
         apply_input(
             map,
             &mut self.body,
@@ -95,7 +109,7 @@ impl MovementState {
             prev,
             speed_multiplier,
             dt,
-        );
+        )
     }
 }
 pub mod state;

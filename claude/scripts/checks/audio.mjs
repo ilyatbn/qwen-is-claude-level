@@ -141,6 +141,92 @@ export default async function ({ page, shot, log }) {
     throw new Error('firing produced neither a shot nor an explosion cue')
   }
 
+  // --- a landing is as loud as the fall was (T20.11) --------------------------
+  //
+  // **The gain, not the cue name.** `land` has fired on every landing since M6
+  // and this check was green throughout, because the log held names only — while
+  // the volume was `Math.abs(vy) / MAX_FALL_SPEED + floor` read on the frame the
+  // body grounded, and `move_y` zeroes `vel.y` *before* it grounds. Every landing
+  // in the game has played at exactly the floor. A number nobody records is a
+  // number nobody can be wrong about.
+  //
+  // The assertion is a **prediction**, not `big > small`: a drop of `h` lands at
+  // `sqrt(2 g h)`, so the expected gain is computable from `GRAVITY` and
+  // `MAX_FALL_SPEED` and both readings are checked against it. `big > small`
+  // would also pass for a formula that is merely monotonic in the wrong units.
+  const landGain = async (height) => {
+    const before = await page.evaluate(() => window.__game.debug().player)
+    await page.evaluate(([x, y]) => window.__game.place(x, y), [before.x, before.y - height])
+    await clear()
+    // Airborne first: `place` rebuilds the body, and polling for `grounded`
+    // straight away can read the *old* one and return before the fall happens.
+    await page.waitForFunction(() => window.__game.debug().player?.grounded === false, null, {
+      timeout: 4000,
+    })
+    // Derived from the physics, never a literal: free-fall time is
+    // `sqrt(2h/g)`, doubled for slack. A wait hardcoded against a tunable is a
+    // test that expires.
+    const fallMs = Math.ceil(Math.sqrt((2 * height) / k.GRAVITY) * 1000)
+    await page.waitForFunction(() => window.__game.debug().player?.grounded === true, null, {
+      timeout: Math.max(2000, fallMs * 4),
+    })
+    await page.waitForTimeout(150)
+    const heard = (await audio()).cueGains.filter((c) => c.name === 'land')
+    return heard.length ? Math.max(...heard.map((c) => c.gain)) : null
+  }
+
+  // `landingFloor` is read from the page, never spelled out here: it is
+  // `LANDING_VOLUME_FLOOR`, and a tunable hardcoded in a fixture is a fixture
+  // that reports the landing volume as broken the day somebody moves the floor.
+  const floor = (await audio()).landingFloor
+  if (typeof floor !== 'number') {
+    throw new Error('debug().audio() reports no landingFloor — the prediction has no constant')
+  }
+  const predicted = (height) => {
+    const impact = Math.min(k.MAX_FALL_SPEED, Math.sqrt(2 * k.GRAVITY * height))
+    return Math.min(1, impact / k.MAX_FALL_SPEED + floor)
+  }
+
+  const hop = k.PLAYER_H
+  // **Chosen so neither reading is at a clamp.** `landingVolume` saturates at
+  // `MAX_FALL_SPEED * (1 - LANDING_VOLUME_FLOOR)` = 675 px/s, which a 163 px
+  // drop already reaches, and a saturated reading agrees with every impact above
+  // it — an assertion that cannot tell 420 px from 900 px is not measuring the
+  // speed.
+  const drop = 120
+  const softGain = await landGain(hop)
+  const hardGain = await landGain(drop)
+  log(
+    `landing gains: ${hop.toFixed(0)} px -> ${softGain === null ? 'none' : softGain.toFixed(3)} ` +
+      `(predicted ${predicted(hop).toFixed(3)}), ${drop} px -> ` +
+      `${hardGain === null ? 'none' : hardGain.toFixed(3)} (predicted ${predicted(drop).toFixed(3)})`,
+  )
+  // The presence half: a landing must make a sound at all, or "it scales" is a
+  // claim about silence.
+  if (softGain === null || hardGain === null) {
+    throw new Error('a landing produced no `land` cue with an audible gain')
+  }
+  for (const [name, got, height] of [
+    ['the hop', softGain, hop],
+    ['the fall', hardGain, drop],
+  ]) {
+    const want = predicted(height)
+    if (Math.abs(got - want) > 0.06) {
+      throw new Error(
+        `${name} from ${height} px played at ${got.toFixed(3)} against a predicted ` +
+          `${want.toFixed(3)} — the landing volume is not the impact speed`,
+      )
+    }
+  }
+  // And the shape of the old bug, named: both readings equal means the volume is
+  // a constant, which is what it was for fifteen milestones.
+  if (Math.abs(hardGain - softGain) < 0.1) {
+    throw new Error(
+      `a ${hop.toFixed(0)} px hop and a ${drop} px fall both played at ` +
+        `${softGain.toFixed(3)} — the landing volume is a constant`,
+    )
+  }
+
   // --- the control: silence must actually be silent --------------------------
   await page.evaluate(() => window.__game.setMasterVolume(0))
   await clear()

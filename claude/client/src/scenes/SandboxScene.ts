@@ -29,6 +29,7 @@ import { cloudSpriteTint } from '../render/clouds-math'
 import { dequantizeAngle } from '../core'
 import { devSurface } from '../dev'
 import { loadIdentity } from '../ui/skins'
+import { LANDING_VOLUME_FLOOR, landingVolume } from '../render/feel-math'
 
 const SCALES: Record<string, MapScale> = {
   small: MapScale.Small,
@@ -87,7 +88,16 @@ export class SandboxScene extends Phaser.Scene {
   private stepAcc = 0
   private wasGrounded = true
   private wasJetting = false
-  private cueLog: string[] = []
+  /**
+   * Every cue that actually started a voice, **with the gain it started at**.
+   *
+   * The gain, not just the name (T20.11): a landing sound that is always the
+   * same loudness is exactly as green as a correct one when the log holds only
+   * names, and it was — `Math.abs(vy)` on the grounding frame is 0, so `land`
+   * played at the floor for fifteen milestones. A number nobody records is a
+   * number nobody can be wrong about.
+   */
+  private cueLog: Array<{ name: string; gain: number }> = []
   private invOpen = false
   /** Round time in seconds, driven by the clock or scrubbed by the slider. */
   private roundTime = 0
@@ -256,21 +266,29 @@ export class SandboxScene extends Phaser.Scene {
         ? this.audio.play(name, { volume })
         : this.audio.spatial(name, x, y, ear, volume)
     if (gain > 0) {
-      this.cueLog.push(name)
+      this.cueLog.push({ name, gain })
       if (this.cueLog.length > 64) this.cueLog.shift()
     }
   }
 
   /** Footsteps, landing and the jetpack — driven by state, not by an event. */
-  private movementCues(dt: number, body: { vx: number; vy: number; grounded: boolean; moveState: number }): void {
+  private movementCues(
+    dt: number,
+    body: { vx: number; grounded: boolean; moveState: number; landingImpact: number },
+  ): void {
     const jetting = body.moveState === 2
     if (jetting !== this.wasJetting) {
       this.audio.hold('jetpack', jetting, 0.35)
-      if (jetting) this.cueLog.push('jetpack')
+      if (jetting) this.cueLog.push({ name: 'jetpack', gain: 1 })
       this.wasJetting = jetting
     }
     if (body.grounded && !this.wasGrounded) {
-      this.cue('land', undefined, undefined, Math.min(1, Math.abs(body.vy) / C().MAX_FALL_SPEED + 0.25))
+      // **`landingImpact`, not `vy`** (T20.11). `move_y` zeroes the velocity
+      // *before* it marks the body grounded, so on this exact frame `vy` is 0 —
+      // this expression has evaluated to the constant 0.25 floor since M6, and
+      // the comment above it described something that could not happen. The
+      // impact speed is measured inside `integrate`, where it still exists.
+      this.cue('land', undefined, undefined, landingVolume(body.landingImpact, C().MAX_FALL_SPEED))
       this.stepAcc = 0
     }
     this.wasGrounded = body.grounded
@@ -746,7 +764,17 @@ export class SandboxScene extends Phaser.Scene {
           samples: self.audioSink?.sampleCount ?? 0,
           unlocked: self.audioSink?.isUnlocked ?? false,
           live: self.audioSink?.liveVoices ?? 0,
-          cues: [...self.cueLog],
+          // Names, derived from the one log rather than kept beside it — the
+          // existing callers ask "did `walk` play"; `cueGains` is the same log
+          // with the number they could not previously see.
+          cues: self.cueLog.map((c) => c.name),
+          cueGains: self.cueLog.map((c) => ({ ...c })),
+          // The floor `landingVolume` adds, exported so `checks/audio.mjs` can
+          // predict a landing's gain from the **real** constant. It had the
+          // number spelled out as `0.25`, which is a tunable hardcoded in a
+          // fixture: move `LANDING_VOLUME_FLOOR` and the check reports the
+          // landing volume as broken when nothing about it changed.
+          landingFloor: LANDING_VOLUME_FLOOR,
           master: self.audio.masterVolume,
         }
       },

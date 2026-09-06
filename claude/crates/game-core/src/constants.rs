@@ -1738,6 +1738,66 @@ pub const BIRD_EDGE_MARGIN: f32 = 48.0;
 pub const BIRD_DROP_VELOCITY: f32 = 40.0;
 
 // ---------------------------------------------------------------------------
+// Fall damage (T20.11)
+// ---------------------------------------------------------------------------
+//
+// **`docs/20` §9 refuses this feature** — *"Fall damage — deliberately absent in
+// v1 so the jetpack stays forgiving"* (`docs/20-player-movement.md:235`) — and
+// `docs/70`–`75` contain no override. The coordinator asked for it directly on
+// 2026-09-04 and that ruling is what unblocks the task; **the doc has not been
+// amended and a builder does not amend it**, so the discrepancy is journalled and
+// `docs/` is untouched. An amendment is the durable home for this block.
+//
+// The numbers below are **measured, not chosen**, on a flat spot of
+// `generate(4242, Small)` with `PLAYER_H` = 28 and one tick of `SIM_DT`:
+//
+//     plain jump (JUMP_VELOCITY 430)   lands at  410 px/s, peak 62.5 px
+//     drop  50 px                      lands at  373 px/s
+//     drop 100 px                      lands at  537 px/s
+//     drop 200 px                      lands at  747 px/s
+//     drop 400 px and beyond           lands at  900 px/s  (MAX_FALL_SPEED)
+
+/// Below this landing speed a fall costs nothing, px/s.
+///
+/// **480, because a plain jump lands at a measured 410** and a jump that hurt
+/// would make the game unplayable rather than punishing. 70 px/s of margin over
+/// the worst ordinary landing, and it puts the free drop height at
+/// `480² / (2 x GRAVITY)` = **82 px**, about three player heights — a ledge you
+/// can see is a ledge you can take.
+pub const FALL_SAFE_SPEED: f32 = 480.0;
+
+/// Health lost per px/s of landing speed **above** `FALL_SAFE_SPEED`.
+///
+/// Linear rather than quadratic: the quantity a player can judge is *how far down
+/// it looks*, and a quadratic curve turns a small misjudgement near the top of the
+/// range into a death. At 0.15 a terminal-velocity landing costs
+/// `(900 - 480) x 0.15` = **63** of `BASE_HEALTH` 100 — the deepest fall in the
+/// game is survivable at full health and lethal at two thirds, which is what makes
+/// it a penalty for flying rather than a second void.
+pub const FALL_DAMAGE_PER_SPEED: f32 = 0.15;
+
+// A plain jump must be free, or the whole game becomes a limp. The measured
+// landing speed is 410 against `JUMP_VELOCITY` 430; guarding against the constant
+// rather than the measurement means a faster jump moves this too.
+const _: () = assert!(FALL_SAFE_SPEED > JUMP_VELOCITY);
+// ...and terminal velocity must not be free, or the rule does nothing at all.
+const _: () = assert!(FALL_SAFE_SPEED < MAX_FALL_SPEED);
+const _: () = assert!(FALL_DAMAGE_PER_SPEED > 0.0);
+// **The deepest possible fall must not kill from full health.** `docs/20` §9's
+// reason for refusing fall damage was that the jetpack should stay forgiving; a
+// fall that is instantly lethal is the version of this feature that clause was
+// right about.
+const _: () = assert!((MAX_FALL_SPEED - FALL_SAFE_SPEED) * FALL_DAMAGE_PER_SPEED < BASE_HEALTH);
+// And it must be worth avoiding: less than a tenth of a health bar is a rule
+// nobody notices, which is the same defect as not having one.
+const _: () =
+    assert!((MAX_FALL_SPEED - FALL_SAFE_SPEED) * FALL_DAMAGE_PER_SPEED > BASE_HEALTH * 0.1);
+// The exemption is `KNOCKBACK_FIRE_GRACE`, reused unchanged (T20.11's ruling): a
+// rocket-jump's round trip is `2 x KNOCKBACK_MAX / GRAVITY` = 0.457 s, inside the
+// 0.6 s grace, so the doc comment there is true and no second timer is needed.
+const _: () = assert!(2.0 * KNOCKBACK_MAX / GRAVITY < KNOCKBACK_FIRE_GRACE);
+
+// ---------------------------------------------------------------------------
 // Ground animals (T20.10)
 // ---------------------------------------------------------------------------
 //
