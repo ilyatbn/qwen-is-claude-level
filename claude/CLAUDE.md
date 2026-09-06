@@ -131,6 +131,15 @@ green suite and a working game.
   literals standing in for a check of the real source; `ls | tail` standing in for a file
   count. When you write an assertion, ask what it would report if the thing it names had not
   happened at all.
+- **A status line is a measurement, and it is only valid at the moment it was taken.** Three
+  consecutive reviews here closed with "one dirty path" while the tree had five — a value read
+  once and restated as though re-read, by the reviewer who had spent those same three reviews
+  correctly refusing other people's remembered numbers. Re-run it; do not carry it.
+  **The costly half is not the wrong number, it is what the wrong number displaced.** The four
+  unreported paths included the one file whose presence answered the open question about the
+  work in flight, so the habitual field crowded out the informative one. When you report
+  state, ask what would have to appear in it to change your next decision — and check that
+  your report is capable of showing it.
 
 **On code**
 
