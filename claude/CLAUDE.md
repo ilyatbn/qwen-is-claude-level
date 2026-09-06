@@ -93,6 +93,12 @@ green suite and a working game.
   control region and a control frame. Four "I cannot see it" bugs shipped past 905
   tests because every assertion checked simulation state.
 - **A population claim needs more than one draw.** Aggregate across seeds.
+- **"The failure moves" is evidence against *one broken test*, not evidence *for* load.**
+  A flaky-list entry once reasoned that because a different member failed each run and none
+  recurred, no single test could be broken. But those tests **shared a fixture** — one timeout
+  budget across two of them — and a shared budget expiring on a shared state transition
+  produces exactly that pattern: a different member each time, none recurring, all one cause.
+  **Before concluding "load", ask what the failing tests share.**
 - **A gate that fails on a coin flip gates nothing.** Remove such an assertion or fix
   its cause; do not weaken it.
 - **A test count going up is not evidence that no test was removed.**
