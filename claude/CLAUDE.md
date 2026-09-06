@@ -103,7 +103,12 @@ green suite and a working game.
   `attacker.is_some()` and reported the two worst weapons as the best.
 - **Assert on effects, not intentions.** A counter saying work was attempted is not
   evidence it happened. Heavy fog's formula was correct for five milestones while
-  nothing carried the number to the screen.
+  nothing carried the number to the screen. **A comment claiming an invariant is an
+  intention too, and reading one retired a live bug here for half an hour.** A catch-up
+  block documents itself as unreachable in production; the guard it rests on is a bare
+  atomic read taken outside the room task and acted on two command round-trips later, so
+  the claim is true when sampled and false when used. Confirm a comment's invariant at the
+  code that maintains it before you believe it about the code that reads it.
 - **For anything visible, assert on rendered pixels** (`docs/72` §C2), with a
   control region and a control frame. Four "I cannot see it" bugs shipped past 905
   tests because every assertion checked simulation state.
