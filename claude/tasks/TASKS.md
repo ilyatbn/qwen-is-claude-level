@@ -479,6 +479,7 @@ right-button decision rather than around it. **Amendments are the coordinator's.
 - [ ] [T20.17](M20/T20.17-the-tests-that-never-run.md) — The tests that never run **(v8)** — nine milestones of invisible erosion; **survey first**
 - [ ] [T20.18](M20/T20.18-seven-copies-of-connect.md) — Seven copies of `connect` **(v8)** — from T20.10's handoff
 - [ ] [T20.19](M20/T20.19-a-hurt-player-rubber-bands.md) — A hurt player rubber-bands, permanently **(v8)** — **live at HEAD**, found by T21.02's sweep
+- [ ] [T20.20](M20/T20.20-a-flake-that-is-a-fixture.md) — A "flake" that is a fixture defect **(v8)** — **found by T20.11**; D-58 entry with a deterministic cause
 - [x] [T20.15](M20/T20.15-a-check-that-waits-without-a-deadline.md) — A browser check that waits without a deadline **(v8)** — **found by T20.01**, pre-existing
 
 **Order note.** T20.04 before T20.12 (accessories are invisible until skins reach the
