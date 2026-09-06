@@ -201,6 +201,13 @@ green suite and a working game.
   `grep | head -12` — the second by the person who had just written this rule. **Any claim of
   the form "there are N of these" gets `| wc -l`.** `ls | wc -l` is the assertion; `ls | tail`
   is a glance.
+  **But `wc -l` counts lines that contain the string, not the things the string names, and
+  that is a different number.** Counting `#[ignore]` attributes this way returned 14 where
+  there were 13: the fourteenth was a module doc comment containing the literal
+  `` `#[ignore]`d `` as prose about a test already counted at its attribute. Following this
+  rule produced the wrong count, which is why the correction lives here. **Anchor the pattern
+  to the syntax of the thing** — `^\s*#\[ignore` — and when the count decides something,
+  enumerate what matched and read the outliers.
 - **Interactive debugging is headed, not headless.** This box has WSLg; `make play`
   opens a real Chrome with CDP and `make probe` reads it without closing it. When a
   person is watching, they take the controls.
