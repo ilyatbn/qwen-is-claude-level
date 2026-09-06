@@ -80,6 +80,13 @@ green suite and a working game.
   *instrument* instead, so it moved the moment the instrument generalised to `head` and a
   truncated terminal. **A title that states its invariant is safe to cite; a slogan naming a
   tool is not.** Do not go rewriting citations of the first kind — they are not the bug.
+- **Never write a command's output you did not run.** Twice this session, both times inside
+  text arguing for rigour: a commit sha supplied from memory because the command ended
+  `&& echo ok` and never printed one, and `grep -rn fixed_seed …/tests/ returns 0` in a
+  paragraph whose whole subject was greps that mislead — it returns 6, and the six were the
+  best evidence in the section. **A remembered output is not a measurement**, and the moment
+  you are most likely to invent one is while writing about care. Run it, paste it, then write
+  the sentence.
 - **Cite the symbol, not the line.** `world/mod.rs::apply_damage_log`, not
   `world/mod.rs:1924`. A line number is a claim with nothing re-validating it, and it rots
   fast: `world/mod.rs` gained ~700 lines in one task and `player/state.rs` ~380 in another,
