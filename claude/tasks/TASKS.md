@@ -526,8 +526,18 @@ rather than storing a hashed field — is the cheap answer, and it is written in
   at that depth. Nothing else in M21 is more than two. If M21 is ever cut short, T21.08 is the
   piece that will not have a foundation.
 - **Wide fan-out, narrow chain.** Four of eight start immediately and only one path exceeds two
-  hops, so M21 parallelises well and no single blocked task can stall more than T21.08. That is
-  a healthier shape than M20's, where T20.04's identity work gated several others.
+  hops, so M21 parallelises well and no single blocked task can stall more than T21.08.
+- **But do not read that as "M21 is more coupled than M20" — the comparison runs the other
+  way, and an earlier version of this entry had it backwards.** Measured over all eighteen M20
+  headers, M20 had **two** intra-milestone edges in total (`T20.03 ← T20.01`,
+  `T20.12 ← T20.04`) and **no chain longer than one hop**. Its graph was flatter than M21's.
+  Yet M20's real coupling was the thing that hurt, and **none of it was in a header**: three
+  task files name `REPLAY_VERSION` (T20.07, T20.08, T20.09), and `PlayerView`'s rebuild and the
+  sandbox-versus-shared-path seam each recur across several — see `HANDOFF-M20.md`, which
+  mentions `REPLAY_VERSION` nine times and `PlayerView` eleven.
+  **Depth in the headers is not independence in the code.** M21's declared chain is the part
+  you can schedule around; M20's undeclared collisions are the part that cost time. When
+  sequencing M21, grep for the shared symbol as well as reading the `Depends on:` line.
 
 **Two claims here, with different shelf lives — do not trust them equally.** The wave structure
 is a property of the eight `Depends on:` headers and cannot change unless a header does; re-derive
