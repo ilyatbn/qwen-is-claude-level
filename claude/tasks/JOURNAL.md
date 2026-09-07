@@ -5464,3 +5464,18 @@ pinned. Exemption is `was_knocked` reused unchanged — 0.457 s arc < 0.6 s grac
 assert; credit defers to a live claim. **The landing sound has been the 0.25 floor since
 M6** — falsified live at 0.250 against 0.561/0.894, and the check reads that floor from the
 page. Two `game-server` reds were D-58. EXIT=0, 47/47, 886/886, 25/25, assets ok.
+
+## T20.19 — the mirror passed a literal `1.0` where the server passes `speed_multiplier()`
+
+Both baseline rows **unmoved at HEAD** — read at the two symbols, never off `grep -c health`,
+which is 2 in `core/index.ts` and 15 in `game-wasm` and misleads in opposite directions.
+**Route 1**: health rides `snap.state` through `setPlayerState`, so `prediction.ts` is
+untouched and the value arrives with the position it must agree with. `player_state` grew to
+nine; the TS decode is centralised and names fields, so the sweep found one raw read and one
+length check, both moved. Tests assert **reconciliation convergence**, not the multiplier:
+`corrections == 0` over 40 frames, a presence control reaching exactly `WALK_SPEED`, and a
+staged pre-fix control that must still be correcting in the second half. `roomFor(dir)` was
+needed — RIGHT from seed 4242 walks 41 px into a wall — which is T20.20's defect, hit twice.
+Health 0 is death, not slow: the first run measured a corpse at one tick of `WALK_ACCEL`.
+Committed by the coordinator; the coder and reviewer died on the session limit mid-gate.
+EXIT=0, 53/53, 873/873, 25/25, assets ok.

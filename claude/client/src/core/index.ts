@@ -130,6 +130,22 @@ export interface PlayerState {
   /** 0 grounded, 1 airborne, 2 jetpack */
   moveState: number
   /**
+   * Health, and it is here because **`applyInput` reads it** (T20.19).
+   *
+   * Not a display value — `GameScene` has had `mine.health` off the wire for
+   * the HUD since M6. This is the input to `PlayerState::speed_multiplier()`
+   * *inside* `apply_input`, which lerps `HEALTH_SPEED_MIN` → 1 by
+   * `health / BASE_HEALTH`. The mirror passed a literal `1.0` there while the
+   * server passed the multiplier, so a hurt player was predicted up to 25 %
+   * fast, drifted past `RECONCILE_EPSILON_PX` within a couple of frames, and
+   * rubber-banded for as long as they stayed hurt and moving.
+   *
+   * The rule is not "the client must know everything" — nothing predicts
+   * darkness, so vision is exempt. It is: **everything `applyInput` reads must
+   * be identical on both sides.**
+   */
+  health: number
+  /**
    * How fast this body was falling at the moment it touched down, px/s, and 0
    * on every frame that is not a landing (T20.11).
    *
@@ -635,7 +651,7 @@ export class Core {
    * this function silently drops, and the caller would have to invent a value.
    */
   setPlayerState(id: number, s: Omit<PlayerState, 'landingImpact'>): void {
-    this.inner.set_player_state(id, s.x, s.y, s.vx, s.vy, s.grounded, s.fuel)
+    this.inner.set_player_state(id, s.x, s.y, s.vx, s.vy, s.grounded, s.fuel, s.health)
   }
 
   /**
@@ -657,7 +673,7 @@ export class Core {
 
   playerState(id: number): PlayerState | null {
     const a = this.inner.player_state(id)
-    if (a.length < 8) return null
+    if (a.length < 9) return null
     return {
       x: a[0]!,
       y: a[1]!,
@@ -667,6 +683,7 @@ export class Core {
       fuel: a[5]!,
       moveState: a[6]!,
       landingImpact: a[7]!,
+      health: a[8]!,
     }
   }
 

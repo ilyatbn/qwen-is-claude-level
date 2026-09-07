@@ -1355,6 +1355,13 @@ export class GameScene extends Phaser.Scene {
           // that was never looked at.
           fuel: mine.jetpackFuel,
           moveState: 0,
+          // T20.19. `apply_input` scales the walk target by
+          // `speed_multiplier()`, which is a function of health — so a snapshot
+          // that carried position but not health left the mirror predicting a
+          // hurt player up to 25 % fast, past `RECONCILE_EPSILON_PX` within a
+          // couple of frames, on every frame they moved. It could not
+          // self-correct either: the correction itself did not carry health.
+          health: mine.health,
         },
       })
     }

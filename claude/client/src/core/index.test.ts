@@ -135,15 +135,30 @@ describe('Core', () => {
     expect(core.loadMask(100, 100, new Uint8Array([0]))).toBe(false)
   })
 
-  it('round-trips player state', () => {
+  it('round-trips player state, health included', () => {
     core.addPlayer(1, 0, 0)
-    core.setPlayerState(1, { x: 12.5, y: -3.25, vx: 7, vy: -1.5, grounded: true, fuel: 2.5, moveState: 0 })
+    // Deliberately not BASE_HEALTH: `addPlayer` seats a player at full health,
+    // so a snapshot value equal to it would be indistinguishable from the
+    // mirror ignoring the argument (T20.19).
+    const hurt = C().BASE_HEALTH / 2
+    core.setPlayerState(1, {
+      x: 12.5,
+      y: -3.25,
+      vx: 7,
+      vy: -1.5,
+      grounded: true,
+      fuel: 2.5,
+      moveState: 0,
+      health: hurt,
+    })
     const s = core.playerState(1)
     expect(s).not.toBeNull()
     expect(s!.x).toBe(12.5)
     expect(s!.y).toBe(-3.25)
     expect(s!.grounded).toBe(true)
     expect(s!.fuel).toBe(2.5)
+    expect(s!.health).toBe(hurt)
+    expect(s!.health).not.toBe(C().BASE_HEALTH)
   })
 
   it('returns null for an unknown player', () => {

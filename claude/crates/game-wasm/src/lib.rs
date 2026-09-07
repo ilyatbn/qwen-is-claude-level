@@ -248,6 +248,22 @@ impl GameCore {
         self.players.retain(|p| p.id != id);
     }
 
+    /// One predicted tick, running **the server's own `apply_input`** — including
+    /// the server's own speed multiplier (T20.19).
+    ///
+    /// **This argument was the literal `1.0` for fifteen milestones, and the
+    /// server's is `PlayerState::speed_multiplier()`** (`world/mod.rs::apply_inputs`).
+    /// That lerps `HEALTH_SPEED_MIN` → 1.0 by `health / BASE_HEALTH`, so a player
+    /// on low health was *predicted* at full walking speed and *simulated* up to
+    /// 25 % slower. `RECONCILE_EPSILON_PX` is 2 px, which a 25 % speed error
+    /// crosses in a couple of frames — so a hurt player rubber-banded on every
+    /// frame they moved, for as long as they stayed hurt, and it could not
+    /// self-correct because `set_player_state` never carried health either.
+    ///
+    /// The rule is not *"the client must know everything"* — darkness is exempt
+    /// because nothing predicts darkness. It is: **everything `apply_input` reads
+    /// must be identical on both sides.** Health became non-exempt the moment it
+    /// fed `speed_multiplier()` inside `apply_input`.
     pub fn apply_input(&mut self, id: u8, seq: u32, buttons: u8, aim: u16, dt: f32) {
         let map = &self.map;
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
@@ -255,6 +271,7 @@ impl GameCore {
         };
         let input = Input::new(seq, buttons, aim);
         let dt = if dt > 0.0 { dt } else { SIM_DT };
+        let speed = p.stats.speed_multiplier();
         apply_input(
             map,
             &mut p.body,
@@ -262,12 +279,19 @@ impl GameCore {
             &mut p.jet,
             &input,
             &p.prev_input,
-            1.0,
+            speed,
             dt,
         );
         p.prev_input = input;
     }
 
+    /// Overwrite a mirrored body from an authoritative snapshot.
+    ///
+    /// **`health` is here because `apply_input` reads it** (T20.19). It is not a
+    /// display value — `GameScene` already had `mine.health` off the wire for the
+    /// HUD — it is the input to `speed_multiplier()`, so without it the mirror
+    /// predicts at a speed the server is not running and the reconciler corrects
+    /// every frame.
     #[allow(clippy::too_many_arguments)]
     pub fn set_player_state(
         &mut self,
@@ -278,6 +302,7 @@ impl GameCore {
         vy: f32,
         grounded: bool,
         fuel: f32,
+        health: f32,
     ) {
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
             return;
@@ -286,10 +311,16 @@ impl GameCore {
         p.body.vel = Vec2::new(vx, vy);
         p.body.grounded = grounded;
         p.jet.fuel = fuel;
+        p.stats.health = health;
     }
 
-    /// `[x, y, vx, vy, grounded, fuel, move_state, landing_impact]`, or empty for
-    /// an unknown id.
+    /// `[x, y, vx, vy, grounded, fuel, move_state, landing_impact, health]`, or
+    /// empty for an unknown id.
+    ///
+    /// **`health` is the ninth element** (T20.19), and it is here so the array
+    /// round-trips everything `set_player_state` accepts: a reader that could set
+    /// health but not read it back would have no way to check the mirror learned
+    /// what the snapshot told it.
     ///
     /// **`landing_impact` is the eighth element and it exists because `vy` cannot
     /// do its job** (T20.11). `move_y` zeroes `vel.y` before it grounds the body,
@@ -319,6 +350,7 @@ impl GameCore {
             p.jet.fuel,
             state,
             p.body.landing_impact,
+            p.stats.health,
         ])
     }
 
@@ -334,8 +366,8 @@ impl GameCore {
 
     /// Is damage against this player being reduced right now? (T20.08)
     ///
-    /// A dedicated call rather than an eighth float on `player_state`: that array
-    /// is read as `a.length < 7` on the TS side and every reader indexes it
+    /// A dedicated call rather than one more float on `player_state`: that array
+    /// is length-checked on the TS side and every reader indexes it
     /// positionally, so growing it is a change with more blast radius than a
     /// boolean deserves.
     ///
@@ -1304,6 +1336,10 @@ pub fn dequantize_angle(q: u16) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use game_core::constants::{
+        BASE_HEALTH, HEALTH_SPEED_MIN, PLAYER_H, PLAYER_W, RECONCILE_EPSILON_PX, SKY_MARGIN,
+        WALK_SPEED,
+    };
 
     /// **Every test in this crate is a plain `#[test]`, and that is the fix for
     /// T19.19.**
@@ -1570,7 +1606,7 @@ mod tests {
     fn player_state_round_trips() {
         let mut core = GameCore::new();
         core.add_player(2, 0.0, 0.0);
-        core.set_player_state(2, 12.5, -3.25, 7.0, -1.5, true, 2.5);
+        core.set_player_state(2, 12.5, -3.25, 7.0, -1.5, true, 2.5, BASE_HEALTH * 0.5);
         let s = core.player_state(2);
         assert_eq!(s[0], 12.5);
         assert_eq!(s[1], -3.25);
@@ -1578,6 +1614,190 @@ mod tests {
         assert_eq!(s[3], -1.5);
         assert_eq!(s[4], 1.0);
         assert_eq!(s[5], 2.5);
+        // T20.19: health round-trips too, because `apply_input` reads it. A
+        // control on the same call: `add_player` seats a player at BASE_HEALTH,
+        // so an assertion that only checked "health is a number" would pass
+        // against a `set_player_state` that dropped the argument on the floor.
+        assert_eq!(s[8], BASE_HEALTH * 0.5, "the snapshot's health was dropped");
+        assert_ne!(s[8], BASE_HEALTH);
+    }
+
+    // --------------------------------------------------------------- T20.19
+
+    /// How much clear, level ground `walk_both_sides` needs: the body itself,
+    /// plus the furthest a full-speed quarter-second of walking can carry it.
+    const SHELF_RUN: i32 = PLAYER_W as i32 + 96;
+
+    /// Replace the terrain around mid-map with a **level, clear shelf**, and
+    /// return where to stand on it.
+    ///
+    /// **Built rather than found, and that is the point.** This fixture's first
+    /// draft walked from the world's own spawn and reported "the fix does not
+    /// work": seed 4242 seats player 1 at x = 16, hard against the left wall on
+    /// a slope, where holding RIGHT at `WALK_SPEED` climbs and holding it at
+    /// `WALK_SPEED * HEALTH_SPEED_MIN` does not move the body one pixel. A
+    /// search of the generated mask then found **no** level, clear stretch this
+    /// long anywhere on the map, so there is nothing to walk on that is not a
+    /// slope. That is T20.20's defect — a fixture that assumes a direction has
+    /// room — and the answer here is to give it room explicitly.
+    ///
+    /// The walking run's terminal velocity is what checks this worked; see the
+    /// control in the test below.
+    fn build_shelf(w: &mut game_core::world::World) -> (f32, f32) {
+        let mut mask = w.map.mask.clone();
+        let top = SKY_MARGIN as i32 + PLAYER_H as i32 * 2;
+        let x0 = mask.w as i32 / 2;
+        let x1 = x0 + SHELF_RUN;
+        for y in 0..top {
+            mask.clear_run(y, x0 - 1, x1 + 1);
+        }
+        for y in top..(top + PLAYER_H as i32) {
+            mask.set_run(y, x0 - 1, x1 + 1);
+        }
+        let coarse = CoarseGrid::build(&mask);
+        w.map = Map::from_parts(mask, coarse, w.map.meta.clone());
+        (x0 as f32 + PLAYER_W, top as f32 - PLAYER_H)
+    }
+
+    struct WalkOutcome {
+        server_x: f32,
+        client_x: f32,
+        server_vx: f32,
+        client_vx: f32,
+        server_health: f32,
+    }
+
+    /// A quarter-second of walking, run on **the server** and on the client
+    /// mirror from the same body, on the same mask, at the same health.
+    ///
+    /// The server side is `game_core::world::World` — the type `game-server`
+    /// steps — and not a re-statement of the three lines in
+    /// `world/mod.rs::apply_inputs`. A copy of those lines would agree with the
+    /// mirror forever, including on the day `apply_inputs` stops passing
+    /// `speed_multiplier()`.
+    fn walk_both_sides(health: f32, buttons: u8) -> WalkOutcome {
+        let mut w = game_core::world::World::new(4242, MapScale::Small);
+        w.add_player(1, 0, String::new());
+        let (stand_x, stand_y) = build_shelf(&mut w);
+        {
+            let p = w.player_mut(1).expect("seated");
+            p.body.pos = Vec2::new(stand_x, stand_y);
+            p.body.vel = Vec2::ZERO;
+        }
+
+        // Settle onto the shelf. **An empty input every tick, not no input at
+        // all**: `World::step` integrates a player *inside* `apply_input`, so a
+        // player with nothing queued does not fall, and the first draft of this
+        // fixture waited ten seconds for a landing that could never happen.
+        let mut landed = false;
+        for seq in 0..120u32 {
+            w.queue_input(1, Input::new(seq, 0, 0));
+            w.step(SIM_DT);
+            if w.player(1).map(|p| p.body.grounded).unwrap_or(false) {
+                landed = true;
+                break;
+            }
+        }
+        assert!(landed, "the server player never landed on the shelf");
+
+        let mut core = GameCore::new();
+        assert!(
+            core.load_mask(w.map.mask.w, w.map.mask.h, &rle::encode(&w.map.mask)),
+            "the mirror would not take the server's mask"
+        );
+
+        w.player_mut(1).expect("seated").health = health;
+        let p = w.player(1).expect("seated");
+        let (pos, vel, grounded, fuel) = (p.body.pos, p.body.vel, p.body.grounded, p.jetpack.fuel);
+        core.add_player(1, pos.x, pos.y);
+        // The production route: this is what `prediction.ts::reconcile` calls.
+        core.set_player_state(1, pos.x, pos.y, vel.x, vel.y, grounded, fuel, health);
+
+        for seq in 0..15u32 {
+            w.queue_input(1, Input::new(seq, buttons, 0));
+            w.step(SIM_DT);
+            core.apply_input(1, seq, buttons, 0, SIM_DT);
+        }
+
+        let sp = w.player(1).expect("seated");
+        let c = core.player_state(1);
+        WalkOutcome {
+            server_x: sp.body.pos.x,
+            client_x: c[0],
+            server_vx: sp.body.vel.x,
+            client_vx: c[2],
+            server_health: sp.health,
+        }
+    }
+
+    /// The client mirror must predict a **hurt** player where the server puts
+    /// them (T20.19).
+    ///
+    /// Before this task the mirror passed a literal `1.0` where the server
+    /// passes `speed_multiplier()`, so a player at half health was predicted
+    /// 12.5 % fast and `prediction.ts` snapped and replayed every pending input
+    /// on every frame they moved.
+    #[test]
+    fn the_client_predicts_a_hurt_player_where_the_server_puts_them() {
+        let right = game_core::player::input::button::RIGHT;
+
+        // The control, and also the fixture's proof that the shelf has room:
+        // the run ends at exactly WALK_SPEED, which a body against a wall
+        // cannot reach (`move_x` and `clamp_to_world` both zero `vel.x`).
+        // Without it every assertion below is satisfied by two bodies that went
+        // nowhere together.
+        let full = walk_both_sides(BASE_HEALTH, right);
+        assert!(
+            (full.server_vx - WALK_SPEED).abs() < 1e-3,
+            "no room to walk right: the server reached {} of {WALK_SPEED}",
+            full.server_vx
+        );
+        assert!(
+            (full.server_x - full.client_x).abs() <= RECONCILE_EPSILON_PX,
+            "the healthy control already diverged, so the map or the inputs differ"
+        );
+
+        // Not health 0: that is *death*, and `apply_inputs` skips a dead player
+        // — the first run of this loop measured a corpse and read 20 px/s,
+        // exactly one tick of WALK_ACCEL. `HEALTH_SPEED_MIN` is pinned as the
+        // floor below instead, which is what it is.
+        for health in [BASE_HEALTH * 0.5, BASE_HEALTH * 0.01] {
+            // `speed_multiplier` is the shared rule, so it is the expectation
+            // for *both* sides rather than a third copy of the lerp.
+            let mut expect = PlayerState::new(1, Vec2::ZERO, 0);
+            expect.health = health;
+            let want = WALK_SPEED * expect.speed_multiplier();
+            // Pins HEALTH_SPEED_MIN in both directions: raise the floor to 1.0
+            // and the upper bound fails; drop it below the lerp's output and
+            // the lower one does.
+            assert!(
+                want > WALK_SPEED * HEALTH_SPEED_MIN && want < WALK_SPEED,
+                "{want} is not between the floor and WALK_SPEED at health {health}"
+            );
+
+            let o = walk_both_sides(health, right);
+            assert_eq!(o.server_health, health, "health moved mid-run");
+
+            // The symptom first, in the units the reconciler works in.
+            let drift = (o.server_x - o.client_x).abs();
+            assert!(
+                drift <= RECONCILE_EPSILON_PX,
+                "at health {health} the client finished {drift} px from the server, past \
+                 RECONCILE_EPSILON_PX ({RECONCILE_EPSILON_PX}) — `prediction.ts` snaps and \
+                 replays every pending input, on every frame"
+            );
+            // Then the cause, so a failure names it rather than leaving a number.
+            assert!(
+                (o.server_vx - want).abs() < 1e-3,
+                "the server ran at {} not {want} at health {health}",
+                o.server_vx
+            );
+            assert!(
+                (o.client_vx - want).abs() < 1e-3,
+                "the client predicted {} not {want} at health {health}",
+                o.client_vx
+            );
+        }
     }
 
     #[test]
