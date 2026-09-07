@@ -40,6 +40,15 @@ says, run its **Done when** command, then:
 
 Never report a task done if its tests fail. Say so and show the output.
 
+**Never stop and wait for a person.** If a task needs a decision you do not think is yours —
+a design call, a spec conflict, a choice between two defensible shapes — **put it to the
+coordinator and keep working**, on that task or the next one. A blocked builder costs hours
+that cannot be recovered; a decision recorded in the task file can be reversed in one commit.
+**Default to whatever follows the live spec**, since overriding `docs/` is the one thing no
+builder may do — that makes spec-following the option needing no authority you lack. Say what
+you assumed and where, at the code. The only things worth stopping for are irreversible,
+destructive, or outward-facing.
+
 ## Scope
 
 - The project root is the folder containing this file. Never read or write outside
