@@ -346,6 +346,37 @@ impl RoomRegistry {
 
     fn detach_from(&mut self, sid: Sid, room: RoomId) {
         if let Some(e) = self.rooms.get_mut(&room) {
+            // **Tell the room, or the seat outlives the socket** (T20.22).
+            //
+            // This was the only leave path that freed the registry's bookkeeping
+            // and told the room task nothing. `session.rs`'s `leave_room` and
+            // `on_disconnect` both send `Leave` before they call `ctx.detach`;
+            // this one is reached by `attach` when a socket **moves** — which is
+            // every `create_room`, every `join_room` by code, and every
+            // `quick_match` whose current room has started or filled — and it
+            // simply removed the mapping. The seat stayed on the roster for the
+            // life of the room, counted against `max_players`, and through
+            // `room.rs::settings_owner` an orphan that joined first owns the
+            // lobby settings and cannot be removed.
+            //
+            // **Here rather than in a fourth caller.** `Leave` is the invariant
+            // every leave maintains, and this is the one function all three go
+            // through — share the guard, or share the function.
+            //
+            // The registry holds `Sid`s and `Leave` wants a `PlayerId`, which is
+            // why the guard was dropped here; `player_of` answers it on the line
+            // above the one that removes it. Read **before** `remove_sid`, and
+            // that ordering is also what keeps this from doubling up: the two
+            // socket-layer paths empty this same `SessionMap` first, so by the
+            // time they reach here `player_of` is already `None` and no second
+            // `Leave` is sent.
+            //
+            // `attach`'s same-room early return means a retry never reaches this
+            // line, so an idempotent re-attach cannot free the seat it was
+            // retrying for.
+            if let Some(id) = e.sessions.player_of(sid) {
+                e.handle.send(crate::room::Command::Leave(id));
+            }
             e.sessions.remove_sid(sid);
             e.humans = e.humans.saturating_sub(1);
             if e.humans == 0 {

@@ -1486,3 +1486,114 @@ async fn a_refused_set_scale_tells_the_sender_why() {
 fn the_fixture_states_its_seed() {
     common::assert_seed_is_stated(&test_config());
 }
+
+/// **A hop must free the seat behind it** (T20.22).
+///
+/// `registry.rs::attach` moves a socket that is already in another room, and
+/// `detach_from` was the only leave path that told the room task nothing: it
+/// removed the socket from `RoomEntry::sessions` and decremented `humans`, and
+/// never sent `Command::Leave`. The seat stayed on the old room's roster for the
+/// life of that room, counted against `max_players`, and — through
+/// `room.rs::settings_owner`, the non-bot seat with the smallest `joined_at` —
+/// could own the lobby settings of a room nobody is in.
+///
+/// **Both rooms, at both ends.** The registry's `humans` and the room task's
+/// roster are two counts of one fact, and this defect moved only one of them:
+/// `humans` was right and the seat was stale. Asserting the empty side alone
+/// would pass for a server that seats nobody, so the new room is asserted
+/// occupied in the same breath.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hopping_to_a_new_room_frees_the_seat_in_the_old_one() {
+    let h = spawn_server().await;
+    let addr = h.addr;
+    let reg = h.stack.registry.clone();
+
+    let (first, second, client) = tokio::task::spawn_blocking(move || {
+        let inbox: Inbox = Arc::default();
+        let c = connect(addr, inbox.clone());
+
+        emit_until(
+            &c,
+            &inbox,
+            "create_room",
+            serde_json::json!({ "name": "ana", "private": true }),
+            "welcome",
+            "ana's first room",
+        );
+        let first = last(&inbox, "room_created", "room_id")
+            .as_u64()
+            .expect("a room id") as u32;
+
+        // The hop. `create_room` always selects a different room, so this is the
+        // path `attach` takes when it moves a socket.
+        c.emit(
+            "create_room",
+            serde_json::json!({ "name": "ana", "private": true }),
+        )
+        .expect("emit");
+        wait_for(&inbox, "welcome", 2, "ana's second room");
+        let second = last(&inbox, "room_created", "room_id")
+            .as_u64()
+            .expect("a room id") as u32;
+        // Handed back rather than dropped: a disconnect here would free the seat
+        // by `on_disconnect`, a different path, and this test would pass with
+        // the fix reverted. It is disconnected after the assertions.
+        (first, second, c)
+    })
+    .await
+    .expect("blocking half");
+
+    assert_ne!(first, second, "the hop did not reach a different room");
+
+    let handle_of = |room: u32| {
+        reg.lock()
+            .expect("registry")
+            .get(room)
+            .map(|e| e.handle.clone())
+    };
+
+    // The seat the hop left behind.
+    let old = handle_of(first).expect("the first room still exists");
+    let old_roster = old.roster().await.expect("room alive");
+    // The presence control, in the same breath: the room the hop arrived in
+    // holds the seat. Without it, an empty roster over there is satisfied by a
+    // server that never seated anybody at all.
+    let new = handle_of(second).expect("the second room still exists");
+    let new_roster = new.roster().await.expect("room alive");
+    assert_eq!(
+        new_roster.len(),
+        1,
+        "the room the hop arrived in holds {new_roster:?}, so this test says \
+         nothing about the room it left"
+    );
+    assert!(
+        old_roster.is_empty(),
+        "the room the hop left still seats {old_roster:?} — an orphan nobody can \
+         remove, charged against max_players for the life of the room"
+    );
+
+    // The other end of the same fact. `humans` was already correct while the
+    // seat was stale, so this is the half that was never broken — asserted so a
+    // fix that traded one for the other cannot pass.
+    let humans = |room: u32| reg.lock().expect("registry").get(room).map(|e| e.humans());
+    assert_eq!(
+        humans(first),
+        Some(0),
+        "the registry still counts the hopper"
+    );
+    assert_eq!(
+        humans(second),
+        Some(1),
+        "the registry lost the hopper on arrival"
+    );
+
+    // **On a blocking thread**: this client owns its own runtime, and dropping
+    // or disconnecting one from inside the test's runtime panics with "cannot
+    // start a runtime from within a runtime".
+    tokio::task::spawn_blocking(move || {
+        let _ = client.disconnect();
+    })
+    .await
+    .expect("disconnect");
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
