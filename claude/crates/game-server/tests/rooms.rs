@@ -8,27 +8,25 @@
 //! B" also passes for a server that delivers nothing at all. Every test here
 //! carries its control.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use game_core::constants::MapScale;
+use game_core::constants::{MapScale, LOBBY_BOT_TIMEOUT, WARMUP_SECONDS};
 use game_server::registry::{QuickMatch, RoomId};
 use game_server::{app, config::Config, state::AppState};
-use rust_socketio::{ClientBuilder, Payload, RawClient};
+
+mod common;
+use common::Inbox;
 
 fn test_config() -> Config {
     Config {
-        map_scale: MapScale::Small,
         // Bots would carve terrain on their own and make "did a carve cross
         // rooms" ambiguous.
         bot_count: 0,
-        ..Config::default()
+        ..common::test_config()
     }
 }
-
-type Inbox = Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>;
 
 struct Harness {
     addr: SocketAddr,
@@ -65,50 +63,19 @@ async fn spawn_server() -> Harness {
     Harness { addr, stack }
 }
 
-/// Connect, and **wait for `open` before emitting anything**.
-///
-/// `rust_socketio`'s `connect()` returns once engine.io is up while the socket.io
-/// namespace CONNECT is still in flight, so a `join` on the next line is dropped
-/// with no error. That produced a 50 % flaky suite and cost a whole session
-/// (`docs/70-amendments-v2.md` §A28). `socket.io-client` buffers emits until
-/// connected; this one does not.
+/// What this suite listens for. The connect itself is `tests/common` (T20.18).
+const EVENTS: &[&str] = &[
+    "welcome",
+    "map_init",
+    "carve",
+    "player_join",
+    "player_leave",
+    "explosion",
+    "join_error",
+];
+
 fn connect(addr: SocketAddr, inbox: Inbox) -> rust_socketio::client::Client {
-    let events = [
-        "welcome",
-        "map_init",
-        "carve",
-        "player_join",
-        "player_leave",
-        "explosion",
-        "join_error",
-    ];
-    let mut b = ClientBuilder::new(format!("http://{addr}")).namespace("/");
-    for ev in events {
-        let inbox = inbox.clone();
-        let name = ev.to_string();
-        b = b.on(ev, move |payload: Payload, _: RawClient| {
-            let v = match payload {
-                Payload::Text(v) => v.first().cloned().unwrap_or(serde_json::Value::Null),
-                #[allow(deprecated)]
-                Payload::String(s) => {
-                    serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s))
-                }
-                Payload::Binary(b) => serde_json::json!({ "binary_len": b.len() }),
-            };
-            if let Ok(mut g) = inbox.lock() {
-                g.entry(name.clone()).or_default().push(v);
-            }
-        });
-    }
-    let (open_tx, open_rx) = std::sync::mpsc::channel::<()>();
-    b = b.on("open", move |_: Payload, _: RawClient| {
-        let _ = open_tx.send(());
-    });
-    let client = b.connect().expect("socket.io connect");
-    open_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("socket.io never reported `open`");
-    client
+    common::connect(addr, EVENTS, &inbox)
 }
 
 fn count(inbox: &Inbox, ev: &str) -> usize {
@@ -122,7 +89,7 @@ fn count(inbox: &Inbox, ev: &str) -> usize {
 /// client here owns its own runtime and every use of it must be on a blocking
 /// thread — dropping a runtime inside an async context panics.
 fn wait_for(inbox: &Inbox, ev: &str, n: usize, label: &str) {
-    let budget = Duration::from_millis(BUDGET_MS);
+    let budget = Duration::from_millis(budget_ms());
     let started = std::time::Instant::now();
     loop {
         if count(inbox, ev) >= n {
@@ -157,7 +124,17 @@ fn wait_for(inbox: &Inbox, ev: &str, n: usize, label: &str) {
 }
 
 /// The wall-clock budget every wait in this file gets.
-const BUDGET_MS: u64 = 10_000;
+///
+/// **Derived, and deliberately not equal to any boundary it outlasts** (T20.18).
+/// This was `10_000` while `LOBBY_BOT_TIMEOUT` and `WARMUP_SECONDS` are both
+/// `10.0`, so a wait that ran its budget out expired on precisely the tick the
+/// room seated its bots or ended warmup under it. Measured not to be what failed
+/// anything (T20.20's D-58 entry) — the worst of 277 waits used 17 % of its
+/// budget — but a budget typed as a literal also expires the day its boundary is
+/// retuned upwards, and `budget_past` retires both hazards at once.
+fn budget_ms() -> u64 {
+    common::budget_past(&[LOBBY_BOT_TIMEOUT, WARMUP_SECONDS])
+}
 
 /// Emit `ev` and **keep emitting** until `expect` comes back.
 ///
@@ -190,7 +167,7 @@ fn emit_until(
     expect: &str,
     label: &str,
 ) {
-    let budget = Duration::from_millis(BUDGET_MS);
+    let budget = Duration::from_millis(budget_ms());
     // Well above the normal latency, or the retry IS the bug. Measured on this
     // box, a healthy `welcome` takes 1.7-1.9 s (worst observed 2.4 s), and a
     // first cut of this retried every 1.5 s — under the normal wait, so every
@@ -201,7 +178,7 @@ fn emit_until(
     //
     // A third of the budget, floored at 5 s: it never fires in a healthy run and
     // fires two or three times in a genuinely silent one.
-    let retry_every = Duration::from_millis((BUDGET_MS / 3).max(5_000));
+    let retry_every = Duration::from_millis((budget_ms() / 3).max(5_000));
     let started = std::time::Instant::now();
     let mut sent = 0;
     while started.elapsed() < budget {
@@ -894,4 +871,10 @@ async fn a_room_with_a_human_in_it_is_never_reaped() {
     );
 
     h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// **The seed is stated, not inherited** (T20.18/T20.20).
+#[test]
+fn the_fixture_states_its_seed() {
+    common::assert_seed_is_stated(&test_config());
 }

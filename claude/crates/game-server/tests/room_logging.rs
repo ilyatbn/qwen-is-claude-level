@@ -11,12 +11,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use game_core::constants::MapScale;
 use game_server::config::Config;
 use game_server::room::spawn_room;
 use socketioxide::SocketIo;
 use tokio::sync::oneshot;
 use tracing_subscriber::layer::SubscriberExt;
+
+mod common;
 
 #[derive(Default)]
 struct Captured {
@@ -56,10 +57,7 @@ where
 
 /// Small, not the shipped Large default: see the note in `tests/room.rs`.
 fn test_config() -> Config {
-    Config {
-        map_scale: MapScale::Small,
-        ..Config::default()
-    }
+    common::test_config()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -130,4 +128,10 @@ async fn every_tick_span_carries_room_and_tick() {
         ticks.last(),
         "tick never advanced across spans: {ticks:?}"
     );
+}
+
+/// **The seed is stated, not inherited** (T20.18/T20.20).
+#[test]
+fn the_fixture_states_its_seed() {
+    common::assert_seed_is_stated(&test_config());
 }

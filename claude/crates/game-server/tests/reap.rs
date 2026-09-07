@@ -15,21 +15,20 @@
 //! T13.06.11 is a commit in this repo named for the time the reaper had no
 //! caller, and a test calling it would not have noticed.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use game_core::constants::MapScale;
 use game_server::{app, config::Config, state::AppState};
-use rust_socketio::{ClientBuilder, Payload, RawClient};
+
+mod common;
+use common::Inbox;
 
 /// Short enough that the live loop takes the room inside a test's patience.
 /// `ROOM_REAP_INTERVAL` is the resolution, so a room lives for at most
 /// `ttl + interval`.
 const TTL_S: f32 = 1.0;
-
-type Inbox = Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>;
 
 struct Harness {
     addr: SocketAddr,
@@ -60,35 +59,12 @@ async fn spawn_server(config: Config) -> Harness {
     Harness { addr, stack }
 }
 
+/// What this suite listens for. The connect itself is `tests/common` (T20.18) —
+/// seven files had a copy of it and only their event lists differed.
+const EVENTS: &[&str] = &["welcome", "map_init", "room_created", "join_error"];
+
 fn connect(addr: SocketAddr, inbox: Inbox) -> rust_socketio::client::Client {
-    let events = ["welcome", "map_init", "room_created", "join_error"];
-    let mut b = ClientBuilder::new(format!("http://{addr}")).namespace("/");
-    for ev in events {
-        let inbox = inbox.clone();
-        let name = ev.to_string();
-        b = b.on(ev, move |payload: Payload, _: RawClient| {
-            let v = match payload {
-                Payload::Text(v) => v.first().cloned().unwrap_or(serde_json::Value::Null),
-                #[allow(deprecated)]
-                Payload::String(s) => {
-                    serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s))
-                }
-                Payload::Binary(b) => serde_json::json!({ "binary_len": b.len() }),
-            };
-            if let Ok(mut g) = inbox.lock() {
-                g.entry(name.clone()).or_default().push(v);
-            }
-        });
-    }
-    let (open_tx, open_rx) = std::sync::mpsc::channel::<()>();
-    b = b.on("open", move |_: Payload, _: RawClient| {
-        let _ = open_tx.send(());
-    });
-    let client = b.connect().expect("socket.io connect");
-    open_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("socket.io never reported `open`");
-    client
+    common::connect(addr, EVENTS, &inbox)
 }
 
 fn count(inbox: &Inbox, ev: &str) -> usize {

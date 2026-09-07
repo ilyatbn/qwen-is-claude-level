@@ -477,7 +477,7 @@ right-button decision rather than around it. **Amendments are the coordinator's.
 - [ ] [T20.14](M20/T20.14-the-whole-thing-at-once.md) — The whole thing at once: an exploratory load test **(v8)**
 - [ ] [T20.16](M20/T20.16-the-balance-control-was-never-sound.md) — Replace the balance control's shape **(v8)** — **the test is knowingly red**; booked by ruling
 - [ ] [T20.17](M20/T20.17-the-tests-that-never-run.md) — The tests that never run **(v8)** — nine milestones of invisible erosion; **survey first**
-- [ ] [T20.18](M20/T20.18-seven-copies-of-connect.md) — Seven copies of `connect` **(v8)** — from T20.10's handoff
+- [x] [T20.18](M20/T20.18-seven-copies-of-connect.md) — Seven copies of `connect` **(v8)** — from T20.10's handoff — **its own Done-when grep cannot survive the consolidation it asks for**; replaced by a guard that reads the value
 - [x] [T20.19](M20/T20.19-a-hurt-player-rubber-bands.md) — A hurt player rubber-bands, permanently **(v8)** — **live at HEAD**, found by T21.02's sweep
 - [ ] [T20.21](M20/T20.21-two-things-apply-input-still-reads.md) — Two things `apply_input` still reads that the mirror does not have **(v8)** — booked by T20.19's review: health truncates to `u8` on the wire (a correction every 5.33 s, forever), and the mirror has no `alive` while `apply_inputs` gates on it (a dead player is predicted walking). Plus two live test defects in T20.19.
 - [x] [T20.20](M20/T20.20-a-flake-that-is-a-fixture.md) — A "flake" that is a fixture defect **(v8)** — **found by T20.11**; D-58 entry with a deterministic cause — **three of the four had one**, and the budget coincidence did not

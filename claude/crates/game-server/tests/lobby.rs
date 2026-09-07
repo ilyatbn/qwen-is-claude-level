@@ -4,24 +4,22 @@
 //! Every negative here carries a control, because "the client did not end up in
 //! that room" also passes for a server that seats nobody anywhere.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use game_core::constants::MapScale;
+use game_core::constants::{READY_TIMEOUT_SECS, ROOM_EMPTY_TTL};
 use game_server::{app, config::Config, state::AppState};
-use rust_socketio::{ClientBuilder, Payload, RawClient};
+
+mod common;
+use common::Inbox;
 
 fn test_config() -> Config {
     Config {
-        map_scale: MapScale::Small,
         bot_count: 0,
-        ..Config::default()
+        ..common::test_config()
     }
 }
-
-type Inbox = Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>;
 
 struct Harness {
     addr: SocketAddr,
@@ -46,47 +44,22 @@ async fn spawn_server() -> Harness {
     Harness { addr, stack }
 }
 
-/// Waits for `open` before returning — see `tests/rooms.rs` and §A28.
+/// What this suite listens for. The connect itself is `tests/common` (T20.18).
+const EVENTS: &[&str] = &[
+    "welcome",
+    "map_init",
+    "room_created",
+    // §E6: `room_list` is deleted — it had no subscriber anywhere in the
+    // app. `lobby_state` is what replaces it, and it is read.
+    "lobby_state",
+    "lobby_error",
+    "room_left",
+    "join_error",
+    "player_join",
+];
+
 fn connect(addr: SocketAddr, inbox: Inbox) -> rust_socketio::client::Client {
-    let events = [
-        "welcome",
-        "map_init",
-        "room_created",
-        // §E6: `room_list` is deleted — it had no subscriber anywhere in the
-        // app. `lobby_state` is what replaces it, and it is read.
-        "lobby_state",
-        "lobby_error",
-        "room_left",
-        "join_error",
-        "player_join",
-    ];
-    let mut b = ClientBuilder::new(format!("http://{addr}")).namespace("/");
-    for ev in events {
-        let inbox = inbox.clone();
-        let name = ev.to_string();
-        b = b.on(ev, move |payload: Payload, _: RawClient| {
-            let v = match payload {
-                Payload::Text(v) => v.first().cloned().unwrap_or(serde_json::Value::Null),
-                #[allow(deprecated)]
-                Payload::String(s) => {
-                    serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s))
-                }
-                Payload::Binary(b) => serde_json::json!({ "binary_len": b.len() }),
-            };
-            if let Ok(mut g) = inbox.lock() {
-                g.entry(name.clone()).or_default().push(v);
-            }
-        });
-    }
-    let (open_tx, open_rx) = std::sync::mpsc::channel::<()>();
-    b = b.on("open", move |_: Payload, _: RawClient| {
-        let _ = open_tx.send(());
-    });
-    let client = b.connect().expect("socket.io connect");
-    open_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("socket.io never reported `open`");
-    client
+    common::connect(addr, EVENTS, &inbox)
 }
 
 /// A field from the **last** occurrence of `ev`, or `Null`.
@@ -133,7 +106,17 @@ fn count(inbox: &Inbox, ev: &str) -> usize {
 }
 
 /// The wall-clock budget every wait in this file gets.
-const BUDGET_MS: u64 = 30_000;
+///
+/// **Derived, and deliberately not equal to any boundary it outlasts** (T20.18).
+/// This was `30_000` while `READY_TIMEOUT_SECS` and `ROOM_EMPTY_TTL` are both
+/// `30.0`, so a wait that ran its budget out expired on precisely the tick the
+/// unready sweep fired or the room became reapable. Measured not to be what
+/// failed anything (T20.20's D-58 entry), but a budget typed as a literal also
+/// expires the day its boundary is retuned upwards, and `budget_past` retires
+/// both hazards at once.
+fn budget_ms() -> u64 {
+    common::budget_past(&[READY_TIMEOUT_SECS, ROOM_EMPTY_TTL])
+}
 
 /// Emit `ev` and **keep emitting** until `expect` comes back.
 ///
@@ -192,7 +175,7 @@ fn emit_until_dropping(
     label: &str,
     drop_first: usize,
 ) {
-    let budget = Duration::from_millis(BUDGET_MS);
+    let budget = Duration::from_millis(budget_ms());
     // Well above the normal latency, or the retry IS the bug. Measured on this
     // box, a healthy `welcome` takes 1.7-1.9 s (worst observed 2.4 s), and a
     // first cut of this retried every 1.5 s — under the normal wait, so every
@@ -203,7 +186,7 @@ fn emit_until_dropping(
     //
     // A third of the budget, floored at 5 s: it never fires in a healthy run and
     // fires two or three times in a genuinely silent one.
-    let retry_every = Duration::from_millis((BUDGET_MS / 3).max(5_000));
+    let retry_every = Duration::from_millis((budget_ms() / 3).max(5_000));
     let started = std::time::Instant::now();
     let mut sent = 0;
     while started.elapsed() < budget {
@@ -273,7 +256,7 @@ fn first(inbox: &Inbox, ev: &str, field: &str) -> serde_json::Value {
 /// 10 s budget was sized for. This test passed standalone and failed inside the
 /// gate for exactly that reason.
 fn wait_for(inbox: &Inbox, ev: &str, n: usize, label: &str) {
-    let budget = Duration::from_millis(BUDGET_MS);
+    let budget = Duration::from_millis(budget_ms());
     let started = std::time::Instant::now();
     loop {
         if count(inbox, ev) >= n {
@@ -1334,11 +1317,20 @@ async fn every_seated_socket_gets_the_map_when_the_match_starts() {
 /// must not have moved it to something shared. Testing `mix_seed` alone would
 /// not catch that, because it never exercises the decision about when the seed
 /// is taken.
+///
+/// **`fixed_seed: None` is stated here, not inherited** (T20.18). This is the
+/// one test in the file whose subject *is* the seed, and a pinned seed is
+/// documented to give every room the same map — `room.rs`'s
+/// `fixed_seed_pins_every_room_to_the_same_map` asserts exactly that. It passed
+/// for a milestone on a default nobody had read; consolidating the fixture is
+/// what surfaced it, and the assertion it makes is now visible in the four lines
+/// above it rather than three files away in `config.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_lobbies_started_with_the_same_settings_get_different_maps() {
     use game_server::room::Room;
     let cfg = Arc::new(Config {
         bot_count: 0,
+        fixed_seed: None,
         ..test_config()
     });
 
@@ -1487,4 +1479,10 @@ async fn a_refused_set_scale_tells_the_sender_why() {
     );
 
     h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// **The seed is stated, not inherited** (T20.18/T20.20).
+#[test]
+fn the_fixture_states_its_seed() {
+    common::assert_seed_is_stated(&test_config());
 }

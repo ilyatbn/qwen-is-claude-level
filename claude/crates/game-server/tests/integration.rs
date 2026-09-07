@@ -32,25 +32,25 @@
 //! namespace CONNECT is still in flight, and an emit before that lands is dropped
 //! with no error — the ~50 % flake that cost a session (§A28).
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use game_core::constants::{
-    MapScale, SIM_DT, SIM_HZ, SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES, SNAPSHOT_HZ,
+    SIM_DT, SIM_HZ, SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES, SNAPSHOT_HZ,
     SNAPSHOT_PLAYER_BYTES,
 };
 use game_server::{app, config::Config, state::AppState};
-use rust_socketio::{ClientBuilder, Payload, RawClient};
+use rust_socketio::{Payload, RawClient};
 
-/// Small maps: a test binary spinning several rooms should not starve the box.
+mod common;
+use common::{connect_watching as connect, Inbox};
+
 fn test_config() -> Config {
     Config {
-        map_scale: MapScale::Small,
         bot_count: 0,
-        ..Config::default()
+        ..common::test_config()
     }
 }
 
@@ -118,51 +118,6 @@ async fn start_match(room: &game_server::room::RoomHandle) {
     }
 }
 
-type Inbox = Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>;
-
-fn text_of(payload: Payload) -> serde_json::Value {
-    match payload {
-        Payload::Text(v) => v.first().cloned().unwrap_or(serde_json::Value::Null),
-        #[allow(deprecated)]
-        Payload::String(s) => serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s)),
-        Payload::Binary(b) => serde_json::json!({ "binary_len": b.len() }),
-    }
-}
-
-/// A blocking socket.io client on its own thread, recording everything it hears.
-fn connect(
-    addr: SocketAddr,
-    events: &[&'static str],
-) -> (rust_socketio::client::Client, Inbox, mpsc::Receiver<String>) {
-    let inbox: Inbox = Arc::new(Mutex::new(HashMap::new()));
-    let (tx, rx) = mpsc::channel::<String>();
-    let mut b = ClientBuilder::new(format!("http://{addr}")).namespace("/");
-    for ev in events {
-        let inbox = inbox.clone();
-        let tx = tx.clone();
-        let name = (*ev).to_string();
-        b = b.on(*ev, move |payload: Payload, _: RawClient| {
-            let v = text_of(payload);
-            inbox
-                .lock()
-                .expect("poisoned")
-                .entry(name.clone())
-                .or_default()
-                .push(v);
-            let _ = tx.send(name.clone());
-        });
-    }
-    let (open_tx, open_rx) = mpsc::channel::<()>();
-    b = b.on("open", move |_: Payload, _: RawClient| {
-        let _ = open_tx.send(());
-    });
-    let client = b.connect().expect("socket.io connect");
-    open_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("socket.io never reported `open`");
-    (client, inbox, rx)
-}
-
 /// Wait for one named event, or fail saying what actually arrived.
 fn wait_for(rx: &mpsc::Receiver<String>, want: &str, secs: u64) {
     let deadline = std::time::Instant::now() + Duration::from_secs(secs);
@@ -208,7 +163,11 @@ struct SnapshotLog {
 /// Like [`connect`], but also decodes every `snapshot` into a [`SnapshotLog`].
 ///
 /// `rust_socketio` registers handlers on the builder, not on the connected
-/// client, so this cannot be bolted on after the fact.
+/// client, so this cannot be bolted on after the fact — which is why
+/// `tests/common` exposes `builder`, `subscribe` and `open` separately as well
+/// as the `connect` that composes them (T20.18). This is the one caller that
+/// needs a handler of its own, and it adds one rather than keeping a second copy
+/// of the connect.
 fn connect_logging_snapshots(
     addr: SocketAddr,
     events: &[&'static str],
@@ -218,25 +177,10 @@ fn connect_logging_snapshots(
     mpsc::Receiver<String>,
     SnapshotLog,
 ) {
-    let inbox: Inbox = Arc::new(Mutex::new(HashMap::new()));
+    let inbox: Inbox = Arc::default();
     let (tx, rx) = mpsc::channel::<String>();
     let log = SnapshotLog::default();
-    let mut b = ClientBuilder::new(format!("http://{addr}")).namespace("/");
-    for ev in events {
-        let inbox = inbox.clone();
-        let tx = tx.clone();
-        let name = (*ev).to_string();
-        b = b.on(*ev, move |payload: Payload, _: RawClient| {
-            let v = text_of(payload);
-            inbox
-                .lock()
-                .expect("poisoned")
-                .entry(name.clone())
-                .or_default()
-                .push(v);
-            let _ = tx.send(name.clone());
-        });
-    }
+    let mut b = common::subscribe(common::builder(addr), events, &inbox, Some(tx));
     {
         let log = log.clone();
         b = b.on("snapshot", move |payload: Payload, _: RawClient| {
@@ -257,15 +201,7 @@ fn connect_logging_snapshots(
             }
         });
     }
-    let (open_tx, open_rx) = mpsc::channel::<()>();
-    b = b.on("open", move |_: Payload, _: RawClient| {
-        let _ = open_tx.send(());
-    });
-    let client = b.connect().expect("socket.io connect");
-    open_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("socket.io never reported `open`");
-    (client, inbox, rx, log)
+    (common::open(b), inbox, rx, log)
 }
 
 /// Join, then wait for the map, then declare ready. The sequence every client runs.
@@ -750,3 +686,9 @@ async fn a_joiner_never_receives_another_player_s_inventory() {
 //
 // **When reconnection lands, this test is the one to write again** — the same
 // both-ends shape, against a client rejoining a match it was already seated in.
+
+/// **The seed is stated, not inherited** (T20.18/T20.20).
+#[test]
+fn the_fixture_states_its_seed() {
+    common::assert_seed_is_stated(&test_config());
+}

@@ -5503,3 +5503,15 @@ budget. `commands_sent_between_ticks` now probes both directions (`room_for`, po
 in sixteen having 5 px of room. `a_player_spawned_against_the_wall_is_still_walked` reproduces
 *"from 2032 to 2032"* on demand. Three more D-58 entries had mechanisms too; table now empty.
 Done-when 20/20. EXIT=0, 47/47, 1288/1301 rust, 890/890 client, 25/25, assets ok.
+
+## T20.18 — one fixture, and a gate that could not outlive its own deliverable
+
+`tests/common/mod.rs` holds `connect`, `test_config`, `emit_when_ready`. **The seven `connect`
+copies had not drifted** — four inbox-shaped, three also feeding an mpsc channel, identical
+otherwise — so nothing had to win, and `connect_logging_snapshots` extends
+`builder`/`subscribe`/`open` rather than copying them. `emit_when_ready` retries **only**
+`IllegalActionBeforeOpen`; budgets stay per file via `budget_past`. **Two findings:**
+`lobby.rs::two_lobbies_..._get_different_maps` was living off the inherited `fixed_seed: None`;
+and **Done-when (2) greps the source, so it reads 0 for all eight after the consolidation it
+mandates** — replaced by `assert_seed_is_stated`: 8 red on one break in the fixture, 7 on one
+in `connect`. EXIT=0, 47/47, 1296/1309 rust, 890/890 client, 25/25, assets ok.

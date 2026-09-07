@@ -9,21 +9,18 @@
 //! If this fails, everything downstream is suspect — prediction runs against the
 //! wrong terrain, and a player is shot through a wall they can still see.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use game_core::constants::MapScale;
 use game_server::{app, config::Config, state::AppState};
-use rust_socketio::{ClientBuilder, Payload, RawClient};
+
+mod common;
+use common::{connect_watching as connect, emit_when_ready, Inbox};
 
 fn test_config() -> Config {
-    Config {
-        map_scale: MapScale::Small,
-        ..Config::default()
-    }
+    common::test_config()
 }
 
 struct Server {
@@ -68,92 +65,6 @@ async fn spawn_server() -> Server {
         _shutdown: stack.shutdown,
     }
 }
-
-type Inbox = Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>;
-
-fn text_of(payload: Payload) -> serde_json::Value {
-    match payload {
-        Payload::Text(v) => v.first().cloned().unwrap_or(serde_json::Value::Null),
-        #[allow(deprecated)]
-        Payload::String(s) => serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s)),
-        Payload::Binary(b) => serde_json::json!({ "binary_len": b.len() }),
-    }
-}
-
-/// A client that records what it hears.
-///
-/// It blocks on `open` before returning. `ClientBuilder::connect()` returns once
-/// engine.io is up while the socket.io namespace CONNECT is still in flight, and
-/// an emit before that lands is dropped with no error — the ~50 % flake that cost
-/// a session (`docs/70-amendments-v2.md` §A28).
-fn connect(
-    addr: SocketAddr,
-    events: &[&'static str],
-) -> (rust_socketio::client::Client, Inbox, mpsc::Receiver<String>) {
-    let inbox: Inbox = Arc::new(Mutex::new(HashMap::new()));
-    let (tx, rx) = mpsc::channel::<String>();
-    let mut b = ClientBuilder::new(format!("http://{addr}")).namespace("/");
-    for ev in events {
-        let inbox = inbox.clone();
-        let tx = tx.clone();
-        let name = (*ev).to_string();
-        b = b.on(*ev, move |payload: Payload, _: RawClient| {
-            inbox
-                .lock()
-                .expect("poisoned")
-                .entry(name.clone())
-                .or_default()
-                .push(text_of(payload));
-            let _ = tx.send(name.clone());
-        });
-    }
-    let (open_tx, open_rx) = mpsc::channel::<()>();
-    b = b.on("open", move |_: Payload, _: RawClient| {
-        let _ = open_tx.send(());
-    });
-    let client = b.connect().expect("socket.io connect");
-    open_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("socket.io never reported `open`");
-    (client, inbox, rx)
-}
-
-/// Emit, waiting out the window in which the client is open but not yet sendable.
-///
-/// `connect` blocks on `open`, which is §A28's fix and is still necessary — **but
-/// it is not sufficient under load.** The `open` callback is dispatched from the
-/// poll thread, and for a few milliseconds after it `emit` still returns
-/// `IllegalActionBeforeOpen`. Measured: 8/8 passes on an idle box in isolation,
-/// and one failure inside a full `cargo test --workspace`, where every test
-/// binary in the repository is running at once — `a_client_flooding_inputs…`
-/// panicked with `emit join: IllegalActionBeforeOpen`.
-///
-/// **This does not weaken anything.** It relaxes no assertion and swallows no
-/// server behaviour: if the server never accepts the join, `wait_for("welcome")`
-/// still fails on its own deadline, and every emit that is not accepted inside
-/// `EMIT_READY_WINDOW` still panics with the error it got.
-///
-/// The same shape exists in the other seven test binaries, each with its own copy
-/// of `connect` — see `tasks/HANDOFF-M20.md`; a shared `tests/common` module is
-/// the durable fix and is a task, not a side effect of this one.
-fn emit_when_ready(c: &rust_socketio::client::Client, ev: &str, payload: serde_json::Value) {
-    let deadline = std::time::Instant::now() + EMIT_READY_WINDOW;
-    loop {
-        match c.emit(ev, payload.clone()) {
-            Ok(()) => return,
-            Err(e) => {
-                if std::time::Instant::now() >= deadline {
-                    panic!("emit {ev}: {e}");
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    }
-}
-
-/// How long `emit_when_ready` will wait for a client that reported `open` to
-/// become sendable. Generous, because it only elapses when something is wrong.
-const EMIT_READY_WINDOW: Duration = Duration::from_secs(5);
 
 fn wait_for(rx: &mpsc::Receiver<String>, want: &str, secs: u64) {
     let deadline = std::time::Instant::now() + Duration::from_secs(secs);
@@ -907,4 +818,10 @@ fn a_client_that_is_not_told_about_the_pads_carves_a_different_mask() {
         "a client with NO pads produced the same mask — so this test cannot fail, \
          and the pads are not actually indestructible"
     );
+}
+
+/// **The seed is stated, not inherited** (T20.18/T20.20).
+#[test]
+fn the_fixture_states_its_seed() {
+    common::assert_seed_is_stated(&test_config());
 }

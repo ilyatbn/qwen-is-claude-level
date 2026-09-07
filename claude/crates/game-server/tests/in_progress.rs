@@ -8,18 +8,27 @@
 //! Every refusal here carries a control that a *lobby* join still succeeds.
 //! Without it, "bo did not get in" also passes for a server that seats nobody.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use game_core::constants::MapScale;
+use game_core::constants::{READY_TIMEOUT_SECS, ROOM_EMPTY_TTL};
 use game_server::{app, config::Config, state::AppState};
-use rust_socketio::{ClientBuilder, Payload, RawClient};
 
-const BUDGET_MS: u64 = 30_000;
+mod common;
+use common::Inbox;
 
-type Inbox = Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>;
+/// The wall-clock budget every wait in this file gets.
+///
+/// **Derived, and deliberately not equal to any boundary it outlasts** (T20.18).
+/// This was `30_000` while `READY_TIMEOUT_SECS` and `ROOM_EMPTY_TTL` are both
+/// `30.0`, so a wait that ran its budget out expired on precisely the tick the
+/// unready sweep fired or the room became reapable. Measured not to be what
+/// failed anything (T20.20's D-58 entry), but a budget typed as a literal also
+/// expires the day its boundary is retuned upwards.
+fn budget_ms() -> u64 {
+    common::budget_past(&[READY_TIMEOUT_SECS, ROOM_EMPTY_TTL])
+}
 
 struct Harness {
     addr: SocketAddr,
@@ -28,10 +37,9 @@ struct Harness {
 
 fn test_config() -> Config {
     Config {
-        map_scale: MapScale::Small,
         // A match that starts must have something to start with.
         bot_count: 1,
-        ..Config::default()
+        ..common::test_config()
     }
 }
 
@@ -49,42 +57,18 @@ async fn spawn_server() -> Harness {
     Harness { addr, stack }
 }
 
+/// What this suite listens for. The connect itself is `tests/common` (T20.18).
+const EVENTS: &[&str] = &[
+    "welcome",
+    "map_init",
+    "room_created",
+    "lobby_state",
+    "join_error",
+    "player_join",
+];
+
 fn connect(addr: SocketAddr, inbox: Inbox) -> rust_socketio::client::Client {
-    let events = [
-        "welcome",
-        "map_init",
-        "room_created",
-        "lobby_state",
-        "join_error",
-        "player_join",
-    ];
-    let mut b = ClientBuilder::new(format!("http://{addr}")).namespace("/");
-    for ev in events {
-        let inbox = inbox.clone();
-        let name = ev.to_string();
-        b = b.on(ev, move |payload: Payload, _: RawClient| {
-            let v = match payload {
-                Payload::Text(v) => v.first().cloned().unwrap_or(serde_json::Value::Null),
-                #[allow(deprecated)]
-                Payload::String(s) => {
-                    serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s))
-                }
-                Payload::Binary(b) => serde_json::json!({ "binary_len": b.len() }),
-            };
-            if let Ok(mut g) = inbox.lock() {
-                g.entry(name.clone()).or_default().push(v);
-            }
-        });
-    }
-    let (open_tx, open_rx) = std::sync::mpsc::channel::<()>();
-    b = b.on("open", move |_: Payload, _: RawClient| {
-        let _ = open_tx.send(());
-    });
-    let client = b.connect().expect("socket.io connect");
-    open_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("socket.io never reported `open`");
-    client
+    common::connect(addr, EVENTS, &inbox)
 }
 
 fn count(inbox: &Inbox, ev: &str) -> usize {
@@ -120,7 +104,7 @@ fn summary(inbox: &Inbox) -> String {
 /// silently stretches and the number in the failure message becomes a fiction.
 fn wait_for(inbox: &Inbox, ev: &str, n: usize, label: &str) {
     let started = std::time::Instant::now();
-    while started.elapsed() < Duration::from_millis(BUDGET_MS) {
+    while started.elapsed() < Duration::from_millis(budget_ms()) {
         if count(inbox, ev) >= n {
             return;
         }
@@ -128,7 +112,7 @@ fn wait_for(inbox: &Inbox, ev: &str, n: usize, label: &str) {
     }
     panic!(
         "{label}: waited {} s for {n} `{ev}`, saw {} (inbox: {})",
-        BUDGET_MS / 1000,
+        budget_ms() / 1000,
         count(inbox, ev),
         summary(inbox)
     );
@@ -405,4 +389,10 @@ async fn quick_match_makes_a_new_lobby_rather_than_being_refused() {
     );
 
     h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// **The seed is stated, not inherited** (T20.18/T20.20).
+#[test]
+fn the_fixture_states_its_seed() {
+    common::assert_seed_is_stated(&test_config());
 }

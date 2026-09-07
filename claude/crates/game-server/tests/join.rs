@@ -4,20 +4,17 @@
 //! These replace M0's echo round-trip: the transport is now proven by doing
 //! something the game needs rather than by bouncing a payload.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use game_core::constants::MapScale;
 use game_server::{app, config::Config, state::AppState};
-use rust_socketio::{ClientBuilder, Payload, RawClient};
 
-/// Small maps, so a test binary spinning several rooms does not starve the box.
+mod common;
+use common::{connect_watching as connect, Inbox};
+
 fn test_config() -> Config {
     Config {
-        map_scale: MapScale::Small,
         // Armed, so **ana's own fires are the carves**. Without this ana has no
         // weapon and every carve this test counted was a bot's — which made the
         // comparison depend on when the bots happened to engage, and on ana and
@@ -25,7 +22,7 @@ fn test_config() -> Config {
         // The claim is that a carve ana causes reaches both sockets; arming her
         // is what makes the test perform that action instead of watching for one.
         dev_loadout: true,
-        ..Config::default()
+        ..common::test_config()
     }
 }
 
@@ -83,59 +80,6 @@ async fn spawn_server(config: Config) -> Server {
 }
 
 /// Everything one test client received, by event name.
-type Inbox = Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>;
-
-fn text_of(payload: Payload) -> serde_json::Value {
-    match payload {
-        Payload::Text(v) => v.first().cloned().unwrap_or(serde_json::Value::Null),
-        #[allow(deprecated)]
-        Payload::String(s) => serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s)),
-        Payload::Binary(b) => serde_json::json!({ "binary_len": b.len() }),
-    }
-}
-
-/// A blocking socket.io client on its own thread, recording everything it hears.
-fn connect(
-    addr: SocketAddr,
-    events: &[&'static str],
-) -> (rust_socketio::client::Client, Inbox, mpsc::Receiver<String>) {
-    let inbox: Inbox = Arc::new(Mutex::new(HashMap::new()));
-    let (tx, rx) = mpsc::channel::<String>();
-    let mut b = ClientBuilder::new(format!("http://{addr}")).namespace("/");
-    for ev in events {
-        let inbox = inbox.clone();
-        let tx = tx.clone();
-        let name = (*ev).to_string();
-        b = b.on(*ev, move |payload: Payload, _: RawClient| {
-            let v = text_of(payload);
-            inbox
-                .lock()
-                .expect("poisoned")
-                .entry(name.clone())
-                .or_default()
-                .push(v);
-            let _ = tx.send(name.clone());
-        });
-    }
-    // Wait for the socket.io CONNECT, not just the transport.
-    //
-    // `connect()` returns once engine.io is up, but the namespace handshake is
-    // still in flight, and an `emit` before it lands is dropped on the floor with
-    // no error — which surfaces later as "never received welcome" and an empty
-    // inbox. The browser client buffers emits until connected; `rust_socketio`
-    // does not, so the harness has to.
-    let (open_tx, open_rx) = mpsc::channel::<()>();
-    b = b.on("open", move |_: Payload, _: RawClient| {
-        let _ = open_tx.send(());
-    });
-    let client = b.connect().expect("socket.io connect");
-    open_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("socket.io never reported `open`");
-    (client, inbox, rx)
-}
-
-/// Wait for one named event, or fail with what actually arrived.
 fn wait_for(rx: &mpsc::Receiver<String>, want: &str, secs: u64) {
     let deadline = std::time::Instant::now() + Duration::from_secs(secs);
     let mut seen = Vec::new();
@@ -433,4 +377,10 @@ async fn the_join_flow_end_to_end() {
         out["leaves"].as_u64().unwrap_or(0) > 0,
         "an abrupt drop must still produce player_leave"
     );
+}
+
+/// **The seed is stated, not inherited** (T20.18/T20.20).
+#[test]
+fn the_fixture_states_its_seed() {
+    common::assert_seed_is_stated(&test_config());
 }

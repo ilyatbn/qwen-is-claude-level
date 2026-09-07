@@ -8,7 +8,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use game_core::constants::MapScale;
 use game_core::constants::{PLAYER_W, SIM_HZ, STEP_UP, WALK_SPEED, WALL_W};
 use game_core::map::Map;
 use game_core::physics::body::Body;
@@ -19,37 +18,9 @@ use game_server::state::AppState;
 use socketioxide::SocketIo;
 use tokio::sync::oneshot;
 
-/// **The map these tests run on, stated rather than inherited** (T20.20).
-///
-/// `Config::default()` leaves `fixed_seed: None`, so every run generated a
-/// different map and put the player somewhere different on it. That is what
-/// made `commands_sent_between_ticks_are_all_applied` a D-58 flaky-list entry:
-/// on a seed that spawns against a wall the held input is a no-op, and on a seed
-/// that spawns in a pocket there is nowhere to walk at all. Measured while
-/// fixing it, with the direction probe already in place: **one unseeded run in
-/// sixteen found 5 px of room in the better direction**, against a 16 px body.
-/// The terrain is that tight: scanning the mask of
-/// `World::new(TEST_SEED, MapScale::Small)` for a level, clear stretch as long
-/// as a body plus a quarter-second walk found **none, on any row** — which is
-/// the same result T20.19 got before it gave up and built its own shelf.
-///
-/// At this seed the probe reports **the full `reach` of clear room, 38 px** —
-/// measured on three runs, identical each time, which is the property a pinned
-/// seed is bought for.
-///
-/// `replay.rs` and `replay_run.rs` have pinned their seeds inline since M13
-/// (`Some(4242)`, `Some(90210)`, `Some(31337)`) and neither has ever been on the
-/// flaky list. The same value as `replay.rs`, so a failure here is reproducible
-/// against a round that suite can also replay.
-///
-/// **It is not on its own the fix.** A seed makes the spawn reproducible; it
-/// does not make walking *right* correct, and the next map change re-rolls which
-/// seeds are walkable. `room_for` below is what makes the direction right, and
-/// the two together are what T20.18 institutionalises for the other seven copies
-/// of this fixture.
-const TEST_SEED: u64 = 4242;
+mod common;
 
-/// A **Small** map, not the shipped default.
+/// A **Small** map on a **stated seed**, not the shipped defaults.
 ///
 /// `DEFAULT_MAP_SCALE` is Large (§A1), so a room built from `Config::default()`
 /// generates 4096x2048 and then steps that world at 60 Hz for the lifetime of the
@@ -60,12 +31,29 @@ const TEST_SEED: u64 = 4242;
 /// `bot_count` is 0 for the same class of reason: `BOT_COUNT` defaults to 3
 /// (§A5), and these tests count seats and players. Bot seating has its own
 /// suite in `tests/bots.rs`.
+///
+/// **What `common::TEST_SEED` buys this file in particular** (T20.20). All eight
+/// fixtures used to reach `fixed_seed: None` through `..Config::default()`, so
+/// every run generated a different map and put the player somewhere different on
+/// it — which is what made `commands_sent_between_ticks_are_all_applied` a D-58
+/// flaky-list entry. On a seed that spawns against a wall the held input is a
+/// no-op; on a seed that spawns in a pocket there is nowhere to walk at all.
+/// Measured while fixing it, with the direction probe already in place: **one
+/// unseeded run in sixteen found 5 px of room in the better direction**, against
+/// a 16 px body. The terrain is that tight: scanning the mask of
+/// `World::new(common::TEST_SEED, MapScale::Small)` for a level, clear stretch as
+/// long as a body plus a quarter-second walk found **none, on any row** — the
+/// same result T20.19 got before it gave up and built its own shelf. At this seed
+/// the probe reports **the full `reach` of clear room, 38 px**, on three runs out
+/// of three.
+///
+/// **The seed is not on its own the fix.** It makes the spawn reproducible; it
+/// does not make walking *right* correct, and the next map change re-rolls which
+/// seeds are walkable. `room_for` below is what makes the direction right.
 pub fn test_config() -> Config {
     Config {
-        map_scale: MapScale::Small,
         bot_count: 0,
-        fixed_seed: Some(TEST_SEED),
-        ..Config::default()
+        ..common::test_config()
     }
 }
 
@@ -413,4 +401,10 @@ async fn the_world_is_reachable_only_through_the_channel() {
     // AppState is untouched by a join: the room is the authority, and the count is
     // maintained by the socket layer (T6.03), not by the room.
     assert_eq!(state.players(), 0);
+}
+
+/// **The seed is stated, not inherited** (T20.18/T20.20).
+#[test]
+fn the_fixture_states_its_seed() {
+    common::assert_seed_is_stated(&test_config());
 }
