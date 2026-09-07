@@ -52,12 +52,17 @@ Never report a task done if its tests fail. Say so and show the output.
   the constant cannot detect the constant itself changing.** Planting
   `ITEM_SPAWN_INTERVAL` 14 → 42 leaves **all 1296 gate tests passing, none failing** — every
   assertion moved with it, exactly as this rule requires. Pinning tests the implementation
-  against the constant; **nothing then tests the constant against reality.** So a tunable whose
-  *value* matters needs one assertion of a different kind — against a measured basis, the way
-  `capacity.rs::max_rooms_carries_its_basis` pins the claim its doc comment makes, or against a
-  golden (`golden.rs::generated_masks_match_the_golden_table` catches every terrain parameter
-  this way). The gate's blind spot here is balance and density, which is precisely where this
-  repository's historical erosion happened.
+  against the constant; **nothing then tests the constant against reality.**
+  **And the ignored measurements do not save you either — verified by planting it and running
+  them: all five pass too.** An earlier note here claimed that suite caught it; it does not, and
+  the claim was repeated once before anyone re-ran it. So for `ITEM_SPAWN_INTERVAL` the true
+  statement is the strong one: **nothing in this repository detects that constant changing.**
+  A tunable whose *value* matters needs an assertion of a different kind — against a measured
+  basis, the way `capacity.rs::max_rooms_carries_its_basis` pins the claim its doc comment
+  makes, or against a golden (`golden.rs::generated_masks_match_the_golden_table` does catch
+  every terrain parameter this way, checked). **Beware the near miss**: `density_report` floors
+  item *variety* and the plant moves *rate* — 37.1 spawns → 26.1 — so a test that looks like it
+  covers the area passes while the thing it is named for moves by a third.
 - No `unwrap()`/`expect()` in `game-server` request paths. Fine in `game-core` and
   tests.
 - TypeScript is `strict`, no `any`. No physics or map logic in TS — that is
