@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as Proc;
 use std::sync::Arc;
 
-use game_core::constants::{MapScale, SIM_DT};
+use game_core::constants::{MapScale, SIM_DT, SIM_HZ};
 use game_core::player::input::{button, Input};
 use game_server::config::Config;
 use game_server::replay::{self, ReplayCommand};
@@ -63,7 +63,32 @@ fn cfg() -> Arc<Config> {
 
 /// Record a round: two bots, one human firing and moving, long enough to cross a
 /// checkpoint and to let the weather scheduler and item cadences run.
+/// What a recording is, for the one caller that needs more than its path.
+///
+/// **`last_alive` exists because the perturbation fixture was measuring a
+/// corpse** (T20.21). Only player 0's inputs reach the file — the bots steer
+/// themselves inside the room and never produce a `ReplayCommand::Input`, which
+/// this fixture's own candidate list confirms: 1400 recorded `Input` commands,
+/// every one of them player 0 — so every perturbable byte belongs to one player,
+/// and `world/mod.rs::apply_inputs` skips a dead one *before* it computes speed.
+/// After that tick, flipping LEFT/RIGHT is a no-op **by construction**, and a
+/// perturbation that cannot change the simulation is a falsification that proves
+/// nothing.
+///
+/// The caller cannot learn this from a `PathBuf`, and reconstructing it would
+/// mean re-simulating the round the recorder just ran. *Return what the caller
+/// needs.*
+struct Recorded {
+    path: PathBuf,
+    /// The last tick on which the recorded inputs' owner was alive.
+    last_alive: u32,
+}
+
 fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
+    record_a_round_reporting(dir, ticks).path
+}
+
+fn record_a_round_reporting(dir: &Path, ticks: u32) -> Recorded {
     let mut room = Room::new(cfg());
     room.start_recording(dir, "000000000001");
 
@@ -81,6 +106,7 @@ fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
     // recorded every one of them at tick 0.
     room.apply_for_test(Command::StartWithBots(id));
 
+    let mut last_alive = 0u32;
     for t in 1..=ticks {
         let buttons = if t % 90 < 45 {
             button::RIGHT
@@ -95,6 +121,14 @@ fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
             room.apply_for_test(Command::Fire(id));
         }
         room.tick_inline(SIM_DT);
+        if room
+            .world_for_test()
+            .players
+            .iter()
+            .any(|p| p.id == id && p.alive)
+        {
+            last_alive = t;
+        }
     }
     // NON-VACUITY. Both halves of this fixture's fix were falsified independently
     // and the test passed either way: with the clock advancing but no round
@@ -119,7 +153,10 @@ fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|e| e == "replay"))
         .collect();
-    v.pop().expect("a file")
+    Recorded {
+        path: v.pop().expect("a file"),
+        last_alive,
+    }
 }
 
 /// Re-simulate exactly as the binary does. Kept in the test rather than exported
@@ -445,14 +482,49 @@ fn find_input(bytes: &[u8], cursor: &mut usize, input: &Input) -> Option<usize> 
 #[test]
 fn a_perturbed_command_is_localised_to_a_nearby_tick() {
     let s = Scratch::new("bin-diverge");
-    let path = record_a_round(s.path(), 1400);
-    let bytes = std::fs::read(&path).expect("read");
-    let file = replay::read_file(&path).expect("decode");
+    let rec = record_a_round_reporting(s.path(), 1400);
+    let bytes = std::fs::read(&rec.path).expect("read");
+    let file = replay::read_file(&rec.path).expect("decode");
+
+    // **One second of living round after the last perturbed tick** (T20.21).
+    //
+    // A perturbation can only diverge if the simulation acts on it, and this
+    // recording's inputs all belong to one player who *dies*. `apply_inputs`
+    // skips a dead player, so past `last_alive` the flip is a no-op by
+    // construction — and a margin before it, there is not enough of the player's
+    // own round left for the difference to compound.
+    //
+    // Measured at this commit, `last_alive = 1347`, twenty candidates per window:
+    //
+    //   margin 0            ticks 1328..1347   5/20   (15 wash out, contiguous)
+    //   margin SIM_HZ / 2   ticks 1298..1317  19/20
+    //   margin SIM_HZ       ticks 1268..1287  20/20
+    //   margin 2 * SIM_HZ   ticks 1208..1227  19/20
+    //
+    // A plateau, not a spike: the two neighbours of the chosen margin both read
+    // 19/20, so this is not perched on one lucky window.
+    const MARGIN: u32 = SIM_HZ;
+    let cut = rec.last_alive.saturating_sub(MARGIN);
+
+    // **The precondition, asserted rather than arranged.** Without this the
+    // fixture fails as *"the runner is barely detecting corrupted commands"* —
+    // blaming the runner for a recording in which nothing could have been
+    // detected. That is what it did: the old window was the last 20 candidates
+    // minus an 8-candidate tail, ticks 1372..1391, entirely past a death at
+    // 1348, and it reported 0 of 20 against the replay runner.
+    assert!(
+        cut > replay::CHECKPOINT_STRIDE,
+        "the recorded player was last alive at tick {}, which leaves no window \
+         between the first checkpoint ({}) and a {MARGIN}-tick margin before \
+         death — nothing in this recording can be perturbed into a divergence, \
+         so a low count below would say nothing about the runner",
+        rec.last_alive,
+        replay::CHECKPOINT_STRIDE
+    );
 
     // Candidates after the first checkpoint, so tick 600 always reproduces and
-    // the divergence has somewhere later to be found. Spread across the rest of
-    // the recording rather than clustered: a population claim needs more than
-    // one draw, and how long a perturbation survives depends on where the bot is.
+    // the divergence has somewhere later to be found; and at or before the cut,
+    // so the player is alive to act on them with round left to compound in.
     let mut cursor = 0usize;
     let mut candidates: Vec<(u32, usize, u8)> = Vec::new();
     for (tick, cmd) in &file.body {
@@ -465,43 +537,36 @@ fn a_perturbed_command_is_localised_to_a_nearby_tick() {
         let Some(at) = find_input(&bytes, &mut cursor, first) else {
             continue;
         };
-        if *tick > replay::CHECKPOINT_STRIDE {
+        if *tick > replay::CHECKPOINT_STRIDE && *tick <= cut {
             candidates.push((*tick, at, first.buttons));
         }
     }
     assert!(
         candidates.len() >= 24,
-        "only {} perturbable inputs after tick {}",
+        "only {} perturbable inputs between tick {} and tick {cut}",
         candidates.len(),
         replay::CHECKPOINT_STRIDE
     );
     // **A contiguous run of late candidates, not a stride across the whole
     // recording.** D-24 predicted this test would need moving the next time the
-    // map changed, and T18.04's bigger objects are that change. Measured here:
+    // map changed, and T18.04's bigger objects were that change. Measured then:
     // spreading twelve samples across the round gave **0 of 12** where it had
     // given 4, and widening the same stride to 24 gave **0 of 24**.
     //
-    // A contiguous late run gives **11 of 20**, and the nine that wash out are
-    // the *last nine ticks in the window* — an ordered boundary, not scatter. A
-    // perturbation needs round left after it to compound before the recording
-    // ends, and those have almost none. Why an evenly-strided sample across the
-    // earlier round found nothing I did not establish, and do not assert.
-    //
-    // The window stops eight candidates short of the end because those eight are
-    // the far side of that boundary: including them would only dilute the sample
-    // with ticks already known to have nowhere to diverge.
+    // **The window is now located by the recording rather than by hand** (T20.21).
+    // It used to be "the last 28 candidates, take 20", a hand-slid offset from
+    // the end of the file, and D-24's prediction came true twice: once when the
+    // terrain moved, and again when the player started dying earlier and the
+    // whole window landed past her death. Anchoring it to `last_alive` makes it
+    // move with the round, which is what the boundary was always about — a
+    // perturbation needs the player alive to act on it and round left to compound
+    // in, and neither of those is a fixed distance from the end of a file.
     //
     // The property under test is **localisation of the divergences that do
     // occur** (D-20), not that any given byte diverges — so the sample is taken
-    // where divergences live, which is late, and it is larger. A bigger sample in
-    // the right region is the hardening; the floor below is not lowered to meet
-    // a thinner one.
+    // where divergences live.
     let n = candidates.len();
-    let sample: Vec<_> = candidates[n.saturating_sub(28)..]
-        .iter()
-        .take(20)
-        .cloned()
-        .collect();
+    let sample: Vec<_> = candidates[n.saturating_sub(20)..].to_vec();
 
     let mut diverged = 0usize;
     let mut washed_out: Vec<u32> = Vec::new();
@@ -562,12 +627,16 @@ fn a_perturbed_command_is_localised_to_a_nearby_tick() {
     // detect a corrupted command at all, and every assertion above would have
     // been skipped in silence.
     //
-    // The floor is 5 of 20 against a measured 11 of 20. D-24's complaint about
-    // the old one was that 3 of 12 measured sat *on* its own floor of 3, so the
-    // next map change went red by construction; this one has six candidates of
-    // room, which is the whole distance from the boundary to the start of the
-    // window. Below 5 the runner would be missing three quarters of corrupted
-    // commands, which is a real regression and not terrain drift.
+    // The floor is 5 of 20 against a measured **20 of 20** (T20.21), so it has
+    // fifteen of room. D-24's complaint about the floor before this one was that
+    // 3 of 12 measured sat *on* its own floor of 3, and the next map change went
+    // red by construction. That is exactly what the `MARGIN` above buys and it is
+    // measured: with `MARGIN` at 0 the window butts against the death boundary
+    // and reads **5 of 20** — passing today, on the floor, red on the next drift.
+    // The margin is what keeps this assertion about the runner.
+    //
+    // Below 5 the runner would be missing three quarters of corrupted commands,
+    // which is a real regression and not terrain drift.
     //
     // Counts in the message rather than a `println!` — which `cargo test`
     // swallows without `--nocapture`, so a drift to 1 would pass in silence.
@@ -590,8 +659,15 @@ fn a_perturbed_command_is_localised_to_a_nearby_tick() {
     // Measured, with a control worktree at the commit before §F4 was repealed:
     //
     //   before  11/20 diverged, 9 washed out (the last nine ticks in the window)
-    //   after   20/20 diverged, 0 washed out — and still 20/20 when the window
-    //           is slid all the way to the final 20 candidates
+    //   after   20/20 diverged, 0 washed out
+    //
+    // **The second half of that line was "and still 20/20 when the window is slid
+    // all the way to the final 20 candidates", and it is withdrawn** (T20.21).
+    // It stopped being true the moment the recorded player started dying before
+    // the end of the recording: the final 20 candidates now read **0 of 20**,
+    // because `apply_inputs` skips a dead player and every one of them is hers.
+    // A measurement in a comment is only valid for the code it was taken
+    // against, and nothing re-validated this one until it failed.
     //
     // The cause is the feature: bots used to stop dead to shoot, and now they
     // fire while moving, so a corrupted button becomes a shot — and a shot
@@ -616,12 +692,15 @@ fn a_perturbed_command_is_localised_to_a_nearby_tick() {
         washed_out.len()
     );
     if washed_out.is_empty() {
-        // Not a failure, but worth saying out loud: the recording no longer
-        // contains a tick late enough to be immune, so this sample can no longer
-        // report where that boundary is.
+        // Not a failure, and no longer a puzzle (T20.21): the wash-out tail is
+        // real and it sits against the **death** boundary, not the end of the
+        // file — 15 of 20 wash out with `MARGIN` at 0. This window is placed a
+        // second clear of it on purpose, so a clean sweep here is the window
+        // working rather than the boundary having vanished.
         println!(
-            "note: every sampled perturbation diverged — the recording has no wash-out \
-             tail since §F4, so this run measures detection but not the boundary"
+            "note: every sampled perturbation diverged — this window is a second \
+             clear of the wash-out boundary by construction, so it measures \
+             detection and not the boundary"
         );
     }
 }
