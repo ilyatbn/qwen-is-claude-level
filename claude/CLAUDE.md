@@ -234,6 +234,17 @@ green suite and a working game.
   and the digits. Use `scripts/vite-url.mjs`. Six copies, six identical breaks.
 - **Do not run the gate while another vite or cargo run is active.** A loaded box
   makes every wall-clock assertion a coin flip.
+- **Name your output file after yourself: `gate-<who>.txt`, never a shared name.** With several
+  agents in one tree there is **no local signal for who owns a process** — a shared shell
+  snapshot means `ps -o ppid=` gives the same parent for everyone, and a start time only tells
+  you the process is new, which is exactly what makes it look like yours. Two gates ran at once
+  tonight because a status message said the box was free and a stale `pgrep` said otherwise;
+  load hit 21 and the run was worthless. The redirect path is the one piece of ownership you
+  control, so make it identify you. **And re-run `pgrep` yourself immediately before you
+  start** — a status statement from anyone, including the coordinator, is not a measurement.
+- **An unattributable process gets reported, not killed.** Sweeping a process group on a guess
+  took out two vites and a leaked server that belonged to someone else. If you cannot say whose
+  it is, say so — that is the answer, not a failure to find one.
 - **Never chain file authoring behind `cd X &&` — and know that `set -e` will not save you.**
   Measured, not argued — **in an empty scratch dir**, or `nonexistent/` may exist and you
   will get four different answers and conclude the rule is wrong:
