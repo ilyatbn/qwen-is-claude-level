@@ -84,6 +84,23 @@ fn wait_for(rx: &mpsc::Receiver<String>, want: &str, secs: u64) {
     panic!("never received `{want}` within {secs}s; saw {seen:?}");
 }
 
+/// Every carve a client was told about, **both shapes**, in `seq` order.
+///
+/// `Carve` and `CarveCapsule` share one `carve_seq` counter on the server, so
+/// they interleave and only the merged stream is the truth. Collecting one name
+/// silently drops the other: this fixture read `"carve"` alone for nine
+/// milestones, so **lava — the only capsule carve in the game until melee
+/// joined it — was never once covered by the assertion the architecture rests
+/// on.** It surfaced when a shovel swing became a capsule and both clients
+/// agreed with each other while disagreeing with the server, which is exactly
+/// the signature of a shape the clients never heard about.
+fn carves(inbox: &Inbox) -> Vec<serde_json::Value> {
+    let mut all = got(inbox, "carve");
+    all.extend(got(inbox, "carve_capsule"));
+    all.sort_by_key(|c| c["seq"].as_u64().unwrap_or(0));
+    all
+}
+
 fn got(inbox: &Inbox, ev: &str) -> Vec<serde_json::Value> {
     inbox
         .lock()
@@ -154,7 +171,22 @@ fn replay(map_init_b64: &str, carves: &[serde_json::Value]) -> String {
             c["y"].as_i64().unwrap_or(0) as i32,
             c["r"].as_i64().unwrap_or(0) as i32,
         );
-        map.carve_circle(x, y, r);
+        // **Both shapes.** A capsule carries `x0/y0/x1/y1`; a circle carries
+        // `x/y`. Applying a capsule as a circle at its `x` — which is absent, so
+        // 0 — would carve the map corner and diverge far more loudly than the
+        // bug this fixture exists to catch, so the shape is chosen on the field
+        // that identifies it rather than on the event name.
+        if let Some(x0) = c["x0"].as_i64() {
+            map.carve_capsule(
+                x0 as i32,
+                c["y0"].as_i64().unwrap_or(0) as i32,
+                c["x1"].as_i64().unwrap_or(0) as i32,
+                c["y1"].as_i64().unwrap_or(0) as i32,
+                r,
+            );
+        } else {
+            map.carve_circle(x, y, r);
+        }
     }
     map.mask.hash_hex()
 }
@@ -188,7 +220,13 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
     let arm = room.clone();
 
     let out = tokio::task::spawn_blocking(move || {
-        let evs = ["welcome", "map_init", "carve", "mask_checksum"];
+        let evs = [
+            "welcome",
+            "map_init",
+            "carve",
+            "carve_capsule",
+            "mask_checksum",
+        ];
         // §E1/§E2: both clients seat into the **lobby**, and the match starts
         // once they are in. `map_init` arrives at match start, not at join, so
         // waiting for it before starting would wait forever.
@@ -261,8 +299,8 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
         let m1 = got(&i1, "map_init");
         let m2 = got(&i2, "map_init");
         let cs = got(&i1, "mask_checksum");
-        let carves1 = got(&i1, "carve");
-        let carves2 = got(&i2, "carve");
+        let carves1 = carves(&i1);
+        let carves2 = carves(&i2);
         // §E1: the clients stay connected until the server's mask has been read.
         // The last human leaving now sends the room back to `Lobby`, and a lobby
         // has no world — so disconnecting here would make the server hash below
@@ -348,7 +386,7 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
         server_hash = read.0;
         server_seq = read.1;
 
-        let (n1, n2) = (got(&i1, "carve"), got(&i2, "carve"));
+        let (n1, n2) = (carves(&i1), carves(&i2));
         let max_of = |v: &[serde_json::Value]| -> u64 {
             v.iter()
                 .filter_map(|c| c["seq"].as_u64())
@@ -558,7 +596,7 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
     let arm = room.clone();
 
     let out = tokio::task::spawn_blocking(move || {
-        let evs = ["welcome", "map_init", "carve"];
+        let evs = ["welcome", "map_init", "carve", "carve_capsule"];
 
         // §E2 moved *when* the joiner can arrive, not what is under test.
         //
@@ -644,7 +682,7 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
         let mut stable = 0;
         for _ in 0..120 {
             std::thread::sleep(Duration::from_millis(50));
-            let n = got(&i2, "carve").len();
+            let n = carves(&i2).len();
             if n == last && n > 0 {
                 stable += 1;
                 // 400 ms with nothing new, well past the 110 ms firing cadence.
@@ -658,7 +696,7 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
         }
 
         let m2 = got(&i2, "map_init");
-        let carves2 = got(&i2, "carve");
+        let carves2 = carves(&i2);
         // The inbox comes back too: the socket stays connected, so it keeps
         // filling, and the comparison below waits for it to catch up with the
         // server rather than trusting the settle loop above to have caught
@@ -729,7 +767,7 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
         server_hash = read.0;
         server_seq = read.1;
 
-        let now = got(&i2, "carve");
+        let now = carves(&i2);
         client_seq = now
             .iter()
             .filter_map(|c| c["seq"].as_u64())

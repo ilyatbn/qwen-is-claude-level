@@ -3044,16 +3044,26 @@ impl World {
                     hits: result.hits.len() as u8,
                 });
                 if let Some(c) = result.carve {
-                    let tip = centre + Vec2::new(aim.cos(), aim.sin()) * reach;
+                    // **The shape `swing` dug, not one derived here.** A melee
+                    // carve is a capsule swept from the swinger's body edge to
+                    // the tip, and publishing a circle at the tip instead is a
+                    // silent mask divergence: the server digs one shape and every
+                    // client applies another. That is exactly what happened when
+                    // the carve became a capsule and this site was not changed
+                    // with it.
+                    let (mouth, tip, r) = result
+                        .carve_shape
+                        .expect("a carve without its geometry cannot be published");
                     self.carve_seq += 1;
                     let seq = self.carve_seq;
-                    self.events.push(GameEvent::Carve {
+                    self.events.push(GameEvent::CarveCapsule {
                         tick,
                         seq,
-                        x: tip.x.round() as i32,
-                        y: tip.y.round() as i32,
-                        r: w.blast_radius.round() as i32,
-                        kind: CarveKind::Weapon,
+                        x0: mouth.x.round() as i32,
+                        y0: mouth.y.round() as i32,
+                        x1: tip.x.round() as i32,
+                        y1: tip.y.round() as i32,
+                        r,
                     });
                     self.reveal(&c.revealed, now);
                 }

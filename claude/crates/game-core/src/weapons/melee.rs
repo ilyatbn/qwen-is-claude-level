@@ -25,6 +25,17 @@ const LOS_STEP: f32 = 3.0;
 #[derive(Debug, Default)]
 pub struct MeleeResult {
     pub carve: Option<CarveResult>,
+    /// The capsule this swing actually dug — `(mouth, tip, radius)` — so the
+    /// caller **announces the shape that was carved instead of deriving one of
+    /// its own**.
+    ///
+    /// It exists because deriving it twice went wrong the first time it could:
+    /// the carve became a capsule from the body edge while `World::fire` still
+    /// published `Carve { x: tip, y: tip, r }`, a circle. Clients applied the
+    /// circle faithfully, and `two_clients_agree_on_the_mask_after_a_hundred_carves`
+    /// — the assertion the whole client/server architecture rests on — went red.
+    /// `CLAUDE.md`: *return what the caller needs*, or it will be called wrong.
+    pub carve_shape: Option<(Vec2, Vec2, i32)>,
     /// victim, damage dealt, impulse applied
     pub hits: Vec<(HitId, f32, Vec2)>,
     /// Everyone this swing **threw**, whether or not it hurt them — see
@@ -171,13 +182,15 @@ pub fn swing(
         let dir = Vec2::new(aim.cos(), aim.sin());
         let mouth = origin + dir * (PLAYER_W * 0.5);
         let tip = origin + dir * reach;
+        let r = def.blast_radius.round() as i32;
         out.carve = Some(map.carve_capsule(
             mouth.x.round() as i32,
             mouth.y.round() as i32,
             tip.x.round() as i32,
             tip.y.round() as i32,
-            def.blast_radius.round() as i32,
+            r,
         ));
+        out.carve_shape = Some((mouth, tip, r));
     }
 
     out

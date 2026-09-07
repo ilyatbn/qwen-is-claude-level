@@ -5567,3 +5567,20 @@ share the guard. **`walk_both_sides` crosses the real codec now** (`game-server`
 reads *"the client predicted 124.875 not 125"*. Floor pinned, `SHELF_RUN` computed. 18/18 wasm,
 1002/1002 core, 891/891 client. **Not green:** `checksum.rs::two_clients_agree...` is red at
 `f874cec` twice with my changes removed — not this task's, and it is the architecture's claim.
+
+## The shovel capsule desynced every client, and `checksum.rs` could never have seen it
+
+`f874cec` made `melee::swing` carve a **capsule** while `World::fire` still published
+`Carve { x: tip, y: tip, r }` — a circle. The server dug one shape and every client applied
+another; `two_clients_agree_on_the_mask_after_a_hundred_carves` caught it, which is the
+assertion `checksum.rs` calls the architecture's foundation. Fixed at the seam: `MeleeResult`
+returns `carve_shape`, the capsule it actually dug, and `fire` publishes `CarveCapsule` from
+those numbers rather than deriving its own — *return what the caller needs*.
+**The harness was the deeper find.** It subscribed to `"carve"` alone, so both clients missed
+every capsule carve *equally*, which is exactly why they agreed with each other. **Lava has
+been the game's only capsule carve for nine milestones and this test never covered it.**
+`carves()` merges both names in `seq` order (one shared counter) and `replay` picks the shape
+from the fields, not the name. Falsified: publish a circle for a capsule and it reds again.
+checksum 6/6, game-server otherwise green, game-core 1002/1002, clippy clean.
+**Open and not mine:** `replay_run::a_perturbed_command_is_localised_to_a_nearby_tick` — 0 of
+20 perturbations diverge. Reproduced at `f03ab6f` with my files stashed; handed to T20.21.
