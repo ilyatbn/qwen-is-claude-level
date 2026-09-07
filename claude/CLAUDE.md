@@ -234,6 +234,15 @@ green suite and a working game.
   and the digits. Use `scripts/vite-url.mjs`. Six copies, six identical breaks.
 - **Do not run the gate while another vite or cargo run is active.** A loaded box
   makes every wall-clock assertion a coin flip.
+- **The gate needs the tree exclusively, not just the box.** It builds and serves from the
+  working tree, so **any edit while it runs invalidates the whole run** — vite serves a
+  half-written module, `window.__game` never constructs, and a dozen browser checks fail with
+  `Cannot read properties of undefined`. That signature means *the tree moved*, not *the code
+  is broken*, and reading it as a result wastes the next thirty-five minutes too.
+  **This happened twice in one night**, both times because the coordinator said "the box is
+  yours" to an agent while a gate was still running. *"Do not touch the browser"* is not
+  enough — a Rust-side task that also edits one client file is enough to do it. **Nobody edits
+  anything under `claude/` while a gate runs.** Commit first, then gate, then work.
 - **Name your output file after yourself: `gate-<who>.txt`, never a shared name.** With several
   agents in one tree there is **no local signal for who owns a process** — a shared shell
   snapshot means `ps -o ppid=` gives the same parent for everyone, and a start time only tells
