@@ -5607,3 +5607,16 @@ code. `record_a_round` now **returns `last_alive`** and the window is anchored a
 before it instead of a hand-slid offset from the end of the file, which is what D-24 predicted
 would keep breaking. Measured: margin 0 → 5/20 (on the floor), SIM_HZ/2 → 19/20, **SIM_HZ →
 20/20**, 2·SIM_HZ → 19/20. Two stale comment measurements withdrawn. 279/279 game-server.
+
+## T20.16 — one axis, aggregate floors, and the old floors watched a 4x regression
+
+Control was Large/4 against a shipping Medium/6 — **two axes**, decided by one seed. It is now
+`DEFAULT_MAP_SCALE` with **2 seats**: one pair against fifteen, and the smallest count at which
+combat is possible, so structural rather than tuned. At `177108b` the control gives **0 encounters
+and 0.0 % sight on all eight seeds** against shipping 447 and a worst seed of 49.7 %. Floors are
+aggregate — per-seed sight ≥10 % (5.0x on the worst draw), pooled damage ≥1000 (2.1x) — and both
+print their margin. `fought` is reported and never asserted: it saturates on trace damage, scoring
+the control **4/8 while it produced zero encounters**, which is why 6-vs-7 was never a margin.
+Falsified in production: `FOV_DAY` 320→80 reds the new floors on the seeds that regressed, while
+the old floors on that same build both passed and only `before_fought < fought` fired. Booked
+T20.26 — `ITEM_SPAWN_INTERVAL` 14→42 passes all six ignored balance tests and all three gate ones.

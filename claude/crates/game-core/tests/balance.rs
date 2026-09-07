@@ -862,81 +862,261 @@ fn encounters(seed: u64, scale: MapScale, bot_count: usize, seconds: f32) -> Enc
     r
 }
 
-/// The acceptance test for T11.16, and it measures the configuration the game
-/// actually ships over the round length it actually runs — `ROUND_SECONDS`, not
-/// the 150 s the survey uses, because a player experiences the whole round.
+// ---------------------------------------------------------------------------
+// T20.16 — the acceptance test, and the control that has to fail it
+// ---------------------------------------------------------------------------
+
+/// The control configuration: the shipping map, with **two seats**.
 ///
-/// The floors carry a **control**: the pre-fix configuration (Large, 4 players)
-/// must *fail* them. Without it these pass for any configuration at all, which
-/// is exactly how §B15's assertions passed against nothing.
+/// **One axis, and the axis is seats.** The control this replaced was `Large`
+/// with 4 players against a shipping `Medium` with 6 — two axes at once, so it
+/// could never say which one the floors were sensitive to (T20.16).
+///
+/// Two seats is one pair; the shipping six is fifteen. Every meeting in this
+/// simulation is a pair meeting, so the shipping configuration has fifteen times
+/// the opportunities — and that is the whole sentence. It is not a tuned number:
+/// **2 is the smallest seat count at which combat is possible at all**, so it is
+/// the structural floor of this axis rather than a value chosen to make a
+/// margin work.
+const CONTROL_SEATS: usize = 2;
+
+/// Per seed, the share of the round with two live players in each other's sight
+/// **and** a clear line between them.
+///
+/// **Measured at `177108b`, `--release`, 8 seeds x `ROUND_SECONDS`:** the
+/// shipping configuration's *worst* seed is **49.7 %** and its best is 100 %, so
+/// this floor of 10 % carries a **5.0x margin on the worst draw**. The control
+/// reads **0.0 % on all eight seeds**, and the retired `Large`-4 control read
+/// 0.0 % on five of eight with a pooled 14.4 %.
+///
+/// Per seed rather than pooled, because the claim is *"no round is a walk in an
+/// empty park"*, and a pooled share is satisfied by two seeds of stalemate. Two
+/// shipping seeds sit at 98.6 % and 100 % — one pair that met and never
+/// separated — and a pooled number would let those two carry six dead ones.
+const SEED_LOS_FLOOR: f32 = 10.0;
+
+/// Damage dealt between players, summed over every seed.
+///
+/// **Measured at `177108b`, `--release`:** shipping **2117** against this floor
+/// of 1000, a **2.1x margin**; the control totals **27** (78x below shipping)
+/// and the retired `Large`-4 control totalled 411.
+///
+/// Pooled, because this one *is* a population claim about the configuration and
+/// not about any round: some rounds end in a chase and some in a brawl, and a
+/// per-seed damage floor would be a claim about pacing that nobody has made.
+const POOLED_DAMAGE_FLOOR: f32 = 1000.0;
+
+/// What the floors say, and which of them a configuration fails.
+///
+/// Returned rather than asserted, so **the same function judges the shipping
+/// configuration and the control**. That is the whole point of a control: the
+/// floors must be the identical floors, or "the control fails them" is a claim
+/// about two different tests (`CLAUDE.md`: share the guard, or share the
+/// function).
+fn floor_failures(rs: &[Encounters]) -> Vec<String> {
+    // `zip` truncates to the shorter side without saying so, and this function's
+    // whole output is "which seeds failed" — a caller that passed six rounds
+    // would get a clean bill for eight seeds. Count both ends.
+    assert_eq!(
+        rs.len(),
+        SEEDS.len(),
+        "floor_failures was given {} rounds for {} seeds — the per-seed floor \
+         would silently skip the difference",
+        rs.len(),
+        SEEDS.len()
+    );
+    let mut out = Vec::new();
+    for (seed, r) in SEEDS.iter().zip(rs) {
+        let los = 100.0 * r.los_ticks as f32 / r.ticks.max(1) as f32;
+        if los < SEED_LOS_FLOOR {
+            out.push(format!(
+                "seed {seed}: {los:.1}% of the round in sight, under the {SEED_LOS_FLOOR:.0}% floor"
+            ));
+        }
+    }
+    let dmg: f32 = rs.iter().map(|r| r.damage).sum();
+    if dmg < POOLED_DAMAGE_FLOOR {
+        out.push(format!(
+            "pooled damage {dmg:.0} over {} seeds, under the {POOLED_DAMAGE_FLOOR:.0} floor",
+            rs.len()
+        ));
+    }
+    out
+}
+
+/// One line of report, and the margin each floor is currently clearing.
+///
+/// **Criterion 3 of T20.16: the margin is printed, not merely asserted**, so a
+/// run of `scripts/ignored.sh` shows a floor being approached rather than the
+/// next person discovering it exhausted. `capacity.rs::max_rooms_carries_its_basis`
+/// is the same idea pointed at a constant's doc comment; this points it at the
+/// running measurement.
+fn report(label: &str, rs: &[Encounters]) {
+    let per_seed: Vec<f32> = rs
+        .iter()
+        .map(|r| 100.0 * r.los_ticks as f32 / r.ticks.max(1) as f32)
+        .collect();
+    let worst = per_seed.iter().copied().fold(f32::INFINITY, f32::min);
+    let pooled_dmg: f32 = rs.iter().map(|r| r.damage).sum();
+    let starts: u32 = rs.iter().map(|r| r.starts).sum();
+    // `fought` is printed and **not asserted on**, and T20.16 is why. It counts
+    // seeds with any damage at all, and "any" includes a single point of splash
+    // from a hazard nobody saw: the two-seat control scores **4/8 on it while
+    // producing zero encounters across all eight seeds**. A statistic that
+    // saturates on trace damage cannot separate a fight from an empty map, which
+    // is how the retired control sat at 6/8 against a shipping 7/8 and was read
+    // as a one-seed margin rather than as a broken instrument.
+    let fought = rs.iter().filter(|r| r.damage > 0.0).count();
+    println!(
+        "\n== {label} — {} seeds x {ROUND_SECONDS}s ==\n   \
+         worst-seed sight {worst:.1}% (floor {SEED_LOS_FLOOR:.0}%, margin {:.1}x)  \
+         pooled damage {pooled_dmg:.0} (floor {POOLED_DAMAGE_FLOOR:.0}, margin {:.1}x)\n   \
+         encounters {starts}   fought {fought}/{} (reported, never asserted — see `report`)",
+        rs.len(),
+        worst / SEED_LOS_FLOOR,
+        pooled_dmg / POOLED_DAMAGE_FLOOR,
+        rs.len(),
+    );
+}
+
+/// The acceptance test for T11.16, re-shaped by T20.16, measuring the
+/// configuration the game actually ships over the round length it actually runs.
+///
+/// **What changed, and why the old shape could not be repaired by picking a new
+/// number.** The floors were `fought >= 6`, `first < 45.0`, and
+/// `before_fought < fought` against a `Large`-4 control.
+///
+/// - `fought` counts seeds with **any** damage, so it saturates: see `report`.
+/// - `first < 45.0` was satisfied by a measured **1.3 s** — a factor of 34 — so
+///   it asserted almost nothing (T20.17). It is not carried over. What it was
+///   reaching for, *"they find each other"*, is said by `SEED_LOS_FLOOR` and
+///   said per seed, which is strictly harder: the retired control passed
+///   `first < 45.0` on the seeds it met at all and fails the sight floor on
+///   **seven of eight**.
+/// - `before_fought < fought` compared **6 to 7** across configurations
+///   differing on two axes, so it could not attribute the difference and had one
+///   seed of margin. It was tripped once inside M20 by animals, untripped again
+///   by something later in the same milestone, and the shipping side then moved
+///   7/8 -> 8/8 between two commits of ordinary work.
+///
+/// The replacement asserts the same floors against both configurations and
+/// requires the control to **fail** them — which is what a control is for, and
+/// what keeps the floors from passing for any configuration at all.
+///
+/// **Falsified at the production binding site, and the old shape was run beside
+/// it.** Planting `FOV_DAY` 320 -> 80 in `constants.rs` — a sight regression, the
+/// kind of drift this file exists to catch:
+///
+/// - this test goes red **on the thing that regressed**: *"seed 7: 5.7 % of the
+///   round in sight, under the 10 % floor"*, and names seed 4242 too;
+/// - the old floors, evaluated on the same planted build, go red **only on
+///   `before_fought < fought`** — `fought` still read 7/8 and passed its `>= 6`,
+///   and mean first contact moved 1.3 s -> 4.2 s and still passed `< 45.0`.
+///
+/// So the old test would have failed, through the one comparison T20.16 calls
+/// unsound and by the coincidence that the control moved with it, while both of
+/// its substantive floors watched a fourfold regression and reported nothing.
+/// That is the difference the reshaping buys, and it is measured rather than
+/// argued.
+///
+/// **What this test does not cover, stated so nobody infers it:** spawn density.
+/// Planting `ITEM_SPAWN_INTERVAL` 14 -> 42 leaves this test green (worst-seed
+/// sight 63.3 %, pooled damage 2676) and it should — this measures whether
+/// players meet, not what is on the ground. `density_report` owns that claim;
+/// see T20.26 for what was measured about it.
 #[test]
-#[ignore = "measurement: minutes in release"]
+#[ignore = "measurement: 3.7 s in release, measured (T20.17 clocked the old shape at 6.7 s)"]
 fn the_shipping_configuration_produces_a_fight() {
     let plrs = BOT_COUNT_DEFAULT + 1;
     let ship: Vec<_> = SEEDS
         .iter()
         .map(|s| encounters(*s, DEFAULT_MAP_SCALE, plrs, ROUND_SECONDS))
         .collect();
-    let fought = ship.iter().filter(|r| r.damage > 0.0).count();
-    let firsts: Vec<f32> = ship.iter().filter_map(|r| r.first_s).collect();
-    let first = firsts.iter().sum::<f32>() / firsts.len().max(1) as f32;
-    println!(
-        "\n== SHIPPING — {DEFAULT_MAP_SCALE:?}, {plrs} players, {} seeds x {ROUND_SECONDS}s ==\n\
-            fought {fought}/{}  1st contact {first:.0}s  seen {}/{}",
-        SEEDS.len(),
-        ship.len(),
-        firsts.len(),
-        ship.len(),
+    report(
+        &format!("SHIPPING — {DEFAULT_MAP_SCALE:?}, {plrs} seats"),
+        &ship,
     );
 
-    // The control. Large with 4 players is what shipped before T11.16, and at
-    // T11.16 it produced **1/8** against the shipping configuration's 7/8.
-    // If it clears these floors, the floors are measuring nothing.
-    //
-    // **It very nearly does, and this comment used to claim it produced zero.**
-    // Measured on an idle box, `--release`, the same eight seeds: at `9bcc655`
-    // (before T20.10) the control is **6/8** against a shipping 7/8 — one seed of
-    // margin left out of the seven it had — and T20.10's animals take the last
-    // one, putting the control at **7/8** and tripping the assertion below.
-    //
-    // The animals do not corrupt the instrument: `r.damage` counts only
-    // `GameEvent::Damage` with an attacker who is not the victim, and an animal
-    // never emits one. What they change is where bots *go* — a kill drops a
-    // medkit or a battery and `wants_item` chases it — which on a sparse Large
-    // map is enough to bring two bots together in one more seed.
-    //
-    // **Left as a red measurement on purpose.** Loosening `before_fought <
-    // fought` would delete the only thing that stops these floors passing for any
-    // configuration at all, and choosing a new control configuration is a balance
-    // decision, not a builder's. See `tasks/HANDOFF-M20.md`.
-    let before: Vec<_> = SEEDS
+    let control: Vec<_> = SEEDS
         .iter()
-        .map(|s| encounters(*s, MapScale::Large, 4, ROUND_SECONDS))
+        .map(|s| encounters(*s, DEFAULT_MAP_SCALE, CONTROL_SEATS, ROUND_SECONDS))
         .collect();
-    let before_fought = before.iter().filter(|r| r.damage > 0.0).count();
-    println!(
-        "   control (Large, 4 players): fought {before_fought}/{}",
-        before.len()
+    report(
+        &format!("CONTROL — {DEFAULT_MAP_SCALE:?}, {CONTROL_SEATS} seats (one pair, not fifteen)"),
+        &control,
     );
 
+    let ship_failed = floor_failures(&ship);
     assert!(
-        fought >= 6,
-        "{DEFAULT_MAP_SCALE:?} with {plrs} players: only {fought}/{} rounds contained a fight",
-        ship.len()
+        ship_failed.is_empty(),
+        "the shipping configuration missed its floors:\n  {}",
+        ship_failed.join("\n  ")
     );
+
+    // The control. **Not `control_x < ship_x`** — that is a comparison of two
+    // numbers and it passed at 6 versus 7. This asserts that the floors
+    // themselves reject the control, so a floor lowered far enough to be
+    // meaningless goes red here rather than going quiet.
+    let control_failed = floor_failures(&control);
     assert!(
-        firsts.len() == ship.len() && first < 45.0,
-        "first contact averages {first:.0}s across {}/{} rounds that had one",
-        firsts.len(),
-        ship.len()
+        !control_failed.is_empty(),
+        "the {CONTROL_SEATS}-seat control cleared every floor the shipping \
+         configuration cleared — the floors do not measure the change"
     );
+    // And it must fail *structurally*, not by one seed: a control that scrapes
+    // under one floor on one seed is the marginal shape all over again.
+    // Measured: **9 failures** — all eight seeds under the sight floor, plus the
+    // pooled damage floor.
     assert!(
-        before_fought < fought,
-        "the control ({before_fought}/{}) matched the shipping configuration \
-         ({fought}/{}) — these floors do not measure the change",
-        before.len(),
-        ship.len()
+        control_failed.len() > SEEDS.len(),
+        "the control failed only {} of the {} floor checks ({:?}) — a control \
+         that barely fails is the marginal control T20.16 replaced",
+        control_failed.len(),
+        SEEDS.len() + 1,
+        control_failed
     );
+}
+
+/// The floors must carry the measurement that justifies them.
+///
+/// **Gate-resident on purpose, and it buys less than it looks like.** T20.17's
+/// finding was that a doc comment can drift while the code stays put, and a
+/// companion test pinned to a comment stays green through exactly that. So this
+/// does **not** stand in for running the measurement — `scripts/ignored.sh` is
+/// the only thing that does. What it buys is that the numbers above cannot be
+/// silently deleted or replaced by a bare value, which is the state the retired
+/// control was in: its margin lived in a comment that had been wrong for nine
+/// milestones and nothing read it.
+///
+/// Checks for **numbers and a margin**, not for a token: `capacity.rs`'s first
+/// version accepted the string `"T10.07"` that the placeholder already
+/// contained, and so passed against precisely the state it existed to reject.
+#[test]
+fn the_balance_floors_record_their_basis() {
+    let src = include_str!("balance.rs");
+    for name in ["SEED_LOS_FLOOR", "POOLED_DAMAGE_FLOOR"] {
+        let decl = format!("const {name}");
+        let i = src
+            .find(&decl)
+            .unwrap_or_else(|| panic!("{name} must exist — this test cannot find what it guards"));
+        let doc_start = src[..i].rfind("\n\n").unwrap_or(0);
+        let doc = &src[doc_start..i];
+        let digits = doc.chars().filter(char::is_ascii_digit).count();
+        assert!(
+            doc.contains("Measured"),
+            "{name} must record where its number came from. Doc was:\n{doc}"
+        );
+        assert!(
+            doc.contains("margin") || doc.contains('x'),
+            "{name} must record the margin it currently clears, so erosion is \
+             visible before exhaustion. Doc was:\n{doc}"
+        );
+        assert!(
+            digits >= 6,
+            "{name}'s basis has only {digits} digits in it — a measurement is \
+             numbers, not a promise of numbers. Doc was:\n{doc}"
+        );
+    }
 }
 
 #[test]

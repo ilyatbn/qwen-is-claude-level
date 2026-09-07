@@ -475,7 +475,7 @@ right-button decision rather than around it. **Amendments are the coordinator's.
 - [x] [T20.12](M20/T20.12-hats-and-sunglasses.md) — Hats and sunglasses **(v8)** — depends on T20.04
 - [x] [T20.13](M20/T20.13-two-rooms-one-of-them-dead.md) — Two rooms, and one of them never starts **(v8)**
 - [x] [T20.14](M20/T20.14-the-whole-thing-at-once.md) — The whole thing at once: an exploratory load test **(v8)** — `crates/game-server/examples/loadgen/`, four scenarios and three planted-fault controls; **reached T19.21 live at both of its observables** and booked T20.22/T20.23/T20.24/T20.25
-- [ ] [T20.16](M20/T20.16-the-balance-control-was-never-sound.md) — Replace the balance control's shape **(v8)** — **the test is knowingly red**; booked by ruling
+- [x] [T20.16](M20/T20.16-the-balance-control-was-never-sound.md) — Replace the balance control's shape **(v8)** — control is now **one axis** (seats, map held): 6 seats is 15 pairs against 2 seats' 1, and the control reads **0 encounters on all eight seeds** against the shipping 447; floors are aggregate with their margins printed; booked T20.26
 - [x] [T20.17](M20/T20.17-the-tests-that-never-run.md) — The tests that never run **(v8)** — nine milestones of invisible erosion; **all thirteen now run and all thirteen pass**, including the one recorded as knowingly red (D-68)
 - [x] [T20.18](M20/T20.18-seven-copies-of-connect.md) — Seven copies of `connect` **(v8)** — from T20.10's handoff — **its own Done-when grep cannot survive the consolidation it asks for**; replaced by a guard that reads the value
 - [x] [T20.19](M20/T20.19-a-hurt-player-rubber-bands.md) — A hurt player rubber-bands, permanently **(v8)** — **live at HEAD**, found by T21.02's sweep
@@ -486,6 +486,7 @@ right-button decision rather than around it. **Amendments are the coordinator's.
 - [ ] [T20.23](M20/T20.23-a-refresh-mid-join-burns-a-room-forever.md) — A refresh mid-join burns a room forever **(v8)** — **found by T20.14**, live at HEAD, 4/4 against a control of 0/4; `on_disconnect` detaches only inside its `if let`
 - [ ] [T20.24](M20/T20.24-the-server-runs-out-of-rooms-at-48-players.md) — The server runs out of rooms at 48 players **(v8)** — **found by T20.14**: 32/32 rooms and 8367 `server_full` refusals out of 10634 while no room's worst tick ever reached 9 ms of a 16.67 ms budget — depends on T20.22 and T20.23
 - [ ] [T20.25](M20/T20.25-the-room-health-metric-never-decays.md) — The room-health metric never decays **(v8)** — **found by T20.14** using it: `record_room_tick` is a lifetime running max and its doc comment promises a decay, so `rooms_over_budget` only ever climbs
+- [ ] [T20.26](M20/T20.26-density-report-floors-variety-not-rate.md) — `density_report` floors variety and the thing that moves is rate **(v8)** — **found by T20.16** checking its own premise: `ITEM_SPAWN_INTERVAL` 14 → 42 passes **all six** ignored balance tests and all three gate-resident ones
 
 **Order note.** T20.04 before T20.12 (accessories are invisible until skins reach the
 renderer at all) and T20.01 before T20.03 (they share a cause). T20.14 is deliberately early

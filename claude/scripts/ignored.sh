@@ -68,20 +68,28 @@ MANIFEST=(
 
 # Tests whose recorded verdict is not `ok`. **Empty, and that is the finding.**
 #
-# `the_shipping_configuration_produces_a_fight` is documented in `balance.rs` as
-# knowingly red — T20.16 owns it — and **it passes at HEAD**. Measured twice,
-# identically, `--release`, idle box, no assertion touched: shipping **7/8**
-# against a control of **6/8**, first contact 1.3 s against a 45 s floor. The
-# comment at the assertion records the control at 7/8 after T20.10's animals took
-# the last seed of margin; somewhere in M20 it went back to 6/8, so the margin is
-# one seed again — the same single seed the comment calls nearly-gone.
+# **`the_shipping_configuration_produces_a_fight` was the entry here, and T20.16
+# retired the reason.** Recorded as it stood, because the history is the argument
+# for the reshaping: this file used to say the test was documented as knowingly
+# red, passing at HEAD, shipping **7/8** against a control of **6/8** — a margin
+# of one seed, on a control that varied map scale *and* seat count at once. That
+# number then moved again on its own: at `177108b` the shipping side reads
+# **8/8**, having been 7/8 two commits of ordinary work earlier. A statistic that
+# drifts a seat inside one milestone cannot carry a one-seed claim.
 #
-# **Recorded as measured, not as remembered.** Nothing here loosens
-# `before_fought < fought`; that would delete the only thing stopping those
-# floors passing for any configuration at all, and picking a new control is a
-# balance decision. Recording `ok` means this script fires the day it goes red
-# again, which is the mechanism the task exists for. Recording a stale `FAILED`
-# would have shipped a runner that is red on day one and therefore ignored.
+# It now compares the shipping seat count against **two seats on the same map** —
+# one axis, one pair against fifteen — and the control produces **0 encounters on
+# all eight seeds** against the shipping 447. The floors are aggregate and print
+# the margin they clear, so this runner shows erosion approaching instead of the
+# next person finding it exhausted.
+#
+# **Recorded as measured, not as remembered.** Nothing here was loosened to get
+# green: the old floors were replaced by strictly harder ones, and planting
+# `FOV_DAY` 320 -> 80 turns the new test red on the seeds that regressed while the
+# old floors, run on the same planted build, both still passed. Recording `ok`
+# means this script fires the day it goes red again, which is the mechanism the
+# task exists for; a stale `FAILED` would have shipped a runner that is red on
+# day one and therefore ignored.
 EXPECTED_RED=()
 
 if [ "${1:-}" = "--list" ]; then
