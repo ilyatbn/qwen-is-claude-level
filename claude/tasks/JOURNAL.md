@@ -5726,3 +5726,17 @@ names: two fields of one object, two fill paths. Now a bounded wait; falsified b
 joining — still fails, `ana sees [0], not two players`. 3/3 green after, plus the earlier solo pass.
 **Second, separate load sensitivity, not fixed:** the closing 600 ms two-browser movement window
 failed 1 of 3 idle runs via its own stall detector (`the CONTROL frame is frozen too`) — worth booking.
+
+## T19.24 — the seed was on the wire; the surface it indexes was not
+
+Option 2 nearly became the **fourth** no-op. `LavaBurst::new` reads `map.meta.surface_points` and
+nothing else, and `load_mask` — the networked client's only map path — did `.clear()` on exactly
+that field, so a client handed the server's seed derives **zero vents**. Proved before writing the
+entry point: `lava.rs::t19_24_client_side_vents` has that as its control. Fix is `extract_surface`
+at `map_init` (not lazily: after a carve the surface no longer matches what the server sampled —
+third test pins it), costing a measured 30 ms on Large in release, ~90 % of `load_mask`, once per
+match. New `GameCore::lava_vents(lo, hi, elapsed)` follows `fog_strength`'s seam — no scheduler,
+no local sim. Cross-check goes through the real `load_mask` + `lava_vents`: same vents, both sides.
+`LavaClock` mirrors `FogClock` (id rule, malformed seed, clear-on-reset); `ventLights` now shared
+with `SandboxScene`, which had those five numbers to itself. 887/887 client, 20/20 wasm, 879 core.
+**Pixel proof outstanding** — the browser half, and the only thing between this and done.

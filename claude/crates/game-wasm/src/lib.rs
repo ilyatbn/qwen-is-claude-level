@@ -73,6 +73,9 @@ struct Weather {
     toxic: Option<ToxicRain>,
     meteor: Option<MeteorShower>,
     lava: Option<LavaBurst>,
+    /// Which seed `lava` was built from, so `lava_vents` rebuilds only when the
+    /// server announces a different burst (T19.24).
+    lava_seed: Option<u64>,
     fog: Option<HeavyFog>,
     forced: Option<(EffectKind, f32)>,
 }
@@ -133,7 +136,27 @@ impl GameCore {
         };
         let coarse = CoarseGrid::build(&mask);
         let mut meta = self.map.meta.clone();
-        meta.surface_points.clear();
+        // **Re-extracted, not cleared** (T19.24). This was `.clear()`, and
+        // `LavaBurst::new` reads `map.meta.surface_points` and *nothing else* to
+        // choose where the ground opens — so a networked client derived **zero
+        // vents from any seed**, which is why handing it the server's seed alone
+        // would have fixed nothing. Proved rather than argued:
+        // `effects/lava.rs::t19_24_client_side_vents`.
+        //
+        // Here rather than lazily when a lava effect starts, and that timing is
+        // load-bearing: the server picks its vents from the surface as it was at
+        // *generation*, and this mask is the one that arrived. The two agree only
+        // while nothing has been carved, which is true at `map_init` and false a
+        // minute later — the third test in that module pins exactly that.
+        //
+        // **It costs, and the number is measured rather than waved at**:
+        // `--release`, this box, `load_mask` end to end against the extraction
+        // alone — Small 7.7 ms / 6.8, Medium 20.3 / 15.8, Large 34.7 / 29.8. So
+        // the scan is ~90 % of the call and makes `map_init` roughly ten times
+        // dearer than the decode it used to be. Paid once per match, inside the
+        // beat where the map is being installed anyway, which is why it is here
+        // and not on a lava burst mid-fight.
+        meta.surface_points = game_core::map::gen::surface::extract_surface(&mask);
         self.map = Map::from_parts(mask, coarse, meta);
         true
     }
@@ -1039,6 +1062,55 @@ impl GameCore {
             "fog": fog,
         })
         .to_string()
+    }
+}
+
+/// Where a **server-announced** lava burst opens the ground, and what each vent
+/// is doing `elapsed` seconds in.
+///
+/// This is `fog_strength`'s seam applied to the one effect that needs the map.
+/// A real match runs the weather on the server and tells the client only that an
+/// effect started, with which seed and when (`effect_start` carries all three) —
+/// so there is **no scheduler here and no local simulation**. `weather_step` is
+/// the sandbox's path: it owns a scheduler, ticks the effect, carves and deals
+/// damage. This one derives presentation and touches nothing.
+///
+/// Returns the same shape `weather_step` puts in its `"vents"` array, so
+/// `WeatherLayer.update` consumes it unchanged.
+///
+/// **The seed alone was never enough.** `LavaBurst::new` reads
+/// `map.meta.surface_points`, which `load_mask` used to clear — see the note
+/// there and `effects/lava.rs::t19_24_client_side_vents`, whose control shows a
+/// pre-fix client deriving nothing however good its seed.
+///
+/// Cached on the seed because the constructor rejection-samples up to 200 times
+/// and this is called every frame; the same seed rebuilds nothing.
+#[wasm_bindgen]
+impl GameCore {
+    pub fn lava_vents(&mut self, seed_lo: u32, seed_hi: u32, elapsed: f32) -> String {
+        let seed = ((seed_hi as u64) << 32) | seed_lo as u64;
+        if self.weather.lava_seed != Some(seed) {
+            // Built at t = 0 so `elapsed` is the whole clock: the server's `now`
+            // and the client's are different numbers for the same instant, and
+            // only the offset from the effect's own start is shared.
+            self.weather.lava = Some(LavaBurst::new(seed, &self.map, 0.0));
+            self.weather.lava_seed = Some(seed);
+        }
+        let Some(l) = self.weather.lava.as_ref() else {
+            return "[]".to_string();
+        };
+        let vents: Vec<serde_json::Value> = l
+            .vents()
+            .iter()
+            .map(|v| {
+                serde_json::json!({
+                    "x": v.pos.x, "y": v.pos.y, "lean": v.lean,
+                    "jetting": elapsed < v.jet_until,
+                    "burning": elapsed >= v.jet_until && elapsed < v.burn_until,
+                })
+            })
+            .collect();
+        serde_json::json!(vents).to_string()
     }
 }
 
@@ -2262,5 +2334,99 @@ impl AttractCore {
             Some(p) => Box::new([p.body.pos.x, p.body.pos.y]),
             None => Box::new([0.0, 0.0]),
         }
+    }
+}
+
+/// T19.24 — the client derives the *server's* vents, through the real entry
+/// points.
+///
+/// `effects/lava.rs::t19_24_client_side_vents` proves the derivation agrees at
+/// the library level. This proves it survives the two things that actually stand
+/// between the two sides in a match: the mask going over the wire as RLE, and
+/// `load_mask` rebuilding the map from it.
+#[cfg(test)]
+mod t19_24_server_driven_lava {
+    use super::*;
+    use game_core::constants::MapScale;
+    use game_core::effects::lava::LavaBurst;
+    use game_core::map::{generate, rle};
+
+    const EFFECT_SEED: u64 = 0x5EED_1A7A;
+
+    fn positions_from_json(json: &str) -> Vec<(i64, i64)> {
+        let v: serde_json::Value = serde_json::from_str(json).expect("vents json");
+        v.as_array()
+            .expect("an array")
+            .iter()
+            .map(|e| {
+                (
+                    e["x"].as_f64().expect("x") as i64,
+                    e["y"].as_f64().expect("y") as i64,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_networked_client_derives_the_servers_vents_after_map_init() {
+        let server = generate(4242, MapScale::Small);
+        let want: Vec<(i64, i64)> = LavaBurst::new(EFFECT_SEED, &server, 0.0)
+            .vents()
+            .iter()
+            .map(|v| (v.pos.x as i64, v.pos.y as i64))
+            .collect();
+        assert!(
+            !want.is_empty(),
+            "the server found no vents — this fixture proves nothing"
+        );
+
+        // The client's whole knowledge of the map: the RLE payload `map_init`
+        // carries, and nothing else.
+        let mut core = GameCore::new();
+        let payload = rle::encode(&server.mask);
+        assert!(
+            core.load_mask(server.mask.w, server.mask.h, &payload),
+            "load_mask refused a payload the server produced"
+        );
+
+        let got = positions_from_json(&core.lava_vents(
+            EFFECT_SEED as u32,
+            (EFFECT_SEED >> 32) as u32,
+            0.0,
+        ));
+        assert_eq!(
+            got, want,
+            "the client derived different vents from the seed"
+        );
+    }
+
+    /// The phases follow `elapsed`, and the control is that they are not all the
+    /// same: a function returning `jetting: true` forever would pass a test that
+    /// only looked at one instant.
+    #[test]
+    fn the_phases_advance_with_elapsed() {
+        let server = generate(4242, MapScale::Small);
+        let mut core = GameCore::new();
+        let payload = rle::encode(&server.mask);
+        assert!(core.load_mask(server.mask.w, server.mask.h, &payload));
+
+        let phase_at = |core: &mut GameCore, t: f32| -> (usize, usize) {
+            let json = core.lava_vents(EFFECT_SEED as u32, (EFFECT_SEED >> 32) as u32, t);
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let a = v.as_array().unwrap();
+            (
+                a.iter().filter(|e| e["jetting"] == true).count(),
+                a.iter().filter(|e| e["burning"] == true).count(),
+            )
+        };
+        let jet = game_core::constants::LAVA_JET_DURATION;
+        let burn = game_core::constants::LAVA_BURN_DURATION;
+
+        let (j0, b0) = phase_at(&mut core, 0.0);
+        let (j1, b1) = phase_at(&mut core, jet + burn * 0.5);
+        let (j2, b2) = phase_at(&mut core, jet + burn + 1.0);
+        assert!(j0 > 0 && b0 == 0, "at t=0 every vent should be jetting");
+        assert!(j1 == 0 && b1 > 0, "mid-burn every vent should be burning");
+        assert!(j2 == 0 && b2 == 0, "past the burn nothing should be active");
     }
 }

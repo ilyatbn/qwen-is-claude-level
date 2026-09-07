@@ -544,3 +544,115 @@ mod tests {
         assert!(lava.tick(&mut map, &mut [], true, 0.0, DT).is_empty());
     }
 }
+
+#[cfg(test)]
+mod t19_24_client_side_vents {
+    use super::*;
+    use crate::constants::MapScale;
+    use crate::map::gen::surface::extract_surface;
+    use crate::map::{generate, CoarseGrid, Map};
+
+    /// One effect seed, fixed. The value does not matter; that both sides use the
+    /// same one does.
+    const EFFECT_SEED: u64 = 0x5EED_1A7A;
+    const NOW: f32 = 12.5;
+
+    /// The map a networked client ends up with, built the way `game-wasm`'s
+    /// `load_mask` builds it: the server's mask, a coarse grid rebuilt from it,
+    /// and **`meta.surface_points` cleared**.
+    fn client_map_today(server: &Map) -> Map {
+        let mask = server.mask.clone();
+        let coarse = CoarseGrid::build(&mask);
+        let mut meta = server.meta.clone();
+        meta.surface_points.clear();
+        Map::from_parts(mask, coarse, meta)
+    }
+
+    /// The same, but with the surface re-extracted from the mask that arrived —
+    /// the one line T19.24 proposes adding.
+    fn client_map_fixed(server: &Map) -> Map {
+        let mask = server.mask.clone();
+        let coarse = CoarseGrid::build(&mask);
+        let mut meta = server.meta.clone();
+        meta.surface_points = extract_surface(&mask);
+        Map::from_parts(mask, coarse, meta)
+    }
+
+    fn vent_positions(map: &Map) -> Vec<(i32, i32)> {
+        LavaBurst::new(EFFECT_SEED, map, NOW)
+            .vents()
+            .iter()
+            .map(|v| (v.pos.x as i32, v.pos.y as i32))
+            .collect()
+    }
+
+    /// **The control, and the finding.** A client built the way the shipping one
+    /// is built derives **no vents at all**, however good its seed is.
+    ///
+    /// This is why T19.24's option-2 deliverable — a wasm entry point taking
+    /// `(kind, seed, now)` — would have been the *fourth* no-op this task
+    /// attracted: `LavaBurst::new` reads `map.meta.surface_points` and nothing
+    /// else, and `load_mask` clears exactly that field. The seed being on the
+    /// wire was necessary and never sufficient.
+    #[test]
+    fn todays_client_derives_no_vents_however_good_the_seed() {
+        let server = generate(4242, MapScale::Small);
+        let server_vents = vent_positions(&server);
+        assert!(
+            !server_vents.is_empty(),
+            "the server itself found no vents — this fixture proves nothing"
+        );
+        assert!(
+            vent_positions(&client_map_today(&server)).is_empty(),
+            "a client whose `surface_points` are cleared should derive nothing"
+        );
+    }
+
+    /// The cross-check T19.24 asks for: same seed, same map, **same vents**.
+    ///
+    /// Positions only. `jet_until` and `burn_until` are `now`-relative and the
+    /// two sides do not share a clock; what must agree is *where the ground
+    /// opens*, which is a pure function of the effect seed and the surface.
+    #[test]
+    fn a_client_that_re_extracts_the_surface_derives_the_servers_vents() {
+        for scale in MapScale::ALL {
+            let server = generate(4242, scale);
+            let server_vents = vent_positions(&server);
+            assert!(
+                !server_vents.is_empty(),
+                "{scale:?}: no vents on the server side — nothing is being compared"
+            );
+            assert_eq!(
+                vent_positions(&client_map_fixed(&server)),
+                server_vents,
+                "{scale:?}: the client derived different vents from the same seed"
+            );
+        }
+    }
+
+    /// **What the cross-check does not cover, asserted rather than hoped.**
+    ///
+    /// The server picks vents from the surface as it was at *generation*;
+    /// re-extraction on the client reads the mask as it *arrived*. Those are the
+    /// same thing only while nothing has been carved. Once the ground is dug,
+    /// they diverge — so a client that joins mid-round, or re-extracts after
+    /// carving, will not agree.
+    ///
+    /// Stated as a test so the limit is a fact rather than a caveat somebody has
+    /// to remember: this is why the re-extraction has to happen at `map_init`
+    /// and not lazily when a lava effect starts.
+    #[test]
+    fn re_extracting_after_a_carve_no_longer_matches_the_server() {
+        let server = generate(4242, MapScale::Small);
+        let mut carved = server.clone();
+        // A crater big enough to remove standable ground, in the middle of the
+        // map where there is some.
+        let (cx, cy) = (carved.mask.w as i32 / 2, carved.mask.h as i32 / 2);
+        carved.carve_circle(cx, cy, 60);
+        let after = extract_surface(&carved.mask);
+        assert_ne!(
+            after, server.meta.surface_points,
+            "carving did not change the extracted surface — this limit test is vacuous"
+        );
+    }
+}

@@ -23,6 +23,7 @@ import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
+import { ventLights } from '../render/weather-math'
 import { DebugOverlay } from '../render/debugOverlay'
 import { cloudTint, cycleU, darknessAt, skyPhase } from '../render/sky-math'
 import { cloudSpriteTint } from '../render/clouds-math'
@@ -1222,10 +1223,9 @@ export class SandboxScene extends Phaser.Scene {
     }
     // Lava lights the map, exactly as ordnance does — a vent at night is a
     // beacon and that is the point of digging yourself a hole being punished.
-    for (const v of weather.vents) {
-      if (v.jetting) lights.push({ x: v.x, y: v.y - 60, radius: 150, intensity: 0.9 })
-      else if (v.burning) lights.push({ x: v.x, y: v.y, radius: 90, intensity: 0.6 })
-    }
+    // T19.24: shared with `GameScene`, which now has vents of its own. The five
+    // numbers lived here alone until a networked client could light them too.
+    lights.push(...ventLights(weather.vents))
     this.lightmap.render(this.cameras.main, darkness, lights, this.fogActive || weather.fog > 0)
 
     this.overlay.update(

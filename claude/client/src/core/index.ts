@@ -456,9 +456,25 @@ export const coreDarknessAt = core_darkness_at
  */
 export const fogStrength = fog_strength
 
+/**
+ * One lava vent as either path reports it.
+ *
+ * Named because two producers now return this shape — `weatherStep`'s `vents`
+ * (the sandbox's local scheduler) and `lavaVents` (a server-announced burst) —
+ * and `WeatherLayer.update` takes it from both. Two inline literals would be two
+ * places for the field names to drift.
+ */
+export interface VentSpec {
+  x: number
+  y: number
+  lean: number
+  jetting: boolean
+  burning: boolean
+}
+
 export interface WeatherState {
   active: { id: number; kind: 'toxic' | 'meteor' | 'lava' | 'fog'; phase: string }[]
-  vents: { x: number; y: number; lean: number; jetting: boolean; burning: boolean }[]
+  vents: VentSpec[]
   /** 0..1 */
   fog: number
 }
@@ -739,6 +755,22 @@ export class Core {
   /** Advance the weather and return the hazards to draw. */
   weatherStep(now: number, dt: number): WeatherState {
     return JSON.parse(this.inner.weather_step(now, dt)) as WeatherState
+  }
+
+  /**
+   * Where a **server-announced** lava burst opens the ground (T19.24).
+   *
+   * `weatherStep` is the sandbox's path — it owns a scheduler, ticks the effect,
+   * carves and damages. This one derives presentation from the seed the server
+   * broadcast on `effect_start` and touches nothing, the way `fogStrength` does
+   * for §F9. A networked client has no scheduler and must not roll its own
+   * weather (`docs/13` §7).
+   *
+   * The seed arrives as a decimal string because it is a `u64`; `lo`/`hi` split
+   * it because `wasm_bindgen` has no `u64` parameter.
+   */
+  lavaVents(seedLo: number, seedHi: number, elapsed: number): VentSpec[] {
+    return JSON.parse(this.inner.lava_vents(seedLo, seedHi, elapsed)) as VentSpec[]
   }
 
   combatStep(now: number, dt: number): CombatEvent[] {

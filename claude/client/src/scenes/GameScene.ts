@@ -21,7 +21,7 @@ import { landingVolume } from '../render/feel-math'
 import { padUnderfoot, type PadView } from '../render/pads'
 import { atlasArt } from '../render/objects'
 import type { MapObject } from '../net/codec'
-import { C, Core, dequantizeAngle, strictConstants } from '../core'
+import { C, Core, dequantizeAngle, strictConstants, type VentSpec } from '../core'
 import { asRecord, Connection, type Welcome } from '../net/connection'
 import { parseLobbyState } from '../net/lobby'
 import { WorldMirror, hex } from '../net/worldMirror'
@@ -97,7 +97,7 @@ import { artFor } from '../render/itemSprites-math'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
-import { FogClock } from '../render/weather-math'
+import { FogClock, LavaClock, ventLights } from '../render/weather-math'
 import { loadIdentity, readId, sameAppearance, type Appearance } from '../ui/skins'
 
 interface RemoteView {
@@ -332,6 +332,10 @@ export class GameScene extends Phaser.Scene {
    * there and cannot reach in a scene that needs a canvas.
    */
   private readonly fog = new FogClock()
+  /** T19.24: which server-announced lava burst is running, and its seed. */
+  private readonly lava = new LavaClock()
+  /** This frame's vents, derived once and read by both the layer and the lights. */
+  private vents: VentSpec[] = []
   private seq = 0
   private acc = 0
   private roundTime = 0
@@ -546,8 +550,15 @@ export class GameScene extends Phaser.Scene {
     this.padViews = []
     this.mapObjects = []
 
-    // The two helpers that carry state of their own.
+    // The three helpers that carry state of their own.
+    //
+    // `lava` for the reason `fog` is here (T20.13): a burst left running does not
+    // stop at the round boundary, and the next match would open vents the server
+    // never announced — fire drawn where there is none, which is the exact
+    // failure T19.24's determinism cross-check exists to prevent.
     this.fog.clear()
+    this.lava.clear()
+    this.vents = []
     this.death.cleared()
   }
 
@@ -862,12 +873,17 @@ export class GameScene extends Phaser.Scene {
           // origin to within one snapshot interval — and the ramp is `FOG_RAMP`
           // (2 s) long, so that lag is invisible.
           this.fog.start(id, rec.kind, this.serverRoundTime)
+          // T19.24: same three events, same origin. Lava differs from fog in
+          // needing the *seed* as well as the clock — its presentation is a set
+          // of places, and the server derived them from this number.
+          this.lava.start(id, rec.kind, this.serverRoundTime, String(p['seed'] ?? '0'))
         } else if (ev === 'effect_phase') {
           this.topHud?.setEffectPhase(id, String(p['phase'] ?? 'active') as EffectPhase)
         } else {
           this.topHud?.endEffect(id)
           // Only *this* fog's end clears it — `FogClock` owns that rule.
           this.fog.end(id)
+          this.lava.end(id)
         }
       })
     }
@@ -1690,6 +1706,10 @@ export class GameScene extends Phaser.Scene {
     // Toxic rain is on while any recorded effect is in its active phase. The
     // lifecycle is already tracked for the e2e; nothing consumed it visually,
     // which is §B21 exactly — the number was right and never reached the screen.
+    // T19.24: derived once per frame and **outside the `world` guard**, so a
+    // frame with no world leaves it empty rather than leaving last frame's vents
+    // standing in the light list below.
+    this.vents = this.ventsNow()
     if (this.world) {
       // **With `dt`.** `WorldView.update(near, dt = 0, weather?)` gates its
       // ordnance and weather work on `dt > 0`, and this scene called it with the
@@ -1712,7 +1732,16 @@ export class GameScene extends Phaser.Scene {
       // not know about each other. `WorldView.liveToxicDrops` counts the real ones
       // it is already tracking.
       this.world.update(this.world.rig.center, dt, {
-        vents: [],
+        // T19.24: **the vents the server chose**, derived from the seed it
+        // broadcast on `effect_start`. This was a hardcoded `[]`, so a networked
+        // client drew no vent, no mouth and no ember — and emitted no light
+        // during the jet, the only phase that damages you. The sandbox rendered
+        // all of it; nobody plays in the sandbox.
+        //
+        // Read into `this.vents` once per frame rather than called twice: the
+        // light list below needs the same answer, and two calls are two JSON
+        // round trips through wasm for a value that cannot change inside a frame.
+        vents: this.vents,
         fallScale: C().MAX_FALL_SPEED,
         fog: this.fog.strength(this.roundTime),
         hasFlashlight: this.hasFlashlight,
@@ -1782,6 +1811,12 @@ export class GameScene extends Phaser.Scene {
       ...this.fx
         .lights()
         .map((l) => ({ x: l.x, y: l.y, radius: l.r, intensity: l.a })),
+      // T19.24: **the lava vents light the ground.** Until the vents above were
+      // derived, this list had nothing to add here — a networked player took
+      // `LAVA_JET_DPS` from a column of lava that emitted no light at all, in the
+      // one phase that damages you. Shared with `SandboxScene`, which had these
+      // numbers to itself.
+      ...ventLights(this.vents),
     ]
     this.debugHud.update(performance.now(), {
       rttMs: this.clock.rtt,
@@ -1808,6 +1843,32 @@ export class GameScene extends Phaser.Scene {
     })
     this.lightmap.render(this.cameras.main, darkness, lights)
     this.refreshHud()
+  }
+
+  /**
+   * The lava vents to draw this frame, or none.
+   *
+   * Derived, not received: the server puts the effect's seed on `effect_start`
+   * and both sides run the same `LavaBurst::new` over the same surface, so the
+   * client draws fire exactly where the server opened the ground. That the two
+   * agree is proved by cross-check rather than by screenshot —
+   * `game-core/src/effects/lava.rs::t19_24_client_side_vents` and
+   * `game-wasm/src/lib.rs::t19_24_server_driven_lava`, the second of which goes
+   * through the real `load_mask` and `lava_vents` entry points.
+   *
+   * The seed alone was never enough: `LavaBurst::new` reads
+   * `map.meta.surface_points`, and `load_mask` used to clear exactly that field.
+   */
+  private ventsNow(): VentSpec[] {
+    // `roundTime`, not `serverRoundTime` — the same pairing `fog` uses: the
+    // origin comes from the snapshot that announced the effect, and the *read*
+    // uses the client's per-frame clock so the phases advance smoothly instead
+    // of stepping at 20 Hz. The offset between the two is under one snapshot
+    // interval against 3 s phase windows, so it cannot move a vent between
+    // jetting and burning.
+    const q = this.lava.query(this.roundTime)
+    if (!q || !this.core) return []
+    return this.core.lavaVents(q.lo, q.hi, q.elapsed)
   }
 
   /**

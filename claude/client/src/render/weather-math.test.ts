@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core, fogStrength } from '../core'
-import { EmberField, FogClock, RainField, fogVeilAlpha, toxicDensity } from './weather-math'
+import { EmberField, FogClock, LavaClock, RainField, fogVeilAlpha, toxicDensity } from './weather-math'
 
 beforeAll(async () => {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
@@ -298,5 +298,70 @@ describe('toxicDensity — the join between the two rains (T20.05)', () => {
   it('a divisor of zero is nothing rather than Infinity', () => {
     expect(toxicDensity(5, 0)).toBe(0)
     expect(toxicDensity(5, NaN)).toBe(0)
+  })
+})
+
+describe("LavaClock — the networked client's half of §A3's ground fire (T19.24)", () => {
+  // 0x1_0000_0003 — deliberately past 32 bits, because the whole reason this
+  // class splits the seed is that a `u64` survives neither JSON nor
+  // `wasm_bindgen`. A seed that fitted in 32 bits would pass with the high half
+  // wired to zero.
+  const SEED = '4294967299'
+
+  it('is idle until a LavaBurst starts, and then reports the seed split and the clock', () => {
+    const l = new LavaClock()
+    // The control: nothing is running before anything happens, so what follows
+    // is about the burst and not about a default.
+    expect(l.running).toBe(false)
+    expect(l.query(0)).toBeNull()
+    expect(l.query(1000)).toBeNull()
+
+    l.start(7, 'LavaBurst', 100, SEED)
+    expect(l.running).toBe(true)
+    // Round time in, elapsed out: holding the origin is the job.
+    expect(l.query(100)).toEqual({ lo: 3, hi: 1, elapsed: 0 })
+    expect(l.query(104.5)?.elapsed).toBeCloseTo(4.5, 6)
+  })
+
+  it('ignores every effect that is not a lava burst', () => {
+    const l = new LavaClock()
+    l.start(1, 'ToxicRain', 0, SEED)
+    l.start(2, 'MeteorShower', 0, SEED)
+    l.start(3, 'HeavyFog', 0, SEED)
+    expect(l.running).toBe(false)
+    expect(l.query(5)).toBeNull()
+  })
+
+  it('is not switched off by another effect ending inside it', () => {
+    // `FogClock`'s branch, and lava needs it for a sharper reason: the veil just
+    // stops looking foggy, but vents that stop being reported stop being *drawn*
+    // and stop lighting the ground — in the phase that is damaging you.
+    const l = new LavaClock()
+    l.start(7, 'LavaBurst', 0, SEED)
+    l.end(8) // somebody else's effect
+    expect(l.running).toBe(true)
+    expect(l.query(2)).toEqual({ lo: 3, hi: 1, elapsed: 2 })
+
+    l.end(7)
+    expect(l.running).toBe(false)
+    expect(l.query(2)).toBeNull()
+  })
+
+  it('survives a malformed seed instead of taking the scene down', () => {
+    // This runs inside a socket event handler; a throw here kills the round, and
+    // a server that changed the wire format is a bug to see, not to crash on.
+    const l = new LavaClock()
+    expect(() => l.start(7, 'LavaBurst', 0, 'not-a-number')).not.toThrow()
+    expect(l.running).toBe(false)
+  })
+
+  it('clear() discards the round whatever is running', () => {
+    // `resetForNewRound`'s caller. A burst left running would open vents in the
+    // *next* match that the server never announced.
+    const l = new LavaClock()
+    l.start(7, 'LavaBurst', 0, SEED)
+    l.clear()
+    expect(l.running).toBe(false)
+    expect(l.query(1)).toBeNull()
   })
 })

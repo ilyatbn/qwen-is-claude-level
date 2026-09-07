@@ -315,3 +315,114 @@ export class FogClock {
     return this.startedAt !== null
   }
 }
+
+/**
+ * Which lava burst is running, when it started, and the seed the server chose
+ * its vents with — the networked client's half of §A3's ground fire (T19.24).
+ *
+ * `FogClock`'s shape, for the same reasons: effects overlap, so an `effect_end`
+ * belonging to another effect must not switch this one off, and that branch is
+ * untestable inside a scene vitest cannot load. What it adds is the **seed**,
+ * because unlike fog — whose ramp is a pure timer — lava's presentation is a set
+ * of *places*, and those are derived from the seed the server broadcast.
+ *
+ * The sandbox does not use this: it owns a real `LavaBurst` and reads
+ * `weatherStep().vents` off its own world. A match's weather runs on the server,
+ * and until this existed the networked client drew none of it — no vent, no
+ * mouth, no ember, and no light during the jet, which is the only phase that
+ * damages you.
+ */
+export class LavaClock {
+  private id = -1
+  private startedAt: number | null = null
+  private lo = 0
+  private hi = 0
+
+  /**
+   * An `effect_start` arrived. Anything that is not a lava burst is ignored.
+   *
+   * `seed` is the decimal string `effect_start` carries — a `u64`, which JSON
+   * has no type for and `wasm_bindgen` has no parameter for, hence the split
+   * into two 32-bit halves here rather than at each call site.
+   */
+  start(id: number, kind: string, roundTime: number, seed: string): void {
+    if (kind !== 'LavaBurst') return
+    let s: bigint
+    try {
+      s = BigInt(seed)
+    } catch {
+      // A malformed seed is a server that changed the wire format, not a reason
+      // to throw inside an event handler and take the scene down with it.
+      return
+    }
+    this.id = id
+    this.startedAt = roundTime
+    this.lo = Number(s & 0xffffffffn)
+    this.hi = Number((s >> 32n) & 0xffffffffn)
+  }
+
+  /** An `effect_end` arrived. Only this burst's own end clears it. */
+  end(id: number): void {
+    if (id !== this.id) return
+    this.clear()
+  }
+
+  /** Discard the round, whatever is running — `FogClock.clear`'s reason. */
+  clear(): void {
+    this.id = -1
+    this.startedAt = null
+    this.lo = 0
+    this.hi = 0
+  }
+
+  /**
+   * What to ask the core for, or `null` when no burst is running.
+   *
+   * Returned as one object rather than three getters so a caller cannot read a
+   * seed that belongs to a burst that has since ended.
+   */
+  query(roundTime: number): { lo: number; hi: number; elapsed: number } | null {
+    if (this.startedAt === null) return null
+    return { lo: this.lo, hi: this.hi, elapsed: roundTime - this.startedAt }
+  }
+
+  /** For a debug handle: is a burst running at all? */
+  get running(): boolean {
+    return this.startedAt !== null
+  }
+}
+
+/**
+ * The lights a lava vent casts, by phase.
+ *
+ * **One function because there are now two callers** (T19.24). `SandboxScene`
+ * has had these five numbers inline since the effect was built; `GameScene`
+ * needs the same ones now that a networked client finally has vents to light,
+ * and a second copy is a second place for the jet's offset or the burn's radius
+ * to drift. `docs/14` §A3 — fire is a light source at night — is the claim both
+ * of them are keeping, so it should be kept once.
+ *
+ * The jet is lit **above** the mouth because that is where the column of lava
+ * is; the afterburn is lit at the mouth itself and dimmer, because what is left
+ * is glowing ground rather than a jet.
+ *
+ * Returned structurally rather than as `lightmap.ts`'s `LightSource` so this
+ * file stays free of the render layer and testable without a canvas.
+ */
+export function ventLights(
+  vents: readonly { x: number; y: number; jetting: boolean; burning: boolean }[],
+): { x: number; y: number; radius: number; intensity: number }[] {
+  const out: { x: number; y: number; radius: number; intensity: number }[] = []
+  for (const v of vents) {
+    if (v.jetting) out.push({ x: v.x, y: v.y - JET_LIGHT_RISE, radius: JET_LIGHT_R, intensity: JET_LIGHT_A })
+    else if (v.burning) out.push({ x: v.x, y: v.y, radius: BURN_LIGHT_R, intensity: BURN_LIGHT_A })
+  }
+  return out
+}
+
+/** How far above the mouth the jet's light sits — the column, not the hole. */
+const JET_LIGHT_RISE = 60
+const JET_LIGHT_R = 150
+const JET_LIGHT_A = 0.9
+const BURN_LIGHT_R = 90
+const BURN_LIGHT_A = 0.6
