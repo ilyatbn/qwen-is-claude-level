@@ -940,7 +940,7 @@ rather than corrupting it, and nothing downstream reads an object's box. It is a
 question — whether separation should be `64 + (w_a + w_b) / 2`, which would change the map,
 or whether 64 centres is what §E12 wants at these sizes. A coordinator call, not a builder's.
 
-## D-58 — The `game-server` integration suite is load-sensitive as a suite  ·  method
+## D-58 — Three of four "load flakes" had mechanisms  ·  method
 **Measured, and the rate is deliberately not claimed.** Pinned at `d453e76`, isolated
 worktree, idle box: **1 failure in 8 serial runs.** At n=8 the 95% interval runs from
 roughly 0.3% to 50%, so **"12.5%" is one observation, not a rate** — D-52's lesson applied
@@ -970,6 +970,72 @@ pre-existing at the M17 boundary (D-51).
 
 **What would earn a number: n ≥ 30 on an idle box**, about 90 minutes. Worth doing once,
 deliberately — not worth inferring from the tail.
+
+### T20.20 re-examined every entry, and the table is now empty
+
+**The heading above is the correction, and it is a correction of this entry's own reasoning.**
+D-58 argued that because the failure moves, no single test can be broken. Every one of the four
+has now been opened, and three had a deterministic cause. `commands_sent_between_ticks_are_all_applied`
+is the one that cracked it — see `tasks/M20/T20.20-a-flake-that-is-a-fixture.md`.
+
+| entry | what it actually was | now |
+|---|---|---|
+| `room.rs::commands_sent_between_ticks_are_all_applied` | `test_config` inherits `fixed_seed: None`, so the spawn moves; on a seed that spawns at the right wall, `physics/resolve.rs::clamp_to_world` holds `vel.x <= 0` and the held RIGHT is a **no-op by construction** — *"from 2032 to 2032"* | probes both directions (`room.rs::room_for`, ported from `checks/audio.mjs::roomFor`) and walks the one with room; `a_player_spawned_against_the_wall_is_still_walked` stages the failure on every seed |
+| `rooms.rs::two_clients_in_one_room_do_hear_each_other` | `wait_for(.., 1, ..)` guarantees `>= 1`, a later `count()` was asserted `== 1` — a **stronger claim than the wait made**, with an unbounded gap between the lines | asserts the names ana heard, which is the claim the test was making anyway |
+| `in_progress.rs::quick_match_makes_a_new_lobby_rather_than_being_refused` | `count(join_error) == 0` with **no presence control** | a third client is refused an unknown code first, so the zero is a measurement |
+| `replay_run.rs::sigterm_leaves_a_verifiable_file_and_sigkill_does_not` | a bare `sock.emit("join", ..)` with no retry — §A28's dropped emit, which `rooms.rs::emit_until` exists for and this file never got | emits `join` until `welcome` comes back |
+
+**The measurement behind the last row, because T20.20's own notes had recorded that one as
+examined with no deterministic cause found.** 13 full `cargo test -p game-server` runs at `6aad66d`, idle box:
+**2 failures, both `sigterm…`, both at the same line** — `welcome_rx.recv_timeout(30 s)`,
+*"never seated: Timeout"*. Thirty seconds of silence on a socket whose `open` callback had
+already fired is not a busy box, which is the argument `emit_until`'s own doc comment makes
+about the identical signature. **A failure that recurs at one line is not a moving failure**,
+and that is the rule this entry originally reasoned past.
+
+### The corroboration from T20.19, checked at the code
+
+T20.20 recorded two observations from T20.19's coder, unverified at the time. Both were
+re-measured against `6aad66d`, and **the mechanism is confirmed while one instance detail is
+wrong**, which is the useful outcome.
+
+- **TypeScript, confirmed exactly.** `prediction.test.ts::directionWithRoom` probes RIGHT then
+  LEFT. Instrumented: `startX=1504`, RIGHT ends at **x=1545.75 with `vx=0`** — 41.75 px into a
+  wall — and LEFT reaches `-150` = `WALK_SPEED`. The fixture picks LEFT, as reported.
+- **Rust, mechanism confirmed, direction inverted.** `World::new(4242, MapScale::Small)` plus
+  `add_player` seats player 1 at **x = 16**, which is `WALL_W + PLAYER_W / 2` — the *left*
+  wall, as reported. But holding **LEFT** is the no-op there (0.0 px at any health); holding
+  RIGHT moves **29.3 px at `BASE_HEALTH` and 23.8 px at health 1**, where `speed_multiplier`
+  is within a percent of its `HEALTH_SPEED_MIN` floor. The
+  account said RIGHT does not move the body one pixel at reduced health; measured, it does.
+  `HEALTH_SPEED_MIN` is 0.75, so a hurt player is a quarter slower, not stopped.
+- **The mask claim is confirmed.** Scanning that map for a level, clear run of
+  `PLAYER_W + 96` px with a body's height of clearance above it: **0 rows have one.** Building
+  a shelf was the right call.
+
+So T20.20's right-wall diagnosis and T20.19's left-wall report are one mechanism —
+`clamp_to_world` computes `min_x` and `max_x` from one expression and mirrors the velocity
+clamp — and both walls trap, but the direction in the T20.19 account is the opposite of the one
+that fails. That is why `room_for` probes rather than assuming.
+
+### The budget-equals-a-constant coincidence: examined and exonerated
+
+T20.20 measured it exactly. Three test files declare `BUDGET_MS` values that **are** shipped
+constants (`rooms.rs` 10_000 = `LOBBY_BOT_TIMEOUT` = `WARMUP_SECONDS`; `lobby.rs` and
+`in_progress.rs` 30_000 = `READY_TIMEOUT_SECS` = `ROOM_EMPTY_TTL`), so the worry was that every
+wait gives up on precisely the tick its room changes state.
+
+The experiment: set `rooms.rs::BUDGET_MS` to `25_000`, a value that is no constant, and re-run.
+**7 runs at 25_000 against 6 at 10_000, and the only failures in either arm were the two
+`sigterm…` above — in `replay_run.rs`, which does not read `rooms.rs::BUDGET_MS` at all.**
+
+The stronger evidence is not the pass/fail count, which at this n could not settle anything. It
+is `WAIT_MARGIN=1`, which prints the fraction of its budget each wait consumed. **277 waits
+across those 13 runs: 213 of them reported 0 %, and the worst in the whole set used 17 %.**
+The closest any wait came to its deadline still left a factor of six, so the value of the
+deadline cannot be what fails them. The coincidence is real and the budgets should still not *be* constants — a reader
+cannot tell the difference from the source — but it is **not** the mechanism, and no D-58 entry
+needed it. (T20.18 gives the three files values that are not state-transition boundaries.)
 
 ## D-59 — The M18 boundary sweep, and the cost of one missing `npm test`  ·  M18
 **191 assertions passed, six checks red.** Split at `a154018` (pre-T18.04) in an isolated

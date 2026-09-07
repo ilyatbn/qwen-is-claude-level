@@ -407,7 +407,7 @@ async fn two_clients_in_one_room_do_hear_each_other() {
     let h = spawn_server().await;
     let addr = h.addr;
 
-    let joins = tokio::task::spawn_blocking(move || {
+    let heard = tokio::task::spawn_blocking(move || {
         let inbox_a: Inbox = Arc::default();
         let a = connect(addr, inbox_a.clone());
         emit_until(
@@ -432,17 +432,38 @@ async fn two_clients_in_one_room_do_hear_each_other() {
 
         // ana was already seated, so ana hears bo arrive.
         wait_for(&inbox_a, "player_join", 1, "ana hears bo");
-        let n = count(&inbox_a, "player_join");
+        // **The names, not the count.** `wait_for(.., 1, ..)` guarantees `>= 1`
+        // and this line used to be asserted `== 1`, which is a stronger claim
+        // than the wait made, with an unbounded gap between the two — a second
+        // arrival landing in that gap fails a test about broadcast routing for
+        // reasons that have nothing to do with routing. Unreachable at
+        // `bot_count: 0`, but it is the shape that presents as a flake, and
+        // T20.20 is about exactly that (D-58). Who ana heard from is the claim
+        // this test is making anyway; the count never was.
+        let heard: Vec<String> = inbox_a
+            .lock()
+            .map(|g| {
+                g.get("player_join")
+                    .map(|v| {
+                        v.iter()
+                            .filter_map(|j| j.get("name").and_then(|n| n.as_str()))
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
         let _ = a.disconnect();
         let _ = b.disconnect();
-        n
+        heard
     })
     .await
     .expect("blocking half");
 
-    assert_eq!(
-        joins, 1,
-        "same-room broadcast is broken, so the negative test proves nothing"
+    assert!(
+        heard.iter().any(|n| n == "bo"),
+        "same-room broadcast is broken, so the negative test proves nothing: \
+         ana heard {heard:?}"
     );
 
     h.stack.shutdown_all(Duration::from_secs(2)).await;

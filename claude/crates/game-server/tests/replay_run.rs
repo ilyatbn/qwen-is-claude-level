@@ -758,8 +758,6 @@ fn sigterm_leaves_a_verifiable_file_and_sigkill_does_not() {
         open_rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("socket.io never reported `open`");
-        sock.emit("join", serde_json::json!({ "name": "ana", "skin_id": 0 }))
-            .expect("join");
 
         // §E1: a file existing no longer means a round is under way — the
         // recorder opens with the room, and the room starts as a lobby. A footer
@@ -771,9 +769,46 @@ fn sigterm_leaves_a_verifiable_file_and_sigkill_does_not() {
         // shielded from it by a filesystem poll that happened to take long
         // enough; §E1 removed that poll's meaning, and the race underneath it
         // surfaced immediately.
-        welcome_rx
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .expect("never seated");
+        // **Emit `join` until the server answers** — this test was D-58's last
+        // member with no explanation, and it has one (T20.20).
+        //
+        // Measured over 13 full `cargo test -p game-server` runs on an idle
+        // box: 2 failures, both here, both `never seated: Timeout` — thirty
+        // seconds of silence on a socket whose `open` callback had already
+        // fired. That is §A28's shape, not a busy box: `connect()` returns
+        // while the socket.io namespace CONNECT is still in flight and an emit
+        // on the next line is dropped **with no error**, which waiting for
+        // `open` narrows without closing. `rooms.rs::emit_until` is the answer
+        // this repository already worked out; this file never got it.
+        //
+        // Re-emitting is safe because the server defines it so: a second join
+        // on one socket is ignored, not a second player
+        // (`session.rs::seat`). **Only `join` may be retried** — the
+        // `start_with_bots` below carries no such guarantee.
+        let seated = {
+            let budget = std::time::Duration::from_secs(30);
+            let retry_every = std::time::Duration::from_secs(5);
+            let started = std::time::Instant::now();
+            let mut sent = 0;
+            loop {
+                sock.emit("join", serde_json::json!({ "name": "ana", "skin_id": 0 }))
+                    .expect("join");
+                sent += 1;
+                if welcome_rx.recv_timeout(retry_every).is_ok() {
+                    if sent > 1 {
+                        eprintln!("EMIT_RETRY join: seated on attempt {sent}");
+                    }
+                    break true;
+                }
+                if started.elapsed() >= budget {
+                    break false;
+                }
+            }
+        };
+        assert!(
+            seated,
+            "never seated: no `welcome` in 30 s on a socket whose `open` had fired"
+        );
         sock.emit("start_with_bots", serde_json::json!({}))
             .expect("start_with_bots");
         map_rx

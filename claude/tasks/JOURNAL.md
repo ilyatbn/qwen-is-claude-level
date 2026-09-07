@@ -5492,3 +5492,14 @@ the mirror sits up to 1.0 health low forever — 0.375 px/s, a correction every 
 0.107 s before T20.19, a 50× win with a permanent floor — and the mirror has no `alive` while
 `apply_inputs` gates on it, so a dead player is predicted walking. Neither is a regression; both
 break the rule T20.19 set. No T20.19 test crosses the codec, which is why neither was caught.
+
+## T20.20 — the flake was a fixture, and so were the other three
+
+**Settling experiment first, and the budget coincidence is exonerated:** `rooms.rs::BUDGET_MS`
+at `25_000` vs `10_000`, 7 runs against 6 — both arms' only failures were in `replay_run.rs`,
+which does not read it, and `WAIT_MARGIN` over **277 waits** shows the worst using 17 % of
+budget. `commands_sent_between_ticks` now probes both directions (`room_for`, ported from
+`audio.mjs::roomFor`) on a **pinned seed**: the probe alone still failed 1 run in 16, one spawn
+in sixteen having 5 px of room. `a_player_spawned_against_the_wall_is_still_walked` reproduces
+*"from 2032 to 2032"* on demand. Three more D-58 entries had mechanisms too; table now empty.
+Done-when 20/20. EXIT=0, 47/47, 1288/1301 rust, 890/890 client, 25/25, assets ok.

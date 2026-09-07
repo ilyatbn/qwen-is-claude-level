@@ -372,11 +372,32 @@ async fn quick_match_makes_a_new_lobby_rather_than_being_refused() {
         )
         .expect("emit");
         wait_for(&ib, "welcome", 1, "bo");
-        (count(&ib, "join_error"), a, b)
+
+        // **The presence control for the absence asserted below** (T20.20).
+        // `count(join_error) == 0` is satisfied by a client that could not have
+        // seen one — a mis-spelled event name, a subscription that never
+        // registered — and the counter had nothing saying otherwise. `cy` asks
+        // `join_room` for a code that cannot exist, which `session.rs`'s
+        // `join_room` answers with `unknown_code`, so this is the same event on
+        // the same `connect` wiring, provoked on purpose.
+        let ic: Inbox = Arc::default();
+        let c = connect(addr, ic.clone());
+        c.emit(
+            "join_room",
+            serde_json::json!({ "code": "ZZZZZZ", "name": "cy" }),
+        )
+        .expect("emit");
+        wait_for(&ic, "join_error", 1, "cy is refused an unknown code");
+
+        (count(&ib, "join_error"), count(&ic, "join_error"), a, b, c)
     })
     .await
     .expect("blocking");
 
+    assert!(
+        out.1 >= 1,
+        "the control never saw a join_error, so bo's zero says nothing"
+    );
     assert_eq!(
         out.0, 0,
         "quick match refused a player instead of making them a new lobby: the \

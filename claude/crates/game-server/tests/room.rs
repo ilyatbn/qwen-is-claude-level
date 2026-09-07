@@ -9,13 +9,45 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use game_core::constants::MapScale;
-use game_core::constants::SIM_HZ;
+use game_core::constants::{PLAYER_W, SIM_HZ, STEP_UP, WALK_SPEED, WALL_W};
+use game_core::map::Map;
+use game_core::physics::body::Body;
 use game_core::player::input::{button, Input};
 use game_server::config::Config;
 use game_server::room::{spawn_room, Command, RoomHandle};
 use game_server::state::AppState;
 use socketioxide::SocketIo;
 use tokio::sync::oneshot;
+
+/// **The map these tests run on, stated rather than inherited** (T20.20).
+///
+/// `Config::default()` leaves `fixed_seed: None`, so every run generated a
+/// different map and put the player somewhere different on it. That is what
+/// made `commands_sent_between_ticks_are_all_applied` a D-58 flaky-list entry:
+/// on a seed that spawns against a wall the held input is a no-op, and on a seed
+/// that spawns in a pocket there is nowhere to walk at all. Measured while
+/// fixing it, with the direction probe already in place: **one unseeded run in
+/// sixteen found 5 px of room in the better direction**, against a 16 px body.
+/// The terrain is that tight: scanning the mask of
+/// `World::new(TEST_SEED, MapScale::Small)` for a level, clear stretch as long
+/// as a body plus a quarter-second walk found **none, on any row** — which is
+/// the same result T20.19 got before it gave up and built its own shelf.
+///
+/// At this seed the probe reports **the full `reach` of clear room, 38 px** —
+/// measured on three runs, identical each time, which is the property a pinned
+/// seed is bought for.
+///
+/// `replay.rs` and `replay_run.rs` have pinned their seeds inline since M13
+/// (`Some(4242)`, `Some(90210)`, `Some(31337)`) and neither has ever been on the
+/// flaky list. The same value as `replay.rs`, so a failure here is reproducible
+/// against a round that suite can also replay.
+///
+/// **It is not on its own the fix.** A seed makes the spawn reproducible; it
+/// does not make walking *right* correct, and the next map change re-rolls which
+/// seeds are walkable. `room_for` below is what makes the direction right, and
+/// the two together are what T20.18 institutionalises for the other seven copies
+/// of this fixture.
+const TEST_SEED: u64 = 4242;
 
 /// A **Small** map, not the shipped default.
 ///
@@ -32,6 +64,7 @@ pub fn test_config() -> Config {
     Config {
         map_scale: MapScale::Small,
         bot_count: 0,
+        fixed_seed: Some(TEST_SEED),
         ..Config::default()
     }
 }
@@ -133,6 +166,108 @@ async fn start_round(room: &RoomHandle, id: u8) {
     }
 }
 
+/// How far the body can walk in `dir` (`1.0` right, `-1.0` left) before terrain
+/// stops it, in pixels, capped at `reach`.
+///
+/// **`scripts/checks/audio.mjs::roomFor` ported, not re-invented** (T20.20).
+/// That check hit the identical problem on the browser side — a fixture that
+/// held one hardcoded direction and reported an audio fault about a player
+/// standing against terrain — and solved it by asking whether there is room
+/// before pushing.
+///
+/// Two differences from the JavaScript, both because Rust can see the real
+/// geometry: the sampled column is the body's own `head_y()..feet_y()` rather
+/// than three fractions of a nominal height, and the bottom `STEP_UP` pixels
+/// are excluded because `physics/resolve.rs::move_x` climbs those rather than
+/// stopping at them — a step up is a slope the body walks, not a wall.
+fn room_for(map: &Map, body: &Body, dir: f32, reach: i32) -> i32 {
+    let half_w = body.size.x / 2.0;
+    let top = body.head_y().ceil() as i32;
+    let bottom = (body.feet_y() - STEP_UP as f32).floor() as i32;
+    for step in 1..=reach {
+        let x = (body.pos.x + dir * (half_w + step as f32)).round() as i32;
+        if (top..=bottom).any(|y| map.mask.get(x, y)) {
+            return step - 1;
+        }
+    }
+    reach
+}
+
+/// What a held quarter-second of input did: the direction chosen, the room the
+/// probe found in it, and where the player was before and after.
+///
+/// **One function, two tests** — the wall test below must exercise the same
+/// direction choice this one does, or "the fixture survives a spawn against the
+/// wall" would be a claim about a second implementation.
+async fn walk_where_there_is_room(room: &RoomHandle, id: u8) -> (f32, i32, f32, f32) {
+    // Held state, at the sim rate, for a quarter second.
+    let ticks = SIM_HZ / 4;
+    let tick = Duration::from_secs_f32(1.0 / SIM_HZ as f32);
+    // The furthest that hold can carry the body, which is as far as it is worth
+    // probing.
+    let reach = (WALK_SPEED * ticks as f32 / SIM_HZ as f32).ceil() as i32;
+
+    // **Which way is there room to walk?** This fixture used to hold RIGHT
+    // unconditionally, with `test_config` inheriting `fixed_seed: None` so that
+    // the spawn moved run to run. On a seed that spawns the player at
+    // `MAP_SMALL_W - WALL_W - PLAYER_W / 2` — the right wall —
+    // `physics/resolve.rs::clamp_to_world` holds `vel.x <= 0`, so holding RIGHT
+    // is a no-op by construction and the test failed "from 2032 to 2032". It was
+    // carried as a load flake on D-58's list; it is not flaky, it is a fixture
+    // that assumed a direction (T20.20). `min_x` and `max_x` are one expression
+    // in `clamp_to_world` with the velocity clamp mirrored, so the left wall at
+    // `WALL_W + PLAYER_W / 2` is the same trap. The wall test below reproduces
+    // the original failure message on demand, on every seed.
+    let (dir, room_px) = room
+        .inspect(move |w| {
+            let body = w
+                .player(id)
+                .map(|p| p.body)
+                .expect("the player is in the world");
+            let right = room_for(&w.map, &body, 1.0, reach);
+            let left = room_for(&w.map, &body, -1.0, reach);
+            if right >= left {
+                (1.0f32, right)
+            } else {
+                (-1.0f32, left)
+            }
+        })
+        .await
+        .expect("alive");
+
+    // **The control on the probe**, so the fix cannot decay into "push whichever
+    // way happens to work". D-29: say which situation was unavailable rather
+    // than measuring a worse one — a body wedged with walls both sides is a
+    // fixture with nowhere to walk, not a command path that dropped inputs.
+    assert!(
+        room_px >= PLAYER_W as i32,
+        "nowhere to walk: {room_px} px of room in the better direction, against \
+         a {PLAYER_W} px body — no held input could move this player, so this \
+         test would say nothing about the command path"
+    );
+
+    let held = if dir > 0.0 {
+        button::RIGHT
+    } else {
+        button::LEFT
+    };
+    let before = room
+        .inspect(move |w| w.player(id).map(|p| p.body.pos.x).unwrap_or(0.0))
+        .await
+        .expect("alive");
+
+    for seq in 1..=ticks {
+        room.send(Command::Input(id, vec![Input::new(seq, held, 0)]));
+        tokio::time::sleep(tick).await;
+    }
+    let after = room
+        .inspect(move |w| w.player(id).map(|p| p.body.pos.x).unwrap_or(0.0))
+        .await
+        .expect("alive");
+
+    (dir, room_px, before, after)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn commands_sent_between_ticks_are_all_applied() {
     let (room, _shut) = room();
@@ -142,27 +277,84 @@ async fn commands_sent_between_ticks_are_all_applied() {
         .expect("seated");
     start_round(&room, id).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let before = room
-        .inspect(move |w| w.player(id).map(|p| p.body.pos.x).unwrap_or(0.0))
-        .await
-        .expect("alive");
 
-    // Held state, at roughly the sim rate, for a quarter second.
-    for seq in 1..=15u32 {
-        room.send(Command::Input(id, vec![Input::new(seq, button::RIGHT, 0)]));
-        tokio::time::sleep(Duration::from_millis(16)).await;
-    }
-    let after = room
-        .inspect(move |w| w.player(id).map(|p| p.body.pos.x).unwrap_or(0.0))
-        .await
-        .expect("alive");
+    let (dir, room_px, before, after) = walk_where_there_is_room(&room, id).await;
 
     // Displacement, not instantaneous velocity: GROUND_FRICTION zeroes vel.x
     // within ~0.1 s of the last input, so a velocity assertion measured after the
     // sleep reads 0 whether or not the inputs ever arrived.
+    //
+    // Signed by the direction that was chosen, so pushing left and drifting
+    // right cannot pass.
     assert!(
-        after > before + 1.0,
-        "held right moved the player from {before} to {after}"
+        (after - before) * dir > 1.0,
+        "held {} with {room_px} px of room and moved the player from {before} to {after}",
+        if dir > 0.0 { "right" } else { "left" }
+    );
+}
+
+/// **The failure the test above carried on D-58's list, staged deliberately.**
+///
+/// A pinned seed alone would make that test pass without making it correct: the
+/// next map change re-rolls the spawn, and nothing would notice until the flake
+/// came back. This puts the player *on* the wall on every run and every seed, so
+/// the direction probe is exercised in the state that used to break it rather
+/// than in whatever state the seed happened to hand over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_player_spawned_against_the_wall_is_still_walked() {
+    let (room, _shut) = room();
+    let id = room
+        .join("ana".into(), Default::default())
+        .await
+        .expect("seated");
+    start_round(&room, id).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Push the body well past the right edge and let the production clamp put
+    // it where it belongs — restating `clamp_to_world`'s arithmetic here would
+    // be a second copy of the thing under discussion.
+    let width = room
+        .inspect(move |w| {
+            let w_px = w.map.mask.w as f32;
+            if let Some(p) = w.player_mut(id) {
+                p.body.pos.x = w_px * 2.0;
+                p.body.vel = game_core::math::Vec2::ZERO;
+            }
+            w_px
+        })
+        .await
+        .expect("alive");
+    // `World::step` integrates a player inside `apply_input`, so a player with
+    // nothing queued is never moved and never clamped: the empty inputs are what
+    // makes the clamp run.
+    let tick = Duration::from_secs_f32(1.0 / SIM_HZ as f32);
+    for seq in 1..=SIM_HZ / 10 {
+        room.send(Command::Input(id, vec![Input::new(seq, 0, 0)]));
+        tokio::time::sleep(tick).await;
+    }
+    let at_wall = room
+        .inspect(move |w| w.player(id).map(|p| p.body.pos.x).unwrap_or(0.0))
+        .await
+        .expect("alive");
+    // The number the original failure reported, derived rather than typed: on a
+    // Small map this is 2048 - 8 - 8 = 2032.
+    assert_eq!(
+        at_wall,
+        width - WALL_W as f32 - PLAYER_W / 2.0,
+        "the clamp did not put the body on the right wall, so this test is not \
+         standing where the failure stood"
+    );
+
+    let (dir, room_px, before, after) = walk_where_there_is_room(&room, id).await;
+
+    assert!(
+        dir < 0.0,
+        "the probe chose RIGHT with the right wall {room_px} px away"
+    );
+    assert!(
+        (after - before) * dir > 1.0,
+        "held left off the right wall with {room_px} px of room and moved the \
+         player from {before} to {after}"
     );
 }
 
