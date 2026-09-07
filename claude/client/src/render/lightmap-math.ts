@@ -72,139 +72,36 @@ export function lightmapNeeded(darkness: number, fogActive: boolean): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Light sources (T5.07)
+// Deleted: the light-source collector (T19.20)
 // ---------------------------------------------------------------------------
-
-export interface LightSourceSpec {
-  x: number
-  y: number
-  radius: number
-  kind: 'radial' | 'cone'
-  angle?: number
-  coneDeg?: number
-  intensity: number
-}
-
-export interface PlayerLight {
-  x: number
-  y: number
-  health: number
-  /**
-   * Carrying one (T20.07), for the reason `FovOpts.hasFlashlight` gives.
-   *
-   * **The cone below is kept, deliberately.** The brief adds a passive radius and
-   * says nothing about removing the cone, and deleting it in passing would be a
-   * design change beyond it. The consequence is worth stating: a carried
-   * flashlight now emits a cone it cannot be switched off — which is invisible
-   * today, because `collectLightSources` still has **no production caller**
-   * (`GameScene` builds `lights` by hand). T19.20 owns the wiring; when it lands,
-   * confirm that a permanently-on cone is wanted before it reaches a screen.
-   */
-  hasFlashlight: boolean
-  /** Radians. */
-  aim: number
-}
-
-export interface WorldLights {
-  localPlayer: PlayerLight
-  remotePlayers: readonly Omit<PlayerLight, 'health'>[]
-  /** `age` in seconds since the blast. */
-  explosions: readonly { x: number; y: number; age: number }[]
-  hazards: readonly { x: number; y: number; kind: 'lava' | 'burn' | 'meteor' }[]
-  darkness: number
-  fogMult: number
-}
-
-/** Explosion flash decay, seconds. */
-export const FLASH_DECAY = 0.2
-
-/**
- * How far each hazard lights the ground at night.
- *
- * **No `flame` entry, deliberately, and the reason is worth reading once.**
- * §F10.3 says a flame "lights the world through the existing lightmap hazard
- * path". That path is `collectLightSources`, below — and **it has no production
- * caller.** Grepped: the only callers in the tree are its own unit tests.
- * `GameScene` builds its light list from `OrdnanceState.lights()` and
- * `OrdnanceFxState.lights()` directly (`GameScene.ts:1498`), and the sandbox
- * does not light at all. A `flame` row here would have lit nothing.
- *
- * So a flame lights the world the way every other projectile does, through
- * `GLOW` in `ordnance-state.ts` and `OrdnanceState.lights()` — the path that is
- * actually wired to the lightmap. The hazards this table is for are the
- * server-announced zones, and §F10.2 stopped a flame being one of them.
- */
-const HAZARD_RADIUS: Record<string, number> = { lava: 150, burn: 90, meteor: 120 }
-
-/**
- * Every light that should erase darkness this frame.
- *
- * The one that is easy to omit and matters most is **remote players' flashlight
- * cones**. Leaving them out silently removes the entire trade the item exists
- * for: a flashlight at night is meant to be a beacon, buying long sightlines at
- * the cost of being seen first (`docs/14-daynight-visibility.md` §4).
- */
-export function collectLightSources(w: WorldLights): LightSourceSpec[] {
-  const c = C()
-  // Daylight with no fog: the lightmap is skipped entirely, so there is nothing
-  // to erase into.
-  if (!lightmapNeeded(w.darkness, w.fogMult < 1)) return []
-
-  const out: LightSourceSpec[] = []
-
-  out.push({
-    x: w.localPlayer.x,
-    y: w.localPlayer.y,
-    radius: fovRadius({
-      darkness: w.darkness,
-      fogMult: w.fogMult,
-      health: w.localPlayer.health,
-      hasFlashlight: w.localPlayer.hasFlashlight,
-    }),
-    kind: 'radial',
-    intensity: 1,
-  })
-
-  if (w.localPlayer.hasFlashlight) {
-    out.push({
-      x: w.localPlayer.x,
-      y: w.localPlayer.y,
-      radius: c.FLASHLIGHT_RANGE * w.fogMult,
-      kind: 'cone',
-      angle: w.localPlayer.aim,
-      coneDeg: c.FLASHLIGHT_CONE_DEG,
-      intensity: 1,
-    })
-  }
-
-  for (const r of w.remotePlayers) {
-    if (!r.hasFlashlight) continue
-    out.push({
-      x: r.x,
-      y: r.y,
-      radius: c.FLASHLIGHT_RANGE * w.fogMult,
-      kind: 'cone',
-      angle: r.aim,
-      coneDeg: c.FLASHLIGHT_CONE_DEG,
-      intensity: 1,
-    })
-  }
-
-  for (const e of w.explosions) {
-    if (e.age >= FLASH_DECAY) continue
-    const t = 1 - e.age / FLASH_DECAY
-    out.push({ x: e.x, y: e.y, radius: 220 * t * w.fogMult, kind: 'radial', intensity: t })
-  }
-
-  for (const h of w.hazards) {
-    out.push({
-      x: h.x,
-      y: h.y,
-      radius: (HAZARD_RADIUS[h.kind] ?? 100) * w.fogMult,
-      kind: 'radial',
-      intensity: 0.85,
-    })
-  }
-
-  return out
-}
+//
+// `collectLightSources`, `LightSourceSpec`, `PlayerLight`, `WorldLights`,
+// `FLASH_DECAY` and `HAZARD_RADIUS` lived here and **had no production caller
+// in the entire tree** — only their own nine unit tests, which made a dead path
+// read as maintained code. It was the sole producer of `kind: 'cone'`, so
+// `lightmap.ts::eraseCone` had no producer either; both are gone.
+//
+// **Sanctioned by `docs/76` §G2**, which withdraws `docs/14` §4's beacon clause
+// — *"Your cone is drawn in everyone's lightmap … Long sightlines at the cost of
+// being seen first"* — and its `F`-toggle bullet, the latter stale since T20.07.
+// A flashlight is a straight upgrade now: a longer view for whoever finds one,
+// with no tell. This is not a builder deleting a specced feature.
+//
+// §G2 spells out what is left: **a wider view, no cone, no toggle, no tell, no
+// fuel cost.** Not even the carrier gets a cone — the only one the client ever
+// built was in the function deleted here, so §4's cone was never rendered for
+// anybody. `FLASHLIGHT_RANGE` and `FLASHLIGHT_CONE_DEG` are consequently read by
+// nothing; §G2 leaves them standing and asks for their retirement to be booked
+// rather than folded in here.
+//
+// T20.07's implementer left a note on `PlayerLight.hasFlashlight` asking that a
+// permanently-on cone be confirmed before it reached a screen. It was asked,
+// and the answer was no — so the note goes with the code it guarded rather than
+// pointing at nothing.
+//
+// What the nine tests covered, so the loss is named rather than counted: the
+// daylight no-op, the local radial, the local cone, the ambient-radius widening,
+// a remote player's cone and its no-flashlight control, explosion-flash decay
+// over `FLASH_DECAY`, lava/burn/meteor hazard lights, and fog shrinking every
+// radius. Only the widening had another home — `fovRadius`, still tested above,
+// including against the Rust copy. The rest guarded a path nothing ran.

@@ -1210,7 +1210,7 @@ export class SandboxScene extends Phaser.Scene {
       // was still rendering the old one, which is §A15's whole lesson. It also
       // silently ignored `fovOverride`, which this branch honours.
       this.lastFov = fov
-      lights.push({ x: body.x, y: body.y, radius: fov, kind: 'radial', intensity: 1 })
+      lights.push({ x: body.x, y: body.y, radius: fov, intensity: 1 })
       // The same `fov` the lightmap uses, not a second copy of the formula —
       // two of them would let the minimap and the screen disagree (§A6).
       this.minimap?.update(dt, { x: body.x, y: body.y }, [], fov)
@@ -1218,13 +1218,13 @@ export class SandboxScene extends Phaser.Scene {
     // Ordnance lights the map. Shooting in the dark tells everyone where you are,
     // and it is most of what makes night combat readable at all.
     for (const l of this.world.ordnance.lights()) {
-      lights.push({ x: l.x, y: l.y, radius: l.r, kind: 'radial', intensity: l.a })
+      lights.push({ x: l.x, y: l.y, radius: l.r, intensity: l.a })
     }
     // Lava lights the map, exactly as ordnance does — a vent at night is a
     // beacon and that is the point of digging yourself a hole being punished.
     for (const v of weather.vents) {
-      if (v.jetting) lights.push({ x: v.x, y: v.y - 60, radius: 150, kind: 'radial', intensity: 0.9 })
-      else if (v.burning) lights.push({ x: v.x, y: v.y, radius: 90, kind: 'radial', intensity: 0.6 })
+      if (v.jetting) lights.push({ x: v.x, y: v.y - 60, radius: 150, intensity: 0.9 })
+      else if (v.burning) lights.push({ x: v.x, y: v.y, radius: 90, intensity: 0.6 })
     }
     this.lightmap.render(this.cameras.main, darkness, lights, this.fogActive || weather.fog > 0)
 

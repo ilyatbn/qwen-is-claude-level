@@ -30,15 +30,20 @@ import { DEPTH } from './backdrop'
 export { fovRadius, lightmapNeeded }
 export type { FovOpts }
 
+/**
+ * One light the lightmap erases around.
+ *
+ * **There is exactly one kind of light, so there is no `kind`** (T19.20). This
+ * carried a `'radial' | 'cone'` discriminant, plus `angle` and `coneDeg`, for a
+ * flashlight cone whose only producer — `lightmap-math.ts::collectLightSources`
+ * — was never called by anything. `docs/76` §G2 withdraws the beacon
+ * clause that cone existed for, so it is gone, and a one-variant discriminant
+ * would only advertise a second kind that does not exist.
+ */
 export interface LightSource {
   x: number
   y: number
   radius: number
-  kind: 'radial' | 'cone'
-  /** Cone only: direction in radians. */
-  angle?: number
-  /** Cone only: full cone angle in degrees. */
-  coneDeg?: number
   /** 0..1 — how completely this light erases the dark. */
   intensity: number
 }
@@ -142,11 +147,7 @@ export class Lightmap {
       if (cx < -r || cy < -r || cx > this.lw + r || cy > this.lh + r) continue
 
       const a = Math.max(0, Math.min(1, s.intensity))
-      if (s.kind === 'cone') {
-        this.eraseCone(ctx, cx, cy, r, s.angle ?? 0, s.coneDeg ?? c.FLASHLIGHT_CONE_DEG, a)
-      } else {
-        this.eraseRadial(ctx, cx, cy, r, a)
-      }
+      this.eraseRadial(ctx, cx, cy, r, a)
       this.stats.drawsLastFrame++
     }
 
@@ -173,28 +174,6 @@ export class Lightmap {
     ctx.fillStyle = g
     ctx.beginPath()
     ctx.arc(cx, cy, r, 0, Math.PI * 2)
-    ctx.fill()
-  }
-
-  private eraseCone(
-    ctx: CanvasRenderingContext2D,
-    cx: number,
-    cy: number,
-    r: number,
-    angle: number,
-    coneDeg: number,
-    alpha: number,
-  ): void {
-    const half = ((coneDeg * Math.PI) / 180) / 2
-    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r)
-    g.addColorStop(0, `rgba(0,0,0,${alpha})`)
-    g.addColorStop(0.6, `rgba(0,0,0,${alpha * 0.9})`)
-    g.addColorStop(1, 'rgba(0,0,0,0)')
-    ctx.fillStyle = g
-    ctx.beginPath()
-    ctx.moveTo(cx, cy)
-    ctx.arc(cx, cy, r, angle - half, angle + half)
-    ctx.closePath()
     ctx.fill()
   }
 

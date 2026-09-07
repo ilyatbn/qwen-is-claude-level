@@ -3,8 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core, coreDarknessAt, coreFovRadius } from '../core'
 import { darknessAt } from './sky-math'
-import { FLASH_DECAY, collectLightSources, fovRadius, lightmapNeeded } from './lightmap-math'
-import type { PlayerLight, WorldLights } from './lightmap-math'
+import { fovRadius, lightmapNeeded } from './lightmap-math'
 
 beforeAll(async () => {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
@@ -109,128 +108,6 @@ describe('lightmapNeeded', () => {
   it('is true for any darkness, or for fog in daylight', () => {
     expect(lightmapNeeded(0.01, false)).toBe(true)
     expect(lightmapNeeded(0, true)).toBe(true)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// collectLightSources (T5.07)
-// ---------------------------------------------------------------------------
-
-describe('collectLightSources', () => {
-  const player = (over: Partial<PlayerLight> = {}): PlayerLight => ({
-    x: 100,
-    y: 200,
-    health: 100,
-    hasFlashlight: false,
-    aim: 0,
-    ...over,
-  })
-  const world = (over: Partial<WorldLights> = {}): WorldLights => ({
-    localPlayer: player(),
-    remotePlayers: [],
-    explosions: [],
-    hazards: [],
-    darkness: 0.82,
-    fogMult: 1,
-    ...over,
-  })
-
-  it('does no work in full daylight', () => {
-    expect(collectLightSources(world({ darkness: 0 }))).toEqual([])
-  })
-
-  it('gives the local player one radial source at night', () => {
-    const ls = collectLightSources(world())
-    expect(ls).toHaveLength(1)
-    expect(ls[0]!.kind).toBe('radial')
-    expect(ls[0]!.x).toBe(100)
-    expect(ls[0]!.radius).toBeCloseTo(
-      fovRadius({ darkness: 0.82, fogMult: 1, health: 100, hasFlashlight: false }),
-      3,
-    )
-  })
-
-  it('adds a cone at the aim angle when one is carried', () => {
-    const ls = collectLightSources(
-      world({ localPlayer: player({ hasFlashlight: true, aim: 1.25 }) }),
-    )
-    const cone = ls.find((l) => l.kind === 'cone')
-    expect(cone).toBeDefined()
-    expect(cone!.angle).toBe(1.25)
-    expect(cone!.coneDeg).toBe(C().FLASHLIGHT_CONE_DEG)
-    expect(cone!.radius).toBeCloseTo(C().FLASHLIGHT_RANGE, 3)
-  })
-
-  it('widens the ambient radius when one is carried — no longer a trade', () => {
-    // The `world()` fixture is at darkness 0.82, i.e. night, which is where the
-    // multiplier applies (T20.07).
-    const off = collectLightSources(world())[0]!.radius
-    const on = collectLightSources(
-      world({ localPlayer: player({ hasFlashlight: true }) }),
-    ).find((l) => l.kind === 'radial')!.radius
-    expect(on).toBeCloseTo(off * C().FLASHLIGHT_FOV_MULT, 3)
-    expect(on).toBeGreaterThan(off)
-  })
-
-  it('draws a remote player’s cone', () => {
-    // Omitting this silently removes the reason a flashlight is a decision: it
-    // is meant to be a beacon that gets you seen first.
-    const ls = collectLightSources(
-      world({ remotePlayers: [{ x: 700, y: 300, hasFlashlight: true, aim: -0.5 }] }),
-    )
-    const cones = ls.filter((l) => l.kind === 'cone')
-    expect(cones).toHaveLength(1)
-    expect(cones[0]!.x).toBe(700)
-    expect(cones[0]!.angle).toBe(-0.5)
-  })
-
-  it('ignores a remote player without one', () => {
-    const ls = collectLightSources(
-      world({ remotePlayers: [{ x: 700, y: 300, hasFlashlight: false, aim: 0 }] }),
-    )
-    expect(ls.filter((l) => l.kind === 'cone')).toHaveLength(0)
-  })
-
-  it('decays an explosion flash to nothing over FLASH_DECAY', () => {
-    const at = (age: number) =>
-      collectLightSources(world({ explosions: [{ x: 0, y: 0, age }] })).filter(
-        (l) => l.x === 0 && l.y === 0,
-      )
-    expect(at(0)[0]!.intensity).toBeCloseTo(1, 3)
-    expect(at(FLASH_DECAY / 2)[0]!.intensity).toBeCloseTo(0.5, 3)
-    expect(at(FLASH_DECAY)).toHaveLength(0)
-    expect(at(FLASH_DECAY + 1)).toHaveLength(0)
-  })
-
-  it('lights lava, burning ground and meteors while they are active', () => {
-    const ls = collectLightSources(
-      world({
-        hazards: [
-          { x: 1, y: 1, kind: 'lava' },
-          { x: 2, y: 2, kind: 'burn' },
-          { x: 3, y: 3, kind: 'meteor' },
-        ],
-      }),
-    )
-    expect(ls).toHaveLength(4) // the player plus three hazards
-    expect(ls.filter((l) => l.intensity === 0.85)).toHaveLength(3)
-  })
-
-  it('shrinks every radius in fog', () => {
-    const clear = collectLightSources(
-      world({ localPlayer: player({ hasFlashlight: true }), hazards: [{ x: 1, y: 1, kind: 'lava' }] }),
-    )
-    const foggy = collectLightSources(
-      world({
-        localPlayer: player({ hasFlashlight: true }),
-        hazards: [{ x: 1, y: 1, kind: 'lava' }],
-        fogMult: C().FOV_FOG_MULT,
-      }),
-    )
-    expect(foggy).toHaveLength(clear.length)
-    for (let i = 0; i < clear.length; i++) {
-      expect(foggy[i]!.radius).toBeLessThan(clear[i]!.radius)
-    }
   })
 })
 

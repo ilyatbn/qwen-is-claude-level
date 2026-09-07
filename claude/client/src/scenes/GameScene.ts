@@ -1771,17 +1771,17 @@ export class GameScene extends Phaser.Scene {
 
     const lights: LightSource[] = [
       // The player's own field of view is a light like any other.
-      { x: rp.x, y: rp.y, radius: fov, kind: 'radial', intensity: 1 },
+      { x: rp.x, y: rp.y, radius: fov, intensity: 1 },
       ...(this.world?.ordnance
         .lights()
-        .map((l) => ({ x: l.x, y: l.y, radius: l.r, kind: 'radial' as const, intensity: l.a })) ??
+        .map((l) => ({ x: l.x, y: l.y, radius: l.r, intensity: l.a })) ??
         []),
       // Fire and flame jets emit like every other emitter (§A3). Smoke and
       // mines deliberately do not: a mine that lit itself up at night would
       // defeat the point of hiding it.
       ...this.fx
         .lights()
-        .map((l) => ({ x: l.x, y: l.y, radius: l.r, kind: 'radial' as const, intensity: l.a })),
+        .map((l) => ({ x: l.x, y: l.y, radius: l.r, intensity: l.a })),
     ]
     this.debugHud.update(performance.now(), {
       rttMs: this.clock.rtt,
