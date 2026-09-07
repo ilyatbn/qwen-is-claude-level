@@ -5584,3 +5584,15 @@ from the fields, not the name. Falsified: publish a circle for a capsule and it 
 checksum 6/6, game-server otherwise green, game-core 1002/1002, clippy clean.
 **Open and not mine:** `replay_run::a_perturbed_command_is_localised_to_a_nearby_tick` — 0 of
 20 perturbations diverge. Reproduced at `f03ab6f` with my files stashed; handed to T20.21.
+
+## T20.14 — the whole thing at once: 48 clients, four scenarios, three planted controls
+
+`examples/loadgen/` drives real sockets at one in-process server; an **example** target, so the
+gate builds it and never runs it. **T19.21 reached at both observables, 3/3 runs**: 5 of 12
+joiners fanned across `lobby_bot_timeout` got `welcome.phase=warmup`, and the catch-up disclosed
+19–25 `item_spawn`s carrying `item_id` against a control of **0 over 7 lobby seats**. Booked, not
+fixed: T20.22 (a room hop orphans the seat behind you — 1 client, no concurrency), T20.23 (a
+refresh mid-join makes a room unreapable, **4/4 against a control of 0/4**), T20.24 (48 clients
+sit at `MAX_ROOMS` 32/32 refusing 8367 joins while the worst room tick used half its budget).
+**Two instrument bugs of my own, both caught by their own controls, both recorded at the code.**
+Full gate deferred by instruction; `replay_run::a_perturbed_command…` red and already journalled.

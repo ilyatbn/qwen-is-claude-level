@@ -474,7 +474,7 @@ right-button decision rather than around it. **Amendments are the coordinator's.
 - [x] [T20.11](M20/T20.11-fall-damage.md) — Fall damage **(v8)** — **unblocked by ruling**; `docs/20` §9 still refuses it and is the coordinator's to amend — **built, and the amendment is outstanding**
 - [x] [T20.12](M20/T20.12-hats-and-sunglasses.md) — Hats and sunglasses **(v8)** — depends on T20.04
 - [x] [T20.13](M20/T20.13-two-rooms-one-of-them-dead.md) — Two rooms, and one of them never starts **(v8)**
-- [ ] [T20.14](M20/T20.14-the-whole-thing-at-once.md) — The whole thing at once: an exploratory load test **(v8)**
+- [x] [T20.14](M20/T20.14-the-whole-thing-at-once.md) — The whole thing at once: an exploratory load test **(v8)** — `crates/game-server/examples/loadgen/`, four scenarios and three planted-fault controls; **reached T19.21 live at both of its observables** and booked T20.22/T20.23/T20.24/T20.25
 - [ ] [T20.16](M20/T20.16-the-balance-control-was-never-sound.md) — Replace the balance control's shape **(v8)** — **the test is knowingly red**; booked by ruling
 - [x] [T20.17](M20/T20.17-the-tests-that-never-run.md) — The tests that never run **(v8)** — nine milestones of invisible erosion; **all thirteen now run and all thirteen pass**, including the one recorded as knowingly red (D-68)
 - [x] [T20.18](M20/T20.18-seven-copies-of-connect.md) — Seven copies of `connect` **(v8)** — from T20.10's handoff — **its own Done-when grep cannot survive the consolidation it asks for**; replaced by a guard that reads the value
@@ -482,6 +482,10 @@ right-button decision rather than around it. **Amendments are the coordinator's.
 - [x] [T20.21](M20/T20.21-two-things-apply-input-still-reads.md) — Two things `apply_input` still reads that the mirror does not have **(v8)** — booked by T20.19's review: health truncates to `u8` on the wire (a correction every 5.33 s, forever), and the mirror has no `alive` while `apply_inputs` gates on it (a dead player is predicted walking). Plus two live test defects in T20.19. — **its Done-when cannot go green while `checksum.rs::two_clients_agree_on_the_mask_after_a_hundred_carves` is red at `f874cec`**, which is not this task's and is reproduced with these changes removed
 - [x] [T20.20](M20/T20.20-a-flake-that-is-a-fixture.md) — A "flake" that is a fixture defect **(v8)** — **found by T20.11**; D-58 entry with a deterministic cause — **three of the four had one**, and the budget coincidence did not
 - [x] [T20.15](M20/T20.15-a-check-that-waits-without-a-deadline.md) — A browser check that waits without a deadline **(v8)** — **found by T20.01**, pre-existing
+- [ ] [T20.22](M20/T20.22-a-room-hop-orphans-the-seat-behind-you.md) — A room hop orphans the seat you left behind **(v8)** — **found by T20.14**, live at HEAD; `registry.rs::detach_from` is the only leave path that never sends `Command::Leave`
+- [ ] [T20.23](M20/T20.23-a-refresh-mid-join-burns-a-room-forever.md) — A refresh mid-join burns a room forever **(v8)** — **found by T20.14**, live at HEAD, 4/4 against a control of 0/4; `on_disconnect` detaches only inside its `if let`
+- [ ] [T20.24](M20/T20.24-the-server-runs-out-of-rooms-at-48-players.md) — The server runs out of rooms at 48 players **(v8)** — **found by T20.14**: 32/32 rooms and 8367 `server_full` refusals out of 10634 while no room's worst tick ever reached 9 ms of a 16.67 ms budget — depends on T20.22 and T20.23
+- [ ] [T20.25](M20/T20.25-the-room-health-metric-never-decays.md) — The room-health metric never decays **(v8)** — **found by T20.14** using it: `record_room_tick` is a lifetime running max and its doc comment promises a decay, so `rooms_over_budget` only ever climbs
 
 **Order note.** T20.04 before T20.12 (accessories are invisible until skins reach the
 renderer at all) and T20.01 before T20.03 (they share a cause). T20.14 is deliberately early
