@@ -28,6 +28,15 @@ says, run its **Done when** command, then:
 4. Append a ≤8-line entry to `tasks/JOURNAL.md` — the handoff.
 5. **Commit**, from the repo root, staging **only** paths under `claude/`. Never
    `git add -A`; never stage `qwen/`.
+   **When more than one agent shares this tree, `git add` then a bare `git commit` is not
+   safe** — the index is shared, so anything another agent stages between your `add` and your
+   `commit` lands in your commit under your message. It happened: four foreign files, including
+   another agent's `balance.rs` and journal lines, were swept into one commit that way. **Use
+   the pathspec form — `git commit -F - -- <paths>` — which commits exactly those paths from
+   the working tree and ignores whatever else is in the index.** If you catch it after the
+   fact and nobody has built on it, `git reset --soft HEAD~1` and re-commit with the pathspec.
+   **Check `git show --stat` on your own commit before moving on**; the stat is where this is
+   visible and it is the only place.
 
 Never report a task done if its tests fail. Say so and show the output.
 
