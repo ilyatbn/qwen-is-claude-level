@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The tests the gate never runs.  T20.17
 #
-#   ./scripts/ignored.sh            run all thirteen, in release
+#   ./scripts/ignored.sh            run all fourteen, in release
 #   ./scripts/ignored.sh --list     print the manifest and exit
 #
 # `scripts/check.sh` is `cargo test --workspace` with no `--release` and no
@@ -10,12 +10,19 @@
 # milestones in exactly that silence: the comment claiming the margin was the
 # only record of it, and a comment is not re-validated by anything.
 #
-# **What it costs, measured rather than assumed: 352 s** for all thirteen on an
-# idle box with the release build already warm, twice, identically. The
-# `#[ignore]` reasons say "minutes in release" and "measurement: minutes"; only
-# `thousand_seed_playability_sweep` is still minutes (244 s of the 352). All
-# five `balance.rs` measurements together are 39 s and the two `capacity.rs` ones
-# 52 s. **The cost that justified excluding them is largely no longer real** —
+# **What it costs, measured rather than assumed: 352 s** for the thirteen this
+# was written against, on an idle box with the release build already warm, twice,
+# identically. The `#[ignore]` reasons say "minutes in release" and "measurement:
+# minutes"; only `thousand_seed_playability_sweep` is still minutes (244 s of the
+# 352). The two `capacity.rs` ones are 52 s.
+#
+# **`balance.rs` was five measurements at 39 s and is now six at 35.8 s** (T20.26
+# added the rate floor; T20.16 reshaped the acceptance test and cut it from 6.7 s
+# to 3.7 s). Measured, not adjusted: the total above is left at its own
+# measurement rather than arithmetic on top of it, because 352 s was taken in one
+# run and a number assembled from two is not the same claim.
+#
+# **The cost that justified excluding them is largely no longer real** —
 # what keeps this out of `check.sh` is not the six minutes, it is that these need
 # `--release` and the gate builds debug, so wiring it in would add a second full
 # build of the workspace to every run. A gate people avoid running gates nothing.
@@ -49,7 +56,7 @@ cd "$ROOT"
 # per body, not by counting `assert`s: `thousand_seed_playability_sweep` fails
 # through `panic!` and contains no `assert` at all, while `density_report` and
 # `item_population_report` are named "report" and carry four failable assertions
-# and one. Ten of the thirteen are guards.
+# and one. Eleven of the fourteen are guards.
 MANIFEST=(
   "thousand_seed_playability_sweep|game-core tests/map_sweep.rs|guard"
   "fifty_medium_seeds_pass_without_the_safe_preset|game-core src/map/gen/mod.rs|guard"
@@ -62,6 +69,7 @@ MANIFEST=(
   "encounter_report|game-core tests/balance.rs|report"
   "item_population_report|game-core tests/balance.rs|guard"
   "the_shipping_configuration_produces_a_fight|game-core tests/balance.rs|guard"
+  "the_spawn_stream_beats_the_wait_it_replaced|game-core tests/balance.rs|guard"
   "how_many_rooms_fit|game-server tests/capacity.rs|guard"
   "rooms_do_not_get_more_expensive_as_more_are_added|game-server tests/capacity.rs|guard"
 )

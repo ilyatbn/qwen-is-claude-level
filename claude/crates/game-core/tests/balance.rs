@@ -569,6 +569,14 @@ fn balance_report() {
 struct Density {
     distinct: usize,
     spawned: u32,
+    /// Items on the ground before the clock starts — `initial_items`, which is
+    /// per scale (8 / 14 / 20) and which `ITEM_SPAWN_INTERVAL` does not touch.
+    initial: u32,
+    /// Items the **periodic stream** produced during the round. Split from
+    /// `spawned` by T20.26: a floor on the total is carried by the initial
+    /// placement, which is exactly why `mean_spawn > 10.0` survived the interval
+    /// being tripled.
+    periodic: u32,
     live_peak: usize,
     evicted: u32,
     first_weapon_s: Option<f32>,
@@ -594,6 +602,7 @@ fn density(seed: u64, seconds: f32, scale: MapScale) -> Density {
     for it in w.items.iter() {
         seen.insert(it.item);
         d.spawned += 1;
+        d.initial += 1;
     }
     let ticks = (seconds / SIM_DT) as u32;
     for t in 0..ticks {
@@ -615,6 +624,7 @@ fn density(seed: u64, seconds: f32, scale: MapScale) -> Density {
                 GameEvent::ItemSpawn { item_id, .. } => {
                     seen.insert(item_id);
                     d.spawned += 1;
+                    d.periodic += 1;
                     if d.first_weapon_s.is_none()
                         && ITEMS
                             .iter()
@@ -702,7 +712,15 @@ fn density_report() {
             pool,
             100.0 * mean_distinct / pool as f32,
             game_core::constants::MAX_WORLD_ITEMS,
-            first.iter().sum::<f32>() / first.len().max(1) as f32,
+            // `sum / len.max(1)` printed **0 s** for a round in which no
+            // weapon ever spawned — the healthiest possible number for the worst
+            // possible outcome (T20.26). `NaN` prints as `NaN` and cannot be
+            // mistaken for a good reading.
+            if first.is_empty() {
+                f32::NAN
+            } else {
+                first.iter().sum::<f32>() / first.len() as f32
+            },
         );
         assert!(
             mean_distinct >= floor,
@@ -1022,8 +1040,10 @@ fn report(label: &str, rs: &[Encounters]) {
 /// **What this test does not cover, stated so nobody infers it:** spawn density.
 /// Planting `ITEM_SPAWN_INTERVAL` 14 -> 42 leaves this test green (worst-seed
 /// sight 63.3 %, pooled damage 2676) and it should — this measures whether
-/// players meet, not what is on the ground. `density_report` owns that claim;
-/// see T20.26 for what was measured about it.
+/// players meet, not what is on the ground. `density_report` owns the variety
+/// half of that claim and `the_spawn_stream_beats_the_wait_it_replaced` owns the
+/// rate half — T20.26 booked the second because the first could not see the
+/// plant.
 #[test]
 #[ignore = "measurement: 3.7 s in release, measured (T20.17 clocked the old shape at 6.7 s)"]
 fn the_shipping_configuration_produces_a_fight() {
@@ -1094,7 +1114,15 @@ fn the_shipping_configuration_produces_a_fight() {
 #[test]
 fn the_balance_floors_record_their_basis() {
     let src = include_str!("balance.rs");
-    for name in ["SEED_LOS_FLOOR", "POOLED_DAMAGE_FLOOR"] {
+    for name in [
+        "SEED_LOS_FLOOR",
+        "POOLED_DAMAGE_FLOOR",
+        // T20.26. Its basis is a quotation rather than a fresh measurement, and
+        // `the_wait_ceiling_is_still_the_one_the_constant_records` guards the
+        // quotation itself; this guards that the numbers behind it are written
+        // down here rather than left to the reader to go and find.
+        "WEAPON_WAIT_CEILING_S",
+    ] {
         let decl = format!("const {name}");
         let i = src
             .find(&decl)
@@ -1397,6 +1425,216 @@ fn item_population_report() {
         println!(
             "     {other:.1} items per round removed by neither pickup nor TTL — void or \
              blast, since the cap never fires at a peak of {peak}/{MAX_WORLD_ITEMS}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T20.26 — the rate floor, and the control that has to fail it
+// ---------------------------------------------------------------------------
+
+/// The wait `ITEM_SPAWN_INTERVAL`'s own doc comment says T11.13 tuned **away
+/// from**, per scale.
+///
+/// **Quoted, not chosen.** These are the *before* column of the table in
+/// `constants.rs` above `ITEM_SPAWN_INTERVAL` — `Small 18 s -> 13 s`,
+/// `Medium 20 s -> 14 s`, `Large 23 s -> 16 s` — so the claim asserted here is
+/// the one the repository already makes about itself: **the tuning that took the
+/// spawn interval from 20.0 to 14.0 must still be delivering what it was
+/// recorded as delivering.** Nothing here was picked because it is where today's
+/// number sits; today's numbers are 13.0 / 12.6 / 13.4, which is 1.4x-1.7x of
+/// margin, and they are printed beside the ceiling every run. Measured at
+/// `722dbf7`, `--release`, 8 seeds x `POOL_SECONDS`; under the plant this task
+/// exists for (`ITEM_SPAWN_INTERVAL` 14 -> 42) the same three read
+/// 26.3 / 30.9 / 40.3 and every scale goes red.
+///
+/// **The table's *after* column has drifted, and that is deliberately not
+/// asserted on.** It records 13 / 14 / 16 s and today reads 13.0 / 12.6 / 13.4 —
+/// Medium and Large are *better* than T11.13 measured, most likely because §F5
+/// took five weapons out of the draw and changed what a batch can contain. That
+/// column is a historical record of what a past measurement found, not a live
+/// claim, so it is left alone rather than quietly rewritten; the *before* column
+/// is the bound because a high-water mark does not go stale.
+///
+/// `the_wait_ceiling_is_still_the_one_the_constant_records` reads that table back
+/// out of `constants.rs` and fails if it stops saying so, because a citation
+/// nothing re-validates is the thing this milestone kept finding.
+const WEAPON_WAIT_CEILING_S: [(MapScale, f32); 3] = [
+    (MapScale::Small, 18.0),
+    (MapScale::Medium, 20.0),
+    (MapScale::Large, 23.0),
+];
+
+/// The control: the world **before the stream has run**.
+///
+/// One sentence: *at zero elapsed time every item on the ground is the initial
+/// placement, so anything the initial placement alone can satisfy is not a
+/// measurement of rate.*
+///
+/// **That is not a hypothetical failure, it is the one in the file.**
+/// `density_report`'s vacuity control is `mean_spawn > 10.0` against a total that
+/// includes the initial placement, and `initial_items` is **8 / 14 / 20** by
+/// scale — so at Medium and Large that control is already satisfied at t = 0,
+/// before a single periodic spawn. It is why tripling `ITEM_SPAWN_INTERVAL` was
+/// invisible: a control satisfied by the eroded value is not a control.
+const CONTROL_SECONDS: f32 = 0.0;
+
+/// The pooled opening wait per scale, and the seeds that had no spawned weapon
+/// at all.
+fn opening_wait(scale: MapScale, seconds: f32) -> (f32, usize, f32, f32) {
+    let ds: Vec<_> = SEEDS.iter().map(|s| density(*s, seconds, scale)).collect();
+    let waits: Vec<f32> = ds.iter().filter_map(|d| d.first_weapon_s).collect();
+    let mean = if waits.is_empty() {
+        f32::INFINITY
+    } else {
+        waits.iter().sum::<f32>() / waits.len() as f32
+    };
+    let initial = ds.iter().map(|d| d.initial).sum::<u32>() as f32 / ds.len() as f32;
+    let periodic = ds.iter().map(|d| d.periodic).sum::<u32>() as f32 / ds.len() as f32;
+    (mean, SEEDS.len() - waits.len(), initial, periodic)
+}
+
+/// How long the periodic stream makes a player wait for a weapon.
+///
+/// **`density_report` floors variety; this floors rate, and they are different
+/// axes.** Tripling `ITEM_SPAWN_INTERVAL` costs Medium **8 %** of its distinct
+/// types (12.6 -> 11.6 of a 19-item pool, because 26 spawns still covers most of
+/// a small pool) and **145 %** of its opening wait (12.6 s -> 30.9 s). The
+/// variety floor could not see it; this does.
+///
+/// **Pooled, not per seed, and the data decided that.** One Small seed opens at
+/// 28 s today — its first batch happened to contain no weapon — which is
+/// variance in *which* item the weights drew, not in how often the stream runs.
+/// A per-seed ceiling would be red today at Small for a reason that has nothing
+/// to do with rate. (`the_shipping_configuration_produces_a_fight` goes the other
+/// way, per seed, for the opposite reason: there the seeds separate cleanly.)
+///
+/// **Why the *opening* wait and not a later one.** Measured: a mid-round version
+/// of this statistic — "a player arriving at the halfway mark waits N seconds" —
+/// **does not track the constant at all.** Planting 14 -> 42 moves it from
+/// 8.3 / 7.5 / 7.6 s to 7.5 / 7.4 / 11.3 s, because by mid-round `ItemSpawn` is
+/// also being emitted by opened crates and by death drops, and those swamp the
+/// periodic stream. The opening wait is clean precisely because it is early:
+/// nobody has died and no crate has landed yet. That idea was built, measured,
+/// and thrown away rather than shipped as a second floor that looked like
+/// coverage.
+///
+/// **What this does not cover, stated so nobody infers it.** A stream that runs
+/// on time and then stops mid-round: the opening wait would be healthy and the
+/// second half starved, and the measurement above is why no honest statistic for
+/// it is offered here. Also uncovered: `ITEM_SPAWN_BATCH_MAX` 2 -> 1, measured at
+/// 13.0 / 15.2 / 18.7 s — a ~20 % supply cut that stays inside every margin. A
+/// floor that redded on it would have to sit within 20 % of today's value, which
+/// is a fitted number wearing a basis.
+#[test]
+#[ignore = "measurement: 8 s in release, measured"]
+fn the_spawn_stream_beats_the_wait_it_replaced() {
+    println!(
+        "\n== SPAWN RATE — {} seeds x {POOL_SECONDS}s ==",
+        SEEDS.len()
+    );
+    let mut failures: Vec<String> = Vec::new();
+    let mut control_failures: Vec<String> = Vec::new();
+
+    for (scale, ceiling) in WEAPON_WAIT_CEILING_S {
+        let (wait, missing, initial, periodic) = opening_wait(scale, POOL_SECONDS);
+        let (c_wait, c_missing, c_initial, c_periodic) = opening_wait(scale, CONTROL_SECONDS);
+        let say = |w: f32| {
+            if w.is_finite() {
+                format!("{w:.1}s")
+            } else {
+                "never".to_string()
+            }
+        };
+        println!(
+            "   {:<7} opening wait {} vs the {ceiling:.0}s it was tuned away from (margin \
+             {:.2}x, {missing}/{} seeds saw no spawned weapon)\n   {:<7} on the ground: initial \
+             {initial:.0} + periodic {periodic:.1}   |   control at t=0: wait {}, initial \
+             {c_initial:.0} + periodic {c_periodic:.0}",
+            format!("{scale:?}"),
+            say(wait),
+            ceiling / wait,
+            SEEDS.len(),
+            "",
+            say(c_wait),
+        );
+        if missing > 0 {
+            failures.push(format!(
+                "{scale:?}: {missing} of {} seeds never saw the stream produce a weapon",
+                SEEDS.len()
+            ));
+        }
+        if wait > ceiling {
+            failures.push(format!(
+                "{scale:?}: opening wait {wait:.1}s is past the {ceiling:.0}s that \
+                 `ITEM_SPAWN_INTERVAL`'s doc records T11.13 as having tuned away from"
+            ));
+        }
+        // The control has to fail the *same* check, or "it fails" is a claim
+        // about a different test (share the guard, or share the function).
+        if c_missing > 0 || c_wait > ceiling {
+            control_failures.push(format!(
+                "{scale:?}: wait {}, {c_missing} seeds with no spawned weapon",
+                say(c_wait)
+            ));
+        }
+        // And the thing the control exists to show: the incumbent vacuity
+        // control reads the total, and the initial placement alone clears it.
+        if c_initial > 10.0 {
+            println!(
+                "   {:<7} ...and `density_report`'s `mean_spawn > 10.0` is already satisfied \
+                 here, at t=0, by {c_initial:.0} initial items alone",
+                "",
+            );
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "the spawn stream regressed past the wait it was tuned to replace:\n  {}",
+        failures.join("\n  ")
+    );
+    assert_eq!(
+        control_failures.len(),
+        WEAPON_WAIT_CEILING_S.len(),
+        "the t=0 control failed at only {} of {} scales ({control_failures:?}) — a floor that \
+         the initial placement can satisfy is not a floor on rate",
+        control_failures.len(),
+        WEAPON_WAIT_CEILING_S.len()
+    );
+}
+
+/// The ceiling above is a quotation, so it is read back from the source it
+/// quotes.
+///
+/// `capacity.rs::max_rooms_carries_its_basis`'s technique, pointed at a citation
+/// this file *depends on*: if the table above `ITEM_SPAWN_INTERVAL` is rewritten,
+/// `WEAPON_WAIT_CEILING_S` stops being a quotation and becomes three numbers
+/// somebody typed. Gate-resident, because that can happen in any commit.
+///
+/// It checks for the **numbers**, not for the words: `capacity.rs`'s first cut
+/// accepted a token its own placeholder already contained.
+#[test]
+fn the_wait_ceiling_is_still_the_one_the_constant_records() {
+    let src = include_str!("../src/constants.rs");
+    let i = src
+        .find("pub const ITEM_SPAWN_INTERVAL")
+        .expect("ITEM_SPAWN_INTERVAL must exist — this test cannot find what it quotes");
+    let doc_start = src[..i].rfind("\n\n").unwrap_or(0);
+    let doc = &src[doc_start..i];
+    assert!(
+        doc.contains("1st weapon"),
+        "the doc no longer records a first-weapon column, so WEAPON_WAIT_CEILING_S is a \
+         quotation of nothing. Doc was:\n{doc}"
+    );
+    for (scale, ceiling) in WEAPON_WAIT_CEILING_S {
+        let needle = format!("{ceiling:.0} s");
+        assert!(
+            doc.contains(&needle),
+            "WEAPON_WAIT_CEILING_S says {scale:?} was tuned away from `{needle}`, and \
+             ITEM_SPAWN_INTERVAL's doc no longer contains that number. Either the tuning was \
+             re-measured — in which case re-derive the ceiling — or the citation rotted. \
+             Doc was:\n{doc}"
         );
     }
 }
