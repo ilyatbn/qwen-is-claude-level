@@ -1770,11 +1770,24 @@ pub const FALL_SAFE_SPEED: f32 = 480.0;
 ///
 /// Linear rather than quadratic: the quantity a player can judge is *how far down
 /// it looks*, and a quadratic curve turns a small misjudgement near the top of the
-/// range into a death. At 0.15 a terminal-velocity landing costs
-/// `(900 - 480) x 0.15` = **63** of `BASE_HEALTH` 100 — the deepest fall in the
-/// game is survivable at full health and lethal at two thirds, which is what makes
-/// it a penalty for flying rather than a second void.
-pub const FALL_DAMAGE_PER_SPEED: f32 = 0.15;
+/// range into a death. At 0.075 a terminal-velocity landing costs
+/// `(900 - 480) x 0.075` = **31.5** of `BASE_HEALTH` 100 — the deepest fall in the
+/// game costs under a third of a full bar, which is a penalty for flying rather
+/// than a second void.
+///
+/// **Halved from 0.15 on 2026-09-07 at the coordinator's instruction** — it was
+/// too aggressive in play. The old value cost 63 of 100 on the same landing, so
+/// the deepest fall was survivable only above two thirds health and any prior
+/// chip damage made it lethal. `FALL_SAFE_SPEED` is untouched, so the free drop
+/// height is unchanged at 82 px and only the slope past it moved.
+///
+/// **`docs/` does not state a value to diverge from — it refuses the feature.**
+/// `docs/20-player-movement.md:235` still reads *"Fall damage — deliberately
+/// absent in v1 so the jetpack stays forgiving."* That divergence predates this
+/// change: it opened when T20.11 built fall damage on the 2026-09-04 ruling with
+/// no override in `docs/70`–`75`, and the amendment has been outstanding since.
+/// This retune changes a number inside that gap rather than opening a new one.
+pub const FALL_DAMAGE_PER_SPEED: f32 = 0.075;
 
 // A plain jump must be free, or the whole game becomes a limp. The measured
 // landing speed is 410 against `JUMP_VELOCITY` 430; guarding against the constant

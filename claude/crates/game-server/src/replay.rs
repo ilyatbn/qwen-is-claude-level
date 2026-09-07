@@ -79,7 +79,14 @@ pub const HEADER_BYTES: usize = 45;
 /// compatibility. **Check `HEAD` before bumping**: T20.09 landed a new *command*
 /// in this window and correctly did **not** bump, because a new tag leaves an old
 /// file replaying byte for byte. Same-sounding question, opposite answers.
-pub const REPLAY_VERSION: u16 = 5;
+/// **6 (fall-damage retune, 2026-09-07)**: `FALL_DAMAGE_PER_SPEED` halved,
+/// 0.15 → 0.075, at the coordinator's instruction. No layout change and no new
+/// tag — this is the **silent divergence** case, which is the one the version
+/// exists for. Any v5 recording in which somebody took a fall would load, run,
+/// and disagree at the first state hash after the landing, because the same
+/// inputs now cost half the health. The `HEAD` check the note above demands:
+/// nothing else has bumped since 5, so this is one bump for one break.
+pub const REPLAY_VERSION: u16 = 6;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

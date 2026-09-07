@@ -5527,3 +5527,16 @@ touched; margin is one seed, so T20.16 still owns it. Whole suite is **352 s**, 
 "minutes each" the ignore reasons claim. Ten of thirteen are guards; two the survey called
 reports carry failable assertions. Planted `ITEM_SPAWN_INTERVAL` 14→42: **1296 gate tests pass**
 and the ignored suite names it. EXIT=0, 47/47, 1296/1309 rust, 890/890 client, 25/25, assets ok.
+
+## Fall damage halved, at the coordinator's instruction — and the replay version with it
+
+`FALL_DAMAGE_PER_SPEED` 0.15 → **0.075**. The coefficient rather than `FALL_SAFE_SPEED`, so
+the free drop height stays 82 px and short falls are unchanged; only the slope past the
+threshold moved. A terminal-velocity landing costs **31.5** of `BASE_HEALTH` 100, not 63.
+**`REPLAY_VERSION` 5 → 6**, which its own policy demands: no layout change and no new tag, but
+a v5 recording containing any fall would load, run and disagree at the first state hash after
+the landing. `HEAD` checked as that note requires — nothing else bumped since 5, one bump for
+one break. No test hardcoded a fall value, so nothing needed re-pinning. **`docs/20:235` still
+refuses fall damage outright** (*"deliberately absent in v1"*); that gap opened at T20.11 and
+the amendment is still outstanding — this retune only changes a number inside it.
+EXIT=0, 47/47, 1296 passed / 13 ignored rust, 890/890 client, 25/25, assets ok.
