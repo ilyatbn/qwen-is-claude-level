@@ -363,9 +363,19 @@ describe('roster and entities', () => {
     expect(crate?.count).toBeNull()
 
     // The control: the same arm, with the fields present.
+    //
+    // **`source` was `'Crate'` here and is now `'Periodic'`** (T19.21). It was
+    // incidental to this control, which is about `item_id` and `count` being
+    // read when they are there — but it made this the one place in the tree
+    // where an `item_spawn` carried `source: 'Crate'`, and that combination was
+    // read as evidence that `SpawnSource::Crate` meant two things. It does not:
+    // it marks a world item that *is* an unopened crate, and the five live
+    // `ItemSpawn` emitters carry `Buried`, `Periodic`, `Periodic`, `Death` and
+    // `Dropped`. The server has never sent this shape and no longer builds it in
+    // the join catch-up either.
     mirror.applyEvent(
       'item_spawn',
-      { world_item_id: 12, item_id: 22, count: 2, x: 1, y: 2, source: 'Crate' },
+      { world_item_id: 12, item_id: 22, count: 2, x: 1, y: 2, source: 'Periodic' },
       0,
     )
     expect(mirror.items.get(12)?.item).toBe(22)

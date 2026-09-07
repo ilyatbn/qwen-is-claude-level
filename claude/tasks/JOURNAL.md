@@ -5677,3 +5677,18 @@ it earns its place: `mean_spawn > 10.0` is satisfied **before the round starts**
 Large by `initial_items` alone (14, 20) — a control satisfied by the eroded value. Two ideas built,
 measured and thrown away: a mid-round wait (crates and death drops swamp the stream, 7.5/7.4/11.3
 under the plant) and a spawn-count floor (batch 2→1 is −20 %, which no honest margin reds).
+
+## T19.21 — the crate leak, and a driver that cannot see it
+
+**Design question first, answered by grep, not opinion: `SpawnSource::Crate` means one thing** —
+"this world item *is* an unopened crate". It gates the crate AABB, the `WORLD_ITEM_TTL`
+exemption and the pickup listing in `game-core`, and the crate sprite, label and parachute on
+the client. **No live `ItemSpawn` ever carries it**: the five emitters are `Buried`, `Periodic`,
+`Periodic`, `Death`, `Dropped`. The only two places an `item_spawn` carried `source: 'Crate'`
+were this catch-up and one `worldMirror.test.ts` fixture — the evidence for "overloaded" was the
+bug and its model. No split; the catch-up now emits `crate_spawn` (plus `grounded`, so a landed
+crate arrives without a parachute). Corrected the `install_world` comment that claimed the
+ordering already prevents this — true only for a guard read landing *after* it.
+**The driver cannot demonstrate it:** the first crate is `round_start + CRATE_INTERVAL` = 35 s
+and `--scenario race` joins a ~2 s-old world, so its "disclosed" counter reads **5 before and 5
+after** — it measures the window, not crates. 286/286 game-server, worldMirror 20/20.

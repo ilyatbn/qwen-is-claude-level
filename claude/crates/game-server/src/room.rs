@@ -2864,9 +2864,33 @@ async fn run(
                         ms = started_at.elapsed().as_millis() as u64,
                         "world generated for match start"
                     );
-                    // Sets the §E2/§E4 bit itself, before the map goes out, so
-                    // no socket can be seated into a match that is already
-                    // handing out its map.
+                    // Sets the §E2/§E4 bit itself, before the map goes out.
+                    //
+                    // **That protects one set of sockets and not the other, and
+                    // the comment here used to claim it protected both**
+                    // (T19.21). It said "so no socket can be seated into a match
+                    // that is already handing out its map", which is true only of
+                    // a socket whose guard read lands *after* this line.
+                    //
+                    // `session.rs::seat` reads `room.has_started()` — a bare
+                    // `AtomicBool` load taken **outside** this task — and then
+                    // makes two `oneshot` round-trips, `room.join` and
+                    // `room.join_info`, before its catch-up `inspect` runs. A
+                    // socket already past that read is not protected by any
+                    // ordering in here, and the `.await` directly above is where
+                    // those sockets accumulate: the generator is 0.3-1.1 s
+                    // against a 16.7 ms tick, so the exposure is not a sub-frame
+                    // gap between ticks. It is every `seat` in flight while a
+                    // world is being generated, and a public lobby reaching
+                    // `LOBBY_BOT_TIMEOUT` opens it on the tick it fires.
+                    //
+                    // No ordering in this arm can close that, because a guard
+                    // read outside the task has the same window wherever it is
+                    // moved to. What the ordering here *does* guarantee is the
+                    // other half, and it is worth keeping: a socket that reads
+                    // the bit after this line is refused, and one that reads it
+                    // before `return_to_lobby` clears the world is refused too,
+                    // because both writes over-refuse in the safe direction.
                     room.install_world(world);
                     // §E1: everyone seated gets the map now. They joined a lobby
                     // and were sent `welcome` without one; this is the message

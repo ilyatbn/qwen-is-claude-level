@@ -1357,24 +1357,41 @@ async fn seat(
     // mid-round needs the same list for the same reason
     // (`docs/41` §4), so this is sent per socket rather
     // than broadcast at round start.
+    // **An unopened crate is announced as a crate, not as its contents**
+    // (T19.21). `docs/40` §3 pins two shapes: `item_spawn` carries `item_id`,
+    // and `crate_spawn` is `{tick, world_item_id, x, y}` — a crate's contents
+    // are withheld **structurally**, by the fields simply not being in the
+    // payload. `events.rs`'s visibility table puts both in the *Everyone* row,
+    // so nothing here is access-controlled and the shape of the event is the
+    // only thing hiding what a crate holds.
+    //
+    // This block mapped every world item to `item_spawn` with no source filter,
+    // and `items/spawning.rs` spawns a crate as an ordinary world item carrying
+    // its real contents. So watching a crate land told you nothing and joining
+    // after it landed told you everything: two players in one match with
+    // different information.
+    //
+    // **`is_crate()` is a value that means one thing, checked before filtering
+    // on it.** `SpawnSource::Crate` marks a world item that *is* an unopened
+    // crate, on both sides: in `game-core` it gates the item's AABB
+    // (`CRATE_W`/`CRATE_H`), its exemption from `WORLD_ITEM_TTL` and its
+    // exclusion from the pickup listing; on the client `source === 'Crate'`
+    // selects the crate sprite, the "Supply crate" label and the parachute.
+    // Nothing ever means "this came out of a crate" by it — the five live
+    // `ItemSpawn` emitters in `world/mod.rs` carry `Buried`, `Periodic`,
+    // `Periodic`, `Death` and `Dropped`, and never `Crate`. The only two places
+    // an `item_spawn` has ever carried `source: "Crate"` are this block and
+    // `worldMirror.test.ts`, which models this block's output.
+    //
+    // `grounded` is carried on the crate payload too, where a live
+    // `crate_spawn` has no need of it: a live crate is announced in the sky, and
+    // one already lying on the ground must not arrive wearing a parachute. The
+    // mirror handles both names in one arm and reads the field either way.
     if let Some(items) = room
         .inspect(|w| {
             w.items
                 .iter()
-                .map(|it| {
-                    serde_json::json!({
-                        "tick": w.tick,
-                        "world_item_id": it.id,
-                        "item_id": it.item,
-                        "count": it.count,
-                        "x": it.pos.x.round() as i32,
-                        "y": it.pos.y.round() as i32,
-                        "source": format!("{:?}", it.source),
-                        // A joiner sees the world as it is now, so an item that
-                        // has already landed must not arrive wearing a parachute.
-                        "grounded": it.grounded,
-                    })
-                })
+                .map(|it| catch_up_item(w.tick, it))
                 .collect::<Vec<_>>()
         })
         .await
@@ -1382,8 +1399,8 @@ async fn seat(
         // Dormant with the `map_init` catch-up above, for the same reason and
         // kept for the same one: reconnection needs the items already on the
         // ground.
-        for it in &items {
-            emit(&socket, "item_spawn", it);
+        for (name, it) in &items {
+            emit(&socket, name, it);
         }
         tracing::debug!(
             target: "game::items",
@@ -1494,6 +1511,56 @@ fn scale_name(s: game_core::constants::MapScale) -> &'static str {
         Medium => "medium",
         Large => "large",
     }
+}
+
+/// One world item, as the join catch-up announces it: the event name and its
+/// payload.
+///
+/// **A named function so the rule can be tested** (T19.21). The catch-up is
+/// reachable in production only through the window `room.rs`'s `install_world`
+/// comment describes — a guard read taken outside the room task, then two
+/// round-trips, with the 0.3-1.1 s map generator in between — so a socket-level
+/// test of it would be a coin flip, and a gate that fails on a coin flip gates
+/// nothing. The end-to-end evidence is the load driver's `--scenario race`; this
+/// is the part that can be pinned deterministically.
+fn catch_up_item(
+    tick: u32,
+    it: &game_core::items::world::WorldItem,
+) -> (&'static str, serde_json::Value) {
+    let x = it.pos.x.round() as i32;
+    let y = it.pos.y.round() as i32;
+    if it.is_crate() {
+        // The same fields `events.rs` gives a live `crate_spawn`, plus
+        // `grounded`: a live crate is announced in the sky and a joiner must not
+        // be shown a parachute on one already lying on the ground. Deliberately
+        // no `item_id` and no `count` — that withholding *is* the mechanism, and
+        // the mirror reads a missing `item_id` as "the server did not say".
+        return (
+            "crate_spawn",
+            serde_json::json!({
+                "tick": tick,
+                "world_item_id": it.id,
+                "x": x,
+                "y": y,
+                "grounded": it.grounded,
+            }),
+        );
+    }
+    (
+        "item_spawn",
+        serde_json::json!({
+            "tick": tick,
+            "world_item_id": it.id,
+            "item_id": it.item,
+            "count": it.count,
+            "x": x,
+            "y": y,
+            "source": format!("{:?}", it.source),
+            // A joiner sees the world as it is now, so an item that has already
+            // landed must not arrive wearing a parachute.
+            "grounded": it.grounded,
+        }),
+    )
 }
 
 fn emit(socket: &SocketRef, ev: &'static str, payload: &serde_json::Value) {
@@ -1741,5 +1808,129 @@ mod tests {
         assert_eq!(m.len(), 1);
         assert_eq!(m.sid_of(1), Some(b));
         assert_eq!(m.player_of(a), None);
+    }
+
+    /// **A late joiner learns a crate's position and not its contents** (T19.21),
+    /// and the control is in the same test: an item genuinely on the ground still
+    /// arrives with its id.
+    ///
+    /// Without the control, "the joiner learns nothing" is satisfied by a
+    /// catch-up that stopped sending items at all.
+    #[test]
+    fn the_catch_up_withholds_what_a_crate_holds_and_still_names_a_loose_item() {
+        use game_core::items::registry::MEDKIT;
+        use game_core::items::world::{SpawnSource, WorldItems};
+        use game_core::math::Vec2;
+
+        let mut items = WorldItems::default();
+        let crate_id = items.spawn(
+            MEDKIT,
+            1,
+            Vec2::new(100.0, 200.0),
+            Vec2::ZERO,
+            SpawnSource::Crate,
+            0.0,
+        );
+        let loose_id = items.spawn(
+            MEDKIT,
+            1,
+            Vec2::new(300.0, 400.0),
+            Vec2::ZERO,
+            SpawnSource::Initial,
+            0.0,
+        );
+
+        let (crate_name, crate_payload) = catch_up_item(7, items.get(crate_id).expect("the crate"));
+        let (loose_name, loose_payload) =
+            catch_up_item(7, items.get(loose_id).expect("the loose item"));
+
+        assert_eq!(crate_name, "crate_spawn");
+        assert_eq!(loose_name, "item_spawn");
+
+        // The subject. `docs/40` §3 withholds a crate's contents structurally —
+        // by the fields not being in the payload — so this asserts their absence
+        // rather than some sentinel value.
+        assert!(
+            crate_payload.get("item_id").is_none() && crate_payload.get("count").is_none(),
+            "the catch-up told a joiner what an unopened crate holds: {crate_payload}"
+        );
+        // The control. A crate and a loose item are both `MEDKIT` here on
+        // purpose: if the catch-up leaked by value rather than by field, an
+        // assertion about ids alone could not tell them apart.
+        assert_eq!(
+            loose_payload.get("item_id").and_then(|v| v.as_u64()),
+            Some(u64::from(MEDKIT)),
+            "the loose item lost its id, so the joiner cannot see what is on the \
+             ground at all: {loose_payload}"
+        );
+
+        // Where it is, still said, or a joiner cannot draw the crate.
+        assert_eq!(crate_payload.get("x").and_then(|v| v.as_i64()), Some(100));
+        assert_eq!(crate_payload.get("y").and_then(|v| v.as_i64()), Some(200));
+    }
+
+    /// **Both ends of one fact: a watcher and a joiner must learn the same thing
+    /// about a crate** (T19.21).
+    ///
+    /// Compared against the *live* producer rather than a literal — `events.rs`
+    /// is what a client watching the crate land receives, and this block is what
+    /// a client joining afterwards receives. Asserting the catch-up's shape
+    /// against a hand-written key list would pass on the day the live event
+    /// gained a field the joiner never hears about.
+    #[test]
+    fn a_joiner_and_a_watcher_learn_the_same_thing_about_a_crate() {
+        use game_core::constants::MapScale;
+        use game_core::items::registry::MEDKIT;
+        use game_core::items::world::{SpawnSource, WorldItems};
+        use game_core::math::Vec2;
+        use game_core::world::{GameEvent, World};
+
+        let world = World::new(4242, MapScale::Small);
+        let mut items = WorldItems::default();
+        let id = items.spawn(
+            MEDKIT,
+            1,
+            Vec2::new(100.0, 200.0),
+            Vec2::ZERO,
+            SpawnSource::Crate,
+            0.0,
+        );
+
+        let live = crate::events::payload_of(
+            &GameEvent::CrateSpawn {
+                tick: 7,
+                world_item_id: id,
+                x: 100.0,
+                y: 200.0,
+            },
+            &world,
+        );
+        let (name, caught_up) = catch_up_item(7, items.get(id).expect("the crate"));
+        assert_eq!(
+            name,
+            crate::events::name_of(&GameEvent::CrateSpawn {
+                tick: 7,
+                world_item_id: id,
+                x: 100.0,
+                y: 200.0,
+            })
+        );
+
+        let live_keys: Vec<&String> = live.as_object().expect("object").keys().collect();
+        for k in &live_keys {
+            assert!(
+                caught_up.get(k.as_str()).is_some(),
+                "the live `crate_spawn` carries `{k}` and the catch-up does not, so a \
+                 joiner knows less about the crate than a watcher: {caught_up}"
+            );
+        }
+        // And nothing extra that discloses. `grounded` is the one addition and it
+        // is deliberate: a live crate is announced in the sky.
+        for k in caught_up.as_object().expect("object").keys() {
+            assert!(
+                live_keys.contains(&k) || k == "grounded",
+                "the catch-up carries `{k}`, which a watcher never hears: {caught_up}"
+            );
+        }
     }
 }
