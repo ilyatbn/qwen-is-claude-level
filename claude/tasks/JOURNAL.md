@@ -5642,3 +5642,38 @@ up, since the two socket-layer paths empty that same map first and reach it with
 `attach`'s same-room early return means a retry never reaches the line, so idempotence holds.
 `--scenario rejoin`: one seat not two, the abandoned room's roster empty, and the capacity
 probe **6 of 6 seated where it refused one as `full`**. game-server 281/281, ghost still clean.
+
+## T20.25 — the metric now does what its comment always said
+
+`record_room_tick` was a lifetime `max` under a doc comment promising a decay, and
+`rooms_over_budget` — what §B2's capacity threshold reads — could therefore only climb. Now a
+trailing window of `RING` ticks, kept **two** windows deep so the reading neither stands forever
+nor drops to healthy the instant a window rolls. Counted in ticks, not wall-clock: a room ticks
+at `SIM_HZ` whatever the box is doing, it costs no clock read on a per-room-per-tick path, and
+the test needs no sleep. Window = `RING`, so `tick_p99_ms` and `tick_p99_ms_max_over_rooms`
+describe the same span. Falsified against **both** alternatives: a lifetime max fails the ageing
+assertion, a bare tumbling window fails the survives-one-window and stays-slow controls.
+
+## T20.24 — the room table is full of empty rooms; `MAX_ROOMS` is not the number to change
+
+Soak re-run after T20.22/T20.23 (load 0.90→2.21 against the original 1.24). `server_full`
+8367→8577 — **unmoved**; `full` 22→10 (T20.22); and `reap freed 32, 0 left` where T20.23's leak
+had made them unreapable. The decisive new number, `--verbose`, at both samples: **32 rooms, 192
+seats, 0 humans** while 8542 joins are refused. Not CPU (p99 flat 1→128 rooms), not seats, not
+the leaks. `MAX_ROOMS` stays at 32 — its basis is memory and it is not what is failing. Binding
+is room *lifetime*: a public lobby auto-starts at `LOBBY_BOT_TIMEOUT` and holds a slot for
+`ROOM_EMPTY_TTL` after emptying. Two levers in D-69, both §E-level and neither mine to take.
+
+## T20.26 — a rate floor whose number is a quotation, not a fit
+
+`density_report` floors variety; tripling `ITEM_SPAWN_INTERVAL` costs Medium **8 %** of distinct
+types and **145 %** of its opening wait, so the variety floor could not see it. New ignored guard
+`the_spawn_stream_beats_the_wait_it_replaced` floors the wait per scale against **18/20/23 s —
+the *before* column of `ITEM_SPAWN_INTERVAL`'s own doc table**, so the number is quoted rather
+than fitted, and `the_wait_ceiling_is_still_the_one_the_constant_records` reads that table back
+out of `constants.rs` (gate-resident) so the citation cannot rot. Today 13.0/12.6/13.4 (1.4-1.7x);
+planted 26.3/30.9/40.3, **red at all three scales, naming each**. Control is the world at t=0, and
+it earns its place: `mean_spawn > 10.0` is satisfied **before the round starts** at Medium and
+Large by `initial_items` alone (14, 20) — a control satisfied by the eroded value. Two ideas built,
+measured and thrown away: a mid-round wait (crates and death drops swamp the stream, 7.5/7.4/11.3
+under the plant) and a spawn-count floor (batch 2→1 is −20 %, which no honest margin reds).

@@ -1337,3 +1337,69 @@ and fails if a `#[ignore]` is ever added without being named in the manifest, or
 without existing — so the set cannot silently grow again. Its companion guard is the one this
 task also booked: every `M<n>/T<n>` link in `TASKS.md` resolves, 235 of them, with a floor of
 50 so a broken pattern cannot report success about an empty set.
+
+## D-69 — The room table fills with empty rooms, and `MAX_ROOMS` is not the number to change  ·  M20
+**T20.24's re-measurement, after T20.22 and T20.23 landed.** The soak, 48 clients, 60 s.
+Load averages recorded because the task asks for them and because the counts are the half of
+this that is load-sensitive: **before** was taken at 1.24, **after** at 0.90 rising to 2.21.
+
+| | before (`f03ab6f`-era) | after (`45689e3`) |
+|---|---|---|
+| join verbs | 10634 | 10923 |
+| `welcome` | 172 | 181 |
+| `server_full` | 8367 | **8577** |
+| `in_progress` | 2069 | 2151 |
+| `full` | 22 | **10** |
+| rooms | peak 32/32, 32 at the end | peak 32/32, 32 at the end, **reap freed 32, 0 left** |
+
+**Two of the three candidate causes are closed, and neither was the bottleneck.**
+`reap freed 32, 0 left` is the load-independent half: before T20.23 those rooms were
+unreapable and the table was permanently burnt; now it is merely saturated while the load
+runs. `full` halving is T20.22 — orphaned seats no longer make rooms look fuller than they
+are. One room sampled mid-run showed `humans=0 roster=["L000"]`, the shape T20.22 fixed, and
+it was clean at the next sample: that is a `Command::Leave` in flight for a tick, not a leak.
+
+**The decisive measurement is new and it settles the design question.** With `--verbose`, at
+**both** sampled moments:
+
+```
+32 rooms, 192 seats, 0 humans — utilisation 0 %
+while 8542 join attempts were refused `server_full`
+```
+
+**The room table is exhausted by rooms with nobody in them.** Not CPU — `MAX_ROOMS`'s own doc
+comment measured tick p99 flat from 1 room to 128, using 0.12 % of half a tick budget at 128.
+Not seats — none were occupied. Not the leaks — both fixed, and the refusal count did not move.
+
+**So `MAX_ROOMS` stays at 32.** It is not protecting the thing that is failing. Its basis is
+memory, written into the constant and pinned by `capacity.rs::max_rooms_carries_its_basis`:
+648 KiB of terrain per room at medium, ~1.2 MiB at large, ~38 MiB at 32 large rooms, a 4x
+margin below the highest count actually measured. Raising it buys more *empty* rooms. A limit
+raised because the old one looked small, without saying what the new one is bounded by, is the
+shape this repository keeps paying for — and here the measurement says the limit is not the
+fault.
+
+**What is binding is room *lifetime*, not room *count*.** A public lobby sets
+`starts_in = LOBBY_BOT_TIMEOUT` (10 s) on its first seating, after which
+`registry.rs::quick_match` skips it because `has_started()`; when its humans leave it still
+holds a slot for `ROOM_EMPTY_TTL` (30 s). Under a retry storm rooms are minted at the arrival
+rate and released 30 s late, so the steady state is a full table of started, empty rooms that
+nobody can join and nobody is in.
+
+**Two levers, neither of which is `MAX_ROOMS`, and both are §E-level calls rather than a
+builder's:**
+
+1. **Reap an empty *started* room sooner than an empty lobby.** `registry.rs::detach_from`'s
+   own comment already argues this: the 30 s window exists for a reconnection seam and
+   *"nothing can use that window yet — §E4 refuses a rejoining socket with `in_progress` — so
+   this buys nothing today"*. For a started room the TTL is currently paying for a feature that
+   does not exist. This is the smaller change of the two.
+2. **Do not auto-start a public lobby that holds one human**, so a lobby keeps accepting
+   arrivals until starting is worth it. Larger, and it touches what `LOBBY_BOT_TIMEOUT` means.
+
+Seating a quick match into a warmup match is the third option and `docs/74` §E4 forbids it; no
+amendment is proposed here. Worth recording that 73 of 181 welcomes did land in `warmup`
+anyway, which the driver flags — that is T19.21's live finding, a different defect.
+
+**`server_full` is the wrong answer to give a client at 0 % seat utilisation**, but the queue
+question is downstream of the two levers: fix the lifetime and there is far less to refuse.
