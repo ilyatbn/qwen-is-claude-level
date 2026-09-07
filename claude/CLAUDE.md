@@ -125,10 +125,17 @@ green suite and a working game.
 - **A population claim needs more than one draw.** Aggregate across seeds.
 - **"The failure moves" is evidence against *one broken test*, not evidence *for* load.**
   A flaky-list entry once reasoned that because a different member failed each run and none
-  recurred, no single test could be broken. But those tests **shared a fixture** — one timeout
-  budget across two of them — and a shared budget expiring on a shared state transition
-  produces exactly that pattern: a different member each time, none recurring, all one cause.
+  recurred, no single test could be broken. But those tests **shared a fixture**, and one cause
+  produces exactly that pattern: a different member each time, none recurring.
   **Before concluding "load", ask what the failing tests share.**
+  **The conclusion held and my first guess at the shared thing did not — which is the reason
+  to measure rather than to reason.** I named a timeout budget that happened to equal the
+  constant it waited on. Thirteen full-suite runs with the budget instrumented: **277 waits,
+  213 of them consumed 0 % of their deadline and the worst consumed 17 %** — nothing was within
+  a factor of six of binding, and the coincidence was real but inert. The shared thing was
+  `test_config`'s inherited `fixed_seed: None`: an unpinned map, re-rolled every run, deciding
+  where a player spawns. **A plausible shared cause is still a hypothesis; instrument the
+  suspect before you fix it.**
 - **A gate that fails on a coin flip gates nothing.** Remove such an assertion or fix
   its cause; do not weaken it.
 - **A test count going up is not evidence that no test was removed.**
