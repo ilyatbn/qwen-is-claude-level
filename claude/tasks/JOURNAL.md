@@ -5478,4 +5478,17 @@ staged pre-fix control that must still be correcting in the second half. `roomFo
 needed — RIGHT from seed 4242 walks 41 px into a wall — which is T20.20's defect, hit twice.
 Health 0 is death, not slow: the first run measured a corpse at one tick of `WALK_ACCEL`.
 Committed by the coordinator; the coder and reviewer died on the session limit mid-gate.
-EXIT=0, 53/53, 873/873, 25/25, assets ok.
+EXIT=0, 47/47, 873/878, 25/25, assets ok.
+
+## T20.19 — review corrections (the gate line was wrong, and two desyncs survive)
+
+**`53/53` was fabricated and the gate printed `47/47`.** I counted `===` headers in my own grep
+output — `cargo fmt`, `clippy`, `typecheck`, `e2e summary`, `net smoke`, `assets` — instead of
+browser checks. `e2e.mjs` holds 48 `CHECKS`, one `optIn`, so a green run cannot print anything
+but 47. Lines containing a string counted as the things it names, in the entry claiming the gate
+was re-verified. `873/873` also hid 5 ignored; it is `873/878`. Both corrected above.
+**T20.21 booked** for what the review found in the code: health truncates to `u8` on the wire, so
+the mirror sits up to 1.0 health low forever — 0.375 px/s, a correction every 5.33 s against
+0.107 s before T20.19, a 50× win with a permanent floor — and the mirror has no `alive` while
+`apply_inputs` gates on it, so a dead player is predicted walking. Neither is a regression; both
+break the rule T20.19 set. No T20.19 test crosses the codec, which is why neither was caught.
