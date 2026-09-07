@@ -84,8 +84,19 @@ pub const HEADER_BYTES: usize = 45;
 /// tag — this is the **silent divergence** case, which is the one the version
 /// exists for. Any v5 recording in which somebody took a fall would load, run,
 /// and disagree at the first state hash after the landing, because the same
-/// inputs now cost half the health. The `HEAD` check the note above demands:
-/// nothing else has bumped since 5, so this is one bump for one break.
+/// inputs now cost half the health.
+///
+/// **And T20.21 shares it — one bump, two breaks.** `PlayerState::speed_multiplier`
+/// now reads `health.floor()`, and `world::apply_inputs` calls that, so **server
+/// movement changed too**: the same inputs move a player at fractional health a
+/// different distance. That is a second silent divergence, and it landed after
+/// this bump without one of its own. **Sharing is correct** — the precedent is
+/// T20.07 and T20.08 sharing 5, and a version is not a changelog, so bumping
+/// twice inside one unreleased window would reject every recording twice for
+/// what is a single break in compatibility. **But the note has to name both**, or
+/// the next person debugging a v6-era divergence reads "fall damage" and rules
+/// out movement. Corrected 2026-09-07; an earlier draft of this line said "one
+/// bump for one break", which was true when written and false an hour later.
 pub const REPLAY_VERSION: u16 = 6;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
