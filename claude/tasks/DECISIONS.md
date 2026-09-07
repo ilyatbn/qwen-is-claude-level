@@ -1288,3 +1288,52 @@ Two consequences worth naming:
   same defect with a smaller blast radius". It is right, and it is also not the whole
   defect surface: parsing from source protects the **table** and leaves the **emitter**
   bare. Both need an assertion, and they are not the same assertion.
+
+## D-68 — The thirteen unrun tests, run  ·  M20
+**Nine milestones of silence ended by typing one command.** `scripts/check.sh` is
+`cargo test --workspace` with no `--release` and no `-- --ignored`, `grep -rn -- "--ignored"
+scripts/ Makefile` returns 0, `--include-ignored` returns 0, and there is no `.github/`. So
+**nothing in this repository had ever run the thirteen `#[ignore]`d tests.** T20.17 built
+`scripts/ignored.sh` and ran them. Three times, idle box, identical each time.
+
+**All thirteen pass, including the one recorded as knowingly red.**
+`balance.rs::the_shipping_configuration_produces_a_fight` is documented at its assertion as
+red since T20.10 — the animals took the last seed of the control's margin, putting the control
+at 7/8 against a shipping 7/8. **At HEAD the control is 6/8 against a shipping 7/8 and the
+assertion passes**: `fought=7 control_before_fought=6 first=1.3s firsts=8/8`, measured twice
+with no assertion touched. Something in M20 after T20.10 gave the seed back. **The margin is
+one seed, which is what the comment calls nearly-gone**, so this is a reprieve rather than a
+resolution and T20.16 still owns the question of a control that is not one draw from useless.
+Recorded as measured rather than as remembered: a runner that ships red on day one is a runner
+nobody adopts, and recording `ok` is what makes it fire the day this goes back.
+
+**The cost that justified the exclusion is largely gone: the whole suite is 352 s** with the
+release build warm. `thousand_seed_playability_sweep` is 244 s of it; all five `balance.rs`
+measurements together are 39 s and the two in `capacity.rs` are 52 s, against `#[ignore]`
+reasons that say "minutes in release" and "measurement: minutes". What still keeps it out of
+`check.sh` is not the six minutes — it is `--release` against a gate that builds debug, which
+would add a second full workspace build to every run.
+
+**Ten of the thirteen are guards, not reports** — classified by whether the test *can fail*,
+per body. Two the survey had classified as reports are guards: `density_report` carries four
+failable assertions including its own vacuity control, and `item_population_report` asserts the
+live-item peak against `MAX_WORLD_ITEMS`. Only `balance_report`, `encounter_report` and
+`kill_chain` cannot fail. Counting `assert` is the wrong instrument in both directions:
+`thousand_seed_playability_sweep` contains none and fails through `panic!`.
+
+**What the gate can and cannot lose, measured by planting two erosions.**
+`MIN_TRAVERSABLE_FRACTION` 0.75 → 0.90 is caught immediately by
+`golden.rs::generated_masks_match_the_golden_table`, so **no terrain-parameter drift can hide**.
+`ITEM_SPAWN_INTERVAL` 14.0 → 42.0 is **invisible: 1296 gate tests pass, 0 fail** — every
+gate assertion on spawning is pinned to the constant, as the rules require, so none of them
+moves when the constant does. The ignored suite goes red and names it: *"Medium: a round shows
+11.2 of 19 drawable item types, below the 11.5 that is T11.09's share of the pool"*, and the
+shipping control collapses to 7/8 vs 7/8 in the same run. **The blind spot is balance and
+density, not terrain**, and it is exactly where the historical erosion happened.
+
+**The runner relies on somebody running it, and that is stated rather than dressed up.** What
+is mechanical is the other half: `scripts/verify-repo.mjs` runs in the gate's always-on section
+and fails if a `#[ignore]` is ever added without being named in the manifest, or named there
+without existing — so the set cannot silently grow again. Its companion guard is the one this
+task also booked: every `M<n>/T<n>` link in `TASKS.md` resolves, 235 of them, with a floor of
+50 so a broken pattern cannot report success about an empty set.

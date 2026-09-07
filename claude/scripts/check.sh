@@ -40,6 +40,12 @@ npm --prefix client run typecheck
 banner "client tests"
 npm --prefix client test -- --run
 
+banner "repo guards"
+# Milliseconds, and deliberately outside the `--fast` block below: these are the
+# two claims nothing else re-validates — that `TASKS.md`'s links resolve, and
+# that every `#[ignore]`d test is named in `scripts/ignored.sh` (T20.17).
+node scripts/verify-repo.mjs
+
 # Everything below needs a browser or the network. `--fast` skips the lot.
 #
 # (This was two nested `if [ "$FAST" -eq 0 ]` blocks with mismatched indentation

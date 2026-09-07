@@ -5515,3 +5515,15 @@ otherwise — so nothing had to win, and `connect_logging_snapshots` extends
 and **Done-when (2) greps the source, so it reads 0 for all eight after the consolidation it
 mandates** — replaced by `assert_seed_is_stated`: 8 red on one break in the fixture, 7 on one
 in `connect`. EXIT=0, 47/47, 1296/1309 rust, 890/890 client, 25/25, assets ok.
+
+## T20.17 — the thirteen unrun tests, run
+
+`scripts/ignored.sh` runs all thirteen and **asserts a recorded verdict per test**;
+`scripts/verify-repo.mjs` is in the gate's always-on half and fails if an `#[ignore]` is ever
+added without being named there, or if a `TASKS.md` task link stops resolving (235, floor 50).
+**All thirteen pass — including `the_shipping_configuration_produces_a_fight`, recorded as
+knowingly red.** Control back to 6/8 against shipping 7/8, measured twice, no assertion
+touched; margin is one seed, so T20.16 still owns it. Whole suite is **352 s**, not the
+"minutes each" the ignore reasons claim. Ten of thirteen are guards; two the survey called
+reports carry failable assertions. Planted `ITEM_SPAWN_INTERVAL` 14→42: **1296 gate tests pass**
+and the ignored suite names it. EXIT=0, 47/47, 1296/1309 rust, 890/890 client, 25/25, assets ok.
