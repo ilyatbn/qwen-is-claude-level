@@ -9,10 +9,13 @@ Read this file first, every session. It is short on purpose.
 - `docs/00`–`62` are the original spec.
 - **`docs/70`–`75` are amendments and they override the originals**
   where they disagree. Read the sections a task names.
-- **Never edit `docs/`.** If a doc is wrong or missing something, stop and report
-  the gap — amendments are written by the coordinator, not by a builder. Reporting a
-  spec defect is a valued outcome: ten of them have been found this way, and every
-  one was a real error.
+- **`docs/00`–`62` are the original spec; `docs/70`–`76` are the amendments.**
+- **Builders still never edit `docs/`.** If a doc is wrong or missing something, report the
+  gap — that is a valued outcome, and a dozen real errors have been found this way.
+  **The coordinator now writes the amendments** (authorised 2026-09-08), as a new
+  `docs/7N-amendments-vN.md` per milestone rather than by editing an original: overrides are
+  named at the point they happen, and the history stays readable. An original is only touched
+  to strike a superseded value and point at the amendment that replaced it.
 
 ## The loop
 

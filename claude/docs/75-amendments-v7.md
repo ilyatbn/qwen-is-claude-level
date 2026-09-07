@@ -353,7 +353,7 @@ New:
 | `BULLET_WIDTH` | 2.0 | " |
 | `BEAM_LIFETIME` | 0.35 | seconds; replaces `TRACER_LIFETIME`'s value on the laser path (§F2) |
 | `SHOVEL_DAMAGE` | 30.0 | (§F5) |
-| `SHOVEL_CARVE` | 14.0 | it digs |
+| `SHOVEL_CARVE` | ~~14.0~~ **16.0** | it digs — **raised by `docs/76` §G3**, `PLAYER_H / 2 + 2` |
 | `SHOVEL_REACH` | 20.0 | " |
 | `SHOVEL_ARC` | 1.2 | radians |
 | `SHOVEL_COOLDOWN` | 0.55 | seconds |
