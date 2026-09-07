@@ -5596,3 +5596,14 @@ refresh mid-join makes a room unreapable, **4/4 against a control of 0/4**), T20
 sit at `MAX_ROOMS` 32/32 refusing 8367 joins while the worst room tick used half its budget).
 **Two instrument bugs of my own, both caught by their own controls, both recorded at the code.**
 Full gate deferred by instruction; `replay_run::a_perturbed_command…` red and already journalled.
+
+## T20.21 follow-up — the perturbation fixture was measuring a corpse
+
+`a_perturbed_command_is_localised_to_a_nearby_tick` read 0/20 because **every recorded input
+belongs to player 0** (1400 commands, all hers; bots never emit `ReplayCommand::Input`) and she
+is dead from tick 1348, while the window was ticks 1372–1391. `apply_inputs` skips a dead
+player, so the flip was a no-op by construction — the coordinator's hypothesis, confirmed at the
+code. `record_a_round` now **returns `last_alive`** and the window is anchored a `SIM_HZ` margin
+before it instead of a hand-slid offset from the end of the file, which is what D-24 predicted
+would keep breaking. Measured: margin 0 → 5/20 (on the floor), SIM_HZ/2 → 19/20, **SIM_HZ →
+20/20**, 2·SIM_HZ → 19/20. Two stale comment measurements withdrawn. 279/279 game-server.
