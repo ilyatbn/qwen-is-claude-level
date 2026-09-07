@@ -52,14 +52,27 @@ code had left.
   "Toggled with `F` … sends `toggle_flashlight` to the server" is withdrawn.
 - **It is not visible to other players.** §4's beacon clause — *"Your cone is drawn in
   everyone's lightmap … Long sightlines at the cost of being seen first"* — is **withdrawn on
-  the coordinator's ruling of 2026-09-08**: *"leave it as is. this is as intended."*
+  the game designer's ruling of 2026-09-08**: *"leave it as is. this is as intented."*
 
 The flashlight is therefore a straight upgrade: a longer view for whoever finds one, with no
 tell. That is a deliberate departure from the original trade, not an oversight, and the cone
 machinery built for the beacon is deleted rather than disabled (T19.20).
 
-What survives from §4 unchanged: the cone shape and range for the *carrier's own* view, the
-reduced ambient radius, and that it costs no fuel.
+**What survives from §4 is less than §4 describes, and an earlier draft of this section got it
+wrong in both directions.** Corrected after the deletion landed:
+
+- **There is no cone on screen at all**, not even for the carrier. The only cone the client
+  ever built lived inside the never-called path deleted by T19.20, so §4's cone was never
+  rendered for anybody. `FLASHLIGHT_RANGE` (260) and `FLASHLIGHT_CONE_DEG` (55) are now
+  defined, bridged through wasm, typed in TS, and **read by nothing**. They are left in place
+  for now; retiring them is a separate change and should be booked, not folded in.
+- **The ambient radius is widened, not reduced.** §4 and the old `FLASHLIGHT_AMBIENT_MULT`
+  (0.65) *shrank* your ambient sight in exchange for the cone. With no cone, that trade had
+  nothing on the other side of it, so T20.07 replaced it with `FLASHLIGHT_FOV_MULT` = **1.5**.
+  Carrying a flashlight now simply lets you see half again as far.
+
+So the shipped flashlight is: **a wider view, no cone, no toggle, no tell, and no fuel cost.**
+That is the whole of it, and it is what the game does today.
 
 ## G3 — The shovel digs a hole you can walk into
 
