@@ -559,6 +559,7 @@ relying on it, not the waves.
 - [ ] [T21.05](M21/T21.05-low-gravity.md) — Low gravity **(v9)** — the `standard | low` half only
 - [ ] [T21.06](M21/T21.06-zero-g-movement.md) — Zero gravity: the movement model **(v9)**
 - [ ] [T21.07](M21/T21.07-zero-g-map.md) — Zero gravity: the map **(v9)** — a second generator
+- [ ] [T21.09](M21/T21.09-the-backpack-holds-the-effect-items.md) — The backpack rows hold the effect items **(v9)** — reported from play: the two right-click rows do not take new pickups. Passive items belong there because they never need selecting; weapons belong on the bar because only the bar can fire. **After T21.01–T21.03.**
 - [ ] [T21.08](M21/T21.08-spacesuits.md) — Spacesuits, with a visor colour you choose **(v9)**
 
 **Order note.** T21.04 first — it is small and it re-walks T20.07's path, which is the pattern
