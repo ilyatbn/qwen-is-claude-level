@@ -134,6 +134,27 @@ for (const c of [a, b]) {
 
 // One room, both players in it — the premise. Without this the whole check is
 // about two people who were never in the same match.
+//
+// **Waited for, not sampled.** `debug().players` is `mirror.players`, which is
+// filled *only* by `applySnapshot` — the 20 Hz stream. The loop above waits on
+// `debug().ready`, which is the map-decoded flag. They are different events and
+// nothing orders them, so reading `players` the instant `ready` flips is a race
+// that happens to win on an idle box: instrumented over three runs here,
+// `players` was **already 2 at the first sample every time** — the 21/25/29 ms
+// recorded was the poll loop's own first iteration, so the gap had closed before
+// anything could observe it. It lost inside a full gate that was logging
+// `tick overrun lagging=2995`, and read `[]` — while the very next assertion,
+// which reads `debug().scores`, listed both names in the same run. Two fields of
+// one object, filled by two different paths.
+//
+// The wait does not weaken the claim, and that was falsified rather than
+// asserted: with `bo` prevented from joining, this still fails, and with the
+// right message — `ana sees [0], not two players`.
+await a.page
+  .waitForFunction('(window.__game?.debug().players ?? []).length === 2', null, {
+    timeout: 30_000,
+  })
+  .catch(() => {})
 const h0 = await health()
 const seenByAna = (await a.dbg())?.players ?? []
 if (h0.rooms !== 1) fail(`the two clients did not share a room: ${h0.rooms} rooms`)

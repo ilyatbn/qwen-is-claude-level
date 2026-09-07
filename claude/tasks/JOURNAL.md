@@ -5711,3 +5711,18 @@ one kind of light needs no discriminant, so seven construction sites lost `kind:
 **Runtime-identical and it predicted the gate:** no producer ever set `'cone'`, so `eraseRadial`
 was always the path — all eleven browser checks that had failed mid-edit came back green.
 Client 882/882 (891 → 882 is exactly the nine); what stopped being guarded is named, not counted.
+
+## `rematch` is not a regression — its premise samples a field it should wait for
+
+The gate's `ana sees [], not two players` is `rematch.mjs`'s **premise**, upstream of every leave,
+disconnect and catch-up path T20.22/T20.23/T19.21 touch — so the three suspects were never
+exercised by it. `debug().players` is `mirror.players`, filled **only** by `applySnapshot` (the
+20 Hz stream); the loop above it waits on `debug().ready`, the map-decoded flag. Different events,
+nothing ordering them. **Instrumented three times: `players` was already 2 at the first sample
+every run** (the 21/25/29 ms recorded is the poll's own first iteration), so the gap closes before
+anything can see it on an idle box — and the gate that caught it was logging `tick overrun
+lagging=2995`. In that same gate run the *next* assertion, reading `debug().scores`, listed both
+names: two fields of one object, two fill paths. Now a bounded wait; falsified by stopping `bo`
+joining — still fails, `ana sees [0], not two players`. 3/3 green after, plus the earlier solo pass.
+**Second, separate load sensitivity, not fixed:** the closing 600 ms two-browser movement window
+failed 1 of 3 idle runs via its own stall detector (`the CONTROL frame is frozen too`) — worth booking.
