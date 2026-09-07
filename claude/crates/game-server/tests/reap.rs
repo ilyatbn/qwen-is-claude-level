@@ -360,3 +360,129 @@ async fn a_full_refusal_does_not_leave_a_phantom_occupant() {
     drop(keeper);
     h.stack.shutdown_all(Duration::from_secs(2)).await;
 }
+
+/// **A refresh at the wrong half-second must not burn a room** (T20.23).
+///
+/// A socket that drops while `seat` is awaiting `room.join` used to leave
+/// `RoomEntry::humans` at 1 for the life of the process: `on_disconnect`
+/// resolved the socket through `sessions.remove_sid`, which had not been
+/// written yet, so it freed nothing. A room whose `humans` never reaches zero
+/// never gets an `empty_since`, and `registry.rs::reap` filters on that field —
+/// so each one is permanent lost capacity against `MAX_ROOMS`, which is 32.
+///
+/// **Both arms on one server, in one test.** "The ghost's room reached zero"
+/// alone is satisfied by a server that seats nobody; the control is the same
+/// client sending the same verb and disconnecting *after* its `welcome`.
+///
+/// The subject is the drop taken straight after the emit, with no wait: that is
+/// what a refresh is, and `room.join` is a command round-trip through a task
+/// ticking at `SIM_HZ`, so the drop lands inside it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_socket_that_drops_before_it_is_seated_does_not_burn_the_room() {
+    let h = spawn_server(cfg(0, 6)).await;
+    let addr = h.addr;
+
+    // The control arm.
+    let control = tokio::task::spawn_blocking(move || {
+        let inbox: Inbox = Arc::default();
+        let c = connect(addr, inbox.clone());
+        c.emit(
+            "create_room",
+            serde_json::json!({ "name": "ana", "private": true }),
+        )
+        .expect("emit");
+        wait_for(&inbox, "welcome", 1, "ana");
+        let id = last(&inbox, "room_created", "room_id")
+            .as_u64()
+            .expect("a room id") as u32;
+        let _ = c.disconnect();
+        id
+    })
+    .await
+    .expect("blocking half");
+    wait_until_free(&h.stack.registry, control, "the control's room");
+
+    let before = room_ids(&h.stack.registry);
+
+    // The subject.
+    tokio::task::spawn_blocking(move || {
+        let inbox: Inbox = Arc::default();
+        let g = connect(addr, inbox.clone());
+        g.emit(
+            "create_room",
+            serde_json::json!({ "name": "ghost", "private": true }),
+        )
+        .expect("emit");
+        // No wait. This is the whole fixture.
+        let _ = g.disconnect();
+    })
+    .await
+    .expect("blocking half");
+
+    let ghost = wait_for_a_new_room(&h.stack.registry, &before);
+    wait_until_free(&h.stack.registry, ghost, "the ghost's room");
+
+    // **Both ends, because the registry and the room are two counts of one
+    // fact.** They agreed at 1 while this was broken — which is why the
+    // discriminating assertion is that they both reach *zero*, not that they
+    // match each other.
+    let handle = h
+        .stack
+        .registry
+        .lock()
+        .expect("registry")
+        .get(ghost)
+        .map(|e| e.handle.clone());
+    if let Some(handle) = handle {
+        let roster = handle.roster().await.unwrap_or_default();
+        assert!(
+            roster.is_empty(),
+            "the ghost's room still seats {roster:?} — the registry let go of the \
+             socket and the room did not"
+        );
+    }
+}
+
+/// Every room the registry currently knows.
+fn room_ids(reg: &Arc<Mutex<game_server::registry::RoomRegistry>>) -> Vec<u32> {
+    reg.lock().expect("registry").ids().to_vec()
+}
+
+/// The one room that appeared since `before`, waited for rather than sampled:
+/// `create_room` is served by the server after the client has already gone.
+fn wait_for_a_new_room(
+    reg: &Arc<Mutex<game_server::registry::RoomRegistry>>,
+    before: &[u32],
+) -> u32 {
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(15) {
+        if let Some(id) = room_ids(reg).into_iter().find(|id| !before.contains(id)) {
+            return id;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("no room was created for the dropped socket; before = {before:?}");
+}
+
+/// Wait until a room holds no humans **or has already been reaped**.
+///
+/// Reaped counts, and this is not a weakening: `room_empty_ttl` is `TTL_S` here,
+/// so a room that reaches zero is taken within a second or two, and a test that
+/// insisted on reading `Some(0)` would race the reaper it is trying to prove
+/// works. The failure this guards against is the opposite one — a room that
+/// stays at 1 forever and is therefore never eligible at all.
+fn wait_until_free(reg: &Arc<Mutex<game_server::registry::RoomRegistry>>, room: u32, label: &str) {
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(15) {
+        match reg.lock().expect("registry").get(room).map(|e| e.humans()) {
+            None | Some(0) => return,
+            _ => {}
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let now = reg.lock().expect("registry").get(room).map(|e| e.humans());
+    panic!(
+        "{label}: room {room} still reads {now:?} humans after 15 s, so it has no \
+         `empty_since` and `reap` can never take it"
+    );
+}

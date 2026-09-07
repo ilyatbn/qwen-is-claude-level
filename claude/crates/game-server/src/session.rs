@@ -968,25 +968,77 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                 socket.on_disconnect(move |socket: SocketRef| {
                     let (ctx, io) = (ctx.clone(), io.clone());
                     async move {
-                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
-                            return;
-                        };
                         // Fires on an abrupt drop as well as a clean close, which
                         // is what keeps a crashed client from holding a seat.
-                        if let Some(id) = sessions.remove_sid(socket.id) {
-                            room.send(Command::Leave(id));
-                            let payload = serde_json::json!({ "id": id, "reason": "disconnect" });
-                            broadcast_except(&io, &sessions, socket.id, "player_leave", &payload);
-                            // Also drop it from the registry, or the room's human
-                            // count never reaches zero and it is never reaped.
-                            ctx.detach(socket.id);
-                            tracing::info!(target: "game::net", player = id, "left");
-                        }
+                        // The body is `release_socket` because `seat` has to run
+                        // the identical cleanup for the drops this handler is too
+                        // early to see (T20.23).
+                        release_socket(&ctx, &io, socket.id, "disconnect").await;
                     }
                 });
             }
         }
     });
+}
+
+/// Free everything a socket holds: its seat in the room, its row in the session
+/// map, and its place in the registry's human count.
+///
+/// **One function, two callers, and the second one is the whole fix** (T20.23).
+/// `on_disconnect` used to do this inline and to call `ctx.detach` *inside* the
+/// `if let Some(id) = sessions.remove_sid(..)`, so a socket that dropped before
+/// `seat` reached its `insert` left `RoomEntry::humans` at 1 forever — no
+/// `empty_since`, and `registry.rs::reap` filters on exactly that field. Each
+/// burnt room is permanent lost capacity against `MAX_ROOMS`, and the trigger is
+/// a refresh at the wrong half-second.
+///
+/// **Making that `detach` unconditional is not the fix, and this was measured
+/// rather than reasoned.** With it hoisted out of the `if let`,
+/// `--scenario ghost` still reports 4 of 4: `seat` is *still awaiting*
+/// `room.join` while the disconnect handler runs, and when it returns it calls
+/// `sessions.insert` and `ctx.attach` — putting back everything the handler just
+/// took away. The gap is not "nothing to find", it is a resurrection after the
+/// cleanup, which is T19.21's shape: a guard read before an await and acted on
+/// after it.
+///
+/// So the second caller is `seat` itself, immediately after the insert, and the
+/// two compose to cover the whole window:
+///
+/// * the drop lands **before** the insert — the handler finds nothing, `seat`
+///   completes, and its own check sees a disconnected socket and releases;
+/// * the drop lands **after** the insert — the handler finds the mapping and
+///   releases, and `seat`'s check releases again harmlessly;
+/// * the drop lands **after** `seat` has finished — the ordinary path.
+///
+/// Idempotent on purpose, because two of those three run it twice:
+/// `remove_sid` answers `None` the second time and `detach` is a no-op on a
+/// socket that is no longer attached.
+async fn release_socket(ctx: &Ctx, io: &SocketIo, sid: Sid, reason: &str) {
+    let Some((_, room, sessions)) = ctx.resolve(sid) else {
+        // Never attached to a room: nothing to free, and `detach` would be a
+        // no-op. A socket that connects and leaves without joining takes this.
+        return;
+    };
+    if let Some(id) = sessions.remove_sid(sid) {
+        room.send(Command::Leave(id));
+        let payload = serde_json::json!({ "id": id, "reason": reason });
+        broadcast_except(io, &sessions, sid, "player_leave", &payload);
+        tracing::info!(target: "game::net", player = id, "left");
+    }
+    // **Outside the `if let`, which is the half `leave_room` already had right**
+    // — attach happens in the verb, before any seat exists, so a socket can be
+    // counted by the registry while the session map has never heard of it.
+    //
+    // **Recorded plainly: this hoist is not what fixes T20.23.** Falsified both
+    // ways. Putting it back inside the `if let` leaves the regression test
+    // green, because by the time `seat`'s own check calls this the insert has
+    // happened and `remove_sid` answers `Some`; removing `seat`'s check instead
+    // reds it at once — *"room 2 still reads Some(1) humans after 15 s"*. It is
+    // kept for parity with `leave_room` and so this function is complete for the
+    // next caller that reaches it with nothing in the session map, which is the
+    // exact shape that produced the bug. No test protects it, and saying so is
+    // better than implying one does.
+    ctx.detach(sid);
 }
 
 /// Seat a socket in `room_id` and send it everything it needs to start playing.
@@ -1109,6 +1161,24 @@ async fn seat(
     };
     sessions.insert(id, socket.id);
     ctx.attach(socket.id, room_id);
+
+    // **The socket may already be gone, and until this line nothing could tell.**
+    //
+    // `room.join` above is a command round-trip through a task ticking at
+    // `SIM_HZ`, and `on_disconnect` can run to completion inside it. When it
+    // does, `remove_sid` finds nothing — this insert has not happened yet — so
+    // the handler frees nothing, and then these two lines put the socket back
+    // into both maps. That is the leak `--scenario ghost` reports as 4 of 4, and
+    // it survives making the handler's `detach` unconditional (measured).
+    //
+    // Checked *after* the insert rather than before it, deliberately: from this
+    // point on the handler can find the socket itself, so a drop landing later
+    // is already covered and this check only has to cover the window that just
+    // closed.
+    if !socket.connected() {
+        release_socket(&ctx, &io, socket.id, "disconnect").await;
+        return;
+    }
 
     // §E1: `join_info`, not `inspect` — a lobby has no world, and `inspect`
     // would drop its closure and answer `None`, which reads as "the room is
