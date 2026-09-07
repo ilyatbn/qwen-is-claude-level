@@ -5540,3 +5540,18 @@ one break. No test hardcoded a fall value, so nothing needed re-pinning. **`docs
 refuses fall damage outright** (*"deliberately absent in v1"*); that gap opened at T20.11 and
 the amendment is still outstanding — this retune only changes a number inside it.
 EXIT=0, 47/47, 1296 passed / 13 ignored rust, 890/890 client, 25/25, assets ok.
+
+## Shovel: the dig left a lip you could not walk through, and a hole exactly your height
+
+Reported from play. The melee carve was a circle dropped at the **tip**, so its near face sat
+at `reach - blast_radius` while the body edge is at `PLAYER_W / 2` — a few px of untouched
+ground between your feet and the opening you had just dug. Now a **capsule swept from the body
+edge to the tip**, so there is no gap; starting at the edge rather than `origin` keeps the rule
+the old comment protected — a swing opens the wall it is aimed at, it does not drop the swinger
+through the floor. `SHOVEL_CARVE` is now `PLAYER_H * 0.5 + 2.0` (16, was 14): one click clears
+`PLAYER_H + 4`, and being a capsule it holds that height along the whole length rather than at
+one point. Falsified — restore the circle and both dig tests red, naming the lip; the knife
+control stays green, which is right. `a_shovel_swing_digs_a_wall_...` caught the shape change
+on its own and now derives a capsule's area. **`docs/75` still tables `carve` 14 and the melee
+`SPEC` mirrors it; the amendment is outstanding.** Applies to axe and hammer too — one path, no
+new flag. game-core 1002/1002, fmt and clippy clean; full gate deferred by instruction.

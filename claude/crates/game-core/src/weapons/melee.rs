@@ -155,11 +155,25 @@ pub fn swing(
         }
     }
 
-    // The swing bites the terrain at the tip of the arc, so an axe opens the wall
-    // it is swung at rather than the ground under the swinger.
+    // The swing bites the terrain **from the swinger's own edge out to the tip of
+    // the arc**, as a swept capsule rather than a circle dropped at the tip.
+    //
+    // It was a circle at the tip until 2026-09-07, and that left a lip: the near
+    // face of the hole sat at `reach - blast_radius` from the centre while the
+    // body's edge is at `PLAYER_W / 2`, so a shovel dug a room you could see into
+    // and could not enter, with a few pixels of untouched ground between your feet
+    // and the opening. Reported from play twice.
+    //
+    // The sweep starts at the body edge rather than at `origin` so the rule the
+    // circle was protecting still holds — a swing opens the wall it is aimed at,
+    // it does not drop the swinger through the floor they are standing on.
     if def.blast_radius > 0.0 {
-        let tip = origin + Vec2::new(aim.cos(), aim.sin()) * reach;
-        out.carve = Some(map.carve_circle(
+        let dir = Vec2::new(aim.cos(), aim.sin());
+        let mouth = origin + dir * (PLAYER_W * 0.5);
+        let tip = origin + dir * reach;
+        out.carve = Some(map.carve_capsule(
+            mouth.x.round() as i32,
+            mouth.y.round() as i32,
             tip.x.round() as i32,
             tip.y.round() as i32,
             def.blast_radius.round() as i32,
@@ -201,7 +215,11 @@ mod t1105 {
         // `Delivery::Melee` and `:228` set-matches the melee roster against this
         // table, so removing a row here would fail that assertion rather than
         // describe the game.
-        ("shovel", 30.0, 14.0, 20.0, 1.2, 0.55, 150.0),
+        // **`carve` diverges from `docs/75` deliberately**: 14 there, 16 here.
+        // Raised 2026-09-07 so one dig clears `PLAYER_H` plus a margin and the
+        // hole is walkable on uneven ground. `docs/` is not a builder's to edit;
+        // the amendment is outstanding and this row records the gap.
+        ("shovel", 30.0, 16.0, 20.0, 1.2, 0.55, 150.0),
     ];
 
     /// The table is the test, and the set must match — a melee weapon with no
@@ -454,6 +472,127 @@ mod t130602 {
         );
         assert_eq!(out.hits.is_empty(), !hit, "hits and the callback disagree");
         hit
+    }
+
+    /// A dig must open a hole the digger can actually walk into.
+    ///
+    /// Both halves come from play: the hole appeared with a **lip** of untouched
+    /// ground between the body and the opening, and it was exactly `PLAYER_H`
+    /// tall at its best point, so it caught on any slope.
+    mod digging {
+        use super::*;
+        use crate::constants::{PLAYER_H, PLAYER_W};
+
+        /// Swing `key` into solid rock at `aim = 0` (straight along `+x`) and
+        /// return the map. Solid everywhere first, so **any** clear pixel
+        /// afterwards is one this swing made — there is nothing to inherit.
+        fn dig(key: &str) -> (Map, Vec2, f32) {
+            let (w, reach, arc, kb) = melee_of(key);
+            let mut map = crate::physics::collide::tests::test_map(256, 256, |m| {
+                for y in 0..256 {
+                    for x in 0..256 {
+                        m.set(x, y);
+                    }
+                }
+            });
+            let origin = Vec2::new(128.0, 128.0);
+            let mut targets: [HitTarget; 0] = [];
+            swing(
+                &mut map,
+                &mut targets,
+                origin,
+                0.0,
+                w,
+                effective_reach(reach),
+                arc,
+                kb,
+                BlastSource::Fired {
+                    owner: 0,
+                    weapon: match crate::items::registry::by_key(key).expect("item").kind {
+                        ItemKind::Weapon(id) => id,
+                        _ => unreachable!("a melee weapon is a weapon"),
+                    },
+                },
+            );
+            (map, origin, effective_reach(reach))
+        }
+
+        /// Clear pixels running vertically through `y` at column `x`.
+        fn clear_height(map: &Map, x: i32, y: i32) -> i32 {
+            if map.mask.get(x, y) {
+                return 0;
+            }
+            let mut n = 1;
+            let mut up = y - 1;
+            while up >= 0 && !map.mask.get(x, up) {
+                n += 1;
+                up -= 1;
+            }
+            let mut down = y + 1;
+            while down < 256 && !map.mask.get(x, down) {
+                n += 1;
+                down += 1;
+            }
+            n
+        }
+
+        /// **1a — no lip.** Every pixel from the body edge to the tip is clear.
+        ///
+        /// The old carve was a circle centred on the tip, so its near face sat at
+        /// `reach - blast_radius` and left solid ground between there and
+        /// `PLAYER_W / 2`. That gap is what this walks.
+        #[test]
+        fn a_shovel_leaves_no_ground_between_the_body_and_the_hole() {
+            let (map, origin, reach) = dig("shovel");
+            let y = origin.y.round() as i32;
+            let from = (origin.x + PLAYER_W * 0.5).round() as i32;
+            let to = (origin.x + reach).round() as i32;
+            for x in from..=to {
+                assert!(
+                    !map.mask.get(x, y),
+                    "solid ground at x={x}, {} px from the body edge — that is the lip a \
+                     player cannot walk through",
+                    x - from
+                );
+            }
+        }
+
+        /// **1b — tall enough, all the way along.** Not just at the tip: a hole
+        /// that is player-height at one point and narrower either side is a hole
+        /// you catch on.
+        #[test]
+        fn a_single_dig_clears_a_player_sized_opening_along_its_whole_length() {
+            let (map, origin, reach) = dig("shovel");
+            let y = origin.y.round() as i32;
+            let from = (origin.x + PLAYER_W * 0.5).round() as i32;
+            let to = (origin.x + reach).round() as i32;
+            let want = PLAYER_H.round() as i32 + 2;
+            for x in from..=to {
+                let h = clear_height(&map, x, y);
+                assert!(
+                    h >= want,
+                    "the opening is {h} px tall at x={x} and a player is {PLAYER_H} — \
+                     wanted at least {want} so it clears on uneven ground"
+                );
+            }
+        }
+
+        /// The control, and it is the reason the two above are not vacuous: a
+        /// weapon that does not dig leaves the same span solid. Without it both
+        /// assertions are satisfied by a map that was never solid to begin with.
+        #[test]
+        fn a_blade_digs_nothing_on_the_same_span() {
+            let (map, origin, reach) = dig("knife");
+            let y = origin.y.round() as i32;
+            let from = (origin.x + PLAYER_W * 0.5).round() as i32;
+            let to = (origin.x + reach).round() as i32;
+            for x in from..=to {
+                assert!(
+                    map.mask.get(x, y),
+                    "the knife carved at x={x}; it has no blast radius and must not dig"
+                );
+            }
+        }
     }
 
     /// The subject: the edge of the swing is `PLAYER_W / 2 + reach` from the
@@ -732,13 +871,19 @@ mod t1905_shovel {
         let after = solid_in(&w.map, tip.x as i32, tip.y as i32, probe);
         let removed = before - after;
 
-        // Area of the carve disc, pinned to the constant. Generous bounds: the
-        // rasteriser is not a circle and the block is not infinite.
-        let area = std::f32::consts::PI * SHOVEL_CARVE * SHOVEL_CARVE;
+        // Area of the carve **capsule**, pinned to the constants. It was a disc
+        // until 2026-09-07; the swing now sweeps from the body edge out to the
+        // tip, and the sweep length is exactly `SHOVEL_REACH` because the mouth
+        // sits at `PLAYER_W / 2` and the tip at `PLAYER_W / 2 + SHOVEL_REACH`.
+        // Generous bounds: the rasteriser is not a circle and the block is not
+        // infinite. **This assertion is why the shape change could not land
+        // silently** — it failed the moment the carve stopped being a disc.
+        let area =
+            std::f32::consts::PI * SHOVEL_CARVE * SHOVEL_CARVE + 2.0 * SHOVEL_CARVE * SHOVEL_REACH;
         assert!(
             removed as f32 > area * 0.6 && (removed as f32) < area * 1.6,
             "a swing at a wall removed {removed} px, not the ~{area:.0} px a \
-             SHOVEL_CARVE ({SHOVEL_CARVE}) disc is"
+             SHOVEL_CARVE ({SHOVEL_CARVE}) capsule swept {SHOVEL_REACH} px is"
         );
 
         // Control: the same swing where there is nothing to dig removes nothing.

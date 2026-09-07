@@ -1366,12 +1366,16 @@ pub const HAMMER_KNOCKBACK: f32 = 340.0;
 /// spawns holding it and it can never leave the inventory, so these six numbers
 /// are the melee floor of the whole arsenal rather than one option among five.
 ///
-/// It **digs** — `SHOVEL_CARVE` is the largest melee carve in the table — because
-/// its job is tunnelling as much as fighting. Damage sits between the bat and the
+/// It **digs**, and `SHOVEL_CARVE` is sized for that job rather than chosen: at
+/// `PLAYER_H / 2 + 2` one swing opens a `PLAYER_H + 4` gap, so a single click
+/// clears a hole a player fits through with a couple of pixels to spare on uneven
+/// ground. Raised from 14 on 2026-09-07 — at 14 the opening was exactly `PLAYER_H`
+/// and caught on any slope. It ties `HAMMER_CARVE` for the largest melee carve.
+/// **`docs/75`'s table still says 14; the amendment is outstanding.** Damage sits between the bat and the
 /// axe: it must be a real answer at touching distance without making the guns
 /// pointless for anyone who closes.
 pub const SHOVEL_DAMAGE: f32 = 30.0;
-pub const SHOVEL_CARVE: f32 = 14.0;
+pub const SHOVEL_CARVE: f32 = PLAYER_H * 0.5 + 2.0;
 pub const SHOVEL_REACH: f32 = 20.0;
 pub const SHOVEL_ARC: f32 = 1.2;
 pub const SHOVEL_COOLDOWN: f32 = 0.55;
