@@ -269,6 +269,27 @@ impl GameCore {
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
             return;
         };
+        // **The gate the server has and this did not** (T20.21).
+        // `world/mod.rs::apply_inputs` runs `if !self.players[idx].alive
+        // { continue; }` *before* it computes `speed`, so a dead player on the
+        // server does not move. Nothing here did, `set_player_state` never set
+        // `alive`, and `GameScene` pushes input every frame — so a dead local
+        // player holding a direction was predicted walking at **full** magnitude
+        // while the server held them still. The same rubber-band T20.19 fixed,
+        // without the 25 % discount.
+        //
+        // **Here rather than in `physics::apply_input`, and rather than in
+        // `GameScene`.** This function is the mirror's counterpart of
+        // `apply_inputs`: the layer that owns the player list and decides whose
+        // input is worth a tick. `physics::apply_input` is the shared leaf and
+        // neither side gates there, so putting it in the leaf would change the
+        // server too. Putting it in `GameScene` would leave the guard one caller
+        // away from the state it protects, where the next caller of
+        // `Predictor::pushInput` drops it — share the guard, or share the
+        // function.
+        if !p.stats.alive {
+            return;
+        }
         let input = Input::new(seq, buttons, aim);
         let dt = if dt > 0.0 { dt } else { SIM_DT };
         let speed = p.stats.speed_multiplier();
@@ -303,6 +324,7 @@ impl GameCore {
         grounded: bool,
         fuel: f32,
         health: f32,
+        alive: bool,
     ) {
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
             return;
@@ -312,10 +334,17 @@ impl GameCore {
         p.body.grounded = grounded;
         p.jet.fuel = fuel;
         p.stats.health = health;
+        // **`alive` is here for the same reason `health` is** (T20.21): not a
+        // display value — `GameScene` reads the flag off the wire for the death
+        // overlay already — but an input to `apply_input`, which now refuses to
+        // move a dead body exactly as `apply_inputs` does. It is bit 0 of the
+        // snapshot's flags and has been on the wire since M6; nothing carried it
+        // across this boundary.
+        p.stats.alive = alive;
     }
 
-    /// `[x, y, vx, vy, grounded, fuel, move_state, landing_impact, health]`, or
-    /// empty for an unknown id.
+    /// `[x, y, vx, vy, grounded, fuel, move_state, landing_impact, health,
+    /// alive]`, or empty for an unknown id.
     ///
     /// **`health` is the ninth element** (T20.19), and it is here so the array
     /// round-trips everything `set_player_state` accepts: a reader that could set
@@ -351,6 +380,12 @@ impl GameCore {
             state,
             p.body.landing_impact,
             p.stats.health,
+            // **The tenth element, and it round-trips what `set_player_state`
+            // now accepts** (T20.21) — for the same reason `health` is the
+            // ninth: a setter with no matching reader gives a caller no way to
+            // check the mirror learned what the snapshot told it, and this one
+            // decides whether `apply_input` moves the body at all.
+            if p.stats.alive { 1.0 } else { 0.0 },
         ])
     }
 
@@ -1606,7 +1641,20 @@ mod tests {
     fn player_state_round_trips() {
         let mut core = GameCore::new();
         core.add_player(2, 0.0, 0.0);
-        core.set_player_state(2, 12.5, -3.25, 7.0, -1.5, true, 2.5, BASE_HEALTH * 0.5);
+        // `false`, for the same reason the health is not `BASE_HEALTH`:
+        // `add_player` seats a player alive, so `true` would be
+        // indistinguishable from the argument being dropped (T20.21).
+        core.set_player_state(
+            2,
+            12.5,
+            -3.25,
+            7.0,
+            -1.5,
+            true,
+            2.5,
+            BASE_HEALTH * 0.5,
+            false,
+        );
         let s = core.player_state(2);
         assert_eq!(s[0], 12.5);
         assert_eq!(s[1], -3.25);
@@ -1620,13 +1668,30 @@ mod tests {
         // against a `set_player_state` that dropped the argument on the floor.
         assert_eq!(s[8], BASE_HEALTH * 0.5, "the snapshot's health was dropped");
         assert_ne!(s[8], BASE_HEALTH);
+        // T20.21: and `alive`, for the same reason — `apply_input` reads it too.
+        assert_eq!(s[9], 0.0, "the snapshot's `alive` was dropped");
     }
 
     // --------------------------------------------------------------- T20.19
 
-    /// How much clear, level ground `walk_both_sides` needs: the body itself,
-    /// plus the furthest a full-speed quarter-second of walking can carry it.
-    const SHELF_RUN: i32 = PLAYER_W as i32 + 96;
+    /// The held run every fixture below walks: a quarter second at the sim rate.
+    const WALK_TICKS: u32 = game_core::constants::SIM_HZ / 4;
+
+    /// How much clear, level ground `walk_both_sides` needs, **computed rather
+    /// than typed** (T20.21).
+    ///
+    /// This was `PLAYER_W as i32 + 96` under a comment saying 96 was "the
+    /// furthest a full-speed quarter-second of walking can carry it". That
+    /// distance is `WALK_SPEED * WALK_TICKS * SIM_DT` = **37.5 px**, not 96, so
+    /// the comment described a derivation the code did not perform and
+    /// `CLAUDE.md` forbids the bare literal outright. The shelf needs the body
+    /// it starts on, the reach, and half a body of clearance past the end —
+    /// `build_shelf` stands the player at `x0 + PLAYER_W`, and a body is placed
+    /// by its centre.
+    fn shelf_run() -> i32 {
+        let reach = WALK_SPEED * WALK_TICKS as f32 * SIM_DT;
+        PLAYER_W as i32 + reach.ceil() as i32 + PLAYER_W as i32 / 2
+    }
 
     /// Replace the terrain around mid-map with a **level, clear shelf**, and
     /// return where to stand on it.
@@ -1647,7 +1712,7 @@ mod tests {
         let mut mask = w.map.mask.clone();
         let top = SKY_MARGIN as i32 + PLAYER_H as i32 * 2;
         let x0 = mask.w as i32 / 2;
-        let x1 = x0 + SHELF_RUN;
+        let x1 = x0 + shelf_run();
         for y in 0..top {
             mask.clear_run(y, x0 - 1, x1 + 1);
         }
@@ -1665,6 +1730,9 @@ mod tests {
         server_vx: f32,
         client_vx: f32,
         server_health: f32,
+        /// What the snapshot actually carried, so a test can assert the wire
+        /// truncated rather than assume it (T20.21).
+        wire_health: f32,
     }
 
     /// A quarter-second of walking, run on **the server** and on the client
@@ -1707,13 +1775,44 @@ mod tests {
         );
 
         w.player_mut(1).expect("seated").health = health;
+
+        // **The mirror's health comes through the real wire** (T20.21).
+        //
+        // T20.19's version passed `health` straight into `set_player_state`, so
+        // both sides held the same `f32` and the fixture could not see
+        // `codec.rs`'s `p.health.clamp(0.0, HEALTH_CAP) as u8` — a truncation,
+        // not a round. That is why a permanent one-health desync survived a task
+        // whose whole subject was health. Encoding and decoding here costs two
+        // calls and makes the fixture model what production does; re-implementing
+        // `as u8` in the test would prove the test's arithmetic instead of the
+        // codec's.
+        let bytes = game_server::codec::encode_snapshot(&w, 1, 0);
+        let snap = game_server::codec::decode_snapshot(&bytes).expect("the server's own bytes");
+        let wire = snap
+            .players
+            .iter()
+            .find(|p| p.id == 1)
+            .expect("player 1 is in the snapshot");
+        let wire_health = wire.health as f32;
+        let wire_alive = wire.flags & 1 != 0;
+
         let p = w.player(1).expect("seated");
         let (pos, vel, grounded, fuel) = (p.body.pos, p.body.vel, p.body.grounded, p.jetpack.fuel);
         core.add_player(1, pos.x, pos.y);
         // The production route: this is what `prediction.ts::reconcile` calls.
-        core.set_player_state(1, pos.x, pos.y, vel.x, vel.y, grounded, fuel, health);
+        core.set_player_state(
+            1,
+            pos.x,
+            pos.y,
+            vel.x,
+            vel.y,
+            grounded,
+            fuel,
+            wire_health,
+            wire_alive,
+        );
 
-        for seq in 0..15u32 {
+        for seq in 0..WALK_TICKS {
             w.queue_input(1, Input::new(seq, buttons, 0));
             w.step(SIM_DT);
             core.apply_input(1, seq, buttons, 0, SIM_DT);
@@ -1727,6 +1826,7 @@ mod tests {
             server_vx: sp.body.vel.x,
             client_vx: c[2],
             server_health: sp.health,
+            wire_health,
         }
     }
 
@@ -1757,19 +1857,51 @@ mod tests {
             "the healthy control already diverged, so the map or the inputs differ"
         );
 
+        // **The floor, pinned where it is defined** (T20.21).
+        //
+        // The range check inside the loop below does not do it, whatever its
+        // comment used to claim. With `want = WALK_SPEED * (m + (1 - m) * f)`
+        // the lower half reduces to `(1 - m) * f > 0`, which is true for
+        // **every** `m < 1` and `f > 0` — set `HEALTH_SPEED_MIN` to 0.5 and it
+        // still passes. Only the upper bound has teeth (raise the floor to 1.0
+        // and `want < WALK_SPEED` fails).
+        //
+        // **And this pin does not give the low side teeth against the constant
+        // either**, measured rather than assumed: it reads `HEALTH_SPEED_MIN`
+        // on both halves, so lowering the constant moves both. That is what
+        // `CLAUDE.md` requires — a test that hardcoded 0.75 would go stale the
+        // day the value is retuned. What it *does* rule out is the thing a
+        // range check cannot: an implementation that stops honouring the floor
+        // at all. Nothing in the repository can catch a retune of this constant,
+        // because its own doc comment states no number to check against.
+        let mut dead = PlayerState::new(1, Vec2::ZERO, 0);
+        dead.health = 0.0;
+        assert_eq!(
+            dead.speed_multiplier(),
+            HEALTH_SPEED_MIN,
+            "the multiplier at zero health is not the floor"
+        );
+
         // Not health 0: that is *death*, and `apply_inputs` skips a dead player
         // — the first run of this loop measured a corpse and read 20 px/s,
-        // exactly one tick of WALK_ACCEL. `HEALTH_SPEED_MIN` is pinned as the
-        // floor below instead, which is what it is.
-        for health in [BASE_HEALTH * 0.5, BASE_HEALTH * 0.01] {
+        // exactly one tick of WALK_ACCEL. That gap is now closed on the mirror
+        // too (T20.21) and `a_dead_player_is_not_predicted_moving` owns it.
+        //
+        // **`BASE_HEALTH / 3.0` is the one that matters here** (T20.21): the
+        // other two are whole numbers, which survive `codec.rs`'s `as u8`
+        // unchanged, so a fixture using only those cannot see the truncation —
+        // which is exactly how T20.19 shipped a permanent one-health desync.
+        // Server health is routinely fractional; a third of full health is the
+        // simplest value derived from a constant that cannot be whole.
+        for health in [BASE_HEALTH * 0.5, BASE_HEALTH * 0.01, BASE_HEALTH / 3.0] {
             // `speed_multiplier` is the shared rule, so it is the expectation
             // for *both* sides rather than a third copy of the lerp.
             let mut expect = PlayerState::new(1, Vec2::ZERO, 0);
             expect.health = health;
             let want = WALK_SPEED * expect.speed_multiplier();
-            // Pins HEALTH_SPEED_MIN in both directions: raise the floor to 1.0
-            // and the upper bound fails; drop it below the lerp's output and
-            // the lower one does.
+            // A sanity range, and only its upper half constrains anything — see
+            // the floor pin above. Kept because it does still catch an
+            // implementation that ignores health or exceeds `WALK_SPEED`.
             assert!(
                 want > WALK_SPEED * HEALTH_SPEED_MIN && want < WALK_SPEED,
                 "{want} is not between the floor and WALK_SPEED at health {health}"
@@ -1777,6 +1909,18 @@ mod tests {
 
             let o = walk_both_sides(health, right);
             assert_eq!(o.server_health, health, "health moved mid-run");
+            // The control on the crossing: for the fractional case the wire must
+            // actually have lost something, or "both sides agree" is a claim
+            // about a value the codec never touched.
+            if health.fract() != 0.0 {
+                assert!(
+                    o.wire_health < o.server_health,
+                    "the wire carried {} for a server health of {} — nothing was \
+                     truncated, so this case proves nothing about the codec",
+                    o.wire_health,
+                    o.server_health
+                );
+            }
 
             // The symptom first, in the units the reconciler works in.
             let drift = (o.server_x - o.client_x).abs();

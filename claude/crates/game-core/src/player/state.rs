@@ -286,13 +286,34 @@ impl PlayerState {
         self.health = (self.health + amount).min(HEALTH_CAP);
     }
 
-    /// At full health you move at `WALK_SPEED`; at 1 health, 75 % of it. Overheal
-    /// does **not** make you faster — the ratio is clamped at 1.
+    /// At full health you move at `WALK_SPEED`; at 0 health, `HEALTH_SPEED_MIN`
+    /// of it. Overheal does **not** make you faster — the ratio is clamped at 1.
+    ///
+    /// **Whole health, because whole health is what both sides have** (T20.21).
+    /// `codec.rs` sends `p.health.clamp(0.0, HEALTH_CAP) as u8` and `codec.ts`
+    /// reads it back with `r.u8()`, and `as u8` **truncates**. Server health is
+    /// routinely fractional — fall damage is `(impact - FALL_SAFE_SPEED) *
+    /// FALL_DAMAGE_PER_SPEED`, poison and overheal decay are per-second rates —
+    /// so the mirror sat up to 1.0 health below the server, permanently and
+    /// always in the same direction. At `(1 - HEALTH_SPEED_MIN) / BASE_HEALTH`
+    /// per point that is 0.375 px/s, which crosses `RECONCILE_EPSILON_PX` every
+    /// 5.33 s and never converges: T20.19's 50x improvement had a floor under it.
+    ///
+    /// **Flooring here makes the two sides equal by construction rather than by
+    /// precision**, which is the property the rule wants. The alternative —
+    /// widening the field — spends bandwidth per player per snapshot at
+    /// `SNAPSHOT_HZ` to buy sub-integer resolution in a number nothing renders,
+    /// which is the same trade `codec.rs` already refuses for `poisoned`. The
+    /// cost is that a player at 99.9 health walks at the 99 speed: 0.375 px/s,
+    /// the very difference this removes from the wire.
+    ///
+    /// Only movement reads this, so nothing else sees the rounding — damage, the
+    /// HUD and death all still use the true fractional health.
     pub fn speed_multiplier(&self) -> f32 {
         lerp(
             HEALTH_SPEED_MIN,
             1.0,
-            (self.health / BASE_HEALTH).clamp(0.0, 1.0),
+            (self.health.floor() / BASE_HEALTH).clamp(0.0, 1.0),
         )
     }
 

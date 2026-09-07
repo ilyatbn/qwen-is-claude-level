@@ -146,6 +146,17 @@ export interface PlayerState {
    */
   health: number
   /**
+   * Alive, and it is here for the same reason `health` is (T20.21):
+   * **`applyInput` reads it.**
+   *
+   * `world/mod.rs::apply_inputs` skips a dead player before it computes speed.
+   * The mirror had no `alive` at all, so a dead local player holding a direction
+   * was predicted walking at full speed while the server held them still — the
+   * rubber-band T20.19 fixed, without the 25 % discount. It is bit 0 of the
+   * snapshot flags and has been on the wire since M6; nothing carried it here.
+   */
+  alive: boolean
+  /**
    * How fast this body was falling at the moment it touched down, px/s, and 0
    * on every frame that is not a landing (T20.11).
    *
@@ -651,7 +662,7 @@ export class Core {
    * this function silently drops, and the caller would have to invent a value.
    */
   setPlayerState(id: number, s: Omit<PlayerState, 'landingImpact'>): void {
-    this.inner.set_player_state(id, s.x, s.y, s.vx, s.vy, s.grounded, s.fuel, s.health)
+    this.inner.set_player_state(id, s.x, s.y, s.vx, s.vy, s.grounded, s.fuel, s.health, s.alive)
   }
 
   /**
@@ -673,7 +684,7 @@ export class Core {
 
   playerState(id: number): PlayerState | null {
     const a = this.inner.player_state(id)
-    if (a.length < 9) return null
+    if (a.length < 10) return null
     return {
       x: a[0]!,
       y: a[1]!,
@@ -684,6 +695,7 @@ export class Core {
       moveState: a[6]!,
       landingImpact: a[7]!,
       health: a[8]!,
+      alive: a[9]! !== 0,
     }
   }
 

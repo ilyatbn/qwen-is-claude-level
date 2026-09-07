@@ -1362,6 +1362,12 @@ export class GameScene extends Phaser.Scene {
           // couple of frames, on every frame they moved. It could not
           // self-correct either: the correction itself did not carry health.
           health: mine.health,
+          // T20.21. `apply_input` refuses to move a dead body, exactly as
+          // `apply_inputs` does — but only if it is told. This flag has been on
+          // the wire since M6 (bit 0) and this scene already reads it for the
+          // death overlay; it simply never reached the mirror, so a dead player
+          // holding a direction was predicted walking at full speed.
+          alive: flag(mine.flags, FLAG.alive),
         },
       })
     }

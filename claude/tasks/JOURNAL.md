@@ -5555,3 +5555,15 @@ control stays green, which is right. `a_shovel_swing_digs_a_wall_...` caught the
 on its own and now derives a capsule's area. **`docs/75` still tables `carve` 14 and the melee
 `SPEC` mirrors it; the amendment is outstanding.** Applies to axe and hammer too — one path, no
 new flag. game-core 1002/1002, fmt and clippy clean; full gate deferred by instruction.
+
+## T20.21 — the mirror's last two disagreements, and a red that is not mine
+
+`speed_multiplier()` reads `health.floor()`: the wire sends `as u8`, a **truncation**, so the
+mirror sat 0.375 px/s slow forever — a correction every 5.33 s. Flooring makes the two equal by
+construction, not by precision. `apply_input` gates on `alive` and `set_player_state` carries
+it, in the mirror's counterpart of `apply_inputs` rather than the shared leaf or `GameScene` —
+share the guard. **`walk_both_sides` crosses the real codec now** (`game-server` dev-deps into
+`game-wasm`), fractional health plus a control that the wire truncated; without the floor it
+reads *"the client predicted 124.875 not 125"*. Floor pinned, `SHELF_RUN` computed. 18/18 wasm,
+1002/1002 core, 891/891 client. **Not green:** `checksum.rs::two_clients_agree...` is red at
+`f874cec` twice with my changes removed — not this task's, and it is the architecture's claim.

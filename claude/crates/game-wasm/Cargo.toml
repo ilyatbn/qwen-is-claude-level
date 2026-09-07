@@ -14,6 +14,17 @@ wasm-bindgen.workspace = true
 serde_json.workspace = true
 console_error_panic_hook = "0.1"
 
+[dev-dependencies]
+# **Only so a test can cross the wire** (T20.21). T20.19's two fixtures set
+# health directly on both sides and so bypassed `codec.rs`'s `as u8`, which is
+# exactly why nobody caught that the mirror sits up to 1.0 health below the
+# server. A test that re-implements the truncation proves the test's arithmetic,
+# not the codec's, so `walk_both_sides` calls the real `encode_snapshot` /
+# `decode_snapshot`. Dev-only: `wasm-pack` builds the lib target and never sees
+# this, and the direction is the light one — `game-server` does not depend on
+# `game-wasm`, so nothing here reaches the shipped artifact.
+game-server = { path = "../game-server" }
+
 # **No `wasm-bindgen-test`, deliberately (T19.19).** `scripts/check.sh` runs
 # `cargo test --workspace` and no wasm runner, so a `#[wasm_bindgen_test]` in
 # this crate compiles, reports nothing and never executes — which is how

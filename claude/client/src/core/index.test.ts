@@ -150,6 +150,10 @@ describe('Core', () => {
       fuel: 2.5,
       moveState: 0,
       health: hurt,
+      // Deliberately `false`, for the same reason `hurt` is not `BASE_HEALTH`:
+      // `addPlayer` seats a player alive, so `true` here would be
+      // indistinguishable from the mirror ignoring the argument (T20.21).
+      alive: false,
     })
     const s = core.playerState(1)
     expect(s).not.toBeNull()
@@ -159,6 +163,29 @@ describe('Core', () => {
     expect(s!.fuel).toBe(2.5)
     expect(s!.health).toBe(hurt)
     expect(s!.health).not.toBe(C().BASE_HEALTH)
+    expect(s!.alive).toBe(false)
+  })
+
+  it('a dead player is not predicted moving, and an alive one is (T20.21)', () => {
+    // `world/mod.rs::apply_inputs` skips a dead player before it computes speed.
+    // The mirror had no `alive`, so `GameScene` — which pushes input every frame
+    // whether or not you are dead — predicted a corpse walking at full speed.
+    core.generate(4242n, MapScale.Small)
+    const walk = (id: number, alive: boolean): number => {
+      core.addPlayer(id, 200, 200)
+      const s0 = core.playerState(id)!
+      core.setPlayerState(id, { ...s0, vx: 0, vy: 0, alive })
+      const x0 = core.playerState(id)!.x
+      for (let seq = 1; seq <= 15; seq++) {
+        core.applyInput(id, seq, C().BTN_RIGHT, 0, 1 / C().SIM_HZ)
+      }
+      return Math.abs(core.playerState(id)!.x - x0)
+    }
+    // The control that makes the zero mean something: the same call on a living
+    // player moves. Without it "a dead player does not move" is satisfied by a
+    // mirror that never moves anybody.
+    expect(walk(21, true)).toBeGreaterThan(1)
+    expect(walk(22, false)).toBe(0)
   })
 
   it('returns null for an unknown player', () => {
