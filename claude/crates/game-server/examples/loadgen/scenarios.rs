@@ -328,18 +328,28 @@ pub async fn soak(
         t.events.values().sum::<usize>() as f32 / elapsed,
         t.events
     ));
-    // **Not comparable between runs, and that is a defect in the metric, not in
-    // this line** (T20.25). `metrics.rs::record_room_tick` is `max`, nothing
-    // resets it on read and nothing decays it despite its doc comment saying
-    // both — so this is a lifetime high-water mark that climbs with the number
-    // of samples taken. Read it as "did any room ever come near the budget",
-    // never as "does per-room cost grow with the room count";
-    // `capacity.rs::rooms_do_not_get_more_expensive_as_more_are_added` answers
-    // the second question and this cannot.
+    // **Now a trailing window, so it is comparable between runs** (T20.25 fixed
+    // it). It used to be `max` over the room's whole life with nothing resetting
+    // or decaying it, which climbed with the number of samples taken and made
+    // this line meaningless across runs of different lengths — the reading this
+    // scenario originally could not use. It now covers the last `RING` ticks or
+    // so, the same span as `tick_p99_ms`.
+    //
+    // Still a *worst*, not a rate: it answers "did any room come near the budget
+    // recently". `capacity.rs::rooms_do_not_get_more_expensive_as_more_are_added`
+    // is what answers whether per-room cost grows with the room count, and it is
+    // `#[ignore]`d — run it through `scripts/ignored.sh`.
+    //
+    // **Read after the reap above, which is now a problem** (T20.25). Dropping a
+    // room calls `metrics::forget_room`, so once T20.22 and T20.23 made these
+    // rooms actually reapable this line started reading an empty map and
+    // printing `0.00 ms, 0 over` — indistinguishable from a server that was
+    // healthy. It read 6.90-8.69 ms when it was written because the leaks kept
+    // the rooms alive. Sample it before the reap, or say "no rooms" distinctly.
     let (worst_ms, over) = metrics.room_health();
     ns.push(format!(
-        "worst room tick ever {worst_ms:.2} ms of a {:.2} ms budget; {over} room(s) over half \
-         it (a lifetime max, not a rate — see T20.25)",
+        "worst room tick {worst_ms:.2} ms of a {:.2} ms budget in the trailing window; \
+         {over} room(s) over half it",
         1000.0 / f64::from(game_core::constants::SIM_HZ)
     ));
     if args.verbose {
