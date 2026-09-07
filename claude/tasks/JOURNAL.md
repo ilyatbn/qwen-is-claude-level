@@ -5588,9 +5588,15 @@ checksum 6/6, game-server otherwise green, game-core 1002/1002, clippy clean.
 ## T20.14 — the whole thing at once: 48 clients, four scenarios, three planted controls
 
 `examples/loadgen/` drives real sockets at one in-process server; an **example** target, so the
-gate builds it and never runs it. **T19.21 reached at both observables, 3/3 runs**: 5 of 12
-joiners fanned across `lobby_bot_timeout` got `welcome.phase=warmup`, and the catch-up disclosed
-19–25 `item_spawn`s carrying `item_id` against a control of **0 over 7 lobby seats**. Booked, not
+gate builds it and never runs it. **T19.21's *window* reached, 3/3 runs**: 5 of 12
+joiners fanned across `lobby_bot_timeout` got `welcome.phase=warmup`, and received a catch-up of
+19–25 `item_spawn`s against a control of **0 over 7 lobby seats**. **CORRECTED 2026-09-08 — that
+is not the crate leak, and reading it as one would have been the wrong acceptance test.** The
+counter tallies *any* `item_spawn` carrying `item_id`, which for ordinary ground items is the
+behaviour `docs/41` §4 requires. `CRATE_INTERVAL` is 35 s and the scenario joins at
+`lobby_bot_timeout` 10 s, so **there has never been a crate on the ground when it runs**, and
+the count reads identically before and after the fix. What it does prove — a live-world seat
+getting the catch-up at all while lobby seats get nothing — is the TOCTOU, and that stands. Booked, not
 fixed: T20.22 (a room hop orphans the seat behind you — 1 client, no concurrency), T20.23 (a
 refresh mid-join makes a room unreapable, **4/4 against a control of 0/4**), T20.24 (48 clients
 sit at `MAX_ROOMS` 32/32 refusing 8367 joins while the worst room tick used half its budget).
