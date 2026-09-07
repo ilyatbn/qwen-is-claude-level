@@ -48,6 +48,16 @@ Never report a task done if its tests fail. Say so and show the output.
 - Every numeric tunable lives in `constants.rs`, mirroring the docs. Never inline a
   number, and **never hardcode one in a test** — pin to the constant, or the fixture
   stays green against a drifted implementation.
+  **Know what that costs, because it is measured: a suite where every assertion is pinned to
+  the constant cannot detect the constant itself changing.** Planting
+  `ITEM_SPAWN_INTERVAL` 14 → 42 leaves **all 1296 gate tests passing, none failing** — every
+  assertion moved with it, exactly as this rule requires. Pinning tests the implementation
+  against the constant; **nothing then tests the constant against reality.** So a tunable whose
+  *value* matters needs one assertion of a different kind — against a measured basis, the way
+  `capacity.rs::max_rooms_carries_its_basis` pins the claim its doc comment makes, or against a
+  golden (`golden.rs::generated_masks_match_the_golden_table` catches every terrain parameter
+  this way). The gate's blind spot here is balance and density, which is precisely where this
+  repository's historical erosion happened.
 - No `unwrap()`/`expect()` in `game-server` request paths. Fine in `game-core` and
   tests.
 - TypeScript is `strict`, no `any`. No physics or map logic in TS — that is
