@@ -5608,6 +5608,17 @@ before it instead of a hand-slid offset from the end of the file, which is what 
 would keep breaking. Measured: margin 0 → 5/20 (on the floor), SIM_HZ/2 → 19/20, **SIM_HZ →
 20/20**, 2·SIM_HZ → 19/20. Two stale comment measurements withdrawn. 279/279 game-server.
 
+## T20.23 — the obvious fix does not fix it, measured
+
+`--scenario ghost` reproduces 4/4 at HEAD. **Hoisting `ctx.detach` out of `on_disconnect`'s
+`if let` — the shape the task proposes — still reports 4 of 4**: `seat` is *awaiting*
+`room.join` while the handler runs, and on return its `sessions.insert` + `ctx.attach` put back
+everything the handler took. Not "nothing to find", a resurrection after the cleanup — T19.21's
+await-gap shape. The fix is a second caller: `release_socket` is shared by `on_disconnect` and
+by `seat` itself, which re-checks `socket.connected()` **after** the insert, so the two compose
+over the whole window and are idempotent where they overlap. Ghost clean, 8/8 rooms reaped.
+Regression test carries its control arm; falsified — remove `seat`'s check and it reds.
+
 ## T20.16 — one axis, aggregate floors, and the old floors watched a 4x regression
 
 Control was Large/4 against a shipping Medium/6 — **two axes**, decided by one seed. It is now
@@ -5620,3 +5631,14 @@ the control **4/8 while it produced zero encounters**, which is why 6-vs-7 was n
 Falsified in production: `FOV_DAY` 320→80 reds the new floors on the seeds that regressed, while
 the old floors on that same build both passed and only `before_fought < fought` fired. Booked
 T20.26 — `ITEM_SPAWN_INTERVAL` 14→42 passes all six ignored balance tests and all three gate ones.
+
+## T20.22 — the seat a hop leaves behind, freed in the one function every leave goes through
+
+`registry::detach_from` freed the registry's bookkeeping and told the room task nothing, so a
+`create_room`/`join_room`/`quick_match` hop left a seat on the old roster for the life of the
+room. Fixed there, not in a fourth caller: `e.sessions.player_of(sid)` answers the `PlayerId`
+the registry was missing, read **before** `remove_sid` — which is also what stops it doubling
+up, since the two socket-layer paths empty that same map first and reach it with `None`.
+`attach`'s same-room early return means a retry never reaches the line, so idempotence holds.
+`--scenario rejoin`: one seat not two, the abandoned room's roster empty, and the capacity
+probe **6 of 6 seated where it refused one as `full`**. game-server 281/281, ghost still clean.
