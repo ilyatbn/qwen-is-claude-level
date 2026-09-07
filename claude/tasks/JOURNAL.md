@@ -5698,3 +5698,16 @@ ordering already prevents this — true only for a guard read landing *after* it
 **The driver cannot demonstrate it:** the first crate is `round_start + CRATE_INTERVAL` = 35 s
 and `--scenario race` joins a ~2 s-old world, so its "disclosed" counter reads **5 before and 5
 after** — it measures the window, not crates. 286/286 game-server, worldMirror 20/20.
+
+## T19.20 — the cone nothing produced, deleted with the nine tests that made it look alive
+
+`collectLightSources` had **no production caller anywhere** — only its own nine unit tests, which
+is worse than none: sixteen assertions made a dead path read as maintained. It was the sole
+producer of `kind: 'cone'`, so `lightmap.ts::eraseCone` had no producer either. Sanctioned by
+`docs/76` §G2, which withdraws `docs/14` §4's beacon clause; the shipped flashlight is **a wider
+view, no cone, no toggle, no tell, no fuel cost**. Gone too: `LightSourceSpec`, `PlayerLight`,
+`WorldLights`, `FLASH_DECAY`, `HAZARD_RADIUS`, and `LightSource`'s `kind`/`angle`/`coneDeg` —
+one kind of light needs no discriminant, so seven construction sites lost `kind: 'radial'`.
+**Runtime-identical and it predicted the gate:** no producer ever set `'cone'`, so `eraseRadial`
+was always the path — all eleven browser checks that had failed mid-edit came back green.
+Client 882/882 (891 → 882 is exactly the nine); what stopped being guarded is named, not counted.
