@@ -422,6 +422,28 @@ impl Bot {
             self.still_for = 0.0;
         }
 
+        // **A bot that picks up T21.03's unicorn wings changes nothing here, and
+        // that is deliberate** — the grep this note answers is the task file's.
+        //
+        // Nothing below knows about wings, so a winged bot goes on pressing
+        // JUMP when it is stuck and JUMP|UP when its target is above. Both are
+        // refused by `apply_input` while the wings are held, and the outcome is
+        // survivable rather than merely harmless:
+        //
+        //  - the stuck-jump is moot, because a flying bot is never stuck: it
+        //    rises out of whatever hole triggered `still_for`;
+        //  - the jetpack climb is moot for the same reason — it rises anyway,
+        //    at `WINGS_FLY_SPEED`, without spending fuel;
+        //  - and the one input that still lands is `DOWN`, which `apply_flight`
+        //    reads as descend. That arm already fires when the target is well
+        //    below, so a winged bot chasing something on the ground comes down
+        //    to it.
+        //
+        // The result is a bot that hovers toward its target instead of walking,
+        // which is odd to watch and not broken. Teaching it to *use* flight —
+        // holding DOWN to close vertically rather than only when far above — is
+        // real work and belongs in a bot task, not here.
+        //
         // Jetpack for a real climb, and only with fuel to spare — a bot that
         // empties its tank hovering is a bot that cannot escape.
         if rise > JETPACK_RISE && me.jetpack.fuel > JETPACK_MAX_FUEL * 0.5 {

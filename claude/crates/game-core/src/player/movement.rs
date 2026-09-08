@@ -9,10 +9,11 @@
 
 use crate::constants::{
     AIR_ACCEL_FACTOR, AIR_DRAG, GROUND_FRICTION, JUMP_BUFFER, JUMP_H_BOOST, JUMP_VELOCITY, SIM_HZ,
-    WALK_ACCEL, WALK_SPEED,
+    WALK_ACCEL, WALK_SPEED, WINGS_FLY_SPEED,
 };
 use crate::math::approach;
 use crate::physics::body::{Body, COYOTE_TICKS};
+use crate::player::input::{button, Input};
 
 /// Jump buffer window in ticks: 0.12 s × 60 Hz = 7.
 pub const JUMP_BUFFER_TICKS: u32 = (JUMP_BUFFER * SIM_HZ as f32) as u32;
@@ -94,6 +95,31 @@ pub fn try_jump(
     body.airborne_ticks = COYOTE_TICKS + 1;
     jump_state.buffered_ticks = 0;
     true
+}
+
+/// Unicorn wings (T21.03): drive the vertical velocity to the wings' own speed.
+///
+/// **Set, not accelerated, and not a thrust.** The brief is *"you just fly
+/// constantly"*, and the literal reading is the right one here: with no input
+/// at all the player **rises**, and holding `DOWN` descends at the same speed.
+/// There is no hover and no drift, because a wing that needed holding would be
+/// a jetpack with different fuel.
+///
+/// Assigning rather than accumulating also makes flight cancel a fall or a
+/// knockback on the tick it starts, which is the behaviour "constant" implies —
+/// and it keeps this function pure and idempotent, so `prediction.ts` replaying
+/// it forty times lands exactly where the server does.
+///
+/// **The horizontal axis is deliberately untouched.** Walking and air control
+/// still run through `apply_horizontal`, so a booted player still flies sideways
+/// at twice the speed and `WINGS_FLY_SPEED` means one thing — the climb — rather
+/// than two.
+pub fn apply_flight(body: &mut Body, input: &Input) {
+    body.vel.y = if input.held(button::DOWN) {
+        WINGS_FLY_SPEED
+    } else {
+        -WINGS_FLY_SPEED
+    };
 }
 
 #[cfg(test)]

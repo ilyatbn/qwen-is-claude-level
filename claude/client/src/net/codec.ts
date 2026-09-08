@@ -328,6 +328,8 @@ export const FLAG = {
  */
 export const MOVE_MOD = {
   boots: 1 << 0,
+  /** T21.03. Carried, never toggled — dropping them is the only off switch. */
+  wings: 1 << 1,
 } as const
 
 export function flag(flags: number, bit: number): boolean {

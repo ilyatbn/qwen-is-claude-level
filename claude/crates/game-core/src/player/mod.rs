@@ -7,7 +7,7 @@ pub mod respawn;
 
 pub use input::{button, edges, Input, InputEdges};
 pub use jetpack::JetpackState;
-pub use movement::{apply_horizontal, try_jump, JumpState};
+pub use movement::{apply_flight, apply_horizontal, try_jump, JumpState};
 
 use crate::map::Map;
 use crate::physics::body::Body;
@@ -68,6 +68,18 @@ pub struct MoveMods {
     /// goes as `v²/2g`, so this is `sqrt` of the height multiplier; see
     /// `BOOTS_JUMP_HEIGHT_MULT`.
     pub jump: f32,
+    /// Constant flight (T21.03's unicorn wings).
+    ///
+    /// While true: gravity is off, the vertical velocity is driven to
+    /// `WINGS_FLY_SPEED`, and **the jump and the jetpack are refused** — refused
+    /// rather than ignored, which is the difference between a bug report that
+    /// says "jump does nothing" and one that says "jump is disabled while you
+    /// are flying".
+    ///
+    /// **This is a field on the struct and not a fourth flag** precisely because
+    /// it is the third gravity regime: `jetpack::gravity_scale` names all three
+    /// in one place, so nothing can be in two of them at once.
+    pub flying: bool,
 }
 
 impl MoveMods {
@@ -82,6 +94,7 @@ impl MoveMods {
     pub const NONE: MoveMods = MoveMods {
         speed: 1.0,
         jump: 1.0,
+        flying: false,
     };
 }
 
@@ -104,22 +117,40 @@ pub fn apply_input(
 
     apply_horizontal(body, dir, mods.speed, dt);
 
-    let jumped = try_jump(body, jump, e.jump_pressed, dir, mods.jump);
+    // **T21.03 — wings refuse the jump and the jetpack, and *refused* is the
+    // operative word.** `try_jump` is not called at all, and the buffered press
+    // is cleared with it: a jump silently swallowed would otherwise fire the
+    // instant the wings were dropped, up to `JUMP_BUFFER` later, which reads on
+    // screen as the game doing something nobody asked for. The jetpack is driven
+    // to inactive rather than merely left unthrust, so `jet.active` — which the
+    // wire, the animation and `gravity_scale` all read — cannot say a player is
+    // jetpacking while the wings are carrying them.
+    let jumped = if mods.flying {
+        jump.buffered_ticks = 0;
+        jetpack::refuse(jet);
+        false
+    } else {
+        let jumped = try_jump(body, jump, e.jump_pressed, dir, mods.jump);
+        jetpack::update(
+            jet,
+            body,
+            input.held(button::JUMP),
+            e.jump_pressed,
+            jumped,
+            dt,
+        );
+        if jet.active {
+            jetpack::apply_thrust(body, input, dt);
+        }
+        jumped
+    };
+    let _ = jumped;
 
-    jetpack::update(
-        jet,
-        body,
-        input.held(button::JUMP),
-        e.jump_pressed,
-        jumped,
-        dt,
-    );
-
-    if jet.active {
-        jetpack::apply_thrust(body, input, dt);
+    if mods.flying {
+        apply_flight(body, input);
     }
 
-    integrate(map, body, jetpack::gravity_scale(jet), dt)
+    integrate(map, body, jetpack::gravity_scale(jet, mods.flying), dt)
 }
 
 /// The complete per-player movement state, so a caller can snapshot and restore it

@@ -2359,6 +2359,37 @@ pub const LIFESTEAL_DAMAGE_PER_HP: f32 = 10.0;
 /// (`movement.rs` states that design).
 pub const BOOTS_SPEED_MULT: f32 = 2.0;
 
+/// Unicorn wings (T21.03): the vertical speed of constant flight, px/s.
+///
+/// **Explicitly not `JETPACK_MAX_SPEED`, and that is the brief's own
+/// instruction**: *"a custom speed separate from jetpacking since I don't know
+/// how balanced this item is — might have to reduce it to make it more fair."*
+/// An alias would have to be split the first time either number moved, so it is
+/// its own constant from the start and this is the one knob that tuning turns.
+///
+/// 200 against the jetpack's 260 is a first setting with a reason rather than a
+/// placeholder: a jetpack is a **short, fast** climb bought with fuel, and wings
+/// are a **slow, endless** one. If they climbed faster as well as forever the
+/// jetpack would have nothing left to be.
+///
+/// **Wings are unlimited, and that is a balance decision hiding inside "you just
+/// fly constantly".** `JETPACK_MAX_FUEL` is what makes the jetpack's flight
+/// finite; the brief mentions no fuel and none is charged, so the only cost of
+/// wings is the inventory slot and the jump they refuse.
+pub const WINGS_FLY_SPEED: f32 = 200.0;
+
+// Flight that does not climb is not flight.
+const _: () = assert!(WINGS_FLY_SPEED > 0.0);
+// The design claim above, asserted rather than described: a jetpack burst must
+// stay the faster of the two, or "slow and endless" is only a comment. This is
+// the number the brief expects to be retuned, so the guard is here to be met.
+const _: () = assert!(WINGS_FLY_SPEED < JETPACK_MAX_SPEED);
+// And a winged descent must be gentler than a hurtful landing, which is what
+// makes wings a blanket fall-damage immunity **by construction** rather than by
+// an exemption anyone had to write (T20.11, T21.02): you cannot arrive faster
+// than you can fly.
+const _: () = assert!(WINGS_FLY_SPEED < FALL_SAFE_SPEED);
+
 /// *"and jump three times higher"* — **height**, and the name says so because
 /// the next reader will otherwise assume it is the velocity (T21.02).
 ///

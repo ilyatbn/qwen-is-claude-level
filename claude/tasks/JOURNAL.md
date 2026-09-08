@@ -5857,3 +5857,16 @@ one function. `reconcile`'s positional epsilon no longer gates a non-positional 
 launch speed, whose free drop height **is** the booted apex, 198 px both. Record in one place.
 Boots art screenshotted three times before it looked like footwear. 895 + workspace + 887
 client + `boots-visible` green; wire falsified at both ends, pixels at two.
+
+## T21.03 — unicorn wings
+
+`MoveMods` gained `flying`, so the whole item rode T21.02's seam: one derivation, both sides,
+and the move-mod byte already existed — bit 1 beside the boots' bit 0. Flight is an assignment
+to `vel.y`, not a thrust, which is what "constantly" means and what keeps `apply_input` pure
+under replay. **The third gravity regime lives in `jetpack::gravity_scale` beside the other
+two**, so nothing can be jetpack-scaled and flying at once. Jump and jetpack are *refused* —
+`try_jump` is not called, the buffer is cleared so nothing fires late, and `jetpack::refuse`
+leaves the fuel machine to its owner. Dropping is the only off switch and the test uses
+`World::drop_item`. `WINGS_FLY_SPEED < FALL_SAFE_SPEED` is asserted, so fall immunity is by
+construction. Bots unchanged, with the reasoning written at `bots/mod.rs`. 901 + 22 wasm + 887
+client green; four falsifications red the right tests, plus the wire at the mirror.

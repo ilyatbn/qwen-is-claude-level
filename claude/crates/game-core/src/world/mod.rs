@@ -8223,3 +8223,252 @@ mod vampire_fangs {
         assert_eq!(health(&w, 0) - before, 1.0);
     }
 }
+
+/// T21.03 — unicorn wings.
+///
+/// Driven through `World::step`, because every claim here is about what
+/// `apply_input` does with a player's inventory and the only honest way to ask
+/// is to run a tick. The **drop** test in particular has to go through
+/// `World::drop_item` (T20.09): dropping is the item's only off switch, and a
+/// test that emptied the inventory by hand would be asserting against a path no
+/// player can take.
+#[cfg(test)]
+mod unicorn_wings {
+    use super::*;
+    use crate::constants::{MapScale, PLAYER_H, SIM_DT, WINGS_FLY_SPEED};
+    use crate::items::registry::{IRONMAN_BOOTS, UNICORN_WINGS};
+    use crate::player::input::button;
+
+    fn world() -> World {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        w
+    }
+
+    /// Put player 0 in open air, well clear of the ground, and return their y.
+    ///
+    /// **Airborne on purpose.** Flight and falling are both vertical, so the
+    /// fixture starts where gravity has room to act — a body resting on the
+    /// floor would show "did not fall" for a player with no wings at all.
+    fn aloft(w: &mut World) -> f32 {
+        let x = w.map.mask.w as f32 / 2.0;
+        let y = w.map.mask.h as f32 / 4.0;
+        let Some(p) = w.player_mut(0) else {
+            panic!("no player 0")
+        };
+        p.body.pos = Vec2::new(x, y);
+        p.body.vel = Vec2::ZERO;
+        p.body.grounded = false;
+        p.iframes_until = -1.0;
+        y
+    }
+
+    /// `n` ticks holding `buttons`, and the y afterwards.
+    fn fly(w: &mut World, buttons: u8, n: u32) -> f32 {
+        for t in 0..n {
+            w.queue_input(0, Input::new(t + 1, buttons, 0));
+            w.step(SIM_DT);
+        }
+        w.player(0).expect("ana").body.pos.y
+    }
+
+    fn wings_slot(w: &World) -> u8 {
+        w.player(0)
+            .expect("ana")
+            .inventory
+            .iter()
+            .find(|(_, s)| s.item == UNICORN_WINGS)
+            .map(|(i, _)| i)
+            .expect("the wings are in the bag")
+    }
+
+    /// The headline claim, with the control that makes it mean something.
+    ///
+    /// *"When in the inventory you just fly constantly"* — so the assertion is
+    /// that a player with **no input at all** rises, and keeps rising. The
+    /// control is the same fixture without the wings, which must fall: without
+    /// it, "y decreased" is satisfied by a map whose ceiling is above the
+    /// spawn, and "flight" would be indistinguishable from a body that never
+    /// moved.
+    #[test]
+    fn wings_rise_with_no_input_and_the_same_player_without_them_falls() {
+        // y grows downward, so rising is a *decrease*.
+        let mut w = world();
+        give(&mut w, 0, UNICORN_WINGS, 1);
+        let start = aloft(&mut w);
+        let after = fly(&mut w, 0, 30);
+        assert!(
+            after < start,
+            "a winged player did not rise: {start} -> {after}"
+        );
+
+        // And keeps rising — one tick of lift could be a fixture artefact.
+        let later = fly(&mut w, 0, 30);
+        assert!(later < after, "the climb stopped: {after} -> {later}");
+
+        // The control.
+        let mut w = world();
+        let start = aloft(&mut w);
+        let after = fly(&mut w, 0, 30);
+        assert!(
+            after > start,
+            "the unwinged control did not fall: {start} -> {after}"
+        );
+    }
+
+    /// The climb is `WINGS_FLY_SPEED`, and `DOWN` descends at the same rate.
+    ///
+    /// Pinned to the constant, which is the one knob the brief expects to be
+    /// turned — *"might have to reduce it to make it more fair"*.
+    #[test]
+    fn the_climb_is_the_wings_own_speed_and_down_descends_at_it() {
+        let mut w = world();
+        give(&mut w, 0, UNICORN_WINGS, 1);
+        aloft(&mut w);
+        fly(&mut w, 0, 5);
+        assert_eq!(
+            w.player(0).expect("ana").body.vel.y,
+            -WINGS_FLY_SPEED,
+            "the climb is not the wings' own speed"
+        );
+        fly(&mut w, button::DOWN, 5);
+        assert_eq!(
+            w.player(0).expect("ana").body.vel.y,
+            WINGS_FLY_SPEED,
+            "holding DOWN did not descend at the wings' own speed"
+        );
+    }
+
+    /// **Refused, not ignored** — and the control is that both work the moment
+    /// the wings come off.
+    ///
+    /// A held JUMP is used rather than a tap, because the jetpack only engages
+    /// after `JETPACK_HOLD_DELAY`; a single press would leave the jetpack half
+    /// of this assertion vacuous.
+    #[test]
+    fn jump_and_jetpack_are_refused_while_the_wings_are_held() {
+        let mut w = world();
+        give(&mut w, 0, UNICORN_WINGS, 1);
+        aloft(&mut w);
+        // Long enough to clear the hold delay several times over.
+        fly(&mut w, button::JUMP, 60);
+        let p = w.player(0).expect("ana");
+        assert!(
+            !p.jetpack.active,
+            "the jetpack engaged while the wings were held"
+        );
+        assert_eq!(
+            p.body.vel.y, -WINGS_FLY_SPEED,
+            "holding JUMP changed the climb, so something other than the wings \
+             moved this player"
+        );
+        assert_eq!(
+            p.jetpack.fuel,
+            crate::constants::JETPACK_MAX_FUEL,
+            "a refused jetpack still burned fuel"
+        );
+        // The buffered press is cleared rather than banked, so nothing fires
+        // late.
+        assert_eq!(p.jump.buffered_ticks, 0, "a jump was banked while flying");
+
+        // **The control: both work once the wings are gone.** Without it this
+        // test passes against a build where JUMP and the jetpack never work.
+        let slot = wings_slot(&w);
+        assert!(w.drop_item(0, slot), "the wings would not drop");
+        aloft(&mut w);
+        fly(&mut w, button::JUMP, 60);
+        let p = w.player(0).expect("ana");
+        assert!(
+            p.jetpack.active,
+            "the jetpack did not engage after the wings came off"
+        );
+        assert!(
+            p.jetpack.fuel < crate::constants::JETPACK_MAX_FUEL,
+            "the jetpack reported active without burning anything"
+        );
+    }
+
+    /// **Dropping them ends the flight**, through the only path a player has.
+    #[test]
+    fn dropping_the_wings_ends_the_flight() {
+        let mut w = world();
+        give(&mut w, 0, UNICORN_WINGS, 1);
+        let start = aloft(&mut w);
+        let flying = fly(&mut w, 0, 30);
+        assert!(flying < start, "the fixture never got off the ground");
+
+        let slot = wings_slot(&w);
+        assert!(w.drop_item(0, slot), "the wings would not drop");
+        let before = w.player(0).expect("ana").body.pos.y;
+        let after = fly(&mut w, 0, 30);
+        assert!(
+            after > before,
+            "the player kept flying after dropping the wings: {before} -> {after}"
+        );
+    }
+
+    /// Boots and wings together, **settled rather than discovered**.
+    ///
+    /// Wings refuse the jump, so the boots' launch multiplier is never asked
+    /// for; their speed multiplier still applies, so a player wearing both flies
+    /// sideways faster. Asserted because "holding both is a state somebody will
+    /// reach", and an unstated interaction is one that gets rediscovered as a
+    /// bug report.
+    #[test]
+    fn wearing_both_flies_at_the_boots_horizontal_speed_and_still_cannot_jump() {
+        let mut w = world();
+        give(&mut w, 0, UNICORN_WINGS, 1);
+        give(&mut w, 0, IRONMAN_BOOTS, 1);
+        aloft(&mut w);
+        // **Short enough not to reach the ceiling.** At `WINGS_FLY_SPEED` the
+        // climb covers `speed * ticks * SIM_DT` px, and `aloft` starts a quarter
+        // of the map down — a longer run ends against the top of the world,
+        // where `clamp_to_world` zeroes `vel.y` and the assertion below reads
+        // "the wings stopped" for a fixture that simply arrived.
+        fly(&mut w, button::RIGHT | button::JUMP, 30);
+        let p = w.player(0).expect("ana");
+        assert!(
+            p.body.pos.y > 0.0,
+            "the fixture reached the top of the world, so vel.y says nothing"
+        );
+        assert_eq!(
+            p.body.vel.y, -WINGS_FLY_SPEED,
+            "the boots' jump got through while the wings were held"
+        );
+        assert!(
+            p.body.vel.x > crate::constants::WALK_SPEED,
+            "the boots' speed did not apply in the air: {} px/s",
+            p.body.vel.x
+        );
+    }
+
+    /// Wings are a **blanket fall-damage immunity, by construction rather than
+    /// by an exemption** — you cannot arrive faster than you can fly, and
+    /// `WINGS_FLY_SPEED < FALL_SAFE_SPEED` is asserted at the constant.
+    ///
+    /// Stated as a test because T21.02's fall rules are one file over and the
+    /// next reader should not have to derive this.
+    #[test]
+    fn a_winged_landing_never_costs_anything() {
+        let mut w = world();
+        give(&mut w, 0, UNICORN_WINGS, 1);
+        aloft(&mut w);
+        let before = w.player(0).expect("ana").health;
+        // Straight down until something stops them.
+        for t in 0..600u32 {
+            w.queue_input(0, Input::new(t + 1, button::DOWN, 0));
+            w.step(SIM_DT);
+            if w.player(0).expect("ana").body.grounded {
+                break;
+            }
+        }
+        let p = w.player(0).expect("ana");
+        assert!(
+            p.body.grounded,
+            "the winged descent never reached the ground"
+        );
+        assert_eq!(p.health, before, "a winged landing cost health");
+        let _ = PLAYER_H;
+    }
+}

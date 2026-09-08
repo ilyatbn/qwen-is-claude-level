@@ -252,6 +252,24 @@ const ART: Record<string, (c: Ctx) => void> = {
     c.fillStyle = '#8a1f18'
     c.fillRect(3, 7, 9, 1) // lace band
   },
+  item_unicorn_wings: (c) => {
+    // Two swept wings meeting at a stem — the only outline here that is wider
+    // than it is tall and split down the middle, which is what makes it
+    // readable beside the boots' slab at 16 px.
+    c.fillStyle = '#f2eef8'
+    for (const dir of [-1, 1]) {
+      c.beginPath()
+      c.moveTo(8, 12)
+      c.lineTo(8 + dir * 7, 4)
+      c.lineTo(8 + dir * 6, 11)
+      c.closePath()
+      c.fill()
+    }
+    c.fillStyle = '#c48ce0'
+    c.fillRect(7, 6, 2, 7) // the stem between them
+    c.fillStyle = '#7ad0f0'
+    c.fillRect(6, 3, 4, 2) // a bright crest, so it is not a white blob
+  },
 }
 
 /** Sprite keys this module can draw. The check asserts against the registry. */

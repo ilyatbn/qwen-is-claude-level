@@ -1841,6 +1841,10 @@ mod tests {
         /// What the snapshot actually carried, so a test can assert the wire
         /// truncated rather than assume it (T20.21).
         wire_health: f32,
+        /// The vertical pair, for T21.03: flight is a *y* claim, and the two
+        /// sides have to agree on it for the same reason they must on x.
+        server_y: f32,
+        client_y: f32,
     }
 
     /// A quarter-second of walking, run on **the server** and on the client
@@ -1852,21 +1856,26 @@ mod tests {
     /// mirror forever, including on the day `apply_inputs` stops passing
     /// `speed_multiplier()`.
     fn walk_both_sides(health: f32, buttons: u8) -> WalkOutcome {
-        walk_both_sides_wearing(health, buttons, false)
+        walk_both_sides_wearing(health, buttons, None)
     }
 
-    /// The same run, optionally in T21.02's ironman boots.
+    /// The same run, optionally carrying one of M21's passive items.
     ///
-    /// **The boots case reuses this fixture rather than getting one of its own**
-    /// — the whole value here is that the mirror is fed through
+    /// **Every case reuses this fixture rather than getting one of its own** —
+    /// the value here is that the mirror is fed through
     /// `encode_snapshot`/`decode_snapshot` and `set_player_state`, and a second
     /// copy would be a second chance to skip one of them.
-    fn walk_both_sides_wearing(health: f32, buttons: u8, boots: bool) -> WalkOutcome {
+    ///
+    /// The item is granted **after** the settle loop, deliberately: T21.03's
+    /// wings fly, so a player wearing them at spawn never lands and the settle
+    /// assertion below would be measuring the item rather than the shelf.
+    fn walk_both_sides_wearing(
+        health: f32,
+        buttons: u8,
+        item: Option<game_core::items::registry::ItemId>,
+    ) -> WalkOutcome {
         let mut w = game_core::world::World::new(4242, MapScale::Small);
         w.add_player(1, 0, String::new());
-        if boots {
-            game_core::world::give(&mut w, 1, game_core::items::registry::IRONMAN_BOOTS, 1);
-        }
         let (stand_x, stand_y) = build_shelf(&mut w);
         {
             let p = w.player_mut(1).expect("seated");
@@ -1888,6 +1897,9 @@ mod tests {
             }
         }
         assert!(landed, "the server player never landed on the shelf");
+        if let Some(id) = item {
+            game_core::world::give(&mut w, 1, id, 1);
+        }
 
         let mut core = GameCore::new();
         assert!(
@@ -1955,7 +1967,52 @@ mod tests {
             client_vx: c[2],
             server_health: sp.health,
             wire_health,
+            server_y: sp.body.pos.y,
+            client_y: c[1],
         }
+    }
+
+    /// The client mirror must predict a **flying** player where the server puts
+    /// them (T21.03).
+    ///
+    /// The same rule as T20.19 and T21.02, on the other axis. `apply_input`
+    /// turns gravity off, drives `vel.y` to `WINGS_FLY_SPEED` and refuses the
+    /// jump, all out of `MoveMods::flying` — which the mirror can only know from
+    /// the move-mod byte. Without it the mirror runs a **falling** body while
+    /// the server runs a climbing one, and the two separate at
+    /// `2 * WINGS_FLY_SPEED` plus gravity.
+    ///
+    /// No buttons at all: *"you just fly constantly"* is the claim, so the
+    /// fixture presses nothing and the flight has to come from the item.
+    #[test]
+    fn the_client_predicts_a_flying_player_where_the_server_puts_them() {
+        let bare = walk_both_sides_wearing(BASE_HEALTH, 0, None);
+        let winged = walk_both_sides_wearing(
+            BASE_HEALTH,
+            0,
+            Some(game_core::items::registry::UNICORN_WINGS),
+        );
+
+        // The control: the wings were on, and they lifted the server's player
+        // off a shelf the unwinged control stayed on. Without it the agreement
+        // below is satisfied by wings that do nothing at all.
+        assert!(
+            winged.server_y < bare.server_y - 1.0,
+            "the winged server run did not rise: {} against an unwinged {}",
+            winged.server_y,
+            bare.server_y
+        );
+
+        // The claim.
+        assert!(
+            (winged.server_y - winged.client_y).abs() <= RECONCILE_EPSILON_PX,
+            "the mirror predicted a flying player at y {} where the server put \
+             them at {} — {} px apart, against an epsilon of \
+             {RECONCILE_EPSILON_PX}",
+            winged.client_y,
+            winged.server_y,
+            (winged.server_y - winged.client_y).abs()
+        );
     }
 
     /// The client mirror must predict a **booted** player where the server puts
@@ -1979,8 +2036,12 @@ mod tests {
     #[test]
     fn the_client_predicts_a_booted_player_where_the_server_puts_them() {
         let right = game_core::player::input::button::RIGHT;
-        let bare = walk_both_sides_wearing(BASE_HEALTH, right, false);
-        let booted = walk_both_sides_wearing(BASE_HEALTH, right, true);
+        let bare = walk_both_sides_wearing(BASE_HEALTH, right, None);
+        let booted = walk_both_sides_wearing(
+            BASE_HEALTH,
+            right,
+            Some(game_core::items::registry::IRONMAN_BOOTS),
+        );
 
         // The control: the boots were on, and they did something.
         assert!(

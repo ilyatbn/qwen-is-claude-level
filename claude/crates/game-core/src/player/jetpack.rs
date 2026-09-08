@@ -165,11 +165,38 @@ pub fn apply_thrust(body: &mut Body, input: &Input, dt: f32) {
 /// `JETPACK_GRAVITY_SCALE` rather than 0 is deliberate: holding Space with no WASD
 /// gives a slow controlled descent rather than a dead hover, so running out of fuel
 /// is a gradual loss of lift instead of a sudden drop.
-pub fn gravity_scale(state: &JetpackState) -> f32 {
-    if state.active {
+pub fn gravity_scale(state: &JetpackState, flying: bool) -> f32 {
+    if flying {
+        // **T21.03's wings: no gravity at all.** The third regime lives here
+        // rather than in a branch at the call site, because "which gravity is
+        // this player under" must have exactly one answer — a second place to
+        // decide it is how a player ends up jetpack-scaled *and* flying.
+        //
+        // 0.0 rather than a small number: `apply_flight` assigns the vertical
+        // velocity outright, so any residual gravity would be overwritten on the
+        // very next tick and would only show up as a discrepancy between the
+        // server and a client that rounded differently.
+        0.0
+    } else if state.active {
         JETPACK_GRAVITY_SCALE
     } else {
         1.0
+    }
+}
+
+/// Refuse the jetpack for this tick (T21.03).
+///
+/// **Not `state.active = false` at the call site.** The jetpack owns its own
+/// state machine — `locked_out`, `idle_ticks`, the refill delay — and a caller
+/// that reached in to clear one field would be a second author of that machine.
+/// Refusing here keeps the fuel accounting honest: a winged player is not
+/// burning, so their tank refills exactly as it does for anyone not thrusting.
+pub fn refuse(state: &mut JetpackState) {
+    state.active = false;
+    state.idle_ticks = state.idle_ticks.saturating_add(1);
+    state.ticks_since_jump = state.ticks_since_jump.saturating_add(1);
+    if state.idle_ticks > REFILL_DELAY_TICKS {
+        state.fuel = (state.fuel + JETPACK_REFILL * crate::constants::SIM_DT).min(JETPACK_MAX_FUEL);
     }
 }
 
@@ -490,7 +517,7 @@ mod tests {
         };
         for _ in 0..30 {
             apply_thrust(&mut b, &input_with(UP), SIM_DT);
-            b.vel.y += GRAVITY * gravity_scale(&s) * SIM_DT;
+            b.vel.y += GRAVITY * gravity_scale(&s, false) * SIM_DT;
             b.pos.y += b.vel.y * SIM_DT;
         }
         assert!(b.pos.y < 0.0, "did not climb: y = {}", b.pos.y);
@@ -507,7 +534,7 @@ mod tests {
         };
         for _ in 0..ticks {
             apply_thrust(&mut powered, &input_with(JUMP), SIM_DT);
-            powered.vel.y += GRAVITY * gravity_scale(&s) * SIM_DT;
+            powered.vel.y += GRAVITY * gravity_scale(&s, false) * SIM_DT;
             powered.pos.y += powered.vel.y * SIM_DT;
         }
 
@@ -529,8 +556,8 @@ mod tests {
     #[test]
     fn gravity_scale_switches_with_active() {
         let mut s = JetpackState::default();
-        assert_eq!(gravity_scale(&s), 1.0);
+        assert_eq!(gravity_scale(&s, false), 1.0);
         s.active = true;
-        assert_eq!(gravity_scale(&s), JETPACK_GRAVITY_SCALE);
+        assert_eq!(gravity_scale(&s, false), JETPACK_GRAVITY_SCALE);
     }
 }

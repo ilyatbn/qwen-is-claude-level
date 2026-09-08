@@ -39,6 +39,8 @@ pub const STARTING_KIT: [ItemId; 1] = [crate::items::registry::SHOVEL];
 
 /// Snapshot bit for T21.02's ironman boots.
 pub const MOVE_MOD_BOOTS: u8 = 1 << 0;
+/// Snapshot bit for T21.03's unicorn wings.
+pub const MOVE_MOD_WINGS: u8 = 1 << 1;
 
 /// The wire's bit assignment for the passives `apply_input` reads (T21.02).
 ///
@@ -51,7 +53,10 @@ pub const MOVE_MOD_BOOTS: u8 = 1 << 0;
 ///
 /// Encode (`move_mod_bits`) and decode (`set_move_mod_bits`) both walk this one
 /// table, so they cannot disagree about a bit.
-const MOVE_MOD_BITS: &[(u8, UtilityId)] = &[(MOVE_MOD_BOOTS, UtilityId::IronmanBoots)];
+const MOVE_MOD_BITS: &[(u8, UtilityId)] = &[
+    (MOVE_MOD_BOOTS, UtilityId::IronmanBoots),
+    (MOVE_MOD_WINGS, UtilityId::UnicornWings),
+];
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DeathCause {
@@ -436,6 +441,17 @@ impl PlayerState {
         MoveMods {
             speed: self.speed_multiplier(),
             jump: self.jump_multiplier(),
+            // T21.03. **Carrying them is flying** — there is no toggle, and
+            // `use_item` refuses the whole `Utility` variant, so dropping them
+            // is the only off switch (T20.09's `World::drop_item`).
+            //
+            // **Boots and wings together, settled rather than discovered.**
+            // Wings refuse the jump outright, so `jump` above is simply unused
+            // while this is true — the boots' launch multiplier is not
+            // overridden, it never gets asked. `speed` still applies, so a
+            // player wearing both flies sideways at twice the rate. That is the
+            // only reading under which neither item silently stops working.
+            flying: self.holds_utility(UtilityId::UnicornWings),
         }
     }
 

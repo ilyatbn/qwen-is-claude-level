@@ -94,6 +94,8 @@ pub enum UtilityId {
     VampireFangs,
     /// T21.02. Passive like the rest: held, never used, never selected.
     IronmanBoots,
+    /// T21.03. **Dropping is the only off switch** — see `WINGS_FLY_SPEED`.
+    UnicornWings,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -157,6 +159,7 @@ pub const SHOVEL: ItemId = 24;
 /// `ITEMS.get(id as usize)`, so a middle insertion remaps every id above it.
 pub const VAMPIRE_FANGS: ItemId = 25;
 pub const IRONMAN_BOOTS: ItemId = 26;
+pub const UNICORN_WINGS: ItemId = 27;
 pub const BAZOOKA: ItemId = 3;
 pub const GRENADE: ItemId = 4;
 pub const SMG: ItemId = 5;
@@ -547,6 +550,20 @@ pub static ITEMS: &[ItemDef] = &[
         spawn_weight: 6,
         crate_weight: 8,
         buried_weight: 10,
+    },
+    // T21.03. Rarer than the other two: constant flight with no fuel is the
+    // strongest movement item in the game, and a round where several players
+    // are airborne is a different game from the one the maps were built for.
+    ItemDef {
+        id: UNICORN_WINGS,
+        key: "unicorn_wings",
+        name: "Unicorn Wings",
+        kind: ItemKind::Utility(UtilityId::UnicornWings),
+        max_stack: 1,
+        sprite: "item_unicorn_wings",
+        spawn_weight: 3,
+        crate_weight: 5,
+        buried_weight: 6,
     },
 ];
 
