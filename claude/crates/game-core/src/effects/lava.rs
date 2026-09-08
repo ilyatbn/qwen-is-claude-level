@@ -630,6 +630,47 @@ mod t19_24_client_side_vents {
         }
     }
 
+    /// **The fact the client's clock is built on**: the server re-bases every
+    /// vent's timers to the moment the burst goes *active*, not to when it was
+    /// constructed.
+    ///
+    /// `LavaBurst::new` runs at the telegraph and sets `jet_until` from the
+    /// `now` it was handed; `tick` then overwrites it the first time `active` is
+    /// true. So a client clock started at `effect_start` runs `EFFECT_TELEGRAPH`
+    /// ahead — a whole phase, against 3 s phases — and reports jetting while the
+    /// ground is still only cracking. `LavaClock.activate` exists because of
+    /// this, and this test is what tells the next person if the re-basing ever
+    /// stops happening.
+    #[test]
+    fn the_server_re_bases_its_vent_clocks_when_the_burst_opens() {
+        let map = generate(4242, MapScale::Small);
+        let constructed_at = 100.0;
+        let mut burst = LavaBurst::new(EFFECT_SEED, &map, constructed_at);
+        let before: Vec<f32> = burst.vents().iter().map(|v| v.jet_until).collect();
+        assert!(!before.is_empty(), "no vents — nothing is being pinned");
+        for j in &before {
+            assert!(
+                (j - (constructed_at + LAVA_JET_DURATION)).abs() < 1e-3,
+                "construction should time from its own `now`"
+            );
+        }
+
+        // Opened a telegraph later, which is when the server first ticks it
+        // active.
+        let opened_at = constructed_at + crate::constants::EFFECT_TELEGRAPH;
+        let mut m2 = map.clone();
+        let mut targets: Vec<crate::weapons::explode::HitTarget> = Vec::new();
+        burst.tick(&mut m2, &mut targets, true, opened_at, 1.0 / 60.0);
+
+        for v in burst.vents() {
+            assert!(
+                (v.jet_until - (opened_at + LAVA_JET_DURATION)).abs() < 1e-3,
+                "opening should re-base the jet window to the open moment, not the \
+                 construction moment — `LavaClock.activate` depends on it"
+            );
+        }
+    }
+
     /// **What the cross-check does not cover, asserted rather than hoped.**
     ///
     /// The server picks vents from the surface as it was at *generation*;

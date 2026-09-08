@@ -126,6 +126,11 @@ const CHECKS = [
   // needs a real server, because a networked client learns that fog exists from
   // an `effect_start` event and the sandbox path never sends one.
   { name: 'fog-visible', file: 'scripts/checks/fog-visible.mjs', standalone: true },
+  // T19.24. Standalone and networked: the claim is that a lava vent lights the
+  // ground **in a real match**, and the sandbox — which already did — proves the
+  // half that was never broken. It waits for night, which the server only
+  // reaches through `round_time`, so it is one of the slower members here.
+  { name: 'lava-lights', file: 'scripts/checks/lava-lights.mjs', standalone: true },
   // §C3: the round ends and you are told. Standalone — it drives a real phase
   // machine on a shortened ROUND_SECONDS, and there is no sandbox path to `Ended`.
   { name: 'round-end', file: 'scripts/checks/round-end.mjs', standalone: true },

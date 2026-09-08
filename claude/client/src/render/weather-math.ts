@@ -341,11 +341,20 @@ export class LavaClock {
   /**
    * An `effect_start` arrived. Anything that is not a lava burst is ignored.
    *
+   * **Records the seed and starts no clock.** `effect_start` fires at the
+   * *telegraph*, and `lava.rs` does not open its vents then: `tick` returns
+   * early while `active` is false, and re-bases every `jet_until` to the moment
+   * `opened` flips. So a clock started here runs `EFFECT_TELEGRAPH` (3 s) ahead
+   * of the server's — which, against 3 s phases, means the client reports
+   * *jetting* through the whole telegraph and *burning* through the whole jet.
+   * A phase out, in the direction that draws fire before there is any. The
+   * origin comes from `activate` instead.
+   *
    * `seed` is the decimal string `effect_start` carries — a `u64`, which JSON
    * has no type for and `wasm_bindgen` has no parameter for, hence the split
    * into two 32-bit halves here rather than at each call site.
    */
-  start(id: number, kind: string, roundTime: number, seed: string): void {
+  start(id: number, kind: string, seed: string): void {
     if (kind !== 'LavaBurst') return
     let s: bigint
     try {
@@ -356,9 +365,18 @@ export class LavaClock {
       return
     }
     this.id = id
-    this.startedAt = roundTime
+    this.startedAt = null
     this.lo = Number(s & 0xffffffffn)
     this.hi = Number((s >> 32n) & 0xffffffffn)
+  }
+
+  /**
+   * An `effect_phase` arrived. Only `active` starts the clock, and only for this
+   * burst — the moment `lava.rs` opens its vents and re-bases their timers.
+   */
+  activate(id: number, phase: string, roundTime: number): void {
+    if (id !== this.id || phase !== 'active') return
+    this.startedAt = roundTime
   }
 
   /** An `effect_end` arrived. Only this burst's own end clears it. */
@@ -386,9 +404,14 @@ export class LavaClock {
     return { lo: this.lo, hi: this.hi, elapsed: roundTime - this.startedAt }
   }
 
-  /** For a debug handle: is a burst running at all? */
+  /** For a debug handle: are this burst's vents open? */
   get running(): boolean {
     return this.startedAt !== null
+  }
+
+  /** For a debug handle: is a burst known but still telegraphing? */
+  get telegraphing(): boolean {
+    return this.id !== -1 && this.startedAt === null
   }
 }
 

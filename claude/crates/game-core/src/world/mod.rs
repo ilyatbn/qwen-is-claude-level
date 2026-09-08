@@ -2338,9 +2338,40 @@ impl World {
     #[doc(hidden)]
     pub fn force_effect(&mut self, kind: EffectKind, now: f32) -> u32 {
         let id = self.effects.force(kind, now);
-        let seed = self.seed ^ (id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        self.install_effect(id, kind, seed, now);
+        self.install_effect(id, kind, self.effect_seed(id), now);
         id
+    }
+
+    /// Test seam: the vents the *installed* lava burst is using.
+    ///
+    /// Exists so a test can compare what the server simulates against what it
+    /// broadcast, which is the only way to catch a seed that disagrees with
+    /// itself (T19.24).
+    #[doc(hidden)]
+    pub fn lava_vent_positions_for_test(&self) -> Vec<(i32, i32)> {
+        self.lava
+            .as_ref()
+            .map(|(_, l)| {
+                l.vents()
+                    .iter()
+                    .map(|v| (v.pos.x as i32, v.pos.y as i32))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The seed a forced effect is installed with.
+    ///
+    /// **One derivation, two readers** (T19.24). `force_effect` installs with
+    /// this, and `WeatherMode::Always` has to *broadcast* it — those were two
+    /// expressions of one number, and the second was the literal `0`. Nothing
+    /// read the seed on the client until lava vents were derived from it, so the
+    /// mismatch was inert; the moment it was read, `WEATHER=lava` would have
+    /// simulated one set of vents and told every client about another. A private
+    /// method rather than the expression twice, because a number that must agree
+    /// in two places should exist in one.
+    fn effect_seed(&self, id: u32) -> u64 {
+        self.seed ^ (id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
     }
 
     fn step_weather(&mut self, now: f32, dt: f32) {
@@ -2368,7 +2399,9 @@ impl World {
                     tick,
                     id,
                     kind,
-                    seed: 0,
+                    // **The seed it was actually installed with**, not `0`
+                    // (T19.24). See `effect_seed`.
+                    seed: self.effect_seed(id),
                     duration: crate::effects::scheduler::active_duration(kind),
                 });
             }
@@ -7634,5 +7667,65 @@ mod fall_damage {
             p.health -= 1.0;
         }
         assert_ne!(a.state_hash(), b.state_hash());
+    }
+}
+
+#[cfg(test)]
+mod t19_24_forced_effect_seed {
+    use super::*;
+    use crate::effects::lava::LavaBurst;
+
+    /// `WEATHER=lava` must broadcast the seed it is actually simulating.
+    ///
+    /// **This was `seed: 0` while the effect installed with
+    /// `self.seed ^ id * K`.** It was inert for as long as nothing on the client
+    /// read the seed; T19.24 makes the client derive vent positions from it, so
+    /// the dev switch would have simulated one set of vents and told every client
+    /// about a different one — fire drawn where there is none, and none where the
+    /// ground is opening. Exactly the failure the cross-checks exist to prevent,
+    /// arriving through the one path no cross-check covered.
+    ///
+    /// Asserted through the vents rather than by comparing two `u64`s: what has
+    /// to agree is *where the ground opens*, and a test on the number alone would
+    /// pass a build where the derivation was right and the install was wrong.
+    #[test]
+    fn always_lava_broadcasts_the_seed_it_simulates() {
+        let mut w = World::new(4242, MapScale::Small);
+        w.weather_mode = WeatherMode::Always(EffectKind::LavaBurst);
+        w.set_phase(RoundPhase::Playing);
+
+        let mut announced: Option<u64> = None;
+        for _ in 0..8 {
+            w.step(crate::constants::SIM_DT);
+            for e in w.drain_events() {
+                if let GameEvent::EffectStart { kind, seed, .. } = e {
+                    if kind == EffectKind::LavaBurst {
+                        announced = Some(seed);
+                    }
+                }
+            }
+            if announced.is_some() {
+                break;
+            }
+        }
+        let seed = announced.expect("Always(LavaBurst) never announced a start");
+
+        let simulated = w.lava_vent_positions_for_test();
+        assert!(
+            !simulated.is_empty(),
+            "no vents were installed — the comparison below would be two empty lists"
+        );
+
+        // What a client does with the number it was given.
+        let derived: Vec<(i32, i32)> = LavaBurst::new(seed, &w.map, 0.0)
+            .vents()
+            .iter()
+            .map(|v| (v.pos.x as i32, v.pos.y as i32))
+            .collect();
+
+        assert_eq!(
+            derived, simulated,
+            "the broadcast seed derives different vents than the server is simulating"
+        );
     }
 }

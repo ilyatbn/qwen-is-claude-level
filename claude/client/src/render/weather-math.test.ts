@@ -316,7 +316,14 @@ describe("LavaClock — the networked client's half of §A3's ground fire (T19.2
     expect(l.query(0)).toBeNull()
     expect(l.query(1000)).toBeNull()
 
-    l.start(7, 'LavaBurst', 100, SEED)
+    l.start(7, 'LavaBurst', SEED)
+    // **Still nothing.** `effect_start` is the telegraph; `lava.rs` opens no
+    // vent until it goes active and re-bases their timers to that instant.
+    expect(l.running).toBe(false)
+    expect(l.telegraphing).toBe(true)
+    expect(l.query(100)).toBeNull()
+
+    l.activate(7, 'active', 100)
     expect(l.running).toBe(true)
     // Round time in, elapsed out: holding the origin is the job.
     expect(l.query(100)).toEqual({ lo: 3, hi: 1, elapsed: 0 })
@@ -325,10 +332,14 @@ describe("LavaClock — the networked client's half of §A3's ground fire (T19.2
 
   it('ignores every effect that is not a lava burst', () => {
     const l = new LavaClock()
-    l.start(1, 'ToxicRain', 0, SEED)
-    l.start(2, 'MeteorShower', 0, SEED)
-    l.start(3, 'HeavyFog', 0, SEED)
+    l.start(1, 'ToxicRain', SEED)
+    l.start(2, 'MeteorShower', SEED)
+    l.start(3, 'HeavyFog', SEED)
+    l.activate(1, 'active', 0)
+    l.activate(2, 'active', 0)
+    l.activate(3, 'active', 0)
     expect(l.running).toBe(false)
+    expect(l.telegraphing).toBe(false)
     expect(l.query(5)).toBeNull()
   })
 
@@ -337,7 +348,8 @@ describe("LavaClock — the networked client's half of §A3's ground fire (T19.2
     // stops looking foggy, but vents that stop being reported stop being *drawn*
     // and stop lighting the ground — in the phase that is damaging you.
     const l = new LavaClock()
-    l.start(7, 'LavaBurst', 0, SEED)
+    l.start(7, 'LavaBurst', SEED)
+    l.activate(7, 'active', 0)
     l.end(8) // somebody else's effect
     expect(l.running).toBe(true)
     expect(l.query(2)).toEqual({ lo: 3, hi: 1, elapsed: 2 })
@@ -351,15 +363,17 @@ describe("LavaClock — the networked client's half of §A3's ground fire (T19.2
     // This runs inside a socket event handler; a throw here kills the round, and
     // a server that changed the wire format is a bug to see, not to crash on.
     const l = new LavaClock()
-    expect(() => l.start(7, 'LavaBurst', 0, 'not-a-number')).not.toThrow()
+    expect(() => l.start(7, 'LavaBurst', 'not-a-number')).not.toThrow()
     expect(l.running).toBe(false)
+    expect(l.telegraphing).toBe(false)
   })
 
   it('clear() discards the round whatever is running', () => {
     // `resetForNewRound`'s caller. A burst left running would open vents in the
     // *next* match that the server never announced.
     const l = new LavaClock()
-    l.start(7, 'LavaBurst', 0, SEED)
+    l.start(7, 'LavaBurst', SEED)
+    l.activate(7, 'active', 0)
     l.clear()
     expect(l.running).toBe(false)
     expect(l.query(1)).toBeNull()

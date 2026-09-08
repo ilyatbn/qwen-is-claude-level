@@ -876,9 +876,13 @@ export class GameScene extends Phaser.Scene {
           // T19.24: same three events, same origin. Lava differs from fog in
           // needing the *seed* as well as the clock — its presentation is a set
           // of places, and the server derived them from this number.
-          this.lava.start(id, rec.kind, this.serverRoundTime, String(p['seed'] ?? '0'))
+          this.lava.start(id, rec.kind, String(p['seed'] ?? '0'))
         } else if (ev === 'effect_phase') {
           this.topHud?.setEffectPhase(id, String(p['phase'] ?? 'active') as EffectPhase)
+          // T19.24: the vents open here, not at `effect_start`. `lava.rs`
+          // re-bases every `jet_until` to the moment it goes active, so this is
+          // the only event that names the origin the server is using.
+          this.lava.activate(id, String(p['phase'] ?? ''), this.serverRoundTime)
         } else {
           this.topHud?.endEffect(id)
           // Only *this* fog's end clears it — `FogClock` owns that rule.
@@ -2756,6 +2760,19 @@ export class GameScene extends Phaser.Scene {
             effects: self.topHud?.effects() ?? [],
           },
           darkness: self.serverDarkness,
+          // T19.24. **World coordinates, so a check can find what it is
+          // photographing.** The client learns vent positions only by deriving
+          // them from the effect seed, so without this a pixel check would have
+          // to hardcode a coordinate that rots the next time the map seed moves —
+          // and would then sample empty ground and pass for the wrong reason.
+          // `no-dev-surface.mjs` guards this whole object out of a production
+          // build.
+          vents: self.vents.map((v) => ({
+            x: v.x,
+            y: v.y,
+            jetting: v.jetting,
+            burning: v.burning,
+          })),
           health: self.health,
           scores: [...self.scores.entries()].map(([id, s]) => ({
             id,

@@ -5740,3 +5740,17 @@ no local sim. Cross-check goes through the real `load_mask` + `lava_vents`: same
 `LavaClock` mirrors `FogClock` (id rule, malformed seed, clear-on-reset); `ventLights` now shared
 with `SandboxScene`, which had those five numbers to itself. 887/887 client, 20/20 wasm, 879 core.
 **Pixel proof outstanding** — the browser half, and the only thing between this and done.
+
+## T19.24 — the pixel proof my first version passed for the wrong reason
+
+Gate green, `lava-lights` **107 s** (the wait for night: no time-of-day override exists server-side,
+so it rides `round_time` to `NIGHT_START`). **The first check passed and so did its falsification** —
+deleting `ventLights` moved the number *up*, 9.5 → 28.1, because it was sampling the mouth and
+embers `drawFire` paints regardless, which contrast harder unlit. Re-aimed at ground beside the vent
+(inside `JET_LIGHT_R`, clear of the sprite): **lights on 22.4, lights off 1.1 and correctly red**,
+control 0.4. The mouth is still sampled and printed, never asserted, because it moves the *opposite*
+way — if the two converge the check has drifted back onto the sprite. Two more defects found on the
+way, both live only because my change made the seed readable: `WeatherMode::Always` broadcast
+`seed: 0` while simulating `self.seed ^ id*K` (one derivation now, `effect_seed`, falsified by
+restoring the literal), and `LavaClock` started at `effect_start` when `lava.rs` re-bases every
+`jet_until` at *activation* — a whole phase out, drawing fire during the telegraph.
