@@ -198,3 +198,31 @@ version's note must name every change it covers.** Version 6 carries two — the
 retune above, and a movement change from flooring health before the speed multiplier — and a
 note that named only the first would send the next person debugging a divergence looking in
 the wrong place.
+
+
+## G9 — Match traces are recorded by default, to a mount that is actually written to
+
+**Decided 2026-09-08.** Recording is on (`RECORD_REPLAY` defaults to `1` in compose) and the
+directory is **`recordings`**, not `replays`, on both sides of the mount.
+
+Wanted for two reasons the coordinator named: **bug reproduction** — a recorded round replays
+exactly, so "it broke two minutes in" becomes an observation rather than a reproduction attempt
+— and **bot training**, since a trace is a record of how a real player moved and fired. A viewer
+is explicitly *not* part of this; see T21.10.
+
+**The bug this fixed, because the shape matters more than the rename.** `docker-compose.yml`
+mounted `../replays:/replays` and `Dockerfile.server` created and chowned `/replays`. Both were
+right and **nothing was ever written there**: `replay_dir` defaults to a *relative* `replays`,
+the container's `WORKDIR` is `/home/game`, and `REPLAY_DIR` was never set — so every trace was
+written to `/home/game/replays` and died with the container. `docs/62` asserted the opposite in
+prose: *"the bind mount is what makes `RECORD_REPLAY=1` useful… without it, the files would die
+with the container."* The mount was there and they died anyway.
+
+**A bind mount is not a destination until something points at it**, and two correct halves that
+never meet look exactly like a working feature. `REPLAY_DIR` is now set explicitly to
+`/recordings` in compose, beside the mount, with a comment saying they must match.
+
+**Still open, and deliberately not decided here:** retention and size. Nobody has measured bytes
+per round at the shipping configuration, nothing deletes old traces, and a recording contains
+player names. A server that fills its disk is a worse outage than no recordings. That is T21.10
+part A.

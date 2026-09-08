@@ -186,7 +186,7 @@ impl Default for Config {
             lobby_bot_timeout: LOBBY_BOT_TIMEOUT,
             fixed_seed: None,
             record_replay: false,
-            replay_dir: "replays".to_string(),
+            replay_dir: "recordings".to_string(),
             debug_dump: false,
             bot_count: BOT_COUNT_DEFAULT,
             // §F7's defaults: bots on, no kit.

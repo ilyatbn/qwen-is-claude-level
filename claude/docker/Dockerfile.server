@@ -49,7 +49,11 @@ RUN apt-get update \
 
 COPY --from=builder /app/target/release/game-server /usr/local/bin/game-server
 
-RUN mkdir -p /replays && chown game:game /replays
+# The recordings mount. Must match `REPLAY_DIR` in docker-compose.yml — this
+# directory existing is not enough on its own, and for a while it was all there
+# was: the server wrote to a relative `replays` under WORKDIR and every trace
+# died with the container.
+RUN mkdir -p /recordings && chown game:game /recordings
 USER game
 WORKDIR /home/game
 

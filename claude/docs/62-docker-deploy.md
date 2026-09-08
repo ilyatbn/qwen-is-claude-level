@@ -88,7 +88,7 @@ services:
       ROUND_SECONDS: ${ROUND_SECONDS:-240}
       FIXED_SEED: ${FIXED_SEED:-}
       RECORD_REPLAY: ${RECORD_REPLAY:-0}
-    volumes: ["../replays:/replays"]
+    volumes: ["../recordings:/recordings"]   # renamed, and `REPLAY_DIR` added — see `docs/76` §G9
     healthcheck: { test: ["CMD","curl","-f","http://localhost:3000/healthz"], interval: 10s }
     stop_grace_period: 10s
 
@@ -104,8 +104,13 @@ services:
 Run: `docker compose -f docker/docker-compose.yml up --build`, then
 `http://localhost:8080`.
 
-The `replays` bind mount is what makes `RECORD_REPLAY=1` useful in Docker — without
+The `recordings` bind mount is what makes `RECORD_REPLAY=1` useful in Docker — without
 it, the files a user is asked to send would die with the container.
+
+> **This paragraph described a fix that was not wired — see `docs/76` §G9.** The mount
+> existed and the traces died anyway: the server wrote to a *relative* `replays` under the
+> container's `WORKDIR /home/game`, and `REPLAY_DIR` was never set, so nothing ever reached
+> the mount. **A bind mount is not a destination until something points at it.**
 
 ## 5. Environment
 
@@ -165,8 +170,8 @@ rounds.
 - The client at `:8080` connects through the nginx proxy and the transport is
   `websocket`, **not** `polling` — check `socket.io` transport in the browser
   console, because the polling fallback works well enough to hide a broken proxy.
-- `docker compose down` produces a clean shutdown, and a replay file exists in
-  `./replays` when `RECORD_REPLAY=1`.
+- `docker compose down` produces a clean shutdown, and a recording exists in
+  `./recordings` — **on the host**, which is the half that was never checked.
 - Killing the server container while a client is connected shows the reconnect
   overlay rather than a stuck frame.
 - The server image runs as a non-root user (`docker exec ... whoami`).
