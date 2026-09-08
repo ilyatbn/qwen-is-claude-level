@@ -5830,3 +5830,16 @@ generator, and pays energy instead of health when the victim holds one. Ratio, n
 was not enough**: `WEAPON_FLAME` is a `Delivery::Projectile` (§F10) and is what a flamethrower's
 damage is logged as, so `is_flying_ordnance` also excludes `Burst::BurnsOut`. 9 falsifications,
 each red at the named test; 891 + workspace + 887 client green. Gate not yet run — box shared.
+
+## T19.27 — the pinned assertion kept its job; a second one got the job it never had
+
+Two assertions, two jobs, in that order. Assertion one is unchanged (`want = nightOff *
+FLASHLIGHT_FOV_MULT`) and goes first so an implementation break still reports T19.22's exact
+wording. Assertion two is **structural**: `nightOn > nightOff + EPS_PX` — the sentence the feature
+promises, needing no number. Chose it over a basis pin because a basis pin still agrees with a
+scene drawing `FOV_NIGHT` twice, and this was the case that was missed.
+**Both falsified at the live binding site**: `FLASHLIGHT_FOV_MULT = 1.5 -> 1.0` in `constants.rs`
+now reds with `did not widen the night radius at all: 110.0 -> 110.0` (it *passed* before);
+`c.FLASHLIGHT_FOV_MULT -> 1` in `lightmap-math.ts::fovRadius` still reds assertion one with
+`110.0 -> 110.0, not 165.0 (x1.5)`. Sweep: one more live instance, `fog-visible`'s
+FLASHLIGHT_FOG_VEIL_MULT, reported not fixed. Gate 49/49.

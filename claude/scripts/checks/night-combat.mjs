@@ -205,14 +205,54 @@ export default async function ({ page, shot, log }) {
           'radius difference is not attributable to the flashlight',
       )
     }
+    // A float tolerance on a pixel radius, shared by every comparison in this
+    // block. Not a tunable — the radii are whole-ish numbers either side of it.
+    const EPS_PX = 0.5
+
+    // **Assertion one: the implementation against the constant.** This is the
+    // one that reds when the scene stops applying the multiplier — T19.22's
+    // falsification reported `110.0 -> 110.0, not 165.0` here — so it goes first
+    // and keeps both numbers in its message.
     const want = nightOff * k.FLASHLIGHT_FOV_MULT
-    if (Math.abs(nightOn - want) > 0.5) {
+    if (Math.abs(nightOn - want) > EPS_PX) {
       throw new Error(
         `a carried flashlight took the night radius ${nightOff.toFixed(1)} -> ` +
           `${nightOn.toFixed(1)}, not ${want.toFixed(1)} (x${k.FLASHLIGHT_FOV_MULT})`,
       )
     }
-    log(`night radius ${nightOff.toFixed(1)} -> ${nightOn.toFixed(1)} with a flashlight`)
+
+    // **Assertion two: the constant against the feature — T19.27.**
+    //
+    // The line above computes `want` from `FLASHLIGHT_FOV_MULT` and compares it
+    // to a radius the client also computed from `FLASHLIGHT_FOV_MULT`. Both
+    // sides read the same constant, so setting it to 1.0 — switching the
+    // flashlight off — makes the check agree with itself. Measured, exactly
+    // that: it passed, reporting `110.0 -> 110.0`.
+    //
+    // That is `docs/76` §G6 inside a browser check. Pinning is still right, and
+    // it is what assertion one does; what pinning cannot do is notice the
+    // *constant's value* changing, because every side of the comparison moves
+    // with it.
+    //
+    // So: the sentence the feature actually promises a player, which needs no
+    // number and reds the moment the multiplier reaches 1.0. Chosen over a basis
+    // pin on the constant's doc comment because it is the case that was missed,
+    // it is cheaper, and it also covers an implementation that quietly stopped
+    // widening anything — a basis pin would still agree with a scene drawing
+    // `FOV_NIGHT` twice.
+    if (!(nightOn > nightOff + EPS_PX)) {
+      throw new Error(
+        `a carried flashlight did not widen the night radius at all: ` +
+          `${nightOff.toFixed(1)} -> ${nightOn.toFixed(1)} with FLASHLIGHT_FOV_MULT ` +
+          `${k.FLASHLIGHT_FOV_MULT} — a torch that lights no further than no torch is ` +
+          'the feature switched off, and assertion one cannot see it because both ' +
+          'sides of it read the same constant',
+      )
+    }
+    log(
+      `night radius ${nightOff.toFixed(1)} -> ${nightOn.toFixed(1)} with a flashlight ` +
+        `(pinned to x${k.FLASHLIGHT_FOV_MULT}, and strictly wider than without)`,
+    )
 
     // **And nothing by day** — the control that stops "it widens the view" being
     // satisfied by a torch that widens it always. Same bag, same map, only the
@@ -225,7 +265,7 @@ export default async function ({ page, shot, log }) {
       throw new Error(`setTime(30) is not daylight (darkness ${dayDark}) — the control is void`)
     }
     const dayOn = await fovNow()
-    if (Math.abs(dayOn - k.FOV_DAY) > 0.5) {
+    if (Math.abs(dayOn - k.FOV_DAY) > EPS_PX) {
       throw new Error(
         `a flashlight changed the daytime radius: ${dayOn.toFixed(1)} against ` +
           `FOV_DAY ${k.FOV_DAY} — it is meant to do nothing at noon`,
