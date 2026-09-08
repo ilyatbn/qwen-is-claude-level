@@ -434,7 +434,7 @@ independent.
 - [ ] [T19.27](M19/T19.27-night-combat-cannot-see-its-own-constant.md) — `night-combat` computes its expectation from the constant it is testing, so `FLASHLIGHT_FOV_MULT = 1.0` **passes** **(v7)** — `docs/76` §G6's blind spot, found live in a gate check by a falsification that did not fail.
 - [ ] [T19.26](M19/T19.26-the-control-arm-races-the-socket.md) — `reap.rs`'s **control arm** races its own socket: `emit` on a connection that may not be open, 3/3 standalone and dead under a full gate **(v7)** — fourth member of the same family as T19.22 and T19.25.
 - [ ] [T19.25](M19/T19.25-rematch-closing-window.md) — `rematch`'s closing window drives two browsers at once and fails **1 run in 3** on an idle box **(v7)** — its stall control is correct; it reports red where it should report inconclusive.
-- [ ] [T19.22](M19/T19.22-night-combat-sleeps-against-nothing.md) — `night-combat` waits against nothing, seven times — **split from the retired suite-context hypothesis**
+- [x] [T19.22](M19/T19.22-night-combat-sleeps-against-nothing.md) — `night-combat` waits against nothing **(v7)** — recounted at HEAD as **10 bare sleeps against 3 polls**, not the 7/2 booked; now **0 and 11**, each waiting on the effect the next line asserts. Green in **5/5** gates; falsified by breaking the radius path, which reds the assertion and not the wait
 - [ ] [T19.23](M19/T19.23-bullets-visible-window-is-the-screenshot.md) — `bullets-visible`'s window is the screenshot itself — **split from the same**; not the same problem as T19.22
 
 **Order note.** T19.15 and T19.14 were written mid-milestone and are **promoted ahead of

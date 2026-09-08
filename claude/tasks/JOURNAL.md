@@ -5754,3 +5754,17 @@ way, both live only because my change made the seed readable: `WeatherMode::Alwa
 `seed: 0` while simulating `self.seed ^ id*K` (one derivation now, `effect_seed`, falsified by
 restoring the literal), and `LavaClock` started at `effect_start` when `lava.rs` re-bases every
 `jet_until` at *activation* — a whole phase out, drawing fire during the telegraph.
+
+## T19.22 — ten sleeps against nothing, now zero
+
+Recounted before starting, as the task asked: **10 `waitForTimeout` against 3 `waitForFunction`**
+at HEAD, not the booked 7/2. Now **0 against 11**. Every wait polls the thing the *next line*
+asserts — terrain `pending === 0` before a screenshot, `darkness` against `NIGHT_DARKNESS` from
+the shipped constant, the adopted aim angle, `projectiles > 0`, the rendered `fov` moving — and
+each deadline is **swallowed**, so a genuine failure still fails at its own assertion with its own
+numbers rather than as "timed out". The bazooka-cooldown second became an in-page retry until the
+smg produces a round: a shot refused by a cooldown consumes nothing, so retrying is safe.
+Falsified at the live binding site (`hasFlashlight: false` in the radius call): reds with
+*"took the night radius 110.0 -> 110.0, not 165.0"*. 13.6 s, and green in **5/5** gates.
+**Found on the way, booked as T19.27:** the flashlight assertion is `nightOff * FLASHLIGHT_FOV_MULT`
+— pinned to the constant on both sides, so setting that constant to 1.0 passes.

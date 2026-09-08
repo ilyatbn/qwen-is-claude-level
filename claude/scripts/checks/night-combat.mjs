@@ -1,9 +1,29 @@
 /** §A3 at night: gunfire and a rocket lighting the map (§F1 — bullets, not tracers). */
 export default async function ({ page, shot, log }) {
+  // **Every wait here polls the thing it is waiting for** (T19.22). This file had
+  // ten bare `waitForTimeout` against three condition polls — a wall-clock window
+  // a busy machine can miss, which is the whole of why it went red inside a full
+  // suite and green standalone.
+  //
+  // The deadline is swallowed rather than thrown on, deliberately: each poll is
+  // immediately followed by the assertion it was waiting for, so a genuine
+  // failure still fails *there*, with its own message and its own number, rather
+  // than being reported as "timed out". A wait must not be able to mask the
+  // thing it is waiting for.
+  const settle = (expr, ms = 10_000) =>
+    page.waitForFunction(expr, null, { timeout: ms }).catch(() => {})
+
+  const k = await page.evaluate(() => window.__game.constants())
+
   await page.evaluate(() => window.__game.regenerate('12345', 'medium'))
-  await page.waitForTimeout(500)
+  // `regenerate` is synchronous through `core.generate` and the `WorldView`
+  // build; what can still be outstanding is chunk baking, and that is what a
+  // screenshot needs finished.
+  await settle('window.__game.debug().pending === 0')
   await page.evaluate(() => window.__game.setTime(90))
-  await page.waitForTimeout(400)
+  // Night, from the shipped constant rather than a guess at how long the lerp
+  // takes.
+  await settle(`window.__game.debug().darkness >= ${k.NIGHT_DARKNESS * 0.99}`)
 
   // A rocket in flight, aimed along whichever lane is actually open.
   //
@@ -46,9 +66,16 @@ export default async function ({ page, shot, log }) {
   log(`firing along ${lane.deg} deg, ${lane.clear} px of clear air`)
   const a = (lane.deg * Math.PI) / 180
   await page.mouse.move(640 + Math.cos(a) * 240, 360 + Math.sin(a) * 240)
-  await page.waitForTimeout(200)
+  // The aim the scene actually adopted, not a guess at how long the pointer takes
+  // to be read. Compared as an angle so the wrap at +/-pi is not a failure.
+  await settle(
+    `Math.abs(Math.atan2(Math.sin(window.__game.debug().aim - (${a})), ` +
+      `Math.cos(window.__game.debug().aim - (${a})))) < 0.25`,
+  )
   await page.evaluate(() => window.__game.fire())
-  await page.waitForTimeout(60)
+  // The 60 ms here was a bet that a projectile would exist by now. This is the
+  // same claim the next two lines assert, so it is polled instead.
+  await settle('window.__game.ordnance().projectiles > 0')
   let o = await page.evaluate(() => window.__game.ordnance())
   log(`rocket in flight: ${JSON.stringify(o)}`)
   if (o.projectiles < 1) throw new Error('no projectile in flight')
@@ -65,7 +92,6 @@ export default async function ({ page, shot, log }) {
   // claim under test is unchanged — sustained fire has to light the dark — but
   // the thing that carries the light is a round in flight rather than a decaying
   // line. That it no longer needs freezing to be seen is the point of §F1.
-  await page.waitForTimeout(1000)
   // **By key, not by index.** §F5 puts a shovel in slot 0 of every player, which
   // moved the sandbox loadout one slot along: `selectSlot(2)` was the smg and is
   // now the grenade — which is also a projectile, so the assertion below would
@@ -76,8 +102,25 @@ export default async function ({ page, shot, log }) {
     if (i < 0) throw new Error(`no smg in the sandbox loadout: ${JSON.stringify(inv.slots)}`)
     window.__game.selectSlot(i)
   })
-  const first = await page.evaluate(() => window.__game.fire())
-  if (!first.projectile) throw new Error(`the smg did not fire: ${JSON.stringify(first)}`)
+  // **The 1 s that used to sit above this was the bazooka's cooldown**, which is
+  // per player and gates the switch on purpose. Nothing exposes `fire_ready_at`,
+  // so this waits on the effect the assertion below names: the smg producing a
+  // round. Retrying costs nothing — a shot refused by a cooldown consumes no
+  // ammunition and spawns nothing — and a weapon that never fires still fails
+  // below, with the refusal it actually got.
+  const first = await page.evaluate(async () => {
+    const deadline = Date.now() + 10_000
+    let r = null
+    while (Date.now() < deadline) {
+      r = window.__game.fire()
+      if (r && r.projectile) return r
+      await new Promise((res) => requestAnimationFrame(res))
+    }
+    return r
+  })
+  if (!first || !first.projectile) {
+    throw new Error(`the smg did not fire: ${JSON.stringify(first)}`)
+  }
   await page.waitForFunction('window.__game.ordnance().projectiles > 0', null, { timeout: 5000 })
   o = await page.evaluate(() => window.__game.ordnance())
   log(`immediately after one shot: ${JSON.stringify(o)}`)
@@ -86,7 +129,9 @@ export default async function ({ page, shot, log }) {
   await page.evaluate(() => {
     window.__smg = setInterval(() => window.__game.fire(), 40)
   })
-  await page.waitForTimeout(400)
+  // **No sleep before the sample.** The 400 ms here was waiting for rounds to
+  // accumulate, which the two polls below already wait for — and they wait on the
+  // counts themselves rather than on a guess at how long 40 ms of fire takes.
   // No freeze: a round crosses the map over most of a second, so it is on screen
   // for the whole capture. The assertion is the same one the tracer half made —
   // ordnance emits light — read off a body that is genuinely there.
@@ -134,15 +179,20 @@ export default async function ({ page, shot, log }) {
     const k = await page.evaluate(() => window.__game.constants())
     const fovNow = () => page.evaluate(() => window.__game.debug().fov)
 
-    // Night, from the same `setTime` the tracer half above used.
+    // Night, from the same `setTime` the tracer half above used — and waited for
+    // by the number the control below compares, not by a fixed 200 ms.
     await page.evaluate(() => window.__game.setTime(90))
-    await page.waitForTimeout(200)
+    await settle(`window.__game.debug().darkness >= ${k.NIGHT_DARKNESS * 0.99}`)
     const darkBefore = await page.evaluate(() => window.__game.debug().darkness)
     const nightOff = await fovNow()
 
     const held = await page.evaluate(() => window.__game.giveFlashlight())
     if (!held) throw new Error('giveFlashlight() did not put one in the bag')
-    await page.waitForTimeout(200)
+    // Wait for the radius the lightmap *rendered with* to move, which is the
+    // number asserted on below. If it never moves this falls through and the
+    // assertion reports the two radii it actually saw — the 200 ms could only
+    // ever have hidden that.
+    await settle(`window.__game.debug().fov !== ${nightOff}`)
     const nightOn = await fovNow()
     const darkAfter = await page.evaluate(() => window.__game.debug().darkness)
 
@@ -168,7 +218,8 @@ export default async function ({ page, shot, log }) {
     // satisfied by a torch that widens it always. Same bag, same map, only the
     // clock moves.
     await page.evaluate(() => window.__game.setTime(30))
-    await page.waitForTimeout(200)
+    // Daylight, waited for by the very condition the next line asserts.
+    await settle('window.__game.debug().darkness <= 0.001')
     const dayDark = await page.evaluate(() => window.__game.debug().darkness)
     if (dayDark > 0.001) {
       throw new Error(`setTime(30) is not daylight (darkness ${dayDark}) — the control is void`)
