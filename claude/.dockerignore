@@ -1,0 +1,13 @@
+target/
+**/node_modules/
+client/dist/
+client/.vite/
+client/src/core/pkg/
+.git/
+debug/
+replays/
+e2e/shots/
+*.log
+# Raw Kenney packs: an input to scripts/build-atlas.mjs, 34 MB, and nothing
+# at runtime reads them. The built atlases under assets/atlas/ are what ship.
+assets/vendor/

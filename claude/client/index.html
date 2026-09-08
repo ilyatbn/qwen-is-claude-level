@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SHRED</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #0b1020; overflow: hidden; }
+      #game { width: 100vw; height: 100vh; }
+      canvas { display: block; }
+
+      /* Screen-space UI is DOM, never a scrollFactor(0) Phaser object, because
+         camera zoom still applies to those (docs/70-amendments-v2.md A35). */
+      .title-screen, .menu-screen {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 0.75rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #e8ecff; text-align: center; pointer-events: none;
+        text-shadow: 0 2px 8px rgba(0,0,0,0.9);
+      }
+      .title-screen > *, .menu-screen > * { pointer-events: auto; }
+      .title-screen h1 {
+        margin: 0; font-size: 5rem; letter-spacing: 0.35rem; font-weight: 800;
+      }
+      .title-screen .tagline { margin: 0 0 1.5rem; opacity: 0.85; }
+      .title-screen .hint, .menu-screen .hint { opacity: 0.6; font-size: 0.85rem; }
+      .menu-screen {
+        background: rgba(6, 10, 26, 0.82); backdrop-filter: blur(2px);
+      }
+      .menu-screen h2 { margin: 0 0 0.5rem; letter-spacing: 0.15rem; }
+      button {
+        font: inherit; padding: 0.6rem 1.4rem; cursor: pointer;
+        background: #1b2450; color: #e8ecff;
+        border: 1px solid #3a4a92; border-radius: 4px;
+      }
+      button:hover, button:focus-visible { background: #2a3a78; outline: none; }
+      button.on { background: #3a5ad0; border-color: #7f9bff; }
+      #start-game { font-size: 1.5rem; padding: 0.8rem 2.4rem; }
+      .scales, .actions {
+        display: flex; gap: 0.5rem; border: none; padding: 0; margin: 0;
+        flex-wrap: wrap; justify-content: center;
+      }
+      .scales legend { padding: 0 0.5rem; opacity: 0.7; }
+      #code {
+        font: inherit; font-size: 2rem; letter-spacing: 0.5rem; width: 9ch;
+        text-align: center; text-transform: uppercase;
+        background: #0d1330; color: #e8ecff;
+        border: 1px solid #3a4a92; border-radius: 4px; padding: 0.4rem;
+      }
+      .code { font-size: 3rem; letter-spacing: 0.6rem; margin: 0; color: #ffd23f; }
+      .code-label { margin: 0; opacity: 0.7; }
+      .room-info { opacity: 0.85; }
+      .error { color: #ff8080; margin: 0.5rem 0 0; }
+
+      /* An overlay, not a pause: translucent, so the round is visible behind it.
+         Anchored to the top rather than centred — the camera stays where you
+         died (§B4) so you can watch the fight continue, and a scoreboard sitting
+         over the middle of the screen covers the thing it exists to let you see. */
+      .death-overlay {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: flex-start;
+        padding-top: 4vh; gap: 0.3rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #e8ecff; background: rgba(40, 6, 10, 0.45);
+        pointer-events: none; text-shadow: 0 2px 8px rgba(0,0,0,0.9);
+      }
+      .death-overlay h2 { margin: 0; font-size: 2.4rem; letter-spacing: 0.2rem; }
+      .death-cause { margin: 0; opacity: 0.9; }
+      .death-count { margin: 0.2rem 0 0.6rem; font-size: 2.2rem; color: #ffd23f; }
+      .death-scores {
+        list-style: none; margin: 0; padding: 0.5rem 0.9rem; min-width: 14rem;
+        background: rgba(6, 10, 26, 0.55); border-radius: 4px; font-size: 0.9rem;
+      }
+      .death-scores li { display: flex; justify-content: space-between; opacity: 0.85; }
+
+      /* Results (§C3). Unlike the death overlay this one takes the controls:
+         the round is over, so it covers the field and its buttons accept clicks.
+         `pointer-events: auto` is load-bearing — the death overlay sets `none`
+         so you can keep playing under it, and inheriting that here would give a
+         screen whose buttons look real and cannot be pressed. */
+      .results-screen {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 0.5rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #e8ecff; background: rgba(6, 10, 26, 0.82);
+        pointer-events: auto; text-shadow: 0 2px 8px rgba(0,0,0,0.9);
+      }
+      .results-screen h2 { margin: 0 0 0.4rem; font-size: 2.6rem; letter-spacing: 0.25rem; }
+      .results-head, .results-rows {
+        list-style: none; margin: 0; padding: 0; min-width: 26rem;
+      }
+      .results-head li, .results-rows li {
+        display: grid; grid-template-columns: 3rem 1fr 5rem 5rem;
+        padding: 0.25rem 0.9rem; gap: 0.5rem;
+      }
+      .results-head li { opacity: 0.55; font-size: 0.8rem; letter-spacing: 0.08rem; }
+      .results-rows li { background: rgba(20, 28, 54, 0.7); border-radius: 3px; margin-bottom: 2px; }
+      .results-rows li.me { background: rgba(60, 84, 150, 0.85); }
+      .results-rows .deaths, .results-rows .score, .results-head .deaths, .results-head .score { text-align: right; }
+      .results-rows .rank { opacity: 0.7; }
+      .results-vote { margin: 0.6rem 0 0; opacity: 0.8; font-size: 0.9rem; }
+      .results-count { margin: 0.1rem 0 0.4rem; font-size: 1.8rem; color: #ffd23f; }
+      .results-buttons { display: flex; gap: 0.8rem; }
+      .results-buttons button {
+        font: inherit; padding: 0.5rem 1.2rem; border-radius: 4px; cursor: pointer;
+        color: #e8ecff; background: #2c3e78; border: 1px solid #4a5fa8;
+      }
+      .results-buttons button:disabled { opacity: 0.5; cursor: default; }
+
+      /* Skins: the chooser is DOM, the previews are on the canvas behind it, so
+         the panel sits to one side and leaves the middle of the screen clear. */
+      .skins-screen {
+        align-items: flex-start; justify-content: flex-start;
+        padding: 3vh 0 0 3vw; background: none; backdrop-filter: none;
+      }
+      .skins-screen h2 { margin: 0 0 0.75rem; }
+      .skins-screen .field { display: flex; flex-direction: column; gap: 0.25rem; opacity: 0.85; }
+      .skins-screen input {
+        font: inherit; background: #0d1330; color: #e8ecff;
+        border: 1px solid #3a4a92; border-radius: 4px; padding: 0.35rem 0.5rem; width: 12rem;
+      }
+      .picker { display: flex; align-items: center; gap: 0.6rem; }
+      .picker button { padding: 0.35rem 0.7rem; }
+      .pick-label { display: flex; flex-direction: column; min-width: 9rem; opacity: 0.7; font-size: 0.8rem; }
+      .pick-label b { font-size: 1.1rem; opacity: 1; color: #e8ecff; }
+      .coming-soon {
+        border: 1px dashed #3a4a92; border-radius: 4px; padding: 0.4rem 0.9rem;
+        opacity: 0.55; margin: 0.4rem 0 0;
+      }
+      .coming-soon legend { padding: 0 0.4rem; font-size: 0.8rem; }
+      .coming-soon p { margin: 0; font-size: 0.9rem; letter-spacing: 0.1rem; }
+    </style>
+  </head>
+  <body>
+    <div id="game"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

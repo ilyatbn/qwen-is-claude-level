@@ -1,0 +1,386 @@
+//! The join flow and event delivery scoping, against a real server with real
+//! socket.io clients (`docs/40-net-protocol.md` §1, §3).
+//!
+//! These replace M0's echo round-trip: the transport is now proven by doing
+//! something the game needs rather than by bouncing a payload.
+
+use std::net::SocketAddr;
+use std::sync::mpsc;
+use std::time::Duration;
+
+use game_server::{app, config::Config, state::AppState};
+
+mod common;
+use common::{connect_watching as connect, Inbox};
+
+fn test_config() -> Config {
+    Config {
+        // Armed, so **ana's own fires are the carves**. Without this ana has no
+        // weapon and every carve this test counted was a bot's — which made the
+        // comparison depend on when the bots happened to engage, and on ana and
+        // bo connecting at the same instant. It measured 19 vs 13, then 0 vs 0.
+        // The claim is that a carve ana causes reaches both sockets; arming her
+        // is what makes the test perform that action instead of watching for one.
+        dev_loadout: true,
+        ..common::test_config()
+    }
+}
+
+struct Server {
+    addr: SocketAddr,
+    /// Held so the room task lives as long as the test.
+    _shutdown: tokio::sync::oneshot::Sender<()>,
+}
+
+async fn spawn_server(config: Config) -> Server {
+    let state = AppState::new(config);
+    let stack = app::build_stack(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    let router = stack.router.clone();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    // Wait for the room to be **ticking**, not for a fixed interval.
+    //
+    // The room generates its map before entering the loop, and `join` is answered
+    // from inside that loop. A sleep long enough on an idle box is not long enough
+    // on a busy one, and the failure surfaces as "never received welcome" — which
+    // looks like a protocol bug and is a race in the fixture.
+    // §E1: `join_info`, not `inspect`. A lobby has no world, so `inspect` drops
+    // its closure and answers `None` — `unwrap_or(0)` then reads 0 forever and
+    // this loop stopped waiting for readiness at all: it burned its full 10 s
+    // and continued regardless, which is a condition that can never be true.
+    //
+    // **Do not start it here.** §E2/§E4: `quick_match` skips a match that has
+    // begun, so a room started before the clients connect leaves every one of
+    // them in a *different* lobby — the test then fires in one room and asserts
+    // against another.
+    //
+    // The room is created and left open; **c1 presses `start_with_bots` further
+    // down**, once bo is seated, and both then wait for `map_init`. An earlier
+    // draft of this comment named a `start_playing` helper that was never
+    // written — a comment pointing at a function nobody wrote is the same class
+    // as a diagnostic that lies, which this repo has a commit named after.
+    //
+    // The start waits out `Warmup` too, because this fixture fires weapons and
+    // compares carve counts: Warmup gates damage, so measuring inside it saw 0
+    // and 0 carves, or 7 and 5 as the phase flipped underneath.
+    // Created, not started, and not held: the clients drive the start
+    // themselves (c1 presses it once bo is seated), so there is nothing here to
+    // keep a handle for.
+    let _ = stack.room();
+    Server {
+        addr,
+        _shutdown: stack.shutdown,
+    }
+}
+
+/// Everything one test client received, by event name.
+fn wait_for(rx: &mpsc::Receiver<String>, want: &str, secs: u64) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    let mut seen = Vec::new();
+    while std::time::Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(name) => {
+                if name == want {
+                    return;
+                }
+                seen.push(name);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(e) => panic!("client channel closed waiting for {want}: {e}"),
+        }
+    }
+    panic!("never received `{want}` within {secs}s; saw {seen:?}");
+}
+
+fn got(inbox: &Inbox, ev: &str) -> Vec<serde_json::Value> {
+    inbox
+        .lock()
+        .expect("poisoned")
+        .get(ev)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// One server, one runtime, the whole join flow in sequence.
+///
+/// Deliberately a **single** test rather than seven. Each of the seven passed on
+/// its own and they interfered when run together in one process — with
+/// `--test-threads=1` as well as in parallel — while two servers driven from one
+/// blocking thread work fine. The interference is in the harness (a blocking
+/// socket.io client per test, each with its own runtime and its own lingering
+/// threads), not in the server, and splitting a stateful protocol across
+/// independent tests was buying nothing: a round *is* sequential.
+/// It catches real bugs: broadcasting `inventory` instead of scoping it to its
+/// owner makes it fail.
+///
+/// **It used to be ~50 % flaky, and the defect was in the harness, not the
+/// server.** `ClientBuilder::connect()` returns once engine.io is up, while the
+/// socket.io namespace handshake is still in flight; the `join` emitted on the
+/// next line was dropped with no error, surfacing as "never received welcome"
+/// and an empty inbox. `connect()` now blocks on the `open` callback. 12
+/// consecutive runs green, from 1-in-4 before.
+///
+/// The way that was established is worth keeping: the test client is not the
+/// client that ships. Driving the real `socket.io-client` against the same
+/// server joined 100/100 times, which located the bug in `rust_socketio` rather
+/// than in the protocol — see `the_shipping_client_joins_reliably` in
+/// `tests/browser_join.rs`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_join_flow_end_to_end() {
+    let s = spawn_server(test_config()).await;
+    let addr = s.addr;
+
+    let out = tokio::task::spawn_blocking(move || {
+        let mut report = serde_json::Map::new();
+
+        // --- welcome, then map_init -------------------------------------
+        let (c1, i1, r1) = connect(
+            addr,
+            &[
+                "welcome",
+                "lobby_state",
+                "map_init",
+                "join_error",
+                "inventory",
+                "player_join",
+                "player_leave",
+                "carve",
+            ],
+        );
+        c1.emit("join", serde_json::json!({ "name": "ana", "skin_id": 3 }))
+            .expect("emit join");
+        wait_for(&r1, "welcome", 15);
+        // §E1 reversed this pair. `lobby_state` follows `go_live` at seat time,
+        // and `map_init` no longer arrives until the match starts — so the lobby
+        // comes first now. `wait_for` drains and discards, so asking in the wrong
+        // order loses the token entirely.
+        wait_for(&r1, "lobby_state", 15);
+
+        // §E2/§E4: **bo seats before the match starts.** `quick_match` skips a
+        // started match, so a client that arrives after the start lands in a
+        // different lobby — and the carve comparison below would then be between
+        // two clients in two rooms. Both seat into the lobby; c1 starts it.
+        let (c2, i2, r2) = connect(addr, &["welcome", "inventory", "carve"]);
+        c2.emit("join", serde_json::json!({ "name": "bo" }))
+            .expect("emit");
+        wait_for(&r2, "welcome", 15);
+
+        c1.emit("start_with_bots", serde_json::json!({}))
+            .expect("start");
+        wait_for(&r1, "map_init", 30);
+        report.insert("welcome".into(), got(&i1, "welcome")[0].clone());
+        report.insert("lobby_state".into(), got(&i1, "lobby_state")[0].clone());
+        report.insert("map_init".into(), got(&i1, "map_init")[0].clone());
+
+        // --- a retry on the same socket must not take a second seat -----
+        c1.emit("join", serde_json::json!({ "name": "ana-again" }))
+            .expect("emit");
+        std::thread::sleep(Duration::from_millis(500));
+        report.insert(
+            "welcomes_after_retry".into(),
+            got(&i1, "welcome").len().into(),
+        );
+
+        // --- a bad name is refused --------------------------------------
+        let (c_bad, i_bad, r_bad) = connect(addr, &["welcome", "join_error"]);
+        c_bad
+            .emit("join", serde_json::json!({ "name": "   " }))
+            .expect("emit");
+        wait_for(&r_bad, "join_error", 15);
+        report.insert("bad_name".into(), got(&i_bad, "join_error")[0].clone());
+        let _ = c_bad.disconnect();
+
+        // --- the second real player is already seated, above ------------
+        wait_for(&r1, "player_join", 15);
+        // bo must be *ready*, or it receives no broadcasts at all (T9.06 gates
+        // `flush_events` on readiness) and the scoping assertion below cannot
+        // fail — it would pass against a server that broadcasts every
+        // inventory to everyone. Verified: without this, deliberately changing
+        // `scope_of` to `Scope::Everyone` still passes.
+        c2.emit("ready", serde_json::json!({})).expect("emit ready");
+
+        // --- scoping: inventory is private ------------------------------
+        //
+        // Counted as a *delta*, not a total. A joiner now receives its own
+        // inventory on join (T9.08), so "bo received zero inventory events
+        // ever" stopped being a proxy for "bo received ana's" — it would fail
+        // on correct behaviour. What the scoping rule actually claims is that
+        // an action by ana produces nothing on bo's socket, so that is what is
+        // measured: bo's count before ana acts, and after.
+        std::thread::sleep(Duration::from_millis(400));
+        let their_before = got(&i2, "inventory").len();
+        c1.emit("select_slot", serde_json::json!({ "slot": 0 }))
+            .expect("emit");
+        std::thread::sleep(Duration::from_millis(800));
+        report.insert("my_inventory".into(), got(&i1, "inventory").len().into());
+        report.insert("their_own_on_join".into(), their_before.into());
+        report.insert(
+            "their_inventory".into(),
+            (got(&i2, "inventory").len() - their_before).into(),
+        );
+
+        // --- terrain is public: both see the same carves ----------------
+        for _ in 0..5 {
+            c1.emit("fire", serde_json::json!({})).expect("emit");
+            std::thread::sleep(Duration::from_millis(120));
+        }
+        // Settled, not slept. Both counts are read at one instant and compared,
+        // so a fixed sleep makes this a race between two sockets: it passed alone
+        // and failed inside `cargo test --workspace`, where the box is loaded and
+        // bo's socket lags ana's by more than the guess. Wait until neither count
+        // has moved for a while, which is the condition the comparison needs and
+        // the shape `checksum.rs` already uses.
+        {
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            let (mut last_a, mut last_b, mut stable) = (usize::MAX, usize::MAX, 0);
+            loop {
+                std::thread::sleep(Duration::from_millis(50));
+                let (a, b) = (got(&i1, "carve").len(), got(&i2, "carve").len());
+                if a == last_a && b == last_b && a > 0 {
+                    stable += 1;
+                    if stable >= 8 {
+                        break;
+                    }
+                } else {
+                    stable = 0;
+                    last_a = a;
+                    last_b = b;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "carve streams never settled: ana {a}, bo {b}"
+                );
+            }
+        }
+        let carves_a = got(&i1, "carve");
+        let carves_b = got(&i2, "carve");
+        // Compared over the window **both** sockets were live for, not as raw
+        // totals. ana connects before bo, and the carves are the bots' — so
+        // every carve in between lands on one socket and not the other, and the
+        // totals differ by whatever the bots did in the gap (measured 19 vs 13).
+        // "Terrain is public" claims the two agree on the carves they could both
+        // have seen, which is the seq range from where the later one starts.
+        let seqs_of = |v: &[serde_json::Value]| -> Vec<u64> {
+            v.iter().filter_map(|c| c["seq"].as_u64()).collect()
+        };
+        let (sa, sb) = (seqs_of(&carves_a), seqs_of(&carves_b));
+        let base = sa
+            .iter()
+            .min()
+            .copied()
+            .unwrap_or(0)
+            .max(sb.iter().min().copied().unwrap_or(0));
+        let common_a: Vec<u64> = sa.iter().copied().filter(|s| *s >= base).collect();
+        let common_b: Vec<u64> = sb.iter().copied().filter(|s| *s >= base).collect();
+        report.insert("carves_a".into(), common_a.len().into());
+        report.insert("carves_b".into(), common_b.len().into());
+        report.insert("carve_seqs".into(), serde_json::json!(common_a));
+
+        // --- a disconnect frees the seat and tells the others -----------
+        //
+        // A clean close, not a dropped handle. An abrupt drop is detected by the
+        // engine.io ping timeout, which is over 20 s by design — testing that here
+        // would be testing the heartbeat, slowly. The handler is the same one
+        // either way (`on_disconnect` fires for both).
+        let _ = c2.disconnect();
+        wait_for(&r1, "player_leave", 15);
+        report.insert("leaves".into(), got(&i1, "player_leave").len().into());
+
+        let _ = c1.disconnect();
+        serde_json::Value::Object(report)
+    })
+    .await
+    .expect("client thread");
+
+    // ---- welcome ----
+    let w = &out["welcome"];
+    assert!(w["player_id"].is_number(), "welcome carries a player id");
+    // `docs/61` §8: the seed is on the HUD so a bug report reproduces the map.
+    assert!(w["seed"].is_string(), "seed must survive as a string");
+    // §E6: `scale` and `players` are **off** `welcome` — a host can change the
+    // map size (§E3), so a copy taken at seating goes stale, and the roster
+    // belongs to `lobby_state`, which derives it from `Seats`. `welcome` now
+    // carries only what is true at seating and never changes.
+    assert!(
+        w.get("scale").is_none_or(|v| v.is_null()),
+        "welcome still carries a scale a host can change under it: {w}"
+    );
+    assert!(
+        w.get("players").is_none_or(|v| v.is_null()),
+        "welcome still carries a roster: {w}"
+    );
+    assert_eq!(w["sim_hz"], 60);
+
+    // And the client is told the scale — by the message that owns it. Without
+    // this the two assertions above pass for a server that stopped saying it.
+    let ls = &out["lobby_state"];
+    assert_eq!(ls["scale"], "small", "lobby_state did not carry the scale");
+    assert!(
+        ls["players"].as_array().is_some_and(|p| !p.is_empty()),
+        "lobby_state carried an empty roster: {ls}"
+    );
+
+    // ---- map_init: base64 text, not a binary attachment (codec::b64_encode) ----
+    let b64 = out["map_init"]
+        .as_str()
+        .expect("map_init is a base64 string");
+    let bytes = game_server::codec::b64_decode(b64).expect("valid base64");
+    assert!(bytes.len() > 1000, "got {} bytes", bytes.len());
+    assert_eq!(
+        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        game_server::codec::MAP_MAGIC,
+        "decoded map_init must start with the magic number"
+    );
+
+    assert_eq!(
+        out["welcomes_after_retry"], 1,
+        "a retry on one socket must not seat a second player"
+    );
+    assert_eq!(out["bad_name"]["reason"], "bad_name");
+
+    // ---- the scoping assertion this whole task exists for ----
+    assert!(
+        out["my_inventory"].as_u64().unwrap_or(0) > 0,
+        "the owner must receive their own inventory"
+    );
+    assert_eq!(
+        out["their_inventory"], 0,
+        "ana selected a slot and bo was told about it: {out}"
+    );
+    // The control. Without it the assertion above passes against a server that
+    // sends no inventory to anybody, which is the build T9.08 exists to fix.
+    assert!(
+        out["their_own_on_join"].as_u64().unwrap_or(0) > 0,
+        "bo was never sent its own inventory on join: {out}"
+    );
+
+    // ---- terrain is public and ordered ----
+    assert_eq!(
+        out["carves_a"], out["carves_b"],
+        "clients disagree on how many carves happened"
+    );
+    let seqs: Vec<u64> = out["carve_seqs"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_u64()).collect())
+        .unwrap_or_default();
+    for pair in seqs.windows(2) {
+        assert!(pair[1] > pair[0], "carve seq went backwards: {seqs:?}");
+    }
+
+    assert!(
+        out["leaves"].as_u64().unwrap_or(0) > 0,
+        "an abrupt drop must still produce player_leave"
+    );
+}
+
+/// **The seed is stated, not inherited** (T20.18/T20.20).
+#[test]
+fn the_fixture_states_its_seed() {
+    common::assert_seed_is_stated(&test_config());
+}

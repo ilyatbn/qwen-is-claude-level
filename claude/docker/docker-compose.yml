@@ -1,0 +1,52 @@
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    ports: ["3000:3000"]
+    environment:
+      BIND_ADDR: 0.0.0.0:3000
+      GAME_LOG: ${GAME_LOG:-info}
+      MAP_SCALE: ${MAP_SCALE:-large}
+      MAX_PLAYERS: ${MAX_PLAYERS:-6}
+      ROUND_SECONDS: ${ROUND_SECONDS:-240}
+      FIXED_SEED: ${FIXED_SEED:-}
+      RECORD_REPLAY: ${RECORD_REPLAY:-0}
+      DEBUG_DUMP: ${DEBUG_DUMP:-0}
+      LOBBY_BOT_TIMEOUT: ${LOBBY_BOT_TIMEOUT:-10}
+      BOT_COUNT: ${BOT_COUNT:-3}
+      BOT_SKILL: ${BOT_SKILL:-0.6}
+    volumes:
+      - ../replays:/replays
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    # Room to flush replay files on SIGTERM.
+    stop_grace_period: 10s
+
+  client:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.client
+    ports: ["8080:80"]
+    depends_on:
+      server:
+        condition: service_healthy
+
+  # Placed, not plumbed. See docs/62-docker-deploy.md §7 for the scale-out path.
+  # redis:
+  #   image: "redis:7-alpine"
+  #   ports: ["6379:6379"]
+  #
+  # postgres:
+  #   image: "postgres:16-alpine"
+  #   environment:
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devonly}
+  #     POSTGRES_DB: game
+  #   volumes: ["pgdata:/var/lib/postgresql/data"]
+  #
+  # volumes:
+  #   pgdata:

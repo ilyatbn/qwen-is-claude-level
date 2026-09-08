@@ -1,0 +1,61 @@
+{
+  "_comment": [
+    "Which vendor .ogg files back which gameplay cue.",
+    "",
+    "Same indirection as atlas-map.json (docs/51 §4): cue names are OURS, and no",
+    "code learns which pack a sound came from. Swapping to a different CC0 pack",
+    "is an edit to this file and a re-run of scripts/build-audio.mjs.",
+    "",
+    "Paths are relative to assets/vendor/kenney/. A missing source is reported",
+    "and skipped — the build still succeeds and the cue is simply silent at",
+    "runtime (docs/50 §8), which is why the game runs with no audio at all.",
+    "",
+    "Several cues list variants. One gunshot sample repeated ten times a second",
+    "is the machine-gun-in-a-tin-can sound; rotating three and jittering the",
+    "playback rate is what stops the ear locking onto the loop."
+  ],
+
+  "_sustained": {
+    "_note": "Cues played with hold(cue,true/false) rather than one-shot. These are the only long files in the set; everything else is under 50 kB.",
+    "jetpack": ["sci-fi-sounds/Audio/spaceEngineLow_000.ogg"],
+    "lava": ["sci-fi-sounds/Audio/spaceEngine_000.ogg"]
+  },
+
+  "cues": {
+    "fire_bazooka": ["sci-fi-sounds/Audio/thrusterFire_000.ogg"],
+    "fire_smg": [
+      "sci-fi-sounds/Audio/laserSmall_000.ogg",
+      "sci-fi-sounds/Audio/laserSmall_001.ogg",
+      "sci-fi-sounds/Audio/laserSmall_002.ogg"
+    ],
+    "fire_grenade": ["impact-sounds/Audio/impactSoft_medium_000.ogg"],
+
+    "explode": [
+      "sci-fi-sounds/Audio/explosionCrunch_000.ogg",
+      "sci-fi-sounds/Audio/explosionCrunch_001.ogg",
+      "sci-fi-sounds/Audio/explosionCrunch_002.ogg"
+    ],
+    "meteor": ["sci-fi-sounds/Audio/lowFrequency_explosion_001.ogg"],
+
+    "hit": ["impact-sounds/Audio/impactPunch_medium_000.ogg"],
+    "death": ["digital-audio/Audio/lowDown.ogg"],
+
+    "pickup": ["interface-sounds/Audio/confirmation_001.ogg"],
+    "crate_land": ["impact-sounds/Audio/impactWood_heavy_000.ogg"],
+
+    "walk": [
+      "impact-sounds/Audio/footstep_grass_000.ogg",
+      "impact-sounds/Audio/footstep_grass_001.ogg",
+      "impact-sounds/Audio/footstep_grass_002.ogg"
+    ],
+    "land": ["impact-sounds/Audio/footstep_concrete_003.ogg"],
+
+    "ui_click": ["interface-sounds/Audio/click_001.ogg"],
+    "phase_change": ["interface-sounds/Audio/bong_001.ogg"],
+    "effect_telegraph": ["digital-audio/Audio/lowThreeTone.ogg"],
+    "toxic": ["sci-fi-sounds/Audio/slime_000.ogg"],
+
+    "jetpack": ["sci-fi-sounds/Audio/spaceEngineLow_000.ogg"],
+    "lava": ["sci-fi-sounds/Audio/spaceEngine_000.ogg"]
+  }
+}

@@ -1,0 +1,299 @@
+#!/usr/bin/env node
+/**
+ * T13.06.1 — no battle exists until players ask for one (`docs/72` §C18).
+ *
+ *   node scripts/checks/lobby-start.mjs
+ *   node scripts/e2e.mjs lobby-start
+ *
+ * ## The bug, as reported
+ *
+ * "Every time I join a game now I join an already active battle." A room was
+ * created at **server startup**, seated bots and began ticking — map, timers,
+ * scoring, items, weather. There was nowhere to arrive except mid-round.
+ *
+ * ## What this asserts, and its controls
+ *
+ * A fresh server has no rooms; connecting puts you in a **lobby** with a map
+ * behind it and nothing simulating; and — the control — pressing "Start with
+ * bots" does start a real round. Without that last half, "you are not in a
+ * battle" also passes for a server that can never start one, which would be a
+ * worse bug than the one being fixed.
+ *
+ * `MIN_PLAYERS_TO_START` is left at its default of 2 here **on purpose**: the
+ * point is that one human alone does not begin a battle.
+ */
+import { spawn } from 'node:child_process'
+import { mkdirSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { matchVitePort } from '../vite-url.mjs'
+import { killGroup } from '../proc-group.mjs'
+import { deadlineMs } from '../lib/deadline.mjs'
+
+// **This check's own configuration, not a shipped tunable.** `LOBBY_BOT_TIMEOUT_S`
+// is an override handed to the server it spawns, so it is not read from
+// `constants.rs` — it *replaces* what is there. One name, two uses: the env block
+// below and the deadline of the wait that watches it expire. They cannot disagree.
+const LOBBY_BOT_TIMEOUT_S = 45
+/** Slack on top, for the round trip between the server starting and the client seeing it. */
+const LOBBY_START_GRACE_S = 8
+
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
+const shots = join(root, 'shots')
+mkdirSync(shots, { recursive: true })
+
+const require = createRequire(join(root, 'client/package.json'))
+const { chromium } = require('playwright-core')
+
+const PORT = 3121
+const libDir = join(process.env.HOME ?? '', '.cache/pwlibs/root/usr/lib/x86_64-linux-gnu')
+const chromePath = join(
+  process.env.HOME ?? '',
+  '.cache/ms-playwright/chromium-1234/chrome-linux64/chrome',
+)
+
+const kids = []
+let failed = false
+const fail = (m) => {
+  console.error(`FAIL: ${m}`)
+  failed = true
+}
+const ok = (m) => console.log(`  ok   ${m}`)
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+process.on('exit', () => kids.forEach(killGroup))
+
+const server = spawn('cargo', ['run', '-q', '-p', 'game-server', '--release'], {
+  detached: true,
+  cwd: root,
+  env: {
+    ...process.env,
+    BIND_ADDR: `127.0.0.1:${PORT}`,
+    MAP_SCALE: 'small',
+    // **Raised so the lobby can be observed at all.** At the 10 s default a cold
+    // page — vite transform, wasm init, first frame — has not reached `ready`
+    // before §E2's timeout fires, so the match has always started by the first
+    // sample. T17.07 measured ~0.0 s of waiting and retired this claim; making
+    // the timeout config-driven is what brings it back.
+    LOBBY_BOT_TIMEOUT: String(LOBBY_BOT_TIMEOUT_S),
+    BOT_COUNT: '3',
+    GAME_LOG: 'warn',
+  },
+  stdio: ['ignore', 'inherit', 'inherit'],
+})
+kids.push(server)
+
+let health = null
+for (let i = 0; i < 900 && !health; i++) {
+  try {
+    const r = await fetch(`http://127.0.0.1:${PORT}/healthz`)
+    if (r.ok) health = await r.json()
+  } catch {
+    /* not listening yet */
+  }
+  if (!health) await sleep(250)
+}
+if (!health) {
+  console.error('server never became healthy')
+  process.exit(1)
+}
+
+// ---- 1. a fresh server is empty -------------------------------------------
+if (health.rooms !== 0) {
+  fail(`a fresh server already has ${health.rooms} room(s) — there is a battle nobody asked for`)
+} else {
+  ok(`fresh server: rooms ${health.rooms}, players ${health.players}`)
+}
+
+// And it stays empty: nothing creates a room on a timer.
+await sleep(3000)
+const idle = await (await fetch(`http://127.0.0.1:${PORT}/healthz`)).json()
+if (idle.rooms !== 0) fail(`a room appeared on its own after 3 s: ${idle.rooms}`)
+else ok('still empty after 3 s idle')
+
+const vite = spawn('npx', ['vite', '--strictPort=false'], {
+  detached: true,
+  cwd: join(root, 'client'),
+  env: { ...process.env, VITE_SERVER_PORT: String(PORT) },
+})
+kids.push(vite)
+const viteUrl = await new Promise((res, rej) => {
+  const on = (b) => {
+    const port = matchVitePort(b)
+    if (port) res(`http://localhost:${port}`)
+  }
+  vite.stdout.on('data', on)
+  vite.stderr.on('data', on)
+  setTimeout(() => rej(new Error('vite never started')), 120_000)
+})
+
+const browser = await chromium.launch({
+  executablePath: chromePath,
+  env: { ...process.env, LD_LIBRARY_PATH: libDir },
+  args: ['--no-sandbox', '--use-gl=swiftshader', '--enable-unsafe-swiftshader'],
+})
+const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } })
+const page = await ctx.newPage()
+const pageErrors = []
+page.on('pageerror', (e) => pageErrors.push(String(e)))
+await page.goto(`${viteUrl}/?e2e=1&game=1&name=ana`)
+// **Wait for the seat, not for `ready`.**
+//
+// `ready` is true only once the world exists, and under §E1 the world is built
+// at *match start* — so a `ready` gate blocks until the lobby is over and then
+// reports the phase that follows it. That is what made T17.07 measure "~0.0 s of
+// waiting" and conclude the browser could not observe a lobby: it was not the
+// timeout being too short, it was the gate being the wrong one. Raising
+// `LOBBY_BOT_TIMEOUT` alone does not fix it; it only delays the same reading.
+//
+// `welcome` arrives at seat time and carries the phase, so this is the first
+// moment a client knows anything, and it is inside the lobby.
+await page.waitForFunction(
+  'window.__game && typeof window.__game.debug().phase === "string" && window.__game.debug().me >= 0',
+  null,
+  { timeout: 120_000 },
+)
+
+// ---- 2. you arrive in a lobby, not a battle --------------------------------
+const dbg = () => page.evaluate('window.__game.debug()')
+let d = await dbg()
+// **Restored at T17.08.** T17.07 retired this: at the default `LOBBY_BOT_TIMEOUT`
+// a cold browser cannot reach `ready` before the timeout fires, so the lobby was
+// always over by the first sample. The timeout is config-driven now and this
+// check raises it, which is what makes the claim observable again.
+if (d.phase !== 'lobby') {
+  fail(`connected straight into phase "${d.phase}" — the bug as reported`)
+} else {
+  ok(`arrived in a lobby (phase ${d.phase})`)
+}
+// **Not "the lobby has a map" — it does not** (§E1). `mapW` is the *client's
+// local core*, which exists from scene construction whether or not a world has
+// been sent. This used to read as proof the lobby had something to look at; the
+// server-side claim it seemed to make is now asserted by
+// `crates/game-server/tests/lobby.rs`, which checks `inspect` answers `None`.
+// Kept as what it actually is: the client core is alive before any map arrives.
+if (!(d.mapW > 0)) fail('the client has no local core at all')
+else ok(`the client's own core is up before any map arrives (${d.mapW}x${d.mapH})`)
+
+// Nothing is **simulating**. Sampled twice, because "0 on the first frame"
+// also holds for a room that is about to start.
+//
+// `serverRoundTime`, not `lastServerTick` and not `roundTime`. §C18 says a lobby does not *simulate*;
+// `tick` is a clock and it advances in a lobby too (`World::tick_idle`) — it
+// has to, because every replay loop is `while tick < until` and a frozen clock
+// spun a core for thirty-five minutes. `round_time` only ever advances inside
+// `step()`, so it is the stricter question and the one actually being asked.
+const r0 = (await dbg()).serverRoundTime ?? -1
+const c0 = (await dbg()).lastServerTick ?? 0
+await sleep(2500)
+const r1 = (await dbg()).serverRoundTime ?? -1
+const c1 = (await dbg()).lastServerTick ?? 0
+if (r1 > r0) fail(`the lobby is simulating: server round time ${r0} -> ${r1}`)
+else ok(`nothing simulating while waiting (server round time ${r0} -> ${r1})`)
+
+// One human alone **does** start a round — after `LOBBY_BOT_TIMEOUT` (§E2).
+//
+// **This assertion was inverted at T17.07, and it had been red since T17.03.**
+// It used to require that a solo player never starts: `docs/72` §C18 raised
+// `MIN_PLAYERS_TO_START` to 2, so waiting alone was the rule. `docs/74` §E2
+// retires that — "one human plus four bots after ten seconds is a game, and two
+// humans waiting forever is not" — and it says so in those words. The check kept
+// asserting the old rule and nobody saw, because the browser suite is deferred
+// until the end of a milestone.
+//
+// The waiting half above still holds and is what §C18's principle survives as:
+// you arrive in a lobby and nothing simulates while you sit in it. What changed
+// is only how that ends.
+// **The value this check is running, not the shipped one** (T20.15).
+//
+// This line used to read `constants().LOBBY_BOT_TIMEOUT`, which is not in
+// `constants_json`: the read was `undefined`, `(undefined + 8) * 1000` is `NaN`,
+// and a `NaN` timeout is **no deadline** — the wait could not fail.
+//
+// The obvious repair is to export the constant, and it is **wrong here**. The
+// server this check spawned runs `LOBBY_BOT_TIMEOUT=45` from the env block above;
+// `constants_json` would hand back the shipped 10.0, so the deadline would be 18 s
+// against an event 45 s away and the check would go red for the wrong reason. The
+// value that governs this wait is the override, and it now has one name feeding
+// both the server and the deadline. `deadlineMs` refuses anything that is not a
+// positive number of seconds, so the NaN cannot come back by another route.
+const startedBy = Date.now()
+await page
+  .waitForFunction('window.__game.debug().phase !== "lobby"', null, {
+    timeout: deadlineMs(LOBBY_BOT_TIMEOUT_S + LOBBY_START_GRACE_S, 'a solo lobby starting itself'),
+  })
+  .catch(() =>
+    fail(`a solo lobby never started, ${LOBBY_BOT_TIMEOUT_S}s timeout notwithstanding`),
+  )
+const waited = (Date.now() - startedBy) / 1000
+d = await dbg()
+if (d.phase === 'lobby') fail('the timeout fired and the phase is still lobby')
+else ok(`a solo lobby started itself after ~${waited.toFixed(1)}s (phase ${d.phase})`)
+// Bots, not an empty match: §E2 fills the seats when the timeout fires.
+//
+// **Waited for, not read on the spot, and T20.01 is why.** `phase` comes from
+// `round_state`, which is broadcast to every socket; `playerCount` is
+// `mirror.players`, which is filled from **snapshots**, and snapshots are gated
+// on this client having decoded `map_init` and sent `ready`. So the phase flips
+// one broadcast before the roster can exist, and an instantaneous read races it.
+//
+// It read `3` before T20.01 and it was a **ghost**: `sweep_unready` evicted the
+// only human at t=30 s of a 45 s lobby, its seat id went onto the free list,
+// `seat_bots` handed that id to a bot, and `SessionMap` still pointed it at the
+// human's socket — so this browser was being sent a bot's snapshots for a match
+// it had no seat in. The count was real and the seat behind it was not.
+await page
+  .waitForFunction('window.__game.debug().playerCount >= 2', null, { timeout: 30_000 })
+  .catch(() => {})
+d = await dbg()
+if ((d.playerCount ?? 0) < 2) fail(`the timeout started a match with no bots: ${d.playerCount}`)
+else ok(`and it seated bots: ${d.playerCount} players`)
+// **And this client is in it.** The ghost above satisfied the count without a
+// seat, so the count alone is not the claim.
+if (!(d.me >= 0) || !d.player) {
+  fail(`the human who waited out the lobby is not in the match it started: me=${d.me} player=${JSON.stringify(d.player)}`)
+} else ok(`and the human who waited is in it (seat ${d.me})`)
+
+// **The panel is gone, and its absence is the assertion now** (§E1, T17.07).
+//
+// This used to require `#lobby-panel` to be on screen: a DOM panel `GameScene`
+// drew over a world the player was already standing in, which is exactly the
+// defect §E1 removed. Waiting is done in the **menu** now, and that screen is
+// asserted on pixels by `scripts/checks/lobby.mjs`.
+//
+// `?game=1` bypasses the menu entirely, so on this path there is no lobby
+// screen at all — which makes "no panel is drawn here" the right claim and the
+// only one this path can make.
+const panelDrawn = await page.evaluate(
+  () => !!(document.querySelector('#lobby-panel') || document.querySelector('#join-code')),
+)
+if (panelDrawn) fail('GameScene is drawing a lobby panel over the world again (§E1)')
+else ok('no lobby panel is drawn over the world')
+await page.screenshot({ path: join(shots, 'lobby-waiting.png') })
+
+// ---- 3. and the round it started is a real one ------------------------------
+//
+// The manual `start_with_bots` control that used to live here is gone: §E2's
+// timeout has already started the match by this point, so pressing it would
+// assert nothing — it would pass against a server that ignored it entirely.
+// The manual path is exercised where it is still the only way in, on the
+// private lobby's ready gate (`scripts/checks/lobby.mjs`, `m10-checkpoint`).
+const t2 = (await dbg()).lastServerTick ?? 0
+await sleep(1500)
+const t3 = (await dbg()).lastServerTick ?? 0
+if (!(t3 > t2)) fail(`the round started but nothing is ticking (${t2} -> ${t3})`)
+else ok(`ticking once the round started (${t2} -> ${t3})`)
+
+
+const stillLobby = await page.evaluate(() => !!document.querySelector('#lobby-panel'))
+if (stillLobby) fail('a lobby panel appeared during the round')
+else ok('still no lobby panel once the round is running')
+await page.screenshot({ path: join(shots, 'lobby-started.png') })
+
+if (pageErrors.length) fail(`page errors: ${pageErrors.slice(0, 3).join(' | ')}`)
+
+await browser.close()
+kids.forEach(killGroup)
+console.log(failed ? 'lobby-start FAILED' : 'lobby-start ok')
+process.exit(failed ? 1 : 0)

@@ -1,0 +1,339 @@
+{
+  "version": 1,
+  "_comment": [
+    "The skin registry (docs/50-sprites-skins.md \u00a72). Changing how a character",
+    "looks is an edit here, not a code change.",
+    "",
+    "Resolution is atlas + prefix + frame name, which is why five characters cost",
+    "five entries and no new art: Kenney's pack ships one rig in five variants and",
+    "scripts/build-atlas.mjs names them `character_<variant>_<pose>`.",
+    "",
+    "The server knows only `skin_id` (\u00a71). It never validates it against this file",
+    "and never sends a texture name, so adding a skin is a client-side change.",
+    "",
+    "anchor.y 0.86: the art is 110 px tall for a 28 px hitbox, and this is where",
+    "that gets reconciled \u2014 the sprite's feet sit at the bottom of the AABB. It is",
+    "per-skin because different art has different proportions."
+  ],
+  "players": [
+    {
+      "id": 0,
+      "name": "Recruit",
+      "atlas": "chars",
+      "prefix": "character_player_",
+      "frames": {
+        "idle": [
+          "idle"
+        ],
+        "walk": [
+          "walk_a",
+          "stand",
+          "walk_b",
+          "stand"
+        ],
+        "jump": [
+          "jump"
+        ],
+        "fall": [
+          "fall"
+        ],
+        "jetpack": [
+          "jetpack_a",
+          "jetpack_b"
+        ],
+        "hurt": [
+          "hurt"
+        ],
+        "dead": [
+          "dead"
+        ]
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.86
+      },
+      "tint": null
+    },
+    {
+      "id": 1,
+      "name": "Adventurer",
+      "atlas": "chars",
+      "prefix": "character_adventurer_",
+      "frames": {
+        "idle": [
+          "idle"
+        ],
+        "walk": [
+          "walk_a",
+          "stand",
+          "walk_b",
+          "stand"
+        ],
+        "jump": [
+          "jump"
+        ],
+        "fall": [
+          "fall"
+        ],
+        "jetpack": [
+          "jetpack_a",
+          "jetpack_b"
+        ],
+        "hurt": [
+          "hurt"
+        ],
+        "dead": [
+          "dead"
+        ]
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.86
+      },
+      "tint": null
+    },
+    {
+      "id": 2,
+      "name": "Scout",
+      "atlas": "chars",
+      "prefix": "character_female_",
+      "frames": {
+        "idle": [
+          "idle"
+        ],
+        "walk": [
+          "walk_a",
+          "stand",
+          "walk_b",
+          "stand"
+        ],
+        "jump": [
+          "jump"
+        ],
+        "fall": [
+          "fall"
+        ],
+        "jetpack": [
+          "jetpack_a",
+          "jetpack_b"
+        ],
+        "hurt": [
+          "hurt"
+        ],
+        "dead": [
+          "dead"
+        ]
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.86
+      },
+      "tint": null
+    },
+    {
+      "id": 3,
+      "name": "Soldier",
+      "atlas": "chars",
+      "prefix": "character_soldier_",
+      "frames": {
+        "idle": [
+          "idle"
+        ],
+        "walk": [
+          "walk_a",
+          "stand",
+          "walk_b",
+          "stand"
+        ],
+        "jump": [
+          "jump"
+        ],
+        "fall": [
+          "fall"
+        ],
+        "jetpack": [
+          "jetpack_a",
+          "jetpack_b"
+        ],
+        "hurt": [
+          "hurt"
+        ],
+        "dead": [
+          "dead"
+        ]
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.86
+      },
+      "tint": null
+    },
+    {
+      "id": 4,
+      "name": "Revenant",
+      "atlas": "chars",
+      "prefix": "character_zombie_",
+      "frames": {
+        "idle": [
+          "idle"
+        ],
+        "walk": [
+          "walk_a",
+          "stand",
+          "walk_b",
+          "stand"
+        ],
+        "jump": [
+          "jump"
+        ],
+        "fall": [
+          "fall"
+        ],
+        "jetpack": [
+          "jetpack_a",
+          "jetpack_b"
+        ],
+        "hurt": [
+          "hurt"
+        ],
+        "dead": [
+          "dead"
+        ]
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.86
+      },
+      "tint": null
+    },
+    {
+      "id": 5,
+      "name": "Recruit (red)",
+      "atlas": "chars",
+      "prefix": "character_player_",
+      "frames": {
+        "idle": [
+          "idle"
+        ],
+        "walk": [
+          "walk_a",
+          "stand",
+          "walk_b",
+          "stand"
+        ],
+        "jump": [
+          "jump"
+        ],
+        "fall": [
+          "fall"
+        ],
+        "jetpack": [
+          "jetpack_a",
+          "jetpack_b"
+        ],
+        "hurt": [
+          "hurt"
+        ],
+        "dead": [
+          "dead"
+        ]
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.86
+      },
+      "tint": "0xff8a7a"
+    }
+  ],
+  "weapons": [
+    {
+      "id": 0,
+      "weaponKey": "bazooka",
+      "atlas": null,
+      "frame": "bazooka_default",
+      "muzzle": {
+        "x": 26,
+        "y": -1
+      },
+      "pivot": {
+        "x": 0.18,
+        "y": 0.5
+      }
+    },
+    {
+      "id": 1,
+      "weaponKey": "grenade",
+      "atlas": null,
+      "frame": "grenade_default",
+      "muzzle": {
+        "x": 12,
+        "y": -2
+      },
+      "pivot": {
+        "x": 0.3,
+        "y": 0.5
+      }
+    },
+    {
+      "id": 2,
+      "weaponKey": "smg",
+      "atlas": null,
+      "frame": "smg_default",
+      "muzzle": {
+        "x": 22,
+        "y": -1
+      },
+      "pivot": {
+        "x": 0.22,
+        "y": 0.5
+      }
+    }
+  ],
+  "_weapons_comment": "atlas null means procedural: these are drawn by client/src/render/weaponTextures.ts rather than packed, because Kenney's packs carry no side-view bazooka, grenade or SMG at a usable size, and docs/51 \u00a75's procedural fallback is the shipping path for anything the packs do not cover. muzzle and pivot are still authoritative and still independent of the server's MUZZLE_OFFSET (docs/50 \u00a74).",
+  "tombstones": [
+    {
+      "id": 0,
+      "name": "Headstone",
+      "atlas": null,
+      "frame": "__tombstone_0"
+    },
+    {
+      "id": 1,
+      "name": "Cross",
+      "atlas": null,
+      "frame": "__tombstone_1"
+    },
+    {
+      "id": 2,
+      "name": "Obelisk",
+      "atlas": null,
+      "frame": "__tombstone_2"
+    },
+    {
+      "id": 3,
+      "name": "Cracked slab",
+      "atlas": null,
+      "frame": "__tombstone_3"
+    },
+    {
+      "id": 4,
+      "name": "Cairn",
+      "atlas": null,
+      "frame": "__tombstone_4"
+    }
+  ],
+  "_tombstones_comment": [
+    "Tombstone skins (docs/71-amendments-v3.md \u00a7B8). `atlas: null` means drawn",
+    "procedurally at runtime, the same convention the weapons use: no Kenney pack",
+    "ships a grave marker, and docs/51 \u00a75's procedural fallback is the shipping",
+    "path for anything the packs do not cover. Choosing a terrain tile that vaguely",
+    "reads as a headstone is the mistake \u00a7A32 caught \u2014 two decor frames turned out",
+    "to be 98% opaque terrain tiles \u2014 and verify-assets now rejects it.",
+    "",
+    "Ids are wire values (`tombstone_skin_id`), so this order is not cosmetic.",
+    "The art is in client/src/render/tombstoneTextures.ts; these five differ in",
+    "SILHOUETTE rather than palette, because at 14x18 px the outline is all a",
+    "player can read and a picker whose options differ only by colour has one",
+    "option."
+  ]
+}

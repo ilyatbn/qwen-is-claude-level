@@ -1,0 +1,995 @@
+//! T8.02 — the replay runner.
+//!
+//! `a_recorded_round_replays_to_the_same_state_hash` is the single best
+//! regression test in this project (`docs/60` §4). If it passes, determinism
+//! holds end to end: the generator, the physics, the item cadences, the weather
+//! schedule and the bots all reproduce from a seed and an ordered command list.
+//! If it ever fails, something has acquired a dependency on ambient state.
+
+use std::path::{Path, PathBuf};
+use std::process::Command as Proc;
+use std::sync::Arc;
+
+use game_core::constants::{MapScale, SIM_DT, SIM_HZ};
+use game_core::player::input::{button, Input};
+use game_server::config::Config;
+use game_server::replay::{self, ReplayCommand};
+use game_server::room::{Command, Room};
+use rust_socketio::{ClientBuilder, Payload, RawClient};
+
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("replayrun-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        Scratch(dir)
+    }
+    fn path(&self) -> &Path {
+        &self.0
+    }
+    fn only_file(&self) -> PathBuf {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(&self.0)
+            .expect("read")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|e| e == "replay"))
+            .collect();
+        assert_eq!(v.len(), 1);
+        v.pop().expect("one")
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn cfg() -> Arc<Config> {
+    Arc::new(Config {
+        map_scale: MapScale::Small,
+        fixed_seed: Some(90210),
+        // Bots in the recording, deliberately: they are the busiest source of
+        // input in the game and they read world state to decide, so a bot that
+        // reproduces is strong evidence the whole sim does.
+        bot_count: 2,
+        record_replay: true,
+        round_seconds: 20.0,
+        dev_loadout: true,
+        ..Config::default()
+    })
+}
+
+/// Record a round: two bots, one human firing and moving, long enough to cross a
+/// checkpoint and to let the weather scheduler and item cadences run.
+/// What a recording is, for the one caller that needs more than its path.
+///
+/// **`last_alive` exists because the perturbation fixture was measuring a
+/// corpse** (T20.21). Only player 0's inputs reach the file — the bots steer
+/// themselves inside the room and never produce a `ReplayCommand::Input`, which
+/// this fixture's own candidate list confirms: 1400 recorded `Input` commands,
+/// every one of them player 0 — so every perturbable byte belongs to one player,
+/// and `world/mod.rs::apply_inputs` skips a dead one *before* it computes speed.
+/// After that tick, flipping LEFT/RIGHT is a no-op **by construction**, and a
+/// perturbation that cannot change the simulation is a falsification that proves
+/// nothing.
+///
+/// The caller cannot learn this from a `PathBuf`, and reconstructing it would
+/// mean re-simulating the round the recorder just ran. *Return what the caller
+/// needs.*
+struct Recorded {
+    path: PathBuf,
+    /// The last tick on which the recorded inputs' owner was alive.
+    last_alive: u32,
+}
+
+fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
+    record_a_round_reporting(dir, ticks).path
+}
+
+fn record_a_round_reporting(dir: &Path, ticks: u32) -> Recorded {
+    let mut room = Room::new(cfg());
+    room.start_recording(dir, "000000000001");
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    room.apply_for_test(Command::Join {
+        name: "ana".into(),
+        look: Default::default(),
+        reply: tx,
+    });
+    let id = rx.blocking_recv().ok().flatten().expect("seat");
+    room.apply_for_test(Command::Ready(id, true));
+    // §C18: a room is born in `Lobby`, and §E2 would not start this one for
+    // `LOBBY_BOT_TIMEOUT`. Without this the fixture records 1400 ticks of a
+    // room that has not started — and, because `tick` only advanced inside `step`,
+    // recorded every one of them at tick 0.
+    room.apply_for_test(Command::StartWithBots(id));
+
+    let mut last_alive = 0u32;
+    for t in 1..=ticks {
+        let buttons = if t % 90 < 45 {
+            button::RIGHT
+        } else {
+            button::LEFT
+        };
+        room.apply_for_test(Command::Input(
+            id,
+            vec![Input::new(t, buttons, (t.wrapping_mul(613) % 65536) as u16)],
+        ));
+        if t % 120 == 0 {
+            room.apply_for_test(Command::Fire(id));
+        }
+        room.tick_inline(SIM_DT);
+        if room
+            .world_for_test()
+            .players
+            .iter()
+            .any(|p| p.id == id && p.alive)
+        {
+            last_alive = t;
+        }
+    }
+    // NON-VACUITY. Both halves of this fixture's fix were falsified independently
+    // and the test passed either way: with the clock advancing but no round
+    // started, it replays 1400 ticks of an idle lobby and the hashes match
+    // trivially. A determinism test that cannot tell a real round from a room
+    // that never started is testing nothing (§B11).
+    assert_ne!(
+        room.world_for_test().phase,
+        game_core::world::RoundPhase::Lobby,
+        "the fixture recorded a room that never left Lobby — 1400 idle ticks, and \
+         the hash comparison below would pass against any build"
+    );
+    assert!(
+        room.tick() > 0,
+        "the fixture recorded {} simulated ticks",
+        room.tick()
+    );
+
+    room.finish_recording();
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+        .expect("read")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "replay"))
+        .collect();
+    Recorded {
+        path: v.pop().expect("a file"),
+        last_alive,
+    }
+}
+
+/// Re-simulate exactly as the binary does. Kept in the test rather than exported
+/// so the binary stays the thing under test in the end-to-end case below.
+fn resimulate(file: &replay::Replay, until: u32) -> Room {
+    let mut room = Room::new(Arc::new(file.header.to_config()));
+    let mut next = 0usize;
+    // Same guard as the binary: this loop is bounded by `world.tick`, and a room
+    // in a phase that does not step never advances it. Without this the test
+    // does not fail, it *hangs* — and it did, at 100 % CPU, on a machine someone
+    // was using.
+    let mut last_tick = room.tick();
+    let mut stalled = 0u32;
+    while room.tick() < until {
+        while let Some((tick, cmd)) = file.body.get(next) {
+            if *tick > room.tick() {
+                break;
+            }
+            next += 1;
+            // One `to_command`, shared with the runner binary. This used to be
+            // a second copy, and it had already drifted: it never learned about
+            // `SetScale`, so this test would have replayed a round the real
+            // runner replays differently.
+            if matches!(cmd, ReplayCommand::Checkpoint { .. }) {
+                continue;
+            }
+            let c = game_server::room::to_command(cmd);
+            room.apply_for_test(c);
+        }
+        room.tick_inline(SIM_DT);
+        if room.tick() == last_tick {
+            stalled += 1;
+            let (t, ph) = (room.tick(), room.world_for_test().phase);
+            assert!(
+                stalled <= 100,
+                "replay stalled at tick {t} in phase {ph:?} — 100 steps advanced nothing"
+            );
+        } else {
+            stalled = 0;
+            last_tick = room.tick();
+        }
+    }
+    room
+}
+
+// ---------------------------------------------------------------------------
+
+/// **The one that matters.**
+#[test]
+fn a_recorded_round_replays_to_the_same_state_hash() {
+    let s = Scratch::new("verify");
+    let path = record_a_round(s.path(), 1400);
+    let file = replay::read_file(&path).expect("decode");
+    let footer = file.footer.clone().expect("footer");
+
+    let mut room = resimulate(&file, footer.final_tick);
+    assert_eq!(
+        room.tick(),
+        footer.final_tick,
+        "the replay must reach the recorded tick"
+    );
+    assert_eq!(
+        room.world_for_test().state_hash(),
+        footer.state_hash,
+        "a recorded round did not reproduce — determinism is broken somewhere"
+    );
+}
+
+/// The test above proves nothing unless a *changed* round produces a *different*
+/// hash. Without this control, a `state_hash` that ignored most of the world
+/// would pass.
+#[test]
+fn a_different_round_produces_a_different_hash() {
+    let s = Scratch::new("control");
+    let path = record_a_round(s.path(), 1400);
+    let file = replay::read_file(&path).expect("decode");
+    let footer = file.footer.clone().expect("footer");
+
+    // Drop the last third of the commands: same seed, same map, different round.
+    let mut perturbed = file.clone();
+    perturbed.body.truncate(perturbed.body.len() * 2 / 3);
+    let mut room = resimulate(&perturbed, footer.final_tick);
+    assert_ne!(
+        room.world_for_test().state_hash(),
+        footer.state_hash,
+        "the hash is insensitive to the round's actual content"
+    );
+}
+
+#[test]
+fn replaying_twice_produces_identical_results() {
+    let s = Scratch::new("twice");
+    let path = record_a_round(s.path(), 900);
+    let file = replay::read_file(&path).expect("decode");
+    let until = file.footer.as_ref().expect("footer").final_tick;
+    let a = resimulate(&file, until).world_for_test().state_hash();
+    let b = resimulate(&file, until).world_for_test().state_hash();
+    assert_eq!(a, b, "two runs of the same file disagree");
+}
+
+/// Empty ticks must be simulated: timers, weather and item cadences advance per
+/// tick, so skipping them silently changes the result.
+#[test]
+fn empty_ticks_are_simulated_not_skipped() {
+    let s = Scratch::new("empty");
+    let mut room = Room::new(cfg());
+    room.start_recording(s.path(), "000000000001");
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    room.apply_for_test(Command::Join {
+        name: "ana".into(),
+        look: Default::default(),
+        reply: tx,
+    });
+    let id = rx.blocking_recv().ok().flatten().expect("seat");
+    room.apply_for_test(Command::Ready(id, true));
+    // §C18: a room is born in `Lobby`, and §E2 would not start this one for
+    // `LOBBY_BOT_TIMEOUT`. Without this the fixture records 1400 ticks of a
+    // room that has not started — and, because `tick` only advanced inside `step`,
+    // recorded every one of them at tick 0.
+    room.apply_for_test(Command::StartWithBots(id));
+    // One command at tick 0 and one at tick 800; everything between is empty.
+    for t in 1..=800 {
+        if t == 800 {
+            room.apply_for_test(Command::Fire(id));
+        }
+        room.tick_inline(SIM_DT);
+    }
+    let expected = room.world_for_test().state_hash();
+    room.finish_recording();
+
+    let file = replay::read_file(&s.only_file()).expect("decode");
+    let mut replayed = resimulate(&file, 800);
+    assert_eq!(
+        replayed.world_for_test().state_hash(),
+        expected,
+        "a round of mostly-empty ticks did not reproduce"
+    );
+    // And the control: a run that skipped the empty ticks would land elsewhere.
+    let mut short = resimulate(&file, 400);
+    assert_ne!(
+        short.world_for_test().state_hash(),
+        expected,
+        "the hash does not change with tick count, so this proves nothing"
+    );
+}
+
+/// Checkpoints are what let a failure say *where*, not just *that*.
+#[test]
+fn checkpoints_are_recorded_every_stride_ticks() {
+    let s = Scratch::new("checkpoints");
+    let path = record_a_round(s.path(), 1400);
+    let file = replay::read_file(&path).expect("decode");
+    let cps: Vec<u32> = file
+        .body
+        .iter()
+        .filter_map(|(_, c)| match c {
+            ReplayCommand::Checkpoint { tick, .. } => Some(*tick),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cps,
+        vec![600, 1200],
+        "expected a checkpoint every {} ticks",
+        replay::CHECKPOINT_STRIDE
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The binary itself
+// ---------------------------------------------------------------------------
+
+fn replay_bin() -> PathBuf {
+    // `cargo test` puts integration binaries in target/<profile>/deps; the binary
+    // under test is one level up.
+    let mut p = std::env::current_exe().expect("test exe");
+    p.pop();
+    if p.ends_with("deps") {
+        p.pop();
+    }
+    p.join("replay")
+}
+
+fn run_bin(args: &[&str]) -> (bool, String) {
+    let out = Proc::new(replay_bin())
+        .args(args)
+        .output()
+        .expect("run the replay binary");
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.success(), s)
+}
+
+#[test]
+fn the_binary_verifies_a_good_file_and_exits_zero() {
+    let s = Scratch::new("bin-verify");
+    let path = record_a_round(s.path(), 900);
+    let (ok, out) = run_bin(&[path.to_str().expect("utf8")]);
+    assert!(ok, "expected exit 0, got:\n{out}");
+    assert!(out.contains("VERIFIED"), "output was:\n{out}");
+}
+
+#[test]
+fn until_stops_at_that_tick_and_reports_its_hash() {
+    let s = Scratch::new("bin-until");
+    let path = record_a_round(s.path(), 900);
+    let (ok, out) = run_bin(&[path.to_str().expect("utf8"), "--until", "300"]);
+    assert!(ok, "output was:\n{out}");
+    assert!(out.contains("simulated 300 ticks"), "output was:\n{out}");
+    assert!(out.contains("state hash"), "output was:\n{out}");
+}
+
+/// A corrupted command must produce a clear error and a non-zero exit, never a
+/// panic and never a silent misparse.
+#[test]
+fn a_corrupted_file_is_a_clear_error_not_a_panic() {
+    let s = Scratch::new("bin-corrupt");
+    let path = record_a_round(s.path(), 300);
+    let mut bytes = std::fs::read(&path).expect("read");
+    // The first command tag sits just past the header and the command's u32 tick.
+    bytes[game_server::replay::HEADER_BYTES + 4] = 250;
+    let bad = s.path().join("corrupt.replay");
+    std::fs::write(&bad, &bytes).expect("write");
+
+    let (ok, out) = run_bin(&[bad.to_str().expect("utf8")]);
+    assert!(!ok, "a corrupt file must not exit 0:\n{out}");
+    assert!(out.contains("unknown command tag"), "output was:\n{out}");
+    assert!(!out.contains("panicked"), "output was:\n{out}");
+}
+
+#[test]
+fn a_truncated_file_is_a_clear_error() {
+    let s = Scratch::new("bin-trunc");
+    let path = record_a_round(s.path(), 300);
+    let bytes = std::fs::read(&path).expect("read");
+    let bad = s.path().join("trunc.replay");
+    std::fs::write(&bad, &bytes[..bytes.len() / 3]).expect("write");
+    // A body cut mid-command is truncated; the reader must say so.
+    let (_, out) = run_bin(&[bad.to_str().expect("utf8")]);
+    assert!(!out.contains("panicked"), "output was:\n{out}");
+}
+
+#[test]
+fn a_version_mismatch_is_a_clear_error() {
+    let s = Scratch::new("bin-version");
+    let path = record_a_round(s.path(), 300);
+    let mut bytes = std::fs::read(&path).expect("read");
+    bytes[4..6].copy_from_slice(&99u16.to_le_bytes());
+    let bad = s.path().join("version.replay");
+    std::fs::write(&bad, &bytes).expect("write");
+
+    let (ok, out) = run_bin(&[bad.to_str().expect("utf8")]);
+    assert!(!ok);
+    assert!(out.contains("replay version 99"), "output was:\n{out}");
+}
+
+/// Net horizontal intent: what the simulation actually reads off the buttons.
+fn net_x(buttons: u8) -> i8 {
+    i8::from(buttons & button::RIGHT != 0) - i8::from(buttons & button::LEFT != 0)
+}
+
+/// A buttons byte whose horizontal intent differs from `b`.
+///
+/// `^= LEFT | RIGHT` on its own is a **silent no-op** on an input holding
+/// neither direction or both: 00 becomes 11 and 11 becomes 00, and both read as
+/// zero horizontal intent. The replay then verifies clean and the test reads it
+/// as "divergence was not detected" when nothing had diverged — the same
+/// vacuity trap as an assertion on a field that does not exist. A reversal is
+/// preferred where one direction is held because it is the largest change
+/// available; otherwise a single bit, which always moves the net.
+fn perturb_buttons(b: u8) -> u8 {
+    [
+        b ^ (button::LEFT | button::RIGHT),
+        b ^ button::LEFT,
+        b ^ button::RIGHT,
+    ]
+    .into_iter()
+    .find(|&c| net_x(c) != net_x(b))
+    .expect("some flip changes the horizontal intent")
+}
+
+/// Byte offset of `body[index]`'s encoded input, anchored to the command index.
+///
+/// A forward cursor, advanced past every command already located, so an
+/// identical earlier input cannot be hit. The previous version searched the
+/// whole file from the start for the first matching bytes and would have
+/// corrupted that earlier command instead — possibly before the checkpoint that
+/// has to still match. Walking the commands in order is the anchor; the search
+/// only finds where the one we are already holding was written.
+fn find_input(bytes: &[u8], cursor: &mut usize, input: &Input) -> Option<usize> {
+    let mut needle = Vec::new();
+    needle.extend_from_slice(&input.seq.to_le_bytes());
+    needle.extend_from_slice(&input.aim.to_le_bytes());
+    needle.push(input.buttons);
+    let at = bytes[*cursor..]
+        .windows(needle.len())
+        .position(|w| w == needle.as_slice())?
+        + *cursor;
+    *cursor = at + needle.len();
+    // `write_command`'s Input arm: `put_u32(seq)`, `put_u16(aim)`, then the
+    // buttons byte — all little-endian (`replay.rs:391`). So the payload is 7
+    // bytes and buttons is the last of them.
+    Some(at + 6)
+}
+
+/// **When a run diverges, the checkpoints localise it to a nearby tick.**
+///
+/// That is the guarantee the format offers, and it is narrower than the one this
+/// test used to assert. The old version flipped a single input's buttons and
+/// required the replay to diverge — which is *"any flipped byte changes the
+/// run"*, a property the system does not have and never promised. A bot steers
+/// itself: reverse its input for one tick and it corrects, and whether that
+/// correction washes out before the next checkpoint depends on the terrain it is
+/// standing on. Pass 6b moved the terrain and the fixture went red having found
+/// nothing. Measured on the new map: the identical byte flip at the identical
+/// offset no longer diverges, and neither does one 600 ticks earlier.
+///
+/// So: perturb a spread of inputs, require that **at least one** diverges — the
+/// control, without which this degrades into corrupting bytes and shrugging —
+/// and for every one that does, assert the reported tick is localised. The ones
+/// that wash out are counted and printed, because that count reaching the whole
+/// set is exactly what the control catches.
+#[test]
+fn a_perturbed_command_is_localised_to_a_nearby_tick() {
+    let s = Scratch::new("bin-diverge");
+    let rec = record_a_round_reporting(s.path(), 1400);
+    let bytes = std::fs::read(&rec.path).expect("read");
+    let file = replay::read_file(&rec.path).expect("decode");
+
+    // **One second of living round after the last perturbed tick** (T20.21).
+    //
+    // A perturbation can only diverge if the simulation acts on it, and this
+    // recording's inputs all belong to one player who *dies*. `apply_inputs`
+    // skips a dead player, so past `last_alive` the flip is a no-op by
+    // construction — and a margin before it, there is not enough of the player's
+    // own round left for the difference to compound.
+    //
+    // Measured at this commit, `last_alive = 1347`, twenty candidates per window:
+    //
+    //   margin 0            ticks 1328..1347   5/20   (15 wash out, contiguous)
+    //   margin SIM_HZ / 2   ticks 1298..1317  19/20
+    //   margin SIM_HZ       ticks 1268..1287  20/20
+    //   margin 2 * SIM_HZ   ticks 1208..1227  19/20
+    //
+    // A plateau, not a spike: the two neighbours of the chosen margin both read
+    // 19/20, so this is not perched on one lucky window.
+    const MARGIN: u32 = SIM_HZ;
+    let cut = rec.last_alive.saturating_sub(MARGIN);
+
+    // **The precondition, asserted rather than arranged.** Without this the
+    // fixture fails as *"the runner is barely detecting corrupted commands"* —
+    // blaming the runner for a recording in which nothing could have been
+    // detected. That is what it did: the old window was the last 20 candidates
+    // minus an 8-candidate tail, ticks 1372..1391, entirely past a death at
+    // 1348, and it reported 0 of 20 against the replay runner.
+    assert!(
+        cut > replay::CHECKPOINT_STRIDE,
+        "the recorded player was last alive at tick {}, which leaves no window \
+         between the first checkpoint ({}) and a {MARGIN}-tick margin before \
+         death — nothing in this recording can be perturbed into a divergence, \
+         so a low count below would say nothing about the runner",
+        rec.last_alive,
+        replay::CHECKPOINT_STRIDE
+    );
+
+    // Candidates after the first checkpoint, so tick 600 always reproduces and
+    // the divergence has somewhere later to be found; and at or before the cut,
+    // so the player is alive to act on them with round left to compound in.
+    let mut cursor = 0usize;
+    let mut candidates: Vec<(u32, usize, u8)> = Vec::new();
+    for (tick, cmd) in &file.body {
+        let ReplayCommand::Input(_, inputs) = cmd else {
+            continue;
+        };
+        let Some(first) = inputs.first() else {
+            continue;
+        };
+        let Some(at) = find_input(&bytes, &mut cursor, first) else {
+            continue;
+        };
+        if *tick > replay::CHECKPOINT_STRIDE && *tick <= cut {
+            candidates.push((*tick, at, first.buttons));
+        }
+    }
+    assert!(
+        candidates.len() >= 24,
+        "only {} perturbable inputs between tick {} and tick {cut}",
+        candidates.len(),
+        replay::CHECKPOINT_STRIDE
+    );
+    // **A contiguous run of late candidates, not a stride across the whole
+    // recording.** D-24 predicted this test would need moving the next time the
+    // map changed, and T18.04's bigger objects were that change. Measured then:
+    // spreading twelve samples across the round gave **0 of 12** where it had
+    // given 4, and widening the same stride to 24 gave **0 of 24**.
+    //
+    // **The window is now located by the recording rather than by hand** (T20.21).
+    // It used to be "the last 28 candidates, take 20", a hand-slid offset from
+    // the end of the file, and D-24's prediction came true twice: once when the
+    // terrain moved, and again when the player started dying earlier and the
+    // whole window landed past her death. Anchoring it to `last_alive` makes it
+    // move with the round, which is what the boundary was always about — a
+    // perturbation needs the player alive to act on it and round left to compound
+    // in, and neither of those is a fixed distance from the end of a file.
+    //
+    // The property under test is **localisation of the divergences that do
+    // occur** (D-20), not that any given byte diverges — so the sample is taken
+    // where divergences live.
+    let n = candidates.len();
+    let sample: Vec<_> = candidates[n.saturating_sub(20)..].to_vec();
+
+    let mut diverged = 0usize;
+    let mut washed_out: Vec<u32> = Vec::new();
+
+    for (i, (tick, at, buttons)) in sample.iter().enumerate() {
+        // **The anchor.** Everything else here is satisfied wherever `at`
+        // points: "the byte changed" is true of any offset, and comparing
+        // `net_x(perturbed[at])` against `net_x(buttons)` is a tautology —
+        // `perturb_buttons` is *defined* to change `net_x`, so it would be
+        // checking a value against its own input. This is the one assertion that
+        // fails if the offset is wrong, because it reads the file.
+        assert_eq!(
+            bytes[*at], *buttons,
+            "tick {tick}: find_input landed on {:#04x}, not the buttons byte {:#04x}",
+            bytes[*at], *buttons
+        );
+
+        let mut perturbed = bytes.clone();
+        perturbed[*at] = perturb_buttons(*buttons);
+
+        let bad = s.path().join(format!("diverge-{i}.replay"));
+        std::fs::write(&bad, &perturbed).expect("write");
+        let (ok, out) = run_bin(&[bad.to_str().expect("utf8")]);
+
+        if ok {
+            washed_out.push(*tick);
+            continue;
+        }
+        diverged += 1;
+        assert!(out.contains("MISMATCH"), "tick {tick}: output was:\n{out}");
+
+        // The claim in this test's name, and the one the runner documents:
+        // localised to within a stride. Two cases, and the bound is the same
+        // either way — a checkpoint that failed puts the cause in the stride
+        // *before* it, while a tail divergence past the last checkpoint is
+        // reported at that checkpoint and puts the cause in the stride *after*.
+        let reported: u32 = out
+            .split("first divergence at tick ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("tick {tick}: no localised tick in:\n{out}"));
+        assert!(
+            reported.abs_diff(*tick) <= replay::CHECKPOINT_STRIDE,
+            "tick {tick}: divergence reported at {reported}, more than a stride \
+             ({}) away — not localised",
+            replay::CHECKPOINT_STRIDE
+        );
+    }
+
+    println!(
+        "perturbations: {diverged}/{} diverged, {} washed out at ticks {washed_out:?}",
+        sample.len(),
+        washed_out.len()
+    );
+
+    // The control. Every perturbation washing out would mean the runner cannot
+    // detect a corrupted command at all, and every assertion above would have
+    // been skipped in silence.
+    //
+    // The floor is 5 of 20 against a measured **20 of 20** (T20.21), so it has
+    // fifteen of room. D-24's complaint about the floor before this one was that
+    // 3 of 12 measured sat *on* its own floor of 3, and the next map change went
+    // red by construction. That is exactly what the `MARGIN` above buys and it is
+    // measured: with `MARGIN` at 0 the window butts against the death boundary
+    // and reads **5 of 20** — passing today, on the floor, red on the next drift.
+    // The margin is what keeps this assertion about the runner.
+    //
+    // Below 5 the runner would be missing three quarters of corrupted commands,
+    // which is a real regression and not terrain drift.
+    //
+    // Counts in the message rather than a `println!` — which `cargo test`
+    // swallows without `--nocapture`, so a drift to 1 would pass in silence.
+    assert!(
+        diverged >= 5,
+        "only {diverged} of {} perturbed inputs diverged ({} washed out at {washed_out:?}) — \
+         the runner is barely detecting corrupted commands",
+        sample.len(),
+        washed_out.len()
+    );
+
+    // **The uninformative direction is "nothing diverged", and only that.**
+    //
+    // This used to require the window to *straddle* the boundary — some ticks
+    // with round left to compound in, some without — and failed if every
+    // perturbation went the same way, in either direction. §F4 removed the
+    // boundary from this recording altogether, so the symmetric form now fails
+    // on a healthy system.
+    //
+    // Measured, with a control worktree at the commit before §F4 was repealed:
+    //
+    //   before  11/20 diverged, 9 washed out (the last nine ticks in the window)
+    //   after   20/20 diverged, 0 washed out
+    //
+    // **The second half of that line was "and still 20/20 when the window is slid
+    // all the way to the final 20 candidates", and it is withdrawn** (T20.21).
+    // It stopped being true the moment the recorded player started dying before
+    // the end of the recording: the final 20 candidates now read **0 of 20**,
+    // because `apply_inputs` skips a dead player and every one of them is hers.
+    // A measurement in a comment is only valid for the code it was taken
+    // against, and nothing re-validated this one until it failed.
+    //
+    // The cause is the feature: bots used to stop dead to shoot, and now they
+    // fire while moving, so a corrupted button becomes a shot — and a shot
+    // becomes a terrain difference — within a tick or two. There is no longer a
+    // tail of ticks with too little round left to compound in, which is why
+    // moving the window cannot restore the straddle and why the old assertion's
+    // own advice ("move the window, not the floor") no longer applies: it was
+    // written for a terrain change, and this is not one.
+    //
+    // What the straddle was guarding is untouched. The floor above still fails
+    // if detection collapses, the localisation assertions in the loop still ran
+    // — on **twenty** real divergences rather than eleven, which is more
+    // coverage, not less — and the genuinely vacuous outcome, where a corrupted
+    // command changes nothing and every assertion above is skipped in silence,
+    // is exactly what this still fails on.
+    assert!(
+        diverged > 0,
+        "not one of {} perturbed inputs diverged ({} washed out at {washed_out:?}) — the \
+         runner cannot detect a corrupted command at all, and every localisation \
+         assertion above was skipped in silence",
+        sample.len(),
+        washed_out.len()
+    );
+    if washed_out.is_empty() {
+        // Not a failure, and no longer a puzzle (T20.21): the wash-out tail is
+        // real and it sits against the **death** boundary, not the end of the
+        // file — 15 of 20 wash out with `MARGIN` at 0. This window is placed a
+        // second clear of it on purpose, so a clean sweep here is the window
+        // working rather than the boundary having vanished.
+        println!(
+            "note: every sampled perturbation diverged — this window is a second \
+             clear of the wash-out boundary by construction, so it measures \
+             detection and not the boundary"
+        );
+    }
+}
+
+#[test]
+fn a_round_replays_far_faster_than_it_was_played() {
+    let s = Scratch::new("bin-speed");
+    // 1400 ticks is ~23 s of game time.
+    let path = record_a_round(s.path(), 1400);
+    let start = std::time::Instant::now();
+    let (ok, out) = run_bin(&[path.to_str().expect("utf8")]);
+    let elapsed = start.elapsed();
+    assert!(ok, "output was:\n{out}");
+    assert!(
+        elapsed.as_secs_f64() < 10.0,
+        "replaying 23 s of game time took {:.1} s",
+        elapsed.as_secs_f64()
+    );
+}
+
+/// The bug this pins: `main` used to return as soon as axum stopped, so the room
+/// task was never scheduled again and **the footer was never written**. A round
+/// killed by `docker compose down` — the one you most want to inspect — produced
+/// an unverifiable file, and every unit test passed because they called
+/// `finish_recording` directly.
+///
+/// Signalling shutdown is not enough on its own; the shutdown has to be *waited
+/// for*.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_signalled_shutdown_writes_the_footer_before_the_process_can_exit() {
+    use game_server::app::build_stack;
+    use game_server::state::AppState;
+
+    let s = Scratch::new("shutdown-footer");
+    let config = Config {
+        map_scale: MapScale::Small,
+        fixed_seed: Some(31337),
+        bot_count: 1,
+        record_replay: true,
+        replay_dir: s.path().to_string_lossy().into_owned(),
+        round_seconds: 30.0,
+        ..Config::default()
+    };
+    let stack = build_stack(AppState::new(config));
+    let room = stack.start_default_room();
+
+    // Let the room tick a while, so there is a round to record.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let _ = stack.shutdown.send(());
+    assert!(
+        room.wait_for_shutdown(std::time::Duration::from_secs(5))
+            .await,
+        "the room did not stop within the grace period"
+    );
+
+    let file = replay::read_file(&s.only_file()).expect("decode");
+    assert!(
+        file.footer.is_some(),
+        "a clean shutdown must leave a verifiable file"
+    );
+}
+
+/// The control, and it has to be a **subprocess**: in-process the room task is
+/// scheduled the moment the oneshot fires, so an in-process "don't wait" case
+/// writes the footer anyway and proves nothing. The bug was that the *process
+/// exited*, taking the runtime with it.
+///
+/// So: SIGTERM must leave a footer, SIGKILL must not. If both left one, the
+/// assertion above would be passing for a reason unrelated to shutdown.
+#[test]
+fn sigterm_leaves_a_verifiable_file_and_sigkill_does_not() {
+    fn run_until_killed(name: &str, signal: &str) -> Option<replay::Replay> {
+        let s = Scratch::new(name);
+        let bin = {
+            let mut p = std::env::current_exe().expect("test exe");
+            p.pop();
+            if p.ends_with("deps") {
+                p.pop();
+            }
+            p.join("game-server")
+        };
+        // A free port chosen here rather than `:0`, because §C18 means the test
+        // has to *connect* to the server to make a room exist, and a port the
+        // OS picked inside the child is one the parent cannot learn with
+        // `GAME_LOG=error`.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("pick a port");
+            let p = l.local_addr().expect("addr").port();
+            drop(l);
+            p
+        };
+        let mut child = Proc::new(&bin)
+            .env("RECORD_REPLAY", "1")
+            .env("REPLAY_DIR", s.path())
+            .env("FIXED_SEED", "31337")
+            .env("MAP_SCALE", "small")
+            .env("ROUND_SECONDS", "60")
+            .env("BOT_COUNT", "1")
+            .env("GAME_LOG", "error")
+            .env("BIND_ADDR", format!("127.0.0.1:{port}"))
+            .spawn()
+            .expect("spawn the server");
+
+        // §C18: a fresh server has no room, and recording starts with a room's
+        // task. Before this change the binary recorded from startup, so this
+        // test only had to wait for a file. Now something has to ask for a game
+        // — which is the behaviour the change exists to produce.
+        let addr = format!("127.0.0.1:{port}");
+        let up = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::net::TcpStream::connect(&addr).is_err() {
+            assert!(std::time::Instant::now() < up, "server never bound {addr}");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let (open_tx, open_rx) = std::sync::mpsc::channel::<()>();
+        let (map_tx, map_rx) = std::sync::mpsc::channel::<()>();
+        let (welcome_tx, welcome_rx) = std::sync::mpsc::channel::<()>();
+        let sock = ClientBuilder::new(format!("http://{addr}"))
+            .namespace("/")
+            .on("open", move |_: Payload, _: RawClient| {
+                let _ = open_tx.send(());
+            })
+            .on("map_init", move |_: Payload, _: RawClient| {
+                let _ = map_tx.send(());
+            })
+            .on("welcome", move |_: Payload, _: RawClient| {
+                let _ = welcome_tx.send(());
+            })
+            .connect()
+            .expect("socket.io connect");
+        // `connect()` returns while the namespace CONNECT is still in flight and
+        // an emit sent on the next line is dropped with no error — the 1-in-4
+        // flake that cost a session (§A28). Wait for `open` first.
+        open_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("socket.io never reported `open`");
+
+        // §E1: a file existing no longer means a round is under way — the
+        // recorder opens with the room, and the room starts as a lobby. A footer
+        // hashes a world, so this test needs a match, and `map_init` is the
+        // message that says there is one. Asking for it is the solo path (§C18).
+        // Seated first. `start_with_bots` from a socket the room has not seated
+        // yet is dropped with no error — the same §A28 shape the `open` wait
+        // above exists for, one verb along. The old version of this test was
+        // shielded from it by a filesystem poll that happened to take long
+        // enough; §E1 removed that poll's meaning, and the race underneath it
+        // surfaced immediately.
+        // **Emit `join` until the server answers** — this test was D-58's last
+        // member with no explanation, and it has one (T20.20).
+        //
+        // Measured over 13 full `cargo test -p game-server` runs on an idle
+        // box: 2 failures, both here, both `never seated: Timeout` — thirty
+        // seconds of silence on a socket whose `open` callback had already
+        // fired. That is §A28's shape, not a busy box: `connect()` returns
+        // while the socket.io namespace CONNECT is still in flight and an emit
+        // on the next line is dropped **with no error**, which waiting for
+        // `open` narrows without closing. `rooms.rs::emit_until` is the answer
+        // this repository already worked out; this file never got it.
+        //
+        // Re-emitting is safe because the server defines it so: a second join
+        // on one socket is ignored, not a second player
+        // (`session.rs::seat`). **Only `join` may be retried** — the
+        // `start_with_bots` below carries no such guarantee.
+        let seated = {
+            let budget = std::time::Duration::from_secs(30);
+            let retry_every = std::time::Duration::from_secs(5);
+            let started = std::time::Instant::now();
+            let mut sent = 0;
+            loop {
+                sock.emit("join", serde_json::json!({ "name": "ana", "skin_id": 0 }))
+                    .expect("join");
+                sent += 1;
+                if welcome_rx.recv_timeout(retry_every).is_ok() {
+                    if sent > 1 {
+                        eprintln!("EMIT_RETRY join: seated on attempt {sent}");
+                    }
+                    break true;
+                }
+                if started.elapsed() >= budget {
+                    break false;
+                }
+            }
+        };
+        assert!(
+            seated,
+            "never seated: no `welcome` in 30 s on a socket whose `open` had fired"
+        );
+        sock.emit("start_with_bots", serde_json::json!({}))
+            .expect("start_with_bots");
+        map_rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the match never started, so there is no round to verify");
+        // Let a few ticks land, so the footer describes a simulation rather than
+        // tick zero.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let _ = Proc::new("kill")
+            .args([signal, &child.id().to_string()])
+            .status();
+        let _ = child.wait();
+        replay::read_file(&s.only_file()).ok()
+    }
+
+    let term = run_until_killed("sigterm", "-TERM").expect("SIGTERM file decodes");
+    assert!(
+        term.footer.is_some(),
+        "SIGTERM must leave a verifiable file — this is the `docker compose down` case"
+    );
+
+    // SIGKILL gives the process no chance to flush, so the file is header-only:
+    // decodable (the header is flushed on create, so a killed round still names
+    // its seed) but with no footer, hence unverifiable.
+    let kill = run_until_killed("sigkill", "-KILL").expect("SIGKILL file still decodes");
+    assert!(
+        kill.footer.is_none(),
+        "SIGKILL left a footer, so the SIGTERM assertion proves nothing about shutdown"
+    );
+    assert_eq!(
+        kill.header.seed, 31337,
+        "a killed round must still say which map it was"
+    );
+}
+
+/// A settings change is recorded, so a replay regenerates the map that was played.
+///
+/// **The divergence this guards is one T17.04 created.** The header writes
+/// `scale` when the room is *constructed*; T17.01 moved world generation to match
+/// *start*; and §E3 lets the host change the map size in between. So the header
+/// says Small, the live world is Large, and a replay that trusted the header
+/// would rebuild the wrong map and diverge on the first tick.
+///
+/// The assertion is on the **map's own dimensions**, not on the recorded command:
+/// a body containing `SetScale` proves it was written, not that replaying it
+/// changes anything.
+#[test]
+fn a_recorded_settings_change_rebuilds_the_map_that_was_played() {
+    let dir = Scratch::new("setscale");
+    let mut room = Room::new(cfg());
+    room.start_recording(dir.path(), "000000000002");
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    room.apply_for_test(Command::Join {
+        name: "ana".into(),
+        look: Default::default(),
+        reply: tx,
+    });
+    let id = rx.blocking_recv().ok().flatten().expect("seat");
+    room.apply_for_test(Command::Ready(id, true));
+
+    // The host changes the map before the match begins — the whole point of
+    // building the world at match start.
+    let (reply, ack) = tokio::sync::oneshot::channel();
+    room.apply_for_test(Command::SetScale {
+        by: id,
+        scale: MapScale::Large,
+        reply,
+    });
+    ack.blocking_recv()
+        .expect("the room answered")
+        .expect("the host may change the map size");
+
+    room.apply_for_test(Command::StartWithBots(id));
+    for _ in 0..10 {
+        room.tick_inline(SIM_DT);
+    }
+    let played = {
+        let w = room.world_for_test();
+        (w.map.mask.w, w.map.mask.h)
+    };
+    room.finish_recording();
+
+    // Control: the header still says what the room was *created* with, so a
+    // replayer that trusted it would build the wrong map. Without this the
+    // assertion below passes for a header that happened to say Large already.
+    let file = replay::decode(&std::fs::read(dir.only_file()).expect("read")).expect("decode");
+    assert_eq!(
+        file.header.scale,
+        MapScale::Small,
+        "the header already recorded the new scale, so this test proves nothing"
+    );
+
+    let replayed = {
+        let mut r = resimulate(&file, 10);
+        let w = r.world_for_test();
+        (w.map.mask.w, w.map.mask.h)
+    };
+    assert_eq!(
+        replayed, played,
+        "the replay rebuilt a different map than the round played: the settings \
+         change was not applied"
+    );
+}

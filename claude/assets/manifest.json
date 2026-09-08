@@ -1,0 +1,65 @@
+{
+  "atlases": [
+    {
+      "key": "chars",
+      "png": "atlas/chars.png",
+      "json": "atlas/chars.json"
+    },
+    {
+      "key": "decor",
+      "png": "atlas/decor.png",
+      "json": "atlas/decor.json"
+    },
+    {
+      "key": "items",
+      "png": "atlas/items.png",
+      "json": "atlas/items.json"
+    },
+    {
+      "key": "fx",
+      "png": "atlas/fx.png",
+      "json": "atlas/fx.json"
+    },
+    {
+      "key": "clouds",
+      "png": "atlas/clouds.png",
+      "json": "atlas/clouds.json"
+    },
+    {
+      "key": "objects",
+      "png": "atlas/objects.png",
+      "json": "atlas/objects.json"
+    }
+  ],
+  "images": [],
+  "themes": [],
+  "audio": [
+    "audio/crate_land.ogg",
+    "audio/death.ogg",
+    "audio/effect_telegraph.ogg",
+    "audio/explode_0.ogg",
+    "audio/explode_1.ogg",
+    "audio/explode_2.ogg",
+    "audio/fire_bazooka.ogg",
+    "audio/fire_grenade.ogg",
+    "audio/fire_smg_0.ogg",
+    "audio/fire_smg_1.ogg",
+    "audio/fire_smg_2.ogg",
+    "audio/hit.ogg",
+    "audio/jetpack.ogg",
+    "audio/land.ogg",
+    "audio/lava.ogg",
+    "audio/meteor.ogg",
+    "audio/phase_change.ogg",
+    "audio/pickup.ogg",
+    "audio/toxic.ogg",
+    "audio/ui_click.ogg",
+    "audio/walk_0.ogg",
+    "audio/walk_1.ogg",
+    "audio/walk_2.ogg"
+  ],
+  "vendorPacks": [
+    "clouds",
+    "kenney-fonts"
+  ]
+}

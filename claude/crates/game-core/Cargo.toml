@@ -1,0 +1,21 @@
+[package]
+name = "game-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure simulation core: map generation, destruction, physics, items, weapons, effects."
+
+[dependencies]
+rand.workspace = true
+rand_chacha.workspace = true
+blake3.workspace = true
+serde = { workspace = true, optional = true }
+png = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]
+dump-png = ["dep:png"]
