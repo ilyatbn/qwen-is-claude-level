@@ -303,9 +303,53 @@ for (const c of [a, b]) {
     })
     .catch(() => fail(`${c.name} never reached the playing phase`))
 }
+// **Waited on the movement, not on a clock** (T19.25).
+//
+// This was `sleep(600)`, and it failed 1 run in 3 on an idle box — caught by its
+// own frozen-frame control, which then reported *red* for a box that stalled
+// rather than a game that broke.
+//
+// Measured before choosing, in both instances across the same window:
+//
+// | | frames in ~600 ms | fps |
+// |---|---|---|
+// | idle | 25 / 25 | 41.4 / 41.5 |
+// | 16 CPU hogs | 6 / 6 | 9.8 / 9.7 |
+//
+// So the cadence is **not** unattainable under load — a quarter of idle still
+// moves the player several times. That rules out the inconclusive-and-retry
+// shape this task offered as the honest last resort: there is a real condition
+// to wait for, so waiting for it is the fix, and an inconclusive verdict here
+// would have been buying a quieter red.
+//
+// The bound is the patch's own geometry, not a number that made it pass: the
+// sampled rect is 320 px wide, so advancing a tenth of that guarantees a tenth
+// of the terrain under it is new. A box too slow to manage even that inside the
+// deadline has genuinely stalled, and the control below still says so.
+const MOVE_PX = 32
 const before = { a: await patch(a), b: await patch(b) }
+const startX = {
+  a: (await a.dbg())?.renderPos?.x ?? 0,
+  b: (await b.dbg())?.renderPos?.x ?? 0,
+}
 for (const c of [a, b]) await c.page.keyboard.down('d')
-await sleep(600)
+await Promise.all(
+  [
+    [a, startX.a],
+    [b, startX.b],
+  ].map(([c, x0]) =>
+    c.page
+      .waitForFunction(
+        (t) => (window.__game?.debug()?.renderPos?.x ?? -Infinity) >= t,
+        x0 + MOVE_PX,
+        { timeout: 15_000 },
+      )
+      // Swallowed: the frozen-frame control below is the assertion, and it
+      // reports the pixels it actually saw. A throw here would replace that
+      // with "timed out" and lose the evidence.
+      .catch(() => {}),
+  ),
+)
 const after = { a: await patch(a), b: await patch(b) }
 for (const c of [a, b]) await c.page.keyboard.up('d')
 

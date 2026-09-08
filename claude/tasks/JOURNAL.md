@@ -5781,3 +5781,17 @@ swallowing a refusal here to report it as a timeout there would trade one race f
 Grepping found **six** connect-then-emit sites, not just the one that failed — counted at both
 ends afterwards: 0 raw `connect(addr` remain, 6 helper call sites, and the file's now-dead local
 `connect` deleted. Falsified by disabling `seat`'s cleanup: the defect arm still fails. 5/5 gates.
+
+## T19.25 — measured the cadence, and the measurement chose the fix
+
+Both browsers, same window: **idle 25 frames / ~605 ms (41.4 and 41.5 fps); under 16 CPU hogs
+6 frames (9.8 and 9.7 fps)**. A quarter of idle still moves the player several times — so the
+cadence is *not* unattainable under load, and that **rules out** the inconclusive-with-retry shape
+the task offered as the honest last resort. There is a real condition to wait for, so waiting for
+it is the fix; an inconclusive verdict here would have been buying a quieter red.
+`sleep(600)` became a wait on `renderPos.x` advancing `MOVE_PX = 32` — a tenth of the 320 px
+sampled rect, so a tenth of the terrain under it is new. Bound by geometry, not by what passed.
+**The first falsification failed to fail**: removing the leaver's input still passed (delta 11.7),
+because the scene animates regardless — I had tested input, not rendering. Killing her
+`requestAnimationFrame` gives the right red: *"the leaver's canvas is frozen: delta 0.0 and an
+identical digest"*. The frozen-frame control is untouched. 5/5 gates.
