@@ -5806,3 +5806,15 @@ build covers **251 px**, those messages arriving at the network rate not `SIM_HZ
 despawns and cannot be drawn still sample after sample. One trailing stationary sample is now
 allowed; every-step-forward judges the rest. Replay lifts `travelled` from the file's own
 source, 14/14. Falsification 2/2 red, 6/6 green reverted. In-suite 5/5, 19.0-20.5s.
+
+## T19.28 — a killed check now says so, and the exit code still refuses it
+
+`p.on('exit', (c) => res(c ?? 1))` became `(c, sig)` through a shared
+`lib/child-outcome.mjs::childOutcome`, which returns `passed` / `failed` / `signalled` — the last
+carrying `killed by SIGKILL` and `ok: false`, so the suite stays red rather than going green on a
+kill. Summary gains a `KILL` label and a line naming which of the not-passing were killed.
+`checks/runner-outcome.mjs` (standalone, first in the suite, 0.1 s) spawns three real children —
+self-SIGKILL after printing its ok line, exit 1, exit 0 — and asserts all three are told apart.
+**Falsified twice at `childOutcome`**: `c ?? 1` reproduces the defect verbatim, both children
+reporting `exited 1`; "everything is signalled" is caught by the exit-1 control. `--help` added —
+the Done-when's first half exited 2 before, matching nothing.

@@ -35,6 +35,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
 import { matchVitePort } from './vite-url.mjs'
+import { childOutcome, outcomeBanner, outcomeLabel } from './lib/child-outcome.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const shotsDir = join(root, 'shots')
@@ -54,6 +55,11 @@ const chromePath = join(
  * than after the two-client round.
  */
 const CHECKS = [
+  // T19.28 — the runner's self-test, first because it costs under a second and
+  // because a runner that misreports its children misreports everything below.
+  // Standalone: it spawns real children and kills one, which is the only way to
+  // observe the `(code, signal)` pair the suite reads.
+  { name: 'runner-outcome', file: 'scripts/checks/runner-outcome.mjs', standalone: true },
   // The front end a player actually meets first (§B3). Its URL has no scene
   // flag: the title screen is the default.
   {
@@ -224,6 +230,17 @@ const CHECKS = [
 ]
 
 const filters = process.argv.slice(2)
+// `--help` before anything else: it is the one invocation that must not build
+// wasm, launch vite or open a browser, and it is what a smoke test can afford
+// to run. Without it `--help` fell through to the name filter, matched nothing
+// and exited 2 — a usage request reported as "no checks match --help".
+if (filters.some((f) => f === '--help' || f === '-h')) {
+  console.log('usage: node scripts/e2e.mjs [name-fragment ...]')
+  console.log('  no arguments runs every check except the opt-in ones')
+  console.log(`available: ${CHECKS.map((c) => c.name).join(', ')}`)
+  console.log(`opt-in:    ${CHECKS.filter((c) => c.optIn).map((c) => c.name).join(', ')}`)
+  process.exit(0)
+}
 const selected = filters.length
   ? CHECKS.filter((c) => filters.some((f) => c.name.includes(f)))
   : // An opt-in check is only skipped when nothing was asked for by name, so
@@ -384,18 +401,21 @@ try {
     const started = Date.now()
 
     if (check.standalone) {
-      const code = await new Promise((res) => {
+      // `(c, sig)`, not `(c)`. A child killed by a signal delivers `code ===
+      // null`, and the old `c ?? 1` reported that as exit 1 — indistinguishable
+      // from a check whose assertions failed. See lib/child-outcome.mjs.
+      const outcome = await new Promise((res) => {
         const p = spawn('node', [check.file], { cwd: root, stdio: 'inherit', env: process.env })
-        p.on('exit', (c) => res(c ?? 1))
+        p.on('exit', (c, sig) => res(childOutcome(c, sig)))
       })
-      const ok = code === 0
       results.push({
         name: check.name,
-        ok,
+        ok: outcome.ok,
+        kind: outcome.kind,
         ms: Date.now() - started,
-        err: ok ? undefined : `exited ${code}`,
+        err: outcome.err,
       })
-      console.log(`  ${ok ? '\x1b[1;32mok\x1b[0m' : '\x1b[1;31mFAILED\x1b[0m'} (${((Date.now() - started) / 1000).toFixed(1)}s)`)
+      console.log(`  ${outcomeBanner(outcome.kind)} (${((Date.now() - started) / 1000).toFixed(1)}s)`)
       continue
     }
 
@@ -437,7 +457,7 @@ try {
       if (errors.length) throw new Error(`page errors:\n${errors.join('\n')}`)
       if (shots === 0) throw new Error('the check wrote no screenshot')
 
-      results.push({ name: check.name, ok: true, ms: Date.now() - started })
+      results.push({ name: check.name, ok: true, kind: 'passed', ms: Date.now() - started })
       console.log(`  \x1b[1;32mok\x1b[0m (${((Date.now() - started) / 1000).toFixed(1)}s)`)
     } catch (e) {
       // Capture the frame at the moment of failure — on a headless box this is
@@ -448,7 +468,7 @@ try {
       } catch {
         /* the page may be gone */
       }
-      results.push({ name: check.name, ok: false, ms: Date.now() - started, err: e.message })
+      results.push({ name: check.name, ok: false, kind: 'failed', ms: Date.now() - started, err: e.message })
       console.log(`  \x1b[1;31mFAILED\x1b[0m ${e.message}`)
     } finally {
       await page.close()
@@ -456,7 +476,7 @@ try {
   }
 } catch (e) {
   console.error(`\nsuite could not start: ${e.message}`)
-  results.push({ name: '(startup)', ok: false, ms: 0, err: e.message })
+  results.push({ name: '(startup)', ok: false, kind: 'failed', ms: 0, err: e.message })
 } finally {
   await browser?.close()
   shutdown()
@@ -465,9 +485,18 @@ try {
 const failed = results.filter((r) => !r.ok)
 console.log('\n\x1b[1;34m=== e2e summary ===\x1b[0m')
 for (const r of results) {
-  console.log(`  ${r.ok ? '\x1b[1;32mok  \x1b[0m' : '\x1b[1;31mFAIL\x1b[0m'} ${r.name.padEnd(28)} ${(r.ms / 1000).toFixed(1)}s`)
+  console.log(`  ${outcomeLabel(r.kind ?? (r.ok ? 'passed' : 'failed'))} ${r.name.padEnd(28)} ${(r.ms / 1000).toFixed(1)}s`)
 }
+const signalled = results.filter((r) => r.kind === 'signalled')
 console.log(`  ${results.length - failed.length}/${results.length} passed`)
+if (signalled.length) {
+  // Named separately because the response differs: a failure is a defect to
+  // fix, a kill is a run to repeat. Both keep the exit code non-zero.
+  console.log(
+    `  ${signalled.length} of the ${failed.length} not-passing were KILLED, not failed: ` +
+      signalled.map((r) => `${r.name} (${r.err})`).join(', '),
+  )
+}
 for (const f of failed) console.log(`\n  ${f.name}: ${f.err}`)
 
 // Did the suite leave anything running? See STRAY_PATTERNS above.
