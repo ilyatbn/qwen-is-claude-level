@@ -4,11 +4,12 @@
 
 use crate::constants::{
     BASE_HEALTH, BATTERY_MAX, DEATH_POINTS, HEALTH_CAP, HEALTH_SPEED_MIN, KILL_POINTS,
-    LASER_BATTERY_DRAIN, LASER_SHIELD_MULT, OVERHEAL_DECAY, RESPAWN_DELAY, SHIELD_DAMAGE_MULT,
-    SHIELD_HIT_COST, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST, TOXIC_POISON_DURATION,
+    LASER_BATTERY_DRAIN, LASER_SHIELD_MULT, LIFESTEAL_DAMAGE_PER_HP, OVERHEAL_DECAY, RESPAWN_DELAY,
+    SHIELD_DAMAGE_MULT, SHIELD_HIT_COST, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST,
+    TOXIC_POISON_DURATION,
 };
 use crate::items::inventory::{Inventory, Stack};
-use crate::items::registry::{def, ItemId, ItemKind, WeaponId};
+use crate::items::registry::{def, ItemId, ItemKind, UtilityId, WeaponId};
 use crate::map::gen::surface::is_standable;
 use crate::map::Map;
 use crate::math::{lerp, Vec2};
@@ -193,6 +194,66 @@ impl PlayerState {
         self.inventory
             .iter()
             .any(|(_, s)| matches!(def(s.item).map(|d| d.kind), Some(ItemKind::Shield)))
+    }
+
+    /// Is a particular passive utility anywhere in the bag? (T21.01)
+    ///
+    /// The generalisation of `holds_shield_generator`, and it follows the same
+    /// two rules. It scans **every slot**, because the passives are held rather
+    /// than selected — *"not the active one"* is the brief for all of them. And
+    /// it asks the `ItemKind`, never an id: `ItemKind::Utility(_)` **is** the
+    /// passive family (`use_item` refuses the whole variant), so a second pair
+    /// of fangs or a second torch is covered by construction. A hand-kept list
+    /// of effect-item ids goes stale on the sixth one, and T21.09 sorts the
+    /// backpack by kind for exactly that reason.
+    pub fn holds_utility(&self, which: UtilityId) -> bool {
+        self.inventory.iter().any(|(_, s)| {
+            matches!(def(s.item).map(|d| d.kind), Some(ItemKind::Utility(u)) if u == which)
+        })
+    }
+
+    /// Vampire fangs (T21.01): turn damage **this player just dealt** into life.
+    ///
+    /// `damage` is what actually **landed** on the victim, not what the weapon
+    /// rolled — the two differ by exactly the victim's generator, and that is
+    /// the case the brief singles out. Feeding on the rolled number would pay
+    /// the attacker for the quarter the generator ate.
+    ///
+    /// **Nothing is stored and nothing is rounded.** The return is
+    /// `damage / LIFESTEAL_DAMAGE_PER_HP`, so two 5-damage hits return the same
+    /// 1.0 that one 10-damage hit does and no fractional carry has to live
+    /// anywhere. Health is already fractional everywhere else here — poison,
+    /// overheal decay and fall damage all write fractions.
+    ///
+    /// `victim_shielded` is *"the opponent **has** a shield generator"*, which
+    /// is `holds_shield_generator` and deliberately **not** `shield_active`:
+    /// the brief asks about the item, and `shield_active` would additionally
+    /// require charge, so draining someone's battery would silently switch your
+    /// own reward back to health mid-fight.
+    ///
+    /// The guard lives here rather than at the call site so that the second
+    /// caller cannot drop it (`CLAUDE.md`: share the guard, or share the
+    /// function).
+    pub fn steal_life(&mut self, damage: f32, victim_shielded: bool) {
+        // A corpse drains nothing. `apply_damage_log` runs before
+        // `resolve_deaths`, so an attacker killed earlier in this same tick is
+        // still `alive` here — but one killed on an earlier tick is not, and
+        // this is the guard that separates them.
+        if damage <= 0.0 || !self.alive || !self.holds_utility(UtilityId::VampireFangs) {
+            return;
+        }
+        let gain = damage / LIFESTEAL_DAMAGE_PER_HP;
+        if victim_shielded {
+            // Clamped at `BATTERY_MAX` by `add_battery`, like a battery pack.
+            self.add_battery(gain);
+        } else {
+            // **`BASE_HEALTH`, not `HEALTH_CAP`.** `heal` overheals to 150 and
+            // decays back; fangs restore rather than buffer, so a full-health
+            // attacker banks nothing. `max` rather than a bare `min` so that an
+            // already-overhealed attacker is not *pulled down* to 100 by a hit
+            // they landed.
+            self.health = self.health.max((self.health + gain).min(BASE_HEALTH));
+        }
     }
 
     /// Take a heal into the counter. **False when already at `MAX_HEALS`** — the

@@ -516,6 +516,43 @@ type BirdLog = std::rc::Rc<std::cell::RefCell<Vec<(BirdId, f32)>>>;
 /// The animals' half of the same deferral (T20.10), shaped exactly like `BirdLog`.
 type AnimalLog = std::rc::Rc<std::cell::RefCell<Vec<(AnimalId, f32)>>>;
 
+/// Who, if anybody, drains life from one entry in the damage log (T21.01).
+///
+/// **Deliberately not the `attacker` that `apply_damage_log`'s other match
+/// produces.** That one names the player a *death* is credited to, and credit
+/// and lifesteal are different questions with different answers on three of the
+/// four variants: `SelfInflicted` and `Fall` both name a player for the kill
+/// feed and must name nobody here — a rocket at your own feet healing you is the
+/// exploit this exists to prevent — and `Player { id }` names its attacker for
+/// credit whatever the weapon, while only a weapon that *flies* feeds a set of
+/// fangs. Deriving one from the other would be the field-that-means-two-things
+/// bug with an exploit on the end of it.
+///
+/// The weapon is resolved to a `Delivery` **through the registry**
+/// (`WeaponDef::is_flying_ordnance`), never by name or id.
+///
+/// Matched exhaustively, so the next `DamageSource` variant is a compile error
+/// here rather than a silent `None` nobody wrote down.
+fn lifesteal_attacker(src: DamageSource, victim: PlayerId) -> Option<PlayerId> {
+    match src {
+        // `id != victim` is belt and braces beside `SelfInflicted`: `explode`
+        // produces `SelfInflicted` when owner == victim, but nothing forces
+        // every future caller to, and the exploit is cheap to close here.
+        DamageSource::Player { id, weapon } => (id != victim
+            && defs::def(weapon).is_some_and(|w| w.is_flying_ordnance()))
+        .then_some(id),
+        // Your own ordnance, however it is delivered.
+        DamageSource::SelfInflicted { .. } => None,
+        // Nobody caused it: a player standing in toxic rain is not dealing
+        // damage, and `Weather` carries no player at all.
+        DamageSource::Weather(_) => None,
+        // T20.11's fall has no weapon — which is exactly why it is its own
+        // variant and not a `SelfInflicted` — so it can never be a projectile.
+        // Named rather than left to a wildcard, as that task file asks.
+        DamageSource::Fall => None,
+    }
+}
+
 /// Everything a weapon call needs to see, players **and** birds.
 ///
 /// One function builds both, and that is the whole design: §C16 says birds take
@@ -2193,9 +2230,22 @@ impl World {
             let Some(p) = self.players.iter_mut().find(|p| p.id == victim) else {
                 continue;
             };
+            // T21.01 needs two facts about the victim, and both have to be taken
+            // inside this borrow.
+            let health_before = p.health;
             if !p.apply_damage(amount, src, now) {
                 continue;
             }
+            // **What landed, not what was rolled.** `apply_damage` scales the hit
+            // by the victim's generator, so this is the health that actually came
+            // off — the only number a "1 hp per 10 damage" rule can honestly be a
+            // fraction of, and the difference is exactly the case the brief calls
+            // out. Read off the field rather than returned: `apply_damage`'s
+            // `bool` has four other callers (two in the wasm sandbox, two weather
+            // paths) and widening it would touch every one of them for a value
+            // only this caller wants.
+            let landed = health_before - p.health;
+            let victim_shielded = p.holds_shield_generator();
             let (attacker, cause) = match src {
                 DamageSource::Player { id, .. } => (Some(id), DeathCause::Player(id)),
                 DamageSource::SelfInflicted { .. } => (Some(victim), DeathCause::SelfInflicted),
@@ -2206,6 +2256,21 @@ impl World {
                 // `apply_damage`'s precedence rule and `killer()`, not here.
                 DamageSource::Fall => (Some(victim), DeathCause::SelfInflicted),
             };
+            // Vampire fangs (T21.01). **Here, and not in `apply_damage`**:
+            // that is a method on the victim's own `PlayerState` and has no way
+            // to reach the attacker, so healing one player out of another's
+            // damage needs the layer that owns both — this one. It also puts the
+            // effect behind the warmup gate at the top of this function by
+            // construction, which a rule written at the weapon would not be.
+            //
+            // Ordered **before** `resolve_deaths`, which runs later in the tick,
+            // so an attacker who was already dead when this entry was logged is
+            // still `!alive` here and `steal_life` refuses them.
+            if let Some(a) = lifesteal_attacker(src, victim) {
+                if let Some(att) = self.players.iter_mut().find(|p| p.id == a) {
+                    att.steal_life(landed, victim_shielded);
+                }
+            }
             self.events.push(GameEvent::Damage {
                 tick,
                 victim,
@@ -7727,5 +7792,300 @@ mod t19_24_forced_effect_seed {
             derived, simulated,
             "the broadcast seed derives different vents than the server is simulating"
         );
+    }
+}
+
+/// T21.01 — vampire fangs.
+///
+/// Driven through `World::apply_damage_log`, which is **the** damage funnel:
+/// its own doc comment records that every source of damage in the game —
+/// weapons, explosions, hitscan, toxic, lava — arrives through it, which is why
+/// the warmup gate can live there. Calling it is therefore exercising the
+/// production path rather than a test-only shim. Flying a real rocket would add
+/// the projectile simulation and the map generator to every assertion below,
+/// and those two are what make such a fixture flaky rather than informative.
+#[cfg(test)]
+mod vampire_fangs {
+    use super::*;
+    use crate::constants::{
+        MapScale, BASE_HEALTH, BATTERY_MAX, LIFESTEAL_DAMAGE_PER_HP, SHIELD_DAMAGE_MULT,
+    };
+    use crate::items::registry::{
+        SHIELD_GENERATOR, VAMPIRE_FANGS, WEAPON_BAZOOKA, WEAPON_FLAME, WEAPON_FLAMETHROWER,
+        WEAPON_KNIFE, WEAPON_LASER_PISTOL,
+    };
+    use crate::weapons::explode::EffectKind;
+
+    /// Attacker 0, victim 1, both past their spawn i-frames.
+    fn duel() -> World {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        w.add_player(1, 1, "bo".into());
+        for id in [0, 1] {
+            if let Some(p) = w.player_mut(id) {
+                // `SPAWN_IFRAMES` would make every hit below a no-op, and
+                // `apply_damage` returning false is indistinguishable from a
+                // rule that declined to heal.
+                p.iframes_until = -1.0;
+            }
+        }
+        w
+    }
+
+    fn shot(weapon: WeaponId) -> DamageSource {
+        DamageSource::Player { id: 0, weapon }
+    }
+
+    /// One log entry, through the funnel.
+    fn hit(w: &mut World, amount: f32, src: DamageSource) {
+        let log: DamageLog = Default::default();
+        log.borrow_mut().push((1, amount, src));
+        w.apply_damage_log(&log, &Default::default(), &Default::default(), 1.0);
+    }
+
+    fn health(w: &World, id: PlayerId) -> f32 {
+        w.player(id).expect("player").health
+    }
+
+    /// Attacker 0 with fangs and `BASE_HEALTH - room` health, so a heal has
+    /// somewhere to go and is not silently swallowed by the cap.
+    fn fanged(room: f32) -> World {
+        let mut w = duel();
+        give(&mut w, 0, VAMPIRE_FANGS, 1);
+        if let Some(p) = w.player_mut(0) {
+            p.health = BASE_HEALTH - room;
+        }
+        w
+    }
+
+    #[test]
+    fn ten_damage_returns_exactly_one_health_and_no_fangs_returns_none() {
+        let mut w = fanged(20.0);
+        let before = health(&w, 0);
+        hit(&mut w, LIFESTEAL_DAMAGE_PER_HP, shot(WEAPON_BAZOOKA));
+        assert_eq!(
+            health(&w, 0) - before,
+            1.0,
+            "the ratio is `damage / LIFESTEAL_DAMAGE_PER_HP`, so one unit of it is 1 hp"
+        );
+
+        // **The control.** Without it "health went up" is satisfied by any
+        // regeneration the game might grow later, and by a rule that heals
+        // everyone.
+        let mut w = duel();
+        if let Some(p) = w.player_mut(0) {
+            p.health = BASE_HEALTH - 20.0;
+        }
+        let before = health(&w, 0);
+        hit(&mut w, LIFESTEAL_DAMAGE_PER_HP, shot(WEAPON_BAZOOKA));
+        assert_eq!(
+            health(&w, 0),
+            before,
+            "the identical shot healed an attacker who was not wearing the fangs"
+        );
+    }
+
+    /// The rounding rule, stated as a test: **there is none.**
+    ///
+    /// Half the ratio returns half a point, and two of those sum to exactly the
+    /// same 1.0 that one whole hit gives. That equality is what makes a stored
+    /// fractional carry unnecessary — and it is the assertion that would fail if
+    /// somebody replaced the ratio with a `floor` at the site.
+    #[test]
+    fn a_partial_hit_returns_a_partial_point_and_two_halves_make_a_whole() {
+        let half = LIFESTEAL_DAMAGE_PER_HP / 2.0;
+
+        let mut w = fanged(20.0);
+        let before = health(&w, 0);
+        hit(&mut w, half, shot(WEAPON_BAZOOKA));
+        assert_eq!(health(&w, 0) - before, 0.5);
+
+        let mut w = fanged(20.0);
+        let before = health(&w, 0);
+        hit(&mut w, half, shot(WEAPON_BAZOOKA));
+        hit(&mut w, half, shot(WEAPON_BAZOOKA));
+        assert_eq!(
+            health(&w, 0) - before,
+            1.0,
+            "5 damage twice must equal 10 damage once, or the rule needs a carry"
+        );
+    }
+
+    /// The boundary, both sides of it, in one test — an absence needs a
+    /// presence beside it or "nothing healed" is satisfied by fangs that never
+    /// work at all.
+    #[test]
+    fn only_a_weapon_that_flies_feeds_the_fangs() {
+        let d = LIFESTEAL_DAMAGE_PER_HP;
+        let cases: [(&str, DamageSource, f32); 6] = [
+            // Presence: a rocket flies, and so does a bullet.
+            ("bazooka", shot(WEAPON_BAZOOKA), 1.0),
+            // Absence: a swing never leaves your hand...
+            ("knife", shot(WEAPON_KNIFE), 0.0),
+            // ...a flame is a field you stand in — and note **both** ids. The
+            // weapon a player carries is `WEAPON_FLAMETHROWER`, but what
+            // `flame.rs` actually logs is `WEAPON_FLAME`, which is a
+            // `Delivery::Projectile`. A rule keyed on the delivery alone would
+            // pass the first of these and fail the second, so the second is the
+            // one that guards the real path.
+            ("flamethrower", shot(WEAPON_FLAMETHROWER), 0.0),
+            ("one flame", shot(WEAPON_FLAME), 0.0),
+            // ...a beam arrives the instant it is fired...
+            ("laser pistol", shot(WEAPON_LASER_PISTOL), 0.0),
+            // ...and weather has no attacker at all.
+            (
+                "toxic rain",
+                DamageSource::Weather(EffectKind::ToxicRain),
+                0.0,
+            ),
+        ];
+        for (name, src, want) in cases {
+            let mut w = fanged(20.0);
+            let before = health(&w, 0);
+            hit(&mut w, d, src);
+            assert_eq!(
+                health(&w, 0) - before,
+                want,
+                "{name}: expected {want} hp of lifesteal"
+            );
+        }
+    }
+
+    /// The exploit this note exists to prevent: a rocket at your own feet.
+    #[test]
+    fn self_damage_and_a_fall_never_feed_the_fangs() {
+        for src in [
+            DamageSource::SelfInflicted {
+                weapon: WEAPON_BAZOOKA,
+            },
+            DamageSource::Fall,
+        ] {
+            let mut w = fanged(20.0);
+            // The victim of a self-hit is the attacker, so aim the log at them.
+            if let Some(p) = w.player_mut(0) {
+                p.iframes_until = -1.0;
+            }
+            let log: DamageLog = Default::default();
+            log.borrow_mut().push((0, LIFESTEAL_DAMAGE_PER_HP, src));
+            let before = health(&w, 0);
+            w.apply_damage_log(&log, &Default::default(), &Default::default(), 1.0);
+            assert!(
+                health(&w, 0) < before,
+                "{src:?}: the fixture did not even hurt anybody"
+            );
+            // Hurt by exactly the damage, with nothing given back.
+            assert_eq!(
+                before - health(&w, 0),
+                LIFESTEAL_DAMAGE_PER_HP,
+                "{src:?}: hurting yourself paid you back"
+            );
+        }
+    }
+
+    /// The brief's second clause, and its mirror. Both directions, because
+    /// "energy went up" and "health went up" are each satisfied by a rule that
+    /// always does the same thing.
+    #[test]
+    fn a_victim_with_a_generator_pays_in_energy_and_one_without_pays_in_health() {
+        let d = LIFESTEAL_DAMAGE_PER_HP;
+
+        // With a generator on the victim.
+        let mut w = fanged(20.0);
+        give(&mut w, 1, SHIELD_GENERATOR, 1);
+        if let Some(p) = w.player_mut(1) {
+            p.battery = BATTERY_MAX;
+        }
+        let (h0, b0) = {
+            let p = w.player(0).expect("ana");
+            (p.health, p.battery)
+        };
+        hit(&mut w, d, shot(WEAPON_BAZOOKA));
+        let p = w.player(0).expect("ana");
+        assert_eq!(p.health, h0, "a shielded victim still paid in health");
+        // **And the amount is what *landed*, not what was rolled.** The victim's
+        // generator ate a quarter of the hit, so the fangs are a fraction of the
+        // three quarters that got through — which is the "dealt or absorbed"
+        // decision, asserted rather than described.
+        assert_eq!(
+            p.battery - b0,
+            d * SHIELD_DAMAGE_MULT / LIFESTEAL_DAMAGE_PER_HP,
+            "energy gained must be a fraction of the damage that landed"
+        );
+
+        // The mirror: no generator, so health and not energy.
+        let mut w = fanged(20.0);
+        let (h0, b0) = {
+            let p = w.player(0).expect("ana");
+            (p.health, p.battery)
+        };
+        hit(&mut w, d, shot(WEAPON_BAZOOKA));
+        let p = w.player(0).expect("ana");
+        assert_eq!(p.health - h0, 1.0);
+        assert_eq!(p.battery, b0, "an unshielded victim paid in energy");
+    }
+
+    /// A full-health attacker banks nothing — `BASE_HEALTH`, not `HEALTH_CAP`:
+    /// the fangs restore, they do not overheal.
+    #[test]
+    fn a_full_health_attacker_discards_the_heal_and_does_not_overheal() {
+        let mut w = fanged(0.0);
+        assert_eq!(health(&w, 0), BASE_HEALTH, "the fixture is not at full");
+        hit(&mut w, LIFESTEAL_DAMAGE_PER_HP * 4.0, shot(WEAPON_BAZOOKA));
+        assert_eq!(
+            health(&w, 0),
+            BASE_HEALTH,
+            "the fangs overhealed past BASE_HEALTH"
+        );
+
+        // And an attacker who is *already* overhealed is not pulled back down to
+        // BASE_HEALTH by landing a hit.
+        let mut w = fanged(0.0);
+        if let Some(p) = w.player_mut(0) {
+            p.health = crate::constants::HEALTH_CAP;
+        }
+        hit(&mut w, LIFESTEAL_DAMAGE_PER_HP, shot(WEAPON_BAZOOKA));
+        assert_eq!(
+            health(&w, 0),
+            crate::constants::HEALTH_CAP,
+            "landing a hit cost an overhealed attacker health"
+        );
+    }
+
+    #[test]
+    fn a_dead_attacker_drains_nothing() {
+        let mut w = fanged(20.0);
+        if let Some(p) = w.player_mut(0) {
+            p.alive = false;
+        }
+        let before = health(&w, 0);
+        hit(&mut w, LIFESTEAL_DAMAGE_PER_HP, shot(WEAPON_BAZOOKA));
+        assert_eq!(health(&w, 0), before, "a corpse drained life");
+
+        // The control: the identical hit from the identical fixture, alive.
+        let mut w = fanged(20.0);
+        let before = health(&w, 0);
+        hit(&mut w, LIFESTEAL_DAMAGE_PER_HP, shot(WEAPON_BAZOOKA));
+        assert_eq!(health(&w, 0) - before, 1.0);
+    }
+
+    /// The warmup gate covers this by construction, and that is worth an
+    /// assertion: the rule sits inside `apply_damage_log` **after** the phase
+    /// check, so there is no second place for a "lifesteal during warmup" bug to
+    /// live.
+    #[test]
+    fn nothing_is_drained_during_warmup() {
+        let mut w = fanged(20.0);
+        w.set_phase(RoundPhase::Warmup);
+        let before = health(&w, 0);
+        hit(&mut w, LIFESTEAL_DAMAGE_PER_HP, shot(WEAPON_BAZOOKA));
+        assert_eq!(health(&w, 0), before);
+        assert_eq!(health(&w, 1), BASE_HEALTH, "warmup dealt damage at all");
+
+        // The control, so the assertion above is not satisfied by a fixture that
+        // simply never hits anybody.
+        w.set_phase(RoundPhase::Playing);
+        hit(&mut w, LIFESTEAL_DAMAGE_PER_HP, shot(WEAPON_BAZOOKA));
+        assert_eq!(health(&w, 0) - before, 1.0);
     }
 }

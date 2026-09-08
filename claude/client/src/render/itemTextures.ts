@@ -218,6 +218,29 @@ const ART: Record<string, (c: Ctx) => void> = {
       c.fill()
     }
   },
+
+  // --- M21's effect items: silhouette first, colour second -----------------
+  //
+  // A pair of fangs, drawn as two downward tapers under a dark upper lip. No
+  // other icon here is two thin vertical spikes, which is the property that
+  // makes it readable at 16 px on the ground — the same rule `tombstoneTextures`
+  // states and `weapon_molotov`'s neck follows.
+  item_vampire_fangs: (c) => {
+    c.fillStyle = '#2a1016'
+    c.fillRect(3, 3, 10, 4) // the gum line
+    c.fillStyle = '#f2eee6'
+    for (const x of [5, 9]) {
+      c.beginPath()
+      c.moveTo(x - 1.5, 6)
+      c.lineTo(x + 1.5, 6)
+      c.lineTo(x, 13)
+      c.closePath()
+      c.fill()
+    }
+    c.fillStyle = '#b0202a'
+    c.fillRect(4, 14, 2, 1) // a drop under each point
+    c.fillRect(10, 14, 2, 1)
+  },
 }
 
 /** Sprite keys this module can draw. The check asserts against the registry. */

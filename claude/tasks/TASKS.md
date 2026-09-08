@@ -558,7 +558,7 @@ it by walking them. **"Startable now" is a claim about tick state** and goes sta
 moment a prerequisite is unticked or a new dependency is added. Re-check the six ticks before
 relying on it, not the waves.
 
-- [ ] [T21.01](M21/T21.01-vampire-fangs.md) — Vampire fangs **(v9)** — depends on T20.08
+- [x] [T21.01](M21/T21.01-vampire-fangs.md) — Vampire fangs **(v9)** — depends on T20.08 — **no doc governs it**; an amendment is the durable home for `LIFESTEAL_DAMAGE_PER_HP` and the "Special items (M21)" block. **The task's "key on the delivery" rule alone would have shipped the flamethrower feeding the fangs**: §F10 made `WEAPON_FLAME` a `Delivery::Projectile` and `flame.rs` logs *that* id, not the emitter's — `is_flying_ordnance` excludes it by `Burst::BurnsOut`, and dropping that clause reds the boundary test
 - [ ] [T21.02](M21/T21.02-ironman-boots.md) — Ironman boots **(v9)** — depends on T20.08, T20.04, T20.12
 - [ ] [T21.03](M21/T21.03-unicorn-wings.md) — Unicorn wings **(v9)** — **hard-depends on T20.09**: dropping is the only off switch
 - [ ] [T21.04](M21/T21.04-day-night-setting.md) — A day/night setting, and a randomisation hook **(v9)** — depends on T20.07

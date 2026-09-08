@@ -2322,6 +2322,30 @@ pub const BULLET_WIDTH: f32 = 2.0;
 /// that has to freeze the frame to see a thing is telling you the player cannot.
 pub const BEAM_LIFETIME: f32 = 0.35;
 
+// ---------------------------------------------------------------------------
+// Special items (M21)
+// ---------------------------------------------------------------------------
+//
+// **No doc section governs these.** `grep -rin "vampire\|fangs\|ironman\|unicorn"`
+// over `docs/` returns nothing: T21.01–T21.03 were asked for directly and every
+// task file says an amendment is the durable home for this block. Reported, not
+// absorbed — a builder does not write `docs/`.
+
+/// Damage a vampire-fang carrier must deal to gain **one** point of life
+/// (T21.01) — *"you heal for 1 hp for every 10 damage you cause with projectile
+/// weapons"*.
+///
+/// Applied as a **ratio and never as a threshold**, which is what removes the
+/// need for a stored fractional carry: 10 damage returns exactly 1.0, and 5
+/// damage twice returns 0.5 twice, which is also exactly 1.0. A "lifesteal
+/// pending" accumulator would be a fourth field on `PlayerState`, and every
+/// field there is hashed into `World::state_hash` and would cost a
+/// `REPLAY_VERSION` bump for a number that is already derivable.
+pub const LIFESTEAL_DAMAGE_PER_HP: f32 = 10.0;
+// A fang that returned more life than the damage it dealt would make trading
+// hits strictly profitable, which is a different item from the one asked for.
+const _: () = assert!(LIFESTEAL_DAMAGE_PER_HP > 1.0);
+
 #[cfg(test)]
 // Every assertion in this module is deliberately over compile-time constants —
 // checking the relationships between them is the entire purpose of the file.

@@ -86,6 +86,12 @@ pub const WEAPON_FLAME: WeaponId = WeaponId(25);
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UtilityId {
     Flashlight,
+    /// T21.01. **A `Utility`, not a kind of its own**, because `Utility` is
+    /// already the passive family: `use_item` refuses every one of them, and
+    /// carrying one is the whole of using it. A fourth `ItemKind` per effect
+    /// item would be a list by another name, and T21.09 sorts the backpack **by
+    /// kind**.
+    VampireFangs,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -145,6 +151,9 @@ pub const TOXIC_GRENADE: ItemId = 23;
 /// §F5. `ITEMS` is indexed by id (`registry::def` is `ITEMS.get(id as usize)`),
 /// so this is appended at index 24 and nothing before it may move.
 pub const SHOVEL: ItemId = 24;
+/// M21's effect items. **Appended, never inserted** (§B16) — `def` is
+/// `ITEMS.get(id as usize)`, so a middle insertion remaps every id above it.
+pub const VAMPIRE_FANGS: ItemId = 25;
 pub const BAZOOKA: ItemId = 3;
 pub const GRENADE: ItemId = 4;
 pub const SMG: ItemId = 5;
@@ -504,6 +513,24 @@ pub static ITEMS: &[ItemDef] = &[
         spawn_weight: 0,
         crate_weight: 0,
         buried_weight: 0,
+    },
+    // T21.01. Rare, and rarer still in a crate: it is the strongest of the
+    // passives against an aggressive player and it costs nothing to hold, so
+    // finding one should be an event. Buried weight stays **below** the
+    // flashlight's, which `the_flashlight_is_the_most_buried_item` protects
+    // deliberately.
+    ItemDef {
+        id: VAMPIRE_FANGS,
+        key: "vampire_fangs",
+        name: "Vampire Fangs",
+        kind: ItemKind::Utility(UtilityId::VampireFangs),
+        // One pair is a pair. A stack of fangs would imply stacking lifesteal,
+        // which the brief does not ask for and `steal_life` does not read.
+        max_stack: 1,
+        sprite: "item_vampire_fangs",
+        spawn_weight: 6,
+        crate_weight: 8,
+        buried_weight: 10,
     },
 ];
 

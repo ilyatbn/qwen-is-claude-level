@@ -5818,3 +5818,15 @@ self-SIGKILL after printing its ok line, exit 1, exit 0 — and asserts all thre
 **Falsified twice at `childOutcome`**: `c ?? 1` reproduces the defect verbatim, both children
 reporting `exited 1`; "everything is signalled" is caught by the exit-1 control. `--help` added —
 the Done-when's first half exited 2 before, matching nothing.
+
+## T21.01 — vampire fangs
+
+`ItemKind::Utility(VampireFangs)` — the family T20.08/T20.07 already made passive, so `use_item`
+refuses it and `holds_utility` generalises `holds_shield_generator` by **kind**, never by id.
+Lifesteal lives in `World::apply_damage_log`, the one damage funnel and the only place holding
+both players; it feeds on `health_before - p.health`, i.e. what **landed** after the victim's
+generator, and pays energy instead of health when the victim holds one. Ratio, not threshold —
+5 twice equals 10 once — so nothing is stored and nothing is hashed. **The delivery rule alone
+was not enough**: `WEAPON_FLAME` is a `Delivery::Projectile` (§F10) and is what a flamethrower's
+damage is logged as, so `is_flying_ordnance` also excludes `Burst::BurnsOut`. 9 falsifications,
+each red at the named test; 891 + workspace + 887 client green. Gate not yet run — box shared.

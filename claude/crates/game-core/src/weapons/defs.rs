@@ -256,6 +256,46 @@ impl WeaponDef {
     pub fn spends_stack(&self) -> bool {
         !self.is_energy() && !matches!(self.delivery, Delivery::Melee { .. })
     }
+
+    /// Does this weapon put ordnance on a target — something that leaves the
+    /// muzzle and does its damage when it arrives? (T21.01)
+    ///
+    /// This is the vampire fangs' *"damage you cause with projectile weapons"*,
+    /// and it is **two** conditions rather than one, because the delivery alone
+    /// gets fire wrong.
+    ///
+    /// The first is the delivery, matched exhaustively so that a seventh kind is
+    /// a compile error here rather than a weapon that silently does or does not
+    /// feed a set of fangs. A rocket and a round fly; a beam arrives the instant
+    /// it is fired, a swing never leaves your hand, a cone of flame is a field
+    /// you stand in, and a mine is something you left behind.
+    ///
+    /// The second is `Burst::BurnsOut`, and it is not a special case dressed up.
+    /// **`WEAPON_FLAME` is a `Delivery::Projectile`** — deliberately, so that
+    /// fire reuses the one flight loop instead of growing a second — and it is
+    /// what a *flamethrower's* damage arrives as: `flame.rs` logs
+    /// `DamageSource::Player { weapon: WEAPON_FLAME }`, not the emitter's
+    /// weapon. So keying on the delivery alone would have let the flamethrower
+    /// feed the fangs, which is the one weapon the brief names as excluded. A
+    /// flame carries `damage: 0.0`, never explodes on contact, and burns at
+    /// `FLAME_DPS` for as long as you stand in it — `BurnsOut` says exactly
+    /// that: a projectile whose whole ending is *"it goes out"* never arrives at
+    /// anybody.
+    ///
+    /// Keyed on this table and never on a name or an id. `Delivery::Hitscan`'s
+    /// own comment calls a name-keyed special case *"the §B16 bug waiting to
+    /// happen"*, and `WEAPON_LASER_SMG` is precisely the weapon it would get
+    /// wrong.
+    pub fn is_flying_ordnance(&self) -> bool {
+        let flies = match self.delivery {
+            Delivery::Projectile { .. } | Delivery::Bullet { .. } => true,
+            Delivery::Hitscan { .. }
+            | Delivery::Melee { .. }
+            | Delivery::Flames { .. }
+            | Delivery::Placed { .. } => false,
+        };
+        flies && !matches!(self.burst, Burst::BurnsOut)
+    }
 }
 
 pub static WEAPONS: &[WeaponDef] = &[
@@ -872,6 +912,80 @@ pub fn ammo_per_pickup(id: WeaponId) -> u8 {
         // Energy weapons and weather ordnance: the stack is the weapon, and
         // charge is the ammo (§B5).
         _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod flying_ordnance {
+    use super::*;
+
+    /// T21.01's boundary, over the **whole table** rather than the handful of
+    /// weapons a combat test happens to fire.
+    ///
+    /// Two halves, and each is the other's control: an "everything flies" bug
+    /// and a "nothing flies" bug both pass a one-sided list.
+    #[test]
+    fn is_flying_ordnance_is_the_two_flying_deliveries_minus_what_merely_goes_out() {
+        let mut flying: Vec<&str> = Vec::new();
+        let mut not: Vec<&str> = Vec::new();
+        for w in WEAPONS {
+            let want = matches!(
+                w.delivery,
+                Delivery::Projectile { .. } | Delivery::Bullet { .. }
+            ) && !matches!(w.burst, Burst::BurnsOut);
+            assert_eq!(w.is_flying_ordnance(), want, "{} classified wrongly", w.key);
+            if want {
+                flying.push(w.key)
+            } else {
+                not.push(w.key)
+            }
+        }
+        // Neither half may be empty, or the assertion above is vacuous on one
+        // side of the boundary it exists to draw.
+        assert!(!flying.is_empty(), "no weapon in the game flies");
+        assert!(!not.is_empty(), "every weapon in the game flies");
+        // And the `BurnsOut` clause must actually be doing something: if no
+        // weapon in the table ever hits it, the clause is dead and the
+        // flamethrower hole this predicate exists to close is open again.
+        assert!(
+            WEAPONS.iter().any(|w| matches!(w.burst, Burst::BurnsOut)
+                && matches!(w.delivery, Delivery::Projectile { .. })),
+            "no projectile burns out any more, so the second clause guards nothing"
+        );
+    }
+
+    /// The named cases, because the table above would agree with itself even if
+    /// every `Delivery` were assigned wrongly. These are the weapons the brief's
+    /// wording actually turns on.
+    #[test]
+    fn a_rocket_and_a_round_fly_and_a_beam_a_swing_a_flame_and_a_mine_do_not() {
+        for key in ["bazooka", "grenade", "pistol", "smg", "molotov"] {
+            let w = by_key(key).unwrap_or_else(|| panic!("{key} is not a weapon"));
+            assert!(w.is_flying_ordnance(), "{key} should leave the muzzle");
+        }
+        // A laser is a **beam**: it arrives the instant it is fired, which is
+        // the one thing that makes it different from a bullet. Keying on the
+        // weapon's name instead of its delivery is how the laser SMG ends up on
+        // the wrong side — `Delivery::Hitscan` calls that "the §B16 bug waiting
+        // to happen" in as many words.
+        //
+        // **`flame` is the case worth staring at.** It is a
+        // `Delivery::Projectile`, so a delivery-only rule would put it in the
+        // list above — and a flamethrower's damage arrives as
+        // `DamageSource::Player { weapon: WEAPON_FLAME }`, which would have made
+        // the flamethrower feed the fangs the brief excludes.
+        for key in [
+            "laser_pistol",
+            "laser_smg",
+            "knife",
+            "shovel",
+            "flamethrower",
+            "flame",
+            "mine",
+        ] {
+            let w = by_key(key).unwrap_or_else(|| panic!("{key} is not a weapon"));
+            assert!(!w.is_flying_ordnance(), "{key} should not feed the fangs");
+        }
     }
 }
 

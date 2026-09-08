@@ -1111,10 +1111,17 @@ mod t1905_shovel {
             let w = defs::def(wid).unwrap_or_else(|| panic!("{key} has no weapon def"));
             assert_eq!(w.key, key, "weapon id {wid:?} now resolves to {}", w.key);
         }
+        // **This was `SHOVEL == ITEMS.len() - 1`** (T21.01). That spelling
+        // asserted "appended, never inserted" as a fact about the *tail*, which
+        // is only true while the shovel is the newest entry — M21 appends the
+        // effect items after it and the guard would have failed for the one
+        // reason it exists to permit. The invariant it means is that nothing was
+        // inserted *before* the shovel, and that is exactly "the shovel still
+        // sits at its own id".
         assert_eq!(
-            SHOVEL as usize,
-            ITEMS.len() - 1,
-            "the shovel is not the last entry, so it was inserted rather than appended"
+            ITEMS[SHOVEL as usize].key, "shovel",
+            "the shovel no longer sits at its own id, so something was \
+             inserted below it and every id above it has moved"
         );
     }
 }
