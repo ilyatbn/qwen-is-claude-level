@@ -5795,3 +5795,14 @@ sampled rect, so a tenth of the terrain under it is new. Bound by geometry, not 
 because the scene animates regardless — I had tested input, not rendering. Killing her
 `requestAnimationFrame` gives the right red: *"the leaver's canvas is frozen: delta 0.0 and an
 identical digest"*. The frozen-frame control is untouched. 5/5 gates.
+
+## T19.23 — the ruling's discriminator was not a measurement
+
+Built the ruled distance bound first, then froze `projectile_move` after the 4th update at
+the live binding site: **the check passed twice.** Its 69 px is synthetic — a real frozen
+build covers **251 px**, those messages arriving at the network rate not `SIM_HZ`, which is
+1.09x from a live round's 274-424 px, so **no distance floor separates them.** The stationary
+*tail* does: **0** across 26 live runs against **3 and 4** frozen, because a round that lands
+despawns and cannot be drawn still sample after sample. One trailing stationary sample is now
+allowed; every-step-forward judges the rest. Replay lifts `travelled` from the file's own
+source, 14/14. Falsification 2/2 red, 6/6 green reverted. In-suite 5/5, 19.0-20.5s.

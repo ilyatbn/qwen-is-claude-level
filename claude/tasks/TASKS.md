@@ -435,7 +435,7 @@ independent.
 - [x] [T19.26](M19/T19.26-the-control-arm-races-the-socket.md) — `reap.rs`'s control arm races its own socket **(v7)** — `emit_until` cannot serve it (`create_room` must not be re-sent), so `common::connect_and_emit` retries **only a refused** send, on a fresh socket. **Six** such sites found, not the one that failed; green in 5/5 gates, falsified by breaking `seat`'s cleanup
 - [x] [T19.25](M19/T19.25-rematch-closing-window.md) — `rematch`'s closing window **(v7)** — measured first: **25 frames/600 ms idle, 6 under 16 CPU hogs**, so the cadence is *not* unattainable and inconclusive-with-retry was ruled out on the numbers. `sleep(600)` is now a wait on `renderPos` advancing a tenth of the sampled rect; green in 5/5 gates
 - [x] [T19.22](M19/T19.22-night-combat-sleeps-against-nothing.md) — `night-combat` waits against nothing **(v7)** — recounted at HEAD as **10 bare sleeps against 3 polls**, not the 7/2 booked; now **0 and 11**, each waiting on the effect the next line asserts. Green in **5/5** gates; falsified by breaking the radius path, which reds the assertion and not the wait
-- [ ] [T19.23](M19/T19.23-bullets-visible-window-is-the-screenshot.md) — `bullets-visible`'s window is the screenshot itself — **split from the same**; not the same problem as T19.22
+- [x] [T19.23](M19/T19.23-bullets-visible-window-is-the-screenshot.md) — `bullets-visible`'s window is the screenshot itself — **split from the same**; not the same problem as T19.22
 
 **Order note.** T19.15 and T19.14 were written mid-milestone and are **promoted ahead of
 the remaining feature work**: three of the four gate runs after T19.02 carried a

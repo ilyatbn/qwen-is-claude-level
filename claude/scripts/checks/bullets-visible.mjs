@@ -330,26 +330,55 @@ if (seen.length === 0) {
  */
 function travelled(samples) {
   if (samples.length < 2) return null
-  const first = samples[0]
-  const last = samples[samples.length - 1]
+  // **Allow exactly one stationary sample at the end: that is the round
+  // arriving, not stalling** (T19.23).
+  //
+  // The every-step-forward rule below is what catches a frozen build, and it is
+  // kept. But applied to the raw samples it also fails a round that *completed*
+  // its flight: the round stops at the terrain it hit and is still drawn there
+  // for the frame or two before it despawns, so whether this check passed
+  // depended on the sampler happening to stop before that. That is the flake.
+  //
+  // **One, and not more.** The bound is what makes this safe, and it is
+  // measured, not guessed — trailing stationary samples, this box, seed 4242:
+  //
+  // | | trailing stationary samples |
+  // |---|---|
+  // | 26 consecutive live runs | **0** in every one |
+  // | the recorded gate failure | 1 |
+  // | `projectile_move` frozen after the 4th update | **3 and 4** |
+  //
+  // A round that lands despawns, so it cannot be drawn stationary for sample
+  // after sample; a frozen one is drawn there until the round times out. Two
+  // stationary samples in a row is therefore not an arrival, and still fails.
+  //
+  // **Distance cannot do this job** — that was tried first and it does not
+  // separate the two populations. A build frozen after four `projectile_move`
+  // messages still covers **251 px** before it stops, against **274-424 px** for
+  // a live round, because those messages arrive at the network rate rather than
+  // at `SIM_HZ`. Any floor that fails the frozen build also fails a real one.
+  const run = samples.slice()
+  const stepOf = (a, b) => (RUN_RIGHT ? b.x - a.x : a.x - b.x)
+  if (stepOf(run[run.length - 2], run[run.length - 1]) <= 0) run.pop()
+  if (run.length < 2) return null
+  const first = run[0]
+  const last = run[run.length - 1]
   const dx = RUN_RIGHT ? last.x - first.x : first.x - last.x
   const dt = last.t - first.t
   // 40 px of screen travel: a round covers that in well under one sample
   // interval, and it is far more than the couple of pixels a static bright thing
-  // wanders under compression noise.
+  // wanders under compression noise. This is a *noise* floor and nothing more —
+  // see above for why it is not the thing that catches a stall.
   if (!(dx > 40 && dt > 0)) return null
   // **Every step, not just the endpoints.** First-to-last alone proves the round
   // was drawn in two places, which is a weaker claim than "it flew" and one a
-  // broken build can satisfy: freezing the drawn position after the *fourth*
-  // update still moved 69 px between the first sample and the last, and passed.
-  // A round whose `projectile_move` stops arriving is exactly the regression this
-  // check is here to catch, so the rule is that it must still be moving at the
-  // end — consecutive samples, each one forward.
-  for (let i = 1; i < samples.length; i++) {
-    const step = RUN_RIGHT ? samples[i].x - samples[i - 1].x : samples[i - 1].x - samples[i].x
+  // broken build can satisfy. A round whose `projectile_move` stops arriving is
+  // exactly the regression this check is here to catch, and after the single
+  // arrival sample is allowed for, a stall anywhere in the run still fails here.
+  for (let i = 1; i < run.length; i++) {
     // Zero is a stall; backwards is a different round entering the lane behind
     // this one. Both mean this sample sequence is not one round in flight.
-    if (step <= 0) return null
+    if (stepOf(run[i - 1], run[i]) <= 0) return null
   }
   // **The cost, stated:** this rule also judges the two control regions below,
   // and a stricter rule makes a control *easier* to satisfy. What it can now
