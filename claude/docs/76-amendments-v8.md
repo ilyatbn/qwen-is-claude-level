@@ -164,7 +164,26 @@ something, or measure something; do not fit.
 **Room capacity is not the binding limit.** Measured at 48 clients: the table saturates at
 `MAX_ROOMS` with **zero humans in it**, while thousands of joins are refused. What binds is how
 long an empty room is held, not how many rooms there are — raising `MAX_ROOMS` buys more empty
-rooms. That is an open question, not a decision made here.
+rooms.
+
+### G7.1 — An empty room is dropped after 15 seconds, lobby or match alike
+
+**Decided 2026-09-08.** `ROOM_EMPTY_TTL` is **15.0**, halved from 30. An empty room is worth
+nothing and the measurement above is what it costs to hold one.
+
+**It applies to a waiting lobby and a running match without distinction, deliberately**: a room
+*is* the lobby and then becomes the match — the same entry, the same slot — and the reaper asks
+only how long it has been empty. There was never a distinction to preserve, and inventing one
+would mean two clocks for one fact.
+
+**This is not the disconnection grace and must not be sized as one.** A lagged client is not
+gone until the socket layer says so. `engineioxide`'s defaults — read from the library, not
+assumed — are a **25 s ping interval and a 20 s ping timeout**, so a dropped connection takes
+**up to 45 s** to be noticed, and only then does this clock start. A cleanly closed tab is
+immediate. So a player who blinks out has ~45 s of grace no matter what this number is, and
+shortening it takes nothing from them.
+
+`MAX_ROOMS` stays at 32. It was never protecting what was failing.
 
 ## G8 — The replay version is a compatibility record, not a changelog
 

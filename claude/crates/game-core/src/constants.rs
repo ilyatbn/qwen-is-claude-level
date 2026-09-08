@@ -1199,7 +1199,24 @@ pub const MINIMAP_REVEAL_R: f32 = 260.0;
 pub const MAX_ROOMS: usize = 32;
 /// Seconds after the last **human** leaves before the room is dropped. Bots do
 /// not keep a room alive.
-pub const ROOM_EMPTY_TTL: f32 = 30.0;
+///
+/// **Halved from 30 on 2026-09-08 at the coordinator's instruction**: an empty
+/// room is worth nothing and T20.24 measured the cost of holding them — 32 rooms,
+/// 192 seats, **0 humans**, while 8542 joins were refused `server_full`. The room
+/// table was exhausted entirely by rooms nobody was in.
+///
+/// **This applies to a lobby and to a running match alike**, and deliberately: a
+/// room *is* the lobby and then becomes the match, and the reaper asks only how
+/// long it has been empty. There was never a distinction to preserve.
+///
+/// **This is not the disconnection grace, and must not be sized as though it
+/// were.** A lagged client is not "gone" until the socket layer says so —
+/// `engineioxide`'s defaults are a 25 s ping interval and a 20 s ping timeout, so
+/// a dropped connection takes **up to 45 s** to be noticed, and only then does
+/// this clock start. A cleanly closed tab is immediate. So the real grace for a
+/// blip is ~45 s regardless of this number; shortening it costs a returning
+/// player nothing they had.
+pub const ROOM_EMPTY_TTL: f32 = 15.0;
 /// How often the process-level sweep asks the registry what has expired.
 ///
 /// `ROOM_EMPTY_TTL` is the deadline; this is only the resolution at which it is
