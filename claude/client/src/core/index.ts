@@ -157,6 +157,22 @@ export interface PlayerState {
    */
   alive: boolean
   /**
+   * The passive-movement bits (T21.02), and they are here for the third time
+   * running for the same reason `health` and `alive` are: **`applyInput` reads
+   * them.**
+   *
+   * `PlayerState::move_mods()` on the Rust side scales the walk target and the
+   * jump launch out of the inventory, so a mirror that does not know a player
+   * is wearing ironman boots predicts them at half the speed and a third of the
+   * height. That is T20.19 and T20.21's shape a third time — a value the mirror
+   * needs, arriving on a path that could skip it.
+   *
+   * `setPlayerState` writes them back into the mirror's *inventory* rather than
+   * storing a second copy beside it, so both sides answer the same question
+   * with the same function.
+   */
+  moveMods: number
+  /**
    * How fast this body was falling at the moment it touched down, px/s, and 0
    * on every frame that is not a landing (T20.11).
    *
@@ -678,7 +694,18 @@ export class Core {
    * this function silently drops, and the caller would have to invent a value.
    */
   setPlayerState(id: number, s: Omit<PlayerState, 'landingImpact'>): void {
-    this.inner.set_player_state(id, s.x, s.y, s.vx, s.vy, s.grounded, s.fuel, s.health, s.alive)
+    this.inner.set_player_state(
+      id,
+      s.x,
+      s.y,
+      s.vx,
+      s.vy,
+      s.grounded,
+      s.fuel,
+      s.health,
+      s.alive,
+      s.moveMods,
+    )
   }
 
   /**
@@ -700,7 +727,7 @@ export class Core {
 
   playerState(id: number): PlayerState | null {
     const a = this.inner.player_state(id)
-    if (a.length < 10) return null
+    if (a.length < 11) return null
     return {
       x: a[0]!,
       y: a[1]!,
@@ -712,6 +739,7 @@ export class Core {
       landingImpact: a[7]!,
       health: a[8]!,
       alive: a[9]! !== 0,
+      moveMods: a[10]!,
     }
   }
 

@@ -80,7 +80,7 @@ import { formatClock, phaseBanner, rankScores, type Phase } from '../ui/scoreboa
 import { ResultsScreen } from '../ui/results'
 import { phaseDeadline, secondsUntil } from '../ui/results-math'
 import { fuelText, fuelTrend } from '../ui/jetpackReadout-math'
-import { FLAG, flag } from '../net/codec'
+import { FLAG, MOVE_MOD, flag } from '../net/codec'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { Minimap } from '../ui/minimap'
 import { Hud, type EffectPhase } from '../ui/hud'
@@ -276,6 +276,8 @@ export class GameScene extends Phaser.Scene {
    * flicker the whole field of view.
    */
   private hasFlashlight = false
+  /** T21.02, from the snapshot's move-mod byte. Drawn, and nothing else. */
+  private hasBoots = false
   private jetReadout: HTMLDivElement | null = null
   /** The private room's join code, once the server has told us (§B9). */
   private joinCode: string | null = null
@@ -511,6 +513,7 @@ export class GameScene extends Phaser.Scene {
     this.shieldOn = false
     this.poisoned = false
     this.hasFlashlight = false
+    this.hasBoots = false
     this.fuel = 0
     this.fuelShown = 0
     this.teleportCharge = 0
@@ -1352,6 +1355,11 @@ export class GameScene extends Phaser.Scene {
       // written by the server, exported by `codec.ts` and consumed only by two
       // tests, which is why the flashlight did nothing in a real game.
       this.hasFlashlight = flag(mine.flags, FLAG.flashlight)
+      // T21.02. **Drawing only** — the simulation half reaches the mirror
+      // through `reconcile` below, which is the path that already carries
+      // everything `applyInput` reads. This field exists because `localView` is
+      // drawn from the scene and not from the snapshot.
+      this.hasBoots = flag(mine.moveMods, MOVE_MOD.boots)
       // Authoritative, because smoke is positional: what you can see depends on
       // which cloud you are standing in. This replaced a hardcoded 1, which is
       // why heavy fog changed nothing in the real game for four milestones.
@@ -1388,6 +1396,12 @@ export class GameScene extends Phaser.Scene {
           // death overlay; it simply never reached the mirror, so a dead player
           // holding a direction was predicted walking at full speed.
           alive: flag(mine.flags, FLAG.alive),
+          // T21.02. `applyInput` scales the walk target and the jump launch by
+          // what the player is carrying, so the mirror has to be told — the
+          // same rule health and `alive` are here for, and the third value to
+          // need it. `reconcile` applies it before its positional epsilon can
+          // gate it; see the comment there.
+          moveMods: mine.moveMods,
         },
       })
     }
@@ -1676,6 +1690,11 @@ export class GameScene extends Phaser.Scene {
         // invulnerability has no visual in `PlayerView` beyond this flag, and
         // giving it one is a design decision, not this task's. **Worth booking.**
         iframes: false,
+        // T21.02, and **not a literal** — that is the shape T20.08 found here
+        // with `shield: false`, where the one player who needed to see their own
+        // state was the one who could not. It comes off the same byte every
+        // remote's boots come off.
+        boots: this.hasBoots,
       })
       this.crosshair.update(rp.x, rp.y, aim)
       // `watchPoint` is an e2e affordance, and only that (§C2). A supply crate
@@ -2003,6 +2022,7 @@ export class GameScene extends Phaser.Scene {
         jetpack: flag(p.flags, FLAG.jetpack),
         shield: flag(p.flags, FLAG.shield),
         iframes: flag(p.flags, FLAG.iframes),
+        boots: flag(p.moveMods, MOVE_MOD.boots),
       })
     }
 

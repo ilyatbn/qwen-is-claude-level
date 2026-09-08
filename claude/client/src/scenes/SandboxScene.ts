@@ -1008,6 +1008,26 @@ export class SandboxScene extends Phaser.Scene {
         self.refreshHud()
         return self.core.shieldActive(0)
       },
+      /**
+       * Put T21.02's ironman boots in the bag — the sibling of
+       * `giveFlashlight`, and for the same reason: they are found, not granted,
+       * so a check that waited for a pair would be waiting on the map.
+       *
+       * **Grant only, deliberately.** The control this needs is the *before*
+       * frame: a check photographs the feet with no boots, grants a pair, and
+       * photographs the same feet on the same map at the same instant. That is
+       * a control frame in the sense `docs/72` §C2 asks for — same camera, same
+       * light, same pose — which two players standing in different places can
+       * never be.
+       *
+       * Returns the **effect** read back through the Rust rule
+       * (`move_mod_bits`), not a confirmation that the ask happened.
+       */
+      giveBoots() {
+        self.core.give(0, 26 /* IRONMAN_BOOTS */, 1)
+        self.refreshHud()
+        return (self.core.playerState(0)?.moveMods ?? 0) !== 0
+      },
       giveFlashlight() {
         // Grant only: `Core` exposes no take, and the control this needs is the
         // **before** state rather than a removal — a check reads the radius with
@@ -1096,6 +1116,12 @@ export class SandboxScene extends Phaser.Scene {
         // `PlayerState::shield_active`.
         shield: this.core.shieldActive(0),
         iframes: false,
+        // T21.02, and **read back out of the mirror rather than tracked here**
+        // — the same rule the networked client draws from, reached through the
+        // same `PlayerState::move_mod_bits`. A boolean kept beside the
+        // inventory would be a second answer that drifts the first time
+        // something drops an item.
+        boots: (this.core.playerState(0)?.moveMods ?? 0) !== 0,
       })
       this.crosshair.update(body.x, body.y, aim)
       this.world.rig.follow({ x: body.x, y: body.y })

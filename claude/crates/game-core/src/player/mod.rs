@@ -40,6 +40,54 @@ use crate::physics::resolve::integrate;
 /// not predicted client-side — it arrives in the binary snapshot — so the *effect*
 /// belongs to `World::apply_inputs`, on the server, and only the measurement
 /// belongs here.
+/// Everything `apply_input` needs to know about a player beyond their body.
+///
+/// **One struct rather than a growing parameter list, and — much more
+/// importantly — one derivation rather than two.**
+/// `PlayerState::move_mods` builds it, `World::apply_inputs` calls that, and the
+/// wasm mirror calls the same function on its own mirrored `PlayerState`.
+/// Nothing else constructs one outside a test.
+///
+/// That shape is what makes T20.19 and T20.21's rule structural instead of
+/// remembered. The rule is *"everything `apply_input` reads must be identical on
+/// both sides"*, and it was broken twice in one week by the same mechanism: the
+/// client passed a literal where the server passed a value. A literal is exactly
+/// what a bare `f32` parameter invites — and there is nowhere to write a literal
+/// here, because the only thing that fits is what the shared derivation
+/// returned. A new modifier is now a **field** that both sides get for free
+/// rather than a fifth argument one of them will be handed and the other will
+/// not.
+///
+/// `MoveMods` deliberately has no `Default`: see `NONE`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct MoveMods {
+    /// Target walk speed as a fraction of `WALK_SPEED`. Health (`docs/21` §3)
+    /// times whatever the bag adds (T21.02's boots).
+    pub speed: f32,
+    /// **Launch velocity** as a fraction of `JUMP_VELOCITY` — not height. Height
+    /// goes as `v²/2g`, so this is `sqrt` of the height multiplier; see
+    /// `BOOTS_JUMP_HEIGHT_MULT`.
+    pub jump: f32,
+}
+
+impl MoveMods {
+    /// An unmodified player: full health, and nothing in the bag that moves you.
+    ///
+    /// **Not a `Default` impl, on purpose.** A `Default` is what a caller
+    /// reaches for when it does not know what to pass, and "a caller that did
+    /// not know what to pass" is the literal `1.0` the mirror carried for
+    /// fifteen milestones. Production has exactly one source — `move_mods` — and
+    /// this is for the movement fixtures that own a bare `Body` and have no
+    /// `PlayerState` at all.
+    pub const NONE: MoveMods = MoveMods {
+        speed: 1.0,
+        jump: 1.0,
+    };
+}
+
+// Eight, and the allow stays (T21.02). `MoveMods` **replaced** an argument
+// rather than adding one — the count is what it was — and the struct is what
+// stops the next modifier making it nine.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_input(
     map: &Map,
@@ -48,15 +96,15 @@ pub fn apply_input(
     jet: &mut JetpackState,
     input: &Input,
     prev: &Input,
-    speed_multiplier: f32,
+    mods: MoveMods,
     dt: f32,
 ) -> f32 {
     let e = edges(input, prev);
     let dir = input.move_dir();
 
-    apply_horizontal(body, dir, speed_multiplier, dt);
+    apply_horizontal(body, dir, mods.speed, dt);
 
-    let jumped = try_jump(body, jump, e.jump_pressed, dir);
+    let jumped = try_jump(body, jump, e.jump_pressed, dir, mods.jump);
 
     jetpack::update(
         jet,
@@ -92,14 +140,7 @@ impl MovementState {
         }
     }
 
-    pub fn step(
-        &mut self,
-        map: &Map,
-        input: &Input,
-        prev: &Input,
-        speed_multiplier: f32,
-        dt: f32,
-    ) -> f32 {
+    pub fn step(&mut self, map: &Map, input: &Input, prev: &Input, mods: MoveMods, dt: f32) -> f32 {
         apply_input(
             map,
             &mut self.body,
@@ -107,7 +148,7 @@ impl MovementState {
             &mut self.jet,
             input,
             prev,
-            speed_multiplier,
+            mods,
             dt,
         )
     }

@@ -81,6 +81,16 @@ export interface SnapshotPlayer {
    * would be a second copy of three guards.
    */
   teleportCharge: number
+  /**
+   * T21.02's passive-movement bits — see `MOVE_MOD` and
+   * `PlayerState::move_mod_bits` on the Rust side.
+   *
+   * **Not a flag, and it is a whole byte, because `applyInput` reads it.** The
+   * flags byte carries things the client only draws; this carries the things
+   * the mirror has to *simulate* with, and the rule those obey is T20.19's:
+   * everything `applyInput` reads must be identical on both sides.
+   */
+  moveMods: number
   /** `null` when the player is holding nothing. */
   selectedItem: number | null
 }
@@ -266,6 +276,7 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
     const heals = consumables & 0b11
     const batteries = (consumables >> 2) & 0b111
     const teleportCharge = r.u8() / 255
+    const moveMods = r.u8()
     players.push({
       id,
       x,
@@ -281,6 +292,7 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
       heals,
       batteries,
       teleportCharge,
+      moveMods,
       selectedItem: item === 255 ? null : item,
     })
   }
@@ -301,6 +313,21 @@ export const FLAG = {
   iframes: 1 << 5,
   /** §E13. Bit 6; `docs/40` §3 still lists 6-7 as reserved. */
   poisoned: 1 << 6,
+} as const
+
+/**
+ * Passive-movement bits (T21.02), a byte of their own beside `FLAG`.
+ *
+ * **Separate from `FLAG` on purpose, and the line is not arbitrary.** `FLAG`
+ * carries what the client *draws*; this carries what the mirror *simulates
+ * with*, which is the set T20.19's rule governs. The flashlight is passive too
+ * and stays in `FLAG` at bit 4, because nothing predicts light.
+ *
+ * The numbering mirrors `player/state.rs`'s `MOVE_MOD_BITS` table, which is the
+ * authority — a wire format is a table, and both ends walk the same one.
+ */
+export const MOVE_MOD = {
+  boots: 1 << 0,
 } as const
 
 export function flag(flags: number, bit: number): boolean {

@@ -3,9 +3,10 @@
 //! See `docs/21-player-stats.md`.
 
 use crate::constants::{
-    BASE_HEALTH, BATTERY_MAX, DEATH_POINTS, HEALTH_CAP, HEALTH_SPEED_MIN, KILL_POINTS,
-    LASER_BATTERY_DRAIN, LASER_SHIELD_MULT, LIFESTEAL_DAMAGE_PER_HP, OVERHEAL_DECAY, RESPAWN_DELAY,
-    SHIELD_DAMAGE_MULT, SHIELD_HIT_COST, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST,
+    boots_fall_safe_speed, boots_jump_velocity_mult, BASE_HEALTH, BATTERY_MAX, BOOTS_SPEED_MULT,
+    DEATH_POINTS, FALL_DAMAGE_PER_SPEED, FALL_SAFE_SPEED, HEALTH_CAP, HEALTH_SPEED_MIN,
+    KILL_POINTS, LASER_BATTERY_DRAIN, LASER_SHIELD_MULT, LIFESTEAL_DAMAGE_PER_HP, OVERHEAL_DECAY,
+    RESPAWN_DELAY, SHIELD_DAMAGE_MULT, SHIELD_HIT_COST, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST,
     TOXIC_POISON_DURATION,
 };
 use crate::items::inventory::{Inventory, Stack};
@@ -16,6 +17,7 @@ use crate::math::{lerp, Vec2};
 use crate::physics::body::Body;
 use crate::player::jetpack::JetpackState;
 use crate::player::movement::JumpState;
+use crate::player::MoveMods;
 use crate::rng::{range_i32, ChaCha8Rng};
 use crate::weapons::defs;
 use crate::weapons::explode::DamageSource;
@@ -34,6 +36,22 @@ pub const ASSIST_WINDOW: f32 = 5.0;
 /// dropped would be re-granted on respawn while the corpse's copy stayed on the
 /// ground — a shovel minted per death. Two lists would eventually disagree.
 pub const STARTING_KIT: [ItemId; 1] = [crate::items::registry::SHOVEL];
+
+/// Snapshot bit for T21.02's ironman boots.
+pub const MOVE_MOD_BOOTS: u8 = 1 << 0;
+
+/// The wire's bit assignment for the passives `apply_input` reads (T21.02).
+///
+/// **A table, and that is not the hand-kept list this project warns against.** A
+/// wire format is inherently a table: bit numbers have to be stable across
+/// versions, and nothing can derive *which bit* from an `ItemKind`. What must
+/// never be a list is the **behaviour**, and it is not — `move_mods` asks
+/// `holds_utility`, so a second item granting the same utility needs no entry
+/// here, and `item_for_utility` finds the item back out of `ITEMS` by kind.
+///
+/// Encode (`move_mod_bits`) and decode (`set_move_mod_bits`) both walk this one
+/// table, so they cannot disagree about a bit.
+const MOVE_MOD_BITS: &[(u8, UtilityId)] = &[(MOVE_MOD_BOOTS, UtilityId::IronmanBoots)];
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DeathCause {
@@ -371,16 +389,182 @@ impl PlayerState {
     /// Only movement reads this, so nothing else sees the rounding — damage, the
     /// HUD and death all still use the true fractional health.
     pub fn speed_multiplier(&self) -> f32 {
-        lerp(
+        let health = lerp(
             HEALTH_SPEED_MIN,
             1.0,
             (self.health.floor() / BASE_HEALTH).clamp(0.0, 1.0),
-        )
+        );
+        // T21.02 — ironman boots, **multiplied in here rather than added as a
+        // ninth argument to `apply_input`**. The seam already exists: this value
+        // is what `apply_horizontal` scales the *target speed* by, and
+        // `movement.rs` states that design in its own comment. Opening a second
+        // one would give two answers to "how fast is this player", and the wasm
+        // mirror already calls this exact function.
+        //
+        // Multiplicative with the health term rather than replacing it: a hurt
+        // player in boots is faster than a hurt player without them and slower
+        // than a healthy one in them, which is the only reading under which both
+        // rules still mean something.
+        if self.holds_utility(UtilityId::IronmanBoots) {
+            health * BOOTS_SPEED_MULT
+        } else {
+            health
+        }
+    }
+
+    /// This player's **launch-velocity** multiplier (T21.02).
+    ///
+    /// `boots_jump_velocity_mult()` and not `BOOTS_JUMP_HEIGHT_MULT`: the
+    /// constant is a height and height goes as `v²/2g`, so the velocity is its
+    /// square root. Written once, there, so this cannot be the place the two
+    /// drift apart.
+    pub fn jump_multiplier(&self) -> f32 {
+        if self.holds_utility(UtilityId::IronmanBoots) {
+            boots_jump_velocity_mult()
+        } else {
+            1.0
+        }
+    }
+
+    /// Everything `apply_input` needs about this player beyond their body.
+    ///
+    /// **The single derivation, and both sides call it** — `World::apply_inputs`
+    /// on the server and `GameCore::apply_input` in the wasm mirror. That is
+    /// what makes T20.19/T20.21's rule structural: there is no literal for
+    /// either side to pass instead.
+    pub fn move_mods(&self) -> MoveMods {
+        MoveMods {
+            speed: self.speed_multiplier(),
+            jump: self.jump_multiplier(),
+        }
+    }
+
+    /// The passive-movement bits for the snapshot (T21.02).
+    ///
+    /// **A byte of its own rather than the flags byte's last bit.** `docs/40` §3
+    /// leaves exactly one flag spare (bit 7) and M21 needs at least two — boots
+    /// and T21.03's wings — with T21.08's spacesuit behind them. Spending the
+    /// last reserved bit on the first of them would have made the second a wire
+    /// break instead of a field addition. **`docs/40` §3 does not describe this
+    /// byte; the amendment is owed.**
+    ///
+    /// **Why it is on the wire at all**, when T20.07 concluded the flashlight
+    /// needed no more than a derived flag: because `apply_input` reads this and
+    /// does not read that. A flashlight changes what you can *see*, which
+    /// nothing predicts, so it stays at bit 4. This byte is exactly the set
+    /// T20.19's rule covers — *everything `apply_input` reads must be identical
+    /// on both sides* — and nothing else belongs in it.
+    ///
+    /// Derived at the encode site from the inventory, so **nothing is stored,
+    /// nothing is hashed, and `REPLAY_VERSION` does not move** (T20.07's
+    /// conclusion, applied).
+    pub fn move_mod_bits(&self) -> u8 {
+        MOVE_MOD_BITS.iter().fold(0u8, |acc, (bit, u)| {
+            if self.holds_utility(*u) {
+                acc | bit
+            } else {
+                acc
+            }
+        })
+    }
+
+    /// Make this player's inventory agree with a `move_mod_bits` byte off the
+    /// wire. **The client mirror's only route to the passives** (T21.02).
+    ///
+    /// It writes the **inventory**, not a field, and that is the whole point:
+    /// `move_mods` derives from the inventory on both sides, so there is one
+    /// rule and the mirror cannot answer differently from the server. A
+    /// `passives: u8` field beside it would be a second answer to "is this
+    /// player wearing boots" — the third flag that `shield_until` and
+    /// `flashlight_on` were both deleted for.
+    ///
+    /// Never called server-side: there the inventory *is* the truth.
+    pub fn set_move_mod_bits(&mut self, bits: u8) {
+        for (bit, u) in MOVE_MOD_BITS {
+            let want = bits & bit != 0;
+            if want == self.holds_utility(*u) {
+                continue;
+            }
+            let Some(item) = crate::items::registry::item_for_utility(*u) else {
+                continue;
+            };
+            if want {
+                let _ = self.inventory.add(item, 1);
+                continue;
+            }
+            // Bound before the `if let`, so `iter`'s borrow has ended by the
+            // time `take_slot` wants a mutable one.
+            let slot = self
+                .inventory
+                .iter()
+                .find(|(_, s)| s.item == item)
+                .map(|(i, _)| i);
+            if let Some(slot) = slot {
+                self.inventory.take_slot(slot);
+            }
+        }
     }
 
     /// Were they thrown by something recently? See `knocked_until`.
     pub fn was_knocked(&self, now: f32) -> bool {
         now < self.knocked_until
+    }
+
+    /// The landing speed below which a fall costs **this** player nothing, px/s.
+    ///
+    /// `FALL_SAFE_SPEED` for everybody, scaled by `boots_fall_safe_speed()` for a
+    /// player carrying ironman boots (T21.02). Exposed separately from
+    /// `fall_damage` so the scale is one expression to read, to change, and to
+    /// pin a test to without restating it.
+    pub fn fall_safe_speed(&self) -> f32 {
+        if self.holds_utility(UtilityId::IronmanBoots) {
+            boots_fall_safe_speed()
+        } else {
+            FALL_SAFE_SPEED
+        }
+    }
+
+    /// What this player's landing costs them, in health (T20.11, T21.02).
+    ///
+    /// **One function at the one site.** `World::apply_inputs` is the only
+    /// caller today, and the second one to appear is exactly where a clause left
+    /// loose at a call site gets dropped — so this answers the whole question,
+    /// threshold and exemption and slope, rather than handing the caller two of
+    /// the three. Share the guard, or share the function.
+    ///
+    /// **The knockback exemption is T20.11's, unchanged.** A rocket jump already
+    /// bought its arc with a blast and charging for the landing as well was
+    /// rejected; the arithmetic is in `constants.rs`, where the 0.457 s round
+    /// trip sits inside a 0.6 s `KNOCKBACK_FIRE_GRACE`. It stays a **boolean**
+    /// exemption because a blast is not a fall the player chose the height of.
+    ///
+    /// **The boots raise the threshold and exempt nothing.** `(impact -
+    /// threshold)` still rises smoothly from zero, so there is no edge anywhere
+    /// — which is the base game's own shape, and a faithful restoration of the
+    /// property the boots broke rather than a new power bolted beside it.
+    ///
+    /// **Three rulings were taken on this and two were reversed; all three, with
+    /// the measurements that decided them, are recorded at
+    /// `constants.rs::boots_fall_safe_speed`** — deliberately in one place, so
+    /// two copies cannot drift. Read it before changing anything here: the
+    /// obvious alternative (exempt the landing outright) was tried and rejected
+    /// for a 23.9 health cliff edge 30 px below the player's own launch.
+    ///
+    /// The two shapes therefore differ on purpose: knockback is a *window*
+    /// because it is momentary, and boots are a *threshold* because they are a
+    /// standing property of the player.
+    ///
+    /// **Server-side only.** Health is not predicted: `apply_input` measures the
+    /// impact and deliberately does nothing with it, which is what keeps it
+    /// pure, and the wasm mirror has no fall-damage path at all — it reads
+    /// `landing_impact` only to scale a landing sound.
+    pub fn fall_damage(&self, impact: f32, now: f32) -> f32 {
+        // `impact` is 0.0 on every tick that is not a landing (`integrate`), so
+        // this is also the "did anything land" test and there is no second one.
+        if impact <= 0.0 || self.was_knocked(now) {
+            return 0.0;
+        }
+        ((impact - self.fall_safe_speed()) * FALL_DAMAGE_PER_SPEED).max(0.0)
     }
 
     pub fn invulnerable(&self, now: f32) -> bool {

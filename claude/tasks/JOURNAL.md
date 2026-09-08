@@ -5843,3 +5843,17 @@ now reds with `did not widen the night radius at all: 110.0 -> 110.0` (it *passe
 `c.FLASHLIGHT_FOV_MULT -> 1` in `lightmap-math.ts::fovRadius` still reds assertion one with
 `110.0 -> 110.0, not 165.0 (x1.5)`. Sweep: one more live instance, `fog-visible`'s
 FLASHLIGHT_FOG_VEIL_MULT, reported not fixed. Gate 49/49.
+
+## T21.02 — ironman boots
+
+`apply_input`'s bare `speed_multiplier: f32` is now `MoveMods`, built **only** by
+`PlayerState::move_mods` and called by `World::apply_inputs` and the wasm mirror — there is no
+literal left for either side to pass, which is what makes T20.19/T20.21's rule structural.
+`SNAPSHOT_PLAYER_BYTES` 19 → 20 for a passive byte derived at the encode site; nothing stored,
+nothing hashed, `REPLAY_VERSION` unmoved. Decoding writes the **inventory**, so both sides ask
+one function. `reconcile`'s positional epsilon no longer gates a non-positional input.
+**Fall damage took three rulings, two reversed** — exemption (23.9 hp edge 30 px below launch),
+`FALL_SAFE_SPEED*√3` (5.15 hp deepest fall, breaching the repo's own 10 % floor), then the
+launch speed, whose free drop height **is** the booted apex, 198 px both. Record in one place.
+Boots art screenshotted three times before it looked like footwear. 895 + workspace + 887
+client + `boots-visible` green; wire falsified at both ends, pixels at two.

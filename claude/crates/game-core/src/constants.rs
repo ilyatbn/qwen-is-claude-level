@@ -869,7 +869,15 @@ pub const MASK_CHECKSUM_INTERVAL: f32 = 5.0;
 /// reason — the fill is a server fact (the arming latch, the cooldown and the
 /// step-off reset all live in `world::teleport`), and a client timing its own two
 /// seconds would be a second copy of three guards.
-pub const SNAPSHOT_PLAYER_BYTES: usize = 19;
+/// 20 with T21.02: the passive-movement byte. **`docs/40` §3 does not describe
+/// it and the amendment is owed**, like the byte above it.
+///
+/// A byte of its own rather than the flags byte's last spare bit, because §3
+/// leaves exactly one (bit 7) and M21 needs at least two — ironman boots and
+/// T21.03's unicorn wings — with T21.08's spacesuit behind them. Spending the
+/// last reserved bit on the first of them would have made the second a wire
+/// break instead of a field addition.
+pub const SNAPSHOT_PLAYER_BYTES: usize = 20;
 /// Header bytes before the player array: tick, round_time_ds, darkness, count.
 pub const SNAPSHOT_HEADER_BYTES: usize = 8;
 /// Trailing `last_input_seq`.
@@ -2342,6 +2350,132 @@ pub const BEAM_LIFETIME: f32 = 0.35;
 /// field there is hashed into `World::state_hash` and would cost a
 /// `REPLAY_VERSION` bump for a number that is already derivable.
 pub const LIFESTEAL_DAMAGE_PER_HP: f32 = 10.0;
+
+/// Ironman boots (T21.02): *"makes you run twice as fast"*.
+///
+/// Multiplies into `PlayerState::speed_multiplier`, the seam `apply_input`
+/// already threads to `apply_horizontal` — where it scales the **target speed**
+/// and not the acceleration, so a booted player is faster rather than twitchier
+/// (`movement.rs` states that design).
+pub const BOOTS_SPEED_MULT: f32 = 2.0;
+
+/// *"and jump three times higher"* — **height**, and the name says so because
+/// the next reader will otherwise assume it is the velocity (T21.02).
+///
+/// Height goes as `v² / 2g`, so three times the height is **√3 ≈ 1.732** times
+/// the launch velocity. Writing 3.0 into `JUMP_VELOCITY` would give nine times
+/// the height. `boots_jump_velocity_mult` is the only place that conversion
+/// exists.
+pub const BOOTS_JUMP_HEIGHT_MULT: f32 = 3.0;
+
+/// The launch-velocity multiplier `BOOTS_JUMP_HEIGHT_MULT` implies.
+///
+/// A function rather than a second constant because `f32::sqrt` is not `const`,
+/// and derived rather than written out as `1.7320508` so the two can never
+/// disagree — a hand-written root would keep the old height silently the day the
+/// height constant is retuned.
+pub fn boots_jump_velocity_mult() -> f32 {
+    BOOTS_JUMP_HEIGHT_MULT.sqrt()
+}
+
+/// The landing speed below which a fall costs a **booted** player nothing, px/s.
+///
+/// It is the booted launch speed itself, and that is the whole design: the free
+/// drop height is then `v²/2g`, which **is** the height a booted jump reaches.
+/// 198 px both, by construction — not "about".
+///
+/// # The property being restored
+///
+/// `JUMP_VELOCITY` 430 against `FALL_SAFE_SPEED` 480 means your own jump never
+/// hurts you — by arithmetic, with no exemption anywhere. Boots push the
+/// identical act to `sqrt(3) x 430` = 744.8 px/s, past the threshold, so a
+/// full-height jump would cost 19.9 health. This restores the property rather
+/// than granting a new one, and `(impact - threshold)` still rises smoothly from
+/// zero, so there is **no edge anywhere** — which is the base game's shape.
+///
+/// # Three rulings, two reversed — meet them here rather than repeat them
+///
+/// **Rejected 1: a time-bounded exemption**, gated on `ticks_since_jump` over a
+/// window derived from the jump's round trip. Rejected because *an exemption
+/// worth 19.9 health has an edge worth 19.9 health wherever it ends*, and no
+/// derivation moves that edge somewhere a player will not meet it: measured, a
+/// booted jump landing 30 px below its own launch — one ledge, ordinary terrain
+/// — cost **23.9 health with nothing on screen to explain it**.
+///
+/// **Rejected 2: `FALL_SAFE_SPEED * boots_jump_velocity_mult()`** (831.4).
+/// Rejected on two measurements. First, `resolve.rs::integrate` clamps `vel.y`
+/// to `MAX_FALL_SPEED` **before** the impact is captured, so no landing in the
+/// game exceeds 900 px/s and every fall past 289 px is the same landing — the
+/// deepest fall the game can produce would have cost a booted player **5.15
+/// health**. Second, that breaches the floor this file asserts about itself a
+/// few lines above — *"less than a tenth of a health bar is a rule nobody
+/// notices"* — and the compile-time guard could not see it, because it is
+/// written over `FALL_SAFE_SPEED` and a booted fall never touches that value.
+/// It would also have put the free drop height at 247 px against a 198 px apex,
+/// so the "safe from the height it launches you to" story was approximate.
+///
+/// # What this one measures out at
+///
+/// ```text
+///                        unbooted   booted
+///     free drop height      82 px   198 px   (= the booted jump apex)
+///     own jump           19.86 hp     0 hp
+///     30 px below launch 23.94 hp  4.08 hp   (smooth: no edge)
+///     deepest fall       31.50 hp 11.64 hp   (floor is 10.0)
+/// ```
+pub fn boots_fall_safe_speed() -> f32 {
+    JUMP_VELOCITY * boots_jump_velocity_mult()
+}
+
+// **The floor above, mirrored for the booted path — and it needs its own assert
+// because the one above cannot see this path.** `FALL_SAFE_SPEED` does not
+// appear anywhere in a booted player's fall; their threshold is the launch
+// speed, so a guard written over `FALL_SAFE_SPEED` is blind to every retune of
+// `BOOTS_JUMP_HEIGHT_MULT`. That is `docs/76` §G6 one path over, and it is the
+// exact shape that would have shipped a 5.15 health deepest fall.
+//
+// The claim is the same sentence as the original: the deepest fall the game can
+// produce must still cost more than a tenth of a bar. Written out, that is
+// `(MAX_FALL_SPEED - launch) * FALL_DAMAGE_PER_SPEED > BASE_HEALTH * 0.1` with
+// `launch = JUMP_VELOCITY * sqrt(BOOTS_JUMP_HEIGHT_MULT)`.
+//
+// `sqrt` is not `const`, so the root is squared away instead. Both sides of
+// `launch * rate < MAX_FALL_SPEED * rate - BASE_HEALTH * 0.1` are positive — the
+// right-hand side by the assert above, which already requires
+// `MAX_FALL_SPEED * rate` to exceed `BASE_HEALTH * 0.1` — so squaring preserves
+// the inequality, and `launch²` is `JUMP_VELOCITY² * BOOTS_JUMP_HEIGHT_MULT`
+// with no root left in it. Division is avoided as well, so this needs nothing
+// from const evaluation that the asserts above do not already use.
+//
+// **Headroom is thin and the number is the point: this fails at
+// `BOOTS_JUMP_HEIGHT_MULT` 3.18.** Today's 3.0 has 6 % to spare, so "make the
+// boots jump a bit higher" is a one-line change that lands on a compile error
+// rather than in a playtest.
+const _: () = assert!(
+    JUMP_VELOCITY
+        * JUMP_VELOCITY
+        * BOOTS_JUMP_HEIGHT_MULT
+        * FALL_DAMAGE_PER_SPEED
+        * FALL_DAMAGE_PER_SPEED
+        < (MAX_FALL_SPEED * FALL_DAMAGE_PER_SPEED - BASE_HEALTH * 0.1)
+            * (MAX_FALL_SPEED * FALL_DAMAGE_PER_SPEED - BASE_HEALTH * 0.1)
+);
+
+// Boots must actually do something in both directions, or the item is art.
+const _: () = assert!(BOOTS_SPEED_MULT > 1.0);
+const _: () = assert!(BOOTS_JUMP_HEIGHT_MULT > 1.0);
+// `boots_fall_safe_speed` is only meaningful while the base game's property
+// holds. If `FALL_SAFE_SPEED` ever drops below `JUMP_VELOCITY` an ordinary jump
+// starts hurting, and scaling a threshold that no longer clears the jump it is
+// scaled from would describe something untrue. `FALL_SAFE_SPEED > JUMP_VELOCITY`
+// is already asserted where those two are defined; this is a second reader of it.
+//
+// `JUMP_HEIGHT`/`JUMP_REACH` in `map/gen/traversal.rs` are compile-time consts
+// derived from `JUMP_VELOCITY`, and they drive the **map generator's**
+// traversability check. Boots let a player clear gaps the map was not built to
+// require — more mobility rather than less, so nothing becomes unreachable, and
+// the generator is deliberately left alone: it must keep generating maps a
+// player *without* boots can cross.
 // A fang that returned more life than the damage it dealt would make trading
 // hits strictly profitable, which is a different item from the one asked for.
 const _: () = assert!(LIFESTEAL_DAMAGE_PER_HP > 1.0);
@@ -2352,6 +2486,63 @@ const _: () = assert!(LIFESTEAL_DAMAGE_PER_HP > 1.0);
 #[allow(clippy::assertions_on_constants)]
 mod tests {
     use super::*;
+
+    /// **The landmine past the floor** (T21.02).
+    ///
+    /// The compile-time assert beside `boots_fall_safe_speed` is the guard that
+    /// actually binds — it fails at `BOOTS_JUMP_HEIGHT_MULT` **3.18**. This is
+    /// the backstop behind it, and it names the second crossing: at **4.38** the
+    /// booted launch speed reaches `MAX_FALL_SPEED` and the boots stop being a
+    /// raised threshold and become **silent fall immunity**, because no landing
+    /// the game can produce clears 900 px/s (`resolve.rs::integrate` clamps
+    /// `vel.y` before the impact is captured).
+    ///
+    /// Two guards rather than one because they fail differently: past 3.18 the
+    /// rule is merely too weak to notice, and past 4.38 it is gone. Whoever
+    /// retunes that constant should meet both numbers rather than an assertion.
+    #[test]
+    fn the_boots_fall_threshold_never_reaches_terminal_velocity() {
+        assert!(
+            boots_fall_safe_speed() < MAX_FALL_SPEED,
+            "a booted player is safe below {} px/s against a terminal velocity of              {MAX_FALL_SPEED} — no landing in the game can clear that, so boots              are fall immunity. BOOTS_JUMP_HEIGHT_MULT crosses here at 4.38, and              the compile-time floor beside `boots_fall_safe_speed` already fails              at 3.18",
+            boots_fall_safe_speed()
+        );
+        // And it must clear the jump it exists for, or the item still hurts
+        // itself. Equivalent to `FALL_SAFE_SPEED > JUMP_VELOCITY` scaled, but
+        // asserted on the value actually used rather than on the pair it came
+        // from.
+        assert!(
+            boots_fall_safe_speed() >= JUMP_VELOCITY * boots_jump_velocity_mult(),
+            "a booted jump launches at {} and is safe only below {} — its own              landing is charged, which is the whole thing this exists to stop",
+            JUMP_VELOCITY * boots_jump_velocity_mult(),
+            boots_fall_safe_speed()
+        );
+    }
+
+    /// The floor, measured through the same arithmetic the game runs, as the
+    /// readable companion to the squared compile-time assert.
+    ///
+    /// **Mirrors `constants.rs`'s own "less than a tenth of a health bar is a
+    /// rule nobody notices" for the booted path.** The const assert proves it at
+    /// build time with the root squared away; this states it in the form the
+    /// sentence is written in, so a reader can check the two agree.
+    #[test]
+    fn the_deepest_fall_still_costs_a_booted_player_more_than_a_tenth_of_a_bar() {
+        let deepest = (MAX_FALL_SPEED - boots_fall_safe_speed()) * FALL_DAMAGE_PER_SPEED;
+        assert!(
+            deepest > BASE_HEALTH * 0.1,
+            "the deepest fall the game can produce costs a booted player              {deepest} health, under the {} this file requires of the unbooted              rule — a penalty nobody notices is the same defect as not having one",
+            BASE_HEALTH * 0.1
+        );
+        // The control: it is a *discount*, not a removal. An unbooted player
+        // must still pay more for the same landing, or the two rules have
+        // collapsed into one.
+        let bare = (MAX_FALL_SPEED - FALL_SAFE_SPEED) * FALL_DAMAGE_PER_SPEED;
+        assert!(
+            bare > deepest,
+            "boots did not reduce the deepest fall at all ({bare} against {deepest})"
+        );
+    }
 
     #[test]
     fn sim_dt_matches_sim_hz() {

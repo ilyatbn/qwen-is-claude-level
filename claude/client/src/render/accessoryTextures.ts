@@ -61,6 +61,39 @@ export const GLASSES_ART: AccessoryArt[] = [
   { id: 3, key: '__glasses_3', name: 'Visor', w: GLASSES_W, h: GLASSES_H },
 ]
 
+const BOOT_W = 20
+const BOOT_H = 4
+
+/**
+ * T21.02's ironman boots. **One pair, not a picker** — they are an item you find
+ * rather than an appearance you choose, so there is no id and no "none" row.
+ */
+export function bootArt(): AccessoryArt {
+  return { id: 0, key: '__boots_ironman', name: 'Ironman Boots', w: BOOT_W, h: BOOT_H }
+}
+
+/**
+ * Red and yellow, as asked — **and wider than the leg, which is the half that
+ * makes them visible.** `tombstoneTextures` states the rule these follow: at
+ * `PLAYER_W` 16 a variant that differs only in palette differs in nothing a
+ * player can read, so the sole overhangs and the outline of the body changes.
+ */
+export function ensureBootTexture(textures: Phaser.Textures.TextureManager): void {
+  draw(textures, bootArt(), (c) => {
+    // Two boots, a pixel apart, so the pair reads as feet rather than a block.
+    // **The canvas is deliberately wide and shallow (20x4).** The scale is set
+    // by width, so the art's aspect ratio *is* the drawn height — a squarer
+    // canvas produced boots three times too tall that covered the shorts. Two
+    // boots at x=2 and x=11 land on the legs rather than flanking them.
+    for (const x of [2, 11]) {
+      c.fillStyle = BOOT_RED
+      c.fillRect(x + 1, 0, 5, 2) // upper, over the ankle
+      c.fillStyle = BOOT_YELLOW
+      c.fillRect(x, 2, 7, 2) // sole, overhanging the upper on both sides
+    }
+  })
+}
+
 /** Art for a hat id, falling back to "none" (`docs/50` §8). */
 export function hatArt(id: number): AccessoryArt {
   return HAT_ART[id] ?? HAT_ART[0]!
@@ -77,6 +110,9 @@ const BRIM = '#2a2f36'
 const FELT = '#3b424b'
 const RED = '#b4453a'
 const STEEL = '#7d8892'
+/** T21.02, and the brief names both: *"make them red and yellow"*. */
+const BOOT_RED = '#c8322a'
+const BOOT_YELLOW = '#f0c020'
 const GOLD = '#d9a521'
 const LENS = '#101418'
 const GLASS = '#2f6fb0'

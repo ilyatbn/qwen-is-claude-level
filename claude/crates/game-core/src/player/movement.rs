@@ -50,7 +50,24 @@ pub struct JumpState {
 }
 
 /// Try to jump this tick. Returns true if a jump was launched.
-pub fn try_jump(body: &mut Body, jump_state: &mut JumpState, jump_pressed: bool, dir: f32) -> bool {
+///
+/// `jump_multiplier` scales the **launch velocity** (T21.02). It is applied here
+/// rather than by the caller afterwards for the reason this project states as
+/// *share the guard, or share the function*: `-JUMP_VELOCITY` is written in
+/// exactly one place, and a caller that re-derived it in order to scale it would
+/// be a second copy of the launch rule, silently wrong the day the buffer, the
+/// coyote window or the horizontal boost changes.
+///
+/// It is a **velocity** multiplier and the name of the constant that feeds it
+/// says so: three times the *height* is `sqrt(3)` here, because height goes as
+/// `v²/2g`.
+pub fn try_jump(
+    body: &mut Body,
+    jump_state: &mut JumpState,
+    jump_pressed: bool,
+    dir: f32,
+    jump_multiplier: f32,
+) -> bool {
     // A press that cannot launch is remembered briefly, so a jump pressed just
     // before landing fires on touchdown instead of being swallowed.
     if jump_pressed {
@@ -65,7 +82,7 @@ pub fn try_jump(body: &mut Body, jump_state: &mut JumpState, jump_pressed: bool,
         return false;
     }
 
-    body.vel.y = -JUMP_VELOCITY;
+    body.vel.y = -JUMP_VELOCITY * jump_multiplier;
     if dir != 0.0 {
         // Added on top of current walking speed, not replacing it.
         body.vel.x += dir * JUMP_H_BOOST;
@@ -99,6 +116,46 @@ mod tests {
     }
 
     // ---- walking ---------------------------------------------------------
+
+    /// **The assertion `docs/76` §G6 asks for beside a pinned one** (T21.02).
+    ///
+    /// Every other boots assertion pins to `BOOTS_JUMP_HEIGHT_MULT` or to
+    /// `boots_jump_velocity_mult()` and would stay green if either moved. This
+    /// one asserts the *relationship* between them: it takes the launch velocity
+    /// `try_jump` actually wrote and asks what height that buys, which is a
+    /// claim about the `sqrt` rather than about the number.
+    ///
+    /// Height goes as `v²/2g`, so the ratio of two apexes is the ratio of the
+    /// squared launch speeds and gravity cancels. **No second integrator is
+    /// written here** — a copy of the physics reporting on the physics would
+    /// prove nothing.
+    ///
+    /// **What it catches:** writing `BOOTS_JUMP_HEIGHT_MULT` straight into the
+    /// velocity instead of its square root, which is the exact mistake that
+    /// constant's doc comment warns the next reader about. It makes this ratio 9
+    /// instead of 3.
+    #[test]
+    fn the_boots_multiplier_buys_exactly_the_height_its_constant_names() {
+        let launch = |mult: f32| {
+            let mut b = grounded_body();
+            let mut j = JumpState::default();
+            assert!(
+                try_jump(&mut b, &mut j, true, 0.0, mult),
+                "the jump refused"
+            );
+            b.vel.y.abs()
+        };
+        let plain = launch(1.0);
+        let booted = launch(crate::constants::boots_jump_velocity_mult());
+        assert!(plain > 0.0, "an ordinary jump launched at nothing");
+        let height_ratio = (booted * booted) / (plain * plain);
+        assert!(
+            (height_ratio - crate::constants::BOOTS_JUMP_HEIGHT_MULT).abs() < 1e-4,
+            "a booted jump reaches {height_ratio}x the height, not {}x — launch \
+             was {booted} px/s against {plain}",
+            crate::constants::BOOTS_JUMP_HEIGHT_MULT
+        );
+    }
 
     #[test]
     fn walking_converges_exactly_on_walk_speed() {
@@ -244,7 +301,7 @@ mod tests {
     fn a_grounded_press_launches() {
         let mut b = grounded_body();
         let mut j = JumpState::default();
-        assert!(try_jump(&mut b, &mut j, true, 0.0));
+        assert!(try_jump(&mut b, &mut j, true, 0.0, 1.0));
         assert_eq!(b.vel.y, -JUMP_VELOCITY);
         assert!(!b.grounded);
     }
@@ -253,7 +310,7 @@ mod tests {
     fn an_airborne_press_past_coyote_time_does_not_launch() {
         let mut b = airborne_body();
         let mut j = JumpState::default();
-        assert!(!try_jump(&mut b, &mut j, true, 0.0));
+        assert!(!try_jump(&mut b, &mut j, true, 0.0, 1.0));
         assert_eq!(b.vel.y, 0.0);
     }
 
@@ -263,20 +320,26 @@ mod tests {
         b.grounded = false;
         b.airborne_ticks = 5;
         let mut j = JumpState::default();
-        assert!(try_jump(&mut b, &mut j, true, 0.0), "5 ticks is inside");
+        assert!(
+            try_jump(&mut b, &mut j, true, 0.0, 1.0),
+            "5 ticks is inside"
+        );
 
         let mut b = Body::new(Vec2::ZERO);
         b.grounded = false;
         b.airborne_ticks = 7;
         let mut j = JumpState::default();
-        assert!(!try_jump(&mut b, &mut j, true, 0.0), "7 ticks is outside");
+        assert!(
+            !try_jump(&mut b, &mut j, true, 0.0, 1.0),
+            "7 ticks is outside"
+        );
     }
 
     #[test]
     fn a_standing_jump_adds_no_horizontal_speed() {
         let mut b = grounded_body();
         let mut j = JumpState::default();
-        try_jump(&mut b, &mut j, true, 0.0);
+        try_jump(&mut b, &mut j, true, 0.0, 1.0);
         assert_eq!(b.vel.x, 0.0);
     }
 
@@ -285,7 +348,7 @@ mod tests {
         let mut b = grounded_body();
         b.vel.x = WALK_SPEED;
         let mut j = JumpState::default();
-        try_jump(&mut b, &mut j, true, 1.0);
+        try_jump(&mut b, &mut j, true, 1.0, 1.0);
         assert_eq!(b.vel.x, WALK_SPEED + JUMP_H_BOOST);
     }
 
@@ -299,7 +362,7 @@ mod tests {
         for _ in 0..60 {
             let held = true;
             let pressed = held && !prev_held;
-            if try_jump(&mut b, &mut j, pressed, 0.0) {
+            if try_jump(&mut b, &mut j, pressed, 0.0, 1.0) {
                 launches += 1;
             }
             prev_held = held;
@@ -315,16 +378,16 @@ mod tests {
         let mut j = JumpState::default();
 
         // Pressed while airborne: buffered, not launched.
-        assert!(!try_jump(&mut b, &mut j, true, 0.0));
+        assert!(!try_jump(&mut b, &mut j, true, 0.0, 1.0));
         assert!(j.buffered_ticks > 0);
 
         // 5 ticks later, still airborne, then land.
         for _ in 0..5 {
-            assert!(!try_jump(&mut b, &mut j, false, 0.0));
+            assert!(!try_jump(&mut b, &mut j, false, 0.0, 1.0));
         }
         b.grounded = true;
         assert!(
-            try_jump(&mut b, &mut j, false, 0.0),
+            try_jump(&mut b, &mut j, false, 0.0, 1.0),
             "the buffered press should fire on the landing tick"
         );
     }
@@ -333,16 +396,16 @@ mod tests {
     fn the_jump_buffer_expires() {
         let mut b = airborne_body();
         let mut j = JumpState::default();
-        try_jump(&mut b, &mut j, true, 0.0);
+        try_jump(&mut b, &mut j, true, 0.0, 1.0);
 
         for _ in 0..15 {
-            try_jump(&mut b, &mut j, false, 0.0);
+            try_jump(&mut b, &mut j, false, 0.0, 1.0);
         }
         assert_eq!(j.buffered_ticks, 0, "buffer should have expired");
 
         b.grounded = true;
         assert!(
-            !try_jump(&mut b, &mut j, false, 0.0),
+            !try_jump(&mut b, &mut j, false, 0.0, 1.0),
             "an expired buffer must not launch a jump much later"
         );
     }
@@ -352,7 +415,7 @@ mod tests {
         // Integrate the launch velocity under gravity with no terrain.
         let mut b = grounded_body();
         let mut j = JumpState::default();
-        try_jump(&mut b, &mut j, true, 0.0);
+        try_jump(&mut b, &mut j, true, 0.0, 1.0);
 
         let start_y = b.pos.y;
         let mut peak = start_y;

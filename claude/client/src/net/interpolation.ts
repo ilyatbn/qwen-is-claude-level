@@ -22,6 +22,12 @@ export interface InterpolatedPlayer {
   aim: number
   health: number
   flags: number
+  /**
+   * T21.02's passive-movement bits, carried through so a remote's boots can be
+   * drawn. Stepped at the midpoint like `flags`, never lerped: it is a bit
+   * field, and half a boot is not a state.
+   */
+  moveMods: number
   /** True while this player's position is being guessed rather than known. */
   extrapolated: boolean
 }
@@ -116,6 +122,7 @@ export class RemoteInterpolator {
           aim: dequantAim(p.aim),
           health: p.health,
           flags: p.flags,
+          moveMods: p.moveMods,
           extrapolated: ahead > 0,
         })
       }
@@ -161,6 +168,10 @@ export class RemoteInterpolator {
         aim: shortestArcLerp(dequantAim(pa.aim), dequantAim(pb.aim), t),
         health: t < 0.5 ? pa.health : pb.health,
         flags: t < 0.5 ? pa.flags : pb.flags,
+        // Stepped like `flags`, for the same reason: a bit field has no
+        // midpoint, and lerping one would make a boot flicker on the frames
+        // either side of a pickup.
+        moveMods: t < 0.5 ? pa.moveMods : pb.moveMods,
         extrapolated: false,
       })
     }
@@ -182,6 +193,7 @@ function still(p: SnapshotPlayer): InterpolatedPlayer {
     aim: dequantAim(p.aim),
     health: p.health,
     flags: p.flags,
+    moveMods: p.moveMods,
     extrapolated: false,
   }
 }

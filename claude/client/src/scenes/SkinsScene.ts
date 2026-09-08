@@ -180,6 +180,9 @@ export class SkinsScene extends Phaser.Scene {
       grounded: true,
       jetpack: false,
       shield: false,
+      // The picker shows appearances you *choose*; boots are an item you find,
+      // and there is no row for them here.
+      boots: false,
       iframes: false,
     })
     // `setState` positions the container in world space; the preview is not in

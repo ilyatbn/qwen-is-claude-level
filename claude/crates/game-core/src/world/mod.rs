@@ -1347,7 +1347,11 @@ impl World {
                 .find(|(i, _)| *i == id)
                 .map(|(_, v)| *v)
                 .unwrap_or_default();
-            let speed = self.players[idx].speed_multiplier();
+            // **The one derivation, and the mirror calls the same function**
+            // (T21.02). It was `speed_multiplier()` — a bare `f32` the client
+            // was free to supply a literal for, which is exactly what it did for
+            // fifteen milestones until T20.19.
+            let mods = self.players[idx].move_mods();
             let p = &mut self.players[idx];
             let impact = apply_input(
                 &self.map,
@@ -1356,24 +1360,23 @@ impl World {
                 &mut p.jetpack,
                 &input,
                 &prev,
-                speed,
+                mods,
                 dt,
             );
-            // **The exemption is `was_knocked`, reused unchanged** (T20.11's
-            // ruling, and the arithmetic is in `constants.rs`): a rocket-jump's
-            // round trip is 0.457 s against a 0.6 s `KNOCKBACK_FIRE_GRACE`, so
-            // the grace already covers the arc and a second timer would be a
-            // fourth flag that can disagree with the three.
+            // **The whole rule moved into `PlayerState::fall_damage`**
+            // (T21.02). It was the threshold, the slope and `!was_knocked`
+            // spelled out here; T20.11's exemption is unchanged inside it, and
+            // the boots' scaled threshold joined it there rather than becoming a
+            // second clause at this site — which is where the next fall-damage
+            // site would drop one of them.
             //
-            // A blast that also drops you off a **ledge** is not exempt from the
-            // ledge: the knockback bought you 36 px of arc and the cliff gave you
-            // the other 250, and by then the grace has expired on its own.
-            if impact > 0.0 && !p.was_knocked(now) {
-                let hurt = (impact - crate::constants::FALL_SAFE_SPEED)
-                    * crate::constants::FALL_DAMAGE_PER_SPEED;
-                if hurt > 0.0 {
-                    falls.push((id, hurt));
-                }
+            // The knockback half is still a window, so a blast that also drops
+            // you off a **ledge** is not exempt from the ledge: the knockback
+            // bought you 36 px of arc and the cliff gave you the other 250, and
+            // by then the grace has expired on its own.
+            let hurt = p.fall_damage(impact, now);
+            if hurt > 0.0 {
+                falls.push((id, hurt));
             }
             p.aim = input.aim;
             if let Some(slot) = self.prev_input.iter_mut().find(|(i, _)| *i == id) {
@@ -7543,6 +7546,137 @@ mod fall_damage {
             w.player(0).expect("alive").health,
             before,
             "walking cost health"
+        );
+    }
+
+    /// Settle player 0 on flat ground, jump **once**, and report
+    /// `(health lost, landing impact)`.
+    ///
+    /// A real jump through `World::step`, not a body placed in the air: the
+    /// exemption is gated on `ticks_since_jump`, which only a launch through
+    /// `try_jump` ever resets. A test that teleported a body upward would pass
+    /// for the wrong reason — or fail for one.
+    ///
+    /// One press and then release. A **held** JUMP engages the jetpack after
+    /// `JETPACK_HOLD_DELAY` and would turn this into a measurement of thrust.
+    fn jump_from_flat(w: &mut World) -> (f32, f32) {
+        let (x, top) = flat_spot(w);
+        {
+            let Some(p) = w.player_mut(0) else {
+                panic!("no player 0")
+            };
+            p.body.pos = Vec2::new(x, top - PLAYER_H / 2.0);
+            p.body.vel = Vec2::ZERO;
+            p.iframes_until = 0.0;
+        }
+        let mut seq = 0u32;
+        let tick = |w: &mut World, buttons: u8, seq: &mut u32| {
+            *seq += 1;
+            w.queue_input(0, crate::player::input::Input::new(*seq, buttons, 0));
+            w.step(SIM_DT);
+        };
+        for _ in 0..90 {
+            tick(w, 0, &mut seq);
+        }
+        assert!(
+            w.player(0).expect("ana").body.grounded,
+            "the fixture never settled, so it is measuring a drop and not a jump"
+        );
+        let before = w.player(0).expect("ana").health;
+        tick(w, button::JUMP, &mut seq);
+        assert!(
+            !w.player(0).expect("ana").body.grounded,
+            "the jump never left the ground"
+        );
+        for _ in 0..600 {
+            tick(w, 0, &mut seq);
+            if w.player(0).expect("ana").body.grounded {
+                break;
+            }
+        }
+        let p = w.player(0).expect("ana");
+        assert!(p.body.grounded, "the jump never came down");
+        (before - p.health, p.body.landing_impact)
+    }
+
+    /// The **boots** half of `fall_damage_exempt`, ruled narrow 2026-09-08.
+    ///
+    /// Four assertions, and the controls are the whole test:
+    ///
+    ///  - an **ordinary** jump costs nothing, which is the property the base
+    ///    game has by arithmetic and the boots break;
+    ///  - a **booted** jump costs nothing too;
+    ///  - and it lands **past `FALL_SAFE_SPEED`**, which is what stops the line
+    ///    above being vacuous. Without it the test passes for boots that never
+    ///    changed the jump at all, since a 430 px/s landing is free anyway;
+    ///  - a fall deep enough to beat even the **scaled** threshold still costs,
+    ///    and costs less than it costs unbooted. That is what reds if anyone
+    ///    writes immunity where the ruling says scale.
+    #[test]
+    fn a_booted_jump_lands_free_and_a_deep_fall_still_costs_but_costs_less() {
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        let (bare_cost, bare_impact) = jump_from_flat(&mut w);
+        assert_eq!(
+            bare_cost, 0.0,
+            "an ordinary jump cost health — the base game's own property is gone"
+        );
+        assert!(
+            bare_impact <= FALL_SAFE_SPEED,
+            "an ordinary jump landed at {bare_impact}, past FALL_SAFE_SPEED \
+             {FALL_SAFE_SPEED} — it is free by exemption, not by arithmetic"
+        );
+
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        give(&mut w, 0, crate::items::registry::IRONMAN_BOOTS, 1);
+        let (booted_cost, booted_impact) = jump_from_flat(&mut w);
+        // **The non-vacuity control.** The exemption is only doing work if the
+        // landing it forgives would otherwise have been charged.
+        assert!(
+            booted_impact > FALL_SAFE_SPEED,
+            "a booted jump landed at {booted_impact}, inside FALL_SAFE_SPEED \
+             {FALL_SAFE_SPEED} — nothing was forgiven, so the assertion below \
+             would pass against boots that do not raise the jump at all"
+        );
+        assert_eq!(
+            booted_cost, 0.0,
+            "a booted jump was charged {booted_cost} health for its own landing"
+        );
+
+        // **A scale, not immunity.** A fall deep enough to beat even the scaled
+        // threshold still costs — and costs less than it costs unbooted. This is
+        // the assertion that reds if anyone writes immunity instead of a scale,
+        // and the height is derived from the scaled threshold itself so it
+        // cannot end up sitting on the boundary.
+        let safe = crate::constants::boots_fall_safe_speed();
+        let boots_free_height = safe * safe / (2.0 * crate::constants::GRAVITY);
+        // Half again past the booted free height, so the drop is unambiguously
+        // beyond it rather than at it.
+        let deep = boots_free_height * 1.5;
+
+        let mut bare_w = world();
+        bare_w.add_player(0, 0, "ana".into());
+        let bare = drop_player(&mut bare_w, deep);
+        assert!(
+            bare > 0.0,
+            "the control drop of {deep} px cost an unbooted player nothing, so \
+             the comparison below discriminates nothing"
+        );
+
+        let mut booted_w = world();
+        booted_w.add_player(0, 0, "ana".into());
+        give(&mut booted_w, 0, crate::items::registry::IRONMAN_BOOTS, 1);
+        let booted_deep = drop_player(&mut booted_w, deep);
+        assert!(
+            booted_deep > 0.0,
+            "a {deep} px fall cost a booted player nothing — that is immunity, \
+             and the ruling is a scaled threshold"
+        );
+        assert!(
+            booted_deep < bare,
+            "boots did not reduce a deep fall at all: {booted_deep} against \
+             {bare} unbooted"
         );
     }
 

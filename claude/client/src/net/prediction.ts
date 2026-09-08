@@ -98,7 +98,28 @@ export class Predictor {
     if (!local) return
 
     const err = Math.hypot(local.x - snap.state.x, local.y - snap.state.y)
-    if (err <= C().RECONCILE_EPSILON_PX) return
+    // **A positional epsilon must not gate a non-positional input to
+    // `applyInput`** (T21.02).
+    //
+    // This early return exists so a good prediction is not snapped for nothing,
+    // and it is a comparison of *positions*. `moveMods` is not a position: it
+    // says how fast this body walks and how high it jumps, and the mirror reads
+    // it every predicted tick. Gating it behind a position check would mean the
+    // frame a player picks boots up, the mirror keeps predicting the old speed
+    // until the error it causes grows past two pixels — a correction that only
+    // fires *because* the mirror was told too late.
+    //
+    // So the gate is now "nothing this reconciler cares about has changed",
+    // rather than "the position is close". When the passives move, the mirror's
+    // model of the player has changed and its prediction is stale by
+    // definition, so it takes the full correction — which is the one path that
+    // already carries them. **No second setter**: this is the same
+    // `setPlayerState` below, reached on one more condition.
+    //
+    // T20.19 and T20.21 were both a value the mirror needed arriving on a path
+    // that could skip it. This is the third, caught before it shipped.
+    const modsChanged = local.moveMods !== snap.state.moveMods
+    if (err <= C().RECONCILE_EPSILON_PX && !modsChanged) return
 
     this.stats.corrections++
     this.stats.lastCorrectionPx = err

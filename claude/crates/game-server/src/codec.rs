@@ -331,6 +331,21 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
         // the ones in `world::teleport` (`CLAUDE.md`: share the guard, or share
         // the function). A byte is cheaper than the divergence.
         b.push((p.teleport.charge_fraction() * 255.0).clamp(0.0, 255.0) as u8);
+        // T21.02 — the passives `apply_input` reads, one bit each.
+        //
+        // **Derived here from the inventory, never stored** — T20.07's
+        // conclusion for the flashlight, applied. Nothing is added to
+        // `PlayerState`, so nothing is added to `World::state_hash` and
+        // `REPLAY_VERSION` does not move.
+        //
+        // **Why this is on the wire when the flashlight's bit was enough as a
+        // flag.** The rule is not "the client must know everything" — it is
+        // *everything `apply_input` reads must be identical on both sides*
+        // (T20.19, T20.21). A flashlight changes what you can see, which nothing
+        // predicts. Boots change how fast you walk and how high you jump, which
+        // is predicted dozens of times a frame, so a client that does not know
+        // rubber-bands on every step.
+        b.push(p.move_mod_bits());
     }
 
     b.extend_from_slice(&last_input_seq.to_le_bytes());
@@ -372,6 +387,8 @@ pub struct SnapshotPlayer {
     pub consumables: u8,
     /// §C5's pad charge, quantised against `TELEPORT_CHARGE`.
     pub teleport_charge: u8,
+    /// T21.02's passive-movement bits — see `PlayerState::move_mod_bits`.
+    pub move_mods: u8,
 }
 
 pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
@@ -398,6 +415,7 @@ pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
             battery: r.u8()?,
             consumables: r.u8()?,
             teleport_charge: r.u8()?,
+            move_mods: r.u8()?,
         });
     }
     let last_input_seq = r.u32()?;

@@ -560,7 +560,7 @@ moment a prerequisite is unticked or a new dependency is added. Re-check the six
 relying on it, not the waves.
 
 - [x] [T21.01](M21/T21.01-vampire-fangs.md) — Vampire fangs **(v9)** — depends on T20.08 — **no doc governs it**; an amendment is the durable home for `LIFESTEAL_DAMAGE_PER_HP` and the "Special items (M21)" block. **The task's "key on the delivery" rule alone would have shipped the flamethrower feeding the fangs**: §F10 made `WEAPON_FLAME` a `Delivery::Projectile` and `flame.rs` logs *that* id, not the emitter's — `is_flying_ordnance` excludes it by `Burst::BurnsOut`, and dropping that clause reds the boundary test
-- [ ] [T21.02](M21/T21.02-ironman-boots.md) — Ironman boots **(v9)** — depends on T20.08, T20.04, T20.12
+- [x] [T21.02](M21/T21.02-ironman-boots.md) — Ironman boots **(v9)** — depends on T20.08, T20.04, T20.12 — `apply_input`'s bare `speed_multiplier: f32` became **`MoveMods`**, derived only by `PlayerState::move_mods` and called by both sides, so there is no literal left for either to pass. **`SNAPSHOT_PLAYER_BYTES` 19 → 20**: a passive byte carrying exactly what `apply_input` reads, derived at the encode site, **no `REPLAY_VERSION` move**. Fall damage: **three rulings, two reversed** — the record is at `constants.rs::boots_fall_safe_speed`. **Its Done-when's `e2e.mjs skins` does not select the pixel check**; that is `boots-visible`, run beside it
 - [ ] [T21.03](M21/T21.03-unicorn-wings.md) — Unicorn wings **(v9)** — **hard-depends on T20.09**: dropping is the only off switch
 - [ ] [T21.04](M21/T21.04-day-night-setting.md) — A day/night setting, and a randomisation hook **(v9)** — depends on T20.07
 - [ ] [T21.05](M21/T21.05-low-gravity.md) — Low gravity **(v9)** — the `standard | low` half only

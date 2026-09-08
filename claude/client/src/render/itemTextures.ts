@@ -241,6 +241,17 @@ const ART: Record<string, (c: Ctx) => void> = {
     c.fillRect(4, 14, 2, 1) // a drop under each point
     c.fillRect(10, 14, 2, 1)
   },
+  item_ironman_boots: (c) => {
+    // The pair seen from the side: a chunky sole is the whole silhouette, and
+    // nothing else in this table is a wide flat slab under a block.
+    c.fillStyle = '#c8322a'
+    c.fillRect(3, 4, 9, 6) // upper
+    c.fillRect(4, 2, 5, 2) // cuff
+    c.fillStyle = '#f0c020'
+    c.fillRect(2, 10, 12, 3) // sole, overhanging both ends
+    c.fillStyle = '#8a1f18'
+    c.fillRect(3, 7, 9, 1) // lace band
+  },
 }
 
 /** Sprite keys this module can draw. The check asserts against the registry. */

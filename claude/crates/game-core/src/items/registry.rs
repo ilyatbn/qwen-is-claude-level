@@ -92,6 +92,8 @@ pub enum UtilityId {
     /// item would be a list by another name, and T21.09 sorts the backpack **by
     /// kind**.
     VampireFangs,
+    /// T21.02. Passive like the rest: held, never used, never selected.
+    IronmanBoots,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -154,6 +156,7 @@ pub const SHOVEL: ItemId = 24;
 /// M21's effect items. **Appended, never inserted** (§B16) — `def` is
 /// `ITEMS.get(id as usize)`, so a middle insertion remaps every id above it.
 pub const VAMPIRE_FANGS: ItemId = 25;
+pub const IRONMAN_BOOTS: ItemId = 26;
 pub const BAZOOKA: ItemId = 3;
 pub const GRENADE: ItemId = 4;
 pub const SMG: ItemId = 5;
@@ -532,6 +535,19 @@ pub static ITEMS: &[ItemDef] = &[
         crate_weight: 8,
         buried_weight: 10,
     },
+    // T21.02. Weighted with the fangs: the effect items are meant to be found
+    // occasionally, not carried every round.
+    ItemDef {
+        id: IRONMAN_BOOTS,
+        key: "ironman_boots",
+        name: "Ironman Boots",
+        kind: ItemKind::Utility(UtilityId::IronmanBoots),
+        max_stack: 1,
+        sprite: "item_ironman_boots",
+        spawn_weight: 6,
+        crate_weight: 8,
+        buried_weight: 10,
+    },
 ];
 
 /// Direct index — ids are exactly `0..ITEMS.len()`, which a test asserts.
@@ -581,6 +597,20 @@ pub fn is_retired(d: &ItemDef) -> bool {
         && d.crate_weight == 0
         && d.buried_weight == 0
         && !crate::player::state::STARTING_KIT.contains(&d.id)
+}
+
+/// The item that grants a given passive utility, if any (T21.02).
+///
+/// Scanned out of `ITEMS` by **kind**, so it needs no second list and stays
+/// right the day two items grant the same utility (it answers with the first,
+/// which is the one the wire will round-trip). The only caller is the client
+/// mirror's `set_move_mod_bits`, which has to turn a wire bit back into the
+/// inventory the shared rule reads.
+pub fn item_for_utility(u: UtilityId) -> Option<ItemId> {
+    ITEMS
+        .iter()
+        .find(|d| d.kind == ItemKind::Utility(u))
+        .map(|d| d.id)
 }
 
 /// Every weapon a player can legitimately end up holding, retired placeholders

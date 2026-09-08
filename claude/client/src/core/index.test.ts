@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { Core, MapScale, C } from './index'
+import { MOVE_MOD } from '../net/codec'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const wasmBytes = readFileSync(join(here, 'pkg/game_wasm_bg.wasm'))
@@ -154,9 +155,14 @@ describe('Core', () => {
       // `addPlayer` seats a player alive, so `true` here would be
       // indistinguishable from the mirror ignoring the argument (T20.21).
       alive: false,
+      // Deliberately non-zero, for the third time and the same reason
+      // (T21.02): `addPlayer` seats a player carrying nothing, so 0 here would
+      // be indistinguishable from the mirror ignoring the argument.
+      moveMods: MOVE_MOD.boots,
     })
     const s = core.playerState(1)
     expect(s).not.toBeNull()
+    expect(s!.moveMods).toBe(MOVE_MOD.boots)
     expect(s!.x).toBe(12.5)
     expect(s!.y).toBe(-3.25)
     expect(s!.grounded).toBe(true)

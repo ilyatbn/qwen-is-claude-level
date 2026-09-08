@@ -22,6 +22,7 @@ import {
   accessoryScale,
   accessoryY,
   animKey,
+  BOOT_WIDTH_FRACTION,
   GLASSES_WIDTH_FRACTION,
   HAT_WIDTH_FRACTION,
   framesFor,
@@ -30,7 +31,7 @@ import {
   spriteScale,
   type SkinDef,
 } from './skins-math'
-import { ensureAccessoryTextures, glassesArt, hatArt } from './accessoryTextures'
+import { bootArt, ensureAccessoryTextures, ensureBootTexture, glassesArt, hatArt } from './accessoryTextures'
 import type { Appearance } from '../ui/skins'
 
 export type { AnimState, AnimInputs }
@@ -42,6 +43,19 @@ export interface PlayerFlags {
   jetpack: boolean
   shield: boolean
   iframes: boolean
+  /**
+   * T21.02's ironman boots.
+   *
+   * **A per-frame flag rather than a constructor field, deliberately.** T20.12's
+   * accessories are `readonly` with no setter because a skin is chosen once, and
+   * `GameScene` destroys and rebuilds a `PlayerView` whenever a remote leaves
+   * the sampled set — which is why a hat has to be passed in at construction.
+   * Boots are picked up and dropped mid-round, so a constructor field would be
+   * stale the moment either happened *and* would vanish on the next rebuild.
+   * Going through `setState` means it is re-read every frame from the snapshot
+   * byte, and the rebuild problem cannot arise.
+   */
+  boots: boolean
 }
 
 /** Skin id → placeholder tint, until `skins.json` lands in T7.03. */
@@ -118,6 +132,8 @@ export class PlayerView {
   private weapon: Phaser.GameObjects.Image | Phaser.GameObjects.Rectangle
   private weaponKey = ''
   private readonly shieldBubble: Phaser.GameObjects.Arc
+  /** T21.02. Built always, shown per frame — see `PlayerFlags.boots`. */
+  private readonly boots: Phaser.GameObjects.Image | null
   private readonly nameLabel: Phaser.GameObjects.Text
   private readonly skinId: number
   /** §T20.12's accessories. `readonly` like `skinId`, for the same reason. */
@@ -234,9 +250,23 @@ export class PlayerView {
           .setScale(accessoryScale(glassesDef.w, c.PLAYER_W, GLASSES_WIDTH_FRACTION))
       : null
 
+    // T21.02's boots, at the feet. Built unconditionally like `shieldBubble`
+    // and toggled in `setState`, so picking a pair up mid-round shows them
+    // without a rebuild.
+    ensureBootTexture(scene.textures)
+    const bootDef = bootArt()
+    this.boots = bootDef.key
+      ? scene.add
+          .image(0, accessoryY(drawn, anchorY, 'boots'), bootDef.key)
+          .setOrigin(0.5, 1)
+          .setScale(accessoryScale(bootDef.w, this.body.displayWidth || c.PLAYER_W, BOOT_WIDTH_FRACTION))
+          .setVisible(false)
+      : null
+
     this.container = scene.add.container(0, 0, [
       this.shieldBubble,
       this.body,
+      ...(this.boots ? [this.boots] : []),
       ...(this.hat ? [this.hat] : []),
       ...(this.glasses ? [this.glasses] : []),
       this.weapon,
@@ -291,6 +321,9 @@ export class PlayerView {
     this.weapon.setScale(1, left ? -1 : 1)
 
     this.shieldBubble.setVisible(flags.shield)
+    // T21.02. Toggled, never rebuilt.
+    this.boots?.setVisible(flags.boots)
+    this.boots?.setFlipX(left)
 
     // i-frames flash; dead is drawn faded rather than removed, so the corpse still
     // reads as a player during the respawn delay.
@@ -299,6 +332,7 @@ export class PlayerView {
     // The accessories fade with the body, or a corpse wears a solid hat.
     this.hat?.setAlpha(alpha)
     this.glasses?.setAlpha(alpha)
+    this.boots?.setAlpha(alpha)
   }
 
   /**

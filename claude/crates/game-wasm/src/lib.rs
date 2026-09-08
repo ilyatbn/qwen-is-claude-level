@@ -315,7 +315,12 @@ impl GameCore {
         }
         let input = Input::new(seq, buttons, aim);
         let dt = if dt > 0.0 { dt } else { SIM_DT };
-        let speed = p.stats.speed_multiplier();
+        // **`PlayerState::move_mods`, the same function the server calls**
+        // (T21.02). Not a struct the mirror assembles itself: the whole reason
+        // this argument stopped being an `f32` is that a bare number is
+        // something a caller can invent, and both of the last two rubber-band
+        // bugs were the mirror inventing one.
+        let mods = p.stats.move_mods();
         apply_input(
             map,
             &mut p.body,
@@ -323,7 +328,7 @@ impl GameCore {
             &mut p.jet,
             &input,
             &p.prev_input,
-            speed,
+            mods,
             dt,
         );
         p.prev_input = input;
@@ -348,6 +353,7 @@ impl GameCore {
         fuel: f32,
         health: f32,
         alive: bool,
+        move_mods: u8,
     ) {
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
             return;
@@ -364,10 +370,22 @@ impl GameCore {
         // snapshot's flags and has been on the wire since M6; nothing carried it
         // across this boundary.
         p.stats.alive = alive;
+        // **T21.02, and it is here for the same reason `health` and `alive`
+        // are** — `apply_input` reads it. `move_mods` feeds
+        // `PlayerState::move_mods()`, which scales the walk target and the jump
+        // launch, so a mirror that does not know a player is wearing boots
+        // predicts them at half speed and a third of the height.
+        //
+        // **It is written into the inventory, not into a field beside it.**
+        // `move_mods()` derives from the inventory on both sides, so this makes
+        // the mirror answer the *same* question the server answered rather than
+        // storing a second answer that could disagree — the third flag that
+        // `shield_until` and `flashlight_on` were both deleted for.
+        p.stats.set_move_mod_bits(move_mods);
     }
 
     /// `[x, y, vx, vy, grounded, fuel, move_state, landing_impact, health,
-    /// alive]`, or empty for an unknown id.
+    /// alive, move_mods]`, or empty for an unknown id.
     ///
     /// **`health` is the ninth element** (T20.19), and it is here so the array
     /// round-trips everything `set_player_state` accepts: a reader that could set
@@ -409,6 +427,13 @@ impl GameCore {
             // check the mirror learned what the snapshot told it, and this one
             // decides whether `apply_input` moves the body at all.
             if p.stats.alive { 1.0 } else { 0.0 },
+            // **The eleventh, and it round-trips what `set_player_state` now
+            // accepts** (T21.02) — for the reason `health` and `alive` are the
+            // ninth and tenth. `prediction.ts` reads it back to answer "have
+            // this player's passives changed since the last snapshot", which is
+            // what lets a *non-positional* input to `apply_input` stop being
+            // gated behind a *positional* epsilon.
+            p.stats.move_mod_bits() as f32,
         ])
     }
 
@@ -1726,6 +1751,7 @@ mod tests {
             2.5,
             BASE_HEALTH * 0.5,
             false,
+            game_core::player::state::MOVE_MOD_BOOTS,
         );
         let s = core.player_state(2);
         assert_eq!(s[0], 12.5);
@@ -1742,6 +1768,16 @@ mod tests {
         assert_ne!(s[8], BASE_HEALTH);
         // T20.21: and `alive`, for the same reason — `apply_input` reads it too.
         assert_eq!(s[9], 0.0, "the snapshot's `alive` was dropped");
+        // T21.02: and the passives, for the same reason again. The control is
+        // the same shape as health's — `add_player` seats a player carrying
+        // nothing, so an assertion that only checked "it is a number" would pass
+        // against a setter that dropped the argument.
+        assert_eq!(
+            s[10],
+            game_core::player::state::MOVE_MOD_BOOTS as f32,
+            "the snapshot's move-mod bits were dropped"
+        );
+        assert_ne!(s[10], 0.0);
     }
 
     // --------------------------------------------------------------- T20.19
@@ -1816,8 +1852,21 @@ mod tests {
     /// mirror forever, including on the day `apply_inputs` stops passing
     /// `speed_multiplier()`.
     fn walk_both_sides(health: f32, buttons: u8) -> WalkOutcome {
+        walk_both_sides_wearing(health, buttons, false)
+    }
+
+    /// The same run, optionally in T21.02's ironman boots.
+    ///
+    /// **The boots case reuses this fixture rather than getting one of its own**
+    /// — the whole value here is that the mirror is fed through
+    /// `encode_snapshot`/`decode_snapshot` and `set_player_state`, and a second
+    /// copy would be a second chance to skip one of them.
+    fn walk_both_sides_wearing(health: f32, buttons: u8, boots: bool) -> WalkOutcome {
         let mut w = game_core::world::World::new(4242, MapScale::Small);
         w.add_player(1, 0, String::new());
+        if boots {
+            game_core::world::give(&mut w, 1, game_core::items::registry::IRONMAN_BOOTS, 1);
+        }
         let (stand_x, stand_y) = build_shelf(&mut w);
         {
             let p = w.player_mut(1).expect("seated");
@@ -1867,6 +1916,12 @@ mod tests {
             .expect("player 1 is in the snapshot");
         let wire_health = wire.health as f32;
         let wire_alive = wire.flags & 1 != 0;
+        // T21.02, and **off the wire for the same reason health is**. Taking it
+        // from `w.player(1).move_mod_bits()` would hand both sides the same
+        // value by construction and the fixture could never see the encoder or
+        // the decoder — which is precisely how a permanent one-health desync
+        // survived a task whose whole subject was health.
+        let wire_mods = wire.move_mods;
 
         let p = w.player(1).expect("seated");
         let (pos, vel, grounded, fuel) = (p.body.pos, p.body.vel, p.body.grounded, p.jetpack.fuel);
@@ -1882,6 +1937,7 @@ mod tests {
             fuel,
             wire_health,
             wire_alive,
+            wire_mods,
         );
 
         for seq in 0..WALK_TICKS {
@@ -1900,6 +1956,64 @@ mod tests {
             server_health: sp.health,
             wire_health,
         }
+    }
+
+    /// The client mirror must predict a **booted** player where the server puts
+    /// them (T21.02).
+    ///
+    /// **This is the assertion the task file calls the one that matters.**
+    /// `apply_input` scales the walk target by `PlayerState::move_mods()`, which
+    /// reads the inventory, and the mirror's inventory is empty until a snapshot
+    /// fills it — so without the move-mod byte on the wire a booted player is
+    /// predicted at half the speed the server runs and rubber-bands on every
+    /// step. It is T20.19's bug with a bigger multiplier.
+    ///
+    /// Three assertions, and the middle one is the control:
+    ///
+    ///  - the two sides agree inside `RECONCILE_EPSILON_PX`;
+    ///  - the run **actually used the boots** — the server reached
+    ///    `WALK_SPEED * BOOTS_SPEED_MULT`, which an unbooted run cannot. Without
+    ///    it the agreement is satisfied by boots that do nothing at all;
+    ///  - and it is faster than the unbooted control on the identical shelf, so
+    ///    the fixture is measuring the item rather than the map.
+    #[test]
+    fn the_client_predicts_a_booted_player_where_the_server_puts_them() {
+        let right = game_core::player::input::button::RIGHT;
+        let bare = walk_both_sides_wearing(BASE_HEALTH, right, false);
+        let booted = walk_both_sides_wearing(BASE_HEALTH, right, true);
+
+        // The control: the boots were on, and they did something.
+        assert!(
+            (booted.server_vx - WALK_SPEED * game_core::constants::BOOTS_SPEED_MULT).abs() < 1e-3,
+            "the booted server run reached {} of an expected {}",
+            booted.server_vx,
+            WALK_SPEED * game_core::constants::BOOTS_SPEED_MULT
+        );
+        assert!(
+            booted.server_vx > bare.server_vx,
+            "booted {} was no faster than unbooted {}",
+            booted.server_vx,
+            bare.server_vx
+        );
+
+        // The claim. Fails by a whole `BOOTS_SPEED_MULT` if the byte is dropped
+        // anywhere between `move_mod_bits`, the codec, `set_player_state` and
+        // `move_mods()`.
+        assert!(
+            (booted.server_x - booted.client_x).abs() <= RECONCILE_EPSILON_PX,
+            "the mirror predicted a booted player at {} where the server put \
+             them at {} — {} px apart, against an epsilon of \
+             {RECONCILE_EPSILON_PX}",
+            booted.client_x,
+            booted.server_x,
+            (booted.server_x - booted.client_x).abs()
+        );
+        assert!(
+            (booted.client_vx - booted.server_vx).abs() < 1e-3,
+            "the mirror ran a booted player at {} against the server's {}",
+            booted.client_vx,
+            booted.server_vx
+        );
     }
 
     /// The client mirror must predict a **hurt** player where the server puts

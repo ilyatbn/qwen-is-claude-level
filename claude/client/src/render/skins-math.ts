@@ -175,14 +175,31 @@ export function spriteScale(artHeight: number, bodyHeight: number, overshoot = 1
  */
 export const HAT_LIFT = 0.23
 export const GLASSES_DROP = 0.38
+/**
+ * T21.02's boots, anchored by their **bottom** at the sprite's feet.
+ *
+ * 1.0, and unlike `HAT_LIFT` no correction is needed: a character *stands on*
+ * the bottom edge of its frame — that is what makes them stand on the ground —
+ * so the feet are the bottom of the drawn box and there is no transparent
+ * padding to compensate for. `HAT_LIFT` is 0.23 rather than 0.10 precisely
+ * because the top edge is not the top of the head.
+ */
+export const BOOT_DROP = 1.0
 
+/**
+ * Where an accessory sits, as an offset from the container origin.
+ *
+ * **One function for all three bands**, so "hats and boots must not share a
+ * band" stays a property of one table rather than of three call sites.
+ */
 export function accessoryY(
   drawnHeight: number,
   anchorY: number,
-  kind: 'hat' | 'glasses',
+  kind: 'hat' | 'glasses' | 'boots',
 ): number {
   const top = -drawnHeight * anchorY
-  return top + drawnHeight * (kind === 'hat' ? HAT_LIFT : GLASSES_DROP)
+  const band = kind === 'hat' ? HAT_LIFT : kind === 'glasses' ? GLASSES_DROP : BOOT_DROP
+  return top + drawnHeight * band
 }
 
 /**
@@ -202,3 +219,34 @@ export function accessoryScale(artWidth: number, bodyWidth: number, fraction: nu
 /** A hat is slightly wider than the body; sunglasses slightly narrower. */
 export const HAT_WIDTH_FRACTION = 1.15
 export const GLASSES_WIDTH_FRACTION = 0.85
+/**
+ * Boots span this much of the **drawn body width** — and the reference is the
+ * drawn body, not `PLAYER_W`, which is the trap the first two attempts fell
+ * into (T21.02).
+ *
+ * A hat can be measured against `PLAYER_W` because it is narrow and sits on a
+ * head that is narrower still. A boot cannot: the sprite is scaled to
+ * `PLAYER_H` by height, so its drawn *width* is whatever the artist's aspect
+ * ratio makes it — measured, about 1.4x `PLAYER_W` — and a boot asked for
+ * "1.2 of `PLAYER_W`" came out at 1.7 of the body and covered the shorts.
+ * Screenshotted twice before it looked like footwear, which is what
+ * `CLAUDE.md` means by *a fix that changes the code without changing the
+ * picture looks exactly like a fix that worked*.
+ *
+ * **0.75 was measured, not chosen**, and it took three screenshots. Wider than
+ * the legs and narrower than the shoulders, so the sole overhangs the shin and
+ * the **outline changes** — `tombstoneTextures`' rule, that variants must differ
+ * in silhouette rather than in palette, since at this size a recoloured foot is
+ * a few pixels nobody can read. At 0.85 the two boots straddled the legs instead
+ * of standing on them.
+ *
+ * **The art's aspect ratio is load-bearing and is the other half of this.**
+ * `accessoryScale` sets the scale from the *width*, so the drawn height is
+ * `width / (BOOT_W / BOOT_H)`. The first two attempts used a squarish canvas and
+ * produced boots three times too tall that covered the shorts; the canvas is
+ * 20x4 for that reason, not for the drawing's sake.
+ *
+ * `boots-visible` enforces the silhouette half: shrink this to 0.01 and the
+ * check reds on "too subtle to call a change".
+ */
+export const BOOT_WIDTH_FRACTION = 0.75
