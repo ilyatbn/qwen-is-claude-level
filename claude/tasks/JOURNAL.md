@@ -5768,3 +5768,16 @@ Falsified at the live binding site (`hasFlashlight: false` in the radius call): 
 *"took the night radius 110.0 -> 110.0, not 165.0"*. 13.6 s, and green in **5/5** gates.
 **Found on the way, booked as T19.27:** the flashlight assertion is `nightOff * FLASHLIGHT_FOV_MULT`
 — pinned to the constant on both sides, so setting that constant to 1.0 passes.
+
+## T19.26 — the retry that had to be smaller than the one already there
+
+`rooms.rs::emit_until` exists for §A28's window and **rules itself out here in its own comment**:
+the failing emit is `create_room`, and re-sending it would create a second room. So
+`common::connect_and_emit` retries strictly less — only when `emit` returns `Err`, which proves
+the socket carried nothing, and on a **fresh** socket, because the observed
+`AlreadyClosed` means that connection is gone and re-emitting on it can only fail the same way.
+It deliberately does **not** wait for a reply: the caller's `wait_for` is still the assertion, and
+swallowing a refusal here to report it as a timeout there would trade one race for a blind spot.
+Grepping found **six** connect-then-emit sites, not just the one that failed — counted at both
+ends afterwards: 0 raw `connect(addr` remain, 6 helper call sites, and the file's now-dead local
+`connect` deleted. Falsified by disabling `seat`'s cleanup: the defect arm still fails. 5/5 gates.

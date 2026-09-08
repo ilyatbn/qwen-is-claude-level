@@ -231,3 +231,55 @@ pub fn emit_when_ready(c: &rust_socketio::client::Client, ev: &str, payload: ser
         }
     }
 }
+
+/// Connect, then send a verb that **must not be sent twice** — retrying the
+/// connection only when the send is *refused*.
+///
+/// **`emit_until` cannot serve this window and says so itself.**
+/// `rooms.rs::emit_until` re-emits until the expected event arrives, and its own
+/// comment rules it out here: *"Only for emits with that guarantee —
+/// `create_room` has none, and retrying it would create a second room."* So this
+/// retries strictly less. It retries only when `emit` returns `Err`, which means
+/// the socket carried nothing: there is no room to duplicate, and re-sending is
+/// provably safe rather than probably safe.
+///
+/// **A new socket per attempt, not a retry on the old one.** T19.26 caught this
+/// inside a loaded gate as
+/// `IncompleteResponseFromEngineIo(WebsocketError(AlreadyClosed))` on a freshly
+/// connected client — `docs/70` §A28's window seen from the transport side.
+/// `AlreadyClosed` means that connection is gone, so re-emitting on it can only
+/// fail the same way; the connection is what has to be rebuilt.
+///
+/// **It does not wait for a reply and must not.** The caller's own
+/// `wait_for(..., "welcome", ...)` is the assertion; swallowing a genuine refusal
+/// here and reporting it as a timeout there would trade one race for a blind
+/// spot, which is the thing T19.26 exists to avoid.
+pub fn connect_and_emit(
+    addr: SocketAddr,
+    events: &[&'static str],
+    inbox: &Inbox,
+    ev: &'static str,
+    payload: serde_json::Value,
+) -> rust_socketio::client::Client {
+    let deadline = Instant::now() + EMIT_READY_WINDOW;
+    let mut last;
+    loop {
+        let client = connect(addr, events, inbox);
+        match client.emit(ev, payload.clone()) {
+            Ok(()) => return client,
+            Err(e) => {
+                last = e.to_string();
+                let _ = client.disconnect();
+                if Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+    panic!(
+        "emit {ev}: refused for the whole {}s window; last error {}",
+        EMIT_READY_WINDOW.as_secs(),
+        last
+    );
+}

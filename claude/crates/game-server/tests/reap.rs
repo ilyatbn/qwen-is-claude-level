@@ -63,10 +63,6 @@ async fn spawn_server(config: Config) -> Harness {
 /// seven files had a copy of it and only their event lists differed.
 const EVENTS: &[&str] = &["welcome", "map_init", "room_created", "join_error"];
 
-fn connect(addr: SocketAddr, inbox: Inbox) -> rust_socketio::client::Client {
-    common::connect(addr, EVENTS, &inbox)
-}
-
 fn count(inbox: &Inbox, ev: &str) -> usize {
     inbox
         .lock()
@@ -126,12 +122,15 @@ fn wait_for_humans(
 /// Host a private room, start it with bots, and return `(room_id, client)`.
 fn host_and_start(addr: SocketAddr, name: &str) -> (u32, rust_socketio::client::Client) {
     let inbox: Inbox = Arc::default();
-    let c = connect(addr, inbox.clone());
-    c.emit(
+    // T19.26: `create_room` cannot be re-sent, so this retries only a *refused*
+    // send — see `common::connect_and_emit`.
+    let c = common::connect_and_emit(
+        addr,
+        EVENTS,
+        &inbox,
         "create_room",
         serde_json::json!({ "name": name, "scale": "small" }),
-    )
-    .expect("emit");
+    );
     wait_for(&inbox, "room_created", 1, name);
     let room_id = last(&inbox, "room_created", "room_id")
         .as_u64()
@@ -254,12 +253,13 @@ async fn an_abandoned_lobby_is_reaped_before_it_ever_starts() {
 
     let room_id = tokio::task::spawn_blocking(move || {
         let inbox: Inbox = Arc::default();
-        let c = connect(addr, inbox.clone());
-        c.emit(
+        let c = common::connect_and_emit(
+            addr,
+            EVENTS,
+            &inbox,
             "create_room",
             serde_json::json!({ "name": "ana", "scale": "small" }),
-        )
-        .expect("emit");
+        );
         wait_for(&inbox, "room_created", 1, "ana");
         let id = last(&inbox, "room_created", "room_id")
             .as_u64()
@@ -306,12 +306,13 @@ async fn a_full_refusal_does_not_leave_a_phantom_occupant() {
 
     let (room_id, keeper) = tokio::task::spawn_blocking(move || {
         let ia: Inbox = Arc::default();
-        let a = connect(addr, ia.clone());
-        a.emit(
+        let a = common::connect_and_emit(
+            addr,
+            EVENTS,
+            &ia,
             "create_room",
             serde_json::json!({ "name": "ana", "scale": "small" }),
-        )
-        .expect("emit");
+        );
         wait_for(&ia, "room_created", 1, "ana");
         let code = last(&ia, "room_created", "code")
             .as_str()
@@ -322,12 +323,13 @@ async fn a_full_refusal_does_not_leave_a_phantom_occupant() {
             .expect("a room id") as u32;
 
         let ib: Inbox = Arc::default();
-        let b = connect(addr, ib.clone());
-        b.emit(
+        let b = common::connect_and_emit(
+            addr,
+            EVENTS,
+            &ib,
             "join_room",
             serde_json::json!({ "name": "bo", "code": code }),
-        )
-        .expect("emit");
+        );
         wait_for(&ib, "join_error", 1, "bo");
         assert_eq!(
             last(&ib, "join_error", "reason").as_str(),
@@ -385,12 +387,17 @@ async fn a_socket_that_drops_before_it_is_seated_does_not_burn_the_room() {
     // The control arm.
     let control = tokio::task::spawn_blocking(move || {
         let inbox: Inbox = Arc::default();
-        let c = connect(addr, inbox.clone());
-        c.emit(
+        // **The control arm, and the one T19.26 caught.** It lost a race with its
+        // own connection under a loaded gate — `AlreadyClosed` on a socket that
+        // had just reported `open`. It still proves exactly what it proved
+        // before: a normal join succeeding, asserted by the `wait_for` below.
+        let c = common::connect_and_emit(
+            addr,
+            EVENTS,
+            &inbox,
             "create_room",
             serde_json::json!({ "name": "ana", "private": true }),
-        )
-        .expect("emit");
+        );
         wait_for(&inbox, "welcome", 1, "ana");
         let id = last(&inbox, "room_created", "room_id")
             .as_u64()
@@ -407,12 +414,13 @@ async fn a_socket_that_drops_before_it_is_seated_does_not_burn_the_room() {
     // The subject.
     tokio::task::spawn_blocking(move || {
         let inbox: Inbox = Arc::default();
-        let g = connect(addr, inbox.clone());
-        g.emit(
+        let g = common::connect_and_emit(
+            addr,
+            EVENTS,
+            &inbox,
             "create_room",
             serde_json::json!({ "name": "ghost", "private": true }),
-        )
-        .expect("emit");
+        );
         // No wait. This is the whole fixture.
         let _ = g.disconnect();
     })
