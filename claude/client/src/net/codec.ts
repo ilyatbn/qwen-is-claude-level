@@ -35,6 +35,13 @@ export interface MapInit {
   spawnPoints: { x: number; y: number }[]
   /** §C5's indestructible pads, in id order — the index **is** the id. */
   pads: { x: number; y: number }[]
+  /**
+   * T21.11's gun emplacements, in id order — the index **is** the id, exactly
+   * as for the pads. Their footprint is indestructible for the same reason, so
+   * a client that never learned where they are carves differently from the
+   * server.
+   */
+  platforms: { x: number; y: number }[]
   decorations: { kind: number; x: number; y: number; flags: number }[]
   /**
    * Scenery stamped into the terrain at pass 6b (§D5).
@@ -199,6 +206,13 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
   const pads: { x: number; y: number }[] = []
   for (let i = 0; i < padCount; i++) pads.push({ x: r.i16(), y: r.i16() })
 
+  const platformCount = r.u16()
+  if (platformCount * 4 > r.remaining) {
+    throw new CodecError(`platform_count ${platformCount} exceeds the payload`)
+  }
+  const platforms: { x: number; y: number }[] = []
+  for (let i = 0; i < platformCount; i++) platforms.push({ x: r.i16(), y: r.i16() })
+
   const decoCount = r.u16()
   if (decoCount * 7 > r.remaining) {
     throw new CodecError(`decoration_count ${decoCount} exceeds the payload`)
@@ -240,6 +254,7 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
     carveSeq,
     spawnPoints,
     pads,
+    platforms,
     decorations,
     objects,
     rle,

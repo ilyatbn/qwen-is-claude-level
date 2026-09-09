@@ -29,6 +29,7 @@ import { DecorationLayer } from './decorations'
 import { fromMeta } from './decorations-math'
 import { ItemLayer } from './itemSprites'
 import { PadLayer, type PadView } from './pads'
+import { PlatformLayer, type PlatformView } from './platforms'
 import { OrdnanceLayer } from './ordnance'
 import { WeatherLayer, type VentView } from './weather'
 import { KIND_BY_WEAPON_KEY, WEAPON_KEYS, type ProjectileKind } from './ordnance-state'
@@ -72,6 +73,7 @@ export class WorldView {
    * `core.meta`, which those scenes have because they generate locally.
    */
   readonly pads: PadLayer
+  readonly platforms: PlatformLayer
   readonly timings: WorldViewTimings = { buildAllMs: 0, lastRebakeMs: 0 }
 
   private readonly backdrop: Backdrop
@@ -136,6 +138,12 @@ export class WorldView {
     // `map_init` and `GameScene` calls `pads.build` again with the wire's list.
     this.pads.build(
       core.meta.teleport_pads.map((p): PadView => ({ id: p.id, x: p.pos.x, y: p.pos.y })),
+    )
+    this.platforms = new PlatformLayer(scene)
+    // Same story as the pads above: a locally generated map already knows its
+    // platforms, and `GameScene` rebuilds from the wire's list at `map_init`.
+    this.platforms.build(
+      core.meta.gun_platforms.map((g): PlatformView => ({ id: g.id, x: g.pos.x, y: g.pos.y })),
     )
     this.weaponKeys = weaponKeys
   }
@@ -313,6 +321,7 @@ export class WorldView {
     this.ordnance.destroy()
     this.decorations.destroy()
     this.pads.destroy()
+    this.platforms.destroy()
     this.terrain.destroy()
     this.backdrop.destroy()
     this.container.destroy()

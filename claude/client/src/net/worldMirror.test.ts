@@ -55,6 +55,11 @@ function initMirror(
   c: Core,
   carveSeq = 0,
   pads = c.meta.teleport_pads.map((p) => ({ x: p.pos.x, y: p.pos.y })),
+  // **And the platforms, for the identical reason as the pads above.** T21.11's
+  // footprints are indestructible too, so a fixture sending `platforms: []` for
+  // a map that has three is a `map_init` no server would send, and it wipes
+  // them — the same way an empty `pads` once turned the hash-agreement test red.
+  platforms = c.meta.gun_platforms.map((g) => ({ x: g.pos.x, y: g.pos.y })),
 ): WorldMirror {
   const m = new WorldMirror(c)
   m.applyMapInit({
@@ -67,6 +72,7 @@ function initMirror(
     carveSeq,
     spawnPoints: [],
     pads,
+    platforms,
     decorations: [],
     objects: [],
     rle: c.maskRle(),
@@ -96,6 +102,7 @@ function freshMirror(): { mirror: WorldMirror; resyncs: number[] } {
     carveSeq: 0,
     spawnPoints: [],
     pads: [],
+    platforms: [],
     decorations: [],
     objects: [],
     rle: core.maskRle(),
@@ -422,6 +429,7 @@ describe('roster and entities', () => {
         carveSeq: 0,
         spawnPoints: [],
         pads: [],
+        platforms: [],
         decorations: [],
         objects: [],
         rle,
@@ -471,6 +479,7 @@ describe('carve stream resumption', () => {
       carveSeq: 41,
       spawnPoints: [],
       pads: [],
+      platforms: [],
       decorations: [],
       objects: [],
       rle: core.maskRle(),
@@ -498,6 +507,7 @@ describe('carve stream resumption', () => {
       carveSeq: 41,
       spawnPoints: [],
       pads: [],
+      platforms: [],
       decorations: [],
       objects: [],
       rle: core.maskRle(),

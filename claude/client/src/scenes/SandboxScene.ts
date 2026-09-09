@@ -760,6 +760,33 @@ export class SandboxScene extends Phaser.Scene {
       decorations() {
         return { count: self.world.decorations.count, total: self.core.meta.decorations.length }
       },
+      /**
+       * T21.11's platforms: **drawn** against **declared**.
+       *
+       * Counted at both ends deliberately. `self.core.meta.gun_platforms` is
+       * what generation produced and `world.platforms.count` is what reached the
+       * screen; a check reading either alone would pass against a layer wired to
+       * nothing, which is the failure twelve mechanisms on this project actually
+       * shipped with.
+       */
+      /**
+       * Hide the platform layer, for the pixel check's control frame.
+       *
+       * Returns what it did rather than acknowledging the ask — a hook that
+       * answers `true` for "I was called" is the shape this project has been
+       * burnt by (assert on effects, not intentions).
+       */
+      showPlatforms(on: boolean) {
+        self.world.platforms.setVisible(on)
+        return { visible: on, count: self.world.platforms.count }
+      },
+      platforms() {
+        return {
+          count: self.world.platforms.count,
+          total: self.core.meta.gun_platforms.length,
+          at: self.core.meta.gun_platforms.map((g) => ({ x: g.pos.x, y: g.pos.y })),
+        }
+      },
       audio() {
         return {
           samples: self.audioSink?.sampleCount ?? 0,

@@ -28,6 +28,9 @@ function mapInitFixture(opts: Partial<{
   padCount: number
   /** Write a pad count the buffer cannot hold, without growing the buffer. */
   padCountLie: number
+  platformCount: number
+  /** Write a platform count the buffer cannot hold, without growing the buffer. */
+  platformCountLie: number
   decoCount: number
   objectCount: number
   rle: Uint8Array
@@ -38,6 +41,7 @@ function mapInitFixture(opts: Partial<{
   const height = opts.height ?? 1024
   const spawns = opts.spawnCount ?? 2
   const pads = opts.padCount ?? 3
+  const platforms = opts.platformCount ?? 2
   const decos = opts.decoCount ?? 1
   const objects = opts.objectCount ?? 2
   const rle = opts.rle ?? new Uint8Array([1, 2, 3, 4])
@@ -46,7 +50,10 @@ function mapInitFixture(opts: Partial<{
   // 4 bytes short, so the decoder read `spawn_count` out of the middle of it.
   const size =
     // §D6's object section sits between the decorations and the RLE length.
-    4 + 4 + 4 + 8 + 1 + 1 + 4 + 4 + 2 + spawns * 4 + 2 + pads * 4 + 2 + decos * 7 +
+    4 + 4 + 4 + 8 + 1 + 1 + 4 + 4 + 2 + spawns * 4 + 2 + pads * 4 +
+    // T21.11's platforms ride between the pads and the decorations.
+    2 + platforms * 4 +
+    2 + decos * 7 +
     2 + objects * OBJECT_WIRE_BYTES + 4 + rle.length
   const b = new ArrayBuffer(size)
   const v = new DataView(b)
@@ -68,6 +75,11 @@ function mapInitFixture(opts: Partial<{
   for (let i = 0; i < pads; i++) {
     v.setInt16(at, 500 + i, true); at += 2
     v.setInt16(at, 600 + i, true); at += 2
+  }
+  v.setUint16(at, opts.platformCountLie ?? platforms, true); at += 2
+  for (let i = 0; i < platforms; i++) {
+    v.setInt16(at, 900 + i, true); at += 2
+    v.setInt16(at, 950 + i, true); at += 2
   }
   v.setUint16(at, decos, true); at += 2
   for (let i = 0; i < decos; i++) {
@@ -154,6 +166,13 @@ describe('map_init', () => {
       { x: 501, y: 601 },
       { x: 502, y: 602 },
     ])
+    // T21.11. Between the pads and the decorations, index-as-id like the pads,
+    // and — same argument — everything after it decodes from the right offset
+    // only if this section is actually read.
+    expect(m.platforms).toEqual([
+      { x: 900, y: 950 },
+      { x: 901, y: 951 },
+    ])
     expect(m.decorations).toEqual([{ kind: 7, x: 300, y: 400, flags: 0b101 }])
     // §D6. After the decorations and before the RLE — and, like the pads above,
     // everything past it decodes from the right offset only if it is read.
@@ -166,6 +185,12 @@ describe('map_init', () => {
 
   it('rejects a pad count the payload cannot hold', () => {
     expect(() => decodeMapInit(mapInitFixture({ padCountLie: 30000 }))).toThrow(/pad_count/)
+  })
+
+  it('rejects a platform count the payload cannot hold', () => {
+    expect(() => decodeMapInit(mapInitFixture({ platformCountLie: 30000 }))).toThrow(
+      /platform_count/,
+    )
   })
 
   it('rejects a wrong magic number with a clear message', () => {

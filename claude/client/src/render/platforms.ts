@@ -1,0 +1,223 @@
+/**
+ * Gun platforms on screen (T21.11A).
+ *
+ * `PadLayer`'s sibling, and deliberately so: a platform is a static seed-placed
+ * map feature you activate by standing on it, which is what a teleport pad is,
+ * and the two should not have two different render paths to drift apart.
+ *
+ * ## Drawn procedurally, not sprited
+ *
+ * No vendored pack has a turret. `docs/51` §5 makes the procedural path the
+ * shipping one for anything the packs do not cover, and `weaponTextures.ts` and
+ * `itemTextures.ts` are the precedent — a generated silhouette that reads
+ * correctly beats a borrowed sprite that does not. The reference art in
+ * `tasks/M21/assets/` is a triple-barrelled turret on a splayed tripod;
+ * **silhouette only** is what is copied from it.
+ *
+ * Drawn at native size into a canvas texture once, because the game renders
+ * `pixelArt: true` and drawing above native size only blurs under NEAREST.
+ *
+ * ## Where the geometry comes from
+ *
+ * `GUN_PLATFORM_W` and `GUN_PLATFORM_H` through the WASM constants, so the
+ * picture cannot drift from the footprint `carve_circle` protects. `pos` is a
+ * feet line, as everywhere else, and the indestructible rock is the rows below
+ * it — the turret is drawn sitting **on** that line, which is what makes the
+ * platform look like it has ground under it.
+ */
+
+import Phaser from 'phaser'
+import { C } from '../core'
+import { DEPTH } from './backdrop'
+
+/** Where a platform is, in world pixels. `pos` is a feet line. */
+export interface PlatformView {
+  id: number
+  x: number
+  y: number
+}
+
+const TEXTURE_KEY = '__gun_platform'
+
+/** Steel, shadowed steel, and the warning stripe that makes it read as a machine. */
+// Deliberately light against terrain. Every theme's `fill`/`edge`
+// (`themes-math.ts::THEMES`) is a mid-to-dark earth or a pale grey, and a dark
+// machine on frost reads as a hole while a dark machine on grassland
+// disappears. A bright steel with a hard dark outline reads on all three.
+const STEEL = '#8d96a4'
+const STEEL_DARK = '#2b3038'
+const STEEL_LIGHT = '#c3cbd6'
+const STRIPE = '#e8b23c'
+const BARREL = '#1b1f26'
+
+/**
+ * How much taller than its footprint the art is drawn.
+ *
+ * The turret stands above the ground it is bolted to, so the texture is taller
+ * than `GUN_PLATFORM_H` — that constant is the *rock*, not the machine. Derived
+ * from the width so the proportions hold if the footprint is retuned.
+ */
+const ART_H_FRACTION = 0.95
+
+/**
+ * Build the platform texture once per texture manager.
+ *
+ * Idempotent, like `ensureWeaponTextures`: the scene is rebuilt on every round
+ * and re-registering a key Phaser already has is a silent no-op that leaks
+ * nothing.
+ */
+export function ensurePlatformTexture(textures: Phaser.Textures.TextureManager): {
+  key: string
+  w: number
+  h: number
+} {
+  const c = C()
+  const w = Math.max(8, Math.round(c.GUN_PLATFORM_W))
+  const h = Math.max(6, Math.round(w * ART_H_FRACTION))
+  if (textures.exists(TEXTURE_KEY)) return { key: TEXTURE_KEY, w, h }
+
+  const canvas = textures.createCanvas(TEXTURE_KEY, w, h)
+  const ctx = canvas?.getContext()
+  if (!canvas || !ctx) return { key: TEXTURE_KEY, w, h }
+
+  const px = (v: number) => Math.round(v)
+  const baseH = Math.max(4, Math.round(h * 0.2))
+  const baseY = h - baseH
+  const cx = w / 2
+
+  // --- the bolted base: a plinth the width of the protected rock -----------
+  //
+  // Drawn full width and hard-edged, because this is the part that has to read
+  // as *ground you cannot destroy*: the rock below it is the footprint
+  // `carve_circle` refuses to clear, and a plinth narrower than the rock would
+  // make the protection look like a bug.
+  ctx.fillStyle = STEEL_DARK
+  ctx.fillRect(0, baseY, w, baseH)
+  ctx.fillStyle = STEEL
+  ctx.fillRect(1, baseY + 1, w - 2, baseH - 2)
+  // A hazard stripe along the top of the plinth, so it reads as equipment
+  // rather than as a rock at a glance.
+  ctx.fillStyle = STRIPE
+  for (let x = 2; x < w - 3; x += 8) ctx.fillRect(x, baseY + 1, 4, 2)
+
+  // --- the splayed tripod ---------------------------------------------------
+  const legTop = px(h * 0.4)
+  ctx.strokeStyle = STEEL_DARK
+  ctx.lineWidth = Math.max(3, Math.round(w * 0.09))
+  for (const dir of [-1, 1]) {
+    ctx.beginPath()
+    ctx.moveTo(cx, legTop)
+    ctx.lineTo(cx + dir * w * 0.32, baseY)
+    ctx.stroke()
+  }
+  // The centre post, so it is a tripod and not a pair of scissors.
+  ctx.beginPath()
+  ctx.moveTo(cx, legTop)
+  ctx.lineTo(cx, baseY)
+  ctx.stroke()
+
+  // --- the housing ----------------------------------------------------------
+  const hubW = px(w * 0.5)
+  const hubH = px(h * 0.34)
+  const hubX = px(cx - hubW * 0.62)
+  const hubY = px(legTop - hubH * 0.75)
+  ctx.fillStyle = STEEL_DARK
+  ctx.fillRect(hubX - 1, hubY - 1, hubW + 2, hubH + 2)
+  ctx.fillStyle = STEEL
+  ctx.fillRect(hubX, hubY, hubW, hubH)
+  ctx.fillStyle = STEEL_LIGHT
+  ctx.fillRect(hubX + 1, hubY + 1, hubW - 2, Math.max(2, px(hubH * 0.3)))
+
+  // --- three barrels, which is the whole silhouette -------------------------
+  //
+  // The reference art is triple-barrelled and that is the one thing a player
+  // has to read at 48 px: a turret, pointing somewhere, with more than one
+  // muzzle. Thick and dark, so they survive against a pale sky.
+  const barrelL = px(w * 0.42)
+  const barrelH = Math.max(3, px(h * 0.09))
+  const gap = barrelH + 2
+  for (let i = -1; i <= 1; i++) {
+    const by = px(hubY + hubH * 0.5 + i * gap)
+    ctx.fillStyle = BARREL
+    ctx.fillRect(hubX + hubW - 2, by, barrelL, barrelH)
+    // A muzzle cap, so each barrel ends in something rather than fading out.
+    ctx.fillStyle = STEEL_LIGHT
+    ctx.fillRect(hubX + hubW - 2 + barrelL - 2, by, 2, barrelH)
+  }
+
+  canvas.refresh()
+  return { key: TEXTURE_KEY, w, h }
+}
+
+interface Entry {
+  sprite: Phaser.GameObjects.Image
+  view: PlatformView
+}
+
+export class PlatformLayer {
+  private readonly entries = new Map<number, Entry>()
+  private readonly container: Phaser.GameObjects.Container
+
+  constructor(private readonly scene: Phaser.Scene) {
+    // The same depth as `PadLayer`, and for the same reason its comment gives:
+    // you stand **on** a platform, so the player must draw over it, and sharing
+    // `DEPTH.decorations` would let a bush sort in front depending on creation
+    // order.
+    this.container = scene.add.container(0, 0).setDepth(DEPTH.decorations - 1)
+  }
+
+  /** How many platforms are drawn. The e2e counts this against the server's list. */
+  get count(): number {
+    return this.entries.size
+  }
+
+  get ids(): number[] {
+    return [...this.entries.keys()]
+  }
+
+  /**
+   * Show or hide the whole layer.
+   *
+   * **For the pixel check's control frame** (`docs/72` §C2): "the turret is on
+   * screen" is only evidence against the same camera, the same map and the same
+   * light with the layer gone. Two locations cannot be that control, and neither
+   * can two maps.
+   */
+  setVisible(on: boolean): void {
+    this.container.setVisible(on)
+  }
+
+  /**
+   * Build the sprites. Idempotent — calling it again with the same list changes
+   * nothing, so a resync does not stack two turrets per platform.
+   */
+  build(platforms: readonly PlatformView[]): void {
+    for (const [id, e] of this.entries) {
+      if (!platforms.some((p) => p.id === id)) {
+        e.sprite.destroy()
+        this.entries.delete(id)
+      }
+    }
+
+    const art = ensurePlatformTexture(this.scene.textures)
+    for (const p of platforms) {
+      const existing = this.entries.get(p.id)
+      if (existing) {
+        existing.view = p
+        existing.sprite.setPosition(p.x, p.y)
+        continue
+      }
+      // Origin (0.5, 1): `p.y` is the feet line, so the art sits **on** the
+      // ground rather than centred through it.
+      const sprite = this.scene.add.image(p.x, p.y, art.key).setOrigin(0.5, 1)
+      this.container.add(sprite)
+      this.entries.set(p.id, { sprite, view: p })
+    }
+  }
+
+  destroy(): void {
+    for (const e of this.entries.values()) e.sprite.destroy()
+    this.entries.clear()
+    this.container.destroy()
+  }
+}

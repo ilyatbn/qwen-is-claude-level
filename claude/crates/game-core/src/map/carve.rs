@@ -12,7 +12,7 @@
 //!
 //! See `docs/11-map-destruction.md` §1–§5.
 
-use crate::constants::{BEDROCK_H, CHUNK_SIZE, COARSE_CELL, TELEPORT_PADS, WALL_W};
+use crate::constants::{BEDROCK_H, CHUNK_SIZE, COARSE_CELL, GUN_PLATFORMS, TELEPORT_PADS, WALL_W};
 use crate::map::shape;
 use crate::map::Map;
 use crate::math::isqrt;
@@ -121,16 +121,23 @@ impl Map {
         // — including through the floor, once §C15 removes the bedrock. Collected
         // once for the whole circle rather than re-scanned per row: there are six.
         //
-        // Only for a **carve**. `fill_circle` adding rock inside a pad cannot
-        // break the guarantee, and refusing it would make the pad a hole that
-        // nothing can ever fill.
-        let pads: Vec<(i32, i32, i32, i32)> = if solid {
+        // **Gun platforms join them (T21.11)** for exactly the same reason and
+        // through exactly the same rect: a platform you can dig out from under is
+        // a platform that falls out of the map, and the coordinator asked for
+        // "a couple pixels of ground you cannot destroy under it". One list, so
+        // the two cannot disagree about what protection means.
+        //
+        // Only for a **carve**. `fill_circle` adding rock inside a footprint
+        // cannot break the guarantee, and refusing it would make the footprint a
+        // hole that nothing can ever fill.
+        let protected: Vec<(i32, i32, i32, i32)> = if solid {
             Vec::new()
         } else {
             self.meta
                 .teleport_pads
                 .iter()
                 .map(|p| p.rect())
+                .chain(self.meta.gun_platforms.iter().map(|g| g.rect()))
                 .filter(|(px0, py0, px1, py1)| {
                     *px1 >= cx - r && *px0 <= cx + r && *py1 >= cy - r && *py0 <= cy + r
                 })
@@ -152,24 +159,25 @@ impl Map {
                 continue;
             }
 
-            // The row's span minus every pad crossing it. Sorted and non-empty
-            // spans only, so the coarse-cell walk below is unchanged.
+            // The row's span minus every protected rect crossing it. Sorted and
+            // non-empty spans only, so the coarse-cell walk below is unchanged.
             //
             // **A fixed array, not a `Vec`.** This runs once per row of every
             // carve — an r=200 sandbox carve is 400 rows — and the first version
-            // allocated on every one of them even though `pads` is empty for
+            // allocated on every one of them even though `protected` is empty for
             // nearly every carve. `docs/60` §6 budgets a single-chunk rebake at
             // 4 ms and `perf` asserts against it, so a per-row heap allocation is
-            // not free. Each pad cuts at most one span in two, so `TELEPORT_PADS`
-            // cuts bound the count at `TELEPORT_PADS + 1`.
-            let mut spans = [(0i32, 0i32); TELEPORT_PADS + 1];
+            // not free. Each rect cuts at most one span in two, so the pads and
+            // the platforms together bound the count at
+            // `TELEPORT_PADS + GUN_PLATFORMS + 1`.
+            let mut spans = [(0i32, 0i32); TELEPORT_PADS + GUN_PLATFORMS + 1];
             let mut n_spans = 1;
             spans[0] = (x0, x1);
-            for &(px0, py0, px1, py1) in &pads {
+            for &(px0, py0, px1, py1) in &protected {
                 if y < py0 || y > py1 {
                     continue;
                 }
-                let mut next = [(0i32, 0i32); TELEPORT_PADS + 1];
+                let mut next = [(0i32, 0i32); TELEPORT_PADS + GUN_PLATFORMS + 1];
                 let mut n_next = 0;
                 for &(sx, ex) in &spans[..n_spans] {
                     if ex < px0 || sx > px1 {

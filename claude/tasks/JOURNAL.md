@@ -5885,3 +5885,22 @@ Three falsifications: bar-preference always (2 red), `Heal` marked passive (2 re
 removed (3 red). Stale claims fixed at `INVENTORY_SLOTS` and `grant_starting_kit`, both of which
 asserted lowest-free-index. Client is positional and looks items up by key, so nothing there
 moved. 907 game-core + 887 client + gate 334 ok, all green.
+
+## T21.11A — the gun platform: placement, protection, wire and art
+
+`GunPlatform` is `TeleportPad`'s sibling by construction: `rect`/`covers`/`underfoot` moved out
+of the pad into a shared `footprint` module and both delegate, so the two cannot disagree about
+whether the rect is inclusive. `carve_circle` protects one list of rects, span array
+`TELEPORT_PADS + GUN_PLATFORMS + 1`, still fixed-size.
+**A separate RNG sub-stream is not enough and this was measured**: `choose_separated` is
+farthest-point sampling over the same surface set, so seed 4242 put platform 1 exactly on pad 1
+at (2800, 472) — two stand-to-activate features on one tile. Platforms now draw from a component
+cleared by `GUN_PLATFORM_PAD_CLEARANCE`, and the test asserts **rect overlap**, not position
+equality, because a pixel's difference would pass the weaker one and still be the bug.
+Adding platforms reddened `two_clients_agree_on_the_mask_after_a_hundred_carves` — the pads'
+own failure, repeated — so `replay` installs them and a negative-control test now aims at the
+property directly. Wire rides after the pads; the byte-walk test caught the insertion.
+Pixel check: subject 9.1, control 0.7, identical over three runs — the first version read 8.2
+against a control of 7.4, and the cause was the day/night cycle moving the whole frame, not the
+threshold. Two falsifications red different halves: a dead layer reds the count, an invisible
+sprite reds only the pixels. 917 core + 137 server + 893 client + gate 334 ok.

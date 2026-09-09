@@ -164,6 +164,8 @@ export class WorldMirror {
     // the layer that owns the mask, and a renderer-only install would look
     // correct and diverge silently.
     this.core.setTeleportPads(m.pads)
+    // T21.11's platforms, same rule, same reason, same moment.
+    this.core.setGunPlatforms(m.platforms)
     // A resync restarts the carve stream: the mask we just loaded already
     // contains every carve the server has applied, so anything buffered is
     // either already baked in or about to be re-sent.

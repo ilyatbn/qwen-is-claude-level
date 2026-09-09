@@ -49,6 +49,7 @@ impl std::error::Error for CodecError {}
 /// u32 magic  u32 width  u32 height  u64 seed  u8 scale  u8 theme  f32 wind
 /// u16 spawn_count      then spawn_count × (i16 x, i16 y)
 /// u16 pad_count        then pad_count × (i16 x, i16 y)
+/// u16 platform_count   then platform_count × (i16 x, i16 y)
 /// u16 decoration_count then decoration_count × (u16 kind, i16 x, i16 y, u8 flags)
 /// u16 object_count     then object_count × (u16 id, i16 x, i16 y, u16 w, u16 h, u8 flip)
 /// u32 rle_byte_len     then the RLE payload
@@ -70,6 +71,12 @@ impl std::error::Error for CodecError {}
 /// glowing ring and a charge indicator — and there is nothing to hide: a pad is a
 /// visible feature of the terrain that every player can see and walk onto. Ids
 /// are the array index, matching `MapMeta`, so nothing on the wire carries them.
+///
+/// **Gun platforms are sent for the same reason as pads** (T21.11): they are
+/// drawn, they are terrain everyone can see, and their ids are the array index.
+/// They ride immediately after the pads because they are the same shape — a
+/// count and a list of feet lines — and a reader who understands one understands
+/// the other.
 ///
 /// **Buried item slots are deliberately absent.** Sending them would put a
 /// complete treasure map in every client's memory, which is a straightforward
@@ -111,6 +118,12 @@ pub fn encode_map_init_at(map: &Map, carve_seq: u32) -> Vec<u8> {
         b.extend_from_slice(&(p.pos.y as i16).to_le_bytes());
     }
 
+    b.extend_from_slice(&(m.gun_platforms.len() as u16).to_le_bytes());
+    for g in &m.gun_platforms {
+        b.extend_from_slice(&(g.pos.x as i16).to_le_bytes());
+        b.extend_from_slice(&(g.pos.y as i16).to_le_bytes());
+    }
+
     b.extend_from_slice(&(m.decorations.len() as u16).to_le_bytes());
     for d in &m.decorations {
         b.extend_from_slice(&d.kind.to_le_bytes());
@@ -150,6 +163,10 @@ pub fn encode_map_init_at(map: &Map, carve_seq: u32) -> Vec<u8> {
 pub struct MapInitParts {
     pub mask: game_core::map::Mask,
     pub teleport_pads: Vec<game_core::map::meta::TeleportPad>,
+    /// T21.11's emplacements, decoded for the same reason the pads are: a client
+    /// rebuilding the map must carve the way the server does, and `carve_circle`
+    /// refuses to clear a platform's rect.
+    pub gun_platforms: Vec<game_core::map::meta::GunPlatform>,
     /// The carve sequence this mask is stamped at (`docs/70` §A40).
     ///
     /// Every carve with `seq <= carve_seq` is **already baked into `mask`**; the
@@ -201,6 +218,18 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
         })
         .collect();
 
+    let platform_count = r.u16()? as usize;
+    let platform_bytes = r.take(platform_count * 4)?;
+    let gun_platforms = (0..platform_count)
+        .map(|i| game_core::map::meta::GunPlatform {
+            id: i as u8,
+            pos: game_core::math::Point::new(
+                i16::from_le_bytes([platform_bytes[i * 4], platform_bytes[i * 4 + 1]]) as i32,
+                i16::from_le_bytes([platform_bytes[i * 4 + 2], platform_bytes[i * 4 + 3]]) as i32,
+            ),
+        })
+        .collect();
+
     let decos = r.u16()? as usize;
     r.take(decos * 7)?;
 
@@ -218,6 +247,7 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
     Ok(MapInitParts {
         mask,
         teleport_pads,
+        gun_platforms,
         carve_seq,
     })
 }
@@ -661,6 +691,8 @@ mod tests {
             + 2
             + map.meta.teleport_pads.len() * 4
             + 2
+            + map.meta.gun_platforms.len() * 4
+            + 2
             + map.meta.decorations.len() * 7
             + 2
             + map.meta.objects.len() * OBJECT_WIRE_BYTES
@@ -718,6 +750,7 @@ mod tests {
         let i16_at = |b: &[u8], i: usize| i16::from_le_bytes([b[i], b[i + 1]]);
         at += 2 + u16_at(&b, at) as usize * 4; // spawns
         at += 2 + u16_at(&b, at) as usize * 4; // pads
+        at += 2 + u16_at(&b, at) as usize * 4; // gun platforms (T21.11)
         at += 2 + u16_at(&b, at) as usize * 7; // decorations
 
         let count = u16_at(&b, at) as usize;
@@ -741,6 +774,34 @@ mod tests {
             "{flipped} of {} objects are flipped — the flag does not vary",
             map.meta.objects.len()
         );
+    }
+
+    /// T21.11's platforms, asserted the way the pads are and for the same
+    /// reason: the id is the array index and is **not** sent, so the client
+    /// derives it. §B16 is the bug where two registries silently assumed a
+    /// positional relationship and a laser resolved as a bazooka.
+    ///
+    /// Through `decode_map_init_parts` rather than by walking the bytes, because
+    /// the parser is what the client actually runs — a byte walk would assert
+    /// the encoder against a second copy of the layout, which is the thing this
+    /// file's own doc comment says not to write.
+    #[test]
+    fn map_init_round_trips_every_gun_platform() {
+        let map = game_core::map::generate(7, MapScale::Small);
+        assert_eq!(
+            map.meta.gun_platforms.len(),
+            game_core::constants::GUN_PLATFORMS,
+            "the fixture map has no platforms, so this asserts nothing"
+        );
+        let parts = decode_map_init_parts(&encode_map_init(&map)).expect("decode");
+        assert_eq!(
+            parts.gun_platforms, map.meta.gun_platforms,
+            "the platforms did not survive the wire"
+        );
+        // And the sections after it still line up: a wrong stride here would
+        // desynchronise the RLE payload rather than losing a platform.
+        assert_eq!(parts.mask.hash(), map.mask.hash());
+        assert_eq!(parts.teleport_pads, map.meta.teleport_pads);
     }
 
     #[test]

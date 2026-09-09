@@ -7,7 +7,8 @@
 
 use crate::constants::{
     MapGenerator, MapScale, BURIED_ATTEMPTS, BURIED_CLEARANCE, BURIED_OFFSET_MAX,
-    BURIED_OFFSET_MIN, BURIED_SEPARATION, PAD_H, PAD_TOUCH_SLACK, PAD_W, TELEPORT_PADS, WIND_MAX,
+    BURIED_OFFSET_MIN, BURIED_SEPARATION, GUN_PLATFORMS, GUN_PLATFORM_H,
+    GUN_PLATFORM_PAD_CLEARANCE, GUN_PLATFORM_W, PAD_H, PAD_W, TELEPORT_PADS, WIND_MAX,
 };
 use crate::map::gen::components::SealedPocket;
 use crate::map::gen::objects::{clear_of_objects, PlacedObject, WhenStarved};
@@ -72,6 +73,51 @@ pub struct TeleportPad {
     pub pos: Point,
 }
 
+/// The three questions a **protected standing spot** answers, in one place.
+///
+/// A teleport pad (§C5) and a gun platform (T21.11) are the same shape at
+/// different sizes: a surface point, a rect of indestructible rock below it, and
+/// a test for whether a body's feet are on it. They had one copy each for about
+/// an hour, which is exactly the arrangement `CLAUDE.md` names — *share the
+/// guard, or share the function* — and the copy that would have drifted first is
+/// `rect`, because whether it is inclusive is invisible until somebody digs one
+/// row out from under a pad.
+///
+/// Free functions rather than a trait: there are two callers, both of which know
+/// their own dimensions at compile time, and a trait would buy dynamic dispatch
+/// nobody wants in `carve_circle`'s inner loop.
+mod footprint {
+    use crate::math::{Point, Vec2};
+
+    /// Inclusive `(x0, y0, x1, y1)` of the protected rock, in mask coordinates.
+    ///
+    /// `pos` is a feet line, so the rock starts on the row **below** it and runs
+    /// `h` rows down, `w` columns wide and centred.
+    pub fn rect(pos: Point, w: i32, h: i32) -> (i32, i32, i32, i32) {
+        let half = w / 2;
+        (pos.x - half, pos.y + 1, pos.x + half - 1, pos.y + h)
+    }
+
+    pub fn covers(pos: Point, w: i32, h: i32, x: i32, y: i32) -> bool {
+        let (x0, y0, x1, y1) = rect(pos, w, h);
+        x >= x0 && x <= x1 && y >= y0 && y <= y1
+    }
+
+    /// Whether a body centred at `centre` is standing on this footprint.
+    ///
+    /// The feet, not the centre: this is ground, and the test that matters is
+    /// whether the bottom of the body box is resting on it. Tolerant by
+    /// `PAD_TOUCH_SLACK` in y because a grounded body's feet sit within a pixel
+    /// or so of the surface line rather than exactly on it, and a body walking a
+    /// slope onto it arrives a pixel or two high.
+    pub fn underfoot(pos: Point, w: i32, centre: Vec2) -> bool {
+        let half = w as f32 / 2.0;
+        let feet = centre.y + crate::constants::PLAYER_H / 2.0;
+        (centre.x - pos.x as f32).abs() <= half
+            && (feet - pos.y as f32).abs() <= crate::constants::PAD_TOUCH_SLACK
+    }
+}
+
 impl TeleportPad {
     /// Inclusive `(x0, y0, x1, y1)` of the protected rock, in mask coordinates.
     ///
@@ -80,32 +126,55 @@ impl TeleportPad {
     /// the rect is inclusive, and the failure would be a pad you can dig one row
     /// out from under.
     pub fn rect(&self) -> (i32, i32, i32, i32) {
-        let half = PAD_W / 2;
-        (
-            self.pos.x - half,
-            self.pos.y + 1,
-            self.pos.x + half - 1,
-            self.pos.y + PAD_H,
-        )
+        footprint::rect(self.pos, PAD_W, PAD_H)
     }
 
     /// Whether `(x, y)` is inside the protected rock.
     pub fn covers(&self, x: i32, y: i32) -> bool {
-        let (x0, y0, x1, y1) = self.rect();
-        x >= x0 && x <= x1 && y >= y0 && y <= y1
+        footprint::covers(self.pos, PAD_W, PAD_H, x, y)
     }
 
     /// Whether a body centred at `(x, y)` is standing on this pad.
-    ///
-    /// The feet, not the centre: a pad is ground, and the test that matters is
-    /// whether the bottom of the body box is resting on it. Tolerant by
-    /// `PAD_TOUCH_SLACK` in y because a grounded body's feet sit within a pixel
-    /// or so of the surface line rather than exactly on it.
     pub fn underfoot(&self, centre: crate::math::Vec2) -> bool {
-        let half = PAD_W as f32 / 2.0;
-        let feet = centre.y + crate::constants::PLAYER_H / 2.0;
-        (centre.x - self.pos.x as f32).abs() <= half
-            && (feet - self.pos.y as f32).abs() <= PAD_TOUCH_SLACK
+        footprint::underfoot(self.pos, PAD_W, centre)
+    }
+}
+
+/// A static gun emplacement (T21.11).
+///
+/// **`TeleportPad`'s sibling, deliberately** — same sampler, same protected-rock
+/// rule, same wire shape — because "a thing on the map you activate by standing
+/// on it" is solved there and a second mechanism would be a second thing to get
+/// wrong. The differences are the footprint size and the RNG sub-stream.
+///
+/// **Position only.** Ammo is world state that mutates and belongs in the state
+/// hash; `MapMeta` is generation output that never changes after the map is
+/// built. Putting the magazine here would make a replay's header disagree with
+/// its own command stream the first time anybody fired.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GunPlatform {
+    pub id: u8,
+    /// The feet line, as for every other surface point.
+    pub pos: Point,
+}
+
+impl GunPlatform {
+    /// Inclusive `(x0, y0, x1, y1)` of the indestructible rock beneath it.
+    pub fn rect(&self) -> (i32, i32, i32, i32) {
+        footprint::rect(self.pos, GUN_PLATFORM_W, GUN_PLATFORM_H)
+    }
+
+    pub fn covers(&self, x: i32, y: i32) -> bool {
+        footprint::covers(self.pos, GUN_PLATFORM_W, GUN_PLATFORM_H, x, y)
+    }
+
+    /// Whether a body centred at `centre` is standing on this platform.
+    ///
+    /// T21.11B's mount test is this and a timer; there is no second geometry
+    /// rule anywhere.
+    pub fn underfoot(&self, centre: crate::math::Vec2) -> bool {
+        footprint::underfoot(self.pos, GUN_PLATFORM_W, centre)
     }
 }
 
@@ -138,6 +207,10 @@ pub struct MapMeta {
     pub spawn_points: Vec<Point>,
     /// The indestructible standing spots (§C5). Ids are their index.
     pub teleport_pads: Vec<TeleportPad>,
+    /// The gun emplacements (T21.11). Ids are their index, as for pads.
+    ///
+    /// Placement only — the magazine is `World` state, because it mutates.
+    pub gun_platforms: Vec<GunPlatform>,
     pub surface_points: Vec<Point>,
     /// Scenery stamped into the terrain at pass 6b (§D5).
     ///
@@ -277,6 +350,35 @@ pub fn generate_full(
     // the_spawn_points`).
     let teleport_pads = choose_pads(&outcome.mask, &outcome.surface, &clear, outcome.seed);
 
+    // And the gun platforms, on a **third** sub-stream for the same reason: on
+    // `"pads"` they would consume the pads' draws and move every pad on every
+    // seed, which is a golden-table regeneration for a feature that has nothing
+    // to do with pads (`platforms_do_not_move_the_pads_or_the_spawns`).
+    //
+    // And **clear of the pads**, which the sub-stream alone does not buy: both
+    // draws are farthest-point sampling over the same surface points, so they
+    // converge on the same extremes however they are seeded. Seed 4242 put a
+    // platform exactly on a pad, and a tile that is both mount-on-stand and
+    // teleport-on-stand is a conflict rather than a coincidence.
+    let clear_of_pads: Vec<usize> = clear
+        .iter()
+        .copied()
+        .filter(|&i| {
+            outcome.surface.get(i).is_some_and(|p| {
+                teleport_pads.iter().all(|pad| {
+                    (p.x - pad.pos.x).abs() >= GUN_PLATFORM_PAD_CLEARANCE
+                        || (p.y - pad.pos.y).abs() >= GUN_PLATFORM_PAD_CLEARANCE
+                })
+            })
+        })
+        .collect();
+    let gun_platforms = choose_gun_platforms(
+        &outcome.mask,
+        &outcome.surface,
+        &clear_of_pads,
+        outcome.seed,
+    );
+
     let buried_slots = choose_buried_slots(
         &outcome.mask,
         &outcome.sealed_pockets,
@@ -300,6 +402,7 @@ pub fn generate_full(
             theme,
             spawn_points,
             teleport_pads,
+            gun_platforms,
             surface_points: outcome.surface,
             objects,
             buried_slots,
@@ -341,6 +444,37 @@ pub fn choose_pads(
         .enumerate()
         .map(|(i, pos)| TeleportPad { id: i as u8, pos })
         .collect()
+}
+
+/// `GUN_PLATFORMS` well-separated, standable emplacements (T21.11).
+///
+/// `choose_pads`' sibling, through the same shared sampler, on the
+/// `"gun_platforms"` sub-stream. The stream name is the whole of the difference
+/// and it is the load-bearing part: `choose_separated`'s contract is that a
+/// caller with its own stream cannot perturb another's, which is what lets this
+/// feature be added without regenerating the golden table.
+///
+/// Like the pads, the count is **not** relaxed downward. Fewer than
+/// `GUN_PLATFORMS` on a map means the generator produced somewhere with nowhere
+/// to stand, and that is worth seeing rather than papering over.
+pub fn choose_gun_platforms(
+    mask: &Mask,
+    surface: &[Point],
+    component: &[usize],
+    seed: u64,
+) -> Vec<GunPlatform> {
+    choose_separated(
+        mask,
+        surface,
+        component,
+        seed,
+        "gun_platforms",
+        GUN_PLATFORMS,
+    )
+    .into_iter()
+    .enumerate()
+    .map(|(i, pos)| GunPlatform { id: i as u8, pos })
+    .collect()
 }
 
 /// Points inside solid rock, biased toward tunnels and pockets.
@@ -927,6 +1061,267 @@ mod tests {
                 "{scale:?}: only {standing} pads left standing"
             );
         }
+    }
+
+    // ------------------------------------------------- T21.11 gun platforms
+
+    #[test]
+    fn gun_platforms_on_every_scale_separated_and_standable() {
+        use crate::constants::{GUN_PLATFORMS, SPAWN_MIN_SEPARATION};
+        for scale in MapScale::ALL {
+            // Two seeds and every scale, the shape the pad test settled on: a
+            // population claim needs more than one draw, and four seeds bought
+            // no new failure mode there either.
+            for seed in [4242u64, 31337] {
+                let plats = &generate(seed, scale).meta.gun_platforms;
+                assert_eq!(
+                    plats.len(),
+                    GUN_PLATFORMS,
+                    "{scale:?}/{seed}: {} platforms",
+                    plats.len()
+                );
+                let map = generate(seed, scale);
+                for g in plats {
+                    assert!(
+                        crate::map::gen::surface::is_standable(&map.mask, g.pos.x, g.pos.y),
+                        "{scale:?}/{seed}: platform {:?} is not standable",
+                        g.pos
+                    );
+                }
+                let floor = SPAWN_MIN_SEPARATION
+                    * crate::map::gen::spawns::RELAX_FACTOR
+                        .powi(crate::map::gen::spawns::MAX_RELAXATIONS as i32);
+                for (i, a) in plats.iter().enumerate() {
+                    for b in &plats[i + 1..] {
+                        let d = (a.pos.distance_sq(b.pos) as f64).sqrt();
+                        assert!(
+                            d >= floor as f64,
+                            "{scale:?}/{seed}: platforms {:?} and {:?} are {d:.0} px apart",
+                            a.pos,
+                            b.pos
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gun_platform_ids_are_their_index() {
+        let map = generate(11, MapScale::Small);
+        for (i, g) in map.meta.gun_platforms.iter().enumerate() {
+            assert_eq!(g.id as usize, i);
+        }
+    }
+
+    /// Platforms draw from their **own** sub-stream — not the pads', not the
+    /// spawns'.
+    ///
+    /// Same argument as `pads_and_spawns_draw_from_different_sub_streams`, and
+    /// the same trap avoided: re-deriving a local `substream(seed,
+    /// "gun_platforms")` and comparing would assert only that `generate` is
+    /// deterministic, which it is however the streams are named. What actually
+    /// fails is comparing the *results*: `choose_separated` is the same sampler
+    /// over the same surface points, so a shared stream name makes the platforms
+    /// land exactly on the pads.
+    #[test]
+    fn gun_platforms_draw_from_their_own_sub_stream() {
+        let map = generate(31337, MapScale::Medium);
+        let plats: Vec<Point> = map.meta.gun_platforms.iter().map(|g| g.pos).collect();
+        let pads: Vec<Point> = map.meta.teleport_pads.iter().map(|p| p.pos).collect();
+        assert_eq!(plats.len(), crate::constants::GUN_PLATFORMS);
+        // Prefixes, because the two lists are different lengths: a shared stream
+        // makes the shorter one a prefix of the longer, which `assert_ne` on the
+        // whole vectors would not catch.
+        let n = plats.len().min(pads.len());
+        assert_ne!(
+            plats[..n],
+            pads[..n],
+            "the platforms landed on the pads — they are sharing a sub-stream"
+        );
+        assert_ne!(
+            plats[..n],
+            map.meta.spawn_points[..n],
+            "the platforms landed on the spawn points — they are sharing a sub-stream"
+        );
+    }
+
+    #[test]
+    fn the_same_seed_gives_the_same_gun_platforms() {
+        let map = generate(31337, MapScale::Medium);
+        let again = generate(31337, MapScale::Medium);
+        assert_eq!(map.meta.gun_platforms, again.meta.gun_platforms);
+    }
+
+    /// The coordinator's *"a couple pixels of ground you cannot destroy under
+    /// it"*, measured at every scale — §A19's lesson that a single-scale
+    /// measurement is a number, not a property.
+    #[test]
+    fn a_carve_over_a_gun_platform_removes_nothing() {
+        use crate::constants::GUN_PLATFORM_W;
+        for scale in MapScale::ALL {
+            let mut map = generate(4242, scale);
+            let plats = map.meta.gun_platforms.clone();
+            assert!(!plats.is_empty(), "{scale:?}: no platforms to test");
+
+            for g in &plats {
+                let (x0, y0, x1, y1) = g.rect();
+                let before: u32 = (y0..=y1).map(|y| map.mask.count_run(y, x0, x1)).sum();
+                let r = map.carve_circle(g.pos.x, g.pos.y + GUN_PLATFORM_W, GUN_PLATFORM_W * 2);
+                let after: u32 = (y0..=y1).map(|y| map.mask.count_run(y, x0, x1)).sum();
+                assert_eq!(
+                    before,
+                    after,
+                    "{scale:?}: a carve took {} px out of platform {} ({:?}); {} removed overall",
+                    before as i64 - after as i64,
+                    g.id,
+                    g.pos,
+                    r.pixels_removed
+                );
+            }
+        }
+    }
+
+    /// The control: the same carve clear of the rect removes plenty, so
+    /// "removed nothing" is about the platform and not about a carve that was
+    /// never going to do anything.
+    #[test]
+    fn the_same_carve_beside_a_gun_platform_removes_plenty() {
+        use crate::constants::GUN_PLATFORM_W;
+        let mut map = generate(4242, MapScale::Medium);
+        let g = map.meta.gun_platforms[0];
+        let mut removed = 0;
+        for dir in [-1, 1] {
+            let mut m = map.clone();
+            removed += m
+                .carve_circle(
+                    g.pos.x + dir * GUN_PLATFORM_W * 4,
+                    g.pos.y + GUN_PLATFORM_W,
+                    GUN_PLATFORM_W * 2,
+                )
+                .pixels_removed;
+        }
+        assert!(
+            removed > 0,
+            "the control carve removed nothing either, so the platform test proves nothing"
+        );
+        map.carve_circle(g.pos.x, g.pos.y + GUN_PLATFORM_W, GUN_PLATFORM_W * 2);
+        assert!(crate::map::gen::surface::is_standable(
+            &map.mask, g.pos.x, g.pos.y
+        ));
+    }
+
+    /// The `solid` exemption, asserted rather than assumed.
+    ///
+    /// Protection is refused for a **carve** only. A `fill_circle` inside the
+    /// rect cannot break the standability guarantee — it only adds rock — and
+    /// refusing it would make the footprint a hole nothing could ever fill.
+    #[test]
+    fn a_fill_inside_a_gun_platform_still_adds_rock() {
+        use crate::constants::GUN_PLATFORM_W;
+        let mut map = generate(4242, MapScale::Medium);
+        let g = map.meta.gun_platforms[0];
+        // Carve a hole well above the platform first, so there is somewhere for
+        // a fill to put rock back. The rect itself is already solid.
+        let (cx, cy) = (g.pos.x, g.pos.y - GUN_PLATFORM_W);
+        map.carve_circle(cx, cy, GUN_PLATFORM_W);
+        let before = map.mask.count_solid();
+        map.fill_circle(cx, cy, GUN_PLATFORM_W);
+        assert!(
+            map.mask.count_solid() > before,
+            "a fill added nothing, so the solid exemption is untested"
+        );
+    }
+
+    /// Platforms and pads are separate features and their **footprints** must
+    /// not overlap.
+    ///
+    /// Asserted on the rects rather than on the positions, because the rects are
+    /// what the conflict is about: two stand-to-activate features whose
+    /// protected rock intersects are two activations competing for one tile.
+    /// Positions differing by a pixel would pass a `assert_ne!` on `pos` and
+    /// still be the bug.
+    #[test]
+    fn gun_platform_footprints_never_overlap_a_pad_footprint() {
+        for scale in MapScale::ALL {
+            for seed in [4242u64, 31337, 11] {
+                let map = generate(seed, scale);
+                assert_eq!(
+                    map.meta.gun_platforms.len(),
+                    crate::constants::GUN_PLATFORMS,
+                    "{scale:?}/{seed}: clearing the pads starved the platform sampler"
+                );
+                for g in &map.meta.gun_platforms {
+                    let (gx0, gy0, gx1, gy1) = g.rect();
+                    for p in &map.meta.teleport_pads {
+                        let (px0, py0, px1, py1) = p.rect();
+                        let overlap = gx0 <= px1 && px0 <= gx1 && gy0 <= py1 && py0 <= gy1;
+                        assert!(
+                            !overlap,
+                            "{scale:?}/{seed}: platform {} {:?} overlaps pad {} {:?}",
+                            g.id, g.pos, p.id, p.pos
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The whole reason the footprint is protected: a map dug to pieces still
+    /// has every platform standing.
+    #[test]
+    fn every_gun_platform_survives_a_map_carved_to_pieces() {
+        use crate::constants::GUN_PLATFORMS;
+        for scale in MapScale::ALL {
+            let mut map = generate(8123, scale);
+            let (w, h) = (map.mask.w as i32, map.mask.h as i32);
+            let before = map.mask.count_solid();
+            let mut y = 0;
+            while y < h {
+                let mut x = 0;
+                while x < w {
+                    map.carve_circle(x, y, 90);
+                    x += 120;
+                }
+                y += 120;
+            }
+            assert!(
+                map.mask.count_solid() * 2 < before,
+                "{scale:?}: the fixture barely destroyed anything"
+            );
+            let standing = map
+                .meta
+                .gun_platforms
+                .iter()
+                .filter(|g| crate::map::gen::surface::is_standable(&map.mask, g.pos.x, g.pos.y))
+                .count();
+            assert_eq!(
+                standing, GUN_PLATFORMS,
+                "{scale:?}: only {standing} platforms left standing"
+            );
+        }
+    }
+
+    /// `underfoot` is the one geometry rule, shared with the pad through
+    /// `footprint`. T21.11B's mount test is this plus a timer.
+    #[test]
+    fn a_body_standing_on_a_gun_platform_is_underfoot_and_one_beside_it_is_not() {
+        use crate::constants::{GUN_PLATFORM_W, PLAYER_H};
+        let map = generate(4242, MapScale::Medium);
+        let g = map.meta.gun_platforms[0];
+        let centre = crate::math::Vec2::new(g.pos.x as f32, g.pos.y as f32 - PLAYER_H / 2.0);
+        assert!(
+            g.underfoot(centre),
+            "a body on the platform is not underfoot"
+        );
+        let beside = crate::math::Vec2::new(
+            g.pos.x as f32 + GUN_PLATFORM_W as f32,
+            g.pos.y as f32 - PLAYER_H / 2.0,
+        );
+        assert!(
+            !g.underfoot(beside),
+            "a body a full width away is underfoot"
+        );
     }
 
     /// Pads draw from their own sub-stream, not the spawn points'.

@@ -1255,6 +1255,11 @@ export class GameScene extends Phaser.Scene {
     // renderer reading it would draw nothing while looking correct.
     this.padViews = init.pads.map((p, i) => ({ id: i, x: p.x, y: p.y }))
     this.world.pads.build(this.padViews)
+    // T21.11's platforms, rebuilt from the wire beside the pads. The index is
+    // the id on both sides — `map_init` does not send one (§B16: two registries
+    // assumed a positional relationship without asserting it and a laser
+    // resolved as a bazooka).
+    this.world.platforms.build(init.platforms.map((p, i) => ({ id: i, x: p.x, y: p.y })))
 
     // §D6. From the wire for the same reason the pads are: a networked client
     // never runs the generator. `atlasArt` returns null frames when the objects
@@ -2538,6 +2543,7 @@ export class GameScene extends Phaser.Scene {
           // nothing, which is the §A39 shape this list exists to catch.
           pads: self.padViews.length,
           padsDrawn: self.world?.pads.count ?? 0,
+          platformsDrawn: self.world?.platforms.count ?? 0,
           // §D6, both ends again: what `map_init` carried, and what the index
           // the bake reads actually holds. `objects` alone would pass for a
           // scene that decoded them and never called `setObjects` — which is

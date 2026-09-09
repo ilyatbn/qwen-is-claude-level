@@ -288,6 +288,7 @@ mod tests {
             theme: 0,
             spawn_points: Vec::new(),
             teleport_pads: Vec::new(),
+            gun_platforms: Vec::new(),
             surface_points: Vec::new(),
             objects: Vec::new(),
             buried_slots: Vec::new(),

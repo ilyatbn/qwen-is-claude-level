@@ -65,6 +65,16 @@ export interface TeleportPad {
   pos: Point
 }
 
+/**
+ * T21.11's gun emplacement. `pos` is a feet line, like a pad's — the
+ * indestructible rock is below it (`GunPlatform::rect` in `map/meta.rs`), and
+ * the client needs only somewhere to draw the turret.
+ */
+export interface GunPlatform {
+  id: number
+  pos: Point
+}
+
 export interface Decoration {
   kind: number
   pos: Point
@@ -81,6 +91,7 @@ export interface MapMeta {
   theme: number
   spawn_points: Point[]
   teleport_pads: TeleportPad[]
+  gun_platforms: GunPlatform[]
   surface_points: Point[]
   buried_slots: BuriedSlot[]
   decorations: Decoration[]
@@ -379,6 +390,10 @@ export interface Constants {
   TELEPORT_CHARGE: number
   TELEPORT_COOLDOWN: number
   TELEPORT_ARM_DISTANCE: number
+  /** T21.11 — the count, and the footprint the turret art is sized from. */
+  GUN_PLATFORMS: number
+  GUN_PLATFORM_W: number
+  GUN_PLATFORM_H: number
   BATTERY_MAX: number
   MAX_HEALS: number
   QUICK_SLOTS: number
@@ -591,6 +606,24 @@ export class Core {
   /** Where this core thinks the pads are, as `[x0, y0, x1, y1, …]`. */
   teleportPads(): Int32Array {
     return this.inner.teleport_pads()
+  }
+
+  /**
+   * T21.11's platforms, installed for the identical reason as the pads: their
+   * footprint is indestructible, so a core that does not know where they are
+   * digs pixels the server refused and the two masks part company one
+   * platform-sized patch at a time.
+   */
+  setGunPlatforms(platforms: readonly { x: number; y: number }[]): void {
+    const xs = new Int32Array(platforms.map((p) => p.x))
+    const ys = new Int32Array(platforms.map((p) => p.y))
+    this.inner.set_gun_platforms(xs, ys)
+    this.invalidate()
+  }
+
+  /** Where this core thinks the platforms are, as `[x0, y0, x1, y1, …]`. */
+  gunPlatforms(): Int32Array {
+    return this.inner.gun_platforms()
   }
 
   private invalidate(): void {

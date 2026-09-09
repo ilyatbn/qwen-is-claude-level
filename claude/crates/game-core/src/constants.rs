@@ -1588,6 +1588,40 @@ pub const TELEPORT_COOLDOWN: f32 = 5.0;
 /// including when you are stationary because you are reading the map.
 pub const TELEPORT_ARM_DISTANCE: f32 = 32.0;
 
+// --- M21 T21.11: gun platforms ---
+
+/// Static gun emplacements per map, chosen the way teleport pads are.
+///
+/// **Three, from the coordinator.** A platform is a map resource worth fighting
+/// over rather than a weapon everyone gets a turn with, and the count is what
+/// makes that true: six would put one within reach of every spawn, one would make
+/// the round about a single tile.
+pub const GUN_PLATFORMS: usize = 3;
+/// A platform is `GUN_PLATFORM_W` wide and `GUN_PLATFORM_H` tall, its top flush
+/// with the surface point — `PAD_W`/`PAD_H`'s meaning exactly, and the rock in
+/// that rect is indestructible for the same reason.
+///
+/// Wider than `PAD_W` because a platform is a thing you stand *on and behind*:
+/// the art is a tripod, and a footprint narrower than the silhouette would let a
+/// rocket dig out ground the picture is still standing on. The coordinator's
+/// requirement was *"a couple pixels of ground you cannot destroy under it"*, and
+/// `GUN_PLATFORM_H` is those pixels.
+pub const GUN_PLATFORM_W: i32 = 48;
+pub const GUN_PLATFORM_H: i32 = 10;
+/// How far a platform must sit from a teleport pad, in px.
+///
+/// **Derived from the two footprints, not chosen**: half of each width, so the
+/// protected rects can touch but never overlap. A fourth number here would be a
+/// number that disagrees with the rects the moment either width moves.
+///
+/// This exists because a separate RNG sub-stream is **not** enough, which was
+/// measured rather than assumed: `choose_separated` is farthest-point sampling
+/// over the same surface set, so the two draws converge on the same extremal
+/// points regardless of stream — seed 4242 put platform 1 exactly on pad 1 at
+/// (2800, 472). Two stand-to-activate features on one tile is a gameplay
+/// conflict (mount versus teleport), not a cosmetic one.
+pub const GUN_PLATFORM_PAD_CLEARANCE: i32 = (PAD_W + GUN_PLATFORM_W) / 2;
+
 // --- C14: a living background ---
 
 /// Parallax mountain layers behind the terrain, from the map seed.

@@ -127,6 +127,7 @@ fn replay_meta() -> game_core::map::MapMeta {
         theme: 0,
         spawn_points: Vec::new(),
         teleport_pads: Vec::new(),
+        gun_platforms: Vec::new(),
         surface_points: Vec::new(),
         objects: Vec::new(),
         buried_slots: Vec::new(),
@@ -158,6 +159,11 @@ fn replay(map_init_b64: &str, carves: &[serde_json::Value]) -> String {
     // §C5, and this is what a real client does through `Core.setTeleportPads`.
     // Without it every carve near a pad digs a patch the server refused.
     meta.teleport_pads = parts.teleport_pads;
+    // T21.11, and the identical rule: platform footprints are indestructible
+    // too, so a client that does not install them carves a platform-shaped
+    // patch the server refused. This fixture caught exactly that on the commit
+    // that added them — `Core.setGunPlatforms` is the real client's half.
+    meta.gun_platforms = parts.gun_platforms;
     let mut map = game_core::map::Map::from_parts(parts.mask, coarse, meta);
 
     let mut ordered: Vec<&serde_json::Value> = carves
@@ -855,6 +861,71 @@ fn a_client_that_is_not_told_about_the_pads_carves_a_different_mask() {
         authority.mask.hash_hex(),
         "a client with NO pads produced the same mask — so this test cannot fail, \
          and the pads are not actually indestructible"
+    );
+}
+
+/// T21.11's platforms must reach the **client's core** too.
+///
+/// The pad sibling above records why this is a test of its own rather than
+/// something left to the socket suite: whether a round's hundred carves happen
+/// to land on a footprint is chance, and a gate that fails on a coin flip gates
+/// nothing. So the carve is aimed at a platform, and the second assertion is the
+/// control — without it, "the masks agree" is also what a build with no
+/// indestructibility at all produces.
+///
+/// This is not hypothetical for platforms either: adding them turned
+/// `two_clients_agree_on_the_mask_after_a_hundred_carves` red until `replay`
+/// installed them, which is the same failure pads produced when they landed.
+#[test]
+fn a_client_that_is_not_told_about_the_gun_platforms_carves_a_different_mask() {
+    use game_core::constants::GUN_PLATFORM_W;
+
+    let server = game_core::map::generate(4242, MapScale::Small);
+    let plat = *server
+        .meta
+        .gun_platforms
+        .first()
+        .expect("the generated map has platforms");
+
+    let bytes = game_server::codec::encode_map_init(&server);
+    let parts = game_server::codec::decode_map_init_parts(&bytes).expect("map_init decodes");
+    assert_eq!(
+        parts.gun_platforms.len(),
+        server.meta.gun_platforms.len(),
+        "map_init dropped platforms on the way out"
+    );
+
+    // Three maps from the same mask: the server's, a client told about the
+    // platforms, and a client that was not. **The pads are installed in all
+    // three**, so the only difference between informed and ignorant is the
+    // platforms — otherwise this would be re-testing the pads.
+    let build = |plats: Vec<game_core::map::meta::GunPlatform>| {
+        let mask = parts.mask.clone();
+        let coarse = game_core::map::CoarseGrid::build(&mask);
+        let mut meta = replay_meta();
+        meta.teleport_pads = parts.teleport_pads.clone();
+        meta.gun_platforms = plats;
+        game_core::map::Map::from_parts(mask, coarse, meta)
+    };
+    let mut informed = build(parts.gun_platforms.clone());
+    let mut ignorant = build(Vec::new());
+    let mut authority = server.clone();
+
+    let (cx, cy, r) = (plat.pos.x, plat.pos.y + GUN_PLATFORM_W, GUN_PLATFORM_W * 2);
+    for m in [&mut authority, &mut informed, &mut ignorant] {
+        m.carve_circle(cx, cy, r);
+    }
+
+    assert_eq!(
+        informed.mask.hash_hex(),
+        authority.mask.hash_hex(),
+        "a client told about the platforms carved a different mask from the server"
+    );
+    assert_ne!(
+        ignorant.mask.hash_hex(),
+        authority.mask.hash_hex(),
+        "a client with NO platforms produced the same mask — so this test cannot \
+         fail, and the footprints are not actually indestructible"
     );
 }
 

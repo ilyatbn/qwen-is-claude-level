@@ -200,6 +200,34 @@ impl GameCore {
             .collect()
     }
 
+    /// T21.11's emplacements, the pads' twin and for the identical reason.
+    ///
+    /// `carve_circle` refuses to clear a platform's rect, so a client that never
+    /// learned where the platforms are digs holes the server does not and the two
+    /// masks drift by a platform-shaped patch per carve. That is not a
+    /// hypothetical for pads — it is the failure `two_clients_agree_on_the_mask_
+    /// after_a_hundred_carves` actually produced the moment pads landed — and
+    /// nothing about platforms makes them immune to it.
+    pub fn set_gun_platforms(&mut self, xs: &[i32], ys: &[i32]) {
+        let n = xs.len().min(ys.len());
+        self.map.meta.gun_platforms = (0..n)
+            .map(|i| game_core::map::meta::GunPlatform {
+                id: i as u8,
+                pos: game_core::math::Point::new(xs[i], ys[i]),
+            })
+            .collect();
+    }
+
+    /// Where this core thinks the platforms are, as `[x0, y0, x1, y1, …]`.
+    pub fn gun_platforms(&self) -> Vec<i32> {
+        self.map
+            .meta
+            .gun_platforms
+            .iter()
+            .flat_map(|g| [g.pos.x, g.pos.y])
+            .collect()
+    }
+
     // ---- terrain access -------------------------------------------------
 
     /// Address of the mask words in WASM memory. See the module docs: the view JS
@@ -1425,6 +1453,11 @@ pub fn constants_json() -> String {
         TELEPORT_CHARGE => c::TELEPORT_CHARGE,
         TELEPORT_COOLDOWN => c::TELEPORT_COOLDOWN,
         TELEPORT_ARM_DISTANCE => c::TELEPORT_ARM_DISTANCE,
+        // T21.11: the renderer sizes the turret from the footprint, so the
+        // picture cannot drift from the rock `carve_circle` protects.
+        GUN_PLATFORMS => c::GUN_PLATFORMS,
+        GUN_PLATFORM_W => c::GUN_PLATFORM_W,
+        GUN_PLATFORM_H => c::GUN_PLATFORM_H,
         BATTERY_MAX => c::BATTERY_MAX,
         MAX_HEALS => c::MAX_HEALS,
         QUICK_SLOTS => c::QUICK_SLOTS,
