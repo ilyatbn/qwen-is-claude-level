@@ -5870,3 +5870,18 @@ leaves the fuel machine to its owner. Dropping is the only off switch and the te
 `World::drop_item`. `WINGS_FLY_SPEED < FALL_SAFE_SPEED` is asserted, so fall immunity is by
 construction. Bots unchanged, with the reasoning written at `bots/mod.rs`. 901 + 22 wasm + 887
 client green; four falsifications red the right tests, plus the wire at the mirror.
+
+## T21.09 — the backpack holds the effect items
+
+`Inventory::add` no longer takes the lowest free index: `placement_order` returns the preferred
+region first, then the other, so a **passive** item prefers `QUICK_SLOTS..INVENTORY_SLOTS` and
+everything else prefers the bar, each falling back rather than refusing. Passive is
+`registry::is_passive`, an **exhaustive** match on `ItemKind` — `Shield | Utility(_)`, the two
+kinds `use_item` answers `WrongKind` for without being a weapon — so the three M21 items need no
+entry and a sixth `ItemKind` will not compile until someone rules on it. Not shared with
+`move_stack`: a drag is the player saying where they want something. The control that earns the
+whole task is the **empty-bar** case — a full-bar-only assertion is satisfied by the old code.
+Three falsifications: bar-preference always (2 red), `Heal` marked passive (2 red), fallback
+removed (3 red). Stale claims fixed at `INVENTORY_SLOTS` and `grant_starting_kit`, both of which
+asserted lowest-free-index. Client is positional and looks items up by key, so nothing there
+moved. 907 game-core + 887 client + gate 334 ok, all green.

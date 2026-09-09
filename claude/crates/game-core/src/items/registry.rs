@@ -598,6 +598,30 @@ pub fn is_weapon(id: ItemId) -> bool {
     matches!(def(id), Some(d) if matches!(d.kind, ItemKind::Weapon(_)))
 }
 
+/// Is this item **passive** — worn rather than wielded (T21.09)?
+///
+/// A passive item is one there is no verb for: `use_item` refuses it with
+/// `WrongKind` and `try_fire_slot` refuses it too, so carrying it *is* using it.
+/// That is exactly the class for which a backpack slot is as good as a quick-bar
+/// slot, and it is why `Inventory::add` can prefer the backpack for these
+/// without taking anything away from the player.
+///
+/// **Derived from the kind, with no list** (T21.09): a roster of "effect items"
+/// would go stale the first time somebody adds a sixth, and the three M21 items
+/// are `Utility` precisely so they need no entry anywhere. The match is
+/// exhaustive on purpose — a new `ItemKind` will not compile until someone says
+/// which side of this it falls on.
+pub fn is_passive(id: ItemId) -> bool {
+    let Some(d) = def(id) else { return false };
+    match d.kind {
+        // Held, never used: the shield generator (T20.08) and every utility
+        // (T20.07, T21.01-03).
+        ItemKind::Shield | ItemKind::Utility(_) => true,
+        // All three have a verb — fire, use, use — so all three want the bar.
+        ItemKind::Weapon(_) | ItemKind::Heal { .. } | ItemKind::Battery { .. } => false,
+    }
+}
+
 /// A weapon nobody can find and nobody is issued: a placeholder kept only
 /// because `ITEMS` is indexed by id and deleting an entry renumbers every id
 /// above it (§B16, the bug where a laser resolved as a bazooka).

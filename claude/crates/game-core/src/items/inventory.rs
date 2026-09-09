@@ -5,7 +5,7 @@
 //! `docs/30-items-inventory.md` §2.
 
 use crate::constants::{INVENTORY_SLOTS, QUICK_SLOTS};
-use crate::items::registry::{is_weapon, max_stack, ItemId};
+use crate::items::registry::{is_passive, is_weapon, max_stack, ItemId};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Stack {
@@ -42,7 +42,9 @@ impl Inventory {
         Self::default()
     }
 
-    /// Merge into existing stacks first, then take free slots.
+    /// Merge into existing stacks first, then take a free slot in
+    /// `placement_order` — the quick bar for anything with a verb, the backpack
+    /// for anything passive (T21.09).
     ///
     /// The doc's example is the contract for a **consumable**: with `max_stack` 3,
     /// adding 2 then 2 gives a stack of 3 and a stack of 1 — not a stack of 4, and
@@ -58,6 +60,36 @@ impl Inventory {
     /// the *only* way anything reaches a slot — `resolve_pickups`, `give` and the
     /// battery grant all come through it. A guard in the caller would be one the
     /// next caller forgets.
+    /// The order `add` tries free slots in: preferred region first, then the
+    /// other one as a fallback (T21.09).
+    ///
+    /// **Passive items prefer the backpack, everything else prefers the bar.**
+    /// The bar is the only region `select` will point at, so a weapon or a
+    /// consumable sitting in the backpack is dead weight until it is dragged out,
+    /// while a passive item works identically in either place — carrying it is
+    /// using it. Sorting by that makes the two rows the slots you cannot select
+    /// from rather than mere overflow.
+    ///
+    /// **Preference, not overflow**: a passive item goes to the backpack even
+    /// with the whole bar free, and each region falls back to the other, so a
+    /// full bar never refuses a pickup that has anywhere to go.
+    ///
+    /// This is deliberately *not* shared with `move_stack`: a drag is the
+    /// player saying where they want something, and a placement rule applied
+    /// there would start refusing valid moves. Share the guard or share the
+    /// function — these are different questions.
+    ///
+    /// Two fixed index ranges, so the order is total and depends on nothing
+    /// unordered.
+    fn placement_order(item: ItemId) -> impl Iterator<Item = usize> {
+        let (first, second) = if is_passive(item) {
+            (QUICK_SLOTS..INVENTORY_SLOTS, 0..QUICK_SLOTS)
+        } else {
+            (0..QUICK_SLOTS, QUICK_SLOTS..INVENTORY_SLOTS)
+        };
+        first.chain(second)
+    }
+
     pub fn add(&mut self, item: ItemId, count: u8) -> AddResult {
         if count == 0 {
             return AddResult::Added;
@@ -85,10 +117,11 @@ impl Inventory {
         // Anything left over stays on the ground rather than opening a second.
         let already_held = self.slots.iter().flatten().any(|s| s.item == item);
         if !(one_slot && already_held) {
-            for slot in self.slots.iter_mut() {
+            for i in Self::placement_order(item) {
                 if left == 0 {
                     break;
                 }
+                let slot = &mut self.slots[i];
                 if slot.is_none() {
                     let take = cap.min(left);
                     *slot = Some(Stack { item, count: take });
@@ -862,6 +895,222 @@ mod dragging {
             (inv.selected() as usize) < QUICK_SLOTS,
             "the selection wandered to slot {}",
             inv.selected()
+        );
+    }
+}
+
+#[cfg(test)]
+mod placement {
+    use super::*;
+    use crate::constants::{BACKPACK_SLOTS, INVENTORY_SLOTS, QUICK_SLOTS};
+    use crate::items::registry::{
+        is_retired, ItemKind, BAZOOKA, FLASHLIGHT, ITEMS, MEDKIT, SHIELD_GENERATOR, SMG,
+    };
+
+    /// The first backpack slot, derived from the constants the way `dragging`
+    /// derives it.
+    const BACKPACK: u8 = QUICK_SLOTS as u8;
+
+    /// Fill every quick-bar slot with a distinct weapon, leaving the backpack
+    /// empty. Distinct so nothing merges — a bar of eight identical stacks would
+    /// absorb a ninth pickup and never exercise placement at all.
+    fn bar_full() -> Inventory {
+        let mut inv = Inventory::new();
+        let weapons: Vec<ItemId> = crate::items::registry::live_weapons()
+            .iter()
+            .map(|d| d.id)
+            .take(QUICK_SLOTS)
+            .collect();
+        assert_eq!(
+            weapons.len(),
+            QUICK_SLOTS,
+            "not enough live weapons to fill the bar"
+        );
+        for w in weapons {
+            inv.add(w, 1);
+        }
+        for i in 0..QUICK_SLOTS {
+            assert!(inv.slot(i as u8).is_some(), "bar slot {i} did not fill");
+        }
+        for i in QUICK_SLOTS..INVENTORY_SLOTS {
+            assert!(
+                inv.slot(i as u8).is_none(),
+                "backpack slot {i} was not free"
+            );
+        }
+        inv
+    }
+
+    fn where_it_landed(inv: &Inventory, item: ItemId) -> Option<u8> {
+        inv.iter().find(|(_, s)| s.item == item).map(|(i, _)| i)
+    }
+
+    /// **The rule is a preference, not an overflow.** Both halves are here in one
+    /// test on purpose: a full-bar-only assertion is satisfied by the old
+    /// lowest-free-index `add`, which would also have put the flashlight in the
+    /// backpack simply because there was nowhere else. The empty-bar case is what
+    /// distinguishes the two, and it is the control.
+    #[test]
+    fn a_passive_item_prefers_the_backpack_full_bar_or_not() {
+        for item in [FLASHLIGHT, SHIELD_GENERATOR] {
+            let mut full = bar_full();
+            assert_eq!(full.add(item, 1), AddResult::Added, "item {item} refused");
+            let at = where_it_landed(&full, item).expect("item {item} vanished");
+            assert!(
+                (at as usize) >= QUICK_SLOTS,
+                "item {item} landed on the bar at {at} with the bar full"
+            );
+
+            // The control: the whole bar is free and it still goes to the backpack.
+            let mut empty = Inventory::new();
+            assert_eq!(empty.add(item, 1), AddResult::Added);
+            let at = where_it_landed(&empty, item).expect("item vanished");
+            assert_eq!(
+                at, BACKPACK,
+                "item {item} took bar slot {at} with the whole inventory free"
+            );
+        }
+    }
+
+    /// The mirror image, and the reason the bar is not simply "wherever is free":
+    /// a weapon in the backpack cannot be selected, so it cannot be fired.
+    #[test]
+    fn a_weapon_prefers_the_bar_and_falls_back_rather_than_refusing() {
+        let mut inv = Inventory::new();
+        inv.add(BAZOOKA, 1);
+        assert_eq!(where_it_landed(&inv, BAZOOKA), Some(0));
+
+        // Bar full of other weapons: the ninth is not refused, it goes behind.
+        let mut full = bar_full();
+        let ninth = crate::items::registry::live_weapons()
+            .iter()
+            .map(|d| d.id)
+            .find(|id| where_it_landed(&full, *id).is_none())
+            .expect("no ninth live weapon");
+        assert_eq!(
+            full.add(ninth, 1),
+            AddResult::Added,
+            "a full bar refused a weapon that had sixteen free slots behind it"
+        );
+        let at = where_it_landed(&full, ninth).expect("weapon vanished");
+        assert!(
+            (at as usize) >= QUICK_SLOTS,
+            "the ninth weapon overwrote bar slot {at}"
+        );
+    }
+
+    /// A consumable has a verb — `use_item` heals from it — so it wants the bar
+    /// like a weapon does. This is the assertion that stops "passive" quietly
+    /// becoming "not a weapon".
+    #[test]
+    fn a_consumable_is_not_passive() {
+        let mut inv = Inventory::new();
+        inv.add(MEDKIT, 1);
+        assert_eq!(where_it_landed(&inv, MEDKIT), Some(0));
+        let mut inv = Inventory::new();
+        inv.add(crate::items::registry::BATTERY_PACK, 1);
+        assert_eq!(
+            where_it_landed(&inv, crate::items::registry::BATTERY_PACK),
+            Some(0)
+        );
+    }
+
+    /// **Named by kind, not by id.** The M21 effect items are covered here
+    /// without appearing in the test, so a sixth one is covered on the day it is
+    /// added to `ITEMS` — which is the whole point of deriving the class rather
+    /// than keeping a list.
+    #[test]
+    fn every_passive_kind_lands_in_the_backpack_and_every_other_kind_on_the_bar() {
+        let mut seen_passive = 0;
+        let mut seen_active = 0;
+        for d in ITEMS.iter().filter(|d| !is_retired(d)) {
+            let passive = matches!(d.kind, ItemKind::Shield | ItemKind::Utility(_));
+            assert_eq!(
+                crate::items::registry::is_passive(d.id),
+                passive,
+                "{} classified against its own kind {:?}",
+                d.key,
+                d.kind
+            );
+            let mut inv = Inventory::new();
+            inv.add(d.id, 1);
+            let at = where_it_landed(&inv, d.id)
+                .unwrap_or_else(|| panic!("{} did not land anywhere", d.key));
+            if passive {
+                seen_passive += 1;
+                assert_eq!(at, BACKPACK, "passive {} took bar slot {at}", d.key);
+            } else {
+                seen_active += 1;
+                assert_eq!(at, 0, "active {} took slot {at}", d.key);
+            }
+        }
+        // A control on the loop itself: an empty or one-sided registry scan would
+        // pass every assertion above without testing anything.
+        assert!(
+            seen_passive >= 5,
+            "only {seen_passive} passive items scanned — M21 adds three to the \
+             flashlight and the shield generator"
+        );
+        assert!(seen_active > 0, "no active items scanned");
+    }
+
+    /// Placement reads two fixed index ranges and nothing else, so the same
+    /// sequence of pickups gives the same layout every time. Asserted against a
+    /// second inventory rather than against literals: a hardcoded layout would
+    /// re-encode the rule instead of checking it is a function of the input.
+    #[test]
+    fn placement_is_a_pure_function_of_the_pickup_sequence() {
+        let seq = [
+            SMG,
+            FLASHLIGHT,
+            BAZOOKA,
+            SHIELD_GENERATOR,
+            MEDKIT,
+            crate::items::registry::VAMPIRE_FANGS,
+        ];
+        let layout = |s: &[ItemId]| {
+            let mut inv = Inventory::new();
+            for &i in s {
+                inv.add(i, 1);
+            }
+            (0..INVENTORY_SLOTS)
+                .map(|i| inv.slot(i as u8).map(|st| st.item))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(layout(&seq), layout(&seq));
+        // And it is total: every one of the 24 slots is reachable, so a passive
+        // item still lands somewhere once the backpack is gone.
+        assert_eq!(
+            Inventory::placement_order(FLASHLIGHT).count(),
+            INVENTORY_SLOTS
+        );
+        assert_eq!(Inventory::placement_order(BAZOOKA).count(), INVENTORY_SLOTS);
+        assert_eq!(BACKPACK_SLOTS + QUICK_SLOTS, INVENTORY_SLOTS);
+    }
+
+    /// The last free slot in the whole inventory is a bar slot, and a passive
+    /// item must still take it. Without the fallback this pickup is silently
+    /// refused and the item stays on the ground.
+    #[test]
+    fn a_passive_item_falls_back_to_the_bar_when_the_backpack_is_full() {
+        // Fill all 24, then free one **bar** slot. There are only 16 live
+        // weapons, so the rest is medkits: `max_stack` apiece, opening one slot
+        // each. Both prefer the bar, so nothing here depends on the rule under
+        // test to reach a full inventory.
+        let mut inv = Inventory::new();
+        for d in crate::items::registry::live_weapons() {
+            inv.add(d.id, 1);
+        }
+        let cap = crate::items::registry::max_stack(MEDKIT);
+        while !inv.slots.iter().all(|s| s.is_some()) {
+            assert_eq!(inv.add(MEDKIT, cap), AddResult::Added, "could not fill up");
+        }
+        assert!(inv.take_slot(3).is_some(), "slot 3 was not occupied");
+        assert_eq!(inv.add(FLASHLIGHT, 1), AddResult::Added);
+        assert_eq!(
+            where_it_landed(&inv, FLASHLIGHT),
+            Some(3),
+            "the flashlight did not fall back to the only free slot"
         );
     }
 }

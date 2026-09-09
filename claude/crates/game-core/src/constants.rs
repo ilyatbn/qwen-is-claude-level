@@ -565,9 +565,15 @@ pub const QUICK_SLOTS: usize = 8;
 pub const BACKPACK_SLOTS: usize = 16;
 /// The whole inventory: the quick bar first, then the backpack.
 ///
-/// **8 → 24.** The ordering is load-bearing rather than cosmetic: `Inventory::add`
-/// fills slots in index order, so quick-bar-first (§C10) falls out of laying the
-/// bar at 0..QUICK_SLOTS instead of being a second rule that can disagree.
+/// **8 → 24.** The ordering is load-bearing rather than cosmetic: the bar is the
+/// low indices, so `Inventory::placement_order` expresses "prefer the bar" and
+/// "prefer the backpack" as two halves of one range rather than as a second rule
+/// that can disagree with §C10 about which slots are selectable.
+///
+/// A pickup no longer simply takes the lowest free index (T21.09): a **passive**
+/// item prefers the backpack, because those are the slots `select` cannot reach
+/// and a passive item never needs selecting. Everything else still prefers the
+/// bar, and either falls back to the other region.
 pub const INVENTORY_SLOTS: usize = QUICK_SLOTS + BACKPACK_SLOTS;
 /// Per slot, same item id.
 pub const MAX_STACK: u8 = 9;

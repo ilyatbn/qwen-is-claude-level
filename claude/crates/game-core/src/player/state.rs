@@ -828,8 +828,9 @@ impl PlayerState {
     /// paying for. `respawn` clears the inventory, so it must re-grant rather than
     /// inherit.
     ///
-    /// Slot 0 by construction: the inventory is empty at both call sites, and
-    /// `add` takes the first free slot.
+    /// Slot 0 by construction: the inventory is empty at both call sites, the
+    /// kit is a weapon, and `add` gives a weapon the lowest free **quick-bar**
+    /// slot (T21.09).
     fn grant_starting_kit(&mut self) {
         for item in STARTING_KIT {
             self.inventory.add(item, 1);
