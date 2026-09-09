@@ -97,7 +97,27 @@ pub const HEADER_BYTES: usize = 45;
 /// the next person debugging a v6-era divergence reads "fall damage" and rules
 /// out movement. Corrected 2026-09-07; an earlier draft of this line said "one
 /// bump for one break", which was true when written and false an hour later.
-pub const REPLAY_VERSION: u16 = 6;
+///
+/// **7 (T21.11B)**: `MountState` joined the per-player hashed block. Three
+/// fields — the platform being ridden, the one being charged toward, and the
+/// hold in seconds — all of which decide whether the next input moves the player
+/// at all. A v6 recording would load, run, and disagree at the **first**
+/// checkpoint rather than at the first mount, because the hash folds the new
+/// bytes in whether or not anybody ever stood on a platform. That is the silent
+/// divergence case, so it is a bump.
+///
+/// **T21.11C shares it.** The platforms' ammo is world state and goes into the
+/// same hash, in the same unreleased window; a version is not a changelog and
+/// bumping twice would reject every recording twice for one break in
+/// compatibility. The precedent is T20.07/T20.08 sharing 5 and T20.21 sharing 6
+/// — and, as the note above records, **the entry has to name both** or whoever
+/// debugs a v7-era divergence reads "mounting" and rules out the magazine.
+///
+/// **No new tag.** Mounting is driven entirely by the existing input stream —
+/// standing still, then holding jump — so an old file's commands are unchanged
+/// in shape. T20.09 is the precedent for the opposite case: a new command tag
+/// leaves an old file replaying byte for byte and correctly did not bump.
+pub const REPLAY_VERSION: u16 = 7;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

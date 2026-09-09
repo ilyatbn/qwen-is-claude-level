@@ -80,6 +80,18 @@ pub struct MoveMods {
     /// it is the third gravity regime: `jetpack::gravity_scale` names all three
     /// in one place, so nothing can be in two of them at once.
     pub flying: bool,
+    /// Riding a gun platform (T21.11B).
+    ///
+    /// **The lockout lives here rather than in the input reader**, because
+    /// `apply_input` is what both sides run and a client-side refusal leaves the
+    /// server moving anyone with a modified client. It is also T20.19/T20.21's
+    /// rule applied: a movement modifier the client does not know about ships as
+    /// rubber-banding, not as an immobile player.
+    ///
+    /// Mutually exclusive with `flying` by construction — `move_mods` derives
+    /// `flying` as *wings and not mounted* — so `jetpack::gravity_scale` still
+    /// names one regime at a time.
+    pub mounted: bool,
 }
 
 impl MoveMods {
@@ -95,6 +107,7 @@ impl MoveMods {
         speed: 1.0,
         jump: 1.0,
         flying: false,
+        mounted: false,
     };
 }
 
@@ -113,7 +126,16 @@ pub fn apply_input(
     dt: f32,
 ) -> f32 {
     let e = edges(input, prev);
-    let dir = input.move_dir();
+    // **T21.11B — a mounted player supplies no direction.** Zeroed here rather
+    // than at any of the callers, because this is the function both sides run:
+    // a lockout applied in the client's input reader would leave the server
+    // moving anyone with a modified client, and a lockout applied only
+    // server-side would rubber-band every mounted player on screen.
+    //
+    // Zero rather than skipping `apply_horizontal`: the deceleration still has
+    // to run, or a player who mounts mid-stride keeps their velocity and slides
+    // off the platform they just mounted.
+    let dir = if mods.mounted { 0.0 } else { input.move_dir() };
 
     apply_horizontal(body, dir, mods.speed, dt);
 
@@ -125,7 +147,12 @@ pub fn apply_input(
     // to inactive rather than merely left unthrust, so `jet.active` — which the
     // wire, the animation and `gravity_scale` all read — cannot say a player is
     // jetpacking while the wings are carrying them.
-    let jumped = if mods.flying {
+    // **Mounted refuses the jump for the same reason wings do, and it matters
+    // more here**: holding jump is the *dismount* gesture (T21.11B), so a
+    // mounted player is holding it on purpose for a whole second. Without this
+    // they would launch off the platform on the first frame of every dismount,
+    // and the buffered press would fire again the moment they landed.
+    let jumped = if mods.flying || mods.mounted {
         jump.buffered_ticks = 0;
         jetpack::refuse(jet);
         false

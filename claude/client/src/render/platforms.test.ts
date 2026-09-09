@@ -29,6 +29,19 @@ function fakeScene() {
     setDepth: () => container,
     destroy: () => destroyed.push(container),
   }
+  const rect = () => {
+    const o = {
+      setOrigin: () => o,
+      setVisible: (v: boolean) => {
+        o.visible = v
+        return o
+      },
+      setPosition: () => o,
+      destroy: () => destroyed.push(o),
+      visible: false,
+    }
+    return o
+  }
   const image = () => {
     const o = {
       setOrigin: () => o,
@@ -55,6 +68,7 @@ function fakeScene() {
           o.y = y
           return o
         },
+        rectangle: () => rect(),
       },
       // No canvas in node: `createCanvas` answers null and the builder returns
       // its size without painting, which is the documented degraded path.
@@ -101,6 +115,24 @@ describe('PlatformLayer (T21.11A)', () => {
     const again = new PlatformLayer(fakeScene().scene)
     again.build(views(3))
     expect(again.count).toBe(3)
+  })
+
+  it('lights only the platforms it is told are occupied', () => {
+    const { scene } = fakeScene()
+    const layer = new PlatformLayer(scene)
+    layer.build(views(3))
+    // Nothing lit to start with — a lamp on by default would make the
+    // "occupied" assertion below true of an empty platform too.
+    layer.setOccupied([])
+    expect(layer.lampsLit()).toEqual([])
+    layer.setOccupied([1])
+    expect(layer.lampsLit()).toEqual([1])
+    // And it is the whole set each frame, not a delta: telling it about a
+    // different rider turns the first lamp off.
+    layer.setOccupied([2])
+    expect(layer.lampsLit()).toEqual([2])
+    layer.setOccupied([])
+    expect(layer.lampsLit()).toEqual([])
   })
 
   it('sizes the art from the footprint, so the picture cannot drift from the rock', () => {

@@ -626,6 +626,17 @@ export class Core {
     return this.inner.gun_platforms()
   }
 
+  /**
+   * Mount or unmount a player (T21.11B). Sandbox control.
+   *
+   * Goes through the wire's own decode path in Rust, so it exercises the code a
+   * real snapshot exercises. Returns the **effect** read back through the
+   * shared movement rule, not an acknowledgement.
+   */
+  setMounted(id: number, on: boolean): boolean {
+    return this.inner.set_mounted(id, on)
+  }
+
   private invalidate(): void {
     this.view = null
     this.metaCache = null

@@ -10,6 +10,7 @@
 pub mod animals;
 pub mod birds;
 pub mod cycle;
+pub mod mount;
 pub mod teleport;
 pub mod tombstones;
 
@@ -1351,6 +1352,11 @@ impl World {
             // (T21.02). It was `speed_multiplier()` — a bare `f32` the client
             // was free to supply a literal for, which is exactly what it did for
             // fifteen milestones until T20.19.
+            // **The mount rule runs before `move_mods`, not after** (T21.11B).
+            // `move_mods` reads `mount.mounted`, so stepping the mount after the
+            // movement would apply this tick's lockout on the *next* tick — one
+            // frame of a mounted player still walking, every single mount.
+            self.step_mount(idx, &input, dt);
             let mods = self.players[idx].move_mods();
             let p = &mut self.players[idx];
             let impact = apply_input(
@@ -2997,6 +3003,13 @@ impl World {
 
     /// Fire the selected weapon. Validation lives in `PlayerState::try_fire`.
     pub fn fire(&mut self, id: PlayerId, now: f32) -> Result<(), UseError> {
+        // **Your own weapons are in the bag, and the bag is out of reach while
+        // mounted** (T21.11B). Firing is not exempted from the one rule: the
+        // coordinator's ask was that a mounted player can do nothing *but*
+        // fire, and what they fire is the platform's gun — which T21.11C spawns
+        // without touching the inventory at all. Exempting personal fire here
+        // would let a mounted player empty a bazooka they cannot see or select.
+        self.inventory_actor(id)?;
         let Some(idx) = self.players.iter().position(|p| p.id == id) else {
             return Err(UseError::Dead);
         };
@@ -3012,12 +3025,12 @@ impl World {
     /// goes down the same path, so alive, has-one and cooldown are checked in the
     /// same order and it cannot be used to sidestep `fire_ready_at`.
     pub fn quick_throw(&mut self, id: PlayerId, now: f32) -> Result<(), UseError> {
+        // §C11 reaches into the bag from wherever the grenade happens to be, so
+        // it is exactly the action the mount lockout is about (T21.11B).
+        self.inventory_actor(id)?;
         let Some(idx) = self.players.iter().position(|p| p.id == id) else {
             return Err(UseError::Dead);
         };
-        if !self.players[idx].alive {
-            return Err(UseError::Dead);
-        }
         let Some(slot) = self.players[idx].quick_throw_slot() else {
             // Rejected with no effect, and named: `docs/61` §3's rule is that the
             // server already knows which of the six answers it was.
@@ -3276,10 +3289,7 @@ impl World {
 
     pub fn use_item(&mut self, id: PlayerId, slot: u8, now: f32) -> Result<ItemId, UseError> {
         let tick = self.tick;
-        let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
-            return Err(UseError::Dead);
-        };
-        let r = p.use_item(slot, now);
+        let r = self.inventory_actor(id)?.use_item(slot, now);
         if r.is_ok() {
             self.events.push(GameEvent::Inventory {
                 tick,
@@ -3289,21 +3299,96 @@ impl World {
         r
     }
 
+    /// Is anybody riding this platform? (T21.11B)
+    ///
+    /// **Derived by scanning the players, not kept as an array on the world.**
+    /// The mount already lives on the player because it is per-life state that
+    /// `respawn` clears; a second record of the same fact is the third flag this
+    /// project keeps paying for, and it would be the one that goes stale when a
+    /// player disconnects mid-round.
+    pub fn platform_occupant(&self, platform: u8) -> Option<PlayerId> {
+        self.players
+            .iter()
+            .find(|p| p.alive && p.mount.mounted == Some(platform))
+            .map(|p| p.id)
+    }
+
+    /// One tick of T21.11B's mount rule for one player.
+    ///
+    /// The decision is `world::mount::step`'s; what lives here is the part a
+    /// player's own state cannot answer — whether the platform they just
+    /// finished charging is already taken.
+    fn step_mount(&mut self, idx: usize, input: &crate::player::Input, dt: f32) {
+        let under = crate::world::mount::platform_underfoot(
+            &self.map.meta.gun_platforms,
+            self.players[idx].body.pos,
+        );
+        let jump_held = input.held(crate::player::button::JUMP);
+        let grounded = self.players[idx].body.grounded;
+        let ev =
+            crate::world::mount::step(&mut self.players[idx].mount, under, jump_held, grounded, dt);
+        match ev {
+            crate::world::mount::MountEvent::Nothing => {}
+            crate::world::mount::MountEvent::WantsMount(platform) => {
+                // **One occupant at a time**, and it is decided here because
+                // this is the only layer that can see the other players.
+                if self.platform_occupant(platform).is_none() {
+                    self.players[idx].mount.mounted = Some(platform);
+                    self.players[idx].mount.target = None;
+                }
+                // If it was taken, the hold has already been reset by `step` —
+                // so a second player waiting on an occupied platform re-charges
+                // and takes it the moment the first gets off, rather than
+                // mounting instantly on a stale hold.
+            }
+            crate::world::mount::MountEvent::WantsDismount(_) => {
+                self.players[idx].mount.mounted = None;
+                // Cleared, so releasing jump on the ground you are standing on
+                // does not immediately re-charge the mount you just left.
+                self.players[idx].mount.target = None;
+            }
+        }
+    }
+
+    /// The player, if they can reach their inventory right now (T21.11B).
+    ///
+    /// **This is the one rule, and it is a shared function rather than a shared
+    /// guard.** The coordinator's ruling was *"mounting makes the inventory
+    /// inaccessible, including health"* — one rule, not a list of banned keys.
+    /// Every slotless action refuses because it comes through here, so `Q`, `R`,
+    /// item use and slot select are covered by one line, and a sixth action
+    /// added next milestone is covered on the day it calls this instead of on
+    /// the day somebody remembers to add a check to it.
+    ///
+    /// The alternative — a `mounted` test at the top of each verb — is four
+    /// copies of one invariant, which is precisely the arrangement
+    /// `CLAUDE.md` names: *share the guard, or share the function*.
+    fn inventory_actor(&mut self, id: PlayerId) -> Result<&mut PlayerState, UseError> {
+        let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
+            return Err(UseError::Dead);
+        };
+        if !p.alive {
+            return Err(UseError::Dead);
+        }
+        if p.mount.is_mounted() {
+            // Named rather than swallowed: `docs/61` §3's rule is that the
+            // server already knows which of the answers it was, and a player
+            // pressing `Q` on a platform deserves to be told the bag is out of
+            // reach rather than watching nothing happen.
+            return Err(UseError::WrongKind);
+        }
+        Ok(p)
+    }
+
     /// `Q` (§C9). The counters are not inventory, so no `Inventory` event —
     /// they ride in the snapshot, which is 20 Hz and always current.
     pub fn use_heal(&mut self, id: PlayerId) -> Result<(), UseError> {
-        match self.players.iter_mut().find(|p| p.id == id) {
-            Some(p) => p.use_heal(),
-            None => Err(UseError::Dead),
-        }
+        self.inventory_actor(id)?.use_heal()
     }
 
     /// `R` (§C9).
     pub fn use_battery_pack(&mut self, id: PlayerId) -> Result<(), UseError> {
-        match self.players.iter_mut().find(|p| p.id == id) {
-            Some(p) => p.use_battery_pack(),
-            None => Err(UseError::Dead),
-        }
+        self.inventory_actor(id)?.use_battery_pack()
     }
 
     /// §C10's drag, validated. The client shows intent; this decides.
@@ -3313,10 +3398,10 @@ impl World {
     /// state the server does not have.
     pub fn move_item(&mut self, id: PlayerId, from: u8, to: u8) -> bool {
         let tick = self.tick;
-        let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
+        let Ok(p) = self.inventory_actor(id) else {
             return false;
         };
-        if !p.alive || !p.inventory.move_stack(from, to) {
+        if !p.inventory.move_stack(from, to) {
             return false;
         }
         self.events.push(GameEvent::Inventory {
@@ -3345,12 +3430,15 @@ impl World {
     pub fn drop_item(&mut self, id: PlayerId, slot: u8) -> bool {
         let tick = self.tick;
         let now = self.round_time;
+        // The one rule (T21.11B). `inventory_actor` takes `&mut self`, so the
+        // reachability question is asked and answered before the read-only walk
+        // below borrows the player again.
+        if self.inventory_actor(id).is_err() {
+            return false;
+        }
         let Some(p) = self.players.iter().find(|p| p.id == id) else {
             return false;
         };
-        if !p.alive {
-            return false;
-        }
         // Read before taking: refusing after the stack is out of the inventory
         // means putting it back, and the put-back is the step a later edit
         // forgets.
@@ -3393,7 +3481,8 @@ impl World {
 
     pub fn select_slot(&mut self, id: PlayerId, slot: u8) {
         let tick = self.tick;
-        if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {
+        // Through the one rule (T21.11B), like every other slotless action.
+        if let Ok(p) = self.inventory_actor(id) {
             if p.inventory.select(slot) {
                 self.events.push(GameEvent::Inventory {
                     tick,
@@ -3572,6 +3661,14 @@ impl World {
                     .to_le_bytes(),
             );
             h.update(&p.teleport.ready_at.to_le_bytes());
+            // §A34, T21.11B. Hashed for the same reason `teleport` above is:
+            // this decides whether the next tick's input moves the player at
+            // all. A replay whose hold had drifted by one tick would mount on a
+            // different tick, and every hash before that would agree — the exact
+            // shape §A34 exists to prevent. `REPLAY_VERSION` moves with it.
+            h.update(&[p.mount.mounted.unwrap_or(255)]);
+            h.update(&[p.mount.target.unwrap_or(255)]);
+            h.update(&p.mount.held.to_le_bytes());
             p.inventory.hash_into(&mut h);
         }
 
@@ -8473,5 +8570,474 @@ mod unicorn_wings {
         );
         assert_eq!(p.health, before, "a winged landing cost health");
         let _ = PLAYER_H;
+    }
+}
+
+/// T21.11B end to end: mounting a gun platform in a real `World`, driven by
+/// `step` and by real inputs.
+///
+/// The unit tests in `world::mount` prove the state machine. These prove it is
+/// **wired** — that `apply_inputs` calls it, that the lockout reaches
+/// `apply_input`, and that the one inventory rule refuses every slotless action.
+/// Twelve mechanisms on this project were built, unit-tested and connected to
+/// nothing, and a state machine nobody calls looks exactly like one that works.
+#[cfg(test)]
+mod mount_wiring {
+    use super::*;
+    use crate::constants::{MapScale, GUN_PLATFORM_MOUNT_TIME, PLAYER_H, SIM_DT};
+    use crate::items::registry::{BATTERY_PACK, MEDKIT};
+    use crate::map::meta::GunPlatform;
+    use crate::player::{button, Input};
+
+    fn playing() -> World {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        w
+    }
+
+    fn platform(w: &World) -> GunPlatform {
+        w.map.meta.gun_platforms[0]
+    }
+
+    /// Plant a player on the platform, the way a player who walked there is.
+    fn plant(w: &mut World, id: PlayerId, g: &GunPlatform) {
+        let centre = Vec2::new(g.pos.x as f32, g.pos.y as f32 - PLAYER_H / 2.0);
+        let p = w.player_mut(id).expect("there");
+        p.body.pos = centre;
+        p.body.vel = Vec2::ZERO;
+        p.body.grounded = true;
+    }
+
+    /// Drive `seconds` of ticks with `input`, re-planting the body each tick so
+    /// the physics of standing on a slope is not what this measures.
+    fn drive(w: &mut World, id: PlayerId, g: &GunPlatform, input: Input, seconds: f32) {
+        let steps = (seconds / SIM_DT).ceil() as usize;
+        for i in 0..steps {
+            if w.player(id).is_some_and(|p| !p.mount.is_mounted()) {
+                plant(w, id, g);
+            }
+            let mut inp = input;
+            inp.seq = i as u32 + 1;
+            w.queue_input(id, inp);
+            w.step(SIM_DT);
+            w.drain_events();
+        }
+    }
+
+    fn held(buttons: u8) -> Input {
+        Input {
+            buttons,
+            ..Default::default()
+        }
+    }
+
+    /// Both halves: the full stand mounts, a shorter one does not.
+    #[test]
+    fn standing_for_the_mount_time_mounts_and_less_does_not() {
+        let mut w = playing();
+        let g = platform(&w);
+        drive(
+            &mut w,
+            0,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 0.5,
+        );
+        assert!(
+            !w.player(0).expect("there").mount.is_mounted(),
+            "half the mount time mounted the player"
+        );
+
+        let mut w = playing();
+        let g = platform(&w);
+        drive(
+            &mut w,
+            0,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        assert_eq!(
+            w.player(0).expect("there").mount.mounted,
+            Some(g.id),
+            "a full stand on platform {} did not mount",
+            g.id
+        );
+    }
+
+    /// The lockout, with the control that makes it mean something.
+    #[test]
+    fn a_mounted_player_does_not_move_and_an_unmounted_one_does() {
+        let mut w = playing();
+        let g = platform(&w);
+        drive(
+            &mut w,
+            0,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        assert!(w.player(0).expect("there").mount.is_mounted());
+
+        let before = w.player(0).expect("there").body.pos;
+        // Hold right for half a second. No re-planting: the point is that the
+        // body does not move on its own.
+        for i in 0..30 {
+            let mut inp = held(button::RIGHT);
+            inp.seq = 1000 + i;
+            w.queue_input(0, inp);
+            w.step(SIM_DT);
+            w.drain_events();
+        }
+        let after = w.player(0).expect("there").body.pos;
+        assert!(
+            (after.x - before.x).abs() < 1.0,
+            "a mounted player walked {} px",
+            (after.x - before.x).abs()
+        );
+
+        // **The control**: the same input, unmounted, moves them — or this test
+        // passes against a game in which nobody can move at all.
+        let mut w2 = playing();
+        let g2 = platform(&w2);
+        plant(&mut w2, 0, &g2);
+        let start = w2.player(0).expect("there").body.pos;
+        for i in 0..30 {
+            let mut inp = held(button::RIGHT);
+            inp.seq = 1000 + i;
+            w2.queue_input(0, inp);
+            w2.step(SIM_DT);
+            w2.drain_events();
+        }
+        let moved = (w2.player(0).expect("there").body.pos.x - start.x).abs();
+        assert!(
+            moved > 5.0,
+            "the control moved only {moved} px, so the lockout test proves nothing"
+        );
+    }
+
+    /// **The one rule, asserted as one rule.** Every slotless action refuses
+    /// while mounted and works when not — and they are driven through a list, so
+    /// a sixth action added later joins this test by being added to the list
+    /// rather than by growing a test of its own.
+    #[test]
+    fn mounting_puts_every_slotless_action_out_of_reach() {
+        // Each entry: a name, and something that returns whether it succeeded.
+        type Verb = (&'static str, fn(&mut World) -> bool);
+        let verbs: &[Verb] = &[
+            ("use_heal (Q)", |w| w.use_heal(0).is_ok()),
+            ("use_battery_pack (R)", |w| w.use_battery_pack(0).is_ok()),
+            ("use_item", |w| {
+                let slot = w
+                    .player(0)
+                    .and_then(|p| p.inventory.iter().find(|(_, s)| s.item == MEDKIT))
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                w.use_item(0, slot, 0.0).is_ok()
+            }),
+            ("select_slot", |w| {
+                let before = w.player(0).expect("there").inventory.selected();
+                let want = if before == 0 { 1 } else { 0 };
+                w.select_slot(0, want);
+                w.player(0).expect("there").inventory.selected() == want
+            }),
+            ("move_item (drag)", |w| w.move_item(0, 0, 5)),
+            ("fire", |w| w.fire(0, 100.0).is_ok()),
+        ];
+
+        // Stock the bag so every verb has something to act on, then check each
+        // verb **works** unmounted before asserting it is refused mounted. An
+        // absence needs a presence.
+        let stock = |w: &mut World| {
+            let p = w.player_mut(0).expect("there");
+            p.inventory.add(MEDKIT, 3);
+            p.inventory.add(BATTERY_PACK, 3);
+            p.health = 10.0;
+            p.battery = 0.0;
+            // `Q` and `R` spend the **counters**, not the inventory (§C9), so
+            // stocking the bag alone left both refusing for want of a charge and
+            // the control failed loudly — which is what it is for.
+            p.heals = 2;
+            p.batteries = 2;
+        };
+
+        for (name, verb) in verbs {
+            let mut w = playing();
+            stock(&mut w);
+            assert!(
+                verb(&mut w),
+                "{name} does not work unmounted, so refusing it mounted proves nothing"
+            );
+
+            let mut w = playing();
+            let g = platform(&w);
+            stock(&mut w);
+            drive(
+                &mut w,
+                0,
+                &g,
+                Input::default(),
+                GUN_PLATFORM_MOUNT_TIME * 1.5,
+            );
+            assert!(
+                w.player(0).expect("there").mount.is_mounted(),
+                "{name}: the fixture failed to mount"
+            );
+            assert!(
+                !verb(&mut w),
+                "{name} still worked while mounted — the inventory is not out of reach"
+            );
+        }
+    }
+
+    /// Both halves, in the other direction.
+    #[test]
+    fn holding_jump_dismounts_and_a_shorter_hold_does_not() {
+        let mut w = playing();
+        let g = platform(&w);
+        drive(
+            &mut w,
+            0,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        assert!(w.player(0).expect("there").mount.is_mounted());
+
+        // Short hold: still mounted.
+        drive(
+            &mut w,
+            0,
+            &g,
+            held(button::JUMP),
+            GUN_PLATFORM_MOUNT_TIME * 0.5,
+        );
+        assert!(
+            w.player(0).expect("there").mount.is_mounted(),
+            "half a jump hold dismounted the player"
+        );
+        // Release, then hold the full time.
+        drive(&mut w, 0, &g, Input::default(), SIM_DT * 2.0);
+        drive(
+            &mut w,
+            0,
+            &g,
+            held(button::JUMP),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        assert!(
+            !w.player(0).expect("there").mount.is_mounted(),
+            "a full jump hold did not dismount"
+        );
+    }
+
+    /// Dismounting must not fling the player: jump is refused while mounted, so
+    /// the gesture cannot also be a launch.
+    #[test]
+    fn the_dismount_hold_never_launches_the_player() {
+        let mut w = playing();
+        let g = platform(&w);
+        drive(
+            &mut w,
+            0,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        let y0 = w.player(0).expect("there").body.pos.y;
+        drive(
+            &mut w,
+            0,
+            &g,
+            held(button::JUMP),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        let p = w.player(0).expect("there");
+        assert!(!p.mount.is_mounted(), "the fixture did not dismount");
+        assert!(
+            p.body.vel.y >= -1.0,
+            "the dismount launched the player upward at {} px/s",
+            p.body.vel.y
+        );
+        assert!(
+            (p.body.pos.y - y0).abs() < PLAYER_H,
+            "the player moved {} px vertically getting off",
+            (p.body.pos.y - y0).abs()
+        );
+    }
+
+    /// One occupant at a time, and the platform frees up when they leave.
+    #[test]
+    fn a_second_player_cannot_mount_an_occupied_platform_and_can_once_it_is_free() {
+        let mut w = playing();
+        w.add_player(1, 0, "bo".into());
+        let g = platform(&w);
+        drive(
+            &mut w,
+            0,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        assert_eq!(w.platform_occupant(g.id), Some(0));
+
+        drive(
+            &mut w,
+            1,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 3.0,
+        );
+        assert!(
+            !w.player(1).expect("there").mount.is_mounted(),
+            "two players mounted the same platform"
+        );
+        assert_eq!(w.platform_occupant(g.id), Some(0));
+
+        // The first gets off; the second can then take it. **This is the
+        // control** — without it, "player 1 never mounted" is also what a broken
+        // mount rule produces.
+        w.player_mut(0).expect("there").mount.mounted = None;
+        drive(
+            &mut w,
+            1,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        assert_eq!(
+            w.platform_occupant(g.id),
+            Some(1),
+            "the platform stayed locked after its occupant left"
+        );
+    }
+
+    /// A corpse holding a platform is a platform nobody can use for the rest of
+    /// the round, and the occupancy rule reads exactly that field.
+    #[test]
+    fn dying_while_mounted_frees_the_platform() {
+        let mut w = playing();
+        let g = platform(&w);
+        drive(
+            &mut w,
+            0,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        assert_eq!(w.platform_occupant(g.id), Some(0));
+
+        let p = w.player_mut(0).expect("there");
+        p.alive = false;
+        assert_eq!(
+            w.platform_occupant(g.id),
+            None,
+            "a dead player still holds the platform"
+        );
+        // And respawn clears the state itself, not just the aliveness.
+        w.player_mut(0)
+            .expect("there")
+            .respawn(Vec2::new(64.0, 64.0), 0.0);
+        assert!(!w.player(0).expect("there").mount.is_mounted());
+    }
+
+    /// A mounted player is a stationary target and that is the whole trade.
+    #[test]
+    fn a_mounted_player_takes_damage_normally() {
+        let mut w = playing();
+        let g = platform(&w);
+        drive(
+            &mut w,
+            0,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        assert!(w.player(0).expect("there").mount.is_mounted());
+        // Through the poison funnel — a real damage path that `step` drives,
+        // rather than a health subtraction that would prove only that `f32`
+        // arithmetic works.
+        let before = w.player(0).expect("there").health;
+        {
+            let now = w.round_time;
+            let p = w.player_mut(0).expect("there");
+            p.iframes_until = 0.0;
+            p.poisoned_until = now + 1.0;
+        }
+        for _ in 0..30 {
+            w.step(SIM_DT);
+            w.drain_events();
+        }
+        let after = w.player(0).expect("there").health;
+        assert!(
+            after < before,
+            "a mounted player took no damage: {before} -> {after}"
+        );
+        assert!(
+            w.player(0).expect("there").mount.is_mounted(),
+            "the damage dismounted them, which is mitigation by another name"
+        );
+    }
+
+    /// The wire carries it, and the mirror's decode gets back what was encoded.
+    #[test]
+    fn the_mounted_bit_round_trips_through_the_move_mod_byte() {
+        use crate::player::state::MOVE_MOD_MOUNTED;
+        let mut w = playing();
+        let g = platform(&w);
+        drive(
+            &mut w,
+            0,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        let bits = w.player(0).expect("there").move_mod_bits();
+        assert!(
+            bits & MOVE_MOD_MOUNTED != 0,
+            "the mounted bit is not set on the wire: {bits:#010b}"
+        );
+
+        // A fresh mirror-side player fed that byte must answer the same question
+        // `apply_input` asks.
+        let mut mirror = crate::player::state::PlayerState::new(9, Vec2::ZERO, 0);
+        mirror.set_move_mod_bits(bits);
+        assert!(
+            mirror.move_mods().mounted,
+            "the mirror did not learn the mount"
+        );
+        // And the control: the same player, unmounted.
+        let clear = w.player(0).expect("there").move_mod_bits() & !MOVE_MOD_MOUNTED;
+        mirror.set_move_mod_bits(clear);
+        assert!(!mirror.move_mods().mounted);
+    }
+
+    /// Wings and a platform cannot both be in charge of gravity.
+    #[test]
+    fn mounting_takes_precedence_over_flight() {
+        let mut w = playing();
+        let g = platform(&w);
+        w.player_mut(0)
+            .expect("there")
+            .inventory
+            .add(crate::items::registry::UNICORN_WINGS, 1);
+        assert!(
+            w.player(0).expect("there").move_mods().flying,
+            "the fixture is not flying, so this asserts nothing"
+        );
+        drive(
+            &mut w,
+            0,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        let mods = w.player(0).expect("there").move_mods();
+        assert!(mods.mounted, "the winged player never mounted");
+        assert!(
+            !mods.flying,
+            "a mounted player is still flying — two gravity regimes at once"
+        );
     }
 }

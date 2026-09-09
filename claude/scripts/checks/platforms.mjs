@@ -91,7 +91,14 @@ export default async function ({ page, shot, log }) {
   // so a platform near one is not in the middle of the frame. Walk outward from
   // the smallest usable offset and take the first that is both on screen and
   // clear of *every* platform — clear of one is not clear of the layer.
-  const clearOf = (x) => p.at.every((g) => Math.abs(g.x - x) >= c.GUN_PLATFORM_W * 2)
+  // **Clear of the player as well as of every platform.** The first version
+  // checked only the platforms and picked a band the character was standing in,
+  // so the "unchanged" control drifted 4.0 on the walk animation alone — a
+  // control that moves is a control that is measuring something.
+  const playerX = target.x - standOff
+  const clearOf = (x) =>
+    p.at.every((g) => Math.abs(g.x - x) >= c.GUN_PLATFORM_W * 2) &&
+    Math.abs(x - playerX) >= c.PLAYER_W * 4
   let control = null
   let controlX = null
   for (const mult of [2, 2.5, 3, 4, 5]) {
@@ -139,6 +146,41 @@ export default async function ({ page, shot, log }) {
     control: { before: controlBefore, after: controlAfter },
   })
   log(`platform region moved ${r.delta.toFixed(1)}, control ${r.controlDelta.toFixed(1)}`)
+
+  // --- T21.11B: the mounted state has to be visible ------------------------
+  //
+  // *A player who cannot tell they are mounted will think the game has frozen*
+  // — they cannot move, cannot open the bag and cannot heal, so the indicator
+  // is the only thing separating "mounted" from "broken". Same control shape as
+  // above: the same platform, the same camera, the same frozen clock, with and
+  // without a rider.
+  const back0 = await page.evaluate(() => window.__game.showPlatforms(true))
+  if (back0.visible !== true) throw new Error('the layer did not come back')
+  await page.waitForTimeout(200)
+
+  const unmounted = await samplePatch(page, shownAt)
+  const controlUnmounted = await samplePatch(page, controlAt)
+
+  const rode = await page.evaluate(() => window.__game.mountNearestPlatform(true))
+  if (rode.mounted !== true) {
+    throw new Error(`mountNearestPlatform reported ${JSON.stringify(rode)} — not mounted`)
+  }
+  log(`mounted on platform ${rode.id} at ${rode.at.x},${rode.at.y}`)
+  await page.waitForTimeout(300)
+
+  const mountedPatch = await samplePatch(page, shownAt)
+  const controlMounted = await samplePatch(page, controlAt)
+  await shot('platforms-mounted')
+
+  const m = assertChanged(unmounted, mountedPatch, {
+    label: 'the platform, with and without a rider',
+    control: { before: controlUnmounted, after: controlMounted },
+  })
+  log(`mounted indicator moved ${m.delta.toFixed(1)}, control ${m.controlDelta.toFixed(1)}`)
+
+  // And put the rider back off, so the page is left as it was found.
+  const off = await page.evaluate(() => window.__game.mountNearestPlatform(false))
+  if (off.mounted !== false) throw new Error('the player would not dismount')
 
   // Put it back, so a later check in the same page is not looking at a hidden
   // layer — and assert the restore, rather than assuming it.

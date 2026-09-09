@@ -5904,3 +5904,22 @@ Pixel check: subject 9.1, control 0.7, identical over three runs — the first v
 against a control of 7.4, and the cause was the day/night cycle moving the whole frame, not the
 threshold. Two falsifications red different halves: a dead layer reds the count, an invisible
 sprite reds only the pixels. 917 core + 137 server + 893 client + gate 334 ok.
+
+## T21.11B — the gun platform: mounting and the input lockout
+
+`world::mount` is `world::teleport`'s sibling: one `held` counter, two directions, reset by
+anything that interrupts. **The first tick on a new target now counts** — without it mounting
+took one tick longer than dismounting, invisible in play and visible exactly once at the float
+boundary. The lockout is a `MoveMods::mounted` field read by the shared `apply_input`, so it is
+T20.19's rule structurally; the mirror learns it from `MOVE_MOD_MOUNTED`, handled **beside**
+`MOVE_MOD_BITS` because that table is item-keyed and mounting is not an item.
+The one inventory rule is `World::inventory_actor`, a shared **function**: `Q`, `R`, use, select,
+drag, drop, fire and quick-throw all refuse through it. **Personal fire is refused too** — your
+weapons are in the bag; T21.11C's gun does not touch the inventory. `flying` is derived as
+*wings and not mounted*, so two gravity regimes cannot both be live.
+`REPLAY_VERSION` **6 → 7** (mount state joins the hashed block; HEAD checked first) and
+**T21.11C shares it** — noted at the constant, because a version is not a changelog.
+Four falsifications red four different tests; dropping the wire bit reproduces the predicted
+rubber-band, mirror 1069.3 vs server 1040 against a 2 px epsilon. The pixel check's control had
+to be moved clear of the player — it was drifting 4.0 on the walk animation. 936 core + server +
+894 client + gate 334 ok.

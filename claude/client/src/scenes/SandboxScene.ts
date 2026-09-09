@@ -770,6 +770,32 @@ export class SandboxScene extends Phaser.Scene {
        * shipped with.
        */
       /**
+       * Ride the nearest platform (T21.11B), for the mounted-state pixel check.
+       *
+       * **Grant-only, like `giveBoots`**, and for the same reason: the control
+       * this needs is the *before* frame — the same platform, on the same map,
+       * at the same instant, with nobody on it. Two platforms cannot be that
+       * control and neither can two frames of a moving clock.
+       *
+       * The sandbox runs the prediction core rather than a `World`, so nobody
+       * mounts by standing here; this installs the state the server would have
+       * sent. Returns the effect read back through the Rust movement rule.
+       */
+      mountNearestPlatform(on: boolean) {
+        const plats = self.core.meta.gun_platforms
+        if (plats.length === 0) return { mounted: false, at: null }
+        const p = self.core.playerState(0)
+        const px = p?.x ?? 0
+        let best = plats[0]!
+        for (const g of plats) {
+          if (Math.abs(g.pos.x - px) < Math.abs(best.pos.x - px)) best = g
+        }
+        const mounted = self.core.setMounted(0, on)
+        self.world.platforms.setOccupied(mounted ? [best.id] : [])
+        self.refreshHud()
+        return { mounted, at: { x: best.pos.x, y: best.pos.y }, id: best.id }
+      },
+      /**
        * Hide the platform layer, for the pixel check's control frame.
        *
        * Returns what it did rather than acknowledging the ask — a hook that

@@ -200,6 +200,31 @@ impl GameCore {
             .collect()
     }
 
+    /// Mount or unmount a player, **through the wire's own decode path**
+    /// (T21.11B).
+    ///
+    /// Sandbox and mirror only. It builds the `move_mod_bits` byte the server
+    /// would have sent and hands it to `set_move_mod_bits`, so this control
+    /// exercises exactly the code a real snapshot exercises rather than opening
+    /// a second route into the same field — the `giveBoots` precedent, which
+    /// grants an item rather than setting a flag.
+    ///
+    /// Returns the effect read back through the shared rule, not an
+    /// acknowledgement that the ask happened.
+    pub fn set_mounted(&mut self, id: u8, on: bool) -> bool {
+        let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
+            return false;
+        };
+        let bits = p.stats.move_mod_bits();
+        let want = if on {
+            bits | game_core::player::state::MOVE_MOD_MOUNTED
+        } else {
+            bits & !game_core::player::state::MOVE_MOD_MOUNTED
+        };
+        p.stats.set_move_mod_bits(want);
+        p.stats.move_mods().mounted
+    }
+
     /// T21.11's emplacements, the pads' twin and for the identical reason.
     ///
     /// `carve_circle` refuses to clear a platform's rect, so a client that never
@@ -1889,7 +1914,7 @@ mod tests {
     /// mirror forever, including on the day `apply_inputs` stops passing
     /// `speed_multiplier()`.
     fn walk_both_sides(health: f32, buttons: u8) -> WalkOutcome {
-        walk_both_sides_wearing(health, buttons, None)
+        walk_both_sides_wearing(health, buttons, None, false)
     }
 
     /// The same run, optionally carrying one of M21's passive items.
@@ -1906,6 +1931,10 @@ mod tests {
         health: f32,
         buttons: u8,
         item: Option<game_core::items::registry::ItemId>,
+        // T21.11B. Not an item, so it cannot ride the `item` argument — the
+        // server player is mounted directly and the mirror learns it the same
+        // way it learns the passives: off the encoded byte.
+        mounted: bool,
     ) -> WalkOutcome {
         let mut w = game_core::world::World::new(4242, MapScale::Small);
         w.add_player(1, 0, String::new());
@@ -1932,6 +1961,13 @@ mod tests {
         assert!(landed, "the server player never landed on the shelf");
         if let Some(id) = item {
             game_core::world::give(&mut w, 1, id, 1);
+        }
+        if mounted {
+            // Straight onto the state the mount rule owns, because this fixture
+            // is about the **wire**, not about the stand-still timer — that is
+            // `world::mount_wiring`'s job, and re-driving it here would make a
+            // failure ambiguous between the two.
+            w.player_mut(1).expect("seated").mount.mounted = Some(0);
         }
 
         let mut core = GameCore::new();
@@ -2005,6 +2041,57 @@ mod tests {
         }
     }
 
+    /// The client mirror must predict a **mounted** player where the server puts
+    /// them (T21.11B).
+    ///
+    /// **The task file calls this the feature's real risk, and it is the same
+    /// bug as T20.19, T21.02 and T21.03 for the third time.** `apply_input`
+    /// zeroes the movement direction out of `MoveMods::mounted`, which the
+    /// mirror can only learn from the move-mod byte. Without it the client runs
+    /// a *walking* body while the server runs a stationary one, and a player who
+    /// mounts under fire watches themselves slide off the platform and snap
+    /// back — which reads as the netcode breaking, not as a locked gun.
+    ///
+    /// Three assertions, and the middle one is the control:
+    ///
+    ///  - the two sides agree inside `RECONCILE_EPSILON_PX`;
+    ///  - the mounted server run **did not move**, so the agreement is not
+    ///    satisfied by a lockout that does nothing;
+    ///  - and the unmounted control on the identical shelf **did** move, so the
+    ///    fixture is measuring the lockout rather than a ledge.
+    #[test]
+    fn the_client_predicts_a_mounted_player_where_the_server_puts_them() {
+        let right = game_core::player::input::button::RIGHT;
+        let free = walk_both_sides_wearing(BASE_HEALTH, right, None, false);
+        let mounted = walk_both_sides_wearing(BASE_HEALTH, right, None, true);
+
+        // The control pair: held right, the free player walks and the mounted
+        // one does not.
+        assert!(
+            free.server_x - free.server_vx.abs() * 0.0 > 0.0 && free.server_vx.abs() > 1.0,
+            "the unmounted control never moved ({} px/s), so this measures nothing",
+            free.server_vx
+        );
+        assert!(
+            mounted.server_vx.abs() < 1.0,
+            "a mounted server player is walking at {} px/s",
+            mounted.server_vx
+        );
+
+        // The claim. Fails by the whole walk if the bit is dropped anywhere
+        // between `move_mod_bits`, the codec, `set_player_state` and
+        // `move_mods()`.
+        assert!(
+            (mounted.server_x - mounted.client_x).abs() <= RECONCILE_EPSILON_PX,
+            "the mirror predicted a mounted player at {} where the server put \
+             them at {} — {} px apart, against an epsilon of \
+             {RECONCILE_EPSILON_PX}",
+            mounted.client_x,
+            mounted.server_x,
+            (mounted.server_x - mounted.client_x).abs(),
+        );
+    }
+
     /// The client mirror must predict a **flying** player where the server puts
     /// them (T21.03).
     ///
@@ -2019,11 +2106,12 @@ mod tests {
     /// fixture presses nothing and the flight has to come from the item.
     #[test]
     fn the_client_predicts_a_flying_player_where_the_server_puts_them() {
-        let bare = walk_both_sides_wearing(BASE_HEALTH, 0, None);
+        let bare = walk_both_sides_wearing(BASE_HEALTH, 0, None, false);
         let winged = walk_both_sides_wearing(
             BASE_HEALTH,
             0,
             Some(game_core::items::registry::UNICORN_WINGS),
+            false,
         );
 
         // The control: the wings were on, and they lifted the server's player
@@ -2069,11 +2157,12 @@ mod tests {
     #[test]
     fn the_client_predicts_a_booted_player_where_the_server_puts_them() {
         let right = game_core::player::input::button::RIGHT;
-        let bare = walk_both_sides_wearing(BASE_HEALTH, right, None);
+        let bare = walk_both_sides_wearing(BASE_HEALTH, right, None, false);
         let booted = walk_both_sides_wearing(
             BASE_HEALTH,
             right,
             Some(game_core::items::registry::IRONMAN_BOOTS),
+            false,
         );
 
         // The control: the boots were on, and they did something.

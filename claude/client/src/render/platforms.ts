@@ -149,8 +149,20 @@ export function ensurePlatformTexture(textures: Phaser.Textures.TextureManager):
   return { key: TEXTURE_KEY, w, h }
 }
 
+/** The lit indicator's colour when somebody is riding the platform. */
+const ACTIVE = 0x6fe6ff
+
 interface Entry {
   sprite: Phaser.GameObjects.Image
+  /**
+   * The occupied indicator.
+   *
+   * A separate object rather than a tint on the sprite: the art is already
+   * light steel, and a multiply tint on light pixels is a change nobody can see
+   * — which is the difference between a state the player can read and one that
+   * only the debug overlay knows about.
+   */
+  lamp: Phaser.GameObjects.Rectangle
   view: PlatformView
 }
 
@@ -176,6 +188,28 @@ export class PlatformLayer {
   }
 
   /**
+   * Which platforms are showing a rider. **Asserted on by the tests, and it
+   * reads the objects rather than a remembered set** — a layer that recorded
+   * the ask and never touched a lamp would satisfy any check of its own input.
+   */
+  lampsLit(): number[] {
+    return [...this.entries.entries()].filter(([, e]) => e.lamp.visible).map(([id]) => id)
+  }
+
+  /**
+   * Which platforms have somebody riding them (T21.11B).
+   *
+   * **Told, not derived from a timer.** The server owns the mount rule — an
+   * occupied platform, a dead player, a hold that reset — and the client draws
+   * the answer, the same way `PadLayer` draws the charge byte rather than
+   * counting its own. Passing the whole set each frame rather than a delta
+   * means a missed message cannot leave a lamp stuck on.
+   */
+  setOccupied(ids: readonly number[]): void {
+    for (const [id, e] of this.entries) e.lamp.setVisible(ids.includes(id))
+  }
+
+  /**
    * Show or hide the whole layer.
    *
    * **For the pixel check's control frame** (`docs/72` §C2): "the turret is on
@@ -195,6 +229,7 @@ export class PlatformLayer {
     for (const [id, e] of this.entries) {
       if (!platforms.some((p) => p.id === id)) {
         e.sprite.destroy()
+        e.lamp.destroy()
         this.entries.delete(id)
       }
     }
@@ -205,18 +240,28 @@ export class PlatformLayer {
       if (existing) {
         existing.view = p
         existing.sprite.setPosition(p.x, p.y)
+        existing.lamp.setPosition(p.x, p.y - art.h * 0.62)
         continue
       }
       // Origin (0.5, 1): `p.y` is the feet line, so the art sits **on** the
       // ground rather than centred through it.
       const sprite = this.scene.add.image(p.x, p.y, art.key).setOrigin(0.5, 1)
-      this.container.add(sprite)
-      this.entries.set(p.id, { sprite, view: p })
+      // Across the housing, which is where a player looks: derived from the
+      // art's own proportions so it cannot drift off the machine.
+      const lamp = this.scene.add
+        .rectangle(p.x, p.y - art.h * 0.62, art.w * 0.5, Math.max(2, art.h * 0.12), ACTIVE, 0.95)
+        .setOrigin(0.5, 0.5)
+        .setVisible(false)
+      this.container.add([sprite, lamp])
+      this.entries.set(p.id, { sprite, lamp, view: p })
     }
   }
 
   destroy(): void {
-    for (const e of this.entries.values()) e.sprite.destroy()
+    for (const e of this.entries.values()) {
+      e.sprite.destroy()
+      e.lamp.destroy()
+    }
     this.entries.clear()
     this.container.destroy()
   }

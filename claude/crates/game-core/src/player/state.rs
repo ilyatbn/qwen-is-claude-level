@@ -41,6 +41,15 @@ pub const STARTING_KIT: [ItemId; 1] = [crate::items::registry::SHOVEL];
 pub const MOVE_MOD_BOOTS: u8 = 1 << 0;
 /// Snapshot bit for T21.03's unicorn wings.
 pub const MOVE_MOD_WINGS: u8 = 1 << 1;
+/// Snapshot bit for T21.11B's mounted-on-a-gun-platform.
+///
+/// **Outside `MOVE_MOD_BITS`, deliberately.** That table maps a bit to a
+/// `UtilityId` because every passive in it is an item you carry; mounting is not
+/// an item and has no `UtilityId` to key on. Forcing it into the table would
+/// have meant inventing a utility nobody can pick up — so it is encoded and
+/// decoded explicitly beside the table, in the same two functions, and the
+/// table keeps meaning exactly one thing.
+pub const MOVE_MOD_MOUNTED: u8 = 1 << 2;
 
 /// The wire's bit assignment for the passives `apply_input` reads (T21.02).
 ///
@@ -147,6 +156,10 @@ pub struct PlayerState {
     /// Reset by `respawn`, which is the whole point: the arming rule is "you have
     /// moved since you spawned", and it has to mean *this* spawn.
     pub teleport: crate::world::teleport::TeleportState,
+    /// T21.11B's gun platform. Per player and per life, like `teleport` beside
+    /// it and for the same reason: a global record of who is on what would arm
+    /// every platform for everyone the moment one player stood still.
+    pub mount: crate::world::mount::MountState,
 }
 
 impl PlayerState {
@@ -176,6 +189,7 @@ impl PlayerState {
             skin_id,
             fire_ready_at: 0.0,
             teleport: crate::world::teleport::TeleportState::new(pos, 0.0),
+            mount: crate::world::mount::MountState::new(),
         };
         // §F5 — join is the other route into the world. `respawn` grants the same
         // kit; both must, or a player who never dies never gets one.
@@ -451,7 +465,14 @@ impl PlayerState {
             // overridden, it never gets asked. `speed` still applies, so a
             // player wearing both flies sideways at twice the rate. That is the
             // only reading under which neither item silently stops working.
-            flying: self.holds_utility(UtilityId::UnicornWings),
+            // **`and not mounted`, so the two regimes cannot both be true.**
+            // `jetpack::gravity_scale` names one gravity regime at a time, and a
+            // player who mounted while wearing wings would otherwise be flying
+            // and bolted down at once — which reads on screen as a platform that
+            // launches you. Mounting wins: you chose it this second, and
+            // dropping the wings is still the only way to stop flying otherwise.
+            flying: self.mount.mounted.is_none() && self.holds_utility(UtilityId::UnicornWings),
+            mounted: self.mount.mounted.is_some(),
         }
     }
 
@@ -475,13 +496,22 @@ impl PlayerState {
     /// nothing is hashed, and `REPLAY_VERSION` does not move** (T20.07's
     /// conclusion, applied).
     pub fn move_mod_bits(&self) -> u8 {
-        MOVE_MOD_BITS.iter().fold(0u8, |acc, (bit, u)| {
+        let items = MOVE_MOD_BITS.iter().fold(0u8, |acc, (bit, u)| {
             if self.holds_utility(*u) {
                 acc | bit
             } else {
                 acc
             }
-        })
+        });
+        // T21.11B rides the same byte and is *not* an item — see
+        // `MOVE_MOD_MOUNTED`. It is derived here rather than stored on the wire
+        // for the same reason the rest of this byte is: one source, read at the
+        // encode site.
+        if self.mount.is_mounted() {
+            items | MOVE_MOD_MOUNTED
+        } else {
+            items
+        }
     }
 
     /// Make this player's inventory agree with a `move_mod_bits` byte off the
@@ -496,6 +526,10 @@ impl PlayerState {
     ///
     /// Never called server-side: there the inventory *is* the truth.
     pub fn set_move_mod_bits(&mut self, bits: u8) {
+        // T21.11B, first: the mount lockout changes what `apply_input` does with
+        // every other bit in this byte, so a mirror that applied the passives
+        // and then the mount would run one tick with the wrong regime.
+        self.mount.set_from_wire(bits & MOVE_MOD_MOUNTED != 0);
         for (bit, u) in MOVE_MOD_BITS {
             let want = bits & bit != 0;
             if want == self.holds_utility(*u) {
@@ -843,6 +877,11 @@ impl PlayerState {
         // an arming rule measuring from the previous life's spawn would fire it
         // two seconds later (§C5).
         self.teleport = crate::world::teleport::TeleportState::new(pos, now);
+        // **Cleared with the rest of the life** (T21.11B). A corpse left holding
+        // a platform is a platform nobody can use for the rest of the round, and
+        // the occupancy rule derives from exactly this field — so not clearing it
+        // would be a soft lock with no other symptom.
+        self.mount = crate::world::mount::MountState::new();
         self.health = BASE_HEALTH;
         self.jetpack = JetpackState::default();
         self.jump = JumpState::default();

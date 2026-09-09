@@ -1621,6 +1621,18 @@ pub const GUN_PLATFORM_H: i32 = 10;
 /// (2800, 472). Two stand-to-activate features on one tile is a gameplay
 /// conflict (mount versus teleport), not a cosmetic one.
 pub const GUN_PLATFORM_PAD_CLEARANCE: i32 = (PAD_W + GUN_PLATFORM_W) / 2;
+/// Seconds of standing on a platform before it mounts you — **and** seconds of
+/// holding jump before it lets you off (T21.11B).
+///
+/// **One constant for both directions, because it is one mechanism.** The mount
+/// timer runs backwards to dismount; a second constant would be a second thing
+/// to tune and the two would drift into "quick to get on, slow to get off" with
+/// nobody having decided that.
+///
+/// A second, matching `TELEPORT_CHARGE`'s neighbourhood (1.5): long enough that
+/// walking over a platform does not seize you, short enough that mounting under
+/// fire is a real choice rather than a suicide.
+pub const GUN_PLATFORM_MOUNT_TIME: f32 = 1.0;
 
 // --- C14: a living background ---
 
