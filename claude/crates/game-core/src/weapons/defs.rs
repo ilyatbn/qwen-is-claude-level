@@ -7,7 +7,8 @@
 
 use crate::constants::{
     AIRBURST_AMMO, FLAME_FRICTION, FLAME_GRAVITY_SCALE, FLAME_LIFE, FLAME_RESTITUTION,
-    MOLOTOV_AMMO, SMOKE_AMMO, TOXIC_DROP_SPEED, TOXIC_GRENADE_AMMO,
+    GUN_PLATFORM_DAMAGE, GUN_PLATFORM_MUZZLE_SPEED, GUN_PLATFORM_RANGE, MOLOTOV_AMMO, SMOKE_AMMO,
+    TOXIC_DROP_SPEED, TOXIC_GRENADE_AMMO,
 };
 use crate::constants::{
     AIRBURST_FAN, AIRBURST_FUSE, AIRBURST_MUZZLE_SPEED, AIRBURST_PELLETS, AIRBURST_PELLET_CARVE,
@@ -58,8 +59,8 @@ use crate::items::registry::{
     WeaponId, WEAPON_AIRBURST, WEAPON_AIRBURST_PELLET, WEAPON_AXE, WEAPON_BAT, WEAPON_BAZOOKA,
     WEAPON_DEAGLE, WEAPON_FLAME, WEAPON_FLAMETHROWER, WEAPON_GRENADE, WEAPON_HAMMER, WEAPON_KNIFE,
     WEAPON_LASER_PISTOL, WEAPON_LASER_SMG, WEAPON_MACHINEGUN, WEAPON_METEOR, WEAPON_METEOR_FRAG,
-    WEAPON_MINE, WEAPON_MOLOTOV, WEAPON_PISTOL, WEAPON_REVOLVER, WEAPON_SHOVEL, WEAPON_SMG,
-    WEAPON_SMOKE, WEAPON_TOXIC_DROP, WEAPON_TOXIC_GRENADE, WEAPON_WHIP,
+    WEAPON_MINE, WEAPON_MOLOTOV, WEAPON_PISTOL, WEAPON_PLATFORM_GUN, WEAPON_REVOLVER,
+    WEAPON_SHOVEL, WEAPON_SMG, WEAPON_SMOKE, WEAPON_TOXIC_DROP, WEAPON_TOXIC_GRENADE, WEAPON_WHIP,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -875,6 +876,41 @@ pub static WEAPONS: &[WeaponDef] = &[
         energy_cost: 0.0,
         burst: Burst::BurnsOut,
     },
+    // --- T21.11C: the gun platform's gun ---
+    //
+    // **Appended last** (§B16), like the shovel and the flame above it.
+    //
+    // A `Delivery::Bullet` with a spread of zero: the volley's fan is applied by
+    // `World::fire_platform`, which places four rounds deterministically across
+    // `GUN_PLATFORM_FAN` rather than drawing four times from the RNG. Leaving the
+    // def's own spread at 0 keeps the fan in exactly one place — a per-round
+    // random spread on top of a fixed fan would be two spreads, and the volley
+    // would stop being reproducible from the same inputs.
+    //
+    // `auto: true`: the trigger is held, and the cadence is
+    // `GUN_PLATFORM_COOLDOWN` on the platform rather than this def's `cooldown`,
+    // which is why that field is 0 here.
+    WeaponDef {
+        id: WEAPON_PLATFORM_GUN,
+        key: "platform_gun",
+        delivery: Delivery::Bullet {
+            spread: 0.0,
+            auto: true,
+        },
+        damage: GUN_PLATFORM_DAMAGE,
+        // No crater. A gun that dug would let a mounted player excavate their own
+        // cover from a position they cannot leave, and §F1's ballistic rounds do
+        // not dig either.
+        blast_radius: 0.0,
+        range: GUN_PLATFORM_RANGE,
+        // Zero: the platform owns the cadence — see `GUN_PLATFORM_COOLDOWN`.
+        cooldown: 0.0,
+        muzzle_speed: GUN_PLATFORM_MUZZLE_SPEED,
+        gravity_scale: 0.0,
+        wind_scale: 0.0,
+        energy_cost: 0.0,
+        burst: Burst::Blast,
+    },
 ];
 
 /// Look a weapon up by id.
@@ -1065,7 +1101,20 @@ mod tests {
         //
         // This is stricter than the rule it replaces, not looser: the old version
         // passed a weapon that carved and did no damage at all.
-        const MAY_NOT_CARVE: &[&str] = &["knife", "bat", "whip"];
+        const MELEE_MAY_NOT_CARVE: &[&str] = &["knife", "bat", "whip"];
+        // **A second list, not a fourth entry in the first one.**
+        //
+        // The list above carries an invariant the loop at the end of this test
+        // asserts — *every member is melee* — and appending a gun to it widened
+        // that invariant to nothing, which the guard caught. So the mounted case
+        // gets its own list and its own assertion, and both stay sharp.
+        //
+        // T21.11C's platform gun does not dig because its rider **cannot move**:
+        // a digging platform gun would let them excavate the cover they are
+        // standing behind from a position they cannot leave. §F1's carried
+        // ballistic rounds do not dig either, so this is the rule rather than an
+        // exception to it.
+        const MOUNTED_MAY_NOT_CARVE: &[&str] = &["platform_gun"];
         // Weather ordnance that **lands** rather than going off. A toxic drop is
         // a projectile only so that it falls (§C21); `World::detonate` intercepts
         // it before any blast, so damage and a blast radius on its def would
@@ -1099,7 +1148,8 @@ mod tests {
                 continue;
             }
             assert!(w.damage > 0.0, "{} does no damage at all", w.key);
-            let exempt = MAY_NOT_CARVE.contains(&w.key);
+            let exempt =
+                MELEE_MAY_NOT_CARVE.contains(&w.key) || MOUNTED_MAY_NOT_CARVE.contains(&w.key);
             if !exempt {
                 assert!(
                     w.blast_radius > 0.0,
@@ -1164,11 +1214,28 @@ mod tests {
         // The exemption list must not outlive its members: a name here that is
         // not a real weapon means someone renamed one and the exemption silently
         // widened to cover nothing.
-        for key in MAY_NOT_CARVE {
+        for key in MELEE_MAY_NOT_CARVE {
             let w = by_key(key).unwrap_or_else(|| panic!("{key} is exempt but does not exist"));
             assert!(
                 matches!(w.delivery, Delivery::Melee { .. }),
                 "{key} is exempt from carving but is not melee"
+            );
+        }
+        // The mounted list carries its own invariant: a bullet nobody carries.
+        // If a future edit gave the platform gun an item, or made it something
+        // other than a round that flies, this is where that shows up.
+        for key in MOUNTED_MAY_NOT_CARVE {
+            let w = by_key(key).unwrap_or_else(|| panic!("{key} is exempt but does not exist"));
+            assert!(
+                matches!(w.delivery, Delivery::Bullet { .. }),
+                "{key} is exempt from carving as a mounted gun but does not fire bullets"
+            );
+            assert!(
+                !crate::items::registry::ITEMS.iter().any(|d| matches!(
+                    d.kind,
+                    crate::items::registry::ItemKind::Weapon(id) if id == w.id
+                )),
+                "{key} is exempt as a gun nobody carries, but an item grants it"
             );
         }
     }
@@ -1289,6 +1356,30 @@ mod ballistics {
         matches!(w.delivery, Delivery::Bullet { .. }) && !w.is_energy()
     }
 
+    /// §B7's table covers the weapons a player can **carry**, and this is the
+    /// named list of ballistic weapons that are not among them.
+    ///
+    /// T21.11C's platform gun fires bullets and has no place in §B7: there is no
+    /// `ItemDef` for it, it never enters an inventory, and its numbers are
+    /// `GUN_PLATFORM_*` beside the platform rather than in the carried table.
+    ///
+    /// **Named rather than filtered by a property**, so the guard keeps its
+    /// value: a carried weapon still cannot join the ballistic set without the
+    /// table moving, and `the_carried_table_exemptions_all_exist` stops this
+    /// list outliving the weapon it names.
+    const NOT_CARRIED: &[&str] = &["platform_gun"];
+
+    #[test]
+    fn the_carried_table_exemptions_all_exist() {
+        for key in NOT_CARRIED {
+            let w = by_key(key).unwrap_or_else(|| panic!("{key} is exempted but does not exist"));
+            assert!(
+                is_ballistic(w),
+                "{key} is exempted from the ballistic table but is not ballistic"
+            );
+        }
+    }
+
     /// The table is the test. Every number in §B7 is asserted, **and** the set of
     /// ballistic weapons must be exactly the set the table covers — so adding a
     /// weapon without adding its numbers here is a failure rather than a silent
@@ -1335,7 +1426,7 @@ mod ballistics {
 
         let mut in_table: Vec<&str> = WEAPONS
             .iter()
-            .filter(|w| is_ballistic(w))
+            .filter(|w| is_ballistic(w) && !NOT_CARRIED.contains(&w.key))
             .map(|w| w.key)
             .collect();
         let mut in_spec: Vec<&str> = SPEC.iter().map(|&(k, ..)| k).collect();

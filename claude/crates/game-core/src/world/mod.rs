@@ -22,7 +22,7 @@ use crate::constants::{
     MapScale, ENDED_SECONDS, MAX_INPUT_QUEUE, MAX_PLAYERS, ROUND_SECONDS, TELEPORT_PADS,
     WARMUP_SECONDS,
 };
-use crate::items::registry::{ItemId, WeaponId};
+use crate::items::registry::{ItemId, WeaponId, WEAPON_PLATFORM_GUN};
 use crate::items::spawning::{assign_buried_items, place_initial, reveal_buried, SpawnSchedule};
 use crate::items::world::{SpawnSource, WorldItemId, WorldItems};
 use crate::map::gen::surface::is_standable;
@@ -768,6 +768,22 @@ pub struct World {
     /// See [`WeatherMode`]. `Auto` everywhere but a development switch.
     pub weather_mode: WeatherMode,
     pub buried_items: Vec<ItemId>,
+    /// Rounds left in each gun platform, indexed by platform id (T21.11C).
+    ///
+    /// **World state, not `MapMeta`.** `MapMeta` is generation output that never
+    /// changes after the map is built; this is spent. It is in the state hash
+    /// for the same reason: a replay whose magazine had drifted would run to a
+    /// different outcome with every checkpoint agreeing.
+    ///
+    /// Parallel to `map.meta.gun_platforms` rather than a field on it, so
+    /// nothing has to make a `MapMeta` mutable to fire a gun.
+    pub platform_ammo: Vec<u16>,
+    /// When each platform may fire again (T21.11C).
+    ///
+    /// **The platform's clock, not the rider's.** `PlayerState::fire_ready_at`
+    /// belongs to whatever they are holding, and a platform sharing it would
+    /// fire at the cadence of a weapon in a bag its rider cannot reach.
+    pub platform_ready_at: Vec<f32>,
     pub round_time: f32,
     pub tick: u32,
     pub phase: RoundPhase,
@@ -847,7 +863,10 @@ impl World {
 
         let birds = Birds::new(seed, &map);
         let animals = Animals::new(seed);
+        let platforms = map.meta.gun_platforms.len();
         World {
+            platform_ammo: vec![crate::constants::GUN_PLATFORM_AMMO; platforms],
+            platform_ready_at: vec![0.0; platforms],
             burn: Default::default(),
             respawn_fallbacks: 0,
             mines: Default::default(),
@@ -3003,12 +3022,23 @@ impl World {
 
     /// Fire the selected weapon. Validation lives in `PlayerState::try_fire`.
     pub fn fire(&mut self, id: PlayerId, now: f32) -> Result<(), UseError> {
-        // **Your own weapons are in the bag, and the bag is out of reach while
-        // mounted** (T21.11B). Firing is not exempted from the one rule: the
-        // coordinator's ask was that a mounted player can do nothing *but*
-        // fire, and what they fire is the platform's gun — which T21.11C spawns
-        // without touching the inventory at all. Exempting personal fire here
-        // would let a mounted player empty a bazooka they cannot see or select.
+        // **A mounted player fires the platform, not their bag** (T21.11C).
+        //
+        // Routed here rather than at the caller because `fire` is the one verb
+        // every trigger comes through — the server command, the bots and the
+        // sandbox — and a branch in one of them would be a branch the other two
+        // do not have. Your own weapons stay out of reach while mounted
+        // (T21.11B): the platform gun spawns without touching the inventory, so
+        // nothing here reads a slot.
+        if let Some(platform) = self.players.iter().find(|p| p.id == id).and_then(|p| {
+            if p.alive {
+                p.mount.mounted
+            } else {
+                None
+            }
+        }) {
+            return self.fire_platform(id, platform, now);
+        }
         self.inventory_actor(id)?;
         let Some(idx) = self.players.iter().position(|p| p.id == id) else {
             return Err(UseError::Dead);
@@ -3297,6 +3327,94 @@ impl World {
             });
         }
         r
+    }
+
+    /// Fire one volley from a gun platform (T21.11C).
+    ///
+    /// **Four rounds in the same tick across a fixed fan**, not four in
+    /// sequence. "A barrage of 4 bullets at a time" is simultaneous, the
+    /// reference art is triple-barrelled, and — the deciding reason — a volley
+    /// is four ordinary calls to the path `fire_from_slot` already uses for a
+    /// bullet, while a sequence would need a queue surviving across ticks. That
+    /// queue would be new hashed state and a new way for a replay to diverge,
+    /// bought for a difference nobody can see at `GUN_PLATFORM_COOLDOWN`.
+    ///
+    /// **The fan is fixed, not drawn.** `muzzle_angle` would take four draws
+    /// from `self.rng` per volley — reproducible, but it would put the gun's
+    /// shot pattern in the same stream as the item spawns and the weather, so
+    /// firing more would move both. Spacing the rounds evenly across
+    /// `GUN_PLATFORM_FAN` costs no draws at all and makes a volley the same
+    /// shape every time, which is what a fixed emplacement should feel like.
+    ///
+    /// The muzzle is the **platform's**, because a mounted player does not move;
+    /// the aim is still theirs.
+    fn fire_platform(&mut self, id: PlayerId, platform: u8, now: f32) -> Result<(), UseError> {
+        let i = platform as usize;
+        if now < *self.platform_ready_at.get(i).unwrap_or(&f32::INFINITY) {
+            return Err(UseError::OnCooldown);
+        }
+        let left = *self.platform_ammo.get(i).unwrap_or(&0);
+        if left == 0 {
+            // **Empty is empty** — the platform keeps its collision, its cover
+            // and its rider, and does nothing. Named rather than silent, so the
+            // client can say why (`docs/61` §3).
+            return Err(UseError::NoAmmo);
+        }
+
+        let Some(idx) = self.players.iter().position(|p| p.id == id) else {
+            return Err(UseError::Dead);
+        };
+        let aim = crate::player::input::Input::new(0, 0, self.players[idx].aim).aim_angle();
+        let origin = match self.map.meta.gun_platforms.get(i) {
+            // A feet line, so the muzzle sits at the housing rather than in the
+            // rock: the same fraction of the art the renderer draws the hub at.
+            Some(g) => Vec2::new(
+                g.pos.x as f32,
+                g.pos.y as f32 - crate::constants::GUN_PLATFORM_W as f32 * 0.5,
+            ),
+            None => return Err(UseError::BadSlot),
+        };
+
+        // **A partial volley when the magazine cannot fill one**, and the
+        // leftover is not invented: `AddResult::Partial` is this repo's
+        // precedent for telling the caller the true number rather than rounding
+        // it. Three rounds left fires three, not four and not none.
+        let rounds = crate::constants::GUN_PLATFORM_BARRAGE.min(left);
+        let tick = self.tick;
+        let fan = crate::constants::GUN_PLATFORM_FAN;
+        for n in 0..rounds {
+            // Evenly across the fan, centred on the aim. With one round the
+            // divisor would be zero, so that case fires straight.
+            let offset = if rounds <= 1 {
+                0.0
+            } else {
+                -fan / 2.0 + fan * (n as f32) / ((rounds - 1) as f32)
+            };
+            let pid = self
+                .projectiles
+                .spawn(WEAPON_PLATFORM_GUN, id, origin, aim + offset, now);
+            if let Some(p) = self.projectiles.get(pid) {
+                let (x, y, vx, vy) = (p.pos.x, p.pos.y, p.vel.x, p.vel.y);
+                self.events.push(GameEvent::ProjectileSpawn {
+                    tick,
+                    id: pid,
+                    weapon: WEAPON_PLATFORM_GUN,
+                    owner: id,
+                    x,
+                    y,
+                    vx,
+                    vy,
+                });
+            }
+        }
+        self.platform_ammo[i] = left - rounds;
+        self.platform_ready_at[i] = now + crate::constants::GUN_PLATFORM_COOLDOWN;
+        Ok(())
+    }
+
+    /// Rounds left in a platform, or `None` for an id that is not one.
+    pub fn platform_ammo(&self, platform: u8) -> Option<u16> {
+        self.platform_ammo.get(platform as usize).copied()
     }
 
     /// Is anybody riding this platform? (T21.11B)
@@ -3672,6 +3790,16 @@ impl World {
             p.inventory.hash_into(&mut h);
         }
 
+        // §A34, T21.11C. The magazine changes the simulation — an empty
+        // platform spawns nothing — so a replay whose ammo had drifted would
+        // diverge with every hash before it agreeing. `REPLAY_VERSION` 7 covers
+        // this and T21.11B's mount state together; see the note there.
+        h.update(&(self.platform_ammo.len() as u32).to_le_bytes());
+        for (ammo, ready) in self.platform_ammo.iter().zip(&self.platform_ready_at) {
+            h.update(&ammo.to_le_bytes());
+            h.update(&ready.to_le_bytes());
+        }
+
         h.update(&(self.items.len() as u32).to_le_bytes());
         for it in self.items.iter() {
             h.update(&it.id.to_le_bytes());
@@ -3932,6 +4060,11 @@ mod state_hash_coverage {
             spawn_schedule: _,
             effects: _,
             buried_items: _,
+            // T21.11C. Both hashed: an empty platform spawns nothing and a
+            // platform on cooldown spawns nothing this tick, so both decide the
+            // simulation. See the fold in `state_hash`.
+            platform_ammo: _,
+            platform_ready_at: _,
             round_time: _,
             tick: _,
             phase: _,
@@ -8743,7 +8876,13 @@ mod mount_wiring {
                 w.player(0).expect("there").inventory.selected() == want
             }),
             ("move_item (drag)", |w| w.move_item(0, 0, 5)),
-            ("fire", |w| w.fire(0, 100.0).is_ok()),
+            // **`fire` is deliberately not in this list since T21.11C.** It no
+            // longer refuses while mounted — it fires the *platform's* gun,
+            // which spawns without touching the inventory. The claim that
+            // matters is therefore "your own weapons are untouched", and it is
+            // asserted directly in `a_mounted_player_fires_the_platform_not_
+            // their_own_weapon` rather than as a refusal here. Removing it from
+            // this list is a change to the rule, not a weakening of the test.
         ];
 
         // Stock the bag so every verb has something to act on, then check each
@@ -9038,6 +9177,362 @@ mod mount_wiring {
         assert!(
             !mods.flying,
             "a mounted player is still flying — two gravity regimes at once"
+        );
+    }
+}
+
+/// T21.11C: the barrage and the magazine, in a real `World`.
+///
+/// The mount fixtures in `mount_wiring` prove you can get on one. These prove
+/// the gun: that a volley is `GUN_PLATFORM_BARRAGE` rounds of the right weapon,
+/// that they come out of the platform's magazine and not the player's bag, and
+/// that an empty platform is dead scenery rather than a despawned one.
+#[cfg(test)]
+mod platform_gun {
+    use super::*;
+    use crate::constants::{
+        MapScale, GUN_PLATFORM_AMMO, GUN_PLATFORM_BARRAGE, GUN_PLATFORM_COOLDOWN,
+        GUN_PLATFORM_MOUNT_TIME, PLAYER_H, SIM_DT,
+    };
+    use crate::items::registry::{BAZOOKA, WEAPON_PLATFORM_GUN};
+    use crate::map::meta::GunPlatform;
+    use crate::player::Input;
+
+    fn playing() -> World {
+        let mut w = World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        w
+    }
+
+    fn platform(w: &World) -> GunPlatform {
+        w.map.meta.gun_platforms[0]
+    }
+
+    /// Mount the player on platform 0 by the real rule, so nothing here depends
+    /// on reaching into the state machine.
+    fn mounted(w: &mut World) -> GunPlatform {
+        let g = platform(w);
+        let steps = (GUN_PLATFORM_MOUNT_TIME * 1.5 / SIM_DT).ceil() as usize;
+        for i in 0..steps {
+            {
+                let p = w.player_mut(0).expect("there");
+                p.body.pos = Vec2::new(g.pos.x as f32, g.pos.y as f32 - PLAYER_H / 2.0);
+                p.body.vel = Vec2::ZERO;
+                p.body.grounded = true;
+            }
+            w.queue_input(0, Input::new(i as u32 + 1, 0, 0));
+            w.step(SIM_DT);
+            w.drain_events();
+        }
+        assert!(
+            w.player(0).expect("there").mount.is_mounted(),
+            "the fixture failed to mount"
+        );
+        g
+    }
+
+    fn spawns(evs: &[GameEvent]) -> Vec<WeaponId> {
+        evs.iter()
+            .filter_map(|e| match e {
+                GameEvent::ProjectileSpawn { weapon, .. } => Some(*weapon),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A volley is exactly `GUN_PLATFORM_BARRAGE` rounds of the platform's own
+    /// weapon. **Counted at both ends**: the projectiles that spawned, and the
+    /// ammo that left the magazine.
+    #[test]
+    fn one_volley_is_a_barrage_of_the_platforms_own_weapon() {
+        let mut w = playing();
+        let g = mounted(&mut w);
+        let before = w.platform_ammo(g.id).expect("a platform");
+        assert_eq!(before, GUN_PLATFORM_AMMO, "a fresh platform is not full");
+
+        let live_before = w.projectiles.iter().count();
+        w.fire(0, 100.0).expect("a mounted player can fire");
+        let evs = w.drain_events();
+        let fired = spawns(&evs);
+
+        assert_eq!(
+            fired.len(),
+            GUN_PLATFORM_BARRAGE as usize,
+            "a volley spawned {} rounds, not {GUN_PLATFORM_BARRAGE}",
+            fired.len()
+        );
+        assert!(
+            fired.iter().all(|wid| *wid == WEAPON_PLATFORM_GUN),
+            "a volley fired something other than the platform gun: {fired:?}"
+        );
+        // The other end: the projectile store agrees with the events.
+        assert_eq!(
+            w.projectiles.iter().count() - live_before,
+            GUN_PLATFORM_BARRAGE as usize,
+            "the events and the projectile store disagree about the volley"
+        );
+        assert_eq!(
+            w.platform_ammo(g.id),
+            Some(before - GUN_PLATFORM_BARRAGE),
+            "the magazine did not lose exactly one volley"
+        );
+    }
+
+    /// The volley is a **fan**: four rounds, four different headings.
+    #[test]
+    fn a_volley_spreads_rather_than_stacking_on_one_heading() {
+        let mut w = playing();
+        mounted(&mut w);
+        w.fire(0, 100.0).expect("fired");
+        let evs = w.drain_events();
+        let headings: Vec<i64> = evs
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::ProjectileSpawn { vx, vy, .. } => {
+                    // Quantised, so float noise is not what makes them distinct.
+                    Some((vy.atan2(*vx) * 10_000.0) as i64)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(headings.len(), GUN_PLATFORM_BARRAGE as usize);
+        let mut uniq = headings.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(
+            uniq.len(),
+            headings.len(),
+            "the volley put {} rounds on {} headings — it is not fanning",
+            headings.len(),
+            uniq.len()
+        );
+    }
+
+    /// **The platform's clock, not the player's.** Firing twice in a tick gives
+    /// one volley; waiting out the cooldown gives another.
+    #[test]
+    fn the_platform_has_its_own_cooldown() {
+        let mut w = playing();
+        let g = mounted(&mut w);
+        w.fire(0, 100.0).expect("first volley");
+        assert!(
+            w.fire(0, 100.0).is_err(),
+            "a second volley fired inside the cooldown"
+        );
+        assert_eq!(
+            w.platform_ammo(g.id),
+            Some(GUN_PLATFORM_AMMO - GUN_PLATFORM_BARRAGE),
+            "the refused volley still spent ammo"
+        );
+        // The control: past the cooldown it fires again.
+        w.fire(0, 100.0 + GUN_PLATFORM_COOLDOWN * 1.5)
+            .expect("second volley after the cooldown");
+        assert_eq!(
+            w.platform_ammo(g.id),
+            Some(GUN_PLATFORM_AMMO - GUN_PLATFORM_BARRAGE * 2)
+        );
+    }
+
+    /// An empty platform stops firing and stays put — collision, mount and all.
+    #[test]
+    fn an_empty_platform_is_dead_scenery_not_a_despawned_one() {
+        let mut w = playing();
+        let g = mounted(&mut w);
+        // Drain it. **The control is that it fired at all before it ran out.**
+        //
+        // **Bounded by attempts, not by successes.** The first version counted
+        // only volleys that fired and asserted on *that* — so a build where
+        // `fire` never succeeds never advanced the counter, the guard could not
+        // trip, and the loop span forever. It did: two of these ran for
+        // **eighteen hours** on the box after a falsification made mounted fire
+        // refuse. A termination guard that the failing case cannot reach is not
+        // a guard, and this is the same shape as the rest of `CLAUDE.md`'s
+        // rules — ask what the assertion reports when the thing it names never
+        // happened at all.
+        let mut volleys = 0usize;
+        let mut now = 100.0;
+        let max_attempts = (GUN_PLATFORM_AMMO as usize) + 16;
+        let mut attempts = 0usize;
+        while w.platform_ammo(g.id) != Some(0) {
+            attempts += 1;
+            assert!(
+                attempts <= max_attempts,
+                "the magazine never emptied: {attempts} attempts, {volleys} volleys fired, \
+                 {:?} rounds left",
+                w.platform_ammo(g.id)
+            );
+            if w.fire(0, now).is_ok() {
+                volleys += 1;
+            }
+            now += GUN_PLATFORM_COOLDOWN * 1.5;
+        }
+        assert_eq!(
+            volleys,
+            (GUN_PLATFORM_AMMO / GUN_PLATFORM_BARRAGE) as usize,
+            "{GUN_PLATFORM_AMMO} rounds at {GUN_PLATFORM_BARRAGE} a volley is not {volleys} volleys"
+        );
+
+        // Empty: it refuses, and spawns nothing.
+        w.drain_events();
+        assert!(w.fire(0, now).is_err(), "an empty platform still fired");
+        assert!(
+            spawns(&w.drain_events()).is_empty(),
+            "an empty platform spawned a round"
+        );
+        // And it is still there, still mountable, still standable.
+        assert_eq!(
+            w.map.meta.gun_platforms.len(),
+            crate::constants::GUN_PLATFORMS
+        );
+        assert!(w.player(0).expect("there").mount.is_mounted());
+        assert!(crate::map::gen::surface::is_standable(
+            &w.map.mask,
+            g.pos.x,
+            g.pos.y
+        ));
+    }
+
+    /// Ammo is **per platform**, so a second occupant finds what the first left.
+    #[test]
+    fn the_magazine_belongs_to_the_platform_not_the_occupant() {
+        let mut w = playing();
+        w.add_player(1, 0, "bo".into());
+        let g = mounted(&mut w);
+        w.fire(0, 100.0).expect("fired");
+        let left = w.platform_ammo(g.id).expect("a platform");
+        assert!(left < GUN_PLATFORM_AMMO);
+
+        // First player leaves; second takes it and finds it as it was left.
+        w.player_mut(0).expect("there").mount.mounted = None;
+        w.player_mut(1).expect("there").mount.mounted = Some(g.id);
+        assert_eq!(w.platform_ammo(g.id), Some(left));
+        w.fire(1, 200.0).expect("the second occupant fired");
+        assert_eq!(
+            w.platform_ammo(g.id),
+            Some(left - GUN_PLATFORM_BARRAGE),
+            "the second occupant got a fresh magazine"
+        );
+        // And the other platforms are untouched — one magazine each.
+        for other in &w.map.meta.gun_platforms {
+            if other.id != g.id {
+                assert_eq!(
+                    w.platform_ammo(other.id),
+                    Some(GUN_PLATFORM_AMMO),
+                    "firing platform {} drained platform {}",
+                    g.id,
+                    other.id
+                );
+            }
+        }
+    }
+
+    /// **The bag is untouched.** This is the assertion that replaced T21.11B's
+    /// "fire is refused while mounted", which T21.11C supersedes.
+    #[test]
+    fn a_mounted_player_fires_the_platform_not_their_own_weapon() {
+        let mut w = playing();
+        let g = mounted(&mut w);
+        w.player_mut(0).expect("there").inventory.add(BAZOOKA, 4);
+        let before: Vec<_> = w
+            .player(0)
+            .expect("there")
+            .inventory
+            .iter()
+            .map(|(i, s)| (i, s.item, s.count))
+            .collect();
+
+        w.fire(0, 100.0).expect("fired");
+        let evs = w.drain_events();
+        assert!(
+            spawns(&evs).iter().all(|wid| *wid == WEAPON_PLATFORM_GUN),
+            "a mounted player fired something out of their own bag"
+        );
+        let after: Vec<_> = w
+            .player(0)
+            .expect("there")
+            .inventory
+            .iter()
+            .map(|(i, s)| (i, s.item, s.count))
+            .collect();
+        assert_eq!(before, after, "firing the platform spent inventory ammo");
+        assert!(w.platform_ammo(g.id).expect("a platform") < GUN_PLATFORM_AMMO);
+
+        // **The control**: unmounted, the same call fires the bazooka out of the
+        // bag — so "the platform fired" is about the mount, not about a fire
+        // path that never works.
+        let mut w2 = playing();
+        w2.player_mut(0).expect("there").inventory.add(BAZOOKA, 4);
+        w2.select_slot(0, 0);
+        let slot = w2
+            .player(0)
+            .expect("there")
+            .inventory
+            .iter()
+            .find(|(_, s)| s.item == BAZOOKA)
+            .map(|(i, _)| i)
+            .expect("a bazooka");
+        w2.select_slot(0, slot);
+        w2.drain_events();
+        w2.fire(0, 100.0).expect("the unmounted control fired");
+        let fired = spawns(&w2.drain_events());
+        assert!(
+            !fired.is_empty() && fired.iter().all(|wid| *wid != WEAPON_PLATFORM_GUN),
+            "the unmounted control fired the platform gun: {fired:?}"
+        );
+    }
+
+    /// A partial volley when the magazine cannot fill one: three rounds left
+    /// fires three, and does not go negative.
+    #[test]
+    fn a_short_magazine_fires_what_is_left_and_stops_at_zero() {
+        let mut w = playing();
+        let g = mounted(&mut w);
+        let short = GUN_PLATFORM_BARRAGE - 1;
+        w.platform_ammo[g.id as usize] = short;
+        w.drain_events();
+        w.fire(0, 100.0).expect("fired");
+        let fired = spawns(&w.drain_events());
+        assert_eq!(
+            fired.len(),
+            short as usize,
+            "a magazine of {short} fired {} rounds",
+            fired.len()
+        );
+        assert_eq!(w.platform_ammo(g.id), Some(0), "the magazine went negative");
+    }
+
+    /// Determinism: the same seed and the same inputs give the same hash after
+    /// several volleys. The magazine is in the hash, so a drifted one shows up.
+    #[test]
+    fn firing_is_deterministic_across_two_identical_worlds() {
+        let run = || {
+            let mut w = playing();
+            mounted(&mut w);
+            let mut now = 100.0;
+            for _ in 0..5 {
+                let _ = w.fire(0, now);
+                now += GUN_PLATFORM_COOLDOWN * 1.5;
+                w.step(SIM_DT);
+                w.drain_events();
+            }
+            w.state_hash()
+        };
+        assert_eq!(run(), run(), "two identical runs diverged");
+    }
+
+    /// The magazine is **in** the hash — asserted directly, because a field the
+    /// hash forgot is exactly the §A34 failure this project has shipped.
+    #[test]
+    fn the_magazine_is_covered_by_the_state_hash() {
+        let mut a = playing();
+        let b = playing();
+        assert_eq!(a.state_hash(), b.state_hash(), "the fixture worlds differ");
+        a.platform_ammo[0] -= 1;
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "spending a round left the state hash unchanged"
         );
     }
 }

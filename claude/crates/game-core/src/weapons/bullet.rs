@@ -428,7 +428,15 @@ mod tests {
         assert_eq!(other, vec![DEAGLE_DAMAGE]);
     }
 
-    /// The auto set is exactly the two automatics (§F3).
+    /// The auto set is exactly the two automatics (§F3), **plus the one gun
+    /// nobody carries**.
+    ///
+    /// T21.11C's `platform_gun` holds its trigger too, but it is not one of
+    /// §F3's automatics and cannot be: there is no item for it, it never enters
+    /// an inventory, and its cadence is `GUN_PLATFORM_COOLDOWN` on the platform
+    /// rather than this def's `cooldown`. It is named here rather than filtered
+    /// out silently, so a *carried* weapon cannot join the auto set without this
+    /// list moving.
     #[test]
     fn only_the_automatics_are_auto() {
         let auto: Vec<&str> = crate::weapons::defs::WEAPONS
@@ -436,7 +444,7 @@ mod tests {
             .filter(|w| matches!(w.delivery, Delivery::Bullet { auto: true, .. }))
             .map(|w| w.key)
             .collect();
-        assert_eq!(auto, vec!["smg", "machinegun"]);
+        assert_eq!(auto, vec!["smg", "machinegun", "platform_gun"]);
         // The control: the semi-autos are not, and the field is what §F3's client
         // repeat will read — it is set here and consumed there.
         for key in ["pistol", "revolver", "deagle"] {

@@ -5923,3 +5923,24 @@ Four falsifications red four different tests; dropping the wire bit reproduces t
 rubber-band, mirror 1069.3 vs server 1040 against a 2 px epsilon. The pixel check's control had
 to be moved clear of the player — it was drifting 4.0 on the walk animation. 936 core + server +
 894 client + gate 334 ok.
+
+## T21.11C — the gun platform: the barrage and the magazine
+
+Volley = `GUN_PLATFORM_BARRAGE` rounds in one tick across a **fixed** fan, not four RNG draws:
+drawing would put the gun's pattern in the same stream as item spawns and weather, so firing
+more would move both. `WEAPON_PLATFORM_GUN` is appended (§B16) with `Delivery::Bullet`, so the
+rounds are the existing bullet path. `World::fire` routes a mounted player to `fire_platform`
+before `inventory_actor` — one branch at the one verb every trigger comes through.
+**Three spec-table guards fired and all three were right.** `every_weapon_digs` refused a
+carving exemption that was not melee, so the mounted case got its **own** list with its own
+invariant rather than widening the melee one to nothing; `only_the_automatics_are_auto` and the
+§B7 ballistic table each got a named, existence-checked exemption.
+**My own test hung the box for 18 h**: its loop guard counted *successful* volleys, so a build
+where `fire` never succeeds could never trip it. Bounded by attempts now, and the third
+falsification — which had hung, and which I had wrongly reported as red — completes in 1.9 s
+and reds 7 tests.
+**`KIND_BY_WEAPON_KEY` was unguarded**: deleting the platform gun's entry reddened nothing, and
+the symptom would be rounds that hurt you and draw as nothing (§F1's six-milestone bug). Added
+the missing direction, read out of `defs.rs` with vacuity controls.
+Ammo + cooldown are hashed; `REPLAY_VERSION` 7 shared with T21.11B as its note says.
+**First gate ran on a loaded box (my error) — 48/51**; re-run idle: 51/51, 334 ok.

@@ -1633,6 +1633,54 @@ pub const GUN_PLATFORM_PAD_CLEARANCE: i32 = (PAD_W + GUN_PLATFORM_W) / 2;
 /// walking over a platform does not seize you, short enough that mounting under
 /// fire is a real choice rather than a suicide.
 pub const GUN_PLATFORM_MOUNT_TIME: f32 = 1.0;
+/// Rounds a platform holds, for the whole round (T21.11C).
+///
+/// **500, and the number is the design rather than a tuning knob.** The
+/// coordinator's ruling: *"a map resource worth fighting over, not a free weapon
+/// three times a round"*. At `GUN_PLATFORM_BARRAGE` per volley that is 125
+/// volleys — a long time holding one position, which is the trade, and a finite
+/// enough supply that taking a platform late in a round can mean taking an empty
+/// one.
+///
+/// **When it is empty it is empty**: the platform keeps its collision, its cover
+/// and its mount, and does nothing. It does not despawn, because the coordinator
+/// wants a refill item later and "empty forever" baked into the shape is what
+/// would have to be undone for it.
+pub const GUN_PLATFORM_AMMO: u16 = 500;
+/// Rounds per volley (T21.11C).
+///
+/// Four, fired **together across a fan** rather than in sequence: *"a barrage of
+/// 4 bullets at a time"*, and the reference art is triple-barrelled. A volley is
+/// four ordinary calls to the existing bullet path; a sequence would need a
+/// queue surviving across ticks, which is new hashed state and a new way to
+/// diverge.
+pub const GUN_PLATFORM_BARRAGE: u16 = 4;
+/// Total spread of one volley, radians — the angle from the first round to the
+/// last, centred on the aim.
+///
+/// Wide enough that four rounds are four rounds rather than one thick one, tight
+/// enough to still be aiming. `SMG_SPREAD` is the neighbour to compare against.
+pub const GUN_PLATFORM_FAN: f32 = 0.10;
+/// Seconds between volleys (T21.11C).
+///
+/// **The platform's own cooldown, not the player's.** `try_fire_slot` gates on
+/// `PlayerState::fire_ready_at`, which belongs to whatever the player happens to
+/// be holding — a platform sharing it would fire at the cadence of the weapon in
+/// a bag its rider cannot even reach.
+pub const GUN_PLATFORM_COOLDOWN: f32 = 0.12;
+/// Damage per round from the platform gun (T21.11C).
+///
+/// Below `MACHINEGUN_DAMAGE`, because the platform's power is its **rate**: four
+/// rounds every `GUN_PLATFORM_COOLDOWN` is far more damage per second than any
+/// carried weapon, and matching a rifle per round as well would make the trade
+/// no trade at all.
+pub const GUN_PLATFORM_DAMAGE: f32 = 6.0;
+/// How far a platform round flies before it stops, px.
+///
+/// Long: the whole point of giving up mobility is reaching across the map.
+pub const GUN_PLATFORM_RANGE: f32 = 900.0;
+/// Muzzle speed of a platform round, px/s.
+pub const GUN_PLATFORM_MUZZLE_SPEED: f32 = 1500.0;
 
 // --- C14: a living background ---
 

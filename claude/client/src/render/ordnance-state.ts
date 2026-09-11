@@ -136,6 +136,15 @@ export const WEAPON_KEYS: string[] = [
   // to it. Its `KIND_BY_WEAPON_KEY` entry and its look arrive with T19.13; until
   // then nothing emits one, so nothing reaches the layer that would draw it.
   'flame',
+  // T21.11C's gun platform. **Appended, like every id before it** — the registry
+  // is positional and `weaponKeysMatchTheRustRegistry` pins this list to it, so
+  // a missing entry here is one weapon's worth of shift in every projectile
+  // colour after it (§B16, the laser that resolved as a bazooka).
+  //
+  // Nobody carries it: there is no `ItemDef`, it never enters an inventory, and
+  // it is spawned only by `World::fire_platform`. It is here because it has a
+  // `WeaponId` and its rounds fly.
+  'platform_gun',
 ]
 
 export const KIND_BY_WEAPON_KEY: Record<string, ProjectileKind> = {
@@ -160,6 +169,11 @@ export const KIND_BY_WEAPON_KEY: Record<string, ProjectileKind> = {
   // §F10.3. Every fire in the game is one of these now — a flamethrower press,
   // a molotov's crowd and a lava vent's afterburn all arrive as this weapon.
   flame: 'flame',
+  // T21.11C. A **bullet**, drawn exactly like the ballistic guns above: the
+  // rounds go down the same `Delivery::Bullet` path in Rust, so drawing them
+  // any other way would be two pictures of one thing — the §A24 mistake this
+  // file's `LOOK` comment already records having paid for once.
+  platform_gun: 'bullet',
 }
 
 export interface TrailPoint {

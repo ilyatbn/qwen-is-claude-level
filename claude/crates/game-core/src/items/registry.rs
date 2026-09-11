@@ -83,6 +83,23 @@ pub const WEAPON_SHOVEL: WeaponId = WeaponId(24);
 /// **Appended, never inserted** (§B16).
 pub const WEAPON_FLAME: WeaponId = WeaponId(25);
 
+/// T21.11C's platform gun.
+///
+/// **Appended, never inserted** (§B16), like every id above it: `WEAPONS` is
+/// indexed by position and inserting anywhere else remaps every weapon after it,
+/// with a laser resolving as a bazooka as the symptom.
+///
+/// It is a weapon def rather than a hand-rolled projectile so the rounds are
+/// **the existing bullet path** — same flight, same collision, same renderer,
+/// same `LOOK` entry. A second bullet implementation is how two things that
+/// should look identical stop matching.
+///
+/// No `ItemDef` refers to it: you cannot pick a platform gun up, and its
+/// magazine lives on the platform rather than in anyone's inventory. That is
+/// also why it never appears in `live_weapons` — it has no item, so
+/// `is_retired`'s weight columns never see it.
+pub const WEAPON_PLATFORM_GUN: WeaponId = WeaponId(26);
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UtilityId {
     Flashlight,

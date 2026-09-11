@@ -124,6 +124,47 @@ describe('the projectile look-up tables', () => {
     }
   })
 
+  /**
+   * The other direction, and it was missing.
+   *
+   * The test above walks `KIND_BY_WEAPON_KEY` and checks the entries that are
+   * **there**. Nothing checked that a weapon whose rounds fly actually has one —
+   * so deleting `platform_gun: 'bullet'` reddened no test at all, and the
+   * symptom in a real round would be rounds that hurt you and cannot be seen.
+   * This project has shipped that exact bug: the ballistic guns were hitscan for
+   * six milestones and the report never stopped being "I cannot see gun
+   * projectiles".
+   *
+   * Read out of the Rust source the same way the key order is, because the
+   * delivery is what decides whether anything flies — a list here would be the
+   * hand-kept thing that goes stale.
+   */
+  it('gives every weapon that spawns a flying round a kind to draw it as', () => {
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../../../crates/game-core/src/weapons/defs.rs'),
+      'utf8',
+    )
+    // `id`, then `key`, then `delivery` — the field order every def uses.
+    const flying = [...src.matchAll(/key:\s*"([^"]+)",[\s\S]{0,600}?delivery:\s*Delivery::(\w+)/g)]
+      .map((m) => ({ key: m[1]!, delivery: m[2]! }))
+      .filter((w) => w.delivery === 'Bullet' || w.delivery === 'Projectile')
+
+    // Vacuity controls: the parse found weapons, and it found the *right*
+    // deliveries — a regex that silently stopped matching would otherwise make
+    // this test pass by having nothing to check.
+    expect(flying.length).toBeGreaterThan(4)
+    expect(flying.map((w) => w.key)).toContain('smg')
+    expect(flying.map((w) => w.key)).not.toContain('knife')
+
+    for (const w of flying) {
+      expect(
+        KIND_BY_WEAPON_KEY[w.key],
+        `${w.key} is a Delivery::${w.delivery} with no KIND_BY_WEAPON_KEY entry — ` +
+          `its rounds would fly and draw as nothing`,
+      ).toBeDefined()
+    }
+  })
+
   it('draws something for every kind, so nothing is silently invisible', () => {
     for (const kind of Object.keys(LOOK) as Array<keyof typeof LOOK>) {
       // A bullet is exempt from the radius rule and only from that rule: it is
