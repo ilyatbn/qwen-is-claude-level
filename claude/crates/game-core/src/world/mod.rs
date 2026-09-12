@@ -1012,9 +1012,41 @@ impl World {
         self.round_seconds
     }
 
-    pub fn set_phase(&mut self, phase: RoundPhase) {
+    /// Tell clients what phase this world is in, **whether or not it just
+    /// changed** (T21.13).
+    ///
+    /// `set_phase` cannot do this: it early-returns when the phase already
+    /// matches, and that is correct — it is a *transition*, and announcing one
+    /// that did not happen would put a phase change in the replay stream that
+    /// the simulation never made.
+    ///
+    /// But a world is **born in `Warmup`** (see the constructor), and
+    /// `room.rs::restart` builds a fresh one and then asks for `Warmup`. That is
+    /// a no-op, so round two announced nothing at all: for the whole warmup the
+    /// client kept `phase == ended` and the *previous* round's deadline, which
+    /// is the "play again" panel sitting over a live round and a clock that
+    /// jumps back up instead of counting down. Reported from play.
+    ///
+    /// `docs/41` §3 says `round_state` is broadcast on every phase change **and**
+    /// once a second during `Playing`; the second half would normally have
+    /// covered this, and `RoundController::last_state_at` meant it did not.
+    pub fn announce_phase(&mut self) {
+        let tick = self.tick;
+        let (phase, time_left) = (self.phase, self.phase_time_left());
+        self.events.push(GameEvent::RoundState {
+            tick,
+            phase,
+            time_left,
+        });
+    }
+
+    /// Move to `phase`, announcing the transition. A no-op if already there.
+    ///
+    /// Returns whether it changed anything, so a caller that *must* have
+    /// announced can tell — see `announce_phase`.
+    pub fn set_phase(&mut self, phase: RoundPhase) -> bool {
         if self.phase == phase {
-            return;
+            return false;
         }
         self.phase = phase;
         self.phase_started_at = self.round_time;
@@ -1027,6 +1059,7 @@ impl World {
         if phase == RoundPhase::Ended {
             self.events.push(GameEvent::RoundEnd { tick });
         }
+        true
     }
 
     pub fn phase_time_left(&self) -> f32 {

@@ -2586,8 +2586,22 @@ impl Room {
         self.populate_world();
         self.seat_bots(seed);
         if let Some(world) = self.world.as_mut() {
-            world.set_phase(game_core::world::RoundPhase::Warmup);
+            // **`announce_phase`, not `set_phase`** (T21.13).
+            //
+            // The world above is freshly built and a world is *born* in
+            // `Warmup`, so `set_phase(Warmup)` was a no-op and round two
+            // announced nothing: for the whole warmup the client held
+            // `phase == ended` and round one's deadline, which is the "play
+            // again" panel over a live round and a clock that jumps back up.
+            // `set_phase` is a transition and correctly refuses to fake one;
+            // what this needs is to *state* the phase, which is a different
+            // verb.
+            debug_assert_eq!(world.phase, game_core::world::RoundPhase::Warmup);
+            world.announce_phase();
         }
+        // The controller outlives the world, and the new world's clock starts at
+        // zero — see `RoundController::step`, which resets its own rebroadcast
+        // anchor when it sees the clock go backwards.
         self.last_checksum_at = 0.0;
         tracing::info!(target: "game::round", seed, "round restarted");
         if recording {

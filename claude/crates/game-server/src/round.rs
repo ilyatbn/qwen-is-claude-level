@@ -163,6 +163,26 @@ impl RoundController {
         let now = world.round_time;
         let _ = dt;
 
+        // **The clock went backwards, so this is a different world** (T21.13).
+        //
+        // A `RoundController` outlives every world it drives: `restart` and the
+        // return-to-lobby path both install a fresh `World` whose `round_time`
+        // starts at zero, while `last_state_at` still holds a value from the
+        // round that just ended — around 249 in a four-minute round. The
+        // condition below then needs `round_time >= 250`, which a 240-second
+        // round never reaches, so the once-a-second rebroadcast `docs/41` §3
+        // promises produced **nothing** in round two and every round after.
+        //
+        // That is also what would otherwise have corrected a missed phase
+        // announcement within a second, so the two defects hid each other.
+        //
+        // Detected rather than reset from the call sites: every path that
+        // replaces the world has this property, and a reset written into two of
+        // them is a reset the third will not have.
+        if now < self.last_state_at {
+            self.last_state_at = f32::NEG_INFINITY;
+        }
+
         match world.phase {
             RoundPhase::Lobby => {}
             RoundPhase::Playing => {

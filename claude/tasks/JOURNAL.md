@@ -6009,3 +6009,24 @@ regenerate); the per-pixel proof lives in the unit tests.
 constants instead of reading them, one had a seam tolerance larger than any possible seam. Both
 now red their own mutation. Golden mask table verified unchanged: this is pixels, not geometry.
 918 client + 337 ok, 52/52.
+
+## T21.13 — the restarted round never announced itself
+
+Two defects, one cause each, both reported from play as one symptom.
+`room.rs::restart` builds a **fresh** world, a world is born in `Warmup`, and `set_phase`
+early-returns when the phase already matches — with the `RoundState` push after that return. So
+round two said nothing for its whole warmup and the client held `phase == ended` and round one's
+deadline: the vote panel over a live round, and a clock that jumps up instead of down.
+`set_phase` is **not** weakened — refusing to fake a transition is correct, and a faked one would
+put a phase change in the replay stream the simulation never made. `World::announce_phase` is a
+different verb: it *states* the phase. `restart` calls it.
+Second: `RoundController::last_state_at` is compared against `world.round_time` and the controller
+outlives the world, so after a restart the anchor held ~249 while the new clock started at 0 and
+the once-a-second rebroadcast `docs/41` §3 promises could never fire again — **0 broadcasts in
+round two against round one's 4**, measured. Reset by detecting the clock going backwards *inside*
+the controller, because every path that replaces the world has that property and a reset written
+into two of them is one the third will not have.
+The two hid each other: the rebroadcast would have corrected a missed announcement in a second.
+**`RoundState` had 14 references in this repo and none in a test** — nothing had ever asserted the
+message the round lifecycle depends on is sent. Both new tests lead with round one as their
+control. Each defect reds only its own test. 918 client + 337 ok, 52/52.

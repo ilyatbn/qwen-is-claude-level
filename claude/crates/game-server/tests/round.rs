@@ -252,3 +252,167 @@ fn a_departing_player_takes_their_vote_with_them() {
     );
     let _ = Duration::from_secs(1);
 }
+
+// ---------------------------------------------------------------- T21.13
+
+/// Every `RoundState` a run produced, as `(phase, time_left)`.
+///
+/// **`RoundState` had fourteen references in this repository and none in a
+/// test** before T21.13 — nothing had ever asserted that the message the whole
+/// round lifecycle depends on is sent at all, which is how a restart came to
+/// announce nothing.
+fn round_states(evs: &[game_core::world::GameEvent]) -> Vec<(RoundPhase, f32)> {
+    evs.iter()
+        .filter_map(|e| match e {
+            game_core::world::GameEvent::RoundState {
+                phase, time_left, ..
+            } => Some((*phase, *time_left)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A restarted round must announce itself (T21.13).
+///
+/// Reported from play: *"the match doesn't really end at 0 and like 10 seconds
+/// before I already see the menu for 'play again', and after the match restarts
+/// the timer has more time that was needed."*
+///
+/// The cause: `room.rs::restart` builds a fresh `World`, a world is **born in
+/// `Warmup`**, and `set_phase(Warmup)` early-returns when the phase already
+/// matches — with the `RoundState` push after that return. So round two said
+/// nothing for its whole warmup, the client kept `phase == ended` and round
+/// one's deadline, and the vote panel stayed up over a live round while the
+/// clock jumped back up instead of counting down.
+#[test]
+fn a_restart_announces_the_new_round() {
+    let mut room = Room::new(cfg(1.0));
+    let _a = seat(&mut room, "a");
+    let _b = seat(&mut room, "b");
+
+    // **The control comes first**: round one announces its warmup, so "a
+    // RoundState exists" cannot be satisfied by the first round alone.
+    let mut first = Vec::new();
+    room.request_start();
+    for _ in 0..(30 * 60) {
+        first.extend(room.tick_inline(SIM_DT));
+        if room.phase() != RoundPhase::Lobby {
+            break;
+        }
+    }
+    assert!(
+        round_states(&first)
+            .iter()
+            .any(|(p, _)| *p == RoundPhase::Warmup),
+        "round one never announced its warmup, so this test cannot see round two's"
+    );
+
+    // Run to Ended and vote to restart.
+    for _ in 0..(20 * 60) {
+        let _ = room.tick_inline(SIM_DT);
+        if room.phase() == RoundPhase::Ended {
+            break;
+        }
+    }
+    assert_eq!(room.phase(), RoundPhase::Ended);
+    room.vote_for_test(0, true);
+    room.vote_for_test(1, true);
+
+    // Collect across the restart itself.
+    let mut second = Vec::new();
+    for _ in 0..(25 * 60) {
+        second.extend(room.tick_inline(SIM_DT));
+        if room.phase() == RoundPhase::Warmup {
+            break;
+        }
+    }
+    assert_eq!(
+        room.phase(),
+        RoundPhase::Warmup,
+        "the round did not restart"
+    );
+
+    let announced = round_states(&second);
+    assert!(
+        announced.iter().any(|(p, _)| *p == RoundPhase::Warmup),
+        "the restarted round announced no warmup: {announced:?} — a client would \
+         hold the previous round's phase and deadline for the whole warmup"
+    );
+    // And it carries the **new** round's time, not the old one's.
+    let warmup = announced
+        .iter()
+        .find(|(p, _)| *p == RoundPhase::Warmup)
+        .expect("a warmup announcement");
+    assert!(
+        warmup.1 > 0.0,
+        "the restarted warmup announced {} seconds left",
+        warmup.1
+    );
+}
+
+/// The once-a-second rebroadcast must survive a restart (T21.13).
+///
+/// `docs/41` §3: *"`round_state` is broadcast on every phase change and once a
+/// second during `Playing`"*. `RoundController::last_state_at` is compared
+/// against `world.round_time` and the controller outlives the world — so after a
+/// restart the anchor held a value from the round that just ended while the new
+/// clock started at zero, and the condition could never be met again. Round two
+/// and every round after produced **no** periodic broadcasts at all, which also
+/// removed the self-correction that would have papered over the defect above.
+#[test]
+fn the_periodic_round_state_survives_a_restart() {
+    let mut room = Room::new(cfg(4.0));
+    let _a = seat(&mut room, "a");
+    let _b = seat(&mut room, "b");
+    begin(&mut room);
+
+    // The control: round one broadcasts periodically while Playing.
+    let mut first = Vec::new();
+    for _ in 0..(30 * 60) {
+        first.extend(room.tick_inline(SIM_DT));
+        if room.phase() == RoundPhase::Ended {
+            break;
+        }
+    }
+    let playing_first = round_states(&first)
+        .iter()
+        .filter(|(p, _)| *p == RoundPhase::Playing)
+        .count();
+    assert!(
+        playing_first > 1,
+        "round one produced {playing_first} Playing broadcasts — the control is \
+         broken, so round two's count proves nothing"
+    );
+
+    room.vote_for_test(0, true);
+    room.vote_for_test(1, true);
+    for _ in 0..(25 * 60) {
+        let _ = room.tick_inline(SIM_DT);
+        if room.phase() == RoundPhase::Warmup {
+            break;
+        }
+    }
+    assert_eq!(
+        room.phase(),
+        RoundPhase::Warmup,
+        "the round did not restart"
+    );
+
+    // Round two, through its Playing phase.
+    let mut second = Vec::new();
+    for _ in 0..(30 * 60) {
+        second.extend(room.tick_inline(SIM_DT));
+        if room.phase() == RoundPhase::Ended {
+            break;
+        }
+    }
+    let playing_second = round_states(&second)
+        .iter()
+        .filter(|(p, _)| *p == RoundPhase::Playing)
+        .count();
+    assert!(
+        playing_second > 1,
+        "round two produced {playing_second} periodic broadcasts against round \
+         one's {playing_first} — the rebroadcast anchor did not follow the new world"
+    );
+}
