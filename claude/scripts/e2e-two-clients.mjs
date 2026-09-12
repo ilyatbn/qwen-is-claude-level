@@ -255,6 +255,139 @@ const solidBeforeB = (await dbg(b)).solid
 // worse and is fixed elsewhere: a platform could be placed on a spawn point, so
 // ana sometimes spawned standing on a gun platform, mounted it by standing
 // still, and fired four **volleys** of four.
+// ---------------------------------------- off the gun platform (T21.22)
+//
+// **The muzzle was never the problem.** This check fired `BAZOOKA_AMMO` times
+// and required exactly that many rockets; it failed inside a full gate with
+// `fired 4 but only 10 rockets left the muzzle` and passed standalone. 10 is
+// not noise: it is 2 rockets + 2 volleys of `GUN_PLATFORM_BARRAGE` (4). Ana
+// never moves in this check, so when the spawn sampler puts her on or beside a
+// gun platform she stands still on it, mounts it — that is the mechanic, not a
+// bug — and a mounted player's trigger pull fires the platform instead of her
+// bag (`world/mod.rs::fire_platform`). The volley's projectiles are owned by
+// her, so `ownProjectileSpawns` counts every one.
+//
+// **The gap this closes is observability, not gameplay.** The firing loop
+// sleeps `BAZOOKA_COOLDOWN * 1000 + 120` = 1020 ms between shots and
+// `GUN_PLATFORM_MOUNT_TIME` is 1.0 s, so a player standing on a platform
+// re-mounts inside *every* gap no matter how the loop is paced — there is no
+// cadence that avoids it, only a position. So this moves her off, proves she
+// left by watching the field rather than by trusting the keypress, and then
+// asserts the mount state either side of the loop. If it ever recurs, the
+// failure names the platform.
+//
+// **Not** by widening `GUN_PLATFORM_SPAWN_CLEARANCE`: that was tried, and it
+// starved the spawn sampler. And **not** by loosening the count below — a
+// tolerance there would have hidden this instead of naming it.
+const mountOf = async (c) => (await dbg(c)).mount
+const m0 = await mountOf(a)
+// §B15. An assertion on a field that does not exist cannot fail, so read the
+// pair once and say so out loud before anything below leans on them.
+if (typeof m0?.mounted !== 'boolean' || !('platformUnderfoot' in (m0 ?? {}))) {
+  fail(
+    `debug().mount is not the expected pair (got ${JSON.stringify(m0)}) — the mount ` +
+      'assertions below cannot fail, so they prove nothing',
+  )
+}
+/**
+ * Where she is and where the platforms are, as one string.
+ *
+ * Carried in every mount failure below, because "ana is mounted" on its own
+ * sends the next reader back to reproduce it: the position and the platform
+ * list are what say whether she spawned there or was moved there, and that is
+ * the whole difference between the two causes this flake has had.
+ */
+const nearPlatforms = async () => {
+  const d = await dbg(a)
+  const me = d.serverPlayer ?? d.player
+  const at = d.platformPositions ?? []
+  const near = at
+    .map((p) => ({ id: p.id, d: Math.hypot(p.x - (me?.x ?? 0), p.y - (me?.y ?? 0)) }))
+    .sort((u, v) => u.d - v.d)[0]
+  return (
+    `ana at (${Math.round(me?.x ?? NaN)},${Math.round(me?.y ?? NaN)}), ` +
+    `${at.length} platforms, nearest ${near ? `#${near.id} at ${Math.round(near.d)} px` : 'none'}`
+  )
+}
+
+// The number that says whether this was one unlucky seed or a standing
+// condition. Printed on every run, pass or fail.
+console.log(
+  `[two-clients] ana at spawn: platformUnderfoot=${m0?.platformUnderfoot ?? null} ` +
+    `mounted=${m0?.mounted ?? null} — ${await nearPlatforms()}`,
+)
+
+/**
+ * Walk ana clear of whatever platform she is standing on, and prove she left.
+ *
+ * **Three steps, because they are three different states.** A mounted player is
+ * immobile, so a direction key pressed while mounted does nothing at all — the
+ * dismount is holding jump, and it goes first and alone. Then the walk. Then a
+ * wait for her to be *at rest*: `grounded` is the exact condition the server's
+ * own mount rule tests (`world/mod.rs::step_mount` reads `body.grounded` and
+ * passes it to `mount::step`), so an airborne body that has cleared the
+ * footprint for one frame on its way back down does not read as "off it".
+ *
+ * **Polled, never slept against `GUN_PLATFORM_MOUNT_TIME`.** That tunable is
+ * not in `constants_json`, so spelling it here would be a hardcoded copy — a
+ * test that expires the day it is retuned (§A32). Waiting on the effect makes
+ * the number irrelevant instead.
+ *
+ * Returns the mount state it ended on — the caller asserts, this only moves.
+ * Either direction is tried, for the reason `holdUntilMoved` above already
+ * gives: a spawn with a wall to its right is a legal spawn.
+ */
+const stepOffPlatform = async (key, deadlineMs = 12_000) => {
+  const started = Date.now()
+  const left = () => deadlineMs - (Date.now() - started)
+  if ((await mountOf(a))?.mounted === true) {
+    await a.page.keyboard.down('Space')
+    while (left() > 0 && (await mountOf(a))?.mounted !== false) await sleep(100)
+    await a.page.keyboard.up('Space')
+  }
+  await a.page.keyboard.down(key)
+  while (left() > 0) {
+    const m = await mountOf(a)
+    if (m?.platformUnderfoot === null && m?.mounted === false) break
+    await sleep(100)
+  }
+  await a.page.keyboard.up(key)
+  let d = await dbg(a)
+  while (left() > 0 && d.player?.grounded !== true) {
+    await sleep(100)
+    d = await dbg(a)
+  }
+  return d.mount
+}
+
+// Only when she is actually on one: walking her for no reason would change the
+// terrain under the crater assertions below on every run, for a condition that
+// holds on some of them.
+if (m0?.platformUnderfoot !== null || m0?.mounted === true) {
+  let m = await stepOffPlatform('d')
+  if (m?.platformUnderfoot !== null || m?.mounted !== false) m = await stepOffPlatform('a')
+  // **The effect, not the keypress.** A `keyboard.down` that moved nobody is
+  // exactly the failure this whole block exists to stop reporting as a muzzle.
+  if (m?.platformUnderfoot !== null || m?.mounted !== false) {
+    fail(
+      `ana could not get clear of a gun platform (underfoot=${m?.platformUnderfoot}, ` +
+        `mounted=${m?.mounted}) — the rocket count below would measure a volley`,
+    )
+  }
+  console.log(
+    `[two-clients] ana stepped off: platformUnderfoot=${m?.platformUnderfoot} mounted=${m?.mounted}`,
+  )
+}
+
+const mountBefore = await mountOf(a)
+if (mountBefore?.mounted !== false) {
+  fail(
+    `ana is mounted on a gun platform before the firing loop (platform ` +
+      `${mountBefore?.platformUnderfoot}) — every trigger pull below fires a volley of ` +
+      `GUN_PLATFORM_BARRAGE, not one rocket. ${await nearPlatforms()}`,
+  )
+}
+
 const spawnsBefore = (await dbg(a)).observed?.ownProjectileSpawns ?? 0
 // The whole stack, at the cadence that empties it.
 const rockets = Math.round(k.BAZOOKA_AMMO)
@@ -270,6 +403,20 @@ const removedB = solidBeforeB - dbF.solid
 // and still pass on a single lucky rocket, which is how it came to believe it
 // fired twelve. If the server did not accept what we sent, that is the finding —
 // not the smaller crater it produces.
+// **And again after** (T21.22). She does not move during the loop, so this
+// cannot change — which is the point: if it ever does, the count below is
+// measuring volleys and the failure should say so rather than blaming the
+// muzzle. An assertion only before the loop would be satisfied by a mount that
+// happened in the first 1020 ms gap.
+const mountAfter = await mountOf(a)
+if (mountAfter?.mounted !== false) {
+  fail(
+    `ana mounted a gun platform during the firing loop (platform ` +
+      `${mountAfter?.platformUnderfoot}) — the rocket count below is volleys of ` +
+      `GUN_PLATFORM_BARRAGE, not rockets. She did not press a key, so the blast or the ` +
+      `crater moved her onto it. ${await nearPlatforms()}`,
+  )
+}
 const spawnsAfter = (await dbg(a)).observed?.ownProjectileSpawns ?? 0
 if (spawnsAfter - spawnsBefore !== rockets) {
   fail(`fired ${rockets} but only ${spawnsAfter - spawnsBefore} rockets left the muzzle`)

@@ -19,7 +19,7 @@ import { AnimalLayer } from '../render/animals'
 import { BirdLayer } from '../render/birds'
 import { landingVolume } from '../render/feel-math'
 import { GATE_KEY, padUnderfoot, type PadView } from '../render/pads'
-import { occupiedPlatforms } from '../render/platforms'
+import { occupiedPlatforms, platformUnderfoot } from '../render/platforms'
 import { atlasArt } from '../render/objects'
 import type { MapObject } from '../net/codec'
 import { C, Core, dequantizeAngle, strictConstants, type VentSpec } from '../core'
@@ -2690,6 +2690,68 @@ export class GameScene extends Phaser.Scene {
           onPad: (() => {
             const me = self.core.playerState(self.me)
             return me ? padUnderfoot(self.padViews, me.x, me.y) : null
+          })(),
+          /**
+           * T21.22. **Riding a platform, and standing on one — two fields,
+           * because they are two facts.**
+           *
+           * `occupiedPlatforms` above already says why the halves come from
+           * different places, and this is the same split made readable to a
+           * browser check. **Whether** she is mounted is the server's, carried
+           * by `MOVE_MOD.mounted` and read off the mirror's snapshot rather
+           * than off prediction, so a mount the server refused cannot appear
+           * here. **Which** platform is under her feet is geometry — the same
+           * `platformUnderfoot` the lamp uses — and it is emphatically *not*
+           * the same question: a mount takes `GUN_PLATFORM_MOUNT_TIME` of
+           * standing still on it, and an occupied platform refuses a second
+           * rider, so `platformUnderfoot` non-null with `mounted` false is a
+           * legal and common state.
+           *
+           * Collapsing them into one flag would have made
+           * `e2e-two-clients`'s "get off the platform" step untestable: the
+           * step has to watch the geometry change, and the assertion either
+           * side of the firing loop has to watch the mount.
+           *
+           * The reason both exist at all: a player who spawns on a platform
+           * mounts it by standing still, and a mounted player's trigger pull
+           * fires a volley of `GUN_PLATFORM_BARRAGE` instead of one rocket.
+           * With nothing reporting the mount, that arrives at a check as
+           * "10 rockets left the muzzle for 4 trigger pulls" — a true count
+           * blaming the wrong mechanism.
+           */
+          /**
+           * Where every gun platform is, so a check can say *which* one it is
+           * near rather than guess a coordinate — `padPositions`, `mines` and
+           * `birdViews` above all exist for the same reason.
+           *
+           * It is what makes `mount.mounted`'s **presence control** possible at
+           * all: proving "she is not mounted" is not vacuous means deliberately
+           * walking her onto one, and a check cannot walk toward a position it
+           * cannot read. It also turns the mount assertions' failure message
+           * from "she is mounted" into "she is mounted, here, and the platforms
+           * are there" — the diagnosis in the failure rather than in the next
+           * session.
+           *
+           * `platformViews` is what `map_init` carried and what the lamp layer
+           * was built from, so this is the same list the renderer uses, not a
+           * second copy that could disagree.
+           */
+          platformPositions: self.platformViews.map((p) => ({ id: p.id, x: p.x, y: p.y })),
+          mount: (() => {
+            const mine = self.mirror.players.get(self.me)
+            const c = C()
+            return {
+              mounted: mine ? flag(mine.moveMods, MOVE_MOD.mounted) : false,
+              platformUnderfoot: mine
+                ? platformUnderfoot(
+                    self.platformViews,
+                    mine.x,
+                    mine.y,
+                    c.PLAYER_H,
+                    c.GUN_PLATFORM_W,
+                  )
+                : null,
+            }
           })(),
           // Count at both ends (§A39). These two numbers were silently
           // different for world items for three milestones; asserting only

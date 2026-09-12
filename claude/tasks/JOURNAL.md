@@ -6066,3 +6066,17 @@ against measured screen brightness, not the textbook noise mean, because the fir
 `loadSettings` was never called at boot; T21.16's gate passed because nothing consumed it yet.
 928 client. Gate 52/53: `two-clients` reds intermittently on a pre-existing gun-platform flake
 (4 pulls, 10 rockets = 2 bazooka + 2 barrages of 4), booked as T21.22 and fixed separately.
+
+## T21.22 — "10 rockets left the muzzle" was a gun platform
+
+`two-clients` fired 4 and counted 10 because a **mounted** player's trigger pull fires the
+platform, and `fire_platform` spawns `GUN_PLATFORM_BARRAGE` rounds **owned by that player**:
+2 + 4 + 4 = 10. Proved, not argued — a run with ana deliberately mounted read `fired 4 but only
+**16** rockets`. The loop's 1020 ms gap exceeds `GUN_PLATFORM_MOUNT_TIME`, so no cadence avoids
+it, only a position. **Observability, not gameplay**: `debug().mount` now carries `mounted` (the
+wire's, off the mirror) and `platformUnderfoot` (geometry) as two fields — `occupiedPlatforms`
+already says why they are two — plus `platformPositions`, without which the presence control
+cannot walk her onto one. The count stays exactly as strict. **0 of 10 runs (twice) had a
+platform underfoot at spawn**, so T21.14's placement fix holds and the residual route is
+displacement mid-loop — which is what the after-loop assertion is for. 10/10 green, 928 client,
+tsc clean. Gate not run: coordinator's.
