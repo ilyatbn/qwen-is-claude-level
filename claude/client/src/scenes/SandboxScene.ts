@@ -838,6 +838,16 @@ export class SandboxScene extends Phaser.Scene {
         self.world.platforms.setVisible(on)
         return { visible: on, count: self.world.platforms.count }
       },
+      /**
+       * T21.15: the map's seed, and the seed the terrain tiles were built from.
+       *
+       * **Both ends.** Either alone passes against the other being wrong — and
+       * the failure mode here is precisely a dropped argument, which leaves the
+       * map seed correct and the tiles constant.
+       */
+      terrainSeeds() {
+        return { map: self.core.meta.seed, tiles: self.world.tileSeed }
+      },
       platforms() {
         return {
           count: self.world.platforms.count,

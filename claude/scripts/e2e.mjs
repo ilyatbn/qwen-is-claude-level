@@ -84,6 +84,7 @@ const CHECKS = [
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
   // §C0's gate: destroying terrain must change the picture, not just the mask.
   { name: 'terrain-render', file: 'scripts/checks/terrain-render.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'terrain-seed', file: 'scripts/checks/terrain-seed.mjs', url: '?sandbox=1&seed=0' },
   // T21.02: the boots have to be visible on the player. In the sandbox
   // because it is the one scene that can supply a **control frame** — the
   // same body, in the same place, before and after picking them up.

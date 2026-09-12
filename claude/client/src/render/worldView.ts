@@ -75,6 +75,17 @@ export class WorldView {
    */
   readonly pads: PadLayer
   readonly platforms: PlatformLayer
+  /**
+   * The seed the terrain tiles were actually built from (T21.15).
+   *
+   * Recorded so a check can count it **at both ends** — the map's seed against
+   * the one the textures used. The regression this exists for is dropping the
+   * argument at the call site below, which makes every map wear the same rock
+   * and which no rendered-pixel comparison of two maps can see: two seeds
+   * generate different *geometry*, so the frame differs either way. Measured: a
+   * pixel comparison of two maps reported 44.1 with the bug fully restored.
+   */
+  readonly tileSeed: number
   readonly timings: WorldViewTimings = { buildAllMs: 0, lastRebakeMs: 0 }
 
   private readonly backdrop: Backdrop
@@ -107,12 +118,16 @@ export class WorldView {
         },
       },
       core,
-      makeFillTexture(256, theme),
-      makeEdgeTexture(256, theme),
+      // **Seeded by the map** (T21.15). These took a hardcoded literal, so every
+      // map in the game wore the same rock — `core.meta.seed` was one line above
+      // the call and simply never passed.
+      makeFillTexture(256, theme, core.meta.seed),
+      makeEdgeTexture(256, theme, core.meta.seed),
       undefined,
-      makeBackTexture(256, theme),
+      makeBackTexture(256, theme, core.meta.seed),
     )
 
+    this.tileSeed = core.meta.seed
     const t0 = performance.now()
     this.terrain.buildAll()
     this.timings.buildAllMs = performance.now() - t0

@@ -5988,3 +5988,24 @@ the right question. Counts now assert the brief's **"up to 3"**: 88 of 90 maps g
 The sub-stream guard took **three** attempts — the first two were hollow and only mutation said
 so — and on the way `substream` turned out not to work the way the original comment claimed.
 `progress` deleted rather than left claiming a wiring it never had. 337 ok, 51/51.
+
+## T21.15 — the terrain texture never varies
+
+`makeNoiseTile` took the literals 7/23/41, so every map ever generated wore byte-identical rock;
+only the 3-entry palette varied. They are **per-layer offsets** now, added to a folded map seed —
+`hash01` truncates to int32 and a u64 seed cannot survive a JS number, so the narrowing is
+explicit rather than left to float precision. **The property the fixed seeds were written for is
+kept**: at one seed a theme change still recolours without reshaping, because theme and seed are
+independent inputs.
+**This survived every gate because the code was only reachable through a canvas** and vitest runs
+in node — so the tiles had no test at all. The arithmetic moved to `noise-math::noiseTilePixels`;
+the canvas half stays put.
+**My first rendered-pixel check was hollow and the falsification said so**: two seeds at one theme
+moved 31.3 against a control of 0.1, and *still* reported 44.1 with the bug fully restored — two
+seeds generate different geometry, so the frame differs whatever the tiles do. A pixel comparison
+cannot isolate this. The browser half now counts both ends (map seed vs tile seed, across a
+regenerate); the per-pixel proof lives in the unit tests.
+**Two of three unit tests were hollow on the first attempt too** — one re-encoded the layer
+constants instead of reading them, one had a seam tolerance larger than any possible seam. Both
+now red their own mutation. Golden mask table verified unchanged: this is pixels, not geometry.
+918 client + 337 ok, 52/52.
