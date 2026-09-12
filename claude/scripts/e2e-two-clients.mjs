@@ -391,9 +391,164 @@ if (mountBefore?.mounted !== false) {
 const spawnsBefore = (await dbg(a)).observed?.ownProjectileSpawns ?? 0
 // The whole stack, at the cadence that empties it.
 const rockets = Math.round(k.BAZOOKA_AMMO)
+/**
+ * **Hop between shots, so the mount can never complete** (T21.22).
+ *
+ * Stepping off a platform before the loop is not enough on its own: ana is
+ * stationary for the whole loop, and *anything* that puts her back on one —
+ * her own blast's knockback, or the crater undercutting the ground she stands
+ * on — gives the mount rule a clear second to work in. The gap below is 1020 ms
+ * and `GUN_PLATFORM_MOUNT_TIME` is 1.0 s, so the mount wins that race by 20 ms
+ * at any cadence. Position is the only lever, and after the first shot this
+ * check does not control her position.
+ *
+ * **So deny the hold instead of avoiding the platform.** Read `mount::step`'s
+ * unmounted branch for what actually maintains `held`:
+ *
+ *     match under {
+ *         Some(id) if grounded => { ...; st.held += dt; ... }
+ *         _ => { st.target = None; st.held = 0.0; }
+ *     }
+ *
+ * **Horizontal movement does not reset it** — nothing there reads velocity or
+ * direction, and a walk only works by carrying her off the footprint. What
+ * resets it is failing that guard, and `grounded` is half of it: one airborne
+ * tick drops into the `_` arm and zeroes `held`. `step_mount` reads
+ * `body.grounded` from the previous `apply_input`, so a jump registers.
+ *
+ * Hence a **hop**, not a nudge sideways. Continuously through the gap, so the
+ * longest unbroken grounded stretch is one hop of this loop rather than a
+ * margin somebody picked — no copy of `GUN_PLATFORM_MOUNT_TIME` appears here,
+ * and there could not be one: it is not in `constants_json`.
+ *
+ * Her **x is untouched** — no direction key — so the craters land where the
+ * blast-radius reasoning above assumed, and the cross-client terrain equality
+ * below still compares two clients watching the same shots.
+ */
+let airborneSeen = 0
+let gapsWithoutAir = 0
+const fuelBefore = (await dbg(a)).jetpack?.fuel ?? 0
+let fuelFloor = Infinity
+let yLow = Infinity
+let yHigh = -Infinity
+/**
+ * Hop once if she is on the ground. Returns the sample it decided from.
+ *
+ * A press while **airborne** is the jetpack gesture, not a jump —
+ * `jetpack::update`'s post-jump branch engages on `jump_pressed &&
+ * !body.grounded`, bypassing `JETPACK_HOLD_DELAY`. Pressing blind every cycle
+ * ran her tank from 5 to 3.2, measured. Grounded-only presses cannot reach that
+ * branch, and a 60 ms tap is released long before the hold delay reaches the
+ * other one.
+ */
+const hopIfGrounded = async () => {
+  const d = await dbg(a)
+  if (d.player?.grounded === true) {
+    await a.page.keyboard.down('Space')
+    await sleep(60)
+    await a.page.keyboard.up('Space')
+  }
+  return d
+}
 for (let i = 0; i < rockets; i++) {
+  const spawnsPre = (await dbg(a)).observed?.ownProjectileSpawns ?? 0
   await a.page.evaluate('window.__game.fire()')
-  await sleep(k.BAZOOKA_COOLDOWN * 1000 + 120)
+  /**
+   * **Wait for the shot to be accepted, then wait the cooldown in the server's
+   * own clock** (T21.22).
+   *
+   * This was `sleep(BAZOOKA_COOLDOWN * 1000 + 120)`: a wall-clock wait against
+   * a server-side tunable, with 120 ms of headroom on 900. Measured at the
+   * moment it bites — one gap advanced the wall clock 1113 ms while
+   * `serverRoundTime` advanced **400 ms**. A gap that looks generous is then
+   * under the cooldown as the server counts it, the next shot is refused, and
+   * the failure reads `fired 4 but only 3 rockets left the muzzle`: a true
+   * report about a refusal that says nothing about the muzzle. It cost three
+   * reds in thirty runs once the hop below added the load that provokes it.
+   *
+   * **Anchored on the spawn, not on the send.** `serverRoundTime` sampled
+   * before `fire()` is *earlier* than the round time the server stamps the shot
+   * at, so waiting a cooldown from it is optimistic — the mistake this replaces.
+   * The spawn arriving proves the server processed the shot, so the round time
+   * read then is at or after `fire_ready_at - cooldown`, and the wait is
+   * conservative.
+   *
+   * **A refusal is still a finding, not something this swallows**: if the spawn
+   * never arrives, this fails and says so.
+   */
+  const acceptBy = Date.now() + 15_000
+  let accepted = null
+  let airThisGap = 0
+  for (;;) {
+    const d = await hopIfGrounded()
+    if (d.player?.grounded === false) {
+      airborneSeen += 1
+      airThisGap += 1
+    }
+    const y0 = d.player?.y
+    if (typeof y0 === 'number') {
+      yLow = Math.min(yLow, y0)
+      yHigh = Math.max(yHigh, y0)
+    }
+    fuelFloor = Math.min(fuelFloor, d.jetpack?.fuel ?? Infinity)
+    if ((d.observed?.ownProjectileSpawns ?? 0) > spawnsPre) {
+      accepted = d.serverRoundTime
+      break
+    }
+    if (Date.now() > acceptBy) break
+    await sleep(120)
+  }
+  if (accepted === null) {
+    fail(
+      `shot ${i + 1} of ${rockets} was never accepted: no projectile of ana's own spawned ` +
+        'within 15 s of the trigger pull',
+    )
+    break
+  }
+  for (;;) {
+    const d = await hopIfGrounded()
+    if (d.player?.grounded === false) {
+      airborneSeen += 1
+      airThisGap += 1
+    }
+    const y = d.player?.y
+    if (typeof y === 'number') {
+      yLow = Math.min(yLow, y)
+      yHigh = Math.max(yHigh, y)
+    }
+    fuelFloor = Math.min(fuelFloor, d.jetpack?.fuel ?? Infinity)
+    if (d.serverRoundTime - accepted > k.BAZOOKA_COOLDOWN) break
+    await sleep(120)
+  }
+  if (airThisGap === 0) gapsWithoutAir += 1
+}
+// **The effect, not the keypress** — and on the exact field the mount rule
+// tests. A `keyboard.down('Space')` that left her on the ground is a nudge sent
+// into the void, and it would leave the mount free to complete while this loop
+// reported that it had prevented it (§A15).
+if (gapsWithoutAir > 0 || airborneSeen === 0) {
+  fail(
+    `the between-shot hop never left the ground in ${gapsWithoutAir} of ${rockets} gaps ` +
+      `(${airborneSeen} airborne samples) — the mount hold was not being reset`,
+  )
+}
+// The second half of the same claim, on position rather than on a flag: a
+// `grounded` that is false while the body has not moved would be a broken
+// instrument, not a jump.
+if (!(yHigh - yLow > 0)) {
+  fail(`the between-shot hop moved ana 0 px vertically (y stayed ${yLow}) — she did not jump`)
+}
+// **The hop must be a jump, not a flight.** Pinned to the fuel she started the
+// loop with rather than to `JETPACK_MAX_FUEL`, so this carries no copy of a
+// tunable and still fails the moment a press reaches `jetpack::update`'s
+// airborne branch. The first version of this loop pressed Space every cycle and
+// ran her tank down to 4: a drained jetpack is a different player, and a check
+// that perturbs its subject that far is measuring its own nudge.
+if (fuelFloor < fuelBefore) {
+  fail(
+    `the between-shot hop burned jetpack fuel (${fuelBefore} -> ${fuelFloor}) — a press ` +
+      'while airborne engages the jetpack instead of jumping',
+  )
 }
 const [daF, dbF] = await settle([a, b])
 const removedA = solidBeforeA - daF.solid

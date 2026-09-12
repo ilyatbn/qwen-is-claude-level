@@ -6080,3 +6080,19 @@ cannot walk her onto one. The count stays exactly as strict. **0 of 10 runs (twi
 platform underfoot at spawn**, so T21.14's placement fix holds and the residual route is
 displacement mid-loop — which is what the after-loop assertion is for. 10/10 green, 928 client,
 tsc clean. Gate not run: coordinator's.
+
+## T21.22b — closing the gun-platform flake: hop, don't step aside
+
+Stepping off before the loop is not sufficient — ana is stationary and a blast can put her back
+on a platform, and the 1020 ms gap loses to `GUN_PLATFORM_MOUNT_TIME` at any cadence. **The
+coordinator's premise that movement resets the hold is wrong**: `mount::step`'s unmounted branch
+reads only `under` and `grounded`, so a walk resets it only by leaving the footprint — what
+resets it in place is one airborne tick. Hence a **hop**, x untouched.
+**Two defects the hop exposed, both measured first.** A press while airborne is the *jetpack*
+(`jump_pressed && !grounded` bypasses `JETPACK_HOLD_DELAY`) and ran her tank 5.0 -> 3.2, so the
+hop presses only from the ground and an assertion pins the fuel. And the firing gap was
+wall-clock while the cooldown is spent in `world.round_time`: one gap advanced wall 1113 ms and
+server 400 ms, refusing the next shot — 3 reds in 30. The gap now waits for the shot to be
+*accepted*, anchors there, then waits the cooldown in the server's clock.
+**Staged control, identical setup, one variable**: no hop -> mounted, 13 spawns (1+4+4+4); hop ->
+`platformUnderfoot` still 0, **not mounted**, 4 spawns. Denial, not avoidance. 12/12 green.
