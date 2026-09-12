@@ -77,10 +77,16 @@ export async function samplePatch(page, { x, y, w, h }) {
     // A digest, so "different pixels arranged to the same mean" still registers.
     // A mean alone cannot tell a crater from a recolour.
     let digest = 2166136261
+    // Sum of squares alongside the sum, so `sd` below costs no second pass.
+    let lsum = 0
+    let lsq = 0
     for (let i = 0; i < d.length; i += 4) {
       r += d[i]
       g += d[i + 1]
       b += d[i + 2]
+      const l = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]
+      lsum += l
+      lsq += l * l
       digest = Math.imul(digest ^ d[i], 16777619) ^ d[i + 1] ^ d[i + 2]
     }
     const n = d.length / 4
@@ -89,6 +95,10 @@ export async function samplePatch(page, { x, y, w, h }) {
       g: g / n,
       b: b / n,
       lum: (0.2126 * r + 0.7152 * g + 0.0722 * b) / n,
+      // **How much the patch varies within itself**, which a mean cannot say.
+      // A flat wash and a cloudy one can share a mean and look nothing alike;
+      // this is the number that tells them apart.
+      sd: Math.sqrt(Math.max(0, lsq / n - (lsum / n) * (lsum / n))),
       digest: digest >>> 0,
       n,
     }

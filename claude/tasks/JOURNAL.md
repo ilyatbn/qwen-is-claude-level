@@ -6049,3 +6049,20 @@ menu. The menu steps aside while the panel is up — left visible, it poked out 
 greyed and unclickable, which reads as a bug rather than as depth. Back and Esc do the same
 thing, rather than one returning to the menu and the other to the round.
 The `resetForNewRound` tripwire caught `optionsPanel` before the gate did. 928 client + 340 ok.
+
+## T21.17 — shader plumbing, and fog first
+The first shaders in the project. `shaders.ts` holds `hasWebGL`, one shared fbm, and
+`FOG_FRAGMENT`; `weather.ts` builds a `Shader` **beside** the flat veil and `useShader()` picks
+one, so a machine without WebGL and a player with the toggle off both keep today's picture.
+Four bugs the checks found and reading would not have: tint bound as `[r,g,b]` where Phaser wants
+`{x,y,z}` rendered the fog **black** with no error; a backtick in a GLSL comment closed the
+template literal and the page never booted; `applyQuality` left visibility to the next frame, so
+the toggle read back stale; and drift measured over a wide patch reads a working shader as still.
+**Heavy fog is concealment, not decoration** — so the check inverts the compositing to recover the
+alpha painted at five spots, which cancels the terrain. The flat veil comes back 0.80 against a
+known `fogVeilAlpha` of 0.800; the shader 0.69–0.92, same mean. `DENSITY_PIVOT` is calibrated
+against measured screen brightness, not the textbook noise mean, because the first value painted
+0.90 where the veil paints 0.80 — the comment claiming mean-preservation was an intention.
+`loadSettings` was never called at boot; T21.16's gate passed because nothing consumed it yet.
+928 client. Gate 52/53: `two-clients` reds intermittently on a pre-existing gun-platform flake
+(4 pulls, 10 rockets = 2 bazooka + 2 barrages of 4), booked as T21.22 and fixed separately.

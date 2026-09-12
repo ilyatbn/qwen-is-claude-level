@@ -13,7 +13,19 @@
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
 import { EmberField, RainField, fogVeilAlpha, toxicDensity } from './weather-math'
+import { FOG_FRAGMENT, hasWebGL, rgbToUniform3f } from './shaders'
+import { isHighQuality, onHighQualityChange } from '../ui/settings'
 import { C } from '../core'
+
+/**
+ * Below this, fog is not drawn at all.
+ *
+ * Not `<= 0`: Phaser will happily fill at 0.0001, and a veil that is technically
+ * drawn between effects is one nobody can assert the absence of. Named because
+ * two places need the same answer — the per-frame draw, and the toggle, which
+ * has to know whether the shader it just enabled should be showing yet.
+ */
+const FOG_VISIBLE = 0.005
 
 export interface VentView {
   x: number
@@ -74,6 +86,28 @@ export class WeatherLayer {
     // draw nothing at all, not a transparent rectangle whose alpha is a rounding
     // error away from visible.
     this.fogVeil = scene.add.graphics().setScrollFactor(0).setDepth(DEPTH.fog)
+
+    // --- T21.17: the High Quality fog -------------------------------------
+    //
+    // **Built beside the flat veil, not instead of it.** One of the two draws on
+    // any given frame; which one is `useShader()`. A machine without WebGL never
+    // gets here, and a player with the toggle off keeps exactly today's picture —
+    // that is the whole contract of T21.16's switch.
+    if (hasWebGL(scene)) {
+      const base = new Phaser.Display.BaseShader('fogVolume', FOG_FRAGMENT, undefined, {
+        alpha: { type: '1f', value: 0 },
+        tint: { type: '3f', value: rgbToUniform3f(C().FOG_SCREEN_COLOUR) },
+      })
+      this.fogShader = scene.add
+        .shader(base, 0, 0, this.cam.width, this.cam.height)
+        .setOrigin(0, 0)
+        .setScrollFactor(0)
+        .setDepth(DEPTH.fog)
+        .setVisible(false)
+    }
+    // A live toggle: layers built under the old value have to follow it, or the
+    // player flips the switch, sees nothing, and flips it back (T21.16).
+    this.unsubscribeQuality = onHighQualityChange(() => this.applyQuality())
     this.rain = new RainField(260, this.cam.width, this.cam.height, 4242)
   }
 
@@ -81,7 +115,47 @@ export class WeatherLayer {
   get fogAlpha(): number {
     return this.lastFogAlpha
   }
+
+  /**
+   * Is the fog currently painted by the shader?
+   *
+   * Read off the object rather than off the setting: the setting can be on where
+   * WebGL is not, and then this is `false` — which is what a check must assert
+   * against, because the flat veil is not a fallback there, it is the only thing
+   * that works.
+   */
+  get fogIsShader(): boolean {
+    return this.useShader() && (this.fogShader?.visible ?? false)
+  }
   private lastFogAlpha = 0
+  /** The High Quality fog, or `null` on a machine with no WebGL. */
+  private fogShader: Phaser.GameObjects.Shader | null = null
+  private readonly unsubscribeQuality: () => void
+
+  /**
+   * Is the shader path in use right now?
+   *
+   * **Both halves matter.** The toggle can be on where WebGL is not available,
+   * and then the flat veil is not a fallback, it is the only thing that works.
+   */
+  private useShader(): boolean {
+    return this.fogShader !== null && isHighQuality()
+  }
+
+  /**
+   * Hide whichever fog is not in use, so the two can never both draw.
+   *
+   * **Applied here rather than left to the next frame.** `fogIsShader` reads the
+   * object's visibility, so a toggle that waits for `drawFog` tells whoever just
+   * flipped it the *old* answer — a wrong read for a check, and a frame of
+   * flicker for a player.
+   */
+  private applyQuality(): void {
+    if (!this.fogShader) return
+    const on = this.useShader()
+    this.fogShader.setVisible(on && this.lastFogAlpha >= FOG_VISIBLE)
+    if (on) this.fogVeil.clear()
+  }
 
   /**
    * Toxic rain, at the density the **real** drops justify (T20.05).
@@ -194,10 +268,21 @@ export class WeatherLayer {
     g.clear()
     const a = fogVeilAlpha(strength, hasFlashlight)
     this.lastFogAlpha = a
-    // Not `a <= 0`: Phaser will happily fill at 0.0001, and a veil that is
-    // technically drawn between effects is one nobody can assert the absence of.
-    if (a < 0.005) {
+    if (a < FOG_VISIBLE) {
       this.lastFogAlpha = 0
+      // **The shader is an object, not a draw call.** Clearing the Graphics is
+      // enough for the flat veil; a shader left visible keeps rendering after
+      // the fog has gone.
+      this.fogShader?.setVisible(false)
+      return
+    }
+    if (this.useShader() && this.fogShader) {
+      // The shader takes the **same** alpha the flat veil would have used, so
+      // the strength — and therefore how far a player can see — is identical in
+      // both modes. Only the painting differs.
+      this.fogShader.setVisible(true)
+      this.fogShader.setUniform('alpha.value', a)
+      this.fogShader.setDisplaySize(this.cam.width, this.cam.height)
       return
     }
     g.fillStyle(C().FOG_SCREEN_COLOUR, a)
@@ -266,5 +351,8 @@ export class WeatherLayer {
     this.fireGfx.destroy()
     this.vignette.destroy()
     this.fogVeil.destroy()
+    this.fogShader?.destroy()
+    // Or every round leaks a listener, and a setting flip wakes the dead ones.
+    this.unsubscribeQuality()
   }
 }

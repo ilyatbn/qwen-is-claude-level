@@ -12,6 +12,7 @@ import Phaser from 'phaser'
 import { C, Core, MapScale, strictConstants, type WeatherState } from '../core'
 import { DEPTH } from '../render/backdrop'
 import { occupiedPlatforms } from '../render/platforms'
+import { isHighQuality, setHighQuality } from '../ui/settings'
 import { MOVE_MOD } from '../net/codec'
 import { WorldView } from '../render/worldView'
 import { caveBackdropDefault, setCaveBackdropDefault } from '../render/terrain'
@@ -989,6 +990,21 @@ export class SandboxScene extends Phaser.Scene {
       },
       setFog(on: boolean) {
         self.fogActive = on
+      },
+      /**
+       * T21.17: flip High Quality from a check, and read back what took effect.
+       *
+       * Returns the **effect** — whether the shader path is actually in use —
+       * not an acknowledgement that the ask happened. A machine without WebGL
+       * answers `false` however the setting is set, which is the honest answer
+       * and the one a check needs.
+       */
+      setHighQuality(on: boolean) {
+        setHighQuality(localStorage, on)
+        return {
+          setting: isHighQuality(),
+          shaderFog: self.world.weather.fogIsShader,
+        }
       },
       toggleOverlays() {
         self.overlay.toggle()

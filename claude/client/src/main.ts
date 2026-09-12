@@ -1,4 +1,5 @@
 import Phaser from 'phaser'
+import { loadSettings } from './ui/settings'
 import { GameScene } from './scenes/GameScene'
 import { TitleScene } from './scenes/TitleScene'
 import { MenuScene } from './scenes/MenuScene'
@@ -134,6 +135,15 @@ async function main(): Promise<Phaser.Game> {
   const c = C()
 
   const scene = (await pickDevScene()) ?? playerScenes()
+
+  // **Before any scene exists** (T21.17). The panel writes this setting and a
+  // module-level cache serves it, so without a read at boot the stored value is
+  // never loaded and High Quality silently reverts to off on every reload.
+  //
+  // T21.16 shipped without this and its gate passed, because nothing consumed
+  // the setting yet and the check only proved it survived closing the *panel*.
+  // The first thing to read it is the first thing that could notice.
+  loadSettings(localStorage)
 
   const game = new Phaser.Game({
     type: Phaser.AUTO,
