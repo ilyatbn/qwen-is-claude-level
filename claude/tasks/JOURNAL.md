@@ -5968,3 +5968,23 @@ pads*, so "the ground behind a body" became a 71 px arch and the control went 32
 bodies stayed at 61. Fixed by hiding pads while it measures ground — the same isolation it
 already does for bodies — and re-falsified: with every body forced to skin 0 it still reds.
 905 client + 337 ok, 51/51.
+
+## T21.14 — the gun platform: what the review found
+
+Seven findings against three committed, gate-green commits. **Two were bugs no test could
+see**: `setOccupied` had no production caller, so the mounted lamp never lit in a real match
+(and `platforms.mjs` drove the sandbox hook, so the check proved the hook); and `mount::step`
+never re-read `underfoot` while mounted, so a blast threw a rider clear and left them firing the
+turret from cover. Both fixed, both falsified.
+**A third, found by chasing a 1-in-6 gate flake, was worse**: platforms were cleared of pads but
+never of **spawn points** — measured at 78 overlaps over 40 seeds x 3 scales, exact coincidences
+included. You spawn on a turret, stand still, and are mounted without touching anything.
+`two-clients` went HEAD 4/2 → placement fix 5/1 → owner-scoped spawn counter 6/0.
+**Two of my own fixes were wrong and were reverted rather than kept**: resetting the mount hold
+on fire cannot help when the weapon's cooldown gap (1.02 s) already exceeds the mount time; and
+clearing spawns at the *pad* clearance starved the sampler, because that constant answers "two
+footprints must not overlap" and a spawn has no footprint. `GUN_PLATFORM_SPAWN_CLEARANCE` asks
+the right question. Counts now assert the brief's **"up to 3"**: 88 of 90 maps get three.
+The sub-stream guard took **three** attempts — the first two were hollow and only mutation said
+so — and on the way `substream` turned out not to work the way the original comment claimed.
+`progress` deleted rather than left claiming a wiring it never had. 337 ok, 51/51.

@@ -3784,8 +3784,18 @@ impl World {
             // all. A replay whose hold had drifted by one tick would mount on a
             // different tick, and every hash before that would agree — the exact
             // shape §A34 exists to prevent. `REPLAY_VERSION` moves with it.
-            h.update(&[p.mount.mounted.unwrap_or(255)]);
-            h.update(&[p.mount.target.unwrap_or(255)]);
+            // **Presence and id folded separately** (T21.14). `unwrap_or(255)`
+            // collided with `mount::WIRE_MOUNTED`, which is also 255 — so
+            // "unmounted" and "mounted, per the wire" hashed identically in the
+            // one place built to detect divergence. Harmless today because a
+            // server-side `mounted` is never 255, and precisely the trap to
+            // leave for whoever next hashes a mirror-side world.
+            h.update(&[
+                u8::from(p.mount.mounted.is_some()),
+                p.mount.mounted.unwrap_or(0),
+                u8::from(p.mount.target.is_some()),
+                p.mount.target.unwrap_or(0),
+            ]);
             h.update(&p.mount.held.to_le_bytes());
             p.inventory.hash_into(&mut h);
         }
@@ -9119,6 +9129,81 @@ mod mount_wiring {
         );
     }
 
+    /// **T21.14: a blast that moves you takes you off the gun — and the gun
+    /// stops being yours.**
+    ///
+    /// The reviewed version of `mount::step` returned early while mounted and
+    /// never looked at `under`, so a rocket could throw a rider clear and leave
+    /// them mounted: immobile, bag locked, and still spawning rounds at the
+    /// platform's muzzle from behind cover. Self-knockback made it repeatable.
+    ///
+    /// Knockback on a mounted player was exercised **nowhere** —
+    /// `a_mounted_player_takes_damage_normally` uses poison, which applies no
+    /// impulse — so this fixture moves the body directly, which is what an
+    /// impulse does to it, without depending on a weapon's tuning.
+    #[test]
+    fn a_displaced_rider_is_dismounted_and_can_no_longer_fire_the_platform() {
+        let mut w = playing();
+        let g = platform(&w);
+        drive(
+            &mut w,
+            0,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        assert!(w.player(0).expect("there").mount.is_mounted());
+        // The control half: on the platform, they can fire it.
+        w.drain_events();
+        assert!(
+            w.fire(0, 100.0).is_ok(),
+            "the fixture cannot fire before the blast, so the assertion below proves nothing"
+        );
+
+        // Thrown clear, as an explosion's impulse does.
+        {
+            let p = w.player_mut(0).expect("there");
+            p.body.pos.x += crate::constants::GUN_PLATFORM_W as f32 * 3.0;
+        }
+        w.queue_input(
+            0,
+            Input {
+                seq: 9_000,
+                ..Default::default()
+            },
+        );
+        w.step(SIM_DT);
+        w.drain_events();
+
+        assert!(
+            !w.player(0).expect("there").mount.is_mounted(),
+            "a player thrown off the platform is still riding it"
+        );
+        assert_eq!(
+            w.platform_occupant(g.id),
+            None,
+            "the platform is still held by someone standing somewhere else"
+        );
+        // And the gun is no longer theirs: firing now goes to the bag, which is
+        // the shovel — never the platform gun.
+        w.drain_events();
+        let _ = w.fire(0, 200.0);
+        let fired: Vec<WeaponId> = w
+            .drain_events()
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::ProjectileSpawn { weapon, .. } => Some(*weapon),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            fired
+                .iter()
+                .all(|wid| *wid != crate::items::registry::WEAPON_PLATFORM_GUN),
+            "a displaced player still fired the platform gun: {fired:?}"
+        );
+    }
+
     /// The wire carries it, and the mirror's decode gets back what was encoded.
     #[test]
     fn the_mounted_bit_round_trips_through_the_move_mod_byte() {
@@ -9150,6 +9235,34 @@ mod mount_wiring {
         let clear = w.player(0).expect("there").move_mod_bits() & !MOVE_MOD_MOUNTED;
         mirror.set_move_mod_bits(clear);
         assert!(!mirror.move_mods().mounted);
+    }
+
+    /// **The hash tells "unmounted" from "mounted per the wire" apart** (T21.14).
+    ///
+    /// `mount.mounted` was folded as `unwrap_or(255)` and `mount::WIRE_MOUNTED`
+    /// is 255, so those two states hashed identically — in the one mechanism
+    /// built to detect divergence. Harmless while only servers hash (a
+    /// server-side `mounted` is never 255) and exactly the trap to leave behind
+    /// for whoever next hashes a mirror-side world.
+    #[test]
+    fn the_state_hash_distinguishes_unmounted_from_the_wire_sentinel() {
+        let mut a = playing();
+        let b = playing();
+        assert_eq!(a.state_hash(), b.state_hash(), "the fixture worlds differ");
+
+        a.player_mut(0).expect("there").mount.mounted = Some(crate::world::mount::WIRE_MOUNTED);
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "a player mounted per the wire hashes the same as an unmounted one"
+        );
+
+        // And the control: a real platform id is distinguishable too, so the
+        // fix did not simply stop hashing the id.
+        a.player_mut(0).expect("there").mount.mounted = Some(0);
+        let with_zero = a.state_hash();
+        a.player_mut(0).expect("there").mount.mounted = Some(1);
+        assert_ne!(with_zero, a.state_hash(), "two platforms hash the same");
     }
 
     /// Wings and a platform cannot both be in charge of gravity.

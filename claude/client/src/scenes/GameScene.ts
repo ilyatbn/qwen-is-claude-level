@@ -19,6 +19,7 @@ import { AnimalLayer } from '../render/animals'
 import { BirdLayer } from '../render/birds'
 import { landingVolume } from '../render/feel-math'
 import { GATE_KEY, padUnderfoot, type PadView } from '../render/pads'
+import { occupiedPlatforms } from '../render/platforms'
 import { atlasArt } from '../render/objects'
 import type { MapObject } from '../net/codec'
 import { C, Core, dequantizeAngle, strictConstants, type VentSpec } from '../core'
@@ -154,6 +155,19 @@ function freshObserved() {
      * goes up, so an assertion on it cannot be raced.
      */
     projectileSpawns: 0,
+    /**
+     * Projectiles **this client's own player** launched (T21.14).
+     *
+     * `projectileSpawns` counts every `projectile_spawn` the client observes —
+     * any player, any bot, and the weather, whose toxic drops and meteor
+     * fragments are projectiles too. That is the right number for "is anything
+     * flying", and the wrong one for "did my four trigger pulls produce four
+     * rockets": `e2e-two-clients` asked the second question with the first
+     * number and flaked at about one run in six, reporting 7 spawns for 4
+     * shots. Added beside it rather than changing it, because five checks read
+     * the broad count and mean it.
+     */
+    ownProjectileSpawns: 0,
     /**
      * `projectile_spawn` events whose weapon is the flame (§F10.2).
      *
@@ -359,6 +373,8 @@ export class GameScene extends Phaser.Scene {
   private animals!: AnimalLayer
   /** §C5's pads, as `map_init` gave them. The layer lives in `WorldView` (§C1). */
   private padViews: PadView[] = []
+  /** T21.14: the platforms drawn this round, for the occupied lamp. */
+  private platformViews: Array<{ id: number; x: number; y: number }> = []
   /** §D6's scenery, straight off the wire — the count the index is checked against. */
   private mapObjects: MapObject[] = []
   /** The local player's pad charge, `0..1`, straight from the snapshot. */
@@ -551,6 +567,9 @@ export class GameScene extends Phaser.Scene {
     // Map payload. Reassigned by `onMapInit`, but not before `update` can read
     // them, and last round's scenery is not this round's.
     this.padViews = []
+    // T21.14: last round's platforms are at last round's coordinates, and this
+    // list decides which one lights up under a rider.
+    this.platformViews = []
     this.mapObjects = []
 
     // The three helpers that carry state of their own.
@@ -1259,7 +1278,8 @@ export class GameScene extends Phaser.Scene {
     // the id on both sides — `map_init` does not send one (§B16: two registries
     // assumed a positional relationship without asserting it and a laser
     // resolved as a bazooka).
-    this.world.platforms.build(init.platforms.map((p, i) => ({ id: i, x: p.x, y: p.y })))
+    this.platformViews = init.platforms.map((p, i) => ({ id: i, x: p.x, y: p.y }))
+    this.world.platforms.build(this.platformViews)
 
     // §D6. From the wire for the same reason the pads are: a networked client
     // never runs the generator. `atlasArt` returns null frames when the objects
@@ -1508,6 +1528,7 @@ export class GameScene extends Phaser.Scene {
     switch (ev) {
       case 'projectile_spawn': {
         this.observed.projectileSpawns += 1
+        if (Number(p['owner'] ?? -1) === this.me) this.observed.ownProjectileSpawns += 1
         // **Keyed on the weapon, not defaulted to a rocket.**
         //
         // Two bugs met here. The wire carries `weapon` as a numeric id
@@ -1788,6 +1809,19 @@ export class GameScene extends Phaser.Scene {
       const me = this.core.playerState(this.me)
       const on = me ? padUnderfoot(this.padViews, me.x, me.y) : null
       this.world.pads.update(dt * 1000, on, this.teleportCharge)
+      // **T21.14: light the platform its rider is standing on.**
+      //
+      // `PlatformLayer::setOccupied` shipped with exactly one caller — a sandbox
+      // debug hook written for the pixel check — so in a real match the lamp
+      // never lit for anyone, and the check could not see it because it drove
+      // that hook directly rather than this path.
+      //
+      // Who is mounted comes off the wire (`MOVE_MOD.mounted`); *which*
+      // platform does not, because it does not need to: the rider is standing
+      // on it, and `platformUnderfoot` is the same geometry the server's
+      // `GunPlatform::underfoot` uses. Cosmetic, exactly like `padUnderfoot`
+      // above — a disagreement costs one frame of a lamp, never a mount.
+      this.world.platforms.setOccupied(this.occupiedPlatforms())
     }
     this.feel.update(dt, this.feelFrame())
     // §C3. Phase-driven, not clock-driven: the server owns which phase the round
@@ -2180,6 +2214,30 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** §A35: `worldView` and the canvas's CSS rect, never the camera transform. */
+  /**
+   * Which platforms have a rider on them right now (T21.14).
+   *
+   * **Both halves of the answer come from different places, deliberately.**
+   * *Whether* a player is mounted is the server's, carried by
+   * `MOVE_MOD.mounted` — the client cannot derive it, because standing on a
+   * platform is not the same as having finished the mount. *Which* platform is
+   * geometry, and is not on the wire because it does not need to be: a rider is
+   * standing on theirs.
+   *
+   * The local player is included from their own snapshot rather than from
+   * prediction, so the lamp cannot light on a mount the server refused.
+   */
+  private occupiedPlatforms(): number[] {
+    const c = C()
+    return occupiedPlatforms(
+      this.mirror.players.values(),
+      this.platformViews,
+      MOVE_MOD.mounted,
+      c.PLAYER_H,
+      c.GUN_PLATFORM_W,
+    )
+  }
+
   private feelFrame(): FeelFrame {
     const cam = this.cameras.main
     const r = this.game.canvas.getBoundingClientRect()
@@ -2852,6 +2910,7 @@ export class GameScene extends Phaser.Scene {
             itemPickups: self.observed.itemPickups,
             hitscans: self.observed.hitscans,
             projectileSpawns: self.observed.projectileSpawns,
+            ownProjectileSpawns: self.observed.ownProjectileSpawns,
             unmappedFireCues: self.observed.unmappedFireCues,
             darknessMin: self.observed.darknessMin,
             darknessMax: self.observed.darknessMax,

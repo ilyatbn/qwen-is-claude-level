@@ -32,7 +32,13 @@ export default async function ({ page, shot, log }) {
 
   const p = await plats()
   log(`declared ${p.total}, drawn ${p.count} (GUN_PLATFORMS ${want})`)
-  if (p.total !== want) throw new Error(`the map generated ${p.total} platforms, expected ${want}`)
+  // **"Up to 3"** (T21.14): clearing the candidates of pads and spawns can leave
+  // a cramped map seating fewer. Measured over 90 maps: 88 get three, one gets
+  // two, one gets one — and none gets a platform on a spawn point, which is the
+  // defect that clearance prevents.
+  if (p.total < 1 || p.total > want) {
+    throw new Error(`the map generated ${p.total} platforms, expected 1..=${want}`)
+  }
   if (p.count !== p.total) {
     throw new Error(`${p.total} platforms declared and ${p.count} drawn — the layer is not running`)
   }
@@ -126,6 +132,15 @@ export default async function ({ page, shot, log }) {
   const h = Math.round(bandH * scale)
   const box = (s) => ({ x: Math.round(s.x - w / 2), y: Math.round(s.y - h / 2), w, h })
 
+  /** A rect of a given **world** half-size around a world point. */
+  const rectAround = async (wx, wy, halfW, halfH) => {
+    const s = await toScreen(page, wx, wy)
+    if (!s.onScreen) throw new Error(`(${Math.round(wx)},${Math.round(wy)}) is off camera`)
+    const rw = Math.max(8, Math.round(halfW * 2 * s.scale))
+    const rh = Math.max(8, Math.round(halfH * 2 * s.scale))
+    return { x: Math.round(s.x - rw / 2), y: Math.round(s.y - rh / 2), w: rw, h: rh }
+  }
+
   const shownAt = box(onPlatform)
   const controlAt = box(control)
   const shownBefore = await samplePatch(page, shownAt)
@@ -161,20 +176,80 @@ export default async function ({ page, shot, log }) {
   const unmounted = await samplePatch(page, shownAt)
   const controlUnmounted = await samplePatch(page, controlAt)
 
+  // **Stand the rider ON the platform.** (T21.14)
+  //
+  // The check frames the turret from `standOff` to the side so the body does not
+  // occlude the arch — correct for the visibility half above, and wrong for this
+  // one: you cannot be mounted on a platform you are not standing on. It passed
+  // before only because the sandbox hook lit the lamp by fiat with a hand-picked
+  // id; routing that hook through the game's own derivation made the check tell
+  // the truth. The lamp sits clear of a standing body's head, so nothing is
+  // occluded by putting them where a rider really is.
+  await page.evaluate(([x, y]) => window.__game.place(x, y - 30), [target.x, target.y])
+  await page.waitForTimeout(500)
+  // **Recompute the rects: `place` moved the camera.**
+  //
+  // `shownAt` and `controlAt` are *screen-space* clips derived from a world
+  // point through the camera transform. Moving the player moves the camera with
+  // them, so reusing the old rects samples a different part of the world — which
+  // read as a delta of 0.0 with the lamp plainly lit, and would have been
+  // diagnosed as a dead lamp if the hook had not reported `lamps lit [0]`.
+  const onPlatform2 = await toScreen(page, target.x, sampleY)
+  if (!onPlatform2.onScreen) throw new Error('the platform left the frame when the rider moved')
+  const control2 = await toScreen(page, controlX, sampleY)
+  if (!control2.onScreen) throw new Error('the control region left the frame when the rider moved')
+  const shownAt2 = box(onPlatform2)
+  const controlAt2 = box(control2)
+  // **Sample the lamp, not the whole turret** (§A15). Geometry from the layer
+  // itself, so the check cannot drift from the art.
+  const lamp = await page.evaluate(() => window.__game.platforms().lamp)
+  if (!lamp) throw new Error('the platform layer reports no lamp geometry')
+  // One **bar**, offset clear of the rider standing in the middle of their own
+  // machine — `dx` is where the layer actually put it.
+  const lampAt = await rectAround(
+    target.x + lamp.dx,
+    target.y + lamp.dy,
+    lamp.w * 0.55,
+    lamp.h * 1.4,
+  )
+  const lampCtrlAt = await rectAround(
+    controlX + lamp.dx,
+    target.y + lamp.dy,
+    lamp.w * 0.55,
+    lamp.h * 1.4,
+  )
+  const unmountedOnPad = await samplePatch(page, lampAt)
+  const controlOnPad = await samplePatch(page, lampCtrlAt)
+
   const rode = await page.evaluate(() => window.__game.mountNearestPlatform(true))
   if (rode.mounted !== true) {
     throw new Error(`mountNearestPlatform reported ${JSON.stringify(rode)} — not mounted`)
   }
-  log(`mounted on platform ${rode.id} at ${rode.at.x},${rode.at.y}`)
+  log(
+    `mounted on platform ${rode.id} at ${rode.at.x},${rode.at.y}; ` +
+      `rider ${JSON.stringify(rode.rider)} feet ${rode.feet}; ` +
+      `derived ${JSON.stringify(rode.lit)}, lamps lit ${JSON.stringify(rode.lamps)}`,
+  )
+  // **Counted at both ends**: what the derivation decided, and what the layer
+  // actually lit. Either alone passes against the other being broken.
+  if (rode.lit.length === 0) {
+    throw new Error(
+      `mounted, but no platform was derived as occupied — rider feet ${rode.feet} ` +
+        `vs platform y ${rode.at.y}`,
+    )
+  }
+  if (rode.lamps.length !== rode.lit.length) {
+    throw new Error(`derived ${rode.lit} occupied but ${rode.lamps} lamps are lit`)
+  }
   await page.waitForTimeout(300)
 
-  const mountedPatch = await samplePatch(page, shownAt)
-  const controlMounted = await samplePatch(page, controlAt)
+  const mountedPatch = await samplePatch(page, lampAt)
+  const controlMounted = await samplePatch(page, lampCtrlAt)
   await shot('platforms-mounted')
 
-  const m = assertChanged(unmounted, mountedPatch, {
+  const m = assertChanged(unmountedOnPad, mountedPatch, {
     label: 'the platform, with and without a rider',
-    control: { before: controlUnmounted, after: controlMounted },
+    control: { before: controlOnPad, after: controlMounted },
   })
   log(`mounted indicator moved ${m.delta.toFixed(1)}, control ${m.controlDelta.toFixed(1)}`)
 

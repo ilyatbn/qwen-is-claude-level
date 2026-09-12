@@ -11,6 +11,8 @@
 import Phaser from 'phaser'
 import { C, Core, MapScale, strictConstants, type WeatherState } from '../core'
 import { DEPTH } from '../render/backdrop'
+import { occupiedPlatforms } from '../render/platforms'
+import { MOVE_MOD } from '../net/codec'
 import { WorldView } from '../render/worldView'
 import { caveBackdropDefault, setCaveBackdropDefault } from '../render/terrain'
 import { PlayerView } from '../render/playerView'
@@ -791,9 +793,39 @@ export class SandboxScene extends Phaser.Scene {
           if (Math.abs(g.pos.x - px) < Math.abs(best.pos.x - px)) best = g
         }
         const mounted = self.core.setMounted(0, on)
-        self.world.platforms.setOccupied(mounted ? [best.id] : [])
+        // **Through the shared derivation, not a hand-picked id** (T21.14).
+        //
+        // This hook used to call `setOccupied([best.id])` directly, which is why
+        // `platforms.mjs` could pass while `GameScene` never lit a lamp at all:
+        // the check drove the hook, and the hook drove the layer. Going through
+        // `occupiedPlatforms` means the pixel assertion exercises the same
+        // function the real game uses, and a fault in it fails both.
+        const c = C()
+        const rider = self.core.playerState(0)
+        const lit = occupiedPlatforms(
+          rider ? [{ x: rider.x, y: rider.y, moveMods: mounted ? MOVE_MOD.mounted : 0 }] : [],
+          self.world.platforms.views,
+          MOVE_MOD.mounted,
+          c.PLAYER_H,
+          c.GUN_PLATFORM_W,
+        )
+        self.world.platforms.setOccupied(lit)
         self.refreshHud()
-        return { mounted, at: { x: best.pos.x, y: best.pos.y }, id: best.id }
+        // **The effect, read back off the objects** — `lampsLit` walks the
+        // sprites rather than echoing `lit`, so a derivation that answered
+        // correctly and a layer that ignored it are distinguishable. `rider` and
+        // `feet` are here because the failure they diagnose is silent: a rider
+        // a few pixels off the surface line is simply not underfoot, and the
+        // lamp stays dark with nothing to say why.
+        return {
+          mounted,
+          lit,
+          lamps: self.world.platforms.lampsLit(),
+          rider: rider ? { x: Math.round(rider.x), y: Math.round(rider.y) } : null,
+          feet: rider ? Math.round(rider.y + c.PLAYER_H / 2) : null,
+          at: { x: best.pos.x, y: best.pos.y },
+          id: best.id,
+        }
       },
       /**
        * Hide the platform layer, for the pixel check's control frame.
@@ -809,6 +841,7 @@ export class SandboxScene extends Phaser.Scene {
       platforms() {
         return {
           count: self.world.platforms.count,
+          lamp: self.world.platforms.lampGeometry(),
           total: self.core.meta.gun_platforms.length,
           at: self.core.meta.gun_platforms.map((g) => ({ x: g.pos.x, y: g.pos.y })),
         }

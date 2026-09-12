@@ -1621,6 +1621,19 @@ pub const GUN_PLATFORM_H: i32 = 10;
 /// (2800, 472). Two stand-to-activate features on one tile is a gameplay
 /// conflict (mount versus teleport), not a cosmetic one.
 pub const GUN_PLATFORM_PAD_CLEARANCE: i32 = (PAD_W + GUN_PLATFORM_W) / 2;
+/// How far a platform must sit from a **spawn point**, in px (T21.14).
+///
+/// **Smaller than the pad clearance, and derived from a different question.**
+/// `GUN_PLATFORM_PAD_CLEARANCE` keeps two *footprints* from overlapping, which
+/// is what two protected rects need. A spawn has no footprint: what must not
+/// happen is a player materialising inside the platform's **mount region**, so
+/// the requirement is `GunPlatform::underfoot` being false for a body standing
+/// on the spawn — half a platform width, plus half a body so a pixel of drift
+/// cannot reach it.
+///
+/// Reusing the pad number here starved the sampler outright: 6 pads plus 6
+/// spawns at 44 px left Medium/seed 0 with two platforms instead of three.
+pub const GUN_PLATFORM_SPAWN_CLEARANCE: i32 = GUN_PLATFORM_W / 2 + PLAYER_W as i32 / 2;
 /// Seconds of standing on a platform before it mounts you — **and** seconds of
 /// holding jump before it lets you off (T21.11B).
 ///

@@ -3,7 +3,13 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { Core, C, MapScale } from '../core'
-import { PlatformLayer, ensurePlatformTexture, type PlatformView } from './platforms'
+import {
+  PlatformLayer,
+  ensurePlatformTexture,
+  occupiedPlatforms,
+  platformUnderfoot,
+  type PlatformView,
+} from './platforms'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const wasmBytes = readFileSync(join(here, '../core/pkg/game_wasm_bg.wasm'))
@@ -155,5 +161,68 @@ describe('PlatformLayer (T21.11A)', () => {
     layer.build(plats.map((g) => ({ id: g.id, x: g.pos.x, y: g.pos.y })))
     // Counted at both ends: what the core holds against what got drawn.
     expect(layer.count).toBe(plats.length)
+  })
+})
+
+/**
+ * T21.14's shared derivation.
+ *
+ * The lamp shipped lit only by a sandbox debug hook — `GameScene` never called
+ * `setOccupied`, so no player in a real match ever saw it, and the pixel check
+ * could not tell because it drove the hook directly. The derivation is a pure
+ * function now so both scenes run the same one and it can be pinned here.
+ */
+describe('occupiedPlatforms (T21.14)', () => {
+  const MOUNTED = 1 << 2
+  const BOOTS = 1 << 0
+  const PLAYER_H = 28
+  const W = 48
+  const plats: PlatformView[] = [
+    { id: 0, x: 100, y: 400 },
+    { id: 1, x: 900, y: 400 },
+  ]
+  /** A body whose feet land exactly on a platform's surface line. */
+  const rider = (x: number, moveMods: number, y = 400 - PLAYER_H / 2) => ({ x, y, moveMods })
+
+  it('lights the platform a mounted rider is standing on', () => {
+    expect(occupiedPlatforms([rider(100, MOUNTED)], plats, MOUNTED, PLAYER_H, W)).toEqual([0])
+    expect(occupiedPlatforms([rider(900, MOUNTED)], plats, MOUNTED, PLAYER_H, W)).toEqual([1])
+  })
+
+  it('needs the wire bit, not merely standing there', () => {
+    // **This is the half the client cannot derive.** Standing on a platform is
+    // not being mounted: the hold takes a second and an occupied platform
+    // refuses a second rider. Lighting on position alone would show a lamp for
+    // anyone who walked past.
+    expect(occupiedPlatforms([rider(100, 0)], plats, MOUNTED, PLAYER_H, W)).toEqual([])
+    expect(occupiedPlatforms([rider(100, BOOTS)], plats, MOUNTED, PLAYER_H, W)).toEqual([])
+    // The control: the same body with the bit set does light it.
+    expect(occupiedPlatforms([rider(100, MOUNTED)], plats, MOUNTED, PLAYER_H, W)).toEqual([0])
+  })
+
+  it('needs the geometry, not merely the bit', () => {
+    // Mounted but nowhere near a platform — which is exactly the state T21.14's
+    // other half produces for one tick after a blast throws a rider clear.
+    expect(occupiedPlatforms([rider(500, MOUNTED)], plats, MOUNTED, PLAYER_H, W)).toEqual([])
+  })
+
+  it('is inclusive at half a platform width and rejects a pixel past it', () => {
+    expect(occupiedPlatforms([rider(100 + W / 2, MOUNTED)], plats, MOUNTED, PLAYER_H, W)).toEqual([0])
+    expect(occupiedPlatforms([rider(100 + W / 2 + 1, MOUNTED)], plats, MOUNTED, PLAYER_H, W)).toEqual([])
+  })
+
+  it('lights each platform once, however many riders claim it', () => {
+    const two = [rider(100, MOUNTED), rider(100, MOUNTED)]
+    expect(occupiedPlatforms(two, plats, MOUNTED, PLAYER_H, W)).toEqual([0])
+  })
+
+  it('is empty when there are no platforms, and does not throw', () => {
+    expect(occupiedPlatforms([rider(100, MOUNTED)], [], MOUNTED, PLAYER_H, W)).toEqual([])
+  })
+
+  it('platformUnderfoot rejects a body in the air above one', () => {
+    // The feet, not the centre: a body well above the surface line is not on it.
+    expect(platformUnderfoot(plats, 100, 400 - PLAYER_H / 2 - 40, PLAYER_H, W)).toBeNull()
+    expect(platformUnderfoot(plats, 100, 400 - PLAYER_H / 2, PLAYER_H, W)).toBe(0)
   })
 })

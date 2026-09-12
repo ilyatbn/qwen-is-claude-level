@@ -1369,13 +1369,29 @@ mod ballistics {
     /// list outliving the weapon it names.
     const NOT_CARRIED: &[&str] = &["platform_gun"];
 
+    /// The exemption must keep being **justified**, not merely be the thing that
+    /// needed exempting.
+    ///
+    /// This asserted `is_ballistic` — the property that made the platform gun
+    /// collide with §B7's table in the first place. Give it an `ItemDef` and it
+    /// becomes a carried ballistic weapon, absent from the carried table, and
+    /// this stayed green (T21.14). The claim is *nobody carries it*, so that is
+    /// what is checked.
     #[test]
-    fn the_carried_table_exemptions_all_exist() {
+    fn the_carried_table_exemptions_are_not_carried() {
         for key in NOT_CARRIED {
             let w = by_key(key).unwrap_or_else(|| panic!("{key} is exempted but does not exist"));
             assert!(
                 is_ballistic(w),
                 "{key} is exempted from the ballistic table but is not ballistic"
+            );
+            assert!(
+                !crate::items::registry::ITEMS.iter().any(|d| matches!(
+                    d.kind,
+                    crate::items::registry::ItemKind::Weapon(id) if id == w.id
+                )),
+                "{key} is exempted from §B7's carried table, but an item grants it — \
+                 it is carried now and its numbers belong in that table"
             );
         }
     }

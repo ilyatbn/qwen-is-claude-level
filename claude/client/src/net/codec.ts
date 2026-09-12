@@ -345,6 +345,15 @@ export const MOVE_MOD = {
   boots: 1 << 0,
   /** T21.03. Carried, never toggled — dropping them is the only off switch. */
   wings: 1 << 1,
+  /**
+   * T21.11B. **Not an item** — the server derives it from the mount state, and
+   * `MOVE_MOD_BITS` in Rust is item-keyed, so this bit is encoded and decoded
+   * beside that table rather than inside it. The client needs it twice: once so
+   * `apply_input` predicts an immobile player, and once so the platform they are
+   * riding lights up (T21.14 — it was on the wire and nothing read it for the
+   * second purpose).
+   */
+  mounted: 1 << 2,
 } as const
 
 export function flag(flags: number, bit: number): boolean {

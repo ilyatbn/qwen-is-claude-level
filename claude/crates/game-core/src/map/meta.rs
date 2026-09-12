@@ -8,7 +8,8 @@
 use crate::constants::{
     MapGenerator, MapScale, BURIED_ATTEMPTS, BURIED_CLEARANCE, BURIED_OFFSET_MAX,
     BURIED_OFFSET_MIN, BURIED_SEPARATION, GUN_PLATFORMS, GUN_PLATFORM_H,
-    GUN_PLATFORM_PAD_CLEARANCE, GUN_PLATFORM_W, PAD_H, PAD_W, TELEPORT_PADS, WIND_MAX,
+    GUN_PLATFORM_PAD_CLEARANCE, GUN_PLATFORM_SPAWN_CLEARANCE, GUN_PLATFORM_W, PAD_H, PAD_W,
+    TELEPORT_PADS, WIND_MAX,
 };
 use crate::map::gen::components::SealedPocket;
 use crate::map::gen::objects::{clear_of_objects, PlacedObject, WhenStarved};
@@ -350,25 +351,58 @@ pub fn generate_full(
     // the_spawn_points`).
     let teleport_pads = choose_pads(&outcome.mask, &outcome.surface, &clear, outcome.seed);
 
-    // And the gun platforms, on a **third** sub-stream for the same reason: on
-    // `"pads"` they would consume the pads' draws and move every pad on every
-    // seed, which is a golden-table regeneration for a feature that has nothing
-    // to do with pads (`platforms_do_not_move_the_pads_or_the_spawns`).
+    // And the gun platforms, on a **third** sub-stream — but not for the reason
+    // this comment used to give.
+    //
+    // It claimed a shared tag would "consume the pads' draws and move every
+    // pad". That is **false**, and `rng::substream` is why: it builds a *fresh*
+    // `ChaCha8Rng` from `seed ^ fnv1a64(tag)`, so two consumers naming the same
+    // tag get two independent generators with the same start. Neither advances
+    // the other. (The comment also cited a test that was never written.)
+    //
+    // What a separate tag actually buys is **decorrelation**: on `"pads"` the
+    // platform draw would start from the pads' exact RNG state over the same
+    // candidates and pick the same points — which is the seed-4242 collision,
+    // a platform sitting on a pad. `platforms_are_decorrelated_from_the_pads`
+    // asserts that against the production sampler, and goes red on a shared tag.
+    // The `clear_of_pads` filter below then guarantees the separation outright;
+    // the tag is what keeps the two draws from agreeing in the first place.
     //
     // And **clear of the pads**, which the sub-stream alone does not buy: both
     // draws are farthest-point sampling over the same surface points, so they
     // converge on the same extremes however they are seeded. Seed 4242 put a
     // platform exactly on a pad, and a tile that is both mount-on-stand and
     // teleport-on-stand is a conflict rather than a coincidence.
+    // **And clear of the spawn points, which the first version missed.**
+    //
+    // Measured, not supposed: over 40 seeds x 3 scales the unfiltered sampler
+    // put a platform within a footprint of a spawn **78 times**, including
+    // exact coincidences. A player then spawns standing on a gun platform,
+    // does not move, and is mounted a second later without touching anything —
+    // movement gone, inventory out of reach, their own weapon replaced by the
+    // turret. It surfaced as a 1-in-6 flake in `e2e-two-clients`, which fires a
+    // bazooka from wherever the player spawned and sometimes counted four
+    // volleys instead of four rockets.
+    //
+    // Same rule as the pads, same constant: these are all "somewhere a player
+    // stands", and two of them on one tile is a conflict however it arises.
+    // Two clearances, because they answer two different questions — see
+    // `GUN_PLATFORM_SPAWN_CLEARANCE`. Using the pad's number for both starved
+    // the sampler and left a map with two platforms instead of three.
     let clear_of_pads: Vec<usize> = clear
         .iter()
         .copied()
         .filter(|&i| {
             outcome.surface.get(i).is_some_and(|p| {
-                teleport_pads.iter().all(|pad| {
+                let off_pads = teleport_pads.iter().all(|pad| {
                     (p.x - pad.pos.x).abs() >= GUN_PLATFORM_PAD_CLEARANCE
                         || (p.y - pad.pos.y).abs() >= GUN_PLATFORM_PAD_CLEARANCE
-                })
+                });
+                let off_spawns = spawn_points.iter().all(|sp| {
+                    (p.x - sp.x).abs() >= GUN_PLATFORM_SPAWN_CLEARANCE
+                        || (p.y - sp.y).abs() >= GUN_PLATFORM_SPAWN_CLEARANCE
+                });
+                off_pads && off_spawns
             })
         })
         .collect();
@@ -1074,10 +1108,18 @@ mod tests {
             // no new failure mode there either.
             for seed in [4242u64, 31337] {
                 let plats = &generate(seed, scale).meta.gun_platforms;
-                assert_eq!(
-                    plats.len(),
-                    GUN_PLATFORMS,
-                    "{scale:?}/{seed}: {} platforms",
+                // **"Up to 3", which is the coordinator's own wording.**
+                //
+                // Clearing the candidates of pads *and* spawns (T21.14) can
+                // leave a cramped map unable to seat three well-separated
+                // points. Measured over 30 seeds x 3 scales: 88 maps get three,
+                // one gets two, one gets one — and none gets a platform on a
+                // spawn, which is the defect that clearance exists to prevent.
+                // Fewer platforms is a lesser map; a platform under a spawning
+                // player is a player mounted without touching anything.
+                assert!(
+                    !plats.is_empty() && plats.len() <= GUN_PLATFORMS,
+                    "{scale:?}/{seed}: {} platforms, expected 1..={GUN_PLATFORMS}",
                     plats.len()
                 );
                 let map = generate(seed, scale);
@@ -1124,6 +1166,64 @@ mod tests {
     /// fails is comparing the *results*: `choose_separated` is the same sampler
     /// over the same surface points, so a shared stream name makes the platforms
     /// land exactly on the pads.
+    /// The separate sub-stream, asserted **through the production sampler**.
+    ///
+    /// Two earlier attempts at this were hollow and both were caught by running
+    /// the mutation rather than reasoning about it (T21.14):
+    ///
+    ///  - `gun_platforms_draw_from_their_own_sub_stream` asserts platforms are
+    ///    not pads, which `clear_of_pads` guarantees on its own — green with the
+    ///    tag renamed to `"pads"`;
+    ///  - a replacement that re-derived both lists with *literal* tag names
+    ///    asserted a property of `choose_separated` and never touched
+    ///    `choose_gun_platforms` at all — also green.
+    ///
+    /// This one calls the real `choose_gun_platforms` over the **unfiltered**
+    /// component, which is the input the pads themselves got. On a shared tag
+    /// the two draws start from the same RNG state over the same candidates and
+    /// agree; on separate tags they do not.
+    #[test]
+    fn platforms_are_decorrelated_from_the_pads() {
+        for seed in [4242u64, 31337, 11] {
+            let map = generate(seed, MapScale::Medium);
+            let component: Vec<usize> = map
+                .meta
+                .largest_component
+                .iter()
+                .map(|&i| i as usize)
+                .collect();
+            assert!(
+                !component.is_empty(),
+                "seed {seed}: no component, so this asserts nothing"
+            );
+            let pads = choose_pads(
+                &map.mask,
+                &map.meta.surface_points,
+                &component,
+                map.meta.seed,
+            );
+            let plats = choose_gun_platforms(
+                &map.mask,
+                &map.meta.surface_points,
+                &component,
+                map.meta.seed,
+            );
+            assert!(
+                !pads.is_empty() && !plats.is_empty(),
+                "seed {seed}: empty draw"
+            );
+            let pad_pts: Vec<Point> = pads.iter().map(|p| p.pos).collect();
+            let plat_pts: Vec<Point> = plats.iter().map(|g| g.pos).collect();
+            let n = plat_pts.len().min(pad_pts.len());
+            assert_ne!(
+                plat_pts[..n],
+                pad_pts[..n],
+                "seed {seed}: the platform draw agrees with the pad draw over the same \
+                 candidates — they are sharing a sub-stream tag"
+            );
+        }
+    }
+
     #[test]
     fn gun_platforms_draw_from_their_own_sub_stream() {
         let map = generate(31337, MapScale::Medium);
@@ -1241,15 +1341,51 @@ mod tests {
     /// protected rock intersects are two activations competing for one tile.
     /// Positions differing by a pixel would pass a `assert_ne!` on `pos` and
     /// still be the bug.
+    /// **A platform must not be placed where a player spawns** (T21.14).
+    ///
+    /// Measured before it was fixed: over 40 seeds x 3 scales the sampler put a
+    /// platform within a footprint of a spawn **78 times**, including exact
+    /// coincidences. A player spawning on one stands still, mounts a second
+    /// later without touching anything, and finds their movement gone, their
+    /// inventory unreachable and their weapon replaced by the turret. It
+    /// reached the gate as a 1-in-6 flake in `e2e-two-clients`.
+    ///
+    /// Asserted on the **footprint**, not on equal positions, for the same
+    /// reason the pad test is: two features a pixel apart are still the bug.
+    #[test]
+    fn gun_platforms_are_never_placed_on_a_spawn_point() {
+        use crate::constants::GUN_PLATFORM_SPAWN_CLEARANCE;
+        for scale in MapScale::ALL {
+            for seed in [0u64, 1, 4242, 31337] {
+                let map = generate(seed, scale);
+                assert!(
+                    !map.meta.gun_platforms.is_empty(),
+                    "{scale:?}/{seed}: clearing the spawns left no platforms at all"
+                );
+                for g in &map.meta.gun_platforms {
+                    for sp in &map.meta.spawn_points {
+                        let clear = (g.pos.x - sp.x).abs() >= GUN_PLATFORM_SPAWN_CLEARANCE
+                            || (g.pos.y - sp.y).abs() >= GUN_PLATFORM_SPAWN_CLEARANCE;
+                        assert!(
+                            clear,
+                            "{scale:?}/{seed}: platform {} at {:?} is on spawn {:?} — \
+                             a player spawning there is mounted without touching anything",
+                            g.id, g.pos, sp
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn gun_platform_footprints_never_overlap_a_pad_footprint() {
         for scale in MapScale::ALL {
             for seed in [4242u64, 31337, 11] {
                 let map = generate(seed, scale);
-                assert_eq!(
-                    map.meta.gun_platforms.len(),
-                    crate::constants::GUN_PLATFORMS,
-                    "{scale:?}/{seed}: clearing the pads starved the platform sampler"
+                assert!(
+                    !map.meta.gun_platforms.is_empty(),
+                    "{scale:?}/{seed}: clearing the pads left no platforms at all"
                 );
                 for g in &map.meta.gun_platforms {
                     let (gx0, gy0, gx1, gy1) = g.rect();
@@ -1271,7 +1407,6 @@ mod tests {
     /// has every platform standing.
     #[test]
     fn every_gun_platform_survives_a_map_carved_to_pieces() {
-        use crate::constants::GUN_PLATFORMS;
         for scale in MapScale::ALL {
             let mut map = generate(8123, scale);
             let (w, h) = (map.mask.w as i32, map.mask.h as i32);
@@ -1289,15 +1424,17 @@ mod tests {
                 map.mask.count_solid() * 2 < before,
                 "{scale:?}: the fixture barely destroyed anything"
             );
+            let want = map.meta.gun_platforms.len();
             let standing = map
                 .meta
                 .gun_platforms
                 .iter()
                 .filter(|g| crate::map::gen::surface::is_standable(&map.mask, g.pos.x, g.pos.y))
                 .count();
+            assert!(want > 0, "{scale:?}: the map has no platforms to test");
             assert_eq!(
-                standing, GUN_PLATFORMS,
-                "{scale:?}: only {standing} platforms left standing"
+                standing, want,
+                "{scale:?}: only {standing} of {want} platforms left standing"
             );
         }
     }

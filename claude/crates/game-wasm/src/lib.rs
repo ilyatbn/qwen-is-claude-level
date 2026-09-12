@@ -1967,6 +1967,21 @@ mod tests {
             // is about the **wire**, not about the stand-still timer — that is
             // `world::mount_wiring`'s job, and re-driving it here would make a
             // failure ambiguous between the two.
+            //
+            // **But a platform has to be under them** (T21.14). Mounting now
+            // ends the moment the rider is not `underfoot` their platform —
+            // that is the fix for being knocked clear and still firing the gun
+            // — so setting `mounted` on a player standing on this fixture's own
+            // shelf described a state the simulation immediately undoes, and the
+            // mirror never saw a mounted tick. The platform goes where they are.
+            let feet = {
+                let p = w.player(1).expect("seated");
+                game_core::math::Point::new(
+                    p.body.pos.x.round() as i32,
+                    (p.body.pos.y + game_core::constants::PLAYER_H / 2.0).round() as i32,
+                )
+            };
+            w.map.meta.gun_platforms = vec![game_core::map::meta::GunPlatform { id: 0, pos: feet }];
             w.player_mut(1).expect("seated").mount.mounted = Some(0);
         }
 

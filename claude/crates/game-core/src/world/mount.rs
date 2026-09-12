@@ -73,15 +73,20 @@ impl MountState {
         Self::default()
     }
 
-    /// How far through the current hold this is, `0..=1`.
-    ///
-    /// For the client's indicator, the way `TeleportState`'s charge byte is: the
-    /// client draws the server's number rather than counting its own, because
-    /// the rules that stop the count — an occupied platform, a player who is
-    /// dead — live here.
-    pub fn progress(&self) -> f32 {
-        (self.held / GUN_PLATFORM_MOUNT_TIME).clamp(0.0, 1.0)
-    }
+    // **`progress()` was here and is gone** (T21.14).
+    //
+    // It returned the hold as `0..=1` and its doc comment said it was "for the
+    // client's indicator, the way `TeleportState`'s charge byte is". It was
+    // not: no byte carried it, no client read it, and its only caller was its
+    // own unit test. A mechanism wired to nothing with a comment asserting the
+    // wiring is the shape this project has paid for a dozen times, so it goes
+    // rather than sitting here looking done.
+    //
+    // **The gap it leaves is real and is recorded, not papered over**: a player
+    // stands still for `GUN_PLATFORM_MOUNT_TIME` with no feedback at all, where
+    // the teleport pad this was modelled on fills a ring. Giving them one needs
+    // a snapshot byte and a client that draws it — a wire change, not a
+    // one-liner — and that is `T21.14`'s follow-up note.
 
     /// Whether this player is riding a platform. **The one question
     /// `move_mods` asks**, and the only one a mirror can answer.
@@ -132,6 +137,23 @@ pub fn step(
     dt: f32,
 ) -> MountEvent {
     if let Some(id) = st.mounted {
+        // **Displaced means dismounted** (T21.14).
+        //
+        // This branch used to return without ever consulting `under`, so a
+        // mounted player thrown clear by a blast stayed mounted: immobile,
+        // inventory-locked, and still firing rounds that spawn at the
+        // platform's own muzzle — from wherever they landed. Self-knockback
+        // made it repeatable rather than an edge case.
+        //
+        // `under` only, not `grounded`: a mounted body rests on the platform and
+        // its `grounded` flag flickers as the solver settles, which would
+        // dismount people for standing still. Being somewhere else is the
+        // condition that matters, and `underfoot` is the one geometry rule.
+        if under != Some(id) {
+            st.held = 0.0;
+            st.target = None;
+            return MountEvent::WantsDismount(id);
+        }
         // Mounted: the qualifying action is holding jump.
         if jump_held {
             st.held += dt;
@@ -251,11 +273,20 @@ mod tests {
     }
 
     /// Both halves again, in the other direction.
+    /// **`under` is `Some(3)` throughout**: a player holding jump to get off is
+    /// still standing on the gun. These fixtures passed `None` before T21.14,
+    /// which described a mounted player who is not on their platform — a state
+    /// that now means *displaced* and dismounts on the spot.
     #[test]
     fn holding_jump_dismounts_and_a_shorter_hold_does_not() {
         let mut st = MountState::new();
         st.mounted = Some(3);
-        let short = hold_for(&mut st, GUN_PLATFORM_MOUNT_TIME - 4.0 * SIM_DT, None, true);
+        let short = hold_for(
+            &mut st,
+            GUN_PLATFORM_MOUNT_TIME - 4.0 * SIM_DT,
+            Some(3),
+            true,
+        );
         assert!(
             short.iter().all(|e| *e == MountEvent::Nothing),
             "a short jump hold dismounted the player"
@@ -263,10 +294,45 @@ mod tests {
 
         let mut st = MountState::new();
         st.mounted = Some(3);
-        let full = hold_for(&mut st, GUN_PLATFORM_MOUNT_TIME + SIM_DT, None, true);
+        let full = hold_for(&mut st, GUN_PLATFORM_MOUNT_TIME + SIM_DT, Some(3), true);
         assert!(
             full.contains(&MountEvent::WantsDismount(3)),
             "a full jump hold did not dismount: {full:?}"
+        );
+    }
+
+    /// T21.14: a blast that moves a mounted player takes them off the gun.
+    ///
+    /// Both halves — an absence needs a presence — and the second is what says
+    /// this is about displacement rather than about mounting being fragile.
+    #[test]
+    fn being_displaced_dismounts_and_staying_put_does_not() {
+        let mut st = MountState::new();
+        st.mounted = Some(2);
+        // Still on it: nothing happens, however long.
+        let stay: Vec<MountEvent> = (0..60)
+            .map(|_| step(&mut st, Some(2), false, true, SIM_DT))
+            .collect();
+        assert!(
+            stay.iter().all(|e| *e == MountEvent::Nothing),
+            "standing on the platform dismounted the player"
+        );
+        assert!(st.is_mounted());
+
+        // Thrown clear: off on the very next tick, not after a hold.
+        let e = step(&mut st, None, false, true, SIM_DT);
+        assert_eq!(e, MountEvent::WantsDismount(2));
+        assert_eq!(st.held, 0.0, "a stale hold survived the displacement");
+    }
+
+    /// Thrown onto a *different* platform is still off the first one.
+    #[test]
+    fn being_displaced_onto_another_platform_leaves_the_first() {
+        let mut st = MountState::new();
+        st.mounted = Some(0);
+        assert_eq!(
+            step(&mut st, Some(1), false, true, SIM_DT),
+            MountEvent::WantsDismount(0)
         );
     }
 
@@ -274,10 +340,12 @@ mod tests {
     fn releasing_jump_resets_the_dismount_hold() {
         let mut st = MountState::new();
         st.mounted = Some(0);
-        hold_for(&mut st, GUN_PLATFORM_MOUNT_TIME * 0.9, None, true);
+        hold_for(&mut st, GUN_PLATFORM_MOUNT_TIME * 0.9, Some(0), true);
         assert!(st.held > 0.0);
-        step(&mut st, None, false, true, SIM_DT);
+        // Still on the platform, jump released.
+        step(&mut st, Some(0), false, true, SIM_DT);
         assert_eq!(st.held, 0.0, "releasing jump did not reset the hold");
+        assert!(st.is_mounted(), "releasing jump dismounted them outright");
     }
 
     /// Moving from one platform to another restarts the hold rather than
@@ -330,15 +398,5 @@ mod tests {
         // The control: the other direction sets it.
         st.set_from_wire(true);
         assert!(st.is_mounted());
-    }
-
-    #[test]
-    fn progress_runs_zero_to_one_and_clamps() {
-        let mut st = MountState::new();
-        assert_eq!(st.progress(), 0.0);
-        st.held = GUN_PLATFORM_MOUNT_TIME / 2.0;
-        assert!((st.progress() - 0.5).abs() < 1e-6);
-        st.held = GUN_PLATFORM_MOUNT_TIME * 10.0;
-        assert_eq!(st.progress(), 1.0);
     }
 }

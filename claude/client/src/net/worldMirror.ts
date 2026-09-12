@@ -21,6 +21,14 @@ export interface RemotePlayerState {
   aim: number
   health: number
   flags: number
+  /**
+   * T21.02's passive-movement byte (`MOVE_MOD`), carried for the same reason
+   * `flags` is: it describes a player and the renderer reads it. T21.14 needed
+   * `MOVE_MOD.mounted` here — it was on the wire and reachable only inside
+   * `renderRemotes`, so the one thing that wanted it per-player could not get at
+   * it.
+   */
+  moveMods: number
   jetpackFuel: number
   /** `null` when the player is holding nothing. */
   selectedItem: number | null
@@ -197,6 +205,7 @@ export class WorldMirror {
         aim: p.aim,
         health: p.health,
         flags: p.flags,
+        moveMods: p.moveMods,
         jetpackFuel: p.jetpackFuel,
         selectedItem: p.selectedItem,
         time: now,

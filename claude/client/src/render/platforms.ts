@@ -152,17 +152,84 @@ export function ensurePlatformTexture(textures: Phaser.Textures.TextureManager):
 /** The lit indicator's colour when somebody is riding the platform. */
 const ACTIVE = 0x6fe6ff
 
+/**
+ * Which platform a body's feet are on, or `null` (T21.14).
+ *
+ * Mirrors `GunPlatform::underfoot`, which is itself `map::meta::footprint`
+ * shared with `TeleportPad` — one answer to "are you standing on it", at three
+ * sites. **Cosmetic only**, exactly like `padUnderfoot`: it decides which lamp
+ * lights, never whether anybody is mounted. That is the server's, off the wire.
+ */
+export function platformUnderfoot(
+  platforms: readonly PlatformView[],
+  cx: number,
+  cy: number,
+  playerH: number,
+  platformW: number,
+): number | null {
+  const feet = cy + playerH / 2
+  for (const p of platforms) {
+    // The y half-width is the pad's touch slack; a rider rests within a pixel or
+    // two of the surface line rather than exactly on it.
+    if (Math.abs(cx - p.x) <= platformW / 2 && Math.abs(feet - p.y) <= 4) return p.id
+  }
+  return null
+}
+
+/** The half of a player this derivation needs: where they are, and the wire byte. */
+export interface RiderView {
+  x: number
+  y: number
+  moveMods: number
+}
+
+/**
+ * Which platforms have a rider on them (T21.14).
+ *
+ * **A pure function, shared by every caller**, because the bug this replaces was
+ * a lamp lit only by a sandbox debug hook: `GameScene` never called
+ * `setOccupied`, so in a real match the one signal distinguishing "mounted" from
+ * "frozen" never appeared. A derivation living inside one scene is a derivation
+ * the other scene does not have.
+ *
+ * The two halves come from different places on purpose. **Whether** a player is
+ * mounted is the server's, carried by `MOVE_MOD.mounted` — the client cannot
+ * derive it, because standing on a platform is not the same as having finished
+ * the mount, and an occupied platform refuses a second rider. **Which** platform
+ * is geometry, and is not on the wire because it does not need to be: a rider is
+ * standing on theirs.
+ */
+export function occupiedPlatforms(
+  riders: Iterable<RiderView>,
+  platforms: readonly PlatformView[],
+  mountedBit: number,
+  playerH: number,
+  platformW: number,
+): number[] {
+  const lit: number[] = []
+  if (platforms.length === 0) return lit
+  for (const r of riders) {
+    if ((r.moveMods & mountedBit) === 0) continue
+    const id = platformUnderfoot(platforms, r.x, r.y, playerH, platformW)
+    if (id !== null && !lit.includes(id)) lit.push(id)
+  }
+  return lit
+}
+
 interface Entry {
   sprite: Phaser.GameObjects.Image
   /**
-   * The occupied indicator.
+   * The occupied indicator: **two bars, one either side of the housing.**
    *
-   * A separate object rather than a tint on the sprite: the art is already
-   * light steel, and a multiply tint on light pixels is a change nobody can see
-   * — which is the difference between a state the player can read and one that
-   * only the debug overlay knows about.
+   * Separate objects rather than a tint on the sprite, because the art is
+   * already light steel and a multiply tint on light pixels is a change nobody
+   * can see. Two rather than one because **the rider stands in the middle of
+   * their own machine**: a single centred bar is 16 px of body across 24 px of
+   * lamp, so the one person who needs to read it — the one who cannot move and
+   * needs to know why — sees least of it. Flanking bars are clear of the body
+   * from every angle, and read as "this thing is live" rather than as a stripe.
    */
-  lamp: Phaser.GameObjects.Rectangle
+  lamps: Phaser.GameObjects.Rectangle[]
   view: PlatformView
 }
 
@@ -188,12 +255,42 @@ export class PlatformLayer {
   }
 
   /**
+   * Where the occupied lamp is, relative to a platform's feet line, in world px
+   * — or `null` when nothing is drawn.
+   *
+   * Read off the object the renderer positioned, for the same reason
+   * `PadLayer::portalGeometry` is: a check that recomputes the art's
+   * proportions is a second copy of them, and only one of the two is on screen.
+   * The first version of `platforms.mjs` sampled the whole barrel band, where
+   * the lamp is about a tenth of the area — it measured 2.5 against a threshold
+   * of 8 with the lamp plainly lit.
+   */
+  lampGeometry(): { dy: number; dx: number; w: number; h: number } | null {
+    for (const e of this.entries.values()) {
+      const l = e.lamps[0]
+      if (!l) return null
+      // `dx` is the offset of one bar from the platform's centre, so a check can
+      // sample a bar rather than the gap between them — which is where the rider
+      // stands.
+      return { dy: l.y - e.view.y, dx: Math.abs(l.x - e.view.x), w: l.width, h: l.height }
+    }
+    return null
+  }
+
+  /** The platforms as built, for a caller that needs their geometry. */
+  get views(): PlatformView[] {
+    return [...this.entries.values()].map((e) => e.view)
+  }
+
+  /**
    * Which platforms are showing a rider. **Asserted on by the tests, and it
    * reads the objects rather than a remembered set** — a layer that recorded
    * the ask and never touched a lamp would satisfy any check of its own input.
    */
   lampsLit(): number[] {
-    return [...this.entries.entries()].filter(([, e]) => e.lamp.visible).map(([id]) => id)
+    return [...this.entries.entries()]
+      .filter(([, e]) => e.lamps.some((l) => l.visible))
+      .map(([id]) => id)
   }
 
   /**
@@ -206,7 +303,10 @@ export class PlatformLayer {
    * means a missed message cannot leave a lamp stuck on.
    */
   setOccupied(ids: readonly number[]): void {
-    for (const [id, e] of this.entries) e.lamp.setVisible(ids.includes(id))
+    for (const [id, e] of this.entries) {
+      const on = ids.includes(id)
+      for (const l of e.lamps) l.setVisible(on)
+    }
   }
 
   /**
@@ -229,7 +329,7 @@ export class PlatformLayer {
     for (const [id, e] of this.entries) {
       if (!platforms.some((p) => p.id === id)) {
         e.sprite.destroy()
-        e.lamp.destroy()
+        for (const l of e.lamps) l.destroy()
         this.entries.delete(id)
       }
     }
@@ -240,7 +340,9 @@ export class PlatformLayer {
       if (existing) {
         existing.view = p
         existing.sprite.setPosition(p.x, p.y)
-        existing.lamp.setPosition(p.x, p.y - art.h * 0.62)
+        existing.lamps.forEach((l, i) =>
+          l.setPosition(p.x + (i === 0 ? -1 : 1) * art.w * 0.3, p.y - art.h * 0.75),
+        )
         continue
       }
       // Origin (0.5, 1): `p.y` is the feet line, so the art sits **on** the
@@ -248,19 +350,34 @@ export class PlatformLayer {
       const sprite = this.scene.add.image(p.x, p.y, art.key).setOrigin(0.5, 1)
       // Across the housing, which is where a player looks: derived from the
       // art's own proportions so it cannot drift off the machine.
-      const lamp = this.scene.add
-        .rectangle(p.x, p.y - art.h * 0.62, art.w * 0.5, Math.max(2, art.h * 0.12), ACTIVE, 0.95)
-        .setOrigin(0.5, 0.5)
-        .setVisible(false)
-      this.container.add([sprite, lamp])
-      this.entries.set(p.id, { sprite, lamp, view: p })
+      // **High enough to clear the rider's head** (T21.14). At `0.62` the band
+      // spanned 25.8–31.3 px above the feet line while a standing player
+      // occupies 0–28 and draws at `DEPTH.actors`, *over* the platform — so 2.2
+      // of its 5.5 px sat behind the one person who needs to read it. Measured,
+      // not guessed. `0.75` puts it at 31.8–37.2, inside the housing (which
+      // spans roughly 23.7–39.3) and clear of a 28 px body.
+      const lamps = [-1, 1].map((dir) =>
+        this.scene.add
+          .rectangle(
+            p.x + dir * art.w * 0.3,
+            p.y - art.h * 0.75,
+            art.w * 0.22,
+            Math.max(2, art.h * 0.12),
+            ACTIVE,
+            0.95,
+          )
+          .setOrigin(0.5, 0.5)
+          .setVisible(false),
+      )
+      this.container.add([sprite, ...lamps])
+      this.entries.set(p.id, { sprite, lamps, view: p })
     }
   }
 
   destroy(): void {
     for (const e of this.entries.values()) {
       e.sprite.destroy()
-      e.lamp.destroy()
+      for (const l of e.lamps) l.destroy()
     }
     this.entries.clear()
     this.container.destroy()

@@ -246,7 +246,16 @@ await selectWeapon(a.page, 'bazooka')
 await sleep(200)
 const solidBeforeA = (await dbg(a)).solid
 const solidBeforeB = (await dbg(b)).solid
-const spawnsBefore = (await dbg(a)).observed?.projectileSpawns ?? 0
+// **Ana's own rockets, not every projectile on the map** (T21.14).
+//
+// `projectileSpawns` counts anything the client observes — the other player,
+// bots, and the weather, whose toxic drops and meteor fragments are projectiles
+// too. Asking "did my four trigger pulls produce four rockets" with that number
+// flaked at about one run in six, reporting 7 for 4. The dominant cause was
+// worse and is fixed elsewhere: a platform could be placed on a spawn point, so
+// ana sometimes spawned standing on a gun platform, mounted it by standing
+// still, and fired four **volleys** of four.
+const spawnsBefore = (await dbg(a)).observed?.ownProjectileSpawns ?? 0
 // The whole stack, at the cadence that empties it.
 const rockets = Math.round(k.BAZOOKA_AMMO)
 for (let i = 0; i < rockets; i++) {
@@ -261,7 +270,7 @@ const removedB = solidBeforeB - dbF.solid
 // and still pass on a single lucky rocket, which is how it came to believe it
 // fired twelve. If the server did not accept what we sent, that is the finding —
 // not the smaller crater it produces.
-const spawnsAfter = (await dbg(a)).observed?.projectileSpawns ?? 0
+const spawnsAfter = (await dbg(a)).observed?.ownProjectileSpawns ?? 0
 if (spawnsAfter - spawnsBefore !== rockets) {
   fail(`fired ${rockets} but only ${spawnsAfter - spawnsBefore} rockets left the muzzle`)
 }
