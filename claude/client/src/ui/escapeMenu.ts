@@ -1,5 +1,5 @@
 /**
- * §C13's escape menu: Resume, Options (disabled), Quit to title.
+ * §C13's escape menu: Resume, Options, Quit to title.
  *
  * **An overlay, not a pause.** The round runs behind it, exactly as §B4
  * established for the death screen and `docs/30` §3 for the inventory — nothing
@@ -14,13 +14,19 @@
  */
 
 /** What `Esc` did, so the caller can act and a test can assert. */
-export type EscapeAction = 'closed-inventory' | 'closed-menu' | 'opened-menu'
+export type EscapeAction =
+  | 'closed-options'
+  | 'closed-inventory'
+  | 'closed-menu'
+  | 'opened-menu'
 
 export interface EscapeState {
   /** The backpack panel (§C10). */
   inventoryOpen: boolean
   /** This menu. */
   menuOpen: boolean
+  /** T21.16's options panel, which is opened **from** this menu. */
+  optionsOpen: boolean
 }
 
 /**
@@ -31,6 +37,12 @@ export interface EscapeState {
  * single `Esc` must not close both, and must not open the menu on top of it.
  */
 export function handleEscape(state: EscapeState): EscapeAction {
+  // **Options first** (T21.16). It can only be opened from the menu, so it is
+  // always the most recently opened thing and therefore the innermost — the
+  // same reasoning that puts the inventory ahead of the menu. Closing it must
+  // leave the menu standing, or a player who opens options and presses Esc is
+  // dropped back into the round two steps from where they were.
+  if (state.optionsOpen) return 'closed-options'
   if (state.inventoryOpen) return 'closed-inventory'
   if (state.menuOpen) return 'closed-menu'
   return 'opened-menu'
@@ -40,6 +52,14 @@ export interface EscapeMenuDeps {
   onResume(): void
   /** Leave the room *and* return to the title. Both, or the seat stays taken. */
   onQuit(): void
+  /**
+   * Open the options panel (T21.16).
+   *
+   * A dep rather than a panel this class owns, for the reason the inventory's
+   * `toggleBackpack` is one: the scene also has to know, so that `Esc` closes
+   * the innermost overlay and the menu does not sit on top of its own child.
+   */
+  onOptions(): void
 }
 
 const BUTTON =
@@ -83,12 +103,14 @@ export class EscapeMenu {
     // in the skins menu (§B3), so the player knows it is planned rather than
     // wondering whether they missed it. `disabled` also takes it out of the tab
     // order, which §C13 asks for in as many words.
+    // **Enabled since T21.16.** It sat here disabled and labelled "coming soon"
+    // — present rather than hidden so a player knew it was planned. It is the
+    // home for the High Quality switch now.
     this.options = doc.createElement('button')
     this.options.id = 'escape-options'
-    this.options.textContent = 'Options — coming soon'
-    this.options.disabled = true
-    this.options.tabIndex = -1
-    this.options.style.cssText = BUTTON + 'opacity:.42;cursor:default;'
+    this.options.textContent = 'Options'
+    this.options.style.cssText = BUTTON
+    this.options.addEventListener('click', () => deps.onOptions())
 
     const quit = doc.createElement('button')
     quit.id = 'escape-quit'

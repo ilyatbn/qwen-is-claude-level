@@ -6030,3 +6030,22 @@ The two hid each other: the rebroadcast would have corrected a missed announceme
 **`RoundState` had 14 references in this repo and none in a test** — nothing had ever asserted the
 message the round lifecycle depends on is sent. Both new tests lead with round one as their
 control. Each defect reds only its own test. 918 client + 337 ok, 52/52.
+
+## T21.16 — an options menu, and the High Quality toggle
+
+The escape menu's "Options — coming soon" button is real now, and opens a panel holding one
+setting. **Default off, and that is the point**: shaders need the better graphics mode and this
+switch exists for machines without it, so defaulting on would make exactly those worse the day
+the first shader lands. Persisted like the skins are — junk, an empty string and a browser with
+storage disabled all read as off rather than reaching a renderer as `NaN`.
+`isHighQuality()` is the single accessor, cached rather than read from storage per frame, and
+`onHighQualityChange` exists so the toggle is **live** — a setting needing a restart is one a
+player flips, sees nothing, and flips back.
+**This task's real claim is that nothing changes**: the browser check flips the switch and
+asserts the field is identical (0.0). A check asserting a *change* would be asserting a feature
+that does not exist yet.
+`handleEscape` gained a fourth state; options is innermost because it can only be opened from the
+menu. The menu steps aside while the panel is up — left visible, it poked out around the edges
+greyed and unclickable, which reads as a bug rather than as depth. Back and Esc do the same
+thing, rather than one returning to the menu and the other to the round.
+The `resetForNewRound` tripwire caught `optionsPanel` before the gate did. 928 client + 340 ok.

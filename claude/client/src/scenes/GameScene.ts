@@ -88,6 +88,7 @@ import { Hud, type EffectPhase } from '../ui/hud'
 import { Bars } from '../ui/bars'
 import { InventoryPanel } from '../ui/inventory'
 import { EscapeMenu, handleEscape } from '../ui/escapeMenu'
+import { OptionsPanel } from '../ui/optionsPanel'
 import { DebugMode } from '../ui/debugMode'
 import { devSurface } from '../dev'
 import { DebugOverlay } from '../render/debugOverlay'
@@ -268,6 +269,8 @@ export class GameScene extends Phaser.Scene {
   private inventory: InventoryPanel | null = null
   /** §C13: Resume / Options / Quit, over a round that keeps running. */
   private escapeMenu: EscapeMenu | null = null
+  /** T21.16's options panel. Opened from the escape menu, closed back to it. */
+  private optionsPanel: OptionsPanel | null = null
   /** §C12: `F1` / `?debug=1`. Off by default, and it owns the T3.11 overlays. */
   private debugMode: DebugMode | null = null
   private overlay: DebugOverlay | null = null
@@ -555,6 +558,10 @@ export class GameScene extends Phaser.Scene {
     this.bars = null
     this.inventory = null
     this.escapeMenu = null
+    // T21.16: the panel is rebuilt with the menu that opens it, so it is
+    // cleared with it — a stale panel from the previous round would be an
+    // orphaned DOM node listening for clicks.
+    this.optionsPanel = null
     this.debugMode = null
     this.overlay = null
     this.jetReadout = null
@@ -1129,6 +1136,7 @@ export class GameScene extends Phaser.Scene {
       this.bars?.destroy()
       this.inventory?.destroy()
       this.escapeMenu?.destroy()
+      this.optionsPanel?.destroy()
       this.debugMode?.destroy()
       this.overlay?.destroy()
       this.jetReadout?.remove()
@@ -2150,8 +2158,29 @@ export class GameScene extends Phaser.Scene {
     // §C13. Quitting **leaves the room** as well as changing scene: a scene
     // change alone keeps the seat, and the room then never reaps (§B14's shape,
     // and the same reason `ResultsScreen.onExit` closes the socket).
+    // T21.16. Built before the menu that opens it, so the callback below has
+    // something to reach.
+    this.optionsPanel = new OptionsPanel({
+      // **Back and Esc do the same thing**, rather than Back closing to the
+      // round while Esc closes to the menu — two ways out of one panel that
+      // disagree is the kind of detail a player notices and cannot name.
+      onClose: () => {
+        this.optionsPanel?.toggle(false)
+        this.escapeMenu?.toggle(true)
+      },
+      storage: localStorage,
+    })
     this.escapeMenu = new EscapeMenu({
       onResume: () => this.escapeMenu?.toggle(false),
+      // **The menu steps aside while the panel is up.** It is wider than the
+      // panel, so leaving it visible left "Resume" and "Quit to title" poking
+      // out around the edges, greyed and unclickable — which reads as a bug
+      // rather than as depth. Closing options brings it straight back, so the
+      // player still lands where they were.
+      onOptions: () => {
+        this.escapeMenu?.toggle(false)
+        this.optionsPanel?.toggle(true)
+      },
       onQuit: () => {
         this.conn.sendRaw('leave_room', {})
         this.conn.close()
@@ -2185,10 +2214,16 @@ export class GameScene extends Phaser.Scene {
       // can be driven under node; this only carries it out.
       switch (
         handleEscape({
+          optionsOpen: this.optionsPanel?.isOpen() ?? false,
           inventoryOpen: this.inventory?.isOpen ?? false,
           menuOpen: this.escapeMenu?.isOpen ?? false,
         })
       ) {
+        case 'closed-options':
+          // Back to the menu it was opened from, not out to the round.
+          this.optionsPanel?.toggle(false)
+          this.escapeMenu?.toggle(true)
+          break
         case 'closed-inventory':
           this.invOpen = this.inventory?.toggle(false) ?? false
           this.refreshHud()

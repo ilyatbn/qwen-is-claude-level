@@ -3,13 +3,17 @@ import { handleEscape, type EscapeState } from './escapeMenu'
 
 /**
  * §C13's stacking rule, which is where key handling on this kind of UI usually
- * breaks. The DOM half — the three buttons, Options disabled and out of the tab
- * order, and quitting actually leaving the room — is asserted in
- * `scripts/checks/escape-menu.mjs`, on the rendered frame and on the socket.
+ * breaks. The DOM half — the three buttons and quitting actually leaving the
+ * room — is asserted in `scripts/checks/escape-menu.mjs`, on the rendered frame
+ * and on the socket.
+ *
+ * T21.16 added a fourth state: the options panel, which is opened **from** this
+ * menu and is therefore always the innermost thing on screen.
  */
 const state = (over: Partial<EscapeState> = {}): EscapeState => ({
   inventoryOpen: false,
   menuOpen: false,
+  optionsOpen: false,
   ...over,
 })
 
@@ -42,5 +46,33 @@ describe('handleEscape', () => {
     expect(handleEscape(s)).toBe('opened-menu')
     s.menuOpen = true
     expect(handleEscape(s)).toBe('closed-menu')
+  })
+})
+
+describe('handleEscape with the options panel (T21.16)', () => {
+  it('closes options first, because it was opened last', () => {
+    expect(handleEscape(state({ optionsOpen: true, menuOpen: true }))).toBe('closed-options')
+  })
+
+  it('leaves the menu standing when options closes', () => {
+    // The action says *what* to close; this pins the ordering that makes a
+    // player who opens options and presses Esc land back on the menu rather
+    // than two steps out in the round.
+    expect(handleEscape(state({ optionsOpen: true, menuOpen: true }))).toBe('closed-options')
+    // ...and the very next press then closes the menu.
+    expect(handleEscape(state({ optionsOpen: false, menuOpen: true }))).toBe('closed-menu')
+  })
+
+  it('beats the inventory too, whatever order they were opened in', () => {
+    expect(
+      handleEscape(state({ optionsOpen: true, inventoryOpen: true, menuOpen: true })),
+    ).toBe('closed-options')
+  })
+
+  it('changes nothing when it is shut — the control', () => {
+    // Without this, "options wins" is also what a function that always returns
+    // 'closed-options' would produce.
+    expect(handleEscape(state({ menuOpen: true }))).toBe('closed-menu')
+    expect(handleEscape(state())).toBe('opened-menu')
   })
 })

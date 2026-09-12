@@ -17,6 +17,15 @@
  *   the *server's* player count, not from the client's opinion of itself.
  */
 import { startStack, enterBattle, tally, sleep } from './harness.mjs'
+import { samplePatch, colourDelta } from './pixels.mjs'
+
+/**
+ * A patch of the playfield, clear of the menu and the panel (T21.16).
+ *
+ * Both overlays are centred, so this sits low and to the left where neither
+ * reaches — the point is to photograph the *game*, not the UI on top of it.
+ */
+const FIELD = { x: 40, y: 470, w: 200, h: 140 }
 
 const PORT = 3126
 const { fail, ok, finish } = tally('escape-menu')
@@ -50,19 +59,79 @@ if (!(await shown('escape-menu'))) {
   ok('Esc opens the menu')
   await shot('escape-menu')
 
-  // Options: present, disabled, and out of the tab order (§C13).
+  // Options: **enabled since T21.16**, and it opens a panel.
+  //
+  // This asserted the opposite until now — present, disabled and out of the tab
+  // order — which was right while it was a stub and is a lie once it works.
   const options = await page.evaluate(() => {
     const el = document.getElementById('escape-options')
     if (!el) return null
-    return { text: el.textContent ?? '', disabled: el.disabled, tabIndex: el.tabIndex }
+    return { text: el.textContent ?? '', disabled: el.disabled }
   })
   if (!options) {
-    fail('Options is missing — §C13 asks for it present and disabled, not hidden')
-  } else if (!options.disabled || options.tabIndex >= 0) {
-    fail(`Options is reachable: disabled=${options.disabled}, tabIndex=${options.tabIndex}`)
+    fail('Options is missing')
+  } else if (options.disabled) {
+    fail('Options is still disabled — T21.16 enables it')
   } else {
-    ok(`Options is present, disabled and unfocusable — "${options.text.trim()}"`)
+    ok(`Options is present and enabled — "${options.text.trim()}"`)
   }
+
+  // --- T21.16: the panel, and the toggle inside it -------------------------
+  const panelShut = await page.evaluate(
+    () => !!document.getElementById('options-panel')?.hidden,
+  )
+  if (!panelShut) fail('the options panel is open before anyone clicked Options')
+
+  await page.evaluate(() => document.getElementById('escape-options')?.click())
+  await sleep(150)
+  const opened = await page.evaluate(() => {
+    const panel = document.getElementById('options-panel')
+    const btn = document.getElementById('options-quality')
+    return { shown: panel ? !panel.hidden : false, label: btn?.textContent ?? '' }
+  })
+  if (!opened.shown) fail('clicking Options opened nothing')
+  else ok(`the options panel opened, High Quality reads "${opened.label}"`)
+  if (opened.label !== 'Off') {
+    fail(`High Quality defaults to "${opened.label}" — it must default to Off, because the ` +
+      `toggle exists for machines that cannot run shaders`)
+  }
+  await shot('options-panel')
+
+  // **Flipping it changes nothing on screen yet, and that is this task's claim.**
+  //
+  // Nothing consumes the setting until the first shader lands, so the honest
+  // assertion here is that the game looks identical either way. A check that
+  // asserted a *change* would be asserting a feature that does not exist.
+  const before = await samplePatch(page, FIELD)
+  await page.evaluate(() => document.getElementById('options-quality')?.click())
+  await sleep(300)
+  const flipped = await page.evaluate(
+    () => document.getElementById('options-quality')?.textContent ?? '',
+  )
+  if (flipped !== 'On') fail(`the toggle read "${flipped}" after a click`)
+  const after = await samplePatch(page, FIELD)
+  const moved = colourDelta(before, after)
+  if (moved > 4) {
+    fail(`turning High Quality on moved the field by ${moved.toFixed(1)} — nothing reads it yet`)
+  } else {
+    ok(`High Quality flips to On and the field is unchanged (${moved.toFixed(1)}), as it must be`)
+  }
+
+  // And it persists: re-opening reads the stored value rather than the default.
+  await page.evaluate(() => document.getElementById('options-close')?.click())
+  await sleep(120)
+  await page.evaluate(() => document.getElementById('escape-options')?.click())
+  await sleep(150)
+  const reopened = await page.evaluate(
+    () => document.getElementById('options-quality')?.textContent ?? '',
+  )
+  if (reopened !== 'On') fail(`re-opening options read "${reopened}", not the stored On`)
+  else ok('the setting survives closing and re-opening the panel')
+
+  // Leave it as it was found, so a later check does not inherit it.
+  await page.evaluate(() => document.getElementById('options-quality')?.click())
+  await page.evaluate(() => document.getElementById('options-close')?.click())
+  await sleep(120)
 
   // --- the round keeps running behind it (§C13, §B4) -----------------------
   const t0 = await dbg()
