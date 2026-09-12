@@ -16,9 +16,17 @@ import {
   type SkinRegistry,
 } from './skins-math'
 
+/** Where a loose image's interesting region is, normalised to its own size. */
+export interface ImageRegion {
+  cx: number
+  cy: number
+  rx: number
+  ry: number
+}
+
 interface Manifest {
   atlases: { key: string; png: string; json: string }[]
-  images: { key: string; path: string }[]
+  images: { key: string; path: string; portal?: ImageRegion }[]
   themes: string[]
   audio: string[]
 }
@@ -30,6 +38,19 @@ let loadAttempted = false
 /** The skin registry, or null if it never loaded. Callers must handle null. */
 export function skins(): SkinRegistry | null {
   return registry
+}
+
+/**
+ * The portal region a loose image declares, or `null`.
+ *
+ * T21.12's gate carries one: `build-gate-sprite.mjs` derives it from the flood
+ * fill that cut the hole, so the charge effect lands exactly in the ring and
+ * cannot drift from the art. Returning `null` rather than a default is
+ * deliberate — a caller that got a plausible-looking guess would draw a blue
+ * blob somewhere near the gate and nobody would know it was wrong.
+ */
+export function imagePortal(key: string): ImageRegion | null {
+  return manifest?.images?.find((i) => i.key === key)?.portal ?? null
 }
 
 /** Theme names the manifest declared, for the terrain renderer. */

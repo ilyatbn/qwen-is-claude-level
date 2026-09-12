@@ -35,7 +35,7 @@
  *   5. **It is on the screen** (§C2): the same rect at two moments, uncharged and
  *      charging, with a control rect in terrain that must not move between them.
  */
-import { samplePatch, colourDelta } from './pixels.mjs'
+import { samplePatch, colourDelta, assertChanged } from './pixels.mjs'
 import { startStack, enterBattle, tally, sleep, standStill, selectWeapon } from './harness.mjs'
 
 const PORT = 3131
@@ -255,7 +255,72 @@ if (!home) {
       h: Math.round(h),
     }
   }
-  const padRect = () => rectAt(home.x + k.PAD_W * 0.4, home.y)
+  /**
+   * A rect of a given **world** half-size around a world point.
+   *
+   * `rectAt` bakes `PAD_W`/`PAD_H` fractions sized for the ring; the gate's
+   * portal is a different shape in a different place, and stretching `rectAt`
+   * to cover both would make one of them wrong.
+   */
+  const rectAtSized = async (wx, wy, halfW, halfH) => {
+    const s = await toScreen(wx, wy)
+    const w = Math.max(10, halfW * 2 * s.scale)
+    const h = Math.max(10, halfH * 2 * s.scale)
+    return {
+      x: Math.round(s.x - w / 2),
+      y: Math.round(s.y - h / 2),
+      w: Math.round(w),
+      h: Math.round(h),
+    }
+  }
+
+  /**
+   * **T21.12 moved the charge indicator, so this rect moved with it.**
+   *
+   * The pad used to fill a yellow arc around its ring, on the feet line — which
+   * is what `rectAt(home.x + PAD_W * 0.4, home.y)` was aimed at. A gate fills
+   * its *portal*, most of a sprite height higher up, and the old rect would have
+   * gone on passing while photographing a brick base that never changes: a
+   * check reporting a claim through something other than the thing it claims.
+   *
+   * The geometry comes from the renderer's own object (`debug().gatePortal`),
+   * not from the manifest, because only one of those is on screen. `null` means
+   * no gate art loaded and the ring is the indicator — the documented fallback
+   * (`docs/50` §8), and then the old rect is the right one.
+   */
+  const gatePortal = await page.evaluate(() => window.__game.debug().gatePortal ?? null)
+  const gateCounts = await page.evaluate(() => {
+    const d = window.__game.debug()
+    return { pads: d.padsDrawn, gates: d.gatesDrawn }
+  })
+  // **The gate art ships in this repository, so its absence is a regression,
+  // not the documented fallback.**
+  //
+  // `docs/50` §8's fallback is for a client with *no assets at all*; a build
+  // that has `assets/manifest.json` and every atlas but has lost
+  // `images/gate.png` is broken. The first version of this block accepted
+  // `gatePortal === null` and printed a green `ok` — so deleting the sprite, or
+  // never running `build-gate-sprite.mjs`, removed the whole feature from the
+  // game and the gate still passed. Counted at both ends, like the pads above.
+  if (gateCounts.gates !== gateCounts.pads) {
+    fail(
+      `${gateCounts.pads} pads drawn but only ${gateCounts.gates} wearing a gate — ` +
+        `the sprite did not load (run scripts/build-gate-sprite.mjs)`,
+    )
+  } else {
+    ok(`all ${gateCounts.gates} pads are wearing a gate`)
+  }
+  if (!gatePortal) {
+    fail('the gate has no portal region — assets/manifest.json lost its `portal` field')
+  } else {
+    ok(
+      `gate portal at dy=${Math.round(gatePortal.dy)} r=${Math.round(gatePortal.rx)}x${Math.round(gatePortal.ry)}`,
+    )
+  }
+  const padRect = () =>
+    gatePortal
+      ? rectAtSized(home.x, home.y + gatePortal.dy, gatePortal.rx * 0.8, gatePortal.ry * 0.8)
+      : rectAt(home.x + k.PAD_W * 0.4, home.y)
 
   /**
    * Whether a rect lies **entirely** inside the canvas.
@@ -364,6 +429,55 @@ if (!home) {
         `canvas ${JSON.stringify(frame)}`,
     )
   }
+  // --- T21.12: the gate is on the screen, with a control frame --------------
+  //
+  // The task asked for this and the first version of the work skipped it: the
+  // charge half below proves the *fill* moves, which a gate drawn with
+  // `visible: false` would still satisfy, because the fill is a different
+  // object. So the arch itself gets its own assertion, and the control is the
+  // same camera and the same map with the pad layer switched off — which is
+  // what `PadLayer::setVisible` exists for. It had no caller until now.
+  //
+  // **Sampled on the stone, not on the portal.** `padRect` targets the hole,
+  // which is where the charge shows — but the hole is transparent, so hiding
+  // the arch moves it by almost nothing (3.4 against a threshold of 8, on a
+  // frame where the gate had plainly gone). The arch is the subject here, so
+  // the rect is the sprite.
+  const gateRect = () =>
+    gatePortal
+      ? rectAtSized(
+          home.x,
+          home.y - gatePortal.gh / 2,
+          gatePortal.gw * 0.45,
+          gatePortal.gh * 0.4,
+        )
+      : padRect()
+  const gateAt = canSample ? await gateRect() : null
+  if (canSample && fits(gateAt)) {
+    const gateOn = await samplePatch(page, gateAt)
+    const gateCtrlOn = await samplePatch(page, await ctrlRect())
+    const off = await page.evaluate(() => window.__game.showPads(false))
+    if (off.visible !== false) fail('showPads(false) did not hide the pad layer')
+    await page.waitForTimeout(200)
+    const gateOff = await samplePatch(page, gateAt)
+    const gateCtrlOff = await samplePatch(page, await ctrlRect())
+    const back = await page.evaluate(() => window.__game.showPads(true))
+    if (back.visible !== true) fail('the pad layer did not come back')
+    await page.waitForTimeout(200)
+    try {
+      const r = assertChanged(gateOn, gateOff, {
+        label: 'the pad region, with and without the gate layer',
+        control: { before: gateCtrlOn, after: gateCtrlOff },
+      })
+      ok(
+        `the gate is drawn: the pad region moved ${r.delta.toFixed(1)}, ` +
+          `a terrain control moved ${r.controlDelta.toFixed(1)}`,
+      )
+    } catch (e) {
+      fail(String(e.message ?? e))
+    }
+  }
+
   const padA = canSample ? await samplePatch(page, padA0) : null
   const ctrlA = canSample ? await samplePatch(page, await ctrlRect()) : null
   await shot('teleport-uncharged')

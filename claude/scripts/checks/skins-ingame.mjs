@@ -232,6 +232,20 @@ const C = await a.page.evaluate('window.__game.constants()')
  */
 async function frame(page, wx, wy, tag) {
   await page.evaluate(([x, y]) => window.__game.watch(x, y), [wx, wy])
+  // **Hide the teleport gates (T21.12).**
+  //
+  // This check's inequality rests on the ground behind two bodies being
+  // *similar enough* that a difference in the bodies cannot be explained by it.
+  // §C5 respawns players **on pads**, and a pad now wears a 64x71 stone arch —
+  // so the ground behind one body became an arch and behind another a hillside,
+  // and the measured ground difference went from ~32 to ~85 while the bodies
+  // stayed at 61. The skins were reaching the screen the whole time; the control
+  // had stopped being a control.
+  //
+  // Hiding them is the same move this function already makes for the bodies:
+  // isolate the subject. It is not a weakened threshold — the inequality and its
+  // 1.5x bar are untouched.
+  await page.evaluate(() => window.__game.showPads?.(false))
   // One frame for the snap to land, then freeze so the two reads below are the
   // same picture with one thing changed.
   await sleep(250)
@@ -248,6 +262,7 @@ async function frame(page, wx, wy, tag) {
   const ground = await samplePatch(page, rect)
   await page.evaluate(() => window.__game.setActorsVisible(true))
   await page.evaluate(() => window.__game.freeze(false))
+  await page.evaluate(() => window.__game.showPads?.(true))
   return { body, ground }
 }
 

@@ -31,7 +31,18 @@
       "json": "atlas/objects.json"
     }
   ],
-  "images": [],
+  "images": [
+    {
+      "key": "gate",
+      "path": "images/gate.png",
+      "portal": {
+        "cx": 0.4990825688073395,
+        "cy": 0.3745847176079734,
+        "rx": 0.28440366972477066,
+        "ry": 0.2616279069767442
+      }
+    }
+  ],
   "themes": [],
   "audio": [
     "audio/crate_land.ogg",

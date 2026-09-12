@@ -25,10 +25,11 @@ import { CameraRig } from './cameraRig'
 import { Backdrop, DEFAULT_THEME, DEPTH } from './backdrop'
 import { resolveTheme } from '../render/themes-math'
 import { makeBackTexture, makeEdgeTexture, makeFillTexture } from './procTextures'
+import { imagePortal } from './assets'
 import { DecorationLayer } from './decorations'
 import { fromMeta } from './decorations-math'
 import { ItemLayer } from './itemSprites'
-import { PadLayer, type PadView } from './pads'
+import { GATE_KEY, PadLayer, type PadView } from './pads'
 import { PlatformLayer, type PlatformView } from './platforms'
 import { OrdnanceLayer } from './ordnance'
 import { WeatherLayer, type VentView } from './weather'
@@ -138,6 +139,7 @@ export class WorldView {
     // `map_init` and `GameScene` calls `pads.build` again with the wire's list.
     this.pads.build(
       core.meta.teleport_pads.map((p): PadView => ({ id: p.id, x: p.pos.x, y: p.pos.y })),
+      imagePortal(GATE_KEY),
     )
     this.platforms = new PlatformLayer(scene)
     // Same story as the pads above: a locally generated map already knows its

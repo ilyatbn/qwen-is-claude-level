@@ -12,13 +12,13 @@
  */
 
 import Phaser from 'phaser'
-import { loadAssetManifest, runLoader } from '../render/assets'
+import { imagePortal, loadAssetManifest, runLoader } from '../render/assets'
 import { DeathOverlay } from '../ui/deathOverlay'
 import { TombstoneLayer } from '../render/tombstones'
 import { AnimalLayer } from '../render/animals'
 import { BirdLayer } from '../render/birds'
 import { landingVolume } from '../render/feel-math'
-import { padUnderfoot, type PadView } from '../render/pads'
+import { GATE_KEY, padUnderfoot, type PadView } from '../render/pads'
 import { atlasArt } from '../render/objects'
 import type { MapObject } from '../net/codec'
 import { C, Core, dequantizeAngle, strictConstants, type VentSpec } from '../core'
@@ -1254,7 +1254,7 @@ export class GameScene extends Phaser.Scene {
     // never runs the generator, so `core.meta.teleport_pads` is empty here and a
     // renderer reading it would draw nothing while looking correct.
     this.padViews = init.pads.map((p, i) => ({ id: i, x: p.x, y: p.y }))
-    this.world.pads.build(this.padViews)
+    this.world.pads.build(this.padViews, imagePortal(GATE_KEY))
     // T21.11's platforms, rebuilt from the wire beside the pads. The index is
     // the id on both sides — `map_init` does not send one (§B16: two registries
     // assumed a positional relationship without asserting it and a laser
@@ -2398,6 +2398,22 @@ export class GameScene extends Phaser.Scene {
         // for a crate that was on screen a moment earlier.
         if (self.watchPoint) self.world?.rig.snapTo(self.watchPoint)
       },
+      /**
+       * Show or hide the teleport pads — **for the pixel check's control
+       * frame** (`docs/72` §C2, T21.12).
+       *
+       * "The gate is on screen" is only evidence against the same camera, the
+       * same map and the same light with the layer gone. Two pads cannot be
+       * that control and neither can two maps.
+       *
+       * Returns what it did, read back off the container, rather than
+       * acknowledging the ask — a hook that answers `true` for "I was called"
+       * is the shape this project keeps paying for.
+       */
+      showPads(on: boolean) {
+        self.world?.pads.setVisible(on)
+        return { visible: self.world?.pads.visible ?? false }
+      },
       debug() {
         const body = self.core.playerState(self.me)
         return {
@@ -2543,6 +2559,18 @@ export class GameScene extends Phaser.Scene {
           // nothing, which is the §A39 shape this list exists to catch.
           pads: self.padViews.length,
           padsDrawn: self.world?.pads.count ?? 0,
+          // T21.12, both ends once more: a pad can be drawn as the fallback
+          // ring with no gate art loaded, and that is a legal state
+          // (`docs/50` §8) — so "drawn" and "wearing a gate" are two different
+          // numbers and a check that conflated them would pass on placeholders.
+          gatesDrawn: self.world?.pads.gatesDrawn ?? 0,
+          // T21.12: where the charge indicator is, so a pixel check can sample
+          // it rather than a rect that used to be right.
+          gatePortal: self.world?.pads.portalGeometry() ?? null,
+          // T21.12: whether the pad layer is currently drawn, so the pixel
+          // check's control frame can prove it turned it off rather than
+          // assuming it.
+          padsVisible: self.world?.pads.visible ?? false,
           platformsDrawn: self.world?.platforms.count ?? 0,
           // §D6, both ends again: what `map_init` carried, and what the index
           // the bake reads actually holds. `objects` alone would pass for a

@@ -5944,3 +5944,27 @@ the symptom would be rounds that hurt you and draw as nothing (§F1's six-milest
 the missing direction, read out of `defs.rs` with vacuity controls.
 Ammo + cooldown are hashed; `REPLAY_VERSION` 7 shared with T21.11B as its note says.
 **First gate ran on a loaded box (my error) — 48/51**; re-run idle: 51/51, 334 ok.
+
+## T21.12 — the teleport pad gets a gate
+
+`build-gate-sprite.mjs` cuts the source's white background by **flood fill from the borders**,
+not a brightness threshold — the stone's own highlights are as bright as the paper, and a
+threshold punches holes through the ring. A second fill from the centre opens the portal, and
+its bbox becomes the charge effect's geometry, so the blue fill cannot drift from the art.
+Size derives from `PAD_W`. The indestructible rock already existed (`TeleportPad::rect`); this
+is the picture, not the rock.
+**A harsh reviewer found what the gate could not.** `PadLayer::setVisible` was built "for the
+pixel check's control frame" and had no caller; `gatesDrawn` counted `gate !== null`, so an arch
+drawn `visible:false` passed every test in the repo; `teleport.mjs` printed a green `ok` when
+the sprite was missing entirely. All three closed — the gate is now counted at both ends and
+asserted against a control frame (80.6 vs 0.0).
+**Four of my own tests were hollow** and are now falsified by name: the fallback's `>= 2` was
+exactly the count that survived deleting the ring; idempotence read a Map keyed by pad id;
+the saturation test never exercised saturation; staleness compared a 3-integer histogram, so
+dropping the un-premultiply passed. I had also misread a falsification — the red was the test
+next door.
+**The gates broke `skins-ingame`**, and it was mine, not a flake: §C5 respawns players *on
+pads*, so "the ground behind a body" became a 71 px arch and the control went 32 → 85 while the
+bodies stayed at 61. Fixed by hiding pads while it measures ground — the same isolation it
+already does for bodies — and re-falsified: with every body forced to skin 0 it still reds.
+905 client + 337 ok, 51/51.
