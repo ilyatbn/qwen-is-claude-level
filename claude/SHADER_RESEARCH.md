@@ -81,11 +81,13 @@ speeds, depth layers, and drops that streak properly. Nice, not transformative.
 Currently a glowing mouth plus flame sprites. A shader could give it a molten
 shimmer. Small win, easy, low risk.
 
-### 6. Clouds — leave alone
+### 6. Clouds — **superseded**
 
-Already real artwork from a 120-frame sprite set, drifting and re-tinted by time
-of day. This is the one effect that already looks how it should. A shader would
-replace something good with something generic.
+This section said "leave alone: already real artwork that looks how it should".
+The coordinator does not like them, which settles it — that judgement was mine
+and it was about effort rather than looks. They are now **off by default and a
+shader under High Quality**. Left here rather than deleted so the reversal is
+visible.
 
 ---
 
@@ -104,19 +106,40 @@ Not asked for, but they are the other flat-looking things:
 
 ---
 
-## Before building anything
+## Decisions taken (coordinator, this session)
 
-Two decisions, both yours rather than mine:
+1. **It is a toggle, not a fallback question.** A **High Quality** switch in the
+   options menu. Off, the game draws as it does today; on, the shader versions
+   run. That settles the old-machine problem without dropping anything, and it
+   means every effect below is additive rather than a replacement.
 
-1. **Old machines.** The game currently picks WebGL when available and falls back
-   to a simpler mode when not. Shaders only work on the first. Either accept that
-   people without it see the plain version, or drop that fallback entirely. This
-   affects every effect, so it should be decided once, up front.
+2. **The clouds go.** They are not liked. Off by default, and rewritten as a
+   shader for High Quality rather than kept as sprites. (This reverses the
+   earlier recommendation to leave them alone, which was mine and was about
+   effort, not looks.)
 
-2. **Where to start.** My recommendation is **fog first** — it is the ugliest
-   thing on screen, it changes the mood of the whole game, and it is self
-   contained. Smoke second, since it is the same technique applied to a smaller
-   target.
+3. **The pattern is: simulation stays, drawing changes.** Where something both
+   acts and appears, the acting half is untouched and only the picture becomes a
+   shader. That applies to fire, smoke, rain and explosions — and it is the rule
+   that keeps this safe to do at all.
+
+4. **Lasers turn out to be the easiest case, not the hardest.** They are not
+   projectiles: `Delivery::Hitscan` resolves instantly and the client draws a
+   fading line. There is nothing to make invisible — the shader simply replaces
+   the line. Same for any future beam weapon.
+
+## Build order
+
+Each of these is its own task, and each must be finished before the next starts.
+
+| # | what | why here |
+|---|---|---|
+| 1 | **Options menu + High Quality toggle** | everything else hangs off it; the escape menu already has a disabled "Options — coming soon" button to fill in |
+| 2 | **Shader plumbing + fog** | the first effect pays for the setup, and fog is the ugliest thing on screen |
+| 3 | **Clouds** | off by default, shader when High Quality |
+| 4 | **Smoke grenades** | same technique as fog, smaller target |
+| 5 | **Laser beams** | easiest, because there is no projectile to reconcile |
+| 6 | **Fire, then explosions** | last, because their pictures must keep matching where the damage is |
 
 ## What I have not checked
 
@@ -124,3 +147,5 @@ Two decisions, both yours rather than mine:
   avoids the question and is what I would try first.
 - Nothing here has been prototyped, so "it would look better" is judgement about
   a technique, not something I have seen running in this game.
+- Whether the toggle should also exist on the title screen rather than only
+  mid-match. Worth deciding when the options menu is built.
