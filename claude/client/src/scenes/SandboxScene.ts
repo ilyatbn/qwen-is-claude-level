@@ -28,8 +28,7 @@ import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { ventLights } from '../render/weather-math'
 import { DebugOverlay } from '../render/debugOverlay'
-import { cloudTint, cycleU, darknessAt, skyPhase } from '../render/sky-math'
-import { cloudSpriteTint } from '../render/clouds-math'
+import { cycleU, darknessAt, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
 import { devSurface } from '../dev'
 import { loadIdentity } from '../ui/skins'
@@ -686,8 +685,10 @@ export class SandboxScene extends Phaser.Scene {
           animState: self.player?.state ?? 'idle',
           roundTime: self.roundTime,
           skyPhase: self.sky?.currentPhase ?? 'morning',
-          // §C14. `visibleClouds` separates "the layer exists" from "it is
-          // drawing", which is the distinction §A15 keeps being about.
+          // §C14. `shaderClouds` separates "the layer exists" from "it is
+          // drawing", which is the distinction §A15 keeps being about — and
+          // since T21.18 it is also the whole of the cloud answer, because there
+          // is no sprite path left to be drawing instead.
           parallax: self.sky?.parallax.debug() ?? null,
           darkness: darknessAt(cycleU(self.roundTime), C().NIGHT_DARKNESS),
           fogMult: self.fogActive ? C().FOV_FOG_MULT : 1,
@@ -1004,6 +1005,12 @@ export class SandboxScene extends Phaser.Scene {
         return {
           setting: isHighQuality(),
           shaderFog: self.world.weather.fogIsShader,
+          // T21.18. Read off the shader object, not off the setting, for the
+          // reason `shaderFog` is: with no WebGL the answer is `false` however
+          // the setting is set, and since T21.18 there is no sprite cloud to
+          // take over — so `false` here means an empty sky, which is a picture a
+          // check must be able to expect.
+          shaderClouds: self.sky?.parallax.cloudsAreShader ?? false,
         }
       },
       toggleOverlays() {
@@ -1041,26 +1048,16 @@ export class SandboxScene extends Phaser.Scene {
       /**
        * Pin the cloud drift clock, `null` to resume.
        *
-       * The spacing is only exactly even at t = 0; after that the per-cloud
-       * speed spread makes clouds pass each other on purpose. A check asserting
-       * on the smallest gap without pinning the clock is asserting on how long
-       * it took to get there, which is the coin-flip gate §C0 forbids.
-       */
-      /** `cloudTint` itself, so a check can compare it with the drawn sprite. */
-      cloudTintAt(u: number, baseAlpha: number, skyMix: number, alphaFloor: number) {
-        return cloudTint(u, baseAlpha, skyMix, alphaFloor)
-      },
-      /**
-       * The tint a **pack sprite** is drawn with, which is not `cloudTint`.
+       * **Every moving quantity the cloud shader gets is derived from the same
+       * elapsed time**, so this freezes the clouds completely — which is what
+       * gives `clouds-shader` a control frame for its motion claim. Its sibling
+       * `setTime` freezes the sky, and a check measuring clouds needs both or it
+       * is measuring the gradient.
        *
-       * §D0/T16.04: selecting `Clouds_black` by phase already darkens the cloud,
-       * so applying `cloudTint`'s mix-and-dim on top would darken it twice. A
-       * check must compare against whichever path `parallax.cloudAtlas` says is
-       * live, or it is asserting the wrong function's answer.
+       * The two seams this sat beside — `cloudTintAt` and `cloudSpriteTintAt`,
+       * which let `living-sky` compare a sprite's tint against the function that
+       * computed it — went with the sprite clouds in T21.18.
        */
-      cloudSpriteTintAt(baseAlpha: number, sprite?: { bright: number; alpha: number }) {
-        return cloudSpriteTint(baseAlpha, sprite)
-      },
       setParallaxClock(t: number | null) {
         self.sky?.parallax.setClock(t)
       },

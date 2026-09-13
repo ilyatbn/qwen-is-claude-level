@@ -86,6 +86,10 @@ const CHECKS = [
   { name: 'terrain-render', file: 'scripts/checks/terrain-render.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'terrain-seed', file: 'scripts/checks/terrain-seed.mjs', url: '?sandbox=1&seed=0' },
   { name: 'fog-shader', file: 'scripts/checks/fog-shader.mjs', url: '?sandbox=1&seed=4242' },
+  // T21.18 item 1: the sprite clouds are retired, and High Quality paints them
+  // with a shader instead. Asserts **both** pictures — the empty band is the
+  // deliberate half.
+  { name: 'clouds-shader', file: 'scripts/checks/clouds-shader.mjs', url: '?sandbox=1&seed=4242' },
   // T21.02: the boots have to be visible on the player. In the sandbox
   // because it is the one scene that can supply a **control frame** — the
   // same body, in the same place, before and after picking them up.

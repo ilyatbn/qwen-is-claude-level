@@ -1,5 +1,6 @@
 /**
- * §C14's living background: mountain silhouettes and drifting clouds.
+ * §C14's living background: mountain silhouettes, and clouds when the machine
+ * can paint them.
  *
  * The parallax band at depth −20 that T3.06 deliberately left empty because there
  * was nothing to put in it. All the maths is in `sky-math.ts` (§A8); this file
@@ -8,46 +9,50 @@
  * forgetting, which is how twelve mechanisms on this project ended up wired to
  * nothing.
  *
- * ## One draw each, no texture or sprite rebuilt per frame
+ * ## The clouds changed shape in T21.18, and the sky got emptier
+ *
+ * Until T21.18 the clouds were **real sprite artwork**: an atlas of 120 frames
+ * in three colour sets, drawn by a pool of twelve `Image`s plus a wrap twin
+ * each, tinted per cloud and per phase. The coordinator did not like them — *"i
+ * dont really like the current clouds so disable them and make them shaders too
+ * if High Quality is enabled."*
+ *
+ * So that whole path is gone, and **with High Quality off this layer now draws
+ * no clouds at all.** That is a deliberate visible loss, not a fallback for a
+ * weak machine: the sprites were not wanted in either mode. `CLOUD_FRAGMENT` is
+ * the replacement and it needs WebGL, so a canvas-only browser gets the same
+ * empty sky the toggle-off path gets.
+ *
+ * What survives untouched: `CLOUD_BAND_TOP`/`CLOUD_BAND_BOTTOM` still say where
+ * clouds live, `CLOUD_DRIFT` and `CLOUD_PARALLAX` still say how fast they cross
+ * and how much the camera moves them, and `cloudTint` still says what colour and
+ * what opacity the phase asks for. The shader is handed those numbers rather
+ * than re-deciding them, so the sky's response to the time of day is the one
+ * `sky-math.test.ts` already covers.
+ *
+ * ## One draw each, no texture rebuilt per frame
  *
  * The ridge is baked **white** into a canvas once per seed and drawn as a
  * `TileSprite`, which wraps for free; the phase response is `setTint`, which
  * costs nothing and is guarded so it only fires when the colour moves. The
- * clouds are one soft-blob texture drawn by a fixed pool of `Image`s that are
- * repositioned and re-tinted, never recreated.
+ * clouds are one quad with uniforms written to it.
  *
  * That is the claim, and it is deliberately narrower than "allocates nothing":
  * `cloudTint` returns a small object each frame and the visible-rect maths is
  * kept in a reused field rather than a fresh literal. What §C14 is protecting is
- * the megapixel canvas and the twelve sprites, and those are built once.
+ * the megapixel canvas, and that is built once.
  */
 
 import Phaser from 'phaser'
 import { C } from '../core'
 import { DEPTH } from './backdrop'
-import {
-  cloudColourForPhase,
-  cloudFrame,
-  cloudSpriteTint,
-  cloudSprites,
-  type CloudSprite,
-} from './clouds-math'
-import {
-  cloudField,
-  cloudTint,
-  cloudTwinX,
-  cloudX,
-  mountainProfile,
-  skyPhase,
-  type Cloud,
-} from './sky-math'
+import { cloudTint, mountainProfile } from './sky-math'
+import { CLOUD_FRAGMENT, hasWebGL, rgbToUniform3f } from './shaders'
+import { isHighQuality, onHighQualityChange } from '../ui/settings'
 import { resolveTheme } from './themes-math'
 
 /** Keys are per-layer and per-seed: a stale texture is a stale mountain range. */
 const RIDGE_KEY = (layer: number, seed: number) => `__ridge_${layer}_${seed >>> 0}`
-const CLOUD_KEY = '__cloud_blob'
-/** The pack's clouds, built by `scripts/build-cloud-atlas.mjs`. */
-const CLOUD_ATLAS_KEY = 'clouds'
 
 function mix(a: number, b: number, t: number): number {
   const ch = (sh: number) => {
@@ -56,52 +61,6 @@ function mix(a: number, b: number, t: number): number {
     return Math.round(av + (bv - av) * t) & 255
   }
   return (ch(16) << 16) | (ch(8) << 8) | ch(0)
-}
-
-/**
- * A soft cloud blob: overlapping radial gradients, white with an alpha falloff so
- * the caller can tint it. Generated once and reused by every cloud.
- */
-function cloudTexture(scene: Phaser.Scene): string {
-  if (scene.textures.exists(CLOUD_KEY)) return CLOUD_KEY
-  const c = C()
-  const w = c.CLOUD_TEX_W
-  const h = c.CLOUD_TEX_H
-  const tex = scene.textures.createCanvas(CLOUD_KEY, w, h)
-  const ctx = tex?.getContext()
-  if (!ctx || !tex) return CLOUD_KEY
-
-  // Five lobes along the width, biggest in the middle: a single ellipse reads as
-  // a smudge, and a cloud is a pile of them.
-  //
-  // **Radii are fractions of the texture HEIGHT, not its width.** The first
-  // version used the width, so on a 256×96 canvas the middle lobe had an 87 px
-  // radius in a 96 px-tall box: every lobe was clipped top and bottom and twelve
-  // clouds rendered as one pale horizontal wash across the sky. The screenshot
-  // is the only reason that was caught — the maths tests were all green.
-  const lobes: Array<[number, number, number]> = [
-    [0.18, 0.62, 0.3],
-    [0.36, 0.5, 0.42],
-    [0.54, 0.46, 0.46],
-    [0.72, 0.56, 0.36],
-    [0.86, 0.66, 0.24],
-  ]
-  for (const [fx, fy, fr] of lobes) {
-    const cx = fx * w
-    const cy = fy * h
-    const r = fr * h
-    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r)
-    g.addColorStop(0, 'rgba(255,255,255,0.85)')
-    g.addColorStop(0.55, 'rgba(255,255,255,0.42)')
-    g.addColorStop(1, 'rgba(255,255,255,0)')
-    ctx.fillStyle = g
-    ctx.fillRect(cx - r, cy - r, r * 2, r * 2)
-  }
-  tex.refresh()
-  // `pixelArt: true` forces NEAREST globally, which stair-steps a gradient this
-  // large — the same opt-out the sun's glow needed.
-  tex.setFilter(Phaser.Textures.FilterMode.LINEAR)
-  return CLOUD_KEY
 }
 
 /**
@@ -138,52 +97,35 @@ function ridgeTexture(scene: Phaser.Scene, layer: number, seed: number, height: 
 export class ParallaxLayer {
   private readonly scene: Phaser.Scene
   private readonly ridges: Phaser.GameObjects.TileSprite[] = []
-  /** One `Image` per cloud, plus one twin each for the seam at the wrap. */
-  private readonly cloudGfx: Phaser.GameObjects.Image[] = []
-  private readonly cloudTwins: Phaser.GameObjects.Image[] = []
-  private clouds: Cloud[] = []
-  /** Which sprite each cloud is — fixed for the round, seeded from the map. */
-  private cloudSprites: CloudSprite[] = []
-  /** The pack atlas, or null when it did not load (`docs/50` §8). */
-  private cloudAtlas: string | null = null
-  /**
-   * The native width of each cloud's atlas frame, resolved once (§E11.1).
-   *
-   * The frames are **trimmed and packed at their cropped size**
-   * (`build-cloud-atlas.mjs`): 120 of them, 33 to 288 px wide, against a
-   * `CLOUD_TEX_W` of 220. **The frame is authoritative** — the pack ships 8
-   * shapes x 5 sizes and those five variants are the only thing that makes a
-   * small cloud small, so forcing every one to 220 px would be a per-cloud
-   * change spanning 8.7x that throws the size variety away and leaves
-   * `CLOUD_SCALE_MIN..MAX`'s 2.3x spread as the whole of it.
-   *
-   * So this exists to make `halfW` agree with what is drawn, not to make the
-   * draw agree with `halfW`.
-   */
-  private cloudFrameW: number[] = []
-  /** Last colour set drawn, so the texture is swapped only when it changes. */
-  private lastCloudColour: string | null = null
   private seed = 0
   private themeId = 0
   private ridgeKeys: string[] = []
   /** Last tint applied, so `setTint` is not called sixty times a second. */
   private lastRidgeTint: number[] = []
-  /** Last tint applied per cloud, so `setTint` is not called twelve times a frame. */
-  private lastCloudTints: number[] = []
   /** Set by `setVisible(false)`; `update` must not undo it on the next frame. */
   private hidden = false
   /** Reused by `view()`, so the per-frame maths does not allocate a literal. */
   private readonly rect = { left: 0, top: 0, w: 0, h: 0 }
   /**
-   * Pins the drift clock, for a check that needs a known layout.
+   * Pins the drift clock, for a check that needs a known picture.
    *
-   * Diagnostic seam, like `setZoom`. The cloud spacing is only exactly even at
-   * elapsed = 0 — after that the per-cloud `speed` spread makes them drift past
-   * each other, which is the point of the spread and not a defect. So an
-   * assertion on the smallest gap has to name a moment, or it is asserting on
-   * how long the browser check happened to take to get there.
+   * Diagnostic seam, like `setZoom`. **Every moving quantity the cloud shader
+   * receives is derived from `elapsed`**, so pinning this freezes the sky
+   * completely — which is what lets `clouds-shader` measure "this patch changed
+   * because the clouds moved" against a control where it must not have. A
+   * shader reading its own `time` uniform would have no such control.
    */
   private clock: number | null = null
+
+  /**
+   * The High Quality clouds, or `null` on a machine with no WebGL.
+   *
+   * **There is no other cloud path** since T21.18 — see the file header. A
+   * canvas-only browser gets an empty sky, which is the same sky the toggle-off
+   * path gives every machine.
+   */
+  private cloudShader: Phaser.GameObjects.Shader | null = null
+  private readonly unsubscribeQuality: () => void
 
   constructor(scene: Phaser.Scene, seed = 0, themeId = 0) {
     this.scene = scene
@@ -231,32 +173,71 @@ export class ParallaxLayer {
       this.lastRidgeTint.push(-1)
     }
 
-    const cloudKey = cloudTexture(scene)
-    for (let i = 0; i < c.CLOUD_COUNT; i++) {
-      const make = () =>
-        scene.add
-          .image(0, 0, cloudKey)
-          .setOrigin(0.5, 0.5)
-          .setScrollFactor(0)
-          .setDepth(DEPTH.parallaxClouds)
-          .setVisible(false)
-      this.cloudGfx.push(make())
-      this.cloudTwins.push(make())
+    // --- T21.18: the clouds, and only when the machine and the player both
+    // --- want them.
+    //
+    // Asked of the renderer rather than assumed from the config: `Phaser.AUTO`
+    // decides at boot, and a canvas fallback handed a shader draws nothing while
+    // reporting success. The quad is sized and placed in `update`, from the same
+    // visible rect the ridges use — a `scrollFactor(0)` object still lives in
+    // camera space, and at zoom 2 that is half the viewport.
+    if (hasWebGL(scene)) {
+      const base = new Phaser.Display.BaseShader('cloudBand', CLOUD_FRAGMENT, undefined, {
+        alpha: { type: '1f', value: 0 },
+        offset: { type: '1f', value: 0 },
+        evolve: { type: '1f', value: 0 },
+        seed: { type: '1f', value: 0 },
+        // **`{x, y, z}`, not an array** — see `rgbToUniform3f`. An array binds
+        // three `undefined`s and the clouds come out black with no error.
+        tint: { type: '3f', value: rgbToUniform3f(0xffffff) },
+      })
+      this.cloudShader = scene.add
+        .shader(base, 0, 0, w, Math.round(h * (c.CLOUD_BAND_BOTTOM - c.CLOUD_BAND_TOP)))
+        .setOrigin(0, 0)
+        .setScrollFactor(0)
+        .setDepth(DEPTH.parallaxClouds)
+        .setVisible(false)
     }
-
-    // §D0/§C14: the pack's own clouds when the atlas loaded, T15.03's procedural
-    // blobs when it did not. Resolved once here rather than per frame — the
-    // answer cannot change mid-round, and `docs/50` §8's fallback must not cost
-    // a texture lookup twelve times a frame to stay silent.
-    this.cloudAtlas = scene.textures.exists(CLOUD_ATLAS_KEY) ? CLOUD_ATLAS_KEY : null
-    if (!this.cloudAtlas) {
-      // Once. Twelve clouds x 60 fps is how a warning becomes noise nobody reads.
-      console.warn(
-        `cloud atlas "${CLOUD_ATLAS_KEY}" is not loaded — falling back to procedural blobs`,
-      )
-    }
+    // A live toggle: a setting that needs a restart is one the player flips,
+    // sees nothing, and flips back (T21.16).
+    this.unsubscribeQuality = onHighQualityChange(() => this.applyQuality())
 
     this.setSeed(seed, themeId)
+    this.applyQuality()
+  }
+
+  /**
+   * Is the shader path in use right now?
+   *
+   * **All three halves matter.** The setting can be on where WebGL is not, and
+   * the whole band can be hidden for a check's control frame — and in either
+   * case there is nothing else to fall back to.
+   */
+  private useShader(): boolean {
+    return this.cloudShader !== null && isHighQuality() && !this.hidden
+  }
+
+  /**
+   * Show or hide the clouds to match the setting, **now**.
+   *
+   * Applied here rather than left to the next frame, for the reason
+   * `WeatherLayer.applyQuality` is: `cloudsAreShader` reads the object's own
+   * visibility, so a toggle that waited for `update` would tell whoever just
+   * flipped it the old answer — a wrong read for a check, and a frame of
+   * flicker for a player.
+   */
+  private applyQuality(): void {
+    this.cloudShader?.setVisible(this.useShader())
+  }
+
+  /**
+   * Are the clouds actually being painted?
+   *
+   * Read off the object rather than off the setting, because the setting can be
+   * on where WebGL is not. That is the honest answer and the one a check needs.
+   */
+  get cloudsAreShader(): boolean {
+    return this.cloudShader?.visible ?? false
   }
 
   /**
@@ -271,35 +252,11 @@ export class ParallaxLayer {
     const c = C()
     this.seed = seed
     this.themeId = themeId
-    // Fractions of the visible rect, resolved to pixels at draw time — see the
-    // `Cloud.x` doc for the zoom bug that came of doing it the other way.
-    this.cloudSprites = cloudSprites(
-      seed,
-      c.CLOUD_COUNT,
-      c.CLOUD_BRIGHT_MIN,
-      c.CLOUD_BRIGHT_MAX,
-      c.CLOUD_ALPHA_MIN,
-      c.CLOUD_ALPHA_MAX,
-    )
-    this.lastCloudColour = null
-    this.lastCloudTints = new Array(c.CLOUD_COUNT).fill(-1)
-    // Resolved once per seed, not per frame. The width is the same across the
-    // three colour sets — they are the same shapes in different inks — so one
-    // lookup answers for whichever set the phase picks later.
-    this.cloudFrameW = this.cloudSprites.map((sp) => {
-      if (!this.cloudAtlas) return c.CLOUD_TEX_W
-      const f = this.scene.textures.getFrame(this.cloudAtlas, cloudFrame('white', sp))
-      return f ? f.width : c.CLOUD_TEX_W
-    })
-    this.clouds = cloudField(
-      seed,
-      c.CLOUD_COUNT,
-      c.CLOUD_BAND_TOP,
-      c.CLOUD_BAND_BOTTOM,
-      c.CLOUD_SCALE_MIN,
-      c.CLOUD_SCALE_MAX,
-      c.CLOUD_SPEED_SPREAD,
-    )
+    // One seed, one sky: the shader offsets its noise by the seed, so a
+    // regenerate gets a different cloudscape and the same seed gets the same
+    // one — the claim `living-sky` makes of the ridge, now true of the clouds
+    // for the same reason and by the same route.
+    this.cloudShader?.setUniform('seed.value', (seed >>> 0) % 997)
     for (let i = 0; i < this.ridges.length; i++) {
       const bandH = Math.round(c.VIEWPORT_H * c.MOUNTAIN_HEIGHT_FRAC[i]!)
       const key = ridgeTexture(this.scene, i, seed, bandH)
@@ -363,95 +320,44 @@ export class ParallaxLayer {
       ts.setSize(view.w, bandH)
     }
 
-    // **One darkening, not two.** `cloudTint` mixes white toward the sky and
-    // scales alpha by its luminance — right for T15.03's white blob, wrong on
-    // top of a sprite whose colour set already encodes the phase. See
-    // `cloudSpriteTint`.
-    const { color, alpha } = this.cloudAtlas
-      ? cloudSpriteTint(c.CLOUD_ALPHA)
-      : cloudTint(u, c.CLOUD_ALPHA, c.CLOUD_SKY_MIX, c.CLOUD_ALPHA_FLOOR)
-    // Which colour SET the sprites come from (§C14), on top of which `cloudTint`
-    // applies the continuous tint. Two different things: the set is white/grey/
-    // black by phase, the tint is the sky's own bottom colour mixed in, and
-    // §A13's lesson is that the second must be derived from the sky rather than
-    // authored beside it.
-    const colour = cloudColourForPhase(skyPhase(u))
-    const colourChanged = colour !== this.lastCloudColour
-    this.lastCloudColour = colour
-    // The wrap span is the width actually on screen, so a cloud leaving the right
-    // edge re-enters at the left one however far the camera is zoomed in.
-    const span = view.w
-    const yScale = view.h / c.VIEWPORT_H
-    for (let i = 0; i < this.clouds.length; i++) {
-      const cloud = this.clouds[i]!
-      const img = this.cloudGfx[i]!
-      const twin = this.cloudTwins[i]!
-      // Parallax applied here rather than through `scrollFactor`, because the
-      // wrap has to happen in the same space the drift does — otherwise the
-      // camera moves a cloud out of the span and the twin lands nowhere useful.
-      const x =
-        ((cloudX(cloud, elapsed, c.CLOUD_DRIFT, span) - scrollX * c.CLOUD_PARALLAX) % span + span) %
-        span
-      // Apparent size held constant through a zoom, like the ridge band.
-      const scale = cloud.scale * yScale
-      const y = view.top + cloud.y * view.h
-      // **From the width actually drawn.** A sprite is `frameW * scale` across;
-      // this used to assume `CLOUD_TEX_W * scale`, which is a 6.7x error in the
-      // wrap offset for the narrowest frame in the pack — the twin sat hundreds
-      // of pixels from the seam it exists to hide. `CLOUD_TEX_W` still sizes the
-      // procedural blob, whose texture really is that wide.
-      const drawnW = this.cloudFrameW[i] ?? c.CLOUD_TEX_W
-      const halfW = (drawnW / 2) * scale
+    // --- the clouds (T21.18) ------------------------------------------------
+    //
+    // `cloudTint` is unchanged and still decides the colour and the opacity for
+    // this point in the day: the shader is handed its answer rather than
+    // re-deciding it in GLSL, so the sky's phase response stays the one
+    // `sky-math.test.ts` covers and there is only one place it can be wrong.
+    const { color, alpha } = cloudTint(u, c.CLOUD_ALPHA, c.CLOUD_SKY_MIX, c.CLOUD_ALPHA_FLOOR)
+    const sh = this.cloudShader
+    if (sh && this.useShader()) {
+      // The band, in the rect that is actually on screen. Same derivation as the
+      // ridge above and for the same reason: a `scrollFactor(0)` object is in
+      // camera space and zoom shrinks that.
+      const bandTop = view.top + view.h * c.CLOUD_BAND_TOP
+      const bandH = view.h * (c.CLOUD_BAND_BOTTOM - c.CLOUD_BAND_TOP)
+      sh.setPosition(view.left, bandTop)
+      // `setSize`, not `setDisplaySize`. The latter scales the quad and leaves
+      // the `resolution` uniform — which Phaser fills from `width`/`height` —
+      // describing the size it was built at, so the field would be sampled
+      // against one rectangle and drawn into another.
+      sh.setSize(view.w, bandH)
 
-      // Swap the texture, never the geometry.
+      // **One number for everything that moves it horizontally**, in band
+      // widths: `CLOUD_DRIFT` px/s of its own drift, plus `CLOUD_PARALLAX` of
+      // the camera's scroll. Both are the constants the sprites used, so a
+      // cloud crosses the sky at the speed it always did and the camera moves it
+      // by as much as it always did.
+      const span = view.w
+      sh.setUniform('offset.value', (elapsed * c.CLOUD_DRIFT - scrollX * c.CLOUD_PARALLAX) / span)
+      // The wall clock, in seconds, for the shapes themselves: a deck that only
+      // slides reads as wallpaper. How slowly it reshapes is a GLSL constant
+      // inside the shader, beside the rest of the look — the same place
+      // `FOG_FRAGMENT` keeps its own.
       //
-      // **This used to claim every sprite is drawn at the blob's
-      // `CLOUD_TEX_W x CLOUD_TEX_H * scale`, so the wrap maths was bit-for-bit
-      // T15.03's. It was not** — the `setDisplaySize` that would have made it
-      // true was overridden by `setScale` on the next line, so the sprite drew at
-      // its own frame width and `halfW` disagreed with it. The comment reassured
-      // a reader checking exactly the thing that was broken.
-      //
-      // §E11.1: the frame is authoritative for a sprite, and `halfW` above is
-      // derived from it. `CLOUD_TEX_W`/`CLOUD_TEX_H` describe the procedural
-      // fallback, which is the only thing whose texture is really that size.
-      if (this.cloudAtlas && colourChanged) {
-        const frame = cloudFrame(colour, this.cloudSprites[i]!)
-        if (this.scene.textures.getFrame(this.cloudAtlas, frame)) {
-          img.setTexture(this.cloudAtlas, frame)
-          twin.setTexture(this.cloudAtlas, frame)
-        }
-      }
-
-      // §E11: each cloud's own opacity on top of the phase's. `setScale` is the
-      // only sizing call on this path now — the `setDisplaySize` that used to sit
-      // in the colour-change branch above was overridden by it every frame, and
-      // the asymmetry is what hid the whole thing: `setDisplaySize` ran **only on
-      // a colour-set change**, `setScale` runs **every frame**, so the override
-      // always won and the computed display size was discarded unread.
-      const spriteAlpha = alpha * (this.cloudAtlas ? (this.cloudSprites[i]?.alpha ?? 1) : 1)
-      img.setVisible(true).setPosition(view.left + x, y).setScale(scale).setAlpha(spriteAlpha)
-      const tx = cloudTwinX(x, span, halfW)
-      if (tx === null) {
-        twin.setVisible(false)
-      } else {
-        twin
-          .setVisible(true)
-          .setPosition(view.left + tx, y)
-          .setScale(scale)
-          .setAlpha(spriteAlpha)
-      }
-      // §E11: each cloud's own brightness, so the tint differs per sprite rather
-      // than once for the whole band. The phase's colour set is still what
-      // `colour` picked above — this only varies within it.
-      const perCloud = this.cloudAtlas
-        ? cloudSpriteTint(alpha, this.cloudSprites[i]).color
-        : color
-      if (perCloud !== this.lastCloudTints[i]) {
-        img.setTint(perCloud)
-        twin.setTint(perCloud)
-        this.lastCloudTints[i] = perCloud
-      }
+      // **Also derived from `elapsed`**, so `setClock` freezes the whole effect
+      // and a check gets a real control frame.
+      sh.setUniform('evolve.value', elapsed)
+      sh.setUniform('alpha.value', alpha)
+      sh.setUniform('tint.value', rgbToUniform3f(color))
     }
   }
 
@@ -463,21 +369,21 @@ export class ParallaxLayer {
    */
   setVisible(on: boolean): void {
     for (const r of this.ridges) r.setVisible(on)
-    for (const g of this.cloudGfx) g.setVisible(on)
-    // Twins are only ever shown by `update`, and only for the clouds that
-    // straddle an edge this frame. Showing them all here would put a duplicate
-    // of every cloud a span away for one frame.
-    for (const g of this.cloudTwins) g.setVisible(false)
+    // **The latch is set before the clouds are asked.** `useShader` reads it, so
+    // setting it afterwards would show the shader for exactly as long as it took
+    // to reach the next line — and `cloudsAreShader`, which a check reads
+    // immediately, would answer from that gap.
     this.hidden = !on
+    this.applyQuality()
   }
 
   destroy(): void {
     for (const r of this.ridges) r.destroy()
-    for (const g of this.cloudGfx) g.destroy()
-    for (const g of this.cloudTwins) g.destroy()
     this.ridges.length = 0
-    this.cloudGfx.length = 0
-    this.cloudTwins.length = 0
+    this.cloudShader?.destroy()
+    this.cloudShader = null
+    // Or every round leaks a listener, and a setting flip wakes the dead ones.
+    this.unsubscribeQuality()
     for (const key of this.ridgeKeys) {
       if (this.scene.textures.exists(key)) this.scene.textures.remove(key)
     }
@@ -493,98 +399,48 @@ export class ParallaxLayer {
   debug(): {
     seed: number
     ridges: number
-    clouds: number
-    visibleClouds: number
     span: number
-    /** Where the clouds actually are this frame, in screen-space px, sorted. */
-    cloudXs: number[]
-    /** The tint Phaser is holding on a cloud sprite, as 0xRRGGBB. */
-    cloudTint: number
-    cloudAlpha: number
-    /** And on the near ridge, for the same reason. */
+    /** The tint Phaser is holding on the near ridge, as 0xRRGGBB. */
     ridgeTint: number
     /**
-     * Which cloud path is live: the pack atlas, or T15.03's procedural blob.
+     * Are the clouds being painted right now?
      *
-     * A check comparing the sprite's tint against `cloudTint` is comparing it
-     * against the wrong function when the atlas is loaded — the two paths tint
-     * differently on purpose (`cloudSpriteTint`), and without this the check
-     * cannot tell which one it is looking at.
+     * Read off the shader object, not off the setting (§A39's both-ends rule in
+     * its smallest form): the setting can be on where WebGL is not, and since
+     * T21.18 there is no sprite fallback to take over — the answer is then
+     * honestly "no clouds", and a check told otherwise would go looking for
+     * pixels that cannot exist.
      */
-    cloudAtlas: string | null
-    /** The frame each cloud is showing, so a check can see the colour set move. */
-    cloudFrames: string[]
+    shaderClouds: boolean
     /**
-     * The **drawn** geometry of every cloud, for the seam (§E11.1).
+     * Where the cloud band is on screen, in client pixels.
      *
-     * `displayWidth` read back off the sprite rather than computed here: the
-     * whole defect was a width that was calculated and then overridden, so a
-     * check that recomputed it would agree with the calculation and miss the
-     * override. `twinX` is `null` when the cloud does not straddle an edge, and
-     * a check needs one that does — sampling the middle of a cloud passes while
-     * the twin sits hundreds of pixels from where it belongs.
+     * Converted here for the reason the cloud boxes used to be: these are
+     * `scrollFactor(0)` objects living in camera space, and at `CAMERA_ZOOM` 2
+     * the visible rect is 640 wide against a 1280 px viewport. A check that
+     * clipped a screenshot with the raw numbers would sample the wrong part of
+     * the sky.
      */
-    cloudBoxes: Array<{ x: number; w: number; twinX: number | null; y: number; h: number }>
+    cloudBand: { x: number; y: number; w: number; h: number }
     /** The camera-space rect that fills the screen, so a check can convert. */
     view: { left: number; top: number; w: number; h: number }
-    /**
-     * §E11's per-cloud brightness and alpha, and the tint each sprite is
-     * **actually holding**.
-     *
-     * Both ends, per cloud. Reading one sprite's tint against one band-wide
-     * expectation was enough while every cloud shared a tint; now they differ by
-     * design, so a single comparison would be asserting that cloud zero happens
-     * to match a value no cloud is drawn with.
-     */
-    cloudVars: Array<{ bright: number; alpha: number }>
-    cloudTints: number[]
   } {
+    const v = this.view()
+    const c = C()
+    const sy = c.VIEWPORT_H / v.h
     return {
       seed: this.seed,
       ridges: this.ridges.length,
-      clouds: this.clouds.length,
-      visibleClouds: this.cloudGfx.filter((g) => g.visible).length,
-      span: this.view().w,
-      // The **drawn** positions, not the field's own numbers. The zoom bug lived
-      // entirely in the gap between those two: the field was evenly spread and
-      // the frame was not, and a check reading the field would have agreed with
-      // the field.
-      cloudXs: this.cloudGfx.map((g) => g.x).sort((a, b) => a - b),
-      // Read back off the sprite, not remembered from the last `update`. This
-      // is the §A39 "count it at both ends" half: `cloudTint` can be perfectly
-      // correct while `setTint` is never called, and every pixel assertion in
-      // `living-sky` passes for that build — measured, not assumed.
-      cloudTint: this.cloudGfx[0]?.tintTopLeft ?? 0,
-      cloudAlpha: this.cloudGfx[0]?.alpha ?? 0,
+      span: v.w,
       ridgeTint: this.ridges[this.ridges.length - 1]?.tintTopLeft ?? 0,
-      cloudAtlas: this.cloudAtlas,
-      cloudFrames: this.cloudGfx.map((g) => String(g.frame?.name ?? '')),
-      // **In screen pixels, converted here.** These sprites are
-      // `scrollFactor(0)`, so their coordinates are camera space — at
-      // `CAMERA_ZOOM` 2 the visible rect is 640 wide against a 1280 px viewport.
-      // A check that clipped a screenshot with the raw numbers would sample the
-      // wrong half of the sky, which is the world-versus-screen mistake
-      // `objects.mjs` already paid for. One conversion, at the source.
-      cloudBoxes: (() => {
-        const v = this.view()
-        const c2 = C()
-        const sx = c2.VIEWPORT_W / v.w
-        const sy = c2.VIEWPORT_H / v.h
-        const toScreenX = (x: number) => (x - v.left) * sx
-        return this.cloudGfx.map((g, i) => {
-          const twin = this.cloudTwins[i]
-          return {
-            x: toScreenX(g.x),
-            w: g.displayWidth * sx,
-            y: (g.y - v.top) * sy,
-            h: g.displayHeight * sy,
-            twinX: twin?.visible ? toScreenX(twin.x) : null,
-          }
-        })
-      })(),
-      view: this.view(),
-      cloudVars: this.cloudSprites.map((sp) => ({ bright: sp.bright, alpha: sp.alpha })),
-      cloudTints: this.cloudGfx.map((g) => g.tintTopLeft),
+      shaderClouds: this.cloudsAreShader,
+      cloudBand: {
+        x: 0,
+        y: v.h * c.CLOUD_BAND_TOP * sy,
+        w: c.VIEWPORT_W,
+        h: v.h * (c.CLOUD_BAND_BOTTOM - c.CLOUD_BAND_TOP) * sy,
+      },
+      view: { left: v.left, top: v.top, w: v.w, h: v.h },
     }
   }
 }

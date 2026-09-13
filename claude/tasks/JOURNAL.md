@@ -6140,3 +6140,16 @@ frames airborne — from an assumed screen centre. **`hud-bars` is not a clock b
 separation on the frame is +1 of a predicted 13, and `Math.sign(0)` read "did not move" as "moved
 against". **`boots-visible` was already 2-in-3 red on an idle box** at HEAD: camera ease moving a
 screen-space band under a body that had not moved a hundredth of a pixel.
+
+## T21.18 item 1 — clouds
+
+The sprite clouds are **gone in both modes**, which is the visible half the coordinator asked
+for; `CLOUD_FRAGMENT` paints two drifting decks in their place under High Quality. `cloudTint`
+still decides colour and opacity and `CLOUD_DRIFT`/`CLOUD_PARALLAX` still decide speed — the
+shader is handed them. Everything it moves on comes from `elapsed`, so `setParallaxClock` freezes
+it and a check gets a real control. **Three plants, all at the live site**: ignoring the setting
+reds both checks on pixels alone with the debug guards disabled; `useShader` → false reds the
+drawn-floor; freezing `offset` **passed** the patch-motion test at 5.83/2.0 — the shapes still
+evolve — so §4b now aligns the clouds' own contribution along x and reds it. `living-sky`'s
+6.3 % cloud strip was its own camera falling through its carve: measured 6.26 % between two
+untouched frames, so the control is against that, not a number.
