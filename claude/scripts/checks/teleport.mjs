@@ -66,6 +66,15 @@ const stack = await startStack({
     // No bots: one wandering onto a pad would fire it and move the subject of
     // every assertion here.
     BOT_COUNT: '0',
+    // **No weather (T19.29).** Re-measured in a full gate before changing
+    // anything: the pad delta was fine and the *control* failed, moving 6.2
+    // against its 4 — and `shots/teleport-uncharged.png` reads "INCOMING TOXIC
+    // RAIN 0:06" while `teleport-charging.png` has green drops streaking across
+    // the rock the control samples. The pixel pair straddles the first weather
+    // roll at `EFFECT_INTERVAL_MIN`. That is the same competitor `death.mjs`
+    // removes (T19.30), so the same remedy: take it out of the arrangement,
+    // leave the 8 / 4 limits exactly where they are.
+    WEATHER: 'off',
     MAP_SCALE: 'small',
     DEV_LOADOUT: '1',
     // Low, so the kill loop below is short. It is still an entirely real death:
