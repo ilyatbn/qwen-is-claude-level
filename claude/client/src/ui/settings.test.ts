@@ -1,11 +1,15 @@
 import { describe, expect, it, beforeEach } from 'vitest'
 import {
+  FPS_COUNTER_KEY,
   HIGH_QUALITY_KEY,
+  isFpsCounter,
   isHighQuality,
   loadSettings,
+  onFpsCounterChange,
   onHighQualityChange,
   readFlag,
   resetSettingsForTest,
+  setFpsCounter,
   setHighQuality,
   writeFlag,
 } from './settings'
@@ -86,5 +90,70 @@ describe('settings (T21.16)', () => {
     const s = store()
     expect(setHighQuality(s, true)).toBe(isHighQuality())
     expect(s.raw.get(HIGH_QUALITY_KEY)).toBe('1')
+  })
+})
+
+describe('the FPS counter setting (T21.24)', () => {
+  beforeEach(() => resetSettingsForTest())
+
+  it('defaults to off', () => {
+    loadSettings(store())
+    expect(isFpsCounter()).toBe(false)
+  })
+
+  it('is read at boot, which is the half T21.16 shipped without', () => {
+    // **The assertion is `loadSettings`, not `setFpsCounter`.** A setting whose
+    // setter works and whose loader forgets it reverts to off on every reload,
+    // looks exactly like a setting that was never switched on, and passed a gate
+    // once already. This is that failure in one line; `fps-counter.mjs` is the
+    // same claim through a real reload.
+    const s = store({ [FPS_COUNTER_KEY]: '1' })
+    loadSettings(s)
+    expect(isFpsCounter()).toBe(true)
+  })
+
+  it('is stored under its own key, so the two settings cannot be one bit', () => {
+    // The control: turning the counter on must leave High Quality alone, or a
+    // player who wanted a frame rate has silently bought a shader — and the
+    // comparison the counter exists for becomes impossible.
+    const s = store()
+    setFpsCounter(s, true)
+    expect(s.raw.get(FPS_COUNTER_KEY)).toBe('1')
+    expect(s.raw.get(HIGH_QUALITY_KEY)).toBeUndefined()
+    expect(isHighQuality()).toBe(false)
+    // And the other direction.
+    setHighQuality(s, true)
+    expect(isFpsCounter()).toBe(true)
+  })
+
+  it('treats anything a player could type as off', () => {
+    for (const junk of ['banana', '', 'true', 'on', '2', '0']) {
+      expect(readFlag(store({ [FPS_COUNTER_KEY]: junk }), FPS_COUNTER_KEY), junk).toBe(false)
+    }
+    expect(readFlag(store({ [FPS_COUNTER_KEY]: '1' }), FPS_COUNTER_KEY)).toBe(true)
+  })
+
+  it('tells its own listeners and leaves the other setting alone', () => {
+    const fps: boolean[] = []
+    const quality: boolean[] = []
+    const off = onFpsCounterChange((v) => fps.push(v))
+    onHighQualityChange((v) => quality.push(v))
+    const s = store()
+    setFpsCounter(s, true)
+    setFpsCounter(s, false)
+    expect(fps).toEqual([true, false])
+    // A shared listener set would wake the fog layer to rebuild a shader because
+    // somebody asked to see a number.
+    expect(quality).toEqual([])
+    // Unsubscribing works, or every round leaks one and a flip wakes the dead.
+    off()
+    setFpsCounter(s, true)
+    expect(fps).toEqual([true, false])
+  })
+
+  it('survives a browser with storage switched off', () => {
+    expect(() => setFpsCounter(hostile, true)).not.toThrow()
+    expect(isFpsCounter()).toBe(true)
+    expect(readFlag(hostile, FPS_COUNTER_KEY)).toBe(false)
   })
 })

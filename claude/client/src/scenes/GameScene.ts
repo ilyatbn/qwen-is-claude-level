@@ -89,7 +89,8 @@ import { Bars } from '../ui/bars'
 import { InventoryPanel } from '../ui/inventory'
 import { EscapeMenu, handleEscape } from '../ui/escapeMenu'
 import { OptionsPanel } from '../ui/optionsPanel'
-import { DebugMode } from '../ui/debugMode'
+import { DebugMode, FpsMeter } from '../ui/debugMode'
+import { isFpsCounter, onFpsCounterChange } from '../ui/settings'
 import { devSurface } from '../dev'
 import { DebugOverlay } from '../render/debugOverlay'
 import { energyBar, healthBar, inRefillDelay, jetpackBar } from '../ui/bars-math'
@@ -229,6 +230,16 @@ function devLook(params: URLSearchParams, store: Pick<Storage, 'getItem'>): Appe
   }
 }
 
+/**
+ * How often the optional FPS readout rewrites its text, in seconds (T21.24).
+ *
+ * **Not every frame.** Sixty DOM writes a second to say a number that has barely
+ * moved is itself a cost the instrument is supposed to be measuring, and a
+ * figure flickering through three digits cannot be read at all. Four updates a
+ * second is fast enough to show a stall and slow enough to sit still.
+ */
+const FPS_READOUT_INTERVAL = 0.25
+
 export class GameScene extends Phaser.Scene {
   private core!: Core
   private conn!: Connection
@@ -296,6 +307,25 @@ export class GameScene extends Phaser.Scene {
   /** T21.02, from the snapshot's move-mod byte. Drawn, and nothing else. */
   private hasBoots = false
   private jetReadout: HTMLDivElement | null = null
+  /**
+   * T21.24's optional FPS readout, and the meter behind it.
+   *
+   * **`FpsMeter`, not `game.loop.actualFps`.** The task named Phaser's figure;
+   * this repository has already paid for it once. `FpsMeter`'s own header
+   * records the diagnosis: `actualFps` is a smoothed average that under-reports
+   * for seconds after a stall, and a "performance regression" investigated under
+   * §A38 turned out to be the counter lying rather than the game being slow —
+   * `perf.mjs` deliberately refuses to assert on it for the same reason. This
+   * counter exists so a player can judge what an effect costs on their machine,
+   * which is precisely the judgement a smoothed average gets wrong, so it reads
+   * the median of real frame deltas like the debug one does. Reported to the
+   * coordinator with the task; one import reverses it.
+   */
+  private fpsCounter: HTMLDivElement | null = null
+  private readonly playerFps = new FpsMeter()
+  private unsubFpsCounter: (() => void) | null = null
+  /** Seconds until the readout is allowed to rewrite itself. */
+  private fpsTextDue = 0
   /** The private room's join code, once the server has told us (§B9). */
   private joinCode: string | null = null
   private codeBanner: HTMLElement | null = null
@@ -565,6 +595,17 @@ export class GameScene extends Phaser.Scene {
     this.debugMode = null
     this.overlay = null
     this.jetReadout = null
+    // T21.24. The element is removed and the subscription dropped in SHUTDOWN;
+    // these two lines are the other half of that, so a rebuilt scene cannot find
+    // a handle to a node that is no longer in the document.
+    this.fpsCounter = null
+    this.unsubFpsCounter = null
+    this.fpsTextDue = 0
+    // The meter outlives the scene object, so it has to be told the round ended:
+    // its window is a median of *consecutive* frame deltas, and the gap across a
+    // restart is a single enormous delta that would sit in the window reporting
+    // a few frames a second for the first half-second of the next round.
+    this.playerFps.reset()
     this.minimap = null
     this.codeBanner = null
     this.joinCode = null
@@ -1140,6 +1181,11 @@ export class GameScene extends Phaser.Scene {
       this.debugMode?.destroy()
       this.overlay?.destroy()
       this.jetReadout?.remove()
+      // T21.24, both halves — `WeatherLayer.destroy` is the model. Without the
+      // unsubscribe every round leaks a listener, and the next flip of the
+      // setting wakes a dead scene's dangling element.
+      this.fpsCounter?.remove()
+      this.unsubFpsCounter?.()
       this.hideJoinCodeBanner()
       this.feel?.destroy()
       this.minimap?.destroy()
@@ -1648,6 +1694,20 @@ export class GameScene extends Phaser.Scene {
     // so switching it on reports the rate you already had rather than starting a
     // fresh window that reads 0 for half a second.
     this.debugMode?.update(_time)
+    // T21.24's player-facing counter. **Sampled every frame, written four times
+    // a second** (`FPS_READOUT_INTERVAL`). Sampling unconditionally is what makes
+    // switching it on report the rate you already had, rather than a fresh empty
+    // window that reads 0 until it fills.
+    //
+    // Above the `ready` guard with the debug meter: a client still waiting for
+    // its world is exactly when a player wants to know whether frames are being
+    // produced at all.
+    this.playerFps.sample(_time)
+    this.fpsTextDue -= delta / 1000
+    if (isFpsCounter() && this.fpsTextDue <= 0) {
+      this.fpsTextDue = FPS_READOUT_INTERVAL
+      this.writeFpsCounter()
+    }
     if (!this.ready) return
     const dt = delta / 1000
     if (!this.ready || !this.world || !this.predictor) return
@@ -2115,6 +2175,37 @@ export class GameScene extends Phaser.Scene {
     document.body.appendChild(jet)
     this.jetReadout = jet
 
+    // T21.24: the optional frame-rate readout.
+    //
+    // **Top-left, which is the one corner of a round nothing else claims** — the
+    // clock is `top:10px;right:14px`, the event banner `top:14px` centred, the
+    // bars, jetpack and quick bar are along the bottom and the minimap is
+    // bottom-right. Offset to `top:26px` because `#debug-fps` sits at `top:8px`:
+    // in a dev build with F1 on, the two readouts stack instead of overprinting,
+    // which is the mistake the jetpack number made over the round clock.
+    //
+    // **A fixed DOM element, not a Phaser text object.** "Does not follow the
+    // camera oddly" is a property a screen-space DOM node has by construction;
+    // a `GameObjects.Text` has it only for as long as nobody forgets
+    // `setScrollFactor(0)`, and `this.hud` and the bars already established the
+    // shape (§A35).
+    const fps = document.createElement('div')
+    fps.id = 'fps-counter'
+    fps.style.cssText =
+      'position:fixed;left:10px;top:26px;z-index:12;pointer-events:none;' +
+      'font:700 13px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;' +
+      'color:#8cff8c;text-shadow:0 1px 2px rgba(0,0,0,.9);'
+    document.body.appendChild(fps)
+    this.fpsCounter = fps
+    // Read at construction, so a player who set it last session gets it without
+    // opening the panel — and it is `loadSettings` at boot that makes that read
+    // return anything (T21.16 shipped a setting nothing loaded).
+    this.applyFpsCounter()
+    // Live, like the quality toggle, and **applied immediately** rather than on
+    // the next frame: a toggle that waits a frame tells whoever just flipped it
+    // the old answer. `WeatherLayer` is the model for both halves of this.
+    this.unsubFpsCounter = onFpsCounterChange(() => this.applyFpsCounter())
+
     // §C8. Built here so it shares the HUD's lifetime, torn down in SHUTDOWN
     // with everything else — a DOM element outliving its scene is how the death
     // overlay once stayed on screen through a restart.
@@ -2271,6 +2362,31 @@ export class GameScene extends Phaser.Scene {
       c.PLAYER_H,
       c.GUN_PLATFORM_W,
     )
+  }
+
+  /**
+   * Show or hide the FPS counter **now**, with a number already in it (T21.24).
+   *
+   * Both halves matter. Hiding is obvious; writing the text here is what stops
+   * the counter appearing empty — or holding the number it had when it was last
+   * switched off — for up to `FPS_READOUT_INTERVAL` after a flip. Painted from
+   * `isFpsCounter()` and never from a flag of its own, which is the rule the
+   * options panel's buttons follow for the same reason.
+   */
+  private applyFpsCounter(): void {
+    const el = this.fpsCounter
+    if (!el) return
+    const on = isFpsCounter()
+    el.style.display = on ? 'block' : 'none'
+    if (on) {
+      this.writeFpsCounter()
+      this.fpsTextDue = FPS_READOUT_INTERVAL
+    }
+  }
+
+  /** The readout's text: a whole number, because tenths are unreadable. */
+  private writeFpsCounter(): void {
+    if (this.fpsCounter) this.fpsCounter.textContent = `${Math.round(this.playerFps.fps())} fps`
   }
 
   private feelFrame(): FeelFrame {

@@ -10,6 +10,16 @@
 export const HIGH_QUALITY_KEY = 'deepcut.highQuality'
 
 /**
+ * The optional FPS counter (T21.24).
+ *
+ * **Not gated behind High Quality**, and deliberately a sibling key rather than
+ * a second bit of the same one: its whole purpose is to let a player compare the
+ * two graphics modes on their own machine, which is impossible if it only exists
+ * in one of them.
+ */
+export const FPS_COUNTER_KEY = 'deepcut.fpsCounter'
+
+/**
  * Read a stored boolean, defaulting to `false` on anything unexpected.
  *
  * **`localStorage` holds strings a player can edit**, so `"banana"`, `""` and a
@@ -51,10 +61,21 @@ export function writeFlag(store: Pick<Storage, 'setItem'>, key: string, on: bool
  * everything else reads.
  */
 let highQuality = false
+/** The FPS counter's live value, cached for the same reason (T21.24). */
+let fpsCounter = false
 
-/** Load the persisted value. Call once, at boot. */
+/**
+ * Load the persisted values. Call once, at boot.
+ *
+ * **Every setting has to be read here.** T21.16 shipped one that was not, and
+ * its gate passed because nothing consumed the value yet — so a stored `on`
+ * silently reverted to `off` on every reload and nothing in the repository could
+ * say so. `fps-counter.mjs` reloads the page and photographs the counter for
+ * exactly this reason.
+ */
 export function loadSettings(store: Pick<Storage, 'getItem'>): void {
   highQuality = readFlag(store, HIGH_QUALITY_KEY)
+  fpsCounter = readFlag(store, FPS_COUNTER_KEY)
 }
 
 /**
@@ -95,8 +116,43 @@ export function onHighQualityChange(fn: Listener): () => void {
   return () => listeners.delete(fn)
 }
 
+/**
+ * Is the FPS counter on? (T21.24)
+ *
+ * Same shape as `isHighQuality`, same reason: one accessor, so the HUD and the
+ * options panel cannot hold two answers to one question.
+ */
+export function isFpsCounter(): boolean {
+  return fpsCounter
+}
+
+/** Set it, persist it, tell listeners, and answer with the value in force. */
+export function setFpsCounter(store: Pick<Storage, 'setItem'>, on: boolean): boolean {
+  fpsCounter = on
+  writeFlag(store, FPS_COUNTER_KEY, on)
+  for (const fn of fpsListeners) fn(fpsCounter)
+  return fpsCounter
+}
+
+/**
+ * Be told when the FPS counter is switched on or off.
+ *
+ * **Its own listener set**, not a shared one carrying a name: a single set would
+ * wake the fog layer every time somebody toggled a text readout, and a listener
+ * that has to ask "which setting was that?" is the field-means-two-things bug in
+ * advance.
+ */
+export function onFpsCounterChange(fn: Listener): () => void {
+  fpsListeners.add(fn)
+  return () => fpsListeners.delete(fn)
+}
+
+const fpsListeners = new Set<Listener>()
+
 /** Test seam: forget everything, so a suite can exercise the empty path. */
 export function resetSettingsForTest(): void {
   highQuality = false
+  fpsCounter = false
   listeners.clear()
+  fpsListeners.clear()
 }

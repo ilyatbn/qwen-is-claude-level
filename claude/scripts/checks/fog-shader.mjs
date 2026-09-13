@@ -78,8 +78,22 @@ const CONCEALMENT_TOLERANCE = 0.1
  */
 const VARIETY_RATIO = 4
 
-/** Below this the shader is too expensive to ship even behind the toggle. */
-const FPS_FLOOR = 15
+/*
+ * There was an `FPS_FLOOR = 15` here and the shader was failed against it.
+ * **Removed in T21.24, and nothing may fail on a frame rate in this file again.**
+ *
+ * Not because the number stopped mattering, but because it is not measurable
+ * where it is taken: headless Chrome on swiftshader, under WSL, on a box that
+ * may be running the gate at the same time. A gate that fails on a coin flip
+ * gates nothing — and this one was worse than a coin flip, because the figure
+ * had already been checked against a real browser and found wrong. The
+ * coordinator opened a real Chrome on the High Quality fog and the frame rate
+ * did not drop the way this check claimed it did.
+ *
+ * The readings are still logged below, because seeing them is useful. Deciding
+ * on them is what is forbidden. What replaces the assertion is T21.24's optional
+ * FPS counter: the person on the machine that matters reads it themselves.
+ */
 
 /**
  * A patch whose un-fogged pixels vary less than this is skipped.
@@ -311,14 +325,14 @@ export default async function ({ page, shot, log }) {
     )
   }
 
-  // 5. and it has to be affordable, even behind the toggle.
-  if (shaderFps < FPS_FLOOR) {
-    throw new Error(
-      `the shader fog runs at ${shaderFps.toFixed(0)} fps against ${flatFps.toFixed(0)} for the ` +
-        `flat veil, under a floor of ${FPS_FLOOR}. High Quality asks for a newer graphics card, ` +
-        `not for a slideshow`,
-    )
-  }
+  // 5. what it costs — **logged, never asserted on** (T21.24, see the note where
+  //    `FPS_FLOOR` used to be).
+  log(
+    `cost, for reading and not for failing: ${shaderFps.toFixed(0)} fps with the shader against ` +
+      `${flatFps.toFixed(0)} for the flat veil. This is headless swiftshader under WSL and the ` +
+      `figure has already been contradicted by a real browser — turn the FPS counter on in ` +
+      `Options (T21.24) and read it on the machine you care about`,
+  )
 
   // --- 6. and back off, which must restore the old picture -------------------
   const off = await page.evaluate(() => window.__game.setHighQuality(false))

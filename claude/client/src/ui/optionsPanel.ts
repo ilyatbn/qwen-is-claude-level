@@ -12,7 +12,7 @@
  * switch the first effect can simply use.
  */
 
-import { isHighQuality, setHighQuality } from './settings'
+import { isFpsCounter, isHighQuality, setFpsCounter, setHighQuality } from './settings'
 
 const PANEL =
   'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:46;' +
@@ -28,6 +28,18 @@ const BTN =
   'background:rgba(40,50,72,.95);font:700 13px/1 ui-monospace,monospace;' +
   'color:#e9edf5;cursor:pointer;pointer-events:auto;'
 
+/**
+ * One button's appearance, from one boolean.
+ *
+ * Shared rather than copied: the second toggle arrived and the first thing a
+ * copy would have dropped is the `aria-pressed` the first one earned.
+ */
+function paint(btn: HTMLButtonElement, on: boolean): void {
+  btn.textContent = on ? 'On' : 'Off'
+  btn.setAttribute('aria-pressed', String(on))
+  btn.style.borderColor = on ? 'rgba(120,220,255,.75)' : 'rgba(255,255,255,.25)'
+}
+
 export interface OptionsPanelDeps {
   /** Close, so the scene can keep its own idea of what is open in step. */
   onClose(): void
@@ -38,6 +50,7 @@ export interface OptionsPanelDeps {
 export class OptionsPanel {
   readonly root: HTMLDivElement
   readonly quality: HTMLButtonElement
+  readonly fps: HTMLButtonElement
   private open = false
 
   constructor(
@@ -76,23 +89,48 @@ export class OptionsPanel {
 
     row.append(label, this.quality)
 
+    // --- T21.24: the FPS counter -------------------------------------------
+    //
+    // **Below High Quality and independent of it.** The counter exists so a
+    // player can decide for themselves whether the setting above costs anything
+    // on their machine, which needs it readable in both modes; gating it behind
+    // High Quality would leave exactly one of the two numbers unmeasurable.
+    const fpsRow = doc.createElement('div')
+    fpsRow.style.cssText = ROW
+    const fpsLabel = doc.createElement('span')
+    fpsLabel.textContent = 'Show frame rate'
+
+    const fpsHint = doc.createElement('div')
+    fpsHint.id = 'options-fps-hint'
+    fpsHint.textContent = 'A small counter in the top-left corner, for judging what an effect costs.'
+    fpsHint.style.cssText = 'opacity:.62;font-size:12px;margin-top:-8px;'
+
+    this.fps = doc.createElement('button')
+    this.fps.id = 'options-fps'
+    this.fps.style.cssText = BTN
+    this.fps.addEventListener('click', () => {
+      // Read back, never tracked here — the same rule the button above follows.
+      setFpsCounter(this.deps.storage, !isFpsCounter())
+      this.refresh()
+    })
+
+    fpsRow.append(fpsLabel, this.fps)
+
     const close = doc.createElement('button')
     close.id = 'options-close'
     close.textContent = 'Back'
     close.style.cssText = BTN + 'display:block;margin:18px auto 0;'
     close.addEventListener('click', () => this.deps.onClose())
 
-    this.root.append(title, row, hint, close)
+    this.root.append(title, row, hint, fpsRow, fpsHint, close)
     doc.body.appendChild(this.root)
     this.refresh()
   }
 
-  /** Paint the button from the setting, never from a local flag. */
+  /** Paint the buttons from the settings, never from a local flag. */
   private refresh(): void {
-    const on = isHighQuality()
-    this.quality.textContent = on ? 'On' : 'Off'
-    this.quality.setAttribute('aria-pressed', String(on))
-    this.quality.style.borderColor = on ? 'rgba(120,220,255,.75)' : 'rgba(255,255,255,.25)'
+    paint(this.quality, isHighQuality())
+    paint(this.fps, isFpsCounter())
   }
 
   isOpen(): boolean {

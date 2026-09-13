@@ -6113,3 +6113,17 @@ the fog had more than one colour — the third returned "thicknesses" of 1.43. W
 a line **inside** each patch, where the fog is one shade and only the ground varies; the per-patch
 intercept then gives the fog's own structure for free. It self-validates at 0.175 against a veil
 whose alpha is known to be 0.800. Gate green.
+
+## T21.24 — an optional FPS counter, and `FPS_FLOOR` retired
+
+`Show frame rate` sits under High Quality in Options, off by default, live, and stored — a green
+`#fps-counter` top-left of `GameScene`'s HUD, clear of the clock and the bars. **It reads
+`FpsMeter` (median of real frame deltas), not `game.loop.actualFps` as the task said**: that figure
+is the one §A38 caught lying and `perf.mjs` refuses to assert on, and a counter for judging what an
+effect costs must not be the instrument that gets that wrong. Flagged for the coordinator; one
+import reverses it. `fog-shader.mjs` now logs its fps and fails on nothing.
+**The first falsification went through the new check and that is the finding**: `opacity:0` on the
+counter — laid out, textual, invisible — still passed, because the "change" was the sky drifting
+over the 1.4 s between frames and the ground control could not see the sky. Repaired with a
+measured noise floor (same rectangle, same interval, nothing touched) and a control beside the
+subject; the plant now reds both. Signal 25.8 against a floor of 0.0.
