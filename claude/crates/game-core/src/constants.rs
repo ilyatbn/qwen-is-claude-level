@@ -1729,59 +1729,15 @@ pub const MOUNTAIN_CELLS: u32 = 6;
 /// Octaves of value noise in the ridge profile.
 pub const MOUNTAIN_OCTAVES: u32 = 3;
 
-/// Soft blobs drifting across the sky layer.
-pub const CLOUD_COUNT: usize = 12;
 /// Drift speed, px/s. Slow enough that it reads as weather rather than as motion.
 pub const CLOUD_DRIFT: f32 = 6.0;
 /// Scroll factor for the cloud band — between the far mountains and the near.
 pub const CLOUD_PARALLAX: f32 = 0.14;
-/// Cloud sprite size, in px, before per-cloud scaling.
-///
-/// Roughly 2:1. Squatter than that and the lobes have nowhere to sit; at 256x96
-/// they were clipped into a horizontal smear that read as haze, not as cloud.
-pub const CLOUD_TEX_W: u32 = 220;
-pub const CLOUD_TEX_H: u32 = 110;
-/// Per-cloud scale range, so twelve draws of one texture do not read as twelve
-/// copies of one cloud.
-///
-/// The top of the range is what decides how much sky one cloud eats: at 1.45 on
-/// a 220 px texture a single cloud is a quarter of a 1280 px screen, which reads
-/// as weather closing in rather than as a cloud passing.
-///
-/// **Up ~30% for §E11.** Was 0.42/0.95, and that range was chosen against a bug:
-/// `parallax.ts` set a display size and then called `setScale` on the same
-/// sprite, which overrides it, so a cloud was drawn at its *native atlas frame*
-/// size scaled — measured, 33 to 288 px wide against the 220 this pair is
-/// multiplied by. The range was tuned to a number nothing read.
-pub const CLOUD_SCALE_MIN: f32 = 0.55;
-pub const CLOUD_SCALE_MAX: f32 = 1.24;
-/// Per-cloud brightness, as a multiplier on the phase's own colour set (§E11).
-///
-/// **Within the set, never across it.** §C14 decides *which* set a cloud comes
-/// from — white by day, grey at dusk, black at night — and this varies how light
-/// or dark one cloud is inside that choice, so the sky has depth without a white
-/// cloud appearing at midnight. The top of the band is 1.0 rather than higher:
-/// above it the tint would brighten past the art's own white and the darker
-/// sets would start to look washed rather than varied.
-pub const CLOUD_BRIGHT_MIN: f32 = 0.62;
-pub const CLOUD_BRIGHT_MAX: f32 = 1.0;
-/// Per-cloud opacity, as a multiplier on `CLOUD_ALPHA` (§E11).
-///
-/// A separate axis from brightness because they do different things: brightness
-/// is how lit a cloud is, alpha is how thick. Varying only one gives twelve
-/// clouds of one density in twelve shades, which still reads as a sheet.
-pub const CLOUD_ALPHA_MIN: f32 = 0.7;
-pub const CLOUD_ALPHA_MAX: f32 = 1.0;
 /// The band of the viewport clouds occupy, as fractions of its height.
 pub const CLOUD_BAND_TOP: f32 = 0.04;
 pub const CLOUD_BAND_BOTTOM: f32 = 0.46;
 /// Cloud opacity at full day. Night and dusk scale down from here.
 pub const CLOUD_ALPHA: f32 = 0.62;
-/// How far a cloud's drift speed may vary from the mean, as a fraction.
-///
-/// 0 makes the twelve move as one sheet, which reads as the camera panning
-/// rather than as weather.
-pub const CLOUD_SPEED_SPREAD: f32 = 0.6;
 /// How much of the sky's own colour a cloud takes, 0 = white, 1 = the sky.
 ///
 /// A cloud is lit by the sky it is in — see `cloudTint`, which derives the whole

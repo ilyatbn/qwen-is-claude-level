@@ -143,7 +143,7 @@ if (existsSync(skinsPath) && manifest) {
 // vendored objects to account for, and the check has nothing to say.
 // `vendorPacks` in assets/manifest.json is how a build script that consumed a
 // sprite pack declares it, so a pipeline with no object manifest behind it —
-// the cloud atlas — is still accounted for. Without it this check would gate
+// the cloud atlas was one until T21.27 retired it — is still accounted for. Without it this check would gate
 // the art it was written for and stay silent about the art the next task
 // commits through a second pipeline.
 const objectManifestPath = join(assets, 'objects', 'manifest.json')

@@ -9,7 +9,7 @@
  *
  * **A script, not a hand-edited PNG.** Every other derived asset here is
  * generated from a committed source by a committed script — `build-atlas.mjs`,
- * `build-object-masks.mjs`, `build-cloud-atlas.mjs` — and a hand-edited binary
+ * `build-object-masks.mjs` — and a hand-edited binary
  * is the one thing nobody can review or redo.
  *
  *   node scripts/build-gate-sprite.mjs           write

@@ -21,11 +21,6 @@
       "json": "atlas/fx.json"
     },
     {
-      "key": "clouds",
-      "png": "atlas/clouds.png",
-      "json": "atlas/clouds.json"
-    },
-    {
       "key": "objects",
       "png": "atlas/objects.png",
       "json": "atlas/objects.json"
@@ -70,7 +65,6 @@
     "audio/walk_2.ogg"
   ],
   "vendorPacks": [
-    "clouds",
     "kenney-fonts"
   ]
 }

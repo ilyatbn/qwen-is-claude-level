@@ -87,8 +87,8 @@ export class TitleScene extends Phaser.Scene {
       this.exposeDebugHandle()
     }
 
-    // The atlases the sky's clouds and ridges want. Guarded: with no art the
-    // parallax falls back to its procedural blobs (`docs/50` §8), which is the
+    // Every atlas the manifest names. Guarded: with no art the scene draws
+    // without it (`docs/50` §8), which is the
     // "starts with no art" guarantee doing its job rather than a reason to stop.
     await runGuardedAsync(
       this.assetGuard,

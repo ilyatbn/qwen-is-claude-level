@@ -29,8 +29,9 @@ in `../sprite_packs`, a sibling directory that `CLAUDE.md` names as a
 coordinator-approved input. `scripts/build-object-masks.mjs` reads them and
 emits `assets/objects/masks.bin`, `assets/objects/manifest.json` and
 `assets/atlas/objects.png` — those four files are what ship. `clouds` is
-listed here because it is part of the same delivery, but it goes to the sky
-layer, not to the terrain (`docs/73` §D0).
+listed here because it is part of the same delivery; it went to the sky layer,
+not to the terrain (`docs/73` §D0), and **no longer ships** — T21.18 replaced the
+sprite clouds with a shader and T21.27 removed their atlas.
 
 | pack | source | licence | fetched | size |
 |---|---|---|---|---|
@@ -38,7 +39,7 @@ layer, not to the terrain (`docs/73` §D0).
 | `crystals` | not recorded — supplied by the repository owner | royalty-free, unlimited use | 2026-08-21 | 2.0M |
 | `bushes` | not recorded — supplied by the repository owner | royalty-free, unlimited use | 2026-08-21 | 17M |
 | `ruins` | not recorded — supplied by the repository owner | royalty-free, unlimited use | 2026-08-21 | 22M |
-| `clouds` | not recorded — supplied by the repository owner | royalty-free, unlimited use | 2026-08-21 | 2.7M |
+| `clouds` (no longer ships, T21.27) | not recorded — supplied by the repository owner | royalty-free, unlimited use | 2026-08-21 | 2.7M |
 
 **Licence, verbatim from the owner (2026-08-27):** *"all the sprite packs I've
 added were royalty free and unlimited use."* Unlimited use covers the

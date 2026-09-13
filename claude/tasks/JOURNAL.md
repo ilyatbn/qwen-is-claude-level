@@ -6153,3 +6153,13 @@ drawn-floor; freezing `offset` **passed** the patch-motion test at 5.83/2.0 — 
 evolve — so §4b now aligns the clouds' own contribution along x and reds it. `living-sky`'s
 6.3 % cloud strip was its own camera falling through its carve: measured 6.26 % between two
 untouched frames, so the control is against that, not a number.
+
+## T21.27 — the sprite clouds, buried
+
+Zero production callers for `cloudSprites`, `cloudField`, `cloudX`, `cloudTwinX`, `Cloud` (greps: only
+their own tests and each other). Deleted with their tests: **client test count fell by 35** (23 in
+`clouds-math.test.ts`, 12 in `sky-math.test.ts`) because the subjects went, not because anything was
+skipped. Also gone: the `clouds` atlas + manifest/`vendorPacks` entries (nothing else drew from it),
+`build-cloud-atlas.mjs` (rerunning it would have re-added the manifest entry), and — coordinator's
+ruling — the 10 dead `CLOUD_*` constants in all three files. `cloudTint` stays (`parallax.ts` feeds the
+shader). No-art start probed with an empty publicDir: title runs, 0 page errors, placeholders logged.

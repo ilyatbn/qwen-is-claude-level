@@ -48,18 +48,19 @@ export function packsInManifest(manifest, shippingManifest = null) {
 /**
  * `pack -> the file that says the shipped art uses it`.
  *
- * The file matters in the failure message: told only that `clouds` is
- * unrecorded, the next person opens `assets/objects/manifest.json` and does not
- * find it there, because clouds route to the sky and that manifest excludes
- * them by design. Naming the wrong file is worse than naming none.
+ * The file matters in the failure message: told only that `clouds` was
+ * unrecorded (while its atlas shipped, before T21.27), the next person would
+ * open `assets/objects/manifest.json` and not find it there, because clouds
+ * routed to the sky and that manifest excludes them by design. Naming the wrong
+ * file is worse than naming none.
  */
 export function packSources(manifest, shippingManifest = null) {
   const sources = new Map()
   const objects = manifest?.objects ?? []
   const packs = objects.map((o) => o.pack).filter(Boolean)
-  // Objects are not the only pipeline that eats a sprite pack: the cloud atlas
-  // is built from `../sprite_packs/clouds` and lands in `assets/atlas/` with no
-  // object manifest behind it. A build script that consumes a pack declares it
+  // Objects are not the only pipeline that can eat a sprite pack: the cloud
+  // atlas was built from `../sprite_packs/clouds` into `assets/atlas/` with no
+  // object manifest behind it, until T21.27 retired it. A build script that consumes a pack declares it
   // in `assets/manifest.json` under `vendorPacks`, so this check covers the art
   // that ships rather than only the art the check was first written for.
   // Both, when both — first-writer-wins would be *true* and still send someone

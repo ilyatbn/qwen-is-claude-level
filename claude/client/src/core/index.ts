@@ -352,21 +352,11 @@ export interface Constants {
   MOUNTAIN_HAZE: number[]
   MOUNTAIN_CELLS: number
   MOUNTAIN_OCTAVES: number
-  CLOUD_COUNT: number
   CLOUD_DRIFT: number
   CLOUD_PARALLAX: number
-  CLOUD_TEX_W: number
-  CLOUD_TEX_H: number
-  CLOUD_SCALE_MIN: number
-  CLOUD_SCALE_MAX: number
   CLOUD_BAND_TOP: number
   CLOUD_BAND_BOTTOM: number
   CLOUD_ALPHA: number
-  CLOUD_SPEED_SPREAD: number
-  CLOUD_BRIGHT_MIN: number
-  CLOUD_BRIGHT_MAX: number
-  CLOUD_ALPHA_MIN: number
-  CLOUD_ALPHA_MAX: number
   CLOUD_SKY_MIX: number
   CLOUD_ALPHA_FLOOR: number
   RIDGE_TEX_W: number
