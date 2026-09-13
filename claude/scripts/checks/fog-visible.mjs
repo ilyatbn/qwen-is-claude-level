@@ -288,9 +288,26 @@ try {
   } else {
     ok(`a carried flashlight thinned the veil to ${lit.a.toFixed(3)} from ${s.a.toFixed(3)}`)
   }
+  // **The constant against the feature — T19.31, `night-combat`'s T19.27 twin.**
+  //
+  // `want` above is computed from `FLASHLIGHT_FOG_VEIL_MULT` and compared to an
+  // alpha the client also computed from `FLASHLIGHT_FOG_VEIL_MULT`, so setting it
+  // to 1.0 — the feature switched off — makes that assertion agree with itself.
+  // The sentence the feature promises needs no number: a carried flashlight
+  // leaves the veil **strictly thinner** than no flashlight. Measured 0.640
+  // against 0.800; at 1.0 the two are equal and this reds.
+  if (lit.s >= 0.99 && s.s >= 0.99 && !(lit.a < s.a - 0.01)) {
+    fail(
+      `a carried flashlight did not thin the veil at all: ${s.a.toFixed(3)} without, ` +
+        `${lit.a.toFixed(3)} with (FLASHLIGHT_FOG_VEIL_MULT ${k.FLASHLIGHT_FOG_VEIL_MULT}) — ` +
+        'the pinned check above cannot see this, because both sides of it read that constant',
+    )
+  }
 
   const litFrames = await frames(page)
   await shot('fog-game-flashlight')
+  /** Travel the flashlight removed, summed over both patches — see T19.31 below. */
+  let gapSum = 0
 
   // **The pixels.** The lit frame must sit between the clear one and the foggy
   // one — closer to clear than the full veil is, by more than the noise floor,
@@ -301,6 +318,7 @@ try {
     const toClearFog = colourDelta(clear0[label], wet[label])
     const toClearLit = colourDelta(clear0[label], litFrames[label])
     const gap = toClearFog - toClearLit
+    gapSum += gap
     // What the constants say the gap should be: the veil moved the frame
     // `toClearFog` at alpha `s.a`, and alpha is linear in the composite, so a
     // multiplier of `FLASHLIGHT_FOG_VEIL_MULT` predicts this much less travel.
@@ -329,6 +347,24 @@ try {
     } else {
       ok(`${label}: the veil is thinner with a flashlight (${gap.toFixed(1)} of travel removed)`)
     }
+  }
+
+  // **And on the pixels, with no constant in it (T19.31).** The per-patch
+  // comparison above is against `predictedGap`, which is `toClearFog * (1 -
+  // FLASHLIGHT_FOG_VEIL_MULT)` — at 1.0 it predicts 0, measures ~0, and passes.
+  // The claim that needs no number: the flashlight removed *some* travel. Per
+  // patch that is a coin flip on the ground (measured gap 7.7 against a noise
+  // floor of 5.4), so it is asked of both patches together — measured 19.3
+  // against 5.4, and ~0 with the feature off.
+  if (!(gapSum > noiseFloor)) {
+    fail(
+      `a flashlight removed only ${gapSum.toFixed(1)} of the veil's travel across both ` +
+        `patches, against a ${noiseFloor.toFixed(1)} noise floor — it thinned nothing ` +
+        `(FLASHLIGHT_FOG_VEIL_MULT ${k.FLASHLIGHT_FOG_VEIL_MULT}); the per-patch prediction ` +
+        'cannot see this, because it is derived from that constant',
+    )
+  } else {
+    ok(`the flashlight removed ${gapSum.toFixed(1)} of travel across both patches (noise ${noiseFloor.toFixed(1)})`)
   }
 
   if (pageErrors.length) fail(`page errors on the flashlight client: ${pageErrors.join(' | ')}`)
