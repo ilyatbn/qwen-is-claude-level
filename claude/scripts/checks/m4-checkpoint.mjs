@@ -11,6 +11,7 @@
  * have caught.
  */
 import { samplePatch, colourDelta } from './pixels.mjs'
+import { simClock } from './sim-clock.mjs'
 
 export default async function ({ page, shot, log }) {
   const inv = () => page.evaluate(() => window.__game.inventory())
@@ -20,6 +21,38 @@ export default async function ({ page, shot, log }) {
       let n = 0
       for (let i = 0; i < v.length; i++) { let b = v[i]; while (b) { n += b & 1; b >>= 1 } }
       return n
+    })
+
+  /**
+   * **The sandbox's own clock, not the wall's** — see `sim-clock.mjs` for the
+   * measurement. Every wait below that is waiting for the *simulation* to do
+   * something is paced by this; the ones waiting for a render or an input round
+   * trip are still `waitForTimeout`, because that is the browser's work.
+   */
+  const sim = simClock(page)
+
+  /**
+   * Where the player is drawn, in screen space.
+   *
+   * The aim below used to be written as an offset from `(640, 360)` — the
+   * middle of the 1280x720 viewport — on the assumption that the player is at
+   * the centre of it. They are not: measured on this seed, the body is drawn at
+   * **(512, 334)**, so `(640 + 300, 360)` is not "sideways", it is a few degrees
+   * below the horizontal into the wall the player is standing beside. See the
+   * SMG section for what that cost. `shieldBubble` below already derives this
+   * the correct way; this is the same arithmetic, shared rather than copied.
+   */
+  const screenPos = () =>
+    page.evaluate(() => {
+      const g = window.__game
+      const me = g.core.playerState(0)
+      const raw = g.debug().worldView
+      const v = { x: raw.x, y: raw.y, w: raw.width ?? raw.w, h: raw.height ?? raw.h }
+      const r = document.querySelector('canvas').getBoundingClientRect()
+      return {
+        x: r.left + ((me.x - v.x) / v.w) * r.width,
+        y: r.top + ((me.y - v.y) / v.h) * r.height,
+      }
     })
 
   await page.evaluate(() => window.__game.regenerate('12345', 'medium'))
@@ -33,7 +66,8 @@ export default async function ({ page, shot, log }) {
   // Straight down, into the ground at my own feet: the rocket spawns MUZZLE_OFFSET
   // below centre, which is at or inside the floor, so it goes off well within its
   // own 42 px blast radius. This is the rocket-jump case.
-  await page.mouse.move(640, 360 + 200)
+  const me = await screenPos()
+  await page.mouse.move(me.x, me.y + 200)
   await page.waitForTimeout(200)
 
   const before = await solid()
@@ -41,9 +75,31 @@ export default async function ({ page, shot, log }) {
   log(`fire -> ${JSON.stringify(ev).slice(0, 120)}`)
   if (ev.rejected) throw new Error(`fire rejected: ${ev.rejected}`)
   if (!ev.projectile) throw new Error('the bazooka spawned no projectile')
+  // **Anchored on the shot being accepted, not on the send.** `fire_ready_at` is
+  // per player and is set to `now + cooldown` from the sandbox's own clock
+  // (`PlayerState::try_fire_slot`), so the SMG below cannot be fired until that
+  // many *simulated* seconds have passed — whatever the wall says. Sampled here
+  // rather than before `fire()`, because anchoring before the action is
+  // optimistic and reds on its own.
+  const firedAt = await sim.now()
 
-  // Let it fly and explode.
-  await page.waitForTimeout(1200)
+  // Let it fly and explode — **in the sandbox's seconds, and on the effect**.
+  // This was `waitForTimeout(1200)`, which is 1200 ms of wall clock; see
+  // `sim-clock.mjs` for the 0.06 ratio that measured. The budget is this check's own,
+  // not a shipped tunable: a rocket fired into the floor at the muzzle detonates
+  // within a frame or two, and 1.2 simulated seconds is two orders of magnitude
+  // of slack on that.
+  const CRATER_BUDGET_S = 1.2
+  const carved = await sim.until(
+    async () => (await solid()) < before,
+    CRATER_BUDGET_S,
+    'the bazooka crater',
+  )
+  if (!carved) {
+    throw new Error(
+      `no crater after ${CRATER_BUDGET_S}s of SIMULATED time — the rocket never went off`,
+    )
+  }
   const after = await solid()
   const now = await inv()
   log(`terrain solid ${before} -> ${after}  (crater removed ${before - after} px)`)
@@ -83,68 +139,118 @@ export default async function ({ page, shot, log }) {
     if (i < 0) throw new Error(`no smg in the sandbox loadout: ${JSON.stringify(inv.slots)}`)
     window.__game.selectSlot(i)
   })
-  // **Aim sideways first.** The bazooka above fires at the player's own feet —
-  // that is the rocket-jump case it is testing — and the mouse was never moved
-  // afterwards, so the SMG fired into the ground 18 px below the muzzle. A
-  // hitscan round did not care: it resolved instantly and drew a tracer. A
-  // bullet (§F1) explodes on its first step and is never airborne for a single
-  // frame, so "no round in the air" was a true reading of a shot with nowhere
-  // to go.
-  await page.mouse.move(640 + 300, 360)
+  // **Aim into open air, from where the player actually is.** The bazooka above
+  // fires at the player's own feet — that is the rocket-jump case it is testing
+  // — so the SMG has to be aimed somewhere else before it is fired. Two things
+  // were wrong with how it was:
+  //
+  // 1. The aim was `(640 + 300, 360)`, an offset from the middle of the
+  //    viewport. The player is drawn at **(512, 334)** on this seed, so that
+  //    point is *below* the horizontal, not level with it — see `screenPos`.
+  // 2. Dead level is into a wall. Traced frame by frame for T21.23: at that
+  //    angle the round spawns at x=274 and is gone in **0 frames** — it dies
+  //    inside the same `combat_step` that spawned it, so `syncProjectiles` never
+  //    sees it and nothing can ever observe it in flight. Up and to the right it
+  //    lives 6 frames, crossing 278→325 px, and still carves 21 px when it
+  //    lands. The assertion below had a nought-to-three frame window to hit; on
+  //    a busy box it missed, and reported "no round in the air" about a shot
+  //    that was fired correctly.
+  const from = await screenPos()
+  await page.mouse.move(from.x + 300, from.y - 300)
   await page.waitForTimeout(200)
   const beforeSmg = await solid()
+
+  // **Wait out the bazooka's cooldown in the clock that spends it.** The old
+  // `waitForTimeout(1200)` after the rocket happened to cover this as a side
+  // effect; waiting on the crater instead returns as soon as the rocket lands,
+  // which is sooner, so the cooldown now has to be waited for on purpose. It is
+  // counted in `world`/sandbox seconds, so that is what it is waited in — the
+  // shape T21.22b arrived at for the same rejection on the networked path.
+  const cd = await page.evaluate(() => window.__game.constants().BAZOOKA_COOLDOWN)
+  // Guard the constant before trusting it: a missing key is `undefined`, and
+  // every comparison against `undefined` is false, so the wait below would fall
+  // through instantly and the rejection would come back looking like a game bug.
+  if (typeof cd !== 'number' || !(cd > 0)) {
+    throw new Error(`BAZOOKA_COOLDOWN is not exposed to the client (got ${cd})`)
+  }
+  const cooled = await sim.until(
+    async () => (await sim.now()) - firedAt > cd,
+    cd * 4,
+    "the bazooka's cooldown",
+  )
+  if (!cooled) throw new Error(`the sandbox clock never advanced ${cd}s past the rocket`)
+
+  // **Latched in the page, on every animation frame, from before the trigger.**
+  // The layer is filled from the mirror once per frame, and a round is only in
+  // it for a handful of frames. The old code polled from node —
+  // `waitForFunction` on one round trip, then `ordnance()` on a *second* — so
+  // the value asserted on was re-read after the wait that proved it, and both
+  // trips have to land inside the same few frames. This latches the high-water
+  // mark where the frames are, so a single drawn frame cannot be missed, and
+  // nothing is re-read.
+  await page.evaluate(() => {
+    const w = window
+    w.__m4SmgPeak = 0
+    const tick = () => {
+      const n = w.__game.ordnance().projectiles
+      if (n > w.__m4SmgPeak) w.__m4SmgPeak = n
+      w.__m4SmgRaf = requestAnimationFrame(tick)
+    }
+    w.__m4SmgRaf = requestAnimationFrame(tick)
+  })
+
   const smg = await page.evaluate(() => window.__game.fire())
   if (!smg.projectile) throw new Error(`the smg did not fire: ${JSON.stringify(smg)}`)
-  // **Waited for, not read once.** The layer is filled from the mirror on the
-  // next frame, so reading it in the same turn as `fire()` samples the instant
-  // before the round exists. Measured: this read 0 in the full suite while
-  // passing standalone, which is what a race looks like.
-  await page
-    .waitForFunction('window.__game.ordnance().projectiles > 0', null, { timeout: 3000 })
-    .catch(() => {})
-  const ord = await page.evaluate(() => window.__game.ordnance())
-  log(`ordnance layer: ${JSON.stringify(ord)}`)
-  if (ord.projectiles < 1) throw new Error('the smg put no round in the air — every shot must be visible')
-  // Wait for it to land. The deadline comes from the constants — flight time is
-  // range/speed — rather than a literal, so it tracks the speed instead of
-  // expiring against it (§A19). Polled with the same `solid()` the crater half
-  // uses, so both halves measure the mask the same way.
+
+  // Wait for the round to land, and pace it by the **sandbox's** clock. The
+  // budget is the constants' own flight time — range/speed — rather than a
+  // literal, so it tracks the speed instead of expiring against it (§A19); what
+  // changed for T21.23 is the clock it is spent in. As `Date.now()` it was
+  // 1375 ms of wall, which under load buys 83 ms of simulation. Polled with the
+  // same `solid()` the crater half uses, so both halves measure the mask the
+  // same way.
   const k = await page.evaluate(() => window.__game.constants())
-  const flightMs = (k.SMG_RANGE / k.SMG_MUZZLE_SPEED) * 1000 + 500
-  const deadline = Date.now() + Math.ceil(flightMs)
+  const flightS = k.SMG_RANGE / k.SMG_MUZZLE_SPEED + 0.5
   let afterSmg = beforeSmg
-  while (Date.now() < deadline) {
-    afterSmg = await solid()
-    if (afterSmg < beforeSmg) break
-    await page.waitForTimeout(50)
-  }
+  await sim.until(
+    async () => {
+      afterSmg = await solid()
+      return afterSmg < beforeSmg
+    },
+    flightS,
+    'the smg round landing',
+  )
+
+  const peak = await page.evaluate(() => {
+    cancelAnimationFrame(window.__m4SmgRaf)
+    return window.__m4SmgPeak
+  })
+  const ord = await page.evaluate(() => window.__game.ordnance())
+  log(`ordnance layer: peak ${peak} projectile(s) drawn in flight; now ${JSON.stringify(ord)}`)
+  if (peak < 1) throw new Error('the smg put no round in the air — every shot must be visible')
   log(`smg: dug ${beforeSmg - afterSmg} px after flight`)
   if (beforeSmg - afterSmg <= 0) throw new Error('the smg round left no mark')
 
-  await shieldBubble({ page, shot, log })
+  await shieldBubble({ page, shot, log, screenPos })
 }
 
 // --- the shield bubble, on your own body (T20.08) ---------------------------
 //
 // Its own function, called from the end of the default export, so the crater half
 // above is untouched and a failure here names itself.
-async function shieldBubble({ page, shot, log }) {
+async function shieldBubble({ page, shot, log, screenPos }) {
   await page.evaluate(() => window.__game.regenerate('12345', 'medium'))
   await page.waitForTimeout(500)
 
   // Where the player is drawn, in screen space, so the patch follows the camera
   // rather than a coordinate that expires the next time the spawn moves.
-  const rect = await page.evaluate(() => {
-    const g = window.__game
-    const me = g.core.playerState(0)
-    const raw = g.debug().worldView
-    const v = { x: raw.x, y: raw.y, w: raw.width ?? raw.w, h: raw.height ?? raw.h }
-    const cv = document.querySelector('canvas')
-    const r = cv.getBoundingClientRect()
-    const sx = r.left + ((me.x - v.x) / v.w) * r.width
-    const sy = r.top + ((me.y - v.y) / v.h) * r.height
-    return { x: Math.round(sx - 40), y: Math.round(sy - 60), w: 80, h: 80 }
-  })
+  //
+  // **`screenPos` is the caller's, not a second copy.** This projection was
+  // written out twice, and the other user of it — the SMG aim — was written with
+  // a *third* answer, `(640, 360)`, which is what put that shot into a wall
+  // (T21.23). One function, so a body drawn somewhere new moves both.
+  const at = await screenPos()
+  const rect = { x: Math.round(at.x - 40), y: Math.round(at.y - 60), w: 80, h: 80 }
 
   // A far patch, which must be sampled **over the same window as the subject** —
   // both endpoints straddling the grant. It was not: `cBefore` and `cAfter` were

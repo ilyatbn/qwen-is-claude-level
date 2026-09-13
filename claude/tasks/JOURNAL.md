@@ -6127,3 +6127,16 @@ counter — laid out, textual, invisible — still passed, because the "change" 
 over the 1.4 s between frames and the ground control could not see the sky. Repaired with a
 measured noise floor (same rectangle, same interval, nothing touched) and a control beside the
 subject; the plant now reds both. Signal 25.8 against a floor of 0.0.
+
+## T21.23 — waits in the wrong clock
+
+36 sim-dependent waits audited, **17 in the wrong clock**, all now on a simulation clock. The
+measurement: `m4-checkpoint`'s `waitForTimeout(1200)` advanced the wall **3308 ms** and the
+sandbox's own clock **200 ms** — Phaser clamps the frame delta to `fps.min` 5 and smooths it over
+ten frames, so under load the sandbox runs at 0.06 of wall. `sim-clock.mjs` and
+`harness.mjs::serverElapsed` are the two shared waits; both guards trip on a *stopped* clock, not
+a slow one, so a busy box cannot fire them. m4's smg was also aimed into a wall 20 px away — 0
+frames airborne — from an assumed screen centre. **`hud-bars` is not a clock bug**: green's real
+separation on the frame is +1 of a predicted 13, and `Math.sign(0)` read "did not move" as "moved
+against". **`boots-visible` was already 2-in-3 red on an idle box** at HEAD: camera ease moving a
+screen-space band under a body that had not moved a hundredth of a pixel.

@@ -765,18 +765,64 @@ if (!healthRect || !cleanPatch) {
     // them.
     const hex = (c, i) => parseInt(c.slice(1 + i * 2, 3 + i * 2), 16)
     const chans = ['r', 'g', 'b']
-    const wrong = chans.filter((ch, i) => {
+    /**
+     * **A channel has to have moved before its direction means anything.**
+     *
+     * `Math.sign(0)` is `0`, so a channel that did not move at all was being
+     * reported as one that "moved against" the prediction — a claim about motion
+     * made about a frame that had none. That is not a hypothetical: T21.23
+     * measured it. Three consecutive idle runs are byte-identical at
+     * `99,144,74` against `67,143,79`, so green's real separation on the frame
+     * is **+1**; the gate run that failed read `98,143,74`, so green's was
+     * **0**. One unit either side of nothing, and the sign of it decided the
+     * gate — a coin flip, which gates nothing.
+     *
+     * Why green in particular, when red and blue are fine. The predictions from
+     * the two hexes are r +62, g +13, b -16; the frame delivers r +32, b -5,
+     * g +1. Red and blue arrive at about a third to a half strength, which is
+     * the compositing over the dark track and the white text. Green arrives at a
+     * *twelfth*, because the poisoned player is also **losing health**, so their
+     * bar is shorter and more of the patch is dark track. Both fills are high in
+     * green (199 and 212), so the shorter bar pulls green down by very nearly
+     * what the yellower hue pushes it up, and the two cancel. Green is the
+     * residue of two opposing effects, not a signal.
+     *
+     * So the floor is on what was *observed*, which is where the noise is,
+     * rather than only on what was predicted. 2 is above the measured 1 unit of
+     * run-to-run wobble and well under blue's 5.
+     */
+    const NOISE = 2
+    const informative = []
+    const wrong = []
+    chans.forEach((ch, i) => {
       const want = hex(sickColour, i) - hex(cleanColour, i)
       // Channels the two colours barely separate cannot say anything; the frame
       // is composited over a track background and text.
-      if (Math.abs(want) < 8) return false
+      if (Math.abs(want) < 8) return
       const got = sickPatch[ch] - cleanPatch[ch]
-      return Math.sign(got) !== Math.sign(want)
+      if (Math.abs(got) < NOISE) return
+      informative.push(ch)
+      if (Math.sign(got) !== Math.sign(want)) wrong.push(ch)
     })
     if (delta < 4) {
       fail(
         `the poisoned health bar is ${delta.toFixed(1)} away from the healthy one on the ` +
           'frame — the colour was computed and never reached a pixel',
+      )
+    } else if (!informative.length) {
+      // **A tripwire, and it cannot fire today — which is the point of saying
+      // so.** With every channel under the floor, `wrong.length === 0` would be
+      // satisfied by a frame that had not moved, so the direction test would
+      // have proved nothing. It is unreachable while the two numbers above stay
+      // as they are: `delta >= 4` over three channels forces at least one of
+      // them past `4 / sqrt(3)` = 2.31, which clears `NOISE` 2. That coupling is
+      // not written down anywhere else, so this is where it is checked — move
+      // either number and this stops being dead and starts being the thing that
+      // tells you.
+      fail(
+        `no channel moved by ${NOISE} or more, so the direction test ran on nothing — ` +
+          `rgb ${sickPatch.r.toFixed(0)},${sickPatch.g.toFixed(0)},${sickPatch.b.toFixed(0)} ` +
+          `vs ${cleanPatch.r.toFixed(0)},${cleanPatch.g.toFixed(0)},${cleanPatch.b.toFixed(0)}`,
       )
     } else if (wrong.length) {
       fail(
@@ -788,7 +834,7 @@ if (!healthRect || !cleanPatch) {
     } else {
       ok(
         `the poisoned health bar moved on the frame exactly as ${cleanColour} -> ` +
-          `${sickColour} predicts (delta ${delta.toFixed(1)}, rgb ` +
+          `${sickColour} predicts on ${informative.join(', ')} (delta ${delta.toFixed(1)}, rgb ` +
           `${sickPatch.r.toFixed(0)},${sickPatch.g.toFixed(0)},${sickPatch.b.toFixed(0)} ` +
           `vs ${cleanPatch.r.toFixed(0)},${cleanPatch.g.toFixed(0)},${cleanPatch.b.toFixed(0)})`,
       )

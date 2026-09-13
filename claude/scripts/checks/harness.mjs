@@ -570,3 +570,73 @@ export async function selectWeapon(page, key) {
       `"${(last ?? []).find((s) => s.selected)?.key ?? 'none'}"`,
   )
 }
+
+/**
+ * Wait for `seconds` of the **server's** round clock to pass, not the wall's.
+ *
+ * `docs/70` T21.22b measured one gap that advanced the wall **1113 ms** while
+ * `serverRoundTime` advanced **400 ms**, and T21.23 measured the sandbox's own
+ * frame clock advancing 200 ms across 3308 ms of wall. Anything the simulation
+ * counts — a cooldown, a charge, an assist window, a scheduled effect — is spent
+ * in that clock, so a `sleep()` against it is a bet on the box being idle, and it
+ * is lost only in the full gate. That is the failure that gets called flakiness.
+ *
+ * `pred` is optional: pass one and this returns its value as soon as it holds,
+ * so the common "wait out the window, but stop early if the thing happens"
+ * shape does not need its own loop.
+ *
+ * **A wait that can never be satisfied fails loudly rather than hanging**, and
+ * the guard measures what would make it unsatisfiable: a server that has stopped
+ * ticking stops this clock too, and a budget denominated in a stopped clock never
+ * expires. So the clock is watched for standing *still*, not for being slow —
+ * a bare attempt count cannot tell those apart, and one tight enough to catch the
+ * stall would fire on a box that was merely busy, which is the failure this
+ * helper exists to stop happening. `maxPolls` is the backstop under that. (The
+ * loop that hung this box for eighteen hours counted its *successes*, so it could
+ * never trip its own guard; both counters here only rise on the failing path.)
+ *
+ * @param {(d: object) => unknown} [pred] read from the same `debug()` sample.
+ * @returns whatever `pred` returned, or `null` if the clock reached the budget.
+ */
+export async function serverElapsed(
+  page,
+  seconds,
+  what,
+  { pred = null, pollMs = 100, stallPolls = 60, maxPolls = 2000 } = {},
+) {
+  const now = async () => {
+    const d = await page.evaluate('window.__game.debug()')
+    return { d, t: d?.serverRoundTime }
+  }
+  const start = await now()
+  if (typeof start.t !== 'number') {
+    throw new Error(`${what}: debug() exposes no serverRoundTime — cannot wait on the server's clock`)
+  }
+  let last = start.t
+  let stalled = 0
+  for (let i = 0; i < maxPolls; i++) {
+    const s = await now()
+    if (pred) {
+      const hit = pred(s.d)
+      if (hit) return hit
+    }
+    if (s.t - start.t >= seconds) return null
+    if (s.t === last) stalled += 1
+    else {
+      stalled = 0
+      last = s.t
+    }
+    if (stalled >= stallPolls) {
+      throw new Error(
+        `${what}: the server's round clock has not moved for ${stalled} polls — stuck at ` +
+          `${s.t.toFixed(1)}s, ${(s.t - start.t).toFixed(1)}s into a ${seconds}s budget. ` +
+          'The round is not ticking.',
+      )
+    }
+    await sleep(pollMs)
+  }
+  throw new Error(
+    `${what}: ${maxPolls} polls and the server clock moved only ` +
+      `${(last - start.t).toFixed(1)}s of ${seconds}s`,
+  )
+}

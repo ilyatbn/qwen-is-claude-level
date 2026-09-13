@@ -36,34 +36,8 @@ import { samplePatch, assertChanged, toScreen } from './pixels.mjs'
 export default async function ({ page, shot, log }) {
   const dbg = () => page.evaluate(() => window.__game.debug())
 
-  // **Wait for stillness, do not assume it.** A body that is still falling from
-  // spawn, or sliding the last pixel down a slope, moves between the position
-  // read and the screenshot — and then "the feet changed" means "the player
-  // moved". A fixed sleep is the version of this that passes on a fast machine
-  // and fails on a loaded one, so this waits on the property instead.
-  let d = null
-  let still = false
-  for (let i = 0; i < 40; i++) {
-    const a = await dbg()
-    await page.waitForTimeout(120)
-    const b = await dbg()
-    if (a.player && b.player && a.player.x === b.player.x && a.player.y === b.player.y) {
-      d = b
-      still = true
-      break
-    }
-    d = b
-  }
-  if (!d || !d.player) throw new Error('the sandbox has no local player')
-  if (!still) throw new Error(`the body never came to rest (${d.player.x},${d.player.y})`)
-
-  // The control on the fixture itself: it must start with **no** boots, or the
-  // "before" frame is not a control frame at all.
-  if ((d.player.moveMods ?? 0) !== 0) {
-    throw new Error(`the sandbox player already carries passives (${d.player.moveMods})`)
-  }
-
-  // Pinned to the engine's own constants, never to a pixel literal.
+  // Pinned to the engine's own constants, never to a pixel literal. Read before
+  // the settle below, because the settle now has to know where the bands are.
   const c = await page.evaluate(() => window.__game.constants())
   const bodyH = c.PLAYER_H
   const bodyW = c.PLAYER_W
@@ -87,6 +61,42 @@ export default async function ({ page, shot, log }) {
     }
   }
 
+  // **Wait for stillness, do not assume it.** A body that is still falling from
+  // spawn, or sliding the last pixel down a slope, moves between the position
+  // read and the screenshot — and then "the feet changed" means "the player
+  // moved". A fixed sleep is the version of this that passes on a fast machine
+  // and fails on a loaded one, so this waits on the property instead.
+  //
+  // **The body, in world space, and deliberately not the band** (T21.23). The
+  // band is the body seen through a camera that is still easing long after the
+  // body has stopped: measured on seed 4242, the body sat at `672.00, 866.78`
+  // without moving a hundredth of a pixel for two seconds while the camera crept
+  // from `672.00, 880.00` to `669.90, 879.47` and the feet band with it, 640 ->
+  // 646 px. The ease is asymptotic, so waiting for the band to hold still is
+  // waiting for a limit, and a longer wait only moves where it stops. The camera
+  // is taken out of the comparison below instead.
+  let d = null
+  let still = false
+  for (let i = 0; i < 40; i++) {
+    const a = await dbg()
+    await page.waitForTimeout(120)
+    const b = await dbg()
+    if (a.player && b.player && a.player.x === b.player.x && a.player.y === b.player.y) {
+      d = b
+      still = true
+      break
+    }
+    d = b
+  }
+  if (!d || !d.player) throw new Error('the sandbox has no local player')
+  if (!still) throw new Error(`the body never came to rest (${d.player.x},${d.player.y})`)
+
+  // The control on the fixture itself: it must start with **no** boots, or the
+  // "before" frame is not a control frame at all.
+  if ((d.player.moveMods ?? 0) !== 0) {
+    throw new Error(`the sandbox player already carries passives (${d.player.moveMods})`)
+  }
+
   const bands = await at()
   const feetBefore = await samplePatch(page, bands.feet)
   const headBefore = await samplePatch(page, bands.head)
@@ -96,28 +106,37 @@ export default async function ({ page, shot, log }) {
   if (!on) throw new Error('giveBoots() reported the boots were not picked up')
   await page.waitForTimeout(250)
 
-  d = await dbg()
-  if ((d.player.moveMods ?? 0) === 0) {
+  const dAfter = await dbg()
+  if ((dAfter.player.moveMods ?? 0) === 0) {
     throw new Error('the mirror does not report the boots after granting them')
   }
   // The body must not have moved, or "the feet changed" is "the player walked".
+  //
+  // **Asked of the body in world space** (T21.23). This compared the *bands*,
+  // which are screen-space and therefore carry every pixel of camera ease along
+  // with any real motion. It read `the body moved 2 px between frames (623,343
+  // -> 625,343)` about a body that had not moved at all — a claim about the
+  // player reported through a rectangle that also answers to the camera. The
+  // world position answers to nothing but the physics, which is what the
+  // sentence is about.
   const bandsAfter = await at()
-  // A pixel of tolerance, and the head control is the real guard: if the body
-  // had walked, the head band would have moved by as much as the feet band and
-  // `assertChanged` refuses that case outright. This only catches the gross
-  // version early, with a message that names the cause.
-  const drift = Math.max(
-    Math.abs(bandsAfter.feet.x - bands.feet.x),
-    Math.abs(bandsAfter.feet.y - bands.feet.y),
-  )
-  if (drift > 1) {
+  const moved = Math.max(Math.abs(dAfter.player.x - d.player.x), Math.abs(dAfter.player.y - d.player.y))
+  if (moved > 1) {
     throw new Error(
-      `the body moved ${drift} px between frames (${bands.feet.x},${bands.feet.y} -> ` +
-        `${bandsAfter.feet.x},${bandsAfter.feet.y}) — the change would be motion, not boots`,
+      `the body moved ${moved.toFixed(2)} px between frames ` +
+        `(${d.player.x.toFixed(2)},${d.player.y.toFixed(2)} -> ` +
+        `${dAfter.player.x.toFixed(2)},${dAfter.player.y.toFixed(2)}) — ` +
+        'the change would be motion, not boots',
     )
   }
-  const feetAfter = await samplePatch(page, bands.feet)
-  const headAfter = await samplePatch(page, bands.head)
+  // **Each patch from its own frame's band.** The after-patches used to be taken
+  // from the *before* rect, so a camera that had eased 2 px sampled the body 2 px
+  // off — which is a change, and not the one being asserted. Recomputed here, the
+  // camera cancels out of both the subject and the control: each rect is over the
+  // feet and the head of the frame it is taken from, wherever the camera has put
+  // them.
+  const feetAfter = await samplePatch(page, bandsAfter.feet)
+  const headAfter = await samplePatch(page, bandsAfter.head)
   await shot('boots-after')
 
   const r = assertChanged(feetBefore, feetAfter, {

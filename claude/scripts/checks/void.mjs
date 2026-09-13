@@ -28,7 +28,15 @@
  * plainly if there is none.
  */
 import { join } from 'node:path'
-import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, shotsDir } from './harness.mjs'
+import {
+  startStack,
+  enterBattle,
+  standStill,
+  selectWeapon,
+  tally,
+  sleep,
+  shotsDir,
+} from './harness.mjs'
 import { samplePatch, colourDelta, toScreen } from './pixels.mjs'
 
 const PORT = 3132
@@ -569,7 +577,22 @@ const openColumn = () =>
 
 let deathSnapshot = null
 {
-  const until = Date.now() + assistWindow * 1000 + 700
+  // **Counted in the server's round clock, not the wall's** (T21.23).
+  // `ASSIST_WINDOW` is spent in `round_time`, and T21.22b measured a gap where
+  // the wall ran 1113 ms to the server's 400. A window this loop believes has
+  // lapsed but the server does not still credits the rocket — which is the exact
+  // failure the loop exists to avoid, arriving from the one direction nothing
+  // here was watching. `t0` is read before the loop and `elapsed` inside it, so
+  // the clock that decides is the clock that counts it.
+  const WINDOW_S = assistWindow + 0.7
+  const STALL_POLLS = 100
+  const t0 = (await dbg()).serverRoundTime
+  if (typeof t0 !== 'number') {
+    throw new Error('debug() exposes no serverRoundTime — cannot wait out ASSIST_WINDOW')
+  }
+  let lastRound = t0
+  let stalled = 0
+  let elapsed = 0
   // **Stay on solid ground while the window runs.**
   //
   // Waiting the window out only works if the player is still standing at the
@@ -585,8 +608,24 @@ let deathSnapshot = null
   // *underneath* produced a rocket-attributed death — and it is why the wait
   // exists at all.
   let backedOff = null
-  while (Date.now() < until) {
+  while (elapsed < WINDOW_S) {
     const d = await dbg()
+    elapsed = d.serverRoundTime - t0
+    // **And a budget in a stopped clock never expires.** The guard is on the
+    // clock standing *still*, not on this loop being slow: 100 polls is 10 s of
+    // the 100 ms sleep below, and the round clock moves every snapshot, so it is
+    // a round that has stopped ticking and nothing else.
+    if (d.serverRoundTime === lastRound) stalled += 1
+    else {
+      stalled = 0
+      lastRound = d.serverRoundTime
+    }
+    if (stalled >= STALL_POLLS) {
+      throw new Error(
+        `the round clock has not moved for ${stalled} polls — stuck at ` +
+          `${d.serverRoundTime.toFixed(1)}s, ${elapsed.toFixed(1)}s into ASSIST_WINDOW`,
+      )
+    }
     if (d.death.visible) {
       deathSnapshot = d
       break
@@ -602,7 +641,21 @@ let deathSnapshot = null
     await sleep(100)
   }
   if (backedOff) await page.keyboard.up(backedOff)
-  if (Date.now() < until) await sleep(until - Date.now())
+  // The loop can leave early on a death; the window still has to finish in the
+  // clock that spends it before anything downstream reads the attribution.
+  while (elapsed < WINDOW_S && stalled < STALL_POLLS) {
+    await sleep(100)
+    const t = (await dbg()).serverRoundTime
+    if (t === lastRound) stalled += 1
+    else {
+      stalled = 0
+      lastRound = t
+    }
+    elapsed = t - t0
+  }
+  if (stalled >= STALL_POLLS) {
+    throw new Error(`the round clock stopped while waiting out the rest of ASSIST_WINDOW`)
+  }
 }
 
 // **Heal before walking in, so only the void can kill.**

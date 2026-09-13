@@ -4,8 +4,20 @@
  * Every assertion reads the *simulation's* body out of `game-core` through
  * `window.__game.debug()`, not the rendered sprite — a sprite can move for reasons
  * that have nothing to do with input.
+ *
+ * **And every wait for the body to do something is paced by the simulation's own
+ * clock** (T21.23). Every question this file asks — did holding D move me, did I
+ * land, did the jetpack lift me — is answered by physics the sandbox integrates
+ * once per frame, so it is counted in `roundTime`, not in milliseconds of wall.
+ * Measured: with twenty busy loops this check failed at `player never landed`,
+ * because 1500 ms of wall had bought a fraction of the fall. See
+ * `sim-clock.mjs`. The waits that are still `waitForTimeout` are the ones for a
+ * *render* or an input round trip, which really are the browser's work.
  */
+import { simClock } from './sim-clock.mjs'
+
 export default async function ({ page, shot, log }) {
+  const sim = simClock(page)
   const body = async () => (await page.evaluate(() => window.__game.debug())).player
   const dbg = () => page.evaluate(() => window.__game.debug())
 
@@ -16,15 +28,26 @@ export default async function ({ page, shot, log }) {
       ([s, h]) => window.__game.place(s.x, s.y - h / 2),
       [spawn, await page.evaluate(() => window.__game.core.meta && 28)],
     )
-    await page.waitForTimeout(600)
+    // Settled is a *state*, not a duration: wait for the body to be on the
+    // ground and still, rather than for a number of milliseconds in which it
+    // might be either.
+    await sim.until(
+      async () => {
+        const b = await body()
+        return b.grounded && Math.abs(b.vy) < 1
+      },
+      1.0,
+      'the player settling after being placed',
+    )
     return body()
   }
 
-  const hold = async (key, ms) => {
+  /** Hold `key` for `seconds` of **simulated** time. */
+  const hold = async (key, seconds) => {
     await page.keyboard.down(key)
-    await page.waitForTimeout(ms)
+    await sim.elapse(seconds, `holding ${key}`)
     await page.keyboard.up(key)
-    await page.waitForTimeout(120)
+    await sim.elapse(0.12, `the release of ${key} reaching the body`)
   }
 
   await page.evaluate(() => window.__game.regenerate('12345', 'medium'))
@@ -32,7 +55,7 @@ export default async function ({ page, shot, log }) {
 
   // --- D moves right -------------------------------------------------------
   let before = await settle()
-  await hold('d', 900)
+  await hold('d', 0.9)
   let after = await body()
   log(`D: x ${before.x.toFixed(1)} -> ${after.x.toFixed(1)}`)
   if (!(after.x > before.x + 20)) throw new Error(`holding D did not move the player right`)
@@ -40,7 +63,7 @@ export default async function ({ page, shot, log }) {
 
   // --- A moves left --------------------------------------------------------
   before = await body()
-  await hold('a', 900)
+  await hold('a', 0.9)
   after = await body()
   log(`A: x ${before.x.toFixed(1)} -> ${after.x.toFixed(1)}`)
   if (!(after.x < before.x - 20)) throw new Error(`holding A did not move the player left`)
@@ -49,7 +72,7 @@ export default async function ({ page, shot, log }) {
   // --- Space jumps: leaves the ground, then lands ---------------------------
   before = await settle()
   await page.keyboard.down(' ')
-  await page.waitForTimeout(90)
+  await sim.elapse(0.09, 'the jump leaving the ground')
   const rising = await body()
   await page.keyboard.up(' ')
   log(`Space: grounded ${before.grounded} -> ${rising.grounded}, vy ${rising.vy.toFixed(0)}`)
@@ -57,17 +80,28 @@ export default async function ({ page, shot, log }) {
   if (!(rising.vy < 0)) throw new Error(`expected upward velocity, got vy ${rising.vy}`)
   await shot('wasd-jump')
 
-  await page.waitForTimeout(1500)
-  const landed = await body()
+  // **On the effect, and on the sandbox's clock.** As `waitForTimeout(1500)`
+  // this is the wait that was measured failing under twenty busy loops: the
+  // wall spent its 1500 ms and the fall had barely started, so "player never
+  // landed" was a true sentence about a jump that was still in the air.
+  const landed = await sim.until(
+    async () => {
+      const b = await body()
+      return b.grounded ? b : null
+    },
+    1.5,
+    'the player landing',
+  )
+  if (!landed) throw new Error('player never landed within 1.5s of simulated time')
   log(`  landed: grounded ${landed.grounded} at y ${landed.y.toFixed(1)}`)
-  if (!landed.grounded) throw new Error('player never landed')
 
   // --- Jetpack: hold Space past JETPACK_HOLD_DELAY, then W ------------------
   before = await settle()
   await page.keyboard.down(' ')
-  await page.waitForTimeout(400) // past the 0.18 s hold delay
+  // Past `JETPACK_HOLD_DELAY` — 0.18 s, and the simulation is what counts it.
+  await sim.elapse(0.4, 'the jetpack hold delay')
   await page.keyboard.down('w')
-  await page.waitForTimeout(700)
+  await sim.elapse(0.7, 'the climb')
   const flying = await body()
   await page.keyboard.up('w')
   await page.keyboard.up(' ')
@@ -85,9 +119,9 @@ export default async function ({ page, shot, log }) {
   // proves nothing. The player has to actually be in the air.
   await settle()
   await page.keyboard.down(' ')
-  await page.waitForTimeout(300)
+  await sim.elapse(0.3, 'the jetpack hold delay, again')
   await page.keyboard.down('w')
-  await page.waitForTimeout(600)
+  await sim.elapse(0.6, 'the climb before testing S')
   await page.keyboard.up('w')
   const beforeS = await body()
   if (beforeS.grounded) throw new Error('expected to be airborne before testing S')
@@ -98,13 +132,13 @@ export default async function ({ page, shot, log }) {
   // threshold of 5 — a gate decided by a rounding error. 800 ms and 30 px is the
   // same property with the noise outside it.
   await page.keyboard.down('s')
-  await page.waitForTimeout(800)
+  await sim.elapse(0.8, 'the descent under S')
   const descended = await body()
   await page.keyboard.up('s')
   await page.keyboard.up(' ')
   const fell = descended.y - beforeS.y
   log(`S: airborne y ${beforeS.y.toFixed(1)} -> ${descended.y.toFixed(1)} (${fell.toFixed(1)} px)`)
-  if (!(fell > 30)) throw new Error(`S descended only ${fell.toFixed(1)} px in 800 ms`)
+  if (!(fell > 30)) throw new Error(`S descended only ${fell.toFixed(1)} px in 0.8s of simulated time`)
 
   // --- Aim tracks the mouse in WORLD space, after the camera has scrolled ---
   //

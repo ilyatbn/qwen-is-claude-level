@@ -195,9 +195,47 @@ if (!white) {
   // scheduler's first roll is EFFECT_INTERVAL_MIN..MAX (30-45 s).
   let sawWarn = null
   let sawBanner = null
-  const deadline = Date.now() + 70_000
-  while (Date.now() < deadline && (!sawWarn || !sawBanner)) {
+  // **70 seconds of the SERVER's round, not of the wall** (T21.23). Both things
+  // waited for here are scheduled in `round_time`: the timer crosses 60 s with
+  // ~30 s of round gone, and the scheduler's first roll is
+  // `EFFECT_INTERVAL_MIN..MAX`, 30-45 s of round. Written as
+  // `Date.now() + 70_000` the headroom was not thin, it was **negative** —
+  // T21.22b measured a gap in which the server advanced 400 ms per 1113 ms of
+  // wall, and 70 s of wall at that rate is 25 s of round, under the 30 s floor of
+  // the thing being waited for. The failure that produces is "no effect was
+  // announced in 70 s ... so this is a real failure", which is a sentence about
+  // the server written by a clock that never asked it anything.
+  //
+  // **And a budget in a stopped clock never expires**, so the guard watches for
+  // the clock standing *still* rather than for the loop being slow — those are
+  // different conditions and only one is a bug. The round clock moves every
+  // snapshot, so not moving across 60 polls (~15 s of the 250 ms sleep below) is
+  // a round that has stopped ticking and nothing else. `harness.mjs` has the same
+  // guard as `serverElapsed`; this loop has a body of its own to run between
+  // polls, so it carries the clock inline rather than wrapping it.
+  const BUDGET_S = 70
+  const STALL_POLLS = 60
+  const t0 = (await dbg()).serverRoundTime
+  if (typeof t0 !== 'number') {
+    throw new Error('debug() exposes no serverRoundTime — cannot wait on the round clock')
+  }
+  let lastRound = t0
+  let stalled = 0
+  let elapsed = 0
+  while (elapsed < BUDGET_S && (!sawWarn || !sawBanner)) {
     const d = await dbg()
+    elapsed = d.serverRoundTime - t0
+    if (d.serverRoundTime === lastRound) stalled += 1
+    else {
+      stalled = 0
+      lastRound = d.serverRoundTime
+    }
+    if (stalled >= STALL_POLLS) {
+      throw new Error(
+        `the round clock has not moved for ${stalled} polls — stuck at ` +
+          `${d.serverRoundTime.toFixed(1)}s, ${elapsed.toFixed(1)}s into a ${BUDGET_S}s budget`,
+      )
+    }
     if (!sawWarn && d.hudTimer.warn) {
       // The rect **as it is now**: the element is right-anchored and its width
       // follows its text, so the before-frame rect is not this rect. That is why
@@ -266,7 +304,8 @@ if (!white) {
 
   if (!sawBanner) {
     fail(
-      'no effect was announced in 70 s, so the banner assertion did not run — ' +
+      `no effect was announced in ${BUDGET_S}s of ROUND TIME, so the banner assertion ` +
+      'did not run — ' +
         `EFFECT_INTERVAL is 30-45 s, so this is a real failure`,
     )
   } else {

@@ -36,7 +36,15 @@
  *      charging, with a control rect in terrain that must not move between them.
  */
 import { samplePatch, colourDelta, assertChanged } from './pixels.mjs'
-import { startStack, enterBattle, tally, sleep, standStill, selectWeapon } from './harness.mjs'
+import {
+  startStack,
+  enterBattle,
+  tally,
+  sleep,
+  standStill,
+  selectWeapon,
+  serverElapsed,
+} from './harness.mjs'
 
 const PORT = 3131
 const { fail, ok, finish } = tally('teleport')
@@ -208,7 +216,12 @@ const home = afterRespawn?.padPositions?.find((p) => p.id === afterRespawn.onPad
 if (home) {
   const before = (await dbg()).player
   await standStill(page)
-  await sleep(k.TELEPORT_CHARGE * 2500)
+  // **The server's clock, not the wall's** (T21.23). A pad charges in
+  // `round_time`, so 2.5x of `TELEPORT_CHARGE` in wall milliseconds is 2.5x only
+  // on an idle box; T21.22b measured a gap where the wall ran three times the
+  // server. This assertion is an *absence* — nobody teleported — and an absence
+  // is exactly what a wait that ended early reports, silently and forever.
+  await serverElapsed(page, k.TELEPORT_CHARGE * 2.5, 'an unarmed pad staying unarmed')
   const after = await dbg()
   const moved = Math.hypot(after.player.x - before.x, after.player.y - before.y)
   if (moved > k.PAD_W) {
