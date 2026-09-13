@@ -72,6 +72,12 @@ const stack = await startStack({
     ROUND_SECONDS: '120',
     BOT_COUNT: '0',
     DEV_LOADOUT: '1',
+    // **No weather (T19.30).** This check is about the self-kill wording, and the
+    // weather schedule is a second killer racing the rocket: a gate run read
+    // `Killed by weather` once in five. `WEATHER=off` removes the competitor
+    // rather than asserting "either death" — a disjunction would stop this check
+    // noticing a self-kill that silently stopped being attributed.
+    WEATHER: 'off',
     // 20 health, so ONE clean rocket kills — exactly as `world_step`'s unit test
     // arranges 20 before firing once. The death is still entirely real: fired,
     // resolved by the server, attributed to the player. Only the starting health
@@ -81,7 +87,7 @@ const stack = await startStack({
     //
     // It was 40 (two rockets) until §C20 made standing still a precondition of
     // firing. Stopping between shots pushed the kill past 50 s, and the weather
-    // schedule starts at EFFECT_INTERVAL_MIN (30 s) with no way to turn it off —
+    // schedule starts at EFFECT_INTERVAL_MIN (30 s) — `WEATHER=off` above now removes it —
     // so the round killed the player before the rockets did and this check
     // reported `cause "Killed by weather"`, which reads as an attribution bug
     // rather than a slow fixture. One rocket lands inside the first 30 s.
@@ -239,7 +245,7 @@ const myDeaths = (d) => (d.observed?.deaths ?? []).filter((x) => x.victim === d.
 //   ... plus requiring 3 blast radii of rock    4 of 8
 //
 // Both additions spend the same clock the weather schedule is racing — it starts
-// at `EFFECT_INTERVAL_MIN` (30 s) and cannot be turned off from the server env —
+// at `EFFECT_INTERVAL_MIN` (30 s); this check now runs with `WEATHER=off` (T19.30) —
 // and the depth precondition additionally rejects maps where the player legitimately
 // stands on the 16 px `FLOOR_CRUST`, on two of which the self-kill then worked
 // perfectly. The residual failures are honest and named; see the journal.
