@@ -45,11 +45,18 @@ export function hasWebGL(scene: Phaser.Scene): boolean {
 }
 
 /**
- * Value-noise fbm, shared by every effect that wants drifting volume.
+ * Value noise and fbm, shared by every effect that wants drifting volume.
  *
  * One copy, for the reason `noise-math.ts` is one copy on the CPU side: two
  * noise functions drift apart and then two effects that should feel like the
  * same weather do not.
+ *
+ * **Two octave counts, because the cost is per pixel and it adds up fast.**
+ * `fbm5` is the detailed one; `fbm3` is for fields whose detail cannot be seen
+ * anyway — inside the wind, or a deliberately soft field. Heavy fog runs to 22
+ * noise samples for every pixel on the screen even after sharing one wind field
+ * between its three banks; spending five octaves on all of them would be paying
+ * for detail that nothing resolves.
  */
 const FBM = /* glsl */ `
 float hash12(vec2 p) {
@@ -68,30 +75,43 @@ float vnoise(vec2 p) {
     u.y);
 }
 
-float fbm(vec2 p) {
+float fbm3(vec2 p) {
   float v = 0.0;
   float a = 0.5;
-  for (int i = 0; i < 5; i++) {
-    v += a * vnoise(p);
-    p *= 2.02;
-    a *= 0.5;
-  }
+  for (int i = 0; i < 3; i++) { v += a * vnoise(p); p *= 2.02; a *= 0.5; }
+  return v;
+}
+
+float fbm5(vec2 p) {
+  float v = 0.0;
+  float a = 0.5;
+  for (int i = 0; i < 5; i++) { v += a * vnoise(p); p *= 2.02; a *= 0.5; }
   return v;
 }
 `
 
 /**
- * Heavy fog (§F9), as drifting volume rather than a flat wash.
+ * Heavy fog (§F9), as living volume rather than a flat wash.
+ *
+ * ## What carries the look, and what it is allowed to cost
+ *
+ * **Thickness and shade are separate fields, and only one of them is expensive
+ * in fairness terms.** How opaque a patch is decides what a player can see
+ * through it, so the thickness has to average out to exactly the flat veil it
+ * replaces — otherwise turning High Quality on would let you see further, and a
+ * graphics setting would become a competitive advantage. How *grey* a patch is
+ * costs nothing by that measure. So the drama lives in the shade and the motion,
+ * which are free, and the thickness stays honest.
+ *
+ * ## Why a domain warp
+ *
+ * Three noise layers at three speeds still read as three sheets of glass sliding
+ * past one another. Displacing the sample point by another noise field makes the
+ * fog *curl*, and that is the whole difference between moving and alive.
  *
  * `alpha` is the **same number the flat veil uses** — `fogVeilAlpha`, which the
  * flashlight already thins. The shader changes how that strength is painted and
- * nothing about what it means, so what a player can *see* is identical either
- * way. That is the rule this whole effort runs on: the simulation stays, the
- * drawing changes.
- *
- * Two noise fields at different scales drifting at different speeds, because one
- * field moving in one direction reads as a texture being slid across the screen
- * rather than as air.
+ * nothing about what it means.
  */
 export const FOG_FRAGMENT = /* glsl */ `
 precision mediump float;
@@ -103,30 +123,55 @@ uniform vec3 tint;
 
 ${FBM}
 
-// Noise units per second. The field spans ~3.2 units across the view, so this
-// drifts a screen-width in roughly fifteen seconds — weather, not a conveyor.
-const float DRIFT = 0.25;
+// Noise units per second for the slowest bank. The others are multiples of it,
+// so the whole field keeps one sense of wind while nothing moves in lockstep.
+const float DRIFT = 0.5;
 
-// How far density swings either side of the mean. Higher reads as torn cloud,
-// lower as the flat wash this replaces.
-//
-// Heavy fog sits at alpha 0.8, so there is only 1.25x of headroom before a patch
-// is fully opaque and the terrain behind it stops showing through at all. Thick
-// patches therefore clip, and **all the visible structure comes from the thin
-// side** — at 0.55 the fog measured *less* varied than the flat veil it
-// replaced, because clipping hid more terrain than the noise revealed.
-const float CONTRAST = 1.0;
+// How far the domain warp drags the field sideways: fog that curls rather than
+// fog that slides. See the note above.
+const float WARP = 0.55;
 
-// The pivot the density swings around: subtracted from the noise so the result is
-// centred on 1.0 rather than offset.
+// How far thickness swings either side of the mean.
 //
-// **Calibrated against the screen, not derived.** Five octaves of value noise
-// average 0.484 on paper, and using that painted a mean alpha of 0.90 where the
-// flat veil paints 0.80 — because the thick tail clips at full opacity and the
-// two noise fields are not independent. The number that matters is the one the
-// player sees, so this is set from the measured mean brightness of the fogged
-// field and the fog-shader browser check asserts the result.
-const float DENSITY_PIVOT = 0.59;
+// **Deliberately small, and the shade carries the look instead.** Heavy fog sits
+// at alpha 0.8, so a wide thickness swing clips its thick patches at fully
+// opaque — and a patch that shows no ground at all destroys contrast rather than
+// varying it. At 1.0 the shader let 3% of the ground's contrast through where
+// the flat veil lets 20%, which is a different game, not a different look.
+const float CONTRAST = 0.45;
+
+// The pivot thickness swings around, so the result is centred on 1.0.
+//
+// Near the mean of the banks' weighted sum. It mattered more when CONTRAST was
+// wide and the tail clipped; with a narrow swing the density stays close to 1.0
+// on its own. The fog-shader browser check asserts the result rather than
+// trusting this number — it measures what fraction of the ground's contrast
+// survives, which is concealment itself.
+const float DENSITY_PIVOT = 0.50;
+
+// How far the grey shifts between the pale banks and the dark ones. A multiplier
+// centred on 1.0, so the *average* shade is still the colour the constant names
+// and only the spread is new.
+//
+// **This is where the drama is allowed to live.** How grey a patch is does not
+// change what a player can see through it, so unlike CONTRAST above this can be
+// pushed as far as it looks good. It is the free half.
+const float SHADE = 0.42;
+
+/**
+ * The wind: a slow displacement field, sampled once and shared.
+ *
+ * **One field for every bank, not one each.** Two independent warps cost six
+ * more noise samples per pixel — a fifth of the shader — and buy less than they
+ * look like they should, because two banks curling to different winds read as
+ * two effects rather than as weather. Sharing it also means the layers agree
+ * about which way the air is moving, which is what a real sky does.
+ */
+vec2 wind(vec2 p, float t) {
+  float wx = fbm3(p + vec2(t * 0.21, 0.0));
+  float wy = fbm3(p + vec2(5.2, 1.3) - vec2(0.0, t * 0.17));
+  return (vec2(wx, wy) - 0.5) * WARP;
+}
 
 void main() {
   vec2 uv = gl_FragCoord.xy / resolution.xy;
@@ -135,31 +180,51 @@ void main() {
   vec2 p = uv * vec2(3.2, 2.1);
   float t = time * DRIFT;
 
-  // Two fields, different scales, different directions. One field moving one way
-  // reads as a texture being slid across the screen rather than as air.
-  float a1 = fbm(p + vec2(t, t * 0.22));
-  float a2 = fbm(p * 1.9 - vec2(t * 0.63, t * 0.11));
-  float d = clamp(mix(a1, a2, 0.45), 0.0, 1.0);
+  // --- three banks, none of them in step ----------------------------------
+  // The far bank is large and slow, the near one small and quick. That contrast
+  // is what gives the field depth instead of one texture crossing the screen.
+  vec2 w = wind(p * 1.1, t * 0.8);
+  // The same wind bends the near bank harder than the far one, which is what
+  // separates them in depth without a second field.
+  float far = fbm5(p * 0.7 + w * 0.7 + vec2(t * 0.10, t * 0.025));
+  float mid = fbm5(p * 1.6 + w * 1.5 - vec2(t * 0.22, t * 0.06));
+  float near = fbm3(p * 3.4 + w * 2.2 + vec2(-t * 0.38, t * 0.10));
 
-  // **Centred on 1.0, not scaled up from 0.**
-  //
-  // Heavy fog is concealment before it is decoration (§F9) — it is what stops a
-  // player being seen. So the shader must average out to the *same* thickness as
-  // the flat veil it replaces, or High Quality would hand whoever enables it a
-  // clearer view of the battlefield and become a competitive advantage rather
-  // than a visual preference. The variation is redistribution: thicker here,
-  // thinner there, the same on average.
+  float d = clamp(far * 0.45 + mid * 0.35 + near * 0.20, 0.0, 1.0);
+
+  // --- thickness: the half that must stay honest ---------------------------
   float density = 1.0 + CONTRAST * (d - DENSITY_PIVOT);
 
-  // Fog pools low. Also mean-preserving, for the reason above — 1.12 and 0.88
-  // average to 1.0 across the screen. uv.y is 0 at the bottom in GL.
+  // Fog pools low. Mean-preserving for the same reason — 1.12 and 0.88 average
+  // to 1.0 across the screen. uv.y is 0 at the bottom in GL.
   density *= mix(1.12, 0.88, uv.y);
 
   float a = clamp(alpha * density, 0.0, 1.0);
 
+  // --- shade: the half that is free ----------------------------------------
+  // A fourth field, slower and at its own scale, decides how pale the fog is
+  // rather than how thick. Kept independent on purpose: if shade tracked
+  // thickness, every pale patch would also be a thin one and the fog would read
+  // as one property drawn twice.
+  float s = fbm3(p * 1.3 + vec2(t * 0.06, -t * 0.04));
+  // Pivoted at 0.55 rather than 0.5, so the field leans to its darker greys.
+  // Fog reads as weather when it is grey and as glare when it is white, and the
+  // pale banks are the ones that clip — without the lean they take over.
+  float shade = 1.0 + SHADE * (smoothstep(0.25, 0.75, s) - 0.55) * 2.0;
+
+  // A little cool in the pale banks and warm in the dark ones, which is what
+  // stops grey-on-grey reading as television static. The two average to about
+  // 1.0, so the mean colour is still the constant's.
+  // Kept gentle. Strong enough to stop grey-on-grey reading as television
+  // static, weak enough that the fog is still grey rather than blue.
+  vec3 temper = mix(vec3(1.05, 1.00, 0.96), vec3(0.96, 1.00, 1.06),
+                    smoothstep(0.3, 0.7, s));
+
+  vec3 col = tint * shade * temper;
+
   // Premultiplied: Phaser blends with a premultiplied-alpha pipeline, and
   // straight colour here comes out washed and too bright.
-  gl_FragColor = vec4(tint * a, a);
+  gl_FragColor = vec4(col * a, a);
 }
 `
 

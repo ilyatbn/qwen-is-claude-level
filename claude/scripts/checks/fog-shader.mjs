@@ -7,74 +7,88 @@
  * toggle is off, because a shader path that quietly becomes the only path is a
  * regression for every machine that cannot run it.
  *
- * ## The instruments, which took four attempts to get right
+ * ## Measuring concealment when the fog has more than one colour
  *
- * Each of these was a wrong answer this check actually gave:
+ * Heavy fog is what stops a player being seen (§F9). So the one thing High
+ * Quality may not do is let you see further — a graphics setting that also wins
+ * fights is not a preference. That makes "does it conceal the same amount" the
+ * load-bearing claim here, and it is the hard one to measure. Four attempts:
  *
- * - **Averaging a wide patch cannot see motion.** A drifting noise field has a
- *   nearly constant mean over 220×150, because what leaves one side arrives at
- *   the other. The first version reported the shader drifting by 0.5 — the same
- *   as a static rectangle. Motion needs a *small* patch, where a local value
- *   swings. Hence `spot`.
- * - **"The mean changed" contradicts claim 4.** Depth cannot be a shift in mean
- *   brightness, because the whole point of claim 4 is that the mean must *not*
- *   move. Depth is structure, not brightness.
- * - **Variation within one frame is mostly the terrain, not the fog.** The flat
- *   veil already varies by ~9 across the field, because it is 80 % opaque and
- *   the ground shows through. Comparing that number to the shader's own is
- *   comparing two mixtures.
+ * - **Mean brightness** moves when the fog's *colour* changes, not only when its
+ *   opacity does. The fog now has pale banks and dark ones, so this reads a
+ *   change that conceals nothing.
+ * - **Subtracting the un-fogged frame** does not cancel the ground: a veil
+ *   composites as `a·fog + (1-a)·ground`, so even at constant `a` the shift is
+ *   `a·(fog − ground)` and still varies wherever the ground does.
+ * - **Inverting for `a` per spot** worked while the fog was one colour, and
+ *   broke the moment it was not — it returned "thicknesses" of 1.43, which no
+ *   alpha can be. It was reading pale as thick.
+ * - **Regressing across the spots** gets the idea right and the statistics
+ *   wrong. `P = (1-a)·T + a·F`, so a line fitted through fogged against un-fogged
+ *   brightness has slope `1-a` — the fraction of ground contrast surviving,
+ *   which *is* concealment. But once the fog has real structure, `F` varies from
+ *   spot to spot far more than the ground does, and eight points cannot separate
+ *   them: it returned a slope of **−0.023**, which no fog can have.
+ * - **Regressing *inside* each patch** is the one that holds. Across 24 px the
+ *   fog is essentially one colour and one thickness, so `F` is constant and the
+ *   only thing varying is the ground. The fit is over ~576 pixels instead of 8
+ *   points, and the fog's between-place variation — the thing that broke the
+ *   previous attempt — cancels completely. Averaging the per-patch slopes gives
+ *   mean concealment.
  *
- * - **Subtracting the un-fogged frame does not cancel the terrain either.** A
- *   veil composites as `a·fog + (1-a)·ground`, so even at a *constant* `a` the
- *   shift is `a·(fog − ground)` and still varies wherever the ground does. The
- *   flat veil's spots spread by 14 that way, and its alpha is one number.
+ * It self-validates: the flat veil's alpha is known, so the slope must come back
+ * as `1 − fogVeilAlpha`. If it does not, the instrument is broken and nothing it
+ * says about the shader can be believed.
  *
- * So depth is measured by **solving for the thickness at each spot**. With the
- * fogged and un-fogged brightness of the same pixels, and the fog's own colour
- * from `constants()`, `a = (fogged − ground) / (fog − ground)` inverts the
- * compositing exactly. Terrain cancels because it appears on both sides of the
- * division. What comes out is the alpha the shader actually painted there — so
- * the flat veil answers one number everywhere, and a cloudy fog does not.
+ * ## The other instruments
  *
- * ## The claims
- *
- *  1. with High Quality **off**, the fog is the flat veil it always was;
- *  2. with it **on**, the fog is *cloudy* — its thickness varies from place to
- *     place, where the flat veil's does not (that is the control);
- *  3. it **moves**, where the flat veil does not;
- *  4. it conceals **the same amount**. Heavy fog is what stops a player being
- *     seen (§F9), so if the shader averaged out thinner, High Quality would be a
- *     competitive advantage rather than a visual preference. Asserted on
- *     `fogVeilAlpha`, the number the simulation uses, *and* on the mean
- *     brightness of the screen, which is what a player experiences;
- *  5. turning it off restores the original picture.
+ * - **Motion needs small patches.** A drifting noise field has a nearly constant
+ *   mean over a wide one, because what leaves one side arrives at the other. An
+ *   early version reported a working shader drifting by 0.5 — the same as a
+ *   static rectangle.
+ * - **"Varied" comes out of the same per-patch fit, as its intercept.** The
+ *   obvious version — how much the painted result differs from place to place —
+ *   reports **87.9 for the flat veil**, because it is reading the ground rather
+ *   than the fog. But `P = (1-a)·T + a·F` means the intercept is `a·F`: the fog's
+ *   own contribution at that patch, ground removed. One fillRect has the same
+ *   `a` and the same `F` everywhere, so its intercepts barely move; thickness
+ *   and shade both land here, which is right, because a player sees both.
  */
-import { samplePatch, colourDelta } from './pixels.mjs'
-
-/** Mean brightness of the two modes may differ by no more than this (0-255). */
-const CONCEALMENT_TOLERANCE = 12
+import { samplePatch, patchLuminance, colourDelta } from './pixels.mjs'
 
 /**
- * Painted thickness must vary by at least this much across the field (alpha).
+ * How far the recovered slope may sit from `1 − fogVeilAlpha`.
  *
- * The shader swings density either side of 1.0 by `CONTRAST`, against a base of
- * 0.8 — so a working one paints somewhere near 0.5 in its thin patches and 1.0
- * in its thick ones. A floor of 0.12 is comfortably under that and comfortably
- * over the flat veil, which paints one number everywhere.
+ * This is the instrument's own accuracy, measured against a veil whose alpha is
+ * known. If a change here needs this widened, the measurement got worse.
  */
-const CLOUDINESS = 0.12
+const SLOPE_ACCURACY = 0.06
 
-/** The flat veil's own spread, which must be ~0 or claim 2 proves nothing. */
-const FLAT_SPREAD_CEILING = 0.04
+/** How far the shader's concealment may sit from the flat veil's. */
+const CONCEALMENT_TOLERANCE = 0.1
 
 /**
- * A spot whose ground is this close to the fog's own colour is dropped.
+ * How much more structure the shader must have than the flat veil.
  *
- * `a = (fogged − ground) / (fog − ground)` divides by that difference, so where
- * the ground already looks like fog the answer is noise over noise. Better to
- * measure four spots honestly than five with one of them meaningless.
+ * **The flat veil's number is the instrument's noise floor, not a rival.** One
+ * `fillRect` has exactly one alpha and one colour, so its true structure is
+ * zero; whatever this measures for it — around 9 — is the per-patch fit's own
+ * error. So this is a signal-to-noise bar rather than a comparison, and 4x noise
+ * is a conventional place to put one.
  */
-const CONTRAST_FLOOR = 20
+const VARIETY_RATIO = 4
+
+/** Below this the shader is too expensive to ship even behind the toggle. */
+const FPS_FLOOR = 15
+
+/**
+ * A patch whose un-fogged pixels vary less than this is skipped.
+ *
+ * Concealment is measured as how much ground contrast the fog destroys, so a
+ * patch of open sky — which has no contrast to destroy — cannot answer the
+ * question, and dividing by its variance would return noise.
+ */
+const GROUND_CONTRAST_FLOOR = 4
 
 export default async function ({ page, shot, log }) {
   await page.evaluate(() => window.__game.regenerate('4242', 'medium'))
@@ -91,22 +105,23 @@ export default async function ({ page, shot, log }) {
     const r = document.querySelector('canvas').getBoundingClientRect()
     return { x: r.left, y: r.top, w: r.width, h: r.height }
   })
-  // Wide, across the middle of the view: fog is full-screen, so anywhere works,
-  // but the middle avoids the panel and the HUD.
   const field = {
     x: Math.round(frame.x + frame.w * 0.42),
     y: Math.round(frame.y + frame.h * 0.3),
     w: 220,
     h: 150,
   }
-  // Small, spread across it. Small because a wide patch averages the fog flat
-  // again; spread because claim 2 is about how thickness differs *by place*.
+  // Eight, because the concealment claim is a line fitted through them and five
+  // points make a noisy fit. Small, because a wide patch averages the fog flat.
   const spots = [
-    [0.1, 0.15],
-    [0.6, 0.2],
-    [0.25, 0.55],
-    [0.8, 0.6],
-    [0.45, 0.85],
+    [0.08, 0.12],
+    [0.55, 0.18],
+    [0.82, 0.32],
+    [0.2, 0.45],
+    [0.65, 0.52],
+    [0.35, 0.68],
+    [0.88, 0.75],
+    [0.12, 0.88],
   ].map(([fx, fy]) => ({
     x: Math.round(field.x + field.w * fx),
     y: Math.round(field.y + field.h * fy),
@@ -115,38 +130,79 @@ export default async function ({ page, shot, log }) {
   }))
   const sampleSpots = async () => Promise.all(spots.map((s) => samplePatch(page, s)))
   const spread = (xs) => Math.max(...xs) - Math.min(...xs)
-
-  // The fog's own colour, from the constant the renderer paints with — not a
-  // literal here, which would pass against a drifted implementation.
-  const fogHex = await page.evaluate(() => window.__game.constants().FOG_SCREEN_COLOUR)
-  if (typeof fogHex !== 'number') {
-    throw new Error(
-      `FOG_SCREEN_COLOUR came back as ${fogHex} — an assertion against a constant that is not ` +
-        `exposed cannot fail, so this check would be hollow`,
-    )
-  }
-  const fogLum =
-    0.2126 * ((fogHex >> 16) & 0xff) + 0.7152 * ((fogHex >> 8) & 0xff) + 0.0722 * (fogHex & 0xff)
+  const fps = () => page.evaluate(() => window.__game.debug().fps ?? 0)
 
   /**
-   * Invert the alpha compositing to recover the thickness painted at each spot.
+   * The fraction of ground contrast surviving the fog, fitted **within** one
+   * patch — see the header for why not across them.
    *
-   * `fogged = a·fog + (1-a)·ground`, so `a = (fogged − ground) / (fog − ground)`.
-   * The ground cancels, which is the entire reason for doing it this way.
+   * Returns null where the ground inside the patch is too flat to fit a line
+   * through: open sky has no contrast to attenuate, so it can say nothing about
+   * concealment, and a slope divided out of near-zero variance is noise.
    */
-  const paintedAlpha = (fogged, ground) =>
-    fogged
-      .map((f, i) => ({ denom: fogLum - ground[i].lum, num: f.lum - ground[i].lum }))
-      .filter((d) => Math.abs(d.denom) >= CONTRAST_FLOOR)
-      .map((d) => d.num / d.denom)
+  const patchSlope = (fogPix, groundPix) => {
+    const n = groundPix.length
+    let mt = 0
+    let mp = 0
+    for (let i = 0; i < n; i++) {
+      mt += groundPix[i]
+      mp += fogPix[i]
+    }
+    mt /= n
+    mp /= n
+    let cov = 0
+    let varT = 0
+    for (let i = 0; i < n; i++) {
+      const dt = groundPix[i] - mt
+      cov += dt * (fogPix[i] - mp)
+      varT += dt * dt
+    }
+    return varT / n < GROUND_CONTRAST_FLOOR ? null : cov / varT
+  }
+
+  /**
+   * Fit every patch and report both things the fit knows.
+   *
+   * `surviving` is the mean slope: how much ground contrast lives through the
+   * fog, which is concealment. `structure` is the spread of the intercepts —
+   * each one the fog's own contribution at that patch with the ground taken
+   * out, so it moves when the fog is thicker *or* paler in one place than
+   * another, and barely moves for a single flat rectangle.
+   */
+  const fitPatches = async (label) => {
+    const slopes = []
+    const intercepts = []
+    for (let i = 0; i < spots.length; i++) {
+      const fogPix = await patchLuminance(page, spots[i])
+      const sl = patchSlope(fogPix, clearPixels[i])
+      if (sl === null) continue
+      const n = fogPix.length
+      const mt = clearPixels[i].reduce((a, v) => a + v, 0) / n
+      const mp = fogPix.reduce((a, v) => a + v, 0) / n
+      slopes.push(sl)
+      intercepts.push(mp - sl * mt)
+    }
+    if (slopes.length < 3) {
+      throw new Error(
+        `only ${slopes.length} of ${spots.length} patches had enough ground contrast to measure ` +
+          `${label} — too few to claim anything about concealment`,
+      )
+    }
+    return {
+      surviving: slopes.reduce((a, b) => a + b, 0) / slopes.length,
+      structure: spread(intercepts),
+    }
+  }
 
   const start = await page.evaluate(() => window.__game.setHighQuality(false))
   log(`starting with High Quality ${start.setting ? 'on' : 'off'}`)
 
   const clear = await samplePatch(page, field)
   const clearSpots = await sampleSpots()
+  const clearPixels = []
+  for (const sp of spots) clearPixels.push(await patchLuminance(page, sp))
 
-  // --- 1. the flat veil, which is what the toggle-off path must keep ---------
+  // --- 1. the flat veil, which the toggle-off path must keep ---------------
   await page.evaluate(() => window.__game.setFog(true))
   await page.waitForTimeout(700)
   const flat = await samplePatch(page, field)
@@ -154,41 +210,39 @@ export default async function ({ page, shot, log }) {
   await page.waitForTimeout(600)
   const flatSpotsLater = await sampleSpots()
   const flatAlpha = await page.evaluate(() => window.__game.debug().fogAlpha ?? 0)
+  const flatFps = await fps()
   await shot('fog-flat')
 
   if (colourDelta(clear, flat) < 8) {
     throw new Error('the flat veil did not darken the field, so nothing here is measuring fog')
   }
 
-  // The control for claim 2: the flat veil paints one thickness everywhere,
-  // because it is a single fillRect. If this spread is not ~0, the inversion is
-  // not cancelling the terrain and claim 2 would be measuring the ground.
-  const flatPainted = paintedAlpha(flatSpots, clearSpots)
-  if (flatPainted.length < 3) {
-    throw new Error(
-      `only ${flatPainted.length} of ${spots.length} spots had ground distinguishable from the ` +
-        `fog colour — too few to claim anything about how thickness varies`,
-    )
-  }
-  const flatSpread = spread(flatPainted)
+  // **The instrument validates itself here.** The flat veil's alpha is known, so
+  // the slope must come back as 1 - it. Everything below rests on this line.
+  const flatFit = await fitPatches('the flat veil')
+  const flatSurviving = flatFit.surviving
+  const expected = 1 - flatAlpha
   log(
-    `flat veil: alpha ${flatAlpha.toFixed(3)}, brightness ${flat.lum.toFixed(1)}, ` +
-      `paints ${flatPainted.map((a) => a.toFixed(2)).join('/')} — spread ${flatSpread.toFixed(3)}`,
+    `flat veil: alpha ${flatAlpha.toFixed(3)}, ground contrast surviving ` +
+      `${flatSurviving.toFixed(3)} (expected ${expected.toFixed(3)}), ${flatFps.toFixed(0)} fps`,
   )
-  if (flatSpread > FLAT_SPREAD_CEILING) {
+  if (Math.abs(flatSurviving - expected) > SLOPE_ACCURACY) {
     throw new Error(
-      `the flat veil paints thicknesses spread by ${flatSpread.toFixed(3)} across the field, ` +
-        `but it is a single fillRect at one alpha — so the inversion is not cancelling the ` +
-        `terrain and claim 2 below would be measuring the ground instead of the fog`,
+      `measured ${flatSurviving.toFixed(3)} of the ground's contrast surviving a veil whose ` +
+        `alpha is ${flatAlpha.toFixed(3)}, so it should be ${expected.toFixed(3)}. The ` +
+        `instrument is wrong, and nothing it says about the shader can be believed`,
     )
   }
 
-  // The control for claim 3: the flat veil does not move.
+  // The control the shader's structure is read against: one alpha and one colour
+  // everywhere means the intercepts barely move.
+  const flatVariety = flatFit.structure
   const flatDrift = spread(flatSpots.map((s, i) => s.lum - flatSpotsLater[i].lum))
   if (flatDrift > 2) {
     throw new Error(
       `the flat veil moved by ${flatDrift.toFixed(2)} between frames — it is a static fillRect, ` +
-        `so something else in the sampled spots is animating and claim 3 would measure that`,
+        `so something else in the sampled spots is animating and the drift claim would measure ` +
+        `that instead`,
     )
   }
 
@@ -207,21 +261,21 @@ export default async function ({ page, shot, log }) {
   await page.waitForTimeout(600)
   const shadedSpotsLater = await sampleSpots()
   const shaderAlpha = await page.evaluate(() => window.__game.debug().fogAlpha ?? 0)
+  const shaderFps = await fps()
   await shot('fog-shader')
 
-  // 2. it is cloudy: it paints different thicknesses in different places.
-  const shaderPainted = paintedAlpha(shadedSpots, clearSpots)
-  const shaderSpread = spread(shaderPainted)
+  // 2. it is varied: structure the ground does not account for.
+  const shaderFit = await fitPatches('the shader')
+  const shaderVariety = shaderFit.structure
   log(
-    `shader fog: brightness ${shaded.lum.toFixed(1)}, paints ` +
-      `${shaderPainted.map((a) => a.toFixed(2)).join('/')} — spread ${shaderSpread.toFixed(3)} ` +
-      `(flat ${flatSpread.toFixed(3)})`,
+    `shader fog: structure of its own ${shaderVariety.toFixed(1)} ` +
+      `(flat veil ${flatVariety.toFixed(1)}), ${shaderFps.toFixed(0)} fps`,
   )
-  if (shaderSpread < CLOUDINESS) {
+  if (shaderVariety < flatVariety * VARIETY_RATIO) {
     throw new Error(
-      `the shader paints the same thickness everywhere — spread ${shaderSpread.toFixed(3)} ` +
-        `against a floor of ${CLOUDINESS}. That is a flat wash with extra steps, which is the ` +
-        `thing it was built to stop being`,
+      `the shader fog has ${shaderVariety.toFixed(1)} of structure the ground does not explain, ` +
+        `where the flat veil has ${flatVariety.toFixed(1)} — under ${VARIETY_RATIO}x, so it is ` +
+        `not visibly more interesting than the rectangle it replaces`,
     )
   }
 
@@ -235,28 +289,38 @@ export default async function ({ page, shot, log }) {
     )
   }
 
-  // 4. it conceals the same amount, in both the number and the picture.
+  // 4. it conceals the same amount — the claim that keeps this fair.
   if (Math.abs(shaderAlpha - flatAlpha) > 0.001) {
     throw new Error(
       `fog strength changed with the toggle: ${flatAlpha} flat vs ${shaderAlpha} shader. ` +
         `Only the painting may differ — this number feeds how far a player can see`,
     )
   }
-  const concealment = Math.abs(shaded.lum - flat.lum)
-  if (concealment > CONCEALMENT_TOLERANCE) {
+  const shaderSurviving = shaderFit.surviving
+  const gap = Math.abs(shaderSurviving - flatSurviving)
+  log(
+    `conceals the same: ${shaderSurviving.toFixed(3)} of the ground's contrast survives the ` +
+      `shader against ${flatSurviving.toFixed(3)} for the veil`,
+  )
+  if (gap > CONCEALMENT_TOLERANCE) {
     throw new Error(
-      `the shader fog conceals a different amount: mean brightness ${shaded.lum.toFixed(1)} ` +
-        `versus ${flat.lum.toFixed(1)} flat, a gap of ${concealment.toFixed(1)}. Heavy fog is ` +
-        `what stops a player being seen, so a thinner High Quality is a competitive advantage, ` +
-        `not a visual preference`,
+      `the shader lets ${shaderSurviving.toFixed(3)} of the ground's contrast through where the ` +
+        `flat veil lets ${flatSurviving.toFixed(3)} — a gap of ${gap.toFixed(3)}. Heavy fog is ` +
+        `what stops a player being seen, so this would make High Quality a competitive ` +
+        `advantage rather than a visual preference`,
     )
   }
-  log(
-    `conceals the same: strength ${shaderAlpha.toFixed(3)} both ways, ` +
-      `brightness within ${concealment.toFixed(1)}`,
-  )
 
-  // --- 5. and back off, which must restore the old picture -------------------
+  // 5. and it has to be affordable, even behind the toggle.
+  if (shaderFps < FPS_FLOOR) {
+    throw new Error(
+      `the shader fog runs at ${shaderFps.toFixed(0)} fps against ${flatFps.toFixed(0)} for the ` +
+        `flat veil, under a floor of ${FPS_FLOOR}. High Quality asks for a newer graphics card, ` +
+        `not for a slideshow`,
+    )
+  }
+
+  // --- 6. and back off, which must restore the old picture -------------------
   const off = await page.evaluate(() => window.__game.setHighQuality(false))
   if (off.shaderFog) throw new Error('the shader fog is still drawing with the toggle off')
   await page.waitForTimeout(500)

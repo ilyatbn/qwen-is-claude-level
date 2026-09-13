@@ -105,6 +105,33 @@ export async function samplePatch(page, { x, y, w, h }) {
   }, b64)
 }
 
+/**
+ * Every pixel's luminance in a region, as a flat array.
+ *
+ * For measurements that need the pixels rather than a digest of them — fitting a
+ * line through a patch, say. `samplePatch` answers "what does this region look
+ * like on average"; this answers "what is in it".
+ */
+export async function patchLuminance(page, { x, y, w, h }) {
+  const b64 = (await page.screenshot({ clip: { x, y, width: w, height: h } })).toString('base64')
+  return page.evaluate(async (src) => {
+    const img = new Image()
+    img.src = `data:image/png;base64,${src}`
+    await img.decode()
+    const cv = document.createElement('canvas')
+    cv.width = img.width
+    cv.height = img.height
+    const ctx = cv.getContext('2d')
+    ctx.drawImage(img, 0, 0)
+    const d = ctx.getImageData(0, 0, img.width, img.height).data
+    const out = new Array(d.length / 4)
+    for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+      out[j] = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]
+    }
+    return out
+  }, b64)
+}
+
 /** Euclidean distance between two samples' mean colours. */
 export function colourDelta(a, b) {
   return Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b)

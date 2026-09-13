@@ -6096,3 +6096,20 @@ server 400 ms, refusing the next shot — 3 reds in 30. The gap now waits for th
 *accepted*, anchors there, then waits the cooldown in the server's clock.
 **Staged control, identical setup, one variable**: no hop -> mounted, 13 spawns (1+4+4+4); hop ->
 `platformUnderfoot` still 0, **not mounted**, 4 spawns. Denial, not avoidance. 12/12 green.
+
+## T21.17b — fog, reworked to feel alive
+Coordinator: *"More layers. Different shades of grey. Animated. Moving. Alive."* Three banks at
+different scales and speeds, all bent by **one shared wind** (a domain warp) — sharing it costs six
+fewer noise samples per pixel than one warp each, and two banks curling to different winds read as
+two effects rather than as weather. A fourth, slower field sets the **shade** independently of the
+thickness, so a pale bank is not necessarily a thin one.
+**The split that made it possible: shade is free, thickness is not.** How grey a patch is does not
+change what a player sees through it; how opaque it is decides the fight. So CONTRAST came *down*
+to 0.45 and the drama went into SHADE and the wind. At CONTRAST 1.0 the thick patches clipped to
+fully opaque and only 3% of the ground's contrast survived against the veil's 20% — a different
+game, not a different look.
+Measuring that took four instruments. Brightness, subtraction and inverting for alpha all lied once
+the fog had more than one colour — the third returned "thicknesses" of 1.43. What holds is fitting
+a line **inside** each patch, where the fog is one shade and only the ground varies; the per-patch
+intercept then gives the fog's own structure for free. It self-validates at 0.175 against a veil
+whose alpha is known to be 0.800. Gate green.
