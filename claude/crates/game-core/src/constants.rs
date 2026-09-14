@@ -1737,16 +1737,44 @@ pub const MOUNTAIN_LAYERS: usize = 2;
 /// these sit behind everything the terrain parallax already covers, and a layer
 /// that scrolled with the terrain would read as terrain.
 pub const MOUNTAIN_PARALLAX: [f32; MOUNTAIN_LAYERS] = [0.10, 0.20];
-/// Ridge height as a fraction of the viewport, far to near.
+/// Ridge height, far to near, as a fraction of `VIEWPORT_H` **in world pixels**.
 ///
 /// The near layer is taller, which is what makes the two read as distance rather
 /// than as one ridge drawn twice.
-pub const MOUNTAIN_HEIGHT_FRAC: [f32; MOUNTAIN_LAYERS] = [0.16, 0.24];
-/// Where the ridge base sits, as a fraction of the viewport height.
 ///
-/// Below the sun and moon arc's horizon (0.82) so the ridge line crosses the
-/// gradient rather than floating in the middle of it.
-pub const MOUNTAIN_BASE_FRAC: f32 = 0.86;
+/// **T21.20 changed the basis, not the values.** This was a fraction of the
+/// camera's *visible* height, so at `CAMERA_ZOOM` 2 a ridge was half the world
+/// size these numbers read as — reported from play as "very small". Now it is
+/// `VIEWPORT_H × frac` world px (115 and 173), which is what the ridge texture was
+/// always baked at: zoom scales it like the terrain beside it, and cannot shrink it.
+pub const MOUNTAIN_HEIGHT_FRAC: [f32; MOUNTAIN_LAYERS] = [0.16, 0.24];
+/// Where the ridge base sits **in the world**, as a fraction of the map's height.
+///
+/// **T21.20: world space, not screen space.** It was 0.86 of the visible rect, so
+/// the ridge rode with the camera while the terrain stayed put — climb or jetpack
+/// and the skyline hung in mid-air ("the mountains are in the air"). A world
+/// height stays put against the ground; the ridge still parallaxes horizontally by
+/// `MOUNTAIN_PARALLAX`.
+///
+/// **Tied to `GROUND_BASE_FRAC`** — the mean line the ground profile is built
+/// around — so the ridge meets the land where the land usually is, and a change to
+/// the terrain's height moves the skyline with it rather than leaving it behind.
+pub const MOUNTAIN_BASE_FRAC: f32 = GROUND_BASE_FRAC;
+/// Where the ridge base sits on the **title screen**, as a fraction of the viewport.
+///
+/// The title has a sky and no map, so there is no world to anchor to; it keeps the
+/// screen layout the game used before T21.20 (0.86, below the sun and moon's
+/// horizon). A separate name because one constant meaning "of the map" in one scene
+/// and "of the screen" in another is a field that means two things.
+pub const MOUNTAIN_TITLE_BASE_FRAC: f32 = 0.86;
+/// The sun and moon's horizon, as a fraction of the viewport height.
+///
+/// Was an inline `0.82` in `sky.ts` (T21.20 moved it here). **Screen space on
+/// purpose**: the bodies scroll at `SKY_BODY_PARALLAX` — nearly pinned to the
+/// camera, as far things are — so their horizon is a line on the screen. The
+/// world-anchored ridge covers them where the two overlap, which reads as the sun
+/// going down behind the mountains.
+pub const SKY_HORIZON_FRAC: f32 = 0.82;
 /// How far each layer's silhouette is faded toward the sky colour, far to near.
 ///
 /// Aerial perspective: distance washes a silhouette out toward the colour of the

@@ -44,6 +44,7 @@
  */
 
 import Phaser from 'phaser'
+import { ridgeLayout, type RidgeLayout } from './parallax-math'
 import { C } from '../core'
 import { DEPTH } from './backdrop'
 import { cloudTint, mountainProfile } from './sky-math'
@@ -97,6 +98,19 @@ function ridgeTexture(scene: Phaser.Scene, layer: number, seed: number, height: 
 export class ParallaxLayer {
   private readonly scene: Phaser.Scene
   private readonly ridges: Phaser.GameObjects.TileSprite[] = []
+  /**
+   * T21.20: a solid skirt under the **near** ridge, from its base to the bottom of the
+   * screen, in the ridge's own tint — or `null` until built.
+   *
+   * World-anchored, the ridge base is a world row, and anywhere the ground dips below
+   * it — a valley, a crater, a cave mouth — the old sprite ended in a straight line
+   * with sky underneath: a mountain range cut off in mid-air, which is "floating"
+   * again by another route. Seen, not reasoned: `living-sky` carves the ground away
+   * and the first world-anchored frame showed exactly that edge. One rectangle at the
+   * near ridge's depth, so the layer set does not change; the far ridge's underside is
+   * behind it anyway. Not drawn on the title, which keeps its old picture.
+   */
+  private skirt: Phaser.GameObjects.Rectangle | null = null
   private seed = 0
   private themeId = 0
   private ridgeKeys: string[] = []
@@ -126,6 +140,8 @@ export class ParallaxLayer {
    */
   private cloudShader: Phaser.GameObjects.Shader | null = null
   private readonly unsubscribeQuality: () => void
+  /** T21.20: the map's height in world px, or 0 with no map (the title). */
+  private mapH = 0
 
   constructor(scene: Phaser.Scene, seed = 0, themeId = 0) {
     this.scene = scene
@@ -170,6 +186,14 @@ export class ParallaxLayer {
         // the near ridge at −21, exactly where the clouds are.
         .setDepth(i === c.MOUNTAIN_LAYERS - 1 ? DEPTH.parallax : DEPTH.parallaxFar + i)
       this.ridges.push(ts)
+      if (i === c.MOUNTAIN_LAYERS - 1) {
+        this.skirt = scene.add
+          .rectangle(0, 0, w, 0, 0x000000)
+          .setOrigin(0, 0)
+          .setScrollFactor(0)
+          .setDepth(ts.depth)
+          .setVisible(false)
+      }
       this.lastRidgeTint.push(-1)
     }
 
@@ -202,7 +226,8 @@ export class ParallaxLayer {
     // sees nothing, and flips back (T21.16).
     this.unsubscribeQuality = onHighQualityChange(() => this.applyQuality())
 
-    this.setSeed(seed, themeId)
+    // No map yet: the title never gets one, and a scene gives it with its seed.
+    this.setSeed(seed, themeId, 0)
     this.applyQuality()
   }
 
@@ -248,10 +273,13 @@ export class ParallaxLayer {
    * textures here and nowhere else is what keeps "a seed always looks the same"
    * true across a regenerate.
    */
-  setSeed(seed: number, themeId: number): void {
+  setSeed(seed: number, themeId: number, mapH: number): void {
     const c = C()
     this.seed = seed
     this.themeId = themeId
+    // T21.20: required, not defaulted — 0 is the title's screen layout, so a scene
+    // that forgot to pass its map would silently float the mountains again.
+    this.mapH = mapH
     // One seed, one sky: the shader offsets its noise by the seed, so a
     // regenerate gets a different cloudscape and the same seed gets the same
     // one — the claim `living-sky` makes of the ridge, now true of the clouds
@@ -296,6 +324,7 @@ export class ParallaxLayer {
     if (this.hidden) return
     const c = C()
     const view = this.view()
+    const z = this.scene.cameras.main.zoom || 1
     if (this.clock !== null) elapsed = this.clock
     const theme = resolveTheme(this.themeId)
     // The theme's rock, well darkened: a silhouette is what the land looks like
@@ -312,12 +341,25 @@ export class ParallaxLayer {
       }
       ts.tilePositionX = scrollX * c.MOUNTAIN_PARALLAX[i]!
 
-      // Re-laid out from the visible rect every frame, so the horizon stays put
-      // through a zoom change (the sandbox has a zoom control, and the game runs
-      // at CAMERA_ZOOM 2).
-      const bandH = view.h * c.MOUNTAIN_HEIGHT_FRAC[i]!
-      ts.setPosition(view.left, view.top + view.h * c.MOUNTAIN_BASE_FRAC - bandH)
-      ts.setSize(view.w, bandH)
+      // **T21.20: anchored to the world when there is a map** — `parallax-math.ts`
+      // has the rule and its tests. It was laid out against the visible rect, which
+      // is why the skyline rode with the camera and halved at `CAMERA_ZOOM` 2.
+      // `ridgeLayout` answers in viewport px; this object is `scrollFactor(0)`, so it
+      // lives in camera space, where the screen's top row is `view.top` and a
+      // viewport px is 1/zoom of a unit. Width and the horizontal tile offset are
+      // unchanged: it still parallaxes sideways at `MOUNTAIN_PARALLAX`.
+      const lay = this.layout(i)
+      ts.setPosition(view.left, view.top + lay.top / z)
+      ts.setSize(view.w, lay.h / z)
+      if (this.skirt && i === this.ridges.length - 1) {
+        const top = view.top + (lay.top + lay.h) / z
+        const h = Math.max(0, view.top + view.h - top)
+        // Only with a world to anchor to, and only when there is screen below the base.
+        this.skirt.setVisible(lay.worldBase !== null && h > 0 && !this.hidden)
+        this.skirt.setPosition(view.left, top)
+        this.skirt.setSize(view.w, h)
+        this.skirt.setFillStyle(tint)
+      }
     }
 
     // --- the clouds (T21.18) ------------------------------------------------
@@ -369,6 +411,7 @@ export class ParallaxLayer {
    */
   setVisible(on: boolean): void {
     for (const r of this.ridges) r.setVisible(on)
+    if (!on) this.skirt?.setVisible(false)
     // **The latch is set before the clouds are asked.** `useShader` reads it, so
     // setting it afterwards would show the shader for exactly as long as it took
     // to reach the next line — and `cloudsAreShader`, which a check reads
@@ -379,6 +422,8 @@ export class ParallaxLayer {
 
   destroy(): void {
     for (const r of this.ridges) r.destroy()
+    this.skirt?.destroy()
+    this.skirt = null
     this.ridges.length = 0
     this.cloudShader?.destroy()
     this.cloudShader = null
@@ -388,6 +433,21 @@ export class ParallaxLayer {
       if (this.scene.textures.exists(key)) this.scene.textures.remove(key)
     }
     this.ridgeKeys = []
+  }
+
+  /** Where ridge `i` sits right now — the one source for `update` and `debug`. */
+  private layout(i: number): RidgeLayout {
+    const c = C()
+    const cam = this.scene.cameras.main
+    return ridgeLayout({
+      mapH: this.mapH,
+      baseFrac: c.MOUNTAIN_BASE_FRAC,
+      titleBaseFrac: c.MOUNTAIN_TITLE_BASE_FRAC,
+      heightFrac: c.MOUNTAIN_HEIGHT_FRAC[i]!,
+      viewportH: c.VIEWPORT_H,
+      viewY: cam.worldView.y,
+      zoom: cam.zoom || 1,
+    })
   }
 
   /** Pin or release the drift clock. `null` resumes. */
@@ -422,6 +482,15 @@ export class ParallaxLayer {
      * the sky.
      */
     cloudBand: { x: number; y: number; w: number; h: number }
+    /**
+     * T21.20: where the **near** ridge is — viewport px, plus its world base and
+     * height (`null` on the title) — from the same `ridgeLayout` call `update`
+     * places it with, and the sprite's own camera-space rect beside it, so a check
+     * can see the formula and the object disagree.
+     */
+    ridge: RidgeLayout & { spriteY: number; spriteH: number }
+    /** T21.20's skirt under the near ridge, camera space: `null` if never built. */
+    skirt: { y: number; h: number; visible: boolean } | null
     /** The camera-space rect that fills the screen, so a check can convert. */
     view: { left: number; top: number; w: number; h: number }
   } {
@@ -440,6 +509,14 @@ export class ParallaxLayer {
         w: c.VIEWPORT_W,
         h: v.h * (c.CLOUD_BAND_BOTTOM - c.CLOUD_BAND_TOP) * sy,
       },
+      ridge: {
+        ...this.layout(this.ridges.length - 1),
+        spriteY: this.ridges[this.ridges.length - 1]?.y ?? 0,
+        spriteH: this.ridges[this.ridges.length - 1]?.height ?? 0,
+      },
+      skirt: this.skirt
+        ? { y: this.skirt.y, h: this.skirt.height, visible: this.skirt.visible }
+        : null,
       view: { left: v.left, top: v.top, w: v.w, h: v.h },
     }
   }

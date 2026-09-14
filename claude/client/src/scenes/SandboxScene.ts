@@ -355,7 +355,7 @@ export class SandboxScene extends Phaser.Scene {
     // session and "a seed always looks the same" was true of the terrain only.
     // `sky` is undefined on the first call: `create()` regenerates before it
     // builds the sky, and the constructor above passes the seed directly.
-    this.sky?.setSeed(this.core.meta.seed, this.core.meta.theme)
+    this.sky?.setSeed(this.core.meta.seed, this.core.meta.theme, this.core.height)
 
     this.seedInput.value = this.seed.toString()
     this.refreshReadout()
@@ -1047,7 +1047,7 @@ export class SandboxScene extends Phaser.Scene {
        * seed entirely.
        */
       setSkySeed(seed: number) {
-        self.sky?.setSeed(seed, self.core.meta.theme)
+        self.sky?.setSeed(seed, self.core.meta.theme, self.core.height)
       },
       /**
        * Pin the cloud drift clock, `null` to resume.

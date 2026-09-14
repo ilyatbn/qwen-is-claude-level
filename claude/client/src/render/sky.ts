@@ -131,7 +131,7 @@ export class SkyLayer {
     }
 
     const w = c.VIEWPORT_W
-    const horizon = c.VIEWPORT_H * 0.82
+    const horizon = c.VIEWPORT_H * c.SKY_HORIZON_FRAC
     const { sun, moon } = bodyPositions(u, w, horizon, c.SKY_BODY_ARC_H ?? 300)
 
     const place = (
@@ -165,8 +165,9 @@ export class SkyLayer {
   }
 
   /** Point the background at a map. Call after every generate. */
-  setSeed(seed: number, themeId: number): void {
-    this.parallax.setSeed(seed, themeId)
+  setSeed(seed: number, themeId: number, mapH: number): void {
+    // `mapH` anchors the ridge to the world (T21.20); the title never calls this.
+    this.parallax.setSeed(seed, themeId, mapH)
   }
 
   get currentPhase(): SkyPhase {

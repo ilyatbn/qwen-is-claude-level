@@ -109,8 +109,8 @@ export default async function ({ page, shot, log }) {
   /**
    * **Open a window through the foreground so the background can be seen.**
    *
-   * The ridge is drawn at a fixed screen fraction — `MOUNTAIN_BASE_FRAC` 0.86 —
-   * so `airRun(0.64, 0.85)` cannot look anywhere else for it. Whether that strip
+   * The ridge used to sit at a fixed screen fraction (0.64..0.85). Since T21.20 it is
+   * anchored to the world, and the layer reports where it is. Whether that strip
    * shows sky or rock is entirely a question of where the camera is, and pass 6b
    * moved the sandbox spawn (objects push spawn candidates away under
    * `OBJECT_CLEAR_OF_SPAWN`). Measured, the strip is now solid rock across the
@@ -129,26 +129,31 @@ export default async function ({ page, shot, log }) {
    * of it is exactly the thing that has to not be there. Carving is also what
    * `terrain-render` already does to see the terrain change.
    */
-  const opened = await page.evaluate(() => {
+  // **T21.20: the ridge is found, not assumed** — it sits wherever its world row
+  // lands on this camera, and `parallax.ridge` says where that is. Opened from the
+  // cloud band (the control) down to the bottom of the ridge (the subject).
+  const ridgeBottom = await page.evaluate(() => {
+    const r = window.__game.debug().parallax.ridge
+    return Math.min(0.98, (r.top + r.h) / window.__game.constants().VIEWPORT_H)
+  })
+  const opened = await page.evaluate(([lo, hi]) => {
     const g = window.__game
     const v = g.debug().worldView
-    // Both background bands: the cloud band at 0.06..0.40, which is the control,
-    // and the ridge at 0.64..0.85, which is the subject.
     // Carved as rows of overlapping circles so the whole strip opens, not just
     // its centre line.
     const radius = Math.ceil(0.07 * v.h) + 8
     const x0 = v.x + 0.3 * v.w
     const x1 = v.x + v.w
     let n = 0
-    for (let fy = 0.05; fy <= 0.87; fy += 0.06) {
+    for (let fy = lo; fy <= hi; fy += 0.06) {
       const wy = v.y + fy * v.h
       for (let wx = x0; wx <= x1; wx += radius) {
         g.carve(Math.round(wx), Math.round(wy), radius)
         n++
       }
     }
-    return { carves: n, radius, from: Math.round(v.y + 0.05 * v.h), to: Math.round(v.y + 0.87 * v.h) }
-  })
+    return { carves: n, radius, from: Math.round(v.y + lo * v.h), to: Math.round(v.y + hi * v.h) }
+  }, [0.05, Math.max(0.87, ridgeBottom + 0.02)])
   await page.waitForTimeout(500)
   log(
     `opened the background bands with ${opened.carves} carves of r=${opened.radius}, ` +
@@ -197,8 +202,15 @@ export default async function ({ page, shot, log }) {
     }
 
     return {
-      // The ridge sits with its base at MOUNTAIN_BASE_FRAC (0.86).
-      ridge: airRun(0.64, 0.85),
+      // Wherever the layer says the near ridge is right now (T21.20) — read after the
+      // carve, because the carve moves the camera. The whole band, crest included:
+      // below the crest every seed's silhouette is the same solid ink, which is why
+      // a fixed strip read "seed 999 drew the same ridge" once the ridge grew.
+      ridge: (() => {
+        const rr = g.parallax.ridge
+        const vh = window.__game.constants().VIEWPORT_H
+        return airRun(Math.max(0.02, rr.top / vh), Math.min(0.98, (rr.top + rr.h) / vh))
+      })(),
       // CLOUD_BAND_TOP..CLOUD_BAND_BOTTOM of the viewport: open sky, and since
       // T21.18 nothing this layer owns is drawn in it unless High Quality is on.
       cloud: airRun(0.06, 0.4),
@@ -297,6 +309,117 @@ export default async function ({ page, shot, log }) {
       `seed 999 drew the same ridge as 4242 (${(diffSeed * 100).toFixed(1)}% of the strip changed) — ` +
         'the skyline is not seeded',
     )
+  }
+
+  // 6. T21.20 — the skyline is anchored to the world, and zoom cannot shrink it.
+  //
+  //    Read off the layer's own report (`parallax.ridge`: the same `ridgeLayout` call
+  //    `update` places the sprite with, plus the sprite's rect). Each claim has a
+  //    control that the camera or the zoom actually moved — "the base did not move"
+  //    is otherwise satisfied by a camera that never went anywhere.
+  {
+    const K = await page.evaluate(() => {
+      const k = window.__game.constants()
+      return {
+        vh: k.VIEWPORT_H,
+        base: k.MOUNTAIN_BASE_FRAC,
+        hf: k.MOUNTAIN_HEIGHT_FRAC[k.MOUNTAIN_LAYERS - 1],
+        mapH: window.__game.core.height,
+      }
+    })
+    const read = async () => {
+      const d = await dbg()
+      const r = d.parallax.ridge
+      return {
+        r,
+        z: d.zoom,
+        viewY: d.worldView.y,
+        view: d.parallax.view,
+        skirt: d.parallax.skirt,
+        // The world row the ridge base is drawn at, recovered from where it is on screen.
+        recovered: (r.top + r.h) / d.zoom + d.worldView.y,
+      }
+    }
+
+    const a = await read()
+    // Both ends: the sprite is where the formula put it, and the formula's base is
+    // the world row the constants name.
+    const wantY = a.view.top + a.r.top / a.z
+    if (Math.abs(wantY - a.r.spriteY) > 0.5 || Math.abs(a.r.h / a.z - a.r.spriteH) > 0.5) {
+      throw new Error(
+        `the near ridge sprite sits at y ${a.r.spriteY.toFixed(1)} h ${a.r.spriteH.toFixed(1)}; ` +
+          `ridgeLayout put it at ${wantY.toFixed(1)} h ${(a.r.h / a.z).toFixed(1)}`,
+      )
+    }
+    if (a.r.worldBase === null || Math.abs(a.r.worldBase - K.mapH * K.base) > 0.5) {
+      throw new Error(`ridge base at world row ${a.r.worldBase}, expected ${K.mapH * K.base} (MOUNTAIN_BASE_FRAC of the map)`)
+    }
+    // **And the row it is actually drawn at**, recovered from the screen answer — not
+    // only the field. Measured by planting a height that did not scale with zoom: the
+    // field still read 983 while the drawn base sat at 948.5, and nothing compared them.
+    if (Math.abs(a.recovered - K.mapH * K.base) > 1) {
+      throw new Error(
+        `the ridge base is drawn at world row ${a.recovered.toFixed(1)} while the layout reports ` +
+          `${a.r.worldBase.toFixed(1)} — the field and the picture disagree`,
+      )
+    }
+    // The skirt starts at the base, so no sky shows under the ridge (seen in the
+    // first world-anchored frame, where the carve exposed a straight cut-off edge).
+    if (a.r.top + a.r.h < K.vh) {
+      const skirtY = a.view.top + (a.r.top + a.r.h) / a.z
+      if (!a.skirt?.visible || Math.abs(a.skirt.y - skirtY) > 0.5) {
+        throw new Error(`the skirt under the ridge is ${JSON.stringify(a.skirt)}, expected visible at y ${skirtY.toFixed(1)}`)
+      }
+    }
+    log(`ridge base world ${a.r.worldBase.toFixed(1)}, on screen ${(a.r.top + a.r.h).toFixed(1)} px at view y ${a.viewY.toFixed(1)}`)
+
+    // Move the camera: put the player high in the air the carve just opened, and let
+    // the rig follow her. (A jetpack hold was tried first and measured 0.0 px of
+    // camera movement — the sandbox page's keys are not the point here, the camera
+    // is.) Polled until the view has actually travelled, never a flat sleep.
+    const target = await page.evaluate(() => {
+      const v = window.__game.debug().worldView
+      return { x: Math.round(v.x + 0.6 * v.w), y: Math.round(v.y + 0.1 * v.h) }
+    })
+    await page.evaluate(([x, y]) => window.__game.place(x, y), [target.x, target.y])
+    let b = await read()
+    for (let i = 0; i < 40 && Math.abs(b.viewY - a.viewY) < 20; i++) {
+      await page.waitForTimeout(50)
+      b = await read()
+    }
+    const dView = b.viewY - a.viewY
+    if (Math.abs(dView) < 20) {
+      throw new Error(`the camera moved only ${dView.toFixed(1)} world px — the anchoring below would be measuring nothing`)
+    }
+    if (Math.abs(b.recovered - a.recovered) > 1) {
+      throw new Error(
+        `the camera moved ${dView.toFixed(1)} world px and the ridge base moved from world row ` +
+          `${a.recovered.toFixed(1)} to ${b.recovered.toFixed(1)} — it rides with the camera again`,
+      )
+    }
+    const dTop = b.r.top - a.r.top
+    if (Math.abs(dTop + dView * b.z) > 1) {
+      throw new Error(`the ridge moved ${dTop.toFixed(1)} px on screen where the terrain moved ${(-dView * b.z).toFixed(1)}`)
+    }
+    log(`camera moved ${dView.toFixed(1)} world px: ridge base stayed at world ${b.recovered.toFixed(1)}, screen row moved ${dTop.toFixed(1)} px`)
+
+    // Zoom: the same ridge at zoom 1 and at the scene's zoom covers the same world height.
+    const z0 = b.z
+    await page.evaluate(() => window.__game.setZoom(1))
+    await page.waitForTimeout(300)
+    const one = await read()
+    await page.evaluate((z) => window.__game.setZoom(z), z0)
+    await page.waitForTimeout(300)
+    const back = await read()
+    if (Math.abs(one.z - back.z) < 0.1) {
+      throw new Error(`setZoom did not change the zoom (${one.z} vs ${back.z}) — the size claim below would be vacuous`)
+    }
+    const h1 = one.r.h / one.z
+    const h2 = back.r.h / back.z
+    if (Math.abs(h1 - h2) > 0.5 || Math.abs(h1 - K.vh * K.hf) > 0.5) {
+      throw new Error(`the ridge is ${h1.toFixed(1)} world px tall at zoom ${one.z} and ${h2.toFixed(1)} at ${back.z} (want ${(K.vh * K.hf).toFixed(1)})`)
+    }
+    log(`ridge ${h1.toFixed(1)} world px tall at zoom ${one.z} and ${h2.toFixed(1)} at zoom ${back.z}`)
   }
 
   // 7. Depth: the terrain draws over the parallax band. Asserted on the depth

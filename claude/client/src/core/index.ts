@@ -359,6 +359,8 @@ export interface Constants {
   MOUNTAIN_PARALLAX: number[]
   MOUNTAIN_HEIGHT_FRAC: number[]
   MOUNTAIN_BASE_FRAC: number
+  MOUNTAIN_TITLE_BASE_FRAC: number
+  SKY_HORIZON_FRAC: number
   MOUNTAIN_HAZE: number[]
   MOUNTAIN_CELLS: number
   MOUNTAIN_OCTAVES: number

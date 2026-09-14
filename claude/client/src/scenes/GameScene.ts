@@ -1325,7 +1325,7 @@ export class GameScene extends Phaser.Scene {
     // keeps a distant ridge the colour of the ground in front of it. The theme
     // is not on the wire today, so both are 0 in a networked round — and they
     // are 0 *together*, which is the property that matters.
-    this.sky.setSeed(this.mapSeed, this.core.meta.theme)
+    this.sky.setSeed(this.mapSeed, this.core.meta.theme, this.core.height)
 
     // §C5. Built from the wire rather than from `core.meta`: a networked client
     // never runs the generator, so `core.meta.teleport_pads` is empty here and a
