@@ -6239,3 +6239,12 @@ serial (red only in parallel): perf, fire-visible, birds, m5-weather, rematch, l
 `affected.mjs [REV]` + `check.sh --changed`: from imports and Cargo edges, unknown → everything; link edges decide e2e (game-wasm dev-depends on game-server).
 Leak guard kills only its own E2E_RUN_ID (it had SIGKILLed 19 of A's chromium). Every e2e start rewrites client/src/core/pkg under anyone's live vite — A's red lava-lights baseline.
 Not done: `--jobs` values other than 1 and 4; m5-weather's serial reason predates bc41865 and wants re-measuring.
+
+## T21.18 items 2–3 — laser beams (`5471424`, no entry at the time) and smoke (`e9a4333`, fix `<this>`)
+Laser: one shader quad per beam under High Quality, strokes when off; `beams-shader` 52.2/0.0/47.0. Smoke: the three
+lobes become one `SMOKE_FRAGMENT` quad (eaten, curling, dispersing edge). `vision` 1→0.349 in the cloud, **identical
+both modes**; frozen repaint 18.2, restore 0.0, control 0.0; drawn 75.9/4; animates 24.1% vs 0.0%. Ignoring the setting
+reds four. `DEV_SMOKE=1` grants a smoke grenade (no check could throw one; `DEV_LOADOUT` untouched). Gate `--changed`
+(48 checks, everything: client+wasm+server) **1055 s, 45/48**: `smoke-shader` (cloud expired under load → `holdHazards`,
+green alone after), `escape-menu` (green alone → parked), `void` (red alone **and on the parent's code** → parked, wants a
+fix). The fix is re-covered by the fire commit's gate. My vitest run left an untracked root `.vite/`; only `client/.vite/` is ignored.

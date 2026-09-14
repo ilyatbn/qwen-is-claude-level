@@ -126,6 +126,10 @@ if (narrated > 0) {
   else ok(`vision is identical in both modes (${visionOn})`)
 
   // --- one cloud, both ways, same instant ---------------------------------------------
+  // Held: in the first `--changed` gate the 8 s cloud ended mid-photographs under load,
+  // and both "animates" readings came back 0.0% over an empty patch.
+  const held = await page.evaluate(() => window.__game.holdHazards(true))
+  if (held.held !== true) fail(`holdHazards did not read back: ${JSON.stringify(held)}`)
   await freeze(true)
   await frame()
   const d = await dbg()
@@ -222,6 +226,7 @@ if (narrated > 0) {
 
   await setHQ(false)
   await freeze(false)
+  await page.evaluate(() => window.__game.holdHazards(false))
 }
 
 if (pageErrors.length) fail(`page errors: ${pageErrors.slice(0, 3).join(' | ')}`)

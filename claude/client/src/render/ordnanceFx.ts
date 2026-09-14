@@ -90,8 +90,28 @@ export class OrdnanceFxLayer {
   }
 
   removeHazard(id: number): void {
-    this.state.removeHazard(id)
+    if (this.hazardsHeld) this.pendingRemovals.push(id)
+    else this.state.removeHazard(id)
   }
+
+  /**
+   * e2e only (T21.18): defer `hazard_ended` so a check can photograph one cloud
+   * both ways. Measured: under suite load an 8 s cloud ended mid-photographs.
+   * Releasing applies every removal that arrived meanwhile.
+   */
+  holdHazards(on: boolean): void {
+    this.hazardsHeld = on
+    if (on) return
+    for (const id of this.pendingRemovals) this.state.removeHazard(id)
+    this.pendingRemovals.length = 0
+  }
+
+  get hazardsAreHeld(): boolean {
+    return this.hazardsHeld
+  }
+
+  private hazardsHeld = false
+  private readonly pendingRemovals: number[] = []
 
   /** Live mine count. The e2e asserts this against the server's (§A39). */
   get mineCount(): number {

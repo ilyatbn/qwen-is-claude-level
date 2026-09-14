@@ -2657,6 +2657,11 @@ export class GameScene extends Phaser.Scene {
         self.fx?.setVisible(on)
         return { visible: self.fx?.visible ?? false }
       },
+      /** e2e only (T21.18): keep ended hazards on screen, so a cloud can be photographed steadily. */
+      holdHazards(on: boolean) {
+        self.fx?.holdHazards(on)
+        return { held: self.fx?.hazardsAreHeld ?? false }
+      },
       /** e2e only (§C2, T21.18): hide the ordnance layer for a same-instant control frame. */
       showOrdnance(on: boolean) {
         self.world?.ordnance.setVisible(on)
