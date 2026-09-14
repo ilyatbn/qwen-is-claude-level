@@ -6163,3 +6163,28 @@ skipped. Also gone: the `clouds` atlas + manifest/`vendorPacks` entries (nothing
 `build-cloud-atlas.mjs` (rerunning it would have re-added the manifest entry), and — coordinator's
 ruling — the 10 dead `CLOUD_*` constants in all three files. `cloudTint` stays (`parallax.ts` feeds the
 shader). No-art start probed with an empty publicDir: title runs, 0 page errors, placeholders logged.
+
+## T19.31 — fog-visible can see its own constant (`5cd36ad`)
+Beside the pinned assertions: the veil strictly thinner with a flashlight (0.640 vs 0.800), and on
+pixels the travel removed **summed over both patches** above noise (19.3 vs 5.4 — per patch the
+ground's 7.7 vs 5.4 is a coin flip). Falsified both ways: `FLASHLIGHT_FOG_VEIL_MULT` 1.0 reds only the
+two new ones; `weather-math` ignoring the flashlight reds the pinned one too. 5/5 gates.
+
+## T19.30 — death runs with WEATHER=off (`0fff050`)
+The task's mechanism was wrong (`DEV_START_HEALTH` is a spawn setting); the race is the rocket loop
+against the first weather roll. Coordinator's ruling: competitor removed, health stays 1, the "cannot
+be turned off" comments corrected. Falsified: a self-kill worded "Killed by weather" still reds. 5/5.
+
+## T19.29 — teleport: not a redraw race, the weather (`529d596`)
+Re-measured first: T21.27's gate reddened `teleport` on its **control** (6.2 vs 4) — toxic rain
+telegraphed in frame A, falling across the control in frame B. **Deviation from the ruling**, in the
+task file: no redraw counter (nothing was late); `WEATHER=off`, 8/4 untouched; a frozen portal fill
+still reds (1.8). T21.27 was ticked in its own commit before its gate, which went 54/55 on this check
+(net smoke and assets run by hand); the shared loop after it is 5/5, `gate-coder-1..5.txt`.
+
+## T21.25 — toxic rain damages; nobody can tell (`2c5bcd5`)
+Measured: mean **66.3 health a shower** in the open over six seeds (one dry), 0 under rock on two;
+≈3.2 poisonings re-derived (54 drops, 2048 px map, 72 px target). Poison is 0.1-per-tick `Damage`
+events: `DamageNumbers` drops <1 and the vignette cannot register, leaving two greens on the bar —
+written up, not built. `toxic-rain-game` now reads health (seed 1, absence control, roofed arm on seed
+2); both arms falsified at live sites. 5/5 gates.
