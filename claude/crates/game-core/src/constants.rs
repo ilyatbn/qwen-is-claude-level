@@ -2143,14 +2143,27 @@ pub const OBJECT_PLACE_ATTEMPTS: u32 = 200;
 /// its centre supported and its outer base columns over air, and that is the
 /// mid-air look — worse at the sizes above, not better.
 ///
-/// **What the rule permits, stated plainly.** The object is seated at the
-/// *median* ground height under its footprint, so roughly half its base is
-/// buried in the slope and half stands proud. Partial burial is correct and
-/// wanted: a boulder half-sunk in a hillside is what a boulder looks like.
-/// Hanging is not, so a majority of the base must be within
-/// `OBJECT_SEAT_BAND` of where it is seated. A rock spanning a chasm fails this;
-/// a rock on a slope passes it.
+/// **What the rule permits, stated plainly.** `seat` places the base at *this*
+/// percentile of the ground depths under the footprint — not the median this once
+/// said, which measured 51 % contact against a 60 % rule — and refuses the object
+/// unless that much of its base is within `OBJECT_SEAT_BAND` of the seat. A rock
+/// spanning a chasm fails this; a rock on a slope passes it. The old wording here
+/// called the rest "partial burial, correct and wanted"; it was reported from play
+/// as floating (T21.21), and the report won.
+///
+/// **Since T21.21 this is the backstop, not the whole answer.** `fill_under` extends
+/// the ground up to meet every base column within `OBJECT_GROUND_FILL_DEPTH`, so what
+/// this still permits is a base perched over a cliff or a cave mouth deeper than
+/// that, on up to 40 % of its width.
 pub const OBJECT_FOOTPRINT_SUPPORT: f32 = 0.6;
+/// T21.21: how far below an object's base the ground may be extended up to meet
+/// it, as a fraction of the object's height.
+///
+/// Measured before the fill existed, over six seeds at three scales: 21.9 % of base
+/// columns touched nothing, with gaps of median 6 px, 90th percentile 224 and a tail
+/// past 1000 — hovering, then cliffs. One object-height closes the hover and the
+/// shallow step under an overhang, and refuses to grow a pillar into a chasm.
+pub const OBJECT_GROUND_FILL_DEPTH: f32 = 1.0;
 
 /// How far the ground may deviate from an object's seated base and still count
 /// as supporting it, as a fraction of the object's **own height** (§E12).

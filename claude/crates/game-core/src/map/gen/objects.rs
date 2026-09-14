@@ -29,9 +29,9 @@
 //! path and nothing extra on the wire (§D1, §D8).
 
 use crate::constants::{
-    MapScale, OBJECT_CLEAR_OF_SPAWN, OBJECT_FOOTPRINT_SUPPORT, OBJECT_MIN_SEPARATION,
-    OBJECT_PIXEL_BUDGET, OBJECT_PLACE_ATTEMPTS, OBJECT_SEAT_BAND, SKY_MARGIN, SPAWN_COUNT_MIN,
-    WALL_W,
+    MapScale, OBJECT_CLEAR_OF_SPAWN, OBJECT_FOOTPRINT_SUPPORT, OBJECT_GROUND_FILL_DEPTH,
+    OBJECT_MIN_SEPARATION, OBJECT_PIXEL_BUDGET, OBJECT_PLACE_ATTEMPTS, OBJECT_SEAT_BAND,
+    SKY_MARGIN, SPAWN_COUNT_MIN, WALL_W,
 };
 use crate::map::objects::{self, ObjectCategory, ObjectMask};
 use crate::map::Mask;
@@ -138,12 +138,76 @@ fn stamp(mask: &mut Mask, p: &PlacedObject, m: &ObjectMask) -> u64 {
     added
 }
 
+/// T21.21: extend the ground up to meet an object's base.
+///
+/// Reported from play: rocks and trees "semi floating ... as if not part of the
+/// map", and *"a rock with the base of 40px cannot be on a flat surface of 28
+/// pixels. Extend the ground to make it appear seamless."* Measured before this
+/// existed, across six seeds and three scales: **21.9 % of base columns touched
+/// nothing**, in 347 of 438 objects, with a median gap of 6 px — a hover, not a
+/// cliff.
+///
+/// For every column whose silhouette reaches the object's **bottom row** — the
+/// base, not a boulder's flank curving up away from the ground — this fills
+/// straight down from under the silhouette to the first solid pixel, if that is
+/// within `OBJECT_GROUND_FILL_DEPTH` of the object's height. Deeper is a cliff
+/// edge or a cave mouth the object is perched over (the measured tail runs past
+/// 1000 px), and a column of rock grown down into it would be a stalk, not ground;
+/// `OBJECT_FOOTPRINT_SUPPORT` still bounds how much of a base may do that.
+///
+/// **Below the silhouette only**, never into it, and never into the side walls.
+/// An object already resting on flat ground has no gap under its bottom row and
+/// gains nothing. Returns the pixels added, which `stamp_objects` charges to the
+/// budget like the object's own.
+fn fill_under(mask: &mut Mask, p: &PlacedObject, m: &ObjectMask) -> u64 {
+    if m.h == 0 {
+        return 0;
+    }
+    let limit = ((m.h as f32) * OBJECT_GROUND_FILL_DEPTH).round().max(1.0) as i32;
+    let bottom = p.y + m.h as i32 - 1;
+    let mut added = 0;
+    for ox in 0..m.w {
+        if !m.solid_flipped(ox, m.h - 1, p.flip) {
+            continue;
+        }
+        let col = p.x + ox as i32;
+        if col < WALL_W as i32 || col >= mask.w as i32 - WALL_W as i32 {
+            continue;
+        }
+        // How much air is under this base column, up to one past the limit.
+        let mut d = 0;
+        while d <= limit && bottom + 1 + d < mask.h as i32 && !mask.get(col, bottom + 1 + d) {
+            d += 1;
+        }
+        if d == 0 || d > limit || bottom + 1 + d >= mask.h as i32 {
+            continue;
+        }
+        for y in (bottom + 1)..(bottom + 1 + d) {
+            mask.set(col, y);
+            added += 1;
+        }
+    }
+    added
+}
+
 /// Pass 6b. Places up to `scale.params().object_count` objects and returns them.
 ///
 /// Draws from `substream(seed, "objects")` and nothing else, so tuning any other
 /// pass cannot move an object and draining any other stream cannot either
 /// (`docs/10` §2).
 pub fn stamp_objects(mask: &mut Mask, seed: u64, scale: MapScale, theme: u8) -> Placement {
+    stamp_objects_with(mask, seed, scale, theme, true)
+}
+
+/// `stamp_objects`, with the T21.21 ground fill switchable — `false` only for the
+/// tests' control, which is the same placement with the bug left in.
+pub(crate) fn stamp_objects_with(
+    mask: &mut Mask,
+    seed: u64,
+    scale: MapScale,
+    theme: u8,
+    fill: bool,
+) -> Placement {
     let count = scale.params().object_count as usize;
     let table = objects::count();
     let budget_px = ((mask.w as f64) * (mask.h as f64) * OBJECT_PIXEL_BUDGET as f64) as u64;
@@ -266,6 +330,9 @@ pub fn stamp_objects(mask: &mut Mask, seed: u64, scale: MapScale, theme: u8) -> 
             }
 
             spent += stamp(mask, &candidate, &m);
+            if fill {
+                spent += fill_under(mask, &candidate, &m);
+            }
             placed.push(candidate);
             continue 'objects;
         }
@@ -396,11 +463,11 @@ const SEAT_CONTACT: i32 = 2;
 ///
 /// **The whole footprint, not a player-sized box at the centre.** For every
 /// column the object covers, this finds the first solid row at or below the
-/// candidate feet line, then seats the object at the **median** of those. Half
-/// the base ends up buried in the slope and half stands proud, which is how a
-/// boulder sits in a hillside — and it is the reason the rule is stated as a
-/// median rather than a maximum or a minimum. Seating on the highest ground
-/// leaves the low side hanging; seating on the lowest buries the object whole.
+/// candidate feet line, then seats the object at the `OBJECT_FOOTPRINT_SUPPORT`
+/// **percentile** of those depths — not the median this once said, which left half
+/// the base in hollows it did not touch (see the note in the body). Seating on the
+/// highest ground leaves the low side hanging; seating on the lowest buries the
+/// object whole. What little still hovers, `fill_under` meets with ground (T21.21).
 ///
 /// It refuses when fewer than `OBJECT_FOOTPRINT_SUPPORT` of its columns lie
 /// within `OBJECT_SEAT_BAND` of that seat: a rock spanning a chasm, or perched
@@ -562,6 +629,200 @@ mod tests {
     /// touching" is how the last three attempts disagreed.
     fn supported_fraction(mask: &Mask, p: &PlacedObject, m: &ObjectMask) -> f32 {
         contact_fraction(mask, p.x, p.y + m.h as i32 - 1, m)
+    }
+
+    /// The air under each base column of a placed object, read from the finished
+    /// mask: the silhouette's **bottom row** only, the columns the fill serves.
+    fn base_gaps(mask: &Mask, p: &PlacedObject, m: &ObjectMask) -> Vec<i32> {
+        let bottom = p.y + m.h as i32 - 1;
+        (0..m.w)
+            .filter(|&ox| m.solid_flipped(ox, m.h - 1, p.flip))
+            .map(|ox| {
+                let col = p.x + ox as i32;
+                let mut d = 0;
+                while bottom + 1 + d < mask.h as i32 && !mask.get(col, bottom + 1 + d) {
+                    d += 1;
+                }
+                d
+            })
+            .collect()
+    }
+
+    /// T21.21: every base column the fill can reach **touches the ground**, on every
+    /// map at every scale — and the same placement without the fill does not, which
+    /// is the reported bug reproduced as a number (the control).
+    #[test]
+    fn a_seated_object_meets_the_ground_under_its_whole_base() {
+        // [without fill, with fill]
+        let mut placed = [0usize; 2];
+        let mut columns = [0usize; 2];
+        let mut hovering = [0usize; 2];
+        let mut perched = [0usize; 2];
+        for seed in [1u64, 4242, 31337, 7, 99, 12345] {
+            for scale in [MapScale::Small, MapScale::Medium, MapScale::Large] {
+                for (i, fill) in [false, true].into_iter().enumerate() {
+                    let mut mask = v2::generate_once(seed, &v2::V2Params::default_for(scale)).mask;
+                    let objs = stamp_objects_with(&mut mask, seed, scale, 0, fill).objects;
+                    placed[i] += objs.len();
+                    for p in &objs {
+                        let Some(m) = objects::mask(p.id as usize) else {
+                            continue;
+                        };
+                        let limit =
+                            ((m.h as f32) * OBJECT_GROUND_FILL_DEPTH).round().max(1.0) as i32;
+                        for d in base_gaps(&mask, p, &m) {
+                            columns[i] += 1;
+                            if d > limit {
+                                perched[i] += 1;
+                            } else if d > 0 {
+                                hovering[i] += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!(
+            "T21.21 BASE without fill: {} objects, {} base columns, {} hovering, {} perched; \
+             with fill: {} objects, {} base columns, {} hovering, {} perched",
+            placed[0],
+            columns[0],
+            hovering[0],
+            perched[0],
+            placed[1],
+            columns[1],
+            hovering[1],
+            perched[1]
+        );
+        assert!(
+            placed[1] > 100,
+            "only {} objects placed with the fill — the rule is rejecting everything",
+            placed[1]
+        );
+        assert!(
+            hovering[0] > 0,
+            "without the fill no base column hovers — the bug is not reproduced, so the \
+             assertion below proves nothing"
+        );
+        assert_eq!(
+            hovering[1], 0,
+            "{} base columns still hover over ground the fill could reach",
+            hovering[1]
+        );
+    }
+
+    /// An object already resting on flat ground gains **no** ground.
+    #[test]
+    fn an_object_on_flat_ground_gains_nothing() {
+        let ground = 300;
+        let mut checked = 0;
+        for id in 0..objects::count() as u32 {
+            let Some(m) = objects::mask(id as usize) else {
+                continue;
+            };
+            if m.w as i32 + 2 * WALL_W as i32 + 20 > 1024 || m.h as i32 > ground - SKY_MARGIN as i32
+            {
+                continue;
+            }
+            let mut mask = flat_map(1024, 512, ground);
+            let p = PlacedObject {
+                id,
+                x: WALL_W as i32 + 10,
+                y: ground - m.h as i32,
+                w: m.w,
+                h: m.h,
+                flip: false,
+            };
+            stamp(&mut mask, &p, &m);
+            assert_eq!(
+                fill_under(&mut mask, &p, &m),
+                0,
+                "object {id} gained ground on flat terrain"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 0,
+            "no object fitted the flat map — nothing was checked"
+        );
+    }
+
+    /// The fill grows ground **up to** the base and no further: nothing at or above
+    /// the base row changes, the gap closes exactly, and a gap deeper than the reach
+    /// is left alone (the control that the bound is real).
+    #[test]
+    fn the_fill_stops_at_the_base_and_is_bounded() {
+        let ground = 300;
+        let solid_above = |mask: &Mask, x0: i32, w: u32, last_row: i32| {
+            let mut n = 0;
+            for y in 0..=last_row {
+                for x in x0..x0 + w as i32 {
+                    n += mask.get(x, y) as usize;
+                }
+            }
+            n
+        };
+        let mut checked = 0;
+        for id in 0..objects::count() as u32 {
+            let Some(m) = objects::mask(id as usize) else {
+                continue;
+            };
+            let limit = ((m.h as f32) * OBJECT_GROUND_FILL_DEPTH).round().max(1.0) as i32;
+            let gap = limit.min(12);
+            if gap < 2
+                || m.w as i32 + 2 * WALL_W as i32 + 20 > 1024
+                || m.h as i32 + limit + 10 > ground - SKY_MARGIN as i32
+            {
+                continue;
+            }
+            let base_cols = (0..m.w)
+                .filter(|&ox| m.solid_flipped(ox, m.h - 1, false))
+                .count();
+
+            // Hovering `gap` px above flat ground: closed exactly, nothing above touched.
+            let mut mask = flat_map(1024, 512, ground);
+            let p = PlacedObject {
+                id,
+                x: WALL_W as i32 + 10,
+                y: ground - gap - m.h as i32,
+                w: m.w,
+                h: m.h,
+                flip: false,
+            };
+            stamp(&mut mask, &p, &m);
+            let base_row = p.y + m.h as i32 - 1;
+            let before = solid_above(&mask, p.x, m.w, base_row);
+            let added = fill_under(&mut mask, &p, &m);
+            assert_eq!(
+                solid_above(&mask, p.x, m.w, base_row),
+                before,
+                "object {id}: the fill rose into the object"
+            );
+            assert_eq!(
+                added as usize,
+                base_cols * gap as usize,
+                "object {id}: the fill is not exactly the gap"
+            );
+            assert!(
+                base_gaps(&mask, &p, &m).iter().all(|d| *d == 0),
+                "object {id}: a base column still hovers"
+            );
+
+            // Deeper than the reach: left alone.
+            let mut deep = flat_map(1024, 512, ground);
+            let q = PlacedObject {
+                y: ground - (limit + 5) - m.h as i32,
+                ..p
+            };
+            stamp(&mut deep, &q, &m);
+            assert_eq!(
+                fill_under(&mut deep, &q, &m),
+                0,
+                "object {id}: the fill reached past OBJECT_GROUND_FILL_DEPTH"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no object fitted — nothing was checked");
     }
 
     /// §E12: nothing hangs in the air, on any map this generator makes.
