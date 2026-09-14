@@ -164,18 +164,17 @@ export async function startStack({ port, env = {}, label = 'check' } = {}) {
   // `e2e_server=<port>` and `lib/stack-router.mjs` forwards by it.
   const sharedVite = process.env.E2E_SHARED_VITE_URL
   const sharedWs = process.env.E2E_SHARED_BROWSER_WS
-  if (Boolean(sharedVite) !== Boolean(sharedWs)) {
+  // Vite alone may be shared (`e2e.mjs --share vite`); a shared browser without
+  // the shared vite whose router gives its cookie meaning is a runner bug.
+  if (sharedWs && !sharedVite) {
     await close()
-    // Half a shared stack is a runner bug; say so rather than guess which half.
-    throw new Error(`${label}: E2E_SHARED_VITE_URL and E2E_SHARED_BROWSER_WS must be set together`)
+    throw new Error(`${label}: E2E_SHARED_BROWSER_WS is set without E2E_SHARED_VITE_URL`)
   }
 
   let vite = null
   let viteUrl
-  let real
   if (sharedVite) {
     viteUrl = sharedVite
-    real = await chromium.connect(sharedWs)
   } else {
     vite = spawn('npx', ['vite', '--strictPort=false'], {
       detached: true,
@@ -192,14 +191,16 @@ export async function startStack({ port, env = {}, label = 'check' } = {}) {
       vite.stderr.on('data', on)
       setTimeout(() => rej(new Error(`${label}: vite never started`)), 120_000)
     })
-    // BROWSER_ARGS carries the rAF-throttling flags and the history of what
-    // their absence cost (`two-clients`): see lib/browser-args.mjs.
-    real = await chromium.launch({
-      executablePath: chromePath,
-      env: { ...process.env, LD_LIBRARY_PATH: libDir },
-      args: BROWSER_ARGS,
-    })
   }
+  // BROWSER_ARGS carries the rAF-throttling flags and the history of what their
+  // absence cost (`two-clients`): see lib/browser-args.mjs.
+  const real = sharedWs
+    ? await chromium.connect(sharedWs)
+    : await chromium.launch({
+        executablePath: chromePath,
+        env: { ...process.env, LD_LIBRARY_PATH: libDir },
+        args: BROWSER_ARGS,
+      })
 
   // `stack.browser` is a wrapper in both modes, so `lobby`, `m10-checkpoint` and
   // `rematch` — which call `stack.browser.newContext` directly — are routed

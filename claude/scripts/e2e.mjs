@@ -82,6 +82,9 @@ const chromePath = join(
 const DEFAULT_JOBS = 4
 const argv = process.argv.slice(2)
 let jobs = DEFAULT_JOBS
+// DEFAULT_SHARE: provisional until the vite-only runs are in — see `--share`.
+const DEFAULT_SHARE = 'all'
+let share = DEFAULT_SHARE
 const filters = []
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i]
@@ -93,6 +96,17 @@ for (let i = 0; i < argv.length; i++) {
       console.error(`--jobs wants a positive integer, got ${v}`)
       process.exit(2)
     }
+  } else if (/^--share(=|$)/.test(a)) {
+    // `--share all|vite|none`: what standalone checks borrow from the suite.
+    // `vite` = the suite's vite (through the router) with a browser of their
+    // own; `all` also connects them to the suite's browser; `none` = the old
+    // full stack per check. A measurement knob — the default is set from runs.
+    const v = a.includes('=') ? a.slice(a.indexOf('=') + 1) : argv[++i]
+    if (!['all', 'vite', 'none'].includes(v)) {
+      console.error(`--share wants all, vite or none, got ${v}`)
+      process.exit(2)
+    }
+    share = v
   } else if (a === '--only') {
     // `--only a,b,c`: exact names, as `affected.mjs` prints them. A fragment
     // filter would let `lobby` also select `lobby-start`, which is harmless,
@@ -341,13 +355,11 @@ try {
       // guard below is what reports a grandchild that outlived its check.
       // The shared vite and browser, unless the check keeps its own stack
       // (`ownStack` in lib/e2e-checks.mjs says why at each entry).
-      const env = check.ownStack
-        ? process.env
-        : {
-            ...process.env,
-            E2E_SHARED_VITE_URL: `http://localhost:${port}`,
-            E2E_SHARED_BROWSER_WS: browserServer.wsEndpoint(),
-          }
+      const env = { ...process.env }
+      if (!check.ownStack && share !== 'none') {
+        env.E2E_SHARED_VITE_URL = `http://localhost:${port}`
+        if (share === 'all') env.E2E_SHARED_BROWSER_WS = browserServer.wsEndpoint()
+      }
       const p = spawn('node', [check.file], {
         cwd: root,
         stdio: ['ignore', 'pipe', 'pipe'],
