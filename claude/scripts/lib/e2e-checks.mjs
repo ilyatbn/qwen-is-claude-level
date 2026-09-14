@@ -87,7 +87,10 @@ export const CHECKS = [
   { name: 'night-combat', file: 'scripts/checks/night-combat.mjs', url: '?sandbox=1&seed=12345', flaky: true },
   { name: 'feel', file: 'scripts/checks/feel.mjs', url: '?sandbox=1&seed=12345' },
   { name: 'minimap', file: 'scripts/checks/minimap.mjs', url: '?sandbox=1&seed=12345' },
-  { name: 'audio', file: 'scripts/checks/audio.mjs', url: '?sandbox=1&seed=12345' },
+  // `serial` (measured): red in 3 of 4 `--jobs 4` runs — a landing played at
+  // 0.250 against a predicted 0.561-0.894, an impact speed from a starved frame
+  // clock — and green in both `--jobs 1` runs.
+  { name: 'audio', file: 'scripts/checks/audio.mjs', url: '?sandbox=1&seed=12345', serial: true },
   { name: 'decorations', file: 'scripts/checks/decorations.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'platforms', file: 'scripts/checks/platforms.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'm9-checkpoint', file: 'scripts/checks/m9-checkpoint.mjs', url: '?sandbox=1&seed=1' },
@@ -97,7 +100,9 @@ export const CHECKS = [
   // §C7: a supply crate falls where you can see it fall. Standalone — it needs a
   // real server, because crates come from the server's spawn schedule and there
   // is no sandbox path to one.
-  { name: 'crates', file: 'scripts/checks/crates.mjs', standalone: true },
+  // `serial` (measured): red in both shared-vite `--jobs 4` runs — "the crate was
+  // never framed in flight" — and green at `--jobs 1` and in both own-stack runs.
+  { name: 'crates', file: 'scripts/checks/crates.mjs', standalone: true, serial: true },
   // §F10.3: **a molotov's fire, in the game, in pixels.** Standalone — it needs
   // a real server, because a molotov's crowd is `Burst::Flames` narrated as 24
   // `projectile_spawn` events and the sandbox has no molotov in its loadout. It
@@ -128,7 +133,9 @@ export const CHECKS = [
   // the snapshot, so it needs a real server rather than the sandbox. Named
   // `hud-bars` because T14.02's Done-when names the same check for §C8's bars,
   // which it will add here.
-  { name: 'hud-bars', file: 'scripts/checks/hud-bars.mjs', standalone: true },
+  // `serial` (measured): red in 3 of 4 `--jobs 4` runs — the poisoned bar's green
+  // channel against the predicted blend — and green in both `--jobs 1` runs.
+  { name: 'hud-bars', file: 'scripts/checks/hud-bars.mjs', standalone: true, serial: true },
   // T14.01 / §C8: the round timer and the event banner. Standalone because it
   // drives a 90 s round to its warning threshold and waits for the weather
   // scheduler's first roll — it needs its own server, not a shared one.
@@ -136,7 +143,11 @@ export const CHECKS = [
   // T14.04 / §C11: `E` throws a grenade from anywhere in the inventory.
   { name: 'quick-throw', file: 'scripts/checks/quick-throw.mjs', standalone: true },
   // T14.05 / §C10: the quick bar, the backpack, and a drag that reaches the server.
-  { name: 'inventory-ui', file: 'scripts/checks/inventory-ui.mjs', standalone: true },
+  // `flaky` (parked, tasks/flaky-test.md): red in 4 of 6 runs including one at
+  // `--jobs 1`, so not a concurrency effect. Its own diagnosis: the bag GREW 6 -> 7
+  // during a fixed 600 ms sleep — a pickup — and the assertion reads any change as
+  // a drop.
+  { name: 'inventory-ui', file: 'scripts/checks/inventory-ui.mjs', standalone: true, flaky: true },
   // T14.06 / §C13: the escape menu, and a quit that actually leaves the room.
   { name: 'escape-menu', file: 'scripts/checks/escape-menu.mjs', standalone: true },
   // T21.24: the player-facing FPS counter, in pixels. Standalone — it lives on

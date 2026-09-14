@@ -6232,3 +6232,10 @@ Knobs (env, default = shipping, gated like WEATHER): DEV_ROUND_CLOCK (ambient-ra
 Falsified at the subject, tree window from B: vent lights removed→lava-lights red; ambient sheet green→ambient-rain red; lobby-seat sweep→lobby red. Knob plants in Rust: each missing rebase red on tick 1; warmup on the constant red.
 Left: title (61 s is the backdrop's own clock; the hook is client code), hud-timer (parked; real 60 s threshold), lobby-start (45 s lets a cold page see the lobby). fog/toxic/fire time is now stack start-up → B's harness reuse.
 Flaky, unrelated: lobby.rs `a_second_client_joins_a_private_room_by_its_code` died at first emit (AlreadyClosed) once; 5/5 alone.
+
+## Browser suite: --jobs, --changed, a shared vite (builder B; 8bb9246 7905a9c 6176115 a7fc12f 8086315 6056045 892933d + this)
+Ports from the OS (`freePort`, claimed under target/e2e-ports; three check pairs shared one). `e2e.mjs --jobs N --share vite` by default: suite 1957.8 s at --jobs 1 → 628.5 s at 4, other builders loading every run. Standalone checks borrow the suite's vite through `lib/stack-router.mjs` (routes by an `e2e_server` cookie; a planted misroute failed escape-menu): fog-visible 144.0→23.8 s, fire-visible 128.2→30.0 s, same assertions. Sharing the *browser* too (`--share all`) saved nothing more alone and cost at --jobs 4: 727.6 s, objects/fog-visible/perf red — one software GPU process for every page.
+serial (red only in parallel): perf, fire-visible, teleport, birds, m5-weather, rematch, living-sky, audio, crates, hud-bars. Parked: inventory-ui (a pickup read as a drop, red at --jobs 1 too). Still red once at --jobs 1 only: death, beams-shader.
+`affected.mjs [REV]` + `check.sh --changed`: from imports and Cargo edges, unknown → everything; link edges decide e2e (game-wasm dev-depends on game-server).
+Leak guard kills only its own E2E_RUN_ID (it had SIGKILLed 19 of A's chromium). Every e2e start rewrites client/src/core/pkg under anyone's live vite — A's red lava-lights baseline.
+Not done: `--jobs` values other than 1 and 4; m5-weather's serial reason predates bc41865 and wants re-measuring.

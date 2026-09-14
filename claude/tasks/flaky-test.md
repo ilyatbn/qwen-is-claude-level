@@ -3,7 +3,7 @@
 Parked by the owner on 2026-09-14, **pending a decision** on each: fix it, delete it, or
 put it back. Nothing here is deleted; a parked test still runs when asked for by name.
 
-- Browser checks carry `flaky: true` in `scripts/e2e.mjs` — skipped by the default run,
+- Browser checks carry `flaky: true` in `scripts/lib/e2e-checks.mjs` — skipped by the default run,
   run with `node scripts/e2e.mjs <name>`.
 - Rust tests carry `#[ignore = "flaky: …"]` — run with
   `cargo test -p <crate> --test <file> <name> -- --ignored`.
@@ -20,6 +20,7 @@ column is what nobody is checking while it sits here.
 | `hud-timer` | browser | carried on the known-flaky list since M19 | the round timer and event banner (§C8) |
 | `night-combat` | browser | carried on the known-flaky list since M19 | beams light the dark at night |
 | `m10-checkpoint` | browser | red twice in M19 full gates, green on standalone re-run both times | the M10 checkpoint — rooms and join codes |
+| `inventory-ui` | browser | red in 4 of 6 suite runs on 2026-09-14 (builder B's `--jobs` measurements), **including one at `--jobs 1`**, so not a concurrency effect. Every time the same line: "the shovel is still in slot 8 and the bag went 6 -> 7 slots — something else was dropped instead". The bag *grew* during a fixed `sleep(600)` after right-clicking the kit — a pickup — and the assertion reads any change in bag size as a drop | the starting kit cannot be dropped (§F5), and a drag that reaches the server (§C10) |
 | `game-server/tests/lobby.rs::a_second_client_joins_a_private_room_by_its_code` | Rust | died once at its first emit on an already-closed socket during Builder A's 2026-09-14 speed work; 5/5 green standalone. Same `AlreadyClosed` shape as the row below | a second client joins a private room by its code |
 | `game-server/tests/lobby.rs::a_lobby_room_has_no_bots` | Rust | red in a T21.20 gate (2026-09-14): `emit: IncompleteResponseFromEngineIo(WebsocketError(AlreadyClosed))`; 5/5 green standalone | a lobby room seats no bots at construction (§C18) |
 

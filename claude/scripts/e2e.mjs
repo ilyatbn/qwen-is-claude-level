@@ -74,16 +74,24 @@ const chromePath = join(
  *
  * The default is measured, not guessed — see DEFAULT_JOBS.
  */
-// DEFAULT_JOBS, measured on this 16-core box on 2026-09-14, full default suite at
-// 00133b7, build warmed first, another builder's tests loading the box throughout:
-//   --jobs 1  1957.8 s  (load median 9.3)   --jobs 4  696.8 s  (load 8 -> 30)
-// 4 is the only parallel value timed end to end. Not yet re-timed with the seven
-// `serial` checks that run then added, which move ~8 min of checks to the end.
+// DEFAULT_JOBS, measured on this 16-core box on 2026-09-14, full default suite,
+// build warmed first, another builder's work loading the box in most runs:
+//   --jobs 1                1957.8 s  49/51  00133b7  (load median 9.3)
+//   --jobs 4, own stacks     696.8 s  45/51  00133b7  (load 8 -> 30)
+//   --jobs 4, --share all    727.6 s  44/51  6056045  (load 7 -> 9)
+//   --jobs 4, --share vite   628.5 s  46/51  892933d  (load 10 -> 7)
+// 4 is the only parallel value timed end to end.
 const DEFAULT_JOBS = 4
 const argv = process.argv.slice(2)
 let jobs = DEFAULT_JOBS
-// DEFAULT_SHARE: provisional until the vite-only runs are in — see `--share`.
-const DEFAULT_SHARE = 'all'
+// DEFAULT_SHARE = 'vite', measured. Alone at --jobs 1, the saving is vite's cold
+// start and not the browser: fog-visible 144.0 s own stack -> 22.2 s share all
+// -> 23.8 s share vite; fire-visible 128.2 -> 28.7 -> 30.0; the same assertions
+// in all three. But `all` puts every concurrent check's pages through one
+// browser's single software GPU process, and at --jobs 4 it was the slowest mode
+// (table above) and turned rendering checks red — objects, fog-visible, perf —
+// that `vite` did not.
+const DEFAULT_SHARE = 'vite'
 let share = DEFAULT_SHARE
 const filters = []
 for (let i = 0; i < argv.length; i++) {
@@ -128,6 +136,7 @@ if (filters.some((f) => f === '--help' || f === '-h')) {
   console.log('  no arguments runs every check except the opt-in ones')
   console.log(`  --jobs N   checks at once (default ${DEFAULT_JOBS}; 1 = sequential, live output)`)
   console.log('  --only     exact check names, comma-separated')
+  console.log(`  --share    all|vite|none: what standalone checks borrow (default ${DEFAULT_SHARE})`)
   console.log(`serial:    ${CHECKS.filter((c) => c.serial).map((c) => c.name).join(', ')}`)
   console.log(`available: ${CHECKS.map((c) => c.name).join(', ')}`)
   console.log(`opt-in:    ${CHECKS.filter((c) => c.optIn).map((c) => c.name).join(', ')}`)
