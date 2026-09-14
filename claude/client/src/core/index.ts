@@ -360,6 +360,7 @@ export interface Constants {
   MOUNTAIN_HEIGHT_FRAC: number[]
   MOUNTAIN_BASE_FRAC: number
   MOUNTAIN_TITLE_BASE_FRAC: number
+  MOUNTAIN_FOOT_FADE: number
   SKY_HORIZON_FRAC: number
   MOUNTAIN_HAZE: number[]
   MOUNTAIN_CELLS: number

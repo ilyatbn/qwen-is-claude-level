@@ -99,18 +99,20 @@ export class ParallaxLayer {
   private readonly scene: Phaser.Scene
   private readonly ridges: Phaser.GameObjects.TileSprite[] = []
   /**
-   * T21.20: a solid skirt under the **near** ridge, from its base to the bottom of the
-   * screen, in the ridge's own tint — or `null` until built.
+   * T21.20: the near ridge's **foot** — a fade from its tint to nothing over
+   * `MOUNTAIN_FOOT_FADE` world px below its base — or `null` until built.
    *
-   * World-anchored, the ridge base is a world row, and anywhere the ground dips below
-   * it — a valley, a crater, a cave mouth — the old sprite ended in a straight line
-   * with sky underneath: a mountain range cut off in mid-air, which is "floating"
-   * again by another route. Seen, not reasoned: `living-sky` carves the ground away
-   * and the first world-anchored frame showed exactly that edge. One rectangle at the
-   * near ridge's depth, so the layer set does not change; the far ridge's underside is
-   * behind it anyway. Not drawn on the title, which keeps its old picture.
+   * World-anchored, the base is a world row, and wherever the ground dips below it
+   * the sprite ended in a straight line with sky under it (seen in `living-sky`'s
+   * carved frame). The first fix was a solid rectangle to the bottom of the screen,
+   * and it was worse: below the base it filled the entire sky with mountain colour
+   * (seen in `skins-ingame`'s frames). A short fade softens the edge and leaves the
+   * sky beneath. One Graphics at the near ridge's depth, so the layer set does not
+   * change; not drawn on the title, which keeps its old picture.
    */
-  private skirt: Phaser.GameObjects.Rectangle | null = null
+  private skirt: Phaser.GameObjects.Graphics | null = null
+  private skirtY = 0
+  private skirtH = 0
   private seed = 0
   private themeId = 0
   private ridgeKeys: string[] = []
@@ -187,12 +189,7 @@ export class ParallaxLayer {
         .setDepth(i === c.MOUNTAIN_LAYERS - 1 ? DEPTH.parallax : DEPTH.parallaxFar + i)
       this.ridges.push(ts)
       if (i === c.MOUNTAIN_LAYERS - 1) {
-        this.skirt = scene.add
-          .rectangle(0, 0, w, 0, 0x000000)
-          .setOrigin(0, 0)
-          .setScrollFactor(0)
-          .setDepth(ts.depth)
-          .setVisible(false)
+        this.skirt = scene.add.graphics().setScrollFactor(0).setDepth(ts.depth).setVisible(false)
       }
       this.lastRidgeTint.push(-1)
     }
@@ -352,13 +349,19 @@ export class ParallaxLayer {
       ts.setPosition(view.left, view.top + lay.top / z)
       ts.setSize(view.w, lay.h / z)
       if (this.skirt && i === this.ridges.length - 1) {
+        // Camera space: one unit is one world px here, because the ridge is world-sized.
         const top = view.top + (lay.top + lay.h) / z
-        const h = Math.max(0, view.top + view.h - top)
-        // Only with a world to anchor to, and only when there is screen below the base.
-        this.skirt.setVisible(lay.worldBase !== null && h > 0 && !this.hidden)
-        this.skirt.setPosition(view.left, top)
-        this.skirt.setSize(view.w, h)
-        this.skirt.setFillStyle(tint)
+        const h = c.MOUNTAIN_FOOT_FADE
+        const onScreen = top < view.top + view.h && top + h > view.top
+        this.skirt.clear()
+        this.skirt.setVisible(lay.worldBase !== null && onScreen && !this.hidden)
+        this.skirtY = top
+        this.skirtH = h
+        if (this.skirt.visible) {
+          // Opaque at the base, transparent at the bottom of the fade.
+          this.skirt.fillGradientStyle(tint, tint, tint, tint, 1, 1, 0, 0)
+          this.skirt.fillRect(view.left, top, view.w, h)
+        }
       }
     }
 
@@ -489,7 +492,9 @@ export class ParallaxLayer {
      * can see the formula and the object disagree.
      */
     ridge: RidgeLayout & { spriteY: number; spriteH: number }
-    /** T21.20's skirt under the near ridge, camera space: `null` if never built. */
+    /** Whether `setVisible(false)` has hidden the band (a check's control frame). */
+    hidden: boolean
+    /** T21.20's foot under the near ridge, camera space: `null` if never built. */
     skirt: { y: number; h: number; visible: boolean } | null
     /** The camera-space rect that fills the screen, so a check can convert. */
     view: { left: number; top: number; w: number; h: number }
@@ -514,8 +519,9 @@ export class ParallaxLayer {
         spriteY: this.ridges[this.ridges.length - 1]?.y ?? 0,
         spriteH: this.ridges[this.ridges.length - 1]?.height ?? 0,
       },
+      hidden: this.hidden,
       skirt: this.skirt
-        ? { y: this.skirt.y, h: this.skirt.height, visible: this.skirt.visible }
+        ? { y: this.skirtY, h: this.skirtH, visible: this.skirt.visible }
         : null,
       view: { left: v.left, top: v.top, w: v.w, h: v.h },
     }

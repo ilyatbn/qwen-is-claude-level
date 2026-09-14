@@ -1767,6 +1767,16 @@ pub const MOUNTAIN_BASE_FRAC: f32 = GROUND_BASE_FRAC;
 /// horizon). A separate name because one constant meaning "of the map" in one scene
 /// and "of the screen" in another is a field that means two things.
 pub const MOUNTAIN_TITLE_BASE_FRAC: f32 = 0.86;
+/// World px over which the near ridge's foot fades from its tint to nothing, below
+/// its base (T21.20).
+///
+/// **A fade, not a solid skirt — measured.** World-anchored, the ridge base is a
+/// world row, and where the ground dips below it the sprite ended in a straight
+/// line with sky under it. A solid fill to the bottom of the screen fixed that edge
+/// and turned the whole sky into a flat wall wherever the camera sat below the base
+/// (`skins-ingame`'s frames: a brown sky, and a ground difference of 55-58 where it
+/// had been 37). Ninety px of haze softens the edge and leaves the sky below it.
+pub const MOUNTAIN_FOOT_FADE: f32 = 90.0;
 /// The sun and moon's horizon, as a fraction of the viewport height.
 ///
 /// Was an inline `0.82` in `sky.ts` (T21.20 moved it here). **Screen space on

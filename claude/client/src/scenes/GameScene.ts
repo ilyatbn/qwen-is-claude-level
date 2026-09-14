@@ -2631,6 +2631,14 @@ export class GameScene extends Phaser.Scene {
       setRainVisible(which: 'toxic' | 'ambient', on: boolean) {
         return self.world?.weather.setRainVisible(which, on) ?? { visible: false }
       },
+      /**
+       * e2e only (§C2, T21.20): hide the parallax band — ridges and their foot — for a
+       * check whose subject stands in front of it. Read back off the layer.
+       */
+      setParallaxVisible(on: boolean) {
+        self.sky?.parallax.setVisible(on)
+        return { hidden: self.sky?.parallax.debug().hidden ?? null }
+      },
       showPads(on: boolean) {
         self.world?.pads.setVisible(on)
         return { visible: self.world?.pads.visible ?? false }

@@ -246,6 +246,12 @@ async function frame(page, wx, wy, tag) {
   // isolate the subject. It is not a weakened threshold — the inequality and its
   // 1.5x bar are untouched.
   await page.evaluate(() => window.__game.showPads?.(false))
+  // **And the parallax band (T21.20)**, for the same reason. Anchoring the mountains
+  // to the world put them — and, in the first version, a solid foot under them —
+  // behind one body and not another: measured, the ground difference went from 37.4
+  // to 55-58 while the bodies stayed at 61.4. Isolating the subject again; the 1.5x
+  // bar is untouched.
+  await page.evaluate(() => window.__game.setParallaxVisible?.(false))
   // One frame for the snap to land, then freeze so the two reads below are the
   // same picture with one thing changed.
   await sleep(250)
@@ -263,6 +269,7 @@ async function frame(page, wx, wy, tag) {
   await page.evaluate(() => window.__game.setActorsVisible(true))
   await page.evaluate(() => window.__game.freeze(false))
   await page.evaluate(() => window.__game.showPads?.(true))
+  await page.evaluate(() => window.__game.setParallaxVisible?.(true))
   return { body, ground }
 }
 
