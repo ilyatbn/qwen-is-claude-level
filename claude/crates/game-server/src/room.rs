@@ -2950,7 +2950,9 @@ async fn run(
                     }
                 }
                 was_lobby = in_lobby;
-                for id in room.sweep_unready(READY_TIMEOUT) {
+                // `DEV_READY_TIMEOUT`, which defaults to `READY_TIMEOUT_SECS`.
+                let ready_timeout = Duration::from_secs_f32(room.config.ready_timeout);
+                for id in room.sweep_unready(ready_timeout) {
                     // The socket-layer half of leaving, which the sweep never
                     // did — see `session::release_swept_socket` for what it is
                     // and what it deliberately is not (the registry's `humans`

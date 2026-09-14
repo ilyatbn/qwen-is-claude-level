@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use game_core::constants::{MapGenerator, MapScale};
 use game_core::constants::{
     BOT_COUNT_DEFAULT, BOT_SKILL_DEFAULT, DEFAULT_MAP_GENERATOR, DEFAULT_MAP_SCALE,
-    LOBBY_BOT_TIMEOUT, MAX_PLAYERS, ROOM_EMPTY_TTL, ROUND_SECONDS,
+    LOBBY_BOT_TIMEOUT, MAX_PLAYERS, READY_TIMEOUT_SECS, ROOM_EMPTY_TTL, ROUND_SECONDS,
 };
 use game_core::weapons::explode::EffectKind;
 use game_core::world::WeatherMode;
@@ -154,6 +154,20 @@ pub struct Config {
     /// **Not in the replay header**, like `dev_flashlight`. A round recorded
     /// with this set will not replay.
     pub dev_round_clock: f32,
+    /// Development only (`DEV_READY_TIMEOUT=<seconds>`, default
+    /// `READY_TIMEOUT_SECS`): how long a seat that never sent `ready` keeps its
+    /// place once a world exists.
+    ///
+    /// Same family as `LOBBY_BOT_TIMEOUT`, which exists for the same reason.
+    /// The `lobby` check proves a private lobby is **never** swept (§E3), and
+    /// the sweep reads `joined_at.elapsed()`, so the check had to sit past the
+    /// timeout on the wall clock: 30 s of a run. A shorter timeout keeps the
+    /// claim's teeth. If lobby seats were ever swept again, the host would be
+    /// dropped at this value instead of at 30 s, and the check would still go red.
+    ///
+    /// Not in the replay header, and it does not need to be: a sweep is recorded
+    /// as a `DropUnready` command, because a replay has no wall clock.
+    pub ready_timeout: f32,
 }
 
 /// Parse `WEATHER`. Unset is `Auto`; every other value must be spelled exactly.
@@ -214,6 +228,7 @@ impl Default for Config {
             weather_mode: WeatherMode::Auto,
             bot_skill: BOT_SKILL_DEFAULT,
             dev_round_clock: 0.0,
+            ready_timeout: READY_TIMEOUT_SECS,
         }
     }
 }
@@ -403,6 +418,21 @@ impl Config {
                 }
                 None => d.dev_round_clock,
             },
+            ready_timeout: match get("DEV_READY_TIMEOUT") {
+                Some(v) => {
+                    let bad = || ConfigError {
+                        var: "DEV_READY_TIMEOUT",
+                        value: v.clone(),
+                        expected: "a positive number of seconds".to_string(),
+                    };
+                    let n = v.trim().parse::<f32>().map_err(|_| bad())?;
+                    if !(n.is_finite() && n > 0.0) {
+                        return Err(bad());
+                    }
+                    n
+                }
+                None => d.ready_timeout,
+            },
         })
     }
 
@@ -412,7 +442,7 @@ impl Config {
             "bind={} scale={} generator={} max_players={} round_seconds={} \
              room_empty_ttl={} lobby_bot_timeout={} fixed_seed={} record_replay={} debug_dump={} bots={} \
              bot_skill={} dev_start_health={} dev_poisoned={} dev_flashlight={} weather={:?} \
-             dev_round_clock={}",
+             dev_round_clock={} ready_timeout={}",
             self.bind_addr,
             self.map_scale.as_str(),
             self.map_generator.as_str(),
@@ -432,6 +462,7 @@ impl Config {
             self.dev_flashlight,
             self.weather_mode,
             self.dev_round_clock,
+            self.ready_timeout,
         )
     }
 }
@@ -645,6 +676,27 @@ mod tests {
         // hour later, for a reason that is not in its own file.
         for v in ["", "Off", "OFF", "no", "1", "true", "rain", "snow"] {
             assert!(from(&[("WEATHER", v)]).is_err(), "WEATHER={v} was accepted");
+        }
+    }
+
+    #[test]
+    fn dev_ready_timeout_defaults_to_the_shipped_constant_and_refuses_nonsense() {
+        assert_eq!(
+            Config::from_source(empty).expect("ok").ready_timeout,
+            READY_TIMEOUT_SECS,
+            "an unset DEV_READY_TIMEOUT changed the shipping timeout"
+        );
+        assert_eq!(
+            from(&[("DEV_READY_TIMEOUT", "12")])
+                .expect("ok")
+                .ready_timeout,
+            12.0
+        );
+        for v in ["", "0", "-5", "abc", "inf", "NaN"] {
+            assert!(
+                from(&[("DEV_READY_TIMEOUT", v)]).is_err(),
+                "DEV_READY_TIMEOUT={v} was accepted"
+            );
         }
     }
 

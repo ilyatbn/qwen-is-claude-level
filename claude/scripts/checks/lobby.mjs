@@ -24,6 +24,19 @@ import { key as clientKey } from '../lib/client-keys.mjs'
 const PORT = await freePort()
 const { fail, ok, finish } = (await import('./harness.mjs')).tally('lobby')
 
+/**
+ * **This check's own ready timeout, not the shipped one.** Handed to the server
+ * as `DEV_READY_TIMEOUT`, and the §E3 wait below reads the same name, so the two
+ * cannot disagree (`lobby-start` does the same with `LOBBY_BOT_TIMEOUT`).
+ *
+ * Shorter than `READY_TIMEOUT_SECS` because that wait is wall clock and was ~30 s
+ * of this run. The claim keeps its teeth: a sweep that took lobby seats would drop
+ * the host at this value just as it did at 30 s. And it leaves room for the match
+ * this check starts later: both clients must decode the map and send `ready`
+ * inside it.
+ */
+const READY_TIMEOUT_S = 12
+
 const stack = await startStack({
   port: PORT,
   label: 'lobby',
@@ -32,6 +45,7 @@ const stack = await startStack({
     // read off the screen. §E2's timeout is `public_lobby`'s subject.
     BOT_COUNT: '0',
     FIXED_SEED: '4242',
+    DEV_READY_TIMEOUT: String(READY_TIMEOUT_S),
   },
 })
 const { browser, viteUrl } = stack
@@ -268,20 +282,24 @@ if (!panel.timer.prevDisabled) {
 //
 // It has to be a **real** wait: the sweep reads `joined_at.elapsed()`, so
 // nothing but the wall clock reaches it. `docs/74:110` — *"No timeout, ever. A
-// private lobby waits as long as its players do."*
+// private lobby waits as long as its players do."* The timeout it waits past is
+// the one this server runs (`READY_TIMEOUT_S`, above), not the shipped one.
 const READY_TIMEOUT_SECS = rustConstants().get('READY_TIMEOUT_SECS')
 // The margin is slack for the tick that notices, not a tunable: the sweep runs
 // once a frame and `>` is strict, so landing exactly on the boundary would be a
 // coin flip.
 const MARGIN_MS = 2_000
 const sat = Date.now() - hostSeatedAt
-const remaining = READY_TIMEOUT_SECS * 1000 + MARGIN_MS - sat
+const remaining = READY_TIMEOUT_S * 1000 + MARGIN_MS - sat
 if (remaining > 0) await sleep(remaining)
 const satFor = (Date.now() - hostSeatedAt) / 1000
-if (satFor <= READY_TIMEOUT_SECS) {
-  fail(`the lobby was only open ${satFor.toFixed(1)} s, under the ${READY_TIMEOUT_SECS} s timeout: the wait proves nothing`)
+if (satFor <= READY_TIMEOUT_S) {
+  fail(`the lobby was only open ${satFor.toFixed(1)} s, under this server's ${READY_TIMEOUT_S} s timeout: the wait proves nothing`)
 } else {
-  ok(`the host sat in its own lobby for ${satFor.toFixed(1)} s, past READY_TIMEOUT_SECS=${READY_TIMEOUT_SECS}`)
+  ok(
+    `the host sat in its own lobby for ${satFor.toFixed(1)} s, past this server's ready timeout ` +
+      `of ${READY_TIMEOUT_S} s (DEV_READY_TIMEOUT; shipped READY_TIMEOUT_SECS=${READY_TIMEOUT_SECS})`,
+  )
 }
 
 // Nobody was swept: the roster still seats both.
