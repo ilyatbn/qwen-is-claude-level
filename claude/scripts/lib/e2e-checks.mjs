@@ -165,9 +165,12 @@ export const CHECKS = [
   // T15.01 / §C5: teleport pads. Standalone — it needs a real server (the pads
   // arrive in `map_init` and the charge in the snapshot) and it walks a player
   // across the map, which wants its own round rather than a shared one.
-  // `serial` (measured, 2026-09-14): red in both `--jobs 4` runs — "the charge never
-  // left zero", a pad charge polled against a wall-clock deadline — and green at `--jobs 1`.
-  { name: 'teleport', file: 'scripts/checks/teleport.mjs', standalone: true, serial: true },
+  // `serial` (measured, 2026-09-14): red in both own-stack `--jobs 4` runs — "the
+  // charge never left zero", a pad charge polled against a wall-clock deadline —
+  // and green at `--jobs 1`. Then `flaky` (parked, tasks/flaky-test.md): red again
+  // running ALONE in the serial tail of the 1160eac `check.sh --changed` gate —
+  // "timed out after 30 s waiting for the respawn", health 0 but still alive.
+  { name: 'teleport', file: 'scripts/checks/teleport.mjs', standalone: true, serial: true, flaky: true },
   // T15.04 / §C16. Standalone: it needs a real server, because birds are
   // server-simulated and the drop has to travel the wire.
   // `serial` (measured): red in both `--jobs 4` runs — "73s and every bird is still
