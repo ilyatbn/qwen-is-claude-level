@@ -143,14 +143,16 @@ test('the real crate graph: game-core has both dependents, and the wasm does not
 
 test('the real game-server selects standalone checks, not in-page ones', () => {
   const r = affected(['crates/game-server/src/app.rs'], real)
-  assert.ok(r.e2e.includes('escape-menu'))
+  // `quick-throw`, not `escape-menu`: escape-menu is parked (tasks/flaky-test.md), and a
+  // parked check is rightly not selected by a helper or crate change.
+  assert.ok(r.e2e.includes('quick-throw'))
   assert.ok(!r.e2e.includes('sky'), 'sky runs on the sandbox, with no server')
   assert.equal(r.netSmoke, true)
 })
 
 test('the real harness selects the standalone checks that import it', () => {
   const r = affected(['scripts/checks/harness.mjs'], real)
-  for (const n of ['escape-menu', 'quick-throw', 'lobby-start']) assert.ok(r.e2e.includes(n), n)
+  for (const n of ['beams-shader', 'quick-throw', 'lobby-start']) assert.ok(r.e2e.includes(n), n)
   assert.ok(!r.e2e.includes('sky'), 'sky does not import the harness')
   assert.ok(!r.e2e.includes('two-clients'), 'two-clients is parked')
 })
