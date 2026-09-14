@@ -86,12 +86,21 @@ function fogState(page) {
   })
 }
 
+/**
+ * This check's own warmup, not the shipped `WARMUP_SECONDS`: three servers each
+ * waited out a full warmup before the weather could start. Nothing here is about
+ * warmup. The same value goes to every arm, so the clear arm's round-time
+ * alignment below still compares like with like.
+ */
+const WARMUP_S = 2
+
 const common = {
   ROUND_SECONDS: String(ROUND_SECONDS),
   FIXED_SEED: '4242',
   // No bots: a bot walking through a sampled patch is a colour change this
   // check would attribute to the weather.
   BOT_COUNT: '0',
+  DEV_WARMUP_SECONDS: String(WARMUP_S),
 }
 
 // --- the fog arm, first, because it sets the round time the other must match --

@@ -808,6 +808,9 @@ pub struct World {
     phase_started_at: f32,
     /// `Playing` duration. Defaults to `ROUND_SECONDS`; overridden for tests.
     round_seconds: f32,
+    /// `Warmup` duration. Defaults to `WARMUP_SECONDS`; the server's
+    /// `DEV_WARMUP_SECONDS` shortens it for browser checks.
+    warmup_seconds: f32,
     last_day_phase: DayPhase,
 
     toxic: Option<(u32, ToxicRain)>,
@@ -952,6 +955,7 @@ impl World {
             tick: 0,
             phase: RoundPhase::Warmup,
             round_seconds: ROUND_SECONDS,
+            warmup_seconds: WARMUP_SECONDS,
             wind,
             seed,
             events: Vec::new(),
@@ -1073,6 +1077,13 @@ impl World {
         self.round_seconds = secs.max(0.0);
     }
 
+    /// How long `Warmup` lasts. `WARMUP_SECONDS` unless the server's
+    /// `DEV_WARMUP_SECONDS` says otherwise. Read only by `phase_time_left`, which
+    /// is what ends the phase, so this is the whole of the change.
+    pub fn set_warmup_seconds(&mut self, secs: f32) {
+        self.warmup_seconds = secs.max(0.0);
+    }
+
     /// Start this world's round clock at `t` instead of 0. The server's
     /// `DEV_ROUND_CLOCK`, for checks that photograph night or the ambient rain.
     ///
@@ -1160,7 +1171,7 @@ impl World {
     pub fn phase_time_left(&self) -> f32 {
         let d = match self.phase {
             RoundPhase::Lobby => return f32::INFINITY,
-            RoundPhase::Warmup => WARMUP_SECONDS,
+            RoundPhase::Warmup => self.warmup_seconds,
             RoundPhase::Playing => self.round_seconds,
             RoundPhase::Ended => ENDED_SECONDS,
         };
@@ -4211,6 +4222,11 @@ mod state_hash_coverage {
             carve_seq: _,
             phase_started_at: _,
             round_seconds: _,
+            // Set once at construction by a development switch and never written
+            // again, like `weather_mode`. Not hashed, so a recorded replay's footer
+            // does not move. What it changes, *when* `Playing` begins, is in the
+            // hash through `phase` and `phase_started_at`.
+            warmup_seconds: _,
             last_day_phase: _,
             toxic: _,
             meteor: _,
@@ -10103,5 +10119,50 @@ mod start_clock_at_tests {
             day.darkness()
         );
         assert!((night.darkness() - crate::constants::NIGHT_DARKNESS).abs() < 1e-3);
+    }
+}
+
+/// `World::set_warmup_seconds`: the phase ends when the configured warmup does,
+/// through the same `phase_time_left` the step already consults.
+#[cfg(test)]
+mod warmup_seconds_tests {
+    use super::*;
+    use crate::constants::SIM_DT;
+
+    /// Step a fresh world until it leaves `Warmup`; the round time it did so at.
+    fn warmup_ends_at(w: &mut World) -> f32 {
+        let cap = ((WARMUP_SECONDS * 2.0) / SIM_DT).ceil() as u32;
+        for _ in 0..cap {
+            if w.phase != RoundPhase::Warmup {
+                return w.round_time;
+            }
+            w.step(SIM_DT);
+        }
+        f32::INFINITY
+    }
+
+    #[test]
+    fn a_shortened_warmup_hands_over_to_playing_when_it_says() {
+        let short = WARMUP_SECONDS / 4.0;
+        let mut w = World::for_test(4242, MapScale::Small);
+        w.set_warmup_seconds(short);
+        let ended = warmup_ends_at(&mut w);
+        assert_eq!(w.phase, RoundPhase::Playing, "warmup never ended");
+        assert!(
+            (ended - short).abs() <= SIM_DT * 2.0,
+            "a {short} s warmup ended at round time {ended}"
+        );
+        // The control: an untouched world is still warming up at that moment,
+        // and ends at the shipped constant, so the setter is what moved it.
+        let mut d = World::for_test(4242, MapScale::Small);
+        let shipped = warmup_ends_at(&mut d);
+        assert!(
+            (shipped - WARMUP_SECONDS).abs() <= SIM_DT * 2.0,
+            "the default warmup ended at {shipped}, not WARMUP_SECONDS"
+        );
+        assert!(
+            shipped > ended + SIM_DT,
+            "control: the setter changed nothing"
+        );
     }
 }

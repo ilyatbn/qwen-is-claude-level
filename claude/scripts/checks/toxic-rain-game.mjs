@@ -34,6 +34,14 @@ import { startStack, enterBattle, tally, sleep, freePort } from './harness.mjs'
 const PORT = await freePort()
 const { fail, ok, finish } = tally('toxic-rain-game')
 
+/**
+ * This check's own warmup, not the shipped `WARMUP_SECONDS`. Both servers below
+ * waited out a full warmup before the first shower could start, and neither half
+ * is about warmup. The dry-sky control still reads before the first drop:
+ * `WEATHER=toxic` telegraphs for `EFFECT_TELEGRAPH` after play begins.
+ */
+const WARMUP_S = 2
+
 const stack = await startStack({
   port: PORT,
   label: 'toxic-rain-game',
@@ -41,6 +49,7 @@ const stack = await startStack({
     WEATHER: 'toxic',
     BOT_COUNT: '0',
     LOBBY_BOT_TIMEOUT: '3',
+    DEV_WARMUP_SECONDS: String(WARMUP_S),
     // **Pinned for the damage half (T21.25).** Where a shower's drops land is a
     // seeded draw, and one shower is one draw: measured in the open over six
     // seeds, five lost 65-97 health and one (4242) lost nothing. The population
@@ -228,7 +237,13 @@ await stack.close()
 const roofStack = await startStack({
   port: await freePort(),
   label: 'toxic-rain-game/roof',
-  env: { WEATHER: 'toxic', BOT_COUNT: '0', LOBBY_BOT_TIMEOUT: '3', FIXED_SEED: '2' },
+  env: {
+    WEATHER: 'toxic',
+    BOT_COUNT: '0',
+    LOBBY_BOT_TIMEOUT: '3',
+    FIXED_SEED: '2',
+    DEV_WARMUP_SECONDS: String(WARMUP_S),
+  },
 })
 try {
   const rc = await roofStack.openClient({ name: 'ana' })

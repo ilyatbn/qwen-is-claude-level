@@ -14,6 +14,7 @@ use game_core::constants::{MapGenerator, MapScale};
 use game_core::constants::{
     BOT_COUNT_DEFAULT, BOT_SKILL_DEFAULT, DEFAULT_MAP_GENERATOR, DEFAULT_MAP_SCALE,
     LOBBY_BOT_TIMEOUT, MAX_PLAYERS, READY_TIMEOUT_SECS, ROOM_EMPTY_TTL, ROUND_SECONDS,
+    WARMUP_SECONDS,
 };
 use game_core::weapons::explode::EffectKind;
 use game_core::world::WeatherMode;
@@ -168,6 +169,17 @@ pub struct Config {
     /// Not in the replay header, and it does not need to be: a sweep is recorded
     /// as a `DropUnready` command, because a replay has no wall clock.
     pub ready_timeout: f32,
+    /// Development only (`DEV_WARMUP_SECONDS=<seconds>`, default
+    /// `WARMUP_SECONDS`): how long `Warmup` lasts before `Playing` begins.
+    ///
+    /// Same family as `ROUND_SECONDS`. Several browser checks start more than one
+    /// server (`fog-visible` three, `toxic-rain-game` two), and each arm waited
+    /// out a full warmup before it could see anything. None of them is about
+    /// warmup, and a check that is (no damage during warmup) leaves this unset.
+    ///
+    /// **Not in the replay header**, like `dev_round_clock`. A round recorded
+    /// with it set will not replay.
+    pub warmup_seconds: f32,
 }
 
 /// Parse `WEATHER`. Unset is `Auto`; every other value must be spelled exactly.
@@ -229,6 +241,7 @@ impl Default for Config {
             bot_skill: BOT_SKILL_DEFAULT,
             dev_round_clock: 0.0,
             ready_timeout: READY_TIMEOUT_SECS,
+            warmup_seconds: WARMUP_SECONDS,
         }
     }
 }
@@ -433,6 +446,21 @@ impl Config {
                 }
                 None => d.ready_timeout,
             },
+            warmup_seconds: match get("DEV_WARMUP_SECONDS") {
+                Some(v) => {
+                    let bad = || ConfigError {
+                        var: "DEV_WARMUP_SECONDS",
+                        value: v.clone(),
+                        expected: "a positive number of seconds".to_string(),
+                    };
+                    let n = v.trim().parse::<f32>().map_err(|_| bad())?;
+                    if !(n.is_finite() && n > 0.0) {
+                        return Err(bad());
+                    }
+                    n
+                }
+                None => d.warmup_seconds,
+            },
         })
     }
 
@@ -442,7 +470,7 @@ impl Config {
             "bind={} scale={} generator={} max_players={} round_seconds={} \
              room_empty_ttl={} lobby_bot_timeout={} fixed_seed={} record_replay={} debug_dump={} bots={} \
              bot_skill={} dev_start_health={} dev_poisoned={} dev_flashlight={} weather={:?} \
-             dev_round_clock={} ready_timeout={}",
+             dev_round_clock={} ready_timeout={} warmup_seconds={}",
             self.bind_addr,
             self.map_scale.as_str(),
             self.map_generator.as_str(),
@@ -463,6 +491,7 @@ impl Config {
             self.weather_mode,
             self.dev_round_clock,
             self.ready_timeout,
+            self.warmup_seconds,
         )
     }
 }
@@ -676,6 +705,27 @@ mod tests {
         // hour later, for a reason that is not in its own file.
         for v in ["", "Off", "OFF", "no", "1", "true", "rain", "snow"] {
             assert!(from(&[("WEATHER", v)]).is_err(), "WEATHER={v} was accepted");
+        }
+    }
+
+    #[test]
+    fn dev_warmup_seconds_defaults_to_the_shipped_constant_and_refuses_nonsense() {
+        assert_eq!(
+            Config::from_source(empty).expect("ok").warmup_seconds,
+            WARMUP_SECONDS,
+            "an unset DEV_WARMUP_SECONDS changed the shipping warmup"
+        );
+        assert_eq!(
+            from(&[("DEV_WARMUP_SECONDS", "2")])
+                .expect("ok")
+                .warmup_seconds,
+            2.0
+        );
+        for v in ["", "0", "-1", "abc", "inf", "NaN"] {
+            assert!(
+                from(&[("DEV_WARMUP_SECONDS", v)]).is_err(),
+                "DEV_WARMUP_SECONDS={v} was accepted"
+            );
         }
     }
 

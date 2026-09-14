@@ -1045,12 +1045,15 @@ impl Room {
         let round_seconds = self.config.round_seconds;
         let weather_mode = self.config.weather_mode;
         let dev_round_clock = self.config.dev_round_clock;
+        let warmup_seconds = self.config.warmup_seconds;
         move || {
             let mut world = World::with_generator(seed, scale, secret, generator);
             // `ROUND_SECONDS` is an environment override for testing (`docs/41`
             // §5) and it was parsed and then dropped: the world used the
             // constant, so a shortened round never shortened.
             world.set_round_seconds(round_seconds);
+            // `DEV_WARMUP_SECONDS`, for the same reason and at both sites.
+            world.set_warmup_seconds(warmup_seconds);
             world.weather_mode = weather_mode;
             // `DEV_ROUND_CLOCK`. Before `populate_world` seats anyone, because a
             // seat's i-frames and respawn times are read off this clock.
@@ -2556,6 +2559,7 @@ impl Room {
             self.config.map_generator,
         );
         world.set_round_seconds(self.config.round_seconds);
+        world.set_warmup_seconds(self.config.warmup_seconds);
         // Both construction sites, or a `WEATHER=off` room gets its weather back
         // the moment the round restarts — which is the shape `set_round_seconds`
         // was already fixed for once (§E4).

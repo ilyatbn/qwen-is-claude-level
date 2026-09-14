@@ -55,12 +55,21 @@ const { fail, ok, finish } = (await import('./harness.mjs')).tally('rematch')
 // From the shipped constants, never a literal: the `Ended` window is what the
 // vote resolves at, and a wait spelled here would expire the day it moves.
 const ENDED_SECONDS = rustConstants().get('ENDED_SECONDS')
+// The shipped warmup. The server below runs a shorter one, so every timeout
+// derived from this is still an upper bound.
 const WARMUP_SECONDS = rustConstants().get('WARMUP_SECONDS')
+/**
+ * This check's own warmup: two rounds each waited out a full one, and neither
+ * the replay vote nor the leaver's new match is about warmup. The frame check
+ * below still waits for `playing`, because warmup locks input.
+ */
+const WARMUP_S = 2
 
 const stack = await startStack({
   port: PORT,
   label: 'rematch',
   env: {
+    DEV_WARMUP_SECONDS: String(WARMUP_S),
     // Short enough to reach `Ended` without waiting out a real round; the
     // `Ended` window itself is a constant and cannot be shortened.
     ROUND_SECONDS: '20',
