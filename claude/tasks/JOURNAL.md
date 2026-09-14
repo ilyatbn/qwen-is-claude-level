@@ -6225,3 +6225,10 @@ deeper stays perched, bounded by `OBJECT_FOOTPRINT_SUPPORT`, kept as the backsto
 stale "median" docs fixed. Without the fill 3603 base columns hover (control), with it 0; flat ground gains
 nothing. Sweep before → after: p05 0.873 → 0.872, caves 82.0 → 81.8%, no failures; golden regenerated with
 it (24/24). Gate 12 57/57 — the seed-pinned browser checks survived. B (tilt) not done, per the split.
+
+## Step 3: checks stop waiting for the clock (builder A; 00133b7 31b6764 39fc8d0 0985113 bc41865 ab2dd36)
+Rust, `[profile.dev.package.game-core] opt-level=2`: game_core 140→33 s, golden 138→29 s (unchanged), world_step 101→15 s, replay_run 45→6 s. `World::for_test` map cache: world_step 15→0.3 s, thrown →0.1 s. Workspace after: 140 s wall, 36/36 ok.
+Knobs (env, default = shipping, gated like WEATHER): DEV_ROUND_CLOCK (ambient-rain 133 s red→33 s; lava-lights→33 s), DEV_READY_TIMEOUT (lobby 58→37 s), DEV_WARMUP_SECONDS (fog-visible 173→145, toxic-rain-game 120→82, rematch 83 red→69). m5-weather polls instead of sleeping (76 s red→60 s).
+Falsified at the subject, tree window from B: vent lights removed→lava-lights red; ambient sheet green→ambient-rain red; lobby-seat sweep→lobby red. Knob plants in Rust: each missing rebase red on tick 1; warmup on the constant red.
+Left: title (61 s is the backdrop's own clock; the hook is client code), hud-timer (parked; real 60 s threshold), lobby-start (45 s lets a cold page see the lobby). fog/toxic/fire time is now stack start-up → B's harness reuse.
+Flaky, unrelated: lobby.rs `a_second_client_joins_a_private_room_by_its_code` died at first emit (AlreadyClosed) once; 5/5 alone.
