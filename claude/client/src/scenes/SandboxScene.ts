@@ -1009,6 +1009,7 @@ export class SandboxScene extends Phaser.Scene {
         return {
           setting: isHighQuality(),
           shaderFog: self.world.weather.fogIsShader,
+          shaderBeams: self.world.ordnance.beamsAreShader,
           // T21.18. Read off the shader object, not off the setting, for the
           // reason `shaderFog` is: with no WebGL the answer is `false` however
           // the setting is set, and since T21.18 there is no sprite cloud to

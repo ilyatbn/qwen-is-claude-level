@@ -1423,6 +1423,8 @@ pub fn constants_json() -> String {
         // §F2: the beam's life, and the bullet streak's shape. `TRACER_LIFETIME`
         // is retired — that path is the two lasers now.
         BEAM_LIFETIME => c::BEAM_LIFETIME,
+        BEAM_SHADER_WIDTH => c::BEAM_SHADER_WIDTH,
+        BEAM_SHADER_POOL => c::BEAM_SHADER_POOL,
         BULLET_LENGTH => c::BULLET_LENGTH,
         BULLET_WIDTH => c::BULLET_WIDTH,
         TRACER_WIDTH => c::TRACER_WIDTH,

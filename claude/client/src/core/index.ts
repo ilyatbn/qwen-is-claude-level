@@ -334,6 +334,8 @@ export interface Constants {
   HEALTH_CAP: number
   SMG_MUZZLE_SPEED: number
   BEAM_LIFETIME: number
+  BEAM_SHADER_WIDTH: number
+  BEAM_SHADER_POOL: number
   BULLET_LENGTH: number
   BULLET_WIDTH: number
   TRACER_WIDTH: number

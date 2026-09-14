@@ -217,6 +217,7 @@ const CHECKS = [
   { name: 'toxic-rain-game', file: 'scripts/checks/toxic-rain-game.mjs', standalone: true },
   { name: 'ambient-rain', file: 'scripts/checks/ambient-rain.mjs', standalone: true },
   { name: 'minimap-crates', file: 'scripts/checks/minimap-crates.mjs', standalone: true },
+  { name: 'beams-shader', file: 'scripts/checks/beams-shader.mjs', standalone: true },
   // T20.10: ground animals, counted at both ends and then photographed.
   // Standalone: it needs a real round on a fixed seed with no bots, because a
   // bot's stray rocket killing one changes the counts it compares.

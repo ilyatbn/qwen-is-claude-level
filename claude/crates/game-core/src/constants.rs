@@ -2498,6 +2498,13 @@ pub const BULLET_WIDTH: f32 = 2.0;
 /// `ordnance-visible` could only photograph one by stopping time first: a check
 /// that has to freeze the frame to see a thing is telling you the player cannot.
 pub const BEAM_LIFETIME: f32 = 0.35;
+/// T21.18: the world-px thickness of the quad a laser beam is painted on under
+/// High Quality — the halo's full spread, not the core's. The flat path's widest
+/// pass is `TRACER_WIDTH × 5`; the shader fades to nothing inside this.
+pub const BEAM_SHADER_WIDTH: f32 = 22.0;
+/// T21.18: how many beams at once get a shader quad. Past it, the rest are drawn
+/// with the flat lines — a cap, never a beam dropped.
+pub const BEAM_SHADER_POOL: u32 = 12;
 
 // ---------------------------------------------------------------------------
 // Special items (M21)

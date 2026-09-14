@@ -18,6 +18,8 @@ import {
   type ProjectileKind,
 } from './ordnance-state'
 import { DEPTH } from './backdrop'
+import { BEAM_FRAGMENT, hasWebGL } from './shaders'
+import { isHighQuality, onHighQualityChange } from '../ui/settings'
 
 // The colour and radius tables used to live here as well as in ordnance-state,
 // which is two sources of truth for one thing and the exact shape §B16 warns
@@ -42,6 +44,17 @@ export class OrdnanceLayer {
   /** §F10.3 — fire, painted rather than summed. See the constructor. */
   private readonly flameGfx: Phaser.GameObjects.Graphics
   readonly state: OrdnanceState
+  /** T21.18: the scene, for building shader quads on demand. */
+  private readonly scene: Phaser.Scene
+  /** Asked of the renderer once: a canvas fallback must not be handed a shader. */
+  private readonly webgl: boolean
+  private readonly unsubscribeQuality: () => void
+  /** T21.18: one quad per beam painted under High Quality, grown on demand, capped. */
+  private readonly beamShaders: Phaser.GameObjects.Shader[] = []
+  /** How many beams the last render painted with the shader — read back, not the setting. */
+  beamShadersDrawn = 0
+  /** Hidden for a check's control frame; `render` honours it for the shader quads too. */
+  private hidden = false
 
   constructor(scene: Phaser.Scene) {
     const c = C()
@@ -71,6 +84,12 @@ export class OrdnanceLayer {
     // terrain at night, which is exactly where §A3's "all bullets are visible"
     // was failing — a 2 px white line at 0.09 s was almost impossible to find.
     this.gfx.setBlendMode(Phaser.BlendModes.ADD)
+    this.scene = scene
+    this.webgl = hasWebGL(scene)
+    // **Repaint on the change, not on the next update.** A check freezes the scene
+    // to photograph one beam in both modes; a frozen scene runs no `update`, so a
+    // toggle that waited for one would photograph the old picture twice.
+    this.unsubscribeQuality = onHighQualityChange(() => this.render())
   }
 
   addTracer(x0: number, y0: number, x1: number, y1: number): void {
@@ -113,9 +132,20 @@ export class OrdnanceLayer {
 
   update(dt: number): void {
     this.state.update(dt)
+    this.render()
+  }
+
+  /**
+   * Draw the current state without advancing it.
+   *
+   * Split out of `update` for T21.18, so a High Quality change repaints the same
+   * instant — the same beams at the same life — rather than the next one.
+   */
+  render(): void {
     const g = this.gfx
     const fg = this.flameGfx
     const c = C()
+    const nowMs = performance.now()
     g.clear()
     fg.clear()
     this.redraws += 1
@@ -133,14 +163,36 @@ export class OrdnanceLayer {
     // Three passes rather than two, all additive: the halo gives it presence
     // against terrain, the core gives it the line, and the muzzle flash marks
     // the shooter. Shooting in the dark should tell everyone where you are.
+    //
+    // **T21.18: under High Quality the three strokes are one shader quad** — the
+    // same tracer, the same life, the same muzzle flash; only the line changes.
+    const shaderBeams = this.useBeamShader()
+    let painted = 0
     for (const t of this.state.tracers) {
       const k = t.life / t.ttl
-      g.lineStyle(c.TRACER_WIDTH * 5, 0xff9a3c, 0.18 * k)
-      g.lineBetween(t.x0, t.y0, t.x1, t.y1)
-      g.lineStyle(c.TRACER_WIDTH * 2, 0xffe9a0, 0.55 * k)
-      g.lineBetween(t.x0, t.y0, t.x1, t.y1)
-      g.lineStyle(c.TRACER_WIDTH, 0xffffff, 1.0 * k)
-      g.lineBetween(t.x0, t.y0, t.x1, t.y1)
+      const sh = shaderBeams ? this.beamShader(painted) : null
+      if (sh) {
+        painted++
+        const dx = t.x1 - t.x0
+        const dy = t.y1 - t.y0
+        const len = Math.max(1, Math.hypot(dx, dy))
+        sh.setPosition((t.x0 + t.x1) / 2, (t.y0 + t.y1) / 2)
+        sh.setDisplaySize(len, c.BEAM_SHADER_WIDTH)
+        sh.setRotation(Math.atan2(dy, dx))
+        sh.setUniform('life.value', k)
+        // No `time` here: Phaser sets its own every render (Shader.js, 3.90:
+        // `uniforms.time.value = renderer.game.loop.getDuration()`), and a value written
+        // here was overwritten before it was drawn — found by planting it frozen.
+        sh.setUniform('span.value', len / c.BEAM_SHADER_WIDTH)
+        sh.setVisible(!this.hidden)
+      } else {
+        g.lineStyle(c.TRACER_WIDTH * 5, 0xff9a3c, 0.18 * k)
+        g.lineBetween(t.x0, t.y0, t.x1, t.y1)
+        g.lineStyle(c.TRACER_WIDTH * 2, 0xffe9a0, 0.55 * k)
+        g.lineBetween(t.x0, t.y0, t.x1, t.y1)
+        g.lineStyle(c.TRACER_WIDTH, 0xffffff, 1.0 * k)
+        g.lineBetween(t.x0, t.y0, t.x1, t.y1)
+      }
 
       // Muzzle flash at the origin, biggest at the instant of firing.
       g.fillStyle(0xffd27a, 0.5 * k)
@@ -149,8 +201,11 @@ export class OrdnanceLayer {
       g.fillCircle(t.x0, t.y0, 3 * k)
     }
 
+    // Quads with no beam this frame are hidden, not destroyed: the pool is reused.
+    for (let i = painted; i < this.beamShaders.length; i++) this.beamShaders[i]!.setVisible(false)
+    this.beamShadersDrawn = painted
+
     // Trails: a tapering polyline, oldest thinnest.
-    const nowMs = performance.now()
     for (const p of this.state.projectiles.values()) {
       const look = LOOK[p.kind]
       // §F10.3: **a flame at rest draws no trail.** A tail behind something that
@@ -227,8 +282,61 @@ export class OrdnanceLayer {
     }
   }
 
+  /** T21.18: WebGL and High Quality, both — the one place that decides. */
+  private useBeamShader(): boolean {
+    return this.webgl && isHighQuality()
+  }
+
+  /**
+   * Show or hide the whole layer, **for a check's control frame** (§C2): the painted
+   * beam against the same frozen instant with nothing of this layer on it. Repaints,
+   * so it works on a frozen scene, and the latch survives the next render.
+   */
+  setVisible(on: boolean): void {
+    this.hidden = !on
+    this.gfx.setVisible(on)
+    this.flameGfx.setVisible(on)
+    this.render()
+  }
+
+  get visible(): boolean {
+    return !this.hidden
+  }
+
+  /** Would a beam drawn now be painted by the shader? For the debug handles. */
+  get beamsAreShader(): boolean {
+    return this.useBeamShader()
+  }
+
+  /** Quad `i` of the pool, built on first use; `null` past `BEAM_SHADER_POOL`. */
+  private beamShader(i: number): Phaser.GameObjects.Shader | null {
+    const c = C()
+    if (i >= c.BEAM_SHADER_POOL) return null
+    while (this.beamShaders.length <= i) {
+      const base = new Phaser.Display.BaseShader('laserBeam', BEAM_FRAGMENT, undefined, {
+        life: { type: '1f', value: 0 },
+        span: { type: '1f', value: 1 },
+      })
+      this.beamShaders.push(
+        this.scene.add
+          .shader(base, 0, 0, c.BEAM_SHADER_WIDTH, c.BEAM_SHADER_WIDTH)
+          .setOrigin(0.5, 0.5)
+          .setDepth(DEPTH.particles)
+          // No `setBlendMode`: a Phaser `Shader` has none (tsc said so). How it
+          // composites is decided by what `BEAM_FRAGMENT` writes, which follows the
+          // fog and cloud shaders' convention.
+          .setVisible(false),
+      )
+    }
+    return this.beamShaders[i] ?? null
+  }
+
   destroy(): void {
     this.flameGfx.destroy()
     this.gfx.destroy()
+    for (const s of this.beamShaders) s.destroy()
+    this.beamShaders.length = 0
+    // Or every round leaks a listener, and a setting flip repaints a dead layer.
+    this.unsubscribeQuality()
   }
 }

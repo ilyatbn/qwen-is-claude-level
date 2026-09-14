@@ -91,7 +91,7 @@ import { InventoryPanel } from '../ui/inventory'
 import { EscapeMenu, handleEscape } from '../ui/escapeMenu'
 import { OptionsPanel } from '../ui/optionsPanel'
 import { DebugMode, FpsMeter } from '../ui/debugMode'
-import { isFpsCounter, onFpsCounterChange } from '../ui/settings'
+import { isFpsCounter, isHighQuality, onFpsCounterChange, setHighQuality } from '../ui/settings'
 import { devSurface } from '../dev'
 import { DebugOverlay } from '../render/debugOverlay'
 import { energyBar, healthBar, inRefillDelay, jetpackBar } from '../ui/bars-math'
@@ -2642,6 +2642,25 @@ export class GameScene extends Phaser.Scene {
         self.sky?.parallax.setVisible(on)
         return { hidden: self.sky?.parallax.debug().hidden ?? null }
       },
+      /** e2e only (T21.18): flip High Quality here, and say what is painted now. */
+      setHighQuality(on: boolean) {
+        setHighQuality(localStorage, on)
+        return {
+          setting: isHighQuality(),
+          // Off the layer, not the setting: without WebGL this is false however set.
+          shaderBeams: self.world?.ordnance.beamsAreShader ?? false,
+        }
+      },
+      /** e2e only (§C2, T21.18): hide the ordnance layer for a same-instant control frame. */
+      showOrdnance(on: boolean) {
+        self.world?.ordnance.setVisible(on)
+        return { visible: self.world?.ordnance.visible ?? false }
+      },
+      /** e2e only (T21.18): stop beams fading, so one can be photographed steadily. */
+      holdTracers(on: boolean) {
+        if (self.world) self.world.ordnance.state.holdTracers = on
+        return { held: self.world?.ordnance.state.holdTracers ?? false }
+      },
       showPads(on: boolean) {
         self.world?.pads.setVisible(on)
         return { visible: self.world?.pads.visible ?? false }
@@ -3021,6 +3040,8 @@ export class GameScene extends Phaser.Scene {
           // many the layer is currently drawing, against `observed.hitscans`
           // for how many the server has narrated.
           tracersDrawn: self.world?.ordnance.state.tracers.length ?? 0,
+          // T21.18: beams the last render painted with the shader, read off the layer.
+          beamShadersDrawn: self.world?.ordnance.beamShadersDrawn ?? 0,
           // The snapshot roster includes the local player, so this is the
           // total — not remotes plus one.
           playerCount: self.mirror.players.size,

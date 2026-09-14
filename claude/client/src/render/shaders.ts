@@ -382,3 +382,58 @@ void main() {
   gl_FragColor = vec4(col * a, a);
 }
 `
+
+/**
+ * T21.18 item 3 — a laser beam, painted rather than stroked.
+ *
+ * Lasers are hitscan (`Delivery::Hitscan`): there is no projectile to hide, only the
+ * fading line `OrdnanceLayer` strokes in three passes. Under High Quality this quad
+ * replaces those strokes — a white-hot core, a warm halo that falls off softly
+ * across the beam, and a ripple running along it — and nothing else: the tracer
+ * record, its lifetime and the light it casts are the same objects either way.
+ *
+ * The quad is one beam: x runs along it (0 at the muzzle end, 1 at the impact), y
+ * across it. `life` is the flat path's own fade factor, so a beam dies on the same
+ * curve in both modes; `span` is the quad's length over its width, so the ripple is
+ * spaced in beam-widths however long the shot was.
+ */
+export const BEAM_FRAGMENT = /* glsl */ `
+precision mediump float;
+
+uniform vec2 resolution;
+// 0..1, the beam's remaining life - the flat path's fade, unchanged.
+uniform float life;
+// Seconds of game time, for the ripple - Phaser's own uniform, set at every render.
+uniform float time;
+// Length over width.
+uniform float span;
+
+varying vec2 fragCoord;
+
+${FBM}
+
+// How tight the white core is across the quad, and how far the warm halo spreads.
+const float CORE = 9.0;
+const float HALO = 3.2;
+// Ripple spacing in beam widths, and how fast it runs toward the target.
+const float RIPPLE = 0.35;
+const float SPEED = 7.0;
+
+void main() {
+  vec2 uv = fragCoord / resolution.xy;
+  float y = uv.y - 0.5;
+  float core = exp(-pow(y * CORE, 2.0));
+  float halo = exp(-pow(y * HALO, 2.0));
+  float along = uv.x * span;
+  float shimmer = 0.72 + 0.28 * vnoise(vec2(along / RIPPLE - time * SPEED, time * 3.0));
+  // Round the ends off rather than cutting the quad square.
+  float ends = smoothstep(0.0, 0.015, uv.x) * smoothstep(1.0, 0.985, uv.x);
+  vec3 warm = vec3(1.0, 0.60, 0.24);
+  vec3 hot = vec3(1.0, 0.93, 0.65);
+  vec3 col = warm * halo * 0.55 * shimmer + mix(hot, vec3(1.0), core) * core;
+  float a = clamp((halo * 0.45 * shimmer + core) * life * ends, 0.0, 1.0);
+  // Premultiplied, for the reason FOG_FRAGMENT is: a Phaser Shader has no blend
+  // mode of its own, and the pipeline expects premultiplied alpha.
+  gl_FragColor = vec4(col * a, a);
+}
+`
