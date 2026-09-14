@@ -22,7 +22,7 @@ import { GATE_KEY, padUnderfoot, type PadView } from '../render/pads'
 import { occupiedPlatforms, platformUnderfoot } from '../render/platforms'
 import { atlasArt } from '../render/objects'
 import type { MapObject } from '../net/codec'
-import { C, Core, dequantizeAngle, strictConstants, type VentSpec } from '../core'
+import { C, Core, ambientRain, dequantizeAngle, strictConstants, type VentSpec } from '../core'
 import { asRecord, Connection, type Welcome } from '../net/connection'
 import { parseLobbyState } from '../net/lobby'
 import { WorldMirror, hex } from '../net/worldMirror'
@@ -252,6 +252,8 @@ export class GameScene extends Phaser.Scene {
   private sky!: SkyLayer
   /** The map seed from `welcome`, for §C14's seeded skyline. */
   private mapSeed = 0
+  /** T21.26: the full `u64` map seed, parsed once from `welcome` — `mapSeed` is its low half. */
+  private roundSeedBig = 0n
   /**
    * The **round's** seed, as `welcome` sent it.
    *
@@ -540,6 +542,7 @@ export class GameScene extends Phaser.Scene {
 
     // The round's identity and its clocks.
     this.mapSeed = 0
+    this.roundSeedBig = 0n
     this.roundSeed = ''
     this.phase = 'lobby'
     this.roundTime = 0
@@ -1290,6 +1293,7 @@ export class GameScene extends Phaser.Scene {
     // map lands. Low 32 bits, because that is all the ridge hash consumes.
     this.mapSeed = Number(BigInt(w.seed || '0') & 0xffffffffn) | 0
     this.roundSeed = String(w.seed ?? '')
+    this.roundSeedBig = /^\d+$/.test(this.roundSeed) ? BigInt(this.roundSeed) : 0n
     this.roundTime = w.roundTime
     this.serverRoundTime = w.roundTime
     this.phase = w.phase as Phase
@@ -1862,6 +1866,10 @@ export class GameScene extends Phaser.Scene {
         fallScale: C().MAX_FALL_SPEED,
         fog: this.fog.strength(this.roundTime),
         hasFlashlight: this.hasFlashlight,
+        // T21.26: the harmless rain — the same pure function of the full map seed and
+        // the round clock that every client evaluates, so nothing about it is on the
+        // wire and two clients cannot disagree.
+        ambient: ambientRain(this.roundSeedBig, this.roundTime),
       })
     }
     // Mine visibility is distance to the *player*, not to the camera centre —
@@ -2619,6 +2627,10 @@ export class GameScene extends Phaser.Scene {
        * acknowledging the ask — a hook that answers `true` for "I was called"
        * is the shape this project keeps paying for.
        */
+      /** e2e only (§C2, T21.26): hide one rain for a control frame. Freeze first. */
+      setRainVisible(which: 'toxic' | 'ambient', on: boolean) {
+        return self.world?.weather.setRainVisible(which, on) ?? { visible: false }
+      },
       showPads(on: boolean) {
         self.world?.pads.setVisible(on)
         return { visible: self.world?.pads.visible ?? false }
@@ -2957,6 +2969,12 @@ export class GameScene extends Phaser.Scene {
           rainDrops: self.world?.weather.rainDrops ?? 0,
           rainPool: self.world?.weather.rainPool ?? 0,
           toxicDensityAsked: self.world?.weather.toxicDensityAsked ?? 0,
+          // T21.26: the ambient sheet's own fields — never `rainDrops`, which is the
+          // toxic sheet's and which `toxic-rain-game` reads.
+          ambientAsked: self.world?.weather.ambientAsked ?? 0,
+          ambientIntensity: self.world?.weather.ambientIntensity ?? 0,
+          ambientDrops: self.world?.weather.ambientDrops ?? 0,
+          ambientPool: self.world?.weather.ambientPool ?? 0,
           toxicIntensity: self.world?.weather.toxicIntensity ?? 0,
           // Positions too, so a check can aim a patch at a projectile rather
           // than guess a screen point — a hardcoded coordinate is a test that

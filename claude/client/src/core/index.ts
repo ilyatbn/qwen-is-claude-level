@@ -17,6 +17,7 @@ import init, {
   constants_json,
   core_darkness_at,
   core_fov_radius,
+  ambient_rain,
   fog_strength,
   quantize_angle,
   dequantize_angle,
@@ -212,6 +213,15 @@ export interface Constants {
   ANIMAL_INTERVAL: number
   /** Live toxic drops during a full-rate shower — the emitter's divisor (T20.05). */
   TOXIC_DROPS_IN_FLIGHT: number
+  AMBIENT_RAIN_WINDOW: number
+  AMBIENT_RAIN_CHANCE: number
+  AMBIENT_RAIN_MIN: number
+  AMBIENT_RAIN_MAX: number
+  AMBIENT_RAIN_RAMP: number
+  AMBIENT_RAIN_DROPS: number
+  AMBIENT_RAIN_COLOUR: number
+  AMBIENT_RAIN_SPEED: number
+  AMBIENT_RAIN_ALPHA: number
   TOMBSTONE_W: number
   TOMBSTONE_H: number
   MAX_TOMBSTONES: number
@@ -476,6 +486,19 @@ export const coreDarknessAt = core_darkness_at
  * the field-of-view disagree about how foggy it is.
  */
 export const fogStrength = fog_strength
+
+/**
+ * T21.26: how hard the harmless ambient rain is falling at `roundTime`, `0..1`.
+ *
+ * Rust's `world::ambient::ambient_rain_at`, not a TypeScript copy: a second
+ * spelling of the schedule is a second thing that can disagree. The seed is the
+ * full `u64` — the map's, as `welcome` sends it — split for `wasm_bindgen`.
+ */
+export function ambientRain(seed: bigint, roundTime: number): number {
+  const lo = Number(seed & 0xffffffffn) >>> 0
+  const hi = Number((seed >> 32n) & 0xffffffffn) >>> 0
+  return ambient_rain(lo, hi, roundTime)
+}
 
 /**
  * One lava vent as either path reports it.

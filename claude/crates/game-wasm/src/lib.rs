@@ -1202,6 +1202,18 @@ impl GameCore {
 /// rewritten in TypeScript so the veil and `fov_multiplier` cannot drift apart.
 ///
 /// A fresh `HeavyFog` at t = 0 is the whole state, so no handle is needed.
+/// T21.26: how hard the **ambient** rain is falling, `0.0..=1.0`.
+///
+/// A pure function of the map seed and the round clock (`world/ambient.rs`), so a
+/// networked client evaluates it for itself exactly as it does the day/night
+/// cycle — nothing is broadcast, nothing is simulated, and two clients on one seed
+/// agree by construction. The seed is split because `wasm_bindgen` has no `u64`.
+#[wasm_bindgen]
+pub fn ambient_rain(seed_lo: u32, seed_hi: u32, round_time: f32) -> f32 {
+    let seed = ((seed_hi as u64) << 32) | seed_lo as u64;
+    game_core::world::ambient::ambient_rain_at(seed, round_time)
+}
+
 #[wasm_bindgen]
 pub fn fog_strength(elapsed: f32) -> f32 {
     HeavyFog::new(0.0).strength(elapsed)
@@ -1245,6 +1257,15 @@ pub fn constants_json() -> String {
         // `weather.ts` — the client had a 260-droplet sheet on a seed of its own
         // and the number it should have been derived from was in Rust all along.
         TOXIC_DROPS_IN_FLIGHT => c::TOXIC_DROPS_IN_FLIGHT,
+        AMBIENT_RAIN_WINDOW => c::AMBIENT_RAIN_WINDOW,
+        AMBIENT_RAIN_CHANCE => c::AMBIENT_RAIN_CHANCE,
+        AMBIENT_RAIN_MIN => c::AMBIENT_RAIN_MIN,
+        AMBIENT_RAIN_MAX => c::AMBIENT_RAIN_MAX,
+        AMBIENT_RAIN_RAMP => c::AMBIENT_RAIN_RAMP,
+        AMBIENT_RAIN_DROPS => c::AMBIENT_RAIN_DROPS,
+        AMBIENT_RAIN_COLOUR => c::AMBIENT_RAIN_COLOUR,
+        AMBIENT_RAIN_SPEED => c::AMBIENT_RAIN_SPEED,
+        AMBIENT_RAIN_ALPHA => c::AMBIENT_RAIN_ALPHA,
         TOMBSTONE_W => c::TOMBSTONE_W,
         TOMBSTONE_H => c::TOMBSTONE_H,
         MAX_TOMBSTONES => c::MAX_TOMBSTONES,

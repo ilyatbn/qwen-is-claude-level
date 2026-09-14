@@ -215,6 +215,7 @@ const CHECKS = [
   // that hid a broken `ordnance.update` for three milestones. Standalone: it needs
   // `WEATHER=toxic` on a real server and a real round.
   { name: 'toxic-rain-game', file: 'scripts/checks/toxic-rain-game.mjs', standalone: true },
+  { name: 'ambient-rain', file: 'scripts/checks/ambient-rain.mjs', standalone: true },
   // T20.10: ground animals, counted at both ends and then photographed.
   // Standalone: it needs a real round on a fixed seed with no bots, because a
   // bot's stray rocket killing one changes the counts it compares.

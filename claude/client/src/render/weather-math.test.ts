@@ -379,3 +379,18 @@ describe("LavaClock — the networked client's half of §A3's ground fire (T19.2
     expect(l.query(1)).toBeNull()
   })
 })
+
+describe('RainField speed (T21.26)', () => {
+  it("scales every drop's fall speed and leaves the rest of the sheet alone", () => {
+    // An arbitrary multiplier, not a tunable: the property is "scales", for any k.
+    const k = 0.37
+    const a = new RainField(40, 800, 600, 9191)
+    const b = new RainField(40, 800, 600, 9191, k)
+    expect(b.drops.length).toBe(a.drops.length)
+    for (let i = 0; i < a.drops.length; i++) {
+      expect(b.drops[i]!.vy).toBeCloseTo(a.drops[i]!.vy * k, 9)
+      expect(b.drops[i]!.x).toBe(a.drops[i]!.x)
+      expect(b.drops[i]!.len).toBe(a.drops[i]!.len)
+    }
+  })
+})

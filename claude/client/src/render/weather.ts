@@ -64,6 +64,15 @@ export class WeatherLayer {
    */
   private readonly fogVeil: Phaser.GameObjects.Graphics
   private readonly rain: RainField
+  /**
+   * T21.26's **ambient** rain: harmless, grey-blue, on its own schedule — a
+   * separate sheet, never a reuse of `rain`. `rain` is the toxic rain's picture and
+   * its density is welded to the real drops (T20.05); a second rain sharing it would
+   * be a field that means two things, and `toxic-rain-game` reads `rainDrops`.
+   */
+  private readonly ambient: RainField
+  private readonly ambientGfx: Phaser.GameObjects.Graphics
+  private ambientTarget = 0
   private readonly embers = new EmberField(70, 260)
   private readonly cam: Phaser.Cameras.Scene2D.Camera
 
@@ -78,6 +87,9 @@ export class WeatherLayer {
     this.vignette = scene.add.graphics().setScrollFactor(0).setDepth(DEPTH.particles - 1)
     this.rainGfx = scene.add.graphics().setScrollFactor(0).setDepth(DEPTH.particles)
     this.rainGfx.setBlendMode(Phaser.BlendModes.ADD)
+    // Under the toxic sheet and its cast, and **not additive**: ADD is what makes the
+    // acid glow, and a harmless rain that glowed would read as a hazard.
+    this.ambientGfx = scene.add.graphics().setScrollFactor(0).setDepth(DEPTH.particles - 2)
     // Embers are world-space — they come out of a vent that is somewhere.
     this.fireGfx = scene.add.graphics().setDepth(DEPTH.particles)
     this.fireGfx.setBlendMode(Phaser.BlendModes.ADD)
@@ -109,6 +121,13 @@ export class WeatherLayer {
     // player flips the switch, sees nothing, and flips it back (T21.16).
     this.unsubscribeQuality = onHighQualityChange(() => this.applyQuality())
     this.rain = new RainField(260, this.cam.width, this.cam.height, 4242)
+    this.ambient = new RainField(
+      C().AMBIENT_RAIN_DROPS,
+      this.cam.width,
+      this.cam.height,
+      9191,
+      C().AMBIENT_RAIN_SPEED,
+    )
   }
 
   /** The veil's current opacity, so a check can count at both ends (§A39). */
@@ -206,6 +225,50 @@ export class WeatherLayer {
     return this.rain.drops.length
   }
 
+  /**
+   * T21.26: the ambient schedule's intensity this frame, `0..1`.
+   *
+   * The schedule is Rust's (`world::ambient`), evaluated by the scene from the map
+   * seed and the round clock. Unlike the toxic sheet there is no real-drop count
+   * behind it, so "is it raining" and "how hard" are honestly the same number.
+   */
+  setAmbient(intensity: number): void {
+    this.ambientTarget = Math.max(0, Math.min(1, intensity))
+  }
+
+  /** What the ambient sheet was asked for this frame, before the field's ramp. */
+  get ambientAsked(): number {
+    return this.ambientTarget
+  }
+
+  /** Ambient droplets actually drawn — its own count, never `rainDrops`. */
+  get ambientDrops(): number {
+    return this.ambient.intensity > 0.02 ? this.ambient.visibleDrops : 0
+  }
+
+  get ambientPool(): number {
+    return this.ambient.drops.length
+  }
+
+  get ambientIntensity(): number {
+    return this.ambient.intensity
+  }
+
+  /**
+   * Show or hide one rain, **for a pixel check's control frame** (§C2): the only way
+   * to know what a sheet contributes to a frozen frame is to take it away. Read back
+   * off the object rather than echoed.
+   */
+  setRainVisible(which: 'toxic' | 'ambient', on: boolean): { visible: boolean } {
+    if (which === 'toxic') {
+      this.rainGfx.setVisible(on)
+      this.vignette.setVisible(on)
+      return { visible: this.rainGfx.visible }
+    }
+    this.ambientGfx.setVisible(on)
+    return { visible: this.ambientGfx.visible }
+  }
+
   get emberCount(): number {
     return this.embers.embers.length
   }
@@ -239,6 +302,9 @@ export class WeatherLayer {
   ): void {
     this.rain.resize(this.cam.width, this.cam.height)
     this.rain.update(dt, this.toxicTarget, this.toxicDensityTarget)
+    // Alpha rides "is it raining" and the count rides the schedule's own ramp.
+    this.ambient.resize(this.cam.width, this.cam.height)
+    this.ambient.update(dt, this.ambientTarget > 0 ? 1 : 0, this.ambientTarget)
 
     for (const v of vents) {
       if (v.jetting) this.embers.emit(dt, v.x, v.y, v.lean, 260)
@@ -246,6 +312,7 @@ export class WeatherLayer {
     this.embers.update(dt, fallScale * 0.9)
 
     this.drawRain()
+    this.drawAmbient()
     this.drawFire(vents)
     this.drawFog(fog, hasFlashlight)
   }
@@ -318,6 +385,23 @@ export class WeatherLayer {
     v.fillRect(0, 0, this.cam.width, this.cam.height)
   }
 
+  /**
+   * The ambient sheet: grey-blue, slower, thinner, and **no full-screen cast** — the
+   * toxic sheet's green wash is part of what says "acid", and this rain says nothing.
+   */
+  private drawAmbient(): void {
+    const g = this.ambientGfx
+    g.clear()
+    const t = this.ambient.intensity
+    if (t <= 0.02) return
+    const c = C()
+    g.lineStyle(1.5, c.AMBIENT_RAIN_COLOUR, c.AMBIENT_RAIN_ALPHA * t)
+    for (const d of this.ambient.drops.slice(0, this.ambient.visibleDrops)) {
+      const len = d.len + d.vy * 0.03
+      g.lineBetween(d.x, d.y, d.x + d.vx * 0.05, d.y + len)
+    }
+  }
+
   private drawFire(vents: VentView[]): void {
     const g = this.fireGfx
     g.clear()
@@ -348,6 +432,7 @@ export class WeatherLayer {
   destroy(): void {
     this.embers.clear()
     this.rainGfx.destroy()
+    this.ambientGfx.destroy()
     this.fireGfx.destroy()
     this.vignette.destroy()
     this.fogVeil.destroy()

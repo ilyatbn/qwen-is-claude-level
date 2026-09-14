@@ -772,6 +772,36 @@ pub const TOXIC_DROP_CARVE_R: f32 = 6.0;
 /// number used to be guessed from; a sentence is not a measurement.
 pub const TOXIC_DROPS_IN_FLIGHT: f32 = 7.0;
 
+// --- T21.26: ambient rain — harmless, not an event ---
+
+/// Ambient rain's schedule is cut into windows this long, each rolled on its own.
+///
+/// The day/night shape rather than the hazard scheduler's (`world/ambient.rs`): a
+/// pure function of seed and round time, so no stream state, no telegraph and no
+/// replay change. 45 s is long enough that a shower and a dry spell both register.
+pub const AMBIENT_RAIN_WINDOW: f32 = 45.0;
+/// Share of windows that rain. With `AMBIENT_RAIN_MIN..MAX` this is roughly a
+/// sixth of the round — weather you notice, not weather you live in.
+pub const AMBIENT_RAIN_CHANCE: f32 = 0.35;
+/// How long one ambient shower lasts, seconds. Always shorter than the window, so
+/// a shower sits wholly inside it.
+pub const AMBIENT_RAIN_MIN: f32 = 12.0;
+pub const AMBIENT_RAIN_MAX: f32 = 30.0;
+/// Fade in and out, seconds, so the sheet never pops.
+pub const AMBIENT_RAIN_RAMP: f32 = 3.0;
+/// Droplets in the ambient sheet's pool. **Fewer than the toxic sheet's 260**, so
+/// the harmless rain reads as a lighter rain as well as a different colour — a
+/// player must not have to study the hue to know whether to run.
+pub const AMBIENT_RAIN_DROPS: u32 = 160;
+/// Ambient droplet colour, 0xRRGGBB: a cold grey-blue, as far from the toxic
+/// sheet's `0x7fe04a` as a rain colour can sit.
+pub const AMBIENT_RAIN_COLOUR: u32 = 0x9d_b8_d6;
+/// Ambient fall speed as a multiple of the toxic sheet's: slower, softer rain.
+pub const AMBIENT_RAIN_SPEED: f32 = 0.55;
+/// Peak stroke opacity of an ambient droplet. No full-screen cast at all: the
+/// toxic sheet's green wash is part of what says "acid", and this rain says nothing.
+pub const AMBIENT_RAIN_ALPHA: f32 = 0.5;
+
 pub const METEOR_DURATION: f32 = 10.0;
 pub const METEOR_EVERY: f32 = 0.5;
 /// Initial downward speed.

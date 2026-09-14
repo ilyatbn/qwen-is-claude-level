@@ -7,6 +7,7 @@
 //!
 //! See `docs/41-server-loop-rooms.md` §2 for the tick order, which is a contract.
 
+pub mod ambient;
 pub mod animals;
 pub mod birds;
 pub mod cycle;
@@ -4977,6 +4978,83 @@ mod toxic_rain_falls {
             per_shower >= one_hit,
             "a shower cost {per_shower:.1} health on average, less than the \
              {one_hit:.1} a single hit is worth"
+        );
+    }
+
+    /// T21.26: the ambient rain **never** hurts anyone — and the control that makes
+    /// that mean something is in the same test, on the same seeds, map and spot: a
+    /// toxic shower does. "Nobody lost health" is otherwise satisfied by a world
+    /// that deals no damage at all.
+    ///
+    /// The ambient schedule has no hook into `World`, so the absence half is
+    /// structural; what this pins is that stepping a world straight through an
+    /// ambient shower leaves a player in the open exactly as healthy as before.
+    /// The horizon stops short of `EFFECT_INTERVAL_MIN`, so no hazard can start
+    /// inside it and be mistaken for the rain.
+    #[test]
+    fn ambient_rain_never_hurts_and_a_toxic_shower_on_the_same_map_does() {
+        use crate::world::ambient::ambient_rain_at;
+        let horizon = crate::constants::EFFECT_INTERVAL_MIN - 2.0;
+        let ticks = (horizon / crate::constants::SIM_DT) as u32;
+        let stand = |w: &mut World| {
+            w.map = map_with_a_cave();
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(0, 0, "open".into());
+            if let Some(p) = w.player_mut(0) {
+                p.body.pos = Vec2::new(
+                    (OPEN_X0 + 40) as f32,
+                    GROUND as f32 - crate::constants::PLAYER_H / 2.0,
+                );
+            }
+        };
+        // Seeds whose ambient rain falls at full strength inside the horizon.
+        let seeds: Vec<u64> = (0u64..400)
+            .filter(|s| {
+                (0..(horizon as i32 * 2)).any(|i| ambient_rain_at(*s, i as f32 * 0.5) >= 1.0)
+            })
+            .take(6)
+            .collect();
+        assert_eq!(
+            seeds.len(),
+            6,
+            "fewer than six of 400 seeds rain ambiently inside {horizon} s"
+        );
+
+        let mut toxic_lost = 0.0f32;
+        for seed in seeds.iter().copied() {
+            let mut w = World::new(seed, MapScale::Small);
+            stand(&mut w);
+            let mut wet_ticks = 0u32;
+            for _ in 0..ticks {
+                if ambient_rain_at(seed, w.round_time) > 0.0 {
+                    wet_ticks += 1;
+                }
+                w.step(crate::constants::SIM_DT);
+            }
+            assert!(
+                wet_ticks > 0,
+                "seed {seed}: the world's clock never passed through its ambient shower"
+            );
+            let health = w.player(0).expect("open").health;
+            assert_eq!(
+                health,
+                crate::constants::BASE_HEALTH,
+                "seed {seed}: standing in {wet_ticks} ticks of ambient rain cost {} health",
+                crate::constants::BASE_HEALTH - health
+            );
+
+            // The control: same seed, same map, same spot — a toxic shower.
+            let mut c = World::new(seed, MapScale::Small);
+            stand(&mut c);
+            c.force_effect(EffectKind::ToxicRain, c.round_time);
+            for _ in 0..ticks {
+                c.step(crate::constants::SIM_DT);
+            }
+            toxic_lost += crate::constants::BASE_HEALTH - c.player(0).expect("open").health;
+        }
+        assert!(
+            toxic_lost > 0.0,
+            "a toxic shower hurt nobody on the same six seeds — the absence above means nothing"
         );
     }
 

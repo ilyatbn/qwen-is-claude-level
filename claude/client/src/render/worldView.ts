@@ -293,7 +293,14 @@ export class WorldView {
   update(
     near: { x: number; y: number },
     dt = 0,
-    weather?: { vents: VentView[]; fallScale: number; fog: number; hasFlashlight: boolean },
+    weather?: {
+      vents: VentView[]
+      fallScale: number
+      fog: number
+      hasFlashlight: boolean
+      /** T21.26: the ambient rain's intensity, `0..1` — required, for `fog`'s reason. */
+      ambient: number
+    },
   ): void {
     if (dt > 0) this.ordnance.update(dt)
     if (dt > 0 && weather) {
@@ -302,6 +309,7 @@ export class WorldView {
       // believed the first while the damage came from the second. One source now,
       // and it is the one the player is actually standing under.
       this.weather.setToxic(this.liveToxicDrops)
+      this.weather.setAmbient(weather.ambient)
       // `fog` is required, not optional: both scenes have a fog strength to give
       // and the whole of §F9 is that one of them never passed it on. A default
       // here would let the next scene silently draw no fog and still typecheck.

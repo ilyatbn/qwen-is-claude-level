@@ -9,7 +9,7 @@
  */
 
 import Phaser from 'phaser'
-import { C, Core, MapScale, strictConstants, type WeatherState } from '../core'
+import { C, Core, MapScale, ambientRain, strictConstants, type WeatherState } from '../core'
 import { DEPTH } from '../render/backdrop'
 import { occupiedPlatforms } from '../render/platforms'
 import { isHighQuality, setHighQuality } from '../ui/settings'
@@ -726,6 +726,10 @@ export class SandboxScene extends Phaser.Scene {
           toxicDrops: self.world.liveToxicDrops,
           rainPool: self.world.weather.rainPool,
           toxicDensityAsked: self.world.weather.toxicDensityAsked,
+          ambientAsked: self.world.weather.ambientAsked,
+          ambientIntensity: self.world.weather.ambientIntensity,
+          ambientDrops: self.world.weather.ambientDrops,
+          ambientPool: self.world.weather.ambientPool,
           embers: self.world.weather.emberCount,
           // Jetting vents, so "the layer drew nothing" can be told apart from
           // "the simulation never jetted" — different bugs, same silence.
@@ -1316,6 +1320,8 @@ export class SandboxScene extends Phaser.Scene {
     // local world — **not** the `fogActive` boolean, which is a debug override
     // and would make the veil a toggle that cannot ramp.
     this.fogStrength = this.fogActive ? 1 : weather.fog
+    // T21.26: the same pure ambient schedule the game scene evaluates, from this map's seed.
+    this.world.weather.setAmbient(ambientRain(this.seed, this.roundTime))
     this.world.weather.update(
       dt,
       weather.vents,

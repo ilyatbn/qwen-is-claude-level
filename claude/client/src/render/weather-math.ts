@@ -90,13 +90,15 @@ export class RainField {
     private w: number,
     private h: number,
     seed = 1,
+    /** Fall speed as a multiple of the toxic sheet's (T21.26's ambient rain is slower). */
+    speed = 1,
   ) {
     const r = rng(seed)
     for (let i = 0; i < count; i++) {
       this.drops.push({
         x: r() * w,
         y: r() * h,
-        vy: 420 + r() * 380,
+        vy: (420 + r() * 380) * speed,
         vx: -30 + r() * 20,
         len: 6 + r() * 10,
       })
