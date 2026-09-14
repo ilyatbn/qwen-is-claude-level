@@ -32,7 +32,7 @@
 import { spawn, spawnSync, execSync } from 'node:child_process'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { format } from 'node:util'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
@@ -41,6 +41,16 @@ import { childOutcome, outcomeBanner, outcomeLabel } from './lib/child-outcome.m
 import { CHECKS } from './lib/e2e-checks.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+/**
+ * Ownership, for the leak guard. Every process this run starts — vite, each
+ * check, its cargo/game-server, every Chromium and its helpers — inherits this
+ * environment, so `/proc/<pid>/environ` says whose it is. "New since the suite
+ * started" said nothing of the kind once agents shared the box: a `--jobs 4` run
+ * reported and SIGKILLed 19 chromium that another builder's `e2e.mjs fire-visible`
+ * was using at the time.
+ */
+const RUN_ID = `${process.pid}-${Date.now()}`
+process.env.E2E_RUN_ID = RUN_ID
 const shotsDir = join(root, 'shots')
 mkdirSync(shotsDir, { recursive: true })
 
@@ -250,10 +260,24 @@ const strayPids = () => {
     const m = line.trim().match(/^(\d+)\s+(.*)$/)
     if (!m) continue
     for (const [name, re] of STRAY_PATTERNS) {
-      if (re.test(m[2])) out.set(Number(m[1]), name)
+      if (re.test(m[2]) && ownedByThisRun(Number(m[1]))) out.set(Number(m[1]), name)
     }
   }
   return out
+}
+/**
+ * Only processes carrying this run's `E2E_RUN_ID` count. A process whose
+ * environment cannot be read (gone, or another user's) is not ours to kill —
+ * an unattributable process gets reported by whoever owns it, not swept here.
+ */
+function ownedByThisRun(pid) {
+  try {
+    return readFileSync(`/proc/${pid}/environ`, 'latin1')
+      .split('\0')
+      .includes(`E2E_RUN_ID=${RUN_ID}`)
+  } catch {
+    return false
+  }
 }
 const straysBefore = strayPids()
 
