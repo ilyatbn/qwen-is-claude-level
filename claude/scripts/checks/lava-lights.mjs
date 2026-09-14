@@ -45,11 +45,11 @@
  * and the check has to wait for it. That is the price of testing the scene a
  * player is actually in.
  */
-import { startStack, enterBattle, tally, sleep, standStill } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, standStill, freePort } from './harness.mjs'
 import { toScreen, samplePatch, colourDelta } from './pixels.mjs'
 import { constants as rustConstants } from '../lib/rust-constants.mjs'
 
-const PORT = 3151
+const PORT = await freePort()
 const { fail, ok, finish } = tally('lava-lights')
 
 const C = rustConstants()

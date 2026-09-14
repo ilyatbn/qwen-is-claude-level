@@ -32,10 +32,10 @@
  * The stack and the route into a battle are `harness.mjs` (§C18).
  */
 import { join } from 'node:path'
-import { startStack, enterBattle, sleep, shotsDir, selectWeapon } from './harness.mjs'
+import { startStack, enterBattle, sleep, shotsDir, selectWeapon, freePort } from './harness.mjs'
 
 const shots = shotsDir
-const PORT = 3113
+const PORT = await freePort()
 
 /**
  * A full round, shortened only as far as `docs/41` §5 allows. Warmup is 10 s on

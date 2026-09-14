@@ -14,9 +14,9 @@
  * tested and wired to nothing (§A15), so the assertion here is on the real key
  * going through the real socket to the real server.
  */
-import { startStack, enterBattle, tally, sleep, standStill } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, standStill, freePort } from './harness.mjs'
 
-const PORT = 3124
+const PORT = await freePort()
 const { fail, ok, finish } = tally('quick-throw')
 
 const stack = await startStack({

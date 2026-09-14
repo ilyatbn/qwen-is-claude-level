@@ -43,9 +43,10 @@ import {
   selectWeapon,
   tally,
   sleep,
+  freePort,
 } from './harness.mjs'
 
-const PORT = 3123
+const PORT = await freePort()
 const { fail, ok, failures } = tally('ordnance-visible')
 
 // No bots: this counts what *we* fired, and a bot's rockets would make both the

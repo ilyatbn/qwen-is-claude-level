@@ -55,11 +55,11 @@
  * says which half broke: an id that never arrived is a wire problem, and an id
  * that arrived with matching pixels is this bug returning.
  */
-import { startStack, enterBattle, standStill, sleep, shotsDir } from './harness.mjs'
+import { startStack, enterBattle, standStill, sleep, shotsDir, freePort } from './harness.mjs'
 import { toScreen, samplePatch, colourDelta } from './pixels.mjs'
 import { join } from 'node:path'
 
-const PORT = 3129
+const PORT = await freePort()
 const { fail, ok, finish } = (await import('./harness.mjs')).tally('skins-ingame')
 
 /**

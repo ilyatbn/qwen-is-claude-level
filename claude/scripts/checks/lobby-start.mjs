@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url'
 import { matchVitePort } from '../vite-url.mjs'
 import { killGroup } from '../proc-group.mjs'
 import { deadlineMs } from '../lib/deadline.mjs'
+import { freePort } from './harness.mjs'
 
 // **This check's own configuration, not a shipped tunable.** `LOBBY_BOT_TIMEOUT_S`
 // is an override handed to the server it spawns, so it is not read from
@@ -47,7 +48,7 @@ mkdirSync(shots, { recursive: true })
 const require = createRequire(join(root, 'client/package.json'))
 const { chromium } = require('playwright-core')
 
-const PORT = 3121
+const PORT = await freePort()
 const libDir = join(process.env.HOME ?? '', '.cache/pwlibs/root/usr/lib/x86_64-linux-gnu')
 const chromePath = join(
   process.env.HOME ?? '',

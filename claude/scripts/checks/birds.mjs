@@ -38,10 +38,11 @@ import {
   tally,
   sleep,
   shotsDir,
+  freePort,
 } from './harness.mjs'
 import { samplePatch, colourDelta } from './pixels.mjs'
 
-const PORT = 3134
+const PORT = await freePort()
 const { fail, ok, finish } = tally('birds')
 
 // No bots: a bot's stray rocket killing a bird would change the counts this

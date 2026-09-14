@@ -37,9 +37,10 @@ import {
   tally,
   sleep,
   shotsDir,
+  freePort,
 } from './harness.mjs'
 
-const PORT = 3122
+const PORT = await freePort()
 const { fail, ok, failures } = tally('ordnance')
 
 // No bots: a bot swinging or placing its own mine would make the counts

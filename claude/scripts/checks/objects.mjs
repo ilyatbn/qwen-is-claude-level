@@ -57,10 +57,10 @@
  * it as a claim awaiting its first run.
  */
 import { join } from 'node:path'
-import { startStack, enterBattle, standStill, tally, sleep, shotsDir } from './harness.mjs'
+import { startStack, enterBattle, standStill, tally, sleep, shotsDir, freePort } from './harness.mjs'
 import { samplePatch, colourDelta, toScreen } from './pixels.mjs'
 
-const PORT = 3139
+const PORT = await freePort()
 
 /**
  * A world rectangle as a screen rectangle, or `null` if it is not on screen.

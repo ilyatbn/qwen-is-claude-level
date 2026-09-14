@@ -30,9 +30,9 @@
  * five did not, which is how one lobby change turned into five red checks.
  */
 import { join } from 'node:path'
-import { startStack, enterBattle, tally, sleep, shotsDir } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, shotsDir, freePort } from './harness.mjs'
 
-const PORT = 3118
+const PORT = await freePort()
 
 /** Warmup is 10 s and is not shortened, so this is the playing half only. */
 const ROUND_SECONDS = 20

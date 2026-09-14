@@ -44,9 +44,10 @@ import {
   selectWeapon,
   tally,
   sleep,
+  freePort,
 } from './harness.mjs'
 
-const PORT = 3131
+const PORT = await freePort()
 const { fail, ok, failures } = tally('bullets-visible')
 
 // No bots: a bot's gunfire crossing the strip would be indistinguishable from

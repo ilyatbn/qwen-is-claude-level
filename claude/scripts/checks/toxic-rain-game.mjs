@@ -29,9 +29,9 @@
  * hopes the scheduler rolled rain rather than fog, a one-in-four coin flip inside
  * a gate.
  */
-import { startStack, enterBattle, tally, sleep } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, freePort } from './harness.mjs'
 
-const PORT = 3136
+const PORT = await freePort()
 const { fail, ok, finish } = tally('toxic-rain-game')
 
 const stack = await startStack({
@@ -226,7 +226,7 @@ await stack.close()
 // rule (a drop that drifts in through a cave mouth) is geometry, and Rust owns
 // it: `a_roof_stops_the_poison_and_open_sky_does_not`.
 const roofStack = await startStack({
-  port: PORT + 1,
+  port: await freePort(),
   label: 'toxic-rain-game/roof',
   env: { WEATHER: 'toxic', BOT_COUNT: '0', LOBBY_BOT_TIMEOUT: '3', FIXED_SEED: '2' },
 })

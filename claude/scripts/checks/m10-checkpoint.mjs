@@ -25,10 +25,10 @@
  * one-player room that had no round at all.
  */
 import { join } from 'node:path'
-import { startStack, enterBattle, selectWeapon, sleep, shotsDir } from './harness.mjs'
+import { startStack, enterBattle, selectWeapon, sleep, shotsDir, freePort } from './harness.mjs'
 import { key as clientKey } from '../lib/client-keys.mjs'
 
-const PORT = 3114
+const PORT = await freePort()
 const shots = shotsDir
 
 const log = (m) => console.log(`  ${m}`)

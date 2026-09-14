@@ -33,10 +33,10 @@
  * is asserted is that every sampled patch lands where an alpha composite of
  * `FOG_SCREEN_COLOUR` at `FOG_SCREEN_ALPHA x strength` puts it.
  */
-import { startStack, enterBattle, tally, sleep } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, freePort } from './harness.mjs'
 import { samplePatch, colourDelta } from './pixels.mjs'
 
-const PORT = 3141
+const PORT = await freePort()
 const { fail, ok, failures } = tally('fog-visible')
 
 const ROUND_SECONDS = 240
@@ -140,7 +140,7 @@ try {
 
 // --- the clear arm, at the same point in the same round -----------------------
 const clearStack = await startStack({
-  port: PORT + 1,
+  port: await freePort(),
   label: 'fog-visible/clear',
   env: { ...common, WEATHER: 'off' },
 })
@@ -255,7 +255,7 @@ try {
 // the control that stops "lighter than nothing" passing, and the first is the
 // control that stops "the layer draws nothing" passing.
 const litStack = await startStack({
-  port: PORT + 2,
+  port: await freePort(),
   label: 'fog-visible/flashlight',
   env: { ...common, WEATHER: 'fog', DEV_FLASHLIGHT: '1' },
 })

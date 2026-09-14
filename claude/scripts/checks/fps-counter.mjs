@@ -44,7 +44,7 @@
  *   has to come back **without anyone opening the panel** — which is false for
  *   any build that forgets the read.
  */
-import { startStack, enterBattle, tally, sleep } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, freePort } from './harness.mjs'
 import { samplePatch, assertChanged, colourDelta } from './pixels.mjs'
 
 /**
@@ -59,7 +59,7 @@ import { samplePatch, assertChanged, colourDelta } from './pixels.mjs'
 const FPS_MIN = 1
 const FPS_MAX = 400
 
-const PORT = 3133
+const PORT = await freePort()
 const { fail, ok, finish } = tally('fps-counter')
 
 const stack = await startStack({

@@ -18,9 +18,9 @@
  * that expires (§A32), and `enterBattle` is where that decision lives now.
  */
 import { join } from 'node:path'
-import { startStack, enterBattle, sleep, shotsDir, selectWeapon } from './checks/harness.mjs'
+import { startStack, enterBattle, sleep, shotsDir, selectWeapon, freePort } from './checks/harness.mjs'
 
-const PORT = 3112
+const PORT = await freePort()
 const shots = shotsDir
 
 const fail = (msg) => {

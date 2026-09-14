@@ -29,10 +29,10 @@
  * Networked, like `ordnance-visible` — the sandbox player has no laser and no
  * battery — and on its map and loadout.
  */
-import { startStack, enterBattle, standStill, selectWeapon, tally, sleep } from './harness.mjs'
+import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort } from './harness.mjs'
 import { samplePatch, colourDelta } from './pixels.mjs'
 
-const PORT = 3154
+const PORT = await freePort()
 const { fail, ok, finish } = tally('beams-shader')
 
 const stack = await startStack({

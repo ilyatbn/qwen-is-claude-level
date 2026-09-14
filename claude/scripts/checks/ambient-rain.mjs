@@ -25,9 +25,9 @@
  * asserts is the hop: the schedule said rain (`ambientAsked`) and the sheet drew
  * (`ambientDrops`), with the control that before it said rain, nothing was drawn.
  */
-import { startStack, enterBattle, tally } from './harness.mjs'
+import { startStack, enterBattle, tally, freePort } from './harness.mjs'
 
-const PORT = 3152
+const PORT = await freePort()
 const { fail, ok, finish } = tally('ambient-rain')
 
 /**

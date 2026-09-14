@@ -44,9 +44,9 @@
  */
 import { join } from 'node:path'
 import { samplePatch } from './pixels.mjs'
-import { startStack, enterBattle, tally, sleep, shotsDir } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, shotsDir, freePort } from './harness.mjs'
 
-const PORT = 3116
+const PORT = await freePort()
 const { fail, ok, failures } = tally('crates')
 
 /**

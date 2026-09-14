@@ -36,10 +36,11 @@ import {
   tally,
   sleep,
   shotsDir,
+  freePort,
 } from './harness.mjs'
 import { samplePatch, colourDelta, toScreen } from './pixels.mjs'
 
-const PORT = 3132
+const PORT = await freePort()
 const { fail, ok, finish } = tally('void')
 
 // FIXED_SEED so the terrain is the same every run — this check needs a map with

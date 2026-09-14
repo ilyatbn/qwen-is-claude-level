@@ -47,10 +47,10 @@
  * child-count assertion on the layer. Both hold for a container that was built
  * correctly and never added to the display list.
  */
-import { startStack, enterBattle, tally, sleep } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, freePort } from './harness.mjs'
 import { samplePatch, colourDelta } from './pixels.mjs'
 
-const PORT = 3137
+const PORT = await freePort()
 const { fail, ok, finish } = tally('animals')
 
 const stack = await startStack({

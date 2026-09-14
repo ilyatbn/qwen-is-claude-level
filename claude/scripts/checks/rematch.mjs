@@ -44,12 +44,12 @@
  *   cannot tell "stuck on the front page" from "seated and waiting" — which is
  *   the entire question. The roster is what separates them.
  */
-import { startStack, sleep } from './harness.mjs'
+import { startStack, sleep, freePort } from './harness.mjs'
 import { samplePatch, colourDelta } from './pixels.mjs'
 import { constants as rustConstants } from '../lib/rust-constants.mjs'
 import { key as clientKey } from '../lib/client-keys.mjs'
 
-const PORT = 3135
+const PORT = await freePort()
 const { fail, ok, finish } = (await import('./harness.mjs')).tally('rematch')
 
 // From the shipped constants, never a literal: the `Ended` window is what the

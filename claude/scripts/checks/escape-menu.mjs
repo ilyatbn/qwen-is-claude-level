@@ -16,7 +16,7 @@
  *   the room never reaps, which is §B14's shape exactly. That is asserted from
  *   the *server's* player count, not from the client's opinion of itself.
  */
-import { startStack, enterBattle, tally, sleep } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, freePort } from './harness.mjs'
 import { samplePatch, colourDelta } from './pixels.mjs'
 
 /**
@@ -27,7 +27,7 @@ import { samplePatch, colourDelta } from './pixels.mjs'
  */
 const FIELD = { x: 40, y: 470, w: 200, h: 140 }
 
-const PORT = 3126
+const PORT = await freePort()
 const { fail, ok, finish } = tally('escape-menu')
 
 const stack = await startStack({

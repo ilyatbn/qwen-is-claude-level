@@ -79,9 +79,10 @@ import {
   standStill,
   selectWeapon,
   shotsDir,
+  freePort,
 } from './harness.mjs'
 
-const PORT = 3143
+const PORT = await freePort()
 const { fail, ok, failures } = tally('fire-visible')
 
 /**

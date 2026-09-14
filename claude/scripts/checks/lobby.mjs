@@ -15,13 +15,13 @@
  * before the second player joins (§C2). A screen that rendered nothing would
  * leave the roster region unchanged between the two frames and fail.
  */
-import { startStack, sleep, shotsDir } from './harness.mjs'
+import { startStack, sleep, shotsDir, freePort } from './harness.mjs'
 import { samplePatch } from './pixels.mjs'
 import { constants as rustConstants } from '../lib/rust-constants.mjs'
 import { join } from 'node:path'
 import { key as clientKey } from '../lib/client-keys.mjs'
 
-const PORT = 3126
+const PORT = await freePort()
 const { fail, ok, finish } = (await import('./harness.mjs')).tally('lobby')
 
 const stack = await startStack({

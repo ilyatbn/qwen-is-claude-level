@@ -44,9 +44,10 @@ import {
   standStill,
   selectWeapon,
   serverElapsed,
+  freePort,
 } from './harness.mjs'
 
-const PORT = 3131
+const PORT = await freePort()
 const { fail, ok, finish } = tally('teleport')
 
 const stack = await startStack({

@@ -14,9 +14,9 @@
  * "the flag is false" would pass for a build that draws the ring anyway.
  */
 import { samplePatch } from './pixels.mjs'
-import { startStack, enterBattle, tally, sleep, standStill } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, standStill, freePort } from './harness.mjs'
 
-const PORT = 3127
+const PORT = await freePort()
 const { fail, ok, finish } = tally('debug-mode')
 
 const stack = await startStack({

@@ -39,10 +39,11 @@ import {
   tally,
   sleep,
   shotsDir,
+  freePort,
 } from './harness.mjs'
 import { join } from 'node:path'
 
-const PORT = 3117
+const PORT = await freePort()
 const { fail, ok, failures } = tally('death')
 
 // No bots: this check is about one player's death, and a bot landing the killing

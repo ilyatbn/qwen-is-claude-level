@@ -22,9 +22,9 @@
  * Networked, not `?sandbox=1` (the coordinator's ruling): crates are a server
  * event, and the minimap only ever drew players and terrain before this.
  */
-import { startStack, enterBattle, tally, sleep } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, freePort } from './harness.mjs'
 
-const PORT = 3153
+const PORT = await freePort()
 const ROUND_SECONDS = 160
 const { fail, ok, finish } = tally('minimap-crates')
 

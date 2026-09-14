@@ -37,9 +37,9 @@
  * pixels. See the report for the ordering defect.
  */
 import { samplePatch } from './pixels.mjs'
-import { startStack, enterBattle, tally, sleep } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, freePort } from './harness.mjs'
 
-const PORT = 3119
+const PORT = await freePort()
 const { fail, ok, failures } = tally('hud-bars')
 
 // No bots: nothing here needs an opponent, and a bot landing a hit would move
@@ -720,7 +720,7 @@ if (!healthRect || !cleanPatch) {
   fail('no health bar rect to compare a poisoned one against')
 } else {
   const sick = await startStack({
-    port: PORT + 1,
+    port: await freePort(),
     label: 'hud-bars-poisoned',
     env: {
       FIXED_SEED: '4242',

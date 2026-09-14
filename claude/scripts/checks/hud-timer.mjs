@@ -27,9 +27,9 @@
  * assertion compares them.
  */
 import { samplePatch } from './pixels.mjs'
-import { startStack, enterBattle, tally, sleep } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, freePort } from './harness.mjs'
 
-const PORT = 3123
+const PORT = await freePort()
 const { fail, ok, finish } = tally('hud-timer')
 
 const ROUND_SECONDS = 90
