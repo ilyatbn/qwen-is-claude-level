@@ -23,10 +23,21 @@ One task per assignment. A task is one file in `tasks/M*/T*.md`. Open it, do wha
 says, run its **Done when** command, then:
 
 1. Paste the **real** output of that command.
-2. **Run `./scripts/check.sh`.** A Done-when proves the task; the gate proves the
-   repository. A crate-scoped Done-when has twice let a commit land that broke the
-   workspace build — it cannot see a type that grew in one crate and not its
-   consumers.
+2. **Run `./scripts/check.sh --changed`** — not the full gate. A Done-when proves the
+   task; `--changed` proves what the change touches: the changed crates **and every crate
+   that depends on them**, the client if touched, and the browser checks mapped to the
+   changed files (`scripts/affected.mjs`; a file it does not recognise runs everything).
+   That dependents rule is the reason this is safe: a crate-scoped Done-when has twice let
+   a commit land that broke the workspace build, because it cannot see a type that grew in
+   one crate and not its consumers.
+   **The full `./scripts/check.sh` runs once per batch of tasks, by the coordinator — not
+   once per task.** Set 2026-09-14 by the owner: one builder ran the ~40-minute full gate
+   thirteen times to land nine tasks, which was most of a day. If the batch run goes red,
+   the per-task commits say which task did it.
+   **A check that fails at random is parked, not re-run** — add it to
+   `tasks/flaky-test.md` with its evidence (`flaky: true` in `scripts/lib/e2e-checks.mjs`, or
+   `#[ignore]` plus a row in `scripts/ignored.sh`). A five-run loop to prove a flake gone
+   costs three and a half hours; the owner decides each parked test's fate.
 3. Tick the box in `tasks/TASKS.md`.
 4. Append a ≤8-line entry to `tasks/JOURNAL.md` — the handoff.
 5. **Commit**, from the repo root, staging **only** paths under `claude/`. Never
