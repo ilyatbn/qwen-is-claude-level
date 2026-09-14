@@ -6188,3 +6188,13 @@ Measured: mean **66.3 health a shower** in the open over six seeds (one dry), 0 
 events: `DamageNumbers` drops <1 and the vignette cannot register, leaving two greens on the bar —
 written up, not built. `toxic-rain-game` now reads health (seed 1, absence control, roofed arm on seed
 2); both arms falsified at live sites. 5/5 gates.
+
+## T21.26 — ambient rain, on its own cycle (`b5d45ef`, `071e1ad`)
+Pure `world::ambient::ambient_rain_at(seed, round_time)`: 45 s windows, each rolled from a fresh
+ChaCha8 sub-stream — no `EffectKind`, scheduler or wire message; `REPLAY_VERSION` unmoved (no `World`
+hook, game-server's 290 pass). A second `RainField` (grey-blue, slower, no cast) with its own debug
+fields. `ambient-rain.mjs` counts changed pixels while frozen — **patch means were blind** (1.2 / 0.0):
+toxic reads green (lead ~22), ambient never does (−5 to −13 over four runs); a cosine is logged only
+(a planted green sheet gave 0.246). First gate red on `two-clients`: the sheet added depth 38, which is
+sandbox-only furniture; `071e1ad` shares the vignette's 39, created first. Gate 7: 56/56. The commit is
+777 lines — past the ~250 guideline; it splits cleanly as schedule / sheet / check.
