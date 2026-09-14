@@ -181,7 +181,8 @@ cave" looked like.
 
 It is a toggle rather than a deletion because the classifier is measured and
 unit-tested and the two are worth comparing. Nothing about it was removed:
-`BackdropMask` is still built and still asserted on in `backdrop-real.test.ts`;
+`BackdropMask` is still built and still asserted on in `backdrop-real.suite.ts` (run per map by
+the `backdrop-real-*.test.ts` files);
 `CAVE_BACKDROP` decides only whether the renderer asks for one, and when it is off
 `buildAll` skips the pass entirely (the expensive half of a round-start bake — see
 `backdropMs` in the sandbox readout).

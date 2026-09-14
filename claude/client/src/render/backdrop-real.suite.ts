@@ -5,6 +5,15 @@
  * `FakeMask` tests passed throughout all three wrong implementations. §A17 makes
  * the point general — anything whose failure mode only exists in real terrain gets
  * a test against real terrain.
+ *
+ * **A suite module, not a test file** (it does not match `*.test.ts`). Each map in
+ * `CASES` is run by its own `backdrop-real-<case>.test.ts`, which calls
+ * `backdropRealSuite` once. It was one file running all six until 2026-09-15: its
+ * test bodies are long synchronous scans, and six maps back to back in one worker
+ * starved vitest's reporter RPC until the run failed with `Timeout calling
+ * "onTaskUpdate"` and every assertion passing — on an idle box too. Split, the
+ * maps run in parallel workers and no worker carries all six.
+ * `backdrop-real-cases.test.ts` asserts every case is still run exactly once.
  */
 import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -30,7 +39,7 @@ let h = 0
  * guarding v1's deep interiors the moment v2 became the default, and its
  * "deep enclosed air" control would have gone quietly to zero samples.
  */
-const CASES = [
+export const CASES = [
   ['v1 small/777', MapScale.Small, 777n, MapGenerator.V1],
   ['v1 medium/4242', MapScale.Medium, 4242n, MapGenerator.V1],
   ['v1 large/99', MapScale.Large, 99n, MapGenerator.V1],
@@ -75,10 +84,10 @@ function build(scale: MapScale, seed: bigint, generator: MapGenerator) {
   distToSolid()
 }
 
-beforeAll(async () => {
+async function initCore() {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
   core = await Core.init(readFileSync(fileURLToPath(url)))
-}, 120_000)
+}
 
 /**
  * Air with rock above it in its own column, **within the ray length**.
@@ -255,7 +264,12 @@ function computeDistToSolid(): Float32Array {
   return px
 }
 
-for (const [name, scale, seed, generator] of CASES)
+/** Registers the whole suite for one map. Called once per `backdrop-real-<case>.test.ts`. */
+export function backdropRealSuite(which: (typeof CASES)[number][0]) {
+  const found = CASES.find(([n]) => n === which)
+  if (!found) throw new Error(`no backdrop-real case named ${which}`)
+  const [name, scale, seed, generator] = found
+  beforeAll(initCore, 120_000)
   describe(`BackdropMask on a real map (${name})`, () => {
     beforeAll(() => build(scale, seed, generator), 120_000)
 
@@ -637,4 +651,5 @@ for (const [name, scale, seed, generator] of CASES)
       0.75,
     )
   })
-})
+  })
+}
