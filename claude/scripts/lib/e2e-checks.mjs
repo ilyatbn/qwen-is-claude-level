@@ -92,11 +92,16 @@ export const CHECKS = [
   // clock — and green in both `--jobs 1` runs.
   { name: 'audio', file: 'scripts/checks/audio.mjs', url: '?sandbox=1&seed=12345', serial: true },
   { name: 'decorations', file: 'scripts/checks/decorations.mjs', url: '?sandbox=1&seed=4242' },
-  { name: 'platforms', file: 'scripts/checks/platforms.mjs', url: '?sandbox=1&seed=4242' },
+  // `flaky` (parked, tasks/flaky-test.md): red once at `--jobs 4` in a full gate
+  // ("the mean moved only 2.2"), green alone.
+  { name: 'platforms', file: 'scripts/checks/platforms.mjs', url: '?sandbox=1&seed=4242', flaky: true },
   { name: 'm9-checkpoint', file: 'scripts/checks/m9-checkpoint.mjs', url: '?sandbox=1&seed=1' },
   // `serial`: it fails on measured frame time (feel-layer ms/frame, fps p50,
   // p99 spikes), and those are exactly what a concurrent check steals.
-  { name: 'perf', file: 'scripts/checks/perf.mjs', url: '?sandbox=1&seed=4242', serial: true },
+  // `flaky` (parked, tasks/flaky-test.md): red at 51.3 fps in the serial tail of a
+  // full gate, still under the decaying load of the parallel phase; 59.9 and 59.5
+  // fps alone on an idle box. `serial` does not wait for the load to fall.
+  { name: 'perf', file: 'scripts/checks/perf.mjs', url: '?sandbox=1&seed=4242', serial: true, flaky: true },
   // §C7: a supply crate falls where you can see it fall. Standalone — it needs a
   // real server, because crates come from the server's spawn schedule and there
   // is no sandbox path to one.
