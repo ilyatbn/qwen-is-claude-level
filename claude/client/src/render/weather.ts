@@ -84,12 +84,19 @@ export class WeatherLayer {
     // vignette drew *over* the drops and washed them out. The measured colour
     // delta was real and was entirely the cast — the rain was invisible and the
     // number said otherwise, which is the §A15 trap wearing a new hat.
+    // T21.26's ambient sheet: under the toxic sheet and its cast, and **not additive**
+    // — ADD is what makes the acid glow, and a harmless rain that glowed would read as
+    // a hazard.
+    //
+    // **At the vignette's depth, created before it, not at a depth of its own.** It
+    // was `particles - 2` (38) and `two-clients` went red: the game's world-layer set
+    // is pinned there, and 38 is the sandbox's hazard furniture, deliberately absent
+    // from the game (§C0/§C1). Equal depths draw in creation order, so this still
+    // sits under the green cast — the same place 38 put it — without a new layer.
+    this.ambientGfx = scene.add.graphics().setScrollFactor(0).setDepth(DEPTH.particles - 1)
     this.vignette = scene.add.graphics().setScrollFactor(0).setDepth(DEPTH.particles - 1)
     this.rainGfx = scene.add.graphics().setScrollFactor(0).setDepth(DEPTH.particles)
     this.rainGfx.setBlendMode(Phaser.BlendModes.ADD)
-    // Under the toxic sheet and its cast, and **not additive**: ADD is what makes the
-    // acid glow, and a harmless rain that glowed would read as a hazard.
-    this.ambientGfx = scene.add.graphics().setScrollFactor(0).setDepth(DEPTH.particles - 2)
     // Embers are world-space — they come out of a vent that is somewhere.
     this.fireGfx = scene.add.graphics().setDepth(DEPTH.particles)
     this.fireGfx.setBlendMode(Phaser.BlendModes.ADD)
