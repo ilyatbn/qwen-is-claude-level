@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The tests the gate never runs.  T20.17
 #
-#   ./scripts/ignored.sh            run all fifteen, in release
+#   ./scripts/ignored.sh            run all sixteen, in release
 #   ./scripts/ignored.sh --list     print the manifest and exit
 #
 # `scripts/check.sh` is `cargo test --workspace` with no `--release` and no
@@ -56,7 +56,7 @@ cd "$ROOT"
 # per body, not by counting `assert`s: `thousand_seed_playability_sweep` fails
 # through `panic!` and contains no `assert` at all, while `density_report` and
 # `item_population_report` are named "report" and carry four failable assertions
-# and one. Twelve of the fifteen are guards.
+# and one. Thirteen of the sixteen are guards.
 MANIFEST=(
   "thousand_seed_playability_sweep|game-core tests/map_sweep.rs|guard"
   "fifty_medium_seeds_pass_without_the_safe_preset|game-core src/map/gen/mod.rs|guard"
@@ -74,6 +74,7 @@ MANIFEST=(
   "rooms_do_not_get_more_expensive_as_more_are_added|game-server tests/capacity.rs|guard"
   # Parked as flaky on 2026-09-14, not for cost — see tasks/flaky-test.md.
   "a_lobby_room_has_no_bots|game-server tests/lobby.rs|guard"
+  "a_second_client_joins_a_private_room_by_its_code|game-server tests/lobby.rs|guard"
 )
 
 # Tests whose recorded verdict is not `ok`. **Empty, and that is the finding.**

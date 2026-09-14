@@ -20,6 +20,7 @@ column is what nobody is checking while it sits here.
 | `hud-timer` | browser | carried on the known-flaky list since M19 | the round timer and event banner (§C8) |
 | `night-combat` | browser | carried on the known-flaky list since M19 | beams light the dark at night |
 | `m10-checkpoint` | browser | red twice in M19 full gates, green on standalone re-run both times | the M10 checkpoint — rooms and join codes |
+| `game-server/tests/lobby.rs::a_second_client_joins_a_private_room_by_its_code` | Rust | died once at its first emit on an already-closed socket during Builder A's 2026-09-14 speed work; 5/5 green standalone. Same `AlreadyClosed` shape as the row below | a second client joins a private room by its code |
 | `game-server/tests/lobby.rs::a_lobby_room_has_no_bots` | Rust | red in a T21.20 gate (2026-09-14): `emit: IncompleteResponseFromEngineIo(WebsocketError(AlreadyClosed))`; 5/5 green standalone | a lobby room seats no bots at construction (§C18) |
 
 ## Considered and not parked
