@@ -26,3 +26,11 @@ proptest = "1"
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+# Debug and test builds optimise game-core, and only game-core. Most of
+# `cargo test --workspace` was debug-build map generation: single tests of 45-193 s.
+# `debug-assertions` and `overflow-checks` are separate profile settings and stay at
+# the dev profile's defaults (on). Opt-level does not change f32 results because
+# Rust has no fast-math, and `golden.rs` passing unchanged is the proof of that.
+[profile.dev.package.game-core]
+opt-level = 2
