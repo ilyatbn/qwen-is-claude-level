@@ -74,7 +74,9 @@ export const CHECKS = [
   { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'sky', file: 'scripts/checks/sky.mjs', url: '?sandbox=1&seed=4242' },
   // §C14: the mountains and clouds must reach the frame, not just the maths.
-  { name: 'living-sky', file: 'scripts/checks/living-sky.mjs', url: '?sandbox=1&seed=4242' },
+  // `serial` (measured, one occurrence): red in the second `--jobs 4` run — the
+  // parallax band's pixel change against its own motion, 5.6% vs 1.3% — green at `--jobs 1`.
+  { name: 'living-sky', file: 'scripts/checks/living-sky.mjs', url: '?sandbox=1&seed=4242', serial: true },
   { name: 'lightmap', file: 'scripts/checks/lightmap.mjs', url: '?sandbox=1&seed=4242' },
   {
     name: 'night_darkens_the_world',
@@ -148,10 +150,14 @@ export const CHECKS = [
   // T15.01 / §C5: teleport pads. Standalone — it needs a real server (the pads
   // arrive in `map_init` and the charge in the snapshot) and it walks a player
   // across the map, which wants its own round rather than a shared one.
-  { name: 'teleport', file: 'scripts/checks/teleport.mjs', standalone: true },
+  // `serial` (measured, 2026-09-14): red in both `--jobs 4` runs — "the charge never
+  // left zero", a pad charge polled against a wall-clock deadline — and green at `--jobs 1`.
+  { name: 'teleport', file: 'scripts/checks/teleport.mjs', standalone: true, serial: true },
   // T15.04 / §C16. Standalone: it needs a real server, because birds are
   // server-simulated and the drop has to travel the wire.
-  { name: 'birds', file: 'scripts/checks/birds.mjs', standalone: true },
+  // `serial` (measured): red in both `--jobs 4` runs — "73s and every bird is still
+  // flying", a wall-clock hunting budget — and green at `--jobs 1`.
+  { name: 'birds', file: 'scripts/checks/birds.mjs', standalone: true, serial: true },
   // T15.02 / §C15: the M15 checkpoint — dig through the floor, fall in, die.
   // Standalone: it needs a real server (the void kill and its attribution are
   // server-side) and a FIXED_SEED map of its own.
@@ -159,7 +165,9 @@ export const CHECKS = [
   // Standalone: it launches its own vite and browser and calls `process.exit`.
   // Imported into this process it would terminate the suite mid-run — and exit 0
   // while doing it, hiding every earlier failure. Run as a subprocess instead.
-  { name: 'm5-weather', file: 'scripts/checks/m5-weather.mjs', standalone: true },
+  // `serial` (measured): red in both `--jobs 4` runs — toxic "reached the active
+  // phase" still telegraphing after a fixed `waitForTimeout(3600)` — green at `--jobs 1`.
+  { name: 'm5-weather', file: 'scripts/checks/m5-weather.mjs', standalone: true, serial: true },
   // T10.06. Standalone: it needs a real game-server, because the overlay's
   // visibility follows the **snapshot's** alive flag (§B4) and no sandbox or
   // synthetic event can raise it — which is the property worth having.
@@ -172,7 +180,9 @@ export const CHECKS = [
   // T20.13: what happens *after* a round ends — one player votes to replay, one
   // exits and quick-matches. Standalone: it needs two clients and a real round
   // driven to `Ended`, which is the sequence nothing else in the suite reaches.
-  { name: 'rematch', file: 'scripts/checks/rematch.mjs', standalone: true },
+  // `serial` (measured): red in both `--jobs 4` runs — "the player who left and
+  // quick-matched never got a match", then a crashed page — green at `--jobs 1`.
+  { name: 'rematch', file: 'scripts/checks/rematch.mjs', standalone: true, serial: true },
   // T20.05: the one weather assertion that is **not** a sandbox check. Every
   // other one drives `?sandbox=1`, which pokes the weather sub-layers by hand and
   // therefore cannot see whether the shared `WorldView` path works — the §C0 shape

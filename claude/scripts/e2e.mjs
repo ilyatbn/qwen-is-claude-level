@@ -71,8 +71,11 @@ const chromePath = join(
  *
  * The default is measured, not guessed — see DEFAULT_JOBS.
  */
-// DEFAULT_JOBS: measured on this 16-core box — see the JOURNAL entry for the
-// wall times at 1 and at this value.
+// DEFAULT_JOBS, measured on this 16-core box on 2026-09-14, full default suite at
+// 00133b7, build warmed first, another builder's tests loading the box throughout:
+//   --jobs 1  1957.8 s  (load median 9.3)   --jobs 4  696.8 s  (load 8 -> 30)
+// 4 is the only parallel value timed end to end. Not yet re-timed with the seven
+// `serial` checks that run then added, which move ~8 min of checks to the end.
 const DEFAULT_JOBS = 4
 const argv = process.argv.slice(2)
 let jobs = DEFAULT_JOBS
