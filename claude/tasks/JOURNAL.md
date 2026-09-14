@@ -6216,3 +6216,12 @@ required; `stats()` reports what it drew. `minimap-crates.mjs` reads the minimap
 networked round: no crate, no dot; lit in 21% of 87 samples against 17%; pixels = `stats()` 87/87; the far
 quarter dark. Always-lit and unwired plants red it; the first plant run was **void** (a parity test rebuilt
 the wasm under the page). `constants-parity` caught the check reading unexported `CRATE_INTERVAL`. 57/57.
+
+## T21.21A — the ground meets a seated object's base (`3e162db`)
+Measured first: 21.9% of **base** columns (the silhouette's bottom row — counting every column said 52.5%,
+which is a boulder's flanks) touched nothing, in 347 of 438 objects; median gap 6 px, tail past 1000.
+`fill_under` fills down to the first solid pixel within `OBJECT_GROUND_FILL_DEPTH` (one object-height);
+deeper stays perched, bounded by `OBJECT_FOOTPRINT_SUPPORT`, kept as the backstop, with its and `seat`'s
+stale "median" docs fixed. Without the fill 3603 base columns hover (control), with it 0; flat ground gains
+nothing. Sweep before → after: p05 0.873 → 0.872, caves 82.0 → 81.8%, no failures; golden regenerated with
+it (24/24). Gate 12 57/57 — the seed-pinned browser checks survived. B (tilt) not done, per the split.
