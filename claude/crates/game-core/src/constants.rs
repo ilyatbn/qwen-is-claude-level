@@ -1207,6 +1207,25 @@ pub const MINIMAP_H: u32 = 100;
 pub const MINIMAP_ALPHA: f32 = 0.75;
 /// World px revealed around the player each tick.
 pub const MINIMAP_REVEAL_R: f32 = 260.0;
+/// T21.19: a dropped crate blinks on the minimap — lit for `MINIMAP_CRATE_ON`
+/// seconds at the start of every `MINIMAP_CRATE_PERIOD`.
+///
+/// **The brief, deliberately** (*"for half a second, every 3 seconds"*). A glance at
+/// the minimap misses the dot about five times in six; that makes crates findable
+/// without turning the minimap into a permanent treasure map, and rewards watching.
+/// If it feels wrong in play, these two numbers are the whole decision.
+///
+/// Driven by the **round clock**, so every client blinks together and in step with
+/// the server's time, and every crate blinks in unison: one ping says "crates are
+/// here". `beaconPulse` (the in-world glow) is a 1 Hz sine on its own clock and is
+/// not the right shape for an on/off blink.
+pub const MINIMAP_CRATE_PERIOD: f32 = 3.0;
+pub const MINIMAP_CRATE_ON: f32 = 0.5;
+/// The beacon dot's colour, 0xRRGGBB — red, as asked; redder and darker than a
+/// remote player's `#ff5a5a`, and it blinks where a player's dot does not.
+pub const MINIMAP_CRATE_COLOUR: u32 = 0xff_2a_2a;
+/// The beacon dot's size, in minimap cells.
+pub const MINIMAP_CRATE_DOT: u32 = 3;
 
 // ---- v3 amendments ----  mirrors docs/71-amendments-v3.md
 

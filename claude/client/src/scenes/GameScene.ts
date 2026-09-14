@@ -84,6 +84,7 @@ import { fuelText, fuelTrend } from '../ui/jetpackReadout-math'
 import { FLAG, MOVE_MOD, flag } from '../net/codec'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { Minimap } from '../ui/minimap'
+import { beaconCrates } from '../ui/minimap-math'
 import { Hud, type EffectPhase } from '../ui/hud'
 import { Bars } from '../ui/bars'
 import { InventoryPanel } from '../ui/inventory'
@@ -1933,7 +1934,9 @@ export class GameScene extends Phaser.Scene {
       // The *same* fov the lightmap and the renderer cull with — computed once,
       // above, rather than recomputed here. Two copies of this number would let
       // the minimap and the screen disagree about who is visible (§A6).
-      this.minimap.update(dt, rp, dots, fov)
+      // T21.19: dropped crates blink here, from the mirror the item layer draws from,
+      // on the server's round clock.
+      this.minimap.update(dt, rp, dots, fov, beaconCrates(this.mirror.items.values()), this.roundTime)
     }
 
     const lights: LightSource[] = [

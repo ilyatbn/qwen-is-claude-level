@@ -275,6 +275,10 @@ export interface Constants {
   MINIMAP_H: number
   MINIMAP_ALPHA: number
   MINIMAP_REVEAL_R: number
+  MINIMAP_CRATE_PERIOD: number
+  MINIMAP_CRATE_ON: number
+  MINIMAP_CRATE_COLOUR: number
+  MINIMAP_CRATE_DOT: number
   AIM_DEADZONE: number
   BTN_LEFT: number
   BTN_RIGHT: number

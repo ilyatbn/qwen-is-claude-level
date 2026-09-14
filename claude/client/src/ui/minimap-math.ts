@@ -114,3 +114,32 @@ export function visibleRemotes<T extends { x: number; y: number }>(
     return dx * dx + dy * dy <= r2
   })
 }
+
+/**
+ * T21.19: is the crate beacon lit at `roundTime`?
+ *
+ * Lit for `on` seconds at the start of every `period`, on the round clock (see
+ * `MINIMAP_CRATE_PERIOD`). A non-finite clock or a non-positive period is dark
+ * rather than lit: a beacon that is always on is the failure the blink exists to avoid.
+ */
+export function crateBeaconLit(roundTime: number, period: number, on: number): boolean {
+  if (!(period > 0) || !Number.isFinite(roundTime)) return false
+  const t = ((roundTime % period) + period) % period
+  return t < on
+}
+
+/**
+ * Which world items get a beacon: **dropped crates** — from a crate, and landed.
+ *
+ * A crate still under its parachute is not a pickup yet, so it does not blink on the
+ * way down. And **regardless of field of view**, unlike `visibleRemotes`: the point
+ * is finding crates, and the coordinator ruled the beacon map-wide — a deliberate
+ * exception to §A6's "the minimap never shows what the screen hides", decided for
+ * crates and nothing else. Buried items are not world items, so `docs/32` §5's
+ * withholding is untouched.
+ */
+export function beaconCrates<T extends { source: string; grounded: boolean }>(items: Iterable<T>): T[] {
+  const out: T[] = []
+  for (const it of items) if (it.source === 'Crate' && it.grounded) out.push(it)
+  return out
+}

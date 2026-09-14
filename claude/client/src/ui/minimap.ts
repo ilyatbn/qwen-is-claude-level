@@ -19,6 +19,7 @@
 import { C, type Core } from '../core'
 import {
   ExploredMask,
+  crateBeaconLit,
   radiusToCells,
   visibleRemotes,
   worldToCell,
@@ -45,6 +46,10 @@ export class Minimap {
   private terrain: Uint8Array
   private terrainAge = TERRAIN_REBAKE_S
   private visible = true
+  /** T21.19: the crates handed in on the last update, and how many dots were drawn. */
+  private crateCount = 0
+  private cratesDrawn = 0
+  private crateLit = false
 
   constructor(
     private readonly core: Core,
@@ -94,8 +99,22 @@ export class Minimap {
     return this.visible
   }
 
-  update(dt: number, me: { x: number; y: number }, others: readonly RemoteDot[], fov: number): void {
+  update(
+    dt: number,
+    me: { x: number; y: number },
+    others: readonly RemoteDot[],
+    fov: number,
+    // T21.19: dropped crates (`beaconCrates`) and the round clock the blink runs on.
+    // Required, not defaulted: an empty default is a scene that forgot to pass its
+    // crates and still typechecks — the minimap drew no items for this whole game.
+    crates: readonly { x: number; y: number }[],
+    roundTime: number,
+  ): void {
     this.reveal(me.x, me.y, C().MINIMAP_REVEAL_R)
+    const c = C()
+    this.crateCount = crates.length
+    this.crateLit = crateBeaconLit(roundTime, c.MINIMAP_CRATE_PERIOD, c.MINIMAP_CRATE_ON)
+    this.cratesDrawn = 0
     if (!this.visible) return
 
     this.terrainAge += dt
@@ -103,7 +122,7 @@ export class Minimap {
       this.resampleTerrain()
       this.terrainAge = 0
     }
-    this.draw(me, others, fov)
+    this.draw(me, others, fov, crates)
   }
 
   /**
@@ -126,7 +145,12 @@ export class Minimap {
     }
   }
 
-  private draw(me: { x: number; y: number }, others: readonly RemoteDot[], fov: number): void {
+  private draw(
+    me: { x: number; y: number },
+    others: readonly RemoteDot[],
+    fov: number,
+    crates: readonly { x: number; y: number }[],
+  ): void {
     const { w, h } = this.geo
     const img = this.ctx.createImageData(w, h)
     const d = img.data
@@ -159,17 +183,42 @@ export class Minimap {
       this.ctx.fillRect(Math.round(p.x) - 1, Math.round(p.y) - 1, 3, 3)
     }
 
+    // T21.19: dropped crates, while the beacon is lit. Under the local player's dot,
+    // which must never be hidden by a crate it is standing on.
+    if (this.crateLit && crates.length > 0) {
+      const c = C()
+      const size = c.MINIMAP_CRATE_DOT
+      const half = Math.floor(size / 2)
+      this.ctx.fillStyle = `#${(c.MINIMAP_CRATE_COLOUR >>> 0).toString(16).padStart(6, '0')}`
+      for (const k of crates) {
+        const q = worldToMinimap(k.x, k.y, this.geo)
+        this.ctx.fillRect(Math.round(q.x) - half, Math.round(q.y) - half, size, size)
+        this.cratesDrawn++
+      }
+    }
+
     const p = worldToMinimap(me.x, me.y, this.geo)
     this.ctx.fillStyle = '#ffe066'
     this.ctx.fillRect(Math.round(p.x) - 1, Math.round(p.y) - 1, 3, 3)
   }
 
   /** For the debug handle and the e2e check. */
-  stats(): { visible: boolean; explored: number; cells: number } {
+  stats(): {
+    visible: boolean
+    explored: number
+    cells: number
+    /** T21.19: crates handed in, whether the beacon is lit, and dots actually drawn. */
+    crates: number
+    crateLit: boolean
+    crateDrawn: number
+  } {
     return {
       visible: this.visible,
       explored: this.explored.exploredCount,
       cells: this.geo.w * this.geo.h,
+      crates: this.crateCount,
+      crateLit: this.crateLit,
+      crateDrawn: this.cratesDrawn,
     }
   }
 

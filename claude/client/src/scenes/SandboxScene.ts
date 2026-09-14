@@ -1355,7 +1355,8 @@ export class SandboxScene extends Phaser.Scene {
       lights.push({ x: body.x, y: body.y, radius: fov, intensity: 1 })
       // The same `fov` the lightmap uses, not a second copy of the formula —
       // two of them would let the minimap and the screen disagree (§A6).
-      this.minimap?.update(dt, { x: body.x, y: body.y }, [], fov)
+      // No crates: the sandbox has no world items to beacon (T21.19).
+      this.minimap?.update(dt, { x: body.x, y: body.y }, [], fov, [], this.roundTime)
     }
     // Ordnance lights the map. Shooting in the dark tells everyone where you are,
     // and it is most of what makes night combat readable at all.
