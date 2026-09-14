@@ -39,6 +39,9 @@ import { createRequire } from 'node:module'
 import { matchVitePort } from './vite-url.mjs'
 import { childOutcome, outcomeBanner, outcomeLabel } from './lib/child-outcome.mjs'
 import { CHECKS } from './lib/e2e-checks.mjs'
+import { startRouter } from './lib/stack-router.mjs'
+import { freePort } from './lib/free-port.mjs'
+import { BROWSER_ARGS } from './lib/browser-args.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 /**
@@ -190,10 +193,16 @@ if (selected.some((c) => c.standalone)) {
 // vite servers were found accumulating on this box, which is itself the "loaded
 // machine" that has been blamed for three separate flakes. Killing the group
 // kills the grandchild too.
+// **One vite for every check, including the standalone ones**, whose own
+// game-servers are each on an OS port. vite proxies `/socket.io` to one port,
+// so that port is `lib/stack-router.mjs`, which forwards each request to the
+// server its context's `e2e_server` cookie names. In-page checks never open a
+// socket, so for them this changes nothing.
+const router = await startRouter(await freePort())
 const vite = spawn('npx', ['vite', '--strictPort=false'], {
   detached: true,
   cwd: join(root, 'client'),
-  env: { ...process.env, LD_LIBRARY_PATH: libDir },
+  env: { ...process.env, LD_LIBRARY_PATH: libDir, VITE_SERVER_PORT: String(router.port) },
 })
 
 let port = null
@@ -302,24 +311,19 @@ for (const k of ['log', 'error', 'warn', 'info']) {
 
 const results = []
 let browser
+let browserServer
 
 try {
   await portReady
-  browser = await chromium.launch({
+  // A browser **server**, so standalone checks connect to it instead of each
+  // launching one (`harness.mjs::startStack`), and one connection to it for the
+  // in-page checks. Same flags as a hand-run check: lib/browser-args.mjs.
+  browserServer = await chromium.launchServer({
     executablePath: chromePath,
     env: { ...process.env, LD_LIBRARY_PATH: libDir },
-    args: [
-      '--no-sandbox',
-      '--use-gl=swiftshader',
-      '--enable-unsafe-swiftshader',
-      // rAF is throttled in a backgrounded page and the client steps off rAF,
-      // so a check whose page is not foreground barely simulates. See the same
-      // flags in `scripts/checks/harness.mjs` for what that cost.
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding',
-    ],
+    args: BROWSER_ARGS,
   })
+  browser = await chromium.connect(browserServer.wsEndpoint())
 
   /**
    * One check, start to finish, with its output going to `sink`. Returns its
@@ -335,10 +339,19 @@ try {
       // game-server inherits these pipes too, so `close` can lag `exit` by a
       // leaked grandchild's lifetime: wait for it, but only briefly — the leak
       // guard below is what reports a grandchild that outlived its check.
+      // The shared vite and browser, unless the check keeps its own stack
+      // (`ownStack` in lib/e2e-checks.mjs says why at each entry).
+      const env = check.ownStack
+        ? process.env
+        : {
+            ...process.env,
+            E2E_SHARED_VITE_URL: `http://localhost:${port}`,
+            E2E_SHARED_BROWSER_WS: browserServer.wsEndpoint(),
+          }
       const p = spawn('node', [check.file], {
         cwd: root,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: process.env,
+        env,
       })
       p.stdout.on('data', (b) => sink.write(b))
       p.stderr.on('data', (b) => sink.write(b))
@@ -460,7 +473,11 @@ try {
   console.error(`\nsuite could not start: ${e.message}`)
   results.push({ name: '(startup)', ok: false, kind: 'failed', ms: 0, err: e.message })
 } finally {
-  await browser?.close()
+  // The connection, then the browser server, then the router — all the suite's
+  // own, closed before the leak guard samples, as vite is.
+  await browser?.close().catch(() => {})
+  await browserServer?.close().catch(() => {})
+  await router.close()
   shutdown()
 }
 

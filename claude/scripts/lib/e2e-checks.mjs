@@ -117,7 +117,9 @@ export const CHECKS = [
   // §C3: the round ends and you are told. Standalone — it drives a real phase
   // machine on a shortened ROUND_SECONDS, and there is no sandbox path to `Ended`.
   { name: 'round-end', file: 'scripts/checks/round-end.mjs', standalone: true },
-  { name: 'lobby-start', file: 'scripts/checks/lobby-start.mjs', standalone: true },
+  // `ownStack`: it starts its own server, vite and browser by hand rather than
+  // through `startStack`, so the shared-stack variables would reach nothing.
+  { name: 'lobby-start', file: 'scripts/checks/lobby-start.mjs', standalone: true, ownStack: true },
   // §E1/§E6/§E7. The only gate on the lobby screen: vitest is `environment:
   // 'node'` with no canvas, so a green unit run proves the reducer and says
   // nothing about whether a lobby appears (D-26).
@@ -146,7 +148,9 @@ export const CHECKS = [
   // T14.08 / §C17: the dev surface is compiled out. Standalone and no shared
   // stack — it builds the client twice and drives the *artifact*, not the dev
   // server, which is the whole point.
-  { name: 'no-dev-surface', file: 'scripts/checks/no-dev-surface.mjs', standalone: true },
+  // `ownStack`: it builds and serves the production artifact and drives *that*;
+  // the shared dev server is exactly what it must not use.
+  { name: 'no-dev-surface', file: 'scripts/checks/no-dev-surface.mjs', standalone: true, ownStack: true },
   // T15.01 / §C5: teleport pads. Standalone — it needs a real server (the pads
   // arrive in `map_init` and the charge in the snapshot) and it walks a player
   // across the map, which wants its own round rather than a shared one.
@@ -167,7 +171,9 @@ export const CHECKS = [
   // while doing it, hiding every earlier failure. Run as a subprocess instead.
   // `serial` (measured): red in both `--jobs 4` runs — toxic "reached the active
   // phase" still telegraphing after a fixed `waitForTimeout(3600)` — green at `--jobs 1`.
-  { name: 'm5-weather', file: 'scripts/checks/m5-weather.mjs', standalone: true, serial: true },
+  // `ownStack`: it launches its own vite and browser, with no harness, so the
+  // shared-stack variables would reach nothing.
+  { name: 'm5-weather', file: 'scripts/checks/m5-weather.mjs', standalone: true, serial: true, ownStack: true },
   // T10.06. Standalone: it needs a real game-server, because the overlay's
   // visibility follows the **snapshot's** alive flag (§B4) and no sandbox or
   // synthetic event can raise it — which is the property worth having.

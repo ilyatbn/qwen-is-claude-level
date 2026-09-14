@@ -58,6 +58,7 @@ export const NOTHING = [
   [/^(shots|recordings|replays)\//, 'run output'],
   [/^scripts\/check\.sh$/, 'the gate itself — `check.sh --changed` exercises it'],
   [/^scripts\/(affected\.mjs|lib\/affected(\.test)?\.mjs)$/, 'its own test runs in every gate mode'],
+  [/^scripts\/lib\/stack-router\.test\.mjs$/, 'runs in every gate mode; the router itself maps through its importers'],
   [/^scripts\/(play|probe|shot|drive)\.mjs$/, 'interactive dev tools'],
   [/^scripts\/(build-atlas|build-audio|catalogue-sprites)\.mjs$|^scripts\/fetch-assets\.sh$/,
     'generators: their output lands in assets/, which is what is tested'],

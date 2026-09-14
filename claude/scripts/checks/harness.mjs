@@ -18,13 +18,20 @@
  * a lobby regression got read as a fixture bug for a whole session.
  */
 import { spawn } from 'node:child_process'
-import { closeSync, mkdirSync, openSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { createServer } from 'node:net'
+import { mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { matchVitePort } from '../vite-url.mjs'
 import { killGroup } from '../proc-group.mjs'
+import { BROWSER_ARGS, chromePath, libDir } from '../lib/browser-args.mjs'
+import { ROUTE_COOKIE } from '../lib/stack-router.mjs'
+
+/**
+ * `freePort` lives in `lib/free-port.mjs` so the runner can take a port without
+ * loading this harness; re-exported, so every check imports it from here as before.
+ */
+export { freePort } from '../lib/free-port.mjs'
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const shotsDir = join(root, 'shots')
@@ -43,80 +50,12 @@ export const { chromium } = require('playwright-core')
  * Where the hand-extracted chromium libs live on this box, and the browser
  * binary itself. Exported so a check that drives a **built bundle** rather than
  * the dev server — `no-dev-surface` — can launch the same browser the same way
- * without a second copy of the LD_LIBRARY_PATH incantation.
+ * without a second copy of the LD_LIBRARY_PATH incantation. The values now live
+ * in `lib/browser-args.mjs`, shared with the suite's own browser.
  */
-export const libDir = join(process.env.HOME ?? '', '.cache/pwlibs/root/usr/lib/x86_64-linux-gnu')
-export const chromePath = join(
-  process.env.HOME ?? '',
-  '.cache/ms-playwright/chromium-1234/chrome-linux64/chrome',
-)
+export { chromePath, libDir }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
-/**
- * A port nobody else is using, **asked of the OS** — for a check's game-server.
- *
- * Every standalone check used to hardcode one (`3112`, `3123`, …) and that was
- * only safe because the suite ran them one at a time: three pairs already shared
- * a number (`teleport`/`bullets-visible` 3131, `hud-timer`/`ordnance-visible`
- * 3123, `lobby`/`escape-menu` 3126). Under `e2e.mjs --jobs N` two of those
- * running together would have had one check's health poll answered by the
- * *other* check's server — a silent wrong-server run, not a loud failure.
- *
- * Asking the OS (`listen(0)`) rules out anything already listening. It does not
- * by itself rule out two concurrent checks being handed the same number in the
- * seconds between this call and their server's `bind`, so each port is also
- * **claimed** with an exclusive-create file under `target/e2e-ports/` and
- * released when this process exits. A port another live check has claimed is
- * skipped; a claim file older than an hour is a crashed run's and is reused.
- *
- * @returns {Promise<number>}
- */
-export async function freePort() {
-  const dir = join(root, 'target', 'e2e-ports')
-  mkdirSync(dir, { recursive: true })
-  for (let attempt = 0; attempt < 50; attempt++) {
-    const port = await new Promise((res, rej) => {
-      const srv = createServer()
-      srv.unref()
-      srv.on('error', rej)
-      // `::` is dual-stack here, so the port is free on 127.0.0.1 *and* ::1 —
-      // the server binds the first, and `localhost` may resolve to either.
-      srv.listen(0, '::', () => {
-        const p = srv.address().port
-        srv.close(() => res(p))
-      })
-    })
-    const claim = join(dir, String(port))
-    try {
-      closeSync(openSync(claim, 'wx'))
-    } catch {
-      try {
-        if (Date.now() - statSync(claim).mtimeMs < 3_600_000) continue
-        writeFileSync(claim, '')
-      } catch {
-        continue
-      }
-    }
-    // One exit handler for every claim: a listener per port trips Node's
-    // leak warning past ten, and `fog-visible` alone claims three.
-    if (!claims.size) {
-      process.on('exit', () => {
-        for (const c of claims) {
-          try {
-            unlinkSync(c)
-          } catch {
-            /* already gone */
-          }
-        }
-      })
-    }
-    claims.add(claim)
-    return port
-  }
-  throw new Error('freePort: 50 OS-assigned ports were all claimed by other checks')
-}
-const claims = new Set()
 
 /**
  * A tiny assertion tally, so every check reports the same way and the suite's
@@ -212,49 +151,80 @@ export async function startStack({ port, env = {}, label = 'check' } = {}) {
     throw new Error(`${label}: server on :${port} never became healthy`)
   }
 
-  const vite = spawn('npx', ['vite', '--strictPort=false'], {
-    detached: true,
-    cwd: join(root, 'client'),
-    env: { ...process.env, VITE_SERVER_PORT: String(port) },
-  })
-  kids.push(vite)
-  const viteUrl = await new Promise((res, rej) => {
-    const on = (b) => {
-      const p = matchVitePort(b)
-      if (p) res(`http://localhost:${p}`)
-    }
-    vite.stdout.on('data', on)
-    vite.stderr.on('data', on)
-    setTimeout(() => rej(new Error(`${label}: vite never started`)), 120_000)
-  })
+  // **Shared or own vite + browser.** Under `e2e.mjs` a standalone check is
+  // handed the suite's vite and browser and starts only its game-server above:
+  // a full stack cost ~50 s under load, and `fog-visible` starts three. Run by
+  // hand, neither variable is set and it launches its own exactly as before.
+  //
+  //   E2E_SHARED_VITE_URL    the suite's vite; its /socket.io proxy is the router
+  //   E2E_SHARED_BROWSER_WS  the suite's `chromium.launchServer().wsEndpoint()`
+  //
+  // One vite cannot proxy to many servers by port, and the client calls `io()`
+  // on its own origin, so every context this stack opens carries
+  // `e2e_server=<port>` and `lib/stack-router.mjs` forwards by it.
+  const sharedVite = process.env.E2E_SHARED_VITE_URL
+  const sharedWs = process.env.E2E_SHARED_BROWSER_WS
+  if (Boolean(sharedVite) !== Boolean(sharedWs)) {
+    await close()
+    // Half a shared stack is a runner bug; say so rather than guess which half.
+    throw new Error(`${label}: E2E_SHARED_VITE_URL and E2E_SHARED_BROWSER_WS must be set together`)
+  }
 
-  browser = await chromium.launch({
-    executablePath: chromePath,
-    env: { ...process.env, LD_LIBRARY_PATH: libDir },
-    args: [
-      '--no-sandbox',
-      '--use-gl=swiftshader',
-      '--enable-unsafe-swiftshader',
-      // The client steps its fixed timestep off `requestAnimationFrame`, and
-      // Chromium throttles rAF in any page that is not the foreground one — to
-      // roughly one frame a second, or none at all. With two or three contexts
-      // open only one of them is foreground, so every other client barely
-      // simulates.
-      //
-      // That is the whole of `two-clients`' long-running mystery. Its own
-      // comment records "polling from t=0 was tried and did not move the player
-      // at all, for a reason I could not explain", and the numbers are exactly
-      // this shape: holding D for the same wall-clock window moved bo 144.8 px
-      // on one standalone run, 15.7 px on the next, and **0.0 px** inside the
-      // suite. Three sessions recorded it as "fails under load, passes
-      // standalone" and reached for longer sleeps, which only moves the
-      // threshold (§A28) — the box was never the problem, backgrounding was.
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding',
-    ],
-  })
-  console.log(`  stack: server :${port}  vite ${viteUrl}`)
+  let vite = null
+  let viteUrl
+  let real
+  if (sharedVite) {
+    viteUrl = sharedVite
+    real = await chromium.connect(sharedWs)
+  } else {
+    vite = spawn('npx', ['vite', '--strictPort=false'], {
+      detached: true,
+      cwd: join(root, 'client'),
+      env: { ...process.env, VITE_SERVER_PORT: String(port) },
+    })
+    kids.push(vite)
+    viteUrl = await new Promise((res, rej) => {
+      const on = (b) => {
+        const p = matchVitePort(b)
+        if (p) res(`http://localhost:${p}`)
+      }
+      vite.stdout.on('data', on)
+      vite.stderr.on('data', on)
+      setTimeout(() => rej(new Error(`${label}: vite never started`)), 120_000)
+    })
+    // BROWSER_ARGS carries the rAF-throttling flags and the history of what
+    // their absence cost (`two-clients`): see lib/browser-args.mjs.
+    real = await chromium.launch({
+      executablePath: chromePath,
+      env: { ...process.env, LD_LIBRARY_PATH: libDir },
+      args: BROWSER_ARGS,
+    })
+  }
+
+  // `stack.browser` is a wrapper in both modes, so `lobby`, `m10-checkpoint` and
+  // `rematch` — which call `stack.browser.newContext` directly — are routed
+  // without an edit. Own mode needs no cookie (its vite proxies straight to
+  // `port`); setting it anyway keeps one path.
+  //
+  // `close()` closes **this check's** contexts, then the browser. For a
+  // connected browser that second call "clears all created contexts belonging
+  // to this browser and disconnects from the browser server" (playwright-core
+  // 1.62.1) — it never kills the suite's browser, and a check that dies without
+  // closing is cleaned the same way when its connection drops.
+  const contexts = []
+  browser = {
+    newContext: async (opts) => {
+      const ctx = await real.newContext(opts)
+      contexts.push(ctx)
+      await ctx.addCookies([{ name: ROUTE_COOKIE, value: String(port), url: viteUrl }])
+      return ctx
+    },
+    close: async () => {
+      for (const c of contexts) await c.close().catch(() => {})
+      await real.close()
+    },
+  }
+  console.log(`  stack: server :${port}  vite ${viteUrl}${sharedVite ? ' (shared)' : ''}`)
 
   return {
     port,

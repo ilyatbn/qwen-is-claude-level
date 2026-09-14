@@ -99,6 +99,9 @@ node scripts/verify-repo.mjs
 # The file → check mapping `--changed` trusts. Run in every mode, because a
 # mapping that silently drops a check is the one failure `--changed` cannot see.
 node --test scripts/lib/affected.test.mjs
+# The socket.io router every standalone check's traffic goes through under
+# e2e.mjs — a misroute would put one check's client on another check's server.
+node --test scripts/lib/stack-router.test.mjs
 
 # Everything below needs a browser or the network. `--fast` skips the lot.
 #
