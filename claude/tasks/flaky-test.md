@@ -29,6 +29,8 @@ column is what nobody is checking while it sits here.
 | `escape-menu` | browser | red in the T21.18 smoke `--changed` gate (2026-09-15, 45/48, load ~3): "turning High Quality on moved the field by 6.5 — nothing reads it yet"; **green alone** straight after ("unchanged (0.5)"). Its claim also predates the cloud and beam shaders, which do read High Quality — the owner should decide whether the assertion still means anything | the escape menu, the Options panel, and High Quality defaulting to Off |
 | `void` | browser | **not random — red every time, and not caused by T21.18**: red in the smoke gate ("held a for 4000 ms … stopped 34 px short"), red alone at `e9a4333` ("two rockets in a row left x=1037 at 26 px"), and red alone again with every code file of `e9a4333` reverted to its parent ("x=1040 at 19 px", no death overlay). Parked so it stops reddening every `--changed` run; it wants fixing, not waiting | the M15 checkpoint — dig through the floor, fall into the void, die (§C15) |
 
+**Not parked, noted (T21.18, 2026-09-15):** `client/src/render/backdrop-real.test.ts` takes **216 s alone** (42/42 green). In one `--changed` gate at load the vitest worker lost its RPC (`Timeout calling "onTaskUpdate"`, 872/914 reported) and the stage went red; the gate before and after it were 914/914. There is no parking mechanism for a vitest file, so it is recorded here — one slow file sits near the runner timeout, and the owner should decide whether it moves out of the default run.
+
 ## Considered and not parked
 
 - `skins-ingame` — red once on 2026-09-14, but that was a real bug (the T21.20 ridge skirt),

@@ -6248,3 +6248,12 @@ reds four. `DEV_SMOKE=1` grants a smoke grenade (no check could throw one; `DEV_
 (48 checks, everything: client+wasm+server) **1055 s, 45/48**: `smoke-shader` (cloud expired under load → `holdHazards`,
 green alone after), `escape-menu` (green alone → parked), `void` (red alone **and on the parent's code** → parked, wants a
 fix). The fix is re-covered by the fire commit's gate. My vitest run left an untracked root `.vite/`; only `client/.vite/` is ignored.
+
+## T21.18 item 4 — fire (`a9b0fd2`; smoke fix was `cf3cd75`, test fix `5cc889b`)
+Each flame's three circles become one `FLAME_FRAGMENT` quad: yellow heart, dark rim, a tongue, a faint haze
+column (not true distortion). Body solid to 1.1 damage radii. `fire-shader`: 24 flames/24 quads, repaint 27.1,
+restore 0.6, control 0.0, drawn 36.0/4, animates 10.5%/0.0%; **damage-circle points painted 192/192 on, 85/192
+on the old picture** — `LOOK.flame`'s "drawn larger than `FLAME_RADIUS`" is false (8.05 px max vs 10). Plants:
+body inside the circle → 79 unpainted; ignoring the setting → five reds. Gates `--changed`: **420 s red** (repo
+guard: parking escape-menu broke `affected.test`'s examples → `5cc889b`), **378 s red** (vitest RPC timeout in
+`backdrop-real.test.ts`, 216 s alone, 42/42 — load), **1049 s green 47/47** (everything; covers smoke fix).
