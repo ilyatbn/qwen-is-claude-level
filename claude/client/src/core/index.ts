@@ -340,6 +340,9 @@ export interface Constants {
   FLAME_SHADER_ASPECT: number
   FLAME_SHADER_BASE: number
   FLAME_SHADER_POOL: number
+  BLAST_SHADER_LIFE: number
+  BLAST_SHADER_SCALE: number
+  BLAST_SHADER_POOL: number
   SMOKE_RADIUS: number
   FOV_SMOKE_MULT: number
   SMOKE_SHADER_SCALE: number

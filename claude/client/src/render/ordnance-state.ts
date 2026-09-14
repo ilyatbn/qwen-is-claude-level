@@ -232,6 +232,15 @@ export interface Impact {
   ttl: number
 }
 
+/** T21.18: one explosion as the High Quality blast paints it. `age` counts up to `ttl`. */
+export interface Blast {
+  x: number
+  y: number
+  r: number
+  age: number
+  ttl: number
+}
+
 export interface Light {
   x: number
   y: number
@@ -284,6 +293,16 @@ export class OrdnanceState {
   holdTracers = false
   readonly projectiles = new Map<number, TrackedProjectile>()
   readonly impacts: Impact[] = []
+  /**
+   * T21.18: what a High Quality blast is painted from — the same explosion as its
+   * `Impact`, but living `blastLife` seconds so the soot can linger after the flash.
+   * **Drawing only**: lights still come from `impacts`, and the crater and knockback
+   * are the server's. `blastLife` 0 (the default) records none.
+   */
+  readonly blasts: Blast[] = []
+  blastLife = 0
+  /** Freeze impact and blast decay — `holdTracers`' twin, for a check posing one blast. */
+  holdImpacts = false
 
   constructor(
     private readonly tracerLifetime: number,
@@ -314,6 +333,7 @@ export class OrdnanceState {
 
   addImpact(x: number, y: number, r: number, kind: string, ttl = 0.35): void {
     this.impacts.push({ x, y, r, kind, life: ttl, ttl })
+    if (this.blastLife > 0) this.blasts.push({ x, y, r, age: 0, ttl: this.blastLife })
   }
 
   update(dt: number): void {
@@ -323,10 +343,24 @@ export class OrdnanceState {
       t.life -= dt
       if (t.life <= 0) this.tracers.splice(i, 1)
     }
+    if (!this.holdImpacts) this.ageImpacts(dt)
+  }
+
+  /**
+   * Age impacts and blasts by `dt`, dropping the finished ones. `update` calls it, and
+   * so does a check posing a held blast at a known age — one function, so the pose
+   * and the game age them the same way.
+   */
+  ageImpacts(dt: number): void {
     for (let i = this.impacts.length - 1; i >= 0; i--) {
       const im = this.impacts[i]!
       im.life -= dt
       if (im.life <= 0) this.impacts.splice(i, 1)
+    }
+    for (let i = this.blasts.length - 1; i >= 0; i--) {
+      const b = this.blasts[i]!
+      b.age += dt
+      if (b.age >= b.ttl) this.blasts.splice(i, 1)
     }
   }
 

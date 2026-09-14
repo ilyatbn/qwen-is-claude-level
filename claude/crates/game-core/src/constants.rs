@@ -2528,6 +2528,15 @@ pub const FLAME_SHADER_BASE: f32 = 0.3;
 /// the flat circles — a cap, never a flame dropped. Under `FLAME_MAX_LIVE` on purpose:
 /// every quad is its own draw call.
 pub const FLAME_SHADER_POOL: u32 = 48;
+/// T21.18: seconds a High Quality explosion is painted for — the flash, the front and
+/// then the soot that lingers. Longer than the flat flash (0.35 s) on purpose; the
+/// light and the crater are unchanged.
+pub const BLAST_SHADER_LIFE: f32 = 1.1;
+/// T21.18: a blast's shader quad half-width, in blast radii. The front runs past the
+/// blast radius and the soot beyond it, so the quad leaves room for both.
+pub const BLAST_SHADER_SCALE: f32 = 1.8;
+/// T21.18: how many blasts at once get a shader quad; past it, the flat flash.
+pub const BLAST_SHADER_POOL: u32 = 16;
 
 // ---------------------------------------------------------------------------
 // Special items (M21)

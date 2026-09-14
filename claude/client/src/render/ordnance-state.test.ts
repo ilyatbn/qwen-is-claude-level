@@ -62,6 +62,31 @@ describe('OrdnanceState', () => {
     expect(o.lights().length).toBe(1)
   })
 
+  it('keeps a blast after its flash, and holds both when asked (T21.18)', () => {
+    const BLAST = 1.1
+    const FLASH = 0.2
+    const o = new OrdnanceState(LIFE, TRAIL)
+    // Off by default: a state nobody configured records no blasts.
+    o.addImpact(0, 0, 42, 'blast', FLASH)
+    expect(o.blasts.length).toBe(0)
+    o.blastLife = BLAST
+    o.addImpact(50, 60, 42, 'blast', FLASH)
+    expect(o.blasts).toEqual([{ x: 50, y: 60, r: 42, age: 0, ttl: BLAST }])
+    // Held: a frame of any length ages neither.
+    o.holdImpacts = true
+    o.update(BLAST * 2)
+    expect(o.impacts.length).toBe(2)
+    expect(o.blasts[0]!.age).toBe(0)
+    // Posed through the shared function: the flash is gone and the blast lingers.
+    o.ageImpacts(FLASH * 1.5)
+    expect(o.impacts.length).toBe(0)
+    expect(o.blasts.length).toBe(1)
+    // Released, it finishes on its own clock.
+    o.holdImpacts = false
+    o.update(BLAST)
+    expect(o.blasts.length).toBe(0)
+  })
+
   it('makes a rocket a brighter light than a grenade', () => {
     // Night combat is readable because ordnance lights the map; a rocket is the
     // brightest thing most rounds will see.

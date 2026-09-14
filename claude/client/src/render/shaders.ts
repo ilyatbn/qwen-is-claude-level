@@ -575,3 +575,77 @@ void main() {
   gl_FragColor = vec4(outc, outa);
 }
 `
+
+/**
+ * T21.18 item 5 — an explosion: a flash, a blast front, and soot that lingers.
+ *
+ * **Drawing only.** The crater, the damage and the knockback are the server's, and
+ * the light still comes from the flat path's impact record. This paints a `Blast`,
+ * the same explosion kept for `BLAST_SHADER_LIFE` so the soot can outlast the flash.
+ *
+ * Coordinates are in blast radii from the centre. `age` is 0..1 of the blast's life:
+ * the fireball is gone by a third of it, the front runs out past one blast radius
+ * quickly and fades, and the soot rises behind it and thins to nothing at the end.
+ * Phaser's `time` only stirs the noise, so a held blast still churns.
+ */
+export const BLAST_FRAGMENT = /* glsl */ `
+precision mediump float;
+
+uniform vec2 resolution;
+// Seconds - Phaser's own uniform, set at every render.
+uniform float time;
+// 0..1 of the blast's painted life.
+uniform float age;
+uniform float seed;
+// Quad half-width in blast radii - BLAST_SHADER_SCALE.
+uniform float scale;
+
+varying vec2 fragCoord;
+
+${FBM}
+
+// Where the front starts and where it ends, in blast radii.
+const float FRONT_FROM = 0.3;
+const float FRONT_TO = 1.35;
+// How quickly the front runs out: most of the way by a fifth of the life.
+const float RUSH = 9.0;
+// The front's thickness, in blast radii.
+const float BAND = 0.16;
+// Soot is solid out to this many blast radii, noise or not.
+const float SOOT_COVER = 1.05;
+
+void main() {
+  vec2 uv = fragCoord / resolution.xy;
+  vec2 p = (uv - 0.5) * 2.0 * scale;
+  float n = fbm3(p * 2.2 + vec2(seed, time * 0.9));
+  float d = length(p) + (n - 0.5) * 0.28;
+  float front = mix(FRONT_FROM, FRONT_TO, 1.0 - exp(-age * RUSH));
+  // The front: a bright ring that fades as it runs out.
+  float ring = exp(-pow((d - front) / BAND, 2.0)) * (1.0 - smoothstep(0.35, 0.8, age));
+  // Everything inside the front burns early; the fireball is gone by a third of the life.
+  float inside = (1.0 - smoothstep(front - 0.1, front + 0.05, d));
+  // Out by 0.22 of the life, and the soot fully in by then: measured, a slower handover
+  // left the fire and the soot equal at a quarter of the life, and orange plus soot over
+  // rock averaged back to rock-brown (102,64,31 over 83,69,53 in explosion-shader).
+  float fire = inside * (1.0 - smoothstep(0.05, 0.22, age));
+  float flash = exp(-d * d * 4.0) * (1.0 - smoothstep(0.0, 0.18, age));
+  // Soot: rises behind the front and lingers, eaten at its edge, gone by the end.
+  // **Solid out to SOOT_COVER whatever the noise does**, FLAME_FRAGMENT's rule: the noise
+  // may only rag the edge outward. And **dark and dense enough to read against rock**:
+  // measured in explosion-shader, at a quarter of the life a point just inside the blast
+  // radius came out 98,69,44 over rock at 94,80,64. Worked through, that is thin soot
+  // (about 0.5) plus the fading orange averaging back to brown - painted, but in the
+  // rock's own colour. A scorch has to look burnt.
+  float sootBody = 1.0 - smoothstep(SOOT_COVER, SOOT_COVER + 0.4 * n + 0.001, length(p));
+  float soot = sootBody * smoothstep(0.05, 0.22, age) * (1.0 - smoothstep(0.55, 1.0, age)) * (0.8 + 0.2 * n);
+  vec3 hot = vec3(1.0, 0.95, 0.78);
+  vec3 orange = vec3(1.0, 0.55, 0.16);
+  vec3 dark = vec3(0.08, 0.065, 0.06);
+  float glowA = clamp(flash + fire * (0.55 + 0.45 * n) + ring * 0.9, 0.0, 1.0);
+  vec3 glow = mix(orange, hot, clamp(flash + ring * 0.4, 0.0, 1.0));
+  float a = clamp(glowA + soot * (1.0 - glowA), 0.0, 1.0);
+  vec3 col = glow * glowA + dark * soot * (1.0 - glowA);
+  // Premultiplied, for the reason FOG_FRAGMENT is.
+  gl_FragColor = vec4(col, a);
+}
+`

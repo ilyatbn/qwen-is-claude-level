@@ -1429,6 +1429,9 @@ pub fn constants_json() -> String {
         FLAME_SHADER_ASPECT => c::FLAME_SHADER_ASPECT,
         FLAME_SHADER_BASE => c::FLAME_SHADER_BASE,
         FLAME_SHADER_POOL => c::FLAME_SHADER_POOL,
+        BLAST_SHADER_LIFE => c::BLAST_SHADER_LIFE,
+        BLAST_SHADER_SCALE => c::BLAST_SHADER_SCALE,
+        BLAST_SHADER_POOL => c::BLAST_SHADER_POOL,
         // T21.18: `smoke-shader` sizes its patches from the cloud and reports the
         // multiplier a player inside it gets, rather than carrying copies.
         SMOKE_RADIUS => c::SMOKE_RADIUS,

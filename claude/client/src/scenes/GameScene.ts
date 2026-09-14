@@ -147,6 +147,8 @@ function freshObserved() {
      * what you fired" was tested for one of the two delivery kinds.
      */
     hitscans: 0,
+    /** T21.18: `explosion` events received, cumulative — the server's end of a blast. */
+    explosions: 0,
     /**
      * `projectile_spawn` events received — a **cumulative** count.
      *
@@ -1045,6 +1047,7 @@ export class GameScene extends Phaser.Scene {
       const x = Number(p['x'] ?? 0)
       const y = Number(p['y'] ?? 0)
       const r = Number(p['r'] ?? 0)
+      this.observed.explosions++
       this.world?.ordnance.addImpact(x, y, r, 'blast')
       // A meteor is a different, heavier sound from a rocket: the kind is on the
       // event already (`docs/40` §3), so nothing new has to be sent for it.
@@ -2651,6 +2654,7 @@ export class GameScene extends Phaser.Scene {
           shaderBeams: self.world?.ordnance.beamsAreShader ?? false,
           shaderSmoke: self.fx?.smokeIsShader ?? false,
           shaderFlames: self.world?.ordnance.flamesAreShader ?? false,
+          shaderBlasts: self.world?.ordnance.blastsAreShader ?? false,
         }
       },
       /** e2e only (§C2, T21.18): hide the hazard/jet/mine layer for a same-instant control frame. */
@@ -2667,6 +2671,23 @@ export class GameScene extends Phaser.Scene {
       showOrdnance(on: boolean) {
         self.world?.ordnance.setVisible(on)
         return { visible: self.world?.ordnance.visible ?? false }
+      },
+      /** e2e only (T21.18): stop explosions ageing, so one blast can be posed and photographed. */
+      holdImpacts(on: boolean) {
+        if (self.world) self.world.ordnance.state.holdImpacts = on
+        return { held: self.world?.ordnance.state.holdImpacts ?? false }
+      },
+      /**
+       * e2e only (T21.18): age held explosions by `seconds` through the state's own
+       * `ageImpacts`, then repaint — so a frozen blast can be posed at a known age.
+       */
+      advanceImpacts(seconds: number) {
+        self.world?.ordnance.state.ageImpacts(seconds)
+        self.world?.ordnance.render()
+        return {
+          impacts: self.world?.ordnance.state.impacts.length ?? 0,
+          blasts: self.world?.ordnance.state.blasts.map((b) => ({ age: b.age, ttl: b.ttl })) ?? [],
+        }
       },
       /** e2e only (T21.18): stop beams fading, so one can be photographed steadily. */
       holdTracers(on: boolean) {
@@ -2994,6 +3015,11 @@ export class GameScene extends Phaser.Scene {
           // T21.18: flames the last render painted with the shader, and where the layer has
           // every flame — the positions its picture was drawn from, not the mirror's.
           flameShadersDrawn: self.world?.ordnance.flameShadersDrawn ?? 0,
+          // T21.18: explosions the layer holds (flat flashes, and the longer-lived blasts the
+          // shader paints from), where they are, and how many quads the last render painted.
+          impactsDrawn: self.world?.ordnance.state.impacts.length ?? 0,
+          blastsAt: (self.world?.ordnance.state.blasts ?? []).map((b) => ({ x: b.x, y: b.y, r: b.r, age: b.age })),
+          blastShadersDrawn: self.world?.ordnance.blastShadersDrawn ?? 0,
           flamesDrawnAt: [...(self.world?.ordnance.state.projectiles.values() ?? [])]
             .filter((p) => p.kind === 'flame')
             .map((p) => ({ x: p.x, y: p.y })),
@@ -3195,6 +3221,7 @@ export class GameScene extends Phaser.Scene {
             itemSpawns: self.observed.itemSpawns,
             itemPickups: self.observed.itemPickups,
             hitscans: self.observed.hitscans,
+            explosions: self.observed.explosions,
             projectileSpawns: self.observed.projectileSpawns,
             ownProjectileSpawns: self.observed.ownProjectileSpawns,
             unmappedFireCues: self.observed.unmappedFireCues,

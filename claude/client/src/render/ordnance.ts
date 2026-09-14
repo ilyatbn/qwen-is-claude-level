@@ -18,7 +18,7 @@ import {
   type ProjectileKind,
 } from './ordnance-state'
 import { DEPTH } from './backdrop'
-import { BEAM_FRAGMENT, FLAME_FRAGMENT, hasWebGL } from './shaders'
+import { BEAM_FRAGMENT, BLAST_FRAGMENT, FLAME_FRAGMENT, hasWebGL } from './shaders'
 import { isHighQuality, onHighQualityChange } from '../ui/settings'
 
 // The colour and radius tables used to live here as well as in ordnance-state,
@@ -57,6 +57,10 @@ export class OrdnanceLayer {
   private readonly flameShaders: Phaser.GameObjects.Shader[] = []
   /** How many flames the last render painted with the shader. */
   flameShadersDrawn = 0
+  /** T21.18: one quad per blast painted under High Quality, grown on demand, capped. */
+  private readonly blastShaders: Phaser.GameObjects.Shader[] = []
+  /** How many blasts the last render painted with the shader. */
+  blastShadersDrawn = 0
   /** Hidden for a check's control frame; `render` honours it for the shader quads too. */
   private hidden = false
 
@@ -66,6 +70,9 @@ export class OrdnanceLayer {
     // five ballistic guns fire objects that fly and are drawn below, with the
     // other projectiles.
     this.state = new OrdnanceState(c.BEAM_LIFETIME, c.PROJECTILE_TRAIL_LEN)
+    // T21.18: record every explosion for the painted blast, whatever the setting now —
+    // turning High Quality on mid-blast then paints the blast already in progress.
+    this.state.blastLife = c.BLAST_SHADER_LIFE
     // §F10.3: **flames get their own Graphics, and it is not additive.**
     //
     // Created first, so it sits under the additive layer at the same depth. This
@@ -292,8 +299,28 @@ export class OrdnanceLayer {
     for (let i = flamesPainted; i < this.flameShaders.length; i++) this.flameShaders[i]!.setVisible(false)
     this.flameShadersDrawn = flamesPainted
 
+    // **T21.18: under High Quality an explosion is a shader quad painted from its
+    // `Blast`**, and the flat flash is not drawn — past `BLAST_SHADER_POOL` it is.
+    let blastsPainted = 0
+    if (shaderBeams) {
+      for (const b of this.state.blasts) {
+        const sh = this.blastShader(blastsPainted)
+        if (!sh) break
+        blastsPainted++
+        const side = 2 * b.r * c.BLAST_SHADER_SCALE
+        sh.setPosition(b.x, b.y)
+        sh.setDisplaySize(side, side)
+        sh.setUniform('age.value', Math.min(1, b.age / b.ttl))
+        sh.setUniform('seed.value', ((b.x * 7 + b.y * 13) % 97) * 0.6180339887)
+        sh.setVisible(!this.hidden)
+      }
+    }
+    for (let i = blastsPainted; i < this.blastShaders.length; i++) this.blastShaders[i]!.setVisible(false)
+    this.blastShadersDrawn = blastsPainted
+    const flatFlashes = shaderBeams && blastsPainted === this.state.blasts.length ? 0 : this.state.impacts.length
+
     // Impacts: a flash that collapses fast.
-    for (const im of this.state.impacts) {
+    for (const im of this.state.impacts.slice(this.state.impacts.length - flatFlashes)) {
       const k = im.life / im.ttl
       g.fillStyle(0xfff0c0, 0.55 * k)
       g.fillCircle(im.x, im.y, im.r * (1.15 - 0.5 * k))
@@ -356,6 +383,28 @@ export class OrdnanceLayer {
     return this.useBeamShader()
   }
 
+  /** Would an explosion drawn now be painted by the shader? The same decider. */
+  get blastsAreShader(): boolean {
+    return this.useBeamShader()
+  }
+
+  /** Blast quad `i` of the pool, built on first use; `null` past `BLAST_SHADER_POOL`. */
+  private blastShader(i: number): Phaser.GameObjects.Shader | null {
+    const c = C()
+    if (i >= c.BLAST_SHADER_POOL) return null
+    while (this.blastShaders.length <= i) {
+      const base = new Phaser.Display.BaseShader('blast', BLAST_FRAGMENT, undefined, {
+        age: { type: '1f', value: 0 },
+        seed: { type: '1f', value: 0 },
+        scale: { type: '1f', value: c.BLAST_SHADER_SCALE },
+      })
+      this.blastShaders.push(
+        this.scene.add.shader(base, 0, 0, 64, 64).setOrigin(0.5, 0.5).setDepth(DEPTH.particles).setVisible(false),
+      )
+    }
+    return this.blastShaders[i] ?? null
+  }
+
   /** Flame quad `i` of the pool, built on first use; `null` past `FLAME_SHADER_POOL`. */
   private flameShader(i: number): Phaser.GameObjects.Shader | null {
     const c = C()
@@ -386,6 +435,8 @@ export class OrdnanceLayer {
     this.beamShaders.length = 0
     for (const s of this.flameShaders) s.destroy()
     this.flameShaders.length = 0
+    for (const s of this.blastShaders) s.destroy()
+    this.blastShaders.length = 0
     // Or every round leaks a listener, and a setting flip repaints a dead layer.
     this.unsubscribeQuality()
   }
