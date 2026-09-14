@@ -6207,3 +6207,12 @@ stayed at 983.0; 172.8 world px at zoom 1 and 2; following at 0.9 and a zoom-wro
 **My solid skirt under the ridge walled off the whole sky** below the base (`skins-ingame` ground diff
 37→58) — now a 90 px fade, and `skins-ingame` hides the band as it hides pads (2.7x). Gates: 8 red on the
 lobby `AlreadyClosed` race (5/5 standalone), 9 on that skirt, 10 green 56/56. No photo at two camera heights.
+
+## T21.19 — crates blink on the minimap (`975ca1c`)
+A red dot at each **landed** crate, lit 0.5 s in 3 s on the round clock — the brief, two constants —
+every crate together, and regardless of field of view (the coordinator's ruling, recorded at
+`beaconCrates` as a §A6 exception for crates only). `Minimap.update` takes the crates and the clock,
+required; `stats()` reports what it drew. `minimap-crates.mjs` reads the minimap canvas's own pixels in a
+networked round: no crate, no dot; lit in 21% of 87 samples against 17%; pixels = `stats()` 87/87; the far
+quarter dark. Always-lit and unwired plants red it; the first plant run was **void** (a parity test rebuilt
+the wasm under the page). `constants-parity` caught the check reading unexported `CRATE_INTERVAL`. 57/57.
