@@ -14,6 +14,24 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { matchVitePort } from '../vite-url.mjs'
 import { killGroup } from '../proc-group.mjs'
+import { constants as rustConstants } from '../lib/rust-constants.mjs'
+
+// **Every wait below is on the effect's own state, deadlined by its own
+// constants.** This check used to sleep fixed amounts: 3.6 s per telegraph,
+// 2.5 s for a meteor to land, 11-16 s to "let it finish". A sleep is either too
+// long (the whole of this check's run time) or, on a loaded box, too short. Read
+// from `constants.rs` directly, because `constants()` does not expose
+// `EFFECT_TELEGRAPH`, `METEOR_DURATION` or the lava durations.
+const RC = rustConstants()
+const TELEGRAPH_S = RC.get('EFFECT_TELEGRAPH')
+const ACTIVE_S = {
+  toxic: RC.get('TOXIC_DURATION'),
+  meteor: RC.get('METEOR_DURATION'),
+  lava: RC.get('LAVA_JET_DURATION') + RC.get('LAVA_BURN_DURATION'),
+  fog: RC.get('FOG_DURATION'),
+}
+/** Slack on top of an effect's own duration, for a loaded box. This check's number, not a tunable. */
+const SLACK_S = 10
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const shots = join(root, 'shots')
@@ -71,14 +89,31 @@ try {
     ['fog', 3],
   ]
 
+  /** Poll the weather probe until `pred` holds or `timeoutMs` passes; return the last reading. */
+  const pollProbe = async (pred, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs
+    let p = await page.evaluate('window.__game.weatherProbe()')
+    while (!pred(p) && Date.now() < deadline) {
+      await page.waitForTimeout(100)
+      p = await page.evaluate('window.__game.weatherProbe()')
+    }
+    return p
+  }
+
   for (const [name, kind] of KINDS) {
     const before = await page.evaluate('window.__game.weatherProbe()')
     const priorIds = new Set(before.active.map((a) => a.id))
     await page.evaluate(`window.__game.forceEffect(${kind})`)
 
-    // Telegraph is 3 s of real time; drive it and then sit in the active phase.
-    await page.waitForTimeout(3600)
-    const during = await page.evaluate('window.__game.weatherProbe()')
+    // Track the id we forced, not the kind: the real scheduler is running
+    // alongside and may legitimately roll the same kind (overlap is allowed by
+    // docs/13 §1), so "no effect of this kind" is the wrong question.
+    const isMine = (a) => a.kind === name && !priorIds.has(a.id)
+    // Out of the telegraph and into the active phase, waited on the phase itself.
+    const during = await pollProbe(
+      (p) => p.active.some((a) => isMine(a) && a.phase === 'active'),
+      (TELEGRAPH_S + SLACK_S) * 1000,
+    )
     // Point the camera at the effect. A screenshot that does not contain the
     // thing it claims to show is not evidence — the first lava run photographed
     // an empty hillside while three vents erupted off-screen.
@@ -87,12 +122,8 @@ try {
       await page.evaluate(`window.__game.place(${at.x}, ${at.y - 40})`)
       await page.waitForTimeout(700)
     }
-    await page.screenshot({ path: join(shots, `m5-${name}.png`) })
 
-    // Track the id we forced, not the kind: the real scheduler is running
-    // alongside and may legitimately roll the same kind (overlap is allowed by
-    // docs/13 §1), so "no effect of this kind" is the wrong question.
-    const mine = during.active.find((a) => a.kind === name && !priorIds.has(a.id))
+    const mine = during.active.find(isMine)
     check(`${name}: reached the active phase`, mine?.phase === 'active',
       JSON.stringify(during.active))
 
@@ -132,26 +163,38 @@ try {
       const ceiling = 2 * Math.PI * c.TOXIC_DROP_CARVE_R ** 2 * drops
       check('toxic: bites, never craters', dug < ceiling, `${dug} px vs a ${ceiling.toFixed(0)} px ceiling`)
     }
+    // Each effect's own evidence, waited on rather than slept for, and bounded by
+    // that effect's duration. The assertion is unchanged, and fails at the deadline.
+    const activeMs = (ACTIVE_S[name] + SLACK_S) * 1000
     if (name === 'meteor') {
-      await page.waitForTimeout(2500)
-      const later = await page.evaluate('window.__game.weatherProbe()')
+      const later = await pollProbe((p) => p.solid < before.solid, activeMs)
       check('meteor: reshaped the map', later.solid < before.solid,
         `${before.solid} -> ${later.solid} solid px`)
     }
     if (name === 'lava') {
-      const later = await page.evaluate('window.__game.weatherProbe()')
+      const later = await pollProbe((p) => p.vents > 0 && p.solid < before.solid, activeMs)
       check('lava: vents opened', later.vents > 0, `${later.vents} vents`)
       check('lava: carved channels', later.solid < before.solid,
         `${before.solid} -> ${later.solid} solid px`)
     }
     if (name === 'fog') {
-      check('fog: cut the field of view', during.fov < before.fov,
-        `fov ${Math.round(before.fov)} -> ${Math.round(during.fov)}`)
+      // Polled, not read on the first active frame: the veil ramps in over
+      // `FOG_RAMP`, so a fog that has just turned active can still be full width.
+      const thick = await pollProbe((p) => p.fov < before.fov, activeMs)
+      check('fog: cut the field of view', thick.fov < before.fov,
+        `fov ${Math.round(before.fov)} -> ${Math.round(thick.fov)}`)
     }
+    // After the effect's own evidence, so the picture shows it working.
+    await page.screenshot({ path: join(shots, `m5-${name}.png`) })
 
-    // Let it finish so the next effect starts from a clean slate.
-    await page.waitForTimeout(name === 'fog' ? 16000 : 11000)
-    const after = await page.evaluate('window.__game.weatherProbe()')
+    // Let it finish so the next effect starts from a clean slate: until the id we
+    // forced leaves the active list, bounded by its telegraph and duration.
+    const after = mine
+      ? await pollProbe(
+          (p) => !p.active.some((a) => a.id === mine.id),
+          (TELEGRAPH_S + ACTIVE_S[name] + SLACK_S) * 1000,
+        )
+      : await page.evaluate('window.__game.weatherProbe()')
     check(`${name}: ran to completion`,
       mine === undefined || !after.active.some((a) => a.id === mine.id),
       JSON.stringify(after.active))
