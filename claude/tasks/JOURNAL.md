@@ -6257,3 +6257,12 @@ on the old picture** — `LOOK.flame`'s "drawn larger than `FLAME_RADIUS`" is fa
 body inside the circle → 79 unpainted; ignoring the setting → five reds. Gates `--changed`: **420 s red** (repo
 guard: parking escape-menu broke `affected.test`'s examples → `5cc889b`), **378 s red** (vitest RPC timeout in
 `backdrop-real.test.ts`, 216 s alone, 42/42 — load), **1049 s green 47/47** (everything; covers smoke fix).
+
+## T21.18 item 5 — explosions (`bdf17d8`); T21.18 ticked 5/5
+The flat flash becomes one `BLAST_FRAGMENT` quad: flash, a ragged front past the blast radius, dark soot filling
+the crater for `BLAST_SHADER_LIFE` (1.1 s). Painted from a `Blast` kept beside each `Impact` (lights, crater and
+knockback unchanged); `holdImpacts` + shared `ageImpacts` pose one real blast. `explosion-shader`: repaint 178.7,
+restore 0.0, control 0.0, drawn 172.7/4, animates 27.0%/0.0%; **blast-radius ring 12/12 at quarter life, faintest 36
+vs 24**; lingers 206.6 after the flash, flat 0.0. Two shaders failed the ring first (peaks 20, 22: soot noised inward,
+then orange-into-soot averaging to rock-brown) — fixed in the shader, threshold unchanged. Plants: too small → 0/12;
+setting ignored → six reds. Gate `--changed` **1057 s green 48/48** (load 6.6 at start, no one else's process).
