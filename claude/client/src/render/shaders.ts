@@ -437,3 +437,68 @@ void main() {
   gl_FragColor = vec4(col * a, a);
 }
 `
+
+/**
+ * T21.18 item 2 — a smoke cloud, billowing rather than three flat lobes.
+ *
+ * **Drawing only.** Smoke blocks vision, and that is the server's: a player inside
+ * `SMOKE_RADIUS` gets `FOV_SMOKE_MULT` in their snapshot however the cloud is painted.
+ * This quad replaces `OrdnanceFxLayer`'s three offset circles and nothing else — the
+ * hazard record, its fade and its removal are the same either way.
+ *
+ * The quad is one cloud, `2 * scale` cloud radii across, centred on it. The body is a
+ * soft disc whose edge is eaten by domain-warped fbm, slowly turning (the curl), and
+ * it swells and thins as `life` runs out, which is the cloud dispersing. `life` is the
+ * flat path's own fade factor, so both die on the same curve.
+ */
+export const SMOKE_FRAGMENT = /* glsl */ `
+precision mediump float;
+
+uniform vec2 resolution;
+// Seconds - Phaser's own uniform, set at every render.
+uniform float time;
+// 0..1, the cloud's remaining life - the flat path's fade, unchanged.
+uniform float life;
+// Per cloud, so two clouds side by side do not billow in step.
+uniform float seed;
+// Quad half-width in cloud radii - SMOKE_SHADER_SCALE.
+uniform float scale;
+// The flat path's smoke grey.
+uniform vec3 tint;
+
+varying vec2 fragCoord;
+
+${FBM}
+
+// Radians per second the cloud turns: slow enough to read as curl, not spin.
+const float CURL = 0.18;
+// Noise cells across one cloud radius.
+const float BILLOW = 1.7;
+// How deep the noise eats into the edge, in cloud radii.
+const float EAT = 0.42;
+// How much wider a dying cloud is than a fresh one.
+const float SPREAD = 0.22;
+// Peak opacity: three flat lobes at 0.34 overlap to about 0.7 at the centre.
+const float DENSITY = 0.82;
+
+void main() {
+  vec2 uv = fragCoord / resolution.xy;
+  vec2 p = (uv - 0.5) * 2.0 * scale;
+  float ang = time * CURL + seed;
+  float c = cos(ang);
+  float s = sin(ang);
+  vec2 q = vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+  vec2 w = vec2(fbm3(q * 1.3 + vec2(seed, time * 0.15)),
+                fbm3(q * 1.3 + vec2(time * 0.12, seed * 1.7))) - 0.5;
+  float n = fbm5(q * BILLOW + w * 1.6 + vec2(seed * 3.1, -time * 0.1));
+  float spread = 1.0 + SPREAD * (1.0 - life);
+  float d = length(p) / spread + (n - 0.5) * EAT * 2.0;
+  float body = 1.0 - smoothstep(0.45, 1.0, d);
+  float a = clamp(body * (0.55 + 0.7 * n) * DENSITY, 0.0, 1.0) * life;
+  // Lit from above, darker in the thick of it, so it reads as volume.
+  float shade = 0.72 + 0.4 * n + 0.12 * uv.y;
+  vec3 col = tint * shade;
+  // Premultiplied, for the reason FOG_FRAGMENT is.
+  gl_FragColor = vec4(col * a, a);
+}
+`

@@ -1425,6 +1425,12 @@ pub fn constants_json() -> String {
         BEAM_LIFETIME => c::BEAM_LIFETIME,
         BEAM_SHADER_WIDTH => c::BEAM_SHADER_WIDTH,
         BEAM_SHADER_POOL => c::BEAM_SHADER_POOL,
+        // T21.18: `smoke-shader` sizes its patches from the cloud and reports the
+        // multiplier a player inside it gets, rather than carrying copies.
+        SMOKE_RADIUS => c::SMOKE_RADIUS,
+        FOV_SMOKE_MULT => c::FOV_SMOKE_MULT,
+        SMOKE_SHADER_SCALE => c::SMOKE_SHADER_SCALE,
+        SMOKE_SHADER_POOL => c::SMOKE_SHADER_POOL,
         BULLET_LENGTH => c::BULLET_LENGTH,
         BULLET_WIDTH => c::BULLET_WIDTH,
         TRACER_WIDTH => c::TRACER_WIDTH,

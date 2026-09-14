@@ -1349,6 +1349,11 @@ impl Room {
         if self.config.dev_flashlight {
             self.give_all(id, &[(game_core::items::registry::FLASHLIGHT, 1)]);
         }
+        // T21.18: a smoke grenade for `smoke-shader`, beside the loadout rather than in
+        // it, so `DEV_LOADOUT`'s bag is unchanged for every other check.
+        if self.config.dev_smoke {
+            self.give_all(id, &[(game_core::items::registry::SMOKE, 2)]);
+        }
         if !self.config.dev_loadout {
             return;
         }

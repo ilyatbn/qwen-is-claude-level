@@ -2649,7 +2649,13 @@ export class GameScene extends Phaser.Scene {
           setting: isHighQuality(),
           // Off the layer, not the setting: without WebGL this is false however set.
           shaderBeams: self.world?.ordnance.beamsAreShader ?? false,
+          shaderSmoke: self.fx?.smokeIsShader ?? false,
         }
+      },
+      /** e2e only (§C2, T21.18): hide the hazard/jet/mine layer for a same-instant control frame. */
+      showFx(on: boolean) {
+        self.fx?.setVisible(on)
+        return { visible: self.fx?.visible ?? false }
       },
       /** e2e only (§C2, T21.18): hide the ordnance layer for a same-instant control frame. */
       showOrdnance(on: boolean) {
@@ -2977,6 +2983,11 @@ export class GameScene extends Phaser.Scene {
             height: self.cameras.main.worldView.height,
           },
           hazardsDrawn: self.fx?.hazardCount ?? 0,
+          // T21.18: smoke clouds the last render painted with the shader, read off the layer.
+          smokeShadersDrawn: self.fx?.smokeShadersDrawn ?? 0,
+          // T21.18: the snapshot's vision multiplier (fog times smoke) — the simulation half
+          // of smoke, which a check asserts does not move with High Quality.
+          vision: self.vision,
           // Both ends, per delivery kind (§A39/§C23). A gun and a rocket take
           // different paths and only one of them was ever counted.
           //

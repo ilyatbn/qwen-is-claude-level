@@ -124,6 +124,13 @@ pub struct Config {
     /// only `dev_loadout` is recorded there, and adding a field would be a header
     /// layout change with its own version consequence.
     pub dev_flashlight: bool,
+    /// Development only (`DEV_SMOKE=1`): spawn carrying a smoke grenade (T21.18).
+    ///
+    /// Sibling of `dev_flashlight`. `smoke-shader` photographs a real smoke cloud in
+    /// a networked round, and no granting path had one: smoke is a pickup, and
+    /// adding it to `DEV_LOADOUT` would change the bag every other check selects
+    /// from. Not in the replay header, for `dev_flashlight`'s reason.
+    pub dev_smoke: bool,
     /// Development only (`WEATHER=auto|off|fog|toxic|meteor|lava`): what the
     /// weather does in this room.
     ///
@@ -237,6 +244,7 @@ impl Default for Config {
             dev_start_health: 0.0,
             dev_poisoned: false,
             dev_flashlight: false,
+            dev_smoke: false,
             weather_mode: WeatherMode::Auto,
             bot_skill: BOT_SKILL_DEFAULT,
             dev_round_clock: 0.0,
@@ -408,6 +416,7 @@ impl Config {
                 .unwrap_or(0.0),
             dev_poisoned: matches!(get("DEV_POISONED").as_deref(), Some("1") | Some("true")),
             dev_flashlight: matches!(get("DEV_FLASHLIGHT").as_deref(), Some("1") | Some("true")),
+            dev_smoke: matches!(get("DEV_SMOKE").as_deref(), Some("1") | Some("true")),
             weather_mode: match get("WEATHER") {
                 Some(v) => parse_weather(&v).ok_or_else(|| ConfigError {
                     var: "WEATHER",
@@ -469,7 +478,7 @@ impl Config {
         format!(
             "bind={} scale={} generator={} max_players={} round_seconds={} \
              room_empty_ttl={} lobby_bot_timeout={} fixed_seed={} record_replay={} debug_dump={} bots={} \
-             bot_skill={} dev_start_health={} dev_poisoned={} dev_flashlight={} weather={:?} \
+             bot_skill={} dev_start_health={} dev_poisoned={} dev_flashlight={} dev_smoke={} weather={:?} \
              dev_round_clock={} ready_timeout={} warmup_seconds={}",
             self.bind_addr,
             self.map_scale.as_str(),
@@ -488,6 +497,7 @@ impl Config {
             self.dev_start_health,
             self.dev_poisoned,
             self.dev_flashlight,
+            self.dev_smoke,
             self.weather_mode,
             self.dev_round_clock,
             self.ready_timeout,
@@ -676,6 +686,21 @@ mod tests {
             .expect("ok")
             .summary()
             .contains("dev_flashlight=true"));
+    }
+
+    /// T21.18's switch: `smoke-shader` needs a real smoke cloud on demand.
+    #[test]
+    fn dev_smoke_is_off_unless_asked_for_and_shows_in_the_summary() {
+        assert!(
+            !Config::from_source(empty).expect("ok").dev_smoke,
+            "an unset DEV_SMOKE armed every player with a smoke grenade"
+        );
+        assert!(from(&[("DEV_SMOKE", "1")]).expect("ok").dev_smoke);
+        assert!(!from(&[("DEV_SMOKE", "0")]).expect("ok").dev_smoke);
+        assert!(from(&[("DEV_SMOKE", "1")])
+            .expect("ok")
+            .summary()
+            .contains("dev_smoke=true"));
     }
 
     #[test]

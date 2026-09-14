@@ -19,8 +19,11 @@
  */
 
 import Phaser from 'phaser'
+import { C } from '../core'
 import { DEPTH } from './backdrop'
 import { OrdnanceFxState, fade, type FxLight, type HazardKind } from './ordnanceFx-math'
+import { SMOKE_FRAGMENT, hasWebGL, rgbToUniform3f } from './shaders'
+import { isHighQuality, onHighQualityChange } from '../ui/settings'
 
 const SWING_LIFE = 0.15
 const JET_LIFE = 0.08
@@ -37,6 +40,19 @@ const HAZARD_COLOUR: Record<HazardKind, number> = {
 export class OrdnanceFxLayer {
   private readonly gfx: Phaser.GameObjects.Graphics
   readonly state: OrdnanceFxState
+  /** T21.18: the scene, for building shader quads on demand. */
+  private readonly scene: Phaser.Scene
+  private readonly webgl: boolean
+  private readonly unsubscribeQuality: () => void
+  /** T21.18: one quad per smoke cloud painted under High Quality, grown on demand, capped. */
+  private readonly smokeShaders: Phaser.GameObjects.Shader[] = []
+  /** How many clouds the last render painted with the shader — read back, not the setting. */
+  smokeShadersDrawn = 0
+  /** Hidden for a check's control frame; `render` honours it for the shader quads too. */
+  private hidden = false
+  /** What the last `update` was given, so a repaint draws the same instant. */
+  private eye = { x: 0, y: 0 }
+  private now = 0
 
   constructor(
     scene: Phaser.Scene,
@@ -46,6 +62,11 @@ export class OrdnanceFxLayer {
     // Particles: in front of actors, behind the lightmap, so a flame jet is lit
     // by its own light rather than drawn over the darkness.
     this.gfx = scene.add.graphics().setDepth(DEPTH.particles)
+    this.scene = scene
+    this.webgl = hasWebGL(scene)
+    // Repaint on the change, not on the next update — `OrdnanceLayer`'s reason: a
+    // frozen scene runs no update, and a check photographs one cloud both ways.
+    this.unsubscribeQuality = onHighQualityChange(() => this.render())
   }
 
   addSwing(x: number, y: number, aim: number, reach: number, arc: number, hits: number): void {
@@ -89,14 +110,43 @@ export class OrdnanceFxLayer {
    * them, not to the camera centre, because the camera leads the aim. */
   update(dt: number, eye: { x: number; y: number }, now: number): void {
     this.state.update(dt)
+    this.eye = eye
+    this.now = now
+    this.render()
+  }
+
+  /**
+   * Draw the current state without advancing it — split out of `update` for
+   * T21.18, so a High Quality change repaints the same instant.
+   */
+  render(): void {
     const g = this.gfx
+    const eye = this.eye
+    const now = this.now
     g.clear()
 
     // --- ground hazards, underneath everything else --------------------------
+    // **T21.18: under High Quality a smoke cloud is one shader quad** — same hazard,
+    // same fade; what a player inside can see is the server's either way.
+    const shaderSmoke = this.useSmokeShader()
+    let painted = 0
     for (const h of this.state.hazards.values()) {
       const t = fade(h.ttl, h.life)
       const colour = HAZARD_COLOUR[h.kind]
       if (h.kind === 'smoke') {
+        const sh = shaderSmoke ? this.smokeShader(painted) : null
+        if (sh) {
+          painted++
+          const c = C()
+          const side = 2 * h.r * c.SMOKE_SHADER_SCALE
+          sh.setPosition(h.x, h.y)
+          sh.setDisplaySize(side, side)
+          sh.setUniform('life.value', t)
+          // The id decides the cloud's shape, so it is stable across renders.
+          sh.setUniform('seed.value', (h.id % 97) * 0.6180339887)
+          sh.setVisible(!this.hidden)
+          continue
+        }
         // A cloud, not a disc: three offset circles so it reads as volume, and
         // opaque enough that "I cannot see" has a visible cause.
         for (let i = 0; i < 3; i++) {
@@ -116,6 +166,9 @@ export class OrdnanceFxLayer {
         g.strokeCircle(h.x, h.y, h.r)
       }
     }
+    // Quads with no cloud this frame are hidden, not destroyed: the pool is reused.
+    for (let i = painted; i < this.smokeShaders.length; i++) this.smokeShaders[i]!.setVisible(false)
+    this.smokeShadersDrawn = painted
 
     // --- flame jets ----------------------------------------------------------
     for (const j of this.state.jets) {
@@ -163,7 +216,54 @@ export class OrdnanceFxLayer {
     }
   }
 
+  /** T21.18: WebGL and High Quality, both — the one place that decides. */
+  private useSmokeShader(): boolean {
+    return this.webgl && isHighQuality()
+  }
+
+  /** Would a smoke cloud drawn now be painted by the shader? For the debug handles. */
+  get smokeIsShader(): boolean {
+    return this.useSmokeShader()
+  }
+
+  /** Show or hide the whole layer, for a check's same-instant control frame (§C2). */
+  setVisible(on: boolean): void {
+    this.hidden = !on
+    this.gfx.setVisible(on)
+    this.render()
+  }
+
+  get visible(): boolean {
+    return !this.hidden
+  }
+
+  /** Quad `i` of the pool, built on first use; `null` past `SMOKE_SHADER_POOL`. */
+  private smokeShader(i: number): Phaser.GameObjects.Shader | null {
+    const c = C()
+    if (i >= c.SMOKE_SHADER_POOL) return null
+    while (this.smokeShaders.length <= i) {
+      const base = new Phaser.Display.BaseShader('smokeCloud', SMOKE_FRAGMENT, undefined, {
+        life: { type: '1f', value: 1 },
+        seed: { type: '1f', value: 0 },
+        scale: { type: '1f', value: c.SMOKE_SHADER_SCALE },
+        tint: { type: '3f', value: rgbToUniform3f(HAZARD_COLOUR.smoke) },
+      })
+      this.smokeShaders.push(
+        this.scene.add
+          // A real base size, as the beam's quad has; `setDisplaySize` scales it per cloud.
+          .shader(base, 0, 0, 64, 64)
+          .setOrigin(0.5, 0.5)
+          .setDepth(DEPTH.particles)
+          .setVisible(false),
+      )
+    }
+    return this.smokeShaders[i] ?? null
+  }
+
   destroy(): void {
     this.gfx.destroy()
+    for (const s of this.smokeShaders) s.destroy()
+    this.smokeShaders.length = 0
+    this.unsubscribeQuality()
   }
 }

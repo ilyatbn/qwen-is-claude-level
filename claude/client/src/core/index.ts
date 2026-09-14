@@ -336,6 +336,10 @@ export interface Constants {
   BEAM_LIFETIME: number
   BEAM_SHADER_WIDTH: number
   BEAM_SHADER_POOL: number
+  SMOKE_RADIUS: number
+  FOV_SMOKE_MULT: number
+  SMOKE_SHADER_SCALE: number
+  SMOKE_SHADER_POOL: number
   BULLET_LENGTH: number
   BULLET_WIDTH: number
   TRACER_WIDTH: number

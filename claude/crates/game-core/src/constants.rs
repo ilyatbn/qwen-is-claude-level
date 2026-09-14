@@ -1554,6 +1554,15 @@ pub const AIRBURST_PELLET_ENERGY: f32 = 4.0;
 
 pub const FOV_SMOKE_MULT: f32 = 0.35;
 pub const SMOKE_RADIUS: f32 = 110.0;
+/// T21.18: a smoke cloud's shader quad, as a multiple of the cloud's radius — its
+/// half-width. The flat path's lobes reach `0.22 r + 0.78 r` = r from the centre;
+/// the painted cloud's eaten edge billows past that, so the quad leaves room for it.
+/// **Purely drawing**: what a player inside can see is `FOV_SMOKE_MULT` at
+/// `SMOKE_RADIUS`, decided by the server either way.
+pub const SMOKE_SHADER_SCALE: f32 = 1.35;
+/// T21.18: how many smoke clouds at once get a shader quad. Past it the rest are
+/// drawn with the flat lobes — a cap, never a cloud dropped.
+pub const SMOKE_SHADER_POOL: u32 = 8;
 pub const SMOKE_DURATION: f32 = 8.0;
 pub const SMOKE_FUSE: f32 = 1.5;
 pub const SMOKE_MUZZLE_SPEED: f32 = 470.0;
