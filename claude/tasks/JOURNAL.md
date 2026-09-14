@@ -6266,3 +6266,12 @@ restore 0.0, control 0.0, drawn 172.7/4, animates 27.0%/0.0%; **blast-radius rin
 vs 24**; lingers 206.6 after the flash, flat 0.0. Two shaders failed the ring first (peaks 20, 22: soot noised inward,
 then orange-into-soot averaging to rock-brown) — fixed in the shader, threshold unchanged. Plants: too small → 0/12;
 setting ignored → six reds. Gate `--changed` **1057 s green 48/48** (load 6.6 at start, no one else's process).
+
+## ordnance red on HEAD — the check aimed through the mine (`d042d78`)
+Not T21.18: red with `client/src` from `a54de82` too. Red 5 of 6 runs alone. The rockets hit, just past the mine: a rocket goes off only when it hits something, and a mine isn't solid to it.
+Logged blasts: player (1263,515) up a rise, mine (1286,526), landings (1336,562)…(1431,648), each crater pushing the next further out.
+The one green run left the player on flatter ground; where earlier steps leave the player depends on timing, so pass/fail was luck.
+Fix in the check: `aimAtMine` aims `NEAR/2` below the mine, so the whole muzzle→aim line lies inside the blast radius. Alone runs: 3/3 green.
+Plants: skip `removeMine` in the `mine_ended` handler → only "leave the layer" red; blast radius −1 in `World::emit_blast` → both red.
+Also green alone: smoke-shader, fire-shader, fire-visible, explosion-shader, ordnance-visible. `--changed` 54 s, 1/1.
+48/48 at `bdf17d8` is plausible (it went green once here), but nothing now can confirm it. Gap: `MINE_W`/`MINE_H` are inline in `placed.rs`, not `constants.rs`.
