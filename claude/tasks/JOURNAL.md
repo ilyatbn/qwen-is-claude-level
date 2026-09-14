@@ -6198,3 +6198,12 @@ toxic reads green (lead ~22), ambient never does (−5 to −13 over four runs);
 (a planted green sheet gave 0.246). First gate red on `two-clients`: the sheet added depth 38, which is
 sandbox-only furniture; `071e1ad` shares the vignette's 39, created first. Gate 7: 56/56. The commit is
 777 lines — past the ~250 guideline; it splits cleanly as schedule / sheet / check.
+
+## T21.20 — the mountains stand on the world (`77a70e6`, `d73968b`)
+`ridgeLayout` anchors the ridge base to a world row (`MOUNTAIN_BASE_FRAC` = `GROUND_BASE_FRAC`) at world
+size; it still parallaxes sideways; the title keeps its screen layout (`MOUNTAIN_TITLE_BASE_FRAC`), and the
+inline 0.82 is `SKY_HORIZON_FRAC`. `living-sky` reads the ridge from the layer: camera moved 64 px, base
+stayed at 983.0; 172.8 world px at zoom 1 and 2; following at 0.9 and a zoom-wrong height both red it.
+**My solid skirt under the ridge walled off the whole sky** below the base (`skins-ingame` ground diff
+37→58) — now a 90 px fade, and `skins-ingame` hides the band as it hides pads (2.7x). Gates: 8 red on the
+lobby `AlreadyClosed` race (5/5 standalone), 9 on that skirt, 10 green 56/56. No photo at two camera heights.
