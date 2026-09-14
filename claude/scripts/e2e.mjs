@@ -30,6 +30,8 @@
  * putting it in the gate affordable.
  */
 import { spawn, spawnSync, execSync } from 'node:child_process'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { format } from 'node:util'
 import { mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -129,7 +131,9 @@ const CHECKS = [
   { name: 'decorations', file: 'scripts/checks/decorations.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'platforms', file: 'scripts/checks/platforms.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'm9-checkpoint', file: 'scripts/checks/m9-checkpoint.mjs', url: '?sandbox=1&seed=1' },
-  { name: 'perf', file: 'scripts/checks/perf.mjs', url: '?sandbox=1&seed=4242' },
+  // `serial`: it fails on measured frame time (feel-layer ms/frame, fps p50,
+  // p99 spikes), and those are exactly what a concurrent check steals.
+  { name: 'perf', file: 'scripts/checks/perf.mjs', url: '?sandbox=1&seed=4242', serial: true },
   // §C7: a supply crate falls where you can see it fall. Standalone — it needs a
   // real server, because crates come from the server's spawn schedule and there
   // is no sandbox path to one.
@@ -138,7 +142,9 @@ const CHECKS = [
   // a real server, because a molotov's crowd is `Burst::Flames` narrated as 24
   // `projectile_spawn` events and the sandbox has no molotov in its loadout. It
   // also carries §F10.3's full-flame-field frame time, for the same reason.
-  { name: 'fire-visible', file: 'scripts/checks/fire-visible.mjs', standalone: true },
+  // `serial`: it fails when a full flame field's median frame time passes 50 ms,
+  // a wall-clock rendering cost that sharing the box would inflate.
+  { name: 'fire-visible', file: 'scripts/checks/fire-visible.mjs', standalone: true, serial: true },
   // §F9: the fog veil **in the game**, not only in the sandbox. Standalone — it
   // needs a real server, because a networked client learns that fog exists from
   // an `effect_start` event and the sandbox path never sends one.
@@ -247,21 +253,59 @@ const CHECKS = [
   },
 ]
 
-const filters = process.argv.slice(2)
+/**
+ * `--jobs N`: how many checks run at once. `--jobs 1` is the old strictly
+ * sequential suite, output streamed live. Above 1 each check's output is
+ * buffered and printed whole when it finishes, so interleaving never happens;
+ * checks marked `serial: true` run alone after the rest.
+ *
+ * The default is measured, not guessed — see DEFAULT_JOBS.
+ */
+// DEFAULT_JOBS: measured on this 16-core box — see the JOURNAL entry for the
+// wall times at 1 and at this value.
+const DEFAULT_JOBS = 4
+const argv = process.argv.slice(2)
+let jobs = DEFAULT_JOBS
+const filters = []
+for (let i = 0; i < argv.length; i++) {
+  const a = argv[i]
+  const m = a.match(/^--jobs(?:=(.*))?$/)
+  if (m) {
+    const v = m[1] ?? argv[++i]
+    jobs = Number(v)
+    if (!Number.isInteger(jobs) || jobs < 1) {
+      console.error(`--jobs wants a positive integer, got ${v}`)
+      process.exit(2)
+    }
+  } else if (a === '--only') {
+    // `--only a,b,c`: exact names, as `affected.mjs` prints them. A fragment
+    // filter would let `lobby` also select `lobby-start`, which is harmless,
+    // but `--only` with an empty list must select nothing rather than all.
+    const v = argv[++i] ?? ''
+    for (const n of v.split(',').filter(Boolean)) filters.push(`=${n}`)
+    if (!v) filters.push('=')
+  } else {
+    filters.push(a)
+  }
+}
+const matches = (c, f) => (f.startsWith('=') ? c.name === f.slice(1) : c.name.includes(f))
 // `--help` before anything else: it is the one invocation that must not build
 // wasm, launch vite or open a browser, and it is what a smoke test can afford
 // to run. Without it `--help` fell through to the name filter, matched nothing
 // and exited 2 — a usage request reported as "no checks match --help".
 if (filters.some((f) => f === '--help' || f === '-h')) {
-  console.log('usage: node scripts/e2e.mjs [name-fragment ...]')
+  console.log('usage: node scripts/e2e.mjs [--jobs N] [--only a,b] [name-fragment ...]')
   console.log('  no arguments runs every check except the opt-in ones')
+  console.log(`  --jobs N   checks at once (default ${DEFAULT_JOBS}; 1 = sequential, live output)`)
+  console.log('  --only     exact check names, comma-separated')
+  console.log(`serial:    ${CHECKS.filter((c) => c.serial).map((c) => c.name).join(', ')}`)
   console.log(`available: ${CHECKS.map((c) => c.name).join(', ')}`)
   console.log(`opt-in:    ${CHECKS.filter((c) => c.optIn).map((c) => c.name).join(', ')}`)
   console.log(`flaky:     ${CHECKS.filter((c) => c.flaky).map((c) => c.name).join(', ')} (see tasks/flaky-test.md)`)
   process.exit(0)
 }
 const selected = filters.length
-  ? CHECKS.filter((c) => filters.some((f) => c.name.includes(f)))
+  ? CHECKS.filter((c) => filters.some((f) => matches(c, f)))
   : // An opt-in or flaky check is only skipped when nothing was asked for by
     // name, so `e2e.mjs full-round` or `e2e.mjs two-clients` still runs it.
     // Flaky checks are parked out of the gate pending a decision — the list and
@@ -309,6 +353,23 @@ const built = spawnSync('node', [join(root, 'scripts/wasm-build.mjs')], {
 if (built.status !== 0) {
   console.error(`wasm-build failed (${built.status}) — vite would serve a stale or missing pkg`)
   process.exit(1)
+}
+// The same move for the game-server every standalone check `cargo run`s. Built
+// inside the first check, its compile counted against that check's health
+// budget; and under `--jobs` N checks would queue on cargo's build lock at once.
+// Same profile and package as `harness.mjs::startStack`, so their `cargo run`
+// finds it fresh.
+if (selected.some((c) => c.standalone)) {
+  console.log('building game-server before starting the clock')
+  const server = spawnSync('cargo', ['build', '--quiet', '--release', '-p', 'game-server'], {
+    cwd: root,
+    stdio: 'inherit',
+    env: process.env,
+  })
+  if (server.status !== 0) {
+    console.error(`game-server build failed (${server.status})`)
+    process.exit(1)
+  }
 }
 
 // `detached` so this gets its own process group. `npx vite` forks the real vite
@@ -396,6 +457,22 @@ const strayPids = () => {
 }
 const straysBefore = strayPids()
 
+/**
+ * Which check a `console.log` belongs to. In-process checks share this process,
+ * so under `--jobs` their lines would interleave; while a check runs inside
+ * `checkOutput.run(sink, …)` its console calls go to its own sink instead.
+ * Outside any check (startup, the summary) they print as usual.
+ */
+const checkOutput = new AsyncLocalStorage()
+for (const k of ['log', 'error', 'warn', 'info']) {
+  const original = console[k].bind(console)
+  console[k] = (...args) => {
+    const sink = checkOutput.getStore()
+    if (sink) sink.write(`${format(...args)}\n`)
+    else original(...args)
+  }
+}
+
 const results = []
 let browser
 
@@ -417,29 +494,50 @@ try {
     ],
   })
 
-  for (const check of selected) {
-    process.stdout.write(`\n\x1b[1;34m=== ${check.name} ===\x1b[0m\n`)
+  /**
+   * One check, start to finish, with its output going to `sink`. Returns its
+   * result row; never throws.
+   */
+  const runStandalone = async (check, sink) => {
     const started = Date.now()
-
-    if (check.standalone) {
-      // `(c, sig)`, not `(c)`. A child killed by a signal delivers `code ===
-      // null`, and the old `c ?? 1` reported that as exit 1 — indistinguishable
-      // from a check whose assertions failed. See lib/child-outcome.mjs.
-      const outcome = await new Promise((res) => {
-        const p = spawn('node', [check.file], { cwd: root, stdio: 'inherit', env: process.env })
-        p.on('exit', (c, sig) => res(childOutcome(c, sig)))
+    // `(c, sig)`, not `(c)`. A child killed by a signal delivers `code ===
+    // null`, and the old `c ?? 1` reported that as exit 1 — indistinguishable
+    // from a check whose assertions failed. See lib/child-outcome.mjs.
+    const outcome = await new Promise((res) => {
+      // Piped, not inherited, so concurrent checks cannot interleave. Its
+      // game-server inherits these pipes too, so `close` can lag `exit` by a
+      // leaked grandchild's lifetime: wait for it, but only briefly — the leak
+      // guard below is what reports a grandchild that outlived its check.
+      const p = spawn('node', [check.file], {
+        cwd: root,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: process.env,
       })
-      results.push({
-        name: check.name,
-        ok: outcome.ok,
-        kind: outcome.kind,
-        ms: Date.now() - started,
-        err: outcome.err,
+      p.stdout.on('data', (b) => sink.write(b))
+      p.stderr.on('data', (b) => sink.write(b))
+      let closed = false
+      p.on('close', () => {
+        closed = true
       })
-      console.log(`  ${outcomeBanner(outcome.kind)} (${((Date.now() - started) / 1000).toFixed(1)}s)`)
-      continue
+      p.on('exit', (c, sig) => {
+        const done = () => res(childOutcome(c, sig))
+        if (closed) return done()
+        p.on('close', done)
+        setTimeout(done, 2000)
+      })
+    })
+    sink.write(`  ${outcomeBanner(outcome.kind)} (${((Date.now() - started) / 1000).toFixed(1)}s)\n`)
+    return {
+      name: check.name,
+      ok: outcome.ok,
+      kind: outcome.kind,
+      ms: Date.now() - started,
+      err: outcome.err,
     }
+  }
 
+  const runInPage = async (check) => {
+    const started = Date.now()
     // A fresh page per check: shared page state is how one check's leftover
     // keyboard or paused clock silently changes the next one's result.
     const page = await browser.newPage({ viewport: { width: 1280, height: 720 } })
@@ -478,8 +576,8 @@ try {
       if (errors.length) throw new Error(`page errors:\n${errors.join('\n')}`)
       if (shots === 0) throw new Error('the check wrote no screenshot')
 
-      results.push({ name: check.name, ok: true, kind: 'passed', ms: Date.now() - started })
       console.log(`  \x1b[1;32mok\x1b[0m (${((Date.now() - started) / 1000).toFixed(1)}s)`)
+      return { name: check.name, ok: true, kind: 'passed', ms: Date.now() - started }
     } catch (e) {
       // Capture the frame at the moment of failure — on a headless box this is
       // usually the only evidence of what it looked like.
@@ -489,12 +587,48 @@ try {
       } catch {
         /* the page may be gone */
       }
-      results.push({ name: check.name, ok: false, kind: 'failed', ms: Date.now() - started, err: e.message })
       console.log(`  \x1b[1;31mFAILED\x1b[0m ${e.message}`)
+      return { name: check.name, ok: false, kind: 'failed', ms: Date.now() - started, err: e.message }
     } finally {
       await page.close()
     }
   }
+
+  // At `--jobs 1` a check's output streams as it happens, header first — the
+  // old behaviour. Above that it is held and printed whole at the end, so a
+  // reader sees one check at a time however they overlapped.
+  const runCheck = async (check) => {
+    const header = `\n\x1b[1;34m=== ${check.name} ===\x1b[0m\n`
+    const live = jobs === 1
+    const chunks = []
+    const sink = {
+      write: (b) => (live ? process.stdout.write(b) : chunks.push(Buffer.from(b))),
+    }
+    if (live) process.stdout.write(header)
+    const result = check.standalone
+      ? await runStandalone(check, sink)
+      : // In-process checks log through `console` (their `log` and `shot`
+        // helpers do), so their output is routed per check by async context.
+        await checkOutput.run(sink, () => runInPage(check))
+    if (!live) process.stdout.write(Buffer.concat([Buffer.from(header), ...chunks]))
+    return result
+  }
+
+  // Serial checks run alone, after the pool drains; at `--jobs 1` everything
+  // keeps the table's order.
+  const pooled = jobs === 1 ? [...selected] : selected.filter((c) => !c.serial)
+  const serial = jobs === 1 ? [] : selected.filter((c) => c.serial)
+  const byName = new Map()
+  const worker = async () => {
+    for (let c = pooled.shift(); c; c = pooled.shift()) byName.set(c.name, await runCheck(c))
+  }
+  if (jobs > 1) {
+    console.log(`\nrunning ${pooled.length} check(s) ${jobs} at a time, then ${serial.length} serial`)
+  }
+  await Promise.all(Array.from({ length: Math.min(jobs, pooled.length) }, worker))
+  for (const c of serial) byName.set(c.name, await runCheck(c))
+  // The summary keeps the table's order, whatever order they finished in.
+  for (const c of selected) if (byName.has(c.name)) results.push(byName.get(c.name))
 } catch (e) {
   console.error(`\nsuite could not start: ${e.message}`)
   results.push({ name: '(startup)', ok: false, kind: 'failed', ms: 0, err: e.message })
