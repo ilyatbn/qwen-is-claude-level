@@ -294,7 +294,7 @@ mod t1107 {
     /// (§A39: count at both ends). This one goes through `World`.
     #[test]
     fn a_real_explosion_destroys_a_mine_and_says_so() {
-        let mut w = World::new(4242, crate::constants::MapScale::Small);
+        let mut w = World::for_test(4242, crate::constants::MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "p".into());
         give(&mut w, 0, MINE, 2);
@@ -331,7 +331,7 @@ mod t1107 {
     /// vanish on their own.
     #[test]
     fn a_blast_that_misses_leaves_the_mine_alone() {
-        let mut w = World::new(4242, crate::constants::MapScale::Small);
+        let mut w = World::for_test(4242, crate::constants::MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "p".into());
         give(&mut w, 0, MINE, 2);

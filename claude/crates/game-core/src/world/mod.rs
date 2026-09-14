@@ -816,6 +816,43 @@ pub struct World {
     fog: Option<(u32, HeavyFog)>,
 }
 
+/// The map cache behind `World::for_test`: one generation per
+/// `(seed, scale, buried_secret)` per test binary.
+///
+/// One `OnceLock` per key, taken out of the mutex before generating, so two tests
+/// asking for different maps generate in parallel and two asking for the same one
+/// wait for a single generation. Test-only state: never compiled into a shipping
+/// build, and holds nothing that affects a simulation beyond the map itself,
+/// which is cloned out on every call.
+#[cfg(any(test, feature = "test-support"))]
+fn shared_test_map(seed: u64, scale: MapScale, buried_secret: u64) -> Map {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Key = (u64, MapScale, u64);
+    type Slot = Arc<OnceLock<Map>>;
+    type Slots = Mutex<HashMap<Key, Slot>>;
+    static CACHE: OnceLock<Slots> = OnceLock::new();
+    let slot = {
+        let mut slots = CACHE
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        slots
+            .entry((seed, scale, buried_secret))
+            .or_default()
+            .clone()
+    };
+    slot.get_or_init(|| {
+        crate::map::generate_full(
+            seed,
+            scale,
+            buried_secret,
+            crate::constants::DEFAULT_MAP_GENERATOR,
+        )
+    })
+    .clone()
+}
+
 impl World {
     pub fn new(seed: u64, scale: MapScale) -> Self {
         Self::with_buried_secret(seed, scale, 0)
@@ -857,6 +894,33 @@ impl World {
         generator: crate::constants::MapGenerator,
     ) -> Self {
         let map = crate::map::generate_full(seed, scale, buried_secret, generator);
+        Self::from_map(seed, buried_secret, map)
+    }
+
+    /// A world for a test that needs a real map and is not testing generation.
+    ///
+    /// Identical to `World::new(seed, scale)`, which
+    /// `a_cached_world_is_the_world_new_builds` pins, but the map is generated at
+    /// most once per test binary for each `(seed, scale)`. Every call gets its own
+    /// clone of the map, so a carve in one test never reaches another.
+    ///
+    /// **Not for anything whose subject is generation, seeds or placement.** Those
+    /// keep calling `World::new` or `generate_full`, so every run generates again.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(seed: u64, scale: MapScale) -> Self {
+        Self::for_test_with_secret(seed, scale, 0)
+    }
+
+    /// `for_test` with a buried secret: the cached twin of `with_buried_secret`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test_with_secret(seed: u64, scale: MapScale, buried_secret: u64) -> Self {
+        let map = shared_test_map(seed, scale, buried_secret);
+        Self::from_map(seed, buried_secret, map)
+    }
+
+    /// Everything after generation. Shared by `build` and `for_test`, so the two
+    /// cannot build different worlds from the same map.
+    fn from_map(seed: u64, buried_secret: u64, map: Map) -> Self {
         let wind = map.meta.wind;
         let buried_items = assign_buried_items(&map, seed ^ buried_secret);
         let mut items = WorldItems::new();
@@ -3926,7 +3990,7 @@ mod state_hash_tests {
     use crate::constants::MapScale;
 
     fn world() -> World {
-        let mut w = World::with_buried_secret(4242, MapScale::Small, 7);
+        let mut w = World::for_test_with_secret(4242, MapScale::Small, 7);
         w.add_player(0, 0, "ana".into());
         w.add_player(1, 0, "bo".into());
         w
@@ -4169,7 +4233,7 @@ mod crate_motion_tests {
     use crate::items::registry::MEDKIT;
 
     fn world() -> World {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w
     }
@@ -4461,7 +4525,7 @@ mod fire_while_moving {
 
     /// One armed player, standing on the ground, in `Playing`.
     fn armed_world() -> World {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         give(
@@ -5133,7 +5197,7 @@ mod toxic_rain_falls {
     /// Drop count is unchanged by making them fall.
     #[test]
     fn the_number_of_drops_still_matches_duration_over_cadence() {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.map = map_with_a_cave();
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
@@ -5191,7 +5255,7 @@ mod toxic_rain_falls {
     /// satisfied by rain that never fell.
     #[test]
     fn every_drop_takes_a_bullet_sized_bite_and_never_a_crater() {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.map = map_with_a_cave();
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
@@ -5279,7 +5343,7 @@ mod toxic_rain_falls {
     /// "poisoned" would be satisfied by a world that poisons everybody.
     #[test]
     fn a_drop_that_lands_on_a_player_poisons_them_and_a_bystander_is_untouched() {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.map = map_with_one_rain_column(OPEN_X0);
         // The generated map's wind came with the `World`, and replacing the map
         // does not replace it. A drop has `wind_scale` 1.0, so eleven pixels of
@@ -5399,7 +5463,7 @@ mod toxic_rain_falls {
     #[test]
     fn poison_respects_the_shield_and_i_frames() {
         use crate::constants::{SHIELD_DAMAGE_MULT, TOXIC_POISON_DURATION};
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.map = map_with_one_rain_column(OPEN_X0);
         w.wind = 0.0;
         w.set_phase(RoundPhase::Playing);
@@ -5485,7 +5549,7 @@ mod toxic_rain_falls {
     #[test]
     fn a_shower_keeps_a_bounded_number_of_drops_in_the_air() {
         use crate::constants::{GRAVITY, SIM_DT, SKY_MARGIN, TOXIC_DROP_EVERY, TOXIC_DROP_SPEED};
-        let mut w = World::new(4242, MapScale::Medium);
+        let mut w = World::for_test(4242, MapScale::Medium);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         w.force_effect(EffectKind::ToxicRain, w.round_time);
@@ -5572,7 +5636,7 @@ mod toxic_rain_falls {
             Map::from_parts(mask, coarse, meta)
         };
 
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.map = map;
         w.set_phase(RoundPhase::Playing);
         let y = GROUND as f32 - 16.0;
@@ -5630,7 +5694,7 @@ mod toxic_rain_falls {
     fn a_drop_poisons_inside_the_splash_and_not_a_pixel_outside_it() {
         use crate::constants::TOXIC_SPLASH_R;
         let poisoned_at = |gap: f32| {
-            let mut w = World::new(4242, MapScale::Small);
+            let mut w = World::for_test(4242, MapScale::Small);
             w.map = map_with_one_rain_column(OPEN_X0);
             w.set_phase(RoundPhase::Playing);
             w.add_player(0, 0, "ana".into());
@@ -5658,7 +5722,7 @@ mod toxic_rain_falls {
     }
 
     fn poisoned_world() -> (World, f32) {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.map = map_with_one_rain_column(OPEN_X0);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
@@ -5693,7 +5757,7 @@ mod toxic_rain_falls {
     /// check samples pixels, and this makes sure there is something to sample.
     #[test]
     fn a_falling_drop_is_broadcast_moving_downward() {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.map = map_with_a_cave();
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
@@ -6034,7 +6098,7 @@ mod death_tells_you_your_inventory_is_gone {
     /// existed.
     #[test]
     fn a_death_pushes_an_inventory_event_for_the_victim() {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         crate::world::give(&mut w, 0, BAZOOKA, 4);
@@ -6079,7 +6143,7 @@ mod quickthrow {
     };
 
     fn armed(items: &[(crate::items::registry::ItemId, u8)]) -> World {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         for (item, n) in items {
@@ -6206,7 +6270,7 @@ mod teleport_wiring {
     use crate::map::meta::TeleportPad;
 
     fn playing() -> World {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         w
@@ -6522,7 +6586,7 @@ mod void {
     use crate::constants::{MapScale, DEATH_POINTS, PLAYER_H, SIM_DT, WALL_W};
 
     fn playing() -> World {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         w
@@ -6627,7 +6691,7 @@ mod void {
     /// returns early during warmup, and you can carve during warmup.
     #[test]
     fn the_void_kills_during_warmup_too() {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.add_player(0, 0, "ana".into());
         assert_eq!(w.phase, RoundPhase::Warmup, "fixture is not in warmup");
         put_at_void_edge(&mut w, 1.0);
@@ -6873,7 +6937,7 @@ mod birds_in_a_round {
     use crate::items::registry::{BATTERY_PACK, MEDKIT};
 
     fn world() -> World {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w
     }
@@ -7276,7 +7340,7 @@ mod weather_mode_tests {
 
     /// Run a round past the warmup for `secs`, recording what the weather did.
     fn run(mode: WeatherMode, secs: f32) -> Run {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.weather_mode = mode;
         let mut r = Run {
             started: Vec::new(),
@@ -7379,7 +7443,7 @@ mod animals_in_a_round {
     use crate::world::animals::{AnimalId, AnimalKind};
 
     fn world() -> World {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w
     }
@@ -7628,7 +7692,7 @@ mod animals_in_a_round {
     fn nothing_drops_during_warmup() {
         // The one damage gate. An animal shot before the round starts must not
         // open a supply line early — the rule `resolve_bird_kills` sits behind.
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Warmup);
         let x = w.map.mask.w as f32 / 2.0;
         let (id, at) = plant(&mut w, AnimalKind::Beetle, x);
@@ -7684,7 +7748,7 @@ mod fall_damage {
     use crate::player::input::button;
 
     fn world() -> World {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w
     }
@@ -8114,7 +8178,7 @@ mod fall_damage {
     fn no_fall_damage_during_warmup() {
         // It goes through `apply_damage_log`, which is the one warmup gate. The
         // control is the same fall in `Playing`, above.
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Warmup);
         w.add_player(0, 0, "ana".into());
         assert_eq!(drop_player(&mut w, 600.0), 0.0, "warmup charged for a fall");
@@ -8243,7 +8307,7 @@ mod t19_24_forced_effect_seed {
     /// pass a build where the derivation was right and the install was wrong.
     #[test]
     fn always_lava_broadcasts_the_seed_it_simulates() {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.weather_mode = WeatherMode::Always(EffectKind::LavaBurst);
         w.set_phase(RoundPhase::Playing);
 
@@ -8306,7 +8370,7 @@ mod vampire_fangs {
 
     /// Attacker 0, victim 1, both past their spawn i-frames.
     fn duel() -> World {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         w.add_player(1, 1, "bo".into());
@@ -8594,7 +8658,7 @@ mod unicorn_wings {
     use crate::player::input::button;
 
     fn world() -> World {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         w
@@ -8844,7 +8908,7 @@ mod mount_wiring {
     use crate::player::{button, Input};
 
     fn playing() -> World {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         w
@@ -9423,7 +9487,7 @@ mod platform_gun {
     use crate::player::Input;
 
     fn playing() -> World {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         w
@@ -9757,6 +9821,74 @@ mod platform_gun {
             a.state_hash(),
             b.state_hash(),
             "spending a round left the state hash unchanged"
+        );
+    }
+}
+
+/// `World::for_test`'s map cache: the same world as `World::new`, and nothing
+/// shared between two worlds built from it.
+#[cfg(test)]
+mod test_map_cache {
+    use super::*;
+
+    /// What "the same world" has to cover. `state_hash` covers the mask and the
+    /// simulation. It does **not** cover where the map put its buried slots, and
+    /// that is exactly what a buried secret moves: a cache that generated every
+    /// map with secret 0 passed a hash-only version of this test. So the slots
+    /// are compared too.
+    fn fingerprint(w: &World) -> ([u8; 32], String, Vec<(i32, i32)>) {
+        let slots = w
+            .map
+            .meta
+            .buried_slots
+            .iter()
+            .map(|b| (b.pos.x, b.pos.y))
+            .collect();
+        (w.state_hash(), w.map.mask.hash_hex(), slots)
+    }
+
+    /// Both halves of "identical": a first call that generates, and a second that
+    /// is served from the cache. A cache handing back a different map, or a
+    /// `from_map` drifting from `build`, changes the fingerprint.
+    #[test]
+    fn a_cached_world_is_the_world_new_builds() {
+        let fresh = fingerprint(&World::new(4242, MapScale::Small));
+        let first = fingerprint(&World::for_test(4242, MapScale::Small));
+        let hit = fingerprint(&World::for_test(4242, MapScale::Small));
+        assert_eq!(first, fresh, "the cached world differs from World::new");
+        assert_eq!(hit, fresh, "the second, cache-served world differs");
+        // The secret is part of the key: buried slots hang off it.
+        let secret = fingerprint(&World::with_buried_secret(4242, MapScale::Small, 7));
+        assert_eq!(
+            fingerprint(&World::for_test_with_secret(4242, MapScale::Small, 7)),
+            secret,
+            "the cached world ignored its buried secret"
+        );
+        // Control: the secret moves the slots at all, or the line above is vacuous.
+        assert_ne!(
+            secret.2, fresh.2,
+            "control: the secret moved no buried slot"
+        );
+    }
+
+    /// A test that digs must not leave a hole in the next test's map.
+    #[test]
+    fn a_carve_in_one_cached_world_never_reaches_the_next() {
+        let pristine = World::new(4242, MapScale::Small).map.mask.hash_hex();
+        let mut dug = World::for_test(4242, MapScale::Small);
+        let (cx, cy) = (dug.map.mask.w as i32 / 2, dug.map.mask.h as i32 / 2);
+        dug.map.carve_circle(cx, cy, 200);
+        // Control: the carve changed this world, or the check below proves nothing.
+        assert_ne!(
+            dug.map.mask.hash_hex(),
+            pristine,
+            "the carve removed nothing"
+        );
+        let next = World::for_test(4242, MapScale::Small);
+        assert_eq!(
+            next.map.mask.hash_hex(),
+            pristine,
+            "a carve in one cached world reached a later one"
         );
     }
 }

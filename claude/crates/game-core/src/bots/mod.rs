@@ -1083,7 +1083,7 @@ mod tests {
     }
 
     fn world_with(ids: &[PlayerId]) -> World {
-        let mut w = World::new(SEED, MapScale::Small);
+        let mut w = World::for_test(SEED, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         for id in ids {
             w.add_player(*id, 0, format!("p{id}"));
@@ -2461,7 +2461,7 @@ mod energy {
     /// out — which an energy weapon's stack never does.
     #[test]
     fn a_bot_holding_a_flat_laser_switches_to_a_loaded_gun() {
-        let mut w = World::new(4242, crate::constants::MapScale::Small);
+        let mut w = World::for_test(4242, crate::constants::MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "bot".into());
         give(&mut w, 0, LASER_PISTOL, 1);
@@ -2556,7 +2556,7 @@ mod bots_already_throw_what_they_carry {
     /// quietly leaving bots with pockets full of grenades.
     #[test]
     fn a_bot_carrying_only_a_grenade_asks_to_select_it() {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "bot".into());
         w.add_player(1, 0, "target".into());

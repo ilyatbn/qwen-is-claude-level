@@ -278,7 +278,7 @@ mod t1105 {
     fn a_melee_weapon_is_never_consumed_by_using_it() {
         for &(key, ..) in SPEC {
             let item = registry::by_key(key).expect("item").id;
-            let mut w = World::new(4242, crate::constants::MapScale::Small);
+            let mut w = World::for_test(4242, crate::constants::MapScale::Small);
             w.set_phase(RoundPhase::Playing);
             w.add_player(0, 0, "p".into());
             give(&mut w, 0, item, 1);
@@ -309,7 +309,7 @@ mod t1105 {
     #[test]
     fn a_ballistic_weapon_in_the_same_harness_does_run_dry() {
         let item = registry::by_key("pistol").expect("pistol").id;
-        let mut w = World::new(4242, crate::constants::MapScale::Small);
+        let mut w = World::for_test(4242, crate::constants::MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "p".into());
         give(&mut w, 0, item, 3);
@@ -737,7 +737,7 @@ mod t1905_shovel {
     /// `PlayerState::new` did not, so a player who never died never held one.
     #[test]
     fn every_player_spawns_holding_a_shovel() {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
 
@@ -777,7 +777,7 @@ mod t1905_shovel {
     /// that cannot hold anything else.
     #[test]
     fn the_shovel_does_not_occupy_the_whole_inventory() {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         crate::world::give(&mut w, 0, registry::PISTOL, 1);
@@ -801,7 +801,7 @@ mod t1905_shovel {
     /// stopped dropping anything.
     #[test]
     fn death_does_not_drop_the_shovel_but_does_drop_what_was_picked_up() {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         crate::world::give(&mut w, 0, registry::BAZOOKA, 1);
@@ -832,7 +832,7 @@ mod t1905_shovel {
     /// about reach or about the carve, and whatever the generator happened to put
     /// between two bodies answers a different question.
     fn lane(gap: f32) -> (World, Vec2) {
-        let mut w = World::new(4242, MapScale::Small);
+        let mut w = World::for_test(4242, MapScale::Small);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         w.add_player(1, 0, "bo".into());

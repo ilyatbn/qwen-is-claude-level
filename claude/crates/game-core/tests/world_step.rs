@@ -17,8 +17,10 @@ use game_core::world::{give, wield, GameEvent, RoundPhase, World};
 
 const SEED: u64 = 4242;
 
+/// Cached: nothing using this fixture is about generation. The two buried-secret
+/// tests below are, and they call `World::new` themselves.
 fn world() -> World {
-    World::new(SEED, MapScale::Small)
+    World::for_test(SEED, MapScale::Small)
 }
 
 /// A world already past warmup, which is where almost everything is testable.

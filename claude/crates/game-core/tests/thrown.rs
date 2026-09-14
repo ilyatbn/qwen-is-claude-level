@@ -23,7 +23,7 @@ use game_core::world::{GameEvent, HazardKind, RoundPhase, World};
 const SEED: u64 = 4242;
 
 fn playing() -> World {
-    let mut w = World::new(SEED, MapScale::Small);
+    let mut w = World::for_test(SEED, MapScale::Small);
     w.set_phase(RoundPhase::Playing);
     let _ = w.drain_events();
     w
@@ -373,7 +373,7 @@ fn a_molotov_that_lands_on_a_player_still_bursts_and_burns_them() {
     // body added to it is inside `SPAWN_IFRAMES` and refuses every point of
     // damage — which reads as "fire burns nobody". Both traps are recorded in
     // `HANDOFF-M19.md`; this is the third fixture to meet them.
-    let mut w = World::new(SEED, MapScale::Small);
+    let mut w = World::for_test(SEED, MapScale::Small);
     w.add_player(0, 0, "ana".to_string());
     let mut guard = 0;
     while (w.phase != RoundPhase::Playing || w.round_time <= SPAWN_IFRAMES) && guard < 4000 {
@@ -616,7 +616,7 @@ fn prediction_agrees_with_the_simulation() {
 
 /// A round with one armed player, past the warmup and the spawn i-frames.
 fn armed_round(weapon: game_core::items::registry::ItemId, count: u8) -> World {
-    let mut w = World::new(SEED, MapScale::Small);
+    let mut w = World::for_test(SEED, MapScale::Small);
     w.add_player(0, 0, "ana".to_string());
     let mut guard = 0;
     while (w.phase != RoundPhase::Playing || w.round_time <= SPAWN_IFRAMES) && guard < 4000 {

@@ -14,8 +14,14 @@ png = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
+# Turns on `test-support` for this crate's own integration tests (`tests/*.rs`),
+# which link the library without `cfg(test)`.
+game-core = { path = ".", features = ["test-support"] }
 
 [features]
 default = ["serde"]
 serde = ["dep:serde"]
 dump-png = ["dep:png"]
+# `World::for_test`: a per-test-binary cache of generated maps. Never enabled by
+# a shipping build. Only `[dev-dependencies]` turn it on.
+test-support = []
