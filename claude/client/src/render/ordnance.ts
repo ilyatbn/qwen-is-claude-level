@@ -18,7 +18,7 @@ import {
   type ProjectileKind,
 } from './ordnance-state'
 import { DEPTH } from './backdrop'
-import { BEAM_FRAGMENT, hasWebGL } from './shaders'
+import { BEAM_FRAGMENT, FLAME_FRAGMENT, hasWebGL } from './shaders'
 import { isHighQuality, onHighQualityChange } from '../ui/settings'
 
 // The colour and radius tables used to live here as well as in ordnance-state,
@@ -53,6 +53,10 @@ export class OrdnanceLayer {
   private readonly beamShaders: Phaser.GameObjects.Shader[] = []
   /** How many beams the last render painted with the shader — read back, not the setting. */
   beamShadersDrawn = 0
+  /** T21.18: one quad per flame painted under High Quality, grown on demand, capped. */
+  private readonly flameShaders: Phaser.GameObjects.Shader[] = []
+  /** How many flames the last render painted with the shader. */
+  flameShadersDrawn = 0
   /** Hidden for a check's control frame; `render` honours it for the shader quads too. */
   private hidden = false
 
@@ -206,6 +210,7 @@ export class OrdnanceLayer {
     this.beamShadersDrawn = painted
 
     // Trails: a tapering polyline, oldest thinnest.
+    let flamesPainted = 0
     for (const p of this.state.projectiles.values()) {
       const look = LOOK[p.kind]
       // §F10.3: **a flame at rest draws no trail.** A tail behind something that
@@ -252,6 +257,18 @@ export class OrdnanceLayer {
       // edge, the orange body, and a yellow heart. Drawn on `flameGfx` — see the
       // constructor for why that layer is not additive.
       if (p.kind === 'flame') {
+        // **T21.18: under High Quality a flame is one shader quad**, centred on the
+        // flame's own position — its damage centre — and solid past `FLAME_RADIUS`.
+        const sh = shaderBeams ? this.flameShader(flamesPainted) : null
+        if (sh) {
+          flamesPainted++
+          const w = 2 * c.FLAME_RADIUS * c.FLAME_SHADER_SCALE
+          sh.setPosition(p.x, p.y)
+          sh.setDisplaySize(w, w * c.FLAME_SHADER_ASPECT)
+          sh.setUniform('seed.value', (p.id % 97) * 0.6180339887)
+          sh.setVisible(!this.hidden)
+          continue
+        }
         const f = flameFlicker(p.id, nowMs)
         fg.fillStyle(FLAME_EDGE, 0.45 * f)
         fg.fillCircle(p.x, p.y, look.r * 1.15 * f)
@@ -271,6 +288,9 @@ export class OrdnanceLayer {
         g.fillCircle(p.x, p.y, Math.max(1.2, look.r * 0.45))
       }
     }
+
+    for (let i = flamesPainted; i < this.flameShaders.length; i++) this.flameShaders[i]!.setVisible(false)
+    this.flameShadersDrawn = flamesPainted
 
     // Impacts: a flash that collapses fast.
     for (const im of this.state.impacts) {
@@ -331,11 +351,41 @@ export class OrdnanceLayer {
     return this.beamShaders[i] ?? null
   }
 
+  /** Would a flame drawn now be painted by the shader? The same decider as the beams. */
+  get flamesAreShader(): boolean {
+    return this.useBeamShader()
+  }
+
+  /** Flame quad `i` of the pool, built on first use; `null` past `FLAME_SHADER_POOL`. */
+  private flameShader(i: number): Phaser.GameObjects.Shader | null {
+    const c = C()
+    if (i >= c.FLAME_SHADER_POOL) return null
+    while (this.flameShaders.length <= i) {
+      const base = new Phaser.Display.BaseShader('flame', FLAME_FRAGMENT, undefined, {
+        seed: { type: '1f', value: 0 },
+        scale: { type: '1f', value: c.FLAME_SHADER_SCALE },
+        aspect: { type: '1f', value: c.FLAME_SHADER_ASPECT },
+        base: { type: '1f', value: c.FLAME_SHADER_BASE },
+      })
+      this.flameShaders.push(
+        this.scene.add
+          .shader(base, 0, 0, 64, 64)
+          // Phaser's origin y is from the top; the flame centre is `base` up from the bottom.
+          .setOrigin(0.5, 1 - c.FLAME_SHADER_BASE)
+          .setDepth(DEPTH.particles)
+          .setVisible(false),
+      )
+    }
+    return this.flameShaders[i] ?? null
+  }
+
   destroy(): void {
     this.flameGfx.destroy()
     this.gfx.destroy()
     for (const s of this.beamShaders) s.destroy()
     this.beamShaders.length = 0
+    for (const s of this.flameShaders) s.destroy()
+    this.flameShaders.length = 0
     // Or every round leaks a listener, and a setting flip repaints a dead layer.
     this.unsubscribeQuality()
   }

@@ -2650,6 +2650,7 @@ export class GameScene extends Phaser.Scene {
           // Off the layer, not the setting: without WebGL this is false however set.
           shaderBeams: self.world?.ordnance.beamsAreShader ?? false,
           shaderSmoke: self.fx?.smokeIsShader ?? false,
+          shaderFlames: self.world?.ordnance.flamesAreShader ?? false,
         }
       },
       /** e2e only (§C2, T21.18): hide the hazard/jet/mine layer for a same-instant control frame. */
@@ -2990,6 +2991,12 @@ export class GameScene extends Phaser.Scene {
           hazardsDrawn: self.fx?.hazardCount ?? 0,
           // T21.18: smoke clouds the last render painted with the shader, read off the layer.
           smokeShadersDrawn: self.fx?.smokeShadersDrawn ?? 0,
+          // T21.18: flames the last render painted with the shader, and where the layer has
+          // every flame — the positions its picture was drawn from, not the mirror's.
+          flameShadersDrawn: self.world?.ordnance.flameShadersDrawn ?? 0,
+          flamesDrawnAt: [...(self.world?.ordnance.state.projectiles.values() ?? [])]
+            .filter((p) => p.kind === 'flame')
+            .map((p) => ({ x: p.x, y: p.y })),
           // T21.18: the snapshot's vision multiplier (fog times smoke) — the simulation half
           // of smoke, which a check asserts does not move with High Quality.
           vision: self.vision,

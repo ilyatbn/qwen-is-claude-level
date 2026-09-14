@@ -218,6 +218,7 @@ export const CHECKS = [
   { name: 'minimap-crates', file: 'scripts/checks/minimap-crates.mjs', standalone: true },
   { name: 'beams-shader', file: 'scripts/checks/beams-shader.mjs', standalone: true },
   { name: 'smoke-shader', file: 'scripts/checks/smoke-shader.mjs', standalone: true },
+  { name: 'fire-shader', file: 'scripts/checks/fire-shader.mjs', standalone: true },
   // T20.10: ground animals, counted at both ends and then photographed.
   // Standalone: it needs a real round on a fixed seed with no bots, because a
   // bot's stray rocket killing one changes the counts it compares.

@@ -502,3 +502,76 @@ void main() {
   gl_FragColor = vec4(col * a, a);
 }
 `
+
+/**
+ * T21.18 item 4 — a flame, painted rather than three flat circles.
+ *
+ * **The flame is the damage area.** A flame hurts anyone within `FLAME_RADIUS` of its
+ * centre, so the body here is solid out to COVER damage radii however the flicker
+ * moves it: the ragged edge lives outside that ring, never inside it. A player must not
+ * be burned by fire they cannot see.
+ *
+ * The quad is taller than wide. The flame centre sits `base` of the way up it, a tongue
+ * licks upward from there, and above the tongue a faint wavering column stands in for
+ * heat haze. **It is not a true distortion**: that needs the scene behind it sampled
+ * into a texture, which a Shader object laid over the scene does not have.
+ *
+ * x and y below are in damage radii from the flame centre; fragCoord y is 0 at the
+ * bottom of the quad. `aspect` is a uniform, not `resolution.y / resolution.x`:
+ * resolution is the quad's base size, and setDisplaySize does not change it.
+ */
+export const FLAME_FRAGMENT = /* glsl */ `
+precision mediump float;
+
+uniform vec2 resolution;
+// Seconds - Phaser's own uniform, set at every render.
+uniform float time;
+// Per flame, so a crowd does not flicker in step.
+uniform float seed;
+// Quad half-width in damage radii - FLAME_SHADER_SCALE.
+uniform float scale;
+// Quad height over width - FLAME_SHADER_ASPECT.
+uniform float aspect;
+// Where the flame centre sits up the quad - FLAME_SHADER_BASE.
+uniform float base;
+
+varying vec2 fragCoord;
+
+${FBM}
+
+// Solid out to this many damage radii, whatever the flicker does.
+const float COVER = 1.1;
+// How far past COVER the ragged edge may reach.
+const float RAG = 0.45;
+// How fast the flicker climbs, noise cells per second.
+const float CLIMB = 2.6;
+
+void main() {
+  vec2 uv = fragCoord / resolution.xy;
+  float x = (uv.x - 0.5) * 2.0 * scale;
+  float y = (uv.y - base) * 2.0 * scale * aspect;
+  float t = time + seed * 7.0;
+  float n = fbm3(vec2(x * 1.4 + seed, y * 1.1 - t * CLIMB));
+  // The body: a disc, and above the centre a tongue that narrows as it climbs.
+  float up = max(y, 0.0);
+  float d = length(vec2(x * (1.0 + up * 0.55), min(y, 0.0) + up * 0.42));
+  float edge = COVER + RAG * n * (0.4 + up * 0.6);
+  float body = 1.0 - smoothstep(COVER, edge + 0.001, d);
+  // Heat haze: a faint wavering column over the tongue.
+  float hazeY = y - 1.6;
+  float haze = (1.0 - smoothstep(0.0, 2.2, abs(hazeY))) * (1.0 - smoothstep(0.3, 1.0, abs(x) / scale));
+  haze *= 0.10 + 0.10 * fbm3(vec2(x * 3.0 + seed, y * 2.0 - t * 3.5));
+  // Yellow heart, orange body, dark red rim.
+  vec3 heart = vec3(1.0, 0.86, 0.32);
+  vec3 flame = vec3(1.0, 0.50, 0.14);
+  vec3 rim = vec3(0.72, 0.18, 0.04);
+  float k = clamp(d / edge, 0.0, 1.0);
+  vec3 col = mix(heart, flame, smoothstep(0.15, 0.55, k + 0.2 * (n - 0.5)));
+  col = mix(col, rim, smoothstep(0.7, 1.0, k));
+  float a = body * 0.95;
+  // Premultiplied, for the reason FOG_FRAGMENT is: the flame, then the haze behind it.
+  vec3 outc = col * a + vec3(1.0, 0.92, 0.8) * haze * (1.0 - a);
+  float outa = a + haze * (1.0 - a);
+  gl_FragColor = vec4(outc, outa);
+}
+`

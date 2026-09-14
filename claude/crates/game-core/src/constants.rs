@@ -2514,6 +2514,20 @@ pub const BEAM_SHADER_WIDTH: f32 = 22.0;
 /// T21.18: how many beams at once get a shader quad. Past it, the rest are drawn
 /// with the flat lines — a cap, never a beam dropped.
 pub const BEAM_SHADER_POOL: u32 = 12;
+/// T21.18: a flame's shader quad half-width, in damage radii (`FLAME_RADIUS`). The
+/// painted body is solid out to 1.1 damage radii and ragged a little past it, so this
+/// leaves room for the rag. **The quad must never be what bounds the fire smaller than
+/// the damage** — `fire-shader` samples every flame's damage circle to hold that.
+pub const FLAME_SHADER_SCALE: f32 = 1.8;
+/// T21.18: the quad's height over its width — room above the flame for the tongue
+/// and the heat-haze column.
+pub const FLAME_SHADER_ASPECT: f32 = 2.2;
+/// T21.18: where the flame's centre (its damage centre) sits up the quad, 0 bottom, 1 top.
+pub const FLAME_SHADER_BASE: f32 = 0.3;
+/// T21.18: how many flames at once get a shader quad. Past it, the rest are drawn with
+/// the flat circles — a cap, never a flame dropped. Under `FLAME_MAX_LIVE` on purpose:
+/// every quad is its own draw call.
+pub const FLAME_SHADER_POOL: u32 = 48;
 
 // ---------------------------------------------------------------------------
 // Special items (M21)
