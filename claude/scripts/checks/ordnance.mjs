@@ -631,12 +631,33 @@ if (placed) {
     }
   }
 
+  /**
+   * Aim at the **ground under** the mine, not at the mine.
+   *
+   * A rocket detonates on contact, and nothing about a mine is solid to it. The
+   * mine's centre sits a few pixels above the ground, so a line through it only
+   * meets terrain *beyond* the mine — and where the ground falls away past the
+   * mine, that is far beyond it. Measured on `FIXED_SEED` 4242, red on HEAD five
+   * runs of six: player at (1263, 515) up a rise, mine at (1286, 526), and the
+   * four blasts landed at (1336, 562), (1372, 586), (1402, 616), (1431, 648) —
+   * 61 to 185 px away, each crater moving the next landing further down the slope,
+   * the mine never inside `BAZOOKA_BLAST_RADIUS` and the player never touched. The
+   * one green run had the earlier steps leave the player somewhere flatter.
+   *
+   * Half a blast radius below the mine is inside the ground the mine rests on,
+   * and every point on the segment from the muzzle to it is within
+   * `max(gap, NEAR / 2)` of the mine — under `NEAR` whenever the approach
+   * settled. So wherever along that segment the rocket meets terrain, the blast
+   * covers the mine. It still has to *hit*: this moves where the shot is
+   * pointed, not whether a mine inside a blast is ended, and not whether the
+   * client drops it.
+   */
   const aimAtMine = async () => {
     const d = await dbg()
     const m = (d.mines ?? [])[0]
     if (!m || !d.worldView) return null
     const sx = (m.x - d.worldView.x) * d.zoom
-    const sy = (m.y - d.worldView.y) * d.zoom
+    const sy = (m.y + NEAR / 2 - d.worldView.y) * d.zoom
     return sx > 0 && sx < 1280 && sy > 0 && sy < 720 ? { sx, sy } : null
   }
 
