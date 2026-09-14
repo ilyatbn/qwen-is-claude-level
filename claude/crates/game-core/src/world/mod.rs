@@ -1073,6 +1073,36 @@ impl World {
         self.round_seconds = secs.max(0.0);
     }
 
+    /// Start this world's round clock at `t` instead of 0. The server's
+    /// `DEV_ROUND_CLOCK`, for checks that photograph night or the ambient rain.
+    ///
+    /// **The same round, shifted.** Night, the ambient schedule and the sky are
+    /// functions of `round_time`, so they arrive `t` seconds early. Everything
+    /// the world had anchored at 0 moves with the clock:
+    /// - the effect scheduler;
+    /// - the item and crate schedule;
+    /// - the initial items' `spawned_at`;
+    /// - the phase anchor.
+    ///
+    /// Otherwise the first tick would roll a burst of effects and spawns to
+    /// catch up, and despawn every starting item past `WORLD_ITEM_TTL`.
+    /// `a_late_clock_is_the_same_round_shifted` pins that.
+    ///
+    /// Call it on a fresh world, before anyone is seated: a player's i-frames
+    /// and respawn times are read off this clock when they are added.
+    pub fn start_clock_at(&mut self, t: f32) {
+        debug_assert!(
+            self.players.is_empty() && self.round_time == 0.0,
+            "start_clock_at is for a fresh world"
+        );
+        self.round_time = t;
+        self.phase_started_at += t;
+        self.last_day_phase = cycle_at(t).phase;
+        self.effects.rebase(t);
+        self.spawn_schedule.rebase(t);
+        self.items.rebase_spawn_times(t);
+    }
+
     pub fn round_seconds(&self) -> f32 {
         self.round_seconds
     }
@@ -9890,5 +9920,188 @@ mod test_map_cache {
             pristine,
             "a carve in one cached world reached a later one"
         );
+    }
+}
+
+/// `World::start_clock_at`: a round whose clock starts late is the same round,
+/// shifted, with nothing bursting to catch up.
+#[cfg(test)]
+mod start_clock_at_tests {
+    use super::*;
+    use crate::constants::{
+        CRATE_INTERVAL, EFFECT_INTERVAL_MAX, ITEM_SPAWN_INTERVAL, SIM_DT, WORLD_ITEM_TTL,
+    };
+    use crate::world::cycle::{CYCLE_LENGTH, NIGHT_START};
+
+    /// The schedule-bearing events: their tick, and their **identity**.
+    ///
+    /// **Why not the whole event.** `round_time` accumulates `SIM_DT` in f32, and
+    /// a clock counting up from 164 s rounds differently from one counting up
+    /// from 0. Measured, twice: the same item, same id, spawned on tick 4202 in
+    /// the late world and 4200 in the early one; and a later one whose `y` read
+    /// 418.08 against 418.01, because what it was placed from had moved for two
+    /// more ticks. So ticks are compared to a drift bound, and each event by what
+    /// it *is*: which effect with which seed, which item id of which kind.
+    /// Positions are left out. A burst, a mass despawn or a missing roll still
+    /// misaligns these, and the ids are assigned in order, so they cannot line
+    /// up by accident.
+    fn scheduled(w: &mut World) -> Vec<(u64, String)> {
+        w.drain_events()
+            .into_iter()
+            .filter_map(|e| match e {
+                GameEvent::EffectStart {
+                    tick,
+                    id,
+                    kind,
+                    seed,
+                    duration,
+                } => Some((
+                    u64::from(tick),
+                    format!("EffectStart {id} {kind:?} {seed} {duration}"),
+                )),
+                GameEvent::ItemSpawn {
+                    tick,
+                    world_item_id,
+                    item_id,
+                    count,
+                    source,
+                    ..
+                } => Some((
+                    u64::from(tick),
+                    format!("ItemSpawn {world_item_id} {item_id} {count} {source:?}"),
+                )),
+                GameEvent::CrateSpawn {
+                    tick,
+                    world_item_id,
+                    ..
+                } => Some((u64::from(tick), format!("CrateSpawn {world_item_id}"))),
+                GameEvent::ItemDespawn {
+                    tick,
+                    world_item_id,
+                } => Some((u64::from(tick), format!("ItemDespawn {world_item_id}"))),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_late_clock_is_the_same_round_shifted() {
+        // Past every schedule `World::build` anchors at 0, so a missing rebase
+        // shows up as a burst or a mass despawn on the first tick.
+        let late = WORLD_ITEM_TTL + CRATE_INTERVAL + EFFECT_INTERVAL_MAX + ITEM_SPAWN_INTERVAL;
+        let mut a = World::for_test(4242, MapScale::Small);
+        let mut b = World::for_test(4242, MapScale::Small);
+        b.start_clock_at(late);
+        for w in [&mut a, &mut b] {
+            w.set_phase(RoundPhase::Playing);
+            let _ = w.drain_events();
+        }
+        // Long enough for each schedule to fire at least once in the early world.
+        let span =
+            WORLD_ITEM_TTL.max(CRATE_INTERVAL).max(EFFECT_INTERVAL_MAX) + ITEM_SPAWN_INTERVAL;
+        let steps = (span / SIM_DT).ceil() as u32;
+        // The starting items, whose despawn is a pure deadline off `spawned_at`.
+        let initial: Vec<String> = a
+            .items
+            .iter()
+            .map(|it| format!("ItemDespawn {}", it.id))
+            .collect();
+        let (mut ea, mut eb) = (Vec::new(), Vec::new());
+        for _ in 0..steps {
+            a.step(SIM_DT);
+            b.step(SIM_DT);
+            ea.extend(scheduled(&mut a));
+            eb.extend(scheduled(&mut b));
+        }
+
+        // **What a late clock must preserve, and what it may not.** A round is
+        // not literally the same round shifted: some of it is a function of
+        // round time by design (the day/night cycle), and measured, an item
+        // spawned 11 ticks later in the late world, beyond any f32 rounding.
+        // What `start_clock_at` promises is narrower. Every *deadline* keeps
+        // its offset, and nothing bursts to catch up. So the pure deadlines are
+        // compared one by one: effect rolls, crate drops, the starting items'
+        // lifetimes. Item spawns, whose timing moves with the clock, are
+        // compared as a total.
+        let deadlines = |evs: &[(u64, String)]| -> Vec<(u64, String)> {
+            evs.iter()
+                .filter(|(_, e)| {
+                    e.starts_with("EffectStart")
+                        || e.starts_with("CrateSpawn")
+                        || initial.contains(e)
+                })
+                .cloned()
+                .collect()
+        };
+        let (da, db) = (deadlines(&ea), deadlines(&eb));
+        // Controls: each kind of deadline fired in the window, or its comparison is vacuous.
+        for kind in ["EffectStart", "CrateSpawn", "ItemDespawn"] {
+            assert!(
+                da.iter().any(|(_, e)| e.starts_with(kind)),
+                "no {kind} deadline fired in the window — widen it"
+            );
+        }
+        // How far f32 accumulation can move a deadline, in ticks: every step can
+        // round by one epsilon of the largest clock value either world reaches.
+        // Derived, not chosen. A missing rebase moves a deadline by thousands of
+        // ticks (an effect on tick 1, every starting item gone at once).
+        let drift = (steps as f32 * f32::EPSILON * (late + span) / SIM_DT).ceil() as u64 + 1;
+        // A deadline near the window's end may have its late twin just past it.
+        let horizon = u64::from(steps).saturating_sub(drift);
+        let early: Vec<_> = da.iter().filter(|(t, _)| *t <= horizon).collect();
+        for (i, (t_early, early_ev)) in early.iter().enumerate() {
+            let Some((t_late, late_ev)) = db.get(i) else {
+                panic!(
+                    "a clock started at {late} s lost deadline {i} of {}: {early_ev} on tick {t_early}",
+                    early.len()
+                );
+            };
+            assert!(
+                late_ev == early_ev && t_late.abs_diff(*t_early) <= drift,
+                "a clock started at {late} s moved a deadline rather than shifting it. \
+                 Deadline {i} of {}:\n  early: tick {t_early} {early_ev}\n  late:  tick \
+                 {t_late} {late_ev}\n  (ticks may differ by at most {drift}, the f32 drift bound)",
+                early.len()
+            );
+        }
+        // No burst: the same number of item spawns, give or take the one batch a
+        // clock-dependent lag can push across the window's end. A schedule left at
+        // 0 fires a batch every tick until it catches up: a dozen batches, not one.
+        let spawns = |evs: &[(u64, String)]| {
+            evs.iter()
+                .filter(|(_, e)| e.starts_with("ItemSpawn"))
+                .count()
+        };
+        let (sa, sb) = (spawns(&ea), spawns(&eb));
+        assert!(sa > 0, "control: no item spawned in the window — widen it");
+        assert!(
+            sa.abs_diff(sb) <= crate::constants::ITEM_SPAWN_BATCH_MAX as usize,
+            "a clock started at {late} s spawned {sb} items where round time 0 spawned {sa} \
+             — more than one batch apart, so a schedule burst to catch up"
+        );
+        // The clocks themselves, to the same f32 drift bound, in seconds.
+        // Measured 163.976 s apart for `late` = 164: accumulation, not a missing
+        // offset, which would be off by all of `late`.
+        assert!(
+            (b.round_time - a.round_time - late).abs() <= drift as f32 * SIM_DT,
+            "the late world's clock is not `late` ahead: {} vs {} (bound {} s)",
+            b.round_time,
+            a.round_time,
+            drift as f32 * SIM_DT
+        );
+    }
+
+    #[test]
+    fn a_clock_started_at_night_is_dark() {
+        let mut night = World::for_test(4242, MapScale::Small);
+        night.start_clock_at(NIGHT_START * CYCLE_LENGTH);
+        let day = World::for_test(4242, MapScale::Small);
+        assert!(
+            night.darkness() > day.darkness(),
+            "control and subject agree: night {} vs day {}",
+            night.darkness(),
+            day.darkness()
+        );
+        assert!((night.darkness() - crate::constants::NIGHT_DARKNESS).abs() < 1e-3);
     }
 }

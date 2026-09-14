@@ -25,10 +25,62 @@
  * asserts is the hop: the schedule said rain (`ambientAsked`) and the sheet drew
  * (`ambientDrops`), with the control that before it said rain, nothing was drawn.
  */
-import { startStack, enterBattle, tally, freePort } from './harness.mjs'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { startStack, enterBattle, tally, freePort, root } from './harness.mjs'
+import { constants as rustConstants } from '../lib/rust-constants.mjs'
 
 const PORT = await freePort()
 const { fail, ok, finish } = tally('ambient-rain')
+
+const SEED = 1
+const ROUND_SECONDS = 300
+/**
+ * Seconds of round time between the moment play starts and the first ambient
+ * droplet. This check's own number, not a tunable: room for the toxic telegraph
+ * and its sheet to be photographed first, and for the start-of-round control to
+ * read a dry schedule.
+ */
+const LEAD_S = 15
+
+/**
+ * Where seed `SEED`'s first full-strength ambient shower begins, read off the
+ * **client's own** `ambient_rain` (the wasm the game draws with), never typed
+ * here. A retune of `AMBIENT_RAIN_*` moves it, and this follows.
+ */
+async function firstShowerStart(seed) {
+  const dir = join(root, 'client/src/core/pkg')
+  const wasm = await import(pathToFileURL(join(dir, 'game_wasm.js')).href)
+  wasm.initSync({ module: readFileSync(join(dir, 'game_wasm_bg.wasm')) })
+  const step = 0.25
+  for (let t = 0; t < ROUND_SECONDS; t += step) {
+    if (wasm.ambient_rain(seed, 0, t) <= 0) continue
+    let u = t
+    while (u < ROUND_SECONDS && wasm.ambient_rain(seed, 0, u) > 0) {
+      if (wasm.ambient_rain(seed, 0, u) >= 0.99) return t
+      u += step
+    }
+    t = u
+  }
+  return null
+}
+
+/**
+ * **Why the round starts late (`DEV_ROUND_CLOCK`).** The ambient schedule is a
+ * pure function of the seed and `round_time`, and seed 1's first full shower is
+ * at ~151 s. The check used to sit through that clock, which was its whole run
+ * time. The server now starts its round clock `WARMUP_SECONDS + LEAD_S` before
+ * that shower, so the wait is ~`LEAD_S`. What is asserted is unchanged.
+ */
+const WARMUP_SECONDS = rustConstants().get('WARMUP_SECONDS')
+const showerAt = await firstShowerStart(SEED)
+if (showerAt === null) {
+  console.error(`ambient-rain: seed ${SEED} has no full ambient shower in ${ROUND_SECONDS} s`)
+  process.exit(1)
+}
+const DEV_ROUND_CLOCK = Math.max(0, showerAt - WARMUP_SECONDS - LEAD_S)
+console.log(`  seed ${SEED}'s first shower starts at round time ${showerAt}; DEV_ROUND_CLOCK=${DEV_ROUND_CLOCK}`)
 
 /**
  * Where streaks are counted: below the HUD strip, clear of the banner and clock.
@@ -57,8 +109,9 @@ const stack = await startStack({
     WEATHER: 'toxic',
     BOT_COUNT: '0',
     LOBBY_BOT_TIMEOUT: '3',
-    FIXED_SEED: '1',
-    ROUND_SECONDS: '300',
+    FIXED_SEED: String(SEED),
+    ROUND_SECONDS: String(ROUND_SECONDS),
+    DEV_ROUND_CLOCK: String(DEV_ROUND_CLOCK),
   },
 })
 const { page, shot, pageErrors } = await stack.openClient({ name: 'ana' })

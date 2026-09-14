@@ -246,6 +246,22 @@ impl EffectScheduler {
         }
     }
 
+    /// Move every time this scheduler holds forward by `by` seconds, so a round
+    /// whose clock starts at `by` sees the same schedule a round starting at 0
+    /// does, shifted.
+    ///
+    /// For `World::start_clock_at` only. Without it a clock that starts past
+    /// `EFFECT_INTERVAL_MAX` rolls one effect per tick until `next_at` catches
+    /// up, which is a burst no real round ever has.
+    pub fn rebase(&mut self, by: f32) {
+        self.next_at += by;
+        for e in self.active.iter_mut() {
+            e.started_at += by;
+            e.phase_started_at += by;
+        }
+        self.last_now = self.last_now.map(|n| n + by);
+    }
+
     /// True only during `Active` — a telegraphing effect is a warning, not a hazard.
     pub fn is_active(&self, kind: EffectKind) -> bool {
         self.active

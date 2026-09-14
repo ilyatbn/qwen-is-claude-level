@@ -139,6 +139,21 @@ pub struct Config {
     /// §F9's acceptance provable in a real match rather than only in the sandbox
     /// — the §C1 half-fix this project has already paid for four times.
     pub weather_mode: WeatherMode,
+    /// Development only (`DEV_ROUND_CLOCK=<seconds>`, 0 = off): the round
+    /// clock this room's world starts at.
+    ///
+    /// Same family as `WEATHER`. Night and the ambient rain are pure functions
+    /// of round time (`cycle.rs`, `ambient.rs`), so a browser check that
+    /// photographs either one used to wait out the real clock: 75 s to night,
+    /// 151 s to the first full ambient shower on seed 1. That wait was most of
+    /// those checks' run time and none of what they check. This changes
+    /// **when** the moment arrives, not what the moment is: the clock that
+    /// drives it is the same `round_time`, and `World::start_clock_at` shifts
+    /// every schedule with it, so nothing bursts to catch up.
+    ///
+    /// **Not in the replay header**, like `dev_flashlight`. A round recorded
+    /// with this set will not replay.
+    pub dev_round_clock: f32,
 }
 
 /// Parse `WEATHER`. Unset is `Auto`; every other value must be spelled exactly.
@@ -198,6 +213,7 @@ impl Default for Config {
             dev_flashlight: false,
             weather_mode: WeatherMode::Auto,
             bot_skill: BOT_SKILL_DEFAULT,
+            dev_round_clock: 0.0,
         }
     }
 }
@@ -372,6 +388,21 @@ impl Config {
                 })?,
                 None => d.weather_mode,
             },
+            dev_round_clock: match get("DEV_ROUND_CLOCK") {
+                Some(v) => {
+                    let bad = || ConfigError {
+                        var: "DEV_ROUND_CLOCK",
+                        value: v.clone(),
+                        expected: "a number of seconds, 0 or more (0 = off)".to_string(),
+                    };
+                    let n = v.trim().parse::<f32>().map_err(|_| bad())?;
+                    if !(n.is_finite() && n >= 0.0) {
+                        return Err(bad());
+                    }
+                    n
+                }
+                None => d.dev_round_clock,
+            },
         })
     }
 
@@ -380,7 +411,8 @@ impl Config {
         format!(
             "bind={} scale={} generator={} max_players={} round_seconds={} \
              room_empty_ttl={} lobby_bot_timeout={} fixed_seed={} record_replay={} debug_dump={} bots={} \
-             bot_skill={} dev_start_health={} dev_poisoned={} dev_flashlight={} weather={:?}",
+             bot_skill={} dev_start_health={} dev_poisoned={} dev_flashlight={} weather={:?} \
+             dev_round_clock={}",
             self.bind_addr,
             self.map_scale.as_str(),
             self.map_generator.as_str(),
@@ -399,6 +431,7 @@ impl Config {
             self.dev_poisoned,
             self.dev_flashlight,
             self.weather_mode,
+            self.dev_round_clock,
         )
     }
 }
@@ -612,6 +645,33 @@ mod tests {
         // hour later, for a reason that is not in its own file.
         for v in ["", "Off", "OFF", "no", "1", "true", "rain", "snow"] {
             assert!(from(&[("WEATHER", v)]).is_err(), "WEATHER={v} was accepted");
+        }
+    }
+
+    #[test]
+    fn dev_round_clock_defaults_off_and_refuses_what_is_not_a_time() {
+        assert_eq!(
+            Config::from_source(empty).expect("ok").dev_round_clock,
+            0.0,
+            "an unset DEV_ROUND_CLOCK changed the shipping behaviour"
+        );
+        assert_eq!(
+            from(&[("DEV_ROUND_CLOCK", "150")])
+                .expect("ok")
+                .dev_round_clock,
+            150.0
+        );
+        assert_eq!(
+            from(&[("DEV_ROUND_CLOCK", "0")])
+                .expect("ok")
+                .dev_round_clock,
+            0.0
+        );
+        for v in ["", "-1", "abc", "inf", "NaN", "12s"] {
+            assert!(
+                from(&[("DEV_ROUND_CLOCK", v)]).is_err(),
+                "DEV_ROUND_CLOCK={v} was accepted"
+            );
         }
     }
 

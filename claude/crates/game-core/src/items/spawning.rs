@@ -220,6 +220,15 @@ impl SpawnSchedule {
         }
     }
 
+    /// Move both deadlines forward by `by` seconds, for `World::start_clock_at`.
+    ///
+    /// `new` anchors them at round time 0. Without this, a clock started past
+    /// `CRATE_INTERVAL` drops one batch per tick until the schedule catches up.
+    pub fn rebase(&mut self, by: f32) {
+        self.next_item_at += by;
+        self.next_crate_at += by;
+    }
+
     pub fn next_item_at(&self) -> f32 {
         self.next_item_at
     }

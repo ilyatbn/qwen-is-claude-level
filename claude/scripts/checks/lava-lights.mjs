@@ -37,13 +37,14 @@
  * vent is sampled in both frames and must not move: without it, the whole screen
  * getting brighter would read as the vent lighting up.
  *
- * ## Why it waits so long
+ * ## How it reaches night without waiting for it
  *
- * There is no time-of-day override on the server (`config.rs` has none) and
- * `setTime` exists only on `SandboxScene`. Darkness comes from `round_time`
- * through `cycle.rs`, so full night begins at `NIGHT_START` x `CYCLE_LENGTH`
- * and the check has to wait for it. That is the price of testing the scene a
- * player is actually in.
+ * Darkness comes from `round_time` through `cycle.rs`, so full night begins at
+ * `NIGHT_START` x `CYCLE_LENGTH`. The check used to wait that out on the real
+ * clock. The server now starts the round clock at `NIGHT_AT - WARMUP_SECONDS`
+ * (`DEV_ROUND_CLOCK`), so night arrives as warmup ends. It is still the same
+ * `round_time` driving the same cycle in the scene a player is actually in:
+ * only the wait is gone, not the path.
  */
 import { startStack, enterBattle, tally, sleep, standStill, freePort } from './harness.mjs'
 import { toScreen, samplePatch, colourDelta } from './pixels.mjs'
@@ -57,6 +58,7 @@ const NIGHT_DARKNESS = C.get('NIGHT_DARKNESS')
 const CYCLE_LENGTH = C.get('DAY_DURATION') + C.get('NIGHT_DURATION')
 /** From the shipped cycle, never a literal: night begins here. */
 const NIGHT_AT = 0.62 * CYCLE_LENGTH
+const WARMUP_SECONDS = C.get('WARMUP_SECONDS')
 
 /** The patch sampled. Small, so terrain either side does not dilute it. */
 const PATCH = { w: 48, h: 48 }
@@ -102,6 +104,8 @@ const stack = await startStack({
     ROUND_SECONDS: '200',
     BOT_COUNT: '0',
     WEATHER: 'lava',
+    // Night as warmup ends; see the header.
+    DEV_ROUND_CLOCK: String(NIGHT_AT - WARMUP_SECONDS),
   },
 })
 

@@ -406,6 +406,16 @@ impl WorldItems {
         self.items.iter()
     }
 
+    /// Move every item's `spawned_at` forward by `by` seconds, for
+    /// `World::start_clock_at`. The initial placement is stamped at round time
+    /// 0, and a clock started past `WORLD_ITEM_TTL` would otherwise despawn
+    /// every one of them on the first tick.
+    pub fn rebase_spawn_times(&mut self, by: f32) {
+        for it in self.items.iter_mut() {
+            it.spawned_at += by;
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.items.len()
     }

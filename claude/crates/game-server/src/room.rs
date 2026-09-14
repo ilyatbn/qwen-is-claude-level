@@ -1044,6 +1044,7 @@ impl Room {
         let generator = self.config.map_generator;
         let round_seconds = self.config.round_seconds;
         let weather_mode = self.config.weather_mode;
+        let dev_round_clock = self.config.dev_round_clock;
         move || {
             let mut world = World::with_generator(seed, scale, secret, generator);
             // `ROUND_SECONDS` is an environment override for testing (`docs/41`
@@ -1051,6 +1052,11 @@ impl Room {
             // constant, so a shortened round never shortened.
             world.set_round_seconds(round_seconds);
             world.weather_mode = weather_mode;
+            // `DEV_ROUND_CLOCK`. Before `populate_world` seats anyone, because a
+            // seat's i-frames and respawn times are read off this clock.
+            if dev_round_clock > 0.0 {
+                world.start_clock_at(dev_round_clock);
+            }
             world.set_phase(game_core::world::RoundPhase::Lobby);
             let _ = world.drain_events();
             // `docs/61` §3 row 1: the line a report of "the map was unplayable"
@@ -2554,6 +2560,10 @@ impl Room {
         // the moment the round restarts — which is the shape `set_round_seconds`
         // was already fixed for once (§E4).
         world.weather_mode = self.config.weather_mode;
+        // Both construction sites, for the same reason as `weather_mode` above.
+        if self.config.dev_round_clock > 0.0 {
+            world.start_clock_at(self.config.dev_round_clock);
+        }
         self.world = Some(world);
         // A restart sends a fresh `map_init`, so the handshake window restarts
         // with it — see the field's own comment.
