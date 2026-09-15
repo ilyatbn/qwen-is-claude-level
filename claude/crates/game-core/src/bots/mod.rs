@@ -430,12 +430,12 @@ impl Bot {
         // refused by `apply_input` while the wings are held, and the outcome is
         // survivable rather than merely harmless:
         //
-        //  - the stuck-jump is moot, because a flying bot is never stuck: it
-        //    rises out of whatever hole triggered `still_for`;
-        //  - the jetpack climb is moot for the same reason — it rises anyway,
-        //    at `WINGS_FLY_SPEED`, without spending fuel;
-        //  - and the one input that still lands is `DOWN`, which `apply_flight`
-        //    reads as descend. That arm already fires when the target is well
+        //  - the jetpack climb's `JUMP|UP` still lands, as a climb: since T21.34
+        //    wings hover with no vertical input and `UP` rises, so a bot whose
+        //    target is above goes up to it at `WINGS_FLY_SPEED`, without fuel;
+        //  - the stuck-jump is refused, and a stuck winged bot with nothing
+        //    above it hovers in place (it can still walk out sideways);
+        //  - and `DOWN` descends. That arm already fires when the target is well
         //    below, so a winged bot chasing something on the ground comes down
         //    to it.
         //

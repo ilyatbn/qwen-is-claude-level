@@ -97,16 +97,21 @@ pub fn try_jump(
     true
 }
 
-/// Unicorn wings (T21.03): drive the vertical velocity to the wings' own speed.
+/// Unicorn wings (T21.03, T21.34): drive the vertical velocity from UP/DOWN.
 ///
-/// **Set, not accelerated, and not a thrust.** The brief is *"you just fly
-/// constantly"*, and the literal reading is the right one here: with no input
-/// at all the player **rises**, and holding `DOWN` descends at the same speed.
-/// There is no hover and no drift, because a wing that needed holding would be
-/// a jetpack with different fuel.
+/// **Hover with no vertical input; `UP` rises and `DOWN` descends, both at
+/// `WINGS_FLY_SPEED`; both held cancel to a hover.** T21.03 read *"you just fly
+/// constantly"* literally: with no input the player rose, forever. The owner
+/// played it on 2026-09-15 — *"the player keeps flying up"* — and the
+/// coordinator ruled for a hover (T21.34). Flight is still constant: gravity is
+/// off (`jetpack::gravity_scale`), so a winged player never falls, and dropping
+/// the wings is still the only off switch.
 ///
-/// Assigning rather than accumulating also makes flight cancel a fall or a
-/// knockback on the tick it starts, which is the behaviour "constant" implies —
+/// `UP` is `W` and `JUMP` is `SPACE` — separate bits. `UP`'s only other reader
+/// is `jetpack::apply_thrust`, which never runs while flying.
+///
+/// **Set, not accelerated, and not a thrust.** Assigning rather than
+/// accumulating also makes flight cancel a fall or a knockback on the tick it starts, which is the behaviour "constant" implies —
 /// and it keeps this function pure and idempotent, so `prediction.ts` replaying
 /// it forty times lands exactly where the server does.
 ///
@@ -115,10 +120,11 @@ pub fn try_jump(
 /// at twice the speed and `WINGS_FLY_SPEED` means one thing — the climb — rather
 /// than two.
 pub fn apply_flight(body: &mut Body, input: &Input) {
-    body.vel.y = if input.held(button::DOWN) {
-        WINGS_FLY_SPEED
-    } else {
-        -WINGS_FLY_SPEED
+    body.vel.y = match (input.held(button::UP), input.held(button::DOWN)) {
+        (true, false) => -WINGS_FLY_SPEED,
+        (false, true) => WINGS_FLY_SPEED,
+        // Neither, or both: hover.
+        _ => 0.0,
     };
 }
 
@@ -139,6 +145,72 @@ mod tests {
         b.grounded = false;
         b.airborne_ticks = 100;
         b
+    }
+
+    // ---- flight (T21.03, T21.34) -------------------------------------------
+
+    /// The vertical velocity `apply_flight` writes for `buttons`, from a body
+    /// already moving at `vy`.
+    fn flown(buttons: u8, vy: f32) -> Body {
+        let mut b = airborne_body();
+        b.vel = Vec2::new(37.0, vy);
+        apply_flight(&mut b, &Input::new(0, buttons, 0));
+        b
+    }
+
+    /// Hover with no vertical input, UP climbs, DOWN descends, both cancel.
+    #[test]
+    fn apply_flight_hovers_by_default_and_up_down_steer_at_the_wings_speed() {
+        for vy in [-900.0, 0.0, 300.0] {
+            assert_eq!(
+                flown(0, vy).vel.y,
+                0.0,
+                "no input did not hover (from {vy})"
+            );
+            assert_eq!(
+                flown(button::UP, vy).vel.y,
+                -WINGS_FLY_SPEED,
+                "UP did not climb"
+            );
+            assert_eq!(
+                flown(button::DOWN, vy).vel.y,
+                WINGS_FLY_SPEED,
+                "DOWN did not descend"
+            );
+            assert_eq!(
+                flown(button::UP | button::DOWN, vy).vel.y,
+                0.0,
+                "UP+DOWN did not cancel"
+            );
+            // JUMP is not UP: it must not climb, or the jump the wings refuse
+            // would come back as flight.
+            assert_eq!(flown(button::JUMP, vy).vel.y, 0.0, "JUMP climbed");
+        }
+    }
+
+    /// **Pure and idempotent**, because `prediction.ts` replays `apply_input`
+    /// over every unacknowledged input and must land where the server does.
+    ///
+    /// Two properties: applying it twice equals applying it once, and the
+    /// output depends only on the input — not on the incoming velocity. The
+    /// horizontal axis is untouched (it belongs to `apply_horizontal`).
+    #[test]
+    fn apply_flight_is_idempotent_and_ignores_the_incoming_vertical_speed() {
+        for buttons in [0, button::UP, button::DOWN, button::UP | button::DOWN] {
+            let once = flown(buttons, 123.0);
+            let mut twice = once;
+            apply_flight(&mut twice, &Input::new(0, buttons, 0));
+            assert_eq!(
+                once, twice,
+                "apply_flight is not idempotent for {buttons:#b}"
+            );
+            assert_eq!(
+                once.vel.y,
+                flown(buttons, -456.0).vel.y,
+                "the result depends on the incoming velocity for {buttons:#b}"
+            );
+            assert_eq!(once.vel.x, 37.0, "apply_flight touched the horizontal axis");
+        }
     }
 
     // ---- walking ---------------------------------------------------------
