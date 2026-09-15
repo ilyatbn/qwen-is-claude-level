@@ -28,6 +28,11 @@
  * (`meta.rs::seat_then_top_up`), and the sweep counts those; the mask says which
  * they are, and at least `MIN_CONCLUSIVE` pads must be asserted.
  *
+ * **One frame, one sky.** Each pad's four patches are separate screenshots, so the camera
+ * is snapped onto the gate and the scene frozen across them, and the day clock is pinned
+ * to daylight. Before this the check slept 600 ms behind an easing camera under a live
+ * sky, and went red once in a `--jobs 4` gate and once alone after the first fix.
+ *
  * Falsified by turning the fill off at `generate_full`'s call site: the on-ground
  * pads then have air under their ends and the pixels say so.
  */
@@ -89,6 +94,13 @@ export default async function ({ page, shot, log }) {
     })
   }
 
+  const frames = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  // Daylight, pinned, as `clouds` and `cloud-rain` pin it. The sandbox sky runs a 120 s
+  // cycle from page load, so "air" was whatever colour the sky had reached by the time a
+  // pad was photographed: measured, rock and air sat 34–108 apart in one run and 23–49 in
+  // another, and pad 2's right end read "to rock 33.1, to air 26.4" in the dim one.
+  await page.evaluate(() => window.__game.setTime(0.3 * 120))
+
   let asserted = 0
   const failures = []
   for (const pad of pads) {
@@ -98,9 +110,15 @@ export default async function ({ page, shot, log }) {
       log(`pad ${pad.id} at (${x}, ${y}): perched ${worst} px past the fill's ${reach} — reported, not asserted`)
       continue
     }
-    // Stand on the gate so the camera centres on it, then let it render.
+    // Stand on the gate, then **snap the camera onto it and hold it there**. This slept
+    // 600 ms and let the follow camera ease over: measured, alone, the camera was still
+    // travelling while the four patches were photographed one after another — 42 world px
+    // on pad 2 (478 -> 435), the pad a `--jobs 4` gate failed on ("to rock 84.3, to air
+    // 67.6"). Each patch then sampled a different frame. Snapped, baked, then frozen.
     await page.evaluate(([px, py]) => window.__game.place(px, py), [x, y - playerH / 2 - 1])
-    await page.waitForTimeout(600)
+    await page.evaluate(([px, py]) => window.__game.watch(px, py), [x, y])
+    await frames()
+    await page.waitForFunction(() => window.__game.debug().pending === 0, null, { timeout: 10_000 })
 
     // The references, chosen by the mask. Rock: the first fully solid strip under
     // the pad centre, below the outline. Air: above the arch, which is under two
@@ -117,10 +135,26 @@ export default async function ({ page, shot, log }) {
       log(`pad ${pad.id}: no clean rock or air reference in the mask — inconclusive`)
       continue
     }
-    const rock = await patch(x - STRIP / 2, rockY, STRIP, ROWS)
-    const air = await patch(x - STRIP / 2, airY, STRIP, ROWS)
-    const left = await patch(x - artW / 2 + 1, y + subjectTop, STRIP, ROWS)
-    const right = await patch(x + artW / 2 - 1 - STRIP, y + subjectTop, STRIP, ROWS)
+    // Four photographs of **one** frame: the scene is frozen across them, and the camera is
+    // read at both ends so a frame that moved anyway is reported rather than judged.
+    let rock, air, left, right, camA, camB
+    await page.evaluate(() => window.__game.freeze(true))
+    try {
+      await frames()
+      camA = await page.evaluate(() => window.__game.debug().camera)
+      rock = await patch(x - STRIP / 2, rockY, STRIP, ROWS)
+      air = await patch(x - STRIP / 2, airY, STRIP, ROWS)
+      left = await patch(x - artW / 2 + 1, y + subjectTop, STRIP, ROWS)
+      right = await patch(x + artW / 2 - 1 - STRIP, y + subjectTop, STRIP, ROWS)
+      camB = await page.evaluate(() => window.__game.debug().camera)
+    } finally {
+      await page.evaluate(() => window.__game.freeze(false))
+    }
+    const camMoved = Math.hypot(camB.x - camA.x, camB.y - camA.y)
+    if (camMoved > 0) {
+      failures.push(`pad ${pad.id} at (${x}, ${y}): the camera moved ${camMoved.toFixed(1)} world px while its patches were photographed — they are not one frame`)
+      continue
+    }
     if (!left || !right || !rock || !air) {
       log(`pad ${pad.id} at (${x}, ${y}): a patch was off screen — inconclusive`)
       continue
@@ -145,9 +179,16 @@ export default async function ({ page, shot, log }) {
     await shot(`gate-ground-pad${pad.id}`)
   }
 
+  await page.evaluate(() => {
+    window.__game.watch(null)
+    window.__game.setTime(null)
+  })
+
+  // Failures first: a pad skipped for a moving camera is not asserted, and the count
+  // alone would name the symptom ("only 0 pads") instead of the cause.
+  if (failures.length) throw new Error(failures.join('\n'))
   if (asserted < MIN_CONCLUSIVE) {
     throw new Error(`only ${asserted} pads were asserted (need ${MIN_CONCLUSIVE}) — nothing measured`)
   }
-  if (failures.length) throw new Error(failures.join('\n'))
   log(`all ${asserted} asserted pads stand on rock under both ends of their drawn base`)
 }

@@ -154,6 +154,62 @@ export async function patchRGBA(page, { x, y, w, h }) {
   }, b64)
 }
 
+/** Per-channel change above which a pixel counts as changed in `comparePhotos`' fraction. */
+export const PIXEL_MOVED = 6
+
+/** A photograph of `rect` (`{x, y, w, h}`), or of the whole frame, as base64 PNG — `comparePhotos`' input. */
+export async function photo(page, rect = null) {
+  const opts = rect ? { clip: { x: rect.x, y: rect.y, width: rect.w, height: rect.h } } : {}
+  return (await page.screenshot(opts)).toString('base64')
+}
+
+/**
+ * Compare two same-size photographs: **the fraction of pixels that changed**, and per
+ * point whether it changed by more than `thr` in some channel.
+ *
+ * `rect` limits the fraction to a box inside the photographs. `detail` gives each point's
+ * largest channel change and both pixels, so an unpainted point can say why.
+ *
+ * **Use this, not `colourDelta` of two patch means, for "painted differently"** (T21.36 in
+ * `fire-shader`, then `smoke-shader`): two pictures of the same size and colour average
+ * alike however differently they are drawn. Fire's mean read 4.0–4.7 against a floor of 4
+ * while 34 % of its band's pixels differed; smoke's read 2.8 in a gate and 20.3 alone.
+ */
+export function comparePhotos(page, a, b, { points = [], thr = PIXEL_MOVED, rect = null } = {}) {
+  return page.evaluate(
+    async ([sa, sb, pts, t, box, moveThr]) => {
+      const load = async (src) => {
+        const img = new Image()
+        img.src = `data:image/png;base64,${src}`
+        await img.decode()
+        const cv = document.createElement('canvas')
+        cv.width = img.width
+        cv.height = img.height
+        const ctx = cv.getContext('2d')
+        ctx.drawImage(img, 0, 0)
+        return { d: ctx.getImageData(0, 0, img.width, img.height).data, w: img.width, h: img.height }
+      }
+      const A = await load(sa)
+      const B = await load(sb)
+      if (A.w !== B.w || A.h !== B.h) throw new Error(`comparePhotos: ${A.w}x${A.h} against ${B.w}x${B.h}`)
+      const peak = (i) => Math.max(Math.abs(A.d[i] - B.d[i]), Math.abs(A.d[i + 1] - B.d[i + 1]), Math.abs(A.d[i + 2] - B.d[i + 2]))
+      const x0 = box ? Math.max(0, box.x) : 0
+      const y0 = box ? Math.max(0, box.y) : 0
+      const x1 = box ? Math.min(A.w, box.x + box.w) : A.w
+      const y1 = box ? Math.min(A.h, box.y + box.h) : A.h
+      let n = 0
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (peak((y * A.w + x) * 4) > moveThr) n++
+      const at = (p) => (Math.round(p.y) * A.w + Math.round(p.x)) * 4
+      return {
+        fraction: n / Math.max(1, (x1 - x0) * (y1 - y0)),
+        points: pts.map((p) => peak(at(p)) > t),
+        detail: pts.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y), peak: peak(at(p)), a: [...A.d.slice(at(p), at(p) + 3)], b: [...B.d.slice(at(p), at(p) + 3)] })),
+      }
+    },
+    [a, b, points, thr, rect, PIXEL_MOVED],
+  )
+}
+
 /** Euclidean distance between two samples' mean colours. */
 export function colourDelta(a, b) {
   return Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b)

@@ -28,7 +28,7 @@
  * scene neither moves nor removes a flame.
  */
 import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort } from './harness.mjs'
-import { samplePatch, colourDelta } from './pixels.mjs'
+import { samplePatch, colourDelta, photo, comparePhotos } from './pixels.mjs'
 
 const PORT = await freePort()
 const { fail, ok, finish } = tally('fire-shader')
@@ -50,46 +50,10 @@ const setHQ = (on) => page.evaluate((v) => window.__game.setHighQuality(v), on)
 const freeze = (on) => page.evaluate((v) => window.__game.freeze(v), on)
 const show = (on) => page.evaluate((v) => window.__game.showOrdnance(v), on)
 const frame = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
-const full = async () => (await page.screenshot()).toString('base64')
-const grab = async (r) => (await page.screenshot({ clip: { x: r.x, y: r.y, width: r.w, height: r.h } })).toString('base64')
-
-/**
- * Compare two same-size photographs: the fraction of pixels that moved, and for each
- * point whether it moved by more than `thr` in some channel.
- */
-const compare = (a, b, points = [], thr = 6, rect = null) =>
-  page.evaluate(
-    async ([sa, sb, pts, t, box]) => {
-      const load = async (src) => {
-        const img = new Image()
-        img.src = `data:image/png;base64,${src}`
-        await img.decode()
-        const cv = document.createElement('canvas')
-        cv.width = img.width
-        cv.height = img.height
-        const ctx = cv.getContext('2d')
-        ctx.drawImage(img, 0, 0)
-        return { d: ctx.getImageData(0, 0, img.width, img.height).data, w: img.width }
-      }
-      const A = await load(sa)
-      const B = await load(sb)
-      const moved = (i, th) =>
-        Math.abs(A.d[i] - B.d[i]) > th || Math.abs(A.d[i + 1] - B.d[i + 1]) > th || Math.abs(A.d[i + 2] - B.d[i + 2]) > th
-      // The whole image, or only `box` inside it (T21.36: the fire band of a full frame).
-      const H = A.d.length / 4 / A.w
-      const x0 = box ? box.x : 0
-      const y0 = box ? box.y : 0
-      const x1 = box ? Math.min(A.w, box.x + box.w) : A.w
-      const y1 = box ? Math.min(H, box.y + box.h) : H
-      let n = 0
-      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (moved((y * A.w + x) * 4, 6)) n++
-      return {
-        fraction: n / Math.max(1, (x1 - x0) * (y1 - y0)),
-        points: pts.map((p) => moved((Math.round(p.y) * A.w + Math.round(p.x)) * 4, t)),
-      }
-    },
-    [a, b, points, thr, rect],
-  )
+const full = () => photo(page)
+const grab = (r) => photo(page, r)
+/** `pixels.mjs::comparePhotos` — moved there so `smoke-shader` shares it rather than copying it. */
+const compare = (a, b, points = [], thr = VISIBLE, rect = null) => comparePhotos(page, a, b, { points, thr, rect })
 
 await selectWeapon(page, 'molotov')
 await standStill(page)

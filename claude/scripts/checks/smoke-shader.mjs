@@ -29,7 +29,7 @@
  *   painted quads only while High Quality is on.
  */
 import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort } from './harness.mjs'
-import { samplePatch, colourDelta } from './pixels.mjs'
+import { samplePatch, colourDelta, photo, comparePhotos } from './pixels.mjs'
 
 const PORT = await freePort()
 const { fail, ok, finish } = tally('smoke-shader')
@@ -46,32 +46,8 @@ const k = await page.evaluate(() => window.__game.constants())
 const setHQ = (on) => page.evaluate((v) => window.__game.setHighQuality(v), on)
 const freeze = (on) => page.evaluate((v) => window.__game.freeze(v), on)
 const frame = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
-const grab = async (r) => (await page.screenshot({ clip: { x: r.x, y: r.y, width: r.w, height: r.h } })).toString('base64')
-/** Fraction of pixels differing by more than 6 in any channel — `beams-shader`'s instrument. */
-const changedFraction = (a, b) =>
-  page.evaluate(
-    async ([sa, sb]) => {
-      const load = async (src) => {
-        const img = new Image()
-        img.src = `data:image/png;base64,${src}`
-        await img.decode()
-        const cv = document.createElement('canvas')
-        cv.width = img.width
-        cv.height = img.height
-        const ctx = cv.getContext('2d')
-        ctx.drawImage(img, 0, 0)
-        return ctx.getImageData(0, 0, img.width, img.height).data
-      }
-      const A = await load(sa)
-      const B = await load(sb)
-      let n = 0
-      for (let i = 0; i < A.length; i += 4) {
-        if (Math.abs(A[i] - B[i]) > 6 || Math.abs(A[i + 1] - B[i + 1]) > 6 || Math.abs(A[i + 2] - B[i + 2]) > 6) n++
-      }
-      return n / (A.length / 4)
-    },
-    [a, b],
-  )
+/** Fraction of pixels differing by more than `PIXEL_MOVED` in any channel (`pixels.mjs::comparePhotos`). */
+const changedFraction = async (a, b, rect = null) => (await comparePhotos(page, a, b, { rect })).fraction
 
 await selectWeapon(page, 'smoke')
 await standStill(page)
@@ -152,6 +128,7 @@ if (narrated > 0) {
   if (sx < P || sx > 1280 - P || sy < P || sy > 720 - P) fail(`the cloud is off camera at ${sx.toFixed(0)},${sy.toFixed(0)}`)
   if (far.dist < reach + P) fail(`no control patch clears the cloud (${far.dist.toFixed(0)} px against ${reach.toFixed(0)})`)
 
+  const offFrame = await photo(page)
   const offBand = await samplePatch(page, band)
   const offCtrl = await samplePatch(page, ctrl)
   const offDrawn = (await dbg()).smokeShadersDrawn
@@ -160,12 +137,14 @@ if (narrated > 0) {
   const on = await setHQ(true)
   await frame()
   const onDrawn = (await dbg()).smokeShadersDrawn
+  const onFrame = await photo(page)
   const onBand = await samplePatch(page, band)
   const onCtrl = await samplePatch(page, ctrl)
   await shot('smoke-shader-on')
 
   const back = await setHQ(false)
   await frame()
+  const backFrame = await photo(page)
   const backBand = await samplePatch(page, band)
   const backCtrl = await samplePatch(page, ctrl)
 
@@ -182,9 +161,21 @@ if (narrated > 0) {
   else ok(`both ends: 0 quads with it off, ${onDrawn} with it on, over the same cloud`)
   if (ctrlMoved > 1) fail(`the control patch moved ${ctrlMoved.toFixed(1)} while only the setting changed`)
   else ok(`control: the patch outside the cloud did not move (${ctrlMoved.toFixed(1)})`)
-  if (!(moved > Math.max(4, ctrlMoved * 3))) {
-    fail(`flipping High Quality moved the cloud patch by only ${moved.toFixed(1)} — the shader is not what is drawn`)
-  } else ok(`the same cloud is painted differently with High Quality on (${moved.toFixed(1)})`)
+  // **Pixels changed inside the band, not the band's mean colour** — `fire-shader`'s T21.36
+  // instrument. The mean read 2.8 against a floor of 4 in a `--jobs 4` gate and 19.7 alone
+  // straight after, over the same cloud: a grey wash and a grey shader cloud average alike
+  // however differently they are drawn. The control is the same metric between the flat
+  // frame and the flat frame restored.
+  const rearranged = await changedFraction(offFrame, onFrame, band)
+  const restoreNoise = await changedFraction(offFrame, backFrame, band)
+  const minRearranged = Math.max(0.05, restoreNoise * 3)
+  console.log(
+    `  cloud band: ${(rearranged * 100).toFixed(1)}% of pixels differ flat vs painted, ` +
+      `${(restoreNoise * 100).toFixed(1)}% flat vs flat restored (floor ${(minRearranged * 100).toFixed(1)}%); band mean moved ${moved.toFixed(1)}`,
+  )
+  if (!(rearranged > minRearranged)) {
+    fail(`flipping High Quality changed only ${(rearranged * 100).toFixed(1)}% of the cloud band — the shader is not what is drawn`)
+  } else ok(`the same cloud is painted differently with High Quality on (${(rearranged * 100).toFixed(1)}% of the band)`)
   if (back.shaderSmoke !== false || restored > 1) {
     fail(`turning High Quality off did not restore the flat cloud: ${restored.toFixed(1)} from the original`)
   } else ok(`off again restores the flat cloud exactly (${restored.toFixed(1)})`)
@@ -211,9 +202,9 @@ if (narrated > 0) {
   const pair = async (hq) => {
     await setHQ(hq)
     await frame()
-    const a = await grab(band)
+    const a = await photo(page, band)
     await sleep(300)
-    const b = await grab(band)
+    const b = await photo(page, band)
     return changedFraction(a, b)
   }
   const still = await pair(false)
