@@ -742,6 +742,8 @@ export class GameScene extends Phaser.Scene {
       const p = asRecord(raw)
       const before = this.phase
       this.phase = String(p['phase'] ?? 'lobby') as Phase
+      // T21.30: the mirror applies the server's input rule for this phase.
+      this.core.setPhase(this.phase)
       // **Back to the lobby means back to the title** (T21.32 item 1, `docs/72` §C3:
       // "If it does not [carry], the client returns to the title"). The server
       // said nothing here until T21.32, so this scene held "Round over" forever.
@@ -1333,6 +1335,8 @@ export class GameScene extends Phaser.Scene {
     this.roundTime = w.roundTime
     this.serverRoundTime = w.roundTime
     this.phase = w.phase as Phase
+    // T21.30: and the mirror is told, for the same reason as in `round_state`.
+    this.core.setPhase(this.phase)
     // `welcome` is the only place a client learns the phase it *joined* in:
     // `round_state` is broadcast on transitions and once a second during
     // `Playing` (`docs/41` §3), so the transition into `Warmup` happens before

@@ -122,6 +122,12 @@ pub const HEADER_BYTES: usize = 45;
 /// 0.075 → 0.025. No layout change and no new tag — the silent divergence case,
 /// exactly as 6 was for the previous retune: a v7 recording in which anybody took
 /// a fall would load, run, and disagree at the first state hash after the landing.
+///
+/// **T21.30 shares it — one bump, two breaks, and the note names both.** In
+/// `Ended` the world now drops queued input and integrates every alive player
+/// on a neutral input, and `fire`/`use_item`/`drop_item` refuse. A v7 recording
+/// of any round that reached `Ended` with input still arriving would diverge at
+/// the first hash inside the results window.
 pub const REPLAY_VERSION: u16 = 8;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.

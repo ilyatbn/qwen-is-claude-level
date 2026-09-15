@@ -151,6 +151,10 @@ export const CHECKS = [
   // §C3: the round ends and you are told. Standalone — it drives a real phase
   // machine on a shortened ROUND_SECONDS, and there is no sandbox path to `Ended`.
   { name: 'round-end', file: 'scripts/checks/round-end.mjs', standalone: true },
+  // T21.30: after "Round over", a held direction leaves the rendered local player
+  // where it is; the same hold during `Playing` is the control. Standalone for
+  // round-end's reason — `Ended` exists only on a real phase machine.
+  { name: 'round-over-frozen', file: 'scripts/checks/round-over-frozen.mjs', standalone: true },
   // `ownStack`: it starts its own server, vite and browser by hand rather than
   // through `startStack`, so the shared-stack variables would reach nothing.
   { name: 'lobby-start', file: 'scripts/checks/lobby-start.mjs', standalone: true, ownStack: true },

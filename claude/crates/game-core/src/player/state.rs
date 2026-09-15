@@ -85,6 +85,8 @@ pub enum UseError {
     WrongKind,
     OnCooldown,
     NoAmmo,
+    /// The round is over (T21.30, `RoundPhase::accepts_input`).
+    RoundOver,
 }
 
 #[derive(Clone, Debug)]

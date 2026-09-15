@@ -76,6 +76,24 @@ fn meta_digest(seed: u64, scale: MapScale, generator: MapGenerator) -> String {
     }
     h.update(&(m.surface_points.len() as u32).to_le_bytes());
     h.update(&(m.largest_component.len() as u32).to_le_bytes());
+    // **T21.28: the pads, the gun platforms and the finished mask.** Everything
+    // above is terrain or chosen before the pads, and the mask column of the table
+    // is `generate_terrain_with`'s — the mask *before* pass 8. So until this block
+    // a change that moved every pad, every platform, or anything pass 8 stamps
+    // into the rock left the table green; measured by planting a 1 px pad offset,
+    // which passed. Pads and platforms are gameplay (where you respawn, what you
+    // mount) and the finished mask is what the client collides with.
+    h.update(&(m.teleport_pads.len() as u32).to_le_bytes());
+    for p in &m.teleport_pads {
+        h.update(&p.pos.x.to_le_bytes());
+        h.update(&p.pos.y.to_le_bytes());
+    }
+    h.update(&(m.gun_platforms.len() as u32).to_le_bytes());
+    for g in &m.gun_platforms {
+        h.update(&g.pos.x.to_le_bytes());
+        h.update(&g.pos.y.to_le_bytes());
+    }
+    h.update(map.mask.hash_hex().as_bytes());
     h.finalize().to_hex()[..16].to_string()
 }
 

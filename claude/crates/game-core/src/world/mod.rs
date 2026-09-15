@@ -66,6 +66,36 @@ pub enum RoundPhase {
 }
 
 impl RoundPhase {
+    /// **Does a player's input do anything in this phase?** (T21.30)
+    ///
+    /// Reported from play: *"i can still move my character after the 'round
+    /// over' is displayed."* The coordinator's ruling: in `Ended`, input does
+    /// nothing — no movement, no firing, no digging, no item use — while bodies
+    /// still settle under gravity. `Warmup` is unchanged.
+    ///
+    /// **One rule, read by both sides**: `World::apply_inputs` and
+    /// `World::inventory_actor` on the server, and the wasm mirror's
+    /// `GameCore::apply_input` on the client, which learns the phase off the
+    /// same `round_state` the results screen does. A flag each side kept would
+    /// be two answers that can disagree, and a disagreement here is a body that
+    /// walks on screen and snaps back.
+    pub fn accepts_input(self) -> bool {
+        self != RoundPhase::Ended
+    }
+
+    /// The inverse of `as_str`, for the client mirror, which receives the phase
+    /// as the wire's string.
+    pub fn parse(s: &str) -> Option<RoundPhase> {
+        [
+            RoundPhase::Lobby,
+            RoundPhase::Warmup,
+            RoundPhase::Playing,
+            RoundPhase::Ended,
+        ]
+        .into_iter()
+        .find(|p| p.as_str() == s)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             RoundPhase::Lobby => "lobby",
@@ -1489,6 +1519,33 @@ impl World {
             }
         }
         self.pending = backlog;
+
+        // **T21.30: once the round is over, input does nothing — but gravity
+        // does.** Everything queued is dropped rather than kept, or it would be
+        // applied the moment the next round starts, and every alive player gets
+        // a **neutral** tick whether their client sent anything or not: the
+        // results screen stops the client sending, and a player who is not sent
+        // an input is not integrated at all, so without this a player mid-air
+        // when the round ended would hang there for the whole results window.
+        //
+        // Through the same loop below, not a second integration path, so the
+        // mount rule, the fall and the aim are treated exactly as on any tick.
+        if !self.phase.accepts_input() {
+            self.pending.clear();
+            this_tick = self
+                .players
+                .iter()
+                .filter(|p| p.alive)
+                .map(|p| {
+                    let seq = self
+                        .prev_input
+                        .iter()
+                        .find(|(i, _)| *i == p.id)
+                        .map_or(0, |(_, v)| v.seq);
+                    (p.id, Input::new(seq, 0, p.aim))
+                })
+                .collect();
+        }
 
         // Collected rather than applied in the loop: `apply_damage_log` takes
         // `&mut self` and the loop holds a `&mut` borrow of one player.
@@ -3161,6 +3218,12 @@ impl World {
 
     /// Fire the selected weapon. Validation lives in `PlayerState::try_fire`.
     pub fn fire(&mut self, id: PlayerId, now: f32) -> Result<(), UseError> {
+        // T21.30. Asked here as well as in `inventory_actor` because the
+        // platform branch below does not go through it — the same rule, read
+        // from the same function, not a second copy of it.
+        if !self.phase.accepts_input() {
+            return Err(UseError::RoundOver);
+        }
         // **A mounted player fires the platform, not their bag** (T21.11C).
         //
         // Routed here rather than at the caller because `fire` is the one verb
@@ -3621,6 +3684,12 @@ impl World {
     /// copies of one invariant, which is precisely the arrangement
     /// `CLAUDE.md` names: *share the guard, or share the function*.
     fn inventory_actor(&mut self, id: PlayerId) -> Result<&mut PlayerState, UseError> {
+        // T21.30: nothing in the bag is reachable once the round is over. Here,
+        // because every slot verb — use, heal, battery, drop, select, drag and
+        // the grenade throw — already comes through this one function.
+        if !self.phase.accepts_input() {
+            return Err(UseError::RoundOver);
+        }
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
             return Err(UseError::Dead);
         };
@@ -4023,6 +4092,187 @@ pub fn wield(world: &mut World, id: PlayerId, item: ItemId) {
         })
         .unwrap_or_else(|| panic!("player {id} is not carrying item {item}"));
     world.select_slot(id, slot);
+}
+
+/// **T21.30 — nobody acts once the round is over.** Reported from play on
+/// 2026-09-15: *"i can still move my character after the 'round over' is
+/// displayed."*
+///
+/// Every test here runs the same thing twice, in `Playing` and in `Ended`, and
+/// the `Playing` half is the control: an "input does nothing" assertion is
+/// satisfied by a player who could never move, fire or use anything at all.
+#[cfg(test)]
+mod round_over_input {
+    use super::*;
+    use crate::constants::{MapScale, PLAYER_H, PLAYER_W, SIM_DT};
+    use crate::items::registry::{max_stack, BAZOOKA, MEDKIT};
+    use crate::player::{button, Input};
+
+    /// One player carrying a bazooka (in hand) and a medkit, settled on the
+    /// ground in `Playing`, then moved to `phase`.
+    fn settled_in(phase: RoundPhase) -> World {
+        let mut w = World::for_test(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        give(&mut w, 0, BAZOOKA, max_stack(BAZOOKA));
+        give(&mut w, 0, MEDKIT, 1);
+        wield(&mut w, 0, BAZOOKA);
+        for seq in 0..120u32 {
+            w.queue_input(0, Input::new(seq + 1, 0, 0));
+            w.step(SIM_DT);
+        }
+        assert!(
+            w.player(0).expect("ana").body.grounded,
+            "the fixture never landed"
+        );
+        w.set_phase(phase);
+        w.drain_events();
+        w
+    }
+
+    #[test]
+    fn held_input_moves_nobody_once_the_round_is_over() {
+        let mut moved = Vec::new();
+        for phase in [RoundPhase::Playing, RoundPhase::Ended] {
+            let mut w = settled_in(phase);
+            let start = w.player(0).expect("ana").body.pos;
+            for i in 0..60u32 {
+                w.queue_input(0, Input::new(1000 + i, button::RIGHT | button::JUMP, 0));
+                w.step(SIM_DT);
+            }
+            let end = w.player(0).expect("ana").body.pos;
+            moved.push(((end.x - start.x).abs(), (end.y - start.y).abs()));
+        }
+        let (playing, ended) = (moved[0], moved[1]);
+        assert!(
+            playing.0 > PLAYER_W,
+            "the control: a second of RIGHT+JUMP in Playing moved {:.1} px",
+            playing.0
+        );
+        assert!(
+            ended.0 < 0.01 && ended.1 < 0.01,
+            "a second of RIGHT+JUMP after the round ended moved the player {ended:?}"
+        );
+    }
+
+    /// Fire, dig, use, drop, select, rearrange — driven through one list, the
+    /// way `mounting_puts_every_slotless_action_out_of_reach` does it, so the
+    /// next verb joins by being added here. Digging is a shot: every weapon
+    /// carves (`weapons::defs::every_weapon_digs`), so a fired rocket aimed at
+    /// the player's own feet is the dig.
+    #[test]
+    fn nothing_fires_digs_or_is_used_once_the_round_is_over() {
+        type Verb = (&'static str, fn(&mut World) -> bool);
+        let verbs: &[Verb] = &[
+            ("fire (and the dig it makes)", |w| {
+                if let Some(p) = w.player_mut(0) {
+                    p.aim = crate::math::quantize_angle(std::f32::consts::FRAC_PI_2);
+                }
+                let before = w.projectiles.len();
+                let now = w.round_time;
+                let fired = w.fire(0, now).is_ok() && w.projectiles.len() > before;
+                let mut dug = false;
+                for i in 0..90u32 {
+                    // Aim held at the feet, and a neutral body, so the rocket
+                    // lands where it was pointed.
+                    w.queue_input(
+                        0,
+                        Input::new(
+                            2000 + i,
+                            0,
+                            crate::math::quantize_angle(std::f32::consts::FRAC_PI_2),
+                        ),
+                    );
+                    w.step(SIM_DT);
+                    dug |= w.drain_events().iter().any(|e| {
+                        matches!(
+                            e,
+                            GameEvent::Carve {
+                                kind: CarveKind::Weapon,
+                                ..
+                            }
+                        )
+                    });
+                }
+                fired && dug
+            }),
+            ("use_item", |w| {
+                if let Some(p) = w.player_mut(0) {
+                    p.health = crate::constants::BASE_HEALTH / 2.0;
+                }
+                let slot = w
+                    .player(0)
+                    .and_then(|p| p.inventory.iter().find(|(_, s)| s.item == MEDKIT))
+                    .map(|(i, _)| i)
+                    .expect("the fixture gave a medkit");
+                let now = w.round_time;
+                w.use_item(0, slot, now).is_ok()
+            }),
+            ("use_heal (Q)", |w| {
+                // One heal to spend: a player spawns with none.
+                if let Some(p) = w.player_mut(0) {
+                    p.health = crate::constants::BASE_HEALTH / 2.0;
+                    p.heals = 1;
+                }
+                w.use_heal(0).is_ok()
+            }),
+            ("drop_item", |w| {
+                let slot = w
+                    .player(0)
+                    .and_then(|p| p.inventory.iter().find(|(_, s)| s.item == MEDKIT))
+                    .map(|(i, _)| i)
+                    .expect("the fixture gave a medkit");
+                w.drop_item(0, slot)
+            }),
+            ("select_slot", |w| {
+                let before = w.player(0).expect("ana").inventory.selected();
+                let want = if before == 0 { 1 } else { 0 };
+                w.select_slot(0, want);
+                w.player(0).expect("ana").inventory.selected() == want
+            }),
+        ];
+        for (name, verb) in verbs {
+            let mut playing = settled_in(RoundPhase::Playing);
+            assert!(
+                verb(&mut playing),
+                "the control: {name} did nothing in Playing"
+            );
+            let mut ended = settled_in(RoundPhase::Ended);
+            assert!(
+                !verb(&mut ended),
+                "{name} still worked after the round ended"
+            );
+        }
+    }
+
+    /// The ruling's other half: input stops, gravity does not. A player in the
+    /// air when the round ends lands — **with nothing queued**, which is what a
+    /// client showing the results screen sends.
+    #[test]
+    fn a_player_airborne_when_the_round_ends_still_lands() {
+        let mut w = settled_in(RoundPhase::Playing);
+        if let Some(p) = w.player_mut(0) {
+            p.body.pos.y -= PLAYER_H * 3.0;
+            p.body.vel = Vec2::ZERO;
+            p.body.grounded = false;
+        }
+        w.set_phase(RoundPhase::Ended);
+        let start_y = w.player(0).expect("ana").body.pos.y;
+        for _ in 0..240 {
+            w.step(SIM_DT);
+            if w.player(0).expect("ana").body.grounded {
+                break;
+            }
+        }
+        let p = w.player(0).expect("ana");
+        assert!(
+            p.body.grounded && p.body.pos.y > start_y + PLAYER_H,
+            "a player three heights up when the round ended is still at y {:.1} \
+             (started {start_y:.1}), grounded {}",
+            p.body.pos.y,
+            p.body.grounded
+        );
+    }
 }
 
 #[cfg(test)]

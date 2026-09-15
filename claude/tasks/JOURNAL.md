@@ -6283,4 +6283,13 @@ against the report-time rate: red at 0.075 ("costs 6.00 … a third of that is 2
 Booted floor became a ratio (≥ ⅓ of unbooted deepest; absolute 10 hp failed to compile at 3.88) — crossing 3.12, planted 3.13 red / 3.11 ok.
 Headroom: unbooted deepest 10.5 vs the 10.0 floor — the next cut is a compile error, by design. `REPLAY_VERSION` 7 → 8.
 `--changed` #1 106 s red: checksum mask test (green alone, load 13). #2 325 s: crates/typecheck green, vitest RPC
-timeout backdrop-real-v1-medium (green alone 80 s, load 21). Browser stage not reached — folded into T21.30's `--changed`.
+timeout backdrop-real-v1-medium (green alone 80 s, load 21). Browser stage skipped at the coordinator's ruling: `death` run by name, green;
+the full browser pass is deferred to the coordinator's end-of-batch gate.
+
+## T21.30 — nobody moves once the round is over
+`RoundPhase::accepts_input` (false in `Ended`) read by `apply_inputs` (drop queue, neutral tick for every alive player so bodies settle),
+`inventory_actor` + `fire` (`UseError::RoundOver`) and the wasm mirror's `apply_input` (phase from `round_state`/`welcome`).
+At HEAD: fire/dig/use all worked in `Ended`, an airborne player hung in the sky, and `round-over-frozen` showed 131 px of walking.
+After: `round_over_input` 3/3, wasm transition test, `round-over-frozen` green (control 37.4 px, ended 0.00 px). Four falsifications red.
+Checks: game-core 970, game-wasm 24, game-server green except integration inventory-count (green alone, load 39), clippy, fmt, tsc,
+vitest core+prediction 28/28, verify-repo. No `--changed` wall time: browser stage deferred to the coordinator's end-of-batch gate.
