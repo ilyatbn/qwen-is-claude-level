@@ -2440,7 +2440,7 @@ export class GameScene extends Phaser.Scene {
     // §C8. Driven from the same server-anchored deadline the strip's clock uses,
     // not from a local stopwatch: §B4 made the death countdown server-driven
     // because a stopwatch drifts, and a round timer drifts the same way.
-    this.topHud?.update(secondsLeft, this.roundTime, C().TIMER_WARN_SECONDS)
+    this.topHud?.update(this.phase, secondsLeft, this.roundTime, C().TIMER_WARN_SECONDS)
 
     // §C8's cluster. `fuelShown` is last frame's fuel, which is what makes the
     // refill delay derivable from two samples rather than from a flag the client

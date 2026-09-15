@@ -95,8 +95,18 @@ export type LobbyIntent =
  * the handover, so they keep their own path. Anything that is purely a current
  * value belongs here, where the next one is a one-line addition rather than a
  * fourth thing to remember.
+ *
+ * **`round_state` is the next one, for the same reason, and it was** (T21.32 item 4). Match
+ * start sends `map_init` and then, on the same tick, the `round_state` announcing
+ * `Warmup` — and `Warmup` gets no periodic rebroadcast (`round.rs`). So it too landed while
+ * `GameScene.create()` was awaiting its asset loader, and the client kept the phase
+ * `welcome` had told it, `lobby`, for the **whole warmup**: "Waiting for players" and a
+ * `0:00` timer until the first `Playing` rebroadcast. Measured through the menu at 1173c70:
+ * five samples of `{"phase":"lobby","timer":"0:00"}`, then `playing`. It is a current
+ * value — the phase *now* and when it ends — so the newest one is the one a late
+ * subscriber needs.
  */
-const LATCHED_EVENTS = new Set(['inventory'])
+const LATCHED_EVENTS = new Set(['inventory', 'round_state'])
 
 export class Connection {
   private socket: SocketLike | null = null

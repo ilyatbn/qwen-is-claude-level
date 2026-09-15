@@ -1,7 +1,14 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { bannerText, clockText, effectLabel, isTimerWarning, type EffectRun } from './hud'
+import {
+  bannerText,
+  clockText,
+  effectLabel,
+  isTimerWarning,
+  roundTimerText,
+  type EffectRun,
+} from './hud'
 import { C, Core } from '../core'
 
 // `C()` is the shipped constant table, read out of WASM. Pinning to it rather
@@ -29,6 +36,20 @@ describe('clockText', () => {
   it('never renders a negative clock', () => {
     // The deadline is the server's and the local frame can run past it.
     expect(clockText(-3)).toBe('0:00')
+  })
+})
+
+describe('roundTimerText', () => {
+  it('is blank in the lobby, where no round timer exists (docs/74 §E1)', () => {
+    // The lobby's `time_left` reaches the client as 0, which is what drew `0:00`.
+    expect(roundTimerText('lobby', 0)).toBe('')
+  })
+
+  it('counts in every phase a match has', () => {
+    // The control: a function that returned '' everywhere would pass the test above.
+    expect(roundTimerText('warmup', 9.5)).toBe('0:09')
+    expect(roundTimerText('playing', 125)).toBe('2:05')
+    expect(roundTimerText('ended', 20)).toBe('0:20')
   })
 })
 
