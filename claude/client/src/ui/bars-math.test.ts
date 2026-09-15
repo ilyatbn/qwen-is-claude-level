@@ -7,6 +7,7 @@ import {
   energyBar,
   healthBar,
   inRefillDelay,
+  JET_REFUSED_LABEL,
   jetpackBar,
   mix,
 } from './bars-math'
@@ -116,6 +117,22 @@ describe('jetpackBar', () => {
     // ...and the *fill* is the same, so what changed is the state and not the
     // number: a bar that also moved would be indistinguishable from refilling.
     expect(waiting.fill).toBe(rising.fill)
+  })
+
+  /**
+   * T21.34: while unicorn wings refuse the jetpack, the bar is empty, grey and
+   * reads the dash. The control is the same full tank without wings, which
+   * must still read full — or this passes against a bar that is always empty.
+   */
+  it('is empty and unavailable while wings refuse the jetpack, and full again without', () => {
+    const refused = jetpackBar(FUEL, FUEL, false, true)
+    const normal = jetpackBar(FUEL, FUEL, false, false)
+    expect(refused.fill).toBe(0)
+    expect(refused.label).toBe(JET_REFUSED_LABEL)
+    expect(refused.colour).not.toBe(normal.colour)
+    expect(refused.colour).not.toBe(jetpackBar(1, FUEL, true).colour)
+    expect(normal.fill).toBe(1)
+    expect(normal.label).toBe(FUEL.toFixed(1))
   })
 })
 

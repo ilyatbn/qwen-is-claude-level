@@ -8808,27 +8808,35 @@ mod unicorn_wings {
 
     /// The headline claim, with the control that makes it mean something.
     ///
-    /// *"When in the inventory you just fly constantly"* — so the assertion is
-    /// that a player with **no input at all** rises, and keeps rising. The
-    /// control is the same fixture without the wings, which must fall: without
-    /// it, "y decreased" is satisfied by a map whose ceiling is above the
-    /// spawn, and "flight" would be indistinguishable from a body that never
-    /// moved.
+    /// **T21.34 replaced T21.03's "rises without input and keeps rising"**,
+    /// which was the bug the owner reported (*"the player keeps flying up"*).
+    /// The rule now: a winged player with **no input at all** hovers — neither
+    /// rising nor falling, for as long as they hold still. The control is the
+    /// same fixture without the wings, which must fall: without it, "y did not
+    /// change" is satisfied by a body resting on something.
     #[test]
-    fn wings_rise_with_no_input_and_the_same_player_without_them_falls() {
-        // y grows downward, so rising is a *decrease*.
+    fn wings_hover_with_no_input_and_the_same_player_without_them_falls() {
         let mut w = world();
         give(&mut w, 0, UNICORN_WINGS, 1);
         let start = aloft(&mut w);
         let after = fly(&mut w, 0, 30);
+        let p = w.player(0).expect("ana");
         assert!(
-            after < start,
-            "a winged player did not rise: {start} -> {after}"
+            !p.body.grounded,
+            "the fixture landed, so a hover proves nothing"
+        );
+        assert_eq!(
+            after, start,
+            "a winged player with no input moved vertically: {start} -> {after}"
+        );
+        assert_eq!(
+            p.body.vel.y, 0.0,
+            "a hovering player carries vertical speed"
         );
 
-        // And keeps rising — one tick of lift could be a fixture artefact.
-        let later = fly(&mut w, 0, 30);
-        assert!(later < after, "the climb stopped: {after} -> {later}");
+        // And keeps hovering — one still tick could be a fixture artefact.
+        let later = fly(&mut w, 0, 60);
+        assert_eq!(later, start, "the hover drifted: {start} -> {later}");
 
         // The control.
         let mut w = world();
@@ -8840,26 +8848,43 @@ mod unicorn_wings {
         );
     }
 
-    /// The climb is `WINGS_FLY_SPEED`, and `DOWN` descends at the same rate.
+    /// `UP` climbs and `DOWN` descends, both at `WINGS_FLY_SPEED`, and both
+    /// held together cancel to a hover.
     ///
     /// Pinned to the constant, which is the one knob the brief expects to be
-    /// turned — *"might have to reduce it to make it more fair"*.
+    /// turned — *"might have to reduce it to make it more fair"*. The positions
+    /// are asserted as well as the velocities, so a `vel.y` that is written and
+    /// then discarded before `integrate` cannot pass.
     #[test]
-    fn the_climb_is_the_wings_own_speed_and_down_descends_at_it() {
+    fn up_climbs_and_down_descends_at_the_wings_own_speed() {
+        // y grows downward, so rising is a *decrease*.
         let mut w = world();
         give(&mut w, 0, UNICORN_WINGS, 1);
-        aloft(&mut w);
-        fly(&mut w, 0, 5);
+        let start = aloft(&mut w);
+        let up = fly(&mut w, button::UP, 5);
         assert_eq!(
             w.player(0).expect("ana").body.vel.y,
             -WINGS_FLY_SPEED,
-            "the climb is not the wings' own speed"
+            "holding UP did not climb at the wings' own speed"
         );
-        fly(&mut w, button::DOWN, 5);
+        assert!(up < start, "holding UP did not rise: {start} -> {up}");
+
+        // **As many ticks down as up**, so the body ends back at `aloft`'s open
+        // air. Ten ticks measured `vel.y == 0.0` here: the extra five carried
+        // the body below its start and onto terrain, and a landing zeroes the
+        // velocity this asserts on.
+        let down = fly(&mut w, button::DOWN, 5);
         assert_eq!(
             w.player(0).expect("ana").body.vel.y,
             WINGS_FLY_SPEED,
             "holding DOWN did not descend at the wings' own speed"
+        );
+        assert!(down > up, "holding DOWN did not descend: {up} -> {down}");
+
+        let both = fly(&mut w, button::UP | button::DOWN, 10);
+        assert_eq!(
+            both, down,
+            "UP and DOWN together did not cancel to a hover: {down} -> {both}"
         );
     }
 
@@ -8881,9 +8906,10 @@ mod unicorn_wings {
             !p.jetpack.active,
             "the jetpack engaged while the wings were held"
         );
+        // Hovering: JUMP is not UP, so holding it must leave the hover alone.
         assert_eq!(
-            p.body.vel.y, -WINGS_FLY_SPEED,
-            "holding JUMP changed the climb, so something other than the wings \
+            p.body.vel.y, 0.0,
+            "holding JUMP changed the hover, so something other than the wings \
              moved this player"
         );
         assert_eq!(
@@ -8918,8 +8944,12 @@ mod unicorn_wings {
         let mut w = world();
         give(&mut w, 0, UNICORN_WINGS, 1);
         let start = aloft(&mut w);
-        let flying = fly(&mut w, 0, 30);
+        let flying = fly(&mut w, button::UP, 30);
         assert!(flying < start, "the fixture never got off the ground");
+        // Still flying with no input: the hover holds before the drop, so the
+        // fall after it is the drop's doing.
+        let held = fly(&mut w, 0, 30);
+        assert_eq!(held, flying, "the hover did not hold before the drop");
 
         let slot = wings_slot(&w);
         assert!(w.drop_item(0, slot), "the wings would not drop");
@@ -8956,8 +8986,9 @@ mod unicorn_wings {
             "the fixture reached the top of the world, so vel.y says nothing"
         );
         assert_eq!(
-            p.body.vel.y, -WINGS_FLY_SPEED,
-            "the boots' jump got through while the wings were held"
+            p.body.vel.y, 0.0,
+            "the boots' jump got through while the wings were held (no UP, so \
+             the wings hover)"
         );
         assert!(
             p.body.vel.x > crate::constants::WALK_SPEED,

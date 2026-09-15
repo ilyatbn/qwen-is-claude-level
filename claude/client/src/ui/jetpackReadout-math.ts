@@ -38,6 +38,26 @@ export function fuelText(fuel: number, maxFuel: number): string {
 }
 
 /**
+ * The whole `#jetpack-readout` line.
+ *
+ * **T21.34: `JET —` while unicorn wings are held.** The jetpack is refused then
+ * (`apply_input`), and the owner's screenshot showed `JET 5.0` beside a flying
+ * player — a number promising fuel nobody can spend. Shown as unavailable rather
+ * than hidden, so the bottom-left cluster keeps its shape; the dash is the same
+ * one the jet bar shows, so the two cannot tell different stories.
+ */
+export function jetReadoutText(
+  fuel: number,
+  maxFuel: number,
+  trend: 'draining' | 'refilling' | 'held',
+  refused: boolean,
+): string {
+  if (refused) return 'JET —'
+  const mark = trend === 'draining' ? '▼' : trend === 'refilling' ? '▲' : '·'
+  return `JET ${fuelText(fuel, maxFuel)} ${mark}`
+}
+
+/**
  * Is the tank refilling, draining, or waiting out `JETPACK_REFILL_DELAY`?
  *
  * Derived from two samples rather than tracked as a fourth flag (CLAUDE.md:

@@ -107,7 +107,13 @@ export function energyBar(battery: number, max: number): BarView {
  * delay gets its own state here: the bar dims and the label says so. Without it
  * the readout looks broken for half a second after every burst.
  */
-export function jetpackBar(fuel: number, max: number, refilling: boolean): BarView {
+export function jetpackBar(fuel: number, max: number, refilling: boolean, refused = false): BarView {
+  // T21.34. **Unavailable, not hidden, while unicorn wings are held** — the
+  // jetpack is refused then, and a full yellow `5.0` told the owner otherwise.
+  // Empty and grey rather than removed, so the cluster does not reflow the frame
+  // the wings are picked up; the refill delay above already uses "dimmed" for
+  // "not usable right now", and this is the same idea taken to its end.
+  if (refused) return { fill: 0, over: 0, colour: JET_REFUSED, label: JET_REFUSED_LABEL }
   const f = Math.min(max, Math.max(0, fuel))
   return {
     fill: max <= 0 ? 0 : f / max,
@@ -116,6 +122,10 @@ export function jetpackBar(fuel: number, max: number, refilling: boolean): BarVi
     label: f.toFixed(1),
   }
 }
+
+/** T21.34: the jet bar's colour and label while wings refuse the jetpack. */
+const JET_REFUSED = '#5c5c5c'
+export const JET_REFUSED_LABEL = '—'
 
 /**
  * True while the tank is in `JETPACK_REFILL_DELAY` — not full, not draining, and

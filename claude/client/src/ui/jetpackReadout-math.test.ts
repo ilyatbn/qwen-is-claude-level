@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fuelText, fuelTrend } from './jetpackReadout-math'
+import { fuelText, fuelTrend, jetReadoutText } from './jetpackReadout-math'
 
 // Pinned to the constants the simulation uses, not to literals: a fixture
 // carrying its own 5.0 stays green against an implementation that has drifted
@@ -52,5 +52,20 @@ describe('fuelTrend', () => {
     // read off a stored flag would give the same answer for both.
     expect(fuelTrend(2.0, 2.5, REFILL, SIM_DT)).toBe('refilling')
     expect(fuelTrend(3.0, 2.5, REFILL, SIM_DT)).toBe('draining')
+  })
+})
+
+describe('jetReadoutText', () => {
+  /**
+   * T21.34, the owner's screenshot: `JET 5.0` beside a flying player whose
+   * jetpack is refused. The control is the same full tank without wings, which
+   * still prints its number — or this passes against a readout that always
+   * says `—`.
+   */
+  it('reads unavailable while wings refuse the jetpack, and the fuel without them', () => {
+    expect(jetReadoutText(MAX_FUEL, MAX_FUEL, 'held', true)).toBe('JET —')
+    expect(jetReadoutText(MAX_FUEL, MAX_FUEL, 'held', false)).toBe(`JET ${fuelText(MAX_FUEL, MAX_FUEL)} ·`)
+    expect(jetReadoutText(2.0, MAX_FUEL, 'draining', false)).toBe('JET 2.0 ▼')
+    expect(jetReadoutText(2.0, MAX_FUEL, 'refilling', false)).toBe('JET 2.0 ▲')
   })
 })

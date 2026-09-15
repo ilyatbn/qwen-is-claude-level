@@ -2148,21 +2148,25 @@ mod tests {
     /// the server runs a climbing one, and the two separate at
     /// `2 * WINGS_FLY_SPEED` plus gravity.
     ///
-    /// No buttons at all: *"you just fly constantly"* is the claim, so the
-    /// fixture presses nothing and the flight has to come from the item.
+    /// **UP held on both runs** (T21.34). Wings hover with no input now, so a
+    /// buttonless winged run would sit on the shelf exactly like the bare one
+    /// and the control below could not tell wings from no wings. UP is also
+    /// the input the mirror has to read correctly: a mirror that ignored it
+    /// would predict a hover while the server climbs.
     #[test]
     fn the_client_predicts_a_flying_player_where_the_server_puts_them() {
-        let bare = walk_both_sides_wearing(BASE_HEALTH, 0, None, false);
+        let up = game_core::player::input::button::UP;
+        let bare = walk_both_sides_wearing(BASE_HEALTH, up, None, false);
         let winged = walk_both_sides_wearing(
             BASE_HEALTH,
-            0,
+            up,
             Some(game_core::items::registry::UNICORN_WINGS),
             false,
         );
 
-        // The control: the wings were on, and they lifted the server's player
-        // off a shelf the unwinged control stayed on. Without it the agreement
-        // below is satisfied by wings that do nothing at all.
+        // The control: the wings were on, and with the same UP they lifted the
+        // server's player off a shelf the unwinged control stayed on. Without it
+        // the agreement below is satisfied by wings that do nothing at all.
         assert!(
             winged.server_y < bare.server_y - 1.0,
             "the winged server run did not rise: {} against an unwinged {}",

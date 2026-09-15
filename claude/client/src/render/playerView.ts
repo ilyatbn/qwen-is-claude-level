@@ -23,6 +23,7 @@ import {
   accessoryY,
   animKey,
   BOOT_WIDTH_FRACTION,
+  WING_WIDTH_FRACTION,
   GLASSES_WIDTH_FRACTION,
   HAT_WIDTH_FRACTION,
   framesFor,
@@ -31,7 +32,15 @@ import {
   spriteScale,
   type SkinDef,
 } from './skins-math'
-import { bootArt, ensureAccessoryTextures, ensureBootTexture, glassesArt, hatArt } from './accessoryTextures'
+import {
+  bootArt,
+  ensureAccessoryTextures,
+  ensureBootTexture,
+  ensureWingTexture,
+  glassesArt,
+  hatArt,
+  wingArt,
+} from './accessoryTextures'
 import type { Appearance } from '../ui/skins'
 
 export type { AnimState, AnimInputs }
@@ -56,6 +65,11 @@ export interface PlayerFlags {
    * byte, and the rebuild problem cannot arise.
    */
   boots: boolean
+  /**
+   * T21.03's unicorn wings, drawn since T21.34. Per frame for the boots' reason,
+   * and off the same move-mods byte, so a remote's wings show as well as yours.
+   */
+  wings: boolean
 }
 
 /** Skin id → placeholder tint, until `skins.json` lands in T7.03. */
@@ -134,6 +148,8 @@ export class PlayerView {
   private readonly shieldBubble: Phaser.GameObjects.Arc
   /** T21.02. Built always, shown per frame — see `PlayerFlags.boots`. */
   private readonly boots: Phaser.GameObjects.Image | null
+  /** T21.34. Built always, shown per frame — see `PlayerFlags.wings`. */
+  private readonly wings: Phaser.GameObjects.Image | null
   private readonly nameLabel: Phaser.GameObjects.Text
   private readonly skinId: number
   /** §T20.12's accessories. `readonly` like `skinId`, for the same reason. */
@@ -263,8 +279,22 @@ export class PlayerView {
           .setVisible(false)
       : null
 
+    // T21.34's wings, at the shoulders and **behind** the body: the torso covers
+    // the middle of the canvas and only the tips past it show, which is what
+    // makes them wings on a back rather than a sticker on a chest.
+    ensureWingTexture(scene.textures)
+    const wingDef = wingArt()
+    this.wings = wingDef.key
+      ? scene.add
+          .image(0, accessoryY(drawn, anchorY, 'wings'), wingDef.key)
+          .setOrigin(0.5, 0.5)
+          .setScale(accessoryScale(wingDef.w, this.body.displayWidth || c.PLAYER_W, WING_WIDTH_FRACTION))
+          .setVisible(false)
+      : null
+
     this.container = scene.add.container(0, 0, [
       this.shieldBubble,
+      ...(this.wings ? [this.wings] : []),
       this.body,
       ...(this.boots ? [this.boots] : []),
       ...(this.hat ? [this.hat] : []),
@@ -324,6 +354,9 @@ export class PlayerView {
     // T21.02. Toggled, never rebuilt.
     this.boots?.setVisible(flags.boots)
     this.boots?.setFlipX(left)
+    // T21.34. Toggled, never rebuilt.
+    this.wings?.setVisible(flags.wings)
+    this.wings?.setFlipX(left)
 
     // i-frames flash; dead is drawn faded rather than removed, so the corpse still
     // reads as a player during the respawn delay.
@@ -333,6 +366,7 @@ export class PlayerView {
     this.hat?.setAlpha(alpha)
     this.glasses?.setAlpha(alpha)
     this.boots?.setAlpha(alpha)
+    this.wings?.setAlpha(alpha)
   }
 
   /**

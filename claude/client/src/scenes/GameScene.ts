@@ -80,7 +80,7 @@ import { cycleU, darknessAt } from '../render/sky-math'
 import { formatClock, phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
 import { ResultsScreen } from '../ui/results'
 import { phaseDeadline, secondsUntil } from '../ui/results-math'
-import { fuelText, fuelTrend } from '../ui/jetpackReadout-math'
+import { fuelText, fuelTrend, jetReadoutText } from '../ui/jetpackReadout-math'
 import { FLAG, MOVE_MOD, flag } from '../net/codec'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { Minimap } from '../ui/minimap'
@@ -312,6 +312,8 @@ export class GameScene extends Phaser.Scene {
   private hasFlashlight = false
   /** T21.02, from the snapshot's move-mod byte. Drawn, and nothing else. */
   private hasBoots = false
+  /** T21.34. Off `MOVE_MOD.wings` in the snapshot — see where it is set. */
+  private hasWings = false
   private jetReadout: HTMLDivElement | null = null
   /**
    * T21.24's optional FPS readout, and the meter behind it.
@@ -570,6 +572,7 @@ export class GameScene extends Phaser.Scene {
     this.poisoned = false
     this.hasFlashlight = false
     this.hasBoots = false
+    this.hasWings = false
     this.fuel = 0
     this.fuelShown = 0
     this.teleportCharge = 0
@@ -1476,6 +1479,9 @@ export class GameScene extends Phaser.Scene {
       // everything `applyInput` reads. This field exists because `localView` is
       // drawn from the scene and not from the snapshot.
       this.hasBoots = flag(mine.moveMods, MOVE_MOD.boots)
+      // T21.34. Drawing and the HUD only, for the boots' reason: the wings on
+      // your own body, and the jet bar and readout shown as refused.
+      this.hasWings = flag(mine.moveMods, MOVE_MOD.wings)
       // Authoritative, because smoke is positional: what you can see depends on
       // which cloud you are standing in. This replaced a hardcoded 1, which is
       // why heavy fog changed nothing in the real game for four milestones.
@@ -1826,6 +1832,7 @@ export class GameScene extends Phaser.Scene {
         // state was the one who could not. It comes off the same byte every
         // remote's boots come off.
         boots: this.hasBoots,
+        wings: this.hasWings,
       })
       this.crosshair.update(rp.x, rp.y, aim)
       // `watchPoint` is an e2e affordance, and only that (§C2). A supply crate
@@ -2173,6 +2180,7 @@ export class GameScene extends Phaser.Scene {
         shield: flag(p.flags, FLAG.shield),
         iframes: flag(p.flags, FLAG.iframes),
         boots: flag(p.moveMods, MOVE_MOD.boots),
+        wings: flag(p.moveMods, MOVE_MOD.wings),
       })
     }
 
@@ -2481,7 +2489,7 @@ export class GameScene extends Phaser.Scene {
     this.bars?.update({
       health: healthBar(this.health, c.BASE_HEALTH, c.HEALTH_CAP, this.poisoned),
       energy: energyBar(this.battery, c.BATTERY_MAX),
-      jetpack: jetpackBar(this.fuel, c.JETPACK_MAX_FUEL, waiting),
+      jetpack: jetpackBar(this.fuel, c.JETPACK_MAX_FUEL, waiting, this.hasWings),
       consumables: {
         heals: this.heals,
         batteries: this.batteries,
@@ -2533,10 +2541,11 @@ export class GameScene extends Phaser.Scene {
     if (this.jetReadout) {
       const trend = fuelTrend(this.fuelShown, this.fuel, C().JETPACK_REFILL, C().SIM_DT)
       this.fuelShown = this.fuel
-      const mark = trend === 'draining' ? '▼' : trend === 'refilling' ? '▲' : '·'
       this.jetReadout.dataset['fuel'] = fuelText(this.fuel, C().JETPACK_MAX_FUEL)
       this.jetReadout.dataset['trend'] = trend
-      this.jetReadout.textContent = `JET ${fuelText(this.fuel, C().JETPACK_MAX_FUEL)} ${mark}`
+      // T21.34: both ends (§A39) — the flag beside the text it produced.
+      this.jetReadout.dataset['refused'] = this.hasWings ? '1' : '0'
+      this.jetReadout.textContent = jetReadoutText(this.fuel, C().JETPACK_MAX_FUEL, trend, this.hasWings)
     }
   }
 
@@ -3199,7 +3208,9 @@ export class GameScene extends Phaser.Scene {
           hudBars: {
             health: healthBar(self.health, C().BASE_HEALTH, C().HEALTH_CAP, self.poisoned),
             energy: energyBar(self.battery, C().BATTERY_MAX),
-            jetpack: jetpackBar(self.fuel, C().JETPACK_MAX_FUEL, false),
+            jetpack: jetpackBar(self.fuel, C().JETPACK_MAX_FUEL, false, self.hasWings),
+            // T21.34: the flag the jet bar's refusal is drawn from.
+            wings: self.hasWings,
             shieldOn: self.shieldOn,
             // Both ends (§A39): the flag off the wire beside the colour it
             // produced, so a green bar with `poisoned` false is visible as a

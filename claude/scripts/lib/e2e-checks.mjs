@@ -54,6 +54,10 @@ export const CHECKS = [
   // because it is the one scene that can supply a **control frame** — the
   // same body, in the same place, before and after picking them up.
   { name: 'boots-visible', file: 'scripts/checks/boots-visible.mjs', url: '?sandbox=1&seed=4242', flaky: true },
+  // T21.34: the unicorn wings on the body, same control-frame shape as boots.
+  // Possible only since wings hover — under T21.03 the body flew off mid-check.
+  // Not parked: a new check that starts on the flaky list gates nothing.
+  { name: 'wings-visible', file: 'scripts/checks/wings-visible.mjs', url: '?sandbox=1&seed=4242' },
   // §D1's gate: destroying terrain must take the SCENERY's pixels with it.
   // Standalone — it needs a real round for `map_init` to carry the objects.
   { name: 'objects', file: 'scripts/checks/objects.mjs', standalone: true },

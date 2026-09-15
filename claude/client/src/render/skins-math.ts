@@ -185,6 +185,12 @@ export const GLASSES_DROP = 0.38
  * because the top edge is not the top of the head.
  */
 export const BOOT_DROP = 1.0
+/**
+ * T21.34's unicorn wings, **centred** on this fraction of the drawn height —
+ * the shoulders, below `GLASSES_DROP`'s face and well above the feet, so the
+ * pixel check's feet band is a clean control.
+ */
+export const WING_DROP = 0.5
 
 /**
  * Where an accessory sits, as an offset from the container origin.
@@ -195,10 +201,11 @@ export const BOOT_DROP = 1.0
 export function accessoryY(
   drawnHeight: number,
   anchorY: number,
-  kind: 'hat' | 'glasses' | 'boots',
+  kind: 'hat' | 'glasses' | 'boots' | 'wings',
 ): number {
   const top = -drawnHeight * anchorY
-  const band = kind === 'hat' ? HAT_LIFT : kind === 'glasses' ? GLASSES_DROP : BOOT_DROP
+  const band =
+    kind === 'hat' ? HAT_LIFT : kind === 'glasses' ? GLASSES_DROP : kind === 'boots' ? BOOT_DROP : WING_DROP
   return top + drawnHeight * band
 }
 
@@ -250,3 +257,9 @@ export const GLASSES_WIDTH_FRACTION = 0.85
  * check reds on "too subtle to call a change".
  */
 export const BOOT_WIDTH_FRACTION = 0.75
+/**
+ * T21.34. Wings span this much of the **drawn** body width (the boots' reference,
+ * for the boots' reason). Wider than the body, so the tips clear both shoulders
+ * and the outline changes — a pair hidden behind the torso would be invisible.
+ */
+export const WING_WIDTH_FRACTION = 1.7
