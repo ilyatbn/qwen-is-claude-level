@@ -6393,3 +6393,10 @@ was 4 per pull every 0.12 s. Client repeats fire at that interval while mounted 
 Balance basis measured before: 300 rounds / 600 ticks = 180 DPS; held 301 = 180.6, ratio 1.003, asserted ±20 %.
 `platform_barrel` hashed with a coverage test; `REPLAY_VERSION` 11. Mounted bots judge the platform's clock/ammo/range (fired nothing
 past shovel reach before). `platform-autofire.mjs`: 36 spawned, 36 drawn, ideal 36; click = 1; red with the held path dropped. ~930 lines.
+
+## T21.40 — gates 20 % smaller, seated or not placed (`224ee18`, `3d71fa0`)
+`PAD_ART_W` 64 → 51, `PAD_W` 40 → 32, gate.png 51×56. Pads/platforms seat or are not placed: main ground, then anywhere (islands); < 2 pads → none.
+Sweep: perched 544/8916 → 0/8717; pads/map [..,999] → [0,0,0,2,8,17,972]; platforms [2,14,41,942] → [20,47,81,851]; p05 .880 → .871, caves 83.1 → 82.1 %.
+New tests: all placed seated / short maps get fewer / 0 or ≥ 2 pads. Golden regenerated. `REPLAY_VERSION` 12. Pads pick a destination uniformly among the others.
+`gate-ground`: drawn gate 0.797 of the old in pixels; falsified both ways. `teleport` side-step now avoids platforms; `platform-autofire` aims from the mask, seed 320.
+Open for the owner: "seated" ignores rock above the base line — 15/26 placements on three maps partly sunk into slopes, 8 by a player height.
