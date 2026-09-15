@@ -64,21 +64,37 @@ const WARMUP_SECONDS = rustConstants().get('WARMUP_SECONDS')
  * below still waits for `playing`, because warmup locks input.
  */
 const WARMUP_S = 2
+/**
+ * Long enough that two cold pages are both seated before §E2 starts the round
+ * without the second one, and short enough that the leaver's new room starts inside
+ * this check.
+ */
+const LOBBY_S = 15
+/** The frame check's own wait for movement, below. */
+const MOVE_WAIT_S = 15
+/**
+ * The round, derived from what has to fit inside bo's **second** one (T21.38).
+ *
+ * Since T21.38 bo's round restarts the moment ana leaves, not when the `Ended` window
+ * closes, so it runs from her exit while she goes to the title, quick-matches, waits
+ * out her lobby's timeout and warms up — and the frame check then needs him still
+ * moving. At the old 20 s that was measured at **`playing 0:02`** for bo at the frame
+ * check (control delta 0.9) and failed once with his frame frozen, his round over.
+ * The slack covers the title → menu → quick-match clicks and a loaded box.
+ */
+const ROUND_S = LOBBY_S + WARMUP_S + MOVE_WAIT_S + 30
 
 const stack = await startStack({
   port: PORT,
   label: 'rematch',
   env: {
     DEV_WARMUP_SECONDS: String(WARMUP_S),
-    // Short enough to reach `Ended` without waiting out a real round; the
-    // `Ended` window itself is a constant and cannot be shortened.
-    ROUND_SECONDS: '20',
+    // Short of a real round; the `Ended` window itself is a constant and cannot
+    // be shortened.
+    ROUND_SECONDS: String(ROUND_S),
     // A bot is a player, and this check counts who is in which room.
     BOT_COUNT: '0',
-    // Long enough that two cold pages are both seated before §E2 starts the
-    // round without the second one, and short enough that the leaver's new room
-    // starts inside this check.
-    LOBBY_BOT_TIMEOUT: '15',
+    LOBBY_BOT_TIMEOUT: String(LOBBY_S),
     WEATHER: 'off',
   },
 })
@@ -185,7 +201,7 @@ if (!rosterTogether.includes('bo')) {
 // --- to the end of the round ----------------------------------------------
 for (const c of [a, b]) {
   await c.page
-    .waitForSelector('.results-screen', { timeout: 120_000 })
+    .waitForSelector('.results-screen', { timeout: (WARMUP_S + ROUND_S + 60) * 1000 })
     .catch(() => fail(`${c.name} never saw the results screen`))
 }
 ok('the round ended and both players got the results screen')
@@ -200,6 +216,31 @@ await b.page
   .waitForSelector('.results-again[disabled]', { timeout: 10_000 })
   .then(() => ok("the replay vote was registered (the button reads 'Voted')"))
   .catch(() => fail('the replay vote was never registered — the button stayed live'))
+
+// --- T21.38: one yes of two humans is not a round ----------------------------
+//
+// The owner's ruling: every human must vote yes. So bo's vote alone, with ana
+// seated and silent, must **not** restart — the control for what follows, where
+// ana leaving is what lets bo's round start. Both screens show the tally, and ana's
+// is the proof the server broadcast it rather than answering only the voter.
+const tallyOn = (c) => c.page.evaluate(() => document.querySelector('.results-tally')?.textContent ?? null)
+for (const c of [a, b]) {
+  await c.page
+    .waitForFunction(
+      () => document.querySelector('.results-tally')?.textContent === '1 of 2 players want a rematch',
+      null,
+      { timeout: 10_000 },
+    )
+    .then(() => ok(`${c.name}'s screen reads "1 of 2 players want a rematch"`))
+    .catch(async () => fail(`${c.name}'s tally after one vote of two: ${JSON.stringify(await tallyOn(c))}`))
+}
+const bPhaseWhileAnaSilent = (await b.dbg())?.phase
+if (bPhaseWhileAnaSilent !== 'ended') {
+  fail(`one yes of two humans restarted the round: bo is in ${JSON.stringify(bPhaseWhileAnaSilent)}`)
+} else ok('control: with ana seated and silent, bo is still on the results screen')
+
+// Ana leaves. A human who leaves is no longer counted (T21.38 R2), so bo is now
+// every human and his yes restarts the room at once.
 await mustClick(a.page, '.results-exit')
 
 // **Exit reaches the title.** This is the step that was blank on `?menu=1`, and
@@ -241,12 +282,30 @@ if (h1.rooms !== 2) {
 // --- and both of them get a match ------------------------------------------
 //
 // The reported symptom in both directions, bounded by the constants that govern
-// each: the voter's room restarts when the `Ended` window closes, and the
-// leaver's starts on `LOBBY_BOT_TIMEOUT`.
+// each: the voter's room restarts once the leaver is gone — at once since T21.38,
+// and at the latest when the `Ended` window closes, which is still the bound — and
+// the leaver's starts on `LOBBY_BOT_TIMEOUT`.
+//
+// **What this proves since T21.38:** a human who leaves during the window does not
+// block the ones who stayed. The control above is the same two humans with ana still
+// seated, which did not restart.
+//
+// **The predicate must not throw** (T21.38). A page whose scene was torn down keeps
+// `window.__game` pointing at it, and its `debug()` throws on the dead camera. A throw
+// inside `waitForFunction` rejects at once rather than waiting — so this reported "never
+// got a match" on its first poll. It was latent until T21.38: bo's restart used to take
+// the whole `Ended` window, and ana's new lobby had built a new scene by the time this
+// polled her. Now bo restarts the moment ana leaves, and ana is still in her lobby.
 const started = (c, label, ms) =>
   c.page
     .waitForFunction(
-      'window.__game && ["warmup", "playing"].includes(window.__game.debug().phase)',
+      () => {
+        try {
+          return !!window.__game && ['warmup', 'playing'].includes(window.__game.debug().phase)
+        } catch {
+          return false
+        }
+      },
       null,
       { timeout: ms },
     )
@@ -351,7 +410,7 @@ await Promise.all(
       .waitForFunction(
         (t) => (window.__game?.debug()?.renderPos?.x ?? -Infinity) >= t,
         x0 + MOVE_PX,
-        { timeout: 15_000 },
+        { timeout: MOVE_WAIT_S * 1000 },
       )
       // Swallowed: the frozen-frame control below is the assertion, and it
       // reports the pixels it actually saw. A throw here would replace that
@@ -361,6 +420,17 @@ await Promise.all(
 )
 const after = { a: await patch(a), b: await patch(b) }
 for (const c of [a, b]) await c.page.keyboard.up('d')
+// The phase each page was in when the second frame was taken. A frozen frame in
+// `ended` is a round that finished — input is dropped there (T21.30) — not a stalled
+// box, and the two call for different fixes.
+// With the HUD timer beside it, so a passing run reports the margin as well: since
+// T21.38 bo's round restarts the moment ana leaves, and it is her new lobby's timeout
+// that decides how much of his round is left by the time this runs.
+const phaseOf = async (c) => {
+  const d = await c.dbg()
+  return `${d?.phase} ${d?.hudTimer?.text ?? '?'}`
+}
+const phasesAfter = { a: await phaseOf(a), b: await phaseOf(b) }
 
 const MIN_DELTA = 8
 const dLeaver = colourDelta(before.a, after.a)
@@ -368,8 +438,8 @@ const dControl = colourDelta(before.b, after.b)
 const frozen = (d, s0, s1) => d < MIN_DELTA && s0.digest === s1.digest
 if (frozen(dControl, before.b, after.b)) {
   fail(
-    `the CONTROL frame is frozen too (delta ${dControl.toFixed(1)}) — the box stalled, ` +
-      `so the leaver's frame proves nothing`,
+    `the CONTROL frame is frozen too (delta ${dControl.toFixed(1)}, phases ` +
+      `${JSON.stringify(phasesAfter)}) — the box stalled, so the leaver's frame proves nothing`,
   )
 } else if (frozen(dLeaver, before.a, after.a)) {
   fail(
@@ -380,7 +450,7 @@ if (frozen(dControl, before.b, after.b)) {
 } else {
   ok(
     `the leaver's canvas is still being drawn (moved ${dLeaver.toFixed(1)}, ` +
-      `control ${dControl.toFixed(1)})`,
+      `control ${dControl.toFixed(1)}; ${JSON.stringify(phasesAfter)})`,
   )
 }
 

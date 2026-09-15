@@ -1821,43 +1821,70 @@ pub const GUN_PLATFORM_MOUNT_TIME: f32 = 1.0;
 ///
 /// **500, and the number is the design rather than a tuning knob.** The
 /// coordinator's ruling: *"a map resource worth fighting over, not a free weapon
-/// three times a round"*. At `GUN_PLATFORM_BARRAGE` per volley that is 125
-/// volleys — a long time holding one position, which is the trade, and a finite
-/// enough supply that taking a platform late in a round can mean taking an empty
-/// one.
+/// three times a round"*. At one round per `GUN_PLATFORM_FIRE_INTERVAL` that is
+/// about 17 s of the trigger held down (T21.43) — a long time holding one
+/// position, which is the trade, and a finite enough supply that taking a
+/// platform late in a round can mean taking an empty one.
 ///
 /// **When it is empty it is empty**: the platform keeps its collision, its cover
 /// and its mount, and does nothing. It does not despawn, because the coordinator
 /// wants a refill item later and "empty forever" baked into the shape is what
-/// would have to be undone for it.
+/// would have to be undone for it. **There is no reload**: one magazine per
+/// platform per round, and T21.43 kept that rule.
 pub const GUN_PLATFORM_AMMO: u16 = 500;
-/// Rounds per volley (T21.11C).
+/// Ticks between two platform rounds while the trigger is held (T21.43).
 ///
-/// Four, fired **together across a fan** rather than in sequence: *"a barrage of
-/// 4 bullets at a time"*, and the reference art is triple-barrelled. A volley is
-/// four ordinary calls to the existing bullet path; a sequence would need a
-/// queue surviving across ticks, which is new hashed state and a new way to
-/// diverge.
-pub const GUN_PLATFORM_BARRAGE: u16 = 4;
-/// Total spread of one volley, radians — the angle from the first round to the
-/// last, centred on the aim.
+/// *"Click and hold to auto fire like a machine gun"* — the owner, 2026-09-15.
+/// It replaced T21.11C's volley of four rounds every 0.12 s.
 ///
-/// Wide enough that four rounds are four rounds rather than one thick one, tight
-/// enough to still be aiming. `SMG_SPREAD` is the neighbour to compare against.
-pub const GUN_PLATFORM_FAN: f32 = 0.10;
-/// Seconds between volleys (T21.11C).
+/// **Counted in ticks, because the server can only fire on one.** Every
+/// accepted shot lands on a tick, so a cadence between two tick counts is a beat
+/// against the tick rate, not a rate. Two ticks is the only value whose held
+/// damage lands inside ±20 % of the volley it replaced: see
+/// `GUN_PLATFORM_SPAM_DPS_BASIS`.
+pub const GUN_PLATFORM_FIRE_TICKS: u32 = 2;
+/// `GUN_PLATFORM_FIRE_TICKS` in seconds — the platform's own clock, and the
+/// cadence the client repeats `fire` at while the button is held.
 ///
 /// **The platform's own cooldown, not the player's.** `try_fire_slot` gates on
 /// `PlayerState::fire_ready_at`, which belongs to whatever the player happens to
 /// be holding — a platform sharing it would fire at the cadence of the weapon in
 /// a bag its rider cannot even reach.
-pub const GUN_PLATFORM_COOLDOWN: f32 = 0.12;
+pub const GUN_PLATFORM_FIRE_INTERVAL: f32 = GUN_PLATFORM_FIRE_TICKS as f32 * SIM_DT;
+/// The turret's barrels, fired in turn — the reference art has three (T21.43).
+pub const GUN_PLATFORM_BARRELS: u8 = 3;
+/// Angle between two neighbouring barrels' rounds, radians (T21.43).
+///
+/// A fixed per-barrel offset, not a random draw: the stream is the same shape
+/// every time from the same inputs, and firing costs the world's RNG nothing.
+/// Three barrels span 2 × this = 0.06 rad, tighter than T21.11C's 0.10 fan,
+/// because a stream is aimed and a volley was thrown.
+pub const GUN_PLATFORM_BARREL_SPREAD: f32 = 0.03;
+/// Muzzle separation between two neighbouring barrels, px, across the aim.
+pub const GUN_PLATFORM_BARREL_GAP: f32 = 4.0;
+/// **The measured basis the held stream is balanced against** (T21.43), in
+/// damage per second. A value that matters: `platform_gun::
+/// the_held_stream_is_balanced_against_its_measured_basis` asserts it.
+///
+/// Measured at `dd2acc6`, before the change, by firing a mounted platform
+/// **every tick** for 10 s — the fastest cadence the server accepts from a
+/// spam-clicker: **300 rounds in 600 ticks**, i.e. a volley of 4 every 8 ticks
+/// (0.12 s rounds up to 8 ticks of 1/60 s), × 6 damage ÷ 10 s = **180 DPS**.
+///
+/// After: one round every 2 ticks × 6 damage = **180 DPS held**, ratio 1.00
+/// (measured by the same test: 301 rounds in 600 ticks, the extra one being the
+/// one-tick grace in `World::fire_platform`). The allowed band is
+/// `GUN_PLATFORM_BALANCE_TOLERANCE`.
+pub const GUN_PLATFORM_SPAM_DPS_BASIS: f32 = 180.0;
+/// How far the held stream's DPS may sit from `GUN_PLATFORM_SPAM_DPS_BASIS`,
+/// as a fraction — the coordinator's ±20 %.
+pub const GUN_PLATFORM_BALANCE_TOLERANCE: f32 = 0.20;
 /// Damage per round from the platform gun (T21.11C).
 ///
-/// Below `MACHINEGUN_DAMAGE`, because the platform's power is its **rate**: four
-/// rounds every `GUN_PLATFORM_COOLDOWN` is far more damage per second than any
-/// carried weapon, and matching a rifle per round as well would make the trade
-/// no trade at all.
+/// Below `MACHINEGUN_DAMAGE`, because the platform's power is its **rate**: a
+/// round every `GUN_PLATFORM_FIRE_INTERVAL` is far more damage per second than
+/// any carried weapon, and matching a rifle per round as well would make the
+/// trade no trade at all.
 pub const GUN_PLATFORM_DAMAGE: f32 = 6.0;
 /// How far a platform round flies before it stops, px.
 ///

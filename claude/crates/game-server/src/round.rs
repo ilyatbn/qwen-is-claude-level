@@ -28,6 +28,10 @@ pub struct RoundController {
     last_state_at: f32,
     /// Set once the `Ended` window has been resolved, so it resolves exactly once.
     resolved: bool,
+    /// The tally last announced in `round_state`, so a change — a vote, or a
+    /// human leaving — is announced once and not sixty times a second (T21.38).
+    /// `None` outside `Ended`, so entering the window always announces.
+    announced_tally: Option<VoteTally>,
     /// Seconds left before a full lobby starts, or `None` while it is not
     /// counting (`docs/72` §C18).
     ///
@@ -36,13 +40,24 @@ pub struct RoundController {
     force_start: bool,
 }
 
+/// The restart vote as the clients are shown it: `yes` of `humans` seated.
+///
+/// Carried on `round_state` during `Ended` (T21.38 R4). Bots are in neither
+/// number — they do not vote and do not count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoteTally {
+    pub yes: usize,
+    pub humans: usize,
+}
+
 /// What the room should do after `tick`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RoundOutcome {
     Continue,
     /// A lobby is ready: seat bots, spawn players, go to `Warmup`.
     Start,
-    /// Majority voted restart: rebuild the world on this seed and go to `Warmup`.
+    /// Every seated human voted restart: rebuild the world on this seed and go
+    /// to `Warmup`.
     Restart {
         seed: u64,
     },
@@ -61,6 +76,7 @@ impl RoundController {
             votes: BTreeMap::new(),
             last_state_at: f32::NEG_INFINITY,
             resolved: false,
+            announced_tally: None,
             force_start: false,
         }
     }
@@ -122,29 +138,35 @@ impl RoundController {
         seed
     }
 
-    /// Majority of the votes **cast**, not of the players connected.
+    /// **Every seated human voted yes**, and there is at least one of them.
     ///
-    /// Non-voters abstain; they do not count as "no". A player who alt-tabs
-    /// during the scoreboard should not veto the next round, and making silence
-    /// a veto is how a lobby dies.
+    /// The owner's ruling, 2026-09-15 (T21.38): *"as long as all human players
+    /// vote yes, restart. If not, title screen."* It replaces T21.32's majority
+    /// of the votes cast, whose argument — silence should abstain, not veto — is
+    /// overruled: silence is now a no, and so is a no.
     ///
-    /// So `connected` is deliberately unread, and the parameter is kept for what
-    /// it lets a caller *say*: `non_voters_abstain_rather_than_veto` passes 6
-    /// with two yes votes, and that number is the whole scenario. T20.13 asked
-    /// whether the omission was an oversight — it is not. The consequence is
-    /// real and intended: **one remaining player can restart a round for a room
-    /// everyone else has left**, which is the same rule seen from the other end.
-    /// Requiring a majority of connected would not change that case either (one
-    /// yes of one connected still wins); it would only turn silence into a veto
-    /// for the many-player case, which is the outcome this rule exists to avoid.
-    fn restart_wins(&self, connected: usize) -> bool {
-        let yes = self.votes.values().filter(|v| **v).count();
-        let cast = self.votes.len();
-        if cast == 0 {
-            return false;
+    /// `humans` is `Room::human_count` at the moment of resolution, so:
+    /// - **bots never count.** They have no socket and cannot vote, and a room
+    ///   of one human and three bots restarts on that one human's yes;
+    /// - **a human who leaves during the window does not block** (T21.38 R2).
+    ///   They are no longer seated, so they are not in `humans`, and `forget`
+    ///   has already dropped their vote.
+    ///
+    /// Counting `yes == humans` rather than checking each human by id rests on
+    /// `votes` holding only seated players' ids. That invariant is kept where
+    /// seats are freed: `Command::Leave` and `sweep_unready` both call `forget`,
+    /// and a bot seat (freed in `restart`/`return_to_lobby`) never held a vote.
+    fn restart_wins(&self, humans: usize) -> bool {
+        humans > 0 && self.tally(humans).yes == humans
+    }
+
+    /// Where the vote stands, for the clients (T21.38 R4): how many yes votes
+    /// against how many seated humans.
+    pub fn tally(&self, humans: usize) -> VoteTally {
+        VoteTally {
+            yes: self.votes.values().filter(|v| **v).count(),
+            humans,
         }
-        let _ = connected;
-        yes * 2 > cast
     }
 
     /// Advance bookkeeping around the world's own phase machine.
@@ -178,10 +200,13 @@ impl RoundController {
 
     /// The match half. `world` is present by construction: every phase below
     /// `Lobby` has one.
+    ///
+    /// `humans` is `Room::human_count` — seated players who are not bots. It is
+    /// what the vote is counted against (T21.38).
     pub fn tick(
         &mut self,
         world: &mut World,
-        connected: usize,
+        humans: usize,
         dt: f32,
     ) -> (Vec<GameEvent>, RoundOutcome) {
         let mut events = Vec::new();
@@ -221,9 +246,16 @@ impl RoundController {
                 }
             }
             RoundPhase::Ended => {
-                if !self.resolved && world.phase_time_left() <= 0.0 {
+                // **Early resolution** (T21.38 R3): once every seated human has
+                // said yes the answer cannot change — the client has no "no"
+                // button and a yes is not withdrawn — so nobody waits the rest of
+                // the window out for it. Decided from recorded commands only, so
+                // a replay restarts on the same tick.
+                let window_closed = world.phase_time_left() <= 0.0;
+                if !self.resolved && (window_closed || self.restart_wins(humans)) {
                     self.resolved = true;
-                    let restart = self.restart_wins(connected);
+                    self.announced_tally = None;
+                    let restart = self.restart_wins(humans);
                     self.votes.clear();
                     let seed = self.advance_seed();
                     return if restart {
@@ -232,6 +264,18 @@ impl RoundController {
                         (events, RoundOutcome::ToLobby { seed })
                     };
                 }
+                // The tally changed — a vote landed, or a human left or
+                // arrived — so say so to everyone. `round_state` is the carrier
+                // (T21.38 R4); the room attaches `votes` when it flushes.
+                let tally = self.tally(humans);
+                if !self.resolved && self.announced_tally != Some(tally) {
+                    self.announced_tally = Some(tally);
+                    events.push(GameEvent::RoundState {
+                        tick: world.tick,
+                        phase: world.phase,
+                        time_left: world.phase_time_left(),
+                    });
+                }
             }
             RoundPhase::Warmup => {}
         }
@@ -239,6 +283,7 @@ impl RoundController {
         // Leaving `Ended` for any reason re-arms the resolver.
         if world.phase != RoundPhase::Ended {
             self.resolved = false;
+            self.announced_tally = None;
         }
         (events, RoundOutcome::Continue)
     }
@@ -256,35 +301,101 @@ mod tests {
         w
     }
 
+    /// T21.38, the owner's ruling: every human yes restarts; one no does not.
+    /// (Was `a_majority_of_those_who_voted_restarts_the_round`, whose 2-yes-1-no
+    /// case is now the losing half.)
     #[test]
-    fn a_majority_of_those_who_voted_restarts_the_round() {
+    fn every_human_voting_yes_restarts_the_round_and_one_no_does_not() {
         let w = world_in(RoundPhase::Ended);
         let mut r = RoundController::new(1234);
         r.vote(&w, 1, true);
         r.vote(&w, 2, true);
-        r.vote(&w, 3, false);
-        assert!(r.restart_wins(3));
+        r.vote(&w, 3, true);
+        assert!(
+            r.restart_wins(3),
+            "three yes of three humans did not restart"
+        );
+
+        // One human says no: a majority, and still the title for everyone.
+        let mut r2 = RoundController::new(1234);
+        r2.vote(&w, 1, true);
+        r2.vote(&w, 2, true);
+        r2.vote(&w, 3, false);
+        assert!(!r2.restart_wins(3), "a human's no was outvoted");
     }
 
-    /// The rule that shapes how the game feels between rounds.
+    /// T21.38: silence is a no. (Was `non_voters_abstain_rather_than_veto`, the
+    /// rule the owner overruled; same scenario, opposite verdict, and the
+    /// control half is now the unanimous case.)
     #[test]
-    fn non_voters_abstain_rather_than_veto() {
+    fn a_silent_human_blocks_the_restart() {
         let w = world_in(RoundPhase::Ended);
         let mut r = RoundController::new(1234);
-        // Two of six connected players vote yes; the other four say nothing.
+        // Two of three humans vote yes; the third says nothing.
         r.vote(&w, 1, true);
         r.vote(&w, 2, true);
         assert!(
-            r.restart_wins(6),
-            "silence from four of six players vetoed the restart"
+            !r.restart_wins(3),
+            "a silent human did not block the restart"
         );
 
-        // The control: an actual majority of NO still loses.
-        let mut r2 = RoundController::new(1234);
-        r2.vote(&w, 1, true);
-        r2.vote(&w, 2, false);
-        r2.vote(&w, 3, false);
-        assert!(!r2.restart_wins(6));
+        // The control: once the third says yes too, it restarts — so the verdict
+        // above is about the silence and not a rule that never restarts.
+        r.vote(&w, 3, true);
+        assert!(r.restart_wins(3));
+    }
+
+    /// A lone human is "every human", and no humans at all is not a yes.
+    #[test]
+    fn a_lone_human_can_restart_and_an_empty_room_cannot() {
+        let w = world_in(RoundPhase::Ended);
+        let mut r = RoundController::new(1234);
+        assert!(!r.restart_wins(0), "a room with no humans restarted itself");
+        r.vote(&w, 1, true);
+        assert!(r.restart_wins(1));
+    }
+
+    #[test]
+    fn the_tally_counts_yes_votes_against_humans() {
+        let w = world_in(RoundPhase::Ended);
+        let mut r = RoundController::new(1234);
+        assert_eq!(r.tally(3), VoteTally { yes: 0, humans: 3 });
+        r.vote(&w, 1, true);
+        r.vote(&w, 2, false);
+        assert_eq!(r.tally(3), VoteTally { yes: 1, humans: 3 });
+        r.forget(1);
+        assert_eq!(r.tally(2), VoteTally { yes: 0, humans: 2 });
+    }
+
+    /// T21.38 R3/R4 at the controller: the tally is announced on entering the
+    /// window and on each change, and every human yes resolves **before** the
+    /// window closes.
+    #[test]
+    fn a_unanimous_yes_resolves_early_and_tally_changes_are_announced() {
+        let mut w = world_in(RoundPhase::Ended);
+        let mut r = RoundController::new(1);
+        let states = |evs: &[GameEvent]| {
+            evs.iter()
+                .filter(|e| matches!(e, GameEvent::RoundState { .. }))
+                .count()
+        };
+        let (evs, out) = r.tick(&mut w, 2, SIM_DT);
+        assert_eq!((states(&evs), &out), (1, &RoundOutcome::Continue));
+        // Nothing changed: nothing announced.
+        let (evs, _) = r.tick(&mut w, 2, SIM_DT);
+        assert_eq!(states(&evs), 0, "an unchanged tally was re-announced");
+        // One of two votes: announced, not resolved.
+        r.vote(&w, 1, true);
+        let (evs, out) = r.tick(&mut w, 2, SIM_DT);
+        assert_eq!((states(&evs), &out), (1, &RoundOutcome::Continue));
+        assert!(w.phase_time_left() > 1.0, "the premise: the window is open");
+        // The second: resolved on this tick, with the window still open.
+        r.vote(&w, 2, true);
+        let (_, out) = r.tick(&mut w, 2, SIM_DT);
+        assert!(
+            matches!(out, RoundOutcome::Restart { .. }),
+            "every human said yes and the room waited: {out:?}"
+        );
     }
 
     #[test]

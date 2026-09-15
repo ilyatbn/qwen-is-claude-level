@@ -21,6 +21,7 @@ use game_core::player::state::{DeathCause, PlayerId};
 use game_core::world::{GameEvent, RoundPhase, World};
 use socketioxide::SocketIo;
 
+use crate::round::VoteTally;
 use crate::session::SessionMap;
 
 /// Where one event goes.
@@ -143,6 +144,17 @@ fn effect_phase_name(p: EffectPhase) -> &'static str {
 /// `inventory` and `score` describe the world *now* rather than carrying a
 /// snapshot of it through the event queue.
 pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
+    payload_with_votes(e, world, None)
+}
+
+/// [`payload_of`], plus the restart vote's tally for a `round_state` sent while
+/// the round is `Ended` (T21.38 R4). The tally lives in the room's
+/// `RoundController`, not in the world, so the room supplies it at flush time.
+pub fn payload_with_votes(
+    e: &GameEvent,
+    world: &World,
+    votes: Option<VoteTally>,
+) -> serde_json::Value {
     use serde_json::json;
     let tick = e.tick();
     match e {
@@ -413,7 +425,7 @@ pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
         }
         GameEvent::RoundState {
             phase, time_left, ..
-        } => round_state_payload(tick, *phase, *time_left, world.seed),
+        } => round_state_payload(tick, *phase, *time_left, world.seed, votes),
         GameEvent::RoundEnd { .. } => json!({"tick": tick, "reason": "round_over"}),
     }
 }
@@ -445,18 +457,26 @@ fn cause_name(c: DeathCause) -> &'static str {
 /// silently omits it, so a client would get one shape for its first seconds and
 /// a different one once playing. `CLAUDE.md`: share the guard, or share the
 /// function. The decoration `7` spelled six places is the same shape.
+///
+/// `votes` (T21.38 R4) is **omitted** when `None`, as `lobby_state` omits its
+/// absent fields: a vote exists only while the round is `Ended`.
 fn round_state_payload(
     tick: u32,
     phase: RoundPhase,
     time_left: f32,
     seed: u64,
+    votes: Option<VoteTally>,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut v = serde_json::json!({
         "tick": tick,
         "phase": phase.as_str(),
         "time_left": time_left,
         "seed": seed.to_string(),
-    })
+    });
+    if let Some(t) = votes {
+        v["votes"] = serde_json::json!({ "yes": t.yes, "humans": t.humans });
+    }
+    v
 }
 
 /// The `lobby_state` payload (§E6), built in one place and sent to every socket.
@@ -625,7 +645,8 @@ pub fn flush_lobby_events(
             );
             continue;
         };
-        let payload = round_state_payload(*tick, *phase, *time_left, seed);
+        // A lobby has no vote.
+        let payload = round_state_payload(*tick, *phase, *time_left, seed, None);
         for sid in sessions.sids() {
             if sessions.queue_or_emit(sid, "round_state", &payload) {
                 if let Some(s) = io.get_socket(sid) {
@@ -640,6 +661,7 @@ pub fn flush_events(
     io: &SocketIo,
     world: &World,
     sessions: &Arc<SessionMap>,
+    votes: Option<VoteTally>,
     events: &[GameEvent],
 ) {
     if events.is_empty() {
@@ -647,7 +669,7 @@ pub fn flush_events(
     }
     let mut batch: Vec<(&'static str, serde_json::Value, Scope)> = Vec::with_capacity(events.len());
     for e in events {
-        batch.push((name_of(e), payload_of(e, world), scope_of(e)));
+        batch.push((name_of(e), payload_with_votes(e, world, votes), scope_of(e)));
     }
 
     // Emitted **inline**, not from a spawned task.
@@ -1007,6 +1029,26 @@ mod tests {
             &w,
         );
         assert_eq!(p["seed"], w.seed.to_string());
+    }
+
+    /// T21.38 R4: the restart tally rides `round_state`, and only when there is
+    /// one. The control is the same event with no tally, so a payload that
+    /// always carried `votes` (or never did) fails one half.
+    #[test]
+    fn round_state_carries_the_vote_tally_only_when_given_one() {
+        let w = world();
+        let e = GameEvent::RoundState {
+            tick: 1,
+            phase: RoundPhase::Ended,
+            time_left: 12.0,
+        };
+        let p = payload_with_votes(&e, &w, Some(VoteTally { yes: 2, humans: 3 }));
+        assert_eq!(p["votes"]["yes"], 2);
+        assert_eq!(p["votes"]["humans"], 3);
+        assert!(
+            payload_of(&e, &w).get("votes").is_none(),
+            "a round_state with no vote carried a votes field"
+        );
     }
 
     /// The same field, on the two events that carry it, must agree.

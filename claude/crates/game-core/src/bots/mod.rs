@@ -759,6 +759,38 @@ impl Bot {
         target: Vec2,
         now: f32,
     ) -> bool {
+        // **A rider fires the platform, so judge the platform's gun** (T21.43).
+        //
+        // `World::fire` sends a mounted player's trigger to the platform, but
+        // everything below asks about the *bag*: the rider's own `fire_ready_at`,
+        // and the selected weapon's reach. With §F5's shovel in hand that meant a
+        // mounted bot refused every target outside a swing, and never fired the
+        // machine gun it was sitting on. So a rider asks the platform's questions
+        // — its clock (the same guard `fire_platform` uses), its magazine, its
+        // range — and line of sight, which is not about the weapon.
+        //
+        // The clock is asked so a holding bot sends one `fire` per round rather
+        // than one per tick with every other one refused; an empty magazine stops
+        // it pressing at all, so it does not hold forever at nothing.
+        if let Some(plat) = me.mount.mounted {
+            if !world.platform_ready(plat, now) {
+                self.stats.rej_cooldown += 1;
+                return false;
+            }
+            if world.platform_ammo(plat).unwrap_or(0) == 0 {
+                self.stats.rej_unarmed += 1;
+                return false;
+            }
+            if (target - pos).len() > crate::constants::GUN_PLATFORM_RANGE {
+                self.stats.rej_range += 1;
+                return false;
+            }
+            if !self.reachable(world, pos, target) {
+                self.stats.rej_los += 1;
+                return false;
+            }
+            return true;
+        }
         if now < me.fire_ready_at {
             self.stats.rej_cooldown += 1;
             return false;
@@ -1062,6 +1094,107 @@ mod tests {
     use crate::world::{give, wield, RoundPhase, World};
 
     const SEED: u64 = 4242;
+
+    /// T21.43: **a bot riding a gun platform fires it** — a stream at the
+    /// platform's cadence, one `fire` per round and none refused — and **stops
+    /// pressing when the magazine is empty**, so it neither never fires nor
+    /// holds forever at nothing.
+    ///
+    /// The control is the same bot, the same bag and the same target unmounted:
+    /// judged by the bag (§F5's shovel), a target 200 px off is out of reach and
+    /// it presses nothing — which was also what a *mounted* bot did before this.
+    #[test]
+    fn a_bot_riding_a_platform_fires_its_stream_and_stops_when_it_is_empty() {
+        use crate::constants::GUN_PLATFORM_FIRE_TICKS;
+        use crate::items::registry::WEAPON_PLATFORM_GUN;
+        use crate::world::GameEvent;
+
+        let mut w = World::for_test(SEED, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "bot".into());
+        let g = w.map.meta.gun_platforms[0];
+        let pos = Vec2::new(g.pos.x as f32, g.pos.y as f32 - PLAYER_H / 2.0);
+        {
+            let p = w.player_mut(0).expect("seated");
+            p.body.pos = pos;
+            p.body.vel = Vec2::new(0.0, 0.0);
+            p.body.grounded = true;
+            // Straight onto the state the mount rule owns: this is a test of the
+            // bot's trigger, and `world::platform_gun` mounts by the real rule.
+            p.mount.mounted = Some(g.id);
+        }
+        let mut b = Bot::new(0, SEED, 0, 0.85);
+        // A target in open air: the first direction whose line is clear.
+        let target = [
+            (0.0, -1.0),
+            (0.7, -0.7),
+            (-0.7, -0.7),
+            (1.0, 0.0),
+            (-1.0, 0.0),
+        ]
+        .iter()
+        .map(|&(dx, dy)| Vec2::new(pos.x + dx * 200.0, pos.y + dy * 200.0))
+        .find(|t| b.reachable(&w, pos, *t))
+        .expect("some open air around the platform");
+
+        // (presses, refused, platform rounds) over `ticks`.
+        let run = |w: &mut World, b: &mut Bot, ticks: usize| {
+            let (mut pressed, mut refused, mut rounds) = (0usize, 0usize, 0usize);
+            for _ in 0..ticks {
+                let now = w.round_time;
+                let me = w.player(0).expect("seated");
+                if b.should_fire(w, me, pos, target, now) {
+                    pressed += 1;
+                    if w.fire(0, now).is_err() {
+                        refused += 1;
+                    }
+                }
+                rounds += w
+                    .drain_events()
+                    .iter()
+                    .filter(|e| {
+                        matches!(e, GameEvent::ProjectileSpawn { weapon, .. }
+                            if *weapon == WEAPON_PLATFORM_GUN)
+                    })
+                    .count();
+                w.step(SIM_DT);
+                w.drain_events();
+            }
+            (pressed, refused, rounds)
+        };
+
+        let ticks = 120usize;
+        let (pressed, refused, rounds) = run(&mut w, &mut b, ticks);
+        let want = ticks / GUN_PLATFORM_FIRE_TICKS as usize;
+        assert!(
+            rounds.abs_diff(want) <= 1,
+            "a riding bot fired {rounds} rounds in {ticks} ticks, not {want} ± 1"
+        );
+        assert_eq!(
+            refused, 0,
+            "the bot pressed on {refused} ticks the platform refused"
+        );
+        assert_eq!(pressed, rounds, "presses and rounds disagree");
+
+        // Empty: it stops pressing at all.
+        w.platform_ammo[g.id as usize] = 0;
+        let (pressed, _, rounds) = run(&mut w, &mut b, ticks);
+        assert_eq!(
+            (pressed, rounds),
+            (0, 0),
+            "a bot held the trigger of an empty platform"
+        );
+
+        // The control: refilled, but unmounted — the bag decides, and it cannot reach.
+        w.platform_ammo[g.id as usize] = crate::constants::GUN_PLATFORM_AMMO;
+        w.player_mut(0).expect("seated").mount.mounted = None;
+        let (pressed, _, rounds) = run(&mut w, &mut b, ticks);
+        assert_eq!(
+            (pressed, rounds),
+            (0, 0),
+            "unmounted, the bot fired at a target out of its bag's reach"
+        );
+    }
 
     /// A point with 260 px of clear air to its right.
     ///

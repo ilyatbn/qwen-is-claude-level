@@ -815,6 +815,12 @@ pub struct World {
     /// belongs to whatever they are holding, and a platform sharing it would
     /// fire at the cadence of a weapon in a bag its rider cannot reach.
     pub platform_ready_at: Vec<f32>,
+    /// Which barrel each platform fires next, `0..GUN_PLATFORM_BARRELS` (T21.43).
+    ///
+    /// Per platform rather than per rider, like the magazine: a held stream is
+    /// the turret turning over, and a second rider picks it up where it stopped.
+    /// Hashed — it decides where the next round leaves the muzzle.
+    pub platform_barrel: Vec<u8>,
     pub round_time: f32,
     pub tick: u32,
     pub phase: RoundPhase,
@@ -965,6 +971,7 @@ impl World {
         World {
             platform_ammo: vec![crate::constants::GUN_PLATFORM_AMMO; platforms],
             platform_ready_at: vec![0.0; platforms],
+            platform_barrel: vec![0; platforms],
             burn: Default::default(),
             respawn_fallbacks: 0,
             mines: Default::default(),
@@ -3531,30 +3538,46 @@ impl World {
         r
     }
 
-    /// Fire one volley from a gun platform (T21.11C).
+    /// Fire one round from a gun platform — one shot of a held stream (T21.43).
     ///
-    /// **Four rounds in the same tick across a fixed fan**, not four in
-    /// sequence. "A barrage of 4 bullets at a time" is simultaneous, the
-    /// reference art is triple-barrelled, and — the deciding reason — a volley
-    /// is four ordinary calls to the path `fire_from_slot` already uses for a
-    /// bullet, while a sequence would need a queue surviving across ticks. That
-    /// queue would be new hashed state and a new way for a replay to diverge,
-    /// bought for a difference nobody can see at `GUN_PLATFORM_COOLDOWN`.
+    /// *"Click and hold to auto fire like a machine gun."* A click is one call
+    /// and one round; holding is the client repeating the call at
+    /// `GUN_PLATFORM_FIRE_INTERVAL`, exactly as every automatic in the bag is
+    /// held (`WeaponDef::is_auto`, `client/src/input/autoFire.ts`). The server
+    /// keeps no "held" bit: its per-platform clock is the authority on cadence,
+    /// so a spam-clicker and a holder fire at the same rate. It replaced
+    /// T21.11C's four-round volley.
     ///
-    /// **The fan is fixed, not drawn.** `muzzle_angle` would take four draws
-    /// from `self.rng` per volley — reproducible, but it would put the gun's
-    /// shot pattern in the same stream as the item spawns and the weather, so
-    /// firing more would move both. Spacing the rounds evenly across
-    /// `GUN_PLATFORM_FAN` costs no draws at all and makes a volley the same
-    /// shape every time, which is what a fixed emplacement should feel like.
+    /// **Cross-tick state, on the world beside the magazine**: `platform_ready_at`
+    /// (the next-shot timer) and `platform_barrel` (which barrel fires next).
+    /// Both are per platform, so a second rider picks up the stream where the
+    /// first left it, and both are in `state_hash`.
+    ///
+    /// **One tick of grace, and only backwards.** The next shot is due
+    /// `GUN_PLATFORM_FIRE_INTERVAL` after the *later* of when the last one was
+    /// due and one tick ago. A repeat that arrives a tick late therefore does not
+    /// push the whole stream a tick later, which is what network jitter between
+    /// two client repeats would otherwise do; and a caller firing on every tick
+    /// still settles at one round per interval, because the credit never exceeds
+    /// one tick. The half tick on the comparison absorbs `round_time`'s float
+    /// accumulation, so a shot due on a tick is not refused by rounding.
+    ///
+    /// **The barrels are fixed offsets, not draws** — the reason T21.11C gave for
+    /// its fan still holds: `muzzle_angle` would put the gun's pattern in the
+    /// same RNG stream as the item spawns and the weather.
     ///
     /// The muzzle is the **platform's**, because a mounted player does not move;
     /// the aim is still theirs.
     fn fire_platform(&mut self, id: PlayerId, platform: u8, now: f32) -> Result<(), UseError> {
+        use crate::constants::{
+            GUN_PLATFORM_BARRELS, GUN_PLATFORM_BARREL_GAP, GUN_PLATFORM_BARREL_SPREAD,
+            GUN_PLATFORM_FIRE_INTERVAL, SIM_DT,
+        };
         let i = platform as usize;
-        if now < *self.platform_ready_at.get(i).unwrap_or(&f32::INFINITY) {
+        if !self.platform_ready(platform, now) {
             return Err(UseError::OnCooldown);
         }
+        let due = *self.platform_ready_at.get(i).unwrap_or(&f32::INFINITY);
         let left = *self.platform_ammo.get(i).unwrap_or(&0);
         if left == 0 {
             // **Empty is empty** — the platform keeps its collision, its cover
@@ -3567,7 +3590,7 @@ impl World {
             return Err(UseError::Dead);
         };
         let aim = crate::player::input::Input::new(0, 0, self.players[idx].aim).aim_angle();
-        let origin = match self.map.meta.gun_platforms.get(i) {
+        let hub = match self.map.meta.gun_platforms.get(i) {
             // A feet line, so the muzzle sits at the housing rather than in the
             // rock: the same fraction of the art the renderer draws the hub at.
             Some(g) => Vec2::new(
@@ -3577,41 +3600,49 @@ impl World {
             None => return Err(UseError::BadSlot),
         };
 
-        // **A partial volley when the magazine cannot fill one**, and the
-        // leftover is not invented: `AddResult::Partial` is this repo's
-        // precedent for telling the caller the true number rather than rounding
-        // it. Three rounds left fires three, not four and not none.
-        let rounds = crate::constants::GUN_PLATFORM_BARRAGE.min(left);
+        // The next barrel in turn. `lane` is -1, 0, +1 for three barrels, so the
+        // stream is centred on the aim both in heading and in muzzle position.
+        let barrel = self.platform_barrel.get(i).copied().unwrap_or(0) % GUN_PLATFORM_BARRELS;
+        let lane = barrel as f32 - (GUN_PLATFORM_BARRELS - 1) as f32 / 2.0;
+        let across = Vec2::new(-aim.sin(), aim.cos());
+        let origin = hub + across * (lane * GUN_PLATFORM_BARREL_GAP);
+        let heading = aim + lane * GUN_PLATFORM_BARREL_SPREAD;
+
         let tick = self.tick;
-        let fan = crate::constants::GUN_PLATFORM_FAN;
-        for n in 0..rounds {
-            // Evenly across the fan, centred on the aim. With one round the
-            // divisor would be zero, so that case fires straight.
-            let offset = if rounds <= 1 {
-                0.0
-            } else {
-                -fan / 2.0 + fan * (n as f32) / ((rounds - 1) as f32)
-            };
-            let pid = self
-                .projectiles
-                .spawn(WEAPON_PLATFORM_GUN, id, origin, aim + offset, now);
-            if let Some(p) = self.projectiles.get(pid) {
-                let (x, y, vx, vy) = (p.pos.x, p.pos.y, p.vel.x, p.vel.y);
-                self.events.push(GameEvent::ProjectileSpawn {
-                    tick,
-                    id: pid,
-                    weapon: WEAPON_PLATFORM_GUN,
-                    owner: id,
-                    x,
-                    y,
-                    vx,
-                    vy,
-                });
-            }
+        let pid = self
+            .projectiles
+            .spawn(WEAPON_PLATFORM_GUN, id, origin, heading, now);
+        if let Some(p) = self.projectiles.get(pid) {
+            let (x, y, vx, vy) = (p.pos.x, p.pos.y, p.vel.x, p.vel.y);
+            self.events.push(GameEvent::ProjectileSpawn {
+                tick,
+                id: pid,
+                weapon: WEAPON_PLATFORM_GUN,
+                owner: id,
+                x,
+                y,
+                vx,
+                vy,
+            });
         }
-        self.platform_ammo[i] = left - rounds;
-        self.platform_ready_at[i] = now + crate::constants::GUN_PLATFORM_COOLDOWN;
+        // One round, one bullet. `left > 0` was checked above, so this cannot wrap.
+        self.platform_ammo[i] = left - 1;
+        self.platform_barrel[i] = (barrel + 1) % GUN_PLATFORM_BARRELS;
+        self.platform_ready_at[i] = due.max(now - SIM_DT) + GUN_PLATFORM_FIRE_INTERVAL;
         Ok(())
+    }
+
+    /// May this platform fire a round at `now`? (T21.43)
+    ///
+    /// **The one copy of the platform's clock.** `fire_platform` refuses on it and
+    /// a riding bot asks it before pressing, so the two cannot drift into a bot
+    /// that presses on ticks the platform refuses. Half a tick of slack absorbs
+    /// `round_time`'s float accumulation — see `fire_platform`. An id that is not
+    /// a platform is never ready.
+    pub fn platform_ready(&self, platform: u8, now: f32) -> bool {
+        self.platform_ready_at
+            .get(platform as usize)
+            .is_some_and(|due| now + crate::constants::SIM_DT * 0.5 >= *due)
     }
 
     /// Rounds left in a platform, or `None` for an id that is not one.
@@ -4017,6 +4048,10 @@ impl World {
             h.update(&ammo.to_le_bytes());
             h.update(&ready.to_le_bytes());
         }
+        // T21.43: the barrel a held stream fires next decides where the next
+        // round leaves the muzzle, so it is state. `REPLAY_VERSION` 9.
+        h.update(&(self.platform_barrel.len() as u32).to_le_bytes());
+        h.update(&self.platform_barrel);
 
         h.update(&(self.items.len() as u32).to_le_bytes());
         for it in self.items.iter() {
@@ -4464,6 +4499,8 @@ mod state_hash_coverage {
             // simulation. See the fold in `state_hash`.
             platform_ammo: _,
             platform_ready_at: _,
+            // T21.43. Hashed: it decides which barrel the next round leaves.
+            platform_barrel: _,
             round_time: _,
             tick: _,
             phase: _,
@@ -9855,21 +9892,22 @@ mod mount_wiring {
     }
 }
 
-/// T21.11C: the barrage and the magazine, in a real `World`.
-///
 /// The mount fixtures in `mount_wiring` prove you can get on one. These prove
-/// the gun: that a volley is `GUN_PLATFORM_BARRAGE` rounds of the right weapon,
-/// that they come out of the platform's magazine and not the player's bag, and
-/// that an empty platform is dead scenery rather than a despawned one.
+/// the gun: that holding the trigger is a stream of single rounds from the
+/// barrels in turn (T21.43), that they come out of the platform's magazine and
+/// not the player's bag, and that an empty platform is dead scenery rather than
+/// a despawned one.
 #[cfg(test)]
 mod platform_gun {
     use super::*;
     use crate::constants::{
-        MapScale, GUN_PLATFORM_AMMO, GUN_PLATFORM_BARRAGE, GUN_PLATFORM_COOLDOWN,
-        GUN_PLATFORM_MOUNT_TIME, PLAYER_H, SIM_DT,
+        MapScale, GUN_PLATFORM_AMMO, GUN_PLATFORM_BALANCE_TOLERANCE, GUN_PLATFORM_BARRELS,
+        GUN_PLATFORM_FIRE_INTERVAL, GUN_PLATFORM_FIRE_TICKS, GUN_PLATFORM_MOUNT_TIME,
+        GUN_PLATFORM_SPAM_DPS_BASIS, PLAYER_H, SIM_DT,
     };
     use crate::items::registry::{BAZOOKA, WEAPON_PLATFORM_GUN};
     use crate::map::meta::GunPlatform;
+    use crate::player::input::button;
     use crate::player::Input;
 
     fn playing() -> World {
@@ -9906,6 +9944,23 @@ mod platform_gun {
         g
     }
 
+    /// Platform rounds in a batch of events: `(x, y, vx, vy)` each.
+    fn rounds(evs: &[GameEvent]) -> Vec<(f32, f32, f32, f32)> {
+        evs.iter()
+            .filter_map(|e| match e {
+                GameEvent::ProjectileSpawn {
+                    weapon,
+                    x,
+                    y,
+                    vx,
+                    vy,
+                    ..
+                } if *weapon == WEAPON_PLATFORM_GUN => Some((*x, *y, *vx, *vy)),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn spawns(evs: &[GameEvent]) -> Vec<WeaponId> {
         evs.iter()
             .filter_map(|e| match e {
@@ -9915,11 +9970,29 @@ mod platform_gun {
             .collect()
     }
 
-    /// A volley is exactly `GUN_PLATFORM_BARRAGE` rounds of the platform's own
-    /// weapon. **Counted at both ends**: the projectiles that spawned, and the
-    /// ammo that left the magazine.
+    /// **Hold the trigger for `ticks` ticks**: a `fire` on every tick, which is
+    /// what the room does for a bot pressing FIRE and the fastest a client could
+    /// send. `buttons` is the movement input for each tick (JUMP to dismount).
+    /// Returns every platform round, in order.
+    fn hold(w: &mut World, ticks: usize, buttons: u8) -> Vec<(f32, f32, f32, f32)> {
+        let mut out = Vec::new();
+        for _ in 0..ticks {
+            let now = w.round_time;
+            let _ = w.fire(0, now);
+            out.extend(rounds(&w.drain_events()));
+            let seq = w.tick + 10_000;
+            w.queue_input(0, Input::new(seq, buttons, 0));
+            w.step(SIM_DT);
+            out.extend(rounds(&w.drain_events()));
+        }
+        out
+    }
+
+    /// **One click is one round** of the platform's own weapon — and the control
+    /// for every held count below. Counted at both ends: the events, the
+    /// projectile store and the magazine.
     #[test]
-    fn one_volley_is_a_barrage_of_the_platforms_own_weapon() {
+    fn one_click_is_one_round_of_the_platforms_own_weapon() {
         let mut w = playing();
         let g = mounted(&mut w);
         let before = w.platform_ammo(g.id).expect("a platform");
@@ -9927,134 +10000,164 @@ mod platform_gun {
 
         let live_before = w.projectiles.iter().count();
         w.fire(0, 100.0).expect("a mounted player can fire");
-        let evs = w.drain_events();
-        let fired = spawns(&evs);
-
+        let fired = spawns(&w.drain_events());
         assert_eq!(
-            fired.len(),
-            GUN_PLATFORM_BARRAGE as usize,
-            "a volley spawned {} rounds, not {GUN_PLATFORM_BARRAGE}",
-            fired.len()
+            fired,
+            vec![WEAPON_PLATFORM_GUN],
+            "one click fired {fired:?}"
         );
-        assert!(
-            fired.iter().all(|wid| *wid == WEAPON_PLATFORM_GUN),
-            "a volley fired something other than the platform gun: {fired:?}"
-        );
-        // The other end: the projectile store agrees with the events.
         assert_eq!(
             w.projectiles.iter().count() - live_before,
-            GUN_PLATFORM_BARRAGE as usize,
-            "the events and the projectile store disagree about the volley"
+            1,
+            "the events and the projectile store disagree about the click"
+        );
+        assert_eq!(w.platform_ammo(g.id), Some(before - 1));
+    }
+
+    /// **Held for N ticks, `N / GUN_PLATFORM_FIRE_TICKS` rounds (± 1), and the
+    /// barrels turn over.** The control is the click above — one call, one
+    /// round — so "held fires many" is the hold, not a click that fires many.
+    #[test]
+    fn holding_fires_a_stream_one_round_per_interval_from_the_barrels_in_turn() {
+        let mut w = playing();
+        let g = mounted(&mut w);
+        let n = 90usize;
+        let fired = hold(&mut w, n, 0);
+        let want = n / GUN_PLATFORM_FIRE_TICKS as usize;
+        assert!(
+            fired.len().abs_diff(want) <= 1,
+            "held {n} ticks and fired {} rounds, not {want} ± 1",
+            fired.len()
         );
         assert_eq!(
             w.platform_ammo(g.id),
-            Some(before - GUN_PLATFORM_BARRAGE),
-            "the magazine did not lose exactly one volley"
+            Some(GUN_PLATFORM_AMMO - fired.len() as u16),
+            "one round did not cost one bullet"
         );
-    }
 
-    /// The volley is a **fan**: four rounds, four different headings.
-    #[test]
-    fn a_volley_spreads_rather_than_stacking_on_one_heading() {
-        let mut w = playing();
-        mounted(&mut w);
-        w.fire(0, 100.0).expect("fired");
-        let evs = w.drain_events();
-        let headings: Vec<i64> = evs
+        // The barrels: a heading pattern with period `GUN_PLATFORM_BARRELS`,
+        // and that many distinct headings — quantised, so float noise is not
+        // what makes them distinct.
+        let headings: Vec<i64> = fired
             .iter()
-            .filter_map(|e| match e {
-                GameEvent::ProjectileSpawn { vx, vy, .. } => {
-                    // Quantised, so float noise is not what makes them distinct.
-                    Some((vy.atan2(*vx) * 10_000.0) as i64)
-                }
-                _ => None,
-            })
+            .map(|(_, _, vx, vy)| (vy.atan2(*vx) * 10_000.0).round() as i64)
             .collect();
-        assert_eq!(headings.len(), GUN_PLATFORM_BARRAGE as usize);
+        let b = GUN_PLATFORM_BARRELS as usize;
         let mut uniq = headings.clone();
         uniq.sort_unstable();
         uniq.dedup();
         assert_eq!(
             uniq.len(),
-            headings.len(),
-            "the volley put {} rounds on {} headings — it is not fanning",
-            headings.len(),
+            b,
+            "{} headings, not one per barrel: {uniq:?}",
             uniq.len()
         );
+        for k in b..headings.len() {
+            assert_eq!(
+                headings[k],
+                headings[k - b],
+                "round {k} broke the barrel cycle"
+            );
+        }
+        for k in 1..headings.len() {
+            assert_ne!(
+                headings[k],
+                headings[k - 1],
+                "two rounds in a row left one barrel"
+            );
+        }
+        // And from different muzzles, not one muzzle turning.
+        let mut muzzles: Vec<(i64, i64)> = fired[..b]
+            .iter()
+            .map(|(x, y, ..)| ((x * 100.0) as i64, (y * 100.0) as i64))
+            .collect();
+        muzzles.dedup();
+        assert_eq!(muzzles.len(), b, "the barrels share a muzzle");
     }
 
-    /// **The platform's clock, not the player's.** Firing twice in a tick gives
-    /// one volley; waiting out the cooldown gives another.
+    /// **The platform's clock, not the player's.** Twice in a tick is one round;
+    /// one interval later is another.
     #[test]
-    fn the_platform_has_its_own_cooldown() {
+    fn the_platform_has_its_own_clock() {
         let mut w = playing();
         let g = mounted(&mut w);
-        w.fire(0, 100.0).expect("first volley");
-        assert!(
-            w.fire(0, 100.0).is_err(),
-            "a second volley fired inside the cooldown"
+        w.fire(0, 100.0).expect("first round");
+        assert_eq!(
+            w.fire(0, 100.0),
+            Err(UseError::OnCooldown),
+            "two rounds in one tick"
         );
         assert_eq!(
             w.platform_ammo(g.id),
-            Some(GUN_PLATFORM_AMMO - GUN_PLATFORM_BARRAGE),
-            "the refused volley still spent ammo"
+            Some(GUN_PLATFORM_AMMO - 1),
+            "a refusal spent ammo"
         );
-        // The control: past the cooldown it fires again.
-        w.fire(0, 100.0 + GUN_PLATFORM_COOLDOWN * 1.5)
-            .expect("second volley after the cooldown");
-        assert_eq!(
-            w.platform_ammo(g.id),
-            Some(GUN_PLATFORM_AMMO - GUN_PLATFORM_BARRAGE * 2)
-        );
+        // The control: one interval on, it fires again.
+        w.fire(0, 100.0 + GUN_PLATFORM_FIRE_INTERVAL)
+            .expect("a round one interval later");
+        assert_eq!(w.platform_ammo(g.id), Some(GUN_PLATFORM_AMMO - 2));
     }
 
-    /// An empty platform stops firing and stays put — collision, mount and all.
+    /// **A held stream stops when the magazine is empty, and stays stopped.**
+    /// There is no reload and no refill (T21.11C, kept by T21.43): an empty
+    /// platform is empty for the rest of the round. The control is that the
+    /// same hold fired every round it had first.
+    #[test]
+    fn a_held_stream_stops_at_an_empty_magazine_and_does_not_reload() {
+        let mut w = playing();
+        let g = mounted(&mut w);
+        let left = 5u16;
+        w.platform_ammo[g.id as usize] = left;
+        let first = hold(&mut w, 60, 0);
+        assert_eq!(
+            first.len(),
+            left as usize,
+            "a magazine of {left} fired {}",
+            first.len()
+        );
+        assert_eq!(w.platform_ammo(g.id), Some(0), "the magazine went negative");
+        // Keep holding for ten seconds: no reload rule exists, so nothing comes.
+        let later = hold(&mut w, (10.0 / SIM_DT) as usize, 0);
+        assert!(
+            later.is_empty(),
+            "an empty platform fired {} more rounds",
+            later.len()
+        );
+        assert_eq!(w.fire(0, w.round_time), Err(UseError::NoAmmo));
+    }
+
+    /// An empty platform is dead scenery — collision, mount and all — and the
+    /// whole magazine is exactly `GUN_PLATFORM_AMMO` rounds.
     #[test]
     fn an_empty_platform_is_dead_scenery_not_a_despawned_one() {
         let mut w = playing();
         let g = mounted(&mut w);
-        // Drain it. **The control is that it fired at all before it ran out.**
-        //
-        // **Bounded by attempts, not by successes.** The first version counted
-        // only volleys that fired and asserted on *that* — so a build where
-        // `fire` never succeeds never advanced the counter, the guard could not
-        // trip, and the loop span forever. It did: two of these ran for
-        // **eighteen hours** on the box after a falsification made mounted fire
-        // refuse. A termination guard that the failing case cannot reach is not
-        // a guard, and this is the same shape as the rest of `CLAUDE.md`'s
-        // rules — ask what the assertion reports when the thing it names never
-        // happened at all.
-        let mut volleys = 0usize;
+        // **Bounded by attempts, not by successes** — a build where `fire` never
+        // succeeds must trip the guard, not spin (two such loops once ran for
+        // eighteen hours).
+        let mut fired = 0usize;
         let mut now = 100.0;
-        let max_attempts = (GUN_PLATFORM_AMMO as usize) + 16;
+        let max_attempts = GUN_PLATFORM_AMMO as usize + 16;
         let mut attempts = 0usize;
         while w.platform_ammo(g.id) != Some(0) {
             attempts += 1;
             assert!(
                 attempts <= max_attempts,
-                "the magazine never emptied: {attempts} attempts, {volleys} volleys fired, \
-                 {:?} rounds left",
-                w.platform_ammo(g.id)
+                "the magazine never emptied: {attempts} attempts, {fired} fired"
             );
             if w.fire(0, now).is_ok() {
-                volleys += 1;
+                fired += 1;
             }
-            now += GUN_PLATFORM_COOLDOWN * 1.5;
+            now += GUN_PLATFORM_FIRE_INTERVAL * 1.5;
         }
-        assert_eq!(
-            volleys,
-            (GUN_PLATFORM_AMMO / GUN_PLATFORM_BARRAGE) as usize,
-            "{GUN_PLATFORM_AMMO} rounds at {GUN_PLATFORM_BARRAGE} a volley is not {volleys} volleys"
-        );
+        assert_eq!(fired, GUN_PLATFORM_AMMO as usize);
 
-        // Empty: it refuses, and spawns nothing.
         w.drain_events();
         assert!(w.fire(0, now).is_err(), "an empty platform still fired");
         assert!(
             spawns(&w.drain_events()).is_empty(),
             "an empty platform spawned a round"
         );
-        // And it is still there, still mountable, still standable.
         assert_eq!(
             w.map.meta.gun_platforms.len(),
             crate::constants::GUN_PLATFORMS
@@ -10067,6 +10170,84 @@ mod platform_gun {
         ));
     }
 
+    /// **Dismounting mid-stream stops it.** Dismounting by the real rule —
+    /// holding jump for `GUN_PLATFORM_MOUNT_TIME` — while the trigger stays
+    /// held the whole time. The control is that the stream was running.
+    #[test]
+    fn dismounting_mid_stream_stops_the_stream() {
+        let mut w = playing();
+        mounted(&mut w);
+        let before = hold(&mut w, 20, 0);
+        assert!(
+            !before.is_empty(),
+            "the stream never started, so its stopping proves nothing"
+        );
+
+        let limit = (GUN_PLATFORM_MOUNT_TIME * 3.0 / SIM_DT) as usize;
+        let mut off = false;
+        for _ in 0..limit {
+            hold(&mut w, 1, button::JUMP);
+            if !w.player(0).expect("there").mount.is_mounted() {
+                off = true;
+                break;
+            }
+        }
+        assert!(off, "holding jump never dismounted");
+        let after = hold(&mut w, 60, 0);
+        assert!(
+            after.is_empty(),
+            "{} platform rounds after dismounting",
+            after.len()
+        );
+    }
+
+    /// **The round ending stops it** (T21.30 froze input in `Ended`). Control:
+    /// the stream was running up to the phase change.
+    #[test]
+    fn the_round_ending_stops_the_stream() {
+        let mut w = playing();
+        mounted(&mut w);
+        let before = hold(&mut w, 20, 0);
+        assert!(!before.is_empty(), "the stream never started");
+        w.set_phase(RoundPhase::Ended);
+        let after = hold(&mut w, 60, 0);
+        assert!(
+            after.is_empty(),
+            "{} platform rounds after the round ended",
+            after.len()
+        );
+        assert_eq!(w.fire(0, w.round_time), Err(UseError::RoundOver));
+    }
+
+    /// **Balance, against the measured basis rather than the constant** (T21.43).
+    ///
+    /// `GUN_PLATFORM_SPAM_DPS_BASIS` is the damage per second T21.11C's volley
+    /// gave a spam-clicker, measured before the change by this same harness —
+    /// a `fire` on every tick for ten seconds. This measures the held stream the
+    /// same way and asserts the ratio, so moving the interval, the damage or the
+    /// grace rule out of the ±20 % band goes red here even though every other
+    /// test is pinned to the constants and would move with them.
+    #[test]
+    fn the_held_stream_is_balanced_against_its_measured_basis() {
+        let mut w = playing();
+        mounted(&mut w);
+        let secs = 10.0f32;
+        let fired = hold(&mut w, (secs / SIM_DT).round() as usize, 0);
+        let damage = crate::weapons::defs::def(WEAPON_PLATFORM_GUN)
+            .expect("the platform gun")
+            .damage;
+        let dps = fired.len() as f32 * damage / secs;
+        let ratio = dps / GUN_PLATFORM_SPAM_DPS_BASIS;
+        println!(
+            "held: {} rounds in {secs} s, {dps} DPS, basis {GUN_PLATFORM_SPAM_DPS_BASIS}, ratio {ratio:.3}",
+            fired.len()
+        );
+        assert!(
+            (ratio - 1.0).abs() <= GUN_PLATFORM_BALANCE_TOLERANCE,
+            "held DPS {dps} is {ratio:.3}× the measured basis {GUN_PLATFORM_SPAM_DPS_BASIS}"
+        );
+    }
+
     /// Ammo is **per platform**, so a second occupant finds what the first left.
     #[test]
     fn the_magazine_belongs_to_the_platform_not_the_occupant() {
@@ -10077,17 +10258,15 @@ mod platform_gun {
         let left = w.platform_ammo(g.id).expect("a platform");
         assert!(left < GUN_PLATFORM_AMMO);
 
-        // First player leaves; second takes it and finds it as it was left.
         w.player_mut(0).expect("there").mount.mounted = None;
         w.player_mut(1).expect("there").mount.mounted = Some(g.id);
         assert_eq!(w.platform_ammo(g.id), Some(left));
         w.fire(1, 200.0).expect("the second occupant fired");
         assert_eq!(
             w.platform_ammo(g.id),
-            Some(left - GUN_PLATFORM_BARRAGE),
+            Some(left - 1),
             "the second occupant got a fresh magazine"
         );
-        // And the other platforms are untouched — one magazine each.
         for other in &w.map.meta.gun_platforms {
             if other.id != g.id {
                 assert_eq!(
@@ -10133,11 +10312,9 @@ mod platform_gun {
         assert!(w.platform_ammo(g.id).expect("a platform") < GUN_PLATFORM_AMMO);
 
         // **The control**: unmounted, the same call fires the bazooka out of the
-        // bag — so "the platform fired" is about the mount, not about a fire
-        // path that never works.
+        // bag — so "the platform fired" is about the mount.
         let mut w2 = playing();
         w2.player_mut(0).expect("there").inventory.add(BAZOOKA, 4);
-        w2.select_slot(0, 0);
         let slot = w2
             .player(0)
             .expect("there")
@@ -10156,43 +10333,22 @@ mod platform_gun {
         );
     }
 
-    /// A partial volley when the magazine cannot fill one: three rounds left
-    /// fires three, and does not go negative.
+    /// Determinism across a **held stream**: the same seed and the same inputs
+    /// give the same hash after the barrels have turned over many times.
     #[test]
-    fn a_short_magazine_fires_what_is_left_and_stops_at_zero() {
-        let mut w = playing();
-        let g = mounted(&mut w);
-        let short = GUN_PLATFORM_BARRAGE - 1;
-        w.platform_ammo[g.id as usize] = short;
-        w.drain_events();
-        w.fire(0, 100.0).expect("fired");
-        let fired = spawns(&w.drain_events());
-        assert_eq!(
-            fired.len(),
-            short as usize,
-            "a magazine of {short} fired {} rounds",
-            fired.len()
-        );
-        assert_eq!(w.platform_ammo(g.id), Some(0), "the magazine went negative");
-    }
-
-    /// Determinism: the same seed and the same inputs give the same hash after
-    /// several volleys. The magazine is in the hash, so a drifted one shows up.
-    #[test]
-    fn firing_is_deterministic_across_two_identical_worlds() {
+    fn a_held_stream_is_deterministic_across_two_identical_worlds() {
         let run = || {
             let mut w = playing();
             mounted(&mut w);
-            let mut now = 100.0;
-            for _ in 0..5 {
-                let _ = w.fire(0, now);
-                now += GUN_PLATFORM_COOLDOWN * 1.5;
-                w.step(SIM_DT);
-                w.drain_events();
-            }
-            w.state_hash()
+            let fired = hold(&mut w, 91, 0);
+            (fired.len(), w.state_hash())
         };
-        assert_eq!(run(), run(), "two identical runs diverged");
+        let (a, b) = (run(), run());
+        assert!(
+            a.0 > GUN_PLATFORM_BARRELS as usize,
+            "the stream never turned the barrels over"
+        );
+        assert_eq!(a, b, "two identical held streams diverged");
     }
 
     /// The magazine is **in** the hash — asserted directly, because a field the
@@ -10206,7 +10362,23 @@ mod platform_gun {
         assert_ne!(
             a.state_hash(),
             b.state_hash(),
-            "spending a round left the state hash unchanged"
+            "spending a round left the hash unchanged"
+        );
+    }
+
+    /// **The barrel is in the hash** (T21.43), like the scheduler's stream
+    /// position: two worlds identical in every visible field whose turrets are
+    /// on different barrels fire their next round from different muzzles.
+    #[test]
+    fn the_barrel_is_covered_by_the_state_hash() {
+        let mut a = playing();
+        let b = playing();
+        assert_eq!(a.state_hash(), b.state_hash(), "the fixture worlds differ");
+        a.platform_barrel[0] = (a.platform_barrel[0] + 1) % GUN_PLATFORM_BARRELS;
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "turning the barrel left the hash unchanged"
         );
     }
 }

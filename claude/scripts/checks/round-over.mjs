@@ -21,9 +21,10 @@
  *    over" forever. `docs/72` §C3: "If it does not, the client returns to the title."
  * 3. **Item 2.** Quick matching again lands in the same room (it is not started and
  *    the TTL is the shipped one), and the map is built on a different seed.
- * 4. **Item 1, the control.** The same lone human voting **inside** the window reads
- *    "Voted" only once the server says so, and gets a new round — so (2) is about
- *    the vote, not a client that leaves every results screen.
+ * 4. **Item 1, the control.** The same lone human voting **inside** the window gets a
+ *    new round — so (2) is about the vote, not a client that leaves every results
+ *    screen. Since T21.38 it comes on the vote, not at the close: one human is every
+ *    human, and the three bots do not count ("0 of 1" in (2) shows they are not).
  *
  * The instruments: the rendered DOM (`#hud-timer`, `.results-count`,
  * `.results-again`, `#start-game`), and `debug().phase` only where the phase itself
@@ -136,6 +137,19 @@ if (!/^Vote closes in \d+ s$/.test(count1 ?? '')) {
   fail(`the results countdown does not say what it counts: ${JSON.stringify(count1)}`)
 } else ok(`the window counts down in words: "${count1}"`)
 
+// T21.38: the tally reaches the screen, and the three bots are not in it. "0 of 1"
+// is both halves at once — a tally that counted bots would read "0 of 4", and one
+// that never arrived reads "" (the `null` a missing field parses to).
+await page
+  .waitForFunction(() => document.querySelector('.results-tally')?.textContent !== '', null, {
+    timeout: 5_000,
+  })
+  .catch(() => {})
+const tally1 = await text('.results-tally')
+if (tally1 !== '0 of 1 player wants a rematch') {
+  fail(`one human and three bots, nobody voted, and the tally reads ${JSON.stringify(tally1)}`)
+} else ok(`the tally counts the one human and no bots: "${tally1}"`)
+
 await page
   .waitForSelector('#start-game', { timeout: (ENDED_SECONDS + 15) * 1000 })
   .then(() => ok('the window closed with no vote and the player is back on the title'))
@@ -161,18 +175,22 @@ else ok(`same room, new map: seed ${seed1} -> ${seed2}`)
 await toResults('round two')
 
 // 4. Item 1, the control: vote inside the window.
+//
+// T21.38: a lone human is every human, so the server restarts **on the vote** rather
+// than at the window's close (R3). That also means "Voted" may never be on screen —
+// the results screen goes as the new round arrives — so the button's wording is
+// `rematch.mjs`'s to assert, where a second human holds the window open.
+//
+// The early restart is asserted against the window's own clock as the player sees
+// it: the seconds the countdown read just before the click. A restart that waited
+// for the close would take all of them.
+const secsAtClick = Number((await text('.results-count'))?.match(/(\d+) s$/)?.[1] ?? NaN)
+const clickedAt = Date.now()
 await page.click('.results-again')
-await page
-  .waitForFunction(() => document.querySelector('.results-again')?.textContent === 'Voted', null, {
-    timeout: 10_000,
-  })
-  .then(() => ok('the vote inside the window reads "Voted" once the server counts it'))
-  .catch(async () => fail(`the counted vote never read "Voted": ${await text('.results-again')}`))
-const count2 = await text('.results-count')
-if (!/^New round in \d+ s$/.test(count2 ?? '')) {
-  fail(`a counted vote does not say a round is coming: ${JSON.stringify(count2)}`)
-} else ok(`a counted vote counts down to the round: "${count2}"`)
-
+const EARLY_MARGIN_S = 3
+if (!(secsAtClick > EARLY_MARGIN_S * 2)) {
+  fail(`too little of the window left to tell early from on-time: ${secsAtClick} s`)
+}
 await page
   .waitForFunction(
     () => {
@@ -185,7 +203,14 @@ await page
     null,
     { timeout: (ENDED_SECONDS + 15) * 1000 },
   )
-  .then(() => ok('a lone human who voted inside the window got a new round'))
+  .then(() => {
+    const took = (Date.now() - clickedAt) / 1000
+    if (took < secsAtClick - EARLY_MARGIN_S) {
+      ok(`a lone human's yes started a new round in ${took.toFixed(1)} s, with ${secsAtClick} s of window left`)
+    } else {
+      fail(`the new round waited for the window: ${took.toFixed(1)} s after a vote with ${secsAtClick} s left`)
+    }
+  })
   .catch(async () => fail(`no new round after a counted vote: ${(await dbg())?.phase}`))
 if (await page.evaluate(() => !!document.querySelector('#start-game'))) {
   fail('a player whose vote carried was sent to the title')
