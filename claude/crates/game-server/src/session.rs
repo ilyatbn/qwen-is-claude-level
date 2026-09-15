@@ -913,7 +913,17 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                             if let Some(id) = sessions.player_of(socket.id) {
                                 let yes =
                                     p.get("restart").and_then(|v| v.as_bool()).unwrap_or(false);
-                                room.send(Command::VoteRestart(id, yes));
+                                // T21.32 item 1: the voter is told whether it counted.
+                                // A room that has gone away answers nothing, which is
+                                // "not counted" — the safe reading for a button.
+                                let (tx, rx) = tokio::sync::oneshot::channel();
+                                room.send(Command::VoteRestart(id, yes, tx));
+                                let counted = rx.await.unwrap_or(false);
+                                emit(
+                                    &socket,
+                                    "vote_counted",
+                                    &serde_json::json!({ "restart": yes, "counted": counted }),
+                                );
                             }
                         }
                     },

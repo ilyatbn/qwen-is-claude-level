@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  countdownText,
   escapeHtml,
+  voteButton,
   phaseDeadline,
   resultsView,
   secondsUntil,
@@ -125,6 +127,41 @@ describe('resultsView', () => {
   it('carries a negative score through — it is signed and may be below zero', () => {
     const v = resultsView([e({ score: -2 })], 1, false)
     expect(v.rows[0]!.score).toBe(-2)
+  })
+})
+
+describe('voteButton (T21.32 item 1)', () => {
+  it('reads Voted only for a vote the server counted', () => {
+    expect(voteButton('counted', 12)).toEqual({ label: 'Voted', disabled: true })
+    // The owner's bug: a press the server dropped must not look like a vote.
+    expect(voteButton('refused', 12).label).not.toBe('Voted')
+    expect(voteButton('pending', 12).label).not.toBe('Voted')
+  })
+
+  it('is pressable inside the window and not after it', () => {
+    // The control for the one pressable state, so "always disabled" cannot pass.
+    expect(voteButton('none', 12)).toEqual({ label: 'Play again', disabled: false })
+    expect(voteButton('none', 0)).toEqual({ label: 'Vote closed', disabled: true })
+    expect(voteButton('none', -1).disabled).toBe(true)
+  })
+})
+
+describe('countdownText (T21.32 item 1)', () => {
+  it('is a visible countdown for the window, rounded up', () => {
+    expect(countdownText('none', 19.2)).toBe('Vote closes in 20 s')
+    expect(countdownText('counted', 3.5)).toBe('New round in 4 s')
+  })
+
+  it('promises a new round only to a counted vote', () => {
+    for (const s of ['none', 'pending', 'refused'] as const) {
+      expect(countdownText(s, 10)).not.toMatch(/new round/i)
+    }
+  })
+
+  it('says the window closed rather than going blank', () => {
+    // The probe at 1173c70 read `count: ""` past the window.
+    expect(countdownText('counted', 0)).toBe('Vote closed')
+    expect(countdownText('none', -2)).toBe('Vote closed')
   })
 })
 

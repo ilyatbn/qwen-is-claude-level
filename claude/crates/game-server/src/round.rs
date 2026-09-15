@@ -67,11 +67,18 @@ impl RoundController {
 
     /// A vote is only meaningful during `Ended`; anything else is ignored rather
     /// than banked, or a player could pre-vote the next round.
-    pub fn vote(&mut self, world: &World, id: PlayerId, restart: bool) {
-        if world.phase != RoundPhase::Ended {
-            return;
+    ///
+    /// **Returns whether it was counted** (T21.32 item 1). The client used to
+    /// show "Voted" on the click, and a click after the window had closed — the
+    /// only kind a stuck results screen could produce — showed it too while this
+    /// discarded the vote. Only the server knows which side of the window a vote
+    /// landed on, so it says.
+    pub fn vote(&mut self, world: &World, id: PlayerId, restart: bool) -> bool {
+        if world.phase != RoundPhase::Ended || self.resolved {
+            return false;
         }
         self.votes.insert(id, restart);
+        true
     }
 
     pub fn forget(&mut self, id: PlayerId) {

@@ -9,11 +9,14 @@
  * input queues a burst that arrives on the next round.
  */
 import {
+  countdownText,
   escapeHtml,
   resultsView,
   shouldShowResults,
+  voteButton,
   voteSummary,
   type ResultsView,
+  type VoteState,
 } from './results-math'
 import type { ScoreEntry } from './scoreboard'
 
@@ -25,7 +28,10 @@ export interface ResultsHandlers {
 export class ResultsScreen {
   private root: HTMLElement | null = null
   private up = false
-  private voted = false
+  /** The server's word on this client's vote, not the click's (T21.32 item 1). */
+  private vote: VoteState = 'none'
+  /** The window's time left as of the last frame, so a click can be judged by it. */
+  private timeLeft = 0
   private readonly handlers: ResultsHandlers
 
   constructor(handlers: ResultsHandlers) {
@@ -39,21 +45,28 @@ export class ResultsScreen {
     entries: readonly ScoreEntry[],
   ): void {
     if (!shouldShowResults(phase)) {
-      // A new round starts with a clean slate: leaving `voted` set would grey the
+      // A new round starts with a clean slate: leaving the vote set would grey the
       // button out for the whole of the next vote.
-      if (this.up) this.voted = false
+      if (this.up) this.vote = 'none'
       this.up = false
       this.hide()
       return
     }
     this.up = true
-    this.render(resultsView(entries, timeLeft, this.voted))
+    this.timeLeft = timeLeft
+    this.render(resultsView(entries, timeLeft, this.vote === 'counted'))
+  }
+
+  /** The server's `vote_counted` answer to this client's press. */
+  voteCounted(counted: boolean): void {
+    if (this.vote === 'pending') this.vote = counted ? 'counted' : 'refused'
   }
 
   private render(view: ResultsView): void {
     const el = this.ensure()
-    el.querySelector('.results-count')!.textContent =
-      view.secondsLeft > 0 ? `${view.secondsLeft}s` : ''
+    // T21.32 item 1: a visible countdown with words, not a bare `12s` that went
+    // blank the moment the window closed and left the screen up with nothing on it.
+    el.querySelector('.results-count')!.textContent = countdownText(this.vote, this.timeLeft)
     el.querySelector('.results-vote')!.textContent = voteSummary()
     el.querySelector('.results-rows')!.innerHTML = view.rows
       .map(
@@ -67,8 +80,9 @@ export class ResultsScreen {
       )
       .join('')
     const again = el.querySelector<HTMLButtonElement>('.results-again')!
-    again.disabled = this.voted
-    again.textContent = this.voted ? 'Voted' : 'Play again'
+    const button = voteButton(this.vote, this.timeLeft)
+    again.disabled = button.disabled
+    again.textContent = button.label
   }
 
   private ensure(): HTMLElement {
@@ -91,8 +105,10 @@ export class ResultsScreen {
     el.querySelector<HTMLButtonElement>('.results-again')!.addEventListener(
       'click',
       () => {
-        if (this.voted) return
-        this.voted = true
+        // The same rule the button is drawn from, so a click cannot do what the
+        // label says it will not.
+        if (voteButton(this.vote, this.timeLeft).disabled) return
+        this.vote = 'pending'
         this.handlers.onPlayAgain()
       },
     )

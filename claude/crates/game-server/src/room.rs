@@ -91,7 +91,11 @@ pub enum Command {
     /// T20.09: put one slot's stack on the ground at the player's feet.
     DropItem(PlayerId, u8),
     Fire(PlayerId),
-    VoteRestart(PlayerId, bool),
+    /// The reply says whether the vote was **counted** (T21.32 item 1): a vote
+    /// outside the `Ended` window is dropped, and the client must not show
+    /// "Voted" for it. The replay runner has nobody to tell and passes a
+    /// throwaway sender, the way `SetScale` does.
+    VoteRestart(PlayerId, bool, oneshot::Sender<bool>),
     ResyncMap(PlayerId),
     Leave(PlayerId),
     /// "Start with bots" from the lobby (§C18) — the solo path.
@@ -188,7 +192,7 @@ impl std::fmt::Debug for Command {
             Command::MoveItem(id, a, b) => write!(f, "MoveItem({id}, {a} -> {b})"),
             Command::DropItem(id, slot) => write!(f, "DropItem({id}, {slot})"),
             Command::Fire(id) => write!(f, "Fire({id})"),
-            Command::VoteRestart(id, v) => write!(f, "VoteRestart({id}, {v})"),
+            Command::VoteRestart(id, v, _) => write!(f, "VoteRestart({id}, {v})"),
             Command::ResyncMap(id) => write!(f, "ResyncMap({id})"),
             Command::Leave(id) => write!(f, "Leave({id})"),
             Command::StartWithBots(id) => write!(f, "StartWithBots({id})"),
@@ -923,7 +927,9 @@ pub fn to_command(c: &ReplayCommand) -> Command {
         ReplayCommand::MoveItem(id, f, t) => Command::MoveItem(*id, *f, *t),
         ReplayCommand::DropItem(id, slot) => Command::DropItem(*id, *slot),
         ReplayCommand::Fire(id) => Command::Fire(*id),
-        ReplayCommand::VoteRestart(id, v) => Command::VoteRestart(*id, *v),
+        ReplayCommand::VoteRestart(id, v) => {
+            Command::VoteRestart(*id, *v, tokio::sync::oneshot::channel().0)
+        }
         // A sweep and a leave have the same effect on the world; the distinction
         // is only in why it happened, which the recorder keeps for the reader.
         ReplayCommand::Leave(id) | ReplayCommand::DropUnready(id) => Command::Leave(*id),
@@ -1760,11 +1766,14 @@ impl Room {
                     }
                 }
             }
-            Command::VoteRestart(id, v) => {
+            Command::VoteRestart(id, v, reply) => {
                 self.note(R::VoteRestart(id, v));
-                if let Some(world) = self.world.as_ref() {
-                    self.round.vote(world, id, v)
-                }
+                // No world is a lobby, and a lobby has no window to vote in.
+                let counted = match self.world.as_ref() {
+                    Some(world) => self.round.vote(world, id, v),
+                    None => false,
+                };
+                let _ = reply.send(counted);
             }
             // Not recorded: a resync sends the client a fresh map and changes
             // nothing about the simulation.
@@ -2373,6 +2382,21 @@ impl Room {
             }
             crate::round::RoundOutcome::ToLobby { seed } => {
                 self.return_to_lobby(seed);
+                // **Tell them** (T21.32 item 1). This sent nothing at all, so every
+                // client in the room held `ended` and the results screen for as
+                // long as it stayed connected — "Play again does nothing" — while
+                // the room had quietly become a lobby. The world is gone by now,
+                // so the room task flushes this through `flush_lobby_events`,
+                // stamped with the seed just adopted; `time_left` is `INFINITY`,
+                // what `JoinInfo` already says for a lobby.
+                events.push(game_core::world::GameEvent::RoundState {
+                    tick: self.tick(),
+                    phase: game_core::world::RoundPhase::Lobby,
+                    time_left: f32::INFINITY,
+                });
+                // And the roster, which a lobby broadcasts on change and a match
+                // does not: the bots just left it.
+                self.note_lobby_change();
             }
         }
         events
@@ -2763,7 +2787,7 @@ impl Room {
     /// tick loop drives.
     pub fn vote_for_test(&mut self, id: PlayerId, restart: bool) {
         if let Some(world) = self.world.as_ref() {
-            self.round.vote(world, id, restart);
+            let _ = self.round.vote(world, id, restart);
         }
     }
 
