@@ -59,6 +59,12 @@ pub struct GameCore {
     projectiles: Projectiles,
     rng: ChaCha8Rng,
     weather: Weather,
+    /// The round phase the server last announced (T21.30). Read only through
+    /// `RoundPhase::accepts_input` — the server's own rule — so the mirror
+    /// stops walking the local body at the moment the server stops. `Playing`
+    /// until told otherwise, which is what the sandbox, which is never told,
+    /// always was.
+    phase: game_core::world::RoundPhase,
 }
 
 /// The sandbox's weather, driven by `weather_step`.
@@ -99,6 +105,19 @@ impl GameCore {
             projectiles: Projectiles::new(),
             rng: substream(1, "wasm"),
             weather: Weather::default(),
+            phase: game_core::world::RoundPhase::Playing,
+        }
+    }
+
+    /// The phase string off `round_state`/`welcome` (T21.30). Returns whether it
+    /// was a phase this build knows; an unknown one leaves the old phase in place.
+    pub fn set_phase(&mut self, phase: &str) -> bool {
+        match game_core::world::RoundPhase::parse(phase) {
+            Some(p) => {
+                self.phase = p;
+                true
+            }
+            None => false,
         }
     }
 
@@ -366,6 +385,15 @@ impl GameCore {
         if !p.stats.alive {
             return;
         }
+        // **T21.30, the server's rule and not a copy of it.** Once the round is
+        // over `World::apply_inputs` integrates a neutral input instead of what
+        // was held, so the mirror does the same — gravity still runs, nothing
+        // the player presses does.
+        let buttons = if self.phase.accepts_input() {
+            buttons
+        } else {
+            0
+        };
         let input = Input::new(seq, buttons, aim);
         let dt = if dt > 0.0 { dt } else { SIM_DT };
         // **`PlayerState::move_mods`, the same function the server calls**
@@ -2085,6 +2113,101 @@ mod tests {
             server_y: sp.body.pos.y,
             client_y: c[1],
         }
+    }
+
+    /// **Prediction agrees with the server across `Playing → Ended`** (T21.30).
+    ///
+    /// Reported from play: after "Round over" the local body walked on screen.
+    /// The server and the mirror hold RIGHT through the transition from the same
+    /// body on the same mask; told the phase, the mirror must end where the
+    /// server does. **The control is the mirror not told**: it must end
+    /// somewhere else, or this test cannot see the phase at all.
+    fn hold_right_across_the_round_ending(tell_the_mirror: bool) -> (f32, f32, f32) {
+        use game_core::world::RoundPhase;
+        let mut w = game_core::world::World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(1, 0, String::new());
+        let (stand_x, stand_y) = build_shelf(&mut w);
+        {
+            let p = w.player_mut(1).expect("seated");
+            p.body.pos = Vec2::new(stand_x, stand_y);
+            p.body.vel = Vec2::ZERO;
+        }
+        for seq in 0..120u32 {
+            w.queue_input(1, Input::new(seq, 0, 0));
+            w.step(SIM_DT);
+            if w.player(1).is_some_and(|p| p.body.grounded) {
+                break;
+            }
+        }
+        let mut core = GameCore::new();
+        assert!(core.load_mask(w.map.mask.w, w.map.mask.h, &rle::encode(&w.map.mask)));
+        let p = w.player(1).expect("seated");
+        assert!(
+            p.body.grounded,
+            "the server player never landed on the shelf"
+        );
+        let start_x = p.body.pos.x;
+        core.add_player(1, p.body.pos.x, p.body.pos.y);
+        core.set_player_state(
+            1,
+            p.body.pos.x,
+            p.body.pos.y,
+            p.body.vel.x,
+            p.body.vel.y,
+            p.body.grounded,
+            p.jetpack.fuel,
+            p.health,
+            p.alive,
+            p.move_mod_bits(),
+        );
+        if tell_the_mirror {
+            assert!(core.set_phase("playing"));
+        }
+        let mut seq = 1000u32;
+        for half in 0..2 {
+            if half == 1 {
+                w.set_phase(RoundPhase::Ended);
+                if tell_the_mirror {
+                    assert!(core.set_phase("ended"));
+                }
+            }
+            for _ in 0..WALK_TICKS {
+                seq += 1;
+                w.queue_input(
+                    1,
+                    Input::new(seq, game_core::player::input::button::RIGHT, 0),
+                );
+                w.step(SIM_DT);
+                core.apply_input(1, seq, game_core::player::input::button::RIGHT, 0, SIM_DT);
+            }
+        }
+        (
+            start_x,
+            w.player(1).expect("seated").body.pos.x,
+            core.player_state(1)[0],
+        )
+    }
+
+    #[test]
+    fn prediction_agrees_with_the_server_across_the_round_ending() {
+        let (start, server_x, client_x) = hold_right_across_the_round_ending(true);
+        assert!(
+            server_x - start > PLAYER_W,
+            "the control: the server player only walked {:.1} px while Playing",
+            server_x - start
+        );
+        assert!(
+            (server_x - client_x).abs() <= RECONCILE_EPSILON_PX,
+            "told the round ended, the mirror put the player at {client_x:.1} and \
+             the server at {server_x:.1}"
+        );
+        let (_, server_x, untold_x) = hold_right_across_the_round_ending(false);
+        assert!(
+            (server_x - untold_x).abs() > RECONCILE_EPSILON_PX,
+            "a mirror never told the phase still agreed ({untold_x:.1} against \
+             {server_x:.1}) — this test cannot see the phase"
+        );
     }
 
     /// The client mirror must predict a **mounted** player where the server puts

@@ -763,6 +763,18 @@ export class Core {
   }
 
   /**
+   * The round phase, as the server announced it (T21.30).
+   *
+   * `applyInput` reads it through `RoundPhase::accepts_input` — the server's own
+   * rule — so once the round is over the local body stops taking input on the
+   * same tick the server's does, instead of walking on screen and snapping back.
+   * Returns false for a phase string this build does not know.
+   */
+  setPhase(phase: string): boolean {
+    return this.inner.set_phase(phase)
+  }
+
+  /**
    * Overwrite a body from an authoritative snapshot.
    *
    * **`landingImpact` is not settable, and the type says so** (T20.11). It is
