@@ -880,16 +880,16 @@ pub static WEAPONS: &[WeaponDef] = &[
     //
     // **Appended last** (§B16), like the shovel and the flame above it.
     //
-    // A `Delivery::Bullet` with a spread of zero: the volley's fan is applied by
-    // `World::fire_platform`, which places four rounds deterministically across
-    // `GUN_PLATFORM_FAN` rather than drawing four times from the RNG. Leaving the
-    // def's own spread at 0 keeps the fan in exactly one place — a per-round
-    // random spread on top of a fixed fan would be two spreads, and the volley
+    // A `Delivery::Bullet` with a spread of zero: the spread is applied by
+    // `World::fire_platform`, which offsets each round by its barrel
+    // (`GUN_PLATFORM_BARREL_SPREAD`) rather than drawing from the RNG. Leaving the
+    // def's own spread at 0 keeps the spread in exactly one place — a per-round
+    // random spread on top of the barrels would be two spreads, and the stream
     // would stop being reproducible from the same inputs.
     //
-    // `auto: true`: the trigger is held, and the cadence is
-    // `GUN_PLATFORM_COOLDOWN` on the platform rather than this def's `cooldown`,
-    // which is why that field is 0 here.
+    // `auto: true`: the trigger is held (T21.43), and the cadence is
+    // `GUN_PLATFORM_FIRE_INTERVAL` on the platform rather than this def's
+    // `cooldown`, which is why that field is 0 here.
     WeaponDef {
         id: WEAPON_PLATFORM_GUN,
         key: "platform_gun",
@@ -903,7 +903,7 @@ pub static WEAPONS: &[WeaponDef] = &[
         // not dig either.
         blast_radius: 0.0,
         range: GUN_PLATFORM_RANGE,
-        // Zero: the platform owns the cadence — see `GUN_PLATFORM_COOLDOWN`.
+        // Zero: the platform owns the cadence — see `GUN_PLATFORM_FIRE_INTERVAL`.
         cooldown: 0.0,
         muzzle_speed: GUN_PLATFORM_MUZZLE_SPEED,
         gravity_scale: 0.0,

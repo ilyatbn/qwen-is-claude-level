@@ -453,6 +453,8 @@ export interface Constants {
   GUN_PLATFORMS: number
   GUN_PLATFORM_W: number
   GUN_PLATFORM_H: number
+  /** T21.43 — seconds between two platform rounds while the trigger is held. */
+  GUN_PLATFORM_FIRE_INTERVAL: number
   BATTERY_MAX: number
   MAX_HEALS: number
   QUICK_SLOTS: number

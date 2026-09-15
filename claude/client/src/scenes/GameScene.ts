@@ -71,7 +71,7 @@ import { WorldView } from '../render/worldView'
 import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
 import { Crosshair, LocalInput } from '../input/localInput'
-import { MAX_FRAME_DT, RepeatFire } from '../input/autoFire'
+import { MAX_FRAME_DT, RepeatFire, repeatSource } from '../input/autoFire'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
@@ -1731,15 +1731,21 @@ export class GameScene extends Phaser.Scene {
     const held = this.input.activePointer.leftButtonDown()
     const sel = this.slots[this.selectedSlot] ?? null
     const profile = this.world?.items.fireProfileForKey(sel?.key ?? null) ?? null
-    const shots = this.repeatFire.update({
-      dt,
-      held,
-      weapon: profile,
-      // An empty stack stops the repeat here as well as at the server, so a
-      // player holding the button on a spent weapon is not sending refused
-      // requests at the weapon's cadence for as long as they hold it.
-      hasAmmo: (sel?.count ?? 0) > 0,
-    })
+    // T21.43: a rider's trigger fires the platform, so the repeat follows it.
+    // Mounted is the **server's** word, off the snapshot — the same field
+    // `debug().mount.mounted` reads — so a mount the server refused cannot
+    // start a stream here.
+    const mine = this.mirror.players.get(this.me)
+    const mounted = mine ? flag(mine.moveMods, MOVE_MOD.mounted) : false
+    // An empty stack stops the repeat here as well as at the server, so a
+    // player holding the button on a spent weapon is not sending refused
+    // requests at the weapon's cadence for as long as they hold it.
+    const source = repeatSource(
+      mounted,
+      { weapon: profile, count: sel?.count ?? 0 },
+      C().GUN_PLATFORM_FIRE_INTERVAL,
+    )
+    const shots = this.repeatFire.update({ dt, held, ...source })
     for (let i = 0; i < shots; i++) this.conn.sendFire()
   }
 
@@ -2973,7 +2979,7 @@ export class GameScene extends Phaser.Scene {
            *
            * The reason both exist at all: a player who spawns on a platform
            * mounts it by standing still, and a mounted player's trigger pull
-           * fires a volley of `GUN_PLATFORM_BARRAGE` instead of one rocket.
+           * fires the platform's gun instead of one rocket (a stream while held, T21.43).
            * With nothing reporting the mount, that arrives at a check as
            * "10 rockets left the muzzle for 4 trigger pulls" — a true count
            * blaming the wrong mechanism.
@@ -3157,6 +3163,11 @@ export class GameScene extends Phaser.Scene {
             (p) => ({ id: p.id, kind: p.kind, x: p.x, y: p.y }),
           ),
           projectilesLastFrame: self.world?.ordnance.drawnProjectilesLastFrame ?? 0,
+          // T21.43: every projectile the layer ever **started drawing**, by kind.
+          // Cumulative, because a platform round lives ~0.6 s and a live count
+          // polled once a few hundred ms misses most of a stream — the same
+          // reason `observed.projectileSpawns` only goes up.
+          projectilesAddedByKind: { ...(self.world?.projectilesAddedByKind ?? {}) },
           // Tracers are not "live" in the same sense — a hitscan shot is an
           // instant, and the tracer is a decaying record of it — so this is how
           // many the layer is currently drawing, against `observed.hitscans`

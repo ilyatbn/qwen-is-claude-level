@@ -433,7 +433,7 @@ mod tests {
     ///
     /// T21.11C's `platform_gun` holds its trigger too, but it is not one of
     /// §F3's automatics and cannot be: there is no item for it, it never enters
-    /// an inventory, and its cadence is `GUN_PLATFORM_COOLDOWN` on the platform
+    /// an inventory, and its cadence is `GUN_PLATFORM_FIRE_INTERVAL` on the platform
     /// rather than this def's `cooldown`. It is named here rather than filtered
     /// out silently, so a *carried* weapon cannot join the auto set without this
     /// list moving.

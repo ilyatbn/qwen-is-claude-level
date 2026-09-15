@@ -383,8 +383,8 @@ const mountBefore = await mountOf(a)
 if (mountBefore?.mounted !== false) {
   fail(
     `ana is mounted on a gun platform before the firing loop (platform ` +
-      `${mountBefore?.platformUnderfoot}) — every trigger pull below fires a volley of ` +
-      `GUN_PLATFORM_BARRAGE, not one rocket. ${await nearPlatforms()}`,
+      `${mountBefore?.platformUnderfoot}) — every trigger pull below fires the platform ` +
+      `gun, not one rocket. ${await nearPlatforms()}`,
   )
 }
 
@@ -567,8 +567,8 @@ const mountAfter = await mountOf(a)
 if (mountAfter?.mounted !== false) {
   fail(
     `ana mounted a gun platform during the firing loop (platform ` +
-      `${mountAfter?.platformUnderfoot}) — the rocket count below is volleys of ` +
-      `GUN_PLATFORM_BARRAGE, not rockets. She did not press a key, so the blast or the ` +
+      `${mountAfter?.platformUnderfoot}) — the rocket count below is platform ` +
+      `rounds, not rockets. She did not press a key, so the blast or the ` +
       `crater moved her onto it. ${await nearPlatforms()}`,
   )
 }

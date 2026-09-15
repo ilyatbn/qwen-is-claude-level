@@ -1581,6 +1581,9 @@ pub fn constants_json() -> String {
         GUN_PLATFORMS => c::GUN_PLATFORMS,
         GUN_PLATFORM_W => c::GUN_PLATFORM_W,
         GUN_PLATFORM_H => c::GUN_PLATFORM_H,
+        // T21.43: the cadence the client repeats `fire` at while a mounted
+        // player holds the button — the platform's clock, not a TS copy of it.
+        GUN_PLATFORM_FIRE_INTERVAL => c::GUN_PLATFORM_FIRE_INTERVAL,
         BATTERY_MAX => c::BATTERY_MAX,
         MAX_HEALS => c::MAX_HEALS,
         QUICK_SLOTS => c::QUICK_SLOTS,

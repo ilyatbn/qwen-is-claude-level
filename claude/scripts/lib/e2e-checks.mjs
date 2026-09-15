@@ -237,6 +237,11 @@ export const CHECKS = [
   // narration (placed − ended); one number would have passed for the whole
   // period the bug existed (§A39).
   { name: 'ordnance', file: 'scripts/checks/ordnance.mjs', standalone: true },
+  // T21.43 — a mounted player holding the button fires a stream from the gun
+  // platform: the server's spawns, the rounds drawn and the interval against
+  // each other, with a single click as the control. Standalone: mounting is the
+  // server's word, and only a real round can give it.
+  { name: 'platform-autofire', file: 'scripts/checks/platform-autofire.mjs', standalone: true },
   // T20.13: what happens *after* a round ends — one player votes to replay, one
   // exits and quick-matches. Standalone: it needs two clients and a real round
   // driven to `Ended`, which is the sequence nothing else in the suite reaches.

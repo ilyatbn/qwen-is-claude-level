@@ -61,6 +61,29 @@ export interface RepeatInput {
   hasAmmo: boolean
 }
 
+/**
+ * What holding the button repeats this frame (T21.43).
+ *
+ * **A rider fires the platform, not the bag** — the server routes a mounted
+ * player's `fire` to the platform (`World::fire`), so the client's repeat has to
+ * follow the same switch or it paces the platform at the cadence of whatever
+ * weapon sits in a bag the rider cannot reach. That was the bug: holding while
+ * mounted fired one volley, or repeated at the smg's rate if one was selected.
+ *
+ * The platform's cadence is `GUN_PLATFORM_FIRE_INTERVAL`, passed in from the
+ * Rust constant rather than copied. Its ammo is not on the wire, so a mounted
+ * hold never blocks on it: an empty platform refuses at the server, at the
+ * interval's rate, which is below the one-request-a-frame flood §F3 prevents.
+ */
+export function repeatSource(
+  mounted: boolean,
+  bag: { weapon: AutoFireWeapon | null; count: number },
+  platformInterval: number,
+): { weapon: AutoFireWeapon | null; hasAmmo: boolean } {
+  if (mounted) return { weapon: { auto: true, cooldown: platformInterval }, hasAmmo: true }
+  return { weapon: bag.weapon, hasAmmo: bag.count > 0 }
+}
+
 export class RepeatFire {
   /** Seconds since the last shot this press produced. */
   private since = 0

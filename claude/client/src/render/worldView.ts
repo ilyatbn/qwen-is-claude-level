@@ -93,6 +93,12 @@ export class WorldView {
   private readonly container: Phaser.GameObjects.Container
   private readonly core: Core
   private readonly tracked = new Map<number, ProjectileKind>()
+  /**
+   * T21.43: how many projectiles of each kind the layer has **started** drawing,
+   * ever. Only goes up, so a check polling a fast stream cannot miss a round
+   * that lived and died between two polls.
+   */
+  readonly projectilesAddedByKind: Partial<Record<ProjectileKind, number>> = {}
   private readonly weaponKeys: string[]
 
   /**
@@ -239,6 +245,7 @@ export class WorldView {
       if (!this.tracked.has(p.id)) {
         this.tracked.set(p.id, kind)
         this.ordnance.addProjectile(p.id, kind, p.x, p.y)
+        this.projectilesAddedByKind[kind] = (this.projectilesAddedByKind[kind] ?? 0) + 1
       }
       this.ordnance.moveProjectile(p.id, p.x, p.y)
     }

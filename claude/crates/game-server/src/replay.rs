@@ -128,7 +128,14 @@ pub const HEADER_BYTES: usize = 45;
 /// on a neutral input, and `fire`/`use_item`/`drop_item` refuse. A v7 recording
 /// of any round that reached `Ended` with input still arriving would diverge at
 /// the first hash inside the results window.
-pub const REPLAY_VERSION: u16 = 8;
+///
+/// **9 (T21.43, the gun platform fires while held)**: a mounted `Fire` spawns one
+/// round from the next barrel every `GUN_PLATFORM_FIRE_INTERVAL` instead of a
+/// volley of four every 0.12 s, and `platform_barrel` joined the hashed platform
+/// block. No new tag — the same `Fire` commands — so it is the silent divergence
+/// case: a v8 recording would disagree at the **first** checkpoint, because the
+/// hash folds the barrel bytes in whether or not anyone mounted.
+pub const REPLAY_VERSION: u16 = 9;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///
