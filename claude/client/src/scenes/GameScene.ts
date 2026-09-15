@@ -90,6 +90,7 @@ import { Bars } from '../ui/bars'
 import { InventoryPanel } from '../ui/inventory'
 import { EscapeMenu, handleEscape } from '../ui/escapeMenu'
 import { OptionsPanel } from '../ui/optionsPanel'
+import { hasWebGL } from '../render/shaders'
 import { DebugMode, FpsMeter } from '../ui/debugMode'
 import { isFpsCounter, isHighQuality, onFpsCounterChange, setHighQuality } from '../ui/settings'
 import { devSurface } from '../dev'
@@ -2274,6 +2275,8 @@ export class GameScene extends Phaser.Scene {
         this.escapeMenu?.toggle(true)
       },
       storage: localStorage,
+      // T21.33: on the Canvas renderer High Quality has nothing to run, so the row says so.
+      shadersAvailable: hasWebGL(this),
     })
     this.escapeMenu = new EscapeMenu({
       onResume: () => this.escapeMenu?.toggle(false),

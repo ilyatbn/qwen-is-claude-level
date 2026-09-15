@@ -85,15 +85,65 @@ function ridgeTexture(scene: Phaser.Scene, layer: number, seed: number, height: 
   ctx.fillStyle = '#ffffff'
   ctx.beginPath()
   ctx.moveTo(0, height)
-  for (let x = 0; x < w; x++) {
-    ctx.lineTo(x, height - profile[x]! * height)
+  // **To `x = w`, not `w - 1`** (T21.33). Closing at `w - 1` left the texture's last column
+  // empty, which is a one-texel transparent seam at every wrap of the TileSprite, crest to base
+  // — the owner's "thin dark vertical line", sky showing through a white Canvas ridge. The
+  // profile wraps over `w`, so `profile[0]` is the height at `x = w`.
+  for (let x = 0; x <= w; x++) {
+    ctx.lineTo(x, height - profile[x % w]! * height)
   }
-  ctx.lineTo(w - 1, height)
+  ctx.lineTo(w, height)
   ctx.closePath()
   ctx.fill()
   tex.refresh()
   return key
 }
+
+/** `0xRRGGBB` and an alpha as a CSS colour. */
+function rgba(rgb: number, a: number): string {
+  return `rgba(${(rgb >> 16) & 255},${(rgb >> 8) & 255},${rgb & 255},${a})`
+}
+
+/**
+ * T21.33: colour a white-baked ridge in place, for the **Canvas** renderer.
+ *
+ * Canvas's `batchSprite` has no tint at all, so `setTint` leaves the ridge the white it was
+ * baked in. `source-in` replaces the colour and keeps the destination's alpha exactly, so the
+ * silhouette and its antialiased crest survive any number of re-colours.
+ */
+function recolourRidge(scene: Phaser.Scene, key: string, tint: number): void {
+  const tex = scene.textures.get(key)
+  if (!(tex instanceof Phaser.Textures.CanvasTexture)) return
+  const ctx = tex.getContext()
+  ctx.globalCompositeOperation = 'source-in'
+  ctx.fillStyle = rgba(tint, 1)
+  ctx.fillRect(0, 0, tex.width, tex.height)
+  ctx.globalCompositeOperation = 'source-over'
+}
+
+/**
+ * T21.33: paint the foot strip — the tint, opaque at the top, transparent at the bottom.
+ *
+ * Replaces `Graphics.fillGradientStyle`, which is **WebGL-only**: Phaser's Canvas Graphics
+ * renderer skips the gradient command, so the rect after it came out solid in whatever colour
+ * the context last held — the owner's full-width navy bar. A texture is drawn the same way by
+ * both renderers, and the colour is baked in because Canvas cannot tint it either.
+ */
+function paintFoot(tex: Phaser.Textures.CanvasTexture, tint: number): void {
+  const ctx = tex.getContext()
+  ctx.clearRect(0, 0, tex.width, tex.height)
+  const g = ctx.createLinearGradient(0, 0, 0, tex.height)
+  // The first row is the **overlap**, opaque, and the fade starts under it — see `update`.
+  g.addColorStop(0, rgba(tint, 1))
+  g.addColorStop(1 / tex.height, rgba(tint, 1))
+  g.addColorStop(1, rgba(tint, 0))
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, tex.width, tex.height)
+  tex.refresh()
+}
+
+/** Per layer instance, so two live scenes never paint one shared strip. */
+let footSerial = 0
 
 export class ParallaxLayer {
   private readonly scene: Phaser.Scene
@@ -107,12 +157,19 @@ export class ParallaxLayer {
    * carved frame). The first fix was a solid rectangle to the bottom of the screen,
    * and it was worse: below the base it filled the entire sky with mountain colour
    * (seen in `skins-ingame`'s frames). A short fade softens the edge and leaves the
-   * sky beneath. One Graphics at the near ridge's depth, so the layer set does not
+   * sky beneath. One object at the near ridge's depth, so the layer set does not
    * change; not drawn on the title, which keeps its old picture.
+   *
+   * **T21.33: an Image of a baked strip, not a Graphics gradient** — see `paintFoot`.
    */
-  private skirt: Phaser.GameObjects.Graphics | null = null
+  private skirt: Phaser.GameObjects.Image | null = null
+  private footTex: Phaser.Textures.CanvasTexture | null = null
+  /** The tint `footTex` was last painted in, so it is re-painted only when that moves. */
+  private footTint = -1
   private skirtY = 0
   private skirtH = 0
+  /** Asked once: Canvas cannot tint, so the ridges are re-coloured in their textures there. */
+  private readonly webgl: boolean
   private seed = 0
   private themeId = 0
   private ridgeKeys: string[] = []
@@ -147,6 +204,7 @@ export class ParallaxLayer {
 
   constructor(scene: Phaser.Scene, seed = 0, themeId = 0) {
     this.scene = scene
+    this.webgl = hasWebGL(scene)
     const c = C()
     const w = c.VIEWPORT_W
     const h = c.VIEWPORT_H
@@ -189,7 +247,17 @@ export class ParallaxLayer {
         .setDepth(i === c.MOUNTAIN_LAYERS - 1 ? DEPTH.parallax : DEPTH.parallaxFar + i)
       this.ridges.push(ts)
       if (i === c.MOUNTAIN_LAYERS - 1) {
-        this.skirt = scene.add.graphics().setScrollFactor(0).setDepth(ts.depth).setVisible(false)
+        // One texel wide, one row per world px of the fade plus one overlap row on top.
+        const key = `__ridge_foot_${footSerial++}`
+        this.footTex = scene.textures.createCanvas(key, 1, Math.ceil(c.MOUNTAIN_FOOT_FADE) + 1) ?? null
+        // `pixelArt` makes every texture NEAREST; a ramp wants to be smooth (the glow's reason).
+        this.footTex?.setFilter(Phaser.Textures.FilterMode.LINEAR)
+        this.skirt = scene.add
+          .image(0, 0, key)
+          .setOrigin(0, 0)
+          .setScrollFactor(0)
+          .setDepth(ts.depth)
+          .setVisible(false)
       }
       this.lastRidgeTint.push(-1)
     }
@@ -289,6 +357,9 @@ export class ParallaxLayer {
         const old = this.ridgeKeys[i]
         this.ridges[i]!.setTexture(key)
         this.ridgeKeys[i] = key
+        // A new texture is white until coloured: on Canvas the colour lives in the texture, so
+        // the guard in `update` must not think this one is already painted.
+        this.lastRidgeTint[i] = -1
         // Phaser's texture manager is global; a ridge left behind is a leak of a
         // megapixel canvas per regenerate (T3.05's lesson, in a new place).
         if (old && old !== key && this.scene.textures.exists(old)) this.scene.textures.remove(old)
@@ -334,6 +405,17 @@ export class ParallaxLayer {
       const tint = mix(ink, skyBottom, c.MOUNTAIN_HAZE[i]!)
       if (tint !== this.lastRidgeTint[i]) {
         ts.setTint(tint)
+        // T21.33: `setTint` does nothing on Canvas. There the texture itself takes the colour,
+        // and the TileSprite is told, or it keeps drawing the pattern it built from the white.
+        // **`setTexture` again, not `dirty = true`**: the Canvas TileSprite copies its frame into
+        // a pattern and only `setFrame` (which `setTexture` calls) rebuilds that copy — `dirty`
+        // alone redraws the old white pattern (measured: 2955 of 2955 ridge px still white).
+        // WebGL keeps the free tint: re-uploading the strip each time the sky moves is the cost
+        // the header rules out.
+        if (!this.webgl) {
+          recolourRidge(this.scene, this.ridgeKeys[i]!, tint)
+          ts.setTexture(this.ridgeKeys[i]!)
+        }
         this.lastRidgeTint[i] = tint
       }
       ts.tilePositionX = scrollX * c.MOUNTAIN_PARALLAX[i]!
@@ -353,14 +435,24 @@ export class ParallaxLayer {
         const top = view.top + (lay.top + lay.h) / z
         const h = c.MOUNTAIN_FOOT_FADE
         const onScreen = top < view.top + view.h && top + h > view.top
-        this.skirt.clear()
         this.skirt.setVisible(lay.worldBase !== null && onScreen && !this.hidden)
         this.skirtY = top
         this.skirtH = h
         if (this.skirt.visible) {
-          // Opaque at the base, transparent at the bottom of the fade.
-          this.skirt.fillGradientStyle(tint, tint, tint, tint, 1, 1, 0, 0)
-          this.skirt.fillRect(view.left, top, view.w, h)
+          // Opaque at the base, transparent at the bottom of the fade — baked, so both renderers
+          // draw the same strip (T21.33).
+          if (this.footTex && tint !== this.footTint) {
+            paintFoot(this.footTex, tint)
+            this.footTint = tint
+          }
+          // **One texel of overlap, reaching up under the ridge's base row.** Measured on Canvas:
+          // the TileSprite's internal canvas takes an integer height (172.8 → 172), so the ridge
+          // stopped short of `top` and one full screen row of sky ran across the whole width
+          // between ridge and foot. The overlap row is opaque ridge colour, so on WebGL, where
+          // the two meet exactly, it lands on pixels already that colour. `skirtY` stays the
+          // fade's start, which is still the base.
+          const texel = this.footTex ? h / (this.footTex.height - 1) : 0
+          this.skirt.setPosition(view.left, top - texel).setDisplaySize(view.w, h + texel)
         }
       }
     }
@@ -427,6 +519,9 @@ export class ParallaxLayer {
     for (const r of this.ridges) r.destroy()
     this.skirt?.destroy()
     this.skirt = null
+    // The strip is per instance, and the texture manager is global.
+    if (this.footTex) this.scene.textures.remove(this.footTex.key)
+    this.footTex = null
     this.ridges.length = 0
     this.cloudShader?.destroy()
     this.cloudShader = null
@@ -494,15 +589,34 @@ export class ParallaxLayer {
     ridge: RidgeLayout & { spriteY: number; spriteH: number }
     /** Whether `setVisible(false)` has hidden the band (a check's control frame). */
     hidden: boolean
-    /** T21.20's foot under the near ridge, camera space: `null` if never built. */
+    /**
+     * T21.20's foot under the near ridge, camera space: `null` if never built. `y` is where the
+     * fade starts (the base); the strip also reaches one opaque texel above it (T21.33).
+     */
     skirt: { y: number; h: number; visible: boolean } | null
     /** The camera-space rect that fills the screen, so a check can convert. */
     view: { left: number; top: number; w: number; h: number }
+    /**
+     * T21.33: per ridge, the viewport x of every on-screen column showing the texture's
+     * **last** column — the wrap seam, which was a transparent line until the silhouette
+     * was closed at `w`. Viewport px, one entry per wrap; empty if none is on screen.
+     */
+    seams: number[][]
   } {
     const v = this.view()
     const c = C()
     const sy = c.VIEWPORT_H / v.h
+    const z = this.scene.cameras.main.zoom || 1
+    // A TileSprite shows texture column (x + tilePositionX) mod W at local x.
+    const seams = this.ridges.map((ts) => {
+      const out: number[] = []
+      const W = c.RIDGE_TEX_W
+      const first = (((W - 1 - ts.tilePositionX) % W) + W) % W
+      for (let x = first; x < v.w; x += W) out.push(x * z)
+      return out
+    })
     return {
+      seams,
       seed: this.seed,
       ridges: this.ridges.length,
       span: v.w,
