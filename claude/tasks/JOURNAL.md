@@ -6355,3 +6355,12 @@ Merged in `integration`, not in the shared tree, so no builder's run saw files m
 kept removed); T21.31 × T21.33 in `main.ts`, `parallax.ts`, `SandboxScene.ts`; T21.30 × T21.32 in `GameScene.ts`'s `round_state`.
 Breakage no branch could see alone: `showSkins` lacked T21.34's required `wings` flag; the merge dropped T21.33's `hasWebGL` import and
 left its `sy` (fed only the retired cloud band). Each caught by the merged typecheck. Fast check green before the full gate.
+
+## After the batch gate — three reds on merged `6b87225` (gate 1007 s, 55/58)
+`living-sky` (`d0cd9c9`): not clouds × Canvas — the camera was still easing toward the aim lead, shifting the portal, player and
+turret 2 px between toggle photos 300 ms apart (1.30 %) while "drift" was read from back-to-back shots. Now holds the rig with
+`watch`, measures drift over the same 300 ms, fails if the camera moved; falsified by a frame dim (94.9 %) and by removing the hold.
+`smoke-shader` + `gate-ground` (`0354ef6`): smoke's "painted differently" was a band mean (2.8 in the gate, 20.3 alone, floor 4);
+now `pixels.mjs::comparePhotos`, shared with `fire-shader`: 78–82 % vs 0.0 % control. `gate-ground` was not load: patches shot while
+the camera eased (pad 2 moved 42 px) under a live 120 s sky; now snap, bake wait, freeze and a daylight pin, references 178–262 apart.
+Net smoke 1/25 once while two builders started, then 25/25 at load 8 — second such sighting today, not parked. fog-shader red once alone (0.136 vs 0.200).
