@@ -6413,3 +6413,9 @@ Each half falsified red alone. Open: `drawClouds` still culls on last frame's `w
 fixed screen aims assumed a centred player; the camera drew it at (762, 272), so the spray hit rock 20 px away. `clearAim` picks a
 mask-clear line from the drawn position; a spray death is a named failure. `crates`: crate behind a wall, walker stuck under an overhang;
 now digs with the shovel (level, then down) when a lane is blocked; pickup asserts unchanged. Both falsified; 6 related checks green alone.
+
+## Gate green — `63050cf`, 2026-09-16 (coordinator)
+`./scripts/check.sh` exit 0 in **974 s**: cargo tests green, client 952/952, e2e **58/58**, net smoke 25/25, assets ok; min free 8.5 GB.
+Covers T21.38 (votes), T21.39 (toxic rain off), T21.40 (smaller gates, seated or not placed), T21.43 (platform hold-to-fire) and
+their three follow-ups (ridge camera lag, ordnance aim, crates dig). Load peaked ~27 in the browser stage — every busy process was the
+gate's own Chrome/game-server under `claude/`, none from a worktree. Run detached (`setsid`), waited on by exact PID.
