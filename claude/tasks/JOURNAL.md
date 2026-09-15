@@ -6303,3 +6303,55 @@ Pads on peaks had air in their protected strip (3/40 columns); it is rock now �
 (first version 40/96), sweep 0 unseated. `gate-ground` pixel check on seed 7: 6/6, falsified red with the fill off. Every fill,
 filter and check falsified at its live site. No `--changed` browser stage: full browser pass deferred to the coordinator's gate.
 Flakes seen under load, green alone: checksum mask test, lobby tombstone skin, in_progress room_created, vitest backdrop RPC timeout.
+
+## T21.31 — real clouds, and rain that falls from them (A `657211a`, B `95d7b11`)
+A: world-space Graphics clouds (seeded, varied, wind drift, above a sky floor) on Canvas and WebGL; the cloud shader retired.
+B: ambient rain from cloud undersides, swept to the first rock; toxic rain is one streak per real server drop.
+Checks: `clouds` + `clouds-canvas`, `cloud-rain` (new); `living-sky`, `weather-visible`, `ambient-rain`, `toxic-rain-game` rewritten.
+Nine plants red at live sites; a count-only toxic check passed a 200 px offset plant, so a per-streak position check was added.
+Open for the owner: dry cloudless valleys; the green toxic tint still shows in caves.
+
+## T21.32 — the round after the round (`734932f`, `c9eb267`, `b76bc44`, `275d670`)
+`return_to_lobby` now announces `round_state{lobby}` (client → title, `docs/72` §C3); votes answered `vote_counted`; countdown in words.
+Room seed advances on the return to the lobby (`advance_seed`, shared with `restart`); `FIXED_SEED` reproduces the sequence.
+Warmup's `round_state` was lost at the menu→game handover (lobby/0:00 for all of warmup); latched. `round-over.mjs` added.
+The unreaped room did not reproduce (live-reaper test, browser probe); log "a human arrived; room is off the clock" added.
+Open: title vs menu after a failed vote; `vote_counted` is not yet in `docs/40`.
+
+## T21.33 — the Canvas renderer (`f0af2f1`)
+Owner's browser runs Phaser CANVAS. Bar: WebGL-only `fillGradientStyle` foot → baked 1×N strip. Ridges white (no Canvas tint) →
+texture recoloured `source-in` + `setTexture`. Sky line: `ridgeTexture` closed at `w-1` (transparent seam) → closes at `w`.
+One-row sky gap under the ridge (TileSprite 172.8 → 172) → one texel of overlap. `?renderer=canvas`, check `canvas-renderer`.
+High Quality disabled with a note when there is no WebGL.
+
+## T21.34 — wings that hover (`7c314a3`, `6da06d7`)
+Hover with no vertical input; UP climbs, DOWN descends at `WINGS_FLY_SPEED`. T21.03's tests rewritten with controls; wasm prediction holds UP.
+Wings drawn procedurally off the snapshot's wings bit (no art exists); the sandbox drew boots for any move-mod bit — each reads its own.
+`wings-visible` needed a wing-palette assertion: change-only passed with the wings hidden (camera drift). Jet shows `JET —` while flying.
+
+## T21.35 — void, Docker recordings, mine size (`6da6530`, `f1b0476`, `c6acf0b`)
+`void` fired in the same turn as the mouse move, so the server used the old aim; now waits for `inputsSent` + 2 ticks; un-parked.
+Docker: host `claude/recordings` root:root 755 vs server uid 10001 → one-shot `recordings-init`; startup logs `replay_dir` and probes it.
+Verified on `t2135-*` containers only. `MINE_W`/`MINE_H` → `constants.rs`. Asked afterwards: its docker commands did not remove the
+owner's containers — they were already gone before its first command.
+
+## T21.36 — fire you can see, and a true escape menu (`40293ad`)
+Flat flames were sized from `LOOK.flame.r` 7 (~8 px vs `FLAME_RADIUS` 10): 108/192 burn points painted. `flameDiscs` covers the radius at
+minimum flicker; `fire-shader` asserts 192/192 both modes. The flicker moved off `performance.now()` so a frozen restore is exact.
+`escape-menu` now asserts default Off, persistence and a live renderer switch (beam quads On 1 / Off 0); un-parked after 6 green solo runs.
+
+## T21.37 — tinted skins on Canvas (`ece3e84`, `88793ac`)
+Canvas has no sprite tint, so skin 5 drew as skin 0: `canvasTint.ts` bakes a tint-multiplied atlas copy once per (atlas, tint).
+`canvas-tinted-skin`: 1.84x warmer than skin 0 in one frame (tint predicts 1.96x); bake skipped → 1.00x red.
+`skins-ingame` was red on the base: bodies 61.0 every run against a ground bar of 26.8–47.4 that moved with the sky. Now per-body pixels.
+
+## backdrop-real yields inside its scans (`e9472b5`)
+The per-map split did not remove the cause: each file ran as one loop-less stretch (13–153 s), past vitest's 60 s worker RPC timeout.
+Scans now `await setImmediate` every ~100 ms: longest stretch 2.73 s. Under 12 CPU hogs: before 37/44 with 2 `onTaskUpdate` errors, after 44/44.
+Yielding made the 5 s per-test timeout live for the first time; the suite's describe sets 600 s. Assertions and console lines identical.
+
+## Integration — nine branches merged, 2026-09-15 (coordinator)
+Merged in `integration`, not in the shared tree, so no builder's run saw files move. Conflicts: `flaky-test.md` (two un-parks, both
+kept removed); T21.31 × T21.33 in `main.ts`, `parallax.ts`, `SandboxScene.ts`; T21.30 × T21.32 in `GameScene.ts`'s `round_state`.
+Breakage no branch could see alone: `showSkins` lacked T21.34's required `wings` flag; the merge dropped T21.33's `hasWebGL` import and
+left its `sy` (fed only the retired cloud band). Each caught by the merged typecheck. Fast check green before the full gate.
