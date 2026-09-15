@@ -6409,3 +6409,7 @@ red alone too, both on fixed-seed maps T21.40 rebuilt — with a builder. Net sm
 so the ridge trailed a moving camera by one frame's travel (probe: 9, 8, 6, 5, 5, 3 px). T21.40's maps just left the player falling at
 the read. Fix: `parallax-math.ts::liveViewY` (scroll, clamp, round as `preRender`) in `layout()` — `GameScene` too — and rig first.
 Each half falsified red alone. Open: `drawClouds` still culls on last frame's `worldView` (harmless).
+`ordnance` + `crates` (`6af9de1`): both fixtures, no game bug. `ordnance`: the player died to its own flamethrower (cause self, 119 → 0) —
+fixed screen aims assumed a centred player; the camera drew it at (762, 272), so the spray hit rock 20 px away. `clearAim` picks a
+mask-clear line from the drawn position; a spray death is a named failure. `crates`: crate behind a wall, walker stuck under an overhang;
+now digs with the shovel (level, then down) when a lane is blocked; pickup asserts unchanged. Both falsified; 6 related checks green alone.
