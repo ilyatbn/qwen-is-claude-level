@@ -94,6 +94,54 @@ export function ensureBootTexture(textures: Phaser.Textures.TextureManager): voi
   })
 }
 
+/** Even: two 12-px halves, each wing occupying columns 2..11 of its half. */
+const WING_W = 24
+const WING_H = 16
+
+/**
+ * T21.03's unicorn wings, drawn on the body since T21.34. **One pair, not a
+ * picker**, for the boots' reason.
+ *
+ * **Procedural because there is no wing art.** Nothing under `assets/atlas`
+ * names a wing, and `../sprite_packs` has no character art at all (see the
+ * header). So this is a pale pair drawn in code, following the boots' rule: at
+ * `PLAYER_W` 16 only a changed outline reads, so the span is wider than the body
+ * and the wings stick out past both shoulders.
+ */
+export function wingArt(): AccessoryArt {
+  return { id: 0, key: '__wings_unicorn', name: 'Unicorn Wings', w: WING_W, h: WING_H }
+}
+
+/**
+ * Two swept feathered wings, one each side of a gap the torso fills.
+ *
+ * Painted **by column**, outward from the back: each column's top edge climbs
+ * one pixel per column toward the tip (the leading edge), and its bottom edge
+ * steps up two pixels every other column (the feathers, scalloped in pairs). The
+ * silhouette is a slanted band rising up and out past the shoulders — a first
+ * attempt painted by *row* and read as a striped pennant at head height.
+ * White, with a pink leading edge and lavender feather tips, so they read
+ * against both sky and rock.
+ */
+export function ensureWingTexture(textures: Phaser.Textures.TextureManager): void {
+  draw(textures, wingArt(), (c) => {
+    const half = WING_W / 2
+    for (const side of [-1, 1]) {
+      for (let dx = 2; dx <= 11; dx++) {
+        const x = side < 0 ? half - 1 - dx : half + dx
+        const top = Math.max(0, 9 - dx)
+        const bottom = WING_H - 1 - 2 * Math.floor((dx - 1) / 2)
+        c.fillStyle = WING_WHITE
+        c.fillRect(x, top, 1, bottom - top + 1)
+        c.fillStyle = WING_EDGE
+        c.fillRect(x, top, 1, 1)
+        c.fillStyle = WING_TINT
+        c.fillRect(x, bottom, 1, 1)
+      }
+    }
+  })
+}
+
 /** Art for a hat id, falling back to "none" (`docs/50` §8). */
 export function hatArt(id: number): AccessoryArt {
   return HAT_ART[id] ?? HAT_ART[0]!
@@ -113,6 +161,10 @@ const STEEL = '#7d8892'
 /** T21.02, and the brief names both: *"make them red and yellow"*. */
 const BOOT_RED = '#c8322a'
 const BOOT_YELLOW = '#f0c020'
+/** T21.34's wings: white feathers, a pink edge and a lavender band. */
+const WING_WHITE = '#f6f3ff'
+const WING_EDGE = '#ff8fd0'
+const WING_TINT = '#b9a6ff'
 const GOLD = '#d9a521'
 const LENS = '#101418'
 const GLASS = '#2f6fb0'

@@ -1140,7 +1140,19 @@ export class SandboxScene extends Phaser.Scene {
       giveBoots() {
         self.core.give(0, 26 /* IRONMAN_BOOTS */, 1)
         self.refreshHud()
-        return (self.core.playerState(0)?.moveMods ?? 0) !== 0
+        return ((self.core.playerState(0)?.moveMods ?? 0) & MOVE_MOD.boots) !== 0
+      },
+      /**
+       * Put T21.03's unicorn wings in the bag (T21.34) — `giveBoots`' sibling,
+       * for `wings-visible`'s control frame. Since T21.34 a winged player with
+       * no input **hovers**, so the body holds still between the two photos.
+       *
+       * Returns the effect, the wings bit read back through the Rust rule.
+       */
+      giveWings() {
+        self.core.give(0, 27 /* UNICORN_WINGS */, 1)
+        self.refreshHud()
+        return ((self.core.playerState(0)?.moveMods ?? 0) & MOVE_MOD.wings) !== 0
       },
       giveFlashlight() {
         // Grant only: `Core` exposes no take, and the control this needs is the
@@ -1235,7 +1247,12 @@ export class SandboxScene extends Phaser.Scene {
         // same `PlayerState::move_mod_bits`. A boolean kept beside the
         // inventory would be a second answer that drifts the first time
         // something drops an item.
-        boots: (this.core.playerState(0)?.moveMods ?? 0) !== 0,
+        //
+        // **Each off its own bit** (T21.34). This was `moveMods !== 0`, which
+        // drew boots on a player carrying only wings — the first move-mod after
+        // boots made the "any bit" test mean two things.
+        boots: ((this.core.playerState(0)?.moveMods ?? 0) & MOVE_MOD.boots) !== 0,
+        wings: ((this.core.playerState(0)?.moveMods ?? 0) & MOVE_MOD.wings) !== 0,
       })
       this.crosshair.update(body.x, body.y, aim)
       this.world.rig.follow({ x: body.x, y: body.y })
