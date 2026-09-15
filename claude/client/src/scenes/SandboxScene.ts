@@ -1392,11 +1392,13 @@ export class SandboxScene extends Phaser.Scene {
     if (!this.timeScrub) this.roundTime += dt
     // Darkness is the server's scalar in M6; here it follows the doc's formula so
     // the sandbox shows what a real round will.
+    // The camera moves **before** the sky reads it, as in `GameScene`: the ridge is placed
+    // against the camera this frame is drawn with, or it trails a moving camera by a frame.
+    this.world.rig.update(dt)
     // T21.31: last frame's weather shades the sky — grey rain clouds, the toxic deck.
     this.sky.parallax.setWeatherShade(this.world.weather.ambientIntensity, this.world.weather.toxicIntensity)
     this.sky.update(this.roundTime, darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS), C().NIGHT_DARKNESS)
 
-    this.world.rig.update(dt)
     if (this.feelEnabled) this.feel.update(dt, this.feelFrame())
     this.world.update(this.world.rig.center)
     this.frameBakes = this.world.terrain.stats.bakesThisFrame
