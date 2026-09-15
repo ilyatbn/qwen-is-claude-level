@@ -6364,3 +6364,10 @@ turret 2 px between toggle photos 300 ms apart (1.30 %) while "drift" was read f
 now `pixels.mjs::comparePhotos`, shared with `fire-shader`: 78–82 % vs 0.0 % control. `gate-ground` was not load: patches shot while
 the camera eased (pad 2 moved 42 px) under a live 120 s sky; now snap, bake wait, freeze and a daylight pin, references 178–262 apart.
 Net smoke 1/25 once while two builders started, then 25/25 at load 8 — second such sighting today, not parked. fog-shader red once alone (0.136 vs 0.200).
+
+## Batch gate green — `e8b9091`, 2026-09-15 (coordinator)
+`./scripts/check.sh` exit 0 in **1015 s**: cargo tests green, client 943/943, e2e **58/58**, net smoke 25/25, assets ok.
+Two earlier attempts were killed by the Claude Code harness ("system is running low on memory") ~2 min into `cargo test`,
+both inside `game-server/tests/integration.rs`, with **≥ 12.6 GB of 15.8 GB free** in every 5 s sample and swap flat.
+`integration.rs` alone: 7/7 in 22 s, minimum 12.5 GB free at 1 s sampling — the tests were not the cause.
+The green run was launched detached (`setsid nohup`) and waited on by exact PID; minimum free 9.1 GB over 187 samples.
