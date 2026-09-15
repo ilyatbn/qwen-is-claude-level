@@ -477,7 +477,7 @@ impl Config {
     pub fn summary(&self) -> String {
         format!(
             "bind={} scale={} generator={} max_players={} round_seconds={} \
-             room_empty_ttl={} lobby_bot_timeout={} fixed_seed={} record_replay={} debug_dump={} bots={} \
+             room_empty_ttl={} lobby_bot_timeout={} fixed_seed={} record_replay={} replay_dir={} debug_dump={} bots={} \
              bot_skill={} dev_start_health={} dev_poisoned={} dev_flashlight={} dev_smoke={} weather={:?} \
              dev_round_clock={} ready_timeout={} warmup_seconds={}",
             self.bind_addr,
@@ -491,6 +491,7 @@ impl Config {
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "random".to_string()),
             self.record_replay,
+            self.replay_dir,
             self.debug_dump,
             self.bot_count,
             self.bot_skill,
@@ -808,5 +809,17 @@ mod tests {
         assert!(!s.contains('\n'));
         assert!(s.contains(&format!("scale={}", DEFAULT_MAP_SCALE.as_str())));
         assert!(s.contains("fixed_seed=random"));
+    }
+
+    /// T21.35: the startup line says where replays go, and says the directory
+    /// that was configured — the control is that it moves with `REPLAY_DIR`.
+    #[test]
+    fn summary_names_the_replay_dir() {
+        let d = Config::from_source(empty).expect("ok");
+        assert!(d
+            .summary()
+            .contains(&format!("replay_dir={} ", d.replay_dir)));
+        let moved = from(&[("REPLAY_DIR", "/elsewhere")]).expect("ok").summary();
+        assert!(moved.contains("replay_dir=/elsewhere "), "{moved}");
     }
 }

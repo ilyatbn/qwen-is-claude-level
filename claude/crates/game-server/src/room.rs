@@ -2455,7 +2455,11 @@ impl Room {
                 self.replay = Some(w);
             }
             Err(e) => {
-                tracing::error!(target: "game::round", "could not start replay: {e}");
+                tracing::error!(
+                    target: "game::round",
+                    "could not start replay in {}: {e}",
+                    dir.display()
+                );
             }
         }
     }

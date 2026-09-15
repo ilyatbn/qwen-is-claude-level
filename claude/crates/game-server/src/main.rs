@@ -27,6 +27,26 @@ async fn main() -> ExitCode {
 
     tracing::info!(target: "game::net", "starting {}", config.summary());
 
+    // T21.35: say where replays go, and find out *now* whether they can. Rooms
+    // open their recorders at construction, so an unwritable directory was
+    // otherwise one `Permission denied` per room, after players had joined.
+    // A warning rather than an exit: recording is diagnostics, not the game.
+    if config.record_replay {
+        let dir = std::path::Path::new(&config.replay_dir);
+        match game_server::replay::probe_writable(dir) {
+            Ok(abs) => {
+                tracing::info!(target: "game::round", "recording replays to {}", abs.display())
+            }
+            Err(e) => tracing::warn!(
+                target: "game::round",
+                "RECORD_REPLAY is on but {} is not writable ({e}) — no match will be recorded. \
+                 In Docker, the host directory behind the mount must be writable by the \
+                 container's user",
+                dir.display()
+            ),
+        }
+    }
+
     let bind = config.bind_addr;
     let state = AppState::new(config);
     // The room task starts here and lives as long as the process.
