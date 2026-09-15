@@ -153,8 +153,14 @@ export class PadLayer {
       let fill: Phaser.GameObjects.Ellipse | null = null
       if (this.scene.textures.exists(GATE_KEY)) {
         const src = this.scene.textures.get(GATE_KEY).getSourceImage()
-        const gw = (src.width as number) || c.PAD_W
-        const gh = (src.height as number) || c.PAD_W
+        const sw = (src.width as number) || c.PAD_ART_W
+        const sh = (src.height as number) || c.PAD_ART_W
+        // **Drawn `PAD_ART_W` wide, whatever the texture is** (T21.28). The
+        // generator fills ground under exactly that many columns, so this is the
+        // number that makes the base sit on rock; the art's own width was a
+        // second number that happened to agree. Height keeps the art's aspect.
+        const gw = c.PAD_ART_W
+        const gh = (sh * gw) / sw
         const portal = gatePortal
         if (portal) {
           // Behind the gate and sized from the region the build derived, so the
@@ -179,7 +185,7 @@ export class PadLayer {
             .setAlpha(0)
           this.container.add(fill)
         }
-        gate = this.scene.add.image(p.x, p.y, GATE_KEY).setOrigin(0.5, 1)
+        gate = this.scene.add.image(p.x, p.y, GATE_KEY).setOrigin(0.5, 1).setDisplaySize(gw, gh)
         this.container.add(gate)
         // The ring and its glow are the **fallback**, not a second decoration:
         // with a gate standing here they would draw a second pad through its

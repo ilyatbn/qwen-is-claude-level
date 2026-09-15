@@ -153,14 +153,14 @@ describe('the gate sprite build (T21.12)', () => {
     const src = PNG.sync.read(readFileSync(SOURCE))
 
     // **Through the builder's own `targetSize`**, not a second copy of its
-    // `WIDTH_IN_PADS`. A duplicated 1.6 here makes a *correct* retune of the
-    // gate's size fail this test for the wrong reason, and pins nothing that
-    // `targetSize` does not already pin.
+    // arithmetic, so a correct retune of the gate's size cannot fail this test
+    // for the wrong reason.
     const want = targetSize(src.width, src.height)
     expect({ w: built.width, h: built.height }).toEqual(want)
-    // And the size is a function of `PAD_W`, which is the claim `targetSize`
-    // makes — asserted here so the two cannot quietly decouple.
-    expect(built.width).toBeGreaterThan(constants().get('PAD_W'))
+    // And the width **is** `PAD_ART_W` (T21.28) — the columns the generator
+    // fills ground under. A committed sprite of any other width is a gate whose
+    // base overhangs the rock it was given.
+    expect(built.width).toBe(constants().get('PAD_ART_W'))
 
     // Re-derive and compare **per pixel**, not by histogram.
     //

@@ -6293,3 +6293,13 @@ At HEAD: fire/dig/use all worked in `Ended`, an airborne player hung in the sky,
 After: `round_over_input` 3/3, wasm transition test, `round-over-frozen` green (control 37.4 px, ended 0.00 px). Four falsifications red.
 Checks: game-core 970, game-wasm 24, game-server green except integration inventory-count (green alone, load 39), clippy, fmt, tsc,
 vitest core+prediction 28/28, verify-repo. No `--changed` wall time: browser stage deferred to the coordinator's end-of-batch gate.
+
+## T21.28 — everything placed stands on ground (`103f856`, `3cf6fef`, commit 3)
+(1) Golden was blind to pads, platforms and the finished mask: a 1 px pad plant passed; digest extended. (2) Fill under every drawn
+column (gate `PAD_ART_W` 64, platform 48) within `PLAYER_H`; choose on ground first, top up, surface re-derived. Sweep: HEAD p05 0.872 /
+caves 81.8 % → 0.880 / 83.1 %, attempts unchanged; 544 of 8916 pads+platforms still perched on 284 maps (the open number).
+Pads on peaks had air in their protected strip (3/40 columns); it is rock now — checksum shooter moved off the pad, floor kept.
+(3) Decorations: client rule = rock under the art's opaque base; generator seats against `DECOR_BASE_W` 23 → 97/97 drawn on 9 maps
+(first version 40/96), sweep 0 unseated. `gate-ground` pixel check on seed 7: 6/6, falsified red with the fill off. Every fill,
+filter and check falsified at its live site. No `--changed` browser stage: full browser pass deferred to the coordinator's gate.
+Flakes seen under load, green alone: checksum mask test, lobby tombstone skin, in_progress room_created, vitest backdrop RPC timeout.

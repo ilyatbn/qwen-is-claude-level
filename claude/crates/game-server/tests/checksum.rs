@@ -272,6 +272,40 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
                     // cooldown — rather than as an obvious zero.
                     game_core::world::wield(w, id, game_core::items::registry::SMG);
                 }
+                // **Off the pads (T21.28).** The shooter spawned standing on the
+                // teleport pad at (1504, 496), and every shot in the fan below
+                // meets the ground within 15 px of its feet — inside that pad's
+                // protected rect. Before T21.28 that rect was mostly *air* (3 of
+                // its 40 columns solid, measured), so the rounds passed through
+                // and carved the slope beyond: 120 carves. With the ground filled
+                // under the gate the rect is rock (40 of 40), `carve_circle`
+                // correctly refuses it, and the same hundred shots made 35. The
+                // subject here is two clients agreeing on a carved mask, so the
+                // shooter stands where the rock can be carved: a spawn point
+                // clear of every pad's and platform's drawn base.
+                let clear = w
+                    .map
+                    .meta
+                    .spawn_points
+                    .iter()
+                    .copied()
+                    .find(|s| {
+                        w.map.meta.teleport_pads.iter().all(|p| {
+                            (s.x - p.pos.x).abs() > game_core::constants::PAD_ART_W
+                                || (s.y - p.pos.y).abs() > game_core::constants::PAD_ART_W
+                        }) && w.map.meta.gun_platforms.iter().all(|g| {
+                            (s.x - g.pos.x).abs() > game_core::constants::GUN_PLATFORM_W
+                                || (s.y - g.pos.y).abs() > game_core::constants::GUN_PLATFORM_W
+                        })
+                    })
+                    .expect("a spawn point clear of every pad and platform");
+                if let Some(p) = w.player_mut(0) {
+                    p.body.pos = game_core::math::Vec2::new(
+                        clear.x as f32,
+                        clear.y as f32 - game_core::constants::PLAYER_H / 2.0,
+                    );
+                    p.body.vel = game_core::math::Vec2::ZERO;
+                }
             }))
             .expect("room alive");
 

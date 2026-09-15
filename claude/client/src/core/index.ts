@@ -443,6 +443,8 @@ export interface Constants {
   TELEPORT_PADS: number
   PAD_W: number
   PAD_H: number
+  /** T21.28 — the gate's drawn width; the generator fills ground under exactly this. */
+  PAD_ART_W: number
   PAD_TOUCH_SLACK: number
   TELEPORT_CHARGE: number
   TELEPORT_COOLDOWN: number

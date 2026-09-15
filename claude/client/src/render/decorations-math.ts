@@ -28,6 +28,8 @@ export interface PlacedDecoration {
   y: number
   flip: boolean
   scale: number
+  /** Sprite origin y that puts the art's base row on the feet line (T21.28). */
+  originY: number
 }
 
 /** Bit 0 is flip; bits 1–2 are the scale tier (`Decoration` in map/meta.rs). */
@@ -70,21 +72,22 @@ export function frameFor(kind: number): string {
 }
 
 /**
- * Half-width of the footprint checked for support, in px.
+ * How far below a decoration's feet line rock may start and still count as the
+ * ground it stands on, in px (T21.28).
  *
- * **Not a single pixel under the centre.** `is_standable` in
- * `map/gen/surface.rs` tests support across the whole body width, and its
- * comment records why: on a slope the box rests on the highest ground beneath
- * it and the centre column is often air, so a centre-only test rejected 168 of
- * 192 sampled columns. Decorations are anchored to those same surface points, so
- * the centre-only test drops them the same way — measured at 25 of 35 on
- * seed 4242 before this was a span. The span and the threshold are the same
- * numbers surface.rs uses, so the client agrees with the generator by
- * construction rather than by a similar-looking guess.
+ * **Coordinator's ruling, 2026-09-15**: a decoration is drawn only when rock sits
+ * directly under **every column of its drawn base**, within this slack. Reported
+ * from play: *"make sure … nothing you place on the map looks like it floats"*.
+ * Pads and gun platforms get ground filled under them; decorations are pictures
+ * with no collision, so rather than stamping rock for them the client holds them
+ * to the standard instead, and a prop that would hang is simply not drawn.
+ *
+ * The rule it replaces asked for 3 solid pixels anywhere in a 16 px span, which a
+ * prop balanced on one corner of a slope satisfies. Equal to `constants.rs`'s
+ * `DECOR_GROUND_SLACK`, which the generator seats decorations with — asserted in
+ * `decorations-real.test.ts`.
  */
-export const SUPPORT_HALF_W = 8
-/** Solid pixels required in that span, matching `MIN_SUPPORT_PX` in surface.rs. */
-export const MIN_SUPPORT_PX = 3
+export const DECOR_GROUND_SLACK_PX = 2
 
 /**
  * Turn wire decorations into placements, dropping any whose ground has gone.
@@ -95,32 +98,107 @@ export const MIN_SUPPORT_PX = 3
  */
 export function place(
   decorations: WireDecoration[],
-  hasFrame: (frame: string) => boolean,
+  baseOf: (frame: string) => ArtBase | null,
   solidAt: (x: number, y: number) => boolean,
 ): PlacedDecoration[] {
   const out: PlacedDecoration[] = []
   for (const d of decorations) {
     const frame = frameFor(d.kind)
     // A theme with no art for this kind: skip it silently, by design.
-    if (!hasFrame(frame)) continue
-    if (!supported(d.x, d.y, solidAt)) continue
+    const base = baseOf(frame)
+    if (!base) continue
     const { flip, scale } = decodeFlags(d.flags)
-    out.push({ kind: d.kind, frame, x: d.x, y: d.y, flip, scale })
+    if (!supported(d.x, d.y, baseColumns(d.x, base, scale, flip), solidAt)) continue
+    out.push({ kind: d.kind, frame, x: d.x, y: d.y, flip, scale, originY: baseOriginY(base) })
   }
   return out
 }
 
-/** Is there ground under this prop's footprint, one pixel below its feet? */
+/** Alpha at or above which an atlas pixel is part of the drawn prop. */
+export const OPAQUE_ALPHA = 128
+
+/**
+ * Where a frame's art actually meets the ground (T21.28, coordinator's ruling):
+ * its lowest opaque row, and that row's opaque span, `[left, right)` in frame
+ * pixels. A tuft's transparent margins touch nothing, so they are not its base.
+ */
+export interface ArtBase {
+  frameW: number
+  frameH: number
+  row: number
+  left: number
+  right: number
+}
+
+/** Measure a frame's `ArtBase` from its alpha. `null` for a fully transparent frame. */
+export function opaqueBase(
+  alphaAt: (x: number, y: number) => number,
+  frameW: number,
+  frameH: number,
+): ArtBase | null {
+  for (let row = frameH - 1; row >= 0; row--) {
+    let left = -1
+    let right = -1
+    for (let x = 0; x < frameW; x++) {
+      if (alphaAt(x, row) >= OPAQUE_ALPHA) {
+        if (left < 0) left = x
+        right = x + 1
+      }
+    }
+    if (left >= 0) return { frameW, frameH, row, left, right }
+  }
+  return null
+}
+
+/**
+ * The sprite origin that stands the base row **on** the feet line.
+ *
+ * Eight of the eighteen frames have transparent rows under their art (measured:
+ * `decor_3`'s lowest opaque row is 13 of 18), so anchoring at the frame's bottom
+ * edge drew them hovering by their own art on perfectly flat ground.
+ */
+export function baseOriginY(base: ArtBase): number {
+  return (base.row + 1) / base.frameH
+}
+
+/**
+ * The world columns a drawn base covers, for a sprite at `x` with origin x 0.5,
+ * scaled and possibly flipped. Rounded outward, so a partly covered column counts.
+ */
+export function baseColumns(
+  x: number,
+  base: ArtBase,
+  scale: number,
+  flip: boolean,
+): { x0: number; x1: number } {
+  const half = base.frameW / 2
+  const a = flip ? half - base.right : base.left - half
+  const b = flip ? half - base.left : base.right - half
+  return { x0: Math.floor(x + a * scale), x1: Math.ceil(x + b * scale) }
+}
+
+/**
+ * Does rock sit under **every** column of the drawn base, within
+ * `DECOR_GROUND_SLACK_PX` of the feet line? (T21.28)
+ */
 export function supported(
   x: number,
   y: number,
+  cols: { x0: number; x1: number },
   solidAt: (x: number, y: number) => boolean,
 ): boolean {
-  let solid = 0
-  for (let dx = -SUPPORT_HALF_W; dx < SUPPORT_HALF_W; dx++) {
-    if (solidAt(x + dx, y + 1) && ++solid >= MIN_SUPPORT_PX) return true
+  void x
+  for (let col = cols.x0; col < cols.x1; col++) {
+    let ground = false
+    for (let dy = 1; dy <= 1 + DECOR_GROUND_SLACK_PX; dy++) {
+      if (solidAt(col, y + dy)) {
+        ground = true
+        break
+      }
+    }
+    if (!ground) return false
   }
-  return false
+  return true
 }
 
 /**

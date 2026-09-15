@@ -43,14 +43,14 @@ export const IMAGE_KEY = 'gate'
 export const IMAGE_PATH = 'images/gate.png'
 
 /**
- * How wide the gate is drawn, in pad widths.
+ * How wide the gate is built: `PAD_ART_W` (T21.28), from `constants.rs`.
  *
- * `PAD_W` is 40 and the arch has to be something a 16 px player walks *into*,
- * with the ring's hole big enough to hold them: at 1.6 the hole is about 40x44
- * world px against a 16x28 body. Wider would make the pad look like a doorway
- * for somebody else.
+ * It was `PAD_W × 1.6` here — 64, a number only this script knew, while the map
+ * generator knew only the 40 px pad and so seated gates whose stone base hung in
+ * the air. The arch still has to be something a 16 px player walks *into*: at 64
+ * the hole is about 40x44 world px against a 16x28 body. Now the generator, this
+ * build and `pads.ts` read the one constant.
  */
-const WIDTH_IN_PADS = 1.6
 
 export function targetSize(srcW, srcH, table = constants()) {
   // Through the parsed `constants.rs`, never a literal — `rust-constants.mjs`
@@ -59,8 +59,7 @@ export function targetSize(srcW, srcH, table = constants()) {
   // name — deliberately, per its own docs: a reader that answered `undefined`
   // would turn every assertion pinned to it into `undefined <= undefined`,
   // false forever and green forever.
-  const padW = table.get('PAD_W')
-  const w = Math.max(8, Math.round(padW * WIDTH_IN_PADS))
+  const w = Math.max(8, Math.round(table.get('PAD_ART_W')))
   const h = Math.max(8, Math.round((w * srcH) / srcW))
   return { w, h }
 }

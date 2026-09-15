@@ -42,6 +42,12 @@ export const CHECKS = [
   // *harness* can detect a change and, more importantly, can FAIL to detect one.
   { name: 'pixels', file: 'scripts/checks/pixels.mjs', url: '', ready: '!!document.body' },
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
+  // T21.28: rock in the rendered pixels under both ends of every gate's drawn base,
+  // against the open air above the arch as the control. Seed 7, not 4242: on 4242
+  // no asserted pad has an end the fill changes at the sampled rows, so the check
+  // could not tell the fill from its absence (measured). Seed 7 is grassland with
+  // all six pads on ground and four such ends.
+  { name: 'gate-ground', file: 'scripts/checks/gate-ground.mjs', url: '?sandbox=1&seed=7' },
   // §C0's gate: destroying terrain must change the picture, not just the mask.
   { name: 'terrain-render', file: 'scripts/checks/terrain-render.mjs', url: '?sandbox=1&seed=4242', flaky: true },
   { name: 'terrain-seed', file: 'scripts/checks/terrain-seed.mjs', url: '?sandbox=1&seed=0' },

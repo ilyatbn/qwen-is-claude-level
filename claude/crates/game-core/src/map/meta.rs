@@ -8,11 +8,15 @@
 use crate::constants::{
     MapGenerator, MapScale, BURIED_ATTEMPTS, BURIED_CLEARANCE, BURIED_OFFSET_MAX,
     BURIED_OFFSET_MIN, BURIED_SEPARATION, GUN_PLATFORMS, GUN_PLATFORM_H,
-    GUN_PLATFORM_PAD_CLEARANCE, GUN_PLATFORM_SPAWN_CLEARANCE, GUN_PLATFORM_W, PAD_H, PAD_W,
-    TELEPORT_PADS, WIND_MAX,
+    GUN_PLATFORM_PAD_CLEARANCE, GUN_PLATFORM_SPAWN_CLEARANCE, GUN_PLATFORM_W, PAD_ART_W, PAD_H,
+    PAD_W, PLAYER_H, PLAYER_W, STANDING_GROUND_FILL_DEPTH, TELEPORT_PADS, WIND_MAX,
 };
+use crate::constants::{DECOR_BASE_W, DECOR_GROUND_SLACK};
 use crate::map::gen::components::SealedPocket;
-use crate::map::gen::objects::{clear_of_objects, PlacedObject, WhenStarved};
+use crate::map::gen::objects::{
+    clear_of_objects, column_gap, fill_column, PlacedObject, WhenStarved,
+};
+use crate::map::gen::surface::extract_surface;
 use crate::map::gen::{
     generate_terrain_with,
     spawns::{choose_separated, choose_spawns},
@@ -313,6 +317,18 @@ pub fn generate_full(
     buried_secret: u64,
     generator: MapGenerator,
 ) -> Map {
+    generate_full_with(requested_seed, scale, buried_secret, generator, true)
+}
+
+/// `generate_full`, with T21.28's ground fill switchable — `false` only for the
+/// tests' control, which is the same choices with the bug left in.
+pub(crate) fn generate_full_with(
+    requested_seed: u64,
+    scale: MapScale,
+    buried_secret: u64,
+    generator: MapGenerator,
+    fill: bool,
+) -> Map {
     let outcome = generate_terrain_with(requested_seed, scale, generator);
     let params = scale.params();
     let objects = outcome.objects.clone();
@@ -349,7 +365,51 @@ pub fn generate_full(
     // Pads come from the same sampler as the spawns, on their own sub-stream, so
     // that adding them cannot move a spawn point (asserted in `pads_do_not_move_
     // the_spawn_points`).
-    let teleport_pads = choose_pads(&outcome.mask, &outcome.surface, &clear, outcome.seed);
+    // **T21.28: on ground, or refused.** A pad is chosen only where every column
+    // of the gate's *drawn* base has ground within `STANDING_GROUND_FILL_DEPTH`
+    // — deeper is a cliff edge, and propping a gate over it on a pillar is the
+    // wrong fix — and where the ground the fill will add cannot reach into a
+    // spawn's body. A filter over candidates, drawing no randomness, so the
+    // `"pads"` stream is untouched. Two fallbacks, because a pad count short of
+    // `TELEPORT_PADS` is a worse map than a pad over a drop: spawn-safe only,
+    // then the old set. The sweep counts every map that got that far.
+    let bodies: Vec<Point> = spawn_points.clone();
+    let teleport_pads = {
+        let grounded = standing_candidates(
+            &outcome.mask,
+            &outcome.surface,
+            &clear,
+            PAD_ART_W,
+            &bodies,
+            &[],
+            true,
+        );
+        let spawn_safe = standing_candidates(
+            &outcome.mask,
+            &outcome.surface,
+            &clear,
+            PAD_ART_W,
+            &bodies,
+            &[],
+            false,
+        );
+        let chosen = seat_then_top_up(
+            &outcome.surface,
+            [&grounded, &spawn_safe, &clear],
+            TELEPORT_PADS,
+            |c| {
+                choose_pads(&outcome.mask, &outcome.surface, c, outcome.seed)
+                    .into_iter()
+                    .map(|p| p.pos)
+                    .collect()
+            },
+        );
+        chosen
+            .into_iter()
+            .enumerate()
+            .map(|(i, pos)| TeleportPad { id: i as u8, pos })
+            .collect::<Vec<_>>()
+    };
 
     // And the gun platforms, on a **third** sub-stream — but not for the reason
     // this comment used to give.
@@ -406,12 +466,48 @@ pub fn generate_full(
             })
         })
         .collect();
-    let gun_platforms = choose_gun_platforms(
-        &outcome.mask,
-        &outcome.surface,
-        &clear_of_pads,
-        outcome.seed,
-    );
+    // The same rule for the platforms, whose drawn base is `GUN_PLATFORM_W`
+    // (`platforms.ts` builds the texture that wide). Neither a spawn nor a pad
+    // may be buried by a platform's fill, and no pad's fill may bury the platform.
+    let pad_feet: Vec<(Point, i32)> = teleport_pads.iter().map(|p| (p.pos, PAD_ART_W)).collect();
+    let mut platform_bodies = bodies.clone();
+    platform_bodies.extend(teleport_pads.iter().map(|p| p.pos));
+    let gun_platforms = {
+        let grounded = standing_candidates(
+            &outcome.mask,
+            &outcome.surface,
+            &clear_of_pads,
+            GUN_PLATFORM_W,
+            &platform_bodies,
+            &pad_feet,
+            true,
+        );
+        let body_safe = standing_candidates(
+            &outcome.mask,
+            &outcome.surface,
+            &clear_of_pads,
+            GUN_PLATFORM_W,
+            &platform_bodies,
+            &pad_feet,
+            false,
+        );
+        let chosen = seat_then_top_up(
+            &outcome.surface,
+            [&grounded, &body_safe, &clear_of_pads],
+            GUN_PLATFORMS,
+            |c| {
+                choose_gun_platforms(&outcome.mask, &outcome.surface, c, outcome.seed)
+                    .into_iter()
+                    .map(|g| g.pos)
+                    .collect()
+            },
+        );
+        chosen
+            .into_iter()
+            .enumerate()
+            .map(|(i, pos)| GunPlatform { id: i as u8, pos })
+            .collect::<Vec<_>>()
+    };
 
     let buried_slots = choose_buried_slots(
         &outcome.mask,
@@ -421,10 +517,42 @@ pub fn generate_full(
         params.buried_slots as usize,
     );
 
-    let decorations = choose_decorations(&outcome.surface, outcome.seed, theme);
+    // **T21.28: the ground under every standing thing, after every choice.** Last,
+    // so it cannot move a spawn, a pad, a platform, a buried slot or an object —
+    // `the_fill_moves_no_spawn_pad_platform_or_object` holds that.
+    let mut mask = outcome.mask;
+    let mut filled = 0u64;
+    if fill {
+        for p in &teleport_pads {
+            filled += fill_standing_ground(&mut mask, p.pos, PAD_ART_W);
+        }
+        for g in &gun_platforms {
+            filled += fill_standing_ground(&mut mask, g.pos, GUN_PLATFORM_W);
+        }
+    }
 
-    let coarse = CoarseGrid::build(&outcome.mask);
-    let chunk_count = (outcome.mask.chunks_x() * outcome.mask.chunks_y()) as usize;
+    // **And the surface is re-derived from the filled mask.** It was extracted
+    // before the fill, and the fill both removes air where a point on a slope
+    // beside a gate kept its body box and adds support where there was none — so
+    // lava vents, respawn's fallback and bots, which read the points as places a
+    // body fits, would be reading the unfilled map. The same two calls both
+    // generators make (`extract_surface`, then `traversal::analyse`), so
+    // `surface_points_match_the_final_mask` holds by construction rather than by a
+    // second rule. Skipped when nothing was added, which leaves an unfilled map
+    // exactly as it was.
+    let (surface_points, report) = if filled > 0 {
+        let surface = extract_surface(&mask);
+        let report = crate::map::gen::traversal::analyse(&mask, &surface, &objects);
+        (surface, report)
+    } else {
+        (outcome.surface, outcome.report)
+    };
+    let traversable_fraction = report.traversable_fraction;
+    let largest_component: Vec<u32> = report.largest_component.iter().map(|&i| i as u32).collect();
+    let decorations = choose_decorations(&mask, &surface_points, outcome.seed, theme);
+
+    let coarse = CoarseGrid::build(&mask);
+    let chunk_count = (mask.chunks_x() * mask.chunks_y()) as usize;
 
     Map {
         meta: MapMeta {
@@ -437,24 +565,163 @@ pub fn generate_full(
             spawn_points,
             teleport_pads,
             gun_platforms,
-            surface_points: outcome.surface,
+            surface_points,
             objects,
             buried_slots,
             decorations,
             wind,
-            traversable_fraction: outcome.report.traversable_fraction,
-            largest_component: outcome
-                .report
-                .largest_component
-                .iter()
-                .map(|&i| i as u32)
-                .collect(),
+            traversable_fraction,
+            largest_component,
         },
-        mask: outcome.mask,
+        mask,
         coarse,
         dirty: vec![false; chunk_count],
         dirty_list: Vec::new(),
     }
+}
+
+/// The columns a thing drawn `drawn_w` wide, centred on `pos`, stands on (T21.28).
+///
+/// `pads.ts` and `platforms.ts` both draw with origin (0.5, 1) at the feet line,
+/// so the sprite covers `[pos.x - w/2, pos.x - w/2 + w)` — the same columns
+/// `footprint::rect` uses for the protected rock, widened to the picture.
+fn drawn_columns(pos: Point, drawn_w: i32) -> std::ops::Range<i32> {
+    let x0 = pos.x - drawn_w / 2;
+    x0..x0 + drawn_w
+}
+
+/// Whether every column of a drawn base has ground within
+/// `STANDING_GROUND_FILL_DEPTH` below the feet line (T21.28).
+pub fn stands_on_ground(mask: &Mask, pos: Point, drawn_w: i32) -> bool {
+    drawn_columns(pos, drawn_w).all(|col| {
+        column_gap(mask, col, pos.y + 1, STANDING_GROUND_FILL_DEPTH) <= STANDING_GROUND_FILL_DEPTH
+    })
+}
+
+/// T21.28: extend the ground up to meet a pad's or a platform's **drawn** base.
+///
+/// Reported from play with a screenshot of a gate on a slope: *"a couple pixels
+/// are touching it in the center but the rest are in the air"*, and *"same for
+/// all other objects you place on the map"*. For every column of the drawn base,
+/// fill straight down from the row under the feet line to the first solid pixel,
+/// within `STANDING_GROUND_FILL_DEPTH` — `objects.rs::fill_column`, the rule the
+/// scenery fill (T21.21) uses, shared rather than copied. Never upward, never into
+/// the sprite's own box, never into a wall; flat ground gains nothing. Returns the
+/// pixels added. Draws no randomness.
+pub fn fill_standing_ground(mask: &mut Mask, pos: Point, drawn_w: i32) -> u64 {
+    drawn_columns(pos, drawn_w)
+        .map(|col| fill_column(mask, col, pos.y + 1, STANDING_GROUND_FILL_DEPTH))
+        .sum()
+}
+
+/// Choose `count` standing spots, **as many as possible from the first tier** (T21.28).
+///
+/// `tiers` are candidate sets from strictest to loosest: on ground and safe, safe
+/// only, anything. The sampler (`choose`, the thing's own sub-stream) runs on the
+/// strictest tier; if it seats fewer than `count` — farthest-point sampling over a
+/// handful of grounded points often seats four of six — the shortfall is **topped
+/// up** from the next tier by farthest-point from what is already chosen, rather
+/// than throwing the grounded ones away and re-drawing everything from the loose
+/// set. That all-or-nothing first version left 835 of 8934 pads and platforms
+/// perched over a drop across the 1000-seed sweep, on 288 maps. The top-up draws
+/// no randomness, so the sub-streams are untouched.
+fn seat_then_top_up<'a>(
+    surface: &[Point],
+    tiers: [&'a [usize]; 3],
+    count: usize,
+    choose: impl Fn(&'a [usize]) -> Vec<Point>,
+) -> Vec<Point> {
+    // The sampler's own most-relaxed separation, which the pad and platform
+    // tests hold every pair to; a top-up closer than this would be the sampler's
+    // rule broken by the code sitting next to it.
+    let floor = crate::constants::SPAWN_MIN_SEPARATION
+        * crate::map::gen::spawns::RELAX_FACTOR
+            .powi(crate::map::gen::spawns::MAX_RELAXATIONS as i32);
+    let floor_sq = (floor * floor) as i64;
+    let mut chosen: Vec<Point> = Vec::new();
+    for tier in tiers {
+        if chosen.len() >= count {
+            break;
+        }
+        if chosen.is_empty() {
+            chosen = choose(tier);
+            continue;
+        }
+        while chosen.len() < count {
+            let next = tier
+                .iter()
+                .filter_map(|&i| surface.get(i).copied())
+                .map(|p| {
+                    (
+                        p,
+                        chosen
+                            .iter()
+                            .map(|c| c.distance_sq(p))
+                            .min()
+                            .unwrap_or(i64::MAX),
+                    )
+                })
+                .filter(|(_, d)| *d >= floor_sq)
+                .max_by_key(|(_, d)| *d);
+            match next {
+                Some((p, _)) => chosen.push(p),
+                None => break,
+            }
+        }
+    }
+    if chosen.len() < count {
+        // Nothing seats the full count even topped up: the old whole draw from the
+        // loosest tier, so no map gets fewer pads or platforms than it did before.
+        let loosest = choose(tiers[2]);
+        if loosest.len() > chosen.len() {
+            chosen = loosest;
+        }
+    }
+    chosen.truncate(count);
+    chosen
+}
+
+/// Could the ground `fill_standing_ground` adds under a thing at `pos` reach into
+/// the body box of someone standing at `body`?
+///
+/// Geometry, not a trial fill: the fill is confined to the drawn columns and the
+/// `STANDING_GROUND_FILL_DEPTH` rows under the feet line, so overlap with that
+/// rectangle is a conservative "maybe" — a body box of `PLAYER_W` plus a pixel
+/// each side, and twice `PLAYER_H` tall to cover `is_standable`'s head clearance.
+fn fill_reaches(pos: Point, drawn_w: i32, body: Point) -> bool {
+    let cols = drawn_columns(pos, drawn_w);
+    let half = (PLAYER_W / 2.0).ceil() as i32 + 1;
+    let (fill_top, fill_bottom) = (pos.y + 1, pos.y + STANDING_GROUND_FILL_DEPTH);
+    let (body_top, body_bottom) = (body.y - 2 * PLAYER_H as i32, body.y);
+    cols.start < body.x + half
+        && body.x - half < cols.end
+        && fill_top <= body_bottom
+        && body_top <= fill_bottom
+}
+
+/// Candidates (indices into `surface`) where a thing drawn `drawn_w` wide may go
+/// (T21.28): its fill buries none of `bodies`, no fill already decided among
+/// `others` reaches it, and — when `grounded` — it stands on ground.
+fn standing_candidates(
+    mask: &Mask,
+    surface: &[Point],
+    component: &[usize],
+    drawn_w: i32,
+    bodies: &[Point],
+    others: &[(Point, i32)],
+    grounded: bool,
+) -> Vec<usize> {
+    component
+        .iter()
+        .copied()
+        .filter(|&i| {
+            surface.get(i).is_some_and(|p| {
+                bodies.iter().all(|b| !fill_reaches(*p, drawn_w, *b))
+                    && others.iter().all(|(o, w)| !fill_reaches(*o, *w, *p))
+                    && (!grounded || stands_on_ground(mask, *p, drawn_w))
+            })
+        })
+        .collect()
 }
 
 /// `TELEPORT_PADS` well-separated, standable pads (§C5).
@@ -571,13 +838,53 @@ pub fn choose_buried_slots(
 }
 
 /// Cosmetic props anchored to the surface. Purely visual — a client may skip them.
-pub fn choose_decorations(surface: &[Point], seed: u64, theme: u8) -> Vec<Decoration> {
+pub fn choose_decorations(mask: &Mask, surface: &[Point], seed: u64, theme: u8) -> Vec<Decoration> {
+    choose_decorations_with(mask, surface, seed, theme, true)
+}
+
+/// Whether a decoration anchored at `p` has rock within `DECOR_GROUND_SLACK` under
+/// every column of the widest base any decoration can draw (T21.28).
+pub fn decoration_seated(mask: &Mask, p: Point) -> bool {
+    let x0 = p.x - DECOR_BASE_W / 2;
+    (x0..x0 + DECOR_BASE_W)
+        .all(|col| column_gap(mask, col, p.y + 1, DECOR_GROUND_SLACK) <= DECOR_GROUND_SLACK)
+}
+
+/// `choose_decorations`, with the T21.28 seat filter switchable — `false` only for
+/// the tests' control.
+///
+/// **Seated spots only** (coordinator's ruling): the client draws a decoration only
+/// when rock sits under every column of its drawn base, and choosing from the whole
+/// surface let it drop 56 of 96 across nine maps, one map keeping a single prop. So
+/// the candidates are the surface points where even the widest base is seated. The
+/// count still comes from the whole surface, so density is unchanged; the unfiltered
+/// set is used only when no point is seated at all, and the sweep counts those maps.
+pub(crate) fn choose_decorations_with(
+    mask: &Mask,
+    surface: &[Point],
+    seed: u64,
+    theme: u8,
+    seat: bool,
+) -> Vec<Decoration> {
     let mut rng = substream(seed, "decor");
     let want = (surface.len() / DECOR_PER_SURFACE).min(DECOR_MAX);
     let mut decorations = Vec::with_capacity(want);
+    let seated: Vec<Point> = if seat {
+        surface
+            .iter()
+            .copied()
+            .filter(|p| decoration_seated(mask, *p))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let pool: &[Point] = if seated.is_empty() { surface } else { &seated };
+    if pool.is_empty() {
+        return decorations;
+    }
 
     for _ in 0..want {
-        let p = surface[range_i32(&mut rng, 0, surface.len() as i32 - 1) as usize];
+        let p = pool[range_i32(&mut rng, 0, pool.len() as i32 - 1) as usize];
         decorations.push(Decoration {
             // Kinds are per-theme; a theme with no art for a kind just skips it.
             kind: (theme as u16 * DECOR_KINDS)
@@ -600,6 +907,307 @@ impl NextU64Compat for ChaCha8Rng {
     fn next_u64_compat(&mut self) -> u64 {
         use rand::RngCore;
         self.next_u64()
+    }
+}
+
+/// T21.28 — decorations are chosen where their base is seated.
+#[cfg(test)]
+mod seated_decorations {
+    use super::*;
+
+    const SEEDS: [u64; 3] = [1, 4242, 31337];
+
+    /// Every decoration's widest possible base has rock within the slack, on
+    /// several maps at every scale; the **control** is the same maps chosen without
+    /// the filter, which must show unseated ones or this proves nothing.
+    #[test]
+    fn every_decoration_is_chosen_where_its_base_is_seated() {
+        // [without the filter, with it]
+        let (mut chosen, mut unseated) = ([0usize; 2], [0usize; 2]);
+        for seed in SEEDS {
+            for scale in MapScale::ALL {
+                let map = generate(seed, scale);
+                for (i, seat) in [false, true].into_iter().enumerate() {
+                    let decor = if seat {
+                        map.meta.decorations.clone()
+                    } else {
+                        choose_decorations_with(
+                            &map.mask,
+                            &map.meta.surface_points,
+                            map.meta.seed,
+                            map.meta.theme,
+                            false,
+                        )
+                    };
+                    chosen[i] += decor.len();
+                    // Measured here, column by column, not through `decoration_seated`.
+                    unseated[i] += decor
+                        .iter()
+                        .filter(|d| {
+                            let x0 = d.pos.x - DECOR_BASE_W / 2;
+                            !(x0..x0 + DECOR_BASE_W).all(|col| {
+                                (d.pos.y + 1..=d.pos.y + 1 + DECOR_GROUND_SLACK)
+                                    .any(|y| map.mask.get(col, y))
+                            })
+                        })
+                        .count();
+                }
+            }
+        }
+        println!(
+            "T21.28 DECOR without the filter: {} chosen, {} unseated; with it: {} chosen, {} unseated",
+            chosen[0], unseated[0], chosen[1], unseated[1]
+        );
+        assert!(
+            unseated[0] > 0,
+            "without the filter nothing is unseated — the control proves nothing"
+        );
+        assert_eq!(
+            unseated[1], 0,
+            "{} decorations were chosen unseated",
+            unseated[1]
+        );
+        assert_eq!(
+            chosen[0], chosen[1],
+            "the filter changed how many decorations a map gets"
+        );
+    }
+}
+
+/// T21.28 — everything placed on the map stands on ground.
+#[cfg(test)]
+mod standing_ground {
+    use super::*;
+    use crate::constants::DEFAULT_MAP_GENERATOR;
+    use crate::map::gen::surface::is_standable;
+
+    const SEEDS: [u64; 3] = [1, 4242, 31337];
+
+    /// The air under each column of a drawn base, uncapped — counted here rather
+    /// than through `column_gap`, so the test measures the finished mask at the
+    /// other end from the code that fills it.
+    fn gaps(mask: &Mask, pos: Point, w: i32) -> Vec<i32> {
+        drawn_columns(pos, w)
+            .map(|col| {
+                let mut d = 0;
+                while pos.y + 1 + d < mask.h as i32 && !mask.get(col, pos.y + 1 + d) {
+                    d += 1;
+                }
+                d
+            })
+            .collect()
+    }
+
+    fn standing(map: &Map) -> Vec<(Point, i32)> {
+        map.meta
+            .teleport_pads
+            .iter()
+            .map(|p| (p.pos, PAD_ART_W))
+            .chain(
+                map.meta
+                    .gun_platforms
+                    .iter()
+                    .map(|g| (g.pos, GUN_PLATFORM_W)),
+            )
+            .collect()
+    }
+
+    /// Every column of every pad's and platform's drawn base has ground under it,
+    /// on several seeds at every scale; the **control** is the same maps with the
+    /// fill off, which must show hanging columns or this proves nothing.
+    #[test]
+    fn every_pad_and_platform_has_ground_under_its_whole_drawn_base() {
+        // [without fill, with fill]
+        let (mut things, mut columns, mut hanging, mut perched) = ([0; 2], [0; 2], [0; 2], [0; 2]);
+        for seed in SEEDS {
+            for scale in MapScale::ALL {
+                for (i, fill) in [false, true].into_iter().enumerate() {
+                    // The fill arm goes through `generate_with` — the entry point the game
+                    // calls — so turning the fill off at its live call site turns this red;
+                    // only the control reaches past it.
+                    let map = if fill {
+                        generate_with(seed, scale, DEFAULT_MAP_GENERATOR)
+                    } else {
+                        generate_full_with(seed, scale, 0, DEFAULT_MAP_GENERATOR, false)
+                    };
+                    for (pos, w) in standing(&map) {
+                        things[i] += 1;
+                        let g = gaps(&map.mask, pos, w);
+                        columns[i] += g.len();
+                        hanging[i] += g
+                            .iter()
+                            .filter(|d| **d > 0 && **d <= STANDING_GROUND_FILL_DEPTH)
+                            .count();
+                        perched[i] += g.iter().any(|d| *d > STANDING_GROUND_FILL_DEPTH) as usize;
+                    }
+                }
+            }
+        }
+        println!(
+            "T21.28 without fill: {} things, {} columns, {} hanging within reach, {} perched past it; \
+             with fill: {} things, {} columns, {} hanging, {} perched",
+            things[0], columns[0], hanging[0], perched[0], things[1], columns[1], hanging[1], perched[1]
+        );
+        assert!(
+            hanging[0] > 0,
+            "without the fill no column hangs — the bug is not reproduced, so the next line proves nothing"
+        );
+        assert_eq!(
+            hanging[1], 0,
+            "{} drawn base columns still hang within the fill's reach",
+            hanging[1]
+        );
+        assert_eq!(
+            perched[0], perched[1],
+            "the fill changed which things are perched — it moved a choice"
+        );
+    }
+
+    fn flat(ground: i32) -> Mask {
+        let mut m = Mask::new_empty(1024, 512);
+        for y in ground..512 {
+            m.set_run(y, 0, 1023);
+        }
+        m
+    }
+
+    /// A pad or platform already on level ground gains **nothing**.
+    #[test]
+    fn a_pad_or_platform_on_flat_ground_gains_nothing() {
+        for w in [PAD_ART_W, GUN_PLATFORM_W] {
+            let mut m = flat(300);
+            let pos = Point::new(512, 299);
+            assert!(stands_on_ground(&m, pos, w));
+            assert_eq!(
+                fill_standing_ground(&mut m, pos, w),
+                0,
+                "width {w} gained ground on flat terrain"
+            );
+        }
+    }
+
+    /// The fill closes a gap under the base exactly and touches nothing at or
+    /// above the feet line — never upward, never into the sprite's own box — and a
+    /// gap deeper than the reach is left alone and refused (the control that the
+    /// bound is real).
+    #[test]
+    fn the_fill_closes_the_gap_below_the_base_and_nothing_above_it() {
+        let ground = 300;
+        let pos = Point::new(512, ground - 1);
+        let notch_cols = 10;
+        let above = |m: &Mask| {
+            let mut n = 0;
+            for y in 0..=pos.y {
+                for col in drawn_columns(pos, PAD_ART_W) {
+                    n += m.get(col, y) as usize;
+                }
+            }
+            n
+        };
+        for (gap, reach) in [
+            (STANDING_GROUND_FILL_DEPTH / 2, true),
+            (STANDING_GROUND_FILL_DEPTH + 5, false),
+        ] {
+            let mut m = flat(ground);
+            // A slope's worth of air under the right-hand end of the drawn base,
+            // outside the 40 px pad strip — the overhang the report is about.
+            let x0 = pos.x + PAD_ART_W / 2 - notch_cols;
+            for y in ground..ground + gap {
+                for x in x0..x0 + notch_cols {
+                    m.clear(x, y);
+                }
+            }
+            let before = above(&m);
+            assert_eq!(stands_on_ground(&m, pos, PAD_ART_W), reach);
+            let added = fill_standing_ground(&mut m, pos, PAD_ART_W);
+            assert_eq!(
+                above(&m),
+                before,
+                "gap {gap}: the fill rose to or above the feet line"
+            );
+            if reach {
+                assert_eq!(
+                    added as i32,
+                    notch_cols * gap,
+                    "gap {gap}: not exactly the gap"
+                );
+                assert!(
+                    gaps(&m, pos, PAD_ART_W).iter().all(|d| *d == 0),
+                    "a column still hangs"
+                );
+            } else {
+                assert_eq!(
+                    added, 0,
+                    "gap {gap}: the fill reached past STANDING_GROUND_FILL_DEPTH"
+                );
+            }
+        }
+    }
+
+    /// The fill draws no randomness and runs after every choice, so a map with it
+    /// and without it chooses the same spawns, pads, platforms and objects.
+    #[test]
+    fn the_fill_moves_no_spawn_pad_platform_or_object() {
+        let mut differs = 0;
+        for seed in SEEDS {
+            for scale in MapScale::ALL {
+                let with = generate_full_with(seed, scale, 0, DEFAULT_MAP_GENERATOR, true);
+                let without = generate_full_with(seed, scale, 0, DEFAULT_MAP_GENERATOR, false);
+                assert_eq!(
+                    with.meta.spawn_points, without.meta.spawn_points,
+                    "{seed} {scale:?}"
+                );
+                assert_eq!(
+                    with.meta.teleport_pads, without.meta.teleport_pads,
+                    "{seed} {scale:?}"
+                );
+                assert_eq!(
+                    with.meta.gun_platforms, without.meta.gun_platforms,
+                    "{seed} {scale:?}"
+                );
+                assert_eq!(with.meta.objects, without.meta.objects, "{seed} {scale:?}");
+                differs += (with.mask.hash_hex() != without.mask.hash_hex()) as usize;
+            }
+        }
+        // The control: the switch reaches the mask, or the equalities above are
+        // comparing two copies of one map.
+        assert!(
+            differs > 0,
+            "the fill changed no mask — the switch does nothing"
+        );
+    }
+
+    /// The coordinator's condition: nothing a body is placed on is buried by the
+    /// fill — every spawn and every surface point still fits a player.
+    #[test]
+    fn no_spawn_or_surface_point_is_buried_by_the_fill() {
+        for seed in SEEDS {
+            for scale in MapScale::ALL {
+                let map = generate(seed, scale);
+                assert!(
+                    !map.meta.surface_points.is_empty(),
+                    "{seed} {scale:?}: no surface points to check"
+                );
+                for s in &map.meta.spawn_points {
+                    assert!(
+                        is_standable(&map.mask, s.x, s.y),
+                        "{seed} {scale:?}: spawn {s:?} buried"
+                    );
+                }
+                for p in &map.meta.surface_points {
+                    assert!(
+                        is_standable(&map.mask, p.x, p.y),
+                        "{seed} {scale:?}: surface {p:?} buried"
+                    );
+                }
+                for &i in &map.meta.largest_component {
+                    assert!(
+                        (i as usize) < map.meta.surface_points.len(),
+                        "component index {i} out of range"
+                    );
+                }
+            }
+        }
     }
 }
 
