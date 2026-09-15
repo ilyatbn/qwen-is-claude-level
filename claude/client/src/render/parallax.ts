@@ -31,7 +31,7 @@
  */
 
 import Phaser from 'phaser'
-import { ridgeLayout, type RidgeLayout } from './parallax-math'
+import { liveViewY, ridgeLayout, type RidgeLayout } from './parallax-math'
 import { C } from '../core'
 import { DEPTH } from './backdrop'
 import { cloudTint, mountainProfile } from './sky-math'
@@ -578,7 +578,13 @@ export class ParallaxLayer {
       titleBaseFrac: c.MOUNTAIN_TITLE_BASE_FRAC,
       heightFrac: c.MOUNTAIN_HEIGHT_FRAC[i]!,
       viewportH: c.VIEWPORT_H,
-      viewY: cam.worldView.y,
+      // Not `cam.worldView.y`: that is last frame's until `preRender`, after `update`.
+      viewY: liveViewY({
+        scrollY: cam.scrollY,
+        height: cam.height,
+        zoom: cam.zoom || 1,
+        clampY: cam.useBounds ? (y) => cam.clampY(y) : null,
+      }),
       zoom: cam.zoom || 1,
     })
   }

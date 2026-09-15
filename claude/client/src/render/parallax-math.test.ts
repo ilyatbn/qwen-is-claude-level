@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { C, Core } from '../core'
-import { ridgeLayout, screenAnchoredRidgeForTest, type RidgeInput } from './parallax-math'
+import { liveViewY, ridgeLayout, screenAnchoredRidgeForTest, type RidgeInput } from './parallax-math'
 
 const here = dirname(fileURLToPath(import.meta.url))
 let c: ReturnType<typeof C>
@@ -75,5 +75,33 @@ describe('ridgeLayout (T21.20)', () => {
     expect(t.worldH).toBeNull()
     expect(t.h).toBeCloseTo(h, 6)
     expect(t.top).toBeCloseTo(c.VIEWPORT_H * c.MOUNTAIN_TITLE_BASE_FRAC - h, 6)
+  })
+})
+
+describe('liveViewY (the ridge a frame behind the camera)', () => {
+  const cam = (scrollY: number, clampY: ((y: number) => number) | null = null) => ({
+    scrollY,
+    height: c.VIEWPORT_H,
+    zoom: c.CAMERA_ZOOM,
+    clampY,
+  })
+
+  it('moves with this frame’s scroll, row for row', () => {
+    const step = 8
+    const a = liveViewY(cam(300))
+    expect(liveViewY(cam(300 + step)) - a).toBe(step)
+  })
+
+  it('is the top of the zoomed view, not the scroll — the control', () => {
+    // Scroll is the unzoomed camera's corner; at CAMERA_ZOOM the view is the middle
+    // of it. A helper that returned `scrollY` would pass the test above.
+    const view = c.VIEWPORT_H / c.CAMERA_ZOOM
+    expect(liveViewY(cam(300))).toBe(Math.floor(300 + c.VIEWPORT_H / 2 - view / 2 + 0.5))
+    expect(liveViewY(cam(300))).not.toBe(300)
+  })
+
+  it('applies the camera’s bounds before the view is taken', () => {
+    const floor = 50
+    expect(liveViewY(cam(-400, (y) => Math.max(floor, y)))).toBe(liveViewY(cam(floor)))
   })
 })
