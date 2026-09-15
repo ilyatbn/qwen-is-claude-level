@@ -40,7 +40,32 @@ function paint(btn: HTMLButtonElement, on: boolean): void {
   btn.style.borderColor = on ? 'rgba(120,220,255,.75)' : 'rgba(255,255,255,.25)'
 }
 
+/** The hint under High Quality when the machine can run it. */
+export const QUALITY_HINT = 'Nicer fog, smoke, fire and beams. Needs a newer graphics card.'
+/** The hint when it cannot (T21.33). */
+export const QUALITY_HINT_NO_WEBGL = 'Needs WebGL, which this browser is not using.'
+
+/**
+ * What the High Quality row shows (T21.33).
+ *
+ * **With no WebGL the toggle is disabled and reads Off**, whatever is stored: every effect
+ * it selects is a shader, a shader cannot run on the Canvas renderer, and each shader site
+ * already falls back through `hasWebGL`. A button reading On there would be a setting the
+ * player flips, sees nothing, and cannot explain. The stored value is left alone, so the
+ * same player on a WebGL browser keeps their choice.
+ */
+export function qualityRow(
+  shadersAvailable: boolean,
+  stored: boolean,
+): { on: boolean; disabled: boolean; hint: string } {
+  return shadersAvailable
+    ? { on: stored, disabled: false, hint: QUALITY_HINT }
+    : { on: false, disabled: true, hint: QUALITY_HINT_NO_WEBGL }
+}
+
 export interface OptionsPanelDeps {
+  /** T21.33: can this renderer run shaders at all? `hasWebGL(scene)` — asked, not assumed. */
+  shadersAvailable: boolean
   /** Close, so the scene can keep its own idea of what is open in step. */
   onClose(): void
   /** Where the setting is persisted. Injected so a test can supply its own. */
@@ -51,6 +76,7 @@ export class OptionsPanel {
   readonly root: HTMLDivElement
   readonly quality: HTMLButtonElement
   readonly fps: HTMLButtonElement
+  private readonly qualityHint: HTMLDivElement
   private open = false
 
   constructor(
@@ -74,13 +100,15 @@ export class OptionsPanel {
     // costs performance and not every machine can run it.
     const hint = doc.createElement('div')
     hint.id = 'options-quality-hint'
-    hint.textContent = 'Nicer fog, smoke, fire and beams. Needs a newer graphics card.'
     hint.style.cssText = 'opacity:.62;font-size:12px;margin-top:-8px;'
+    this.qualityHint = hint
 
     this.quality = doc.createElement('button')
     this.quality.id = 'options-quality'
     this.quality.style.cssText = BTN
     this.quality.addEventListener('click', () => {
+      // A disabled button fires no click, but the rule belongs to the row, not to the DOM.
+      if (qualityRow(this.deps.shadersAvailable, isHighQuality()).disabled) return
       // **Read the value back rather than tracking one here.** A panel with its
       // own copy of the setting is a second answer to the same question.
       setHighQuality(this.deps.storage, !isHighQuality())
@@ -129,7 +157,12 @@ export class OptionsPanel {
 
   /** Paint the buttons from the settings, never from a local flag. */
   private refresh(): void {
-    paint(this.quality, isHighQuality())
+    const q = qualityRow(this.deps.shadersAvailable, isHighQuality())
+    paint(this.quality, q.on)
+    this.quality.disabled = q.disabled
+    this.quality.style.opacity = q.disabled ? '.45' : '1'
+    this.quality.style.cursor = q.disabled ? 'not-allowed' : 'pointer'
+    this.qualityHint.textContent = q.hint
     paint(this.fps, isFpsCounter())
   }
 

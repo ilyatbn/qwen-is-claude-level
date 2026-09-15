@@ -130,6 +130,25 @@ async function pickDevScene(): Promise<Phaser.Types.Scenes.SceneType[] | null> {
   return null
 }
 
+/**
+ * T21.33: `?renderer=canvas` forces Phaser's Canvas renderer.
+ *
+ * **Every browser check runs WebGL (swiftshader), and the owner's browser runs
+ * Canvas** — headed Chrome under WSLg hands Phaser no GL context, so `AUTO` falls
+ * back. Nothing in the repo had ever looked at that picture, and it had a solid
+ * bar across the sky (`fillGradientStyle` is WebGL-only). This is how a check
+ * gets the owner's renderer on a box that does have WebGL.
+ *
+ * Dev surface only, like `?sandbox=1`: a player's renderer is whatever `AUTO`
+ * finds.
+ */
+function rendererType(): number {
+  if (devSurface() && new URLSearchParams(location.search).get('renderer') === 'canvas') {
+    return Phaser.CANVAS
+  }
+  return Phaser.AUTO
+}
+
 async function main(): Promise<Phaser.Game> {
   const core = await Core.init()
   const c = C()
@@ -146,7 +165,7 @@ async function main(): Promise<Phaser.Game> {
   loadSettings(localStorage)
 
   const game = new Phaser.Game({
-    type: Phaser.AUTO,
+    type: rendererType(),
     parent: 'game',
     width: c.VIEWPORT_W,
     height: c.VIEWPORT_H,

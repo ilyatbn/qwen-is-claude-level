@@ -77,6 +77,14 @@ export const CHECKS = [
   // `serial` (measured, one occurrence): red in the second `--jobs 4` run — the
   // parallax band's pixel change against its own motion, 5.6% vs 1.3% — green at `--jobs 1`.
   { name: 'living-sky', file: 'scripts/checks/living-sky.mjs', url: '?sandbox=1&seed=4242', serial: true },
+  // T21.33: the owner's renderer. Every other check runs WebGL; this one forces Canvas and
+  // reads the foot under the ridge, the ridge's colour and its wrap seam off the game canvas.
+  {
+    name: 'canvas-renderer',
+    file: 'scripts/checks/canvas-renderer.mjs',
+    url: '?sandbox=1&seed=4242&renderer=canvas',
+    serial: true,
+  },
   { name: 'lightmap', file: 'scripts/checks/lightmap.mjs', url: '?sandbox=1&seed=4242' },
   {
     name: 'night_darkens_the_world',
