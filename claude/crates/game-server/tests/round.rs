@@ -206,6 +206,178 @@ fn without_a_majority_the_room_returns_to_lobby() {
     assert_ne!(room.phase(), RoundPhase::Ended);
 }
 
+/// Run a started room to `Ended`, let the window close with no votes, and return
+/// once it is back in `Lobby`.
+fn back_to_lobby(room: &mut Room) {
+    for _ in 0..(20 * 60) {
+        let _ = room.tick_inline(SIM_DT);
+        if room.phase() == RoundPhase::Ended {
+            break;
+        }
+    }
+    assert_eq!(room.phase(), RoundPhase::Ended, "the round never ended");
+    for _ in 0..((game_core::constants::ENDED_SECONDS + 2.0) * 60.0) as usize {
+        let _ = room.tick_inline(SIM_DT);
+        if room.phase() == RoundPhase::Lobby {
+            return;
+        }
+    }
+    panic!("the vote window closed with no votes and the room is not in Lobby");
+}
+
+/// Two matches started from one room's lobby: `(seed, mask hash)` of each map.
+fn two_lobby_starts(cfg: Arc<Config>) -> [(u64, String); 2] {
+    let mut room = Room::new_in_room(cfg, 1);
+    seat(&mut room, "a");
+    begin(&mut room);
+    let first = {
+        let w = room.world_for_test();
+        (w.seed, w.map.mask.hash_hex())
+    };
+    back_to_lobby(&mut room);
+    assert!(room.world().is_none(), "§E1: a lobby holds no world");
+    begin(&mut room);
+    let second = {
+        let w = room.world_for_test();
+        (w.seed, w.map.mask.hash_hex())
+    };
+    [first, second]
+}
+
+/// T21.32 item 2. Reported from play: rounds one and two in `room=1` both logged
+/// `map generated seed=222892591914436108`.
+///
+/// `two_rooms_with_no_fixed_seed_get_different_maps` covers two **rooms**; this
+/// is one room, played twice through its lobby, which is the path a failed vote
+/// takes. The mask hash is asserted as well as the seed, because the seed is an
+/// input and the map is what a player sees.
+#[test]
+fn two_lobby_starts_in_one_room_build_different_maps() {
+    let [first, second] = two_lobby_starts(cfg(1.0));
+    assert_ne!(
+        first.0, second.0,
+        "the second match from the lobby was built on the first one's seed"
+    );
+    assert_ne!(
+        first.1, second.1,
+        "the second match from the lobby has the first one's terrain"
+    );
+}
+
+/// The control for the test above, and `FIXED_SEED`'s promise (`docs/41` §5):
+/// the sequence is a function of the fixed seed. Round one is built on it
+/// exactly, and two rooms given it walk the same sequence afterwards — so a
+/// "different map" above is not the product of something unseeded.
+#[test]
+fn fixed_seed_pins_the_whole_sequence_of_lobby_starts() {
+    let pinned = |seed| {
+        Arc::new(Config {
+            fixed_seed: Some(seed),
+            ..(*cfg(1.0)).clone()
+        })
+    };
+    let a = two_lobby_starts(pinned(4242));
+    let b = two_lobby_starts(pinned(4242));
+    assert_eq!(a[0].0, 4242, "round one was not built on FIXED_SEED");
+    assert_eq!(a, b, "FIXED_SEED did not reproduce the sequence of maps");
+    assert_ne!(a[0], a[1], "FIXED_SEED froze every map to the same one");
+}
+
+/// T21.32 item 1: "Play again does nothing". The room went back to `Lobby` and
+/// told nobody, so every client held the results screen until it disconnected.
+///
+/// The control is `Ended`'s own announcement in the same stream, so a room that
+/// announced nothing at all cannot pass.
+#[test]
+fn returning_to_the_lobby_is_announced() {
+    let mut room = Room::new(cfg(1.0));
+    seat(&mut room, "a");
+    begin(&mut room);
+    let mut phases = Vec::new();
+    for _ in 0..((game_core::constants::WARMUP_SECONDS
+        + 1.0
+        + game_core::constants::ENDED_SECONDS
+        + 2.0)
+        * 60.0) as usize
+    {
+        // Both streams, in the order the room task flushes them: the world's own
+        // events (where `Ended` is announced) and then the controller's (where the
+        // return to the lobby is). `tick_inline` returns only the second.
+        let mut evs = room
+            .world_mut()
+            .map(|w| w.drain_events())
+            .unwrap_or_default();
+        evs.extend(room.tick_inline(SIM_DT));
+        phases.extend(round_states(&evs).into_iter().map(|(p, _)| p));
+        if room.phase() == RoundPhase::Lobby {
+            break;
+        }
+    }
+    assert_eq!(
+        room.phase(),
+        RoundPhase::Lobby,
+        "the premise: no vote, so Lobby"
+    );
+    assert!(
+        phases.contains(&RoundPhase::Ended),
+        "the control: the round's end was never announced, so this run proves nothing"
+    );
+    assert_eq!(
+        phases.last(),
+        Some(&RoundPhase::Lobby),
+        "the room went back to the lobby and told nobody: {phases:?}"
+    );
+}
+
+/// Send a vote the way the socket layer does, and return the room's answer.
+fn vote(room: &mut Room, id: game_core::player::state::PlayerId, restart: bool) -> bool {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    room.apply_for_test(Command::VoteRestart(id, restart, reply));
+    rx.blocking_recv().unwrap_or(false)
+}
+
+/// T21.32 item 1: a vote the server will not count is **answered** as not
+/// counted, so the button never reads "Voted" for it. Both sides of the window,
+/// and the lobby after it — the case the owner hit.
+#[test]
+fn a_vote_is_counted_only_inside_the_window() {
+    let mut room = Room::new(cfg(1.0));
+    let a = seat(&mut room, "a");
+    begin(&mut room);
+    assert!(
+        !vote(&mut room, a, true),
+        "a vote during warmup was counted"
+    );
+    for _ in 0..(20 * 60) {
+        let _ = room.tick_inline(SIM_DT);
+        if room.phase() == RoundPhase::Ended {
+            break;
+        }
+    }
+    assert_eq!(room.phase(), RoundPhase::Ended);
+    // The control: inside the window it counts, so "never counted" cannot pass.
+    assert!(
+        vote(&mut room, a, false),
+        "a vote inside the window was refused"
+    );
+    back_to_lobby_from_ended(&mut room);
+    assert!(
+        !vote(&mut room, a, true),
+        "a vote sent to a room already back in the lobby was counted"
+    );
+}
+
+/// As `back_to_lobby`, for a room already in `Ended`.
+fn back_to_lobby_from_ended(room: &mut Room) {
+    for _ in 0..((game_core::constants::ENDED_SECONDS + 2.0) * 60.0) as usize {
+        let _ = room.tick_inline(SIM_DT);
+        if room.phase() == RoundPhase::Lobby {
+            return;
+        }
+    }
+    panic!("the window closed on a single no vote and the room is not in Lobby");
+}
+
 #[test]
 fn the_controller_is_deterministic_across_runs() {
     let run = || {

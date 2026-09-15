@@ -106,6 +106,57 @@ export function secondsUntil(deadline: number, roundTime: number): number {
   return deadline - roundTime
 }
 
+/**
+ * Where this client's restart vote stands (T21.32 item 1).
+ *
+ * `counted` is the **server's** word, never the click's. The button used to read
+ * "Voted" the moment it was pressed, and a press after the window had closed —
+ * the only kind a stuck results screen could produce — read "Voted" for a vote
+ * `round.rs::vote` had thrown away.
+ */
+export type VoteState = 'none' | 'pending' | 'counted' | 'refused'
+
+export interface VoteButton {
+  label: string
+  disabled: boolean
+}
+
+/**
+ * The "Play again" button for a vote state and the time left in the window.
+ *
+ * Only `none` inside the window is pressable. A window this client's clock
+ * says has closed is not offered: the server closes it on its own clock, and a
+ * press there would be answered `refused` a moment later anyway.
+ */
+export function voteButton(state: VoteState, timeLeft: number): VoteButton {
+  switch (state) {
+    case 'counted':
+      return { label: 'Voted', disabled: true }
+    case 'pending':
+      return { label: 'Voting…', disabled: true }
+    case 'refused':
+      return { label: 'Vote closed', disabled: true }
+    case 'none':
+      return voteSecondsLeft(timeLeft) > 0
+        ? { label: 'Play again', disabled: false }
+        : { label: 'Vote closed', disabled: true }
+  }
+}
+
+/**
+ * The countdown line (T21.32 item 1).
+ *
+ * "New round in N s" only once this client's vote is **counted**: until then
+ * the window closing produces a new round only if somebody's vote carries it,
+ * and a line promising one to a player who has not voted would be a promise
+ * silence does not keep (`restart_wins` needs at least one vote).
+ */
+export function countdownText(state: VoteState, timeLeft: number): string {
+  const s = voteSecondsLeft(timeLeft)
+  if (s <= 0) return 'Vote closed'
+  return state === 'counted' ? `New round in ${s} s` : `Vote closes in ${s} s`
+}
+
 export function resultsView(
   entries: readonly ScoreEntry[],
   timeLeft: number,

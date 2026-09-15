@@ -113,6 +113,24 @@ describe('Connection', () => {
     expect(inv).toHaveLength(1)
   })
 
+  it('replays the round_state a late subscriber missed, so a match does not start in the lobby', async () => {
+    // T21.32 item 4. `Warmup`'s `round_state` lands during the menu → game handover
+    // and is never rebroadcast.
+    const { conn, deliver } = await connected()
+    deliver('round_state', { tick: 5, phase: 'lobby', time_left: null })
+    deliver('round_state', { tick: 6, phase: 'warmup', time_left: 10 })
+    // The control: an event that is not a current value is still not replayed, so this
+    // is the latch doing it and not a handler that sees everything.
+    deliver('score', { scores: [] })
+    const phases: unknown[] = []
+    const scores: unknown[] = []
+    conn.on('round_state', (p) => phases.push((p as { phase: string }).phase))
+    conn.on('score', (p) => scores.push(p))
+    await Promise.resolve()
+    expect(phases).toEqual(['warmup'])
+    expect(scores).toEqual([])
+  })
+
   it('replays the newest inventory, not the first', async () => {
     const { conn, deliver } = await connected()
     deliver('inventory', { slots: [], selected: 0 })

@@ -333,7 +333,17 @@ impl RoomRegistry {
         }
         if let Some(e) = self.rooms.get_mut(&room) {
             e.humans += 1;
-            e.empty_since = None;
+            // T21.32 item 3: **the line the owner's log did not have.** A room
+            // logged "last human left; room is on the clock" and was never reaped,
+            // and nothing could say what took it off the clock — this is the one
+            // writer that does. Logged only on the transition, so a room that is
+            // already occupied adds nothing.
+            if e.empty_since.take().is_some() {
+                tracing::info!(
+                    target: "game::round", room, socket = %sid, humans = e.humans,
+                    "a human arrived; room is off the clock"
+                );
+            }
         }
     }
 

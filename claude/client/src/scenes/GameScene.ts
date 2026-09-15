@@ -690,10 +690,7 @@ export class GameScene extends Phaser.Scene {
       // not quit). A disconnect is how the server already frees a seat
       // (`docs/40` §6); the explicit `leave_room` of §B9 has no client method
       // yet and belongs with T14.06, which owns the quit path and `connection.ts`.
-      onExit: () => {
-        this.conn.close()
-        this.scene.start('Title')
-      },
+      onExit: () => this.exitToTitle(),
     })
     this.localInput = new LocalInput(this)
     this.crosshair = new Crosshair(this, DEPTH.hud)
@@ -733,9 +730,26 @@ export class GameScene extends Phaser.Scene {
     })
     this.conn.on('map_init', (p) => this.onMapInit(typeof p === 'string' ? p : ''))
     this.conn.on('snapshot', (p) => this.onSnapshot(typeof p === 'string' ? p : ''))
+    // T21.32 item 1: the server's answer to "Play again". Only this makes the
+    // button read "Voted".
+    this.conn.on('vote_counted', (raw) => {
+      this.results.voteCounted(asRecord(raw)['counted'] === true)
+    })
     this.conn.on('round_state', (raw) => {
       const p = asRecord(raw)
+      const before = this.phase
       this.phase = String(p['phase'] ?? 'lobby') as Phase
+      // **Back to the lobby means back to the title** (T21.32 item 1, `docs/72` §C3:
+      // "If it does not [carry], the client returns to the title"). The server
+      // said nothing here until T21.32, so this scene held "Round over" forever.
+      //
+      // Only from a phase a match has. The lobby `round_state` a player is seated
+      // with can reach this handler through the latch after `welcome` already
+      // said `lobby`, and that one is a handover, not a round ending.
+      if (this.phase === 'lobby' && before !== 'lobby') {
+        this.exitToTitle()
+        return
+      }
       this.timeLeft = Number(p['time_left'] ?? 0)
       const stateTick = Number(p['tick'] ?? this.lastServerTick)
       // A restart hands us a brand-new `World`, so the server's tick and round
@@ -1289,6 +1303,20 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ------------------------------------------------------------------ server
+
+  /**
+   * Leave the match for the title: "Exit to title", and a round that went back to
+   * the lobby (T21.32 item 1). One function, so the two cannot disagree about
+   * what leaving is.
+   *
+   * Close the socket, do not merely change scene: the seat stays occupied
+   * otherwise and the room never reaps (§B14's shape — quitting that does not
+   * quit). A disconnect is how the server already frees a seat (`docs/40` §6).
+   */
+  private exitToTitle(): void {
+    this.conn.close()
+    this.scene.start('Title')
+  }
 
   private onWelcome(w: Welcome): void {
     this.me = w.playerId
@@ -2443,7 +2471,7 @@ export class GameScene extends Phaser.Scene {
     // §C8. Driven from the same server-anchored deadline the strip's clock uses,
     // not from a local stopwatch: §B4 made the death countdown server-driven
     // because a stopwatch drifts, and a round timer drifts the same way.
-    this.topHud?.update(secondsLeft, this.roundTime, C().TIMER_WARN_SECONDS)
+    this.topHud?.update(this.phase, secondsLeft, this.roundTime, C().TIMER_WARN_SECONDS)
 
     // §C8's cluster. `fuelShown` is last frame's fuel, which is what makes the
     // refill delay derivable from two samples rather than from a flag the client

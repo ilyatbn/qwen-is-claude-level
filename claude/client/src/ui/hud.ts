@@ -42,6 +42,18 @@ export function clockText(seconds: number): string {
 }
 
 /**
+ * What the round timer says in `phase`.
+ *
+ * **Nothing in `lobby`** (T21.32 item 4). `docs/74` §E1: "The map, the round timer, the
+ * weather schedule and the item spawns come into existence at the moment the match
+ * starts." A lobby has no round timer, and the `0:00` it drew was not a value: the lobby's
+ * `time_left` is `INFINITY`, which JSON carries as `null`, which the client reads as 0.
+ */
+export function roundTimerText(phase: string, secondsLeft: number): string {
+  return phase === 'lobby' ? '' : clockText(secondsLeft)
+}
+
+/**
  * True when the timer should be red.
  *
  * **Strictly below**, so the boundary second is not red: at exactly
@@ -180,9 +192,11 @@ export class Hud {
    * a stopwatch drifts, and §B4 made the death countdown server-driven for
    * exactly this reason.
    */
-  update(secondsLeft: number, now: number, warnAt: number): void {
-    const warn = isTimerWarning(secondsLeft, warnAt)
-    this.timer.textContent = clockText(secondsLeft)
+  update(phase: string, secondsLeft: number, now: number, warnAt: number): void {
+    const text = roundTimerText(phase, secondsLeft)
+    // No timer, no warning: a blank lobby timer must not paint itself red.
+    const warn = text !== '' && isTimerWarning(secondsLeft, warnAt)
+    this.timer.textContent = text
     // A data attribute as well as the colour: a pixel check reads the colour, a
     // DOM check reads this, and the two can then be asserted against each other.
     this.timer.dataset['warn'] = warn ? '1' : '0'
@@ -192,13 +206,13 @@ export class Hud {
     // an event, and an event can be missed by a client that joined mid-effect.
     for (const [id, r] of this.runs) if (r.endsAt <= now) this.runs.delete(id)
 
-    const text = bannerText([...this.runs.values()], now)
-    if (text === null) {
+    const banner = bannerText([...this.runs.values()], now)
+    if (banner === null) {
       this.banner.style.display = 'none'
       this.banner.textContent = ''
     } else {
       this.banner.style.display = 'block'
-      this.banner.textContent = text
+      this.banner.textContent = banner
     }
   }
 

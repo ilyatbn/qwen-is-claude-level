@@ -217,6 +217,10 @@ export const CHECKS = [
   // `serial` (measured): red in both `--jobs 4` runs — "the player who left and
   // quick-matched never got a match", then a crashed page — green at `--jobs 1`.
   { name: 'rematch', file: 'scripts/checks/rematch.mjs', standalone: true, serial: true },
+  // T21.32: what `rematch` cannot see — a round whose vote window is waited out, a
+  // lobby start on a new map, and the first frames of a match reached through the
+  // menu. Standalone: it needs a short round and three bots on its own server.
+  { name: 'round-over', file: 'scripts/checks/round-over.mjs', standalone: true },
   // T20.05: the one weather assertion that is **not** a sandbox check. Every
   // other one drives `?sandbox=1`, which pokes the weather sub-layers by hand and
   // therefore cannot see whether the shared `WorldView` path works — the §C0 shape
