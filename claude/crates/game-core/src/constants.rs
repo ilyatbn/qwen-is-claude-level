@@ -1598,6 +1598,13 @@ pub const MINE_AMMO: u8 = 2;
 pub const MINE_ARM_TIME: f32 = 1.0;
 pub const MINE_TRIGGER_RADIUS: f32 = 36.0;
 pub const MINE_LIFETIME: f32 = 90.0;
+/// A mine's own collision box, in pixels. Small enough to sit in a doorway.
+///
+/// Moved here from `weapons/placed.rs` (T21.35), where it was the one pair of
+/// mine numbers outside this file. Server-only: the client draws a mine from
+/// its position and never reads the box.
+pub const MINE_W: f32 = 10.0;
+pub const MINE_H: f32 = 6.0;
 
 // --- B8: tombstones ---
 

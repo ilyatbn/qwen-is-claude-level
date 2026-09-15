@@ -12,6 +12,7 @@
 //! - **Explosions destroy it.** That is what stops a map filling with mines and
 //!   makes clearing a chokepoint a real play.
 
+use crate::constants::{MINE_H, MINE_W};
 use crate::items::registry::WeaponId;
 use crate::map::Map;
 use crate::math::Vec2;
@@ -73,10 +74,6 @@ pub struct Mines {
     mines: Vec<Mine>,
     next_id: MineId,
 }
-
-/// A mine's own collision box. Small enough to sit in a doorway.
-const MINE_W: f32 = 10.0;
-const MINE_H: f32 = 6.0;
 
 impl Mines {
     pub fn len(&self) -> usize {
