@@ -708,6 +708,16 @@ pub const EFFECT_INTERVAL_MAX: f32 = 45.0;
 /// Warning before an effect activates.
 pub const EFFECT_TELEGRAPH: f32 = 3.0;
 
+/// **Toxic rain is switched off** (T21.39). The owner, 2026-09-15: *"Disable toxic rain
+/// completely for now its not working properly."* The rewrite is parked as
+/// `tasks/parking-lot/T21.41-rewrite-toxic-rain.md`.
+///
+/// The one switch: the scheduler never rolls it (`scheduler.rs::roll_kind`),
+/// `WEATHER=toxic` is refused (`game-server/src/config.rs`), the sandbox cannot force
+/// it (`game-wasm::force_effect`), and the browser checks that need it read this and
+/// skip. Every line of the effect is kept, so un-parking is this flag plus the rewrite.
+pub const TOXIC_RAIN_ENABLED: bool = false;
+
 pub const TOXIC_DURATION: f32 = 8.0;
 /// Seconds between drops while the rain is active.
 ///

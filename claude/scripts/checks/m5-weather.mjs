@@ -14,7 +14,10 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { matchVitePort } from '../vite-url.mjs'
 import { killGroup } from '../proc-group.mjs'
-import { constants as rustConstants } from '../lib/rust-constants.mjs'
+import { constants as rustConstants, flag as rustFlag } from '../lib/rust-constants.mjs'
+
+/** T21.39: toxic rain is switched off, and the sandbox refuses to force it. */
+const TOXIC_ON = rustFlag('TOXIC_RAIN_ENABLED')
 
 // **Every wait below is on the effect's own state, deadlined by its own
 // constants.** This check used to sleep fixed amounts: 3.6 s per telegraph,
@@ -101,6 +104,10 @@ try {
   }
 
   for (const [name, kind] of KINDS) {
+    if (name === 'toxic' && !TOXIC_ON) {
+      console.log('  skip  toxic: switched off (TOXIC_RAIN_ENABLED, T21.41)')
+      continue
+    }
     const before = await page.evaluate('window.__game.weatherProbe()')
     const priorIds = new Set(before.active.map((a) => a.id))
     await page.evaluate(`window.__game.forceEffect(${kind})`)

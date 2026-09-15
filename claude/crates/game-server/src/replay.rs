@@ -129,13 +129,20 @@ pub const HEADER_BYTES: usize = 45;
 /// of any round that reached `Ended` with input still arriving would diverge at
 /// the first hash inside the results window.
 ///
-/// **9 (T21.43, the gun platform fires while held)**: a mounted `Fire` spawns one
+/// **9 (T21.39, toxic rain switched off, 2026-09-15)**: `TOXIC_RAIN_ENABLED` is false,
+/// so the weather scheduler's roll zeroes toxic rain's weight and the same seed now
+/// draws a different sequence of effects; the scheduler also hashes the switch. The
+/// silent divergence case: a v8 recording would disagree at the first effect roll.
+///
+/// **10 (T21.43, the gun platform fires while held)**: a mounted `Fire` spawns one
 /// round from the next barrel every `GUN_PLATFORM_FIRE_INTERVAL` instead of a
 /// volley of four every 0.12 s, and `platform_barrel` joined the hashed platform
 /// block. No new tag — the same `Fire` commands — so it is the silent divergence
-/// case: a v8 recording would disagree at the **first** checkpoint, because the
-/// hash folds the barrel bytes in whether or not anyone mounted.
-pub const REPLAY_VERSION: u16 = 9;
+/// case: a v9 recording would disagree at the **first** checkpoint, because the
+/// hash folds the barrel bytes in whether or not anyone mounted. Its own number
+/// rather than sharing 9, because T21.39 had already landed 9 on `claude_builds`
+/// in a separate commit.
+pub const REPLAY_VERSION: u16 = 10;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///
@@ -1118,7 +1125,9 @@ mod tests {
         let mut wrong_magic = good.clone();
         wrong_magic[0] ^= 0xFF;
         let mut wrong_version = good;
-        wrong_version[4..6].copy_from_slice(&9u16.to_le_bytes());
+        // Pinned to the constant: this was the literal `9`, which went on meaning "a
+        // version that is not this one" right up until T21.39 made 9 the current one.
+        wrong_version[4..6].copy_from_slice(&(REPLAY_VERSION + 1).to_le_bytes());
         assert!(matches!(
             decode(&wrong_magic),
             Err(ReplayError::BadMagic(_))

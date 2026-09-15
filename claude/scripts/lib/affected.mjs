@@ -138,7 +138,7 @@ export function loadContext(checks, dir = root) {
  */
 export function affected(changed, ctx) {
   const { checks, imports, members, dependents, linkDependents, namedByClientTests } = ctx
-  const inDefault = (c) => !c.flaky && !c.optIn
+  const inDefault = (c) => !c.flaky && !c.optIn && !c.disabled
   const byFile = new Map(checks.map((c) => [c.file, c]))
   const e2e = new Set()
   const crates = new Set()
