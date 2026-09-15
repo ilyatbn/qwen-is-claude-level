@@ -190,12 +190,19 @@ pub struct Config {
 }
 
 /// Parse `WEATHER`. Unset is `Auto`; every other value must be spelled exactly.
+///
+/// **`toxic` is refused while `TOXIC_RAIN_ENABLED` is false** (T21.39), with a message
+/// naming why — not quietly mapped to `off`, for the reason every other bad spelling is
+/// refused: a check that asked for toxic rain and got a clear sky fails an hour later
+/// somewhere else.
 fn parse_weather(v: &str) -> Option<WeatherMode> {
     Some(match v {
         "auto" => WeatherMode::Auto,
         "off" | "none" => WeatherMode::Off,
         "fog" => WeatherMode::Always(EffectKind::HeavyFog),
-        "toxic" => WeatherMode::Always(EffectKind::ToxicRain),
+        "toxic" if game_core::constants::TOXIC_RAIN_ENABLED => {
+            WeatherMode::Always(EffectKind::ToxicRain)
+        }
         "meteor" => WeatherMode::Always(EffectKind::MeteorShower),
         "lava" => WeatherMode::Always(EffectKind::LavaBurst),
         _ => return None,
@@ -421,7 +428,15 @@ impl Config {
                 Some(v) => parse_weather(&v).ok_or_else(|| ConfigError {
                     var: "WEATHER",
                     value: v.clone(),
-                    expected: "one of: auto, off, fog, toxic, meteor, lava".to_string(),
+                    expected: if v == "toxic" {
+                        "one of: auto, off, fog, meteor, lava — toxic rain is disabled \
+                         (TOXIC_RAIN_ENABLED, T21.41)"
+                            .to_string()
+                    } else if game_core::constants::TOXIC_RAIN_ENABLED {
+                        "one of: auto, off, fog, toxic, meteor, lava".to_string()
+                    } else {
+                        "one of: auto, off, fog, meteor, lava".to_string()
+                    },
                 })?,
                 None => d.weather_mode,
             },
@@ -716,7 +731,6 @@ mod tests {
             ("off", WeatherMode::Off),
             ("none", WeatherMode::Off),
             ("fog", WeatherMode::Always(EffectKind::HeavyFog)),
-            ("toxic", WeatherMode::Always(EffectKind::ToxicRain)),
             ("meteor", WeatherMode::Always(EffectKind::MeteorShower)),
             ("lava", WeatherMode::Always(EffectKind::LavaBurst)),
         ] {
@@ -732,6 +746,30 @@ mod tests {
         for v in ["", "Off", "OFF", "no", "1", "true", "rain", "snow"] {
             assert!(from(&[("WEATHER", v)]).is_err(), "WEATHER={v} was accepted");
         }
+    }
+
+    /// T21.39: `WEATHER=toxic` no longer starts toxic rain — it is refused, and the
+    /// refusal says why. The control is `fog`, the same `Always` arm, still accepted
+    /// (the test above).
+    #[test]
+    fn weather_toxic_is_refused_while_toxic_rain_is_switched_off() {
+        let got = from(&[("WEATHER", "toxic")]);
+        if game_core::constants::TOXIC_RAIN_ENABLED {
+            assert_eq!(
+                got.expect("ok").weather_mode,
+                WeatherMode::Always(EffectKind::ToxicRain)
+            );
+            return;
+        }
+        let err = got.expect_err("WEATHER=toxic was accepted with toxic rain switched off");
+        assert_eq!(err.var, "WEATHER");
+        assert!(
+            err.to_string().contains("T21.41"),
+            "the refusal does not say toxic rain is disabled: {err}"
+        );
+        // And the list a bad spelling is shown no longer offers it.
+        let other = from(&[("WEATHER", "rain")]).expect_err("rain");
+        assert!(!other.expected.contains("toxic"), "{}", other.expected);
     }
 
     #[test]

@@ -12,6 +12,10 @@
  * subject is a full-screen cast.
  */
 import { samplePatch, assertChanged, assertUnchanged, colourDelta } from './pixels.mjs'
+import { flag as rustFlag } from '../lib/rust-constants.mjs'
+
+/** T21.39: is toxic rain switched on? Read off `constants.rs`, never typed here. */
+const TOXIC_ON = rustFlag('TOXIC_RAIN_ENABLED')
 
 export default async function ({ page, shot, log }) {
   await page.evaluate(() => window.__game.regenerate('4242', 'medium'))
@@ -274,79 +278,85 @@ export default async function ({ page, shot, log }) {
     await page.evaluate(() => window.__game.setTime(null))
   }
 
-  await page.evaluate(() => window.__game.forceWeather(0)) // toxic
-  // Telegraph is EFFECT_TELEGRAPH (3 s) before the active phase, and the rain
-  // ramps in after that. Waiting less than that photographs a dry sky and blames
-  // the renderer.
-  await page.waitForTimeout(6500)
+  // T21.39: toxic rain is switched off and `forceWeather(0)` does nothing, so its
+  // section is skipped rather than deleted. T21.41 turns it back on.
+  if (!TOXIC_ON) {
+    log('skip toxic rain: switched off (TOXIC_RAIN_ENABLED, T21.41)')
+  } else {
+    await page.evaluate(() => window.__game.forceWeather(0)) // toxic
+    // Telegraph is EFFECT_TELEGRAPH (3 s) before the active phase, and the rain
+    // ramps in after that. Waiting less than that photographs a dry sky and blames
+    // the renderer.
+    await page.waitForTimeout(6500)
 
-  const sample = () =>
-    page.evaluate(() => {
-      const g = window.__game
-      const d = g.debug()
-      return {
-        intensity: d.toxicIntensity,
-        drops: d.rainDrops,
-        real: d.toxicDrops,
+    const sample = () =>
+      page.evaluate(() => {
+        const g = window.__game
+        const d = g.debug()
+        return {
+          intensity: d.toxicIntensity,
+          drops: d.rainDrops,
+          real: d.toxicDrops,
+        }
+      })
+    const state = await sample()
+    const wet = await samplePatch(page, sky)
+    await shot('weather-toxic-rain')
+
+    // Count at both ends before looking at a pixel (§A39): if the layer is drawing
+    // nothing, say so plainly rather than reporting a colour delta.
+    log(
+      `toxic intensity ${state.intensity.toFixed(2)}, streaks drawn ${state.drops}, ` +
+        `real drops in the air ${state.real}`,
+    )
+    if (state.drops === 0) {
+      throw new Error('the rain layer is drawing no drops — nothing about visibility has been tested')
+    }
+
+    // --- the two rains are one rain (T20.05, T21.31) --------------------------
+    //
+    // §C6's emitter and §C21's projectiles both ran and neither knew about the other:
+    // a fixed 260-droplet sheet, and an unrelated set of real drops doing the carving
+    // and the poisoning. T20.05 welded the sheet's density to the live count; T21.31
+    // draws a streak **at** each live drop instead, so the two numbers are equal by
+    // construction — and this is the assertion that would notice them coming apart.
+    // Read in one call: the sandbox syncs its projectiles and draws the rain in the
+    // same update, so between two frames both ends describe the same moment.
+    {
+      const d = await page.evaluate(() => {
+        const x = window.__game.debug()
+        return { real: x.toxicDrops, drawn: x.rainDrops }
+      })
+      if (d.real <= 0) {
+        throw new Error('no real toxic drop was in the air, so "the drawn rain is the real rain" proves nothing')
       }
-    })
-  const state = await sample()
-  const wet = await samplePatch(page, sky)
-  await shot('weather-toxic-rain')
-
-  // Count at both ends before looking at a pixel (§A39): if the layer is drawing
-  // nothing, say so plainly rather than reporting a colour delta.
-  log(
-    `toxic intensity ${state.intensity.toFixed(2)}, streaks drawn ${state.drops}, ` +
-      `real drops in the air ${state.real}`,
-  )
-  if (state.drops === 0) {
-    throw new Error('the rain layer is drawing no drops — nothing about visibility has been tested')
-  }
-
-  // --- the two rains are one rain (T20.05, T21.31) --------------------------
-  //
-  // §C6's emitter and §C21's projectiles both ran and neither knew about the other:
-  // a fixed 260-droplet sheet, and an unrelated set of real drops doing the carving
-  // and the poisoning. T20.05 welded the sheet's density to the live count; T21.31
-  // draws a streak **at** each live drop instead, so the two numbers are equal by
-  // construction — and this is the assertion that would notice them coming apart.
-  // Read in one call: the sandbox syncs its projectiles and draws the rain in the
-  // same update, so between two frames both ends describe the same moment.
-  {
-    const d = await page.evaluate(() => {
-      const x = window.__game.debug()
-      return { real: x.toxicDrops, drawn: x.rainDrops }
-    })
-    if (d.real <= 0) {
-      throw new Error('no real toxic drop was in the air, so "the drawn rain is the real rain" proves nothing')
+      if (d.drawn !== d.real) {
+        throw new Error(
+          `the layer drew ${d.drawn} toxic streaks with ${d.real} real drops in the air — the rain ` +
+            `on the screen is not the rain that falls on you (T20.05, T21.31)`,
+        )
+      }
+      log(`both ends: ${d.drawn} streaks drawn at ${d.real} real drops`)
     }
-    if (d.drawn !== d.real) {
-      throw new Error(
-        `the layer drew ${d.drawn} toxic streaks with ${d.real} real drops in the air — the rain ` +
-          `on the screen is not the rain that falls on you (T20.05, T21.31)`,
-      )
-    }
-    log(`both ends: ${d.drawn} streaks drawn at ${d.real} real drops`)
+
+    const r = assertChanged(dry, wet, {
+      label: 'toxic rain over the sky',
+      // The control is the dry-to-dry pair: the same view, no weather.
+      control: { before: dry, after: dry2 },
+      minDelta: Math.max(8, noise * 3),
+    })
+    log(`rain changed the sky by ${r.delta.toFixed(1)} against a ${noise.toFixed(1)} noise floor`)
+
+    // And it must stop — on its own, because effects end on their own timer and
+    // there is no cancel. A layer that never clears looks identical to one that is
+    // always on, and "the effect ran" would then pass forever.
+    // TOXIC_DURATION is 8 s from the active phase, plus the ramp out.
+    await page.waitForTimeout(9000)
+    const cleared = await page.evaluate(() => window.__game.debug().toxicIntensity)
+    if (cleared > 0.05) throw new Error(`the rain did not stop: intensity still ${cleared}`)
+    log('rain cleared after the effect ended')
+    await shot('weather-cleared')
   }
-
-  const r = assertChanged(dry, wet, {
-    label: 'toxic rain over the sky',
-    // The control is the dry-to-dry pair: the same view, no weather.
-    control: { before: dry, after: dry2 },
-    minDelta: Math.max(8, noise * 3),
-  })
-  log(`rain changed the sky by ${r.delta.toFixed(1)} against a ${noise.toFixed(1)} noise floor`)
-
-  // And it must stop — on its own, because effects end on their own timer and
-  // there is no cancel. A layer that never clears looks identical to one that is
-  // always on, and "the effect ran" would then pass forever.
-  // TOXIC_DURATION is 8 s from the active phase, plus the ramp out.
-  await page.waitForTimeout(9000)
-  const cleared = await page.evaluate(() => window.__game.debug().toxicIntensity)
-  if (cleared > 0.05) throw new Error(`the rain did not stop: intensity still ${cleared}`)
-  log('rain cleared after the effect ended')
-  await shot('weather-cleared')
 
   // --- lava: fire spewing UP from the vent (§C6) ---------------------------
   //

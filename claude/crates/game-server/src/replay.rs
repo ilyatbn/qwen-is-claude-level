@@ -128,7 +128,12 @@ pub const HEADER_BYTES: usize = 45;
 /// on a neutral input, and `fire`/`use_item`/`drop_item` refuse. A v7 recording
 /// of any round that reached `Ended` with input still arriving would diverge at
 /// the first hash inside the results window.
-pub const REPLAY_VERSION: u16 = 8;
+///
+/// **9 (T21.39, toxic rain switched off, 2026-09-15)**: `TOXIC_RAIN_ENABLED` is false,
+/// so the weather scheduler's roll zeroes toxic rain's weight and the same seed now
+/// draws a different sequence of effects; the scheduler also hashes the switch. The
+/// silent divergence case: a v8 recording would disagree at the first effect roll.
+pub const REPLAY_VERSION: u16 = 9;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///
@@ -1111,7 +1116,9 @@ mod tests {
         let mut wrong_magic = good.clone();
         wrong_magic[0] ^= 0xFF;
         let mut wrong_version = good;
-        wrong_version[4..6].copy_from_slice(&9u16.to_le_bytes());
+        // Pinned to the constant: this was the literal `9`, which went on meaning "a
+        // version that is not this one" right up until T21.39 made 9 the current one.
+        wrong_version[4..6].copy_from_slice(&(REPLAY_VERSION + 1).to_le_bytes());
         assert!(matches!(
             decode(&wrong_magic),
             Err(ReplayError::BadMagic(_))

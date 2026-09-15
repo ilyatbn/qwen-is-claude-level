@@ -29,6 +29,14 @@ column is what nobody is checking while it sits here.
 
 **Not parked, noted (T21.18, 2026-09-15):** `client/src/render/backdrop-real.test.ts` takes **216 s alone** (42/42 green). In one `--changed` gate at load the vitest worker lost its RPC (`Timeout calling "onTaskUpdate"`, 872/914 reported) and the stage went red; the gate before and after it were 914/914. There is no parking mechanism for a vitest file, so it is recorded here — one slow file sits near the runner timeout, and the owner should decide whether it moves out of the default run. **Red again in the coordinator's full gate at `bf76714` on an idle box (load 1.35):** `873 passed (915)`, two `onTaskUpdate` errors, then **915/915 in 217 s alone**. **Split per map on 2026-09-15** into six `backdrop-real-*.test.ts` files over `backdrop-real.suite.ts` (assertions unchanged), so the six run in parallel workers; `backdrop-real-cases.test.ts` asserts every case is still run once.
 
+## Disabled, not flaky
+
+`toxic-rain-game` carries `disabled: 'T21.41'`, not `flaky`: toxic rain is switched off by the
+owner's ruling of 2026-09-15 (`TOXIC_RAIN_ENABLED`, T21.39), and `WEATHER=toxic` is refused, so the
+check cannot run until the rewrite turns it back on. Out of the default suite, still runs by name,
+listed under `disabled:` in `e2e.mjs --help`. The toxic halves of `m5-weather`, `weather-visible`,
+`hud-bars` and `ambient-rain` skip themselves off the same constant and the rest of each runs.
+
 ## Considered and not parked
 
 - `skins-ingame` — red once on 2026-09-14, but that was a real bug (the T21.20 ridge skirt),

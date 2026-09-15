@@ -38,6 +38,7 @@
  */
 import { samplePatch } from './pixels.mjs'
 import { startStack, enterBattle, tally, sleep, freePort } from './harness.mjs'
+import { flag as rustFlag } from '../lib/rust-constants.mjs'
 
 const PORT = await freePort()
 const { fail, ok, failures } = tally('hud-bars')
@@ -716,7 +717,11 @@ else ok('no page errors')
 
 await stack.close()
 
-if (!healthRect || !cleanPatch) {
+if (!rustFlag('TOXIC_RAIN_ENABLED')) {
+  // T21.39: only toxic rain poisons, and it is switched off — the poisoned bar is
+  // unreachable in play. Skipped, not deleted; T21.41 turns it back on.
+  console.log('  skip  the poisoned health bar: toxic rain is switched off (TOXIC_RAIN_ENABLED, T21.41)')
+} else if (!healthRect || !cleanPatch) {
   fail('no health bar rect to compare a poisoned one against')
 } else {
   const sick = await startStack({

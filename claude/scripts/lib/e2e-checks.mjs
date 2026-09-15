@@ -5,7 +5,9 @@
  *
  * Flags: `standalone` runs as a subprocess with its own stack; `serial` runs
  * alone under `--jobs`; `flaky` is parked out of the default suite
- * (tasks/flaky-test.md); `optIn` runs only when named.
+ * (tasks/flaky-test.md); `optIn` runs only when named; `disabled: '<task>'` is out of
+ * the default suite because the feature it checks is switched off — **not flaky** —
+ * and still runs when named. The value is the task that turns it back on.
  */
 /**
  * The suite. `url` is the query string the check needs; a check that regenerates
@@ -252,7 +254,9 @@ export const CHECKS = [
   // therefore cannot see whether the shared `WorldView` path works — the §C0 shape
   // that hid a broken `ordnance.update` for three milestones. Standalone: it needs
   // `WEATHER=toxic` on a real server and a real round.
-  { name: 'toxic-rain-game', file: 'scripts/checks/toxic-rain-game.mjs', standalone: true },
+  // `disabled` (T21.39): toxic rain is switched off and `WEATHER=toxic` is refused, so
+  // this can only run once T21.41's rewrite flips `TOXIC_RAIN_ENABLED` back on.
+  { name: 'toxic-rain-game', file: 'scripts/checks/toxic-rain-game.mjs', standalone: true, disabled: 'T21.41' },
   { name: 'ambient-rain', file: 'scripts/checks/ambient-rain.mjs', standalone: true },
   { name: 'minimap-crates', file: 'scripts/checks/minimap-crates.mjs', standalone: true },
   { name: 'beams-shader', file: 'scripts/checks/beams-shader.mjs', standalone: true },
