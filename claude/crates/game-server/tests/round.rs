@@ -127,7 +127,7 @@ fn a_started_round_enters_warmup_and_a_fresh_room_does_not() {
 }
 
 #[test]
-fn a_majority_restart_starts_a_new_round_on_a_new_seed_with_zeroed_scores() {
+fn a_unanimous_restart_starts_a_new_round_on_a_new_seed_with_zeroed_scores() {
     let mut room = Room::new(cfg(1.0));
     let a = seat(&mut room, "a");
     let _b = seat(&mut room, "b");
@@ -183,7 +183,7 @@ fn a_majority_restart_starts_a_new_round_on_a_new_seed_with_zeroed_scores() {
 }
 
 #[test]
-fn without_a_majority_the_room_returns_to_lobby() {
+fn a_lone_human_voting_no_returns_the_room_to_lobby() {
     let mut room = Room::new(cfg(1.0));
     seat(&mut room, "a");
     begin(&mut room);
@@ -423,6 +423,193 @@ fn a_departing_player_takes_their_vote_with_them() {
         "a departed player's vote still counted"
     );
     let _ = Duration::from_secs(1);
+}
+
+// ---------------------------------------------------------------- T21.38
+//
+// The owner's ruling, 2026-09-15: "as long as all human players vote yes,
+// restart. If not, title screen." Every case below runs through the live `Room`,
+// so `human_count` — the thing that keeps bots out of the count — is the one
+// production passes, not a number a test chose.
+
+fn cfg_with_bots(bots: usize) -> Arc<Config> {
+    Arc::new(Config {
+        bot_count: bots,
+        ..(*cfg(1.0)).clone()
+    })
+}
+
+/// Seat `humans`, start, and run to `Ended`.
+fn ended_room(
+    config: Arc<Config>,
+    humans: usize,
+) -> (Room, Vec<game_core::player::state::PlayerId>) {
+    let mut room = Room::new(config);
+    let ids = (0..humans)
+        .map(|i| seat(&mut room, &format!("h{i}")))
+        .collect();
+    begin(&mut room);
+    for _ in 0..(20 * 60) {
+        let _ = room.tick_inline(SIM_DT);
+        if room.phase() == RoundPhase::Ended {
+            break;
+        }
+    }
+    assert_eq!(room.phase(), RoundPhase::Ended, "the round never ended");
+    (room, ids)
+}
+
+/// Tick until the window resolves; the phase it resolved to, and how many ticks
+/// that took.
+fn resolve(room: &mut Room) -> (RoundPhase, usize) {
+    let limit = ((game_core::constants::ENDED_SECONDS + 2.0) / SIM_DT) as usize;
+    for t in 1..=limit {
+        let _ = room.tick_inline(SIM_DT);
+        if room.phase() != RoundPhase::Ended {
+            return (room.phase(), t);
+        }
+    }
+    panic!("the vote window never resolved");
+}
+
+/// Ticks in the whole `Ended` window — what a vote that only resolves at the
+/// close would take.
+fn window_ticks() -> usize {
+    (game_core::constants::ENDED_SECONDS / SIM_DT) as usize
+}
+
+#[test]
+fn every_human_yes_restarts_and_one_human_no_sends_everyone_to_the_lobby() {
+    let (mut room, ids) = ended_room(cfg(1.0), 3);
+    for id in &ids {
+        room.vote_for_test(*id, true);
+    }
+    assert_eq!(
+        resolve(&mut room).0,
+        RoundPhase::Warmup,
+        "three yes of three"
+    );
+
+    // One no among three: a majority, and still the lobby.
+    let (mut room, ids) = ended_room(cfg(1.0), 3);
+    room.vote_for_test(ids[0], true);
+    room.vote_for_test(ids[1], true);
+    room.vote_for_test(ids[2], false);
+    assert_eq!(
+        resolve(&mut room).0,
+        RoundPhase::Lobby,
+        "a human's no was outvoted"
+    );
+}
+
+#[test]
+fn one_silent_human_sends_everyone_to_the_lobby() {
+    let (mut room, ids) = ended_room(cfg(1.0), 3);
+    room.vote_for_test(ids[0], true);
+    room.vote_for_test(ids[1], true);
+    let (phase, ticks) = resolve(&mut room);
+    assert_eq!(
+        phase,
+        RoundPhase::Lobby,
+        "silence did not block the restart"
+    );
+    // It waited for the window, which is the only thing silence can wait for.
+    assert!(
+        ticks >= window_ticks() - 1,
+        "the room gave up on the silent human early: {ticks} ticks"
+    );
+}
+
+/// Bots never vote and never count: humans all yes with three silent bots
+/// restarts. The control is the same room with one human silent, so the pass is
+/// not a rule that ignores everyone's silence.
+#[test]
+fn silent_bots_do_not_block_when_every_human_said_yes() {
+    let (mut room, ids) = ended_room(cfg_with_bots(3), 2);
+    assert_eq!(room.bot_count(), 3, "the premise: bots are seated");
+    let tally = room.vote_tally().expect("a tally in Ended");
+    assert_eq!(
+        (tally.yes, tally.humans),
+        (0, 2),
+        "the tally counted bots as voters"
+    );
+    for id in &ids {
+        room.vote_for_test(*id, true);
+    }
+    assert_eq!(
+        resolve(&mut room).0,
+        RoundPhase::Warmup,
+        "silent bots blocked a restart every human voted for"
+    );
+
+    let (mut room, ids) = ended_room(cfg_with_bots(3), 2);
+    room.vote_for_test(ids[0], true);
+    assert_eq!(
+        resolve(&mut room).0,
+        RoundPhase::Lobby,
+        "the control: with a human silent it must not restart"
+    );
+}
+
+#[test]
+fn a_lone_human_voting_yes_restarts_before_the_window_closes() {
+    let (mut room, ids) = ended_room(cfg_with_bots(3), 1);
+    room.vote_for_test(ids[0], true);
+    let (phase, ticks) = resolve(&mut room);
+    assert_eq!(
+        phase,
+        RoundPhase::Warmup,
+        "a lone human's yes did not restart"
+    );
+    assert!(
+        ticks < window_ticks() / 2,
+        "every human had said yes and the room still waited {ticks} of \
+         {} ticks",
+        window_ticks()
+    );
+}
+
+/// T21.38 R2: a human who leaves during the window is no longer counted, so the
+/// humans who stayed and said yes get their round — at once, since the answer
+/// is now known. The control is the same two humans with nobody leaving.
+#[test]
+fn a_human_who_leaves_during_the_window_does_not_block() {
+    let (mut room, ids) = ended_room(cfg(1.0), 2);
+    room.vote_for_test(ids[0], true);
+    let _ = room.tick_inline(SIM_DT);
+    assert_eq!(room.phase(), RoundPhase::Ended, "one yes of two resolved");
+    room.leave_for_test(ids[1]);
+    let (phase, ticks) = resolve(&mut room);
+    assert_eq!(
+        phase,
+        RoundPhase::Warmup,
+        "a departed human blocked the restart"
+    );
+    assert!(
+        ticks < window_ticks() / 2,
+        "resolved only at the close: {ticks}"
+    );
+
+    let (mut room, ids) = ended_room(cfg(1.0), 2);
+    room.vote_for_test(ids[0], true);
+    assert_eq!(
+        resolve(&mut room).0,
+        RoundPhase::Lobby,
+        "the control: the same silent human, still seated, must block"
+    );
+}
+
+/// The tally is `Some` only in `Ended`, which is what keeps `votes` off every
+/// other `round_state`.
+#[test]
+fn the_vote_tally_exists_only_while_the_round_is_ended() {
+    let mut room = Room::new(cfg(1.0));
+    seat(&mut room, "a");
+    assert!(room.vote_tally().is_none(), "a lobby reported a vote");
+    begin(&mut room);
+    assert!(room.vote_tally().is_none(), "warmup reported a vote");
+    let (room, _) = ended_room(cfg(1.0), 1);
+    assert!(room.vote_tally().is_some(), "the control: Ended has one");
 }
 
 // ---------------------------------------------------------------- T21.13

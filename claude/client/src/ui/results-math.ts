@@ -144,17 +144,60 @@ export function voteButton(state: VoteState, timeLeft: number): VoteButton {
 }
 
 /**
- * The countdown line (T21.32 item 1).
- *
- * "New round in N s" only once this client's vote is **counted**: until then
- * the window closing produces a new round only if somebody's vote carries it,
- * and a line promising one to a player who has not voted would be a promise
- * silence does not keep (`restart_wins` needs at least one vote).
+ * The restart vote as the server tallies it (T21.38): `yes` votes of `humans`
+ * seated. Bots are in neither number.
  */
-export function countdownText(state: VoteState, timeLeft: number): string {
+export interface VoteTally {
+  yes: number
+  humans: number
+}
+
+/**
+ * Read `round_state.votes`, or `null` when it is absent or malformed.
+ *
+ * The server sends it only while the round is `Ended`. `null` is the honest
+ * reading of anything else — never a `{yes: 0, humans: 0}` built from
+ * `Number(undefined ?? 0)`, which would render a confident "0 of 0" off a field
+ * that does not exist (§B15).
+ */
+export function parseVoteTally(raw: unknown): VoteTally | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const r = raw as Record<string, unknown>
+  const yes = r['yes']
+  const humans = r['humans']
+  if (typeof yes !== 'number' || typeof humans !== 'number') return null
+  if (!Number.isInteger(yes) || !Number.isInteger(humans) || yes < 0 || humans < 0) return null
+  return { yes, humans }
+}
+
+/** Every seated human has said yes — the server restarts on this (T21.38 R3). */
+export function everyoneSaidYes(tally: VoteTally | null): boolean {
+  return tally !== null && tally.humans > 0 && tally.yes >= tally.humans
+}
+
+/**
+ * The countdown line (T21.32 item 1, reworded by T21.38).
+ *
+ * "Vote closes in N s" for everyone, voted or not: since T21.38 one counted yes
+ * no longer carries the round, so T21.32's "New round in N s" after a counted
+ * vote would promise a round that a silent player can still take away. Only a
+ * tally showing every human's yes promises one — and the server restarts on that
+ * at once, so it says the round is starting rather than counting to it.
+ */
+export function countdownText(timeLeft: number, tally: VoteTally | null): string {
+  if (everyoneSaidYes(tally)) return 'New round starting…'
   const s = voteSecondsLeft(timeLeft)
   if (s <= 0) return 'Vote closed'
-  return state === 'counted' ? `New round in ${s} s` : `Vote closes in ${s} s`
+  return `Vote closes in ${s} s`
+}
+
+/**
+ * "2 of 3 players want a rematch" — or nothing, when no tally has arrived.
+ */
+export function tallyText(tally: VoteTally | null): string {
+  if (tally === null) return ''
+  const who = tally.humans === 1 ? 'player wants' : 'players want'
+  return `${tally.yes} of ${tally.humans} ${who} a rematch`
 }
 
 export function resultsView(
@@ -166,23 +209,16 @@ export function resultsView(
 }
 
 /**
- * The line under the buttons.
+ * The rule line under the scoreboard.
  *
- * It states the **rule**, not a tally, and that is a deliberate limit rather than
- * a simplification: `round_state` carries `phase`, `time_left` and `seed` and
- * **no vote information at all**, so a client cannot know how many have voted.
- * An earlier draft of this rendered `${votesFor}/${connected}` from a
- * `votes_for` field that does not exist — `Number(undefined ?? 0)` is 0, so it
- * would have displayed a confident `0/4` for the whole window and never once
- * failed (§B15).
- *
- * The rule itself is the server's: `restart_wins` is `yes * 2 > cast`, a majority
- * of those who **voted**, with abstentions ignored (`docs/41` §3 — "a player who
- * alt-tabs should not veto the round"). Note that §3 *also* says "majority of
- * connected", which cannot both hold; see the journal entry for T13.06.
+ * The rule is the server's `round.rs::RoundController::restart_wins`, from the
+ * owner's ruling of 2026-09-15 (T21.38): *"as long as all human players vote
+ * yes, restart. If not, title screen."* Silence counts as no; a player who
+ * leaves is no longer asked. Bots are not mentioned because they are not asked
+ * either. The tally is its own line, `tallyText`, from `round_state.votes`.
  */
 export function voteSummary(): string {
-  return 'A majority of the players who vote starts a new round.'
+  return 'A new round starts only if every player votes Play again — otherwise everyone goes back to the title.'
 }
 
 /**
