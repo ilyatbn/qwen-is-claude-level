@@ -1825,13 +1825,70 @@ pub const MOUNTAIN_CELLS: u32 = 6;
 /// Octaves of value noise in the ridge profile.
 pub const MOUNTAIN_OCTAVES: u32 = 3;
 
-/// Drift speed, px/s. Slow enough that it reads as weather rather than as motion.
+/// Drift speed, px/s, before a cloud's own `CLOUD_SPEED_MIN..MAX` and the wind.
+/// Slow enough that it reads as weather rather than as motion.
+///
+/// **T21.31: the clouds are world objects now**, so this is world px/s and there is
+/// no `CLOUD_PARALLAX` — rain falls from under a cloud, and a cloud that slid with
+/// the camera would drag its rain across the ground with it.
 pub const CLOUD_DRIFT: f32 = 6.0;
-/// Scroll factor for the cloud band — between the far mountains and the near.
-pub const CLOUD_PARALLAX: f32 = 0.14;
-/// The band of the viewport clouds occupy, as fractions of its height.
-pub const CLOUD_BAND_TOP: f32 = 0.04;
-pub const CLOUD_BAND_BOTTOM: f32 = 0.46;
+/// Extra drift per unit of the round's wind (`MapMeta::wind`, px/s² up to
+/// `WIND_MAX`), px/s. At `WIND_MAX` a cloud gains 7 px/s in the wind's direction.
+pub const CLOUD_WIND_GAIN: f32 = 0.08;
+/// One cloud per this many world px of map width (T21.31): 20 over a medium map,
+/// which at `CAMERA_ZOOM` 2 is three or four across the view — "many, small".
+pub const CLOUD_SPACING: f32 = 150.0;
+/// A cloud's width, world px. The owner's report was *"too large"*: the widest is
+/// under a quarter of the 640 px a zoomed camera shows.
+pub const CLOUD_W_MIN: f32 = 44.0;
+pub const CLOUD_W_MAX: f32 = 150.0;
+/// Height as a fraction of width — flat streaks to heaped puffs.
+pub const CLOUD_ASPECT_MIN: f32 = 0.32;
+pub const CLOUD_ASPECT_MAX: f32 = 0.62;
+/// Lobes per cloud: the silhouette. Three is a small puff, eight a long bank.
+pub const CLOUD_LOBES_MIN: u32 = 3;
+pub const CLOUD_LOBES_MAX: u32 = 8;
+/// Per-cloud multiple of the drift speed, so no two clouds keep station.
+pub const CLOUD_SPEED_MIN: f32 = 0.5;
+pub const CLOUD_SPEED_MAX: f32 = 1.6;
+/// Per-cloud brightness, multiplied into the phase's tint.
+pub const CLOUD_BRIGHT_MIN: f32 = 0.74;
+pub const CLOUD_BRIGHT_MAX: f32 = 1.0;
+/// The two ends a cloud's own tint is drawn between, 0xRRGGBB: cool and warm white.
+pub const CLOUD_TINT_COOL: u32 = 0xdd_e8_ff;
+pub const CLOUD_TINT_WARM: u32 = 0xff_ee_d8;
+/// Per-cloud opacity, as a multiple of the phase's `cloudTint` alpha.
+pub const CLOUD_OPACITY_MIN: f32 = 0.65;
+pub const CLOUD_OPACITY_MAX: f32 = 1.0;
+/// How far a cloud's base floats above the **sky floor**, world px.
+///
+/// The sky floor is the highest rock within `CLOUD_FLOOR_WINDOW` of the cloud, so
+/// a cloud is never inside rock however it drifts — and it is measured from the
+/// land under it rather than from the top of the world, which at `CAMERA_ZOOM` 2 is
+/// never on screen (`BIRD_ALTITUDE_ABOVE_MIN`'s lesson).
+pub const CLOUD_ALTITUDE_MIN: f32 = 50.0;
+pub const CLOUD_ALTITUDE_MAX: f32 = 200.0;
+/// Width of the window the sky floor takes its highest rock over, world px.
+///
+/// **Must exceed `CLOUD_W_MAX + CLOUD_FLOOR_SMOOTH`**: the floor is a max-height
+/// filter over this window smoothed over `CLOUD_FLOOR_SMOOTH`, and what that is
+/// guaranteed to clear is the rock within `(WINDOW - SMOOTH) / 2` of the centre —
+/// which has to cover half the widest cloud. Asserted in the tests below.
+pub const CLOUD_FLOOR_WINDOW: f32 = 440.0;
+/// Smoothing of the sky floor, world px, so a cloud rises over a mesa rather than
+/// jumping when the mesa enters its window.
+pub const CLOUD_FLOOR_SMOOTH: f32 = 120.0;
+/// Column step of the scan for the highest rock, world px.
+pub const CLOUD_FLOOR_STEP: u32 = 2;
+/// Nearest a cloud's top may come to the top of the world, world px.
+pub const CLOUD_TOP_MIN: f32 = 4.0;
+/// Soft rings each lobe is painted with. **Both paths are plain filled circles**,
+/// so they draw on Phaser's Canvas renderer too (T21.31: the owner plays there);
+/// High Quality only paints more, fainter rings, which is a softer edge.
+pub const CLOUD_RINGS: u32 = 3;
+pub const CLOUD_RINGS_HQ: u32 = 6;
+/// The title screen has no map: its sky floor is this fraction of the viewport.
+pub const CLOUD_TITLE_FLOOR_FRAC: f32 = 0.46;
 /// Cloud opacity at full day. Night and dusk scale down from here.
 pub const CLOUD_ALPHA: f32 = 0.62;
 /// How much of the sky's own colour a cloud takes, 0 = white, 1 = the sky.
@@ -2718,6 +2775,16 @@ const _: () = assert!(BOOTS_JUMP_HEIGHT_MULT > 1.0);
 // A fang that returned more life than the damage it dealt would make trading
 // hits strictly profitable, which is a different item from the one asked for.
 const _: () = assert!(LIFESTEAL_DAMAGE_PER_HP > 1.0);
+// T21.31: the sky floor clears the rock within `(WINDOW - SMOOTH) / 2` of a cloud's
+// centre, and that has to reach both ends of the widest cloud, or a wide cloud
+// drifting past a narrow spire can put its edge inside the rock.
+const _: () = assert!(CLOUD_FLOOR_WINDOW - CLOUD_FLOOR_SMOOTH >= CLOUD_W_MAX);
+// A cloud has to fit under the lowest altitude the ground could ever allow:
+// `GROUND_CREST_HEADROOM` of air above the highest ground, below `SKY_MARGIN`.
+const _: () = assert!(
+    CLOUD_TOP_MIN + CLOUD_W_MAX * CLOUD_ASPECT_MAX + CLOUD_ALTITUDE_MIN
+        <= (SKY_MARGIN as f32) + (GROUND_CREST_HEADROOM as f32)
+);
 
 #[cfg(test)]
 // Every assertion in this module is deliberately over compile-time constants —

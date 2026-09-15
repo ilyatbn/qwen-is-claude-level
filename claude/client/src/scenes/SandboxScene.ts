@@ -25,6 +25,7 @@ import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { SkyLayer } from '../render/sky'
+import type { SkyGround } from '../render/parallax'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { ventLights } from '../render/weather-math'
 import { DebugOverlay } from '../render/debugOverlay'
@@ -104,6 +105,8 @@ export class SandboxScene extends Phaser.Scene {
   private invOpen = false
   /** Round time in seconds, driven by the clock or scrubbed by the slider. */
   private roundTime = 0
+  /** T21.31: where the e2e `watch` hook holds the camera, or `null` to follow the player. */
+  private watchPoint: { x: number; y: number } | null = null
   private timeScrub = false
 
   private player!: PlayerView
@@ -311,6 +314,17 @@ export class SandboxScene extends Phaser.Scene {
 
   // ---------------------------------------------------------------- generation
 
+  /** T21.31: what the sky needs of this map — its size, its rock and its wind. */
+  private skyGround(): SkyGround {
+    const core = this.core
+    return {
+      width: core.width,
+      height: core.height,
+      solidAt: (x, y) => core.solidAt(x, y),
+      wind: core.meta.wind,
+    }
+  }
+
   private regenerate(): void {
     // Tear the old map down *first*. Phaser's texture manager is global, so a
     // reused key keeps the old pixels and the new map comes out looking subtly
@@ -355,7 +369,7 @@ export class SandboxScene extends Phaser.Scene {
     // session and "a seed always looks the same" was true of the terrain only.
     // `sky` is undefined on the first call: `create()` regenerates before it
     // builds the sky, and the constructor above passes the seed directly.
-    this.sky?.setSeed(this.core.meta.seed, this.core.meta.theme, this.core.height)
+    this.sky?.setSeed(this.core.meta.seed, this.core.meta.theme, this.skyGround())
 
     this.seedInput.value = this.seed.toString()
     this.refreshReadout()
@@ -685,10 +699,9 @@ export class SandboxScene extends Phaser.Scene {
           animState: self.player?.state ?? 'idle',
           roundTime: self.roundTime,
           skyPhase: self.sky?.currentPhase ?? 'morning',
-          // §C14. `shaderClouds` separates "the layer exists" from "it is
-          // drawing", which is the distinction §A15 keeps being about — and
-          // since T21.18 it is also the whole of the cloud answer, because there
-          // is no sprite path left to be drawing instead.
+          // §C14. `cloudsDrawn` beside `clouds` separates "the round has clouds"
+          // from "this frame drew some", which is the distinction §A15 keeps being
+          // about (T21.31).
           parallax: self.sky?.parallax.debug() ?? null,
           darkness: darknessAt(cycleU(self.roundTime), C().NIGHT_DARKNESS),
           fogMult: self.fogActive ? C().FOV_FOG_MULT : 1,
@@ -1010,12 +1023,9 @@ export class SandboxScene extends Phaser.Scene {
           setting: isHighQuality(),
           shaderFog: self.world.weather.fogIsShader,
           shaderBeams: self.world.ordnance.beamsAreShader,
-          // T21.18. Read off the shader object, not off the setting, for the
-          // reason `shaderFog` is: with no WebGL the answer is `false` however
-          // the setting is set, and since T21.18 there is no sprite cloud to
-          // take over — so `false` here means an empty sky, which is a picture a
-          // check must be able to expect.
-          shaderClouds: self.sky?.parallax.cloudsAreShader ?? false,
+          // T21.31: the clouds exist either way; High Quality only paints more,
+          // fainter rings. Read off the layer's last frame, repainted on the flip.
+          cloudRings: self.sky?.parallax.debug().cloudRings ?? 0,
         }
       },
       toggleOverlays() {
@@ -1048,7 +1058,7 @@ export class SandboxScene extends Phaser.Scene {
        * seed entirely.
        */
       setSkySeed(seed: number) {
-        self.sky?.setSeed(seed, self.core.meta.theme, self.core.height)
+        self.sky?.setSeed(seed, self.core.meta.theme, self.skyGround())
       },
       /**
        * Pin the cloud drift clock, `null` to resume.
@@ -1065,6 +1075,27 @@ export class SandboxScene extends Phaser.Scene {
        */
       setParallaxClock(t: number | null) {
         self.sky?.parallax.setClock(t)
+      },
+      /**
+       * T21.31: hide the clouds alone, for a same-instant control frame. Read back
+       * off the layer — `setParallaxVisible` takes the ridges too, and a cloud check
+       * whose control also moved the ridges would be measuring both.
+       */
+      setCloudsVisible(on: boolean) {
+        return self.sky?.parallax.setCloudsVisible(on) ?? { visible: false }
+      },
+      /** T21.31: every cloud's world box at clock `t`, drawn or not — for the rock sweep. */
+      cloudsAt(t: number) {
+        return self.sky?.parallax.cloudsAt(t) ?? []
+      },
+      /**
+       * T21.31: frame a world point and hold the camera there, `null` to follow the
+       * player again. The game scene's `watch`, for the same reason: a cloud is
+       * wherever the seed put it, usually well above the player's view.
+       */
+      watch(x: number | null, y = 0) {
+        self.watchPoint = x === null ? null : { x, y }
+        if (self.watchPoint) self.world.rig.snapTo(self.watchPoint)
       },
       /**
        * Jump to a point in the day, for inspecting a phase — or `null` to hand
@@ -1238,8 +1269,12 @@ export class SandboxScene extends Phaser.Scene {
         boots: (this.core.playerState(0)?.moveMods ?? 0) !== 0,
       })
       this.crosshair.update(body.x, body.y, aim)
-      this.world.rig.follow({ x: body.x, y: body.y })
-      this.world.rig.setAim(aim)
+      // `watchPoint` is the e2e `watch` hook's, and only that (T21.31).
+      this.world.rig.follow(this.watchPoint ?? { x: body.x, y: body.y })
+      // No lookahead while watching: the aim lead eases in over many frames, so a
+      // held camera kept creeping ~6 px and two photographs of one "still" frame
+      // differed by 14 % on the slower Canvas renderer (measured, T21.31).
+      this.world.rig.setAim(this.watchPoint ? null : aim)
       this.movementCues(dt, body)
     }
 

@@ -49,7 +49,10 @@ export const CHECKS = [
   // T21.18 item 1: the sprite clouds are retired, and High Quality paints them
   // with a shader instead. Asserts **both** pictures — the empty band is the
   // deliberate half.
-  { name: 'clouds-shader', file: 'scripts/checks/clouds-shader.mjs', url: '?sandbox=1&seed=4242' },
+  // T21.31: world clouds, on both renderers — the owner plays on Canvas, and a check
+  // that only ever ran on WebGL is how his sky went empty without anything noticing.
+  { name: 'clouds', file: 'scripts/checks/clouds.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'clouds-canvas', file: 'scripts/checks/clouds.mjs', url: '?sandbox=1&seed=4242&renderer=canvas' },
   // T21.02: the boots have to be visible on the player. In the sandbox
   // because it is the one scene that can supply a **control frame** — the
   // same body, in the same place, before and after picking them up.

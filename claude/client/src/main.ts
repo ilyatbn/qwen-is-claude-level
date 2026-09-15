@@ -146,7 +146,10 @@ async function main(): Promise<Phaser.Game> {
   loadSettings(localStorage)
 
   const game = new Phaser.Game({
-    type: Phaser.AUTO,
+    // T21.31: `?renderer=canvas` forces Phaser's Canvas renderer, which is what the
+    // owner's browser falls back to — a check that only ever ran on WebGL could not
+    // see a picture that exists there alone. Anything else stays `AUTO`.
+    type: new URLSearchParams(location.search).get('renderer') === 'canvas' ? Phaser.CANVAS : Phaser.AUTO,
     parent: 'game',
     width: c.VIEWPORT_W,
     height: c.VIEWPORT_H,

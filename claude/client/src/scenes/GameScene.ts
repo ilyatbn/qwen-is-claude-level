@@ -1329,7 +1329,15 @@ export class GameScene extends Phaser.Scene {
     // keeps a distant ridge the colour of the ground in front of it. The theme
     // is not on the wire today, so both are 0 in a networked round — and they
     // are 0 *together*, which is the property that matters.
-    this.sky.setSeed(this.mapSeed, this.core.meta.theme, this.core.height)
+    // T21.31: the clouds' ground and wind too. **The wind off `map_init`**, not
+    // `core.meta`, which a networked client never generates (see §C5 below).
+    const core = this.core
+    this.sky.setSeed(this.mapSeed, core.meta.theme, {
+      width: core.width,
+      height: core.height,
+      solidAt: (x, y) => core.solidAt(x, y),
+      wind: init.wind,
+    })
 
     // §C5. Built from the wire rather than from `core.meta`: a networked client
     // never runs the generator, so `core.meta.teleport_pads` is empty here and a
@@ -2644,6 +2652,10 @@ export class GameScene extends Phaser.Scene {
       setParallaxVisible(on: boolean) {
         self.sky?.parallax.setVisible(on)
         return { hidden: self.sky?.parallax.debug().hidden ?? null }
+      },
+      /** e2e only (§C2, T21.31): hide the clouds alone for a same-instant control frame. */
+      setCloudsVisible(on: boolean) {
+        return self.sky?.parallax.setCloudsVisible(on) ?? { visible: false }
       },
       /** e2e only (T21.18): flip High Quality here, and say what is painted now. */
       setHighQuality(on: boolean) {

@@ -18,7 +18,7 @@ import {
   type Star,
 } from './sky-math'
 import { DEPTH } from './backdrop'
-import { ParallaxLayer } from './parallax'
+import { ParallaxLayer, type SkyGround } from './parallax'
 
 const GRAD_KEY = '__sky_gradient'
 const GRAD_H = 256
@@ -161,13 +161,21 @@ export class SkyLayer {
 
     // The parallax band gets the gradient's **own** bottom colour, so the haze
     // on a distant ridge cannot drift from the sky it is fading into.
-    this.parallax.update(this.scene.time.now / 1000, bottom, this.scene.cameras.main.scrollX, u)
+    //
+    // T21.31: and the **round's** clock, not this browser's `time.now`: the clouds
+    // are world objects that rain falls from, so two players in one round must see
+    // them in one place.
+    this.parallax.update(roundTime, bottom, this.scene.cameras.main.scrollX, u)
   }
 
-  /** Point the background at a map. Call after every generate. */
-  setSeed(seed: number, themeId: number, mapH: number): void {
-    // `mapH` anchors the ridge to the world (T21.20); the title never calls this.
-    this.parallax.setSeed(seed, themeId, mapH)
+  /**
+   * Point the background at a map. Call after every generate.
+   *
+   * `ground` anchors the ridge (T21.20) and the clouds (T21.31) to the world; the
+   * title never calls this.
+   */
+  setSeed(seed: number, themeId: number, ground: SkyGround): void {
+    this.parallax.setSeed(seed, themeId, ground)
   }
 
   get currentPhase(): SkyPhase {

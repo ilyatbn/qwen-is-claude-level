@@ -383,9 +383,31 @@ export interface Constants {
   MOUNTAIN_CELLS: number
   MOUNTAIN_OCTAVES: number
   CLOUD_DRIFT: number
-  CLOUD_PARALLAX: number
-  CLOUD_BAND_TOP: number
-  CLOUD_BAND_BOTTOM: number
+  CLOUD_WIND_GAIN: number
+  CLOUD_SPACING: number
+  CLOUD_W_MIN: number
+  CLOUD_W_MAX: number
+  CLOUD_ASPECT_MIN: number
+  CLOUD_ASPECT_MAX: number
+  CLOUD_LOBES_MIN: number
+  CLOUD_LOBES_MAX: number
+  CLOUD_SPEED_MIN: number
+  CLOUD_SPEED_MAX: number
+  CLOUD_BRIGHT_MIN: number
+  CLOUD_BRIGHT_MAX: number
+  CLOUD_TINT_COOL: number
+  CLOUD_TINT_WARM: number
+  CLOUD_OPACITY_MIN: number
+  CLOUD_OPACITY_MAX: number
+  CLOUD_ALTITUDE_MIN: number
+  CLOUD_ALTITUDE_MAX: number
+  CLOUD_FLOOR_WINDOW: number
+  CLOUD_FLOOR_SMOOTH: number
+  CLOUD_FLOOR_STEP: number
+  CLOUD_TOP_MIN: number
+  CLOUD_RINGS: number
+  CLOUD_RINGS_HQ: number
+  CLOUD_TITLE_FLOOR_FRAC: number
   CLOUD_ALPHA: number
   CLOUD_SKY_MIX: number
   CLOUD_ALPHA_FLOOR: number
