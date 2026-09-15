@@ -83,10 +83,11 @@ const DEV_ROUND_CLOCK = Math.max(0, showerAt - WARMUP_SECONDS - LEAD_S)
 console.log(`  seed ${SEED}'s first shower starts at round time ${showerAt}; DEV_ROUND_CLOCK=${DEV_ROUND_CLOCK}`)
 
 /**
- * Where streaks are counted: below the HUD strip, clear of the banner and clock.
- * Rain is screen-space, so any band will do.
+ * T21.31: **the whole frame is photographed.** Rain was a screen-space sheet, so any
+ * band showed it; now it falls only under clouds and the real toxic drops fall where
+ * the server put them, so a fixed band can be dry sky. Frozen and toggled within one
+ * instant, nothing else in the frame changes, which the noise count below measures.
  */
-const BAND = { x: 200, y: 70, w: 880, h: 260 }
 /**
  * A pixel counts as changed when any channel moved by more than this.
  *
@@ -135,7 +136,7 @@ const cosine = (u, v) => (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (norm(u) * 
 const fmt = (v) => `(${v.map((x) => x.toFixed(1)).join(', ')})`
 
 const grab = async () =>
-  (await page.screenshot({ clip: { x: BAND.x, y: BAND.y, width: BAND.w, height: BAND.h } })).toString('base64')
+  (await page.screenshot()).toString('base64')
 
 /** Pixels that differ between two photographs, and their mean change (a - b). */
 const compare = (a, b) =>
@@ -213,7 +214,10 @@ if (start.asked === 0 && start.drops !== 0) {
 
 // --- the toxic sheet, for the colour the ambient one must not be mistaken for --
 const toxicUp = await page
-  .waitForFunction('window.__game.debug().rainDrops > 60', null, { timeout: 120_000 })
+  // T21.31: the real drops (a handful), with the cast faded fully in.
+  .waitForFunction('window.__game.debug().rainDrops > 0 && window.__game.debug().toxicIntensity >= 0.99', null, {
+    timeout: 120_000,
+  })
   .then(() => true)
   .catch(() => false)
 let toxic = null
@@ -231,13 +235,50 @@ const ambientUp = await page
   // At **full** strength: photographed on its first droplets the sheet is a
   // ramp's worth of faint lines, which is a measurement of the ramp.
   .waitForFunction(
-    'window.__game.debug().ambientAsked >= 0.99 && window.__game.debug().ambientIntensity >= 0.99',
+    // T21.31: and drops in the view, which needs a cloud over it — the rain is not a sheet.
+    'window.__game.debug().ambientAsked >= 0.99 && window.__game.debug().ambientIntensity >= 0.99 && window.__game.debug().ambientDrops > 0',
     null,
     { timeout: 240_000 },
   )
   .then(() => true)
   .catch(() => false)
 let ambient = null
+/**
+ * T21.31: **frame a raining cloud before photographing the rain.**
+ *
+ * The rain falls only under clouds now, and the first run of this after the change
+ * drew one droplet in view: seed 1 spawns the player in a valley between two cliffs,
+ * and the clouds sit above the cliff tops, so almost none of the valley is under one.
+ * That is the ruling working — a valley with no cloud over it is dry. So the camera is
+ * held under a cloud with open air beneath it; *where* rain may fall is `cloud-rain`'s
+ * claim, and this check's claim is that the harmless rain on screen is not green.
+ */
+let framed = null
+if (ambientUp) {
+  framed = await page.evaluate(() => {
+    const g = window.__game
+    const t = g.debug().roundTime ?? 0
+    const core = g.core
+    const boxes = g.cloudsAt(t).filter((b) => b.visible).sort((a, b) => b.w - a.w)
+    for (const b of boxes) {
+      const x = Math.round(b.left + b.w / 2)
+      let y = Math.ceil(b.top + b.h)
+      while (y < core.height && !core.solidAt(x, y)) y++
+      if (y - (b.top + b.h) > 120) return { index: b.index, x, y: b.top + b.h + 90 }
+    }
+    return null
+  })
+  if (!framed) fail('no cloud in the round has open air under it to frame the ambient rain in')
+  else {
+    await page.evaluate(([x, y]) => window.__game.watch(x, y), [framed.x, framed.y])
+    const drawn = await page
+      .waitForFunction('window.__game.debug().ambientDrops >= 20', null, { timeout: 30_000 })
+      .then(() => true)
+      .catch(() => false)
+    if (!drawn) fail(`framed under cloud ${framed.index} and fewer than 20 ambient droplets drew in 30 s`)
+    else ok(`framed under cloud ${framed.index}: ${(await read()).drops} ambient droplets in view`)
+  }
+}
 if (!ambientUp) {
   const s = await read()
   fail(`no ambient rain drew by round time ${s.t.toFixed(1)} (schedule ${s.asked})`)
@@ -248,6 +289,8 @@ if (!ambientUp) {
   else ok(`round time ${s.t.toFixed(1)}: the schedule asked ${s.asked.toFixed(2)} and ${s.drops} droplets drew`)
   ambient = await isolate('ambient')
   await shot('ambient-rain-ambient')
+  // Hand the camera back to the player: `watch` is held until released.
+  await page.evaluate(() => window.__game.watch(null))
   console.log(`  ambient sheet: ${ambient.changed} of ${ambient.total} px changed, mean change ${fmt(ambient.delta)}, noise ${ambient.noiseChanged} px`)
 }
 

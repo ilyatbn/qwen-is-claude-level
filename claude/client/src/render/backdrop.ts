@@ -30,9 +30,9 @@ export const DEPTH = {
    * §C14's living background, inside the −20 band `docs/12` §5 reserves.
    *
    * Three depths rather than one because the clouds sit **between** the two
-   * mountain layers: `CLOUD_PARALLAX` (0.14) is between the ridges' 0.10 and
-   * 0.20, and a cloud drawn in front of a ridge it scrolls behind reads as a
-   * mistake immediately.
+   * mountain layers. Since T21.31 the clouds are world objects rather than a
+   * parallax band, and they keep this depth: behind the terrain, so a cave never
+   * shows one, and in front of the far ridge they would otherwise be mistaken for.
    */
   parallaxFar: -22,
   parallaxClouds: -21,

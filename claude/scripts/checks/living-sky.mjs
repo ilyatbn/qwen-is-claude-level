@@ -83,12 +83,13 @@ export default async function ({ page, shot, log }) {
     layers: window.__game.constants().MOUNTAIN_LAYERS,
   }))
   if (p.ridges !== c.layers) throw new Error(`${p.ridges} ridge layers, expected MOUNTAIN_LAYERS (${c.layers})`)
-  // The clouds are the control here now (T21.18): with High Quality off — which
-  // is the default this check runs under — nothing paints that band, and the
-  // assertion below says so.
-  if (p.shaderClouds) {
-    throw new Error('the cloud shader is drawing with High Quality off, which nothing turned on')
-  }
+  // T21.31: the clouds are world objects now and `clouds.mjs` owns them. This check
+  // needs a strip of **empty** sky for its control, and a cloud drifting through it
+  // would be read as the ridge toggle moving open sky — so they are hidden for the
+  // photographs below, and read back to be sure they went.
+  if (!(p.clouds > 0)) throw new Error(`the sky has ${p.clouds} clouds — debug().parallax is not the layer that draws them`)
+  const cloudsOff = await page.evaluate(() => window.__game.setCloudsVisible(false))
+  if (cloudsOff.visible !== false) throw new Error('setCloudsVisible(false) did not hide the clouds')
   // `p.seed` is right *here*: this check drives the sandbox, where the client
   // really does generate the map, so its local seed is the round's. In a
   // networked scene it would not be — see `roundSeed` in `GameScene.debug()`.
@@ -211,8 +212,8 @@ export default async function ({ page, shot, log }) {
         const vh = window.__game.constants().VIEWPORT_H
         return airRun(Math.max(0.02, rr.top / vh), Math.min(0.98, (rr.top + rr.h) / vh))
       })(),
-      // CLOUD_BAND_TOP..CLOUD_BAND_BOTTOM of the viewport: open sky, and since
-      // T21.18 nothing this layer owns is drawn in it unless High Quality is on.
+      // The upper sky: open air, and with the clouds hidden above nothing this
+      // layer owns is drawn in it.
       cloud: airRun(0.06, 0.4),
     }
   })
@@ -263,9 +264,8 @@ export default async function ({ page, shot, log }) {
   // Hiding the layer must move the ridge strip and leave the cloud strip where
   // it would have been anyway: if the toggle moved both, this is measuring the
   // whole frame going dark rather than a band of mountains being taken away.
-  // Since T21.18 nothing this layer owns is painted in the cloud band with High
-  // Quality off, so this is also the pixel half of the `shaderClouds` assertion
-  // at the top — `clouds-shader` owns the rest.
+  // With the clouds hidden at the top, nothing this layer owns is painted in the
+  // upper strip — `clouds.mjs` owns the clouds themselves (T21.31).
   //
   // Compared against `drift` rather than against a number: this fixture's own
   // creep is 6 % of the strip, so a fixed ceiling under that would fail for
@@ -437,4 +437,5 @@ export default async function ({ page, shot, log }) {
     throw new Error(`the parallax band (${bandTop}) is not behind the terrain (${terrainDepth})`)
   }
   log(`layer set: [${depths.join(',')}]`)
+  await page.evaluate(() => window.__game.setCloudsVisible(true))
 }

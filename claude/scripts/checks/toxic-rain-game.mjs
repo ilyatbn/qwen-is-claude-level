@@ -72,15 +72,30 @@ const read = () =>
     return {
       real: d.toxicDrops,
       drawn: d.rainDrops,
-      pool: d.rainPool,
-      asked: d.toxicDensityAsked,
+      // T21.31: where the streaks were drawn, world px — the real drops themselves.
+      drawnAt: d.toxicDropsDrawn ?? [],
+      me: d.player ? { x: d.player.x, y: d.player.y } : null,
       intensity: d.toxicIntensity,
-      full: g.constants().TOXIC_DROPS_IN_FLIGHT,
       t: d.roundTime ?? 0,
       health: d.health,
       // The wire's poisoned bit, beside the health it explains (§A39).
       poisoned: d.hudBars?.poisoned ?? null,
     }
+  })
+
+/**
+ * The lowest rock above the local player's head, world y, or `null` under open sky.
+ * T21.31: a drawn drop below this row and over her would be rain inside the shelter.
+ */
+const roofY = (pg) =>
+  pg.evaluate(() => {
+    const g = window.__game
+    const p = g.debug().player
+    if (!p) return null
+    for (let y = Math.round(p.y - g.constants().PLAYER_H); y >= 0; y -= 1) {
+      if (g.core.solidAt(Math.round(p.x), y)) return y
+    }
+    return null
   })
 
 /** Is there rock anywhere above the local player's head? */
@@ -100,7 +115,7 @@ const roofed = (pg) =>
  * poison has run out, in the **simulation's** clock (T21.23): what health was
  * lost, whether the wire ever said "poisoned", and how much rain fell.
  */
-async function followShower(readFn, k) {
+async function followShower(readFn, k, roof = null) {
   let s = await readFn()
   const start = s
   let last = s.health
@@ -108,6 +123,19 @@ async function followShower(readFn, k) {
   let sawPoison = !!s.poisoned
   let maxDrops = s.real
   let clean = 0
+  // T21.31: the picture half. Polls with a drawn drop over her head within the splash,
+  // and — under a roof — drawn drops between the roof and her feet, which must not exist.
+  let overhead = 0
+  let underRoof = 0
+  const look = (x) => {
+    if (!x.me || !x.drawnAt) return
+    for (const d of x.drawnAt) {
+      if (Math.abs(d.x - x.me.x) > k.TOXIC_SPLASH_R || d.y > x.me.y) continue
+      if (roof !== null && d.y > roof) underRoof++
+      else overhead++
+    }
+  }
+  look(s)
   const limit = s.t + k.TOXIC_DURATION + k.TOXIC_POISON_DURATION + 20
   while (s.t < limit) {
     await sleep(100)
@@ -116,11 +144,12 @@ async function followShower(readFn, k) {
     last = s.health
     sawPoison ||= !!s.poisoned
     maxDrops = Math.max(maxDrops, s.real)
+    look(s)
     // Done once the sky has been dry and the player clean for a whole poison.
     clean = s.real === 0 && !s.poisoned ? clean + 1 : 0
     if (clean * 0.1 >= k.TOXIC_POISON_DURATION + 1) break
   }
-  return { start, end: s, lost, sawPoison, maxDrops }
+  return { start, end: s, lost, sawPoison, maxDrops, overhead, underRoof }
 }
 
 // **The control, first.** Before any shower the sky must be dry — otherwise
@@ -148,29 +177,42 @@ if (!wet) {
 } else {
   ok(`the game client has ${wet.real} real toxic drop(s) in the air`)
 
-  // **Both ends.** The count the server put in the air, and the sheet drawn from
-  // it. Before T20.05 the right-hand number was the constant 260 and the left-hand
-  // one was never read at all.
-  const want = Math.max(0, Math.min(1, wet.real / wet.full))
-  if (Math.abs(wet.asked - want) > 1e-6) {
+  // **Both ends, by construction since T21.31.** The rain is drawn as a streak at each
+  // real drop, so the count drawn is the count in the air. Frozen for the read: the scene
+  // syncs its projectiles and draws the rain in one update, and a message landing between
+  // two reads would compare two moments.
+  await page.evaluate(() => window.__game.freeze(true))
+  const both = await read()
+  // **And where, not only how many.** The count alone was measured blind: streaks drawn
+  // 200 px from every real drop kept it equal, and kept the over-her-head count below
+  // passing too (86 hits against 39 unplanted). So every streak's position is compared
+  // with the ordnance layer's live drops, read in the same frozen frame — the state the
+  // streaks were drawn from, and the state `syncProjectiles` fills from the server's.
+  const places = await page.evaluate(() => {
+    const d = window.__game.debug()
+    return { drawn: d.toxicDropsDrawn ?? null, live: d.toxicDropsLive ?? null }
+  })
+  await page.evaluate(() => window.__game.freeze(false))
+  if (both.real <= 0) fail('the real drops were gone by the time both ends were read — nothing was compared')
+  else if (both.drawn !== both.real) {
     fail(
-      `the emitter asked for ${wet.asked} with ${wet.real} real drops and ` +
-        `TOXIC_DROPS_IN_FLIGHT ${wet.full} — expected ${want}`,
+      `the layer drew ${both.drawn} toxic streaks with ${both.real} real drops in the air — ` +
+        `the rain on the screen is not the rain that poisons (T20.05, T21.31)`,
     )
-  } else ok(`density ${wet.asked.toFixed(2)} derived from ${wet.real} real drops`)
-
-  // And it reaches the screen: the ramp takes ~1.5 s, so give it one.
-  await sleep(1600)
-  const drawn = await read()
-  if (drawn.drawn <= 0) {
-    fail(
-      `the emitter drew ${drawn.drawn} droplets while ${drawn.real} real drops were ` +
-        `falling — the derivation is right and nothing carried it to the screen (§B21)`,
-    )
-  } else if (drawn.drawn > drawn.pool) {
-    fail(`drew ${drawn.drawn} droplets from a pool of ${drawn.pool}`)
+  } else ok(`the toxic rain drawn is the real rain: ${both.drawn} streaks at ${both.real} drops`)
+  if (!Array.isArray(places.drawn) || !Array.isArray(places.live)) {
+    fail(`debug() does not carry both drop lists (drawn ${typeof places.drawn}, live ${typeof places.live}) — the positions cannot be compared`)
   } else {
-    ok(`the sheet is drawn in the game scene: ${drawn.drawn} of ${drawn.pool} droplets`)
+    const key = (p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`
+    const live = new Set(places.live.map(key))
+    const stray = places.drawn.filter((p) => !live.has(key(p)))
+    if (places.live.length === 0) fail('no live drop in the frozen frame — the position comparison compared nothing')
+    else if (stray.length > 0 || places.drawn.length !== places.live.length) {
+      fail(
+        `${stray.length} of ${places.drawn.length} toxic streaks are not at a live drop ` +
+          `(e.g. drawn ${JSON.stringify(stray[0])}, live ${JSON.stringify(places.live[0])}) — the picture is not where the poison is`,
+      )
+    } else ok(`every toxic streak is at a live drop: ${places.drawn.length} of ${places.live.length}`)
   }
   await shot('toxic-rain-game')
 }
@@ -204,6 +246,13 @@ if (wet) {
         `poisoned seen ${shower.sawPoison}, up to ${shower.maxDrops} drops in the air`,
     )
     // Both ends (§A39): the wire's flag and the health it costs.
+    // T21.31: drawn drops did come down over her while she was hurt. **A presence
+    // control, not the proof that picture and poison agree** — measured, it still passes
+    // with every streak drawn 200 px off (the shower scatters drops near her either way).
+    // The per-streak position match above is the assertion that catches that.
+    if (!(shower.overhead > 0)) {
+      fail('the player was in a shower and no drawn drop ever came down within TOXIC_SPLASH_R of her — the damage below is not the picture')
+    } else ok(`drawn toxic drops came down over her ${shower.overhead} time(s) during the shower`)
     if (!shower.sawPoison) fail('the player stood in a whole shower and the wire never said poisoned')
     else ok('the wire said poisoned during the shower')
     // `lost > 0` beside the pinned floor: the floor is derived from
@@ -251,9 +300,17 @@ try {
   const readRoof = () =>
     rc.page.evaluate(() => {
       const d = window.__game.debug()
-      return { real: d.toxicDrops, t: d.roundTime ?? 0, health: d.health, poisoned: d.hudBars?.poisoned ?? null }
+      return {
+        real: d.toxicDrops,
+        t: d.roundTime ?? 0,
+        health: d.health,
+        poisoned: d.hudBars?.poisoned ?? null,
+        drawnAt: d.toxicDropsDrawn ?? [],
+        me: d.player ? { x: d.player.x, y: d.player.y } : null,
+      }
     })
   const covered = await roofed(rc.page)
+  const roofRow = await roofY(rc.page)
   const started = await rc.page
     .waitForFunction('window.__game.debug().toxicDrops > 0', null, { timeout: 120_000 })
     .then(() => true)
@@ -263,7 +320,11 @@ try {
   } else if (!started) {
     fail('no toxic drop reached the roofed client, so "no damage under rock" would be a dry sky')
   } else {
-    const shower = await followShower(readRoof, k)
+    const shower = await followShower(readRoof, k, roofRow)
+    // T21.31, the picture: no drawn drop between her roof and her feet. Its presence
+    // control is the open-sky half above, where drawn drops did come down over her.
+    if (shower.underRoof > 0) fail(`${shower.underRoof} drawn toxic drops came down under the roof over her`)
+    else ok(`under rock: no drawn drop below her roof at row ${roofRow} (${shower.overhead} landed on it)`)
     if (shower.maxDrops <= 0) fail('the roofed client saw no rain at all during its shower')
     else if (shower.lost > 0 || shower.sawPoison) {
       fail(
