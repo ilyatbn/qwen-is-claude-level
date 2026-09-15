@@ -160,6 +160,17 @@ export default async function ({ page, shot, log }) {
     `opened the background bands with ${opened.carves} carves of r=${opened.radius}, ` +
       `world y ${opened.from}..${opened.to}`,
   )
+  // **Hold the camera where it is for the toggle photographs.** Following the
+  // player, the rig eases toward her aim lead for many frames, so the camera was
+  // still creeping — measured 670.90 → 669.99 world px across the toggle pair with
+  // the player standing still at x 672 — and the portal, player and turret that
+  // reach into the cloud strip moved with it. `watch` holds the rig with no lead
+  // (`SandboxScene.update`, T21.31); released at step 6, which needs it to follow.
+  await page.evaluate(() => {
+    const c = window.__game.debug().camera
+    window.__game.watch(c.x, c.y)
+  })
+  await page.waitForTimeout(200)
 
   const band = await page.evaluate(() => {
     const g = window.__game.debug()
@@ -230,22 +241,33 @@ export default async function ({ page, shot, log }) {
       `cloud band x ${band.cloud.x}..${band.cloud.x + band.cloud.w}`,
   )
 
+  const camAt = () => page.evaluate(() => window.__game.debug().worldView)
   const withLayer = (await page.screenshot()).toString('base64')
+  const camOn = await camAt()
   await shot('living-sky-day')
-  // **The fixture's own noise, measured rather than assumed.** This check carves
-  // the ground out from under the player, so the camera is still falling while
-  // the frames below are taken and the whole picture creeps. Two frames with the
-  // layer left alone say how much of any "difference" is that creep — measured,
-  // 6.3 % of the cloud strip, which is exactly what the toggle appeared to
-  // change. Without this the control below reads the fall as clouds.
+  // **The fixture's own noise, measured over the same interval as the toggle.**
+  // It used to be two back-to-back screenshots, while the toggle's pair sits
+  // 300 ms apart — so a camera still easing (the aim lead, below) could read
+  // 0.0 % here and 1.3 % there, and it did, deterministically on the merged
+  // `claude_builds` (6b87225). The pixels were the portal, the player and the
+  // turret, which reach into the strip, shifted 2 px: one world px at zoom 2.
+  await page.waitForTimeout(300)
   const stillOn = (await page.screenshot()).toString('base64')
   const drift = await changedFraction(page, withLayer, stillOn, band.cloud)
   await page.evaluate(() => window.__game.setParallaxVisible(false))
   await page.waitForTimeout(300)
   const withoutLayer = (await page.screenshot()).toString('base64')
+  const camOff = await camAt()
   await shot('living-sky-hidden')
   await page.evaluate(() => window.__game.setParallaxVisible(true))
   await page.waitForTimeout(300)
+  // The hold below is what makes the ceiling tight, so it is read back, not trusted.
+  if (camOn.x !== camOff.x || camOn.y !== camOff.y) {
+    throw new Error(
+      `the held camera moved from ${camOn.x},${camOn.y} to ${camOff.x},${camOff.y} between the ` +
+        'toggle photographs — the cloud strip control would be measuring the camera',
+    )
+  }
 
   const ridgeDelta = await changedFraction(page, withLayer, withoutLayer, band.ridge)
   const cloudDelta = await changedFraction(page, withLayer, withoutLayer, band.cloud)
@@ -317,6 +339,12 @@ export default async function ({ page, shot, log }) {
   //    `update` places the sprite with, plus the sprite's rect). Each claim has a
   //    control that the camera or the zoom actually moved — "the base did not move"
   //    is otherwise satisfied by a camera that never went anywhere.
+  //
+  //    The hold from step 2 ends here, not earlier: released before step 5, the
+  //    rig eased back toward the aim lead during the seed photographs and "same
+  //    seed" read 1.7 % of the ridge strip against its 2 % ceiling (measured). This
+  //    step moves the player and needs the camera to follow her.
+  await page.evaluate(() => window.__game.watch(null))
   {
     const K = await page.evaluate(() => {
       const k = window.__game.constants()
