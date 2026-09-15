@@ -89,6 +89,13 @@ export const CHECKS = [
     url: '?sandbox=1&seed=4242&renderer=canvas',
     serial: true,
   },
+  // T21.37: the red Recruit is red on Canvas too, against the plain Recruit in the same frame.
+  {
+    name: 'canvas-tinted-skin',
+    file: 'scripts/checks/canvas-tinted-skin.mjs',
+    url: '?sandbox=1&seed=4242&renderer=canvas',
+    serial: true,
+  },
   { name: 'lightmap', file: 'scripts/checks/lightmap.mjs', url: '?sandbox=1&seed=4242' },
   {
     name: 'night_darkens_the_world',

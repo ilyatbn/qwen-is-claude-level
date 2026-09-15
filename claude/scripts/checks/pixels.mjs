@@ -132,6 +132,28 @@ export async function patchLuminance(page, { x, y, w, h }) {
   }, b64)
 }
 
+/**
+ * Every pixel of a region as `{ w, h, rgba }`, `rgba` a flat array of 0..255 (T21.37).
+ *
+ * For comparisons that must know *which* pixels changed, not only by how much on average:
+ * `skins-ingame` masks a body's own pixels with it. Pass integer rects, so two regions of the
+ * same size decode to arrays that line up.
+ */
+export async function patchRGBA(page, { x, y, w, h }) {
+  const b64 = (await page.screenshot({ clip: { x, y, width: w, height: h } })).toString('base64')
+  return page.evaluate(async (src) => {
+    const img = new Image()
+    img.src = `data:image/png;base64,${src}`
+    await img.decode()
+    const cv = document.createElement('canvas')
+    cv.width = img.width
+    cv.height = img.height
+    const ctx = cv.getContext('2d')
+    ctx.drawImage(img, 0, 0)
+    return { w: img.width, h: img.height, rgba: Array.from(ctx.getImageData(0, 0, img.width, img.height).data) }
+  }, b64)
+}
+
 /** Euclidean distance between two samples' mean colours. */
 export function colourDelta(a, b) {
   return Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b)

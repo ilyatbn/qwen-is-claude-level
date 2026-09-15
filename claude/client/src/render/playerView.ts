@@ -42,6 +42,8 @@ import {
   wingArt,
 } from './accessoryTextures'
 import type { Appearance } from '../ui/skins'
+import { bakeTintedAtlas } from './canvasTint'
+import { hasWebGL } from './shaders'
 
 export type { AnimState, AnimInputs }
 export { deriveAnimState, facingLeft }
@@ -124,7 +126,7 @@ export function resetPlaceholderWarnings(): void {
  * PlayerView would either warn on every join or silently keep the first one.
  * The key is derived from the skin id, so two players on the same skin share.
  */
-function ensureAnims(scene: Phaser.Scene, skin: SkinDef): void {
+function ensureAnims(scene: Phaser.Scene, skin: SkinDef, atlas: string): void {
   const states: AnimState[] = ['idle', 'walk', 'jump', 'fall', 'jetpack', 'hurt', 'dead']
   for (const state of states) {
     const key = animKey(skin, state)
@@ -133,7 +135,9 @@ function ensureAnims(scene: Phaser.Scene, skin: SkinDef): void {
     if (names.length === 0) continue
     scene.anims.create({
       key,
-      frames: names.map((frame) => ({ key: skin.atlas, frame })),
+      // `atlas`, not `skin.atlas` (T21.37): on Canvas a tinted skin plays its baked copy. The anim
+      // key is per skin id and the renderer is fixed for the game, so the two never mix.
+      frames: names.map((frame) => ({ key: atlas, frame })),
       frameRate: state === 'walk' ? 9 : state === 'jetpack' ? 12 : 1,
       repeat: names.length > 1 ? -1 : 0,
     })
@@ -216,13 +220,19 @@ export class PlayerView {
 
     const anchorY = this.skinDef?.anchor.y ?? PlayerView.ANCHOR_Y
     if (this.usingAtlas && this.skinDef) {
-      ensureAnims(scene, this.skinDef)
+      // T21.37: a skin's tint is its identity (skin 5 is skin 0's frames in red). WebGL tints in
+      // the shader; **Canvas has no sprite tint**, so there the frames come from a copy baked in
+      // the tint, or the red Recruit draws as the plain one.
+      const tint = parseTint(this.skinDef.tint)
+      const webgl = hasWebGL(scene)
+      const atlas =
+        tint !== undefined && !webgl ? bakeTintedAtlas(scene.textures, this.skinDef.atlas, tint) : this.skinDef.atlas
+      ensureAnims(scene, this.skinDef, atlas)
       const first = framesFor(this.skinDef, 'idle')[0]
-      this.body = scene.add.sprite(0, 0, this.skinDef.atlas, first).setOrigin(0.5, anchorY)
+      this.body = scene.add.sprite(0, 0, atlas, first).setOrigin(0.5, anchorY)
       const h = this.body.height || c.PLAYER_H
       this.body.setScale(spriteScale(h, c.PLAYER_H))
-      const tint = parseTint(this.skinDef.tint)
-      if (tint !== undefined) this.body.setTint(tint)
+      if (tint !== undefined && webgl) this.body.setTint(tint)
       this.body.play(animKey(this.skinDef, 'idle'), true)
     } else {
       const key = placeholderTexture(scene.textures, skinId, `char_${skinId}_idle`)
