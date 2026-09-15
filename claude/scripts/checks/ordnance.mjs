@@ -182,6 +182,66 @@ async function fireAt(sx, sy) {
 }
 
 /**
+ * A screen point to aim at along a line **the live mask says is open**, measured
+ * from where the player actually is on screen.
+ *
+ * The fire steps used to aim at fixed screen points — (900, 420) for the spray,
+ * (1060, 180) for the bottle — which only mean "right and a little down" and "up
+ * and to the right" when the player is at the centre of the screen and the ground
+ * ahead is open. Neither holds by construction. After T21.40 regenerated the map
+ * `FIXED_SEED` 4242 builds, measured: player at (1504, 483) but drawn at screen
+ * (762, 272) because the camera sits at (1123, 347); "(900, 420)" was then 47°
+ * *down*, and that line met rock **20 px** from the body. The spray landed on the
+ * player's own feet, a flame burns its owner once the grace is over (§F10.1,
+ * `flame.rs::the_owner_is_burned_by_their_own_flame_but_not_before_the_grace`),
+ * and health went 119 → 0 in two seconds with the death booked `cause: self`.
+ * The bag empties on death, so the failure surfaced one step later as `"molotov"
+ * is not in the inventory. Held: (nothing)`.
+ *
+ * `dirs` are world-space unit-ish vectors in order of preference. The first whose
+ * line runs `need` px clear is taken; if none does, that is a map fact and it is
+ * returned as `null` for the caller to fail on by name.
+ */
+async function clearAim(dirs, need) {
+  return page.evaluate(
+    ([dirs, need]) => {
+      const g = window.__game.debug()
+      const core = window.__game.core
+      const p = g.player
+      const v = g.worldView
+      if (!p || !v) return null
+      const psx = (p.x - v.x) * g.zoom
+      const psy = (p.y - v.y) * g.zoom
+      const tried = []
+      for (const [ux, uy] of dirs) {
+        const n = Math.hypot(ux, uy)
+        const [dx, dy] = [ux / n, uy / n]
+        let clear = need
+        for (let t = 0; t <= need; t += 2) {
+          if (core.solidAt(Math.round(p.x + dx * t), Math.round(p.y + dy * t))) {
+            clear = t
+            break
+          }
+        }
+        tried.push(`(${dx.toFixed(2)},${dy.toFixed(2)})→${clear}`)
+        if (clear < need) continue
+        // A point on that line far enough out that the aim angle is not
+        // dominated by a pixel of rounding, pulled in until it is on screen.
+        for (let r = 220; r >= 40; r -= 20) {
+          const sx = psx + dx * r
+          const sy = psy + dy * r
+          if (sx > 4 && sx < 1276 && sy > 4 && sy < 716) {
+            return { sx, sy, dx, dy, clear, from: [Math.round(p.x), Math.round(p.y)], tried }
+          }
+        }
+      }
+      return { sx: null, tried, from: [Math.round(p.x), Math.round(p.y)] }
+    },
+    [dirs, need],
+  )
+}
+
+/**
  * Fire until it demonstrably lands, or give up.
  *
  * `fire_ready_at` is per **player**, not per weapon — deliberately, so swapping
@@ -358,12 +418,47 @@ if (swung) ok(`melee: ${swung.swings} swing(s) received and drawn`)
 await holding('melee')
 await selectWeapon(page, 'flamethrower')
 const beforeFlames = (await dbg()).flamesSpawned ?? 0
-for (let i = 0; i < 6; i++) {
-  await fireAt(900, 420)
-  await settle(120)
+// **How clear the line has to be**, derived: a flame that meets rock stops within
+// a body-and-a-flame of the player's centre at `PLAYER_H / 2 + FLAME_RADIUS`, and
+// it bounces and rolls from there, so four of those is the margin. A number
+// picked from one map would be the fixed screen point again, one level down.
+const kFire = await page.evaluate(() => window.__game.constants())
+const FIRE_CLEAR = 4 * (kFire.PLAYER_H / 2 + kFire.FLAME_RADIUS)
+// Level or rising lines first: a flame falls (`FLAME_GRAVITY_SCALE`), so one
+// launched level still carries; one launched down lands at your feet.
+const sprayAim = await clearAim(
+  [[1, -0.35], [1, 0], [1, -0.8], [-1, -0.35], [-1, 0], [-1, -0.8]],
+  FIRE_CLEAR,
+)
+if (!sprayAim || sprayAim.sx === null) {
+  fail(
+    `flamethrower: no line ${FIRE_CLEAR} px clear to spray along from ${JSON.stringify(sprayAim?.from)} ` +
+      `— tried ${sprayAim?.tried?.join(' ')}; spraying anyway would burn the player`,
+  )
+} else {
+  console.log(`    spraying along (${sprayAim.dx.toFixed(2)}, ${sprayAim.dy.toFixed(2)}): ${sprayAim.tried.join(' ')}`)
+  for (let i = 0; i < 6; i++) {
+    await fireAt(sprayAim.sx, sprayAim.sy)
+    await settle(120)
+  }
 }
 const sprayed = await until((d) => (d.flamesSpawned ?? 0) > beforeFlames, 8000, 'flames to arrive')
 if (sprayed) ok(`flamethrower: ${sprayed.flamesSpawned} flame(s) received from the server`)
+// Said here, by name. A player killed by its own spray loses its bag, and
+// without this line the run reports `"molotov" is not in the inventory` one step
+// later — true, and it says nothing about what happened.
+{
+  await settle(600)
+  const d = await dbg()
+  // Any death: nothing else in this room can kill (no bots), and none is expected.
+  const died = d.observed?.deaths ?? []
+  if (died.length > 0 || d.death?.meAlive === false) {
+    fail(
+      `the player died spraying the flamethrower (${JSON.stringify(died)}) — the flames came back ` +
+        'onto it, and every later step would be about a respawned player with an empty bag',
+    )
+  }
+}
 
 // --- a hazard on the ground -------------------------------------------------
 //
@@ -396,7 +491,21 @@ await selectWeapon(page, 'molotov')
 // fire kills — health went 14 → 1 → 0 over 800 ms in a frame-by-frame watch.
 // Aimed above it, the same throw carries clear; the run below still walks away
 // as well, because how far it carries depends on the ground it is thrown from.
-await fireAt(1060, 180)
+// Up and away along a line the mask says is open — see `clearAim`. The old fixed
+// (1060, 180) was "up and right" only from the centre of the screen; from where
+// T21.40's map puts the player it met a rise 52 px out.
+const bottleAim = await clearAim([[1, -0.3], [1, -0.7], [-1, -0.3], [-1, -0.7]], FIRE_CLEAR)
+if (!bottleAim || bottleAim.sx === null) {
+  fail(
+    `molotov: no line ${FIRE_CLEAR} px clear to throw along from ${JSON.stringify(bottleAim?.from)} ` +
+      `— tried ${bottleAim?.tried?.join(' ')}`,
+  )
+} else {
+  console.log(`    throwing along (${bottleAim.dx.toFixed(2)}, ${bottleAim.dy.toFixed(2)}): ${bottleAim.tried.join(' ')}`)
+  await fireAt(bottleAim.sx, bottleAim.sy)
+}
+// Away from the side it was thrown to.
+const escapeKey = bottleAim?.dx < 0 ? 'd' : 'a'
 // **Walk out from under it while it is still in the air.**
 //
 // The bottle lands roughly where the player was standing, and its fire kills:
@@ -425,7 +534,7 @@ await fireAt(1060, 180)
 // 225 px: further than the zones spread. The hazard is polled **during** the
 // walk, because it appears the moment the bottle lands and this walk outlasts
 // the flames.
-await page.keyboard.down('a')
+await page.keyboard.down(escapeKey)
 // §F10.2: a molotov leaves **flames**, not a `hazard_spawn` zone, so the thing
 // to wait for changed with it. `MOLOTOV_FLAMES` of them arrive at once, and the
 // count is cumulative, so a burst cannot fall between two polls.
@@ -436,7 +545,7 @@ const burnt = await until(
   "a molotov's flames to arrive",
 )
 await settle(1500)
-await page.keyboard.up('a')
+await page.keyboard.up(escapeKey)
 await settle(300)
 const survived = await dbg()
 if ((survived.observed?.deaths ?? []).length > 0) {
