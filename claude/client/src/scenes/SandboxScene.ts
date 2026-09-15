@@ -107,6 +107,8 @@ export class SandboxScene extends Phaser.Scene {
   private timeScrub = false
 
   private player!: PlayerView
+  /** T21.37: the extra bodies `__game.showSkins` stands up for a check. */
+  private skinLineup: PlayerView[] = []
   private localInput!: LocalInput
   private crosshair!: Crosshair
   private seq = 0
@@ -1065,6 +1067,31 @@ export class SandboxScene extends Phaser.Scene {
        */
       setParallaxClock(t: number | null) {
         self.sky?.parallax.setClock(t)
+      },
+      /**
+       * T21.37: stand extra bodies at world points, `null` to remove them.
+       *
+       * The sandbox draws one body, and a tint check needs a tinted and an untinted skin **in
+       * one frame** — same renderer, light and camera — so the untinted one is a control rather
+       * than a memory. Built through `PlayerView`, the path every scene draws players with, and
+       * posed idle facing right so the two differ only in skin. Returns how many are standing.
+       */
+      showSkins(list: { skin: number; x: number; y: number }[] | null) {
+        for (const v of self.skinLineup) v.destroy()
+        self.skinLineup = (list ?? []).map(({ skin, x, y }) => {
+          const v = new PlayerView(self, skin, 0, 0)
+          v.container.setDepth(DEPTH.actors)
+          v.setState(x, y, 0, 0, 0, {
+            alive: true,
+            grounded: true,
+            jetpack: false,
+            shield: false,
+            iframes: false,
+            boots: false,
+          })
+          return v
+        })
+        return self.skinLineup.length
       },
       /**
        * Jump to a point in the day, for inspecting a phase — or `null` to hand
