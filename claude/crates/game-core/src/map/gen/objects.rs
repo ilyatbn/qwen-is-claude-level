@@ -170,24 +170,46 @@ fn fill_under(mask: &mut Mask, p: &PlacedObject, m: &ObjectMask) -> u64 {
         if !m.solid_flipped(ox, m.h - 1, p.flip) {
             continue;
         }
-        let col = p.x + ox as i32;
-        if col < WALL_W as i32 || col >= mask.w as i32 - WALL_W as i32 {
-            continue;
-        }
-        // How much air is under this base column, up to one past the limit.
-        let mut d = 0;
-        while d <= limit && bottom + 1 + d < mask.h as i32 && !mask.get(col, bottom + 1 + d) {
-            d += 1;
-        }
-        if d == 0 || d > limit || bottom + 1 + d >= mask.h as i32 {
-            continue;
-        }
-        for y in (bottom + 1)..(bottom + 1 + d) {
-            mask.set(col, y);
-            added += 1;
-        }
+        added += fill_column(mask, p.x + ox as i32, bottom + 1, limit);
     }
     added
+}
+
+/// How much air there is in column `col` from row `from` down, **up to one past
+/// `limit`**: 0 is ground at `from`, `limit + 1` means "deeper than the reach"
+/// (or no ground before the bottom of the map). Never reads above `from`.
+///
+/// T21.28 split this out of `fill_under` so the teleport pads and gun platforms
+/// ask the same question with the same edge rules — the walls, the bottom of the
+/// map, the off-by-one at the limit — instead of a second copy that drifts
+/// (`CLAUDE.md`: share the function).
+pub(crate) fn column_gap(mask: &Mask, col: i32, from: i32, limit: i32) -> i32 {
+    if col < WALL_W as i32 || col >= mask.w as i32 - WALL_W as i32 {
+        return limit + 1;
+    }
+    let mut d = 0;
+    while d <= limit && from + d < mask.h as i32 && !mask.get(col, from + d) {
+        d += 1;
+    }
+    if from + d >= mask.h as i32 {
+        return limit + 1;
+    }
+    d
+}
+
+/// Fill column `col` straight down from row `from` to the first solid pixel, if
+/// that is within `limit`; returns the pixels added. Nothing at or above `from`
+/// is touched, nothing is filled into a wall, and a gap deeper than `limit` is
+/// left alone — a cliff edge, not a hover.
+pub(crate) fn fill_column(mask: &mut Mask, col: i32, from: i32, limit: i32) -> u64 {
+    let d = column_gap(mask, col, from, limit);
+    if d == 0 || d > limit {
+        return 0;
+    }
+    for y in from..from + d {
+        mask.set(col, y);
+    }
+    d as u64
 }
 
 /// Pass 6b. Places up to `scale.params().object_count` objects and returns them.

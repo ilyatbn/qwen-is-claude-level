@@ -1621,6 +1621,35 @@ pub const TELEPORT_PADS: usize = 6;
 /// short enough that stamping one into a hillside does not build a tower.
 pub const PAD_W: i32 = 40;
 pub const PAD_H: i32 = 8;
+/// How wide the teleport gate is **drawn**, in px (T21.28).
+///
+/// Not `PAD_W`: the pad is the 40 px strip you stand on and the rock
+/// `carve_circle` protects, and the gate standing on it is wider — a stone arch
+/// with 12 px of base overhang each side. The two were never the same number, and
+/// the generator only knew the narrow one, so it seated gates whose stone base hung
+/// over a slope — reported from play with a screenshot: *"a couple pixels are
+/// touching it in the center but the rest are in the air"*.
+///
+/// **One number, read by all three sides**: the generator fills ground under this
+/// many columns (`map/meta.rs::fill_standing_ground`), `build-gate-sprite.mjs`
+/// builds the art this wide, and `pads.ts` displays it at this width. 64 is what
+/// the build already produced (`PAD_W` × 1.6), so the committed art is unchanged.
+pub const PAD_ART_W: i32 = 64;
+/// How far below a pad's or a gun platform's drawn base the ground may be
+/// extended up to meet it, in px (T21.28).
+///
+/// **A pixel count, not `OBJECT_GROUND_FILL_DEPTH`'s fraction of a height.** That
+/// rule measures against an object's own collision mask, whose height the
+/// generator has; a gate's drawn height is derived by the sprite build from the
+/// art's aspect ratio and nothing in `game-core` knows it, so reusing the fraction
+/// would need a second art constant that could drift from the picture.
+///
+/// **One player height**: across a 64 px base that closes a slope of about 40°
+/// either side, which is the ground a player walks up. Measured at HEAD over 36
+/// maps, 54 % of pads had every drawn column within 28 px and 29 % had one past
+/// 71 — a cliff edge, and those placements are refused rather than propped on a
+/// pillar (`meta.rs::generate_full_with`).
+pub const STANDING_GROUND_FILL_DEPTH: i32 = PLAYER_H as i32;
 /// How far a body's feet may sit from a pad's surface line and still count as
 /// standing on it, in px.
 ///

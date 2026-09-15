@@ -9,10 +9,12 @@
 //! need adjusting — report it rather than loosening the assertion.
 
 use game_core::constants::{
-    MapScale, MIN_TRAVERSABLE_FRACTION, PLAYER_H, PLAYER_W, SKY_MARGIN, SPAWN_COUNT_MIN,
+    MapScale, GUN_PLATFORM_W, MIN_TRAVERSABLE_FRACTION, PAD_ART_W, PLAYER_H, PLAYER_W, SKY_MARGIN,
+    SPAWN_COUNT_MIN, STANDING_GROUND_FILL_DEPTH,
 };
 use game_core::map::gen::silhouette::borders_hold;
 use game_core::map::{generate, Map};
+use game_core::math::Point;
 
 /// Surface points with rock above them: cave floors, ledges under overhangs.
 /// The fraction of these inside the largest traversable component is the direct
@@ -43,8 +45,30 @@ fn underground_stats(map: &Map, component: &[usize]) -> (usize, usize) {
     (total, reachable)
 }
 
+/// The deepest air under any column of a thing drawn `w` wide on `pos`, measured
+/// here rather than through `meta.rs::stands_on_ground` so the sweep counts the
+/// finished map at the other end from the code that fills it (T21.28).
+fn worst_gap(map: &Map, pos: Point, w: i32) -> i32 {
+    let x0 = pos.x - w / 2;
+    (x0..x0 + w)
+        .map(|col| {
+            let mut d = 0;
+            while pos.y + 1 + d < map.mask.h as i32 && !map.mask.get(col, pos.y + 1 + d) {
+                d += 1;
+            }
+            d
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 struct Stats {
     attempts: [usize; 16],
+    /// T21.28: pads and platforms still over air past the fill's reach — the
+    /// placements that fell back to the unfiltered set — and the maps with any.
+    perched: usize,
+    standing: usize,
+    maps_fell_back: usize,
     safe_preset: usize,
     fractions: Vec<f32>,
     underground_total: usize,
@@ -56,6 +80,9 @@ impl Stats {
     fn new() -> Self {
         Stats {
             attempts: [0; 16],
+            perched: 0,
+            standing: 0,
+            maps_fell_back: 0,
             safe_preset: 0,
             fractions: Vec::new(),
             underground_total: 0,
@@ -81,6 +108,10 @@ impl Stats {
             100.0 * self.underground_reachable as f32 / self.underground_total.max(1) as f32,
             self.underground_reachable,
             self.underground_total,
+        );
+        println!(
+            "{label}: T21.28 standing things={} perched past the fill (fell back)={} maps that fell back={}",
+            self.standing, self.perched, self.maps_fell_back
         );
     }
 }
@@ -165,6 +196,47 @@ fn thousand_seed_playability_sweep() {
                     fail(format!("spawn {s:?} is not standable"));
                     break;
                 }
+            }
+            // T21.28: the fill must not have buried anything a body is placed on.
+            for p in &map.meta.surface_points {
+                if !game_core::map::gen::surface::is_standable(&map.mask, p.x, p.y) {
+                    fail(format!(
+                        "surface point {p:?} is not standable after the fill"
+                    ));
+                    break;
+                }
+            }
+            // And every pad and platform stands on ground under its drawn base, or
+            // is over a drop deeper than the fill may reach — counted, not hidden.
+            let standing = map
+                .meta
+                .teleport_pads
+                .iter()
+                .map(|p| (p.pos, PAD_ART_W))
+                .chain(
+                    map.meta
+                        .gun_platforms
+                        .iter()
+                        .map(|g| (g.pos, GUN_PLATFORM_W)),
+                );
+            let mut fell_back = false;
+            for (pos, w) in standing {
+                let worst = worst_gap(&map, pos, w);
+                stats.standing += 1;
+                overall.standing += 1;
+                if worst > STANDING_GROUND_FILL_DEPTH {
+                    stats.perched += 1;
+                    overall.perched += 1;
+                    fell_back = true;
+                } else if worst > 0 {
+                    stats.failures.push(format!(
+                        "seed {seed} {scale:?}: {pos:?} hangs {worst} px, inside the fill's reach"
+                    ));
+                }
+            }
+            if fell_back {
+                stats.maps_fell_back += 1;
+                overall.maps_fell_back += 1;
             }
             let _ = (PLAYER_W, PLAYER_H);
         }
