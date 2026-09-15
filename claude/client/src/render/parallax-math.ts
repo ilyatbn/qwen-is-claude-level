@@ -61,6 +61,34 @@ export function ridgeLayout(o: RidgeInput): RidgeLayout {
   return { top: o.viewportH * o.titleBaseFrac - h, h, worldBase: null, worldH: null }
 }
 
+/** What `liveViewY` needs of a Phaser camera. */
+export interface CameraRow {
+  scrollY: number
+  /** The camera's height in viewport px (not divided by zoom). */
+  height: number
+  zoom: number
+  /** `camera.clampY` when the camera has bounds, else `null`. */
+  clampY: ((y: number) => number) | null
+}
+
+/**
+ * The world row at the top of the screen **for the frame about to be drawn**.
+ *
+ * `camera.worldView` is not that. Phaser recomputes it only in `Camera.preRender`,
+ * which runs after the scene's `update`, so an object placed from `worldView.y` during
+ * `update` is placed against **last frame's** camera and drawn against this one. The
+ * ridge trailed a falling camera by one frame's travel (measured in `living-sky` on
+ * T21.40's maps: 9, 8, 6, 5, 5, 3 world px on six consecutive reads).
+ *
+ * This is `preRender`'s own arithmetic from the scroll `centerOn` has already set:
+ * clamp to bounds, then round the view's top the way Phaser rounds `worldView`.
+ */
+export function liveViewY(cam: CameraRow): number {
+  const sy = cam.clampY ? cam.clampY(cam.scrollY) : cam.scrollY
+  const displayH = Math.floor(cam.height / cam.zoom + 0.5)
+  return Math.floor(sy + cam.height / 2 - displayH / 2 + 0.5)
+}
+
 /**
  * The layout T21.20 replaced — kept **only** as the unit tests' control.
  *

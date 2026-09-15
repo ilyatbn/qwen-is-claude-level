@@ -6400,3 +6400,12 @@ Sweep: perched 544/8916 → 0/8717; pads/map [..,999] → [0,0,0,2,8,17,972]; pl
 New tests: all placed seated / short maps get fewer / 0 or ≥ 2 pads. Golden regenerated. `REPLAY_VERSION` 12. Pads pick a destination uniformly among the others.
 `gate-ground`: drawn gate 0.797 of the old in pixels; falsified both ways. `teleport` side-step now avoids platforms; `platform-autofire` aims from the mask, seed 320.
 Open for the owner: "seated" ignores rock above the base line — 15/26 placements on three maps partly sunk into slopes, 8 by a player height.
+
+## After the T21.38–T21.43 gate — four reds on `560547d` (gate 1019 s, 54/58)
+`death` red once on a 5.1 s countdown against `RESPAWN_DELAY` 5.0, green alone — a load slip, not parked. `ordnance` and `crates`
+red alone too, both on fixed-seed maps T21.40 rebuilt — with a builder. Net smoke 25/25 and assets ok when run separately.
+`living-sky` (`032440f`): a real rendering bug, first bad commit `224ee18` (bisected, 2 runs each). `ParallaxLayers.layout` read
+`camera.worldView.y`, which Phaser refreshes only in `preRender` after `update`, and `SandboxScene` ran `sky.update` before `rig.update`,
+so the ridge trailed a moving camera by one frame's travel (probe: 9, 8, 6, 5, 5, 3 px). T21.40's maps just left the player falling at
+the read. Fix: `parallax-math.ts::liveViewY` (scroll, clamp, round as `preRender`) in `layout()` — `GameScene` too — and rig first.
+Each half falsified red alone. Open: `drawClouds` still culls on last frame's `worldView` (harmless).
