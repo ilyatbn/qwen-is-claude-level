@@ -6,8 +6,12 @@
  * green against a drifted implementation (`CLAUDE.md`).
  */
 
-import { describe, expect, it } from 'vitest'
-import { MAX_FRAME_DT, RepeatFire, type AutoFireWeapon } from './autoFire'
+import { beforeAll, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { MAX_FRAME_DT, RepeatFire, repeatSource, type AutoFireWeapon } from './autoFire'
+import { C, Core } from '../core'
 import { fireProfileByRegistryKey, parseRegistry } from '../render/itemSprites-math'
 import { itemRegistryJson } from '../render/__liveRegistry'
 
@@ -250,5 +254,49 @@ describe('RepeatFire', () => {
 
   it('fires nothing when no weapon is selected', () => {
     expect(hold(null, 1.0).shots).toBe(0)
+  })
+})
+
+/**
+ * T21.43 — a rider holds the platform's trigger, not the bag's.
+ *
+ * The cadence is the Rust constant through the live WASM, never a literal. The
+ * bag in every case is the **laser pistol**, which does not repeat: so a mounted
+ * hold that repeats is the mount doing it, and the unmounted control over the
+ * very same bag firing nothing proves it is not the bag.
+ */
+describe('a mounted hold repeats at the platform cadence (T21.43)', () => {
+  beforeAll(async () => {
+    await Core.init(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../core/pkg/game_wasm_bg.wasm')))
+  })
+
+  const pistol = () => {
+    const p = profiles.get('laser_pistol')
+    if (!p) throw new Error('laser_pistol has no fire profile')
+    return p
+  }
+
+  it('mounted, holding fires one round per GUN_PLATFORM_FIRE_INTERVAL', () => {
+    const interval = C().GUN_PLATFORM_FIRE_INTERVAL
+    expect(interval).toBeGreaterThan(0)
+    const s = repeatSource(true, { weapon: pistol(), count: 0 }, interval)
+    const { shots, elapsed } = hold(s.weapon, 1.0, { hasAmmo: s.hasAmmo })
+    // Within one of the ideal: the clock pays out whole intervals only.
+    expect(Math.abs(shots - Math.floor(elapsed / interval))).toBeLessThanOrEqual(1)
+    expect(shots).toBeGreaterThan(1)
+  })
+
+  it('the control: the same bag, unmounted, does not repeat', () => {
+    const interval = C().GUN_PLATFORM_FIRE_INTERVAL
+    const s = repeatSource(false, { weapon: pistol(), count: 1 }, interval)
+    expect(hold(s.weapon, 1.0, { hasAmmo: s.hasAmmo }).shots).toBe(0)
+  })
+
+  it('unmounted, the bag decides — its cadence and its ammo', () => {
+    const smg = profiles.get('smg')
+    if (!smg) throw new Error('smg has no fire profile')
+    const interval = C().GUN_PLATFORM_FIRE_INTERVAL
+    expect(repeatSource(false, { weapon: smg, count: 5 }, interval)).toEqual({ weapon: smg, hasAmmo: true })
+    expect(repeatSource(false, { weapon: smg, count: 0 }, interval).hasAmmo).toBe(false)
   })
 })
