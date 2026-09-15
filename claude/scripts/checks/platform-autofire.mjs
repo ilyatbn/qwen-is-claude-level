@@ -27,7 +27,16 @@
  * the button does.
  */
 import { join } from 'node:path'
-import { startStack, enterBattle, standStill, tally, sleep, shotsDir, freePort } from './harness.mjs'
+import {
+  startStack,
+  enterBattle,
+  standStill,
+  selectWeapon,
+  tally,
+  sleep,
+  shotsDir,
+  freePort,
+} from './harness.mjs'
 
 const PORT = await freePort()
 const { fail, ok, failures } = tally('platform-autofire')
@@ -59,55 +68,115 @@ try {
   const me = (d) => d.serverPlayer ?? d.player
   const plats = d0.platformPositions ?? []
   if (plats.length === 0) throw new Error('the round has no gun platforms')
-  const target = [...plats].sort(
+  const byDistance = [...plats].sort(
     (u, v) => Math.hypot(u.x - me(d0).x, u.y - me(d0).y) - Math.hypot(v.x - me(d0).x, v.y - me(d0).y),
-  )[0]
-  console.log(`[platform-autofire] ana at (${Math.round(me(d0).x)},${Math.round(me(d0).y)}), walking to #${target.id} at (${target.x},${target.y})`)
+  )
+  console.log(
+    `[platform-autofire] ana at (${Math.round(me(d0).x)},${Math.round(me(d0).y)}); platforms ` +
+      byDistance.map((g) => `#${g.id}@(${g.x},${g.y})`).join(' '),
+  )
 
-  const walkBy = Date.now() + 60_000
-  let key = null
-  let lastX = me(d0).x
-  let lastProgressAt = Date.now()
-  for (;;) {
-    const d = await dbg()
-    const p = me(d)
-    if (d.mount.platformUnderfoot === target.id && d.player?.grounded === true) break
-    if (Date.now() > walkBy) {
-      throw new Error(`could not reach platform #${target.id}: ana at (${Math.round(p.x)},${Math.round(p.y)})`)
-    }
-    const dx = target.x - p.x
-    const want = Math.abs(dx) < k.GUN_PLATFORM_W / 4 ? null : dx > 0 ? 'd' : 'a'
-    if (want !== key) {
-      if (key) await page.keyboard.up(key)
-      if (want) await page.keyboard.down(want)
-      key = want
-    }
-    if (Math.abs(p.x - lastX) > 4) {
-      lastX = p.x
-      lastProgressAt = Date.now()
-    } else if (want && Date.now() - lastProgressAt > 500) {
-      // Stuck on a step or a wall: jump, then hold for the jetpack to climb.
-      await page.keyboard.down('Space')
-      await sleep(80)
-      await page.keyboard.up('Space')
-      await sleep(80)
-      await page.keyboard.down('Space')
-      await sleep(450)
-      await page.keyboard.up('Space')
-      lastProgressAt = Date.now()
-    } else if (!want && target.y < p.y - k.PLAYER_H) {
-      // Right under it: climb straight up.
-      await page.keyboard.down('Space')
-      await sleep(80)
-      await page.keyboard.up('Space')
-      await sleep(80)
-      await page.keyboard.down('Space')
-      await sleep(350)
-      await page.keyboard.up('Space')
-    }
-    await sleep(60)
+  const jetpackHop = async (holdMs) => {
+    await page.keyboard.down('Space')
+    await sleep(80)
+    await page.keyboard.up('Space')
+    await sleep(80)
+    await page.keyboard.down('Space')
+    await sleep(holdMs)
+    await page.keyboard.up('Space')
   }
-  if (key) await page.keyboard.up(key)
+
+  /**
+   * Walk to one platform, or give up on it. **Nearest first, each on its own
+   * deadline**: a platform can sit in a pocket under the rock a spawn stands on,
+   * and the first version of this spent its whole minute ten pixels to the side
+   * of one, 108 px above it.
+   *
+   * Three moves: walk toward it; jump and jetpack when a step stops the walk;
+   * and **dig straight down with the shovel** when it is underneath — §F5 seats
+   * one in every bag, and a platform's footprint is indestructible, so digging
+   * stops on it rather than through it.
+   */
+  const walkTo = async (target, deadlineMs) => {
+    const by = Date.now() + deadlineMs
+    let key = null
+    let lastX = me(await dbg()).x
+    let lastY = me(await dbg()).y
+    let lastProgressAt = Date.now()
+    let dug = 0
+    try {
+      for (;;) {
+        const d = await dbg()
+        const p = me(d)
+        if (d.mount.platformUnderfoot === target.id && d.player?.grounded === true) return { ok: true, dug }
+        if (Date.now() > by) return { ok: false, at: p, dug }
+        const dx = target.x - p.x
+        const want = Math.abs(dx) < k.GUN_PLATFORM_W / 4 ? null : dx > 0 ? 'd' : 'a'
+        if (want !== key) {
+          if (key) await page.keyboard.up(key)
+          if (want) await page.keyboard.down(want)
+          key = want
+        }
+        if (Math.abs(p.x - lastX) > 4 || Math.abs(p.y - lastY) > 4) {
+          lastX = p.x
+          lastY = p.y
+          lastProgressAt = Date.now()
+        } else if (want && Date.now() - lastProgressAt > 500) {
+          // **Stuck: dig toward it, then hop.** Measured on seed 4242, a hop alone
+          // left her pinned against the rise between the spawn gate and #0, and
+          // in a pit on the way to #2 — the jetpack does not clear either. So
+          // swing the shovel along the line to the platform first, the way a
+          // player tunnels, aimed through the camera transform so the swing
+          // points where the platform is rather than at a guessed screen spot.
+          if (key) await page.keyboard.up(key)
+          key = null
+          const { toScreen } = await import('./pixels.mjs')
+          const s = await toScreen(page, target.x, target.y - k.PLAYER_H / 2)
+          if (dug === 0) await selectWeapon(page, 'shovel')
+          const c = await toScreen(page, p.x, p.y)
+          // Off camera still has a direction: clamp the aim onto the screen edge.
+          const ax = Math.max(20, Math.min(1260, c.x + (s.x - c.x) * 0.5))
+          const ay = Math.max(20, Math.min(700, c.y + (s.y - c.y) * 0.5))
+          await page.mouse.move(ax, ay)
+          await sleep(120)
+          for (let n = 0; n < 3; n++) {
+            await page.evaluate('window.__game.fire()')
+            dug += 1
+            await sleep(600)
+          }
+          await jetpackHop(450)
+          lastProgressAt = Date.now()
+        } else if (!want && target.y < p.y - k.PLAYER_H) {
+          await jetpackHop(350)
+        } else if (!want && target.y > p.y + k.PLAYER_H && d.player?.grounded === true) {
+          if (dug === 0) await selectWeapon(page, 'shovel')
+          await page.mouse.move(640, 360 + 200)
+          await sleep(100)
+          await page.evaluate('window.__game.fire()')
+          dug += 1
+          await sleep(350)
+        }
+        await sleep(60)
+      }
+    } finally {
+      if (key) await page.keyboard.up(key)
+    }
+  }
+
+  let target = null
+  for (const g of byDistance) {
+    const r = await walkTo(g, 40_000)
+    if (r.ok) {
+      target = g
+      console.log(`[platform-autofire] reached #${g.id} (dug ${r.dug} times)`)
+      break
+    }
+    console.log(
+      `[platform-autofire] gave up on #${g.id}: ana at (${Math.round(r.at.x)},${Math.round(r.at.y)}), dug ${r.dug}`,
+    )
+    await page.screenshot({ path: join(shotsDir, `platform-autofire-walk-${g.id}.png`) })
+  }
+  if (!target) throw new Error('could not reach any gun platform')
   await standStill(page)
   const mountBy = Date.now() + 10_000
   let mounted = false
@@ -121,9 +190,14 @@ try {
   if (!mounted) throw new Error(`stood on platform #${target.id} and the server never mounted her`)
   ok(`mounted platform #${target.id}`)
 
-  // Aim up and to the right: open sky, so a round lives long enough to be drawn
-  // rather than hitting the ground inside one snapshot.
-  await page.mouse.move(640 + 260, 360 - 200)
+  // **Aim down the open cave, to the left.** A round lives long enough to be
+  // drawn only if it survives a snapshot (`SNAPSHOT_HZ` 20, so 50 ms). The first
+  // run aimed up and right: on seed 4242 platform #0 sits in a cave with rock
+  // ~60 px that way, a round at 1500 px/s hit it in ~40 ms, and 7 of 34 spawned
+  // rounds were never in a snapshot at all — drawn 27, measured. That is the aim
+  // starving the instrument, not the layer dropping rounds; the cave is open
+  // for several hundred px to the left.
+  await page.mouse.move(640 - 380, 360 + 60)
   await sleep(300)
 
   const sample = async () => {
