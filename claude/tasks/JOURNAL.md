@@ -6386,3 +6386,10 @@ longer blocks (R2). Early resolution on unanimous yes (R3); tally on `round_stat
 Results: rule line, "N of M players want a rematch", "Vote closes in N s" / "New round starting…". `REPLAY_VERSION` 9 → 10 (R6).
 `rematch.mjs`: throw-safe `started()`, round length derived (was a 0:02 margin). Falsified: majority rule → 3 unit + 4 room tests red;
 seats-for-humans → bots/lone tests red. `lobby.rs::a_tombstone_skin_is_carried_and_echoed` red once under load, green alone.
+
+## T21.43 — the gun platform fires while held (`a26a126`, `a11c3f0`)
+Owner: "click and hold to auto fire like a machine gun". One bullet per `GUN_PLATFORM_FIRE_INTERVAL` (2 ticks) from 3 barrels in turn;
+was 4 per pull every 0.12 s. Client repeats fire at that interval while mounted (`autoFire.ts::repeatSource`); server clock has 1-tick grace.
+Balance basis measured before: 300 rounds / 600 ticks = 180 DPS; held 301 = 180.6, ratio 1.003, asserted ±20 %.
+`platform_barrel` hashed with a coverage test; `REPLAY_VERSION` 11. Mounted bots judge the platform's clock/ammo/range (fired nothing
+past shovel reach before). `platform-autofire.mjs`: 36 spawned, 36 drawn, ideal 36; click = 1; red with the held path dropped. ~930 lines.
