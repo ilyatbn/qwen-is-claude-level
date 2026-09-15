@@ -53,6 +53,8 @@ export const CHECKS = [
   // that only ever ran on WebGL is how his sky went empty without anything noticing.
   { name: 'clouds', file: 'scripts/checks/clouds.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'clouds-canvas', file: 'scripts/checks/clouds.mjs', url: '?sandbox=1&seed=4242&renderer=canvas' },
+  // T21.31 B: every rain pixel under a cloud and above the rock — under, above, in a cave.
+  { name: 'cloud-rain', file: 'scripts/checks/cloud-rain.mjs', url: '?sandbox=1&seed=4242' },
   // T21.02: the boots have to be visible on the player. In the sandbox
   // because it is the one scene that can supply a **control frame** — the
   // same body, in the same place, before and after picking them up.

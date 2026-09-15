@@ -1823,6 +1823,8 @@ export class GameScene extends Phaser.Scene {
     // Darkness from round time locally, corrected by the server's byte so the
     // two never drift apart (`docs/14` §1).
     const darkness = this.serverDarkness || darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS)
+    // T21.31: last frame's weather shades the sky — grey rain clouds, the toxic deck.
+    this.sky.parallax.setWeatherShade(this.world?.weather.ambientIntensity ?? 0, this.world?.weather.toxicIntensity ?? 0)
     this.sky.update(this.roundTime, darkness)
 
     this.death.update(
@@ -1882,6 +1884,8 @@ export class GameScene extends Phaser.Scene {
         // the round clock that every client evaluates, so nothing about it is on the
         // wire and two clients cannot disagree.
         ambient: ambientRain(this.roundSeedBig, this.roundTime),
+        // T21.31: rain falls from these clouds and nowhere else.
+        clouds: this.sky.parallax.rainClouds(),
       })
     }
     // Mine visibility is distance to the *player*, not to the camera centre —
@@ -2653,6 +2657,14 @@ export class GameScene extends Phaser.Scene {
         self.sky?.parallax.setVisible(on)
         return { hidden: self.sky?.parallax.debug().hidden ?? null }
       },
+      /**
+       * e2e only (T21.31): every cloud's world box at clock `t`, drawn or not. In a round
+       * the clouds run on `roundTime`, so a check passes `debug().roundTime` to see them
+       * where they are.
+       */
+      cloudsAt(t: number) {
+        return self.sky?.parallax.cloudsAt(t) ?? []
+      },
       /** e2e only (§C2, T21.31): hide the clouds alone for a same-instant control frame. */
       setCloudsVisible(on: boolean) {
         return self.sky?.parallax.setCloudsVisible(on) ?? { visible: false }
@@ -3058,8 +3070,13 @@ export class GameScene extends Phaser.Scene {
           hasFlashlight: self.hasFlashlight,
           toxicDrops: self.world?.liveToxicDrops ?? 0,
           rainDrops: self.world?.weather.rainDrops ?? 0,
-          rainPool: self.world?.weather.rainPool ?? 0,
-          toxicDensityAsked: self.world?.weather.toxicDensityAsked ?? 0,
+          // T21.31: where the streaks were drawn — the real drops, so a check can ask
+          // whether one fell over a player's head.
+          toxicDropsDrawn: self.world?.weather.toxicDropsDrawn ?? [],
+          // ...and where the ordnance layer's live drops are, the state they are drawn
+          // from — so a check compares places, not only counts.
+          toxicDropsLive: self.world?.liveToxicDropList ?? [],
+          ambientAlive: self.world?.weather.ambientAlive ?? 0,
           // T21.26: the ambient sheet's own fields — never `rainDrops`, which is the
           // toxic sheet's and which `toxic-rain-game` reads.
           ambientAsked: self.world?.weather.ambientAsked ?? 0,

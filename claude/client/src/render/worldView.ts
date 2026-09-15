@@ -33,6 +33,7 @@ import { GATE_KEY, PadLayer, type PadView } from './pads'
 import { PlatformLayer, type PlatformView } from './platforms'
 import { OrdnanceLayer } from './ordnance'
 import { WeatherLayer, type VentView } from './weather'
+import type { RainCloud } from './weather-math'
 import { KIND_BY_WEAPON_KEY, WEAPON_KEYS, type ProjectileKind } from './ordnance-state'
 
 export interface WorldViewTimings {
@@ -147,7 +148,8 @@ export class WorldView {
     this.decorations.build(fromMeta(core.meta.decorations), (x, y) => core.solidAt(x, y))
 
     this.ordnance = new OrdnanceLayer(scene)
-    this.weather = new WeatherLayer(scene)
+    // T21.31: the live mask, so a raindrop dies at the first rock it reaches.
+    this.weather = new WeatherLayer(scene, (x, y) => core.solidAt(x, y))
     this.items = new ItemLayer(scene)
     this.pads = new PadLayer(scene)
     // A locally generated map already knows its pads; a networked one is told by
@@ -285,9 +287,17 @@ export class WorldView {
    * caller would have to be computed twice, identically, forever (T20.05).
    */
   get liveToxicDrops(): number {
-    let n = 0
-    for (const p of this.ordnance.state.projectiles.values()) if (p.kind === 'drop') n++
-    return n
+    return this.liveToxicDropList.length
+  }
+
+  /**
+   * T21.31: the same drops, **with where they are** — the toxic rain is drawn at them,
+   * so the picture and the poison are one population rather than two joined by a count.
+   */
+  get liveToxicDropList(): Array<{ x: number; y: number }> {
+    const out: Array<{ x: number; y: number }> = []
+    for (const p of this.ordnance.state.projectiles.values()) if (p.kind === 'drop') out.push({ x: p.x, y: p.y })
+    return out
   }
 
   update(
@@ -300,6 +310,8 @@ export class WorldView {
       hasFlashlight: boolean
       /** T21.26: the ambient rain's intensity, `0..1` — required, for `fog`'s reason. */
       ambient: number
+      /** T21.31: the clouds over the view, world px — rain falls from these and nowhere else. */
+      clouds: readonly RainCloud[]
     },
   ): void {
     if (dt > 0) this.ordnance.update(dt)
@@ -308,7 +320,7 @@ export class WorldView {
       // lifecycle and the drops came from the projectile stream, and the emitter
       // believed the first while the damage came from the second. One source now,
       // and it is the one the player is actually standing under.
-      this.weather.setToxic(this.liveToxicDrops)
+      this.weather.setToxic(this.liveToxicDropList)
       this.weather.setAmbient(weather.ambient)
       // `fog` is required, not optional: both scenes have a fog strength to give
       // and the whole of §F9 is that one of them never passed it on. A default
@@ -322,6 +334,7 @@ export class WorldView {
         weather.fallScale,
         weather.fog,
         weather.hasFlashlight,
+        weather.clouds,
       )
     }
     this.drainDirty()

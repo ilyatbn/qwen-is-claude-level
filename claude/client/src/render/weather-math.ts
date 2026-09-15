@@ -15,16 +15,6 @@
 
 import { C, fogStrength } from '../core'
 
-export interface Drop {
-  x: number
-  y: number
-  /** Fall speed, px/s. Varied per drop so the sheet has depth. */
-  vy: number
-  /** Lateral drift, px/s. */
-  vx: number
-  len: number
-}
-
 export interface Ember {
   x: number
   y: number
@@ -44,118 +34,124 @@ function rng(seed: number): () => number {
   }
 }
 
-/**
- * A sheet of falling droplets covering a rectangle, wrapping at the bottom.
- *
- * `intensity` ramps 0..1 so the rain fades in and out rather than appearing whole,
- * which is what makes it read as weather rather than as a layer being toggled.
- */
-/**
- * Live real drops → the fraction of the emitter's pool to draw (T20.05).
- *
- * §C6 gave the rain a particle emitter; §C21 made a drop a projectile *"so that
- * the rain is visible"*. Both clauses are live, and for five milestones the game
- * satisfied them **separately**: a 260-droplet sheet on seed 4242 that knew
- * nothing about the weather, and an unrelated set of real drops that did the
- * carving and the poisoning. A player saw a downpour and was hit by a drizzle.
- *
- * This is the join. It is a **scalar**, deliberately: the emitter is
- * `setScrollFactor(0)` screen-space and the drops are world-space projectiles, so
- * drawing a particle *at* a drop is a different renderer, not this one.
- *
- * `full` is `TOXIC_DROPS_IN_FLIGHT` — measured, not the 54 drops a whole shower
- * releases, which is a cumulative figure against a live one.
- */
-export function toxicDensity(liveDrops: number, full: number): number {
-  if (!(full > 0)) return 0
-  return Math.max(0, Math.min(1, liveDrops / full))
+// ---------------------------------------------------------------------------
+// T21.31: rain that falls from clouds
+// ---------------------------------------------------------------------------
+
+/** A cloud rain may fall from, world px — `ParallaxLayer.rainClouds`' boxes. */
+export interface RainCloud {
+  left: number
+  top: number
+  w: number
+  h: number
 }
 
-export class RainField {
-  readonly drops: Drop[] = []
+/** One world-space droplet. */
+export interface WorldDrop {
+  x: number
+  /** The head of the streak. */
+  y: number
+  /** Where it left its cloud: the streak's tail never reaches above this. */
+  y0: number
+  vy: number
+  len: number
+  alive: boolean
+  /** Seconds before it next leaves a cloud, so a shower does not start as one line. */
+  wait: number
+}
+
+/** The constants `CloudRain` reads. */
+export type RainTuning = Pick<
+  ReturnType<typeof C>,
+  | 'AMBIENT_RAIN_FALL_MIN'
+  | 'AMBIENT_RAIN_FALL_MAX'
+  | 'AMBIENT_RAIN_STREAK_MIN'
+  | 'AMBIENT_RAIN_STREAK_MAX'
+  | 'AMBIENT_RAIN_SPAWN_DEPTH'
+  | 'AMBIENT_RAIN_STAGGER'
+>
+
+/**
+ * T21.31's ambient rain: droplets that leave the underside of a cloud, fall in world
+ * space and die at the first rock — reported from play as *"it literally rains from
+ * the whole screen when the clouds are below me"*.
+ *
+ * Replaces `RainField`, the screen-space sheet, which could not be told where a cloud
+ * or the ground was. A fixed pool still, so a downpour costs what a drizzle does: a
+ * drop that lands is re-launched from a cloud rather than a new one made.
+ *
+ * **No cloud, no rain**: with an empty `clouds` a drop waits, however hard the schedule
+ * says it is raining. **No ramp of its own**: `ambient_rain` already fades in and out
+ * over `AMBIENT_RAIN_RAMP`, so the share of the pool falling is that number exactly.
+ */
+export class CloudRain {
+  readonly drops: WorldDrop[] = []
   intensity = 0
-  /**
-   * `0..1`, ramped like `intensity` — the share of the pool that is drawn.
-   *
-   * **Separate from `intensity` on purpose.** `intensity` is "is this effect
-   * happening", and it drives the fade and the green cast; this is "how hard",
-   * and it drives the count. One scalar meaning both would make a shower that is
-   * merely starting indistinguishable from one that is nearly dry — a field that
-   * means two things, which is the shape this repo keeps paying for.
-   */
-  density = 0
+  private readonly r: () => number
 
   constructor(
     count: number,
-    private w: number,
-    private h: number,
-    seed = 1,
-    /** Fall speed as a multiple of the toxic sheet's (T21.26's ambient rain is slower). */
-    speed = 1,
+    seed: number,
+    private readonly k: RainTuning,
   ) {
-    const r = rng(seed)
+    this.r = rng(seed)
     for (let i = 0; i < count; i++) {
-      this.drops.push({
-        x: r() * w,
-        y: r() * h,
-        vy: (420 + r() * 380) * speed,
-        vx: -30 + r() * 20,
-        len: 6 + r() * 10,
-      })
+      this.drops.push({ x: 0, y: 0, y0: 0, vy: 0, len: 0, alive: false, wait: this.r() * k.AMBIENT_RAIN_STAGGER })
     }
   }
 
-  resize(w: number, h: number): void {
-    this.w = w
-    this.h = h
-  }
-
   /**
-   * `target` is 1 while the effect is active, 0 otherwise; the ramp is 1/`ramp` s.
-   *
-   * `density` is `toxicDensity(liveDrops, TOXIC_DROPS_IN_FLIGHT)` and is
-   * **required**, not defaulted (T20.05). A default of 1 would mean "draw the
-   * whole sheet", which is exactly the behaviour this task removed — a caller
-   * that forgot to wire the real drops would compile, run, and reproduce the bug.
-   * It rides the same ramp so a drop landing does not pop 37 droplets off the
-   * screen.
+   * `floorY` is the lowest world row worth simulating — the bottom of the view — so a
+   * drop falling past what anyone can see is re-launched rather than carried.
    */
-  update(dt: number, target: number, density: number, ramp = 1.5): void {
-    const step = dt / ramp
-    this.intensity =
-      target > this.intensity
-        ? Math.min(target, this.intensity + step)
-        : Math.max(target, this.intensity - step)
-    this.density =
-      density > this.density
-        ? Math.min(density, this.density + step)
-        : Math.max(density, this.density - step)
-
-    if (this.intensity <= 0) return
-    for (const d of this.drops) {
-      d.y += d.vy * dt
-      d.x += d.vx * dt
-      // Wrap rather than respawn: the pool never changes size, so the cost of a
-      // downpour is the cost of a drizzle.
-      if (d.y > this.h) {
-        d.y -= this.h
-        d.x = ((d.x % this.w) + this.w) % this.w
+  update(
+    dt: number,
+    target: number,
+    clouds: readonly RainCloud[],
+    solidAt: (x: number, y: number) => boolean,
+    floorY: number,
+  ): void {
+    const k = this.k
+    this.intensity = Math.max(0, Math.min(1, target))
+    const active = Math.round(this.intensity * this.drops.length)
+    for (let i = 0; i < this.drops.length; i++) {
+      const d = this.drops[i]!
+      if (i >= active) {
+        d.alive = false
+        continue
       }
-      if (d.x < 0) d.x += this.w
-      else if (d.x > this.w) d.x -= this.w
+      if (!d.alive) {
+        d.wait -= dt
+        if (d.wait > 0 || clouds.length === 0) continue
+        const c = clouds[Math.floor(this.r() * clouds.length)]!
+        d.x = c.left + c.w * (0.15 + 0.7 * this.r())
+        d.y0 = c.top + c.h * k.AMBIENT_RAIN_SPAWN_DEPTH
+        d.y = d.y0
+        d.vy = k.AMBIENT_RAIN_FALL_MIN + (k.AMBIENT_RAIN_FALL_MAX - k.AMBIENT_RAIN_FALL_MIN) * this.r()
+        d.len = k.AMBIENT_RAIN_STREAK_MIN + (k.AMBIENT_RAIN_STREAK_MAX - k.AMBIENT_RAIN_STREAK_MIN) * this.r()
+        d.alive = true
+        continue
+      }
+      // **Every row crossed this frame, not only the row landed on.** Measured in
+      // `cloud-rain`: on a loaded box the frame step reaches ~20 px, and a drop tested
+      // only where it landed stepped clean over a thin ledge and fell on below it.
+      const from = d.y
+      d.y += d.vy * dt
+      const rx = Math.round(d.x)
+      let hit = d.y > floorY
+      for (let yy = Math.floor(from) + 1; !hit && yy <= Math.round(d.y); yy++) hit = solidAt(rx, yy)
+      if (hit) {
+        d.alive = false
+        d.wait = this.r() * k.AMBIENT_RAIN_STAGGER
+      }
     }
   }
 
-  /**
-   * How many of the pool to draw right now.
-   *
-   * A prefix of the pool rather than a random subset: the drops' x are already
-   * uniform over the width, so the first N are spread as evenly as any N, and a
-   * stable prefix means a thinning shower fades out droplets instead of
-   * reshuffling the whole sheet every frame.
-   */
-  get visibleDrops(): number {
-    return Math.round(this.density * this.drops.length)
+  /** Droplets in the air right now. */
+  get alive(): number {
+    let n = 0
+    for (const d of this.drops) if (d.alive) n++
+    return n
   }
 }
 
@@ -237,7 +233,7 @@ export class EmberField {
  * opaque.
  *
  * **And it is required, not defaulted.** T20.05 argued — correctly — that
- * `RainField`'s density argument must be required because *"a default of 1 is
+ * the rain's old density argument must be required because *"a default of 1 is
  * the old bug and would let an unwired caller reproduce it silently"*. `false`
  * here is the old bug in exactly that sense: it is the pre-T20.07 behaviour, a
  * veil that never lightens. Two commits in one family applied opposite rules to

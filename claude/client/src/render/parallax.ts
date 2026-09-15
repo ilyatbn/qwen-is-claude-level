@@ -36,6 +36,7 @@ import { C } from '../core'
 import { DEPTH } from './backdrop'
 import { cloudTint, mountainProfile } from './sky-math'
 import {
+  cloudCentreX,
   cloudField,
   cloudVelocity,
   columnTops,
@@ -143,6 +144,13 @@ export class ParallaxLayer {
   /** World space (scroll factor 1): rain falls from under these. */
   private readonly cloudGfx: Phaser.GameObjects.Graphics
   private clouds: Cloud[] = []
+  /** T21.31: the sickly deck along `SKY_MARGIN` a toxic shower's drops leave from. */
+  private toxicDeck: Cloud[] = []
+  /** Every placed ambient cloud over the view's columns — what the rain falls from. */
+  private overhead: CloudBox[] = []
+  /** `0..1` shades from the weather: how grey the clouds are, how visible the deck is. */
+  private rainShade = 0
+  private toxicShade = 0
   private floor: SkyFloor
   private mapW: number
   private wind = 0
@@ -259,6 +267,27 @@ export class ParallaxLayer {
       this.wind = 0
     }
     this.clouds = cloudField(seed, this.mapW, c)
+    // A second field on its own seed, packed tighter: a shower's drops leave from
+    // anywhere along the map, so the deck must be continuous where the clouds are not.
+    this.toxicDeck = cloudField((seed ^ 0x70c1c) >>> 0, this.mapW, { ...c, CLOUD_SPACING: c.TOXIC_DECK_SPACING })
+  }
+
+  /**
+   * T21.31: the weather's two shades, `0..1` — the ambient rain greys the clouds it
+   * falls from, and a toxic shower fades its deck in with the cast.
+   */
+  setWeatherShade(ambient: number, toxic: number): void {
+    this.rainShade = Math.max(0, Math.min(1, ambient))
+    this.toxicShade = Math.max(0, Math.min(1, toxic))
+  }
+
+  /**
+   * T21.31: the clouds rain may fall from this frame — every placed cloud over the
+   * view's columns, **including those above the top of the view**, or a player standing
+   * under a cloud they cannot see would stand in a dry sky.
+   */
+  rainClouds(): readonly CloudBox[] {
+    return this.overhead
   }
 
   /**
@@ -339,27 +368,54 @@ export class ParallaxLayer {
     const g = this.cloudGfx
     g.clear()
     this.drawn = []
+    this.overhead = []
+    const wv = this.scene.cameras.main.worldView
+    // **The rain's clouds are placed whether or not the clouds are shown**: hiding
+    // them for a control frame must not stop the rain it is being compared against.
+    for (let i = 0; i < this.clouds.length; i++) {
+      const b = placeCloud(this.clouds[i]!, i, t, this.wind, this.mapW, this.floor, c)
+      if (b.visible && b.left <= wv.right && b.left + b.w >= wv.x && b.top <= wv.bottom) this.overhead.push(b)
+    }
     const on = !this.hidden && !this.cloudsHidden
     g.setVisible(on)
     if (!on) return
     const rings = isHighQuality() ? c.CLOUD_RINGS_HQ : c.CLOUD_RINGS
     this.lastRings = rings
     const phase = cloudTint(u, c.CLOUD_ALPHA, c.CLOUD_SKY_MIX, c.CLOUD_ALPHA_FLOOR)
-    const wv = this.scene.cameras.main.worldView
-    for (let i = 0; i < this.clouds.length; i++) {
-      const cloud = this.clouds[i]!
-      const b = placeCloud(cloud, i, t, this.wind, this.mapW, this.floor, c)
-      if (!b.visible) continue
-      if (b.left > wv.right || b.left + b.w < wv.x || b.top > wv.bottom || b.top + b.h < wv.y) continue
-      this.drawn.push(b)
-      const colour = mulColor(phase.color, cloud.tint)
-      const a = (phase.alpha * cloud.opacity) / rings
+    const paint = (cloud: Cloud, b: CloudBox, colour: number, alpha: number) => {
+      const a = alpha / rings
       g.fillStyle(colour, a)
       // Outer ring at the lobe's full radius, each further ring smaller: the
       // alpha piles up toward the middle, which is the soft edge.
       for (let k = 0; k < rings; k++) {
         const shrink = 1 - (0.45 * k) / rings
         for (const l of cloud.lobes) g.fillCircle(b.left + l.cx, b.top + l.cy, l.r * shrink)
+      }
+    }
+    const onScreen = (b: CloudBox) => b.left <= wv.right && b.left + b.w >= wv.x && b.top <= wv.bottom && b.top + b.h >= wv.y
+    for (const b of this.overhead) {
+      if (!onScreen(b)) continue
+      const cloud = this.clouds[b.index]!
+      this.drawn.push(b)
+      const lit = mulColor(phase.color, cloud.tint)
+      paint(cloud, b, mix(lit, mulColor(phase.color, c.CLOUD_RAIN_GREY), c.CLOUD_RAIN_DARKEN * this.rainShade), phase.alpha * cloud.opacity)
+    }
+    // The toxic deck: its base on `SKY_MARGIN`, where `toxic.rs` releases every drop.
+    if (this.toxicShade > 0.02) {
+      const tint = mulColor(phase.color, c.TOXIC_CLOUD_TINT)
+      for (let i = 0; i < this.toxicDeck.length; i++) {
+        const cloud = this.toxicDeck[i]!
+        const cx = cloudCentreX(cloud, t, this.wind, this.mapW, c)
+        const b: CloudBox = {
+          index: i,
+          left: cx - cloud.w / 2,
+          top: Math.max(c.CLOUD_TOP_MIN, c.SKY_MARGIN - cloud.h),
+          w: cloud.w,
+          h: cloud.h,
+          visible: true,
+        }
+        if (!onScreen(b)) continue
+        paint(cloud, b, tint, phase.alpha * this.toxicShade)
       }
     }
   }

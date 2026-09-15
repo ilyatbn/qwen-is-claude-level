@@ -2,110 +2,11 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core, fogStrength } from '../core'
-import { EmberField, FogClock, LavaClock, RainField, fogVeilAlpha, toxicDensity } from './weather-math'
+import { CloudRain, EmberField, FogClock, LavaClock, fogVeilAlpha, type RainCloud } from './weather-math'
 
 beforeAll(async () => {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
   await Core.init(readFileSync(fileURLToPath(url)))
-})
-
-describe('RainField', () => {
-  it('keeps a fixed pool however long it rains — an emitter, not entities', () => {
-    const r = new RainField(120, 800, 600)
-    r.update(0.016, 1, 1)
-    const n = r.drops.length
-    for (let i = 0; i < 600; i++) r.update(0.016, 1, 1) // ~10 s of downpour
-    expect(r.drops.length).toBe(n)
-  })
-
-  it('ramps in and out rather than appearing whole', () => {
-    const r = new RainField(20, 800, 600)
-    expect(r.intensity).toBe(0)
-    r.update(0.5, 1, 1)
-    // Mid-ramp: neither off nor fully on. A layer that snaps to 1 reads as a
-    // toggle, not as weather.
-    expect(r.intensity).toBeGreaterThan(0)
-    expect(r.intensity).toBeLessThan(1)
-    for (let i = 0; i < 20; i++) r.update(0.1, 1, 1)
-    expect(r.intensity).toBe(1)
-    for (let i = 0; i < 40; i++) r.update(0.1, 0, 1)
-    expect(r.intensity).toBe(0)
-  })
-
-  it('wraps every drop back inside the view', () => {
-    const r = new RainField(200, 400, 300)
-    for (let i = 0; i < 300; i++) r.update(0.016, 1, 1)
-    for (const d of r.drops) {
-      expect(d.y).toBeGreaterThanOrEqual(0)
-      expect(d.y).toBeLessThanOrEqual(300)
-      expect(d.x).toBeGreaterThanOrEqual(0)
-      expect(d.x).toBeLessThanOrEqual(400)
-    }
-  })
-
-  it('does not move a drop while the intensity is zero', () => {
-    // The control for the test above: if drops moved regardless, "it rains when
-    // active" would pass for a field that always rains.
-    const r = new RainField(10, 400, 300)
-    const y0 = r.drops.map((d) => d.y)
-    for (let i = 0; i < 50; i++) r.update(0.016, 0, 1)
-    expect(r.drops.map((d) => d.y)).toEqual(y0)
-  })
-
-  it('draws a slice of the pool, sized by the real drops (T20.05)', () => {
-    // §C6's emitter and §C21's projectiles were two rains that did not know about
-    // each other: this pool was a constant 260 whatever the weather did. The pool
-    // is still fixed — that is §C6 — but how much of it is drawn is the rain that
-    // is actually falling on you.
-    const r = new RainField(100, 800, 600)
-    // Ramped up at full density: the whole sheet.
-    for (let i = 0; i < 40; i++) r.update(0.1, 1, 1)
-    expect(r.density).toBe(1)
-    expect(r.visibleDrops).toBe(100)
-
-    // Half the rain, and the pool has not changed size.
-    for (let i = 0; i < 40; i++) r.update(0.1, 1, 0.5)
-    expect(r.visibleDrops).toBe(50)
-    expect(r.drops.length).toBe(100)
-
-    // None of it, while the effect is still notionally on: nothing is drawn, and
-    // that is the honest picture of a shower whose last drop has landed.
-    for (let i = 0; i < 40; i++) r.update(0.1, 1, 0)
-    expect(r.visibleDrops).toBe(0)
-    expect(r.intensity).toBe(1)
-  })
-
-  it('ramps the density instead of popping droplets off the screen', () => {
-    const r = new RainField(100, 800, 600)
-    for (let i = 0; i < 40; i++) r.update(0.1, 1, 1)
-    // One frame at zero must not empty the sheet — a drop landing changes the
-    // live count by one, and 37 droplets vanishing on that frame is a flicker.
-    r.update(0.016, 1, 0)
-    expect(r.density).toBeGreaterThan(0.9)
-    expect(r.visibleDrops).toBeGreaterThan(90)
-  })
-
-  it('density and intensity are not the same number', () => {
-    // The control for treating them as one field: a shower that is fading in at
-    // full rate and one that is fully present but nearly dry must not be the same
-    // state. `intensity` drives the green cast, `density` drives the count.
-    const a = new RainField(100, 800, 600)
-    a.update(0.75, 1, 1) // half a ramp, both climbing together
-    expect(a.intensity).toBeCloseTo(a.density, 6)
-
-    const b = new RainField(100, 800, 600)
-    for (let i = 0; i < 40; i++) b.update(0.1, 1, 1)
-    for (let i = 0; i < 40; i++) b.update(0.1, 1, 0.2)
-    expect(b.intensity).toBe(1)
-    expect(b.density).toBeCloseTo(0.2, 6)
-  })
-
-  it('is deterministic from its seed, so a screenshot of rain reproduces', () => {
-    const a = new RainField(30, 800, 600, 99)
-    const b = new RainField(30, 800, 600, 99)
-    expect(a.drops).toEqual(b.drops)
-    expect(new RainField(30, 800, 600, 100).drops).not.toEqual(a.drops)
-  })
 })
 
 describe('EmberField', () => {
@@ -275,32 +176,6 @@ describe('FogClock — the networked client\'s half of §F9', () => {
   })
 })
 
-describe('toxicDensity — the join between the two rains (T20.05)', () => {
-  it('is the live drop count over a full-rate shower, clamped', () => {
-    const full = C().TOXIC_DROPS_IN_FLIGHT
-    expect(toxicDensity(0, full)).toBe(0)
-    expect(toxicDensity(full, full)).toBe(1)
-    expect(toxicDensity(full / 2, full)).toBeCloseTo(0.5, 6)
-    // A heavier-than-full instant saturates rather than overdrawing the pool.
-    expect(toxicDensity(full * 3, full)).toBe(1)
-    // And never negative, whatever a caller hands it.
-    expect(toxicDensity(-4, full)).toBe(0)
-  })
-
-  it('takes the constant from Rust, and it is a real number there', () => {
-    // The T20.15 shape: a constant that is not in `constants_json` reads as
-    // `undefined` and every division by it is `NaN`, silently.
-    const full = C().TOXIC_DROPS_IN_FLIGHT
-    expect(Number.isFinite(full)).toBe(true)
-    expect(full).toBeGreaterThan(0)
-  })
-
-  it('a divisor of zero is nothing rather than Infinity', () => {
-    expect(toxicDensity(5, 0)).toBe(0)
-    expect(toxicDensity(5, NaN)).toBe(0)
-  })
-})
-
 describe("LavaClock — the networked client's half of §A3's ground fire (T19.24)", () => {
   // 0x1_0000_0003 — deliberately past 32 bits, because the whole reason this
   // class splits the seed is that a `u64` survives neither JSON nor
@@ -380,17 +255,101 @@ describe("LavaClock — the networked client's half of §A3's ground fire (T19.2
   })
 })
 
-describe('RainField speed (T21.26)', () => {
-  it("scales every drop's fall speed and leaves the rest of the sheet alone", () => {
-    // An arbitrary multiplier, not a tunable: the property is "scales", for any k.
-    const k = 0.37
-    const a = new RainField(40, 800, 600, 9191)
-    const b = new RainField(40, 800, 600, 9191, k)
-    expect(b.drops.length).toBe(a.drops.length)
-    for (let i = 0; i < a.drops.length; i++) {
-      expect(b.drops[i]!.vy).toBeCloseTo(a.drops[i]!.vy * k, 9)
-      expect(b.drops[i]!.x).toBe(a.drops[i]!.x)
-      expect(b.drops[i]!.len).toBe(a.drops[i]!.len)
+describe('CloudRain — rain falls from clouds and stops at the ground (T21.31)', () => {
+  // Fixture geometry, not tunables: one cloud over flat ground, and a rock shelf.
+  const cloud = { left: 400, top: 100, w: 120, h: 50 }
+  const groundY = 600
+  const shelf = { x0: 440, x1: 480, y: 320 }
+  const solid = (x: number, y: number) => y >= groundY || (x >= shelf.x0 && x < shelf.x1 && y >= shelf.y && y < shelf.y + 20)
+  const DT = 1 / 60
+
+  const run = (rain: CloudRain, seconds: number, clouds: RainCloud[], target = 1, onStep?: () => void) => {
+    for (let t = 0; t < seconds; t += DT) {
+      rain.update(DT, target, clouds, solid, groundY + 100)
+      onStep?.()
     }
+  }
+
+  it('draws nothing without a cloud, however hard the schedule says it is raining', () => {
+    const rain = new CloudRain(C().AMBIENT_RAIN_DROPS, 1, C())
+    run(rain, 5, [])
+    expect(rain.alive).toBe(0)
+    // The control: the same pool under a cloud does rain.
+    run(rain, 5, [cloud])
+    expect(rain.alive).toBeGreaterThan(0)
+  })
+
+  it('draws nothing when the schedule is dry, even under a cloud', () => {
+    const rain = new CloudRain(C().AMBIENT_RAIN_DROPS, 1, C())
+    run(rain, 5, [cloud], 0)
+    expect(rain.alive).toBe(0)
+  })
+
+  it('every live drop is under its cloud, below the cloud\'s lower part, and never in rock', () => {
+    const k = C()
+    const rain = new CloudRain(k.AMBIENT_RAIN_DROPS, 7, k)
+    let seen = 0
+    let underShelf = 0
+    run(rain, 20, [cloud], 1, () => {
+      for (const d of rain.drops) {
+        if (!d.alive) continue
+        seen++
+        expect(d.x).toBeGreaterThanOrEqual(cloud.left)
+        expect(d.x).toBeLessThanOrEqual(cloud.left + cloud.w)
+        expect(d.y0).toBeCloseTo(cloud.top + cloud.h * k.AMBIENT_RAIN_SPAWN_DEPTH, 6)
+        expect(d.y).toBeGreaterThanOrEqual(d.y0)
+        expect(solid(Math.round(d.x), Math.round(d.y))).toBe(false)
+        // The column the rock test asks about is the rounded one, so count that column.
+        const rx = Math.round(d.x)
+        if (rx >= shelf.x0 && rx < shelf.x1 && d.y > shelf.y) underShelf++
+      }
+    })
+    // Presence, and the shelf really was in the rain's way: without the rock test the
+    // column under it fills with drops.
+    expect(seen).toBeGreaterThan(1000)
+    expect(underShelf).toBe(0)
+  })
+
+  it('never steps over thin rock, however long the frame', () => {
+    const k = C()
+    // A ledge 2 px thick under the whole cloud, and a frame far longer than 60 fps: the
+    // drop moves tens of px a step, so a test only at the landing row skips the ledge.
+    const ledgeY = 300
+    const thin = (_x: number, y: number) => y >= groundY || y === ledgeY || y === ledgeY + 1
+    const rain = new CloudRain(k.AMBIENT_RAIN_DROPS, 5, k)
+    const bigStep = 0.1
+    let seen = 0
+    for (let t = 0; t < 20; t += bigStep) {
+      rain.update(bigStep, 1, [cloud], thin, groundY + 100)
+      for (const d of rain.drops) {
+        if (!d.alive) continue
+        seen++
+        expect(d.y).toBeLessThan(ledgeY)
+      }
+    }
+    // Presence: drops were falling, or "none below the ledge" is a dry sky.
+    expect(seen).toBeGreaterThan(100)
+  })
+
+  it('falls at the constant speeds and thins with the schedule', () => {
+    const k = C()
+    const rain = new CloudRain(k.AMBIENT_RAIN_DROPS, 3, k)
+    run(rain, 10, [cloud], 1)
+    const full = rain.alive
+    for (const d of rain.drops.filter((x) => x.alive)) {
+      expect(d.vy).toBeGreaterThanOrEqual(k.AMBIENT_RAIN_FALL_MIN)
+      expect(d.vy).toBeLessThanOrEqual(k.AMBIENT_RAIN_FALL_MAX)
+    }
+    run(rain, 10, [cloud], 0.25)
+    expect(rain.alive).toBeLessThanOrEqual(Math.round(0.25 * k.AMBIENT_RAIN_DROPS))
+    expect(rain.alive).toBeLessThan(full)
+  })
+
+  it('is the same rain from the same seed', () => {
+    const a = new CloudRain(40, 99, C())
+    const b = new CloudRain(40, 99, C())
+    run(a, 3, [cloud])
+    run(b, 3, [cloud])
+    expect(a.drops).toEqual(b.drops)
   })
 })

@@ -107,6 +107,8 @@ export class SandboxScene extends Phaser.Scene {
   private roundTime = 0
   /** T21.31: where the e2e `watch` hook holds the camera, or `null` to follow the player. */
   private watchPoint: { x: number; y: number } | null = null
+  /** T21.31: the e2e `forceAmbient` override of the ambient schedule, or `null`. */
+  private ambientOverride: number | null = null
   private timeScrub = false
 
   private player!: PlayerView
@@ -730,15 +732,13 @@ export class SandboxScene extends Phaser.Scene {
           // Weather at both ends: the sim's ramp, and how many drops are drawn.
           toxicIntensity: self.world.weather.toxicIntensity,
           rainDrops: self.world.weather.rainDrops,
-          // **The other end of the rain** (T20.05). `rainDrops` is what the
-          // emitter draws; this is how many real drops are in the air, and until
-          // now nothing compared them — the sheet was a constant 260 whatever the
-          // weather did. `rainPool` is the emitter's size, so "thinned" can be
-          // told from "off", and `toxicDensityAsked` is the derivation itself,
-          // before the ramp.
+          // **The other end of the rain** (T20.05). `rainDrops` is what the layer
+          // drew; this is how many real drops are in the air. Since T21.31 the
+          // streaks are drawn *at* the real drops, so the two are equal by
+          // construction, and `toxicDropsDrawn` says where they went.
           toxicDrops: self.world.liveToxicDrops,
-          rainPool: self.world.weather.rainPool,
-          toxicDensityAsked: self.world.weather.toxicDensityAsked,
+          toxicDropsDrawn: self.world.weather.toxicDropsDrawn,
+          ambientAlive: self.world.weather.ambientAlive,
           ambientAsked: self.world.weather.ambientAsked,
           ambientIntensity: self.world.weather.ambientIntensity,
           ambientDrops: self.world.weather.ambientDrops,
@@ -1093,6 +1093,19 @@ export class SandboxScene extends Phaser.Scene {
        * player again. The game scene's `watch`, for the same reason: a cloud is
        * wherever the seed put it, usually well above the player's view.
        */
+      /** T21.31: force the ambient rain's intensity, `null` to hand it back to the schedule. */
+      forceAmbient(v: number | null) {
+        self.ambientOverride = v
+      },
+      /** T21.31: pause the scene's update so a frame can be photographed twice. Rendering goes on. */
+      freeze(on: boolean) {
+        if (on) self.scene.pause()
+        else self.scene.resume()
+      },
+      /** e2e only (§C2, T21.31): hide one rain for a control frame. Freeze first. */
+      setRainVisible(which: 'toxic' | 'ambient', on: boolean) {
+        return self.world.weather.setRainVisible(which, on)
+      },
       watch(x: number | null, y = 0) {
         self.watchPoint = x === null ? null : { x, y }
         if (self.watchPoint) self.world.rig.snapTo(self.watchPoint)
@@ -1322,6 +1335,8 @@ export class SandboxScene extends Phaser.Scene {
     if (!this.timeScrub) this.roundTime += dt
     // Darkness is the server's scalar in M6; here it follows the doc's formula so
     // the sandbox shows what a real round will.
+    // T21.31: last frame's weather shades the sky — grey rain clouds, the toxic deck.
+    this.sky.parallax.setWeatherShade(this.world.weather.ambientIntensity, this.world.weather.toxicIntensity)
     this.sky.update(this.roundTime, darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS), C().NIGHT_DARKNESS)
 
     this.world.rig.update(dt)
@@ -1351,19 +1366,22 @@ export class SandboxScene extends Phaser.Scene {
     // why the fix has to live in `WeatherLayer` and be fed the same number at both
     // call sites. `liveToxicDrops` reads the projectiles `syncProjectiles` put in
     // the ordnance layer a few lines up, so both scenes count one thing one way.
-    this.world.weather.setToxic(this.world.liveToxicDrops)
+    this.world.weather.setToxic(this.world.liveToxicDropList)
     // §F9's veil. `weather.fog` is `fog.rs`'s own `strength()`, straight off the
     // local world — **not** the `fogActive` boolean, which is a debug override
     // and would make the veil a toggle that cannot ramp.
     this.fogStrength = this.fogActive ? 1 : weather.fog
     // T21.26: the same pure ambient schedule the game scene evaluates, from this map's seed.
-    this.world.weather.setAmbient(ambientRain(this.seed, this.roundTime))
+    // `forceAmbient` (e2e, T21.31) overrides the schedule so a check need not wait for a shower.
+    this.world.weather.setAmbient(this.ambientOverride ?? ambientRain(this.seed, this.roundTime))
     this.world.weather.update(
       dt,
       weather.vents,
       C().MAX_FALL_SPEED,
       this.fogStrength,
       this.hasFlashlight(),
+      // T21.31: rain falls from these clouds and nowhere else.
+      this.sky.parallax.rainClouds(),
     )
     // Fog from the effect ramps; the Fog button is a separate manual override so
     // visibility can be inspected without waiting for a burst.

@@ -796,11 +796,46 @@ pub const AMBIENT_RAIN_DROPS: u32 = 160;
 /// Ambient droplet colour, 0xRRGGBB: a cold grey-blue, as far from the toxic
 /// sheet's `0x7fe04a` as a rain colour can sit.
 pub const AMBIENT_RAIN_COLOUR: u32 = 0x9d_b8_d6;
-/// Ambient fall speed as a multiple of the toxic sheet's: slower, softer rain.
-pub const AMBIENT_RAIN_SPEED: f32 = 0.55;
 /// Peak stroke opacity of an ambient droplet. No full-screen cast at all: the
 /// toxic sheet's green wash is part of what says "acid", and this rain says nothing.
 pub const AMBIENT_RAIN_ALPHA: f32 = 0.5;
+/// Fall speed of an ambient droplet, world px/s (T21.31).
+///
+/// Was `AMBIENT_RAIN_SPEED`, a multiple (0.55) of the toxic sheet's 420..800 — and that
+/// sheet is gone: toxic rain is drawn at the server's real drops now. Same speeds, as
+/// numbers of their own.
+pub const AMBIENT_RAIN_FALL_MIN: f32 = 231.0;
+pub const AMBIENT_RAIN_FALL_MAX: f32 = 440.0;
+/// Streak length of an ambient droplet, world px.
+pub const AMBIENT_RAIN_STREAK_MIN: f32 = 12.0;
+pub const AMBIENT_RAIN_STREAK_MAX: f32 = 26.0;
+/// Stroke width of an ambient droplet, world px.
+pub const AMBIENT_RAIN_WIDTH: f32 = 1.5;
+/// How far down its cloud a droplet leaves from, as a fraction of the cloud's height
+/// (T21.31): from the underside, so no rain is ever drawn above a cloud.
+pub const AMBIENT_RAIN_SPAWN_DEPTH: f32 = 0.8;
+/// Longest a droplet waits before leaving a cloud again, seconds — so a shower starts
+/// as a scatter rather than one line of drops under every cloud.
+pub const AMBIENT_RAIN_STAGGER: f32 = 1.2;
+/// How far a raining cloud is greyed toward `CLOUD_RAIN_GREY` at full ambient rain.
+pub const CLOUD_RAIN_DARKEN: f32 = 0.45;
+pub const CLOUD_RAIN_GREY: u32 = 0x8e_96_9f;
+
+// --- T21.31: toxic rain, drawn where the real drops are ---
+
+/// The streak drawn behind each real toxic drop, world px. The drop itself is the
+/// ordnance layer's dot; this is what makes it read as rain.
+pub const TOXIC_STREAK_LEN: f32 = 18.0;
+pub const TOXIC_STREAK_WIDTH: f32 = 2.0;
+pub const TOXIC_STREAK_ALPHA: f32 = 0.9;
+/// The green cast over the whole view while a shower is on, and its fade, seconds.
+/// Screen-wide on purpose: "it is raining acid" is a fact about the round.
+pub const TOXIC_CAST_ALPHA: f32 = 0.1;
+pub const TOXIC_CAST_RAMP: f32 = 1.5;
+/// The sickly deck a shower's drops leave from, along `SKY_MARGIN` (T21.31): one cloud
+/// per this many world px of map width, tinted this colour, faded in with the cast.
+pub const TOXIC_DECK_SPACING: f32 = 70.0;
+pub const TOXIC_CLOUD_TINT: u32 = 0x8f_ae_5e;
 
 pub const METEOR_DURATION: f32 = 10.0;
 pub const METEOR_EVERY: f32 = 0.5;
