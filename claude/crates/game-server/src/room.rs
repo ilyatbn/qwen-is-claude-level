@@ -2067,6 +2067,13 @@ impl Room {
         self.seats.seats.iter().filter(|s| !s.bot).count()
     }
 
+    /// The restart vote as `round_state` shows it: `Some` only while the round
+    /// is `Ended`, since that is the only window a vote exists in (T21.38 R4).
+    pub fn vote_tally(&self) -> Option<crate::round::VoteTally> {
+        (self.phase() == game_core::world::RoundPhase::Ended)
+            .then(|| self.round.tally(self.human_count()))
+    }
+
     /// Seat bots and enter `Warmup`. The one place a round begins.
     fn begin_round(&mut self) {
         self.seat_bots(self.seed);
@@ -2209,7 +2216,6 @@ impl Room {
         // §E1: a lobby has no world at all — no map, no round clock, no weather
         // schedule, no item spawns. Only the clock and the start condition run.
         let humans = self.human_count();
-        let connected = self.seats.seats.len();
 
         if self.world.is_none() {
             // The clock runs; nothing else does (`docs/72` §C18-clarified, and
@@ -2300,7 +2306,8 @@ impl Room {
         }
         world.step(dt);
 
-        let (mut events, outcome) = self.round.tick(world, connected, dt);
+        // T21.38: the vote is counted against humans, not seats — bots never vote.
+        let (mut events, outcome) = self.round.tick(world, humans, dt);
 
         // `docs/61` §3, the rows that only the event stream can answer. These are
         // deliberate diagnostic lines, not verbosity: each one is the thing you
@@ -3042,7 +3049,8 @@ async fn run(
                     .unwrap_or_default();
                 events.extend(round_events);
                 if let Some(world) = room.world() {
-                    crate::events::flush_events(&io, world, &sessions, &events);
+                    let votes = room.vote_tally();
+                    crate::events::flush_events(&io, world, &sessions, votes, &events);
                 } else {
                     crate::events::flush_lobby_events(&io, &sessions, room.seed, &events);
                 }
