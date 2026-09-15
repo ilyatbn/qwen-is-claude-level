@@ -862,6 +862,16 @@ export class SandboxScene extends Phaser.Scene {
         return { visible: on, count: self.world.platforms.count }
       },
       /**
+       * Show or hide the teleport pads, for `gate-ground`'s gate-size frame pair
+       * (T21.40): the gate's drawn width is the columns that change when this
+       * layer goes. `GameScene` has the same hook. Reads the visibility back off
+       * the layer rather than echoing the ask.
+       */
+      showPads(on: boolean) {
+        self.world.pads.setVisible(on)
+        return { visible: self.world.pads.visible }
+      },
+      /**
        * T21.15: the map's seed, and the seed the terrain tiles were built from.
        *
        * **Both ends.** Either alone passes against the other being wrong — and

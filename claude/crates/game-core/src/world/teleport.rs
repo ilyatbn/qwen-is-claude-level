@@ -35,7 +35,7 @@ pub struct TeleportState {
     /// **Latched, and it has to be.** §C5 says a pad does nothing until the
     /// player *has moved* — past tense. Recomputing it from the current position
     /// each tick looks tidier and is wrong by construction: `TELEPORT_ARM_DISTANCE`
-    /// (32) is larger than a pad's half-width (`PAD_W / 2` = 20), so the only way
+    /// (32) is larger than a pad's half-width (`PAD_W / 2` = 16), so the only way
     /// to be armed is to be standing off the pad, and walking back onto the pad
     /// you spawned on would disarm you again. The pad you respawn on would then be
     /// unusable for the whole life rather than for the first few seconds of it.
@@ -244,7 +244,7 @@ mod tests {
     ///
     /// It walks **off** the pad and back, because that is the only way to satisfy
     /// the rule — `TELEPORT_ARM_DISTANCE` (32) exceeds a pad's half-width
-    /// (`PAD_W / 2` = 20), so "32 px from where I spawned" is always off the pad
+    /// (`PAD_W / 2` = 16), so "32 px from where I spawned" is always off the pad
     /// you spawned on. That is what makes the latch load-bearing rather than
     /// tidy: without it, coming back disarms you and the respawn pad is dead for
     /// the whole life.

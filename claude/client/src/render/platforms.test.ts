@@ -153,7 +153,9 @@ describe('PlatformLayer (T21.11A)', () => {
   })
 
   it('a generated map puts every platform somewhere the layer can draw', () => {
-    core.generate(4242n, MapScale.Medium)
+    // 31337, not 4242 (T21.40): a map seats platforms or places none, and 4242
+    // Medium has no seated spot left, so it now carries none.
+    core.generate(31337n, MapScale.Medium)
     const plats = core.meta.gun_platforms
     expect(plats.length).toBe(C().GUN_PLATFORMS)
     const { scene } = fakeScene()

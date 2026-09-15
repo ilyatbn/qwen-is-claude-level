@@ -36,6 +36,7 @@
  *      charging, with a control rect in terrain that must not move between them.
  */
 import { samplePatch, colourDelta, assertChanged } from './pixels.mjs'
+import { constants as rustConstants } from '../lib/rust-constants.mjs'
 import {
   startStack,
   enterBattle,
@@ -118,8 +119,13 @@ async function until(pred, deadlineMs, what) {
 
 // --- 1. both ends -----------------------------------------------------------
 const d0 = await dbg()
-if (d0.pads !== k.TELEPORT_PADS) {
-  fail(`map_init carried ${d0.pads} pads, expected TELEPORT_PADS (${k.TELEPORT_PADS})`)
+// T21.40 (owner, 2026-09-15): a map places only the pads it can seat, and none
+// rather than one — so the wire carries 0 or TELEPORT_PADS_MIN..=TELEPORT_PADS.
+// This check needs a pad to die onto, so its fixed seed must have at least the
+// minimum. `TELEPORT_PADS_MIN` is read from `constants.rs`, not the wasm table.
+const padsMin = rustConstants().get('TELEPORT_PADS_MIN')
+if (d0.pads < padsMin || d0.pads > k.TELEPORT_PADS) {
+  fail(`map_init carried ${d0.pads} pads, expected ${padsMin}..=TELEPORT_PADS (${k.TELEPORT_PADS}) on this seed`)
 } else {
   ok(`map_init carried all ${d0.pads} pads`)
 }
@@ -162,8 +168,23 @@ for (let i = 0; Date.now() < killDeadline; i++) {
   // name.
   if (i > 0 && i % 3 === 0) await selectWeapon(page, 'bazooka')
   // Step aside so the next rocket lands on ground rather than in the last hole.
+  //
+  // **Away from the nearest gun platform (T21.40).** Standing still on a platform
+  // mounts it, and a mounted player's trigger fires the turret, not the bazooka, so
+  // she never dies. T21.40 moved 4242 small's platforms onto seated ground and put
+  // one at (1456, 530), beside the spawn on pad 5 (1504, 496): the alternating step
+  // walked onto it, and this timed out "health 20, alive true" twice.
   if (i > 0) {
-    const dir = i % 2 === 0 ? 'd' : 'a'
+    const plats = d.platformPositions ?? []
+    const px = d.player.x
+    const near = plats.reduce(
+      (best, g) => (best === null || Math.abs(g.x - px) < Math.abs(best.x - px) ? g : best),
+      null,
+    )
+    const alternate = i % 2 === 0 ? 'd' : 'a'
+    const dir =
+      near && Math.abs(near.x - px) < k.GUN_PLATFORM_W * 3 ? (near.x < px ? 'd' : 'a') : alternate
+    if (d.mount?.mounted) console.log(`  step ${i}: mounted on a platform — stepping ${dir} off it`)
     await page.keyboard.down(dir)
     await sleep(500)
     await page.keyboard.up(dir)
