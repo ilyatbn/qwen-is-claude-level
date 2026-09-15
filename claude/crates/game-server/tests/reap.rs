@@ -241,6 +241,94 @@ async fn a_room_whose_last_human_left_is_reaped_by_the_running_server() {
     h.stack.shutdown_all(Duration::from_secs(2)).await;
 }
 
+/// T21.32 item 3: **the owner's path**, which neither test above takes.
+///
+/// Reported from play: a public room whose round ran out, whose vote window
+/// closed with nobody's vote counted, and which therefore went back to `Lobby`
+/// (`room.rs::return_to_lobby`) — then its one human left, and 18.4 s later a
+/// quick match landed back in the same room. The two tests above cover a room
+/// abandoned *during* a match and a lobby that never started; this is the room
+/// that has been both, reached through `quick_match` as a player reaches it.
+///
+/// Driven through the **live** reaper, like the others: nothing here calls
+/// `reap`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_room_whose_round_went_back_to_the_lobby_is_reaped_when_its_last_human_leaves() {
+    // Short everything except the vote window, which is a constant.
+    let (warmup, round, lobby) = (1.0, 1.0, 1.0);
+    let h = spawn_server(Config {
+        warmup_seconds: warmup,
+        round_seconds: round,
+        lobby_bot_timeout: lobby,
+        ..cfg(3, 6)
+    })
+    .await;
+    let addr = h.addr;
+    let reg = h.stack.registry.clone();
+
+    let client = tokio::task::spawn_blocking(move || {
+        let inbox: Inbox = Arc::default();
+        let c = common::connect_and_emit(
+            addr,
+            EVENTS,
+            &inbox,
+            "quick_match",
+            serde_json::json!({ "name": "ana" }),
+        );
+        wait_for(&inbox, "welcome", 1, "ana");
+        wait_for(&inbox, "map_init", 1, "ana");
+        c
+    })
+    .await
+    .expect("blocking");
+
+    let (room, handle) = {
+        let r = reg.lock().expect("registry");
+        assert_eq!(r.ids().len(), 1, "quick match made more than one room");
+        let id = r.ids()[0];
+        (id, r.get(id).map(|e| e.handle.clone()).expect("the room"))
+    };
+    assert!(handle.has_started(), "the premise: a match is running");
+
+    // Run the round and its vote window out. Nobody votes, so `ToLobby`.
+    let budget = Duration::from_millis(common::budget_past(&[warmup
+        + round
+        + game_core::constants::ENDED_SECONDS]));
+    let started = std::time::Instant::now();
+    while handle.has_started() && started.elapsed() < budget {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        !handle.has_started(),
+        "the premise: the round never went back to the lobby inside {budget:?}"
+    );
+
+    // On a blocking thread: `rust_socketio`'s client starts its own runtime.
+    tokio::task::spawn_blocking(move || {
+        let _ = client.disconnect();
+    })
+    .await
+    .expect("blocking");
+    wait_for_humans(&reg, room, 0, "ana's disconnect was never seen");
+
+    let deadline = std::time::Instant::now()
+        + Duration::from_secs_f32(TTL_S + game_core::constants::ROOM_REAP_INTERVAL + 5.0);
+    let mut gone = false;
+    while std::time::Instant::now() < deadline {
+        if reg.lock().expect("registry").get(room).is_none() {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        gone,
+        "a room whose round went back to the lobby outlived its TTL after its last \
+         human left"
+    );
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
 /// A lobby nobody is in dies too — §E5 is one rule, not two.
 ///
 /// The match-start path is the one above; this is the same rule before a world
