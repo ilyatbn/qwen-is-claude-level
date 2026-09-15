@@ -29,7 +29,10 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { startStack, enterBattle, tally, freePort, root } from './harness.mjs'
-import { constants as rustConstants } from '../lib/rust-constants.mjs'
+import { constants as rustConstants, flag as rustFlag } from '../lib/rust-constants.mjs'
+
+/** T21.39: toxic rain is switched off; its half of this check waits for T21.41. */
+const TOXIC_ON = rustFlag('TOXIC_RAIN_ENABLED')
 
 const PORT = await freePort()
 const { fail, ok, finish } = tally('ambient-rain')
@@ -106,8 +109,9 @@ const stack = await startStack({
   label: 'ambient-rain',
   env: {
     // Toxic so both sheets can be photographed in one round; seed pinned so the
-    // ambient schedule is the same every run.
-    WEATHER: 'toxic',
+    // ambient schedule is the same every run. T21.39: `off` while toxic rain is
+    // switched off — `WEATHER=toxic` is refused — and the toxic half is skipped.
+    WEATHER: TOXIC_ON ? 'toxic' : 'off',
     BOT_COUNT: '0',
     LOBBY_BOT_TIMEOUT: '3',
     FIXED_SEED: String(SEED),
@@ -213,15 +217,18 @@ if (start.asked === 0 && start.drops !== 0) {
 } else ok(`start: schedule ${start.asked.toFixed(2)}, ambient droplets ${start.drops} of ${start.pool}`)
 
 // --- the toxic sheet, for the colour the ambient one must not be mistaken for --
-const toxicUp = await page
-  // T21.31: the real drops (a handful), with the cast faded fully in.
-  .waitForFunction('window.__game.debug().rainDrops > 0 && window.__game.debug().toxicIntensity >= 0.99', null, {
-    timeout: 120_000,
-  })
-  .then(() => true)
-  .catch(() => false)
+const toxicUp = !TOXIC_ON
+  ? false
+  : await page
+      // T21.31: the real drops (a handful), with the cast faded fully in.
+      .waitForFunction('window.__game.debug().rainDrops > 0 && window.__game.debug().toxicIntensity >= 0.99', null, {
+        timeout: 120_000,
+      })
+      .then(() => true)
+      .catch(() => false)
 let toxic = null
-if (!toxicUp) fail('the toxic sheet never drew — there is nothing to compare the ambient rain against')
+if (!TOXIC_ON) console.log('  skip  the toxic sheet: toxic rain is switched off (TOXIC_RAIN_ENABLED, T21.41)')
+else if (!toxicUp) fail('the toxic sheet never drew — there is nothing to compare the ambient rain against')
 else {
   toxic = await isolate('toxic')
   await shot('ambient-rain-toxic')
@@ -327,6 +334,13 @@ if (visible.toxic && visible.ambient) {
   if (!(greenLead(ambient.delta) < 0)) {
     fail(`the ambient sheet's change ${fmt(ambient.delta)} is green-led — it reads as the hazard`)
   } else ok(`the ambient sheet does not read green (lead ${greenLead(ambient.delta).toFixed(1)}) — a player can tell them apart`)
+} else if (!TOXIC_ON && visible.ambient) {
+  // T21.39: no toxic sheet to anchor against, but "the harmless rain is not green" is
+  // this check's claim and needs only the ambient sheet's own change.
+  const greenLead = (v) => v[1] - Math.max(v[0], v[2])
+  if (!(greenLead(ambient.delta) < 0)) {
+    fail(`the ambient sheet's change ${fmt(ambient.delta)} is green-led — it reads as the hazard`)
+  } else ok(`the ambient sheet does not read green (lead ${greenLead(ambient.delta).toFixed(1)}; toxic anchor skipped, T21.41)`)
 } else if (toxic || ambient) {
   // Not an `ok`: a colour comparison against a sheet that is not on screen would
   // pass for the wrong reason, which is exactly what the first run of this did.
@@ -336,7 +350,8 @@ if (visible.toxic && visible.ambient) {
 // --- not an event ---------------------------------------------------------------
 // `WEATHER=toxic` forces the scheduler to pick rain, so every effect this client
 // was told about is the toxic one. An ambient rain announced as an effect would be
-// a second kind here.
+// a second kind here. Under T21.39's `WEATHER=off` there are none, and an ambient
+// rain announced as one would be the first.
 const end = await read()
 if (end.kinds.length > 1) fail(`the client saw more than one effect kind: ${end.kinds.join(', ')}`)
 else ok(`effects announced: ${end.kinds.join(', ') || 'none'} — the ambient rain was never one of them`)

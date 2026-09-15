@@ -1043,7 +1043,13 @@ impl GameCore {
 
     /// Force an effect to begin its telegraph now: 0 toxic, 1 meteor, 2 lava,
     /// 3 fog. The sandbox control for the M5 checkpoint.
+    ///
+    /// **`0` does nothing while `TOXIC_RAIN_ENABLED` is false** (T21.39): the sandbox is
+    /// not a way round the owner's ruling.
     pub fn force_effect(&mut self, kind: u8, now: f32) {
+        if kind == 0 && !game_core::constants::TOXIC_RAIN_ENABLED {
+            return;
+        }
         let kind = match kind {
             0 => EffectKind::ToxicRain,
             1 => EffectKind::MeteorShower,
@@ -1285,6 +1291,8 @@ pub fn constants_json() -> String {
         // `weather.ts` — the client had a 260-droplet sheet on a seed of its own
         // and the number it should have been derived from was in Rust all along.
         TOXIC_DROPS_IN_FLIGHT => c::TOXIC_DROPS_IN_FLIGHT,
+        // T21.39: the sandbox hides its Toxic button off this.
+        TOXIC_RAIN_ENABLED => c::TOXIC_RAIN_ENABLED,
         AMBIENT_RAIN_WINDOW => c::AMBIENT_RAIN_WINDOW,
         AMBIENT_RAIN_CHANCE => c::AMBIENT_RAIN_CHANCE,
         AMBIENT_RAIN_MIN => c::AMBIENT_RAIN_MIN,
@@ -1773,8 +1781,9 @@ mod tests {
         core.add_player(0, 200.0, 200.0);
         core.add_player(1, 260.0, 200.0);
         // A scheduler has to exist or `weather_step` returns before the poison
-        // block. Forcing an effect is how the sandbox makes one.
-        core.force_effect(0, 0.0);
+        // block. Forcing an effect is how the sandbox makes one. Fog, not toxic
+        // rain: toxic is switched off (T21.39) and fog deals no damage of its own.
+        core.force_effect(3, 0.0);
 
         let before: Vec<f32> = core.players.iter().map(|p| p.stats.health).collect();
         for p in core.players.iter_mut() {

@@ -508,6 +508,8 @@ export class SandboxScene extends Phaser.Scene {
       ['Lava', 2],
       ['Fog FX', 3],
     ] as const) {
+      // T21.39: no Toxic button while toxic rain is switched off.
+      if (kind === 0 && !C().TOXIC_RAIN_ENABLED) continue
       r4.append(button(name, () => this.core.forceEffect(kind, this.weatherTime)))
     }
     r4.prepend(label('weather'))

@@ -75,3 +75,14 @@ export function constants() {
   if (!cached) cached = parseConstants(readFileSync(CONSTANTS_RS, 'utf8'))
   return cached
 }
+
+/**
+ * A `pub const NAME: bool = true|false;` from `constants.rs` (T21.39's
+ * `TOXIC_RAIN_ENABLED`). Separate from `get`, which is arithmetic only. Throws on a
+ * name that is not a bool literal, for `get`'s reason.
+ */
+export function flag(name, source = readFileSync(CONSTANTS_RS, 'utf8')) {
+  const m = source.match(new RegExp(`^pub const ${name}\\s*:\\s*bool\\s*=\\s*(true|false)\\s*;`, 'm'))
+  if (!m) throw new Error(`constants.rs has no \`pub const ${name}: bool = true|false;\``)
+  return m[1] === 'true'
+}

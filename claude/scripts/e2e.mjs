@@ -141,15 +141,19 @@ if (filters.some((f) => f === '--help' || f === '-h')) {
   console.log(`available: ${CHECKS.map((c) => c.name).join(', ')}`)
   console.log(`opt-in:    ${CHECKS.filter((c) => c.optIn).map((c) => c.name).join(', ')}`)
   console.log(`flaky:     ${CHECKS.filter((c) => c.flaky).map((c) => c.name).join(', ')} (see tasks/flaky-test.md)`)
+  console.log(
+    `disabled:  ${CHECKS.filter((c) => c.disabled).map((c) => `${c.name} (${c.disabled})`).join(', ')} (feature switched off, not flaky)`,
+  )
   process.exit(0)
 }
 const selected = filters.length
   ? CHECKS.filter((c) => filters.some((f) => matches(c, f)))
-  : // An opt-in or flaky check is only skipped when nothing was asked for by
-    // name, so `e2e.mjs full-round` or `e2e.mjs two-clients` still runs it.
+  : // An opt-in, flaky or disabled check is only skipped when nothing was asked
+    // for by name, so `e2e.mjs full-round` or `e2e.mjs two-clients` still runs it.
     // Flaky checks are parked out of the gate pending a decision — the list and
-    // the evidence for each is tasks/flaky-test.md.
-    CHECKS.filter((c) => !c.optIn && !c.flaky)
+    // the evidence for each is tasks/flaky-test.md. Disabled ones check a feature
+    // that is switched off (T21.39); the value names the task that turns it on.
+    CHECKS.filter((c) => !c.optIn && !c.flaky && !c.disabled)
 if (!selected.length) {
   console.error(`no checks match ${filters.join(', ')}`)
   console.error(`available: ${CHECKS.map((c) => c.name).join(', ')}`)

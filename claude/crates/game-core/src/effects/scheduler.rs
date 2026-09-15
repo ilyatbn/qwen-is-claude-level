@@ -4,7 +4,7 @@
 
 use crate::constants::{
     EFFECT_INTERVAL_MAX, EFFECT_INTERVAL_MIN, EFFECT_TELEGRAPH, FOG_DURATION, METEOR_DURATION,
-    TOXIC_DURATION,
+    TOXIC_DURATION, TOXIC_RAIN_ENABLED,
 };
 use crate::rng::{pick_weighted, range_f32, substream, ChaCha8Rng};
 use crate::weapons::explode::EffectKind;
@@ -79,6 +79,9 @@ pub struct EffectScheduler {
     /// Guards against a caller ticking twice with the same `now`, which would
     /// otherwise advance a phase boundary twice.
     last_now: Option<f32>,
+    /// May `roll_kind` pick toxic rain? `TOXIC_RAIN_ENABLED` in every build; a field
+    /// only so the switch-on control test can run beside the switch-off one (T21.39).
+    toxic_enabled: bool,
 }
 
 impl EffectScheduler {
@@ -113,11 +116,16 @@ impl EffectScheduler {
         h.update(&[self.last_kind.map_or(255, |k| k as u8)]);
         h.update(&self.next_id.to_le_bytes());
         h.update(&self.last_now.unwrap_or(f32::NAN).to_le_bytes());
+        h.update(&[u8::from(self.toxic_enabled)]);
         let mut probe = self.rng.clone();
         h.update(&rand::RngCore::next_u64(&mut probe).to_le_bytes());
     }
 
     pub fn new(seed: u64, round_start: f32) -> Self {
+        Self::with_toxic(seed, round_start, TOXIC_RAIN_ENABLED)
+    }
+
+    fn with_toxic(seed: u64, round_start: f32, toxic_enabled: bool) -> Self {
         let mut rng = substream(seed, "weather");
         let next_at = round_start + range_f32(&mut rng, EFFECT_INTERVAL_MIN, EFFECT_INTERVAL_MAX);
         Self {
@@ -127,6 +135,7 @@ impl EffectScheduler {
             last_kind: None,
             next_id: 0,
             last_now: None,
+            toxic_enabled,
         }
     }
 
@@ -215,8 +224,19 @@ impl EffectScheduler {
     /// raw weights of 0.30/0.30/0.20/0.20 — the no-repeat rule necessarily shifts
     /// mass toward the lighter kinds, and that shift is the same for any correct
     /// implementation of "never repeat".
+    ///
+    /// **T21.39: toxic rain's weight is zeroed while `TOXIC_RAIN_ENABLED` is false**, the
+    /// same way the last kind's is — so the variant, its weight and its duration stay,
+    /// and a draw is still the conditional distribution over what is left. With 3:2:2
+    /// (meteor, lava, fog) and no repeats the stationary shares are 0.375/0.3125/0.3125.
+    /// Never an empty table: at most two of four weights are zeroed.
     fn roll_kind(&mut self) -> EffectKind {
         let mut weights = WEIGHTS;
+        if !self.toxic_enabled {
+            if let Some(i) = KINDS.iter().position(|k| *k == EffectKind::ToxicRain) {
+                weights[i] = 0;
+            }
+        }
         if let Some(last) = self.last_kind {
             if let Some(i) = KINDS.iter().position(|k| *k == last) {
                 weights[i] = 0;
@@ -420,11 +440,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_weighted_distribution_matches_the_table() {
-        let mut s = EffectScheduler::new(31337, 0.0);
+    /// Every kind started over `sim_seconds`, counted in `KINDS` order.
+    fn kind_counts(mut s: EffectScheduler, sim_seconds: f32) -> [usize; 4] {
         let mut counts = [0usize; 4];
-        let ticks = (400_000.0 / DT) as u32; // ~10 600 effects
+        let ticks = (sim_seconds / DT) as u32;
         for i in 0..ticks {
             let now = i as f32 * DT;
             for ev in s.tick(now, 1.0e9) {
@@ -434,6 +453,80 @@ mod tests {
                 }
             }
         }
+        counts
+    }
+
+    /// T21.39, the owner's ruling: across many seeds and a long clock, the live
+    /// scheduler never starts toxic rain. The control is the next test.
+    #[test]
+    fn toxic_rain_is_never_rolled_while_switched_off() {
+        let toxic = KINDS
+            .iter()
+            .position(|k| *k == EffectKind::ToxicRain)
+            .unwrap();
+        let mut total = 0;
+        for seed in 0..40u64 {
+            let counts = kind_counts(EffectScheduler::new(seed, 0.0), 6_000.0);
+            total += counts.iter().sum::<usize>();
+            assert_eq!(
+                counts[toxic], 0,
+                "seed {seed}: toxic rain started {} times with TOXIC_RAIN_ENABLED = \
+                 {TOXIC_RAIN_ENABLED} — counts {counts:?}",
+                counts[toxic]
+            );
+        }
+        // Not vacuous: the weather kept happening, only without toxic rain.
+        assert!(total > 40 * 100, "only {total} effects over 40 seeds");
+    }
+
+    /// The control for the test above: the same seeds and clock with the switch on
+    /// do roll toxic rain, so "never" is about the switch and not a quiet stream.
+    #[test]
+    fn the_switch_on_does_roll_toxic_rain() {
+        let toxic = KINDS
+            .iter()
+            .position(|k| *k == EffectKind::ToxicRain)
+            .unwrap();
+        for seed in 0..40u64 {
+            let counts = kind_counts(EffectScheduler::with_toxic(seed, 0.0, true), 6_000.0);
+            assert!(counts[toxic] > 0, "seed {seed}: {counts:?}");
+        }
+    }
+
+    /// The live odds, with toxic rain switched off (T21.39): weights 3:2:2 for meteor,
+    /// lava, fog under the no-repeat rule. Stationary shares, solved by hand:
+    /// π_meteor = 0.6·(1 − π_meteor) → 0.375, and lava = fog = 0.3125.
+    #[test]
+    fn the_live_distribution_without_toxic_rain() {
+        if TOXIC_RAIN_ENABLED {
+            return; // the table below is the one pinned for the switch-on case
+        }
+        let counts = kind_counts(EffectScheduler::new(31337, 0.0), 400_000.0);
+        let total: usize = counts.iter().sum();
+        assert!(total > 10_000, "only {total} effects");
+        let expected = [0.0, 0.375, 0.3125, 0.3125];
+        for i in 0..4 {
+            let share = counts[i] as f32 / total as f32;
+            assert!(
+                (share - expected[i]).abs() < 0.012,
+                "{:?}: {share:.4} vs {:.4}",
+                KINDS[i],
+                expected[i]
+            );
+        }
+        // The no-repeat rule is still visible: raw 3:2:2 would give meteor 3/7.
+        let heavy = counts[1] as f32 / total as f32;
+        assert!(
+            (heavy - 3.0 / 7.0).abs() > 0.03,
+            "meteor share {heavy:.4} is indistinguishable from the raw 3/7"
+        );
+    }
+
+    /// The 3:3:2:2 table, pinned with the switch **on** — what the rewrite (T21.41)
+    /// turns back on, and the control that the zeroing above is the only change.
+    #[test]
+    fn the_weighted_distribution_matches_the_table() {
+        let counts = kind_counts(EffectScheduler::with_toxic(31337, 0.0, true), 400_000.0);
         let total: usize = counts.iter().sum();
         assert!(total > 10_000, "only {total} effects");
         // Standard error at this sample size is ~0.004, so 0.012 is a 3-sigma

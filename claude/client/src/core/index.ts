@@ -213,6 +213,8 @@ export interface Constants {
   ANIMAL_INTERVAL: number
   /** Live toxic drops during a full-rate shower — the emitter's divisor (T20.05). */
   TOXIC_DROPS_IN_FLIGHT: number
+  /** T21.39: toxic rain is switched off while this is false. */
+  TOXIC_RAIN_ENABLED: boolean
   AMBIENT_RAIN_WINDOW: number
   AMBIENT_RAIN_CHANCE: number
   AMBIENT_RAIN_MIN: number
