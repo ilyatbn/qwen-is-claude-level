@@ -7971,6 +7971,65 @@ mod fall_damage {
         assert!(hurt > 0.0);
     }
 
+    /// **The owner's words, in numbers (T21.29).** Reported from play on
+    /// 2026-09-15: *"fall damage is still way to high … reduce it by 300%"*,
+    /// ruled as **every landing costs a third of what it did then**.
+    ///
+    /// A different kind of assertion from the rest of this module, on purpose:
+    /// every test above is pinned to `FALL_DAMAGE_PER_SPEED`, so planting the
+    /// old value back leaves them all green. This one is pinned to the rate **at
+    /// the time of the report** — a historical fact, not a tunable — and to
+    /// landings measured through the world, so the constant drifting back up
+    /// turns it red.
+    #[test]
+    fn a_landing_costs_at_most_a_third_of_what_it_did_when_the_owner_reported_it() {
+        /// `FALL_DAMAGE_PER_SPEED` on 2026-09-15, when the report was made. The
+        /// basis of the claim, so it is a literal by necessity.
+        const RATE_WHEN_REPORTED: f32 = 0.075;
+        let mut w = world();
+        w.add_player(0, 0, "ana".into());
+        // Drops in player heights, from an ordinary ledge to past terminal
+        // velocity: the "basic landings" of the report and the worst one.
+        for heights in [4.0f32, 8.0, 16.0, 40.0] {
+            if let Some(p) = w.player_mut(0) {
+                p.health = crate::constants::BASE_HEALTH;
+            }
+            let (x, top) = flat_spot(&w);
+            if let Some(p) = w.player_mut(0) {
+                p.body.pos = Vec2::new(x, top - PLAYER_H / 2.0 - heights * PLAYER_H);
+                p.body.vel = Vec2::ZERO;
+                p.body.grounded = false;
+                p.iframes_until = 0.0;
+            }
+            let before = w.player(0).expect("seated").health;
+            let mut impact = 0.0f32;
+            for t in 0..600u32 {
+                w.queue_input(0, crate::player::input::Input::new(t + 1, 0, 0));
+                w.step(SIM_DT);
+                let p = w.player(0).expect("alive");
+                if p.body.landing_impact > 0.0 {
+                    impact = p.body.landing_impact;
+                    break;
+                }
+            }
+            let lost = before - w.player(0).expect("alive").health;
+            let then = ((impact - FALL_SAFE_SPEED) * RATE_WHEN_REPORTED).max(0.0);
+            // The control: the drop is one that hurt when reported, so "costs
+            // a third" is not satisfied by a landing that was always free.
+            assert!(
+                then > 0.0,
+                "a {heights}-height drop landed at {impact:.0} px/s, which was free anyway"
+            );
+            assert!(lost > 0.0, "a {heights}-height drop is now free: {lost}");
+            assert!(
+                lost <= then / 3.0 + 0.01,
+                "a {heights}-height drop ({impact:.0} px/s) costs {lost:.2}; it cost \
+                 {then:.2} when the owner reported it, and a third of that is {:.2}",
+                then / 3.0
+            );
+        }
+    }
+
     #[test]
     fn walking_downhill_never_costs_anything() {
         // The `ground_snap` path, through the world this time: `physics::resolve`

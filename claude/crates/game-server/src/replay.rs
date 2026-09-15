@@ -117,7 +117,12 @@ pub const HEADER_BYTES: usize = 45;
 /// standing still, then holding jump — so an old file's commands are unchanged
 /// in shape. T20.09 is the precedent for the opposite case: a new command tag
 /// leaves an old file replaying byte for byte and correctly did not bump.
-pub const REPLAY_VERSION: u16 = 7;
+///
+/// **8 (T21.29, fall damage cut to a third, 2026-09-15)**: `FALL_DAMAGE_PER_SPEED`
+/// 0.075 → 0.025. No layout change and no new tag — the silent divergence case,
+/// exactly as 6 was for the previous retune: a v7 recording in which anybody took
+/// a fall would load, run, and disagree at the first state hash after the landing.
+pub const REPLAY_VERSION: u16 = 8;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

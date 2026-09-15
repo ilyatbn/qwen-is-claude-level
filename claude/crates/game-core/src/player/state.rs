@@ -598,7 +598,8 @@ impl PlayerState {
     /// `constants.rs::boots_fall_safe_speed`** — deliberately in one place, so
     /// two copies cannot drift. Read it before changing anything here: the
     /// obvious alternative (exempt the landing outright) was tried and rejected
-    /// for a 23.9 health cliff edge 30 px below the player's own launch.
+    /// for a 23.9 health cliff edge 30 px below the player's own launch (at the
+    /// 0.075 rate of the time; 8.0 at T21.29's 0.025 — smaller, still an edge).
     ///
     /// The two shapes therefore differ on purpose: knockback is a *window*
     /// because it is momentary, and boots are a *threshold* because they are a

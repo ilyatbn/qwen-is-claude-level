@@ -1964,9 +1964,9 @@ pub const FALL_SAFE_SPEED: f32 = 480.0;
 ///
 /// Linear rather than quadratic: the quantity a player can judge is *how far down
 /// it looks*, and a quadratic curve turns a small misjudgement near the top of the
-/// range into a death. At 0.075 a terminal-velocity landing costs
-/// `(900 - 480) x 0.075` = **31.5** of `BASE_HEALTH` 100 — the deepest fall in the
-/// game costs under a third of a full bar, which is a penalty for flying rather
+/// range into a death. At 0.025 a terminal-velocity landing costs
+/// `(900 - 480) x 0.025` = **10.5** of `BASE_HEALTH` 100 — the deepest fall in the
+/// game costs about a tenth of a full bar, which is a penalty for flying rather
 /// than a second void.
 ///
 /// **Halved from 0.15 on 2026-09-07 at the coordinator's instruction** — it was
@@ -1981,7 +1981,26 @@ pub const FALL_SAFE_SPEED: f32 = 480.0;
 /// change: it opened when T20.11 built fall damage on the 2026-09-04 ruling with
 /// no override in `docs/70`–`75`, and the amendment has been outstanding since.
 /// This retune changes a number inside that gap rather than opening a new one.
-pub const FALL_DAMAGE_PER_SPEED: f32 = 0.075;
+///
+/// **Cut to a third, 0.075 → 0.025, on 2026-09-15 (T21.29)** — reported from
+/// play: *"fall damage is still way to high. im doing pretty basic landings and it
+/// does quite a lot of damange. reduce it by 300%. its not fun."* A 300 %
+/// reduction is not a number; the coordinator's ruling reads it as **every
+/// landing costs a third of what it did**. `FALL_SAFE_SPEED` is unchanged again,
+/// so *which* landings hurt is the same and only *how much* moved. A 112 px drop
+/// (4 player heights) went from 6.0 to 2.0; the deepest fall from 31.5 to 10.5.
+///
+/// **This value is held by a test of a different kind**:
+/// `world::fall_damage::a_landing_costs_at_most_a_third_of_what_it_did_when_the_owner_reported_it`
+/// measures landings through the world against the rate at the time of the
+/// report, so it is the one test that sees this constant move back up.
+///
+/// **Headroom: the deepest fall now barely clears the tenth-of-a-bar floor
+/// below — 10.5 against 10.** Any further cut to this rate (or a raised
+/// `FALL_SAFE_SPEED`) fails to compile there; that floor is deliberate and is not
+/// to be loosened in passing. If the owner wants landings gentler still, it is a
+/// decision about the floor, not a retune.
+pub const FALL_DAMAGE_PER_SPEED: f32 = 0.025;
 
 // A plain jump must be free, or the whole game becomes a limp. The measured
 // landing speed is 410 against `JUMP_VELOCITY` 430; guarding against the constant
@@ -2628,7 +2647,8 @@ pub fn boots_jump_velocity_mult() -> f32 {
 /// `JUMP_VELOCITY` 430 against `FALL_SAFE_SPEED` 480 means your own jump never
 /// hurts you — by arithmetic, with no exemption anywhere. Boots push the
 /// identical act to `sqrt(3) x 430` = 744.8 px/s, past the threshold, so a
-/// full-height jump would cost 19.9 health. This restores the property rather
+/// full-height jump would cost 19.9 health (at the 0.075 rate of the time; 6.6
+/// at today's 0.025). This restores the property rather
 /// than granting a new one, and `(impact - threshold)` still rises smoothly from
 /// zero, so there is **no edge anywhere** — which is the base game's shape.
 ///
@@ -2639,7 +2659,8 @@ pub fn boots_jump_velocity_mult() -> f32 {
 /// worth 19.9 health has an edge worth 19.9 health wherever it ends*, and no
 /// derivation moves that edge somewhere a player will not meet it: measured, a
 /// booted jump landing 30 px below its own launch — one ledge, ordinary terrain
-/// — cost **23.9 health with nothing on screen to explain it**.
+/// — cost **23.9 health with nothing on screen to explain it** (at the 0.075
+/// rate of the time; the same edge is 8.0 at T21.29's 0.025, still unexplained).
 ///
 /// **Rejected 2: `FALL_SAFE_SPEED * boots_jump_velocity_mult()`** (831.4).
 /// Rejected on two measurements. First, `resolve.rs::integrate` clamps `vel.y`
@@ -2655,12 +2676,15 @@ pub fn boots_jump_velocity_mult() -> f32 {
 ///
 /// # What this one measures out at
 ///
+/// At `FALL_DAMAGE_PER_SPEED` 0.025 (T21.29; the 0.075 figures were exactly three
+/// times these):
+///
 /// ```text
 ///                        unbooted   booted
 ///     free drop height      82 px   198 px   (= the booted jump apex)
-///     own jump           19.86 hp     0 hp
-///     30 px below launch 23.94 hp  4.08 hp   (smooth: no edge)
-///     deepest fall       31.50 hp 11.64 hp   (floor is 10.0)
+///     own jump            6.62 hp     0 hp
+///     30 px below launch  7.98 hp  1.36 hp   (smooth: no edge)
+///     deepest fall       10.50 hp  3.88 hp   (booted floor: a third of 10.50)
 /// ```
 pub fn boots_fall_safe_speed() -> f32 {
     JUMP_VELOCITY * boots_jump_velocity_mult()
@@ -2673,31 +2697,31 @@ pub fn boots_fall_safe_speed() -> f32 {
 // `BOOTS_JUMP_HEIGHT_MULT`. That is `docs/76` §G6 one path over, and it is the
 // exact shape that would have shipped a 5.15 health deepest fall.
 //
-// The claim is the same sentence as the original: the deepest fall the game can
-// produce must still cost more than a tenth of a bar. Written out, that is
-// `(MAX_FALL_SPEED - launch) * FALL_DAMAGE_PER_SPEED > BASE_HEALTH * 0.1` with
-// `launch = JUMP_VELOCITY * sqrt(BOOTS_JUMP_HEIGHT_MULT)`.
+// **Restated as a ratio by T21.29 (coordinator-approved, 2026-09-15).** It used
+// to be the absolute "more than a tenth of a bar", and the owner's cut of the
+// rate to a third put the booted deepest fall at 3.88 hp and failed it — an
+// absolute floor in hp was a builder's claim, and the owner's report overrules
+// it. What the guard exists to stop is boots quietly becoming fall immunity, and
+// that is a claim about the *discount*, which no retune of the rate can move:
+// **a booted player's deepest fall must cost at least a third of an unbooted
+// one's.** Written out,
+// `(MAX_FALL_SPEED - launch) * 3 > MAX_FALL_SPEED - FALL_SAFE_SPEED` with
+// `launch = JUMP_VELOCITY * sqrt(BOOTS_JUMP_HEIGHT_MULT)`, i.e.
+// `launch < MAX_FALL_SPEED - (MAX_FALL_SPEED - FALL_SAFE_SPEED) / 3`.
 //
-// `sqrt` is not `const`, so the root is squared away instead. Both sides of
-// `launch * rate < MAX_FALL_SPEED * rate - BASE_HEALTH * 0.1` are positive — the
-// right-hand side by the assert above, which already requires
-// `MAX_FALL_SPEED * rate` to exceed `BASE_HEALTH * 0.1` — so squaring preserves
-// the inequality, and `launch²` is `JUMP_VELOCITY² * BOOTS_JUMP_HEIGHT_MULT`
-// with no root left in it. Division is avoided as well, so this needs nothing
-// from const evaluation that the asserts above do not already use.
+// `sqrt` is not `const`, so the root is squared away instead. Both sides are
+// positive (the right-hand side because `FALL_SAFE_SPEED < MAX_FALL_SPEED` is
+// asserted above), so squaring preserves the inequality, and `launch²` is
+// `JUMP_VELOCITY² * BOOTS_JUMP_HEIGHT_MULT` with no root left in it.
 //
 // **Headroom is thin and the number is the point: this fails at
-// `BOOTS_JUMP_HEIGHT_MULT` 3.18.** Today's 3.0 has 6 % to spare, so "make the
+// `BOOTS_JUMP_HEIGHT_MULT` 3.12.** Today's 3.0 has 4 % to spare, so "make the
 // boots jump a bit higher" is a one-line change that lands on a compile error
 // rather than in a playtest.
 const _: () = assert!(
-    JUMP_VELOCITY
-        * JUMP_VELOCITY
-        * BOOTS_JUMP_HEIGHT_MULT
-        * FALL_DAMAGE_PER_SPEED
-        * FALL_DAMAGE_PER_SPEED
-        < (MAX_FALL_SPEED * FALL_DAMAGE_PER_SPEED - BASE_HEALTH * 0.1)
-            * (MAX_FALL_SPEED * FALL_DAMAGE_PER_SPEED - BASE_HEALTH * 0.1)
+    JUMP_VELOCITY * JUMP_VELOCITY * BOOTS_JUMP_HEIGHT_MULT
+        < (MAX_FALL_SPEED - (MAX_FALL_SPEED - FALL_SAFE_SPEED) / 3.0)
+            * (MAX_FALL_SPEED - (MAX_FALL_SPEED - FALL_SAFE_SPEED) / 3.0)
 );
 
 // Boots must actually do something in both directions, or the item is art.
@@ -2729,21 +2753,21 @@ mod tests {
     /// **The landmine past the floor** (T21.02).
     ///
     /// The compile-time assert beside `boots_fall_safe_speed` is the guard that
-    /// actually binds — it fails at `BOOTS_JUMP_HEIGHT_MULT` **3.18**. This is
+    /// actually binds — it fails at `BOOTS_JUMP_HEIGHT_MULT` **3.12**. This is
     /// the backstop behind it, and it names the second crossing: at **4.38** the
     /// booted launch speed reaches `MAX_FALL_SPEED` and the boots stop being a
     /// raised threshold and become **silent fall immunity**, because no landing
     /// the game can produce clears 900 px/s (`resolve.rs::integrate` clamps
     /// `vel.y` before the impact is captured).
     ///
-    /// Two guards rather than one because they fail differently: past 3.18 the
+    /// Two guards rather than one because they fail differently: past 3.12 the
     /// rule is merely too weak to notice, and past 4.38 it is gone. Whoever
     /// retunes that constant should meet both numbers rather than an assertion.
     #[test]
     fn the_boots_fall_threshold_never_reaches_terminal_velocity() {
         assert!(
             boots_fall_safe_speed() < MAX_FALL_SPEED,
-            "a booted player is safe below {} px/s against a terminal velocity of              {MAX_FALL_SPEED} — no landing in the game can clear that, so boots              are fall immunity. BOOTS_JUMP_HEIGHT_MULT crosses here at 4.38, and              the compile-time floor beside `boots_fall_safe_speed` already fails              at 3.18",
+            "a booted player is safe below {} px/s against a terminal velocity of              {MAX_FALL_SPEED} — no landing in the game can clear that, so boots              are fall immunity. BOOTS_JUMP_HEIGHT_MULT crosses here at 4.38, and              the compile-time floor beside `boots_fall_safe_speed` already fails              at 3.12",
             boots_fall_safe_speed()
         );
         // And it must clear the jump it exists for, or the item still hurts
@@ -2761,22 +2785,21 @@ mod tests {
     /// The floor, measured through the same arithmetic the game runs, as the
     /// readable companion to the squared compile-time assert.
     ///
-    /// **Mirrors `constants.rs`'s own "less than a tenth of a health bar is a
-    /// rule nobody notices" for the booted path.** The const assert proves it at
-    /// build time with the root squared away; this states it in the form the
-    /// sentence is written in, so a reader can check the two agree.
+    /// **A ratio since T21.29**: the booted deepest fall keeps at least a third
+    /// of the unbooted one's cost, whatever the rate is. The const assert proves
+    /// it at build time with the root squared away; this states it in the form
+    /// the sentence is written in, so a reader can check the two agree.
     #[test]
-    fn the_deepest_fall_still_costs_a_booted_player_more_than_a_tenth_of_a_bar() {
+    fn the_deepest_fall_still_costs_a_booted_player_a_third_of_an_unbooted_one() {
         let deepest = (MAX_FALL_SPEED - boots_fall_safe_speed()) * FALL_DAMAGE_PER_SPEED;
+        let bare = (MAX_FALL_SPEED - FALL_SAFE_SPEED) * FALL_DAMAGE_PER_SPEED;
         assert!(
-            deepest > BASE_HEALTH * 0.1,
-            "the deepest fall the game can produce costs a booted player              {deepest} health, under the {} this file requires of the unbooted              rule — a penalty nobody notices is the same defect as not having one",
-            BASE_HEALTH * 0.1
+            deepest * 3.0 > bare,
+            "the deepest fall the game can produce costs a booted player              {deepest} health against {bare} unbooted — under a third, so boots are              drifting into fall immunity"
         );
         // The control: it is a *discount*, not a removal. An unbooted player
         // must still pay more for the same landing, or the two rules have
         // collapsed into one.
-        let bare = (MAX_FALL_SPEED - FALL_SAFE_SPEED) * FALL_DAMAGE_PER_SPEED;
         assert!(
             bare > deepest,
             "boots did not reduce the deepest fall at all ({bare} against {deepest})"

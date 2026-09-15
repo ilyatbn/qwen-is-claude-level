@@ -6275,3 +6275,12 @@ Fix in the check: `aimAtMine` aims `NEAR/2` below the mine, so the whole muzzle�
 Plants: skip `removeMine` in the `mine_ended` handler → only "leave the layer" red; blast radius −1 in `World::emit_blast` → both red.
 Also green alone: smoke-shader, fire-shader, fire-visible, explosion-shader, ordnance-visible. `--changed` 54 s, 1/1.
 48/48 at `bdf17d8` is plausible (it went green once here), but nothing now can confirm it. Gap: `MINE_W`/`MINE_H` are inline in `placed.rs`, not `constants.rs`.
+
+## T21.29 — fall damage cut to a third
+`FALL_DAMAGE_PER_SPEED` 0.075 → 0.025, safe speed unchanged: a 4-height drop 6.0 → 2.0 hp, deepest fall 31.5 → 10.5.
+Value test `fall_damage::a_landing_costs_at_most_a_third_of_what_it_did_when_the_owner_reported_it` drops through `World::step`
+against the report-time rate: red at 0.075 ("costs 6.00 … a third of that is 2.00"), green at 0.025.
+Booted floor became a ratio (≥ ⅓ of unbooted deepest; absolute 10 hp failed to compile at 3.88) — crossing 3.12, planted 3.13 red / 3.11 ok.
+Headroom: unbooted deepest 10.5 vs the 10.0 floor — the next cut is a compile error, by design. `REPLAY_VERSION` 7 → 8.
+`--changed` #1 106 s red: checksum mask test (green alone, load 13). #2 325 s: crates/typecheck green, vitest RPC
+timeout backdrop-real-v1-medium (green alone 80 s, load 21). Browser stage not reached — folded into T21.30's `--changed`.
