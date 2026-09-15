@@ -14,6 +14,11 @@
  * "onTaskUpdate"` and every assertion passing — on an idle box too. Split, the
  * maps run in parallel workers and no worker carries all six.
  * `backdrop-real-cases.test.ts` asserts every case is still run exactly once.
+ *
+ * **The split shortened the stall; it did not end it** — `v1 medium` hit the same
+ * timeout again under load the same day. The scans now give the event loop a turn
+ * every `YIELD_MS`: see `turn` for the mechanism and the measurements. Only *when*
+ * control returns changed; every stride, population and bound is as it was.
  */
 import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -63,9 +68,12 @@ const DEEP_WINDOW = {
   [MapGenerator.V2]: [55, 88],
 } as const
 
-function build(scale: MapScale, seed: bigint, generator: MapGenerator) {
+async function build(scale: MapScale, seed: bigint, generator: MapGenerator) {
   distCache = null
   core.generateWith(seed, scale, generator)
+  // WASM and the constructor below are synchronous work this file cannot split;
+  // a turn between them keeps the two from adding up to one stretch.
+  await turn()
   w = core.width
   h = core.height
   const c = C()
@@ -81,7 +89,78 @@ function build(scale: MapScale, seed: bigint, generator: MapGenerator) {
   // 257 ms at Large (8.4 M px) — against tests that individually run 20-33 s.
   // It is under 1 % of the file's runtime. The 33 s is the tests' own full-map
   // scans crossing into WASM per pixel, which is legitimate work.
-  distToSolid()
+  await distToSolid()
+}
+
+/**
+ * Give the worker's event loop a turn.
+ *
+ * **Why, measured.** vitest 2.1.9's worker RPC is birpc with its default timeout,
+ * `DEFAULT_TIMEOUT = 6e4` (`vitest/dist/chunks/index.68735LiX.js`) — 60 s, since
+ * `createForksRpcOptions` (`chunks/utils.Cn0zI1t3.js`) passes none. Both that timer
+ * and the reply live in the worker: the reply to an `onTaskUpdate` sits unread in
+ * the IPC pipe until the loop turns, and when it does, the timers phase runs before
+ * the poll that would read it. So a call sent just before a synchronous stretch
+ * longer than 60 s fails with `Timeout calling "onTaskUpdate"` although its answer
+ * arrived long before — and whether a call is outstanding when a stretch starts is
+ * a coin flip, which is why the failure came and went.
+ *
+ * **Before this, the stretch was the whole file.** The runner chains `it`s on
+ * microtasks, which never turn the loop, so with synchronous bodies a 0 ms timer
+ * armed in the first `beforeAll` did not fire until `afterAll`: 13.2 s (v2 small)
+ * up to **153.0 s (v1 large)** at load 21-30 on 2026-09-15. The longest single body
+ * was 54.5 s (v1 large, `still detects a broken classifier`).
+ *
+ * `setImmediate`, not `await Promise.resolve()`: a microtask resumes before the
+ * loop reaches poll, so it would change nothing.
+ */
+function turn(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+/**
+ * The longest a scan runs before it turns the loop, in ms. Checked once per row, so
+ * a stretch is at most this plus one row.
+ *
+ * 100 ms is 1/600 of the 60 s timeout, so a tenfold slowdown under load still
+ * leaves it at 1/60. What it cannot bound is synchronous work this file does not
+ * own: `generateWith` (WASM) at up to 1.52 s and a `BackdropMask` constructor at
+ * up to 0.91 s, measured at the same load — 2.5 % of the timeout at worst.
+ *
+ * Measured after, same instrument (a 0 ms timer, late by the stretch) at load
+ * 23-40: the longest stretch inside a scan is 0.86 s (v1 large, the broken
+ * classifier's own constructor plus a row) and the longest anywhere 2.73 s (v1
+ * large, WASM init and `generateWith` before the first turn) — against 153 s
+ * before. 4.6 % of the timeout.
+ *
+ * A clock rather than a row count because a row costs anything from a fraction of
+ * a ms (the chamfer) to 107 ms on average (`enclosedAir` at v1 large), and a count
+ * sized for the dearest loop turns the cheap ones thousands of times for nothing.
+ */
+const YIELD_MS = 100
+/** The sealed-air flood has no rows; it checks the clock every this many pops. */
+const FLOOD_CHECK = 4096
+let lastTurn = 0
+
+/**
+ * Each test's own budget, in ms, set on the `describe` so every map's tests get it.
+ *
+ * **Turning the loop is what made a test timeout exist here at all.** vitest's
+ * default 5 s is a timer in the same worker, so while the scans never yielded it
+ * could not fire, and bodies ran 54.5 s (v1 large, load 21-30) and 77 s (with 12 CPU
+ * hogs added) against it unnoticed. The first run with `breathe` in place failed
+ * 23 of 44 tests, every one with `Test timed out in 5000ms` and nothing else.
+ *
+ * 600 s is ~8x the worst body measured under deliberate load: finite, so a hang is
+ * still reported, and far enough out that load alone does not decide it.
+ */
+const SCAN_TIMEOUT_MS = 600_000
+
+/** A turn if `YIELD_MS` has passed since the last one; otherwise returns at once. */
+async function breathe(): Promise<void> {
+  if (performance.now() - lastTurn < YIELD_MS) return
+  await turn()
+  lastTurn = performance.now()
 }
 
 async function initCore() {
@@ -217,27 +296,31 @@ function enclosedAir(x: number, y: number): boolean {
  * unbroken synchronous block. Three tests wanted it, so each case paid for it
  * three times, and with six cases that starved the vitest worker's RPC until it
  * reported `Timeout calling "onTaskUpdate"` and failed the file without failing a
- * test. Computed once per `build()`, which is once per map.
+ * test. Computed once per `build()`, which is once per map. It now turns the
+ * event loop between rows (`breathe`); unbroken it measured 454 ms at Large.
  */
 let distCache: Float32Array | null = null
-function distToSolid(): Float32Array {
+async function distToSolid(): Promise<Float32Array> {
   if (distCache) return distCache
-  distCache = computeDistToSolid()
+  distCache = await computeDistToSolid()
   return distCache
 }
 
-function computeDistToSolid(): Float32Array {
+async function computeDistToSolid(): Promise<Float32Array> {
   const ORTH = 3
   const DIAG = 4
   const CAP = 3 * 500
   const d = new Int32Array(w * h)
-  for (let y = 0; y < h; y++)
+  for (let y = 0; y < h; y++) {
+    await breathe()
     for (let x = 0; x < w; x++) d[y * w + x] = core.solidAt(x, y) ? 0 : CAP
+  }
   const relax = (i: number, from: number, cost: number) => {
     const v = d[from]! + cost
     if (v < d[i]!) d[i] = v
   }
-  for (let y = 0; y < h; y++)
+  for (let y = 0; y < h; y++) {
+    await breathe()
     for (let x = 0; x < w; x++) {
       const i = y * w + x
       if (d[i] === 0) continue
@@ -248,7 +331,9 @@ function computeDistToSolid(): Float32Array {
         if (x + 1 < w) relax(i, i - w + 1, DIAG)
       }
     }
-  for (let y = h - 1; y >= 0; y--)
+  }
+  for (let y = h - 1; y >= 0; y--) {
+    await breathe()
     for (let x = w - 1; x >= 0; x--) {
       const i = y * w + x
       if (d[i] === 0) continue
@@ -259,6 +344,7 @@ function computeDistToSolid(): Float32Array {
         if (x > 0) relax(i, i + w - 1, DIAG)
       }
     }
+  }
   const px = new Float32Array(w * h)
   for (let i = 0; i < d.length; i++) px[i] = d[i]! / ORTH
   return px
@@ -270,14 +356,15 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
   if (!found) throw new Error(`no backdrop-real case named ${which}`)
   const [name, scale, seed, generator] = found
   beforeAll(initCore, 120_000)
-  describe(`BackdropMask on a real map (${name})`, () => {
+  describe(`BackdropMask on a real map (${name})`, { timeout: SCAN_TIMEOUT_MS }, () => {
     beforeAll(() => build(scale, seed, generator), 120_000)
 
-  it('draws almost no enclosed air as sky', () => {
+  it('draws almost no enclosed air as sky', async () => {
     // The §A14 implementation failed this at 49.3%.
     let enclosed = 0
     let asSky = 0
     for (let y = 8; y < h; y += 4) {
+      await breathe()
       for (let x = 8; x < w; x += 4) {
         if (!enclosedAir(x, y)) continue
         enclosed++
@@ -343,8 +430,9 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
    * argument that two definitions could in principle differ, which is the weaker
    * thing a "show they can disagree" demonstration would have given.
    */
-  it('still detects a broken classifier on the same population', () => {
+  it('still detects a broken classifier on the same population', async () => {
     const c = C()
+    await turn()
     const broken = new BackdropMask(
       core,
       undefined,
@@ -362,6 +450,7 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
     let shippedAsSky = 0
     let brokenAsSky = 0
     for (let y = 8; y < h; y += 4) {
+      await breathe()
       for (let x = 8; x < w; x += 4) {
         if (!enclosedAir(x, y)) continue
         enclosed++
@@ -387,10 +476,11 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
       .toBeGreaterThan(0.8)
   })
 
-  it('draws almost no open sky as backdrop', () => {
+  it('draws almost no open sky as backdrop', async () => {
     let open = 0
     let asBackdrop = 0
     for (let y = 8; y < h; y += 4) {
+      await breathe()
       for (let x = 8; x < w; x += 4) {
         if (core.solidAt(x, y)) continue
         // **Unambiguous** open sky: nothing above it, and no rock anywhere near.
@@ -445,7 +535,7 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
    * this: the far tail is gone, and the far tail is what renders as a hard-edged
    * rectangle hanging in the sky rather than as shadow hugging a cliff.
    */
-  it('never draws backdrop far from any rock', () => {
+  it('never draws backdrop far from any rock', async () => {
     const maxD = C().BACKDROP_MAX_DIST_TO_SOLID
     // Slack for the coarse field: the distance is sampled per 8 px cell and
     // bilinearly interpolated, so a pixel can read a little under its true
@@ -454,8 +544,9 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
     let far = 0
     let violations = 0
     let worst = 0
-    const dist = distToSolid()
+    const dist = await distToSolid()
     for (let y = 8; y < h; y += 4) {
+      await breathe()
       for (let x = 8; x < w; x += 4) {
         if (core.solidAt(x, y)) continue
         const d = dist[y * w + x]!
@@ -476,14 +567,14 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
     ).toBe(0)
   })
 
-  it('still draws the deep interior of a wide void as backdrop', () => {
+  it('still draws the deep interior of a wide void as backdrop', async () => {
     // The failure §A18 ranks worst is standing in a cavern and seeing daylight, and
     // a distance bound is exactly the kind of change that could cause it. A v1 void
     // at VOID_RADIUS_MAX puts its centre ~155 px from a wall, which is why
     // BACKDROP_MAX_DIST_TO_SOLID is 160 and not lower — so the deepest enclosed air
     // must still be backdrop. `DEEP_WINDOW` is where that air is, per generator.
     const [deepLo, deepHi] = DEEP_WINDOW[generator]
-    const dist = distToSolid()
+    const dist = await distToSolid()
     let deep = 0
     let asSky = 0
     // Stride 2, not 4. This population is one physical region — the interior of
@@ -491,6 +582,7 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
     // chamber. At stride 4 it yields 11 samples, which is a control that controls
     // nothing; the region did not change, the sampling did.
     for (let y = 8; y < h; y += 2) {
+      await breathe()
       for (let x = 8; x < w; x += 2) {
         if (core.solidAt(x, y)) continue
         const d = dist[y * w + x]!
@@ -520,7 +612,7 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
    * mesa — sat entirely outside what they measured, and they reported 5-8 % while
    * a playthrough showed a wall of brown.
    */
-  it('never draws air with open sky straight overhead as backdrop', () => {
+  it('never draws air with open sky straight overhead as backdrop', async () => {
     // Two legitimate ways a pixel with a clear column can still be interior, and
     // the population excludes both rather than the assertion tolerating them:
     //
@@ -533,13 +625,13 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
     //
     // 40 px of clearance clears both: it is past the blur, and wider than half of
     // 2 x REACH_PX (28).
-    const dist = distToSolid()
+    const dist = await distToSolid()
     // Sealed air short-circuits every ray test in `BackdropMask` by design, so it
     // is excluded rather than tolerated. Flooded here with the class's own reach
     // rule but computed independently — the flood seeds from the sky margin
     // through air at least `REACH_PX` from rock, so a crack narrower than a
     // player-sized disc does not let daylight in.
-    const sealed = (() => {
+    const sealed = await (async () => {
       const rC = BackdropMask.REACH_PX * 3
       const open = new Uint8Array(w * h)
       const stack: number[] = []
@@ -551,7 +643,9 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
         stack.push(i)
       }
       for (let x = 0; x < w; x++) for (let y = 0; y < C().SKY_MARGIN; y++) push(x, y)
+      let pops = 0
       while (stack.length) {
+        if (++pops % FLOOD_CHECK === 0) await breathe()
         const i = stack.pop()!
         const x = i % w
         const y = (i - x) / w
@@ -567,6 +661,7 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
     let asBackdrop = 0
     let nearish = 0
     for (let y = 8; y < h; y += 4) {
+      await breathe()
       for (let x = 8; x < w; x += 4) {
         if (core.solidAt(x, y)) continue
         if (dist[y * w + x]! < 40) continue
@@ -610,7 +705,7 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
     ).toBeLessThan(0.001)
   })
 
-  it('keeps the interior boundary off the coarse grid', () => {
+  it('keeps the interior boundary off the coarse grid', async () => {
     // Measured as grid ALIGNMENT rather than run length. A run-length metric on a
     // real map mostly measures how flat the terrain is — a plateau produces a long
     // constant run legitimately — whereas the defect being guarded against is the
@@ -619,6 +714,7 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
     let boundary = 0
     let aligned = 0
     for (let y = 8; y < h - 8; y += 2) {
+      await breathe()
       for (let x = 8; x < w - 8; x += 2) {
         if (core.solidAt(x, y)) continue
         const here = bd.insideAt(x, y)
@@ -634,6 +730,7 @@ export function backdropRealSuite(which: (typeof CASES)[number][0]) {
     let ctrlBoundary = 0
     let ctrlAligned = 0
     for (let y = 8; y < h - 8; y += 2) {
+      await breathe()
       for (let x = 8; x < w - 8; x += 2) {
         if (core.solidAt(x, y) === core.solidAt(x + 2, y)) continue
         ctrlBoundary++
