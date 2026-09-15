@@ -134,15 +134,28 @@ pub const HEADER_BYTES: usize = 45;
 /// draws a different sequence of effects; the scheduler also hashes the switch. The
 /// silent divergence case: a v8 recording would disagree at the first effect roll.
 ///
-/// **10 (T21.43, the gun platform fires while held)**: a mounted `Fire` spawns one
+/// **10 (T21.38, a new round needs every human, 2026-09-15)**: the restart vote now
+/// resolves **early**, on the tick every seated human has voted yes, where it used to
+/// wait for the `Ended` window to close. A recording file ends at `restart`, so a v9
+/// file in which everyone said yes early carries checkpoints and a footer from after
+/// the vote, and the v10 room replaces the world before reaching them. No layout
+/// change and no new tag — the silent divergence case.
+///
+/// **The same task changed the rule too — the note names both.** A majority of the
+/// votes cast used to restart; now every seated human must say yes, or the room goes
+/// to the lobby. On its own that changes only what follows a file's last tick, which
+/// no replay checks, but whoever debugs a v10-era divergence around a round's end
+/// should know both moved.
+///
+/// **11 (T21.43, the gun platform fires while held)**: a mounted `Fire` spawns one
 /// round from the next barrel every `GUN_PLATFORM_FIRE_INTERVAL` instead of a
 /// volley of four every 0.12 s, and `platform_barrel` joined the hashed platform
 /// block. No new tag — the same `Fire` commands — so it is the silent divergence
-/// case: a v9 recording would disagree at the **first** checkpoint, because the
+/// case: a v10 recording would disagree at the **first** checkpoint, because the
 /// hash folds the barrel bytes in whether or not anyone mounted. Its own number
-/// rather than sharing 9, because T21.39 had already landed 9 on `claude_builds`
-/// in a separate commit.
-pub const REPLAY_VERSION: u16 = 10;
+/// rather than sharing, because T21.39 (9) and T21.38 (10) had each already
+/// landed on `claude_builds` in a separate commit.
+pub const REPLAY_VERSION: u16 = 11;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

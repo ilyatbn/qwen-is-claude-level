@@ -79,7 +79,7 @@ import { hazardKind } from '../render/ordnanceFx-math'
 import { cycleU, darknessAt } from '../render/sky-math'
 import { formatClock, phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
 import { ResultsScreen } from '../ui/results'
-import { phaseDeadline, secondsUntil } from '../ui/results-math'
+import { parseVoteTally, phaseDeadline, secondsUntil } from '../ui/results-math'
 import { fuelText, fuelTrend, jetReadoutText } from '../ui/jetpackReadout-math'
 import { FLAG, MOVE_MOD, flag } from '../net/codec'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
@@ -755,6 +755,9 @@ export class GameScene extends Phaser.Scene {
         this.exitToTitle()
         return
       }
+      // T21.38: how many humans want a rematch, re-announced by the server on
+      // every change during `Ended`. Absent in every other phase, which reads null.
+      this.results.setTally(parseVoteTally(p['votes']))
       this.timeLeft = Number(p['time_left'] ?? 0)
       const stateTick = Number(p['tick'] ?? this.lastServerTick)
       // A restart hands us a brand-new `World`, so the server's tick and round

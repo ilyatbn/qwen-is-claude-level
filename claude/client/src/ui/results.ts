@@ -13,10 +13,12 @@ import {
   escapeHtml,
   resultsView,
   shouldShowResults,
+  tallyText,
   voteButton,
   voteSummary,
   type ResultsView,
   type VoteState,
+  type VoteTally,
 } from './results-math'
 import type { ScoreEntry } from './scoreboard'
 
@@ -32,6 +34,8 @@ export class ResultsScreen {
   private vote: VoteState = 'none'
   /** The window's time left as of the last frame, so a click can be judged by it. */
   private timeLeft = 0
+  /** The server's tally from the latest `round_state`; `null` outside `Ended` (T21.38). */
+  private tally: VoteTally | null = null
   private readonly handlers: ResultsHandlers
 
   constructor(handlers: ResultsHandlers) {
@@ -62,12 +66,18 @@ export class ResultsScreen {
     if (this.vote === 'pending') this.vote = counted ? 'counted' : 'refused'
   }
 
+  /** The tally from each `round_state` — `null` when it carried none (T21.38). */
+  setTally(tally: VoteTally | null): void {
+    this.tally = tally
+  }
+
   private render(view: ResultsView): void {
     const el = this.ensure()
     // T21.32 item 1: a visible countdown with words, not a bare `12s` that went
     // blank the moment the window closed and left the screen up with nothing on it.
-    el.querySelector('.results-count')!.textContent = countdownText(this.vote, this.timeLeft)
+    el.querySelector('.results-count')!.textContent = countdownText(this.timeLeft, this.tally)
     el.querySelector('.results-vote')!.textContent = voteSummary()
+    el.querySelector('.results-tally')!.textContent = tallyText(this.tally)
     el.querySelector('.results-rows')!.innerHTML = view.rows
       .map(
         (r) =>
@@ -97,6 +107,7 @@ export class ResultsScreen {
       </li></ol>
       <ol class="results-rows"></ol>
       <p class="results-vote"></p>
+      <p class="results-tally"></p>
       <p class="results-count"></p>
       <div class="results-buttons">
         <button class="results-again">Play again</button>

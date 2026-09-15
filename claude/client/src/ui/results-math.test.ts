@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   countdownText,
   escapeHtml,
+  everyoneSaidYes,
+  parseVoteTally,
+  tallyText,
   voteButton,
   phaseDeadline,
   resultsView,
@@ -146,37 +149,63 @@ describe('voteButton (T21.32 item 1)', () => {
   })
 })
 
-describe('countdownText (T21.32 item 1)', () => {
+describe('countdownText (T21.32 item 1, T21.38)', () => {
   it('is a visible countdown for the window, rounded up', () => {
-    expect(countdownText('none', 19.2)).toBe('Vote closes in 20 s')
-    expect(countdownText('counted', 3.5)).toBe('New round in 4 s')
+    expect(countdownText(19.2, null)).toBe('Vote closes in 20 s')
+    expect(countdownText(3.5, { yes: 1, humans: 2 })).toBe('Vote closes in 4 s')
   })
 
-  it('promises a new round only to a counted vote', () => {
-    for (const s of ['none', 'pending', 'refused'] as const) {
-      expect(countdownText(s, 10)).not.toMatch(/new round/i)
+  it('promises a new round only when every human has said yes', () => {
+    // T21.38: one counted yes no longer carries the round, so nothing short of the
+    // whole tally may promise one.
+    for (const t of [null, { yes: 0, humans: 1 }, { yes: 2, humans: 3 }, { yes: 0, humans: 0 }]) {
+      expect(countdownText(10, t)).not.toMatch(/new round/i)
     }
+    // The control, so "never promises" cannot pass.
+    expect(countdownText(10, { yes: 3, humans: 3 })).toBe('New round starting…')
   })
 
   it('says the window closed rather than going blank', () => {
     // The probe at 1173c70 read `count: ""` past the window.
-    expect(countdownText('counted', 0)).toBe('Vote closed')
-    expect(countdownText('none', -2)).toBe('Vote closed')
+    expect(countdownText(0, { yes: 1, humans: 2 })).toBe('Vote closed')
+    expect(countdownText(-2, null)).toBe('Vote closed')
   })
 })
 
-describe('voteSummary', () => {
-  it('states the rule the server actually implements', () => {
-    // `restart_wins` is `yes * 2 > cast`: a majority of those who voted, with
-    // abstentions ignored. The text must not promise a different rule.
-    expect(voteSummary()).toMatch(/majority of the players who vote/i)
+describe('voteSummary (T21.38)', () => {
+  it('states the rule the server implements: every player, or the title', () => {
+    // The owner's ruling: "as long as all human players vote yes, restart. If
+    // not, title screen." The old majority wording must be gone.
+    expect(voteSummary()).toMatch(/every player/i)
+    expect(voteSummary()).toMatch(/title/i)
+    expect(voteSummary()).not.toMatch(/majority/i)
+  })
+})
+
+describe('the vote tally (T21.38)', () => {
+  it('reads round_state.votes', () => {
+    expect(parseVoteTally({ yes: 2, humans: 3 })).toEqual({ yes: 2, humans: 3 })
   })
 
-  it('quotes no tally, because the client is never sent one', () => {
-    // `round_state` carries phase, time_left and seed — no vote data. A summary
-    // with numbers in it would be reading a field that does not exist, which
-    // renders as a confident `0/4` and can never fail (§B15).
-    expect(voteSummary()).not.toMatch(/\d/)
+  it('is null, not "0 of 0", when the field is absent or malformed', () => {
+    // §B15: `Number(undefined ?? 0)` would render a confident tally off a field
+    // that does not exist. Absent reads as no tally, and no tally renders nothing.
+    for (const raw of [undefined, null, {}, { yes: '1', humans: 2 }, { yes: -1, humans: 2 }]) {
+      expect(parseVoteTally(raw)).toBeNull()
+    }
+    expect(tallyText(null)).toBe('')
+  })
+
+  it('says how many humans want a rematch', () => {
+    expect(tallyText({ yes: 2, humans: 3 })).toBe('2 of 3 players want a rematch')
+    expect(tallyText({ yes: 0, humans: 1 })).toBe('0 of 1 player wants a rematch')
+  })
+
+  it('counts everyone-said-yes only with at least one human', () => {
+    expect(everyoneSaidYes({ yes: 2, humans: 2 })).toBe(true)
+    expect(everyoneSaidYes({ yes: 1, humans: 2 })).toBe(false)
+    expect(everyoneSaidYes({ yes: 0, humans: 0 })).toBe(false)
+    expect(everyoneSaidYes(null)).toBe(false)
   })
 })
 
