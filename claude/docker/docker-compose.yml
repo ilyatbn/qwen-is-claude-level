@@ -1,8 +1,28 @@
 services:
+  # **Make the recordings mount writable before the server starts** (T21.35).
+  # A bind mount replaces the image's `/recordings` (owned by `game`) with the
+  # host directory, and when that directory does not exist Docker creates it as
+  # `root:root 755`. The server runs as `game` and got `Permission denied` on
+  # every room. This one-shot container runs as root from the same image, hands
+  # the directory to `game`, and exits; the server image itself stays non-root
+  # (`docs/62` §8). Chown by name, so the uid lives only in Dockerfile.server.
+  recordings-init:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    user: root
+    entrypoint: ["chown", "game:game", "/recordings"]
+    volumes:
+      - ../recordings:/recordings
+    restart: "no"
+
   server:
     build:
       context: ..
       dockerfile: docker/Dockerfile.server
+    depends_on:
+      recordings-init:
+        condition: service_completed_successfully
     ports: ["3000:3000"]
     environment:
       BIND_ADDR: 0.0.0.0:3000

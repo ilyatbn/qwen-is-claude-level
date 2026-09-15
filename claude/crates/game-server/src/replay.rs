@@ -431,6 +431,27 @@ impl From<io::Error> for ReplayError {
 // Writing
 // ---------------------------------------------------------------------------
 
+/// Whether `RECORD_REPLAY` can actually write into `dir`, asked **once at
+/// startup** (T21.35). Returns the directory as an absolute path when it can.
+///
+/// Rooms open their recorders at construction, so without this an unwritable
+/// directory surfaced as one `could not start replay: Permission denied` per
+/// room, and only after a player had already joined one. In Docker that is the
+/// bind mount: the host directory replaces the image's `/recordings`, and a host
+/// directory Docker created for the mount is `root:root 755` — the container's
+/// `game` user can read it and write nothing.
+///
+/// It really creates and removes a file rather than reading permission bits: a
+/// read-only filesystem, an ACL or a user-namespace remap all pass a mode check
+/// and fail the write.
+pub fn probe_writable(dir: &Path) -> Result<PathBuf, ReplayError> {
+    fs::create_dir_all(dir)?;
+    let probe = dir.join(format!(".write-probe-{}", std::process::id()));
+    File::create(&probe)?;
+    fs::remove_file(&probe)?;
+    Ok(fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()))
+}
+
 pub struct ReplayWriter {
     file: BufWriter<File>,
     path: PathBuf,
@@ -847,6 +868,37 @@ fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("probe-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// The presence half: a writable directory (created if missing) passes,
+    /// comes back absolute, and the probe leaves nothing in it.
+    #[test]
+    fn probe_writable_accepts_a_writable_dir_and_leaves_it_empty() {
+        let dir = scratch("ok").join("nested");
+        let abs = probe_writable(&dir).expect("a fresh temp dir is writable");
+        assert!(abs.is_absolute(), "{abs:?} is not absolute");
+        assert_eq!(fs::read_dir(&dir).expect("created").count(), 0);
+        let _ = fs::remove_dir_all(dir.parent().expect("parent"));
+    }
+
+    /// The absence half. A directory under a regular *file* cannot be created
+    /// by anyone, root included — a mode-bit fixture would pass for a test run
+    /// as root and prove nothing.
+    #[test]
+    fn probe_writable_rejects_a_dir_that_cannot_be_written() {
+        let base = scratch("bad");
+        fs::create_dir_all(&base).expect("base");
+        let file = base.join("not-a-dir");
+        fs::write(&file, b"x").expect("file");
+        let err = probe_writable(&file.join("recordings"));
+        assert!(matches!(err, Err(ReplayError::Io(_))), "{err:?}");
+        let _ = fs::remove_dir_all(&base);
+    }
 
     fn header() -> ReplayHeader {
         ReplayHeader {
