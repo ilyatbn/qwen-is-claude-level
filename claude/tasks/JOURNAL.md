@@ -6371,3 +6371,11 @@ Two earlier attempts were killed by the Claude Code harness ("system is running 
 both inside `game-server/tests/integration.rs`, with **≥ 12.6 GB of 15.8 GB free** in every 5 s sample and swap flat.
 `integration.rs` alone: 7/7 in 22 s, minimum 12.5 GB free at 1 s sampling — the tests were not the cause.
 The green run was launched detached (`setsid nohup`) and waited on by exact PID; minimum free 9.1 GB over 187 samples.
+
+## T21.39 — toxic rain switched off (`e1400b5`, merged `a5287f1`)
+Owner 2026-09-15: "Disable toxic rain completely". One switch: constants.rs `TOXIC_RAIN_ENABLED = false`. The scheduler zeroes
+toxic's weight (hashed); odds now meteor .375 / lava .3125 / fog .3125. `WEATHER=toxic` refused at parse (names T21.41);
+wasm `force_effect(0)` a no-op, sandbox button hidden. `REPLAY_VERSION` 8 → 9. All toxic code kept.
+`toxic-rain-game`: new `disabled: 'T21.41'` flag (skipped, runs by name, in `--help`). `m5-weather`, `weather-visible`, `hud-bars`
+poisoned bar and `ambient-rain` skip only their toxic part off the switch. Never-rolled test (40 seeds × 6000 s) with a switch-on
+control; planting `true` → red, 41 toxic starts. Poison unreachable in play (`DEV_POISONED` kept). Rewrite parked: T21.41.
