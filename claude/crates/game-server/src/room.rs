@@ -2077,7 +2077,15 @@ impl Room {
     /// A `Lobby` room has no bots (§C18), so leaving them seated would give the
     /// next `human_count()` the wrong answer and let an empty room restart
     /// itself — the original bug, one layer along.
-    fn return_to_lobby(&mut self) {
+    fn return_to_lobby(&mut self, seed: u64) {
+        // T21.32 item 2: the next match is built on a **new** seed. The comment
+        // below always claimed a fresh world "stops a second round replaying the
+        // first one's map", and it did not: `generate_world_task` reads
+        // `self.seed`, which only `restart` ever rewrote. Advanced here rather
+        // than at match start so that everything a lobby reports — `welcome`,
+        // `round_state` — already names the seed its map will be built on, which
+        // is what the client seeds the ground texture from.
+        self.adopt_seed(seed);
         for b in std::mem::take(&mut self.bots) {
             self.seats.free_seat(b.player);
             if let Some(world) = self.world.as_mut() {
@@ -2363,8 +2371,8 @@ impl Room {
             crate::round::RoundOutcome::Restart { seed } => {
                 events.extend(self.restart(seed));
             }
-            crate::round::RoundOutcome::ToLobby => {
-                self.return_to_lobby();
+            crate::round::RoundOutcome::ToLobby { seed } => {
+                self.return_to_lobby(seed);
             }
         }
         events
@@ -2543,17 +2551,27 @@ impl Room {
         self.seats.begin_tick();
     }
 
-    fn restart(&mut self, seed: u64) -> Vec<game_core::world::GameEvent> {
-        let buried_secret = match self.config.fixed_seed {
+    /// Take `seed` for the next world, with the buried-slot secret that goes
+    /// with it (§A31).
+    ///
+    /// **Shared by `restart` and `return_to_lobby`** (T21.32 item 2): the pair
+    /// has to move together, and a second copy of the secret's derivation is
+    /// the one that would forget `FIXED_SEED`'s zero.
+    fn adopt_seed(&mut self, seed: u64) {
+        self.buried_secret = match self.config.fixed_seed {
             Some(_) => 0,
             None => seed.rotate_left(17) ^ 0x9E37_79B9_7F4A_7C15,
         };
+        self.seed = seed;
+    }
+
+    fn restart(&mut self, seed: u64) -> Vec<game_core::world::GameEvent> {
         // One file per round. A single file spanning a restart would carry two
         // seeds and two maps, and the footer hash could only describe one of them.
         let recording = self.replay.is_some();
         self.finish_recording();
-        self.seed = seed;
-        self.buried_secret = buried_secret;
+        self.adopt_seed(seed);
+        let buried_secret = self.buried_secret;
         // §E1.1: the seats are the roster. A restart used to copy the old
         // world's player list into the new one, which meant the identity of a
         // player survived only as long as a world did.

@@ -46,8 +46,11 @@ pub enum RoundOutcome {
     Restart {
         seed: u64,
     },
-    /// Nobody wanted another round.
-    ToLobby,
+    /// Nobody wanted another round. `seed` is the one the **next** match from
+    /// the lobby is built on (T21.32 item 2) — see [`RoundController::advance_seed`].
+    ToLobby {
+        seed: u64,
+    },
 }
 
 impl RoundController {
@@ -95,6 +98,21 @@ impl RoundController {
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         z ^ (z >> 31)
+    }
+
+    /// Step to the next round's seed and return it.
+    ///
+    /// **One step for both ways a round can follow a round** (T21.32 item 2). It
+    /// lived inline in the `Restart` branch only, so a room whose vote failed went
+    /// back to the lobby still holding the seed it had just played — and the next
+    /// lobby start regenerated the identical map, ground texture and all.
+    /// Reported from play: two rounds in `room=1`, both
+    /// `map generated seed=222892591914436108`.
+    pub fn advance_seed(&mut self) -> u64 {
+        self.round_number += 1;
+        let seed = self.next_seed();
+        self.seed = seed;
+        seed
     }
 
     /// Majority of the votes **cast**, not of the players connected.
@@ -198,15 +216,13 @@ impl RoundController {
             RoundPhase::Ended => {
                 if !self.resolved && world.phase_time_left() <= 0.0 {
                     self.resolved = true;
-                    return if self.restart_wins(connected) {
-                        self.round_number += 1;
-                        let seed = self.next_seed();
-                        self.seed = seed;
-                        self.votes.clear();
+                    let restart = self.restart_wins(connected);
+                    self.votes.clear();
+                    let seed = self.advance_seed();
+                    return if restart {
                         (events, RoundOutcome::Restart { seed })
                     } else {
-                        self.votes.clear();
-                        (events, RoundOutcome::ToLobby)
+                        (events, RoundOutcome::ToLobby { seed })
                     };
                 }
             }

@@ -206,6 +206,83 @@ fn without_a_majority_the_room_returns_to_lobby() {
     assert_ne!(room.phase(), RoundPhase::Ended);
 }
 
+/// Run a started room to `Ended`, let the window close with no votes, and return
+/// once it is back in `Lobby`.
+fn back_to_lobby(room: &mut Room) {
+    for _ in 0..(20 * 60) {
+        let _ = room.tick_inline(SIM_DT);
+        if room.phase() == RoundPhase::Ended {
+            break;
+        }
+    }
+    assert_eq!(room.phase(), RoundPhase::Ended, "the round never ended");
+    for _ in 0..((game_core::constants::ENDED_SECONDS + 2.0) * 60.0) as usize {
+        let _ = room.tick_inline(SIM_DT);
+        if room.phase() == RoundPhase::Lobby {
+            return;
+        }
+    }
+    panic!("the vote window closed with no votes and the room is not in Lobby");
+}
+
+/// Two matches started from one room's lobby: `(seed, mask hash)` of each map.
+fn two_lobby_starts(cfg: Arc<Config>) -> [(u64, String); 2] {
+    let mut room = Room::new_in_room(cfg, 1);
+    seat(&mut room, "a");
+    begin(&mut room);
+    let first = {
+        let w = room.world_for_test();
+        (w.seed, w.map.mask.hash_hex())
+    };
+    back_to_lobby(&mut room);
+    assert!(room.world().is_none(), "§E1: a lobby holds no world");
+    begin(&mut room);
+    let second = {
+        let w = room.world_for_test();
+        (w.seed, w.map.mask.hash_hex())
+    };
+    [first, second]
+}
+
+/// T21.32 item 2. Reported from play: rounds one and two in `room=1` both logged
+/// `map generated seed=222892591914436108`.
+///
+/// `two_rooms_with_no_fixed_seed_get_different_maps` covers two **rooms**; this
+/// is one room, played twice through its lobby, which is the path a failed vote
+/// takes. The mask hash is asserted as well as the seed, because the seed is an
+/// input and the map is what a player sees.
+#[test]
+fn two_lobby_starts_in_one_room_build_different_maps() {
+    let [first, second] = two_lobby_starts(cfg(1.0));
+    assert_ne!(
+        first.0, second.0,
+        "the second match from the lobby was built on the first one's seed"
+    );
+    assert_ne!(
+        first.1, second.1,
+        "the second match from the lobby has the first one's terrain"
+    );
+}
+
+/// The control for the test above, and `FIXED_SEED`'s promise (`docs/41` §5):
+/// the sequence is a function of the fixed seed. Round one is built on it
+/// exactly, and two rooms given it walk the same sequence afterwards — so a
+/// "different map" above is not the product of something unseeded.
+#[test]
+fn fixed_seed_pins_the_whole_sequence_of_lobby_starts() {
+    let pinned = |seed| {
+        Arc::new(Config {
+            fixed_seed: Some(seed),
+            ..(*cfg(1.0)).clone()
+        })
+    };
+    let a = two_lobby_starts(pinned(4242));
+    let b = two_lobby_starts(pinned(4242));
+    assert_eq!(a[0].0, 4242, "round one was not built on FIXED_SEED");
+    assert_eq!(a, b, "FIXED_SEED did not reproduce the sequence of maps");
+    assert_ne!(a[0], a[1], "FIXED_SEED froze every map to the same one");
+}
+
 #[test]
 fn the_controller_is_deterministic_across_runs() {
     let run = || {
