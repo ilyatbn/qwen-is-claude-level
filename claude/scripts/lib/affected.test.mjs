@@ -143,8 +143,10 @@ test('the real crate graph: game-core has both dependents, and the wasm does not
 
 test('the real game-server selects standalone checks, not in-page ones', () => {
   const r = affected(['crates/game-server/src/app.rs'], real)
-  // `quick-throw`, not `escape-menu`: escape-menu is parked (tasks/flaky-test.md), and a
-  // parked check is rightly not selected by a helper or crate change.
+  // `quick-throw` because it has never been parked: a parked check is rightly not selected
+  // by a helper or crate change, so an example that goes on or off `tasks/flaky-test.md`
+  // would flip this assertion for a reason unrelated to the mapping. (It was chosen over
+  // `escape-menu` while that one was parked; T21.36 un-parked it on 2026-09-15.)
   assert.ok(r.e2e.includes('quick-throw'))
   assert.ok(!r.e2e.includes('sky'), 'sky runs on the sandbox, with no server')
   assert.equal(r.netSmoke, true)
