@@ -1671,11 +1671,25 @@ pub const TELEPORT_PADS: usize = 6;
 ///
 /// Wider than `PLAYER_W` (16) so a body lands on it rather than beside it, and
 /// short enough that stamping one into a hillside does not build a tower.
-pub const PAD_W: i32 = 40;
+///
+/// **T21.40: 40 → 32**, with the gate. The owner, 2026-09-15: *"reduce its size by
+/// 20% its kinda large"*. The strip is the gate's footing, so it shrinks with the
+/// drawn gate (`PAD_ART_W`) by the same 80 %.
+pub const PAD_W: i32 = 32;
 pub const PAD_H: i32 = 8;
+/// The fewest pads a map may carry, unless it carries none (T21.40).
+///
+/// A pad sends you to any *other* pad (`world/teleport.rs::destination`), so one
+/// pad alone is a gate that charges and goes nowhere. The owner's ruling: *"just
+/// dont place any more if there's no proper space"* — a map that can seat only one
+/// gets none.
+pub const TELEPORT_PADS_MIN: usize = 2;
 /// How wide the teleport gate is **drawn**, in px (T21.28).
 ///
-/// Not `PAD_W`: the pad is the 40 px strip you stand on and the rock
+/// **T21.40: 64 → 51**, 80 % — *"reduce its size by 20% its kinda large"* (the
+/// owner, 2026-09-15). Height follows the art's aspect, so the gate is not squashed.
+///
+/// Not `PAD_W`: the pad is the `PAD_W` strip you stand on and the rock
 /// `carve_circle` protects, and the gate standing on it is wider — a stone arch
 /// with 12 px of base overhang each side. The two were never the same number, and
 /// the generator only knew the narrow one, so it seated gates whose stone base hung
@@ -1684,9 +1698,11 @@ pub const PAD_H: i32 = 8;
 ///
 /// **One number, read by all three sides**: the generator fills ground under this
 /// many columns (`map/meta.rs::fill_standing_ground`), `build-gate-sprite.mjs`
-/// builds the art this wide, and `pads.ts` displays it at this width. 64 is what
-/// the build already produced (`PAD_W` × 1.6), so the committed art is unchanged.
-pub const PAD_ART_W: i32 = 64;
+/// builds the art this wide, and `pads.ts` displays it at this width. T21.28's 64
+/// was what the build already produced (`PAD_W` × 1.6); T21.40's 51 is 80 % of it,
+/// rebuilt by `build-gate-sprite.mjs`, and `gate-ground` measures the drawn gate
+/// against the art rather than against this number.
+pub const PAD_ART_W: i32 = 51;
 /// How far below a pad's or a gun platform's drawn base the ground may be
 /// extended up to meet it, in px (T21.28).
 ///
@@ -1696,7 +1712,7 @@ pub const PAD_ART_W: i32 = 64;
 /// art's aspect ratio and nothing in `game-core` knows it, so reusing the fraction
 /// would need a second art constant that could drift from the picture.
 ///
-/// **One player height**: across a 64 px base that closes a slope of about 40°
+/// **One player height**: across T21.28's 64 px base that closes a slope of about 40°
 /// either side, which is the ground a player walks up. Measured at HEAD over 36
 /// maps, 54 % of pads had every drawn column within 28 px and 29 % had one past
 /// 71 — a cliff edge, and those placements are refused rather than propped on a

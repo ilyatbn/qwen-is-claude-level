@@ -46,7 +46,14 @@ const stack = await startStack({
   label: 'platform-autofire',
   // No bots: a bot's bullets would be drawn too, and the drawn count would stop
   // being hers. `FIXED_SEED` so the walk to the platform is the same every run.
-  env: { FIXED_SEED: '4242', ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_START_HEALTH: '150' },
+  //
+  // **320 small, not 4242 (T21.40).** T21.40 seats platforms or does not place them,
+  // and 4242's nearest platform moved to (1456, 530), half sunk in a slope: 30 of its
+  // 48 drawn columns have rock at or above its surface line. The walk reached it 2 runs
+  // in 3 and then could not stand still on the sliver of real surface to mount. 320 was
+  // chosen by measurement over seeds 1..400: spawn 0 at (176, 335), platform #0 at
+  // (240, 335), level, flat ground between, no rock above its base.
+  env: { FIXED_SEED: '320', MAP_SCALE: 'small', ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_START_HEALTH: '150' },
 })
 
 try {
@@ -111,7 +118,15 @@ try {
         if (d.mount.platformUnderfoot === target.id && d.player?.grounded === true) return { ok: true, dug }
         if (Date.now() > by) return { ok: false, at: p, dug }
         const dx = target.x - p.x
-        const want = Math.abs(dx) < k.GUN_PLATFORM_W / 4 ? null : dx > 0 ? 'd' : 'a'
+        // **Level but not on it yet: keep stepping to the centre (T21.40).** The walk
+        // used to stop steering within a quarter footprint, which is only right when
+        // the platform is a body above or below (the hop and dig branches). On 4242,
+        // after T21.40 moved #0 to (1456, 530), she stopped at (1445, 508) on rock 8 px
+        // above its surface line — 11 px off centre, not underfoot, no branch firing —
+        // and waited out the deadline (1 run in 3).
+        const near = Math.abs(dx) < k.GUN_PLATFORM_W / 4
+        const vertical = target.y > p.y + k.PLAYER_H || target.y < p.y - k.PLAYER_H
+        const want = near && (vertical || Math.abs(dx) < 2) ? null : dx > 0 ? 'd' : 'a'
         if (want !== key) {
           if (key) await page.keyboard.up(key)
           if (want) await page.keyboard.down(want)
@@ -197,7 +212,41 @@ try {
   // rounds were never in a snapshot at all — drawn 27, measured. That is the aim
   // starving the instrument, not the layer dropping rounds; the cave is open
   // for several hundred px to the left.
-  await page.mouse.move(640 - 380, 360 + 60)
+  //
+  // **T21.40: aim where the mask is open, not at a fixed screen point.** T21.40
+  // seats platforms or does not place them, and 4242's platform #0 moved to
+  // (1456, 530) on a slope beside the spawn; the fixed "down and left" then ran
+  // into rock and the drawn count read 8 of 32 and 12 of 30 — the aim starving the
+  // instrument again, exactly as above. So the direction is chosen from the live
+  // mask: the one, of a fan, whose ray from her body stays in air longest, and it
+  // must stay open for `CLEAR_SNAPSHOTS` snapshots of flight or the drawn count
+  // cannot mean anything and this says so.
+  const { constants: rustConstants } = await import('../lib/rust-constants.mjs')
+  const rk = rustConstants()
+  const CLEAR_SNAPSHOTS = 3
+  const need = (rk.get('GUN_PLATFORM_MUZZLE_SPEED') * CLEAR_SNAPSHOTS) / rk.get('SNAPSHOT_HZ')
+  const here = (await dbg()).player
+  const aim = await page.evaluate(
+    ([ox, oy, reach]) => {
+      let best = { deg: 0, run: -1 }
+      for (let deg = -180; deg <= 180; deg += 10) {
+        const r = (deg * Math.PI) / 180
+        let run = 0
+        while (run < reach && !window.__game.core.solidAt(Math.round(ox + Math.cos(r) * run), Math.round(oy + Math.sin(r) * run))) run += 4
+        if (run > best.run) best = { deg, run }
+      }
+      return best
+    },
+    [here.x, here.y, need * 2],
+  )
+  console.log(`[platform-autofire] aim ${aim.deg}° from (${Math.round(here.x)},${Math.round(here.y)}): ${aim.run} px clear, need ${need}`)
+  if (aim.run < need) {
+    throw new Error(`no direction from platform #${target.id} is open for ${need} px — the drawn count would measure the rock`)
+  }
+  const { toScreen: aimToScreen } = await import('./pixels.mjs')
+  const rad = (aim.deg * Math.PI) / 180
+  const aimAt = await aimToScreen(page, here.x + Math.cos(rad) * 120, here.y + Math.sin(rad) * 120)
+  await page.mouse.move(aimAt.x, aimAt.y)
   await sleep(300)
 
   const sample = async () => {

@@ -155,7 +155,17 @@ pub const HEADER_BYTES: usize = 45;
 /// hash folds the barrel bytes in whether or not anyone mounted. Its own number
 /// rather than sharing, because T21.39 (9) and T21.38 (10) had each already
 /// landed on `claude_builds` in a separate commit.
-pub const REPLAY_VERSION: u16 = 11;
+///
+/// **12 (T21.40, gates 20 % smaller and seated or not placed, 2026-09-15)**: the same
+/// seed now places different teleport pads and gun platforms, sometimes fewer or none
+/// (only seated spots, islands included), and fills different ground under them;
+/// `PAD_W` 40 → 32 changes which rock a carve may not remove. The map is regenerated
+/// from the header's seed, so a v11 recording would load onto a different map and
+/// disagree at the first checkpoint. No new tag. **T21.28 moved placement the same
+/// way without a bump**: it landed after T21.29's 8 (11:32 → 12:54 that day), so a v8
+/// recording made in that window replayed onto a different map. T21.39's 9 retired
+/// those; every v9–v11 recording postdates T21.28, and this number covers T21.40.
+pub const REPLAY_VERSION: u16 = 12;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

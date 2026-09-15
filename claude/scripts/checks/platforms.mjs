@@ -23,7 +23,9 @@ import { samplePatch, assertChanged, toScreen } from './pixels.mjs'
 export default async function ({ page, shot, log }) {
   const plats = () => page.evaluate(() => window.__game.platforms())
 
-  await page.evaluate(() => window.__game.regenerate('4242', 'medium'))
+  // 31337, not 4242 (T21.40): platforms are seated or not placed, and 4242 medium
+  // has no seated spot, so it carries none.
+  await page.evaluate(() => window.__game.regenerate('31337', 'medium'))
   await page.waitForTimeout(900)
 
   const c = await page.evaluate(() => window.__game.constants())

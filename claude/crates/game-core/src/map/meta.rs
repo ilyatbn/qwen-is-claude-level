@@ -9,7 +9,8 @@ use crate::constants::{
     MapGenerator, MapScale, BURIED_ATTEMPTS, BURIED_CLEARANCE, BURIED_OFFSET_MAX,
     BURIED_OFFSET_MIN, BURIED_SEPARATION, GUN_PLATFORMS, GUN_PLATFORM_H,
     GUN_PLATFORM_PAD_CLEARANCE, GUN_PLATFORM_SPAWN_CLEARANCE, GUN_PLATFORM_W, PAD_ART_W, PAD_H,
-    PAD_W, PLAYER_H, PLAYER_W, STANDING_GROUND_FILL_DEPTH, TELEPORT_PADS, WIND_MAX,
+    PAD_W, PLAYER_H, PLAYER_W, STANDING_GROUND_FILL_DEPTH, TELEPORT_PADS, TELEPORT_PADS_MIN,
+    WIND_MAX,
 };
 use crate::constants::{DECOR_BASE_W, DECOR_GROUND_SLACK};
 use crate::map::gen::components::SealedPocket;
@@ -370,32 +371,46 @@ pub(crate) fn generate_full_with(
     // — deeper is a cliff edge, and propping a gate over it on a pillar is the
     // wrong fix — and where the ground the fill will add cannot reach into a
     // spawn's body. A filter over candidates, drawing no randomness, so the
-    // `"pads"` stream is untouched. Two fallbacks, because a pad count short of
-    // `TELEPORT_PADS` is a worse map than a pad over a drop: spawn-safe only,
-    // then the old set. The sweep counts every map that got that far.
+    // `"pads"` stream is untouched.
+    //
+    // **T21.40: and never anywhere else.** T21.28 fell back to unseated tiers when
+    // the seated ones could not reach the count, which left 544 of 8916 pads and
+    // platforms perched over drops on 284 of 999 sweep maps. The owner, 2026-09-15:
+    // *"just place them somewhere else then like a floating island or just dont
+    // place any more if there's no proper space"*. So the tiers are both seated:
+    // the main traversable ground first, then **every** surface point clear of
+    // objects — floating islands and unreached ledges included — for the
+    // shortfall. Main ground first is the builder's call (reversible): a map that
+    // could already seat its pads keeps them where they were. What cannot be
+    // seated is not placed, and fewer than `TELEPORT_PADS_MIN` becomes none.
+    let everywhere: Vec<usize> = (0..outcome.surface.len()).collect();
+    let clear_anywhere = clear_of_objects(
+        &outcome.surface,
+        &everywhere,
+        &objects,
+        WhenStarved::FallBack,
+    );
     let bodies: Vec<Point> = spawn_points.clone();
     let teleport_pads = {
-        let grounded = standing_candidates(
+        let seated_main = standing_candidates(
             &outcome.mask,
             &outcome.surface,
             &clear,
             PAD_ART_W,
             &bodies,
             &[],
-            true,
         );
-        let spawn_safe = standing_candidates(
+        let seated_anywhere = standing_candidates(
             &outcome.mask,
             &outcome.surface,
-            &clear,
+            &clear_anywhere,
             PAD_ART_W,
             &bodies,
             &[],
-            false,
         );
         let chosen = seat_then_top_up(
             &outcome.surface,
-            [&grounded, &spawn_safe, &clear],
+            &[&seated_main, &seated_anywhere],
             TELEPORT_PADS,
             |c| {
                 choose_pads(&outcome.mask, &outcome.surface, c, outcome.seed)
@@ -404,7 +419,7 @@ pub(crate) fn generate_full_with(
                     .collect()
             },
         );
-        chosen
+        a_network_or_none(chosen)
             .into_iter()
             .enumerate()
             .map(|(i, pos)| TeleportPad { id: i as u8, pos })
@@ -449,23 +464,26 @@ pub(crate) fn generate_full_with(
     // Two clearances, because they answer two different questions — see
     // `GUN_PLATFORM_SPAWN_CLEARANCE`. Using the pad's number for both starved
     // the sampler and left a map with two platforms instead of three.
-    let clear_of_pads: Vec<usize> = clear
-        .iter()
-        .copied()
-        .filter(|&i| {
-            outcome.surface.get(i).is_some_and(|p| {
-                let off_pads = teleport_pads.iter().all(|pad| {
-                    (p.x - pad.pos.x).abs() >= GUN_PLATFORM_PAD_CLEARANCE
-                        || (p.y - pad.pos.y).abs() >= GUN_PLATFORM_PAD_CLEARANCE
-                });
-                let off_spawns = spawn_points.iter().all(|sp| {
-                    (p.x - sp.x).abs() >= GUN_PLATFORM_SPAWN_CLEARANCE
-                        || (p.y - sp.y).abs() >= GUN_PLATFORM_SPAWN_CLEARANCE
-                });
-                off_pads && off_spawns
+    let clear_of_pads = |pool: &[usize]| -> Vec<usize> {
+        pool.iter()
+            .copied()
+            .filter(|&i| {
+                outcome.surface.get(i).is_some_and(|p| {
+                    let off_pads = teleport_pads.iter().all(|pad| {
+                        (p.x - pad.pos.x).abs() >= GUN_PLATFORM_PAD_CLEARANCE
+                            || (p.y - pad.pos.y).abs() >= GUN_PLATFORM_PAD_CLEARANCE
+                    });
+                    let off_spawns = spawn_points.iter().all(|sp| {
+                        (p.x - sp.x).abs() >= GUN_PLATFORM_SPAWN_CLEARANCE
+                            || (p.y - sp.y).abs() >= GUN_PLATFORM_SPAWN_CLEARANCE
+                    });
+                    off_pads && off_spawns
+                })
             })
-        })
-        .collect();
+            .collect()
+    };
+    let (main_clear_of_pads, anywhere_clear_of_pads) =
+        (clear_of_pads(&clear), clear_of_pads(&clear_anywhere));
     // The same rule for the platforms, whose drawn base is `GUN_PLATFORM_W`
     // (`platforms.ts` builds the texture that wide). Neither a spawn nor a pad
     // may be buried by a platform's fill, and no pad's fill may bury the platform.
@@ -473,27 +491,27 @@ pub(crate) fn generate_full_with(
     let mut platform_bodies = bodies.clone();
     platform_bodies.extend(teleport_pads.iter().map(|p| p.pos));
     let gun_platforms = {
-        let grounded = standing_candidates(
+        // T21.40: seated or not placed, main ground first, then anywhere — the pads'
+        // rule. A map short of `GUN_PLATFORMS` seats fewer, down to none.
+        let seated_main = standing_candidates(
             &outcome.mask,
             &outcome.surface,
-            &clear_of_pads,
+            &main_clear_of_pads,
             GUN_PLATFORM_W,
             &platform_bodies,
             &pad_feet,
-            true,
         );
-        let body_safe = standing_candidates(
+        let seated_anywhere = standing_candidates(
             &outcome.mask,
             &outcome.surface,
-            &clear_of_pads,
+            &anywhere_clear_of_pads,
             GUN_PLATFORM_W,
             &platform_bodies,
             &pad_feet,
-            false,
         );
         let chosen = seat_then_top_up(
             &outcome.surface,
-            [&grounded, &body_safe, &clear_of_pads],
+            &[&seated_main, &seated_anywhere],
             GUN_PLATFORMS,
             |c| {
                 choose_gun_platforms(&outcome.mask, &outcome.surface, c, outcome.seed)
@@ -625,9 +643,15 @@ pub fn fill_standing_ground(mask: &mut Mask, pos: Point, drawn_w: i32) -> u64 {
 /// set. That all-or-nothing first version left 835 of 8934 pads and platforms
 /// perched over a drop across the 1000-seed sweep, on 288 maps. The top-up draws
 /// no randomness, so the sub-streams are untouched.
+///
+/// **T21.40: every tier is seated, and there is no last resort.** T21.28 ended with
+/// a whole re-draw from an unseated tier when the top-up fell short, which is where
+/// every perched gate came from. The owner, 2026-09-15: *"just dont place any more if
+/// there's no proper space"*. So a shortfall stays a shortfall: this returns up to
+/// `count`, possibly none.
 fn seat_then_top_up<'a>(
     surface: &[Point],
-    tiers: [&'a [usize]; 3],
+    tiers: &[&'a [usize]],
     count: usize,
     choose: impl Fn(&'a [usize]) -> Vec<Point>,
 ) -> Vec<Point> {
@@ -639,7 +663,7 @@ fn seat_then_top_up<'a>(
             .powi(crate::map::gen::spawns::MAX_RELAXATIONS as i32);
     let floor_sq = (floor * floor) as i64;
     let mut chosen: Vec<Point> = Vec::new();
-    for tier in tiers {
+    for &tier in tiers {
         if chosen.len() >= count {
             break;
         }
@@ -669,16 +693,21 @@ fn seat_then_top_up<'a>(
             }
         }
     }
-    if chosen.len() < count {
-        // Nothing seats the full count even topped up: the old whole draw from the
-        // loosest tier, so no map gets fewer pads or platforms than it did before.
-        let loosest = choose(tiers[2]);
-        if loosest.len() > chosen.len() {
-            chosen = loosest;
-        }
-    }
     chosen.truncate(count);
     chosen
+}
+
+/// Pads, or none: fewer than `TELEPORT_PADS_MIN` is none (T21.40).
+///
+/// A pad sends you to any *other* pad (`world/teleport.rs::destination`), so a lone
+/// pad charges and goes nowhere. The owner's *"just dont place any more if there's no
+/// proper space"* applies to the network as a whole: a map that can seat one gets
+/// none, and its players respawn through `respawn.rs`'s spawn-point fallback.
+fn a_network_or_none(mut pads: Vec<Point>) -> Vec<Point> {
+    if pads.len() < TELEPORT_PADS_MIN {
+        pads.clear();
+    }
+    pads
 }
 
 /// Could the ground `fill_standing_ground` adds under a thing at `pos` reach into
@@ -701,7 +730,8 @@ fn fill_reaches(pos: Point, drawn_w: i32, body: Point) -> bool {
 
 /// Candidates (indices into `surface`) where a thing drawn `drawn_w` wide may go
 /// (T21.28): its fill buries none of `bodies`, no fill already decided among
-/// `others` reaches it, and — when `grounded` — it stands on ground.
+/// `others` reaches it, and it stands on ground (T21.40: always — there is no
+/// unseated tier any more, so the flag that allowed one is gone).
 fn standing_candidates(
     mask: &Mask,
     surface: &[Point],
@@ -709,7 +739,6 @@ fn standing_candidates(
     drawn_w: i32,
     bodies: &[Point],
     others: &[(Point, i32)],
-    grounded: bool,
 ) -> Vec<usize> {
     component
         .iter()
@@ -718,22 +747,29 @@ fn standing_candidates(
             surface.get(i).is_some_and(|p| {
                 bodies.iter().all(|b| !fill_reaches(*p, drawn_w, *b))
                     && others.iter().all(|(o, w)| !fill_reaches(*o, *w, *p))
-                    && (!grounded || stands_on_ground(mask, *p, drawn_w))
+                    && stands_on_ground(mask, *p, drawn_w)
             })
         })
         .collect()
 }
 
-/// `TELEPORT_PADS` well-separated, standable pads (§C5).
+/// Up to `TELEPORT_PADS` well-separated, standable pads (§C5), from `component`.
 ///
 /// The same farthest-point sampling as spawn points — §C5 asks for exactly that
 /// — through the shared `choose_separated`, on the `"pads"` sub-stream.
 ///
-/// The count is not relaxed downward the way spawns are. `choose_separated` will
-/// return fewer than asked on a map with nowhere to put them, and that is a
-/// generation failure worth seeing rather than papering over: `six_pads_on_every_
-/// scale` is the test, and if it ever fires the answer is in the generator, not
-/// here.
+/// **T21.40: fewer is allowed, and so is none.** This used to say a map short of
+/// `TELEPORT_PADS` was "a generation failure worth seeing", pinned by a six-pads
+/// test. The owner overruled that on 2026-09-15: *"Gates on steep peaks? Too wide?
+/// Just place them somewhere else then like a floating island or just dont place
+/// any more if there's no proper space"*. `generate_full_with` hands this only
+/// candidates where the gate's drawn base is seated — the main ground first, then
+/// any surface point, islands included — tops up the shortfall from the same
+/// seated set, places what that yields, and places none when that is fewer than
+/// `TELEPORT_PADS_MIN` (`a_network_or_none`). The tests are
+/// `every_placed_pad_and_platform_is_seated`, `a_map_short_of_seated_ground_gets_fewer`
+/// and `a_map_has_no_pads_or_a_network_never_one`; the sweep reports how often
+/// maps fall short.
 pub fn choose_pads(
     mask: &Mask,
     surface: &[Point],
@@ -755,9 +791,10 @@ pub fn choose_pads(
 /// caller with its own stream cannot perturb another's, which is what lets this
 /// feature be added without regenerating the golden table.
 ///
-/// Like the pads, the count is **not** relaxed downward. Fewer than
-/// `GUN_PLATFORMS` on a map means the generator produced somewhere with nowhere
-/// to stand, and that is worth seeing rather than papering over.
+/// **T21.40: like the pads, seated or not placed.** `generate_full_with` offers only
+/// seated candidates (main ground, then anywhere), so a map with no proper space
+/// gets fewer than `GUN_PLATFORMS`, down to none. A platform has no pairing rule:
+/// one alone is still a turret.
 pub fn choose_gun_platforms(
     mask: &Mask,
     surface: &[Point],
@@ -1326,6 +1363,9 @@ mod tests {
                     "{scale:?}/{seed}: only {} spawns after the object filter",
                     map.meta.spawn_points.len()
                 );
+                // T21.40: a map places only the pads it can seat, so the full set is
+                // no longer the contract; these four seeds still seat one, and a
+                // filter that starved the chooser would show here as fewer.
                 assert_eq!(
                     map.meta.teleport_pads.len(),
                     TELEPORT_PADS,
@@ -1559,8 +1599,121 @@ mod tests {
 
     // ---------------------------------------------------------------- §C5 pads
 
+    /// T21.40 fixture: maps the 1000-seed sweep found short of `TELEPORT_PADS` after
+    /// the fallback was removed — the maps where T21.28 perched a pad or platform.
+    /// Taken from the sweep's "first maps short" lines (sweep seeds are
+    /// `i * 2654435761 + 17`), one per scale plus Medium's three-pad map.
+    const SHORT: [(u64, MapScale); 4] = [
+        (621_137_968_091, MapScale::Small),
+        (42_470_972_193, MapScale::Medium),
+        (34_507_664_910, MapScale::Medium),
+        (583_975_867_437, MapScale::Large),
+    ];
+
+    fn worst_gap(mask: &Mask, pos: Point, w: i32) -> i32 {
+        drawn_columns(pos, w)
+            .map(|col| {
+                let mut d = 0;
+                while pos.y + 1 + d < mask.h as i32 && !mask.get(col, pos.y + 1 + d) {
+                    d += 1;
+                }
+                d
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// **The owner's rule (T21.40): nothing placed unseated.** Every pad and platform
+    /// on the short maps and on ordinary ones has ground under every drawn column —
+    /// zero air after the fill, never a drop past its reach. The short maps are the
+    /// ones where T21.28's fallback perched things, so restoring the fallback turns
+    /// this red; the control is that those maps really place something.
     #[test]
-    fn six_teleport_pads_on_every_scale_separated_and_standable() {
+    fn every_placed_pad_and_platform_is_seated() {
+        let mut maps: Vec<(u64, MapScale)> = SHORT.to_vec();
+        for seed in [4242u64, 31337] {
+            maps.extend(MapScale::ALL.iter().map(|s| (seed, *s)));
+        }
+        let (mut placed, mut unseated) = (0usize, Vec::new());
+        for (seed, scale) in maps {
+            let map = generate(seed, scale);
+            for (pos, w) in map
+                .meta
+                .teleport_pads
+                .iter()
+                .map(|p| (p.pos, PAD_ART_W))
+                .chain(
+                    map.meta
+                        .gun_platforms
+                        .iter()
+                        .map(|g| (g.pos, GUN_PLATFORM_W)),
+                )
+            {
+                placed += 1;
+                let worst = worst_gap(&map.mask, pos, w);
+                if worst > 0 {
+                    unseated.push(format!("{scale:?}/{seed}: {pos:?} over {worst} px of air"));
+                }
+            }
+        }
+        assert!(placed > 0, "nothing was placed, so 'all seated' is vacuous");
+        assert!(
+            unseated.is_empty(),
+            "{} unseated: {unseated:?}",
+            unseated.len()
+        );
+    }
+
+    /// Fewer than the target is allowed — and happens: on every `SHORT` map the pads
+    /// are under `TELEPORT_PADS`, and the ordinary maps are the control that the
+    /// chooser still seats a full set where there is room.
+    #[test]
+    fn a_map_short_of_seated_ground_gets_fewer() {
+        use crate::constants::TELEPORT_PADS;
+        assert!(
+            !SHORT.is_empty(),
+            "no short maps named — the fixture measures nothing"
+        );
+        for (seed, scale) in SHORT {
+            let n = generate(seed, scale).meta.teleport_pads.len();
+            assert!(
+                n < TELEPORT_PADS,
+                "{scale:?}/{seed}: {n} pads — not short any more"
+            );
+        }
+        let full = generate(4242, MapScale::Medium).meta.teleport_pads.len();
+        assert_eq!(full, TELEPORT_PADS, "the control map lost pads");
+    }
+
+    /// 0 or at least `TELEPORT_PADS_MIN`, never a lone pad. The rule, unit-tested at
+    /// `a_network_or_none` with the presence control (two survive) beside the absence
+    /// (one does not), and held on real maps including the short ones.
+    #[test]
+    fn a_map_has_no_pads_or_a_network_never_one() {
+        let p = |n: usize| {
+            (0..n)
+                .map(|i| Point::new(i as i32 * 500, 100))
+                .collect::<Vec<_>>()
+        };
+        assert!(a_network_or_none(p(1)).is_empty(), "a lone pad survived");
+        assert_eq!(
+            a_network_or_none(p(TELEPORT_PADS_MIN)).len(),
+            TELEPORT_PADS_MIN
+        );
+        assert!(a_network_or_none(p(0)).is_empty());
+        let mut maps: Vec<(u64, MapScale)> = SHORT.to_vec();
+        maps.push((4242, MapScale::Small));
+        for (seed, scale) in maps {
+            let n = generate(seed, scale).meta.teleport_pads.len();
+            assert!(
+                n == 0 || n >= TELEPORT_PADS_MIN,
+                "{scale:?}/{seed}: {n} pads"
+            );
+        }
+    }
+
+    #[test]
+    fn placed_teleport_pads_are_separated_and_standable() {
         use crate::constants::{SPAWN_MIN_SEPARATION, TELEPORT_PADS};
         for scale in MapScale::ALL {
             // Two seeds, not four. A population claim needs more than one draw
@@ -1570,9 +1723,9 @@ mod tests {
             for seed in [4242u64, 31337] {
                 let map = generate(seed, scale);
                 let pads = &map.meta.teleport_pads;
-                assert_eq!(
-                    pads.len(),
-                    TELEPORT_PADS,
+                // T21.40: up to `TELEPORT_PADS`; how many is the tests above.
+                assert!(
+                    pads.len() <= TELEPORT_PADS,
                     "{scale:?}/{seed}: {} pads",
                     pads.len()
                 );
@@ -1698,9 +1851,17 @@ mod tests {
                 .iter()
                 .filter(|p| crate::map::gen::surface::is_standable(&map.mask, p.pos.x, p.pos.y))
                 .count();
+            // T21.40: the map's own pad count, which may be under `TELEPORT_PADS`;
+            // the control is that it has some, or "all survived" is vacuous.
+            let placed = map.meta.teleport_pads.len();
+            assert!(
+                placed >= crate::constants::TELEPORT_PADS_MIN,
+                "{scale:?}: no pads to survive"
+            );
+            assert!(placed <= TELEPORT_PADS);
             assert_eq!(
-                standing, TELEPORT_PADS,
-                "{scale:?}: only {standing} pads left standing"
+                standing, placed,
+                "{scale:?}: only {standing} of {placed} pads left standing"
             );
         }
     }
@@ -1725,9 +1886,10 @@ mod tests {
                 // spawn, which is the defect that clearance exists to prevent.
                 // Fewer platforms is a lesser map; a platform under a spawning
                 // player is a player mounted without touching anything.
+                // T21.40: seated or not placed, so none is allowed too.
                 assert!(
-                    !plats.is_empty() && plats.len() <= GUN_PLATFORMS,
-                    "{scale:?}/{seed}: {} platforms, expected 1..={GUN_PLATFORMS}",
+                    plats.len() <= GUN_PLATFORMS,
+                    "{scale:?}/{seed}: {} platforms, expected 0..={GUN_PLATFORMS}",
                     plats.len()
                 );
                 let map = generate(seed, scale);
@@ -1868,7 +2030,10 @@ mod tests {
     fn a_carve_over_a_gun_platform_removes_nothing() {
         use crate::constants::GUN_PLATFORM_W;
         for scale in MapScale::ALL {
-            let mut map = generate(4242, scale);
+            // 31337, not 4242: T21.40 seats platforms or places none, and 4242 Medium's
+            // three were all perched (after the pad and spawn clearances it has three
+            // candidates, none seated), so it now has none.
+            let mut map = generate(31337, scale);
             let plats = map.meta.gun_platforms.clone();
             assert!(!plats.is_empty(), "{scale:?}: no platforms to test");
 
@@ -1896,7 +2061,7 @@ mod tests {
     #[test]
     fn the_same_carve_beside_a_gun_platform_removes_plenty() {
         use crate::constants::GUN_PLATFORM_W;
-        let mut map = generate(4242, MapScale::Medium);
+        let mut map = generate(31337, MapScale::Medium); // T21.40: 4242 Medium seats no platform
         let g = map.meta.gun_platforms[0];
         let mut removed = 0;
         for dir in [-1, 1] {
@@ -1927,7 +2092,7 @@ mod tests {
     #[test]
     fn a_fill_inside_a_gun_platform_still_adds_rock() {
         use crate::constants::GUN_PLATFORM_W;
-        let mut map = generate(4242, MapScale::Medium);
+        let mut map = generate(31337, MapScale::Medium); // T21.40: 4242 Medium seats no platform
         let g = map.meta.gun_platforms[0];
         // Carve a hole well above the platform first, so there is somewhere for
         // a fill to put rock back. The rect itself is already solid.
@@ -1963,13 +2128,13 @@ mod tests {
     #[test]
     fn gun_platforms_are_never_placed_on_a_spawn_point() {
         use crate::constants::GUN_PLATFORM_SPAWN_CLEARANCE;
+        // T21.40: one map may seat none (4242 Medium does), so the control is the
+        // population: across these maps the clearance must leave platforms to check.
+        let mut checked = 0;
         for scale in MapScale::ALL {
             for seed in [0u64, 1, 4242, 31337] {
                 let map = generate(seed, scale);
-                assert!(
-                    !map.meta.gun_platforms.is_empty(),
-                    "{scale:?}/{seed}: clearing the spawns left no platforms at all"
-                );
+                checked += map.meta.gun_platforms.len();
                 for g in &map.meta.gun_platforms {
                     for sp in &map.meta.spawn_points {
                         let clear = (g.pos.x - sp.x).abs() >= GUN_PLATFORM_SPAWN_CLEARANCE
@@ -1984,17 +2149,21 @@ mod tests {
                 }
             }
         }
+        assert!(
+            checked > 0,
+            "no map seated a platform, so 'none on a spawn' is vacuous"
+        );
     }
 
     #[test]
     fn gun_platform_footprints_never_overlap_a_pad_footprint() {
+        // T21.40: the population control, as in the spawn test above.
+        let mut checked = 0;
         for scale in MapScale::ALL {
             for seed in [4242u64, 31337, 11] {
                 let map = generate(seed, scale);
-                assert!(
-                    !map.meta.gun_platforms.is_empty(),
-                    "{scale:?}/{seed}: clearing the pads left no platforms at all"
-                );
+                // T21.40: a map may seat none; the population control is below.
+                checked += map.meta.gun_platforms.len();
                 for g in &map.meta.gun_platforms {
                     let (gx0, gy0, gx1, gy1) = g.rect();
                     for p in &map.meta.teleport_pads {
@@ -2009,6 +2178,10 @@ mod tests {
                 }
             }
         }
+        assert!(
+            checked > 0,
+            "no map seated a platform, so 'no overlap' is vacuous"
+        );
     }
 
     /// The whole reason the footprint is protected: a map dug to pieces still
@@ -2052,7 +2225,7 @@ mod tests {
     #[test]
     fn a_body_standing_on_a_gun_platform_is_underfoot_and_one_beside_it_is_not() {
         use crate::constants::{GUN_PLATFORM_W, PLAYER_H};
-        let map = generate(4242, MapScale::Medium);
+        let map = generate(31337, MapScale::Medium); // T21.40: 4242 Medium seats no platform
         let g = map.meta.gun_platforms[0];
         let centre = crate::math::Vec2::new(g.pos.x as f32, g.pos.y as f32 - PLAYER_H / 2.0);
         assert!(

@@ -9,8 +9,8 @@
 //! need adjusting — report it rather than loosening the assertion.
 
 use game_core::constants::{
-    MapScale, GUN_PLATFORM_W, MIN_TRAVERSABLE_FRACTION, PAD_ART_W, PLAYER_H, PLAYER_W, SKY_MARGIN,
-    SPAWN_COUNT_MIN, STANDING_GROUND_FILL_DEPTH,
+    MapScale, GUN_PLATFORMS, GUN_PLATFORM_W, MIN_TRAVERSABLE_FRACTION, PAD_ART_W, PLAYER_H,
+    PLAYER_W, SKY_MARGIN, SPAWN_COUNT_MIN, STANDING_GROUND_FILL_DEPTH, TELEPORT_PADS,
 };
 use game_core::map::gen::silhouette::borders_hold;
 use game_core::map::{generate, Map};
@@ -73,6 +73,13 @@ struct Stats {
     /// map with no seated surface point at all — and the maps where that happened.
     decor_unseated: usize,
     decor_maps_fell_back: usize,
+    /// T21.40: maps by how many pads (index 0..=TELEPORT_PADS) and platforms
+    /// (0..=GUN_PLATFORMS) they got, counted off the finished map.
+    pads_per_map: [usize; TELEPORT_PADS + 1],
+    platforms_per_map: [usize; GUN_PLATFORMS + 1],
+    /// The first few (seed, pads) short of `TELEPORT_PADS`, so a unit test can name
+    /// maps that really fall short rather than guess.
+    short_examples: Vec<(u64, usize)>,
     safe_preset: usize,
     fractions: Vec<f32>,
     underground_total: usize,
@@ -89,6 +96,9 @@ impl Stats {
             maps_fell_back: 0,
             decor_unseated: 0,
             decor_maps_fell_back: 0,
+            pads_per_map: [0; TELEPORT_PADS + 1],
+            platforms_per_map: [0; GUN_PLATFORMS + 1],
+            short_examples: Vec::new(),
             safe_preset: 0,
             fractions: Vec::new(),
             underground_total: 0,
@@ -122,6 +132,19 @@ impl Stats {
         println!(
             "{label}: T21.28 decorations unseated={} maps whose decorations fell back={}",
             self.decor_unseated, self.decor_maps_fell_back
+        );
+        let short = self.pads_per_map[..TELEPORT_PADS].iter().sum::<usize>();
+        println!(
+            "{label}: T21.40 maps by pad count 0..={TELEPORT_PADS}: {:?} (short of target {short}, none {}, exactly one {})",
+            self.pads_per_map, self.pads_per_map[0], self.pads_per_map[1]
+        );
+        println!(
+            "{label}: T21.40 maps by platform count 0..={GUN_PLATFORMS}: {:?}",
+            self.platforms_per_map
+        );
+        println!(
+            "{label}: T21.40 first maps short of {TELEPORT_PADS} pads (seed, pads): {:?}",
+            self.short_examples
         );
     }
 }
@@ -229,6 +252,15 @@ fn thousand_seed_playability_sweep() {
                         .iter()
                         .map(|g| (g.pos, GUN_PLATFORM_W)),
                 );
+            let pads = map.meta.teleport_pads.len().min(TELEPORT_PADS);
+            if pads < TELEPORT_PADS && stats.short_examples.len() < 6 {
+                stats.short_examples.push((seed, pads));
+            }
+            stats.pads_per_map[pads] += 1;
+            overall.pads_per_map[pads] += 1;
+            let plats = map.meta.gun_platforms.len().min(GUN_PLATFORMS);
+            stats.platforms_per_map[plats] += 1;
+            overall.platforms_per_map[plats] += 1;
             let mut fell_back = false;
             for (pos, w) in standing {
                 let worst = worst_gap(&map, pos, w);
@@ -238,6 +270,10 @@ fn thousand_seed_playability_sweep() {
                     stats.perched += 1;
                     overall.perched += 1;
                     fell_back = true;
+                    // T21.40: the owner's rule — nothing placed unseated, ever.
+                    stats.failures.push(format!(
+                        "seed {seed} {scale:?}: {pos:?} perched {worst} px past the fill's reach"
+                    ));
                 } else if worst > 0 {
                     stats.failures.push(format!(
                         "seed {seed} {scale:?}: {pos:?} hangs {worst} px, inside the fill's reach"

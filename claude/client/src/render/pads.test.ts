@@ -228,8 +228,11 @@ describe('PadLayer and the gate (T21.12)', () => {
     const layer = new PadLayer(scene)
     layer.build(views(1), portal)
     const g = layer.portalGeometry()!
-    // Above the feet line by the sprite's own geometry: 71 * (1 - 0.375).
-    expect(g.dy).toBeCloseTo(-71 * (1 - portal.cy), 3)
+    // Above the feet line by the sprite's own geometry: drawn `PAD_ART_W` wide, so
+    // the fake 64x71 source is drawn 71 * PAD_ART_W / 64 tall (T21.40 moved the
+    // width; this used the old drawn height, 71, as a literal).
+    const drawnH = (71 * C().PAD_ART_W) / 64
+    expect(g.dy).toBeCloseTo(-drawnH * (1 - portal.cy), 3)
     expect(g.dy).toBeLessThan(0)
   })
 })
