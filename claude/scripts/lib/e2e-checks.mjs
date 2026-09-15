@@ -166,7 +166,7 @@ export const CHECKS = [
   // a drop.
   { name: 'inventory-ui', file: 'scripts/checks/inventory-ui.mjs', standalone: true, flaky: true },
   // T14.06 / §C13: the escape menu, and a quit that actually leaves the room.
-  { name: 'escape-menu', file: 'scripts/checks/escape-menu.mjs', standalone: true, flaky: true },
+  { name: 'escape-menu', file: 'scripts/checks/escape-menu.mjs', standalone: true },
   // T21.24: the player-facing FPS counter, in pixels. Standalone — it lives on
   // `GameScene`'s HUD, and the sandbox has a debug HUD of its own, so a sandbox
   // check would pass against a build where the real game drew nothing (§C0).

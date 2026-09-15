@@ -16,16 +16,7 @@
  *   the room never reaps, which is §B14's shape exactly. That is asserted from
  *   the *server's* player count, not from the client's opinion of itself.
  */
-import { startStack, enterBattle, tally, sleep, freePort } from './harness.mjs'
-import { samplePatch, colourDelta } from './pixels.mjs'
-
-/**
- * A patch of the playfield, clear of the menu and the panel (T21.16).
- *
- * Both overlays are centred, so this sits low and to the left where neither
- * reaches — the point is to photograph the *game*, not the UI on top of it.
- */
-const FIELD = { x: 40, y: 470, w: 200, h: 140 }
+import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort } from './harness.mjs'
 
 const PORT = await freePort()
 const { fail, ok, finish } = tally('escape-menu')
@@ -37,6 +28,42 @@ const stack = await startStack({
 })
 const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
 await enterBattle(page, { waitPlaying: true, label: 'escape-menu' })
+
+/**
+ * Fire a laser with the menu down and report the most beam quads the ordnance layer
+ * painted while that beam lived — `null` if no beam was ever held.
+ *
+ * **The most, over the beam's life, not the first reading.** `tracersDrawn` is the
+ * state's tracer count and rises the moment the shot arrives, *before* the render
+ * that paints it, so a single read took `beamShadersDrawn` from the previous frame
+ * and reported 0 with High Quality On (measured, first run of this check). A beam is
+ * used because it is the one High Quality effect a player can make on demand; what it
+ * *looks like* is `beams-shader`'s claim, not this check's.
+ */
+async function beamQuadsAfterAShot() {
+  await selectWeapon(page, 'laser_pistol')
+  await standStill(page)
+  await page.mouse.move(1000, 300)
+  await sleep(150)
+  for (let shot = 0; shot < 10; shot++) {
+    await page.evaluate(() => window.__game.fire())
+    let held = false
+    let most = 0
+    for (let i = 0; i < 60; i++) {
+      const d = await dbg()
+      if ((d.tracersDrawn ?? 0) > 0) {
+        held = true
+        if (typeof d.beamShadersDrawn !== 'number') return null
+        most = Math.max(most, d.beamShadersDrawn)
+      } else if (held) {
+        break
+      }
+      await sleep(20)
+    }
+    if (held) return most
+  }
+  return null
+}
 
 const shown = (id) =>
   page.evaluate((elId) => {
@@ -97,25 +124,24 @@ if (!(await shown('escape-menu'))) {
   }
   await shot('options-panel')
 
-  // **Flipping it changes nothing on screen yet, and that is this task's claim.**
+  // **T21.36: the click is stored, and the renderer reads it live.**
   //
-  // Nothing consumes the setting until the first shader lands, so the honest
-  // assertion here is that the game looks identical either way. A check that
-  // asserted a *change* would be asserting a feature that does not exist.
-  const before = await samplePatch(page, FIELD)
+  // This used to assert that turning High Quality on left a patch of the field
+  // unchanged, "because nothing reads it yet". Since T21.18 the cloud, beam, smoke,
+  // fire and explosion shaders all read it, so that patch moved or not depending on
+  // what was in it (red 6.5 in a gate, green 0.5 alone). **What the setting paints is
+  // those five checks' claim**, each with a control frame. This check's claim is the
+  // menu's: the click reaches storage, and a layer drawing *after* it reads the new
+  // value without a restart — measured as beam quads painted by the ordnance layer.
   await page.evaluate(() => document.getElementById('options-quality')?.click())
-  await sleep(300)
-  const flipped = await page.evaluate(
-    () => document.getElementById('options-quality')?.textContent ?? '',
-  )
-  if (flipped !== 'On') fail(`the toggle read "${flipped}" after a click`)
-  const after = await samplePatch(page, FIELD)
-  const moved = colourDelta(before, after)
-  if (moved > 4) {
-    fail(`turning High Quality on moved the field by ${moved.toFixed(1)} — nothing reads it yet`)
-  } else {
-    ok(`High Quality flips to On and the field is unchanged (${moved.toFixed(1)}), as it must be`)
-  }
+  await sleep(150)
+  const flipped = await page.evaluate(() => ({
+    label: document.getElementById('options-quality')?.textContent ?? '',
+    stored: localStorage.getItem('deepcut.highQuality'),
+  }))
+  if (flipped.label !== 'On') fail(`the toggle read "${flipped.label}" after a click`)
+  if (flipped.stored !== '1') fail(`the click did not reach storage: deepcut.highQuality is ${JSON.stringify(flipped.stored)}`)
+  else ok('one click turns High Quality On, and it is stored')
 
   // And it persists: re-opening reads the stored value rather than the default.
   await page.evaluate(() => document.getElementById('options-close')?.click())
@@ -127,11 +153,38 @@ if (!(await shown('escape-menu'))) {
   )
   if (reopened !== 'On') fail(`re-opening options read "${reopened}", not the stored On`)
   else ok('the setting survives closing and re-opening the panel')
-
-  // Leave it as it was found, so a later check does not inherit it.
-  await page.evaluate(() => document.getElementById('options-quality')?.click())
   await page.evaluate(() => document.getElementById('options-close')?.click())
   await sleep(120)
+  await page.keyboard.press('Escape')
+  await sleep(250)
+
+  const onBeams = await beamQuadsAfterAShot()
+  // The control, set from the same panel: Off must paint none, or "On painted some"
+  // is a statement about a layer that ignores the setting.
+  await page.keyboard.press('Escape')
+  await sleep(250)
+  await page.evaluate(() => document.getElementById('escape-options')?.click())
+  await sleep(150)
+  await page.evaluate(() => document.getElementById('options-quality')?.click())
+  await sleep(120)
+  const offLabel = await page.evaluate(() => document.getElementById('options-quality')?.textContent ?? '')
+  await page.evaluate(() => document.getElementById('options-close')?.click())
+  await sleep(120)
+  await page.keyboard.press('Escape')
+  await sleep(250)
+  const offBeams = await beamQuadsAfterAShot()
+  console.log(`  beam quads painted after a shot: High Quality On ${onBeams}, Off ${offBeams} (label "${offLabel}")`)
+  if (onBeams === null || offBeams === null) {
+    fail('no beam was drawn after ten shots, so "read live" was never measured')
+  } else if (!(onBeams > 0) || offBeams !== 0 || offLabel !== 'Off') {
+    fail(`the renderer did not follow the panel live: On painted ${onBeams} beam quad(s), Off painted ${offBeams}`)
+  } else {
+    ok(`the renderer follows the panel with no restart: On painted ${onBeams} beam quad(s), Off 0`)
+  }
+
+  // Back to the menu, as the section below expects to find it.
+  await page.keyboard.press('Escape')
+  await sleep(250)
 
   // --- the round keeps running behind it (§C13, §B4) -----------------------
   const t0 = await dbg()
