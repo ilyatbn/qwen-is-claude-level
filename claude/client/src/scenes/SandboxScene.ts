@@ -1087,6 +1087,7 @@ export class SandboxScene extends Phaser.Scene {
             jetpack: false,
             shield: false,
             iframes: false,
+            wings: false,
             boots: false,
           })
           return v
