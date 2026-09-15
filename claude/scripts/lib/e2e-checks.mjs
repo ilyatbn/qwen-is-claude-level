@@ -183,8 +183,9 @@ export const CHECKS = [
   { name: 'birds', file: 'scripts/checks/birds.mjs', standalone: true, serial: true },
   // T15.02 / §C15: the M15 checkpoint — dig through the floor, fall in, die.
   // Standalone: it needs a real server (the void kill and its attribution are
-  // server-side) and a FIXED_SEED map of its own.
-  { name: 'void', file: 'scripts/checks/void.mjs', standalone: true, flaky: true },
+  // server-side) and a FIXED_SEED map of its own. Un-parked in T21.35: it was
+  // firing before its aim reached the server, not flaking.
+  { name: 'void', file: 'scripts/checks/void.mjs', standalone: true },
   // Standalone: it launches its own vite and browser and calls `process.exit`.
   // Imported into this process it would terminate the suite mid-run — and exit 0
   // while doing it, hiding every earlier failure. Run as a subprocess instead.

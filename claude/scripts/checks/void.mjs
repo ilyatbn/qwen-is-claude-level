@@ -33,6 +33,7 @@ import {
   enterBattle,
   standStill,
   selectWeapon,
+  serverElapsed,
   tally,
   sleep,
   shotsDir,
@@ -468,6 +469,28 @@ const opened = await (async () => {
       return null
     }
     await page.mouse.move(aimAt.x, aimAt.y)
+    // **Let the aim reach the server before the trigger does** (T21.35).
+    //
+    // `fire()` sends a bare `fire` event; the angle travels separately, in the
+    // input packets the scene samples from the pointer once a frame. Fired in
+    // the same turn as the move, the server shoots along the *previous* aim.
+    // Measured on seed 5, three runs of three: rocket 1 spawned and exploded
+    // (`ownProjectileSpawns` 0→1, `explosions` 0→1) and carved **0 px** in a
+    // 281×324 window around the player and the column, while rocket 2 at the
+    // identical aim carved 2011 px. When both duds land, the check reads "two
+    // rockets in a row left x=… at N px" — the parked red.
+    //
+    // Waited on effects, not slept: a packet sampled after the move has left
+    // the client (`inputsSent` moved), then the server's clock has run two
+    // ticks, so an input carrying the new angle has been applied.
+    {
+      const sent0 = (await dbg()).inputsSent
+      await serverElapsed(page, 5, 'an input sampled after the aim move to be sent', {
+        pred: (d) => d.inputsSent > sent0 + 1,
+      })
+      const simDt = await page.evaluate(() => window.__game.constants().SIM_DT)
+      await serverElapsed(page, 2 * simDt, 'the server to apply the new aim')
+    }
     await page.evaluate('window.__game.fire()')
 
     for (let w = 0; w < 25; w++) {
