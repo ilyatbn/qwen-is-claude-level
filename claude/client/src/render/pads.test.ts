@@ -96,6 +96,12 @@ describe('PadLayer and the gate (T21.12)', () => {
         width: 20,
         height: 20,
         setOrigin: () => o,
+        // T21.28: `pads.ts` sizes the gate to `PAD_ART_W`.
+        setDisplaySize: (w: number, h: number) => {
+          o.displayWidth = w
+          o.displayHeight = h
+          return o
+        },
         setStrokeStyle: () => o,
         setPosition: (x: number, y: number) => {
           o.x = x

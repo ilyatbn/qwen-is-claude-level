@@ -11,6 +11,7 @@ use crate::constants::{
     GUN_PLATFORM_PAD_CLEARANCE, GUN_PLATFORM_SPAWN_CLEARANCE, GUN_PLATFORM_W, PAD_ART_W, PAD_H,
     PAD_W, PLAYER_H, PLAYER_W, STANDING_GROUND_FILL_DEPTH, TELEPORT_PADS, WIND_MAX,
 };
+use crate::constants::{DECOR_BASE_W, DECOR_GROUND_SLACK};
 use crate::map::gen::components::SealedPocket;
 use crate::map::gen::objects::{
     clear_of_objects, column_gap, fill_column, PlacedObject, WhenStarved,
@@ -548,7 +549,7 @@ pub(crate) fn generate_full_with(
     };
     let traversable_fraction = report.traversable_fraction;
     let largest_component: Vec<u32> = report.largest_component.iter().map(|&i| i as u32).collect();
-    let decorations = choose_decorations(&surface_points, outcome.seed, theme);
+    let decorations = choose_decorations(&mask, &surface_points, outcome.seed, theme);
 
     let coarse = CoarseGrid::build(&mask);
     let chunk_count = (mask.chunks_x() * mask.chunks_y()) as usize;
@@ -837,13 +838,53 @@ pub fn choose_buried_slots(
 }
 
 /// Cosmetic props anchored to the surface. Purely visual — a client may skip them.
-pub fn choose_decorations(surface: &[Point], seed: u64, theme: u8) -> Vec<Decoration> {
+pub fn choose_decorations(mask: &Mask, surface: &[Point], seed: u64, theme: u8) -> Vec<Decoration> {
+    choose_decorations_with(mask, surface, seed, theme, true)
+}
+
+/// Whether a decoration anchored at `p` has rock within `DECOR_GROUND_SLACK` under
+/// every column of the widest base any decoration can draw (T21.28).
+pub fn decoration_seated(mask: &Mask, p: Point) -> bool {
+    let x0 = p.x - DECOR_BASE_W / 2;
+    (x0..x0 + DECOR_BASE_W)
+        .all(|col| column_gap(mask, col, p.y + 1, DECOR_GROUND_SLACK) <= DECOR_GROUND_SLACK)
+}
+
+/// `choose_decorations`, with the T21.28 seat filter switchable — `false` only for
+/// the tests' control.
+///
+/// **Seated spots only** (coordinator's ruling): the client draws a decoration only
+/// when rock sits under every column of its drawn base, and choosing from the whole
+/// surface let it drop 56 of 96 across nine maps, one map keeping a single prop. So
+/// the candidates are the surface points where even the widest base is seated. The
+/// count still comes from the whole surface, so density is unchanged; the unfiltered
+/// set is used only when no point is seated at all, and the sweep counts those maps.
+pub(crate) fn choose_decorations_with(
+    mask: &Mask,
+    surface: &[Point],
+    seed: u64,
+    theme: u8,
+    seat: bool,
+) -> Vec<Decoration> {
     let mut rng = substream(seed, "decor");
     let want = (surface.len() / DECOR_PER_SURFACE).min(DECOR_MAX);
     let mut decorations = Vec::with_capacity(want);
+    let seated: Vec<Point> = if seat {
+        surface
+            .iter()
+            .copied()
+            .filter(|p| decoration_seated(mask, *p))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let pool: &[Point] = if seated.is_empty() { surface } else { &seated };
+    if pool.is_empty() {
+        return decorations;
+    }
 
     for _ in 0..want {
-        let p = surface[range_i32(&mut rng, 0, surface.len() as i32 - 1) as usize];
+        let p = pool[range_i32(&mut rng, 0, pool.len() as i32 - 1) as usize];
         decorations.push(Decoration {
             // Kinds are per-theme; a theme with no art for a kind just skips it.
             kind: (theme as u16 * DECOR_KINDS)
@@ -866,6 +907,70 @@ impl NextU64Compat for ChaCha8Rng {
     fn next_u64_compat(&mut self) -> u64 {
         use rand::RngCore;
         self.next_u64()
+    }
+}
+
+/// T21.28 — decorations are chosen where their base is seated.
+#[cfg(test)]
+mod seated_decorations {
+    use super::*;
+
+    const SEEDS: [u64; 3] = [1, 4242, 31337];
+
+    /// Every decoration's widest possible base has rock within the slack, on
+    /// several maps at every scale; the **control** is the same maps chosen without
+    /// the filter, which must show unseated ones or this proves nothing.
+    #[test]
+    fn every_decoration_is_chosen_where_its_base_is_seated() {
+        // [without the filter, with it]
+        let (mut chosen, mut unseated) = ([0usize; 2], [0usize; 2]);
+        for seed in SEEDS {
+            for scale in MapScale::ALL {
+                let map = generate(seed, scale);
+                for (i, seat) in [false, true].into_iter().enumerate() {
+                    let decor = if seat {
+                        map.meta.decorations.clone()
+                    } else {
+                        choose_decorations_with(
+                            &map.mask,
+                            &map.meta.surface_points,
+                            map.meta.seed,
+                            map.meta.theme,
+                            false,
+                        )
+                    };
+                    chosen[i] += decor.len();
+                    // Measured here, column by column, not through `decoration_seated`.
+                    unseated[i] += decor
+                        .iter()
+                        .filter(|d| {
+                            let x0 = d.pos.x - DECOR_BASE_W / 2;
+                            !(x0..x0 + DECOR_BASE_W).all(|col| {
+                                (d.pos.y + 1..=d.pos.y + 1 + DECOR_GROUND_SLACK)
+                                    .any(|y| map.mask.get(col, y))
+                            })
+                        })
+                        .count();
+                }
+            }
+        }
+        println!(
+            "T21.28 DECOR without the filter: {} chosen, {} unseated; with it: {} chosen, {} unseated",
+            chosen[0], unseated[0], chosen[1], unseated[1]
+        );
+        assert!(
+            unseated[0] > 0,
+            "without the filter nothing is unseated — the control proves nothing"
+        );
+        assert_eq!(
+            unseated[1], 0,
+            "{} decorations were chosen unseated",
+            unseated[1]
+        );
+        assert_eq!(
+            chosen[0], chosen[1],
+            "the filter changed how many decorations a map gets"
+        );
     }
 }
 

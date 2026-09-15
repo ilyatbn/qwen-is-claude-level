@@ -8,7 +8,7 @@ export declare const IMAGE_PATH: string
  * The sprite's target size, derived from `PAD_W`.
  *
  * Exported so a test can pin the committed artifact against the builder's own
- * arithmetic instead of carrying a second copy of `WIDTH_IN_PADS`.
+ * arithmetic instead of carrying a second copy of `PAD_ART_W`'s use.
  */
 export declare function targetSize(
   srcW: number,

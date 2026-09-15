@@ -1650,6 +1650,22 @@ pub const PAD_ART_W: i32 = 64;
 /// 71 — a cliff edge, and those placements are refused rather than propped on a
 /// pillar (`meta.rs::generate_full_with`).
 pub const STANDING_GROUND_FILL_DEPTH: i32 = PLAYER_H as i32;
+
+/// The widest a decoration's **opaque base** can be drawn, in px (T21.28).
+///
+/// Coordinator's ruling: a decoration is drawn only with rock under every column
+/// of its drawn base, and the generator chooses spots where that holds. The
+/// generator does not know the per-frame art, so it seats every decoration against
+/// this one conservative width: the widest opaque bottom row across
+/// `assets/atlas/decor.json` (18 px, `decor_8` and `decor_11`, measured) at the
+/// largest scale tier (1.25, `decorations-math.ts::SCALE_TIERS`), rounded up.
+/// `decorations-real.test.ts` asserts the atlas never exceeds it, so new art wider
+/// than this fails a test instead of floating.
+pub const DECOR_BASE_W: i32 = 23;
+/// How far below a decoration's base rock may start and still count as the ground
+/// it stands on, in px (T21.28, the coordinator's "within 1–2 px"). Read by the
+/// generator here and asserted equal to `decorations-math.ts::DECOR_GROUND_SLACK_PX`.
+pub const DECOR_GROUND_SLACK: i32 = 2;
 /// How far a body's feet may sit from a pad's surface line and still count as
 /// standing on it, in px.
 ///

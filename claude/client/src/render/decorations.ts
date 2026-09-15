@@ -12,7 +12,9 @@ import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
 import {
   destroyedBy,
+  opaqueBase,
   place,
+  type ArtBase,
   type PlacedDecoration,
   type WireDecoration,
 } from './decorations-math'
@@ -56,16 +58,33 @@ export class DecorationLayer {
       return
     }
     const texture = this.scene.textures.get(ATLAS)
-    const hasFrame = (f: string) => texture.has(f)
-
-    this.placed = place(decorations, hasFrame, solidAt)
+    // T21.28: each frame's base is measured once from its own alpha and cached —
+    // the art's lowest opaque row and its span — and the ground rule, the anchor
+    // and the columns all come from that, not from the 18 px frame.
+    const bases = new Map<string, ArtBase | null>()
+    const baseOf = (f: string): ArtBase | null => {
+      if (!texture.has(f)) return null
+      let b = bases.get(f)
+      if (b === undefined) {
+        const fr = texture.get(f)
+        b = opaqueBase(
+          (px, py) => this.scene.textures.getPixelAlpha(px, py, ATLAS, f),
+          fr.width,
+          fr.height,
+        )
+        bases.set(f, b)
+      }
+      return b
+    }
+    this.placed = place(decorations, baseOf, solidAt)
     this.sprites = this.placed.map((d) => {
       const img = this.scene.add
         .image(d.x, d.y, ATLAS, d.frame)
         // Anchored at the bottom centre: the position is a surface point, which
         // is where the prop's feet go, not its middle (§A26 — a coordinate
         // without its frame of reference is how things end up buried).
-        .setOrigin(0.5, 1)
+        // The base row on the feet line, not the frame's edge (T21.28).
+        .setOrigin(0.5, d.originY)
         .setScale(d.scale)
         .setFlipX(d.flip)
       this.container.add(img)

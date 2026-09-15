@@ -69,6 +69,10 @@ struct Stats {
     perched: usize,
     standing: usize,
     maps_fell_back: usize,
+    /// T21.28: decorations chosen where their widest base is not seated — only on a
+    /// map with no seated surface point at all — and the maps where that happened.
+    decor_unseated: usize,
+    decor_maps_fell_back: usize,
     safe_preset: usize,
     fractions: Vec<f32>,
     underground_total: usize,
@@ -83,6 +87,8 @@ impl Stats {
             perched: 0,
             standing: 0,
             maps_fell_back: 0,
+            decor_unseated: 0,
+            decor_maps_fell_back: 0,
             safe_preset: 0,
             fractions: Vec::new(),
             underground_total: 0,
@@ -112,6 +118,10 @@ impl Stats {
         println!(
             "{label}: T21.28 standing things={} perched past the fill (fell back)={} maps that fell back={}",
             self.standing, self.perched, self.maps_fell_back
+        );
+        println!(
+            "{label}: T21.28 decorations unseated={} maps whose decorations fell back={}",
+            self.decor_unseated, self.decor_maps_fell_back
         );
     }
 }
@@ -237,6 +247,18 @@ fn thousand_seed_playability_sweep() {
             if fell_back {
                 stats.maps_fell_back += 1;
                 overall.maps_fell_back += 1;
+            }
+            let unseated = map
+                .meta
+                .decorations
+                .iter()
+                .filter(|d| !game_core::map::meta::decoration_seated(&map.mask, d.pos))
+                .count();
+            stats.decor_unseated += unseated;
+            overall.decor_unseated += unseated;
+            if unseated > 0 {
+                stats.decor_maps_fell_back += 1;
+                overall.decor_maps_fell_back += 1;
             }
             let _ = (PLAYER_W, PLAYER_H);
         }

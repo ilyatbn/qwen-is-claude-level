@@ -1533,6 +1533,8 @@ pub fn constants_json() -> String {
         TELEPORT_PADS => c::TELEPORT_PADS,
         PAD_W => c::PAD_W,
         PAD_H => c::PAD_H,
+        // T21.28: the gate's drawn width, which the generator fills ground under.
+        PAD_ART_W => c::PAD_ART_W,
         PAD_TOUCH_SLACK => c::PAD_TOUCH_SLACK,
         TELEPORT_CHARGE => c::TELEPORT_CHARGE,
         TELEPORT_COOLDOWN => c::TELEPORT_COOLDOWN,
