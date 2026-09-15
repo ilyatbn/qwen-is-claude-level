@@ -44,7 +44,17 @@
  */
 import { join } from 'node:path'
 import { samplePatch } from './pixels.mjs'
-import { startStack, enterBattle, tally, sleep, shotsDir, freePort } from './harness.mjs'
+import {
+  startStack,
+  enterBattle,
+  tally,
+  sleep,
+  shotsDir,
+  freePort,
+  selectWeapon,
+  standStill,
+  serverElapsed,
+} from './harness.mjs'
 
 const PORT = await freePort()
 const { fail, ok, failures } = tally('crates')
@@ -744,6 +754,110 @@ if (!seen) {
       [from, to],
     )
 
+  /**
+   * **Dig through what the lane probe names, with the shovel every player holds.**
+   *
+   * T21.40 regenerated the map seed 31337 builds, and its crate now lands at
+   * (1605, 894) in a pocket behind a wall. Measured on `claude_builds` 560547d,
+   * alone and in the gate: the walker reaches (1265, 711) in ~10 s and stays there
+   * for the other 60 — holding `d` under a rounded overhang, so the jetpack drives
+   * its head into the lip and y never leaves 711 — and fails with "terrain blocked
+   * the lane at (1279, 718), clearable from y=480". Nothing killed it and nothing
+   * about the pads or platforms is near; the screenshot shows an ordinary lip of
+   * rock. So it is the walker, not the game.
+   *
+   * Flying over was tried by an earlier version and reverted (see the steering
+   * comment in the loop). Digging needs no path: §F5 gives every player a shovel,
+   * and one swing clears a player-sized opening `SHOVEL_REACH` along the aim
+   * (`melee.rs::a_single_dig_clears_a_player_sized_opening_along_its_whole_length`),
+   * so swinging along the line to the crate is a tunnel a player would dig.
+   *
+   * Only when the lane is blocked **and** the body has stopped: an open lane that
+   * stalls is the approach or the pickup, and the failure line says so. The pickup
+   * assertions below are untouched — digging changes how we arrive, not what
+   * counts as arriving.
+   */
+  // The cooldown from the **registry** the client already times its own repeat
+  // fire from (`item_registry_json`), not a copy: `SHOVEL_COOLDOWN` is not in
+  // `constants()`, and a literal 0.55 here would stay green against a moved def.
+  const kDig = await page.evaluate(() => {
+    const k = window.__game.constants()
+    const reg = JSON.parse(window.__game.core.itemRegistryJson())
+    return { SIM_DT: k.SIM_DT, SHOVEL_COOLDOWN: reg.find((it) => it.key === 'shovel')?.cooldown }
+  })
+  for (const name of ['SHOVEL_COOLDOWN', 'SIM_DT']) {
+    if (typeof kDig[name] !== 'number' || !(kDig[name] > 0)) {
+      throw new Error(`crates: no ${name} to wait on (got ${kDig[name]}) — the dig cannot be timed`)
+    }
+  }
+  /**
+   * Polls without moving before the first swing: one whole jet burst (20 polls,
+   * below) after the stall that triggers it (3) — the jetpack gets its chance at
+   * the obstruction first, as it did before this was added.
+   */
+  const DIG_AFTER_POLLS = 3 + 20 + 1
+  let digs = 0
+  /** Of `digs`, how many were straight down — the staircase's other half. */
+  let downDigs = 0
+  /** Set by the first swing at an obstruction; cleared once the lane opens. */
+  let digging = false
+  const digToward = async (target) => {
+    if (held) {
+      await page.keyboard.up(held)
+      held = null
+    }
+    if (jetting) {
+      await page.keyboard.up('Space')
+      jetting = false
+    }
+    await selectWeapon(page, 'shovel')
+    // §C20: a swing from a moving body is refused.
+    await standStill(page)
+    // **A staircase, not a line at the crate.** The first version swung straight
+    // at the crate — 28° down from (1265, 711) — and measured: swing 1 moved the
+    // body 11 px, then 31 more left the lane blocked at the same (1318, 740) and
+    // the body at (1276, 718). A sloped opening `SHOVEL_CARVE` in radius puts its
+    // ceiling at head height one step in, so the body cannot enter, and a swing
+    // reaches only `SHOVEL_REACH + SHOVEL_CARVE` from the centre — the rock ahead
+    // never came into range. So: level, which a body can walk into, while the
+    // crate is further across than down; straight down, which a body falls into,
+    // once it is further down than across and at least a body below.
+    const aim = await page.evaluate(
+      ([tx, ty]) => {
+        const g = window.__game.debug()
+        const k = window.__game.constants()
+        const p = g.player
+        const v = g.worldView
+        const dx = tx - p.x
+        const dy = ty - p.y
+        const down = dy > k.PLAYER_H && Math.abs(dy) > Math.abs(dx)
+        const [ux, uy] = down ? [0, 1] : [Math.sign(dx) || 1, 0]
+        // Through the live camera, from where the player is drawn — the camera
+        // does not centre the player, so the screen centre is not the origin.
+        return {
+          sx: (p.x - v.x) * g.zoom + ux * 120,
+          sy: (p.y - v.y) * g.zoom + uy * 120,
+          down,
+        }
+      },
+      [target.x, target.y],
+    )
+    if (aim.down) downDigs++
+    await page.mouse.move(aim.sx, aim.sy)
+    // The aim travels in input packets and `fire` separately (T21.35, see
+    // `void.mjs`): wait for an input sampled after the move, then two server
+    // ticks, or the swing goes along the previous angle.
+    const sent0 = (await dbg()).inputsSent
+    await serverElapsed(page, 5, 'an input sampled after the dig aim to be sent', {
+      pred: (d) => d.inputsSent > sent0 + 1,
+    })
+    await serverElapsed(page, 2 * kDig.SIM_DT, 'the server to apply the dig aim')
+    await page.evaluate('window.__game.fire()')
+    await serverElapsed(page, kDig.SHOVEL_COOLDOWN, 'the shovel to come off cooldown')
+    digs++
+    digging = true
+  }
+
   const deadline = Date.now() + 70_000
   for (let i = 0; Date.now() < deadline && !gone; i++) {
     const c = await crateNow()
@@ -856,6 +970,27 @@ if (!seen) {
       last = me.x
       if (moved) stuckFor = 0
       else stuckFor++
+      if (lane && !lane.blocked) digging = false
+      // Once digging, swing again as soon as the body stops in the tunnel;
+      // before, only after the jetpack has had its burst.
+      if (lane?.blocked && stuckFor >= (digging ? 2 : DIG_AFTER_POLLS)) {
+        await digToward(stillThere)
+        lane = await laneTo(
+          { x: (await dbg()).player?.x ?? me.x, y: (await dbg()).player?.y ?? me.y },
+          { x: stillThere.x, y: stillThere.y },
+        )
+        if (digs % 5 === 1) {
+          console.log(
+            `    dig ${digs}: from (${me.x.toFixed(0)}, ${me.y.toFixed(0)}) toward the crate; ` +
+              `lane ${lane.blocked ? `still blocked at (${lane.firstHit?.x}, ${lane.firstHit?.y})` : 'open'}`,
+          )
+        }
+        stuckFor = 0
+        last = null
+        jetPolls = 0
+        jetRest = 0
+        continue
+      }
       // The hop stays as the zero-fuel fallback: `wantJet` above holds Space while
       // stuck, and when the tank is empty that does nothing at all.
       if (!jetting && stuckFor > 0) await page.keyboard.press('Space')
@@ -901,7 +1036,8 @@ if (!seen) {
       .join(' ')
     fail(
       `our client flew at the crate for 70 s and never picked it up — closest ` +
-        `approach ${closest.toFixed(0)} px, PICKUP_RADIUS is ${k0.PICKUP_RADIUS}; ${why}. ` +
+        `approach ${closest.toFixed(0)} px, PICKUP_RADIUS is ${k0.PICKUP_RADIUS}; ${why}; ` +
+        `${digs} shovel swing(s) at the obstruction (${downDigs} straight down). ` +
         `Carrying: ${carried || '(nothing)'} — a crate holding a weapon already ` +
         'held at full stack is refused by §C24 and is not a bug',
     )
