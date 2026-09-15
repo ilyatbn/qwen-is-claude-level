@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   bulletStreak,
   flameAtRest,
+  flameDiscs,
   flameFlicker,
+  FLAME_FLICKER_MIN,
   KIND_BY_WEAPON_KEY,
   LOOK,
   OrdnanceState,
@@ -145,6 +147,8 @@ describe('the projectile look-up tables', () => {
     for (const [key, kind] of Object.entries(KIND_BY_WEAPON_KEY)) {
       expect(WEAPON_KEYS, `${key} is not a real weapon`).toContain(key)
       expect(LOOK[kind], `${kind} has no look`).toBeDefined()
+      // A flame is sized by `flameDiscs`, not `r` — tested under 'a flame on screen'.
+      if (kind === 'flame') continue
       expect(LOOK[kind].r, `${kind} would be invisible`).toBeGreaterThan(0)
     }
   })
@@ -198,6 +202,9 @@ describe('the projectile look-up tables', () => {
       // asserting the wrong dimension — and the `bulletStreak` tests above are
       // what cover the one that matters.
       if (kind === 'bullet') continue
+      // Nor a flame: its discs come from `FLAME_RADIUS` through `flameDiscs` (T21.36),
+      // which the 'a flame on screen' tests hold to the burn radius.
+      if (kind === 'flame') continue
       expect(LOOK[kind].r).toBeGreaterThanOrEqual(3)
     }
   })
@@ -298,10 +305,40 @@ describe('a flame on screen (§F10.3)', () => {
     // middle step was assumed and a laser drew as a bazooka.
     expect(KIND_BY_WEAPON_KEY['flame']).toBe('flame')
     expect(LOOK.flame).toBeDefined()
-    expect(LOOK.flame.r).toBeGreaterThan(0)
     // And it is not somebody else's look. A `KIND_BY_WEAPON_KEY` entry that
     // pointed at `molotov` would satisfy every assertion above.
     expect(LOOK.flame).not.toEqual(LOOK.molotov)
+  })
+
+  it('draws the flame body over the whole burn circle at every flicker (T21.36)', () => {
+    // Read from the Rust source, not copied: a player burns within `FLAME_RADIUS`.
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../../../crates/game-core/src/constants.rs'),
+      'utf8',
+    )
+    const m = src.match(/pub const FLAME_RADIUS: f32 = ([0-9.]+);/)
+    expect(m, 'FLAME_RADIUS is not in constants.rs').not.toBeNull()
+    const burn = Number(m![1])
+    expect(burn).toBeGreaterThan(0)
+
+    // `FLAME_FLICKER_MIN` is only a bound if the flicker never goes under it —
+    // sampled across ids and ten seconds, and the low end is actually reached.
+    let lowest = Infinity
+    for (let id = 0; id < 97; id++) {
+      for (let t = 0; t < 10_000; t += 7) lowest = Math.min(lowest, flameFlicker(id, t))
+    }
+    expect(lowest).toBeGreaterThanOrEqual(FLAME_FLICKER_MIN)
+    expect(lowest).toBeLessThan(FLAME_FLICKER_MIN + 0.01)
+
+    for (const f of [FLAME_FLICKER_MIN, lowest, 0.9, 1]) {
+      const d = flameDiscs(burn, f)
+      expect(d.body, `body at flicker ${f} is smaller than the burn radius`).toBeGreaterThanOrEqual(burn)
+      expect(d.rim).toBeGreaterThan(d.body)
+      expect(d.heart).toBeGreaterThan(0)
+      expect(d.heart).toBeLessThan(d.body)
+    }
+    // Control: the old picture — a separate radius of 7 — fails the same rule.
+    expect(7 * 0.8 * FLAME_FLICKER_MIN).toBeLessThan(burn)
   })
 
   it('flickers the same way twice for the same flame at the same moment', () => {

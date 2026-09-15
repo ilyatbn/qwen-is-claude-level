@@ -11,6 +11,7 @@ import { C } from '../core'
 import {
   bulletStreak,
   flameAtRest,
+  flameDiscs,
   flameFlicker,
   LOOK,
   OrdnanceState,
@@ -141,8 +142,21 @@ export class OrdnanceLayer {
   redraws = 0
   drawnProjectilesLastFrame = 0
 
+  /**
+   * The flat flames' flicker clock, in ms — advanced by `update`, **not** read from
+   * `performance.now()` in `render`.
+   *
+   * T21.36: `render` is "draw the current state without advancing it", and a High
+   * Quality flip repaints a frozen scene through it. With the wall clock there, every
+   * repaint drew the flat fire at a new flicker; that was invisible while the discs were
+   * ~8 px, and once they were sized to cover `FLAME_RADIUS` it moved `fire-shader`'s
+   * exact-restore reading to 1.1 and 2.5 against a limit of 1 in two of three runs.
+   */
+  private flickerMs = 0
+
   update(dt: number): void {
     this.state.update(dt)
+    this.flickerMs += dt * 1000
     this.render()
   }
 
@@ -156,7 +170,7 @@ export class OrdnanceLayer {
     const g = this.gfx
     const fg = this.flameGfx
     const c = C()
-    const nowMs = performance.now()
+    const nowMs = this.flickerMs
     g.clear()
     fg.clear()
     this.redraws += 1
@@ -276,13 +290,15 @@ export class OrdnanceLayer {
           sh.setVisible(!this.hidden)
           continue
         }
+        // T21.36: sized from the burn radius, so the body covers every point that burns.
         const f = flameFlicker(p.id, nowMs)
+        const disc = flameDiscs(c.FLAME_RADIUS, f)
         fg.fillStyle(FLAME_EDGE, 0.45 * f)
-        fg.fillCircle(p.x, p.y, look.r * 1.15 * f)
+        fg.fillCircle(p.x, p.y, disc.rim)
         fg.fillStyle(look.colour, 0.95)
-        fg.fillCircle(p.x, p.y, look.r * 0.8 * f)
+        fg.fillCircle(p.x, p.y, disc.body)
         fg.fillStyle(FLAME_HEART, 0.95)
-        fg.fillCircle(p.x, p.y, look.r * 0.38 * f)
+        fg.fillCircle(p.x, p.y, disc.heart)
         continue
       }
 

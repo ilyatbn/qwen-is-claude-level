@@ -73,12 +73,14 @@ export const LOOK: Record<ProjectileKind, ProjectileLook> = {
   drop: { r: 3, colour: 0x9bf05a, trail: 8 },
   meteor: { r: 8, colour: 0xff4433, trail: 14 },
   fragment: { r: 3, colour: 0xff7755, trail: 5 },
-  // §F10.3. Drawn a little larger than `FLAME_RADIUS` (10) hurts, because a
-  // flame's *glow* is what you see and its damage circle is what you feel, and
-  // a blob smaller than the thing that burns you reads as a near miss. The
-  // trail is short: a flame flies for a fraction of its life and rests for the
-  // rest of it, and a long tail behind a resting flame is a smear.
-  flame: { r: 7, colour: 0xff8a2b, trail: 4 },
+  // §F10.3. **`r` is unused for a flame**, as it is for a bullet: its discs are
+  // sized from `FLAME_RADIUS` by `flameDiscs`, so the fire you see covers the
+  // circle that burns you. T21.36: this used to be `r: 7` under a comment saying
+  // "a little larger than `FLAME_RADIUS`" — the discs reached ~8 px against 10,
+  // and `fire-shader` measured 85–108 of 192 burn-circle points unpainted.
+  // The trail is short: a flame flies for a fraction of its life and rests for
+  // the rest of it, and a long tail behind a resting flame is a smear.
+  flame: { r: 0, colour: 0xff8a2b, trail: 4 },
 }
 
 /**
@@ -446,7 +448,27 @@ export function flameFlicker(id: number, timeMs: number): number {
   const t = timeMs / 1000
   const a = Math.sin(t * 11.0 + phase)
   const b = Math.sin(t * 17.0 + phase * 2.3)
-  return 0.875 + 0.125 * (a * 0.6 + b * 0.4)
+  // `a * 0.6 + b * 0.4` is in [-1, 1], so the result is in [FLAME_FLICKER_MIN, 1].
+  return FLAME_FLICKER_MID + FLAME_FLICKER_SWING * (a * 0.6 + b * 0.4)
+}
+
+const FLAME_FLICKER_MID = 0.875
+const FLAME_FLICKER_SWING = 0.125
+/** The smallest value `flameFlicker` returns. `flameDiscs` sizes the body from it. */
+export const FLAME_FLICKER_MIN = FLAME_FLICKER_MID - FLAME_FLICKER_SWING
+
+/**
+ * The three flat discs of a flame with High Quality off (or past `FLAME_SHADER_POOL`),
+ * sized from the burn radius — T21.36.
+ *
+ * **The opaque body covers the burn circle at the smallest flicker**: a player takes
+ * `FLAME_DPS` anywhere within `FLAME_RADIUS`, so ground that burns must look like it
+ * burns. The rim and heart keep the proportions the flame had (1.15 : 0.8 : 0.38), so
+ * it is the same flame, scaled — it just no longer comes from a radius of its own.
+ */
+export function flameDiscs(burnRadius: number, flicker: number): { rim: number; body: number; heart: number } {
+  const body = (burnRadius * flicker) / FLAME_FLICKER_MIN
+  return { rim: body * (1.15 / 0.8), body, heart: body * (0.38 / 0.8) }
 }
 
 /**

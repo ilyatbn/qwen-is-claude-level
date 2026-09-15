@@ -13,9 +13,9 @@
  * A flame hurts anyone within `FLAME_RADIUS` of its centre. So the assertion that
  * matters is not "something orange is there" but **every point just inside every
  * flame's damage circle is painted** — sampled at eight points on the ring, against
- * the same frozen frame with the ordnance layer hidden. The same ring is measured with
- * High Quality off and **reported, not asserted**: that is the old picture, whose outer
- * circle is `7 × 1.15` px at most against a damage radius of 10.
+ * the same frozen frame with the ordnance layer hidden. **The same ring is asserted with
+ * High Quality off** (T21.36): it was only reported, and read 85–108/192, because the flat
+ * discs were sized from a separate `r: 7` and reached ~8 px against a damage radius of 10.
  *
  * ## The rest, as `beams-shader` and `smoke-shader`
  *
@@ -57,9 +57,9 @@ const grab = async (r) => (await page.screenshot({ clip: { x: r.x, y: r.y, width
  * Compare two same-size photographs: the fraction of pixels that moved, and for each
  * point whether it moved by more than `thr` in some channel.
  */
-const compare = (a, b, points = [], thr = 6) =>
+const compare = (a, b, points = [], thr = 6, rect = null) =>
   page.evaluate(
-    async ([sa, sb, pts, t]) => {
+    async ([sa, sb, pts, t, box]) => {
       const load = async (src) => {
         const img = new Image()
         img.src = `data:image/png;base64,${src}`
@@ -75,14 +75,20 @@ const compare = (a, b, points = [], thr = 6) =>
       const B = await load(sb)
       const moved = (i, th) =>
         Math.abs(A.d[i] - B.d[i]) > th || Math.abs(A.d[i + 1] - B.d[i + 1]) > th || Math.abs(A.d[i + 2] - B.d[i + 2]) > th
+      // The whole image, or only `box` inside it (T21.36: the fire band of a full frame).
+      const H = A.d.length / 4 / A.w
+      const x0 = box ? box.x : 0
+      const y0 = box ? box.y : 0
+      const x1 = box ? Math.min(A.w, box.x + box.w) : A.w
+      const y1 = box ? Math.min(H, box.y + box.h) : H
       let n = 0
-      for (let i = 0; i < A.d.length; i += 4) if (moved(i, 6)) n++
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (moved((y * A.w + x) * 4, 6)) n++
       return {
-        fraction: n / (A.d.length / 4),
+        fraction: n / Math.max(1, (x1 - x0) * (y1 - y0)),
         points: pts.map((p) => moved((Math.round(p.y) * A.w + Math.round(p.x)) * 4, t)),
       }
     },
-    [a, b, points, thr],
+    [a, b, points, thr, rect],
   )
 
 await selectWeapon(page, 'molotov')
@@ -166,6 +172,7 @@ if (onScreen.length < 2) {
   await show(true)
   const back = await setHQ(false)
   await frame()
+  const backFrame = await full()
   const backBand = await samplePatch(page, band)
   const backCtrl = ctrl ? await samplePatch(page, ctrl) : null
 
@@ -186,8 +193,21 @@ if (onScreen.length < 2) {
   else ok(`both ends: ${(d.flamesDrawnAt ?? []).length} flames held, ${onDrawn} quads painted; 0 with it off`)
   if (ctrlMoved > 1) fail(`the control patch moved ${ctrlMoved.toFixed(1)} while only the setting changed`)
   else ok(`control: the patch away from the fire did not move (${ctrlMoved.toFixed(1)})`)
-  if (!(moved > Math.max(4, ctrlMoved * 3))) fail(`flipping High Quality moved the fire by only ${moved.toFixed(1)} — the shader is not what is drawn`)
-  else ok(`the same fire is painted differently with High Quality on (${moved.toFixed(1)})`)
+  // **Pixels rearranged inside the fire band, not the band's mean colour** (T21.36). The
+  // mean read 26.7 while the flat fire was ~8 px discs; once they were sized to cover
+  // `FLAME_RADIUS` — the same ground the shader covers — it read 4.0–4.7 against a floor
+  // of 4: two orange areas of one size average alike however differently they are drawn.
+  // The control is the same metric between the flat frame and the flat frame restored,
+  // which is exact now that the flicker clock stops with the scene.
+  const rearranged = (await compare(offFrame, onFrame, [], VISIBLE, band)).fraction
+  const restoreNoise = (await compare(offFrame, backFrame, [], VISIBLE, band)).fraction
+  const minRearranged = Math.max(0.05, restoreNoise * 3)
+  console.log(
+    `  fire band: ${(rearranged * 100).toFixed(1)}% of pixels differ flat vs painted, ` +
+      `${(restoreNoise * 100).toFixed(1)}% flat vs flat restored (floor ${(minRearranged * 100).toFixed(1)}%); band mean moved ${moved.toFixed(1)}`,
+  )
+  if (!(rearranged > minRearranged)) fail(`flipping High Quality changed only ${(rearranged * 100).toFixed(1)}% of the fire band — the shader is not what is drawn`)
+  else ok(`the same fire is painted differently with High Quality on (${(rearranged * 100).toFixed(1)}% of the band)`)
   if (back.shaderFlames !== false || restored > 1) fail(`turning High Quality off did not restore the flat fire: ${restored.toFixed(1)} from the original`)
   else ok(`off again restores the flat fire exactly (${restored.toFixed(1)})`)
   if (!(drawn > floor)) fail(`the painted fire is ${drawn.toFixed(1)} from the same frame without it, against ${floor.toFixed(1)} — nothing is drawn`)
@@ -197,13 +217,17 @@ if (onScreen.length < 2) {
   const painted = await compare(onFrame, hiddenFrame, ring, VISIBLE)
   const flat = await compare(offFrame, hiddenFrame, ring, VISIBLE)
   const cover = (r) => r.points.filter(Boolean).length
-  console.log(
-    `  damage-circle points painted: High Quality on ${cover(painted)}/${ring.length}, ` +
-      `off ${cover(flat)}/${ring.length} (the old picture — reported, not asserted)`,
-  )
+  console.log(`  damage-circle points painted: High Quality on ${cover(painted)}/${ring.length}, off ${cover(flat)}/${ring.length}`)
   if (cover(painted) !== ring.length) {
     fail(`${ring.length - cover(painted)} of ${ring.length} points just inside a flame's damage circle are unpainted under High Quality — burned by fire you cannot see`)
-  } else ok(`every point just inside every on-camera damage circle is painted (${ring.length})`)
+  } else ok(`every point just inside every on-camera damage circle is painted with High Quality on (${ring.length})`)
+  // T21.36: **and with it off.** This was reported, not asserted, and read 85–108/192:
+  // the flat discs reached ~8 px against a burn radius of 10. The flat body is sized from
+  // `FLAME_RADIUS` now (`ordnance-state.ts::flameDiscs`) — the default setting is Off, so
+  // this is the picture most players see, and the one past `FLAME_SHADER_POOL` for everyone.
+  if (cover(flat) !== ring.length) {
+    fail(`${ring.length - cover(flat)} of ${ring.length} points just inside a flame's damage circle are unpainted with High Quality off — burned by fire you cannot see`)
+  } else ok(`every point just inside every on-camera damage circle is painted with High Quality off (${ring.length})`)
 
   // --- it animates: frozen, 300 ms apart ---------------------------------------------
   const pair = async (hq) => {
