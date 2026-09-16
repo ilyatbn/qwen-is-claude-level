@@ -1044,10 +1044,14 @@ impl GameCore {
     /// Force an effect to begin its telegraph now: 0 toxic, 1 meteor, 2 lava,
     /// 3 fog. The sandbox control for the M5 checkpoint.
     ///
-    /// **`0` does nothing while `TOXIC_RAIN_ENABLED` is false** (T21.39): the sandbox is
+    /// **A switched-off kind does nothing** (`0` toxic since T21.39, `2` lava since
+    /// 2026-09-16): the sandbox is
     /// not a way round the owner's ruling.
     pub fn force_effect(&mut self, kind: u8, now: f32) {
         if kind == 0 && !game_core::constants::TOXIC_RAIN_ENABLED {
+            return;
+        }
+        if kind == 2 && !game_core::constants::LAVA_ENABLED {
             return;
         }
         let kind = match kind {
@@ -1293,6 +1297,7 @@ pub fn constants_json() -> String {
         TOXIC_DROPS_IN_FLIGHT => c::TOXIC_DROPS_IN_FLIGHT,
         // T21.39: the sandbox hides its Toxic button off this.
         TOXIC_RAIN_ENABLED => c::TOXIC_RAIN_ENABLED,
+        LAVA_ENABLED => c::LAVA_ENABLED,
         AMBIENT_RAIN_WINDOW => c::AMBIENT_RAIN_WINDOW,
         AMBIENT_RAIN_CHANCE => c::AMBIENT_RAIN_CHANCE,
         AMBIENT_RAIN_MIN => c::AMBIENT_RAIN_MIN,

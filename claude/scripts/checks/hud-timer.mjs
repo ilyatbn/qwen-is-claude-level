@@ -81,8 +81,9 @@ const RED_MIN = 100
  * at the start of the round and the frame the timer went red in. It has two
  * confounds and both are large enough to decide it:
  *
- * 1. **It is not the same rectangle.** `#hud-timer` is `right:14px`, so it is
- *    right-anchored and its width follows its text: "1:29" measures 111 px and
+ * 1. **It is not the same rectangle.** `#hud-timer` was `right:14px` (it is
+ *    centred since 2026-09-16; either way it is not left-anchored), so its width
+ *    follows its text: "1:29" measures 111 px and
  *    "0:59" measures 121, because `1` is a narrow glyph. The before-frame rect
  *    and the after-frame rect differ by 10 px of background. Forcing the two
  *    samples onto the narrow rect reproduced the failure **8 times out of 8**
@@ -163,6 +164,51 @@ if (!white) {
   const near = [left - 2, left - 1, left, left + 1, left + 2].some((n) => asClock(n) === shown)
   if (near) ok(`timer matches round_state.time_left within 2 s — "${shown}" vs ${left.toFixed(1)}s`)
   else fail(`the timer reads "${shown}" while round_state says ${left.toFixed(1)}s left ("${asClock(left)}")`)
+
+  // ------------------------------------------------------------ the layout
+  //
+  // **The 2026-09-16 move, asserted on the laid-out boxes.** The owner reported
+  // the kill feed *"hidden behind the timer"*: `#hud-timer` was `top:10px;
+  // right:14px` and `feelLayer`'s feed is `right:10px;top:10px`, so the 40 px
+  // timer drew straight over it. `hud.test.ts` can only check the two constants
+  // agree — vitest runs with `environment: 'node'` and there is no layout there,
+  // which is exactly why §C2 puts this here instead.
+  //
+  // The feed is addressed by its `data-feel` attribute because it has no id.
+  const rectOfSel = (sel) =>
+    page.evaluate((q) => {
+      const el = document.querySelector(q)
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }
+    }, sel)
+
+  const overlaps = (a, b) =>
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+
+  const feed = await rectOfSel('[data-feel="killfeed"]')
+  if (!feed) {
+    fail('the kill feed element is not in the DOM at all — nothing to keep clear of')
+  } else {
+    // The feed is an empty flex column until somebody dies, so it can be 0 px
+    // wide. Assert against the corner it *owns* rather than against a box that
+    // may not be there yet: the timer must not reach into the right-hand quarter.
+    const vw = await page.evaluate(() => window.innerWidth)
+    const timerRight = white.x + white.w
+    if (timerRight > vw * 0.75) {
+      fail(
+        `the timer runs to x=${timerRight} of a ${vw}px viewport — that is the ` +
+          `corner the kill feed is anchored in (right:10px), which is the overlap ` +
+          'the owner reported',
+      )
+    } else {
+      ok(`timer clears the kill feed corner: ends at x=${timerRight} of ${vw}`)
+    }
+    // ...and it is actually centred, not merely moved left.
+    const centreErr = Math.abs(white.x + white.w / 2 - vw / 2)
+    if (centreErr > 8) fail(`the timer centre is ${centreErr.toFixed(0)}px off the viewport centre`)
+    else ok(`timer is centred (${centreErr.toFixed(0)}px off)`)
+  }
 
   // Control: it is NOT red yet. Without this, "it turned red" passes for a
   // timer that was red for the whole round (§A26).

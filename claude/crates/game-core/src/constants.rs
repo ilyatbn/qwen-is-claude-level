@@ -718,6 +718,21 @@ pub const EFFECT_TELEGRAPH: f32 = 3.0;
 /// skip. Every line of the effect is kept, so un-parking is this flag plus the rewrite.
 pub const TOXIC_RAIN_ENABLED: bool = false;
 
+/// **Lava bursts are switched off** (2026-09-16). The owner, from play: *"the lava
+/// burst is coming out of weird places. i dont like it. disable it too for now."*
+///
+/// The same one-switch shape `TOXIC_RAIN_ENABLED` established and for the same
+/// reason: every line of the effect is kept, so switching it back on is this flag
+/// plus whatever fixes the placement. The scheduler zeroes its weight, `WEATHER=lava`
+/// is refused at parse, the sandbox cannot force it, and the browser checks that
+/// need it read this and skip.
+///
+/// **Two of the four kinds are now off**, which leaves meteor showers and heavy fog
+/// as the whole weather table. `roll_kind` also zeroes the kind that just ran, so
+/// three of four weights can be zero at once — `a_draw_is_always_possible` is the
+/// guard that this still leaves something to draw.
+pub const LAVA_ENABLED: bool = false;
+
 pub const TOXIC_DURATION: f32 = 8.0;
 /// Seconds between drops while the rain is active.
 ///
@@ -2150,12 +2165,24 @@ pub const BIRD_DROP_VELOCITY: f32 = 40.0;
 
 /// Below this landing speed a fall costs nothing, px/s.
 ///
-/// **480, because a plain jump lands at a measured 410** and a jump that hurt
-/// would make the game unplayable rather than punishing. 70 px/s of margin over
-/// the worst ordinary landing, and it puts the free drop height at
-/// `480² / (2 x GRAVITY)` = **82 px**, about three player heights — a ledge you
-/// can see is a ledge you can take.
-pub const FALL_SAFE_SPEED: f32 = 480.0;
+/// **Was 480, because a plain jump lands at a measured 410** and a jump that
+/// hurt would make the game unplayable rather than punishing. That put the free
+/// drop height at `480² / (2 x GRAVITY)` = **82 px**, about three player heights.
+///
+/// **Doubled to a 165 px free drop, owner 2026-09-16**, reported from play:
+/// *"add a minimum height for fall damage to work (or if it already exists,
+/// double it)"*. The minimum already existed and it is this constant — but it is
+/// written as a **speed**, and the owner asked about a **height**. Height goes as
+/// `v²/2g`, so doubling the height is `sqrt(2)` on the speed, not 2:
+/// `480 x sqrt(2)` = **678.8**, for `678.8² / (2 x GRAVITY)` = **164.6 px**,
+/// exactly twice the 82.3 px above. Doubling the *speed* instead would have
+/// quadrupled the height to 329 px, which is not what was asked.
+///
+/// **This shrinks the damaging band from 420 px/s wide to 221**, and everything
+/// downstream of that is why `FALL_DAMAGE_PER_SPEED` had to move with it — see
+/// the ruling recorded there. `boots_fall_safe_speed` is *not* affected: it is
+/// derived from `JUMP_VELOCITY`, never from this.
+pub const FALL_SAFE_SPEED: f32 = 678.8;
 
 /// Health lost per px/s of landing speed **above** `FALL_SAFE_SPEED`.
 ///
@@ -2192,12 +2219,31 @@ pub const FALL_SAFE_SPEED: f32 = 480.0;
 /// measures landings through the world against the rate at the time of the
 /// report, so it is the one test that sees this constant move back up.
 ///
-/// **Headroom: the deepest fall now barely clears the tenth-of-a-bar floor
-/// below — 10.5 against 10.** Any further cut to this rate (or a raised
-/// `FALL_SAFE_SPEED`) fails to compile there; that floor is deliberate and is not
-/// to be loosened in passing. If the owner wants landings gentler still, it is a
-/// decision about the floor, not a retune.
-pub const FALL_DAMAGE_PER_SPEED: f32 = 0.025;
+/// **Raised 0.025 -> 0.046 on 2026-09-16, and it is a consequence, not a
+/// retune.** The owner doubled the free drop height (see `FALL_SAFE_SPEED`),
+/// which shrank the damaging band from 420 px/s to 221 — so at an unchanged rate
+/// the deepest fall the game can produce would have cost 5.53 hp and breached
+/// the tenth-of-a-bar floor asserted below. Asked which should give, the owner
+/// chose **"keep the worst fall meaningful"** over "keep falls gentle": you fall
+/// twice as far for nothing, and past that line it hurts properly.
+///
+/// **The window here is narrow and both ends bind at terminal velocity.** The
+/// floor below needs `221.2 x rate > 10`, so `rate > 0.04521`; T21.29's ruling
+/// that no landing costs more than a third of the 0.075 it did when reported
+/// needs `221.2 x rate <= 420 x 0.025 = 10.5`, so `rate <= 0.04747`. 0.046 sits
+/// between them with 1.7 % and 3.1 % of margin. It is a tight fit and it is
+/// deliberate — the two guards are what keep this a discount rather than a
+/// removal, and a value outside that range fails one of them at build time or in
+/// `world::fall_damage`.
+///
+/// ```text
+///                        before (480 / 0.025)   after (678.8 / 0.046)
+///     free drop height             82 px                165 px
+///     112 px drop (4 heights)     2.0 hp                   0 hp   (now free)
+///     224 px drop (8 heights)     7.5 hp                 4.7 hp
+///     deepest fall               10.5 hp                10.2 hp
+/// ```
+pub const FALL_DAMAGE_PER_SPEED: f32 = 0.046;
 
 // A plain jump must be free, or the whole game becomes a limp. The measured
 // landing speed is 410 against `JUMP_VELOCITY` 430; guarding against the constant
@@ -2802,8 +2848,26 @@ pub const BOOTS_SPEED_MULT: f32 = 2.0;
 /// wings is the inventory slot and the jump they refuse.
 pub const WINGS_FLY_SPEED: f32 = 200.0;
 
+/// Horizontal speed multiplier while unicorn wings are carried.
+///
+/// **Owner, 2026-09-16, from play:** *"wings should also slow you down by an
+/// additional 10%"*. *Additional* is why this multiplies rather than replaces —
+/// it lands on top of the health term and of `BOOTS_SPEED_MULT`, so a booted,
+/// winged, healthy player moves at `2.0 x 0.9` = 1.8x and a hurt one is slower
+/// still. Every other reading makes one of the three rules silently stop
+/// mattering, which is the shape `speed_multiplier` was already written against.
+///
+/// It is a **cost paid for unlimited flight**, and it is the second one: the
+/// first is that wings refuse the jump. Both are what keep `WINGS_FLY_SPEED`'s
+/// "slow and endless" story true against a jetpack that is fast and finite.
+pub const WINGS_SPEED_MULT: f32 = 0.9;
+
 // Flight that does not climb is not flight.
 const _: () = assert!(WINGS_FLY_SPEED > 0.0);
+// A slow is a slow. Nothing here reads as a speed *boost* hiding in a name that
+// says otherwise, and a multiplier of 1.0 would be the item quietly not doing it.
+const _: () = assert!(WINGS_SPEED_MULT < 1.0);
+const _: () = assert!(WINGS_SPEED_MULT > 0.0);
 // The design claim above, asserted rather than described: a jetpack burst must
 // stay the faster of the two, or "slow and endless" is only a comment. This is
 // the number the brief expects to be retuned, so the guard is here to be met.
@@ -2821,7 +2885,36 @@ const _: () = assert!(WINGS_FLY_SPEED < FALL_SAFE_SPEED);
 /// the launch velocity. Writing 3.0 into `JUMP_VELOCITY` would give nine times
 /// the height. `boots_jump_velocity_mult` is the only place that conversion
 /// exists.
-pub const BOOTS_JUMP_HEIGHT_MULT: f32 = 3.0;
+///
+/// **Cut 3.0 -> 2.25 on 2026-09-16**, owner, reported from play: *"jumping power
+/// of boots is way too high. reduce by 25%"*. Read as 25 % off the **height**,
+/// which is what this constant is — 187 px of apex becomes 141 px.
+///
+/// **This no longer drives the fall threshold.** It used to: `boots_fall_safe_speed`
+/// was `JUMP_VELOCITY * sqrt(BOOTS_JUMP_HEIGHT_MULT)`, so cutting the jump cut the
+/// protection with it, and against the same day's doubled `FALL_SAFE_SPEED` that
+/// would have left booted players *more* fragile than bare-footed ones — an
+/// inversion `the_deepest_fall_still_costs_a_booted_player_a_third_of_an_unbooted_one`
+/// catches on its `bare > deepest` control. Asked, the owner chose **"cut the
+/// jump, leave fall protection alone"**, so the protection moved to
+/// `BOOTS_FALL_HEIGHT_MULT` and kept its 3.0.
+pub const BOOTS_JUMP_HEIGHT_MULT: f32 = 2.25;
+
+/// The drop height ironman boots make free, as a multiple of a plain jump's.
+///
+/// **Split from `BOOTS_JUMP_HEIGHT_MULT` on 2026-09-16** and holds that
+/// constant's old 3.0, so the fall protection is exactly what it was before the
+/// jump was cut. See the ruling recorded there.
+///
+/// **The cost of the split, stated plainly:** boots no longer protect you from
+/// precisely the height they throw you to. They now over-protect — 198 px of
+/// free fall against a 141 px apex — so the old "safe from your own jump, by
+/// construction" story is gone, and what replaces it is an assertion:
+/// `boots_fall_safe_speed() >= JUMP_VELOCITY * boots_jump_velocity_mult()`,
+/// which used to be an identity and is now a real inequality with 100 px/s in
+/// it. That assertion is the only thing keeping a booted jump from charging
+/// itself, so it is not decoration.
+pub const BOOTS_FALL_HEIGHT_MULT: f32 = 3.0;
 
 /// The launch-velocity multiplier `BOOTS_JUMP_HEIGHT_MULT` implies.
 ///
@@ -2884,7 +2977,9 @@ pub fn boots_jump_velocity_mult() -> f32 {
 ///     deepest fall       10.50 hp  3.88 hp   (booted floor: a third of 10.50)
 /// ```
 pub fn boots_fall_safe_speed() -> f32 {
-    JUMP_VELOCITY * boots_jump_velocity_mult()
+    // `BOOTS_FALL_HEIGHT_MULT`, not `BOOTS_JUMP_HEIGHT_MULT`: the two were one
+    // constant until 2026-09-16 and the split is recorded at both of them.
+    JUMP_VELOCITY * BOOTS_FALL_HEIGHT_MULT.sqrt()
 }
 
 // **The floor above, mirrored for the booted path — and it needs its own assert
@@ -2903,20 +2998,23 @@ pub fn boots_fall_safe_speed() -> f32 {
 // **a booted player's deepest fall must cost at least a third of an unbooted
 // one's.** Written out,
 // `(MAX_FALL_SPEED - launch) * 3 > MAX_FALL_SPEED - FALL_SAFE_SPEED` with
-// `launch = JUMP_VELOCITY * sqrt(BOOTS_JUMP_HEIGHT_MULT)`, i.e.
+// `launch = JUMP_VELOCITY * sqrt(BOOTS_FALL_HEIGHT_MULT)`, i.e.
 // `launch < MAX_FALL_SPEED - (MAX_FALL_SPEED - FALL_SAFE_SPEED) / 3`.
 //
 // `sqrt` is not `const`, so the root is squared away instead. Both sides are
 // positive (the right-hand side because `FALL_SAFE_SPEED < MAX_FALL_SPEED` is
 // asserted above), so squaring preserves the inequality, and `launch²` is
-// `JUMP_VELOCITY² * BOOTS_JUMP_HEIGHT_MULT` with no root left in it.
+// `JUMP_VELOCITY² * BOOTS_FALL_HEIGHT_MULT` with no root left in it.
 //
 // **Headroom is thin and the number is the point: this fails at
-// `BOOTS_JUMP_HEIGHT_MULT` 3.12.** Today's 3.0 has 4 % to spare, so "make the
-// boots jump a bit higher" is a one-line change that lands on a compile error
-// rather than in a playtest.
+// `BOOTS_FALL_HEIGHT_MULT` 3.69.** It used to fail at 3.12; the crossing moved
+// out when `FALL_SAFE_SPEED` doubled on 2026-09-16 and shrank the unbooted band
+// this is measured against. Today's 3.0 has 19 % to spare. **The constant this
+// reads is the fall one, not the jump one** — since the split, raising
+// `BOOTS_JUMP_HEIGHT_MULT` cannot reach this guard at all, which is why the
+// assertion below about a booted jump charging itself had to become real.
 const _: () = assert!(
-    JUMP_VELOCITY * JUMP_VELOCITY * BOOTS_JUMP_HEIGHT_MULT
+    JUMP_VELOCITY * JUMP_VELOCITY * BOOTS_FALL_HEIGHT_MULT
         < (MAX_FALL_SPEED - (MAX_FALL_SPEED - FALL_SAFE_SPEED) / 3.0)
             * (MAX_FALL_SPEED - (MAX_FALL_SPEED - FALL_SAFE_SPEED) / 3.0)
 );
@@ -2924,6 +3022,11 @@ const _: () = assert!(
 // Boots must actually do something in both directions, or the item is art.
 const _: () = assert!(BOOTS_SPEED_MULT > 1.0);
 const _: () = assert!(BOOTS_JUMP_HEIGHT_MULT > 1.0);
+const _: () = assert!(BOOTS_FALL_HEIGHT_MULT > 1.0);
+// **A booted jump must not charge itself.** This was an identity while the two
+// multipliers were one constant; since the 2026-09-16 split it is the only thing
+// asserting that the protection still covers the launch it exists for.
+const _: () = assert!(BOOTS_FALL_HEIGHT_MULT >= BOOTS_JUMP_HEIGHT_MULT);
 // `boots_fall_safe_speed` is only meaningful while the base game's property
 // holds. If `FALL_SAFE_SPEED` ever drops below `JUMP_VELOCITY` an ordinary jump
 // starts hurting, and scaling a threshold that no longer clears the jump it is

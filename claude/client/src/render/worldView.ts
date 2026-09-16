@@ -106,7 +106,35 @@ export class WorldView {
    * manager is global, so a rebuilt view over a reused key keeps the previous
    * map's pixels — call `destroy()` before constructing another (T3.05).
    */
-  constructor(scene: Phaser.Scene, core: Core, weaponKeys: string[] = WEAPON_KEYS) {
+  /**
+   * `mapSeed` and `themeId` are **passed in, not read off `core.meta`** — and
+   * that is the whole of the 2026-09-16 terrain-texture fix.
+   *
+   * A networked client never runs the generator. `WorldMirror.applyMapInit`
+   * calls `Core.loadMask`, which clones the *existing* meta and replaces only
+   * the surface points, so `core.meta.seed` and `core.meta.theme` keep whatever
+   * the client's throwaway startup map had — measured live across four rounds
+   * with four different `roundSeed`s: `meta.seed` read **1** every time, and
+   * `GameScene`'s own comment recorded `meta.theme` as always 0.
+   *
+   * So T21.15's fix — stop passing the literals 7/23/41, pass the map seed —
+   * was correct in `procTextures.ts` and landed on a constant here. The rock,
+   * the rim and the cave-back were still byte-identical in every networked
+   * round, and so was the palette, which is why it was reported a second time.
+   * *A fix that changes the code without changing the picture looks exactly
+   * like a fix that worked.*
+   *
+   * Both values are on the wire already (`codec.rs` writes seed and theme into
+   * `map_init`; `codec.ts` decodes them). `SandboxScene` generates its own map,
+   * so its `core.meta` is real — hence the defaults.
+   */
+  constructor(
+    scene: Phaser.Scene,
+    core: Core,
+    weaponKeys: string[] = WEAPON_KEYS,
+    mapSeed: number = Number(core.meta.seed),
+    themeId: number = core.meta.theme,
+  ) {
     const { width: mapW, height: mapH } = core
     this.core = core
 
@@ -114,7 +142,7 @@ export class WorldView {
     this.container = scene.add.container(0, 0).setDepth(DEPTH.terrain)
 
     // Seeded from the map, so a seed always looks the same (`docs/12` §4).
-    const theme = resolveTheme(core.meta.theme)
+    const theme = resolveTheme(themeId)
     this.terrain = new TerrainRenderer(
       scene.textures,
       {
@@ -125,16 +153,17 @@ export class WorldView {
         },
       },
       core,
-      // **Seeded by the map** (T21.15). These took a hardcoded literal, so every
-      // map in the game wore the same rock — `core.meta.seed` was one line above
-      // the call and simply never passed.
-      makeFillTexture(256, theme, core.meta.seed),
-      makeEdgeTexture(256, theme, core.meta.seed),
+      // **Seeded by the map** (T21.15, corrected 2026-09-16). These took a
+      // hardcoded literal; then they took `core.meta.seed`, which is a constant
+      // on a networked client. `mapSeed` is the one the server actually built
+      // the map from — see the constructor doc.
+      makeFillTexture(256, theme, mapSeed),
+      makeEdgeTexture(256, theme, mapSeed),
       undefined,
-      makeBackTexture(256, theme, core.meta.seed),
+      makeBackTexture(256, theme, mapSeed),
     )
 
-    this.tileSeed = core.meta.seed
+    this.tileSeed = mapSeed
     const t0 = performance.now()
     this.terrain.buildAll()
     this.timings.buildAllMs = performance.now() - t0

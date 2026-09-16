@@ -109,6 +109,7 @@ pub fn step(
     pads: &[TeleportPad],
     pos: Vec2,
     grounded: bool,
+    eligible: bool,
     now: f32,
     dt: f32,
 ) -> TeleportStep {
@@ -119,7 +120,14 @@ pub fn step(
 
     // Standing, not brushing past in mid-air: a pad is ground, and a jetpack
     // hovering through the rect for a whole charge is not "standing on" it.
-    let under = if grounded {
+    //
+    // **`eligible` is the carried-item veto** (owner, 2026-09-16: unicorn wings
+    // *"cannot interact with teleports"*). It is folded into `under` rather than
+    // checked at the `Fire` arm on purpose: falling through to the `else` below
+    // clears `state.charging`, so a winged player standing on a pad shows **no
+    // charge at all** rather than charging to full and then being refused. A
+    // refusal the player can watch fill up is a bug report.
+    let under = if grounded && eligible {
         pads.iter().find(|p| p.underfoot(pos)).map(|p| p.id)
     } else {
         None
@@ -215,7 +223,7 @@ mod tests {
         let n = (secs / SIM_DT).ceil() as i32;
         for _ in 0..n {
             now += SIM_DT;
-            if let TeleportStep::Fire(id) = step(state, pads, pos, true, now, SIM_DT) {
+            if let TeleportStep::Fire(id) = step(state, pads, pos, true, true, now, SIM_DT) {
                 return Some(id);
             }
         }
@@ -261,7 +269,7 @@ mod tests {
         );
         // One tick out there is all it takes; the pad is not involved.
         assert_eq!(
-            step(&mut s, &pads, away, true, SIM_DT, SIM_DT),
+            step(&mut s, &pads, away, true, true, SIM_DT, SIM_DT),
             TeleportStep::Idle
         );
         assert!(s.armed, "walking the arm distance did not arm");
@@ -322,7 +330,7 @@ mod tests {
         let mut now = 0.0;
         for tick in 1..=due + 1 {
             now += SIM_DT;
-            if let TeleportStep::Fire(id) = step(&mut s, &pads, here, true, now, SIM_DT) {
+            if let TeleportStep::Fire(id) = step(&mut s, &pads, here, true, true, now, SIM_DT) {
                 fired_on = Some((id, tick));
                 break;
             }
@@ -352,7 +360,7 @@ mod tests {
         while s.charge_fraction() < 0.8 {
             now += SIM_DT;
             assert_eq!(
-                step(&mut s, &pads, here, true, now, SIM_DT),
+                step(&mut s, &pads, here, true, true, now, SIM_DT),
                 TeleportStep::Idle
             );
         }
@@ -362,6 +370,7 @@ mod tests {
             &mut s,
             &pads,
             Vec2::new(here.x + 400.0, here.y),
+            true,
             true,
             now,
             SIM_DT,
@@ -378,7 +387,7 @@ mod tests {
         for _ in 0..((TELEPORT_CHARGE * 3.0 / SIM_DT) as i32) {
             now += SIM_DT;
             assert_eq!(
-                step(&mut s, &pads, here, false, now, SIM_DT),
+                step(&mut s, &pads, here, false, true, now, SIM_DT),
                 TeleportStep::Idle,
                 "a hovering player charged a pad"
             );
@@ -404,7 +413,7 @@ mod tests {
         let mut fired_again = None;
         while t < now + TELEPORT_COOLDOWN - SIM_DT {
             t += SIM_DT;
-            if let TeleportStep::Fire(id) = step(&mut s, &pads, dest, true, t, SIM_DT) {
+            if let TeleportStep::Fire(id) = step(&mut s, &pads, dest, true, true, t, SIM_DT) {
                 fired_again = Some(id);
                 break;
             }
@@ -419,7 +428,7 @@ mod tests {
         let mut fired_after = None;
         while t < now + TELEPORT_COOLDOWN + TELEPORT_CHARGE * 2.0 {
             t += SIM_DT;
-            if let TeleportStep::Fire(id) = step(&mut s, &pads, dest, true, t, SIM_DT) {
+            if let TeleportStep::Fire(id) = step(&mut s, &pads, dest, true, true, t, SIM_DT) {
                 fired_after = Some(id);
                 break;
             }
@@ -447,7 +456,7 @@ mod tests {
         while t < 10.0 + TELEPORT_COOLDOWN + TELEPORT_CHARGE * 3.0 {
             t += SIM_DT;
             assert_eq!(
-                step(&mut s, &pads, dest, true, t, SIM_DT),
+                step(&mut s, &pads, dest, true, true, t, SIM_DT),
                 TeleportStep::Idle,
                 "the pad fired without the player moving off it"
             );
@@ -456,13 +465,13 @@ mod tests {
         // The control: walk off, come back, and it works again.
         let away = Vec2::new(dest.x + TELEPORT_ARM_DISTANCE, dest.y);
         t += SIM_DT;
-        step(&mut s, &pads, away, true, t, SIM_DT);
+        step(&mut s, &pads, away, true, true, t, SIM_DT);
         assert!(s.armed, "the walk did not re-arm");
 
         let mut fired = None;
         while t < 10.0 + TELEPORT_COOLDOWN + TELEPORT_CHARGE * 6.0 {
             t += SIM_DT;
-            if let TeleportStep::Fire(id) = step(&mut s, &pads, dest, true, t, SIM_DT) {
+            if let TeleportStep::Fire(id) = step(&mut s, &pads, dest, true, true, t, SIM_DT) {
                 fired = Some(id);
                 break;
             }
@@ -515,10 +524,10 @@ mod tests {
         let mut now = 0.0;
         while s.charge_fraction() < 0.9 {
             now += SIM_DT;
-            step(&mut s, &pads, a, true, now, SIM_DT);
+            step(&mut s, &pads, a, true, true, now, SIM_DT);
         }
         now += SIM_DT;
-        step(&mut s, &pads, b, true, now, SIM_DT);
+        step(&mut s, &pads, b, true, true, now, SIM_DT);
         assert!(
             s.charge_fraction() < 0.1,
             "pad 0's charge carried over to pad 1: {}",

@@ -6419,3 +6419,21 @@ now digs with the shovel (level, then down) when a lane is blocked; pickup asser
 Covers T21.38 (votes), T21.39 (toxic rain off), T21.40 (smaller gates, seated or not placed), T21.43 (platform hold-to-fire) and
 their three follow-ups (ridge camera lag, ordnance aim, crates dig). Load peaked ~27 in the browser stage — every busy process was the
 gate's own Chrome/game-server under `claude/`, none from a worktree. Run detached (`setsid`), waited on by exact PID.
+
+## Owner play session 2026-09-16 — eleven reports, one sitting (coordinator, live)
+Interactive session on a headed Chrome. **Two tooling bugs first**: `play.mjs` never passed the swiftshader flags the gate uses, so the
+owner's window had **no WebGL at all** — Phaser fell back to Canvas, High Quality disabled itself, and every T21.17/T21.18 shader has
+been verified in a browser nobody played in. Same file: the play URL lacked `e2e=1`, so `make probe` returned `null` for every real match.
+Both fixed; `debug=1` is now opt-in (it was drawing a second FPS counter the Options toggle does not govern, and the aim ring).
+**Balance, owner-ruled**: free fall height 82 → 165 px (`FALL_SAFE_SPEED` 480 → 678.8) with `FALL_DAMAGE_PER_SPEED` 0.025 → 0.046 to hold
+the tenth-of-a-bar floor — owner chose "keep the worst fall meaningful" over "keep falls gentle"; the live window is 0.0452–0.0475.
+Boots jump 3.0 → 2.25 with fall protection split off as `BOOTS_FALL_HEIGHT_MULT` = 3.0 (owner's call), or doubled `FALL_SAFE_SPEED` would
+have made boots *worse* than bare feet — `bare > deepest` catches it. Wings: `WINGS_SPEED_MULT` 0.9, and they refuse pads and platforms.
+Lava switched off beside toxic rain; the scheduler's `toxic_enabled` bool became `enabled: [bool; 4]`. **Two live kinds + never-repeat is
+a strict meteor/fog alternation** — pinned, not discovered. `REPLAY_VERSION` 12 → 13.
+**Two stale fixes found.** `a_landing_costs_at_most_a_third…` froze the *rate* at 0.075 but read the *threshold* from the live constant, so
+its historical baseline moved whenever the constant did. And **T21.15 never worked in a networked round**: it wired the terrain texture to
+`core.meta.seed`, which `loadMask` leaves at the client's startup value — measured **1 across four different `roundSeed`s**, with
+`meta.theme` always 0. Seed and theme were on the wire all along; `WorldView` takes them now.
+Also: timer to top-centre off the kill feed, hazard banner below it, the duplicate bottom-left clock deleted, the black placeholder weapon
+removed, map size off the pre-host/join screen. Rust `--workspace` exit 0, client 953/953, fmt and clippy clean. Full gate not yet run.

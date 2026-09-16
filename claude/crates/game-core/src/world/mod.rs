@@ -3174,7 +3174,21 @@ impl World {
                 continue;
             }
             let (pos, grounded) = (self.players[i].body.pos, self.players[i].body.grounded);
-            let fired = teleport::step(&mut self.players[i].teleport, pads, pos, grounded, now, dt);
+            // Wings refuse the pad (owner, 2026-09-16). Read from the inventory
+            // here, where the player is, rather than plumbed through `MoveMods`:
+            // `apply_input` never sees this, so it is not a prediction input and
+            // it does not belong in the byte T20.19's rule governs.
+            let eligible =
+                !self.players[i].holds_utility(crate::items::registry::UtilityId::UnicornWings);
+            let fired = teleport::step(
+                &mut self.players[i].teleport,
+                pads,
+                pos,
+                grounded,
+                eligible,
+                now,
+                dt,
+            );
             let teleport::TeleportStep::Fire(from) = fired else {
                 continue;
             };
@@ -3670,10 +3684,24 @@ impl World {
     /// player's own state cannot answer — whether the platform they just
     /// finished charging is already taken.
     fn step_mount(&mut self, idx: usize, input: &crate::player::Input, dt: f32) {
-        let under = crate::world::mount::platform_underfoot(
-            &self.map.meta.gun_platforms,
-            self.players[idx].body.pos,
-        );
+        // **Wings refuse the platform** (owner, 2026-09-16: *"you cannot interact
+        // with teleports and machinegun platforms if wearing them"*).
+        //
+        // Expressed as "there is no platform under you" rather than as a guard on
+        // the mount arm, because that is the one input `mount::step` already
+        // routes **both** decisions through: a winged player cannot mount, and a
+        // mounted player who picks wings up is displaced-and-dismounted by the
+        // `under != Some(id)` branch that T21.14 added. One veto, both directions,
+        // no second rule to keep in step with the first.
+        let under =
+            if self.players[idx].holds_utility(crate::items::registry::UtilityId::UnicornWings) {
+                None
+            } else {
+                crate::world::mount::platform_underfoot(
+                    &self.map.meta.gun_platforms,
+                    self.players[idx].body.pos,
+                )
+            };
         let jump_held = input.held(crate::player::button::JUMP);
         let grounded = self.players[idx].body.grounded;
         let ev =
@@ -8228,12 +8256,24 @@ mod fall_damage {
         // scales, which is the property the player is actually judging.
         let mut w = world();
         w.add_player(0, 0, "ana".into());
-        let free_height = FALL_SAFE_SPEED * FALL_SAFE_SPEED / (2.0 * crate::constants::GRAVITY);
-        let near = drop_player(&mut w, free_height * 2.0);
+        // **Both drops have to land *inside* the damaging band**, and multiples
+        // of the free height stopped doing that on 2026-09-16: `resolve.rs`
+        // clamps to `MAX_FALL_SPEED` at a ~400 px drop, and once the free height
+        // doubled to 165 px, `free_height * 2` and `free_height * 6` both
+        // saturated — two different heights, one identical 10.18 hp, and the
+        // test read as "harder landings cost the same".
+        //
+        // So the heights are derived from the **band** rather than from the
+        // threshold: a third and two thirds of the way from `FALL_SAFE_SPEED` to
+        // `MAX_FALL_SPEED`. That is inside the clamp by construction, and it
+        // stays inside it whatever either constant does next.
+        let band = MAX_FALL_SPEED - FALL_SAFE_SPEED;
+        let height_for = |v: f32| v * v / (2.0 * crate::constants::GRAVITY);
+        let near = drop_player(&mut w, height_for(FALL_SAFE_SPEED + band / 3.0));
         if let Some(p) = w.player_mut(0) {
             p.health = crate::constants::BASE_HEALTH;
         }
-        let far = drop_player(&mut w, free_height * 6.0);
+        let far = drop_player(&mut w, height_for(FALL_SAFE_SPEED + band * 2.0 / 3.0));
         assert!(near > 0.0 && far > near, "{near} then {far}");
     }
 
@@ -8273,8 +8313,22 @@ mod fall_damage {
         /// `FALL_DAMAGE_PER_SPEED` on 2026-09-15, when the report was made. The
         /// basis of the claim, so it is a literal by necessity.
         const RATE_WHEN_REPORTED: f32 = 0.075;
+        /// **`FALL_SAFE_SPEED` on 2026-09-15, and it has to be a literal for the
+        /// same reason the rate is.**
+        ///
+        /// It was not, and that was a live defect found on 2026-09-16: `then`
+        /// was computed as `(impact - FALL_SAFE_SPEED) * RATE_WHEN_REPORTED`,
+        /// freezing the rate but reading the threshold from the constant. The
+        /// baseline therefore moved whenever the threshold did, so "what it cost
+        /// when the owner reported it" silently stopped being that — and when the
+        /// threshold doubled the same day, a 112 px drop produced a **negative**
+        /// baseline, clamped to zero, and the test's own control fired with "which
+        /// was free anyway" about a drop that cost 6.0 hp on the day in question.
+        /// Half a frozen basis is not a frozen basis.
+        const THRESHOLD_WHEN_REPORTED: f32 = 480.0;
         let mut w = world();
         w.add_player(0, 0, "ana".into());
+        let mut costs: Vec<(f32, f32, f32)> = Vec::new();
         // Drops in player heights, from an ordinary ledge to past terminal
         // velocity: the "basic landings" of the report and the worst one.
         for heights in [4.0f32, 8.0, 16.0, 40.0] {
@@ -8300,21 +8354,44 @@ mod fall_damage {
                 }
             }
             let lost = before - w.player(0).expect("alive").health;
-            let then = ((impact - FALL_SAFE_SPEED) * RATE_WHEN_REPORTED).max(0.0);
+            let then = ((impact - THRESHOLD_WHEN_REPORTED) * RATE_WHEN_REPORTED).max(0.0);
             // The control: the drop is one that hurt when reported, so "costs
             // a third" is not satisfied by a landing that was always free.
             assert!(
                 then > 0.0,
                 "a {heights}-height drop landed at {impact:.0} px/s, which was free anyway"
             );
-            assert!(lost > 0.0, "a {heights}-height drop is now free: {lost}");
             assert!(
                 lost <= then / 3.0 + 0.01,
                 "a {heights}-height drop ({impact:.0} px/s) costs {lost:.2}; it cost \
                  {then:.2} when the owner reported it, and a third of that is {:.2}",
                 then / 3.0
             );
+            costs.push((heights, impact, lost));
         }
+
+        // **`lost > 0` for every drop was removed on 2026-09-16, because the
+        // owner asked for the opposite.** Doubling the free height is *meant* to
+        // make the shallow end free — the 4-player-height drop that used to cost
+        // 2.0 hp is the one the ask was about. Asserting every listed drop still
+        // hurts would have made that requirement unimplementable.
+        //
+        // What replaces it pins **both ends**, which the old single assertion
+        // did not: the shallow drop is free now (and reds if the threshold drifts
+        // back down), and the deepest still costs (and reds if fall damage is
+        // quietly deleted). An absence needs a presence beside it.
+        let (_, shallow_impact, shallow_cost) = costs[0];
+        assert_eq!(
+            shallow_cost, 0.0,
+            "a 4-player-height drop landing at {shallow_impact:.0} px/s cost \
+             {shallow_cost:.2} — the owner's doubled free height is not in force"
+        );
+        let (_, deep_impact, deep_cost) = *costs.last().expect("four drops");
+        assert!(
+            deep_cost > 0.0,
+            "the deepest fall ({deep_impact:.0} px/s) is free — fall damage is \
+             not gentler, it is gone"
+        );
     }
 
     #[test]
@@ -8441,17 +8518,62 @@ mod fall_damage {
         w.add_player(0, 0, "ana".into());
         give(&mut w, 0, crate::items::registry::IRONMAN_BOOTS, 1);
         let (booted_cost, booted_impact) = jump_from_flat(&mut w);
-        // **The non-vacuity control.** The exemption is only doing work if the
-        // landing it forgives would otherwise have been charged.
-        assert!(
-            booted_impact > FALL_SAFE_SPEED,
-            "a booted jump landed at {booted_impact}, inside FALL_SAFE_SPEED \
-             {FALL_SAFE_SPEED} — nothing was forgiven, so the assertion below \
-             would pass against boots that do not raise the jump at all"
-        );
         assert_eq!(
             booted_cost, 0.0,
-            "a booted jump was charged {booted_cost} health for its own landing"
+            "a booted jump landing at {booted_impact} px/s was charged {booted_cost} \
+             health for its own landing"
+        );
+        // The observation the comment below rests on, stated as a number rather
+        // than as prose: since 2026-09-16 the booted jump lands *under* the bare
+        // threshold. If this ever stops holding, the control below is no longer
+        // the only thing keeping the boots' fall half honest — read both.
+        assert!(
+            booted_impact < FALL_SAFE_SPEED,
+            "a booted jump now lands at {booted_impact}, past the bare \
+             {FALL_SAFE_SPEED} — the boots' own-jump protection is load-bearing \
+             again and the note below is stale"
+        );
+
+        // **The non-vacuity control, moved off the booted jump on 2026-09-16.**
+        //
+        // It used to assert `booted_impact > FALL_SAFE_SPEED` — the booted jump
+        // must land somewhere the base rule would charge, or "boots forgive it"
+        // forgives nothing. That stopped being true the day the owner doubled the
+        // free drop height: everyone is now safe to 165 px and a booted jump only
+        // reaches 141, so it lands at 638 against a 678.8 threshold and is free
+        // **by the base rule**. The boots are not doing the forgiving any more.
+        //
+        // That is worth knowing rather than asserting around, so it is stated:
+        // `boots_fall_safe_speed` is currently redundant for a booted player's
+        // own jump. What it still does is raise the threshold for *falls*, and
+        // that is where the control belongs now — there has to exist a landing
+        // the base rule charges and the booted rule does not, or the item's fall
+        // half is dead weight.
+        let bare_t = FALL_SAFE_SPEED;
+        let boots_t = crate::constants::boots_fall_safe_speed();
+        assert!(
+            boots_t > bare_t,
+            "boots protect to {boots_t} against a bare {bare_t} — the raised \
+             threshold forgives no landing at all"
+        );
+        let between = (bare_t + boots_t) / 2.0;
+        let h_between = between * between / (2.0 * crate::constants::GRAVITY);
+        let mut wb = world();
+        wb.add_player(0, 0, "ana".into());
+        let charged_bare = drop_player(&mut wb, h_between);
+        let mut wc = world();
+        wc.add_player(0, 0, "ana".into());
+        give(&mut wc, 0, crate::items::registry::IRONMAN_BOOTS, 1);
+        let charged_booted = drop_player(&mut wc, h_between);
+        assert!(
+            charged_bare > 0.0,
+            "a {h_between:.0} px drop was free even bare-footed, so the pair \
+             below compares two free landings"
+        );
+        assert_eq!(
+            charged_booted, 0.0,
+            "a {h_between:.0} px drop cost a booted player {charged_booted} — \
+             it sits between the two thresholds and should be free in boots"
         );
 
         // **A scale, not immunity.** A fall deep enough to beat even the scaled
@@ -9863,9 +9985,19 @@ mod mount_wiring {
         assert_ne!(with_zero, a.state_hash(), "two platforms hash the same");
     }
 
-    /// Wings and a platform cannot both be in charge of gravity.
+    /// Wings and a platform cannot both be in charge of gravity — and since
+    /// 2026-09-16 the way that is guaranteed is that **a winged player never
+    /// mounts at all**.
+    ///
+    /// **This test asserted the opposite until then**, and was right to: T21.11B
+    /// resolved the clash by letting the mount win, so the old name was
+    /// `mounting_takes_precedence_over_flight`. The owner replaced the rule from
+    /// play — *"you cannot interact with teleports and machinegun platforms if
+    /// wearing them"* — so precedence is no longer the mechanism; refusal is. The
+    /// invariant underneath is unchanged and is still what the last assertion
+    /// checks: never both regimes at once.
     #[test]
-    fn mounting_takes_precedence_over_flight() {
+    fn wings_refuse_the_platform_outright() {
         let mut w = playing();
         let g = platform(&w);
         w.player_mut(0)
@@ -9884,10 +10016,43 @@ mod mount_wiring {
             GUN_PLATFORM_MOUNT_TIME * 1.5,
         );
         let mods = w.player(0).expect("there").move_mods();
-        assert!(mods.mounted, "the winged player never mounted");
         assert!(
-            !mods.flying,
-            "a mounted player is still flying — two gravity regimes at once"
+            !mods.mounted,
+            "a winged player mounted the platform — the refusal is not in force"
+        );
+        // Still flying, so the refusal did not quietly cost them the wings too.
+        assert!(
+            mods.flying,
+            "the winged player stopped flying without mounting"
+        );
+        assert!(
+            !(mods.mounted && mods.flying),
+            "two gravity regimes at once — the invariant the old precedence rule \
+             existed to protect"
+        );
+    }
+
+    /// The control for the refusal: the **same fixture without wings** mounts.
+    ///
+    /// Without this, `wings_refuse_the_platform_outright` passes against a
+    /// platform nobody can mount, a broken `drive` helper, or a fixture standing
+    /// nowhere near the platform — every one of which asserts "did not mount"
+    /// just as well as the rule does.
+    #[test]
+    fn the_same_player_without_wings_does_mount() {
+        let mut w = playing();
+        let g = platform(&w);
+        drive(
+            &mut w,
+            0,
+            &g,
+            Input::default(),
+            GUN_PLATFORM_MOUNT_TIME * 1.5,
+        );
+        assert!(
+            w.player(0).expect("there").move_mods().mounted,
+            "the bare-backed control never mounted, so the refusal above proves \
+             nothing about wings"
         );
     }
 }

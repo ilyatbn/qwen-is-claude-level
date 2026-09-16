@@ -18,7 +18,20 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const url = process.argv[2] ?? 'http://localhost:5173/?debug=1'
+// `e2e=1` is what exposes `window.__game` (`GameScene::exposeDebugHandle`), and
+// it gates **nothing else** — three call sites, all of them the handle. Without
+// it `make probe` prints `null` for a live match, which is the one thing the
+// interactive loop in `CLAUDE.md` exists to read.
+// **`debug=1` is deliberately NOT the default.** It turns on debug mode, which
+// draws its own `#debug-fps` readout that the Options toggle does not govern —
+// so the frame rate showed with the toggle off, and showed *twice* with it on
+// (`GameScene`'s counter sits at `top:26px` precisely to stack under it). Both
+// are dev-only; `no-dev-surface.mjs` proves `debug-fps` is absent from a
+// production bundle. Debug mode also draws the aim ring around the player. A
+// person playing the game wants to see the game — pass the URL explicitly when
+// you want the overlays: `make play URL='http://localhost:5173/?e2e=1&debug=1'`,
+// or press F1 in the window.
+const url = process.argv[2] ?? 'http://localhost:5173/?e2e=1'
 const port = Number(process.env.CDP_PORT ?? 9222)
 const runDir = join(root, '.run')
 mkdirSync(runDir, { recursive: true })
@@ -36,6 +49,18 @@ const child = spawn(
     '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
     '--disable-session-crashed-bubble',
+    // **The gate gets WebGL and this window did not.** `scripts/lib/browser-args.mjs`
+    // passes these to the headless Chrome every browser check runs in, so every
+    // shader effect (fog, fire, smoke, beams, explosions) is verified under WebGL —
+    // while the window a person actually plays in fell back to Phaser CANVAS, where
+    // `optionsPanel.ts::QUALITY_HINT_NO_WEBGL` disables High Quality outright. The
+    // effects were therefore tested in a browser nobody played in. Measured on this
+    // box: without these flags a fresh canvas returns no WebGL context at all; with
+    // them, `ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader
+    // driver)`. There is no GPU under WSLg, so software rendering is the only WebGL
+    // available and Chrome now refuses it unless asked twice.
+    '--use-gl=swiftshader',
+    '--enable-unsafe-swiftshader',
     '--new-window',
     url,
   ],

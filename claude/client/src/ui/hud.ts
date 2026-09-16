@@ -133,7 +133,38 @@ export function installFont(doc: Document): void {
  */
 export const DISPLAY_STACK = `'${FONT_FAMILY}',ui-monospace,SFMono-Regular,Menlo,monospace`
 
-/** Round timer, top-right; event banner, top-centre. */
+/** Round timer: distance from the top of the viewport, px. */
+export const TIMER_TOP = 10
+/** Round timer: line height, px. Its `font` size and its box are the same number. */
+export const TIMER_H = 40
+/**
+ * Event banner: directly below the timer, **derived** from it.
+ *
+ * Written as arithmetic over the two constants above rather than as a literal,
+ * because the whole point of the 2026-09-16 move is that the banner sits under
+ * the timer — and a literal that happens to clear it today is a literal that
+ * overlaps it the first time the timer's size changes. `hud.test.ts` asserts the
+ * ordering rather than the number.
+ */
+export const BANNER_TOP = TIMER_TOP + TIMER_H + 6
+
+/**
+ * Round timer, **top-centre**; event banner directly below it.
+ *
+ * **Both moved 2026-09-16**, owner, from play: *"theres a list of recent
+ * kills/deaths on the top right side of the screen but its hidden behind the
+ * timer … lets move the timer to the top center. notifications of incoming
+ * hazards shoud be below it."*
+ *
+ * The timer was `top:10px;right:14px` and `feelLayer`'s kill feed is
+ * `right:10px;top:10px` — the same corner, and the timer is 40 px of opaque
+ * display face drawn over the top of the feed. Two owners of one corner, neither
+ * aware of the other; moving the timer is what frees it.
+ *
+ * The banner was top-centre at `top:14px`, which is where the timer now is, so it
+ * moves down to clear it. `TIMER_H` is the one number both positions derive from,
+ * rather than two literals that agree until one of them is edited.
+ */
 export class Hud {
   readonly timer: HTMLDivElement
   readonly banner: HTMLDivElement
@@ -146,8 +177,9 @@ export class Hud {
     this.timer.id = 'hud-timer'
     this.timer.dataset['warn'] = '0'
     this.timer.style.cssText =
-      'position:fixed;top:10px;right:14px;z-index:12;pointer-events:none;' +
-      `font:700 40px/1 ${DISPLAY_STACK};letter-spacing:1px;` +
+      `position:fixed;top:${TIMER_TOP}px;left:50%;transform:translateX(-50%);` +
+      'z-index:12;pointer-events:none;' +
+      `font:700 ${TIMER_H}px/1 ${DISPLAY_STACK};letter-spacing:1px;` +
       'color:#ffffff;text-shadow:0 2px 4px rgba(0,0,0,.85);'
     doc.body.appendChild(this.timer)
 
@@ -158,7 +190,7 @@ export class Hud {
     // the whole top of the screen and swallows nothing (it is pointer-events
     // none) but does make the empty case impossible to assert on by geometry.
     this.banner.style.cssText =
-      'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:12;' +
+      `position:fixed;top:${BANNER_TOP}px;left:50%;transform:translateX(-50%);z-index:12;` +
       `pointer-events:none;font:700 34px/1.1 ${DISPLAY_STACK};letter-spacing:2px;` +
       'color:#ff3b30;text-shadow:0 2px 6px rgba(0,0,0,.9);display:none;'
     doc.body.appendChild(this.banner)

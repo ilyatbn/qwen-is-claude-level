@@ -77,7 +77,7 @@ import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
 import { hazardKind } from '../render/ordnanceFx-math'
 import { cycleU, darknessAt } from '../render/sky-math'
-import { formatClock, phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
+import { phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
 import { ResultsScreen } from '../ui/results'
 import { parseVoteTally, phaseDeadline, secondsUntil } from '../ui/results-math'
 import { fuelText, fuelTrend, jetReadoutText } from '../ui/jetpackReadout-math'
@@ -1361,17 +1361,22 @@ export class GameScene extends Phaser.Scene {
     const init = this.mirror.applyMapInitB64(b64)
 
     this.world?.destroy()
-    this.world = new WorldView(this, this.core)
+    // **The seed and theme come off the wire** (2026-09-16). `core.meta` carries
+    // neither on a networked client — `loadMask` clones the startup map's meta —
+    // so `WorldView` was building every round's rock from seed 1 and theme 0.
+    // `this.mapSeed` is the same value the sky already uses, two lines below.
+    this.world = new WorldView(this, this.core, undefined, this.mapSeed, init.theme)
 
-    // The **same** theme the terrain resolves, not a second opinion: `WorldView`
-    // reads `core.meta.theme` for the rock palette, so reading it here is what
-    // keeps a distant ridge the colour of the ground in front of it. The theme
-    // is not on the wire today, so both are 0 in a networked round — and they
-    // are 0 *together*, which is the property that matters.
+    // The **same** theme the terrain resolves, not a second opinion: both now
+    // read `map_init`'s theme, so a distant ridge stays the colour of the ground
+    // in front of it. **The old note here said the theme "is not on the wire
+    // today" and that was wrong** — `codec.rs` has written it into `map_init`
+    // all along and `codec.ts` decodes it; the two were agreeing on 0 because
+    // both read `core.meta`, not because there was nothing better to read.
     // T21.31: the clouds' ground and wind too. **The wind off `map_init`**, not
     // `core.meta`, which a networked client never generates (see §C5 below).
     const core = this.core
-    this.sky.setSeed(this.mapSeed, core.meta.theme, {
+    this.sky.setSeed(this.mapSeed, init.theme, {
       width: core.width,
       height: core.height,
       solidAt: (x, y) => core.solidAt(x, y),
@@ -2253,10 +2258,12 @@ export class GameScene extends Phaser.Scene {
 
     // T21.24: the optional frame-rate readout.
     //
-    // **Top-left, which is the one corner of a round nothing else claims** — the
-    // clock is `top:10px;right:14px`, the event banner `top:14px` centred, the
-    // bars, jetpack and quick bar are along the bottom and the minimap is
-    // bottom-right. Offset to `top:26px` because `#debug-fps` sits at `top:8px`:
+    // **Top-left, which is the one corner of a round nothing else claims** — since
+    // 2026-09-16 the clock and the event banner are both top-*centre* (the clock
+    // moved off the kill feed, the banner moved below the clock), the kill feed
+    // has the top-right to itself, the bars, jetpack and quick bar are along the
+    // bottom and the minimap is bottom-right. Offset to `top:26px` because
+    // `#debug-fps` sits at `top:8px`:
     // in a dev build with F1 on, the two readouts stack instead of overprinting,
     // which is the mistake the jetpack number made over the round clock.
     //
@@ -2555,9 +2562,13 @@ export class GameScene extends Phaser.Scene {
     // The join code stays: someone arriving late still needs it, and nothing
     // else shows it once the banner has gone.
     const strip = this.joinCode ? `code ${this.joinCode}` : ''
-    const lines = [
-      [status, banner ?? formatClock(this.timeLeft), strip].filter((p) => p !== '').join('   │   '),
-    ]
+    // **The clock came out of this strip on 2026-09-16**, owner, from play:
+    // *"honestly i see we have two timers. one on the bottom left and one top
+    // right."* They were the same number twice — `#hud-timer` and this — and this
+    // is the worse copy: 12 px monospace at the bottom edge against 40 px of
+    // display face. `phaseBanner` stays, because "Warmup" and "Round over" are
+    // words the big timer does not carry, and it brings its own clock with it.
+    const lines = [[status, banner ?? '', strip].filter((p) => p !== '').join('   │   ')]
     if (this.scoreboardOpen) lines.push(board)
     this.hud.textContent = lines.join('\n')
 

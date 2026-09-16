@@ -242,7 +242,17 @@ export class PlayerView {
     ensureWeaponTextures(scene.textures)
     // Starts as the generic bar and is replaced by `setWeapon` the moment the
     // HUD knows what is selected — a player holding nothing still needs a hand.
-    this.weapon = scene.add.rectangle(0, -c.PLAYER_H * 0.35, 14, 4, 0x2a2f36).setOrigin(0, 0.5)
+    // **The placeholder bar is gone** (owner, 2026-09-16, from play: *"still
+    // seeing the black bar coming out of the character. if irrelevant for your
+    // debugging purposes remove it."*). It was never a debug aid — it was the
+    // stand-in for a weapon with no art, and since only three weapons have any
+    // (`weaponTextures.ts`), it is what every player held all the time.
+    //
+    // An empty, zero-sized rectangle rather than a `null` weapon: `setState`
+    // rotates and scales this every frame and `setWeapon` swaps it by index, so
+    // keeping the slot filled is what stops both of them growing a null check
+    // each. It draws nothing because it has no size and no fill alpha.
+    this.weapon = scene.add.rectangle(0, -c.PLAYER_H * 0.35, 0, 0, 0, 0).setOrigin(0, 0.5)
     this.scene = scene
 
     this.shieldBubble = scene.add
@@ -399,9 +409,9 @@ export class PlayerView {
         .image(0, -c.PLAYER_H * 0.35, art.key)
         .setOrigin(art.pivot.x, art.pivot.y)
     } else {
-      this.weapon = this.scene.add
-        .rectangle(0, -c.PLAYER_H * 0.35, 14, 4, 0x2a2f36)
-        .setOrigin(0, 0.5)
+      // Same as the constructor: a weapon with no art draws nothing at all,
+      // rather than the black bar the owner asked to be rid of.
+      this.weapon = this.scene.add.rectangle(0, -c.PLAYER_H * 0.35, 0, 0, 0, 0).setOrigin(0, 0.5)
     }
     this.container.addAt(this.weapon, Math.max(0, idx))
   }

@@ -3,8 +3,8 @@
 //! See `docs/13-weather-effects.md` §1–§2.
 
 use crate::constants::{
-    EFFECT_INTERVAL_MAX, EFFECT_INTERVAL_MIN, EFFECT_TELEGRAPH, FOG_DURATION, METEOR_DURATION,
-    TOXIC_DURATION, TOXIC_RAIN_ENABLED,
+    EFFECT_INTERVAL_MAX, EFFECT_INTERVAL_MIN, EFFECT_TELEGRAPH, FOG_DURATION, LAVA_ENABLED,
+    METEOR_DURATION, TOXIC_DURATION, TOXIC_RAIN_ENABLED,
 };
 use crate::rng::{pick_weighted, range_f32, substream, ChaCha8Rng};
 use crate::weapons::explode::EffectKind;
@@ -23,6 +23,23 @@ const KINDS: [EffectKind; 4] = [
     EffectKind::LavaBurst,
     EffectKind::HeavyFog,
 ];
+
+/// Which kinds this build may roll, in `KINDS` order.
+///
+/// **The one place the switches are read**, so a kind that is off is off in the
+/// scheduler, in the hash and in every test that builds a real scheduler — and a
+/// third switch is a line here rather than a new field.
+fn enabled_from_constants() -> [bool; KINDS.len()] {
+    let mut on = [true; KINDS.len()];
+    for (i, k) in KINDS.iter().enumerate() {
+        on[i] = match k {
+            EffectKind::ToxicRain => TOXIC_RAIN_ENABLED,
+            EffectKind::LavaBurst => LAVA_ENABLED,
+            _ => true,
+        };
+    }
+    on
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum EffectPhase {
@@ -79,9 +96,15 @@ pub struct EffectScheduler {
     /// Guards against a caller ticking twice with the same `now`, which would
     /// otherwise advance a phase boundary twice.
     last_now: Option<f32>,
-    /// May `roll_kind` pick toxic rain? `TOXIC_RAIN_ENABLED` in every build; a field
-    /// only so the switch-on control test can run beside the switch-off one (T21.39).
-    toxic_enabled: bool,
+    /// Which of `KINDS` may `roll_kind` pick? Read from the constants in every
+    /// build; a field only so the switch-on control tests can run beside the
+    /// switch-off ones (T21.39, and lava on 2026-09-16).
+    ///
+    /// **An array indexed by `KINDS`, not a bool per kind.** Two switched-off
+    /// kinds meant a second bool, and a third would have meant a third — and the
+    /// thing `roll_kind` actually wants is "the weight of a disabled kind is
+    /// zero", which is one rule over a table rather than one clause per kind.
+    enabled: [bool; KINDS.len()],
 }
 
 impl EffectScheduler {
@@ -116,16 +139,18 @@ impl EffectScheduler {
         h.update(&[self.last_kind.map_or(255, |k| k as u8)]);
         h.update(&self.next_id.to_le_bytes());
         h.update(&self.last_now.unwrap_or(f32::NAN).to_le_bytes());
-        h.update(&[u8::from(self.toxic_enabled)]);
+        for on in self.enabled {
+            h.update(&[u8::from(on)]);
+        }
         let mut probe = self.rng.clone();
         h.update(&rand::RngCore::next_u64(&mut probe).to_le_bytes());
     }
 
     pub fn new(seed: u64, round_start: f32) -> Self {
-        Self::with_toxic(seed, round_start, TOXIC_RAIN_ENABLED)
+        Self::with_enabled(seed, round_start, enabled_from_constants())
     }
 
-    fn with_toxic(seed: u64, round_start: f32, toxic_enabled: bool) -> Self {
+    fn with_enabled(seed: u64, round_start: f32, enabled: [bool; KINDS.len()]) -> Self {
         let mut rng = substream(seed, "weather");
         let next_at = round_start + range_f32(&mut rng, EFFECT_INTERVAL_MIN, EFFECT_INTERVAL_MAX);
         Self {
@@ -135,7 +160,7 @@ impl EffectScheduler {
             last_kind: None,
             next_id: 0,
             last_now: None,
-            toxic_enabled,
+            enabled,
         }
     }
 
@@ -225,15 +250,25 @@ impl EffectScheduler {
     /// mass toward the lighter kinds, and that shift is the same for any correct
     /// implementation of "never repeat".
     ///
-    /// **T21.39: toxic rain's weight is zeroed while `TOXIC_RAIN_ENABLED` is false**, the
-    /// same way the last kind's is — so the variant, its weight and its duration stay,
-    /// and a draw is still the conditional distribution over what is left. With 3:2:2
-    /// (meteor, lava, fog) and no repeats the stationary shares are 0.375/0.3125/0.3125.
-    /// Never an empty table: at most two of four weights are zeroed.
+    /// **A switched-off kind's weight is zeroed**, the same way the last kind's is —
+    /// so the variant, its weight and its duration stay, and a draw is still the
+    /// conditional distribution over what is left.
+    ///
+    /// **Two kinds are off as of 2026-09-16** (toxic rain, T21.39; lava, the owner
+    /// from play), which leaves meteor 3 and fog 2. Combined with never-repeat that
+    /// is not a distribution at all: with exactly two kinds live, the one that did
+    /// not just run is the only one with a non-zero weight, so **the weather strictly
+    /// alternates meteor, fog, meteor, fog** and the 3:2 weighting stops meaning
+    /// anything. That is a consequence of switching two of four off, not a bug here,
+    /// and it is what `two_live_kinds_alternate` pins so it is noticed rather than
+    /// discovered. Switching either kind back on restores a real draw.
+    ///
+    /// Never an empty table — three of four weights can now be zero at once, which
+    /// is what `a_draw_is_always_possible` guards.
     fn roll_kind(&mut self) -> EffectKind {
         let mut weights = WEIGHTS;
-        if !self.toxic_enabled {
-            if let Some(i) = KINDS.iter().position(|k| *k == EffectKind::ToxicRain) {
+        for (i, on) in self.enabled.iter().enumerate() {
+            if !on {
                 weights[i] = 0;
             }
         }
@@ -488,45 +523,78 @@ mod tests {
             .position(|k| *k == EffectKind::ToxicRain)
             .unwrap();
         for seed in 0..40u64 {
-            let counts = kind_counts(EffectScheduler::with_toxic(seed, 0.0, true), 6_000.0);
+            let counts = kind_counts(
+                EffectScheduler::with_enabled(seed, 0.0, [true; KINDS.len()]),
+                6_000.0,
+            );
             assert!(counts[toxic] > 0, "seed {seed}: {counts:?}");
         }
     }
 
-    /// The live odds, with toxic rain switched off (T21.39): weights 3:2:2 for meteor,
-    /// lava, fog under the no-repeat rule. Stationary shares, solved by hand:
-    /// π_meteor = 0.6·(1 − π_meteor) → 0.375, and lava = fog = 0.3125.
+    /// The live odds with the switches where they actually are.
+    ///
+    /// **Rewritten 2026-09-16 when lava was switched off.** It used to pin
+    /// 0.375/0.3125/0.3125 — the shares for weights 3:2:2 over meteor, lava and
+    /// fog with toxic rain alone disabled. Lava going off leaves **two** live
+    /// kinds, and never-repeat over two kinds is not a distribution: whichever
+    /// did not just run is the only one with a non-zero weight, so the run
+    /// alternates and both shares are exactly 0.5. The 3:2 weighting no longer
+    /// reaches the outcome at all.
+    ///
+    /// **So this test is derived from the switches rather than from a written
+    /// table**, because a hand-solved table is what went stale here. It computes
+    /// what the live set implies and checks the run against that — one live kind
+    /// would be 1.0, two alternate at 0.5 each, three or more get the Markov
+    /// solve back. `two_live_kinds_alternate` pins the alternation itself, which
+    /// is the part a share of 0.5 cannot distinguish from a fair coin.
     #[test]
-    fn the_live_distribution_without_toxic_rain() {
-        if TOXIC_RAIN_ENABLED {
-            return; // the table below is the one pinned for the switch-on case
-        }
+    fn the_live_distribution_matches_the_live_switches() {
+        let live: Vec<usize> = enabled_from_constants()
+            .iter()
+            .enumerate()
+            .filter(|(_, on)| **on)
+            .map(|(i, _)| i)
+            .collect();
         let counts = kind_counts(EffectScheduler::new(31337, 0.0), 400_000.0);
         let total: usize = counts.iter().sum();
         assert!(total > 10_000, "only {total} effects");
-        let expected = [0.0, 0.375, 0.3125, 0.3125];
-        for i in 0..4 {
-            let share = counts[i] as f32 / total as f32;
-            assert!(
-                (share - expected[i]).abs() < 0.012,
-                "{:?}: {share:.4} vs {:.4}",
-                KINDS[i],
-                expected[i]
-            );
+
+        // Nothing switched off ever runs. This is the half that would catch a
+        // disabled kind leaking back in, and it does not depend on the shares.
+        for (i, on) in enabled_from_constants().iter().enumerate() {
+            if !on {
+                assert_eq!(counts[i], 0, "{:?} ran while switched off", KINDS[i]);
+            }
         }
-        // The no-repeat rule is still visible: raw 3:2:2 would give meteor 3/7.
-        let heavy = counts[1] as f32 / total as f32;
-        assert!(
-            (heavy - 3.0 / 7.0).abs() > 0.03,
-            "meteor share {heavy:.4} is indistinguishable from the raw 3/7"
-        );
+
+        if live.len() == 2 {
+            for &i in &live {
+                let share = counts[i] as f32 / total as f32;
+                assert!(
+                    (share - 0.5).abs() < 0.012,
+                    "{:?}: {share:.4} vs 0.5000 — with two live kinds and \
+                     never-repeat the run must alternate",
+                    KINDS[i]
+                );
+            }
+        } else {
+            // Three or more live: the no-repeat Markov chain is back and the
+            // shares are no longer forced. Assert only that every live kind runs,
+            // and leave the solved table to the switch-on test below.
+            for &i in &live {
+                assert!(counts[i] > 0, "{:?} never ran: {counts:?}", KINDS[i]);
+            }
+        }
     }
 
     /// The 3:3:2:2 table, pinned with the switch **on** — what the rewrite (T21.41)
     /// turns back on, and the control that the zeroing above is the only change.
     #[test]
     fn the_weighted_distribution_matches_the_table() {
-        let counts = kind_counts(EffectScheduler::with_toxic(31337, 0.0, true), 400_000.0);
+        let counts = kind_counts(
+            EffectScheduler::with_enabled(31337, 0.0, [true; KINDS.len()]),
+            400_000.0,
+        );
         let total: usize = counts.iter().sum();
         assert!(total > 10_000, "only {total} effects");
         // Standard error at this sample size is ~0.004, so 0.012 is a 3-sigma
@@ -724,5 +792,67 @@ mod tests {
         }
         assert!(s.active().is_empty());
         assert!(!s.is_active(EffectKind::HeavyFog));
+    }
+
+    /// **Three of four weights can be zero at once** now that two kinds are
+    /// switched off and `roll_kind` also zeroes whatever just ran. This is the
+    /// guard that there is still something to draw.
+    ///
+    /// Falsified by hand: zeroing the fourth (setting `enabled` all-false) makes
+    /// `pick_weighted` face an empty table, which is the panic this rules out.
+    #[test]
+    fn a_draw_is_always_possible() {
+        let live = enabled_from_constants().iter().filter(|on| **on).count();
+        assert!(
+            live >= 2,
+            "only {live} weather kind(s) are switched on — with never-repeat \
+             zeroing one more, a draw has nothing left to pick from"
+        );
+        // Not a proof by reasoning: roll a real scheduler a long way and let it
+        // panic if the table ever empties.
+        for seed in [1u64, 7, 4242, 31337] {
+            let counts = kind_counts(EffectScheduler::new(seed, 0.0), 6_000.0);
+            assert!(
+                counts.iter().sum::<usize>() > 0,
+                "seed {seed} started no effects at all in 6000 s: {counts:?}"
+            );
+        }
+    }
+
+    /// **With exactly two kinds live the weather alternates**, because
+    /// never-repeat leaves precisely one non-zero weight. Pinned so the
+    /// consequence of switching two of four off is visible here rather than
+    /// discovered in a match.
+    ///
+    /// Falsified by re-enabling a third kind in `enabled`: the run stops
+    /// alternating and the assertion reds.
+    #[test]
+    fn two_live_kinds_alternate() {
+        let live: Vec<EffectKind> = KINDS
+            .iter()
+            .zip(enabled_from_constants())
+            .filter(|(_, on)| *on)
+            .map(|(k, _)| *k)
+            .collect();
+        if live.len() != 2 {
+            return; // a third kind came back on; this property is not claimed then
+        }
+        let mut s = EffectScheduler::new(2026, 0.0);
+        let mut seen: Vec<EffectKind> = Vec::new();
+        let ticks = (6_000.0 / DT) as u32;
+        for i in 0..ticks {
+            for ev in s.tick(i as f32 * DT, 1.0e9) {
+                if let EffectEvent::Started { kind, .. } = ev {
+                    seen.push(kind);
+                }
+            }
+        }
+        assert!(seen.len() >= 6, "only {} effects started", seen.len());
+        for w in seen.windows(2) {
+            assert_ne!(w[0], w[1], "the same kind ran twice running: {seen:?}");
+        }
+        for k in &seen {
+            assert!(live.contains(k), "{k:?} ran while switched off: {seen:?}");
+        }
     }
 }

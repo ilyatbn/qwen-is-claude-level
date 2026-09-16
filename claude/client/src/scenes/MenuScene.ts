@@ -18,7 +18,6 @@ import {
   type MenuAction,
   type MenuModel,
   type Screen,
-  stepIndex,
 } from '../ui/menu'
 import {
   checkCode,
@@ -30,7 +29,6 @@ import {
   isRecord,
   settingsControls,
   stepSetting,
-  SCALES,
   type Identity,
   type LobbyStateMsg,
   type Scale,
@@ -281,25 +279,28 @@ export class MenuScene extends Phaser.Scene {
     }
 
     if (m.screen === 'private') {
-      // Host or join — the two things a private game can be (§E7). Hosting
-      // carries the map size, because the host owns the settings (§E3), and it
-      // is the same stepper the lobby shows: one control, built once.
+      // Host or join — the two things a private game can be (§E7).
+      //
+      // **The map size stepper was removed here on 2026-09-16**, owner, from
+      // play: *"when creating a private game the map size is shown before you
+      // choose to host or join. it shouldnt be there anymore since its in the
+      // options."* It asked the question before the answer could matter: a
+      // guest about to press Join never owns the setting (§E3 gives it to the
+      // host), so half of everyone who saw it was being offered a control that
+      // would be discarded one click later.
+      //
+      // Hosting is unaffected. `createRoom` still sends `this.model.scale`,
+      // which is the persisted value from `loadScale`, and the host can change
+      // it in the lobby — the same `scale` row as `bots`, `kit` and `timer`,
+      // over the wire, where every player can see what it is now.
       el.innerHTML = `
         <h2>Private game</h2>
-        <div class="settings-row">
-          <span class="setting-name">Map size</span>
-          <button id="scale-prev" aria-label="Smaller map">‹</button>
-          <span class="setting-value" id="scale-value">${m.scale.toUpperCase()}</span>
-          <button id="scale-next" aria-label="Larger map">›</button>
-        </div>
         <div class="actions">
           <button id="host">Host</button>
           <button id="join">Join</button>
           <button id="back">Back</button>
         </div>
         ${err}`
-      el.querySelector('#scale-prev')?.addEventListener('click', () => this.stepMenuScale(-1))
-      el.querySelector('#scale-next')?.addEventListener('click', () => this.stepMenuScale(1))
       el.querySelector('#host')?.addEventListener('click', () => this.createRoom())
       el.querySelector('#join')?.addEventListener('click', () =>
         this.dispatch({ type: 'go', screen: 'join' }),
@@ -470,10 +471,17 @@ export class MenuScene extends Phaser.Scene {
     }
   }
 
-  /** Whichever stepper the current screen owns. */
+  /**
+   * Whichever stepper the current screen owns.
+   *
+   * The `private` screen owned one until 2026-09-16 and now owns none — the map
+   * size moved to the lobby entirely. Left-and-right there does nothing, which
+   * is correct: there is no longer a control for the keys to drive, and binding
+   * them to an invisible model field is how a setting changes with nothing on
+   * screen to say so.
+   */
   private stepEither(delta: number): void {
-    if (this.model.screen === 'private') this.stepMenuScale(delta)
-    else if (this.model.screen === 'lobby') this.step('scale', delta)
+    if (this.model.screen === 'lobby') this.step('scale', delta)
   }
 
   /**
@@ -488,20 +496,11 @@ export class MenuScene extends Phaser.Scene {
     return { min: c.ROUND_SECONDS_MIN, max: c.ROUND_SECONDS_MAX, step: c.ROUND_SECONDS_STEP }
   }
 
-  /**
-   * The menu's own stepper, before a lobby exists.
-   *
-   * Same wrap, same order, same `SCALES` as the lobby's `scale` row — the
-   * difference is only where the answer goes: here into the model that
-   * `createRoom` will send, and there over the wire to a room that already
-   * exists. Both go through `stepIndex` so "what is the next size" has one
-   * answer, and both read the one `SCALES` in `net/lobby` — this file used to
-   * declare a second copy of that list.
-   */
-  private stepMenuScale(delta: number): void {
-    const next = SCALES[stepIndex(SCALES.indexOf(this.model.scale), delta, SCALES.length)]
-    if (next) this.dispatch({ type: 'setScale', scale: next })
-  }
+  // `stepMenuScale` was deleted on 2026-09-16 with the `private` screen's map
+  // size stepper — its only caller. T21.27's rule: a method kept "in case",
+  // with no production caller, reads as a guarded capability and is not one.
+  // `createRoom` sends `this.model.scale` straight from `loadScale`, and the
+  // lobby's `step('scale', …)` is the one stepper left.
 
   /**
    * Move one setting one step, over the wire.

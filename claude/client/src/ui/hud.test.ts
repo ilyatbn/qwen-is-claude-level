@@ -2,6 +2,9 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
+  BANNER_TOP,
+  TIMER_H,
+  TIMER_TOP,
   bannerText,
   clockText,
   effectLabel,
@@ -132,5 +135,20 @@ describe('bannerText', () => {
     // ...and falls back to the other one once that has gone, rather than to
     // nothing — the second effect is still running.
     expect(bannerText(both, 50)).toBe('Heavy Fog 0:40')
+  })
+})
+
+/**
+ * The 2026-09-16 layout move, asserted as an **ordering** rather than as the
+ * numbers themselves.
+ *
+ * Pinning `BANNER_TOP === 56` would pass the day someone shrinks the timer and
+ * leaves a 20 px hole, and fail the day someone adds a pixel of padding for a
+ * good reason. What the owner asked for is *"notifications of incoming hazards
+ * shoud be below it"*, and that is a relation between two boxes.
+ */
+describe('the top-centre HUD stack', () => {
+  it('puts the hazard banner clear of the bottom of the timer', () => {
+    expect(BANNER_TOP).toBeGreaterThanOrEqual(TIMER_TOP + TIMER_H)
   })
 })

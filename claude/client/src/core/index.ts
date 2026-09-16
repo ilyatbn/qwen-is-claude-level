@@ -215,6 +215,8 @@ export interface Constants {
   TOXIC_DROPS_IN_FLIGHT: number
   /** T21.39: toxic rain is switched off while this is false. */
   TOXIC_RAIN_ENABLED: boolean
+  /** Owner 2026-09-16: lava bursts are switched off while this is false. */
+  LAVA_ENABLED: boolean
   AMBIENT_RAIN_WINDOW: number
   AMBIENT_RAIN_CHANCE: number
   AMBIENT_RAIN_MIN: number

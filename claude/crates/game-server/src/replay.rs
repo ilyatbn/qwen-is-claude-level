@@ -165,7 +165,29 @@ pub const HEADER_BYTES: usize = 45;
 /// way without a bump**: it landed after T21.29's 8 (11:32 → 12:54 that day), so a v8
 /// recording made in that window replayed onto a different map. T21.39's 9 retired
 /// those; every v9–v11 recording postdates T21.28, and this number covers T21.40.
-pub const REPLAY_VERSION: u16 = 12;
+/// **13 (the owner's 2026-09-16 play session)**: six changes in one bump, because they
+/// landed in one sitting and every one of them is the silent divergence case — no new
+/// tag, no layout change, a v12 recording simply disagrees at the first checkpoint.
+///
+///  - **Fall damage.** `FALL_SAFE_SPEED` 480 → 678.8 (the free drop height doubled,
+///    82 → 165 px) and `FALL_DAMAGE_PER_SPEED` 0.025 → 0.046 to keep the deepest fall
+///    above the tenth-of-a-bar floor. Every landing in the file is charged differently.
+///  - **Boots.** `BOOTS_JUMP_HEIGHT_MULT` 3.0 → 2.25, so the same input reaches a
+///    different apex from the first jump. Fall protection split out as
+///    `BOOTS_FALL_HEIGHT_MULT` and kept at 3.0, so the threshold itself is unchanged.
+///  - **Wings.** `WINGS_SPEED_MULT` 0.9 multiplies into `speed_multiplier`, so a
+///    winged player's horizontal position diverges on the first tick they move.
+///  - **Wings refuse pads and platforms.** `teleport::step` gains an `eligible`
+///    argument and `step_mount` sees no platform under a winged player — a v12 file
+///    in which anyone teleported or mounted while carrying wings replays differently.
+///  - **Lava switched off.** `LAVA_ENABLED` is false, so the scheduler zeroes lava's
+///    weight and the same seed draws a different sequence of effects. With toxic rain
+///    already off this leaves two kinds, which never-repeat turns into a strict
+///    alternation — the sequence is not merely reweighted, it is deterministic.
+///  - **The scheduler's hash changed shape.** `toxic_enabled` (one byte) became
+///    `enabled: [bool; 4]` (four), so every checkpoint hash moves even in a round
+///    where no effect ever rolled.
+pub const REPLAY_VERSION: u16 = 13;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

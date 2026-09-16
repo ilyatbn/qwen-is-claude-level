@@ -7,7 +7,7 @@ use crate::constants::{
     DEATH_POINTS, FALL_DAMAGE_PER_SPEED, FALL_SAFE_SPEED, HEALTH_CAP, HEALTH_SPEED_MIN,
     KILL_POINTS, LASER_BATTERY_DRAIN, LASER_SHIELD_MULT, LIFESTEAL_DAMAGE_PER_HP, OVERHEAL_DECAY,
     RESPAWN_DELAY, SHIELD_DAMAGE_MULT, SHIELD_HIT_COST, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST,
-    TOXIC_POISON_DURATION,
+    TOXIC_POISON_DURATION, WINGS_SPEED_MULT,
 };
 use crate::items::inventory::{Inventory, Stack};
 use crate::items::registry::{def, ItemId, ItemKind, UtilityId, WeaponId};
@@ -426,10 +426,22 @@ impl PlayerState {
         // player in boots is faster than a hurt player without them and slower
         // than a healthy one in them, which is the only reading under which both
         // rules still mean something.
-        if self.holds_utility(UtilityId::IronmanBoots) {
+        let booted = if self.holds_utility(UtilityId::IronmanBoots) {
             health * BOOTS_SPEED_MULT
         } else {
             health
+        };
+        // T21.03's wings, slowed on 2026-09-16 — *"an additional 10%"*, so it
+        // multiplies the two terms above rather than replacing either. It lands
+        // here and not in `movement.rs` for the reason the boots clause gives:
+        // this function is the one answer to "how fast is this player", the wasm
+        // mirror calls it, and `prediction.ts` predicts through the same
+        // `MoveMods.speed` this feeds. A slow the client did not know about
+        // ships as rubber-banding, not as a slower player.
+        if self.holds_utility(UtilityId::UnicornWings) {
+            booted * WINGS_SPEED_MULT
+        } else {
+            booted
         }
     }
 

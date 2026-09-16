@@ -508,8 +508,12 @@ export class SandboxScene extends Phaser.Scene {
       ['Lava', 2],
       ['Fog FX', 3],
     ] as const) {
-      // T21.39: no Toxic button while toxic rain is switched off.
+      // No button for a kind that is switched off — T21.39 for toxic rain,
+      // the owner's 2026-09-16 call for lava. A button that silently does
+      // nothing is worse than an absent one: `force_effect` already refuses
+      // both, so the click would look like a broken sandbox.
       if (kind === 0 && !C().TOXIC_RAIN_ENABLED) continue
+      if (kind === 2 && !C().LAVA_ENABLED) continue
       r4.append(button(name, () => this.core.forceEffect(kind, this.weatherTime)))
     }
     r4.prepend(label('weather'))

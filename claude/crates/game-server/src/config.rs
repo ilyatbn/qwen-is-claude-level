@@ -191,10 +191,10 @@ pub struct Config {
 
 /// Parse `WEATHER`. Unset is `Auto`; every other value must be spelled exactly.
 ///
-/// **`toxic` is refused while `TOXIC_RAIN_ENABLED` is false** (T21.39), with a message
-/// naming why — not quietly mapped to `off`, for the reason every other bad spelling is
-/// refused: a check that asked for toxic rain and got a clear sky fails an hour later
-/// somewhere else.
+/// **A switched-off kind is refused**, with a message naming why — not quietly mapped
+/// to `off`, for the reason every other bad spelling is refused: a check that asked for
+/// toxic rain and got a clear sky fails an hour later somewhere else. `toxic` since
+/// T21.39; `lava` since 2026-09-16.
 fn parse_weather(v: &str) -> Option<WeatherMode> {
     Some(match v {
         "auto" => WeatherMode::Auto,
@@ -204,9 +204,39 @@ fn parse_weather(v: &str) -> Option<WeatherMode> {
             WeatherMode::Always(EffectKind::ToxicRain)
         }
         "meteor" => WeatherMode::Always(EffectKind::MeteorShower),
-        "lava" => WeatherMode::Always(EffectKind::LavaBurst),
+        "lava" if game_core::constants::LAVA_ENABLED => WeatherMode::Always(EffectKind::LavaBurst),
         _ => return None,
     })
+}
+
+/// The `WEATHER` spellings this build accepts, for the error message.
+///
+/// **Built from the switches rather than written out.** Two hand-maintained lists
+/// drifted apart the moment lava joined toxic rain — the `if v == "toxic"` special case
+/// this replaced named lava as still accepted while the parser had just stopped
+/// accepting it.
+fn weather_spellings() -> String {
+    let mut out = vec!["auto", "off", "fog", "meteor"];
+    if game_core::constants::TOXIC_RAIN_ENABLED {
+        out.push("toxic");
+    }
+    if game_core::constants::LAVA_ENABLED {
+        out.push("lava");
+    }
+    format!("one of: {}", out.join(", "))
+}
+
+/// Why a spelling that names a real kind was still refused, or `None` if it was not one.
+fn weather_switched_off(v: &str) -> Option<&'static str> {
+    match v {
+        "toxic" if !game_core::constants::TOXIC_RAIN_ENABLED => {
+            Some("toxic rain is disabled (TOXIC_RAIN_ENABLED, T21.41)")
+        }
+        "lava" if !game_core::constants::LAVA_ENABLED => {
+            Some("lava bursts are disabled (LAVA_ENABLED, owner 2026-09-16)")
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -428,14 +458,9 @@ impl Config {
                 Some(v) => parse_weather(&v).ok_or_else(|| ConfigError {
                     var: "WEATHER",
                     value: v.clone(),
-                    expected: if v == "toxic" {
-                        "one of: auto, off, fog, meteor, lava — toxic rain is disabled \
-                         (TOXIC_RAIN_ENABLED, T21.41)"
-                            .to_string()
-                    } else if game_core::constants::TOXIC_RAIN_ENABLED {
-                        "one of: auto, off, fog, toxic, meteor, lava".to_string()
-                    } else {
-                        "one of: auto, off, fog, meteor, lava".to_string()
+                    expected: match weather_switched_off(&v) {
+                        Some(why) => format!("{} — {why}", weather_spellings()),
+                        None => weather_spellings(),
                     },
                 })?,
                 None => d.weather_mode,
@@ -726,19 +751,64 @@ mod tests {
             WeatherMode::Auto,
             "an unset WEATHER changed the shipping behaviour"
         );
+        // **The always-accepted spellings.** A kind that can be switched off does
+        // not belong in this list — it belongs in the pair below, which asserts
+        // *whichever* of accept-or-refuse the switch currently calls for. Writing
+        // `lava` here was what made this test red the day lava was switched off,
+        // and a list that has to be edited every time a switch moves is a second
+        // copy of the switch.
         for (v, want) in [
             ("auto", WeatherMode::Auto),
             ("off", WeatherMode::Off),
             ("none", WeatherMode::Off),
             ("fog", WeatherMode::Always(EffectKind::HeavyFog)),
             ("meteor", WeatherMode::Always(EffectKind::MeteorShower)),
-            ("lava", WeatherMode::Always(EffectKind::LavaBurst)),
         ] {
             assert_eq!(
                 from(&[("WEATHER", v)]).expect("ok").weather_mode,
                 want,
                 "WEATHER={v}"
             );
+        }
+        // The switchable kinds, each asserted against its own switch: accepted
+        // when it is on, refused with a message naming the switch when it is off.
+        for (v, on, want) in [
+            (
+                "toxic",
+                game_core::constants::TOXIC_RAIN_ENABLED,
+                WeatherMode::Always(EffectKind::ToxicRain),
+            ),
+            (
+                "lava",
+                game_core::constants::LAVA_ENABLED,
+                WeatherMode::Always(EffectKind::LavaBurst),
+            ),
+        ] {
+            if on {
+                assert_eq!(
+                    from(&[("WEATHER", v)]).expect("ok").weather_mode,
+                    want,
+                    "WEATHER={v} is switched on and was not accepted"
+                );
+                assert!(
+                    weather_spellings().contains(v),
+                    "WEATHER={v} is accepted but the error message does not offer it"
+                );
+            } else {
+                let err = from(&[("WEATHER", v)])
+                    .expect_err("WEATHER={v} was accepted while switched off");
+                assert_eq!(err.var, "WEATHER");
+                assert!(
+                    err.expected.contains("disabled"),
+                    "WEATHER={v} was refused without saying it is switched off: {}",
+                    err.expected
+                );
+                assert!(
+                    !weather_spellings().contains(v),
+                    "WEATHER={v} is refused but still offered as a choice: {}",
+                    weather_spellings()
+                );
+            }
         }
         // Refused rather than silently defaulted. A check that sets `WEATHER=of`
         // and gets the shipping weather is a check that fails somewhere else, an
