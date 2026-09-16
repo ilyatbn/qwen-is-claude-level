@@ -16,6 +16,8 @@ import { flag as rustFlag } from '../lib/rust-constants.mjs'
 
 /** T21.39: is toxic rain switched on? Read off `constants.rs`, never typed here. */
 const TOXIC_ON = rustFlag('TOXIC_RAIN_ENABLED')
+/** Owner 2026-09-16: lava is switched off, and `force_effect` refuses kind 2. */
+const LAVA_ON = rustFlag('LAVA_ENABLED')
 
 export default async function ({ page, shot, log }) {
   await page.evaluate(() => window.__game.regenerate('4242', 'medium'))
@@ -364,6 +366,16 @@ export default async function ({ page, shot, log }) {
   // map, and a screenshot of a vent that is off-camera is not evidence (§A22).
   // The count is the both-ends signal — the sim has jetting vents, the layer has
   // embers — and the pixel half is covered by the rain above.
+  //
+  // **Skipped, not deleted**, exactly as the toxic section above is: the owner
+  // switched lava off on 2026-09-16 and `force_effect` refuses kind 2, so the
+  // forced burst never starts and `no vent ever jetted` would fire — a red that
+  // names the fixture for a decision made in `constants.rs`. Switching
+  // `LAVA_ENABLED` back on turns this back on with it.
+  if (!LAVA_ON) {
+    log('skip lava: switched off (LAVA_ENABLED, owner 2026-09-16)')
+    return
+  }
   await page.evaluate(() => window.__game.forceWeather(2))
   let peak = 0
   let jetting = 0

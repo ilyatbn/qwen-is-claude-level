@@ -18,6 +18,8 @@ import { constants as rustConstants, flag as rustFlag } from '../lib/rust-consta
 
 /** T21.39: toxic rain is switched off, and the sandbox refuses to force it. */
 const TOXIC_ON = rustFlag('TOXIC_RAIN_ENABLED')
+/** Owner 2026-09-16: lava is switched off, and `force_effect` refuses it too. */
+const LAVA_ON = rustFlag('LAVA_ENABLED')
 
 // **Every wait below is on the effect's own state, deadlined by its own
 // constants.** This check used to sleep fixed amounts: 3.6 s per telegraph,
@@ -106,6 +108,10 @@ try {
   for (const [name, kind] of KINDS) {
     if (name === 'toxic' && !TOXIC_ON) {
       console.log('  skip  toxic: switched off (TOXIC_RAIN_ENABLED, T21.41)')
+      continue
+    }
+    if (name === 'lava' && !LAVA_ON) {
+      console.log('  skip  lava: switched off (LAVA_ENABLED, owner 2026-09-16)')
       continue
     }
     const before = await page.evaluate('window.__game.weatherProbe()')
