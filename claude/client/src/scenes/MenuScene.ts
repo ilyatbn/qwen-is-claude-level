@@ -42,6 +42,21 @@ import { devSurface } from '../dev'
 import { C } from '../core'
 
 
+/**
+ * The screens on which this scene holds a live socket and occupies a seat on the
+ * server.
+ *
+ * `matching` and `create` are seated from the moment `enterLobby` constructs the
+ * `Connection`; `lobby` is where both land once `welcome` arrives. `name` is
+ * **not** here — `enterLobby` returns before building a socket when it has to
+ * ask for a name, so the prompt never holds a seat.
+ *
+ * A `Set` rather than a predicate over `Screen` so that adding a screen is a
+ * decision someone makes here, in one list, rather than a clause they forget in
+ * a condition.
+ */
+const SEATED_SCREENS: ReadonlySet<Screen> = new Set<Screen>(['matching', 'create', 'lobby'])
+
 export class MenuScene extends Phaser.Scene {
   private model: MenuModel = { ...DEFAULT_MODEL }
   private root: HTMLElement | null = null
@@ -230,12 +245,36 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private dispatch(a: MenuAction): void {
+    const from = this.model.screen
     this.model = menuReducer(this.model, a)
     if (a.type === 'setScale') saveScale(localStorage, this.model.scale)
     // Leaving the prompt by any route — the button, `Esc`, or a navigation from
     // elsewhere — abandons the join it was standing in front of. Cleared here
     // rather than on the Back button, because `Esc` does not go through it.
     if (this.model.screen !== 'name') this.pendingEntry = null
+    // **Leaving a seated screen by any route gives the seat back** (owner,
+    // 2026-09-16, from play: *"if i click quick game, escape, then quick game
+    // again, 2 slots with my username fill"*).
+    //
+    // Exactly the hazard the two lines above already guard against, one field
+    // over — and the reason it is here and not on a button is the same reason
+    // written there: **`Esc` does not go through the Back button.** Three exits
+    // dispatched `back` without telling the server, and only the fourth — the
+    // rendered lobby's Back — called `leaveLobby`. `keydown-ESC` is bound once,
+    // scene-wide, so it left a live socket on `matching`, `create` *and*
+    // `lobby`; pressing Quick Game again opened a second one and the server
+    // seated the same name twice. `session.rs`'s `leave_room` already says what
+    // happens otherwise: *"a client that hops rooms holds two seats and the
+    // first room never empties."*
+    //
+    // Driven off the screen transition rather than off the action, so a future
+    // action that navigates out of a seated screen inherits it instead of
+    // having to remember. `leaveLobby` is a no-op without a socket, so the
+    // transitions that never had one — `create` → `name` when the prompt
+    // interrupts a join — cost nothing.
+    if (SEATED_SCREENS.has(from) && !SEATED_SCREENS.has(this.model.screen)) {
+      this.leaveLobby()
+    }
     this.render()
   }
 
@@ -465,7 +504,10 @@ export class MenuScene extends Phaser.Scene {
         el.querySelector(`#${c.id}-next`)?.addEventListener('click', () => this.step(c.id, 1))
       }
       el.querySelector('#back')?.addEventListener('click', () => {
-        this.leaveLobby()
+        // No `leaveLobby()` here any more: `dispatch` does it for every exit
+        // from a seated screen, and this button was the *only* one of four that
+        // remembered. A second copy of the rule is how the other three came to
+        // be missing it.
         this.dispatch({ type: 'back' })
       })
     }

@@ -6437,3 +6437,15 @@ its historical baseline moved whenever the constant did. And **T21.15 never work
 `meta.theme` always 0. Seed and theme were on the wire all along; `WorldView` takes them now.
 Also: timer to top-centre off the kill feed, hazard banner below it, the duplicate bottom-left clock deleted, the black placeholder weapon
 removed, map size off the pre-host/join screen. Rust `--workspace` exit 0, client 953/953, fmt and clippy clean. Full gate not yet run.
+
+## Quick game → Esc → quick game seated you twice (owner, 2026-09-16)
+`keydown-ESC` is bound once, scene-wide, straight to `dispatch({type:'back'})`, and the **only** exit that called `leaveLobby` was the
+rendered lobby's Back button. So three of four ways out of a seated screen — Esc from anywhere, `matching`'s Back, `lobby`-while-joining's
+Back — kept the socket and the seat; pressing Quick Game again opened a second one. `session.rs`'s `leave_room` had already written the
+consequence down: *"a client that hops rooms holds two seats and the first room never empties."* Server side was correct throughout.
+Fixed where `pendingEntry` is already handled for the identical reason, with that comment's own words: **Esc does not go through the Back
+button.** `SEATED_SCREENS` = matching/create/lobby; `dispatch` compares the screen before and after and leaves on the way out. The lobby
+Back button's explicit call is gone — a second copy of the rule is how the other three came to lack it.
+New check `quick-rejoin` drives a real `page.keyboard.press('Escape')`, not `__menu.dispatch` — driving the model would have passed against
+the broken build. **Falsified**: guard disabled → `["ana","ana","empty","empty","empty"]`, the owner's report exactly. lobby, lobby-start,
+title, rematch green; client 953/953; typecheck clean.

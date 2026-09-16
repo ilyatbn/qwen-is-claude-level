@@ -181,6 +181,8 @@ export const CHECKS = [
   // 'node'` with no canvas, so a green unit run proves the reducer and says
   // nothing about whether a lobby appears (D-26).
   { name: 'lobby', file: 'scripts/checks/lobby.mjs', standalone: true },
+  // Owner 2026-09-16: quick → Esc → quick seated the same name twice.
+  { name: 'quick-rejoin', file: 'scripts/checks/quick-rejoin.mjs', standalone: true },
   // §C26 — the jetpack number reaches the screen. Standalone: fuel comes from
   // the snapshot, so it needs a real server rather than the sandbox. Named
   // `hud-bars` because T14.02's Done-when names the same check for §C8's bars,
