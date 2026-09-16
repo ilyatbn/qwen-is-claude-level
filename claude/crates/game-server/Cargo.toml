@@ -1,0 +1,38 @@
+[package]
+name = "game-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "axum + socketioxide game server: the authority."
+# Two binaries now (the server and the replay runner), so `cargo run -p
+# game-server` needs to be told which is the default — otherwise every script
+# that runs the server breaks with "could not determine which binary to run".
+default-run = "game-server"
+
+[dependencies]
+game-core.workspace = true
+tokio.workspace = true
+axum.workspace = true
+socketioxide.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+
+[features]
+# Forwarded to game-core so `--bin replay --dump-map` can write a PNG.
+dump-png = ["game-core/dump-png"]
+
+[[bin]]
+name = "replay"
+path = "src/bin/replay.rs"
+
+[[bin]]
+name = "game-server"
+path = "src/main.rs"
+
+[dev-dependencies]
+rust_socketio = "0.6"
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+tokio = { workspace = true }

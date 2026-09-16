@@ -1,0 +1,469 @@
+/**
+ * `living-sky` — §C14's mountains, asserted from the frame.
+ *
+ * ## Why every assertion here samples pixels
+ *
+ * The maths is already covered by `sky-math.test.ts`, and a correct formula that
+ * nothing carries to the screen is the failure this project has paid for four
+ * times (§A15, §A16). So the questions this check asks are the ones a unit test
+ * cannot: is there a ridge in the frame, and does a seed always draw the same one.
+ *
+ * ## The clouds left this file in T21.18
+ *
+ * This check used to carry the cloud half of §C14 too — twelve sprites, their
+ * wrap twins, their per-cloud tints and their colour sets. **All of that is
+ * gone**, because the sprite clouds themselves are: T21.18 retired them at the
+ * coordinator's request and replaced them, under High Quality only, with a
+ * shader. `clouds-shader` is where the clouds are asserted now, and it asserts
+ * *both* pictures — the empty band with the toggle off, and the painted one with
+ * it on.
+ *
+ * What that leaves here is the mountains, plus one thing the clouds are now
+ * useful *as*: the cloud band is this file's control region. Hiding the parallax
+ * layer has to move the ridge strip and leave the cloud strip alone, which is
+ * what says the toggle is changing a layer rather than the whole frame.
+ *
+ * ## The control that makes each claim mean something
+ *
+ * - **A control region.** Every claim is paired with a patch of the frame that
+ *   must *not* change, so "the strip moved" cannot be explained by the whole
+ *   picture moving.
+ * - **A control frame.** The mountain claims are measured against the same frame
+ *   with the layer hidden, so "there are pixels here" cannot be satisfied by the
+ *   gradient that was always there.
+ */
+
+/** Fraction of pixels differing between two screenshots inside a rect. */
+async function changedFraction(page, b0, b1, rect) {
+  return page.evaluate(
+    async ([x0, x1, r]) => {
+      const load = async (b) => {
+        const img = new Image()
+        img.src = `data:image/png;base64,${b}`
+        await img.decode()
+        const cv = document.createElement('canvas')
+        cv.width = img.width
+        cv.height = img.height
+        const c = cv.getContext('2d')
+        c.drawImage(img, 0, 0)
+        return c.getImageData(r.x, r.y, r.w, r.h).data
+      }
+      const a = await load(x0)
+      const b = await load(x1)
+      let n = 0
+      for (let i = 0; i < a.length; i += 4) {
+        if (
+          Math.abs(a[i] - b[i]) > 6 ||
+          Math.abs(a[i + 1] - b[i + 1]) > 6 ||
+          Math.abs(a[i + 2] - b[i + 2]) > 6
+        ) {
+          n++
+        }
+      }
+      return n / (a.length / 4)
+    },
+    [b0, b1, rect],
+  )
+}
+
+export default async function ({ page, shot, log }) {
+  const dbg = () => page.evaluate(() => window.__game.debug())
+
+  await page.evaluate(() => window.__game.regenerate('4242', 'medium'))
+  await page.waitForTimeout(500)
+  await page.evaluate(() => window.__game.setTime(0.3 * 120))
+  await page.waitForTimeout(400)
+
+  // 1. The layers exist and are drawing, from the scene rather than from a
+  //    constructor that ran.
+  const d = await dbg()
+  const p = d.parallax
+  if (!p) throw new Error('debug().parallax is missing — this check cannot fail, so it proves nothing')
+  const c = await page.evaluate(() => ({
+    layers: window.__game.constants().MOUNTAIN_LAYERS,
+  }))
+  if (p.ridges !== c.layers) throw new Error(`${p.ridges} ridge layers, expected MOUNTAIN_LAYERS (${c.layers})`)
+  // T21.31: the clouds are world objects now and `clouds.mjs` owns them. This check
+  // needs a strip of **empty** sky for its control, and a cloud drifting through it
+  // would be read as the ridge toggle moving open sky — so they are hidden for the
+  // photographs below, and read back to be sure they went.
+  if (!(p.clouds > 0)) throw new Error(`the sky has ${p.clouds} clouds — debug().parallax is not the layer that draws them`)
+  const cloudsOff = await page.evaluate(() => window.__game.setCloudsVisible(false))
+  if (cloudsOff.visible !== false) throw new Error('setCloudsVisible(false) did not hide the clouds')
+  // `p.seed` is right *here*: this check drives the sandbox, where the client
+  // really does generate the map, so its local seed is the round's. In a
+  // networked scene it would not be — see `roundSeed` in `GameScene.debug()`.
+  log(`${p.ridges} ridges, seed ${p.seed}`)
+
+  // 2. The layers are actually IN the frame.
+  //
+  //    The control frame: the same view with the parallax band hidden. Without
+  //    it, "the sky band has pixels in it" is satisfied by the gradient, which
+  //    was there before this task existed.
+  //
+  //    **Both bands are chosen by content, not by a fixed rectangle.** The
+  //    parallax layers sit BEHIND the terrain, so a strip that happens to be
+  //    pointed at rock shows the same pixels whether the ridge is drawn or not —
+  //    the first version of this check failed for exactly that reason, and
+  //    `sky.mjs` carries the same lesson from the same cause. So: find the widest
+  //    run of screen columns that is open air all the way down through the band.
+  /**
+   * **Open a window through the foreground so the background can be seen.**
+   *
+   * The ridge used to sit at a fixed screen fraction (0.64..0.85). Since T21.20 it is
+   * anchored to the world, and the layer reports where it is. Whether that strip
+   * shows sky or rock is entirely a question of where the camera is, and pass 6b
+   * moved the sandbox spawn (objects push spawn candidates away under
+   * `OBJECT_CLEAR_OF_SPAWN`). Measured, the strip is now solid rock across the
+   * whole width at every zoom:
+   *
+   *   zoom 1: 0 clear columns   view y 501..1221
+   *   zoom 2: 0 clear columns   view y 681..1041
+   *   zoom 3: 0 clear columns   view y 741..981
+   *
+   * Zooming cannot help: the strip maps to world rows *below* the camera centre
+   * at any zoom, and the camera centres on a player standing on the ground.
+   *
+   * So the foreground is carved away. This is not making the world fit the
+   * fixture — the subject of every ridge assertion below is the **parallax
+   * layer**, measured by toggling it on and off, and foreground terrain in front
+   * of it is exactly the thing that has to not be there. Carving is also what
+   * `terrain-render` already does to see the terrain change.
+   */
+  // **T21.20: the ridge is found, not assumed** — it sits wherever its world row
+  // lands on this camera, and `parallax.ridge` says where that is. Opened from the
+  // cloud band (the control) down to the bottom of the ridge (the subject).
+  const ridgeBottom = await page.evaluate(() => {
+    const r = window.__game.debug().parallax.ridge
+    return Math.min(0.98, (r.top + r.h) / window.__game.constants().VIEWPORT_H)
+  })
+  const opened = await page.evaluate(([lo, hi]) => {
+    const g = window.__game
+    const v = g.debug().worldView
+    // Carved as rows of overlapping circles so the whole strip opens, not just
+    // its centre line.
+    const radius = Math.ceil(0.07 * v.h) + 8
+    const x0 = v.x + 0.3 * v.w
+    const x1 = v.x + v.w
+    let n = 0
+    for (let fy = lo; fy <= hi; fy += 0.06) {
+      const wy = v.y + fy * v.h
+      for (let wx = x0; wx <= x1; wx += radius) {
+        g.carve(Math.round(wx), Math.round(wy), radius)
+        n++
+      }
+    }
+    return { carves: n, radius, from: Math.round(v.y + lo * v.h), to: Math.round(v.y + hi * v.h) }
+  }, [0.05, Math.max(0.87, ridgeBottom + 0.02)])
+  await page.waitForTimeout(500)
+  log(
+    `opened the background bands with ${opened.carves} carves of r=${opened.radius}, ` +
+      `world y ${opened.from}..${opened.to}`,
+  )
+  // **Hold the camera where it is for the toggle photographs.** Following the
+  // player, the rig eases toward her aim lead for many frames, so the camera was
+  // still creeping — measured 670.90 → 669.99 world px across the toggle pair with
+  // the player standing still at x 672 — and the portal, player and turret that
+  // reach into the cloud strip moved with it. `watch` holds the rig with no lead
+  // (`SandboxScene.update`, T21.31); released at step 6, which needs it to follow.
+  await page.evaluate(() => {
+    const c = window.__game.debug().camera
+    window.__game.watch(c.x, c.y)
+  })
+  await page.waitForTimeout(200)
+
+  const band = await page.evaluate(() => {
+    const g = window.__game.debug()
+    const v = g.worldView
+    const core = window.__game.core
+    const cv = document.querySelector('canvas')
+    const r = cv.getBoundingClientRect()
+
+    /** The widest run of columns whose world pixels are all air across the band. */
+    const airRun = (fy0, fy1) => {
+      const y0 = r.height * fy0
+      const y1 = r.height * fy1
+      const clear = (sx) => {
+        const wx = v.x + (sx / r.width) * v.w
+        for (let sy = y0; sy <= y1; sy += 6) {
+          const wy = v.y + (sy / r.height) * v.h
+          if (core.solidAt(Math.round(wx), Math.round(wy))) return false
+        }
+        return true
+      }
+      let best = null
+      let run = null
+      // Start right of the DOM control panel, which is not sky.
+      for (let sx = Math.floor(r.width * 0.32); sx < r.width - 4; sx += 4) {
+        if (clear(sx)) {
+          run ??= { x0: sx, x1: sx }
+          run.x1 = sx
+        } else {
+          if (run && (!best || run.x1 - run.x0 > best.x1 - best.x0)) best = run
+          run = null
+        }
+      }
+      if (run && (!best || run.x1 - run.x0 > best.x1 - best.x0)) best = run
+      if (!best) return null
+      return {
+        x: Math.round(r.left + best.x0),
+        y: Math.round(r.top + y0),
+        w: best.x1 - best.x0,
+        h: Math.round(y1 - y0),
+      }
+    }
+
+    return {
+      // Wherever the layer says the near ridge is right now (T21.20) — read after the
+      // carve, because the carve moves the camera. The whole band, crest included:
+      // below the crest every seed's silhouette is the same solid ink, which is why
+      // a fixed strip read "seed 999 drew the same ridge" once the ridge grew.
+      ridge: (() => {
+        const rr = g.parallax.ridge
+        const vh = window.__game.constants().VIEWPORT_H
+        return airRun(Math.max(0.02, rr.top / vh), Math.min(0.98, (rr.top + rr.h) / vh))
+      })(),
+      // The upper sky: open air, and with the clouds hidden above nothing this
+      // layer owns is drawn in it.
+      cloud: airRun(0.06, 0.4),
+    }
+  })
+  for (const key of ['ridge', 'cloud']) {
+    if (!band[key] || band[key].w < 120) {
+      throw new Error(
+        `no run of open sky wide enough to sample the ${key} band ` +
+          `(${band[key] ? band[key].w : 0} px) — the camera is looking at rock`,
+      )
+    }
+  }
+  log(
+    `ridge band x ${band.ridge.x}..${band.ridge.x + band.ridge.w}, ` +
+      `cloud band x ${band.cloud.x}..${band.cloud.x + band.cloud.w}`,
+  )
+
+  const camAt = () => page.evaluate(() => window.__game.debug().worldView)
+  const withLayer = (await page.screenshot()).toString('base64')
+  const camOn = await camAt()
+  await shot('living-sky-day')
+  // **The fixture's own noise, measured over the same interval as the toggle.**
+  // It used to be two back-to-back screenshots, while the toggle's pair sits
+  // 300 ms apart — so a camera still easing (the aim lead, below) could read
+  // 0.0 % here and 1.3 % there, and it did, deterministically on the merged
+  // `claude_builds` (6b87225). The pixels were the portal, the player and the
+  // turret, which reach into the strip, shifted 2 px: one world px at zoom 2.
+  await page.waitForTimeout(300)
+  const stillOn = (await page.screenshot()).toString('base64')
+  const drift = await changedFraction(page, withLayer, stillOn, band.cloud)
+  await page.evaluate(() => window.__game.setParallaxVisible(false))
+  await page.waitForTimeout(300)
+  const withoutLayer = (await page.screenshot()).toString('base64')
+  const camOff = await camAt()
+  await shot('living-sky-hidden')
+  await page.evaluate(() => window.__game.setParallaxVisible(true))
+  await page.waitForTimeout(300)
+  // The hold below is what makes the ceiling tight, so it is read back, not trusted.
+  if (camOn.x !== camOff.x || camOn.y !== camOff.y) {
+    throw new Error(
+      `the held camera moved from ${camOn.x},${camOn.y} to ${camOff.x},${camOff.y} between the ` +
+        'toggle photographs — the cloud strip control would be measuring the camera',
+    )
+  }
+
+  const ridgeDelta = await changedFraction(page, withLayer, withoutLayer, band.ridge)
+  const cloudDelta = await changedFraction(page, withLayer, withoutLayer, band.cloud)
+  log(
+    `hiding the band changed ridge strip ${(ridgeDelta * 100).toFixed(1)}%, cloud strip ` +
+      `${(cloudDelta * 100).toFixed(1)}% — against ${(drift * 100).toFixed(1)}% of that strip ` +
+      `moving on its own`,
+  )
+  if (ridgeDelta < 0.02) {
+    throw new Error(
+      `hiding the parallax band changed only ${(ridgeDelta * 100).toFixed(1)}% of the ridge strip — ` +
+        'the mountains are not on screen',
+    )
+  }
+  // **The control, and it runs in the opposite direction to the one above.**
+  // Hiding the layer must move the ridge strip and leave the cloud strip where
+  // it would have been anyway: if the toggle moved both, this is measuring the
+  // whole frame going dark rather than a band of mountains being taken away.
+  // With the clouds hidden at the top, nothing this layer owns is painted in the
+  // upper strip — `clouds.mjs` owns the clouds themselves (T21.31).
+  //
+  // Compared against `drift` rather than against a number: this fixture's own
+  // creep is 6 % of the strip, so a fixed ceiling under that would fail for
+  // reasons that have nothing to do with the layer.
+  const cloudCeiling = drift * 1.5 + 0.01
+  if (cloudDelta > cloudCeiling) {
+    throw new Error(
+      `hiding the parallax band changed ${(cloudDelta * 100).toFixed(1)}% of the cloud strip ` +
+        `where the strip moves ${(drift * 100).toFixed(1)}% on its own — nothing should be ` +
+        'painting there with High Quality off, so either something is, or the ridge reading ' +
+        'above is measuring the whole frame rather than the mountains',
+    )
+  }
+
+  // 5. A seed always looks the same, and a different seed does not.
+  await page.evaluate(() => window.__game.setTime(0.3 * 120))
+  await page.waitForTimeout(400)
+  //
+  //    Re-seeding the **sky only**, not the map: `regenerate` moves the terrain,
+  //    and a frame diff after one is 100 % changed whether or not the skyline
+  //    reads its seed. The first version of this assertion did exactly that and
+  //    would have passed against a ridge that ignored the seed.
+  const shotFor = async (seed) => {
+    await page.evaluate((s) => window.__game.setSkySeed(s), seed)
+    await page.waitForTimeout(400)
+    return (await page.screenshot()).toString('base64')
+  }
+  const a1 = await shotFor(4242)
+  const other = await shotFor(999)
+  const a2 = await shotFor(4242)
+  const sameSeed = await changedFraction(page, a1, a2, band.ridge)
+  const diffSeed = await changedFraction(page, a1, other, band.ridge)
+  log(`ridge strip: same seed ${(sameSeed * 100).toFixed(1)}% changed, different seed ${(diffSeed * 100).toFixed(1)}%`)
+  if (sameSeed > 0.02) {
+    throw new Error(`seed 4242 twice drew a different ridge (${(sameSeed * 100).toFixed(1)}% of the strip)`)
+  }
+  // The other half, which "same seed → same" alone does not rule out: a ridge
+  // that ignores the seed entirely passes the assertion above.
+  if (diffSeed < 0.02) {
+    throw new Error(
+      `seed 999 drew the same ridge as 4242 (${(diffSeed * 100).toFixed(1)}% of the strip changed) — ` +
+        'the skyline is not seeded',
+    )
+  }
+
+  // 6. T21.20 — the skyline is anchored to the world, and zoom cannot shrink it.
+  //
+  //    Read off the layer's own report (`parallax.ridge`: the same `ridgeLayout` call
+  //    `update` places the sprite with, plus the sprite's rect). Each claim has a
+  //    control that the camera or the zoom actually moved — "the base did not move"
+  //    is otherwise satisfied by a camera that never went anywhere.
+  //
+  //    The hold from step 2 ends here, not earlier: released before step 5, the
+  //    rig eased back toward the aim lead during the seed photographs and "same
+  //    seed" read 1.7 % of the ridge strip against its 2 % ceiling (measured). This
+  //    step moves the player and needs the camera to follow her.
+  await page.evaluate(() => window.__game.watch(null))
+  {
+    const K = await page.evaluate(() => {
+      const k = window.__game.constants()
+      return {
+        vh: k.VIEWPORT_H,
+        base: k.MOUNTAIN_BASE_FRAC,
+        hf: k.MOUNTAIN_HEIGHT_FRAC[k.MOUNTAIN_LAYERS - 1],
+        mapH: window.__game.core.height,
+      }
+    })
+    const read = async () => {
+      const d = await dbg()
+      const r = d.parallax.ridge
+      return {
+        r,
+        z: d.zoom,
+        viewY: d.worldView.y,
+        view: d.parallax.view,
+        skirt: d.parallax.skirt,
+        // The world row the ridge base is drawn at, recovered from where it is on screen.
+        recovered: (r.top + r.h) / d.zoom + d.worldView.y,
+      }
+    }
+
+    const a = await read()
+    // Both ends: the sprite is where the formula put it, and the formula's base is
+    // the world row the constants name.
+    const wantY = a.view.top + a.r.top / a.z
+    if (Math.abs(wantY - a.r.spriteY) > 0.5 || Math.abs(a.r.h / a.z - a.r.spriteH) > 0.5) {
+      throw new Error(
+        `the near ridge sprite sits at y ${a.r.spriteY.toFixed(1)} h ${a.r.spriteH.toFixed(1)}; ` +
+          `ridgeLayout put it at ${wantY.toFixed(1)} h ${(a.r.h / a.z).toFixed(1)}`,
+      )
+    }
+    if (a.r.worldBase === null || Math.abs(a.r.worldBase - K.mapH * K.base) > 0.5) {
+      throw new Error(`ridge base at world row ${a.r.worldBase}, expected ${K.mapH * K.base} (MOUNTAIN_BASE_FRAC of the map)`)
+    }
+    // **And the row it is actually drawn at**, recovered from the screen answer — not
+    // only the field. Measured by planting a height that did not scale with zoom: the
+    // field still read 983 while the drawn base sat at 948.5, and nothing compared them.
+    if (Math.abs(a.recovered - K.mapH * K.base) > 1) {
+      throw new Error(
+        `the ridge base is drawn at world row ${a.recovered.toFixed(1)} while the layout reports ` +
+          `${a.r.worldBase.toFixed(1)} — the field and the picture disagree`,
+      )
+    }
+    // The skirt starts at the base, so no sky shows under the ridge (seen in the
+    // first world-anchored frame, where the carve exposed a straight cut-off edge).
+    if (a.r.top + a.r.h < K.vh) {
+      const skirtY = a.view.top + (a.r.top + a.r.h) / a.z
+      if (!a.skirt?.visible || Math.abs(a.skirt.y - skirtY) > 0.5) {
+        throw new Error(`the skirt under the ridge is ${JSON.stringify(a.skirt)}, expected visible at y ${skirtY.toFixed(1)}`)
+      }
+    }
+    log(`ridge base world ${a.r.worldBase.toFixed(1)}, on screen ${(a.r.top + a.r.h).toFixed(1)} px at view y ${a.viewY.toFixed(1)}`)
+
+    // Move the camera: put the player high in the air the carve just opened, and let
+    // the rig follow her. (A jetpack hold was tried first and measured 0.0 px of
+    // camera movement — the sandbox page's keys are not the point here, the camera
+    // is.) Polled until the view has actually travelled, never a flat sleep.
+    const target = await page.evaluate(() => {
+      const v = window.__game.debug().worldView
+      return { x: Math.round(v.x + 0.6 * v.w), y: Math.round(v.y + 0.1 * v.h) }
+    })
+    await page.evaluate(([x, y]) => window.__game.place(x, y), [target.x, target.y])
+    let b = await read()
+    for (let i = 0; i < 40 && Math.abs(b.viewY - a.viewY) < 20; i++) {
+      await page.waitForTimeout(50)
+      b = await read()
+    }
+    const dView = b.viewY - a.viewY
+    if (Math.abs(dView) < 20) {
+      throw new Error(`the camera moved only ${dView.toFixed(1)} world px — the anchoring below would be measuring nothing`)
+    }
+    if (Math.abs(b.recovered - a.recovered) > 1) {
+      throw new Error(
+        `the camera moved ${dView.toFixed(1)} world px and the ridge base moved from world row ` +
+          `${a.recovered.toFixed(1)} to ${b.recovered.toFixed(1)} — it rides with the camera again`,
+      )
+    }
+    const dTop = b.r.top - a.r.top
+    if (Math.abs(dTop + dView * b.z) > 1) {
+      throw new Error(`the ridge moved ${dTop.toFixed(1)} px on screen where the terrain moved ${(-dView * b.z).toFixed(1)}`)
+    }
+    log(`camera moved ${dView.toFixed(1)} world px: ridge base stayed at world ${b.recovered.toFixed(1)}, screen row moved ${dTop.toFixed(1)} px`)
+
+    // Zoom: the same ridge at zoom 1 and at the scene's zoom covers the same world height.
+    const z0 = b.z
+    await page.evaluate(() => window.__game.setZoom(1))
+    await page.waitForTimeout(300)
+    const one = await read()
+    await page.evaluate((z) => window.__game.setZoom(z), z0)
+    await page.waitForTimeout(300)
+    const back = await read()
+    if (Math.abs(one.z - back.z) < 0.1) {
+      throw new Error(`setZoom did not change the zoom (${one.z} vs ${back.z}) — the size claim below would be vacuous`)
+    }
+    const h1 = one.r.h / one.z
+    const h2 = back.r.h / back.z
+    if (Math.abs(h1 - h2) > 0.5 || Math.abs(h1 - K.vh * K.hf) > 0.5) {
+      throw new Error(`the ridge is ${h1.toFixed(1)} world px tall at zoom ${one.z} and ${h2.toFixed(1)} at ${back.z} (want ${(K.vh * K.hf).toFixed(1)})`)
+    }
+    log(`ridge ${h1.toFixed(1)} world px tall at zoom ${one.z} and ${h2.toFixed(1)} at zoom ${back.z}`)
+  }
+
+  // 7. Depth: the terrain draws over the parallax band. Asserted on the depth
+  //    values the scene actually built, not on the constants.
+  const depths = await page.evaluate(() => window.__game.sceneDepths())
+  for (const want of [-22, -21, -20]) {
+    if (!depths.includes(want)) throw new Error(`no layer at depth ${want}: got [${depths.join(',')}]`)
+  }
+  // Against the depth the scene actually built its terrain at, not against a
+  // literal 0: `Math.max(-22,-21,-20) >= 0` is a constant expression and could
+  // never have failed.
+  const terrainDepth = Math.min(...depths.filter((v) => v >= 0))
+  const bandTop = Math.max(-22, -21, -20)
+  if (!(bandTop < terrainDepth)) {
+    throw new Error(`the parallax band (${bandTop}) is not behind the terrain (${terrainDepth})`)
+  }
+  log(`layer set: [${depths.join(',')}]`)
+  await page.evaluate(() => window.__game.setCloudsVisible(true))
+}

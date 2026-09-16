@@ -1,0 +1,78 @@
+services:
+  # **Make the recordings mount writable before the server starts** (T21.35).
+  # A bind mount replaces the image's `/recordings` (owned by `game`) with the
+  # host directory, and when that directory does not exist Docker creates it as
+  # `root:root 755`. The server runs as `game` and got `Permission denied` on
+  # every room. This one-shot container runs as root from the same image, hands
+  # the directory to `game`, and exits; the server image itself stays non-root
+  # (`docs/62` §8). Chown by name, so the uid lives only in Dockerfile.server.
+  recordings-init:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    user: root
+    entrypoint: ["chown", "game:game", "/recordings"]
+    volumes:
+      - ../recordings:/recordings
+    restart: "no"
+
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    depends_on:
+      recordings-init:
+        condition: service_completed_successfully
+    ports: ["3000:3000"]
+    environment:
+      BIND_ADDR: 0.0.0.0:3000
+      GAME_LOG: ${GAME_LOG:-info}
+      MAP_SCALE: ${MAP_SCALE:-large}
+      MAX_PLAYERS: ${MAX_PLAYERS:-6}
+      ROUND_SECONDS: ${ROUND_SECONDS:-240}
+      FIXED_SEED: ${FIXED_SEED:-}
+      # On by default: match traces are wanted for bug reproduction and for
+      # bot training. `REPLAY_DIR` is absolute and must match the mount below —
+      # the container's WORKDIR is /home/game, so a relative path here writes
+      # inside the container and is lost when it stops. That was the bug this
+      # replaced: the volume was mounted and nothing was ever written to it.
+      RECORD_REPLAY: ${RECORD_REPLAY:-1}
+      REPLAY_DIR: /recordings
+      DEBUG_DUMP: ${DEBUG_DUMP:-0}
+      LOBBY_BOT_TIMEOUT: ${LOBBY_BOT_TIMEOUT:-10}
+      BOT_COUNT: ${BOT_COUNT:-3}
+      BOT_SKILL: ${BOT_SKILL:-0.6}
+    volumes:
+      - ../recordings:/recordings
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    # Room to flush recordings on SIGTERM.
+    stop_grace_period: 10s
+
+  client:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.client
+    ports: ["8080:80"]
+    depends_on:
+      server:
+        condition: service_healthy
+
+  # Placed, not plumbed. See docs/62-docker-deploy.md §7 for the scale-out path.
+  # redis:
+  #   image: "redis:7-alpine"
+  #   ports: ["6379:6379"]
+  #
+  # postgres:
+  #   image: "postgres:16-alpine"
+  #   environment:
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devonly}
+  #     POSTGRES_DB: game
+  #   volumes: ["pgdata:/var/lib/postgresql/data"]
+  #
+  # volumes:
+  #   pgdata:

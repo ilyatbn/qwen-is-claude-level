@@ -1,0 +1,65 @@
+{
+  "sustained": [
+    "jetpack",
+    "lava"
+  ],
+  "cues": {
+    "fire_bazooka": [
+      "audio/fire_bazooka.ogg"
+    ],
+    "fire_smg": [
+      "audio/fire_smg_0.ogg",
+      "audio/fire_smg_1.ogg",
+      "audio/fire_smg_2.ogg"
+    ],
+    "fire_grenade": [
+      "audio/fire_grenade.ogg"
+    ],
+    "explode": [
+      "audio/explode_0.ogg",
+      "audio/explode_1.ogg",
+      "audio/explode_2.ogg"
+    ],
+    "meteor": [
+      "audio/meteor.ogg"
+    ],
+    "hit": [
+      "audio/hit.ogg"
+    ],
+    "death": [
+      "audio/death.ogg"
+    ],
+    "pickup": [
+      "audio/pickup.ogg"
+    ],
+    "crate_land": [
+      "audio/crate_land.ogg"
+    ],
+    "walk": [
+      "audio/walk_0.ogg",
+      "audio/walk_1.ogg",
+      "audio/walk_2.ogg"
+    ],
+    "land": [
+      "audio/land.ogg"
+    ],
+    "ui_click": [
+      "audio/ui_click.ogg"
+    ],
+    "phase_change": [
+      "audio/phase_change.ogg"
+    ],
+    "effect_telegraph": [
+      "audio/effect_telegraph.ogg"
+    ],
+    "toxic": [
+      "audio/toxic.ogg"
+    ],
+    "jetpack": [
+      "audio/jetpack.ogg"
+    ],
+    "lava": [
+      "audio/lava.ogg"
+    ]
+  }
+}

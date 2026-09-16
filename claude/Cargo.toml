@@ -1,0 +1,36 @@
+[workspace]
+members = ["crates/game-core", "crates/game-server", "crates/game-wasm"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+game-core = { path = "crates/game-core" }
+rand = { version = "0.8", default-features = false }
+rand_chacha = { version = "0.3", default-features = false }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+socketioxide = { version = "0.18", features = ["state", "extensions", "tracing"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+blake3 = "1"
+wasm-bindgen = "0.2"
+png = "0.17"
+proptest = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+# Debug and test builds optimise game-core, and only game-core. Most of
+# `cargo test --workspace` was debug-build map generation: single tests of 45-193 s.
+# `debug-assertions` and `overflow-checks` are separate profile settings and stay at
+# the dev profile's defaults (on). Opt-level does not change f32 results because
+# Rust has no fast-math, and `golden.rs` passing unchanged is the proof of that.
+[profile.dev.package.game-core]
+opt-level = 2
