@@ -4,8 +4,18 @@ Written at the owner's request at the end of a live interactive session. The box
 **clean**: server, vite, Chrome and the tracer are all stopped, nothing is listening on
 3000/5173/9222, and the tree is committed.
 
-Commits: `4f28b2e` (the session's work) and the lava check-skips on top of it.
-Parent was `9196b59`.
+Commits, oldest first, on top of `9196b59`: `4f28b2e` (the session's work),
+`e44cecc` (lava check-skips), `525c255` (this file), `77d6842` + `f22e2ee` (the
+quick-game seat fix and its check, added after this file was first written).
+
+**One thing on the box is not mine.** `make stop` left nothing running, but two
+containers from `make docker-up` — `docker-server-1` on :3000 and `docker-client-1`
+on :8080 — came up partway through and are still up. I did not start them and I have
+not touched them: `ss -ltnp` shows no process for :3000 because the listener is in a
+container, so they are unattributable from inside this session and get reported rather
+than swept. `curl :3000/healthz` answers, so that stack is live. **Anyone running the
+gate should stop them first** — the gate needs the box, and a second server stack is
+exactly the load that turns a wall-clock assertion into a coin flip.
 
 ## State of the gate
 
@@ -101,6 +111,19 @@ have made boots *more fragile than bare feet*, which `bare > deepest` catches.
    on last frame's `worldView`; **M21 is not finished** — T21.04–T21.08 and T21.10, the
    *"new match settings"* half of the milestone (day/night toggle, low gravity, zero-g with
    its own movement model, map generator and forced skin) were never written as task files.
+
+## Fixed after this file was first written
+
+**Quick game → Esc → quick game seated you twice** (`77d6842`, `f22e2ee`).
+`keydown-ESC` is bound once, scene-wide, straight to `dispatch({type:'back'})`, and the
+only exit that called `leaveLobby` was the rendered lobby's Back button — so three of
+four ways out of a seated screen kept the socket and the seat. The server was correct
+throughout; `session.rs`'s `leave_room` had already written down the consequence of not
+calling it. Fixed in `dispatch`, beside the guard that does the same for `pendingEntry`
+and for the reason that comment already gives: *Esc does not go through the Back button.*
+New check `quick-rejoin`, falsified by disabling the guard (roster comes back
+`["ana","ana","empty","empty","empty"]`). `lobby`, `lobby-start`, `title` and `rematch`
+re-run green beside it.
 
 ## Raised at the end of the session, not yet built
 
