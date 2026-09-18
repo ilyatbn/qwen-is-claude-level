@@ -6449,3 +6449,15 @@ Back button's explicit call is gone — a second copy of the rule is how the oth
 New check `quick-rejoin` drives a real `page.keyboard.press('Escape')`, not `__menu.dispatch` — driving the model would have passed against
 the broken build. **Falsified**: guard disabled → `["ana","ana","empty","empty","empty"]`, the owner's report exactly. lobby, lobby-start,
 title, rematch green; client 953/953; typecheck clean.
+
+## M22 — space, specified and not started (owner, 2026-09-18)
+*"make t21.05-08 milestone m22 … dont work on it yet … recheck the requirements."* Ten tasks in `tasks/M22/`, brief in `M22-space.md`.
+**M22 was already taken** by the parked alien-invasion milestone; renumbered M23 (not in `TASKS.md`, no task cited it, so it was the
+cheaper move). The four originals are superseded, not moved — removed from `parking-lot/`, each new file names its origin.
+Re-check moved eight things; two shrink the work. **Zero-g movement is most of the way built**: `jetpack::gravity_scale(state, flying)`
+already returns 0.0 and calls itself "the third regime", and `MoveMods.flying` is derived, wired and predicted — the owner's "reuse the
+wings mechanic" describes a seam that exists. **The hazard table is already per-instance**: 2026-09-16's `enabled: [bool; N]` is hashed and
+constructor-injected, so a per-mode hazard set is an argument, not a redesign. Also: the chain no longer depends on parked `T21.04`; the
+boundary shape is decided (circle, from the reference image); `BurnField` is the wrong home for a flare and its own first line says so;
+radiation collides with the shipped `shield_active`; golden grows 24 rows → 36. Six owner rulings listed and blocking code, not files.
+Three dangling pointers fixed (M21's build order, T21.03's forward reference, the alien file's ids). `verify-repo` 288/288.

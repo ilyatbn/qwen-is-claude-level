@@ -1,4 +1,10 @@
-# M22 — Alien invasion: the first team match (parked)
+# M23 — Alien invasion: the first team match (parked)
+
+> **Renumbered M22 → M23 on 2026-09-18.** The owner asked for the space work to be M22 and
+> this file already held that number, parked and unscheduled since 2026-09-15. Nothing depends
+> on the old number: it is not in `TASKS.md`, no task cites it, and `grep -rn "M22" tasks/ docs/`
+> found only this file and the parking README. Renumbering the parked one was therefore the
+> cheaper of the two moves. **The content below is unchanged.**
 
 **Parked on arrival** (owner, 2026-09-15): specified here so picking it up costs nothing, not
 scheduled. Nothing below is in `TASKS.md`'s build order; `tasks/parking-lot/README.md` lists it.
@@ -18,7 +24,8 @@ scheduled. Nothing below is in `TASKS.md`'s build order; `tasks/parking-lot/READ
 
 | needed | today |
 |---|---|
-| a match mode chosen like "no gravity" | **No gravity is not built** — T21.05–T21.07 are parked specs. What *is* built is the private-lobby settings path (`room.rs` `Command::SetScale / SetBots / SetStartKit / SetRoundSeconds`: host-only, `ReplayCommand` tags, `lobby_state`, a row in `client/src/net/lobby.ts`). Invasion is **a new setting on that path**, which is the path no-gravity was specified to use too |
+| a match mode chosen like "no gravity" | **No gravity is not built** — its specs are `tasks/M22/` since 2026-09-18 (they were
+`T21.05`–`T21.07`, parked). What *is* built is the private-lobby settings path (`room.rs` `Command::SetScale / SetBots / SetStartKit / SetRoundSeconds`: host-only, `ReplayCommand` tags, `lobby_state`, a row in `client/src/net/lobby.ts`). Invasion is **a new setting on that path**, which is the path no-gravity was specified to use too |
 | a 1-in-20 random roll | the seeded-roll pattern exists: `rng::substream(seed, tag)`, e.g. `meta.rs::theme_for`. A new `"invasion"` tag |
 | teams | **none** — no team, ally or friendly-fire concept anywhere (core, server, wire, scoreboard). Self-damage is deliberate (`explode.rs`, `melee.rs`) |
 | a team loss | **round end is time only**: `World::step` calls `set_phase(Ended)` at `phase_time_left() <= 0`. A heart loss is a second trigger at the same place |

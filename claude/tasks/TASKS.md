@@ -529,6 +529,14 @@ prediction correct. **Any movement modifier the client does not know about ships
 rubber-banding, not as a wrong speed.** T20.07's conclusion — derive a bit at the encode site
 rather than storing a hashed field — is the cheap answer, and it is written into each file.
 
+> **Read the rest of this section as history.** `T21.04`–`T21.08` are **not in M21 any more**:
+> `T21.05`–`T21.08` became **M22** on 2026-09-18 at the owner's request and `T21.04` is in
+> `tasks/parking-lot/`. The build order, the dependency chain and the "(8)" in the heading all
+> describe the milestone as it was planned, and are left standing because the reasoning in them
+> — the `apply_input` purity hazard, the acyclic-graph correction — is still the reasoning M22
+> inherits. **Nothing below is startable here.** The live plan is the M22 section at the end of
+> this file.
+
 **M21 build order, computed from the eight `Depends on:` headers 2026-09-06** (after
 `0eb0355` broke the T21.06 ↔ T21.07 cycle — the graph is acyclic, verified by walking it):
 
@@ -621,3 +629,56 @@ different to play.
 boots and see them on your legs; hold unicorn wings and be unable to stop flying until you
 drop them; land a rocket on someone holding a shield generator and watch your battery rise
 instead of your health.
+
+## M22 — Space: a match played in orbit (10)
+
+**Specified 2026-09-18 and not started** — the owner asked for the milestone, not the work:
+*"dont work on it yet just make it a separate milestone since its probably larger than you
+think."* The brief, the re-check of the four parked originals, the build order and the six
+questions the owner still owes a ruling on are in **[M22-space.md](M22/M22-space.md)**. Read
+that first; the files below are the tasks it splits into.
+
+Built from `T21.05`–`T21.08`, which were parked in M21 and are superseded by these — the
+originals were removed from `tasks/parking-lot/` in the same commit, and
+`git log --diff-filter=D -- tasks/parking-lot` finds them. **`T21.04` (day/night) stays
+parked**: the owner has ruled day/night out of space, and the settings pattern it was going to
+establish is T20.07's, which landed — so nothing in M22 waits on the parking lot.
+
+**The two findings that change the size of this milestone.** *Zero-g movement is most of the
+way built*: `jetpack::gravity_scale(state, flying)` already returns `0.0` for a flying player
+and its own comment calls that "the third regime", and `MoveMods.flying` is already derived,
+on the wire and predicted — so the owner's *"reuse the wings mechanic"* describes a seam that
+exists rather than proposing one. And *the hazard table is already per-instance*: the
+`toxic_enabled` bool became `enabled: [bool; N]` on 2026-09-16, already hashed and already
+injected, so a per-mode hazard set is a constructor argument rather than a redesign.
+
+- [ ] [T22.01](M22/T22.01-the-gravity-match-setting.md) — The gravity match setting — depends on nothing — `standard | low | space` on T20.07's path, in the replay header because it is simulation state. **Deliberately behaviourless**: its control test is that every existing test still passes unchanged. Named `space` and not `none` because the mode is a map, a backdrop, two hazards and a suit, and hanging all of that off a word that means gravity is how it ends up misfiled
+- [ ] [T22.02](M22/T22.02-low-gravity.md) — Low gravity — depends on T22.01 — **may not be wanted**: the owner moved the gravity chain here but described only space (open question 3). A gravity *scale*, never the constant — `JUMP_HEIGHT`/`JUMP_REACH` are compile-time consts that drive the generator's verdict, so the constant moves the golden table and a scale does not. **Two copies of the projectile gravity term**: the hot loop inlines it and bypasses the extracted function, so a scale applied to one misses every shot in flight
+- [ ] [T22.03](M22/T22.03-zero-g-movement-on-the-wings-regime.md) — Zero-g movement, on the wings regime **(large)** — depends on T22.01 — **not** on T22.05; the originals once declared each other and deadlocked. What wings do not do is the work: momentum that never damps, a collision rule (**stop or bounce — open question 1**), and a fuel cost on movement. `grounded` is the design decision the model turns on, and today *a body that ever leaves the ground can never land again* — most of "movement just doesn't stop" already arrives by accident
+- [ ] [T22.04](M22/T22.04-thrusters-and-the-burst.md) — Thrusters: the energy cost and the burst you can see — depends on T22.03 — **the plume fires opposite the direction you travel**; move down and it is above you. Asserted on rendered pixels with velocity as the control, in **both** render paths — T21.36's flames covered 108 of 192 burn points with High Quality off
+- [ ] [T22.05A](M22/T22.05A-the-space-map-boundary-and-islands.md) — The space map: the boundary and the islands **(large)** — depends on T22.01 — **the shape is decided: a circle**, from the owner's reference image. This is the split the original asked for. Golden hashes move through the **retry loop**, not through shared RNG (which is isolated and pinned by two tests): `report.passed` reads `JUMP_REACH`/`JUMP_HEIGHT`, so a flipped verdict re-derives every substream. 24 data rows become 36. **Walk-traversability is meaningless here**, so the acceptance predicate is a deliverable
+- [ ] [T22.05B](M22/T22.05B-the-space-map-spawns-objects-and-up.md) — The space map: spawns, objects, and everything that assumes "up" **(large)** — depends on T22.05A — **spawns are the blocking problem**: the generator derives them from a surface and there is none. `surface_points` is also the only input `LavaBurst::new` reads, and birds take their altitude from the median column top. Eight subsystems assume up and each needs a ruling — the owner has already reported floating scenery twice and perched gates once, each one of these surfacing late
+- [ ] [T22.06](M22/T22.06-the-space-backdrop.md) — The space backdrop: sun, moon, earth, stars, and they move — depends on T22.01 — **switching the sky stack off is most of this task**: the day/night cycle, clouds, fog, ambient rain and the parallax ridge, each with a live check behind it. Inherits the `living-sky` trap (`worldView.y` refreshes in `preRender`, so a layer laid out in `update` trails the camera by a frame — probed at 9, 8, 6, 5, 5, 3 px). **Read the seed from the wire**: a networked client's `core.meta.seed` was measured at 1 across four rounds
+- [ ] [T22.07](M22/T22.07-spacesuits-and-the-visor.md) — Spacesuits, with a visor colour you choose — depends on T22.05B, T20.04, T20.12 — a forced body with a chosen accent, and **the chosen skin must come back when the mode ends**. Procedural, and **silhouette not palette** — a picker whose options differ only by colour is a picker with one option, which is what this brief asks for. `skins.json`'s skin 5 is skin 0 tinted, so any comparison must pick different atlas prefixes and say why
+- [ ] [T22.08](M22/T22.08-solar-flares.md) — Solar flares — depends on T22.01 — **`BurnField` is the wrong home and its own first line says so** ("Damaging ground zones"); a ribbon moving through open space is the thing §F12 ruled out. New shape, or a deliberate widening with the comment rewritten. Burns for `N` seconds, default 4. T21.25 is the precedent for the test: toxic rain's check asserted drops exist and are drawn and **never read a health bar**
+- [ ] [T22.09](M22/T22.09-radiation-and-the-shield-economy.md) — Radiation, and what a shield means now — depends on T22.01 — 1 damage a second unshielded, and **the blocking question is whether the suit's shield is the one that already exists** (`shield_active`, the generator item, `SHIELD_DAMAGE_MULT`): one predicate with two sources, or a second thing that makes `shield_active` answer two questions. Battery packs already exist as item 6 — what is missing is a reason to want one
+
+**Order note.** T22.01 first and alone; everything reads the setting. Then five independent
+branches. **T22.03 and T22.05A are the two large ones and are independent of each other** — the
+movement model is observable on an ordinary map, the generator is asserted on map properties.
+The mode is not *playable* until T22.03 and T22.05B are both in.
+
+**Six things the owner owes a ruling on, listed in full in the milestone file.** Contact in
+zero-g — stop or bounce; whether the suit shield is the shield that already exists; whether low
+gravity survives as its own mode; what `grounded` means in zero-g; what bots do; and whether
+radiation is ambient or zonal.
+
+**An amendment is owed and is not written.** `docs/13`, `docs/14` and `docs/10` all describe
+behaviour this milestone overrides in one mode, and `docs/20-player-movement.md:235` still
+refuses fall damage outright. Per `CLAUDE.md` the coordinator writes `docs/77-amendments-v9.md`
+**when the work lands**, not now.
+
+**Checkpoint:** host a match in space and float between asteroids on your thrusters, watching
+the plume fire from the opposite side; run your energy down and drift; take a battery pack and
+watch the radiation stop eating you; see a solar flare cross the arena and get out of its way;
+look up and see the earth, moved since the round began.
