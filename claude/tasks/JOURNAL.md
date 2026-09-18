@@ -6461,3 +6461,18 @@ constructor-injected, so a per-mode hazard set is an argument, not a redesign. A
 boundary shape is decided (circle, from the reference image); `BurnField` is the wrong home for a flare and its own first line says so;
 radiation collides with the shipped `shield_active`; golden grows 24 rows → 36. Six owner rulings listed and blocking code, not files.
 Three dangling pointers fixed (M21's build order, T21.03's forward reference, the alien file's ids). `verify-repo` 288/288.
+
+## M22 grew three times in one sitting — vortex, asteroid gravity, black hole (owner, 2026-09-18)
+Tasks only, no code. Ten → **thirteen**, five of them large. `T22.10` breach vortex, `T22.11` asteroid gravity wells, `T22.12` black hole.
+**Three findings that reshape earlier tasks rather than sitting beside them.** (1) `apply_gravity` is
+`body.vel.y += GRAVITY * gravity_scale * dt` — a **scalar on one axis**, so "pull towards that point" has no seam; choosing between a new
+argument and a new function is now M22's largest design call, and `MAX_FALL_SPEED` clamps `vel.y` only so the mode has no terminal velocity
+until `T22.11` writes one. (2) `Map::circle` is the single chokepoint all **five** production carve sites funnel through (explode ×2,
+bullet, flame, tombstones), so breach detection goes there or it ships half-working. (3) `carve_circle`'s doc says *"Bedrock and the side
+walls are never touched"* — `WALL_W`/`BEDROCK_H` already give an indestructible border, so `T22.05A` must **not** build the rim from it or
+the owner's "you can still destroy it obviously" is false by construction.
+**Three pairs of true statements that read as contradictions, each resolved by scoping the claim, not softening it**: T22.05A's closure is
+generation-time against T22.10's runtime breach; T22.11's "escape is always possible" is scoped to asteroids against T22.12's deliberate
+inescapability. Also: island → asteroid, and "zero gravity" retired as a description — no *global* gravity, many local wells.
+Nine owner rulings outstanding; the expensive one is whether a pulled player **orients** to the asteroid surface (if yes, every
+upright-drawn thing is wrong). `verify-repo` 291/291.

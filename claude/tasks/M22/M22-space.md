@@ -2,7 +2,9 @@
 
 **Specified 2026-09-18 at the owner's request, and not started.** *"dont work on it yet just
 make it a separate milestone since its probably larger than you think."* It is larger: the
-count below is **ten tasks**, two of them large, and one of them is a second map generator.
+count below is **thirteen tasks**, five of them large, and one of them is a second map
+generator. It grew twice on the day it was written — the vortex, then asteroid gravity and the
+black hole — and each addition made an earlier task bigger rather than sitting beside it.
 
 Built out of four tasks that were parked in M21 (`T21.05`–`T21.08`) plus everything the owner
 added on 2026-09-18. The four originals are superseded, not lost — each task below names the
@@ -30,7 +32,8 @@ The M21 half, verbatim, as it was recorded when the originals were written:
 > *"players are now in a spacesuit skin (make one with several colors and have a different
 > visor color selection)."*
 
-And the 2026-09-18 additions, verbatim:
+And the 2026-09-18 additions, verbatim — **three separate messages, each of which grew the
+milestone**:
 
 > *"there's no day/light in space but the sun and moon and the earth and stars can be the
 > background and should move. there are no clouds or fog or anything like that."*
@@ -46,6 +49,18 @@ And the 2026-09-18 additions, verbatim:
 > by radiation taking 1 damage per second. all players have a shield by default in a spacesuit,
 > but energy is still a thing so they need to make sure to constantly replenish it with battery
 > packs."*
+
+> *"lets add a fun secret. if you make a hole in the outer layer of the map (that wraps the
+> boundaries, you can still destroy it obviously), it creates a vortex that sucks you in and
+> pops you back out in a random location on the map."*
+>
+> *"each 'island' (lets make it an asteroid since we're in space) has its own internal gravity.
+> it pulls players towards it. they have several levels of gravity, lets say 1-5. its harder to
+> escape from them."*
+>
+> *"add a new hazard. black hole. this is a permanent one and appears randomly at the last
+> minute. it will destroy one of the many random 'asteroids' and suck players into it if they
+> get close. they die immmediately. if you get within the range of it, you cannot escape."*
 
 A reference image came with it: an asteroid arena — rocky islands floating inside a **closed,
 glowing circular boundary**, astronauts on and between them, satellites and a nebula behind.
@@ -131,16 +146,30 @@ task files; all of them block the code.**
    radiation"* reads as ambient and constant. If it is ambient the mode has a permanent
    energy drain and battery packs become the pacing item; if it is zonal it is a hazard like
    the others. Ambient is the straight reading and is assumed below.
+7. **Do players pulled toward an asteroid orient to its surface?** `T22.11`'s question, and the
+   expensive one: if they do, every upright-drawn thing is wrong — the walk cycle, the weapon
+   flip, the hats, the name labels, the bars. The reference image shows astronauts upright on
+   rocks whatever side they are on, so **no** is assumed, and it is a tenth of the work.
+8. **The black hole — four rulings**, listed in `T22.12`: every round or sometimes; whether it
+   grows; whether it keeps eating; and what it does once the round is over.
+9. **The vortex — five smaller rulings**, listed in `T22.10`: whether it catches a player
+   wearing wings (the straight answer is yes, but wings were just given the opposite rule for
+   pads and platforms); one hole or many; whether a hole heals; whether items and projectiles
+   are pulled in; and whether it shows on the minimap, which a *secret* argues against and
+   usability argues for.
 
 ## Build order
 
     T22.01 ─┬─ T22.02
-            ├─ T22.03 ── T22.04
-            ├─ T22.05A ── T22.05B
+            ├─ T22.03 ── T22.04 ─┐
+            ├─ T22.05A ─┬─ T22.05B ── T22.07
+            │           ├─ T22.10
+            │           └─ T22.11 ── T22.12
             ├─ T22.06
             ├─ T22.08
             └─ T22.09
-    T22.05B ── T22.07
+
+    T22.04 ── T22.11   (the thruster's delta-v is what "harder to escape" is measured against)
 
 - **T22.01 first and alone.** Everything reads the setting.
 - **Then five independent branches.** `T22.02`, `T22.03`, `T22.05A`, `T22.06`, `T22.08` and
@@ -152,6 +181,15 @@ task files; all of them block the code.**
 - **The mode is not playable until `T22.03` and `T22.05B` are both in.** A model with nowhere
   to float and a map nobody can traverse are each half a feature.
 - **`T22.07` last of the map chain** — spacesuits are the mode's skin and the mode has to exist.
+- **`T22.10` needs the rim to exist and shares `T22.05B`'s destination picker**, so it is
+  startable after `T22.05A` but not finishable before `T22.05B`.
+- **`T22.11` is the other large one and it is not optional.** Asteroid gravity turns "zero-g"
+  into "no global gravity, many local wells", which is a different feel and a different physics
+  problem — and the seam for it does not exist (`apply_gravity` is a scalar on `vel.y`).
+- **Three attractors share one summation** — asteroid wells (`T22.11`), the breach vortex
+  (`T22.10`) and the black hole (`T22.12`). Whichever lands first writes it; the other two use
+  it. Three loops means the float-order fix, the prediction fix and the cutoff each have to be
+  right three times.
 
 ## Obligations this milestone carries
 
@@ -170,4 +208,6 @@ task files; all of them block the code.**
 Host a match in space and float between asteroids on your thrusters, watching the plume fire
 from the opposite side; run your energy down and drift; take a battery pack and watch the
 radiation stop eating you; see a solar flare cross the arena and get out of its way; look up
-and see the earth, moved since the round began.
+and see the earth, moved since the round began; blow a hole in the rim and get eaten by what
+comes through it; claw your way off a level-5 asteroid on the last of your fuel; and watch a
+black hole open in the final minute, take a rock with it, and pull the round to a close.
