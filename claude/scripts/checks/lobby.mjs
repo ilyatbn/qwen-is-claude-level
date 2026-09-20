@@ -233,6 +233,76 @@ for (const id of MOVED) {
   }
 }
 
+// --- T22.01: the fifth row still fits on screen ---------------------------
+//
+// The panel is a centred DOM overlay with no max-height and no scroll, and
+// gravity adds a fifth row to it. **The roster pads to `LOBBY_CAPACITY` with
+// empty seats**, so the panel is already at its full height here with two
+// clients seated — no need to fill the lobby to measure it.
+//
+// Asserted against the bottom of `#ready`, the last control a player must be
+// able to reach: if it is below the fold there is no way to press it.
+{
+  const box = await ana.page.locator('#ready').boundingBox()
+  const viewport = await ana.page.evaluate(() => window.innerHeight)
+  const roster = await ana.page.evaluate(() => document.querySelectorAll('#roster li').length)
+  if (!box) {
+    fail('the Ready button has no bounding box — the panel did not render')
+  } else if (box.y + box.height > viewport) {
+    fail(
+      `the settings panel overflows: Ready ends at ${Math.round(box.y + box.height)}px ` +
+        `in a ${viewport}px viewport, with ${roster} roster rows — the fifth row pushed it off`,
+    )
+  } else {
+    ok(
+      `the panel fits: Ready ends at ${Math.round(box.y + box.height)}px of ${viewport}px, ` +
+        `with ${roster} roster rows and ${IDS.length} settings rows`,
+    )
+  }
+}
+
+// --- T22.01: `space` actually crosses the wire ---------------------------
+//
+// **The loop above only ever sends `low`**, because it steps each setting once
+// and gravity starts at Standard. That left the third value — the one the whole
+// milestone is named for — never sent by anything, so a drift between
+// `GRAVITIES` and `GravityMode::ALL` would have reached a player as
+// `lobby_error: unknown gravity` with no check red first. `lobby.test.ts` pins
+// the two lists to each other; this pins the *wire*, which is the half a unit
+// test cannot reach.
+//
+// Stepped rather than set directly: the panel's arrow is the only control a
+// player has, so this is the route a player takes.
+{
+  const before = (await settings(ana)).gravity.value
+  await ana.page.evaluate(() => window.__menu.step('gravity', 1))
+  await ana.page
+    .waitForFunction((v) => window.__menu.settings().gravity.value !== v, before, {
+      timeout: 10_000,
+    })
+    .catch(() => {})
+  const hostSees = (await settings(ana)).gravity.value
+  // The guest is the other end: `lobby_state` carried it, not just the DOM.
+  await bo.page
+    .waitForFunction((v) => window.__menu.settings().gravity.value === v, hostSees, {
+      timeout: 20_000,
+    })
+    .catch(() => {})
+  const guestSees = (await settings(bo)).gravity.value
+  if (hostSees !== 'Space') {
+    fail(`stepping gravity past Low reached "${hostSees}", not Space — the third mode never crossed the wire`)
+  } else if (guestSees !== hostSees) {
+    fail(`the host sees gravity "${hostSees}" and the guest sees "${guestSees}" — Space did not reach the other seat`)
+  } else {
+    ok(`gravity reached Space and the guest sees it too ("${before}" -> "${hostSees}")`)
+  }
+  // **The guest read is the control**, and it is why this is not just a DOM
+  // assertion: the guest's panel is fed only by `lobby_state`, so it can only
+  // say "Space" if the server parsed `space`, stored it and broadcast it. A
+  // spelling the server refuses leaves the guest on the old value and the
+  // branch above fires.
+}
+
 // The timer is in minutes on screen, and seconds are what crossed the wire.
 if (!/^\d+ min$/.test(anaAfter.timer.value)) {
   fail(`the timer is not shown in minutes: "${anaAfter.timer.value}"`)

@@ -203,6 +203,15 @@ export interface PlayerState {
  * prevent — see `docs/01-architecture.md`.
  */
 export interface Constants {
+  /**
+   * T22.01's gravity spellings, straight off `GravityMode::ALL`.
+   *
+   * The **only** structural link between the Rust enum and `lobby.ts`'s
+   * `GRAVITIES`; `lobby.test.ts` asserts the two are equal, so a value added,
+   * renamed or reordered on one side fails there rather than reaching a player
+   * as `lobby_error: unknown gravity`.
+   */
+  GRAVITY_MODES: readonly string[]
   MINE_ARM_TIME: number
   /** T20.10's ground animals — drawn size **is** the hit box. */
   SPIDER_W: number

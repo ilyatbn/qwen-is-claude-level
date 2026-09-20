@@ -18,6 +18,7 @@ import {
   lobbyReducer,
   parseLobbyState,
   quickMatchPayload,
+  GRAVITIES,
   SCALES,
   settingsControls,
   START_KITS,
@@ -547,6 +548,20 @@ function lobby(over: Partial<LobbyStateMsg> = {}): LobbyStateMsg {
 }
 
 describe('the private settings panel (§F7)', () => {
+  it('carries the same gravity list the Rust enum does, value for value', () => {
+    // **The only link between `GRAVITIES` and `GravityMode::ALL`.** Before this
+    // they agreed by comment, and a value added, renamed or reordered on one
+    // side would have reached a player as `lobby_error: unknown gravity` with
+    // nothing red first.
+    expect([...GRAVITIES]).toEqual([...C().GRAVITY_MODES])
+    // The control: the pin is against a non-empty list of the right size, so
+    // `toEqual` is not comparing two empties. Three is the count R3 fixed —
+    // `standard | low | space` — and if `Low` is ever dropped both ends move
+    // together and this line is the one that says the count changed.
+    expect(C().GRAVITY_MODES).toHaveLength(3)
+    expect(C().GRAVITY_MODES).toContain('space')
+  })
+
   it('reads its bounds from the core, and they are a usable range', () => {
     // The control for every `bounds`-driven assertion below: if the three
     // constants never crossed, these are all zero and every step "clamps"

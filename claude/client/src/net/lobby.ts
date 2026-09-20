@@ -196,9 +196,13 @@ export type StartKit = (typeof START_KITS)[number]
  *
  * **`space`, not `none`.** The third mode is a different map, a different
  * backdrop and its own hazards, not an absence of gravity — the spelling is the
- * server's `GravityMode::as_str`, and these two lists are pinned to each other
- * by nothing but this comment, which is why `parseLobbyState` refuses a value
- * that is not in it rather than passing it through.
+ * server's `GravityMode::as_str`.
+ *
+ * **Pinned to `GravityMode::ALL`, structurally**, through `constants_json`'s
+ * `GRAVITY_MODES`; `lobby.test.ts` asserts the two lists are equal. They used to
+ * agree by comment alone, and a drift on the third value would have reached a
+ * player as `lobby_error: unknown gravity` with nothing red first — the
+ * count-the-thing-at-both-ends rule with only one end counted.
  */
 export const GRAVITIES = ['standard', 'low', 'space'] as const
 export type Gravity = (typeof GRAVITIES)[number]

@@ -1574,6 +1574,13 @@ pub fn constants_json() -> String {
         // needs the same geometry and the same two seconds the sim uses — a
         // renderer carrying its own 40 and its own 2.0 would keep drawing the
         // old pad after either was tuned (§A19).
+        // T22.01. **The gravity spellings themselves**, not a tunable — the one
+        // mechanism that pins `lobby.ts`'s `GRAVITIES` to `GravityMode::ALL`.
+        // Without it the two lists agreed by comment only, and a drift on the
+        // third value would reach a player as `lobby_error: unknown gravity`
+        // with nothing red first. `lobby.test.ts` asserts the two are equal;
+        // this is the end of that assertion that Rust owns.
+        GRAVITY_MODES => c::GravityMode::ALL.iter().map(|g| g.as_str()).collect::<Vec<_>>(),
         // §F7. The private-lobby panel draws its own bounds and its own step;
         // a stepper carrying a local 240/600/60 would keep offering the old
         // range after any of them was tuned (§A19).

@@ -7725,34 +7725,156 @@ mod gravity_tests {
     use crate::constants::{GravityMode, MapScale, SIM_DT};
     use crate::player::input::{button, Input};
 
+    /// How long a run is, and how often the falling things are replaced.
+    ///
+    /// **`RESEED_TICKS` is not a free number, and reasoning about it was wrong.**
+    /// A bazooka round spawned into a pristine map survives 57 ticks, so 30
+    /// "obviously" leaves one in the air at tick 600. It does not: by then the
+    /// run has cratered the terrain and moved the players, and a fresh round
+    /// dies far sooner. Bisected against the real runner —
+    /// **30, 20 and 15 all end with `projectiles = 0`; 10 does not** — so the
+    /// value is the measurement, not the arithmetic.
+    ///
+    /// `the_runner_reaches_every_falling_subsystem` re-measures this on every
+    /// run rather than trusting the paragraph above, which is the only reason it
+    /// is safe to write a number here at all.
+    const TICKS: u32 = 600;
+    const RESEED_TICKS: u32 = 10;
+
+    /// Where the falling things are dropped, relative to the player they follow:
+    /// high enough to fall for a while, offset so a projectile's arc is not the
+    /// same shape as a straight drop.
+    const DROP_ABOVE: f32 = 260.0;
+    const DROP_AHEAD: f32 = 120.0;
+
+    /// What one run produced: the hash, where player 0 ended, and how many of
+    /// each falling thing were live **at the moment the hash was taken**.
+    ///
+    /// The counts are in the return value rather than asserted inside `run`
+    /// because they are the *sensitivity* of the hash, and a reader of
+    /// `the_setting_changes_no_simulation_yet` has to be able to see that
+    /// something checks them.
+    struct Run {
+        hash: [u8; 32],
+        ended_at: Vec2,
+        projectiles: usize,
+        mines: usize,
+        tombstones: usize,
+    }
+
     /// A round of identical inputs under `mode`, hashed at the end.
     ///
     /// Two players so the hash covers more than one body, and a held
     /// jump-and-run so every path gravity could plausibly be wired into —
-    /// `apply_input`, the fall, the landing — is actually walked. A run that
-    /// stood still would be satisfied by a build where gravity did nothing at
-    /// all, which is the opposite of what is being asserted.
-    fn run(mode: GravityMode) -> ([u8; 32], Vec2) {
+    /// `apply_input`, the fall, the landing — is actually walked.
+    ///
+    /// **And a projectile, a mine and a grave, replaced every `RESEED_TICKS`.**
+    /// The first draft ran players only and finished with
+    /// `projectiles=0 mines=0 tombstones=0`, so a gravity read planted in
+    /// `Projectiles::step` left this module green — and R3 schedules T22.02
+    /// early *precisely* to walk the projectile gravity seam. They are replaced
+    /// rather than spawned once because a mine or a grave with no sideways
+    /// motion lands in the same spot under any gravity: only the time to get
+    /// there changes, and `hash_into` records position, not time.
+    fn run(mode: GravityMode) -> Run {
+        run_driven(mode, true)
+    }
+
+    /// `drive == false` queues a neutral input every tick instead of the held
+    /// run-and-jump. It exists for one assertion — that the inputs are
+    /// load-bearing — and that assertion is the only honest way to make the
+    /// claim: a player left alone still *moves*, because it spawns in the air
+    /// and falls, and my first two attempts at this both passed with the
+    /// buttons deleted (`pos != Vec2::ZERO`, then `started_at != ended_at`).
+    fn run_driven(mode: GravityMode, drive: bool) -> Run {
         let mut w = World::for_test(4242, MapScale::Small);
         w.gravity = mode;
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
         w.add_player(1, 1, "bo".into());
-        for tick in 0..600u32 {
+        for tick in 0..TICKS {
             for id in 0..2u8 {
                 w.queue_input(
                     id,
                     Input {
                         seq: tick + 1,
-                        buttons: button::RIGHT | if tick % 30 < 4 { button::JUMP } else { 0 },
+                        buttons: if drive {
+                            button::RIGHT | if tick % 30 < 4 { button::JUMP } else { 0 }
+                        } else {
+                            0
+                        },
                         aim: 0,
                     },
                 );
             }
+            if tick % RESEED_TICKS == 0 {
+                seed_falling_things(&mut w);
+            }
             w.step(SIM_DT);
         }
-        let pos = w.player(0).map(|p| p.body.pos).unwrap_or(Vec2::ZERO);
-        (w.state_hash(), pos)
+        Run {
+            hash: w.state_hash(),
+            ended_at: w.player(0).map(|p| p.body.pos).unwrap_or(Vec2::ZERO),
+            projectiles: w.projectiles.len(),
+            mines: w.mines.len(),
+            tombstones: w.tombstones.len(),
+        }
+    }
+
+    /// Drop one projectile, one mine and one grave above player 0.
+    ///
+    /// **Spawned directly rather than through an inventory**, because arming a
+    /// player and making them fire is plumbing this test does not exercise and
+    /// would break the moment the starting kit changes. All three go through the
+    /// same public entry points production uses — `spawn_raw` for a meteor or a
+    /// death throw, `place` for a mine and for a grave.
+    ///
+    /// The mine's three numbers come **off its own `WeaponDef`**, not from
+    /// literals here: `world::use_item`'s `Delivery::Placed` arm reads exactly
+    /// those, so a retune moves both together.
+    fn seed_falling_things(w: &mut World) {
+        use crate::items::registry::{WEAPON_BAZOOKA, WEAPON_MINE};
+        use crate::weapons::defs::{def, Delivery};
+
+        let Some(anchor) = w.player(0).map(|p| p.body.pos) else {
+            return;
+        };
+        let now = w.round_time;
+        let from = anchor + Vec2::new(0.0, -DROP_ABOVE);
+
+        // Fired **up and sideways**, so its arc — not merely its fall time —
+        // depends on gravity, and so it is still in the air a reseed later.
+        // `muzzle_speed` off the def, for the reason the mine's numbers are.
+        let speed = def(WEAPON_BAZOOKA).map_or(0.0, |d| d.muzzle_speed);
+        w.projectiles.spawn_raw(
+            WEAPON_BAZOOKA,
+            0,
+            from,
+            Vec2::new(speed * 0.5, -speed * 0.5),
+            now,
+        );
+
+        if let Some(mine) = def(WEAPON_MINE) {
+            if let Delivery::Placed {
+                arm_time,
+                trigger_radius,
+                lifetime,
+            } = mine.delivery
+            {
+                w.mines.place(
+                    0,
+                    mine,
+                    from + Vec2::new(DROP_AHEAD, 0.0),
+                    arm_time,
+                    trigger_radius,
+                    lifetime,
+                    now,
+                );
+            }
+        }
+
+        w.tombstones
+            .place(0, from + Vec2::new(-DROP_AHEAD, 0.0), 0, now);
     }
 
     #[test]
@@ -7769,43 +7891,96 @@ mod gravity_tests {
     ///
     /// **What it rules out:** any wiring of `World::gravity` into the
     /// simulation. It is asserted on the state hash rather than on a position,
-    /// because the hash covers every body, every projectile and every item —
-    /// a positional assertion would miss gravity applied to a crate and not to
-    /// a player.
+    /// because the hash covers every body, every projectile, every mine, every
+    /// grave and every item — a positional assertion would miss gravity applied
+    /// to a rocket and not to a player. Each of those four sites is falsified
+    /// separately; the reds are in T22.01's follow-up report.
     ///
-    /// **The control for the control** is the second half: the same runner with
-    /// a different *seed* produces a different hash, so "the hashes match" is
-    /// about gravity and not about a runner that hashes an empty world.
+    /// **The control for the control** is the second half, and it uses the *same
+    /// seed*: a world that ran one tick must not hash the same as one that ran
+    /// `TICKS`, and player 0 must have left its spawn. Both of those were broken
+    /// in the first draft — the position assertion compared against `Vec2::ZERO`,
+    /// which a stationary player never returns, so it only ever detected "no
+    /// player existed", and it passed with the inputs zeroed.
     #[test]
     fn the_setting_changes_no_simulation_yet() {
-        let (standard, pos) = run(GravityMode::Standard);
+        let standard = run(GravityMode::Standard);
         for mode in [GravityMode::Low, GravityMode::Space] {
-            let (other, _) = run(mode);
             assert_eq!(
-                standard, other,
+                standard.hash,
+                run(mode).hash,
                 "{mode:?} changed the simulation — T22.01 ships the setting and \
                  no behaviour. If you are T22.02 or T22.03, this test has done \
                  its job and retires with your change."
             );
         }
 
-        // The control: the runner is capable of producing a different hash, and
-        // the world it hashed is one where something happened.
-        let mut moved = World::for_test(1337, MapScale::Small);
-        moved.set_phase(RoundPhase::Playing);
-        moved.add_player(0, 0, "ana".into());
-        moved.step(SIM_DT);
+        // A world that barely ran must not hash the same as one that ran
+        // `TICKS`, or the equality above is satisfied by a runner that hashes
+        // nothing. Same seed, same seats — the only difference is the running.
+        let mut barely = World::for_test(4242, MapScale::Small);
+        barely.set_phase(RoundPhase::Playing);
+        barely.add_player(0, 0, "ana".into());
+        barely.add_player(1, 1, "bo".into());
+        barely.step(SIM_DT);
         assert_ne!(
-            standard,
-            moved.state_hash(),
-            "the runner returns the same hash for different worlds, so the \
-             equality above proves nothing"
+            standard.hash,
+            barely.state_hash(),
+            "{TICKS} ticks hash the same as one, so the equality above proves nothing"
         );
+
+        // And the held run-and-jump is load-bearing: the same run with neutral
+        // input must produce a different world.
+        //
+        // **Asserted against a neutral run, not against the spawn position.**
+        // Two weaker forms shipped and both passed with the buttons deleted:
+        // `pos != Vec2::ZERO` (a stationary player returns its spawn, never
+        // zero) and `started_at != ended_at` (a player left alone still falls).
+        // Only comparing against a world that received no input can report the
+        // input being gone.
+        let neutral = run_driven(GravityMode::Standard, false);
         assert_ne!(
-            pos,
-            Vec2::ZERO,
-            "the run never moved anybody, so no gravity path was walked"
+            standard.hash, neutral.hash,
+            "the run hashes the same with the held run-and-jump as without it, \
+             so the inputs drive nothing and no player gravity path is walked"
         );
+        // Belt and braces on the same claim, in a form a reader can picture:
+        // only `button::RIGHT` moves a body sideways.
+        assert_ne!(
+            standard.ended_at.x, neutral.ended_at.x,
+            "player 0 ended at the same x driven and undriven ({}), so \
+             `button::RIGHT` reached nothing",
+            standard.ended_at.x
+        );
+    }
+
+    /// Every falling subsystem gravity will be wired into is **live at the moment
+    /// the hash is taken**, and this is what keeps it that way.
+    ///
+    /// Written because none of them were: the first draft measured
+    /// `projectiles=0 mines=0 tombstones=0` after 600 ticks, so a mode read
+    /// planted in `Projectiles::step` left the whole module green while looking
+    /// exactly like a test that covered it.
+    ///
+    /// **It asserts at hash time rather than at spawn time on purpose.** A
+    /// spawn-time check would stay green through the failure that actually
+    /// happened, which was a rocket dying three ticks before the end. That makes
+    /// this the guard on `RESEED_TICKS` against a projectile-lifetime retune.
+    #[test]
+    fn the_runner_reaches_every_falling_subsystem() {
+        let r = run(GravityMode::Standard);
+        for (name, n) in [
+            ("projectiles", r.projectiles),
+            ("mines", r.mines),
+            ("tombstones", r.tombstones),
+        ] {
+            assert!(
+                n > 0,
+                "no {name} were live when the hash was taken, so \
+                 `the_setting_changes_no_simulation_yet` is blind to whatever \
+                 gravity does to them — shorten RESEED_TICKS"
+            );
+        }
     }
 }
 

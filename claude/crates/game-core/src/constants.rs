@@ -2584,7 +2584,19 @@ impl GravityMode {
         }
     }
 
-    /// Every value, in panel order — the list the lobby's stepper walks.
+    /// Every value, in panel order.
+    ///
+    /// **Nothing in Rust walks this in production** — the lobby's stepper is
+    /// `GRAVITIES` in `client/src/net/lobby.ts`, and the panel is TypeScript. An
+    /// earlier version of this comment claimed the stepper walked it, which a
+    /// reader would have believed.
+    ///
+    /// What it is actually for: the exhaustiveness loop in
+    /// `constants::tests::gravity_parses_and_round_trips`, and
+    /// `game-wasm`'s `constants_json`, which exports these spellings as
+    /// `GRAVITY_MODES` so `lobby.test.ts` can assert the TypeScript list equals
+    /// this one. **That export is the only thing keeping the two in step**, so a
+    /// variant added here without one there fails in the client's tests.
     pub const ALL: [GravityMode; 3] = [GravityMode::Standard, GravityMode::Low, GravityMode::Space];
 }
 
