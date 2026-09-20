@@ -6505,3 +6505,10 @@ did. It has **two** lists — `IDS` (displayed, 5 entries incl. `scale`) and `MO
 file returns **1**. So two of my four claims were false and **nothing anywhere stepped map size across the wire**: the same gap T22.01 had
 just closed for `gravity`, one setting over. Closed by adding `'scale'` to `MOVED`; falsified by making the guest's `parseLobbyState`
 ignore the wire's scale — *"FAIL: the host changed scale and the screen still reads SMALL"* — then restored, empty diff.
+
+## M22 batch gate 1 — green, 16m49s (coordinator, 2026-09-21)
+Full `./scripts/check.sh` over T22.00 + T22.01, run detached (`setsid`) and waited on by exact PID, per the harness-kill finding.
+`START 01:58:23 → END 02:15:12`, `EXIT=0`. Read the stages rather than the exit code: **cargo fmt, cargo clippy -D warnings, cargo test
+--workspace 1459 passed / 0 failed over 36 result lines, client typecheck, client tests 954/954, e2e 58/58, net smoke, assets, repo
+guards.** `title` green for the first time since 2026-09-16 and 31 s faster; `smoke-shader`, T22.01's one-sighting flake, passed here —
+left recorded, not parked.
