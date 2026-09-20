@@ -28,6 +28,13 @@ and no way to aim. "Constant until they hit something" is the owner's sentence a
 its straight reading. The reference image is astronauts **standing on rocks**, which bounce
 cannot produce.
 
+**This costs zero lines, and that is the trap.** `resolve.rs::move_x` already zeroes only
+`vel.x` on a wall and `move_y` only `vel.y` on a floor or ceiling — which *is* this rule. So
+a test named *"a collision stops you along the normal and preserves the tangential"* passes
+today, under standard gravity, **with the new code deleted**. It tests the framework. This
+ruling is a decision to record, not a feature to build; the test that earns its keep is the
+**no-damping** one.
+
 **Reverse it by:** the contact branch in `physics/resolve.rs` — the same two lines that
 already zero `vel.x` in `move_x` and `vel.y` in `move_y`. A restitution coefficient of 0.0
 is what those lines are; a bounce is that constant nonzero.
@@ -234,6 +241,20 @@ pub struct Forces {
 
 **"What accelerates this body" has exactly one answer and it is the `Forces` value.**
 
+**`T22.11` introduces `Forces`, and nobody before it does.** `T22.02` and `T22.03` are
+batch 2 and walk the existing scalar seam; a coder who brings `Forces` forward pre-empts the
+task that owns it and makes the merge a rewrite of a rewrite. R3's "low gravity walks the
+seam before T22.11 rewrites it" means exactly that.
+
+**The cost that is invisible from `resolve.rs`.** `integrate` has five production callers and
+four of them are not players: `weapons/placed.rs::Mines::step`, `items/world.rs::WorldItems::step`,
+`world/tombstones.rs::Tombstones::step`, `world/animals.rs::Animals::tick` — each passing a
+literal `1.0`, and **none of them can see the match setting today**; their signatures are
+`(map, …, dt)`. That is four signature changes propagating up to `World::step`, and it is the
+real cost of this ruling. **R14 rules what each of them does, so they are four mechanical
+edits and not four design calls.** `apply_gravity` itself has exactly one production caller
+(`integrate`), so its early return survives untouched — the cheapest part of this.
+
 **Reverse it by:** `Forces` is one type with one construction site per mode; collapsing it
 back to a scalar is deleting two fields.
 
@@ -296,6 +317,30 @@ health bar; state it in the doc comment and assert the relation.
 
 **Reverse it by:** the fill step in the space generator — one pass that currently writes
 nothing outside the annulus.
+
+## R14 — In space, only players are pulled. Everything else floats where it is put.
+
+*Raised by the T22.02/T22.03 forward sweep, which found four judgement calls hiding behind
+R10. Ruled here so `T22.11` inherits four mechanical edits instead.*
+
+**The wells, the vortex and the black hole pull players and nothing else.** The owner's own
+sentence is *"it pulls **players** towards it"*. Projectiles, items, crates, tombstones and
+mines are not attracted — a rocket curving around a rock is a balance change nobody asked
+for, and loot drifting into a rock is loot deletion.
+
+**And every non-player body is at gravity scale 0 in space**, so it comes to rest where it
+is put:
+
+| body | in space | why |
+|---|---|---|
+| `weapons/placed.rs::Mines::step` | floats where placed | a mine hanging in space is a **floating proximity mine**, which is correct here. Its doc comment argues mines must fall because *"a mine hanging in the air over a crater is the lie `docs/32` §4 rules out"* — that lie is about **ground**, and there is none |
+| `items/world.rs::WorldItems::step` | floats where dropped | `T22.05B` must therefore spawn items in open space, which it owes anyway |
+| `items/spawning.rs` crates | float; no fall, no `is_falling_crate` | a crate falling to a floor that does not exist is the same bug |
+| `world/tombstones.rs::Tombstones::step` | spawns at the death position and stays | a marker drifting where you died is the right picture, and it keeps the carve deterministic |
+| `world/animals.rs::Animals::tick` | **no animals at all in space** | birds, beetles and spiders in a vacuum. This also answers the `birds.rs` row of `T22.05B`'s table |
+
+**Reverse it by:** one scale value per call site, and the attractor list's entity filter —
+the same filter R9 point 4 names.
 
 ---
 

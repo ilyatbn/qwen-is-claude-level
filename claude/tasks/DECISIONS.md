@@ -1424,3 +1424,21 @@ not widened · R13 outside the rim is **void**.
 owner — `M22-space.md`'s build order permits either and does not say which. Nothing else in
 the milestone's order moves.
 **Reverse it by:** each ruling names its own single site; the file is the index.
+
+## D-71 — In space only players are pulled, and everything else floats where it is put  ·  M22
+**Decided by:** me, on the T22.02/T22.03 forward sweep's finding.
+**The ambiguity:** `R10` makes gravity a `Forces` value, and the sweep enumerated
+`integrate`'s five production callers: four of them are not players — `Mines::step`,
+`WorldItems::step`, `Tombstones::step`, `Animals::tick` — each passing a literal `1.0`, and
+**none can see the match setting**. Each was a separate design call sitting unowned inside
+`T22.11`, and each of those four functions argues in its own doc comment for falling.
+**Chosen:** the attractors pull **players only** — which is the owner's own word, *"it pulls
+players towards it"* — and every non-player body is at scale 0 in space, coming to rest where
+it is put. Mines become floating proximity mines, items and crates float where dropped,
+tombstones mark the death position, and **there are no animals in space at all**, which also
+closes the `birds.rs` row of `T22.05B`'s table.
+**Consequence:** four mechanical edits instead of four design calls, and `T22.11`'s
+*"does the field touch anything but players"* is answered before it is asked. It also means
+`T22.05B` must spawn items in open space — which it owed anyway.
+**Reverse it by:** one scale value per call site, plus the attractor list's entity filter.
+**Full text:** `R14` in [M22/M22-RULINGS.md](M22/M22-RULINGS.md).
