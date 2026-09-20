@@ -174,25 +174,70 @@ export default async function ({ page, shot, log }) {
   if (menu.screen !== 'menu') throw new Error(`menu opened on ${menu.screen}`)
   await shot('menu')
 
-  // §E7: Quick Game takes no options, so the stepper lives behind Private Game.
+  // --- the Private Game screen (§E7) --------------------------------------
+  //
+  // Quick Game takes no options — a quick match randomises its settings — so
+  // hosting and joining live behind Private Game.
+  //
+  // **A map-size stepper used to be asserted here and there is no longer one to
+  // assert.** `4f28b2e` (owner, 2026-09-16) took the control off this screen:
+  // it asked the question before the answer could matter, since a guest about
+  // to press Join never owns the setting. That commit did not touch this file,
+  // so what stood here spent five days waiting 30 s for `#scale-value` and
+  // failing — nothing selected `title` in between, because `affected.mjs` only
+  // reaches it when a client source file changes.
+  //
+  // **Where map size is asserted now**: `scripts/checks/lobby.mjs`, whose `IDS`
+  // list carries `scale` through the host's panel, the guest's panel and the
+  // seat gate (host's arrows enabled, guest's disabled). Its `MOVED` list —
+  // `bots`, `kit`, `timer`, `gravity` — does *not* include `scale`, so no check
+  // steps map size end-to-end; that half rests on `lobby.test.ts`, which pins
+  // `stepSetting(…, 'scale', ±1)` wrapping in both directions. Said plainly
+  // rather than left to be discovered: the wire half of a map-size change is
+  // the one thing this move did not carry over.
   await page.click('#private')
   if ((await m()).screen !== 'private') throw new Error('Private Game did not open')
 
-  // The stepper wraps, in both directions, and the label follows the model.
-  const shown = () => page.textContent('#scale-value')
-  const wasShown = await shown()
-  await page.click('#scale-next')
-  if ((await m()).scale === 'small') throw new Error('the stepper did not advance')
-  const after = await shown()
-  if (after === wasShown) throw new Error(`the stepper label did not change: ${wasShown}`)
-  // Back to where it started, which is what "wrapping" has to mean in both
-  // directions — a stepper that only advances passes a one-way check.
-  await page.click('#scale-prev')
-  if ((await shown()) !== wasShown) throw new Error(`prev did not undo next: ${await shown()}`)
-  // And the keyboard drives the same control (§E7).
-  await page.keyboard.press('ArrowRight')
-  if ((await shown()) === wasShown) throw new Error('the arrow keys do not step the map size')
-  log(`stepper: ${wasShown} -> ${after}, wraps and takes arrow keys`)
+  // What the screen **is**: three buttons, each labelled and usable, and
+  // nothing else. Asserted as a set rather than one id at a time so that it
+  // reports both directions — a button that went missing, and a control that
+  // came back.
+  const WANT = [
+    ['host', 'Host'],
+    ['join', 'Join'],
+    ['back', 'Back'],
+  ]
+  const buttons = await page.$$eval('.menu-screen .actions button', (els) =>
+    els.map((b) => ({ id: b.id, label: (b.textContent ?? '').trim(), disabled: b.disabled })),
+  )
+  for (const [id, label] of WANT) {
+    const b = buttons.find((x) => x.id === id)
+    if (!b) {
+      throw new Error(
+        `the Private Game screen has no ${label} button (#${id}); it shows ` +
+          `${JSON.stringify(buttons.map((x) => x.id))}`,
+      )
+    }
+    if (b.label !== label) throw new Error(`#${id} reads "${b.label}", not "${label}"`)
+    if (b.disabled) throw new Error(`the ${label} button is disabled, so nothing can press it`)
+  }
+  const extra = buttons.filter((b) => !WANT.some(([id]) => id === b.id))
+  if (extra.length) {
+    throw new Error(
+      `the Private Game screen has controls nothing asserts: ` +
+        `${JSON.stringify(extra.map((b) => b.id || b.label))}`,
+    )
+  }
+
+  // And it navigates. Back is clicked rather than driven from the keyboard
+  // because Esc is asserted below and the two are separate bindings; Host is
+  // not clicked here — this check runs no game server, and `lobby.mjs` presses
+  // it against a real one to host a real room.
+  await page.click('#back')
+  if ((await m()).screen !== 'menu') throw new Error('Back did not return to the menu')
+  await page.click('#private')
+  if ((await m()).screen !== 'private') throw new Error('Private Game did not reopen')
+  log(`private game: ${buttons.map((b) => b.label).join(', ')}; Back returns to the menu`)
 
   // The join screen, and a bad code named locally rather than round-tripped.
   await page.click('#join')
