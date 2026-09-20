@@ -1442,3 +1442,30 @@ closes the `birds.rs` row of `T22.05B`'s table.
 `T22.05B` must spawn items in open space — which it owed anyway.
 **Reverse it by:** one scale value per call site, plus the attractor list's entity filter.
 **Full text:** `R14` in [M22/M22-RULINGS.md](M22/M22-RULINGS.md).
+
+## D-72 — The rim is an ellipse, and the generator is a derived `MapGenerator` variant  ·  M22
+**Decided by:** me, on the T22.05A/B forward sweep.
+**The ambiguity — and it was a wrong premise, not an ambiguity.** `R13` said "circle", from
+the owner's reference image. **Every map is 2:1** (`2048/1024`, `3072/1536`, `4096/2048`,
+measured), so a true circle leaves `w - h` px of dead map — **2048 px on Large, half the
+arena**. The original text claimed a circle leaves `WALL_W` strips of 8 px; that is out by a
+factor of 64 and in the wrong direction.
+**Chosen:** an **ellipse inscribed in the map rect, inset** clear of `SKY_MARGIN` and
+`FLOOR_CRUST`. The reason it beats the circle rather than compromising with it:
+**`MINIMAP_W` x `MINIMAP_H` is 200 x 100, also 2:1**, so an inscribed ellipse **draws as a true
+circle on the minimap** — the only place the arena's shape is ever visible, since the camera
+viewport is a fraction of the map. The owner's picture appears exactly where a picture can be
+seen, and the arena is not half empty to buy it.
+**Also chosen, same sweep:** the space map is **`MapGenerator::Space`, a third variant in
+`MapGenerator::ALL`, derived from the gravity mode and never selected beside it** (`R15`).
+The variant is what makes `tests/golden.rs::cases()` grow 24 -> 36 automatically; the
+alternative `GravityMode` branch gains `cases()` nothing and would ship the space map with
+**zero** golden coverage while its "most important test" stayed green.
+**Three corrections of fact that fell out and are worth keeping:** `BEDROCK_H` is **0**, so
+there is no indestructible floor and `carve_circle`'s doc sentence is half-stale;
+`clamp_to_world` has **no bottom clamp**, so `world/mod.rs::step_void` is the only thing
+between a breaching player and an infinite drift (`R16`); and `tick_crates` spawns across the
+full map width above the rim, so in space **every crate would spawn in the void**.
+**Reverse it by:** the rim equation (a circle is `rx = ry = h/2`), and the one `match` in
+`generate_terrain_with` plus the derivation line in `room.rs`.
+**Full text:** `R13`, `R15`, `R16`, `R17` in [M22/M22-RULINGS.md](M22/M22-RULINGS.md).

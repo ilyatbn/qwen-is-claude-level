@@ -296,27 +296,56 @@ health bar; state it in the doc comment and assert the relation.
 
 **Reverse it by:** `effects/flare.rs` is one file and one `KINDS` row.
 
-## R13 — Outside the rim is **void**, and the rim is ordinary rock
+## R13 — The rim is an **ellipse**, inset, of ordinary destructible rock, and outside it is void
 
-*`T22.05A`, which asks what is in the `WALL_W` strips a circle leaves in a rectangle.*
+*Revised 2026-09-20 after the T22.05A/B forward sweep. **The original ruling said "circle" and
+was written on a wrong premise** — it assumed a circle in a roughly square map. It is not.*
 
-- The rim is a thin annulus of **ordinary destructible mask**. Not `WALL_W`, not bedrock —
-  `T22.10` is a whole task about breaking it and the owner said *"you can still destroy it
-  obviously"*.
-- **Outside the rim there is nothing** — empty mask, the backdrop showing through. Not
-  rock. A breach therefore opens onto real emptiness, which is what makes the vortex a
-  containment mechanism with something to contain rather than a door into more rock.
-- The `WALL_W` columns and the `BEDROCK_H` floor still exist and are still indestructible.
-  They sit **outside the circle, in that void**, and a player only ever meets them by
-  breaching the rim and out-running a vortex. That is a hard invisible edge and it is
-  accepted: `clamp_to_world` already guarantees nobody leaves the world, and R9's vortex is
-  what makes it unreachable in practice.
-- Asteroid **gravity level correlates with radius**, monotonically, with jitter. A big rock
-  with a weak pull reads as broken. `T22.05A` asks for this to be said either way; it is
-  said.
+**Every map is 2:1.** `MAP_SMALL_W/H = 2048/1024`, `MEDIUM 3072/1536`, `LARGE 4096/2048` —
+measured, not remembered. A true circle is limited by the short axis, so r = h/2, and it
+leaves **w − h px of dead map**: 1024 px on Small, **2048 px on Large — half the arena**, which
+the camera pans over and the minimap draws empty. The original text said the circle leaves
+`WALL_W` strips of 8 px. It is out by a factor of 64 and in the wrong direction.
 
-**Reverse it by:** the fill step in the space generator — one pass that currently writes
-nothing outside the annulus.
+**The ruling: an ellipse inscribed in the map rect, inset from the borders.** And the reason
+is not a compromise, it is better than the circle:
+
+- **The minimap is `MINIMAP_W = 200` × `MINIMAP_H = 100` — also 2:1.** An ellipse inscribed in
+  a 2:1 map therefore **draws as a true circle on the minimap**, and the minimap is the only
+  place the arena's shape is ever visible: the camera viewport is a small fraction of the map,
+  so from inside you see an arc of rim and never a shape. **The owner's circle appears exactly
+  where a circle can be seen**, and the arena is not half empty to buy it.
+- The owner's own sentence offers the latitude: *"It can be squared, a circle, or some other
+  shape that wraps everyone together."* **Wrapping everyone together is the requirement**; the
+  reference image is how it was illustrated.
+- **Inset it**, clear of `SKY_MARGIN` (96) at the top and `FLOOR_CRUST` (16) at the bottom.
+  A full-height ellipse collides with `silhouette::force_borders`, which forces the sky band
+  empty and the floor-crust band solid full-width, and `borders_hold` is asserted by
+  `gen/mod.rs::every_scale_produces_the_right_dimensions_with_borders_intact`, the identically
+  named test in `gen/v2/mod.rs`, and `tests/map_sweep.rs::thousand_seed_playability_sweep`.
+  **Insetting keeps all three green and untouched**; disabling `force_borders` costs three
+  amended tests to buy nothing.
+
+**The rest of R13 stands:**
+
+- The rim is **ordinary destructible mask**. Not `WALL_W`, not bedrock — `T22.10` is a whole
+  task about breaking it.
+- **Outside the rim there is nothing** — empty mask, the backdrop showing through. That is
+  what makes the vortex a containment mechanism with something to contain.
+- Asteroid **gravity level correlates with radius**, monotonically, with jitter.
+
+**Two corrections to what the original R13 claimed about the world's edges**, both verified:
+
+- **`BEDROCK_H` is `0`.** There is no indestructible floor; §C15 removed it. `Map::circle`'s
+  bottom clamp `h - BEDROCK_H` is inert and `carve_circle`'s doc sentence *"Bedrock and the
+  side walls are never touched"* is half-stale. The only indestructible border is the 8 px
+  `WALL_W` side band below `SKY_MARGIN`. **Report that stale doc comment; do not fix it here.**
+- **`clamp_to_world` has no bottom clamp** — it clamps x to the `WALL_W` bands and the **top**
+  to `y >= half_h`, and nothing downward. So R13's original *"`clamp_to_world` already
+  guarantees nobody leaves the world"* was **false**. What is below is `R16`.
+
+**Reverse it by:** the rim-rasterising step in the space generator — one ellipse equation.
+A circle is that equation with `rx = ry = h/2`.
 
 ## R14 — In space, only players are pulled. Everything else floats where it is put.
 
@@ -341,6 +370,109 @@ is put:
 
 **Reverse it by:** one scale value per call site, and the attractor list's entity filter —
 the same filter R9 point 4 names.
+
+## R15 — The space map is a third `MapGenerator`, **derived** from the mode, never chosen beside it
+
+*Raised by the sweep: the two routes have opposite consequences for golden coverage, and the
+task file assumed a branching mechanism that does not exist.*
+
+**First, the mechanism the task file named is wrong.** *"Reached the way `MapScale` already
+branches the existing one"* — `MapScale` branches nothing; it is a size/parameter table
+(`constants.rs::MapScale::params`). The thing that branches generators is `MapGenerator`, at
+exactly one site: `map/gen/mod.rs::generate_terrain_with`'s
+`match generator { V1 => …, V2 => … }`.
+
+**The ruling, in two halves that must both hold:**
+
+1. **`MapGenerator::Space` is a real third variant and joins `MapGenerator::ALL`.**
+   `tests/golden.rs::cases()` iterates `MapGenerator::ALL` × 4 seeds × `MapScale::ALL`, so the
+   table grows **24 → 36 automatically** and `tests/dump_maps.rs` follows. That is the free
+   coverage. **The alternative — a `GravityMode::Space` branch inside the existing generator —
+   gains `cases()` nothing, so the space map would ship with zero golden coverage while
+   `T22.05A`'s "most important test" (*existing hashes unchanged when the mode is off*) stayed
+   green for a build where the generator was never called.** That is the
+   assertion-that-rules-out-nothing shape, and it is why this half is not negotiable.
+2. **It is *derived* from the gravity mode, never selected beside it.** The room computes
+   `generator = if gravity == Space { MapGenerator::Space } else { <the lobby's choice> }`.
+   One source of truth. **Two independent fields would let a lobby pick "space gravity" and
+   "generator V2" and get a normal map in orbit** — *derive, do not add a fourth flag*, and
+   this is that rule at the largest scale in the milestone.
+
+**The plumbing this needs, which no task file costed.** Gravity does not reach map generation
+at all today: `game-server/src/room.rs::generate_world_task` builds the world first and
+assigns `world.gravity` **afterwards**. `World::with_generator` → `World::build` →
+`map::generate_full` has no gravity parameter anywhere. **`T22.05A` makes gravity a
+constructor input** so the derivation happens before the map exists. That is a signature change
+through the `World` constructors and it belongs in `T22.05A`'s size estimate.
+
+**And the lobby preview runs the generator client-side.** `client/src/scenes/PreviewScene.ts`
+calls `core.generate(seed, scale)` directly — the networked round does not (it uses
+`loadMask`), but the **preview a host looks at while choosing the mode does**. A host who
+picks space and is shown a normal map is a visible lie, and it is the same shape as the T19.24
+bug `T22.05B` already quotes. `PreviewScene` needs the mode.
+
+**Reverse it by:** the one `match` in `generate_terrain_with`, and the one derivation line in
+`room.rs`.
+
+## R16 — The void still kills in space, and crates must stop spawning from the sky
+
+*Raised by the sweep. Two edge-of-the-world behaviours that fire wrongly, and they have
+opposite answers.*
+
+**The void kill stays.** `world/mod.rs::step_void` kills at `head_y > map.mask.h` and
+`is_in_the_void` names the cause. With no bottom clamp (R13), that is the **only** thing
+between a player who breached the rim and an infinite drift, and it already has an attributed
+death cause — which is more than most of this milestone starts with. Keep it, in every mode.
+
+**The consequence is `T22.10`'s to carry:** the vortex must capture a breaching player
+*before* they cross `mask.h`, so **its capture radius has to exceed the rim's thickness plus
+the inset**, and that budget must be stated in `T22.10` as a number with the drift speed it
+was derived from. A vortex that is merely near the hole lets people fall out of the world
+through the feature designed to stop exactly that.
+
+**Crates must not spawn from the sky in space.** `items/spawning.rs::SpawnSchedule::tick_crates`
+spawns at a random x across the **full map width** at `y = SKY_MARGIN / 2`. Under R13 that
+point is **above the rim's top arc at every x**, so in space **every crate spawns outside the
+boundary**, and under R14 (non-player bodies float where they are put) it then hangs there
+forever, unreachable. In space, crates come from `T22.05B`'s open-space picker like everything
+else — the same function, for the reason R14 and `T22.10` both already give.
+
+**Reverse it by:** the `tick_crates` spawn-point expression, one branch.
+
+## R17 — The acceptance predicate replaces the verdict, not the report
+
+*`T22.05A` says its own acceptance predicate is a deliverable. This is its shape.*
+
+`traversal::analyse` returns `TraversalReport { total_points, largest_component,
+traversable_fraction, passed }`, and `passed` is
+`traversable_fraction >= MIN_TRAVERSABLE_FRACTION && enough_spawns`. **`generate_full_with`
+and `MapMeta` consume that struct**, so the space pipeline keeps its shape and replaces only
+what fills it.
+
+- **`passed`** = the rim is **closed** — an 8-connected ring walk over the mask, not a sample
+  — **and** at least `SPAWN_COUNT_MIN` candidate points exist at `SPAWN_MIN_SEPARATION`,
+  drawn from **open space**, not from standable ground.
+- **`traversable_fraction` = 1.0 by construction**, because everything is reachable under
+  thrust. **Say that at the code**, or `map_sweep`'s cross-check between the fraction and
+  `largest_component.len()` fires and reads as a generator bug.
+- **`largest_component`** = every index, and a comment saying it now means *"all reachable"*.
+  **That is a field-means-two-things risk and it is flagged rather than swallowed** — it is
+  accepted here only because the alternative is a second report type that `MapMeta` cannot
+  hold.
+
+**Do not skip the replacement and hope.** If nothing replaces the verdict, all 12 attempts
+(`MAX_GEN_ATTEMPTS`) fail, the safe preset runs, and the map that ships is the **safe-preset
+map** with `used_safe_preset = true` — silently, because `map_sweep` is `#[ignore]`d and
+nothing routine reports it.
+
+**One correction to the task file's framing**, verified: the existing predicate is **not**
+walk-only. `can_jetpack` and the `NavRegions` flood edges are in the disjunction. A scatter of
+asteroids within one jetpack budget of each other **could score surprisingly well** — so
+*measure what the existing predicate says about a space map before asserting it is
+meaningless*. And `surface_points` will **not** be empty: asteroid tops are standable, so
+`extract_surface` finds them.
+
+**Reverse it by:** one function, the space arm of the verdict.
 
 ---
 
