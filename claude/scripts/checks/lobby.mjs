@@ -202,7 +202,7 @@ if (hostLocked.length) {
 } else ok("control: the host's controls are enabled, so the guest's are locked by seat")
 
 // --- the host changes every steppable setting, and the guest sees it -----
-const MOVED = ['bots', 'kit', 'timer', 'gravity']
+const MOVED = ['scale', 'bots', 'kit', 'timer', 'gravity']
 const beforeMoved = Object.fromEntries(MOVED.map((id) => [id, anaPanel[id].value]))
 for (const id of MOVED) {
   await ana.page.evaluate((i) => window.__menu.step(i, 1), id)

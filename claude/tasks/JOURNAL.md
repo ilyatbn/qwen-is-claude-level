@@ -6493,3 +6493,15 @@ sites; the builder's *first* fix for the second was wrong the same way and it ca
 the wire as `space` and the TS/Rust mode lists are pinned structurally. **The lobby panel has 9 px of headroom** at capacity — a sixth
 settings row would overflow, now asserted. Ten shipped-code defects in `M22/M22-FOUND-DEFECTS.md`; `title` broken since `4f28b2e` is
 `T22.00`. Full gate not yet run for this batch.
+
+## T22.00 — the title check, and the coverage hole behind it (builder + coordinator, 2026-09-20)
+`title` had asserted a map-size stepper since `4f28b2e` deleted it on 2026-09-16 — five days red, unseen because `affected.mjs` only
+selects it when a **client source file** changes and everything since was server-side or docs. `509617f` replaces the block with the
+screen's real contract (Host/Join/Back as a **set**, so a returning `#scale-next` is named rather than ignored) and it runs 31 s faster,
+the old 30 s timeout being gone. Falsified by deleting the Host button: *"the Private Game screen has no Host button (#host); it shows
+["join","back"]"*.
+**The builder then found my task file's justification was wrong.** I wrote that `lobby.mjs` covers map size "strictly more" than `title`
+did. It has **two** lists — `IDS` (displayed, 5 entries incl. `scale`) and `MOVED` (stepped, 4, without it) — and `grep -c scale` on that
+file returns **1**. So two of my four claims were false and **nothing anywhere stepped map size across the wire**: the same gap T22.01 had
+just closed for `gravity`, one setting over. Closed by adding `'scale'` to `MOVED`; falsified by making the guest's `parseLobbyState`
+ignore the wire's scale — *"FAIL: the host changed scale and the screen still reads SMALL"* — then restored, empty diff.
