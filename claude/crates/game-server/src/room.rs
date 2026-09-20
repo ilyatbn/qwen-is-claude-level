@@ -145,6 +145,18 @@ pub enum Command {
         seconds: f32,
         reply: oneshot::Sender<Result<(), &'static str>>,
     },
+    /// T22.01's gravity, on the same terms as the three above: host-only,
+    /// private-only, before the start, refused with a reason (§E6), recorded in
+    /// the replay, and clearing every ready flag.
+    ///
+    /// Its own command rather than a fourth arm of a generic `SetSetting`, for
+    /// the reason stated above: the parse belongs at the socket boundary, where
+    /// a bad value can still be refused with a reason.
+    SetGravity {
+        by: PlayerId,
+        gravity: game_core::constants::GravityMode,
+        reply: oneshot::Sender<Result<(), &'static str>>,
+    },
     /// Tell the room who it is: its join code, and whether it is private.
     ///
     /// The registry owns identity — it mints codes and keeps the `code -> id`
@@ -208,6 +220,7 @@ impl std::fmt::Debug for Command {
             Command::SetRoundSeconds { by, seconds, .. } => {
                 write!(f, "SetRoundSeconds({by}, {seconds})")
             }
+            Command::SetGravity { by, gravity, .. } => write!(f, "SetGravity({by}, {gravity:?})"),
             Command::LobbyRead { .. } => f.write_str("LobbyRead"),
             Command::Inspect(_) => f.write_str("Inspect"),
         }
@@ -447,6 +460,28 @@ impl RoomHandle {
         rx.await.unwrap_or(Err("the room is gone"))
     }
 
+    /// Choose the gravity the match is played under, as `by` (T22.01).
+    pub async fn set_gravity(
+        &self,
+        by: PlayerId,
+        gravity: game_core::constants::GravityMode,
+    ) -> Result<(), &'static str> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::SetGravity {
+                by,
+                gravity,
+                reply: tx,
+            })
+            .await
+            .is_err()
+        {
+            return Err("the room is gone");
+        }
+        rx.await.unwrap_or(Err("the room is gone"))
+    }
+
     /// This room's lobby, for the join handshake and for tests.
     pub async fn lobby_state(&self) -> Option<LobbyState> {
         let (tx, rx) = oneshot::channel();
@@ -515,6 +550,9 @@ pub struct LobbyState {
     /// The room's round length **including** the environment default, so a seat
     /// reading this never sees a value the match will not use.
     pub round_seconds: f32,
+    /// T22.01's gravity, carried here for the reason the three above are:
+    /// every seat has to see what the host chose, not just the host who chose it.
+    pub gravity: game_core::constants::GravityMode,
     pub settings_owner: Option<PlayerId>,
     pub starts_in: Option<f32>,
     pub players: Vec<LobbySeat>,
@@ -918,6 +956,11 @@ pub fn to_command(c: &ReplayCommand) -> Command {
             seconds: *secs,
             reply: tokio::sync::oneshot::channel().0,
         },
+        ReplayCommand::SetGravity(id, gravity) => Command::SetGravity {
+            by: *id,
+            gravity: *gravity,
+            reply: tokio::sync::oneshot::channel().0,
+        },
         ReplayCommand::Input(id, v) => Command::Input(*id, v.clone()),
         ReplayCommand::UseItem(id, s) => Command::UseItem(*id, *s),
         ReplayCommand::SelectSlot(id, s) => Command::SelectSlot(*id, *s),
@@ -1050,6 +1093,7 @@ impl Room {
         let generator = self.config.map_generator;
         let round_seconds = self.config.round_seconds;
         let weather_mode = self.config.weather_mode;
+        let gravity = self.config.gravity;
         let dev_round_clock = self.config.dev_round_clock;
         let warmup_seconds = self.config.warmup_seconds;
         move || {
@@ -1061,6 +1105,10 @@ impl Room {
             // `DEV_WARMUP_SECONDS`, for the same reason and at both sites.
             world.set_warmup_seconds(warmup_seconds);
             world.weather_mode = weather_mode;
+            // T22.01, at **both** construction sites for `weather_mode`'s reason:
+            // a room whose host chose a gravity must not get the default back
+            // when the round restarts.
+            world.gravity = gravity;
             // `DEV_ROUND_CLOCK`. Before `populate_world` seats anyone, because a
             // seat's i-frames and respawn times are read off this clock.
             if dev_round_clock > 0.0 {
@@ -1196,6 +1244,10 @@ impl Room {
             // value and a set room reports the host's, with no third field that
             // can disagree with either.
             round_seconds: self.config.round_seconds,
+            // Off the config, for `scale`'s reason and `round_seconds`'s: one
+            // place a setting lives, so an untouched room reports the default
+            // and a set room reports the host's choice.
+            gravity: self.config.gravity,
             settings_owner: self.settings_owner(),
             starts_in: self.starts_in,
             players: self
@@ -1899,6 +1951,18 @@ impl Room {
                         self.note(R::SetRoundSeconds(by, seconds));
                         self.settings_changed();
                     });
+                let _ = reply.send(answer);
+            }
+            // T22.01, through the same gate, the same record and the same
+            // ready-clearing as the three above — no fourth copy of any of them.
+            Command::SetGravity { by, gravity, reply } => {
+                let answer = self.check_settings_change(by).map(|()| {
+                    let mut config = (*self.config).clone();
+                    config.gravity = gravity;
+                    self.config = Arc::new(config);
+                    self.note(R::SetGravity(by, gravity));
+                    self.settings_changed();
+                });
                 let _ = reply.send(answer);
             }
             // Not recorded: identity is registry bookkeeping, not simulation.
@@ -2622,6 +2686,10 @@ impl Room {
         // the moment the round restarts — which is the shape `set_round_seconds`
         // was already fixed for once (§E4).
         world.weather_mode = self.config.weather_mode;
+        // T22.01 — the restart site. This is the one `bots_enabled` and
+        // `start_kit` were moved onto `Config` for: round two must be the game
+        // the host chose, not the default.
+        world.gravity = self.config.gravity;
         // Both construction sites, for the same reason as `weather_mode` above.
         if self.config.dev_round_clock > 0.0 {
             world.start_clock_at(self.config.dev_round_clock);

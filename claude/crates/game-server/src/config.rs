@@ -79,6 +79,11 @@ pub struct Config {
     /// §F7. What every player is armed with at spawn and respawn. On `Config`
     /// for the reason above.
     pub start_kit: game_core::constants::StartKit,
+    /// T22.01. Which gravity the match is played under. On `Config` for exactly
+    /// the reason `bots_enabled` states above: `ReplayHeader` is built from
+    /// `Config` and `restart()` writes a fresh header for round two, so a
+    /// setting that lived on `Room` would replay round two at the default.
+    pub gravity: game_core::constants::GravityMode,
     /// Spawn every player with a weapon. **Development only, default off.**
     ///
     /// The game's design is that you find your weapons (`docs/32`), and that is
@@ -277,6 +282,9 @@ impl Default for Config {
             // §F7's defaults: bots on, no kit.
             bots_enabled: true,
             start_kit: game_core::constants::StartKit::None,
+            // T22.01's default: the shipped game. Nothing plays differently
+            // until a host says otherwise.
+            gravity: game_core::constants::GravityMode::Standard,
             dev_loadout: false,
             dev_start_health: 0.0,
             dev_poisoned: false,
@@ -439,11 +447,13 @@ impl Config {
             record_replay,
             replay_dir,
             debug_dump,
-            // §F7's two lobby settings have no environment spelling on purpose:
-            // they are a private host's choice, and an env var for them would be
-            // a second way to set a value the lobby owns.
+            // §F7's two lobby settings — and T22.01's gravity — have no
+            // environment spelling on purpose: they are a private host's choice,
+            // and an env var for them would be a second way to set a value the
+            // lobby owns.
             bots_enabled: d.bots_enabled,
             start_kit: d.start_kit,
+            gravity: d.gravity,
             bot_count,
             bot_skill,
             dev_loadout: matches!(get("DEV_LOADOUT").as_deref(), Some("1") | Some("true")),

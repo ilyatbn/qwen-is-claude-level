@@ -2509,6 +2509,86 @@ impl StartKit {
 }
 
 // ---------------------------------------------------------------------------
+// Gravity (a private-lobby setting, T22.01)
+// ---------------------------------------------------------------------------
+
+/// Which gravity a match is played under, as the host picks it in the lobby.
+///
+/// It lives beside [`StartKit`] and [`MapScale`] because it is the same kind of
+/// thing: a value chosen in the lobby that crosses the socket, the replay header
+/// and the client, so one spelling of each name has to be shared by all three.
+///
+/// **`Space`, not `None`.** The brief asked for *"gravity: standard, low, none"*,
+/// but the third mode is not "no gravity": it is a different map, a different
+/// backdrop, its own hazards and a suit. Naming the variant after the single
+/// physical property it changes is how map generation ends up hanging off a word
+/// that means gravity, so the value is named after the mode instead.
+///
+/// **`Low` stays** — M22-RULINGS R3. If it is ever dropped, this enum becomes
+/// `Standard | Space` and the wire bytes below renumber with it.
+///
+/// **Nothing reads this yet, deliberately.** T22.01 ships the setting and no
+/// behaviour at all; the simulation arm for each variant is T22.02's (low) and
+/// T22.03's (space). The test named
+/// `world::gravity_tests::the_setting_changes_no_simulation_yet` is what says so,
+/// and it is meant to be retired by whichever of those lands first.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum GravityMode {
+    /// `GRAVITY` as every other mode has always used it. The default, and the
+    /// value every existing test runs under.
+    #[default]
+    Standard,
+    /// A lighter pull. Floatier jumps, slower falls, the same map (T22.02).
+    Low,
+    /// The space mode: its own map, backdrop, hazards and suit (T22.03 onward).
+    Space,
+}
+
+impl GravityMode {
+    /// Parse the wire value. `None` for anything else, so the caller can refuse
+    /// with a reason rather than clamping — `MapScale::parse`'s rule (§E6,
+    /// `docs/61` §3).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "standard" => Some(GravityMode::Standard),
+            "low" => Some(GravityMode::Low),
+            "space" => Some(GravityMode::Space),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            GravityMode::Standard => "standard",
+            GravityMode::Low => "low",
+            GravityMode::Space => "space",
+        }
+    }
+
+    /// Wire encoding for the replay, which is bytes and not JSON.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            GravityMode::Standard => 0,
+            GravityMode::Low => 1,
+            GravityMode::Space => 2,
+        }
+    }
+
+    pub const fn from_u8(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(GravityMode::Standard),
+            1 => Some(GravityMode::Low),
+            2 => Some(GravityMode::Space),
+            _ => None,
+        }
+    }
+
+    /// Every value, in panel order — the list the lobby's stepper walks.
+    pub const ALL: [GravityMode; 3] = [GravityMode::Standard, GravityMode::Low, GravityMode::Space];
+}
+
+// ---------------------------------------------------------------------------
 // Map scale and its per-scale parameter table
 // ---------------------------------------------------------------------------
 
@@ -3205,6 +3285,30 @@ mod tests {
         assert_eq!(MapScale::parse("MEDIUM"), Some(MapScale::Medium));
         assert_eq!(MapScale::parse("huge"), None);
         assert_eq!(MapScale::from_u8(3), None);
+    }
+
+    /// `GravityMode`'s three spellings agree with each other, both ways.
+    ///
+    /// The loop is over `ALL`, so a fourth variant that forgot an arm fails
+    /// here rather than at whichever of the socket, the replay and the panel
+    /// reads it first. The three assertions after it are the control: a parser
+    /// that returned `Some(Standard)` for everything would satisfy the loop.
+    #[test]
+    fn gravity_parses_and_round_trips() {
+        for g in GravityMode::ALL {
+            assert_eq!(GravityMode::parse(g.as_str()), Some(g));
+            assert_eq!(GravityMode::from_u8(g.as_u8()), Some(g));
+        }
+        assert_eq!(GravityMode::parse("SPACE"), Some(GravityMode::Space));
+        assert_eq!(
+            GravityMode::parse("none"),
+            None,
+            "the third mode is `space`"
+        );
+        assert_eq!(GravityMode::from_u8(3), None);
+        // The default is what every existing match plays under, and T22.01's
+        // whole claim is that nothing changes without the host asking.
+        assert_eq!(GravityMode::default(), GravityMode::Standard);
     }
 
     #[test]

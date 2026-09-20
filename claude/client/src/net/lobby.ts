@@ -191,6 +191,18 @@ export interface LobbySeat {
 export const START_KITS = ['none', 'basic', 'all'] as const
 export type StartKit = (typeof START_KITS)[number]
 
+/**
+ * T22.01's gravity values, in panel order.
+ *
+ * **`space`, not `none`.** The third mode is a different map, a different
+ * backdrop and its own hazards, not an absence of gravity — the spelling is the
+ * server's `GravityMode::as_str`, and these two lists are pinned to each other
+ * by nothing but this comment, which is why `parseLobbyState` refuses a value
+ * that is not in it rather than passing it through.
+ */
+export const GRAVITIES = ['standard', 'low', 'space'] as const
+export type Gravity = (typeof GRAVITIES)[number]
+
 export interface LobbyStateMsg {
   private: boolean
   capacity: number
@@ -199,6 +211,8 @@ export interface LobbyStateMsg {
   bots: boolean
   startKit: StartKit
   roundSeconds: number
+  /** T22.01. Always sent, for the reason the three above are. */
+  gravity: Gravity
   players: LobbySeat[]
   code?: string
   settingsOwner?: number
@@ -207,6 +221,7 @@ export interface LobbyStateMsg {
 
 const isScale = (v: unknown): v is Scale => SCALES.includes(v as Scale)
 const isKit = (v: unknown): v is StartKit => START_KITS.includes(v as StartKit)
+const isGravity = (v: unknown): v is Gravity => GRAVITIES.includes(v as Gravity)
 
 /**
  * Decode `lobby_state`, defensively.
@@ -218,6 +233,7 @@ const isKit = (v: unknown): v is StartKit => START_KITS.includes(v as StartKit)
 export function parseLobbyState(p: Record<string, unknown>): LobbyStateMsg {
   const rawScale = p['scale']
   const rawKit = p['start_kit']
+  const rawGravity = p['gravity']
   const out: LobbyStateMsg = {
     private: p['private'] === true,
     capacity: typeof p['capacity'] === 'number' ? p['capacity'] : 0,
@@ -237,6 +253,9 @@ export function parseLobbyState(p: Record<string, unknown>): LobbyStateMsg {
     // someone made the server default `false`, and nothing would say so.
     bots: typeof p['bots'] === 'boolean' ? p['bots'] : true,
     startKit: isKit(rawKit) ? rawKit : 'none',
+    // T22.01. The fallback is the server's default, so a message from an older
+    // server reads as the shipped game rather than as something no room can be.
+    gravity: isGravity(rawGravity) ? rawGravity : 'standard',
     roundSeconds: typeof p['round_seconds'] === 'number' ? p['round_seconds'] : 0,
     players: Array.isArray(p['players'])
       ? (p['players'] as unknown[]).filter(isRecord).map((q) => ({
@@ -399,6 +418,20 @@ const KIT_LABELS: Record<StartKit, string> = {
   all: 'All',
 }
 
+/**
+ * How each gravity reads on screen (T22.01).
+ *
+ * A `Record` rather than a capitalisation of the wire value, for `KIT_LABELS`'s
+ * reason: the wire word and the screen word are allowed to differ, and a
+ * `Record` keyed on the union makes a new mode a type error rather than a row
+ * that renders its own enum name.
+ */
+const GRAVITY_LABELS: Record<Gravity, string> = {
+  standard: 'Standard',
+  low: 'Low',
+  space: 'Space',
+}
+
 /** The bounds the round-length stepper moves between, from `Constants`. */
 export interface TimerBounds {
   min: number
@@ -407,7 +440,7 @@ export interface TimerBounds {
 }
 
 /** Which setting a control drives. The element ids are built from these. */
-export type SettingId = 'scale' | 'bots' | 'kit' | 'timer'
+export type SettingId = 'scale' | 'gravity' | 'bots' | 'kit' | 'timer'
 
 /** One row of the panel, as the screen should draw it. */
 export interface SettingControl {
@@ -452,11 +485,15 @@ export function stepSetting(
   id: SettingId,
   delta: number,
   b: TimerBounds,
-): Scale | boolean | StartKit | number | undefined {
+): Scale | Gravity | boolean | StartKit | number | undefined {
   if (!ownsSettings(s, mySeat)) return undefined
   switch (id) {
     case 'scale':
       return SCALES[stepIndex(SCALES.indexOf(s.scale), delta, SCALES.length)]
+    // Wraps, like `scale` and for the same reason: it is a short cycle of named
+    // values with no bound to end at.
+    case 'gravity':
+      return GRAVITIES[stepIndex(GRAVITIES.indexOf(s.gravity), delta, GRAVITIES.length)]
     // Two values, so either direction is a toggle — `stepIndex` rather than
     // `!on` so the wrap rule stays in one place.
     case 'bots':
@@ -500,6 +537,7 @@ export function settingsControls(
   })
   return [
     row('scale', 'Map size', s.scale.toUpperCase()),
+    row('gravity', 'Gravity', GRAVITY_LABELS[s.gravity]),
     row('bots', 'Bots', s.bots ? 'Enabled' : 'Disabled'),
     row('kit', 'Starting weapons', KIT_LABELS[s.startKit]),
     row('timer', 'Timer', minutesLabel(s.roundSeconds)),

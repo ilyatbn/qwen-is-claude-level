@@ -240,6 +240,7 @@ fn join_and_ready(
 /// refused. "Full" is a property of *a specific room*, and joining one by its
 /// code is how a player asks for that room in particular.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "flaky: no `welcome` within 15 s under a loaded gate — see tasks/flaky-test.md"]
 async fn a_seventh_client_is_told_the_room_is_full() {
     let cfg = Config {
         max_players: 3,

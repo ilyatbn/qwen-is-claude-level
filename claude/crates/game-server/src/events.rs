@@ -498,6 +498,10 @@ pub fn lobby_state_payload(state: &crate::room::LobbyState) -> serde_json::Value
         "bots": state.bots,
         "start_kit": state.start_kit.as_str(),
         "round_seconds": state.round_seconds,
+        // T22.01, on the same terms: always present, never omitted. Every room
+        // has a gravity, and `parseLobbyState` reads a missing key as its
+        // default — so omitting it would show every seat the wrong setting.
+        "gravity": state.gravity.as_str(),
         "players": state
             .players
             .iter()

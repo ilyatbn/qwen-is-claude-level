@@ -10,9 +10,9 @@
 use std::sync::Arc;
 
 use game_core::constants::{
-    MapScale, StartKit, BASE_HEALTH, INVENTORY_SLOTS, LOBBY_BOT_TIMEOUT, LOBBY_CAPACITY,
-    PISTOL_AMMO, RESPAWN_DELAY, ROUND_SECONDS, ROUND_SECONDS_MAX, ROUND_SECONDS_MIN,
-    ROUND_SECONDS_STEP, SIM_DT, START_KIT_GRENADES, WARMUP_SECONDS,
+    GravityMode, MapScale, StartKit, BASE_HEALTH, INVENTORY_SLOTS, LOBBY_BOT_TIMEOUT,
+    LOBBY_CAPACITY, PISTOL_AMMO, RESPAWN_DELAY, ROUND_SECONDS, ROUND_SECONDS_MAX,
+    ROUND_SECONDS_MIN, ROUND_SECONDS_STEP, SIM_DT, START_KIT_GRENADES, WARMUP_SECONDS,
 };
 use game_core::items::registry::WEAPON_BAZOOKA;
 use game_core::world::RoundPhase;
@@ -484,6 +484,12 @@ fn set_round_seconds(room: &mut Room, by: u8, seconds: f32) -> Result<(), &'stat
     rx.blocking_recv().expect("the room answered")
 }
 
+fn set_gravity(room: &mut Room, by: u8, gravity: GravityMode) -> Result<(), &'static str> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    room.apply_for_test(Command::SetGravity { by, gravity, reply });
+    rx.blocking_recv().expect("the room answered")
+}
+
 /// A room with a world, so inventories and the round clock can be read.
 ///
 /// `tick_inline` rather than `tick_once`: §E1 split "ask for a world" from
@@ -516,6 +522,12 @@ fn the_host_moves_each_setting_and_every_ready_flag_clears() {
         ("round_seconds", &|r: &mut Room, by: u8| {
             set_round_seconds(r, by, ROUND_SECONDS_MIN + ROUND_SECONDS_STEP)
         }),
+        // T22.01, in the same table on purpose: the host gate, the refusal and
+        // §E3's ready-clearing are one path, and a fourth setting with its own
+        // copy of the assertions is how one of them comes to be missing a half.
+        ("gravity", &|r: &mut Room, by: u8| {
+            set_gravity(r, by, GravityMode::Space)
+        }),
     ] {
         let mut room = private_room();
         let ana = seat(&mut room, "ana");
@@ -537,8 +549,18 @@ fn the_host_moves_each_setting_and_every_ready_flag_clears() {
         );
         let after = room.lobby_state();
         assert_eq!(
-            (after.bots, after.start_kit, after.round_seconds),
-            (before.bots, before.start_kit, before.round_seconds),
+            (
+                after.bots,
+                after.start_kit,
+                after.round_seconds,
+                after.gravity
+            ),
+            (
+                before.bots,
+                before.start_kit,
+                before.round_seconds,
+                before.gravity
+            ),
             "{name}: the refusal still moved the setting"
         );
         assert!(
@@ -555,6 +577,7 @@ fn the_host_moves_each_setting_and_every_ready_flag_clears() {
         match name {
             "bots" => assert!(!s.bots, "bots did not move"),
             "start_kit" => assert_eq!(s.start_kit, StartKit::Basic, "start_kit did not move"),
+            "gravity" => assert_eq!(s.gravity, GravityMode::Space, "gravity did not move"),
             _ => assert_eq!(
                 s.round_seconds,
                 ROUND_SECONDS_MIN + ROUND_SECONDS_STEP,
@@ -567,6 +590,44 @@ fn the_host_moves_each_setting_and_every_ready_flag_clears() {
              including the changer's"
         );
     }
+}
+
+/// T22.01 — the host's gravity reaches the `World` the match is played on.
+///
+/// **The effect, not the field.** `lobby_state().gravity` says only that the
+/// room remembered the command; the claim the task makes is that the value
+/// arrives where a simulation could read it, and `generate_world_task` is the
+/// one place that carries it there. Falsified by deleting that one assignment:
+/// this test goes red with `left: Standard, right: Space` and every lobby-side
+/// assertion in this file stays green, which is why it is not enough to check
+/// the lobby.
+///
+/// The control is the same room with nothing set: it builds a `Standard` world,
+/// so "the world is `Space`" is the setting's doing and not the default.
+#[test]
+fn the_gravity_the_host_chose_is_the_gravity_the_world_is_built_with() {
+    let mut control = private_room();
+    let a = seat(&mut control, "ana");
+    ready(&mut control, a, true);
+    start(&mut control);
+    assert_eq!(
+        control.world_for_test().gravity,
+        GravityMode::Standard,
+        "a room nobody touched did not build the shipped game"
+    );
+
+    let mut room = private_room();
+    let ana = seat(&mut room, "ana");
+    assert_eq!(set_gravity(&mut room, ana, GravityMode::Space), Ok(()));
+    // After the change, not before: §E3 clears every ready flag when a setting
+    // moves, so readying first would leave the room sitting in its lobby.
+    ready(&mut room, ana, true);
+    start(&mut room);
+    assert_eq!(
+        room.world_for_test().gravity,
+        GravityMode::Space,
+        "the host's gravity never reached the world the match is played on"
+    );
 }
 
 /// Bots off means no bots, and stays that way. Control: the same room with bots

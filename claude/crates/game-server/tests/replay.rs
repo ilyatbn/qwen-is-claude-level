@@ -435,7 +435,7 @@ fn bots_survive_the_unready_sweep_and_humans_who_never_ready_do_not() {
 /// 8 and this test would say so.
 #[test]
 fn a_settings_change_is_recorded_and_replaying_it_reproduces_the_room() {
-    use game_core::constants::{StartKit, ROUND_SECONDS_MAX};
+    use game_core::constants::{GravityMode, StartKit, ROUND_SECONDS_MAX};
 
     let s = Scratch::new("settings");
     let mut room = Room::new(cfg(true));
@@ -462,13 +462,14 @@ fn a_settings_change_is_recorded_and_replaying_it_reproduces_the_room() {
                 ReplayCommand::SetBots(..)
                     | ReplayCommand::SetStartKit(..)
                     | ReplayCommand::SetRoundSeconds(..)
+                    | ReplayCommand::SetGravity(..)
             )
         })
         .collect();
     assert_eq!(
         recorded.len(),
-        3,
-        "all three settings changes must be in the file, got {recorded:?}"
+        4,
+        "all four settings changes must be in the file, got {recorded:?}"
     );
     assert_eq!(
         r.header.round_seconds, 8.0,
@@ -490,22 +491,32 @@ fn a_settings_change_is_recorded_and_replaying_it_reproduces_the_room() {
     }
     let after = replayed.lobby_state();
     assert_eq!(
-        (after.bots, after.start_kit, after.round_seconds),
-        (live.bots, live.start_kit, live.round_seconds),
+        (
+            after.bots,
+            after.start_kit,
+            after.round_seconds,
+            after.gravity
+        ),
+        (live.bots, live.start_kit, live.round_seconds, live.gravity),
         "the replayed room does not hold the settings the live one did"
     );
     assert_eq!(
-        (after.bots, after.start_kit, after.round_seconds),
-        (false, StartKit::All, ROUND_SECONDS_MAX),
+        (
+            after.bots,
+            after.start_kit,
+            after.round_seconds,
+            after.gravity
+        ),
+        (false, StartKit::All, ROUND_SECONDS_MAX, GravityMode::Space),
         "the control: these are the values that were set, and none of them is \
          what the room or its header started at"
     );
 }
 
-/// The three changes, in one place so the live room and the assertion above
+/// The four changes, in one place so the live room and the assertion above
 /// cannot drift apart.
 fn settings_commands(by: u8) -> Vec<Command> {
-    use game_core::constants::{StartKit, ROUND_SECONDS_MAX};
+    use game_core::constants::{GravityMode, StartKit, ROUND_SECONDS_MAX};
     vec![
         Command::SetBots {
             by,
@@ -520,6 +531,11 @@ fn settings_commands(by: u8) -> Vec<Command> {
         Command::SetRoundSeconds {
             by,
             seconds: ROUND_SECONDS_MAX,
+            reply: tokio::sync::oneshot::channel().0,
+        },
+        Command::SetGravity {
+            by,
+            gravity: GravityMode::Space,
             reply: tokio::sync::oneshot::channel().0,
         },
     ]
@@ -539,7 +555,7 @@ fn settings_commands(by: u8) -> Vec<Command> {
 /// `grep restart` over both replay test files returned nothing at all.
 #[test]
 fn a_restart_carries_the_private_settings_into_the_second_file() {
-    use game_core::constants::StartKit;
+    use game_core::constants::{GravityMode, StartKit};
 
     // One number, used as the room's round length and as the loop's bound. Two
     // copies of it drift, and the loop then either exits before the restart or
@@ -583,6 +599,14 @@ fn a_restart_carries_the_private_settings_into_the_second_file() {
         kit: StartKit::All,
         reply: tokio::sync::oneshot::channel().0,
     });
+    // T22.01, on the same path and for the same reason: its command is in round
+    // one's file and nothing re-sends it, so round two's header is the only
+    // carrier.
+    room.apply_for_test(Command::SetGravity {
+        by: ana,
+        gravity: GravityMode::Space,
+        reply: tokio::sync::oneshot::channel().0,
+    });
     room.apply_for_test(Command::Ready(ana, true));
 
     // Round one, to its end, then vote it round again.
@@ -609,23 +633,37 @@ fn a_restart_carries_the_private_settings_into_the_second_file() {
     // The live room still holds the settings — the control for what follows.
     let live = room.lobby_state();
     assert_eq!(
-        (live.bots, live.start_kit),
-        (false, StartKit::All),
+        (live.bots, live.start_kit, live.gravity),
+        (false, StartKit::All, GravityMode::Space),
         "the live room lost the settings across its own restart"
+    );
+    // **The effect, not the field.** The world round two is actually played on
+    // has to carry it, which is `room.rs::restart`'s assignment and not the
+    // config read above.
+    assert_eq!(
+        room.world_for_test().gravity,
+        GravityMode::Space,
+        "round two is being played at the default gravity"
     );
 
     let second = replay::read_file(&s.files()[1]).expect("decode the second file");
     assert!(
         !second.body.iter().any(|(_, c)| matches!(
             c,
-            ReplayCommand::SetBots(..) | ReplayCommand::SetStartKit(..)
+            ReplayCommand::SetBots(..)
+                | ReplayCommand::SetStartKit(..)
+                | ReplayCommand::SetGravity(..)
         )),
         "the second file contains the settings commands after all — then this \
          test is not exercising the header path it exists for"
     );
     assert_eq!(
-        (second.header.bots_enabled, second.header.start_kit),
-        (false, StartKit::All),
+        (
+            second.header.bots_enabled,
+            second.header.start_kit,
+            second.header.gravity
+        ),
+        (false, StartKit::All, GravityMode::Space),
         "round two's header does not describe the room that played it"
     );
 

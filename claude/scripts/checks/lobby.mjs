@@ -177,10 +177,14 @@ if (!seated.some((n) => n.startsWith('ana')) || !seated.some((n) => n.startsWith
 const settings = (c) => c.page.evaluate('window.__menu.settings()')
 const anaPanel = await settings(ana)
 const boPanel = await settings(bo)
-const IDS = ['scale', 'bots', 'kit', 'timer']
+// T22.01 adds `gravity`. It is in this list and not merely present on screen
+// because the list is what the assertions below iterate: a row left out of it
+// is a row the guest gate, the host control and the "every seat sees it" half
+// all skip in silence.
+const IDS = ['scale', 'gravity', 'bots', 'kit', 'timer']
 const missing = IDS.filter((id) => !anaPanel[id])
 if (missing.length) fail(`the host's panel is missing rows: ${JSON.stringify(missing)}`)
-else ok(`the host sees all four settings on screen: ${JSON.stringify(anaPanel)}`)
+else ok(`the host sees all ${IDS.length} settings on screen: ${JSON.stringify(anaPanel)}`)
 
 // The guest sees the same rows and cannot touch any of them. Both halves: a
 // guest with no panel at all would satisfy "disabled" vacuously.
@@ -197,34 +201,35 @@ if (hostLocked.length) {
   fail(`the host's controls are disabled too: ${JSON.stringify(hostLocked)}`)
 } else ok("control: the host's controls are enabled, so the guest's are locked by seat")
 
-// --- the host changes all three, and the guest sees it -------------------
-const before3 = { bots: anaPanel.bots.value, kit: anaPanel.kit.value, timer: anaPanel.timer.value }
-for (const id of ['bots', 'kit', 'timer']) {
+// --- the host changes every steppable setting, and the guest sees it -----
+const MOVED = ['bots', 'kit', 'timer', 'gravity']
+const beforeMoved = Object.fromEntries(MOVED.map((id) => [id, anaPanel[id].value]))
+for (const id of MOVED) {
   await ana.page.evaluate((i) => window.__menu.step(i, 1), id)
 }
 await bo.page
   .waitForFunction(
     (b) => {
       const s = window.__menu.settings()
-      return s.bots && s.bots.value !== b.bots && s.kit.value !== b.kit && s.timer.value !== b.timer
+      return s.bots && Object.keys(b).every((id) => s[id] && s[id].value !== b[id])
     },
-    before3,
+    beforeMoved,
     { timeout: 20_000 },
   )
   .catch(() => {})
 
 const anaAfter = await settings(ana)
 const boAfter = await settings(bo)
-for (const id of ['bots', 'kit', 'timer']) {
-  if (anaAfter[id].value === before3[id]) {
-    fail(`the host changed ${id} and the screen still reads "${before3[id]}"`)
+for (const id of MOVED) {
+  if (anaAfter[id].value === beforeMoved[id]) {
+    fail(`the host changed ${id} and the screen still reads "${beforeMoved[id]}"`)
   } else if (boAfter[id].value !== anaAfter[id].value) {
     fail(
       `the guest's ${id} reads "${boAfter[id].value}" and the host's reads ` +
         `"${anaAfter[id].value}" — the change did not reach the other seat`,
     )
   } else {
-    ok(`${id}: "${before3[id]}" -> "${anaAfter[id].value}", and the guest sees the same`)
+    ok(`${id}: "${beforeMoved[id]}" -> "${anaAfter[id].value}", and the guest sees the same`)
   }
 }
 

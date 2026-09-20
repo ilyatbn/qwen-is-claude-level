@@ -385,9 +385,14 @@ fn no_room_list_producer_survives() {
 ///
 /// The second seat is load-bearing for that: `settings_owner` must name the host
 /// and not the guest, and neither seat entry may carry a settings key.
+///
+/// **The name says "three" and there are four since T22.01's gravity.** Kept
+/// anyway: `tasks/HANDOFF-M19.md` cites this test by name as the record of an
+/// earlier rename, and orphaning that citation costs more than the count in a
+/// title does. The lists below are the population, not the name.
 #[test]
 fn the_payload_carries_the_three_private_settings_once_for_the_whole_room() {
-    use game_core::constants::{StartKit, ROUND_SECONDS_MIN, ROUND_SECONDS_STEP};
+    use game_core::constants::{GravityMode, StartKit, ROUND_SECONDS_MIN, ROUND_SECONDS_STEP};
 
     let mut room = Room::new(cfg());
     room.apply_for_test(Command::SetIdentity {
@@ -402,6 +407,7 @@ fn the_payload_carries_the_three_private_settings_once_for_the_whole_room() {
     assert_eq!(before["bots"], true);
     assert_eq!(before["start_kit"], "none");
     assert_eq!(before["round_seconds"], ROUND_SECONDS);
+    assert_eq!(before["gravity"], "standard");
 
     for cmd in [
         Command::SetBots {
@@ -419,6 +425,11 @@ fn the_payload_carries_the_three_private_settings_once_for_the_whole_room() {
             seconds: ROUND_SECONDS_MIN + ROUND_SECONDS_STEP,
             reply: tokio::sync::oneshot::channel().0,
         },
+        Command::SetGravity {
+            by: ana,
+            gravity: GravityMode::Space,
+            reply: tokio::sync::oneshot::channel().0,
+        },
     ] {
         room.apply_for_test(cmd);
     }
@@ -427,9 +438,10 @@ fn the_payload_carries_the_three_private_settings_once_for_the_whole_room() {
     assert_eq!(p["bots"], false);
     assert_eq!(p["start_kit"], "basic");
     assert_eq!(p["round_seconds"], ROUND_SECONDS_MIN + ROUND_SECONDS_STEP);
+    assert_eq!(p["gravity"], "space");
     // Present, not merely equal to a default: a payload that dropped the keys
     // would read `Value::Null` and compare unequal above, but say so poorly.
-    for key in ["bots", "start_kit", "round_seconds"] {
+    for key in ["bots", "start_kit", "round_seconds", "gravity"] {
         assert!(!p[key].is_null(), "{key} is missing from lobby_state");
     }
 
@@ -443,7 +455,7 @@ fn the_payload_carries_the_three_private_settings_once_for_the_whole_room() {
     let players = p["players"].as_array().expect("players is an array");
     assert_eq!(players.len(), 2, "both seats must be in the payload");
     for seat in players {
-        for key in ["bots", "start_kit", "round_seconds"] {
+        for key in ["bots", "start_kit", "round_seconds", "gravity"] {
             assert!(
                 seat[key].is_null(),
                 "{key} is carried per seat — a guest would only see the host's copy"

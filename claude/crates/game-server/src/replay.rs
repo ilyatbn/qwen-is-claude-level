@@ -17,7 +17,7 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use game_core::constants::{MapGenerator, MapScale, StartKit, SIM_HZ};
+use game_core::constants::{GravityMode, MapGenerator, MapScale, StartKit, SIM_HZ};
 use game_core::player::input::Input;
 use game_core::player::state::PlayerId;
 use game_core::world::World;
@@ -34,12 +34,12 @@ pub const FOOTER_MAGIC: u32 = 0x5250_4C45;
 /// Bytes a header occupies on disk: magic 4, version 2, seed 8, buried secret 8,
 /// scale 1, generator 1, sim_hz 4, round_seconds 4, max_players 2,
 /// min_players_to_start 2 (retired §E2; still written, as 0), bot_count 2,
-/// bot_skill 4, dev_loadout 1, bots_enabled 1, start_kit 1.
+/// bot_skill 4, dev_loadout 1, bots_enabled 1, start_kit 1, gravity 1.
 ///
 /// Public because the body starts here, and a test that wants to corrupt the
 /// first command has to know where it is. Two of them used to carry the number
 /// inline and both broke the moment the header grew a field.
-pub const HEADER_BYTES: usize = 45;
+pub const HEADER_BYTES: usize = 46;
 
 /// **2**: the header gained `generator`. A v1 round replayed against v2 (or the
 /// reverse) rebuilds a different map and diverges on the first shot that touches
@@ -187,7 +187,24 @@ pub const HEADER_BYTES: usize = 45;
 ///  - **The scheduler's hash changed shape.** `toxic_enabled` (one byte) became
 ///    `enabled: [bool; 4]` (four), so every checkpoint hash moves even in a round
 ///    where no effect ever rolled.
-pub const REPLAY_VERSION: u16 = 13;
+///
+/// **14 (T22.01, the gravity match setting)**: the header gained `gravity`, one
+/// byte, appended after `start_kit`. This is the **layout** case rather than the
+/// silent-divergence one: a v13 file is a byte short, so a decoder that skipped
+/// the bump would read the body's first `u32` tick misaligned and report a
+/// corrupt command stream on a file that is fine. Nothing already in the header
+/// moved.
+///
+/// **No new hashed state, and that is deliberate.** `World::gravity` is not in
+/// `state_hash` — it is an input like `seed`, carried here, and a world that ran
+/// under a different gravity diverges in `players`, which *is* hashed. So every
+/// checkpoint in a v13 file would still match byte for byte; the version moves
+/// for the header's length alone.
+///
+/// **Tag 23, `SetGravity`, appends with it** and would not have needed a bump on
+/// its own — T20.09's precedent, restated at `SetBots`: an old file never
+/// contains the tag, so it decodes exactly as before.
+pub const REPLAY_VERSION: u16 = 14;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///
@@ -250,6 +267,13 @@ pub enum ReplayCommand {
     SetBots(PlayerId, bool),
     SetStartKit(PlayerId, StartKit),
     SetRoundSeconds(PlayerId, f32),
+    /// The host changed the gravity before the match began (T22.01).
+    ///
+    /// Recorded for `SetScale`'s reason and on `SetBots`'s terms: an appended
+    /// tag, so no file written before today contains it. The header carries the
+    /// setting too, and which of the two is authoritative depends on the round —
+    /// see `SetBots` above, which states the rule once for all four.
+    SetGravity(PlayerId, GravityMode),
     /// Already filtered: duplicates and stale sequences are dropped before they
     /// reach here, so a replay applies exactly the input the live round did.
     Input(PlayerId, Vec<Input>),
@@ -325,6 +349,7 @@ impl ReplayCommand {
             ReplayCommand::SetStartKit(..) => 20,
             ReplayCommand::SetRoundSeconds(..) => 21,
             ReplayCommand::DropItem(..) => 22,
+            ReplayCommand::SetGravity(..) => 23,
         }
     }
 }
@@ -366,6 +391,11 @@ pub struct ReplayHeader {
     /// here and not only in the command stream.
     pub bots_enabled: bool,
     pub start_kit: StartKit,
+    /// T22.01's gravity. Here and not only in the command stream for §F7's
+    /// reason, restated at `REPLAY_VERSION` 4: `restart()` writes a fresh header
+    /// for round two, so from round two this is the **only** carrier of a
+    /// setting the host chose in round one's lobby.
+    pub gravity: GravityMode,
 }
 
 impl ReplayHeader {
@@ -385,6 +415,7 @@ impl ReplayHeader {
             dev_loadout: config.dev_loadout,
             bots_enabled: config.bots_enabled,
             start_kit: config.start_kit,
+            gravity: config.gravity,
         }
     }
 
@@ -402,6 +433,7 @@ impl ReplayHeader {
             dev_loadout: self.dev_loadout,
             bots_enabled: self.bots_enabled,
             start_kit: self.start_kit,
+            gravity: self.gravity,
             record_replay: false,
             ..Config::default()
         }
@@ -448,6 +480,7 @@ pub enum ReplayError {
     BadScale(u8),
     BadGenerator(u8),
     BadStartKit(u8),
+    BadGravity(u8),
     /// A byte that is neither 0 nor 1 where a flag was written. Its own variant
     /// rather than a lenient `!= 0`, because a corrupt file that decodes as
     /// `true` replays a setting the round never had and then diverges somewhere
@@ -478,6 +511,7 @@ impl std::fmt::Display for ReplayError {
             ReplayError::BadScale(s) => write!(f, "unknown map scale {s}"),
             ReplayError::BadGenerator(g) => write!(f, "unknown map generator {g}"),
             ReplayError::BadStartKit(k) => write!(f, "unknown starting kit {k}"),
+            ReplayError::BadGravity(g) => write!(f, "unknown gravity {g}"),
             ReplayError::BadBool(field, b) => write!(f, "{field} is {b}, not 0 or 1"),
             ReplayError::BadUtf8 => f.write_str("player name is not valid utf-8"),
         }
@@ -605,6 +639,9 @@ fn write_header(w: &mut impl Write, h: &ReplayHeader) -> Result<(), ReplayError>
     // failure the note above records having already happened once.
     w.write_all(&[u8::from(h.bots_enabled)])?;
     w.write_all(&[h.start_kit.as_u8()])?;
+    // T22.01, appended after everything above for the reason the note on the two
+    // §F7 fields gives: inserting it earlier would move every field after it.
+    w.write_all(&[h.gravity.as_u8()])?;
     Ok(())
 }
 
@@ -644,6 +681,10 @@ fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayErro
         ReplayCommand::SetRoundSeconds(id, secs) => {
             w.write_all(&[*id])?;
             put_f32(w, *secs)?;
+        }
+        ReplayCommand::SetGravity(id, gravity) => {
+            w.write_all(&[*id])?;
+            w.write_all(&[gravity.as_u8()])?;
         }
         ReplayCommand::Input(id, inputs) => {
             w.write_all(&[*id])?;
@@ -820,6 +861,12 @@ pub fn decode(bytes: &[u8]) -> Result<Replay, ReplayError> {
             let b = c.u8()?;
             StartKit::from_u8(b).ok_or(ReplayError::BadStartKit(b))?
         },
+        // Strict, like everything added since v4: a corrupt byte that read as a
+        // mode the round never played would replay a different game.
+        gravity: {
+            let b = c.u8()?;
+            GravityMode::from_u8(b).ok_or(ReplayError::BadGravity(b))?
+        },
     };
 
     let mut body = Vec::new();
@@ -890,6 +937,10 @@ fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
             StartKit::from_u8(b).ok_or(ReplayError::BadStartKit(b))?
         }),
         21 => ReplayCommand::SetRoundSeconds(c.u8()?, c.f32()?),
+        23 => ReplayCommand::SetGravity(c.u8()?, {
+            let b = c.u8()?;
+            GravityMode::from_u8(b).ok_or(ReplayError::BadGravity(b))?
+        }),
         3 => {
             let id = c.u8()?;
             let n = c.u8()? as usize;
@@ -984,6 +1035,8 @@ mod tests {
             // Both off the default, for the reason above.
             bots_enabled: false,
             start_kit: StartKit::All,
+            // Off the default too, for the reason above.
+            gravity: GravityMode::Space,
         }
     }
 
@@ -1033,6 +1086,8 @@ mod tests {
             ReplayCommand::SetStartKit(0, StartKit::Basic),
             ReplayCommand::SetStartKit(0, StartKit::All),
             ReplayCommand::SetRoundSeconds(0, 300.0),
+            ReplayCommand::SetGravity(0, GravityMode::Low),
+            ReplayCommand::SetGravity(0, GravityMode::Space),
         ]
     }
 
@@ -1070,7 +1125,8 @@ mod tests {
                 | ReplayCommand::UseBatteryPack(_)
                 | ReplayCommand::QuickThrow(_)
                 | ReplayCommand::MoveItem(..)
-                | ReplayCommand::DropItem(..) => {}
+                | ReplayCommand::DropItem(..)
+                | ReplayCommand::SetGravity(..) => {}
             }
         }
         let all = every_command();
@@ -1086,15 +1142,15 @@ mod tests {
         // read 18 against a returned 18 and pass. Sitting here, the number is in
         // front of the person holding the error.
         let tags: std::collections::BTreeSet<u8> = all.iter().map(|c| c.tag()).collect();
-        // 21, and **tag 7 is a hole**: `ToggleFlashlight` retired with the toggle
+        // 22, and **tag 7 is a hole**: `ToggleFlashlight` retired with the toggle
         // in T20.07, and its number was not reused. The count is a coverage check
         // on `every_command`, not an assertion that the tags are contiguous —
         // renumbering would have made every later command's encoding depend on
         // this one's removal, for nothing.
         assert_eq!(
             tags.len(),
-            21,
-            "`every_command` returns {} distinct tags, not 21 — a variant was \
+            22,
+            "`every_command` returns {} distinct tags, not 22 — a variant was \
              added to the match above without being added to the list: {tags:?}",
             tags.len()
         );
@@ -1370,6 +1426,7 @@ mod format_tests {
         v.push(1); // dev_loadout
         v.push(0); // bots_enabled — off, so it is not the default
         v.push(1); // start_kit — Basic, so it is not the default
+        v.push(2); // gravity — Space, so it is not the default
         v
     }
 
@@ -1404,6 +1461,9 @@ mod format_tests {
         // `Default::default()` would read `true`/`None` and fail here.
         assert!(!h.bots_enabled, "bots_enabled did not read");
         assert_eq!(h.start_kit, StartKit::Basic, "start_kit did not read");
+        // T22.01, appended after those two and written off *its* default for the
+        // same reason: a decoder that stopped short would leave this `Standard`.
+        assert_eq!(h.gravity, GravityMode::Space, "gravity did not read");
     }
 
     /// The v4 fields are decoded **strictly**, and `dev_loadout` is not.
@@ -1420,19 +1480,24 @@ mod format_tests {
             v[i] = b;
             decode(&v)
         };
-        // The three flag bytes are the last three of the header.
+        // The four strict-or-lenient bytes are the last four of the header:
+        // dev_loadout, bots_enabled, start_kit, gravity — in that order.
         let n = HEADER_BYTES;
-        match at(n - 2, 2) {
+        match at(n - 3, 2) {
             Err(ReplayError::BadBool("bots_enabled", 2)) => {}
             other => panic!("a bots_enabled of 2 must be refused, got {other:?}"),
         }
-        match at(n - 1, 9) {
+        match at(n - 2, 9) {
             Err(ReplayError::BadStartKit(9)) => {}
             other => panic!("a start_kit of 9 must be refused, got {other:?}"),
         }
+        match at(n - 1, 9) {
+            Err(ReplayError::BadGravity(9)) => {}
+            other => panic!("a gravity of 9 must be refused, got {other:?}"),
+        }
         // The control, and the older convention: `dev_loadout` still takes any
         // non-zero as true, so a file written before v4 keeps parsing.
-        let lenient = at(n - 3, 2).expect("a dev_loadout of 2 must still parse");
+        let lenient = at(n - 4, 2).expect("a dev_loadout of 2 must still parse");
         assert!(
             lenient.header.dev_loadout,
             "the lenient field read 2 as false"

@@ -322,6 +322,11 @@ export class Connection {
     this.sendRaw('set_round_seconds', { round_seconds: seconds })
   }
 
+  /** T22.01's gravity, refused with `lobby_error` on the same three terms. */
+  sendSetGravity(gravity: string): void {
+    this.sendRaw('set_gravity', { gravity })
+  }
+
   sendUseItem(slot: number): void {
     this.emit('use_item', { slot })
   }

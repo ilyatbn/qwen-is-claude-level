@@ -20,8 +20,8 @@ use birds::{BirdId, BirdKind, Birds};
 use tombstones::Tombstones;
 
 use crate::constants::{
-    MapScale, ENDED_SECONDS, MAX_INPUT_QUEUE, MAX_PLAYERS, ROUND_SECONDS, TELEPORT_PADS,
-    WARMUP_SECONDS,
+    GravityMode, MapScale, ENDED_SECONDS, MAX_INPUT_QUEUE, MAX_PLAYERS, ROUND_SECONDS,
+    TELEPORT_PADS, WARMUP_SECONDS,
 };
 use crate::items::registry::{ItemId, WeaponId, WEAPON_PLATFORM_GUN};
 use crate::items::spawning::{assign_buried_items, place_initial, reveal_buried, SpawnSchedule};
@@ -798,6 +798,24 @@ pub struct World {
     pub effects: EffectScheduler,
     /// See [`WeatherMode`]. `Auto` everywhere but a development switch.
     pub weather_mode: WeatherMode,
+    /// Which gravity this match is played under (T22.01).
+    ///
+    /// **Set once, at construction, from the room's `Config`** — the same shape
+    /// as `weather_mode`, and set at *both* of `room.rs`'s construction sites for
+    /// the same recorded reason: a room that got its setting back at the default
+    /// on restart is the bug `set_round_seconds` was fixed for once already.
+    ///
+    /// **Nothing reads it yet.** T22.01 ships the setting and no behaviour;
+    /// `gravity_tests::the_setting_changes_no_simulation_yet` is the assertion
+    /// that says so, and whichever of T22.02 and T22.03 lands first retires it.
+    ///
+    /// **When something does read it, the client half is not free.** The client
+    /// does not run a `World`: `game-wasm`'s `LocalCore` predicts by calling
+    /// `player::apply_input` directly, with everything it reads passed in as
+    /// `MoveMods` (T21.02's shape — derive at the encode site, do not store a
+    /// second copy). A gravity-aware `apply_input` therefore has to reach the
+    /// mirror the same way, or prediction desyncs on the first jump.
+    pub gravity: GravityMode,
     pub buried_items: Vec<ItemId>,
     /// Rounds left in each gun platform, indexed by platform id (T21.11C).
     ///
@@ -987,6 +1005,7 @@ impl World {
             spawn_schedule: SpawnSchedule::new(seed, 0.0, initial_draws),
             effects: EffectScheduler::new(seed, 0.0),
             weather_mode: WeatherMode::Auto,
+            gravity: GravityMode::Standard,
             buried_items,
             round_time: 0.0,
             tick: 0,
@@ -4568,6 +4587,18 @@ mod state_hash_coverage {
             // *is* hashed, so hashing this as well would only prove the switch
             // was read.
             weather_mode: _,
+            // `gravity` is the host's lobby choice, set once at construction and
+            // never written again. It is an input like `seed`: it is carried in
+            // the replay header, and two worlds that ran under different gravity
+            // diverge in `players` — which *is* hashed — so hashing this as well
+            // would only prove the setting was read, at the cost of moving every
+            // checkpoint hash ever recorded.
+            //
+            // **That argument is only sound while the header carries it**, which
+            // is `ReplayHeader::gravity` and `REPLAY_VERSION` 14. A future mode
+            // switch that reached the world by any other route would need to be
+            // hashed instead.
+            gravity: _,
             // `respawn_fallbacks` counts a condition §C5 says cannot happen. It
             // is an assertion aid, not state: the choice it records is already
             // reflected in the respawned body's position, which *is* hashed, so
@@ -7676,6 +7707,105 @@ mod birds_in_a_round {
         w.birds
             .place_for_test(id, BirdKind::Normal, at + Vec2::new(17.0, 0.0));
         assert_ne!(before, w.state_hash(), "a bird moved and the hash did not");
+    }
+}
+
+/// T22.01 — the gravity setting, which is deliberately behaviourless.
+///
+/// **This module exists to be deleted.** T22.01 ships the lobby row, the wire
+/// message, the replay header field and the `World` field, and changes how
+/// nothing plays; these two tests are what make that a claim the suite can
+/// report on rather than a sentence in a commit message. Whichever of T22.02
+/// (low gravity) and T22.03 (space) lands first **must** turn
+/// `the_setting_changes_no_simulation_yet` red, and retiring it then is the
+/// correct move — leaving it green would mean that task shipped nothing.
+#[cfg(test)]
+mod gravity_tests {
+    use super::*;
+    use crate::constants::{GravityMode, MapScale, SIM_DT};
+    use crate::player::input::{button, Input};
+
+    /// A round of identical inputs under `mode`, hashed at the end.
+    ///
+    /// Two players so the hash covers more than one body, and a held
+    /// jump-and-run so every path gravity could plausibly be wired into —
+    /// `apply_input`, the fall, the landing — is actually walked. A run that
+    /// stood still would be satisfied by a build where gravity did nothing at
+    /// all, which is the opposite of what is being asserted.
+    fn run(mode: GravityMode) -> ([u8; 32], Vec2) {
+        let mut w = World::for_test(4242, MapScale::Small);
+        w.gravity = mode;
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        w.add_player(1, 1, "bo".into());
+        for tick in 0..600u32 {
+            for id in 0..2u8 {
+                w.queue_input(
+                    id,
+                    Input {
+                        seq: tick + 1,
+                        buttons: button::RIGHT | if tick % 30 < 4 { button::JUMP } else { 0 },
+                        aim: 0,
+                    },
+                );
+            }
+            w.step(SIM_DT);
+        }
+        let pos = w.player(0).map(|p| p.body.pos).unwrap_or(Vec2::ZERO);
+        (w.state_hash(), pos)
+    }
+
+    #[test]
+    fn a_world_is_standard_gravity_until_somebody_says_otherwise() {
+        let w = World::for_test(4242, MapScale::Small);
+        assert_eq!(
+            w.gravity,
+            GravityMode::Standard,
+            "a world built without a lobby setting must play the shipped game"
+        );
+    }
+
+    /// The control that says T22.01 shipped no behaviour.
+    ///
+    /// **What it rules out:** any wiring of `World::gravity` into the
+    /// simulation. It is asserted on the state hash rather than on a position,
+    /// because the hash covers every body, every projectile and every item —
+    /// a positional assertion would miss gravity applied to a crate and not to
+    /// a player.
+    ///
+    /// **The control for the control** is the second half: the same runner with
+    /// a different *seed* produces a different hash, so "the hashes match" is
+    /// about gravity and not about a runner that hashes an empty world.
+    #[test]
+    fn the_setting_changes_no_simulation_yet() {
+        let (standard, pos) = run(GravityMode::Standard);
+        for mode in [GravityMode::Low, GravityMode::Space] {
+            let (other, _) = run(mode);
+            assert_eq!(
+                standard, other,
+                "{mode:?} changed the simulation — T22.01 ships the setting and \
+                 no behaviour. If you are T22.02 or T22.03, this test has done \
+                 its job and retires with your change."
+            );
+        }
+
+        // The control: the runner is capable of producing a different hash, and
+        // the world it hashed is one where something happened.
+        let mut moved = World::for_test(1337, MapScale::Small);
+        moved.set_phase(RoundPhase::Playing);
+        moved.add_player(0, 0, "ana".into());
+        moved.step(SIM_DT);
+        assert_ne!(
+            standard,
+            moved.state_hash(),
+            "the runner returns the same hash for different worlds, so the \
+             equality above proves nothing"
+        );
+        assert_ne!(
+            pos,
+            Vec2::ZERO,
+            "the run never moved anybody, so no gravity path was walked"
+        );
     }
 }
 

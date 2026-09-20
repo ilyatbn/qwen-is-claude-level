@@ -26,6 +26,7 @@ column is what nobody is checking while it sits here.
 | `platforms` | browser | red once in the same gate at `--jobs 4`: "the mean moved only 2.2 (threshold 8), though the pixels did rearrange"; green alone at load 6.6 in 6.1 s. One sighting — a candidate for `serial` instead if it recurs only in parallel | a gun platform's turret layer is drawn |
 | `game-server/tests/lobby.rs::a_second_client_joins_a_private_room_by_its_code` | Rust | died once at its first emit on an already-closed socket during Builder A's 2026-09-14 speed work; 5/5 green standalone. Same `AlreadyClosed` shape as the row below | a second client joins a private room by its code |
 | `game-server/tests/lobby.rs::a_lobby_room_has_no_bots` | Rust | red in a T21.20 gate (2026-09-14): `emit: IncompleteResponseFromEngineIo(WebsocketError(AlreadyClosed))`; 5/5 green standalone | a lobby room seats no bots at construction (§C18) |
+| `game-server/tests/integration.rs::a_seventh_client_is_told_the_room_is_full` | Rust | T22.01's gate, 2026-09-21: **green and red in the same file, on the same tree, from the same binary** — `ok` in the Done-when's own `cargo test -p game-server`, then `FAILED` ~30 min later in `check.sh --changed`'s three-crate `cargo test` at 1-min load 7.01, with `never received 'welcome' within 15s; saw []`. `saw []` is an empty inbox, so it is the socket.io handshake and not the seating path. **3/3 green standalone at 0.6 s each** against a 15.45 s failure — the wall-clock margin is a factor of 24 on an idle box and zero under load. Same family as the two `lobby.rs` rows above | a seventh client is refused **over the wire** with `join_error: full`, and is not also welcomed |
 
 **Not parked, noted (T21.18, 2026-09-15):** `client/src/render/backdrop-real.test.ts` takes **216 s alone** (42/42 green). In one `--changed` gate at load the vitest worker lost its RPC (`Timeout calling "onTaskUpdate"`, 872/914 reported) and the stage went red; the gate before and after it were 914/914. There is no parking mechanism for a vitest file, so it is recorded here — one slow file sits near the runner timeout, and the owner should decide whether it moves out of the default run. **Red again in the coordinator's full gate at `bf76714` on an idle box (load 1.35):** `873 passed (915)`, two `onTaskUpdate` errors, then **915/915 in 217 s alone**. **Split per map on 2026-09-15** into six `backdrop-real-*.test.ts` files over `backdrop-real.suite.ts` (assertions unchanged), so the six run in parallel workers; `backdrop-real-cases.test.ts` asserts every case is still run once.
 
@@ -39,6 +40,15 @@ listed under `disabled:` in `e2e.mjs --help`. The toxic halves of `m5-weather`, 
 
 ## Considered and not parked
 
+- **`smoke-shader` — one sighting, 2026-09-21, T22.01's gate.** Red at 28.0 s in the 58-check
+  `--changed` suite at 1-min load 7.8–10.8: *"the painted cloud changed 1.0 % of its pixels in
+  300 ms against 0.0 % flat — it does not animate"*. **Green alone on the same tree at 20.3 s,
+  reading 11.8 % against the same 0.0 % control** — a factor of twelve, so the assertion is not
+  marginal, the frames simply were not drawn. Every other assertion in the check passed in both
+  runs, including the two that share its fixture, so it is the one *wall-clock* claim in the file
+  (300 ms of real time) and nothing else. Handled like `platforms` above rather than parked: one
+  sighting, and the owner should decide between `serial` and `flaky` if it recurs. **The task that
+  saw it changed no client render code at all** — a Rust enum, a lobby row and a replay header.
 - `skins-ingame` — red once on 2026-09-14, but that was a real bug (the T21.20 ridge skirt),
   fixed in `d73968b`.
 - `teleport` — red once on 2026-09-14 before T19.29 turned weather off for it; then green in

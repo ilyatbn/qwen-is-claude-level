@@ -127,8 +127,8 @@ describe('join errors', () => {
 
 describe('lobby errors', () => {
   // Every reason the server emits on `lobby_error`, copied from
-  // `session.rs` (`set_scale`/`set_bots`/`set_start_kit`/`set_round_seconds`)
-  // and `room.rs` (`check_settings_change`, `set_round_seconds`).
+  // `session.rs` (`set_scale`/`set_bots`/`set_start_kit`/`set_round_seconds`/
+  // `set_gravity`) and `room.rs` (`check_settings_change`, `set_round_seconds`).
   const REASONS = [
     'only the host can change the settings',
     'settings can only be changed in a private game',
@@ -138,6 +138,7 @@ describe('lobby errors', () => {
     'the round length is not a whole number of steps',
     'unknown map size',
     'unknown starting kit',
+    'unknown gravity',
     'bots must be true or false',
     'the round length must be a number',
     'the room is gone',
@@ -235,6 +236,7 @@ const emptyLobby = {
   bots: true,
   startKit: 'none' as const,
   roundSeconds: 0,
+  gravity: 'standard' as const,
   players: [],
 }
 
@@ -354,6 +356,13 @@ describe('lobby_state (§E6)', () => {
     expect(bare.startKit).toBe('none')
     expect(bare.roundSeconds).toBe(0)
     expect(parseLobbyState({ ...raw, start_kit: 'everything' }).startKit).toBe('none')
+    // T22.01, both halves. `none` is the spelling the brief used and the one
+    // the enum deliberately does not have, so it must fall back rather than
+    // reach the panel as junk.
+    expect(bare.gravity).toBe('standard')
+    expect(parseLobbyState({ ...raw, gravity: 'space' }).gravity).toBe('space')
+    expect(parseLobbyState({ ...raw, gravity: 'low' }).gravity).toBe('low')
+    expect(parseLobbyState({ ...raw, gravity: 'none' }).gravity).toBe('standard')
     // Junk for `bots`. This pins behaviour rather than discriminating: the type
     // check and the `!== false` it replaced agree on every input, so no
     // assertion here can tell them apart. What it does rule out is junk ever
@@ -389,6 +398,7 @@ describe('the roster (§E6)', () => {
     bots: true,
     startKit: 'none' as const,
     roundSeconds: 0,
+    gravity: 'standard' as const,
     players: [
       { seat: 0, name: 'ana', skinId: 0, hatId: 0, glassesId: 0, ready: true, bot: false },
       { seat: 1, name: 'Bot 1', skinId: 0, hatId: 0, glassesId: 0, ready: true, bot: true },
@@ -526,6 +536,7 @@ function lobby(over: Partial<LobbyStateMsg> = {}): LobbyStateMsg {
     // which would make "the host's arrows are all enabled" fail for a reason
     // that has nothing to do with the host gate.
     roundSeconds: bounds.min + bounds.step,
+    gravity: 'standard',
     settingsOwner: HOST,
     players: [
       { seat: HOST, name: 'ana', skinId: 0, hatId: 0, glassesId: 0, ready: false, bot: false },
@@ -599,7 +610,7 @@ describe('the private settings panel (§F7)', () => {
 
   it('disables exactly what it refuses, so a screen cannot disagree with the wire', () => {
     const guest = settingsControls(lobby(), GUEST, bounds)
-    expect(guest).toHaveLength(4)
+    expect(guest).toHaveLength(5)
     for (const c of guest) {
       expect([c.id, c.prevDisabled, c.nextDisabled]).toEqual([c.id, true, true])
     }
@@ -658,6 +669,10 @@ describe('the private settings panel (§F7)', () => {
     expect(rows(lobby({ startKit: 'none' })).kit).toBe('None')
     expect(rows(lobby({ startKit: 'basic' })).kit).toBe('Basic')
     expect(rows(lobby({ startKit: 'all' })).kit).toBe('All')
+    // T22.01: the screen word, not the wire word.
+    expect(rows(lobby()).gravity).toBe('Standard')
+    expect(rows(lobby({ gravity: 'low' })).gravity).toBe('Low')
+    expect(rows(lobby({ gravity: 'space' })).gravity).toBe('Space')
     // Minutes on screen, seconds on the wire — one conversion, at the edge.
     expect(rows(lobby({ roundSeconds: bounds.min })).timer).toBe(
       `${Math.round(bounds.min / 60)} min`,
@@ -675,16 +690,23 @@ describe('the private settings panel (§F7)', () => {
       bots: false,
       start_kit: 'all',
       round_seconds: bounds.max,
+      gravity: 'space',
       players: [],
     })
-    expect([full.bots, full.startKit, full.roundSeconds]).toEqual([false, 'all', bounds.max])
+    expect([full.bots, full.startKit, full.roundSeconds, full.gravity]).toEqual([
+      false,
+      'all',
+      bounds.max,
+      'space',
+    ])
 
     // An older server that carries none of them: the panel still renders, at
     // the server's own defaults, rather than throwing or showing blanks.
     const bare = parseLobbyState({ private: true, capacity: 5, scale: 'small', players: [] })
     const rows = settingsControls({ ...bare, settingsOwner: HOST }, HOST, bounds)
-    expect(rows.map((c) => c.id)).toEqual(['scale', 'bots', 'kit', 'timer'])
+    expect(rows.map((c) => c.id)).toEqual(['scale', 'gravity', 'bots', 'kit', 'timer'])
     expect(rows.find((c) => c.id === 'bots')?.value).toBe('Enabled')
     expect(rows.find((c) => c.id === 'kit')?.value).toBe('None')
+    expect(rows.find((c) => c.id === 'gravity')?.value).toBe('Standard')
   })
 })
