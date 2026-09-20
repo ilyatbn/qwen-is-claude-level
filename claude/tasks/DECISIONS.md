@@ -1469,3 +1469,37 @@ full map width above the rim, so in space **every crate would spawn in the void*
 **Reverse it by:** the rim equation (a circle is `rx = ry = h/2`), and the one `match` in
 `generate_terrain_with` plus the derivation line in `room.rs`.
 **Full text:** `R13`, `R15`, `R16`, `R17` in [M22/M22-RULINGS.md](M22/M22-RULINGS.md).
+
+## D-73 — R10 could not be built as written; six more rulings from two sweeps  ·  M22
+**Decided by:** me, on the attractor and client forward sweeps.
+**The ambiguity — again a wrong premise, and this one was mine.** `R10` said *"every existing
+caller passes the moral equivalent of `Forces::gravity(1.0)`"*. Four of `integrate`'s five
+production callers do. **The fifth, `player::apply_input`, does not receive a gravity scale —
+it computes one.** So `accel` and `max_speed` have to arrive as inputs to the one function in
+the tree that has written down a refusal to grow: *"Eight, and the allow stays. `MoveMods`
+**replaced** an argument rather than adding one … the struct is what stops the next modifier
+making it nine."*
+**Chosen:** honour that comment instead of spending it. `mods: MoveMods` becomes
+`step: MoveStep { mods, env: Env { accel, max_speed } }` — **one parameter replaces one
+parameter, the count stays eight**, and `PlayerState::move_mods()` stays the pure derivation
+T20.19 and T21.02 paid for. Rejected: a ninth argument, folding into `MoveMods`, and a
+partly-overwritten `Forces` (which makes `gravity_scale` mean two things — the rule `R10`
+cites to justify itself).
+**Six more, all in the rulings file.** `R16` **revised**: it covered one of four arcs — breach
+the left, right or top rim and `clamp_to_world` pins you **alive, outside the rim, forever**,
+which is worse than the death it prevented; so in space the void is **outside the rim**, one
+predicate, reusing `DeathCause::Void` whole. `R8.4` **revised**: T21.30 froze *input* and kept
+**physics running** — *"input does nothing — but gravity does"* — so the attractor keeps
+pulling in `Ended` by default; gate it at the `Env` construction. `R18`: the levels derive
+from **`JETPACK_CLIMB_BUDGET` (780 px, already a constant with its basis in its doc comment)**
+plus an acceleration ceiling against `JETPACK_THRUST_UP`, because the thruster is a **speed
+governor, not an impulse budget** and produces no delta-v at all. `R19`: seven production
+carve sites, not five, and `carve_capsule` stamps `circle` **once per Bresenham pixel**, so a
+breach detector needs de-duplication. `R20`: a new death cause has two ends and the client end
+**fails silently** into `'player'`. `R21`: the scheduler **forbids** a permanent effect, and
+the round controller is an order of magnitude cheaper, counted. `R22`: `SandboxScene` needs a
+`?gravity=` param or five checks cannot reach the mode. `R23`: `T22.07`'s Done-when was
+**already green** on a substring match against two live checks.
+**Reverse it by:** each ruling names its own site; the file is the index.
+**Full text:** `R8`, `R10`, `R11`, `R13`, `R16`, `R18`–`R23` in
+[M22/M22-RULINGS.md](M22/M22-RULINGS.md).

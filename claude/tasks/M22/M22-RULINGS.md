@@ -171,9 +171,17 @@ into the *physics*, only into the *drawing*.
 3. **It eats exactly one asteroid, on arrival, and never again.** Keeps `T22.12`'s own test
    honest — *"exactly one asteroid is gone afterwards"* — and keeps the well bookkeeping to
    a single removal.
-4. **At round end it freezes.** `Ended` stops the pull and the horizon, the way T21.30
-   froze input; it stays **drawn**, because a hazard that vanishes on the results screen
-   reads as a rendering bug. A corpse does not get dragged through the scoreboard.
+4. **At round end it freezes** — **and the analogy this originally used was wrong.** T21.30
+   froze *input* and **deliberately kept physics running**; its own comment says *"once the
+   round is over, input does nothing — but gravity does"*, and `World::apply_inputs` in
+   `Ended` substitutes a neutral `Input` and runs it through the same `apply_input`. **So an
+   attractor applied on that path keeps pulling in `Ended` by default.** The one place to gate
+   it is the `Env` construction in `World::apply_inputs` — zero the `accel` when
+   `!self.phase.accepts_input()` — not `set_phase`, and not inside the black hole's own code.
+   It stays **drawn**, because a hazard that vanishes on the results screen reads as a
+   rendering bug; and since `World::step` calls `step_weather` only `if playing`, **"it stays
+   drawn" needs its own channel** — a snapshot field or a sticky client event, not the
+   scheduler.
 
 **Reverse it by:** four separate places, deliberately — the arrival roll, the radius
 constant, the eat-once guard, and the `Ended` arm. None of them is the other.
@@ -241,6 +249,60 @@ pub struct Forces {
 
 **"What accelerates this body" has exactly one answer and it is the `Forces` value.**
 
+### How `Forces` reaches `apply_input` — REVISED 2026-09-20, because the first version could not be built
+
+The attractor sweep found that **this ruling's central sentence was false**: *"every existing
+caller passes the moral equivalent of `Forces::gravity(1.0)`"*. Four of `integrate`'s five
+production callers do. **The fifth, `player::apply_input`, does not receive a gravity scale —
+it computes one**, on its last line:
+`integrate(map, body, jetpack::gravity_scale(jet, mods.flying), dt)`. So `accel` and
+`max_speed` have to arrive as new **inputs to `apply_input`**, which is the one function in the
+tree that has written down a refusal to grow:
+
+> `// Eight, and the allow stays (T21.02). MoveMods **replaced** an argument rather than
+> // adding one — the count is what it was — and the struct is what stops the next modifier
+> // making it nine.`
+
+**The ruling: honour that comment rather than spend it.** `apply_input`'s `mods: MoveMods`
+parameter becomes `step: MoveStep { mods: MoveMods, env: Env }`, where
+`Env { accel: Vec2, max_speed: Option<f32> }`. **One parameter replaces one parameter and the
+count stays eight** — which is exactly the move the comment blesses, done a second time for
+the same reason.
+
+- `PlayerState::move_mods()` stays a **pure derivation** returning `MoveMods`, untouched. That
+  property is what T20.19 and T21.02 paid for and it is not spent here.
+- The two call sites — `world/mod.rs::World::apply_inputs` and
+  `game-wasm/src/lib.rs::GameCore::apply_input` — build the `MoveStep`. They are the two
+  places that can see both a player and the world.
+- `apply_input` composes `Forces { gravity_scale: jetpack::gravity_scale(jet, mods.flying),
+  accel: env.accel, max_speed: env.max_speed }` at its one `integrate` line.
+- **Rejected: a ninth argument** (spends the comment), **folding into `MoveMods`** (gives
+  `move_mods()` arguments and dissolves the single-derivation property), and **passing a
+  `Forces` that `apply_input` partly overwrites** (makes `gravity_scale` mean two things —
+  the rule this ruling cites to justify itself).
+
+### `max_speed` on `|vel|` has three live interactions, and one is a documented refusal
+
+- **`jetpack::apply_thrust` clamps per axis, deliberately**, to `JETPACK_MAX_SPEED` = 260, and
+  its comment refuses the magnitude clamp in as many words: *"Per axis, not by vector
+  magnitude: a magnitude clamp makes diagonal flight slower on each axis than straight flight,
+  which reads as the controls fighting you."* Diagonal thrust reaches ≈368. **A space
+  `max_speed` below 368 silently re-introduces the complaint that comment exists to refuse.**
+  Pick above it, or say why this mode differs.
+- **Knockback is deliberately unclamped upward** — `apply_gravity`'s doc: *"Upward velocity is
+  not clamped, so a strong knockback still launches properly."* A magnitude clamp clamps
+  upward too, so `KNOCKBACK_MAX` (320) and `HAMMER_KNOCKBACK` (340) now interact with it.
+- **`substeps` already imposes an implicit cap**: `MAX_SUBSTEPS` 64 × `MAX_SUBSTEP_PX` 1 px at
+  60 Hz ≈ 3840 px/s per axis, and the module doc calls it *"a correctness guarantee, not an
+  optimisation"*. A `max_speed` above that is inert.
+- `physics/resolve.rs::no_tunnelling_at_ten_times_terminal_velocity_through_integrate` drives
+  `vel.y = 9000` and `vel.x = ±5000` through `integrate`, so **`Forces::gravity(1.0)` must
+  carry `max_speed: None`** or that test goes red — and it is one of the controls.
+
+**And `a_resting_body_is_bit_identical_after_600_ticks` is this ruling's control test and it
+already exists** — an exact `assert_eq!` on position with no epsilon. If the refactor is
+bit-identical for the four non-player callers, it passes untouched.
+
 **`T22.11` introduces `Forces`, and nobody before it does.** `T22.02` and `T22.03` are
 batch 2 and walk the existing scalar seam; a coder who brings `Forces` forward pre-empts the
 task that owns it and makes the merge a rewrite of a rewrite. R3's "low gravity walks the
@@ -273,6 +335,28 @@ back to a scalar is deleting two fields.
 - `kind` is what lets `T22.11`'s escape guarantee be scoped to `Kind::Asteroid` while
   `T22.12`'s horizon carries the inverse assertion. That scoping is the whole reason the
   two tasks do not contradict each other — see `T22.12`.
+
+### The three plumbing paths this needs, none of which any task file costed
+
+**The summation function is the easy half.** Both sides must feed it the *same list*, and
+today the client cannot build any of the three:
+
+| source | on the wire today? | what it needs |
+|---|---|---|
+| asteroid wells | **no** — `codec.rs::encode_map_init` writes magic/w/h/seed/scale/theme/wind/carve_seq/spawns/pads/platforms/decorations/objects/RLE | a new section, a `decode_map_init_parts` field, a `worldMirror.ts::applyMapInit` line, a `core/index.ts` wrapper and a `GameCore::set_asteroids` — **the `set_teleport_pads`/`set_gun_platforms` precedent, four layers** |
+| breach vortex | **no** — created at runtime from a carve, and the client's carve mirror is driven by server events, so it cannot derive them in lockstep | an event plus a setter |
+| black hole | **no** — arrival is a seeded server roll | an event plus a setter |
+
+**And `MapMeta` is the wrong home for the levels, twice over.**
+
+1. **`GameCore::load_mask` clones the meta the core already held** — which, on a networked
+   client, is whatever `GameCore::new()` generated, a Small map at seed 1. Anything the server
+   puts in `MapMeta` arrives on the client as **stale meta from an unrelated map**. That is
+   exactly why pads and platforms needed explicit setters, and it is the T19.24 shape again.
+2. **`World::state_hash` hashes `self.map.mask.hash()` and nothing from `MapMeta`.** Levels
+   stored there are **not** in the state hash, so a level that drifted between the two sides
+   is invisible to the determinism guard this whole milestone rests on. Hold them in `World`,
+   or hash the contribution explicitly and say you did.
 
 **Reverse it by:** it is one file with one public function; a second loop is what this
 prevents, so reversing it means writing one.
@@ -344,6 +428,33 @@ is not a compromise, it is better than the circle:
   to `y >= half_h`, and nothing downward. So R13's original *"`clamp_to_world` already
   guarantees nobody leaves the world"* was **false**. What is below is `R16`.
 
+### Three things the minimap argument needs in order to hold
+
+*Added 2026-09-20 from the client sweep. The conclusion stands; two of its supports were
+thinner than written and one is a constraint that has to be honoured or the ruling buys
+nothing.*
+
+1. **The inset must preserve the 2:1 ratio or the minimap circle is lost.** Insetting
+   `SKY_MARGIN` (96) at the top and `FLOOR_CRUST` (16) at the bottom gives
+   `ry = (h − 112)/2`. To keep `rx/ry = 2` the **x-inset must be exactly 112 px per side** —
+   the *total* y-inset, not half of it. Any other x-inset makes it an ellipse on the minimap
+   too, which is the one thing this ruling was bought for. Derive it; do not pick it.
+2. **The rim must be at least `mapW / MINIMAP_W` px thick** — 10.24 px on Small, 15.36 on
+   Medium, **20.48 on Large**. `Minimap::resampleTerrain` point-samples `core.solidAt` once
+   per cell, so a rim thinner than one cell aliases into a broken dashed ring or vanishes.
+   *"A thin layer of land"* has a floor and this is it.
+3. **The honest correction: the minimap is an explored mask.** `Minimap::draw` paints
+   unexplored cells flat and reveals only within `MINIMAP_REVEAL_R` = 260 world px of where
+   you have been. So the circle exists only where a player has already flown, and *"the only
+   place the arena's shape is ever visible"* is true late in a round rather than always. **The
+   ruling still stands** — the ellipse keeps the whole arena and the circle appears where a
+   shape can appear at all — but its reason is weaker than it was stated, and a reader should
+   know that rather than discover it.
+
+Also, for whoever writes the pixel check: **the minimap is a fixed-position DOM overlay**, not
+part of the game canvas, so `getImageData` on the canvas will not see it. `page.screenshot()`
+will.
+
 **Reverse it by:** the rim-rasterising step in the space generator — one ellipse equation.
 A circle is that equation with `rx = ry = h/2`.
 
@@ -414,21 +525,38 @@ bug `T22.05B` already quotes. `PreviewScene` needs the mode.
 **Reverse it by:** the one `match` in `generate_terrain_with`, and the one derivation line in
 `room.rs`.
 
-## R16 — The void still kills in space, and crates must stop spawning from the sky
+## R16 — In space the void is **outside the rim**, and crates stop spawning from the sky
 
 *Raised by the sweep. Two edge-of-the-world behaviours that fire wrongly, and they have
 opposite answers.*
 
-**The void kill stays.** `world/mod.rs::step_void` kills at `head_y > map.mask.h` and
-`is_in_the_void` names the cause. With no bottom clamp (R13), that is the **only** thing
-between a player who breached the rim and an infinite drift, and it already has an attributed
-death cause — which is more than most of this milestone starts with. Keep it, in every mode.
+**REVISED 2026-09-20 — the original covered one of four arcs.** It said the vortex must catch
+a breaching player before they cross `mask.h`. That is the **bottom** arc only. Breach the
+left, right or top rim and `clamp_to_world` pins the player at x = 16 or y = 14 with velocity
+zeroed inward — **alive, outside the rim, in empty mask, with no global gravity and nothing to
+push them back.** A permanently exiled living player, with no death cause, no message and no
+timer, for the rest of the round. That is worse than the death the original was preventing.
 
-**The consequence is `T22.10`'s to carry:** the vortex must capture a breaching player
-*before* they cross `mask.h`, so **its capture radius has to exceed the rim's thickness plus
-the inset**, and that budget must be stated in `T22.10` as a number with the drift speed it
-was derived from. A vortex that is merely near the hole lets people fall out of the world
-through the feature designed to stop exactly that.
+**The ruling: in space, the void is *outside the rim*, not *below the map*.**
+`world/mod.rs::is_in_the_void` gains a space arm that tests the boundary ellipse, and
+`step_void` keeps reading that same predicate — which it already does, for the reason its own
+comment gives: *"the same test `step_void` kills on, so `resolve_deaths` can name the cause
+without a flag to keep in sync … Derive, do not add a fourth flag."*
+
+One predicate change covers all four arcs, reuses `DeathCause::Void` and its whole existing
+feed/overlay/score path, and needs no new cause. **Give it a grace band** — a margin outside
+the rim before it fires — so the vortex has room to do its job, and state that margin against
+the drift speed it was derived from.
+
+**The consequence `T22.10` carries:** the vortex must capture inside that grace band. Its
+capture radius has to exceed the rim thickness plus the band, stated as a number with its
+basis. A vortex that is merely *near* the hole lets people die through the feature designed to
+stop exactly that.
+
+Minor correction to the original: `tick_crates` spawns across
+`WALL_W + CRATE_WALL_MARGIN … w − WALL_W − CRATE_WALL_MARGIN`, not the literal full width. The
+conclusion is unaffected — `y = SKY_MARGIN/2` = 48 is above an ellipse inset clear of
+`SKY_MARGIN` = 96 at **every** x, so every crate still spawns outside the rim.
 
 **Crates must not spawn from the sky in space.** `items/spawning.rs::SpawnSchedule::tick_crates`
 spawns at a random x across the **full map width** at `y = SKY_MARGIN / 2`. Under R13 that
@@ -473,6 +601,169 @@ meaningless*. And `surface_points` will **not** be empty: asteroid tops are stan
 `extract_surface` finds them.
 
 **Reverse it by:** one function, the space arm of the verdict.
+
+## R18 — Asteroid levels are derived from `JETPACK_CLIMB_BUDGET`, not from a delta-v
+
+*`T22.11` says the five levels derive from the thruster's delta-v. **The thruster does not
+produce a delta-v.***
+
+`jetpack::apply_thrust` clamps each axis to `JETPACK_MAX_SPEED` = 260 whenever the pre-thrust
+speed on that axis was within it. **It is a speed governor, not an impulse budget** — from
+rest you cannot exceed 260 px/s on an axis however long you burn. So *"level n costs roughly
+k(n) fuel to leave from the surface"* is not a quantity this thruster has.
+
+**The two quantities it does have, and both are already in the tree:**
+
+1. **A distance budget, and it is already a named constant with its basis in its doc comment**
+   — `JETPACK_CLIMB_BUDGET = JETPACK_MAX_SPEED * JETPACK_MAX_FUEL * 0.6` = **780 px**,
+   documented as *"the furthest a player can climb in one unbroken effort"* and already
+   consumed by `map/gen/traversal.rs::analyse`. **That is the measured basis `T22.11` asks for
+   and does not name.** It is also the same number `R17` warns governs whether a scatter of
+   asteroids scores well on the existing traversability predicate — one constant, both
+   questions.
+2. **An acceleration ceiling.** If a well's acceleration at the surface reaches
+   `JETPACK_THRUST_UP` = 2200 px/s², the player cannot move outward **at any fuel level**.
+   That is `T22.11`'s *"maximum well against maximum thrust"* guard stated correctly: **a
+   comparison of accelerations, not of delta-v.** Assert it.
+
+**Reverse it by:** the level → pull table's derivation, one function with the basis in its
+doc comment the way `capacity.rs::max_rooms_carries_its_basis` does it.
+
+## R19 — Breach detection lives in `Map::circle` and must de-duplicate per carve
+
+*The chokepoint ruling is right. The census justifying it was wrong, and the correction adds a
+requirement.*
+
+**`Map::circle` really is the single chokepoint** — `carve_circle`, `fill_circle` and
+`carve_capsule` all funnel through it, and no production code writes `mask.set`/`mask.clear`
+outside `map/gen/`. So `T22.10`'s ruling stands.
+
+**But there are seven production carve sites, not five, and the one the task file builds its
+rhetoric on does not exist.** `world/tombstones.rs` does not carve in production — its only
+`carve_circle` is in a test that carves the ground *away* to see whether a stone falls, the
+opposite of a tombstone carving. The real list: `weapons/explode.rs` (two),
+`weapons/bullet.rs`, `weapons/flame.rs`, **`weapons/melee.rs`** (the dig path, `carve_capsule`),
+**`effects/lava.rs`** (channels, `carve_capsule`), and **`world/mod.rs::detonate`** (the toxic
+drop's bite). Three were missed, and **two of the three missed ones are the capsule paths.**
+
+**That is the new requirement.** `carve_capsule` stamps `circle` **once per Bresenham pixel**
+— verified, it collects centres and calls `self.circle` for each. So a breach detector inside
+`circle` fires **N times for one shovel swing or one lava channel**. *"A breach makes **a**
+vortex"* needs de-duplication at the carve-call level, not at the circle level, or those two
+paths spawn a vortex per pixel.
+
+`fill_circle` has **zero** production callers, so `R9`'s point 3 is safe as written.
+
+**Reverse it by:** the de-dup guard is one accumulator on the `CarveResult` the capsule path
+already folds.
+
+## R20 — A new death cause has two ends and the client end fails silently
+
+*`T22.12` wants a named death cause. Count the thing at both ends.*
+
+**Rust end**, `player/state.rs::DeathCause` has four arms — `Player`, `SelfInflicted`,
+`Weather`, `Void` — and a fifth must be added at: the enum; `PlayerState::killer`;
+`world/mod.rs::resolve_deaths`; `world/mod.rs::apply_damage_log`;
+`game-server/src/events.rs::cause_name`; `bots/mod.rs`; `tests/balance.rs`.
+
+**There is no channel that carries a cause into `resolve_deaths`**, and that is deliberate:
+`Void` works by `step_void` zeroing health and `resolve_deaths` **re-deriving** the cause from
+`is_in_the_void(p)`. The horizon kill follows that shape — a pass plus a predicate read one
+pass later — or it goes through `DamageSource`. It cannot simply "pass a cause".
+
+**Client end, and this is where it dies quietly.** `GameScene`'s `death` handler narrows the
+wire string against an allowlist and **anything unrecognised becomes `'player'`**. A new
+`"black_hole"` therefore renders as `"? → ana (black_hole)"` — an unknown murderer, which is
+the exact bug `killfeed-state.test.ts` records having already been fixed once, for `void`.
+Sites: `ui/killfeed-state.ts::DeathCause` and `::killLine`, **the `GameScene` allowlist**,
+`ui/deathOverlay-math.ts::causeText` and `::weatherName`, `ui/feelLayer.ts::kill`, and the
+`death` / `void` browser checks.
+
+**And report this pre-existing defect, do not fix it here:**
+`deathOverlay-math.ts::weatherName` has arms for `'toxicrain'`, `'meteorshower'`,
+`'lavaburst'` and `'selfinflicted'` that **the server can never send** — `cause_name` emits
+only four strings and there is no `by` field on the wire to carry an effect kind. Four
+unreachable arms, and no `'heavyfog'` arm at all. That is the count-both-ends failure already
+in the tree, at the exact end `T22.12` is about to extend.
+
+**Reverse it by:** one enum arm and one allowlist entry; the point of this ruling is that it
+is *two* edits and the second one is silent.
+
+## R21 — The black hole belongs to the round controller, not the scheduler
+
+*`T22.12` asks. The code answers, and more strongly than the task states.*
+
+**The scheduler does not merely lack a permanent lifecycle — it forbids one.** `tick`'s start
+gate is `if now + EFFECT_TELEGRAPH + active_duration(kind) <= round_ends_at`, and a permanent
+effect has no finite duration, so that guard can never admit it. The comment beside it says
+why: *"an effect that outlives the round would kill someone after the scoreboard is up."*
+Then `self.active.retain(|e| e.phase != EffectPhase::Done)` requires an end.
+
+**And the cost is an order of magnitude apart.** A fifth `EffectKind` touches, in production
+only: `game-wasm/src/lib.rs` (18 sites), `effects/scheduler.rs` (10), `world/mod.rs` (9),
+`game-server/src/config.rs` (4), plus `effects/meteor.rs`, `effects/lava.rs`, and TypeScript
+string comparisons in `render/weather-math.ts` and `ui/hud.ts`. Against that, the round
+controller is: two `World` fields, one line in `World::step`, one `state_hash` contribution,
+one line in the exhaustive destructure, one event. **`World::round_ends_at()` is already
+computed and is the T-minus clock.**
+
+**Reverse it by:** it is two fields on `World`; moving it into the scheduler is the larger
+change in both directions.
+
+## R22 — `SandboxScene` takes a `?gravity=` parameter
+
+*Without this, five of `T22.06`'s eight checks cannot reach the mode they are supposed to
+assert about, and `T22.04`'s pixel work has nowhere cheap to live.*
+
+`SandboxScene` reads only `seed` and `scale` from the URL and its exposed
+`regenerate(seed?, scale?)` has no mode argument, so **every sandbox check is structurally
+incapable of seeing a space map.** And gravity deliberately has no environment spelling
+(`config.rs`: *"§F7's two lobby settings — and T22.01's gravity — have no environment spelling
+on purpose"*), so a standalone check cannot start a space round by env either; the only route
+is driving the private-lobby UI.
+
+**Give `SandboxScene` a `?gravity=` URL parameter and a mode argument on `regenerate`.** It is
+cheap, it unlocks the five sandbox checks, and it makes every rendered-pixel assertion in
+`T22.04`, `T22.06`, `T22.08` and `T22.11` tractable. **Whichever task lands first writes it**
+— the same rule as `R11`'s attractor list.
+
+**Note for every M22 client task:** `scripts/lib/affected.mjs` says *"A client source file
+selects every browser check."* and `/^assets\//` is in its `EVERYTHING` set. So
+`./scripts/check.sh --changed` is effectively the full browser suite for any task touching
+client sources — **the per-task economy does not apply to those, and the coordinator should
+expect the time.**
+
+**Reverse it by:** one `params.get('gravity')` and one argument.
+
+## R23 — `T22.07`'s Done-when is already green, and `PlayerView` takes an `Appearance`
+
+*Two smaller findings from the client sweep, ruled so they are not rediscovered.*
+
+**The Done-when passes today and would pass for a build that never ran the new check.**
+`scripts/e2e.mjs`'s filter is a **substring** match, and `skins` matches two live checks —
+`skins` and `skins-ingame` — both already in the default suite. **Anchor it with `=` to a new
+distinct name** (`node scripts/e2e.mjs =spacesuit`), or the Done-when reports the success of
+work nobody did. Note also that `npm --prefix client test -- --run skins playerView` filters
+to `playerView-math.test.ts`; **there is no `playerView.test.ts`**, so the half of `PlayerView`
+the task changes has no vitest file behind that filter.
+
+**`PlayerView`'s constructor takes an `Appearance`, not six positional arguments.** It is
+already `(scene, skinId, hatId, glassesId)`; suit and visor make six, and `ui/skins.ts` has
+already written down that this is the reason a thing becomes an object. `sameAppearance` then
+carries all five fields, **which is its stated purpose** — *"the next accessory cannot be
+added to the map and the constructor and forgotten in the `if`"*. This task is that guard's
+first real test; do not make it the guard's first miss.
+
+**One correction the task file needs:** `tombstone_skin_id` reaches `player_join` but **not
+`lobby_state`** — `room.rs::LobbySeat` carries `skin_id`, `hat_id`, `glasses_id` and no
+tombstone. If the visor must be visible **in the lobby**, the precedent is `hat_id`/
+`glasses_id`, not the tombstone.
+
+**And the chosen skin comes back for free**, provided the mode override lives at render time:
+nothing in `GameScene` ever writes cosmetic storage — `saveChoice`'s only production callers
+are in `SkinsScene`. Override at `GameScene::lookOf` or in the `PlayerView` constructor, never
+in storage or in `this.scores`. The test is still worth writing, because `lookOf` is exactly
+where a coder would be tempted to mutate.
 
 ---
 

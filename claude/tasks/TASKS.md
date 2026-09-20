@@ -692,9 +692,12 @@ is real and earned by contact from below; bots fly and it is in scope; radiation
 players do **not** orient to a surface (the expensive one, ruled the cheap way the reference
 image supports); the black hole arrives every round at a random moment, fixed size, eats one
 asteroid, freezes at `Ended`; the vortex catches everyone including wings, caps at three,
-never heals, takes players only, and stays off the minimap. Four further design calls are
-ruled there too — `Forces` for gravity, **one** attractor list, a new type for the flare,
-and void outside the rim.
+never heals, takes players only, and stays off the minimap. **Twenty-three rulings** now, after four
+forward sweeps: `Forces`/`MoveStep` for gravity, **one** attractor list, a new type for the
+flare, an inset **ellipse** rim with void outside it, the levels derived from
+`JETPACK_CLIMB_BUDGET`, breach detection de-duplicated at the carve call, the black hole in
+the round controller rather than the scheduler, and a `?gravity=` parameter on the sandbox
+without which five browser checks cannot reach the mode at all.
 
 **An amendment is owed and is not written.** `docs/13`, `docs/14` and `docs/10` all describe
 behaviour this milestone overrides in one mode, and `docs/20-player-movement.md:235` still
