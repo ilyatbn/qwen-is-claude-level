@@ -1403,3 +1403,24 @@ anyway, which the driver flags — that is T19.21's live finding, a different de
 
 **`server_full` is the wrong answer to give a client at 0 % seat utilisation**, but the queue
 question is downstream of the two levers: fix the lifetime and there is far less to refuse.
+
+## D-70 — The nine M22 rulings, plus four design calls, made in one sitting  ·  M22
+**Decided by:** me, on the owner's explicit instruction — *"lets do m22 … make your own
+decisions."*
+**The ambiguity:** `M22-space.md` listed nine things it said the owner owed a ruling on, and
+called all nine blocking for code though not for the task files. Four further design calls
+sat inside individual task files marked *"decide before writing"*.
+**Chosen**, in full, with the reasoning and a "Reverse it by" line each, in
+**[M22/M22-RULINGS.md](M22/M22-RULINGS.md)**. In one line each:
+R1 contact **stops**, no bounce · R2 the suit shield **is** `shield_active`, one predicate
+two sources · R3 low gravity **stays**, built third · R4 `grounded` is real and earned by
+contact from below · R5 bots fly, in scope, splittable · R6 radiation ambient and constant ·
+R7 players do **not** orient to a surface · R8 black hole every round, fixed, eats one,
+freezes at `Ended` · R9 vortex catches everyone, cap 3, never heals, players only, off the
+minimap · R10 gravity becomes a **`Forces` value** · R11 **one** attractor list in
+`world/attractors.rs`, written by `T22.11` · R12 a flare is a **new shape**, `BurnField` is
+not widened · R13 outside the rim is **void**.
+**Consequence:** `T22.11` is scheduled **before** `T22.10` so the shared summation has one
+owner — `M22-space.md`'s build order permits either and does not say which. Nothing else in
+the milestone's order moves.
+**Reverse it by:** each ruling names its own single site; the file is the index.

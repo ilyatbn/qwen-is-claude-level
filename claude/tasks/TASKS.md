@@ -638,6 +638,12 @@ think."* The brief, the re-check of the four parked originals, the build order a
 questions the owner still owes a ruling on are in **[M22-space.md](M22/M22-space.md)**. Read
 that first; the files below are the tasks it splits into.
 
+**The nine open rulings are closed.** The owner said *"make your own decisions"* on
+2026-09-20, so the coordinator ruled on all nine, plus the four design calls the task files
+left open — in **[M22-RULINGS.md](M22/M22-RULINGS.md)**, indexed as `D-70`. **Builders read
+their task file, then that one**; where a task says *"owner question N"* or *"decide before
+writing"*, the ruling is binding.
+
 Built from `T21.05`–`T21.08`, which were parked in M21 and are superseded by these — the
 originals were removed from `tasks/parking-lot/` in the same commit, and
 `git log --diff-filter=D -- tasks/parking-lot` finds them. **`T21.04` (day/night) stays
@@ -667,6 +673,8 @@ injected, so a per-mode hazard set is a constructor argument rather than a redes
 - [ ] [T22.12](M22/T22.12-the-black-hole.md) — The black hole **(large)** — depends on T22.05A, T22.11 — arrives at a random time in the **last minute**, permanent, eats one asteroid, and inside the horizon **you cannot escape**. That is the deliberate exception to T22.11's escape guarantee: scope that guard to asteroids and give this one the inverse assertion, or "you cannot escape" is a claim nothing tests. **The scheduler does neither "permanent" nor "at T-minus"** — every effect today is interval-scheduled with a duration — so decide whether it belongs there or in the round controller. The horizon is a **state change**, not a very strong pull
 
 **Order note.** T22.01 first and alone; everything reads the setting. Then the branches.
+**T22.11 runs before T22.10** (`R11`): the three attractors share one summation and the task
+that writes it has to land first. The build order above permits either and did not say which.
 **T22.03, T22.05A, T22.05B, T22.11 and T22.12 are the five large ones**; T22.03 and T22.05A are
 independent of each other — the movement model is observable on an ordinary map, the generator
 is asserted on map properties. The mode is not *playable* until T22.03 and T22.05B are both in.
@@ -674,12 +682,16 @@ is asserted on map properties. The mode is not *playable* until T22.03 and T22.0
 Whichever lands first writes it; three loops means the float-order fix, the prediction fix and
 the cutoff each have to be right three times.
 
-**Nine things the owner owes a ruling on, listed in full in the milestone file.** Contact in
-zero-g — stop or bounce; whether the suit shield is the shield that already exists; whether low
-gravity survives as its own mode; what `grounded` means in zero-g; what bots do; whether
-radiation is ambient or zonal; **whether a player pulled toward an asteroid orients to its
-surface** (the expensive one — if yes, every upright-drawn thing is wrong); four smaller ones
-about the black hole; and five about the vortex.
+**All nine rulings are made** (2026-09-20, coordinator, `D-70`) and live in
+**[M22-RULINGS.md](M22/M22-RULINGS.md)** with a "Reverse it by" line each. The short form:
+contact **stops**; the suit shield **is** `shield_active`; low gravity **stays**; `grounded`
+is real and earned by contact from below; bots fly and it is in scope; radiation is ambient;
+players do **not** orient to a surface (the expensive one, ruled the cheap way the reference
+image supports); the black hole arrives every round at a random moment, fixed size, eats one
+asteroid, freezes at `Ended`; the vortex catches everyone including wings, caps at three,
+never heals, takes players only, and stays off the minimap. Four further design calls are
+ruled there too — `Forces` for gravity, **one** attractor list, a new type for the flare,
+and void outside the rim.
 
 **An amendment is owed and is not written.** `docs/13`, `docs/14` and `docs/10` all describe
 behaviour this milestone overrides in one mode, and `docs/20-player-movement.md:235` still
