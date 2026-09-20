@@ -765,6 +765,188 @@ are in `SkinsScene`. Override at `GameScene::lookOf` or in the `PlayerView` cons
 in storage or in `this.scores`. The test is still worth writing, because `lookOf` is exactly
 where a coder would be tempted to mutate.
 
+## R24 — The suit battery is a second health bar that radiation eats first
+
+*The hazard sweep did the arithmetic `T22.09` only gestured at, and the answer is that the
+mode as ruled is unsurvivable by roughly 17×. This ruling is the fix, and it is a **design**,
+not a patch.*
+
+**What was wrong, all measured:**
+
+- **Nobody spawns with a battery.** `PlayerState::new` sets `battery: 0.0` and `STARTING_KIT`
+  is `[SHOVEL]`. Under `R2` — *the suit, while the battery has charge* — **every player in
+  space is unshielded from the first tick**, and dies of radiation in 100 seconds.
+- **The per-second shield drain does not exist and must not be re-added.** T20.08 **deleted**
+  `SHIELD_DURATION` and `SHIELD_DRAIN`, deliberately, and `constants.rs` says so at the
+  gravestone. `SHIELD_HIT_COST` is **1.0 per hit taken, nothing per second** — a *pool*, not a
+  timer, and its doc comment says *"`BATTERY_MAX` of 100 buys a hundred absorptions"*.
+  `T22.09`'s deliverable *"energy drains, so the shield is not free"* would reverse a shipped,
+  documented decision. **It does not get to.**
+- **The economy does not exist either.** `BATTERY_PACK`'s spawn weight is 14 of 241 (5.81 %)
+  and 18 of 271 in crates (6.64 %). A 240 s round on Medium yields **2.69 packs for the whole
+  lobby — 22.4 energy per player** — and **43 % of rounds start with no pack on the map at
+  all**.
+
+**The ruling, and the exchange rate is the design:**
+
+| | |
+|---|---|
+| `RADIATION_DPS` | **1.0** — the owner's number, to *health*, when unsealed |
+| `RADIATION_SHIELD_COST` | **1.0 energy per second**, to *battery*, when sealed |
+| suit battery at spawn, in space | **`BATTERY_MAX`** (100), and **restored on respawn** |
+| `BATTERY_PACK` spawn weight in space | **doubled** (14 → 28, ≈ 11 %) |
+
+**One energy buys one damage avoided, and `BATTERY_MAX` equals `BASE_HEALTH`.** So the suit
+battery is *literally* a second health bar, and radiation eats it first. A full suit is 100
+seconds of grace; a battery pack is 50 seconds more; at zero the suit fails and radiation
+starts on you at the same rate. **That is one sentence a player can learn by dying once**, and
+it needs no new tuning vocabulary.
+
+**The pressure it produces**, at 230 s of play (240 − warmup) and a fresh suit per life: a
+player who ignores batteries dies of radiation about **twice a round**; a player who picks up
+two or three does not. That is a hazard, not a clock nobody can beat — which is what 1 dps
+against a 0.0 starting battery was.
+
+**Respawn restoring the suit is what stops the death spiral** — without it, the first
+radiation death guarantees the second.
+
+**These four numbers are a starting point with a stated basis, not a measurement.** They come
+from a sweep's arithmetic, not from a run. **`T22.09` owes a `balance.rs`-shaped measurement
+over 8 seeds and must report it**, and must move the numbers if the measurement disagrees. The
+basis goes in the constants' doc comments.
+
+**Reverse it by:** four constants, and the space arm of the spawn-weight table.
+
+## R25 — Radiation logs one damage entry per second, never one per tick
+
+*`R6` said ambient and constant. At 60 Hz that is a catastrophe nobody costed.*
+
+`SIM_HZ` is 60. If radiation follows the toxic-poison shape — one `DamageLog` entry per tick
+per affected player — then `apply_damage_log` emits a `GameEvent::Damage` per player per tick:
+**360 events a second at `MAX_PLAYERS`, for the whole round.** On the client each one drives
+`feel.damageTaken` (a floating damage number reading `0.0167`), `vignette.hit` (a red hit
+vignette retriggered 60×/s, i.e. permanent) and **`audio.spatial('hit', …)` — a hit sound
+sixty times a second, forever** — plus a `Scope::Pair` wire message on top of
+`SNAPSHOT_HZ` = 20.
+
+The precedent has the same shape but is bounded: `TOXIC_POISON_DURATION` is 3.0 s and only for
+players actually rained on. `R6` makes it unbounded and universal, which is what makes the
+difference.
+
+**Accumulate and emit on whole seconds** — one entry per second per player. It still goes
+through `apply_damage_log`, because that is where the warmup gate lives and *"a subtraction
+from `health` inside the player would be the one damage source in the game that skipped it"*.
+
+**Reverse it by:** the accumulator, one field and one comparison.
+
+## R26 — `shield_active` takes the suit as an argument, and the suit does not draw the bubble
+
+*`R2`'s "Reverse it by" line priced this as one place. It is not one place, and the sweep
+found a third consequence the ruling did not see.*
+
+**`PlayerState` has no route to the game mode.** `shield_active(&self, now)` is
+`self.battery > 0.0 && self.holds_shield_generator()`; there is no `mode`, no `in_space`, and
+`World.gravity` is read by **nothing** in production. So `R2`'s second source needs either a
+new `PlayerState` field — **the exact shape that struct's own comment rejects**: *"**No
+`shield_until`** (T20.08) … A field beside them would be a third answer that can disagree"* —
+or the mode reaching the predicate.
+
+**The ruling: the caller supplies the mode bit.** `shield_active(&self, now, suit: bool)`,
+with `suit` passed by the three production call sites that *do* know the world —
+`net/codec.rs`'s encode, `state.rs::apply_damage`, and `game-wasm/src/lib.rs::shield_active`.
+One predicate, two sources, **and no fourth flag on `PlayerState`**. `R2`'s verdict stands;
+its price was wrong.
+
+**And the suit does not draw the shield generator's bubble.** `codec.rs` sets flags bit 3 from
+`shield_active` and `playerView.ts` shows `shieldBubble` from it — so under `R2` as written,
+**every player in space wears a shield bubble for the entire round**. That bubble means *"I am
+carrying a shield generator"*, which is tactical information, and it would come to mean
+nothing. The suit's seal gets its **own** quieter feedback — and that feedback is what
+`T22.09`'s *"a player can tell it is happening"* requirement is asking for anyway, so this
+costs the task nothing and saves the bubble.
+
+**While you are there, fix the lie:** `game-wasm/src/lib.rs::shield_active` calls
+`p.stats.shield_active(0.0)` — a hardcoded `now`. Inert today because `now` is unused; a
+landmine the moment the predicate wants a clock.
+
+**Reverse it by:** one argument and one flag bit.
+
+## R27 — `R12` is right for a reason it did not give, and the flare's model is **poison**, not burn
+
+*Two corrections to `R12`, one of which reverses its evidence while keeping its verdict.*
+
+**1. `BurnField` does not hold the shared burn-duration model, and has not since §F10.2.**
+`R12` and `T22.08` both say *"`FLAME`, molotov and lava already share it"* and locate it in
+`burn.rs`. **All three left that file.** `burn.rs`'s own header says so: *"**§F10.2 took the
+fire out of it.** All three of those are flames now … What is left here is the **toxic
+grenade's cloud**"*, and `BurnKind` has exactly one arm. The shared thing is
+`weapons::flame::light_fan` with `FLAME_LIFE`, and it is not in `burn.rs` at all. The §F12
+sentence is also mis-quoted: its subject is a **toxic zone**, not a fire.
+
+**2. The model the owner actually described is `poisoned_until`, and neither file names it.**
+*"Burns players touching it for N seconds"* is a **per-player status that persists after you
+leave** — which is `PlayerState::poison()` / `::poisoned(now)`, whose doc comment already
+states the rule the flare wants: *"Writing the deadline is the whole rule. Adding to it would
+stack."* Copy that. `BurnField::tick`'s overlap test is explicitly disqualified anyway — its
+own comment says the centre-plus-half-width circle *"is **not** safe for anything small"*, and
+a ribbon is small. `flame::touching` is the right shape test.
+
+**3. The decisive argument for a new type is the wire, not the doc comment** — and it is not
+reversible by editing a comment, which the doc-comment argument is.
+**`GameEvent::HazardSpawn { id, kind, x, y, r, duration }` and `HazardEnded { id }` are the
+whole hazard channel. There is no move event** — `grep -rn "HazardMove\|hazard_move"` over
+`crates/` and `client/src` returns **0**. And `ordnanceFx-math.ts`'s hazard update loop decays
+`ttl` and **never moves `x`/`y`**. A moving hazard cannot be expressed. Also
+`ordnanceFx-math.ts::hazardKind` maps to `'toxic' | 'smoke' | 'other'`, so a new kind
+**silently becomes `'other'` and draws as a neutral disc** — `R20`'s client-end-fails-silently
+shape at a second site.
+
+**4. So the flare's position must be a pure function of (effect seed, elapsed time)**,
+evaluated in `game-core` and **re-derived in TypeScript** — the `render/weather-math.ts::LavaClock`
+precedent, whose doc records that until it existed *"the networked client drew none of it — no
+vent, no mouth, no ember, and no light during the jet, which is the only phase that damages
+you."* That is `T22.08`'s open prediction question, answered by the code.
+
+**5. `R12` set a duration and no damage rate.** *"Burns for 4 seconds"* is not a number of
+damage. **`SOLAR_FLARE_DPS` = 8.0**, so a full burn is 32 — about a third of a health bar,
+dodgeable, and survivable alongside `R24`'s radiation. Basis in the doc comment, measured and
+reported like `R24`'s.
+
+**Reverse it by:** `effects/flare.rs` is one file; the verdict does not change, only its
+justification.
+
+## R28 — The scheduler's per-mode seam does **not** exist yet, and its alternation guard goes quietly blind
+
+*The milestone brief called this *"a constructor argument, not a redesign"*. That was half
+right and the missing half is real work.*
+
+**What is true:** `enabled: [bool; KINDS.len()]` is a per-instance field and it **is** already
+hashed — `hash_into` folds it.
+
+**What is not:** `with_enabled` is **private with zero production callers** — the only
+production constructor is `EffectScheduler::new(seed, round_start)`, which hard-calls
+`enabled_from_constants()` and takes no mode. Both of `with_enabled`'s other call sites are
+tests. And `World.gravity` is read by **nothing** in production. So a per-mode hazard table
+needs a new public constructor **and** the mode threaded from `World` — required work, in
+whichever task lands first.
+
+**And the guard that is supposed to protect the table goes silently green.**
+`two_live_kinds_alternate` opens `if live.len() != 2 { return; }` — so the moment a space
+table has three live kinds it **asserts nothing at all**, with no failure and no signal.
+`a_draw_is_always_possible` reads the same constants table and is equally blind to a space
+one. **Whichever task writes the space table owes both of them a space arm.**
+
+**A pre-existing defect to report, not to fix:** a table with **one** live kind is a live bug.
+`roll_kind` zeroes the last-run kind, so a one-kind table reaches `pick_weighted` with all
+weights zero — and `rng.rs::pick_weighted` does **not** panic there, it `return 0`s, which is
+`KINDS[0]` = **`ToxicRain`, a kind that is switched off**. `a_draw_is_always_possible`'s doc
+comment calls this *"the panic this rules out"*; **there is no panic**, there is a silently
+wrong hazard. **So a space table must have at least two live kinds**, and that is a constraint
+on the design, not a detail.
+
+**Reverse it by:** the new constructor is one function; the guards' space arms are one
+parameter each.
+
 ---
 
 # Build order, as scheduled

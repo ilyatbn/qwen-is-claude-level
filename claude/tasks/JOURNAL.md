@@ -6476,3 +6476,20 @@ generation-time against T22.10's runtime breach; T22.11's "escape is always poss
 inescapability. Also: island → asteroid, and "zero gravity" retired as a description — no *global* gravity, many local wells.
 Nine owner rulings outstanding; the expensive one is whether a pulled player **orients** to the asteroid surface (if yes, every
 upright-drawn thing is wrong). `verify-repo` 291/291.
+
+## M22 — the nine rulings, five sweeps, and T22.01 (coordinator + builders, 2026-09-20)
+Owner: *"lets do m22 … loop till its perfect. make your own decisions."* All nine open questions ruled, plus nineteen more the sweeps
+forced: `M22/M22-RULINGS.md`, R1–R28, each with a "Reverse it by" line. **Five read-only forward sweeps before any code**, which found ~40
+task-file defects and **overturned four of my own rulings**. R13 said "circle" — every map is 2:1, so a circle wastes half the arena;
+it is an inset **ellipse**, which draws as a true circle on the 2:1 minimap. R10 said every `integrate` caller passes a gravity scale —
+`apply_input` *computes* one, and the fix collides with a comment written to stop a ninth argument, so `mods` becomes `MoveStep`. R16
+covered one rim arc of four; the other three strand a player **alive** outside the map, so in space the void is *outside the rim*. R24 is
+the big one: at shipped numbers radiation was unsurvivable by ~17× and **nobody spawns with a battery** — the suit battery is now a second
+health bar radiation eats first, 1 energy per 1 damage, `BATTERY_MAX` = `BASE_HEALTH`.
+**T22.01 landed** (`af76376` + `e4f0bec`): `standard|low|space` on §F7's path, replay header, `REPLAY_VERSION` 13 → 14, deliberately
+behaviourless. Harsh review found the behaviourless control **blind to the projectile seam R3 sends T22.02 to** — a plant there stayed
+green — and an assertion named "the run never moved anybody" that only detected "no player existed". Both fixed, falsified at four live
+sites; the builder's *first* fix for the second was wrong the same way and it caught that by falsifying its own remedy. Gravity now reaches
+the wire as `space` and the TS/Rust mode lists are pinned structurally. **The lobby panel has 9 px of headroom** at capacity — a sixth
+settings row would overflow, now asserted. Ten shipped-code defects in `M22/M22-FOUND-DEFECTS.md`; `title` broken since `4f28b2e` is
+`T22.00`. Full gate not yet run for this batch.

@@ -1503,3 +1503,35 @@ the round controller is an order of magnitude cheaper, counted. `R22`: `SandboxS
 **Reverse it by:** each ruling names its own site; the file is the index.
 **Full text:** `R8`, `R10`, `R11`, `R13`, `R16`, `R18`–`R23` in
 [M22/M22-RULINGS.md](M22/M22-RULINGS.md).
+
+## D-74 — The suit battery is a second health bar; and four more from the hazard sweep  ·  M22
+**Decided by:** me, on the T22.08/T22.09 forward sweep, which did the arithmetic `T22.09` only
+gestured at.
+**The ambiguity — and the answer was that the mode I had ruled could not be played.** Measured:
+`PlayerState::new` sets `battery: 0.0` and `STARTING_KIT` is `[SHOVEL]`, so under `R2` **every
+player in space is unshielded from the first tick** and dies in 100 s. The per-second shield
+drain `T22.09` wanted does not exist — T20.08 **deleted** `SHIELD_DURATION` and `SHIELD_DRAIN`
+and `SHIELD_HIT_COST` is a per-hit pool. And `BATTERY_PACK`'s 14/241 weight yields **2.69 packs
+per 240 s round for the whole lobby, 22.4 energy per player**, against a 1 dps clock — short by
+roughly **17x**, with 43 % of rounds starting with no pack on the map.
+**Chosen (`R24`), and it is a design rather than a patch:** `RADIATION_DPS` 1.0 to health when
+unsealed, **`RADIATION_SHIELD_COST` 1.0 energy per second to battery when sealed**, suit battery
+**full at spawn and restored on respawn** in space, and `BATTERY_PACK`'s space weight doubled.
+One energy buys one damage avoided and `BATTERY_MAX` equals `BASE_HEALTH`, so **the suit battery
+is literally a second health bar and radiation eats it first** — one sentence a player learns by
+dying once. Ignore batteries and radiation kills you about twice a round; pick up two or three
+and it does not.
+**Four more.** `R25`: radiation logs **once a second, not once a tick** — 60 Hz x 6 players is
+360 damage events a second, which is a hit sound sixty times a second for the whole round.
+`R26`: `shield_active` **cannot see the mode** and `R2` priced its reversal at one place; the
+mode bit becomes an argument at three production call sites, and **the suit does not draw the
+generator's bubble**, or a bubble that means "I carry a shield generator" comes to mean nothing.
+`R27`: `R12` reached the right verdict on false evidence — `BurnField` has not held the
+burn-duration model since §F10.2, the model the owner described is `poisoned_until`, and the
+decisive obstacle is that **the hazard wire has no move event at all**. `R28`: the scheduler's
+per-mode seam **does not exist yet** (`with_enabled` is private with zero production callers),
+and `two_live_kinds_alternate` **silently asserts nothing** once a table has three live kinds.
+**These four numbers are a stated basis, not a measurement.** `T22.09` owes a `balance.rs`-shaped
+run over 8 seeds and must move them if it disagrees.
+**Reverse it by:** four constants and the space arm of the spawn-weight table.
+**Full text:** `R24`-`R28` in [M22/M22-RULINGS.md](M22/M22-RULINGS.md).

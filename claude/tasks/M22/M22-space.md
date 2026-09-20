@@ -73,7 +73,9 @@ The owner asked for a re-check. Eight things moved, and two of them shrink the w
 **1. The gravity chain no longer depends on a parked task.** `T21.05` declared *"Depends on:
 T21.04 (the settings pattern)"* — the day/night setting, parked separately and still parked.
 The owner has now ruled day/night **out** of space entirely, and the settings *path* it was
-going to copy is T20.07's, which landed. So the dependency is void and nothing in M22 waits on
+going to copy is **`docs/75` §F7's**, which landed — **not T20.07's, which is the flashlight
+task and adds no lobby setting** (corrected 2026-09-20, after a builder followed the pointer
+and found nothing there). So the dependency is void and nothing in M22 waits on
 the parking lot. This was the chain's only external block.
 
 **2. Zero-g movement is most of the way built, because wings shipped.** `T21.06` was written
