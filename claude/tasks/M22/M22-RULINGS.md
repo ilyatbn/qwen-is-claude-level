@@ -613,6 +613,8 @@ meaningless*. And `surface_points` will **not** be empty: asteroid tops are stan
 
 ## R18 — Asteroid levels are derived from `JETPACK_CLIMB_BUDGET`, not from a delta-v
 
+**SUPERSEDED IN PART 2026-09-21 by `R46`.** The ceiling inequality below is stated against `JETPACK_THRUST_UP` = 2200. That is the pack's strongest axis; the binding direction is **down**, at `JETPACK_THRUST_DOWN` = 900, for a player on the underside of a rock. Read `R46` for the inequality that replaces it. Everything else in this ruling stands.
+
 *`T22.11` says the five levels derive from the thruster's delta-v. **The thruster does not
 produce a delta-v.***
 
@@ -1378,6 +1380,122 @@ lands and `integrate` is still at five, that is a finding, exactly as a nine-arg
 **The full gate runs once per batch, by me, not once per task** (`CLAUDE.md`, set
 2026-09-14 by the owner). Per task: the **Done when** command, then
 `./scripts/check.sh --changed`.
+
+## R45 — `T22.11` is three tasks, and the seam lands first, bit-identical
+
+**Scouted read-only 2026-09-21; the measurements are in the scout report, and I take its
+recommendation.** `T22.11` as specified is **15 files** and **12 production call sites**.
+`CLAUDE.md`'s *"a task is ~one file and ~250 lines; heading well past that means it needs
+splitting"* is not a close call here. Split:
+
+- **`T22.11A` — the seam, and no behaviour.** R10's `Forces` and `Env`/`MoveStep`; `integrate`
+  5 → **4** parameters; `apply_input` 9 → **8**; the four non-player steppers take the mode,
+  which is where **R30**'s live bug is fixed (see R48). No wells. The control is
+  `resolve::a_resting_body_is_bit_identical_after_600_ticks` plus the golden table, both
+  untouched — this task is a refactor that changes no pixel.
+- **`T22.11B` — the field.** `world/attractors.rs` (R11), the level→pull relation with its
+  basis in the doc comment, the falloff and cutoff (R47), the space terminal speed, the escape
+  ceiling assertion (R46), and `World::state_hash`'s asteroid contribution (R36's
+  red-before-green).
+- **`T22.11C` — the client.** `GameCore::set_asteroids`, the `core/index.ts` wrapper, the
+  `worldMirror.ts::applyMapInit` line, and the prediction-agreement test.
+
+**Shape (c) — the struct — is ruled, and the deciding reason is not argument count.** Under
+both rejected shapes a new caller passing `Vec2::ZERO` gets a legal, silent *"no field"* that
+nothing in the tree reports — which is the shape of the twelve mechanisms this project has
+built and wired to nothing. Under (c) a caller must name a `Forces`.
+
+**The one way to reintroduce that silent failure is a `Default`**, and it is forbidden here for
+the reason `MoveMods::NONE`'s doc comment already gives four files away: *"a `Default` is what
+a caller reaches for when it does not know what to pass."* A `Default` would also void R10's
+nominated control, which passes for a build where `accel` is never read.
+
+**Reverse it by:** landing `T22.11` as one task.
+
+## R46 — The escape ceiling is `JETPACK_THRUST_DOWN`, not `JETPACK_THRUST_UP`. **This overturns R18.**
+
+**R18 and `T22.11`'s task file both state the guard against `JETPACK_THRUST_UP` = 2200.** That
+is the pack's *strongest* axis. The thruster is anisotropic — measured at
+`jetpack::thrust_delta`: up 2200, sideways 1100, **down 900**.
+
+So the binding direction is a player resting on the **underside** of a rock, who must push
+*downward* to leave it and has 900 px/s² to do it with. **A well of 1500 px/s² at the surface
+passes R18's assertion as written and still traps that player forever** — with, in the task
+file's own words, *"no cause on screen and no message"*. The guard was named *"escape is
+possible"* and tested *"escape is possible from the top"*: a claim reported through something
+other than the thing it claims, which is this milestone's signature defect, in my own ruling.
+
+**The ruling.** With `d_min(r) = SPACE_ASTEROID_CORE_FRAC * r + PLAYER_H / 2.0` — the closest a
+live player body's centre can sit to a rock's centre —
+
+    max over n <= SPACE_LEVEL_MAX, r <= SPACE_ASTEROID_R_MAX  of  a(n, r, d_min(r))
+        <  JETPACK_THRUST_DOWN
+
+scoped to asteroids, so `T22.12`'s black hole keeps the inverse assertion.
+
+If the owner ever prefers the weaker guarantee — *you can always escape upward* — that is a
+legitimate call, but it must then be **written at the code that the underside of a rock is a
+trap**, because nothing else in the tree would say so.
+
+**Reverse it by:** the constant in the ceiling assertion in `constants.rs`.
+
+## R47 — The wells fall off **linearly to a cutoff**, not as inverse-square
+
+Arithmetic, done by the scout and re-checked here rather than remembered. Pin an inverse-square
+well to R46's ceiling at the smallest rock that can reach level 5 (`r = 54`, so
+`d_min = 0.75*54 + 14 = 54.5`):
+
+    k(5)  <  900 * 54.5^2  =  2 673 225 px^3/s^2
+
+That same well, one climb budget out at 780 px, delivers `2 673 225 / 780^2` = **4.4 px/s²** —
+against an 1100 px/s² sideways thruster, which is nothing. **An inverse-square field pinned to
+an escapable ceiling is either brutal at the surface or imperceptible at range; there is no
+setting where it is both.**
+
+So: `a(d) = a_surf(n) * max(0, 1 - d / R(n))`. Three things follow, and all three are why this
+is the ruling:
+1. `a_surf(n)` **is** the quantity R46's inequality bounds — the guard and the tunable are the
+   same number, so the table cannot drift away from its own assertion.
+2. `R(n) <= JETPACK_CLIMB_BUDGET` gives R18 the measured basis it asked for, stated as a
+   sentence a player can feel: *a full tank always clears the well's influence.*
+3. The acceleration reaches zero **continuously** at `R(n)`, which dissolves the task file's own
+   objection to a cutoff — *"a well with a hard edge is a wall you fall off."*
+
+**Reverse it by:** the falloff expression in `world/attractors.rs`.
+
+## R48 — `T22.11A` carries R30's fix, and R30 is a bug in a **shipped** mode
+
+R30 is filed as *"scale non-player bodies under `Low`"*, which reads like polish. It is not.
+Measured: `Mines::step`, `WorldItems::step`, `Tombstones::step` and `Animals::tick` each pass a
+**literal `1.0`** to `integrate`. `GravityMode::Low.scale()` is `LOW_GRAVITY_SCALE` = 0.5. So in
+a low-gravity match **a dropped weapon falls at twice the speed of the player who dropped it**,
+and low gravity has been playable since `T22.02` landed.
+
+It is R10's signature change that fixes it, so it belongs to `T22.11A` and not to a later task
+— but it is the only part of `T22.11A` that is *not* behaviour-neutral, and its test is the one
+assertion in that task that must be red first.
+
+**Reverse it by:** the four literals.
+
+## R49 — R11's plumbing table is stale in `T22.11`'s favour, and `T22.05A` is why
+
+R11 costs the asteroid-levels wire at **four layers** and says they are *"not on the wire
+today"*. Measured 2026-09-21, that is no longer true: `T22.05A` shipped
+`game-server/src/codec.rs::encode_map_init`'s asteroid section, `decode_map_init_parts`'s read
+into `parts.asteroids` (pinned by `codec.rs::map_init_round_trips_every_asteroid_and_its_level`),
+and `client/src/net/codec.ts`'s decode.
+
+**Three layers remain**, all in `T22.11C`: `GameCore::set_asteroids`, the `core/index.ts`
+wrapper, and one line in `worldMirror.ts::applyMapInit` — which already calls `setTeleportPads`
+and `setGunPlatforms` two lines above, so the precedent is its own neighbour.
+
+**And the client's position is worse than R11 states, which matters for the red-before-green.**
+R11 says the client holds *stale* meta. `GameCore::new()` is `generate(1, MapScale::Small)` on
+the **standard** generator, whose `meta.asteroids` is **empty**. A networked client today would
+predict against a field of exactly zero everywhere — not a wrong field, *no* field. That is a
+sharper and easier failure to write a test for.
+
+**Reverse it by:** nothing — this is a correction of fact, not a choice.
 
 # What this milestone owes when it lands
 
