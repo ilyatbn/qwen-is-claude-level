@@ -68,6 +68,35 @@ listed under `disabled:` in `e2e.mjs --help`. The toxic halves of `m5-weather`, 
   which is the loop `CLAUDE.md` forbids. So: evidence recorded, coverage left in place, decision
   with the owner. `flaky: true` would delete the only assertion in the repository that says the
   smoke shader *moves*, which is the "I cannot see it" class.
+
+  **Fixed at the cause instead, T22.00B (2026-09-21) — and the load reading above is wrong.**
+  The check no longer sleeps: it advances 18 *drawn* frames at a time, five times, and the
+  largest change from the first photograph decides. Three measurements, all on this box:
+
+  - **Load is real but it was not the cause.** With 24 spinners at 1-min load 21.4 the check
+    read 13.3 %, and with four shader checks at once at load 39.9 it read 27.9 % — both green,
+    both **above** the idle reading. CDP CPU throttling does cut frames drawn per 300 ms from
+    **18 at x1 to 3 at x64**, so "fewer frames under load" is a true mechanism; it is simply not
+    the one that fired here, and **I could not reproduce either sighting by loading the box.**
+  - **The 300 ms window is marginal on an idle box.** `time` is wall clock (Phaser's
+    `TimeStep::getDuration`) and the fbm warp moves ~0.05 noise units in 300 ms, so how many
+    pixels cross `PIXEL_MOVED` depends on where in the noise the cloud is. Photographed 39 times
+    running at ~260 ms apart, idle, the reading waved between **0.0 % and 11.2 %**.
+  - **Head to head, 15 trials each, idle (CPU throttle x1):** the old form read
+    `10.1 13.7 1.5 0.1 4.3 9.9 10.7 3.9 6.5 0.0 8.0 0.9 1.4 0.3 7.6` — **4 of 15 at or under the
+    1.0 % floor**, including two 0.0 %; the new form read min **13.1 %**, 0 of 15 under. At x16
+    the old form was 2 of 15 under (two 0.0 %) and the new form min **31.6 %**, 0 of 15 under.
+    So the old check failed on a coin flip **whatever the load**, and the suite only ever
+    re-rolled the coin.
+
+  Both arms falsified at the live binding site: pinning `time` to 0 in `SMOKE_FRAGMENT` gives
+  *"changed 0.0 % of its pixels at most over 90 drawn frames (1.6 s) … it does not animate"*, and
+  killing `requestAnimationFrame` gives *"the page drew 0 of 90 frames in 40.0 s … the box stopped
+  rendering, so this says nothing about whether the smoke shader animates"* — the distinction this
+  check could not make for two sightings. **Neither `serial` nor `flaky` is needed; the row stays
+  closed.** The twins are untouched and listed in T22.00B's report: `fire-shader`,
+  `explosion-shader`, `beams-shader` and `fog-shader` all still sample two frames across a wall
+  clock.
 - `skins-ingame` — red once on 2026-09-14, but that was a real bug (the T21.20 ridge skirt),
   fixed in `d73968b`.
 - `teleport` — red once on 2026-09-14 before T19.29 turned weather off for it; then green in

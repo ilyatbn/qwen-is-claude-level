@@ -22,9 +22,11 @@
  *
  * - **Drawn, not blank**: the painted cloud against the same frozen frame with the
  *   layer hidden, the control's drift as the floor.
- * - **Animates**: frozen, two frames 300 ms apart. The flat lobes move only on
- *   `update`, which a frozen scene does not run, so they are the still control; the
- *   shader reads Phaser's own clock and must change.
+ * - **Animates**: frozen, and sampled over *rendered frames* rather than wall clock —
+ *   see `animation` below for the two sightings that cost, and for the measurements
+ *   that decided its shape. The flat lobes move only on `update`, which a frozen scene
+ *   does not run, so they are the still control; the shader reads Phaser's own clock
+ *   and must change.
  * - **Both ends**: the server narrated the hazard, and `smokeShadersDrawn` counts
  *   painted quads only while High Quality is on.
  */
@@ -198,21 +200,113 @@ if (narrated > 0) {
   if (!(drawn > floor)) fail(`the painted cloud is ${drawn.toFixed(1)} from the same frame without it, against a floor of ${floor.toFixed(1)} — nothing is drawn`)
   else ok(`the painted cloud is on the screen (${drawn.toFixed(1)} against ${floor.toFixed(1)})`)
 
-  // --- it animates: frozen, 300 ms apart, flat as the still control --------------------
-  const pair = async (hq) => {
+  // --- it animates: frozen, over rendered frames, flat as the still control ------------
+  //
+  // **This waited on a wall clock and went red twice (T22.00B)**, both times only inside
+  // the 58-check suite: "changed 1.0 % of its pixels in 300 ms against 0.0 % flat" on
+  // 2026-09-20 and 0.5 % on 2026-09-21, against 11.8 % and 9.9 % alone on the same trees.
+  //
+  // Two separate defects, both measured while fixing this, and the fix needs both halves:
+  //
+  // 1. **A sleep does not guarantee a redraw.** The quad's picture only moves when Phaser
+  //    renders, and Phaser renders on `requestAnimationFrame`. Under CDP CPU throttling the
+  //    page drew 18 frames in 300 ms at x1 and **3 at x64** — so on a loaded box the two
+  //    photographs can be of the same drawn frame, and the reading collapses to nothing the
+  //    shader did. So: advance a fixed number of *drawn* frames. Load then changes how long
+  //    the step takes, which is harmless, not what it measures.
+  // 2. **One 300 ms window is marginal whatever the load.** `time` is wall clock
+  //    (Phaser's `TimeStep::getDuration`), and the fbm domain warp moves about 0.05 noise
+  //    units in 300 ms — so how many pixels cross `PIXEL_MOVED` depends on where in the
+  //    noise the cloud currently is. Photographed 39 times in a row at ~260 ms apart on an
+  //    **idle** box the reading waved between **0.0 % and 11.2 %**, touching 0.0 % three
+  //    times; 15 runs of the old form read 0.9 % and 0.3 % among them. One sample of one
+  //    window is therefore a coin flip on any box. So: several steps, and the **largest**
+  //    change from the first photograph decides. Every step must be flat for this to fail,
+  //    which is what "it does not animate" actually claims.
+  //
+  // The budget is generous and is not a measurement — it exists so a page that has stopped
+  // rendering **fails** rather than hanging, and the failure below says which it was.
+  /** Frames drawn per step: what a 60 Hz box draws in the 300 ms this check used to sleep. */
+  const STEP_FRAMES = 18
+  /** Steps taken, so one flat window cannot decide the verdict. */
+  const STEPS = 5
+  /** Ceiling on one step, ~26x the idle cost of 18 frames. A frozen page fails here. */
+  const FRAME_BUDGET_MS = 8_000
+
+  /**
+   * Resolve once `n` frames have been drawn, or `budget` ms have passed — whichever comes
+   * first, and it reports which by returning both. The `setTimeout` is the half that cannot
+   * hang: a page whose `requestAnimationFrame` never fires still resolves, with `frames`
+   * short of `n`.
+   */
+  const advanceFrames = (n, budget) =>
+    page.evaluate(
+      ([want, cap]) =>
+        new Promise((resolve) => {
+          const t0 = performance.now()
+          let drawn = 0
+          let done = false
+          const end = () => {
+            if (done) return
+            done = true
+            resolve({ frames: drawn, ms: performance.now() - t0 })
+          }
+          const timer = setTimeout(end, cap)
+          const tick = () => {
+            drawn++
+            if (drawn >= want) {
+              clearTimeout(timer)
+              end()
+            } else requestAnimationFrame(tick)
+          }
+          requestAnimationFrame(tick)
+        }),
+      [n, budget],
+    )
+
+  /** The largest change from the first photograph over `STEPS` steps, and what it cost. */
+  const animation = async (hq) => {
     await setHQ(hq)
     await frame()
-    const a = await photo(page, band)
-    await sleep(300)
-    const b = await photo(page, band)
-    return changedFraction(a, b)
+    const first = await photo(page, band)
+    let most = 0
+    let frames = 0
+    let ms = 0
+    for (let i = 0; i < STEPS; i++) {
+      const step = await advanceFrames(STEP_FRAMES, FRAME_BUDGET_MS)
+      frames += step.frames
+      ms += step.ms
+      most = Math.max(most, await changedFraction(first, await photo(page, band)))
+    }
+    return { most, frames, ms, wanted: STEP_FRAMES * STEPS }
   }
-  const still = await pair(false)
-  const living = await pair(true)
-  console.log(`  frozen cloud, 300 ms apart: flat ${(still * 100).toFixed(1)}% of pixels changed, painted ${(living * 100).toFixed(1)}%`)
-  if (!(living > Math.max(0.01, still * 3))) {
-    fail(`the painted cloud changed ${(living * 100).toFixed(1)}% of its pixels in 300 ms against ${(still * 100).toFixed(1)}% flat — it does not animate`)
-  } else ok(`the painted cloud animates (${(living * 100).toFixed(1)}% against the flat cloud's ${(still * 100).toFixed(1)}%)`)
+  const still = await animation(false)
+  const living = await animation(true)
+  const seconds = (x) => (x.ms / 1000).toFixed(1)
+  console.log(
+    `  frozen cloud, most changed of ${STEPS} steps of ${STEP_FRAMES} drawn frames: ` +
+      `flat ${(still.most * 100).toFixed(1)}% (${still.frames}/${still.wanted} frames in ${seconds(still)} s), ` +
+      `painted ${(living.most * 100).toFixed(1)}% (${living.frames}/${living.wanted} frames in ${seconds(living)} s)`,
+  )
+  if (living.frames < living.wanted || still.frames < still.wanted) {
+    // **Not "it does not animate"** — the distinction this check could not make for two
+    // sightings. Nothing was drawn, so nothing here is evidence either way about the shader.
+    fail(
+      `the page drew ${living.frames} of ${living.wanted} frames in ${seconds(living)} s painted and ` +
+        `${still.frames} of ${still.wanted} in ${seconds(still)} s flat — the box stopped rendering, ` +
+        `so this says nothing about whether the smoke shader animates`,
+    )
+  } else if (!(living.most > Math.max(0.01, still.most * 3))) {
+    fail(
+      `the painted cloud changed ${(living.most * 100).toFixed(1)}% of its pixels at most over ` +
+        `${living.frames} drawn frames (${seconds(living)} s) against ${(still.most * 100).toFixed(1)}% flat — it does not animate`,
+    )
+  } else {
+    ok(
+      `the painted cloud animates (${(living.most * 100).toFixed(1)}% against the flat cloud's ` +
+        `${(still.most * 100).toFixed(1)}%, over ${living.frames} drawn frames in ${seconds(living)} s)`,
+    )
+  }
   if ((await dbg()).hazardsDrawn < 1) fail('the cloud ended during the photographs — every reading above may describe an empty patch')
 
   await setHQ(false)
