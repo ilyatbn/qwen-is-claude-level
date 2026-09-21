@@ -6592,3 +6592,23 @@ seed/scale/generator/gravity and **regenerates**. And the cave-backdrop finding 
 **0 of 1 098 496 interior px are sky-reachable**, so unless space gets its own backdrop the client paints the whole playfield as a cave.
 **A guard it falsified and reported as inert** (`R32`): `gen::reanalyse` is correct and never runs — pass 8 fills ground on **0 of 900**
 space maps. Kept, because it closes the moment T22.05B reseats pads; **T22.05B owes it a test that fires it.**
+
+## T22.05A fixes — and item 5 was a real bug, which the review and I both under-called (2026-09-21)
+`224cdb3`, 11 files. All seven review items fixed, eight falsifications, every one red. **The discriminator is F3b.**
+`no_asteroid_pixel_touches_the_rim`'s doc claimed *"this measures the mask"* and the body never read a pixel — the review said the property
+holds so it was only a wording fix, and **it was not**. Letting lumps escape the bounding radius leaves the old float-only assertion `ok`
+and turns the new mask sweep red at `(859, 184)`. It was blind to an entire class because it only ever read `a.r` and `a.x/a.y`.
+**The rim numbers, re-measured and now re-runnable.** 30.00 / 29.75 / 29.75 px at 117° / 113° / 114°. Spacing stepped in ellipse parameter
+is 5.19 px at the ends and **10.38 px** at top and bottom; scallop `2·√(16² − 5.19²)` = **30.27** predicted. The concentric annulus,
+brute-forced at 3600 angles × 20000 samples, is **30.17 px (0.943×)** — so the two constructions are within **0.4 px** and thickness never
+chose between them; closure did, and the doc now says so. `the_rim_is_thicker_than_one_minimap_cell` asserts a **29.25–30.75 px window**,
+so the figure is measured rather than trusted. x-inset is **128 px**, from the centreline, `h` cancelling because `w = 2h`.
+Also fixed: `TeleportPad`'s stolen doc restored; `generate_with` now derives from the core's gravity (so its argument is a *request* the
+mode can override — documented, and R15's forbidden state is unreachable); the encoder control that passed with the whole payload deleted;
+`sceneParams.ts` extracted so R22's `?gravity=` has exactly one site and deleting it is red; `DEFAULT_MAP_GENERATOR` exported and pinned to
+Rust by mask hash. `SPACE_RIM_CLEARANCE`'s "two player heights" was 56, not 64.
+**`objects` failed the gate on a wall-clock budget → `R37`.** 4.20 ms median against a 4 ms budget in-suite; **0.80 ms alone, minutes
+later**. Six gate logs in the tree show **four of six prior runs already exceeded the budget on their *max***, and the check gates only the
+median. Moving to `perf` (already `serial` + `flaky`) rather than `flaky: true` on `objects`, which would disable eight pixel assertions to
+silence one timing line. **Watching, not parked:** `game-server/tests/lobby.rs` failed a different member on each of two runs, both passing
+standalone, sharing the lobby harness — the shape `CLAUDE.md` says not to read as "load" without instrumenting. It passed inside the gate.

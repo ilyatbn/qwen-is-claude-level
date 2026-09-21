@@ -1173,6 +1173,30 @@ two sides and show the state hash notices.
 
 **Reverse it by:** one contribution in `World::state_hash`.
 
+## R37 — The `objects` rebake budget moves to `perf`, which already carries the right flags
+
+*A third wall-clock assertion has now decided a gate on load. Same family as `T22.00B`/`T22.00C`,
+different shape.*
+
+`scripts/checks/objects.mjs` asserts `median single-chunk rebake ≤ 4 ms over 40 samples`. In a
+`--changed` run it read **4.20 ms** and failed; alone on the same tree immediately afterwards,
+**0.80 ms median, 2.30 max**. And the six gate logs already in the tree say this was always
+marginal — **four of six prior runs already exceeded the 4 ms budget on their *max***, and the
+check only gates the median, so under `e2e.mjs --jobs` the median walks into the max's old range.
+
+**Do not set `flaky: true` on `objects`.** That disables the **whole** check — eight real pixel
+assertions including *"carve took the art with it"* and the seam test — to silence one timing
+line. The builder declined to do it and was right to.
+
+**The ruling: move the rebake budget into `scripts/checks/perf.mjs`**, which is already
+`serial: true` **and** `flaky: true` — the check that exists for wall-clock budgets. That is not
+weakening the assertion; it is putting it where assertions of its kind already live, and it
+leaves `objects`' eight pixel assertions gating on every run.
+
+**Added to `T22.00C`'s scope**, which is already the task for wall-clock assertions.
+
+**Reverse it by:** one assertion, back in `objects.mjs`.
+
 ---
 
 # Build order, as scheduled
