@@ -2603,24 +2603,56 @@ impl GravityMode {
     /// The multiplier this mode puts on [`GRAVITY`], everywhere gravity is
     /// integrated.
     ///
-    /// **This is the single place the mode becomes a number.** Four production
-    /// sites read `GRAVITY` to move something — `physics::resolve::apply_gravity`
-    /// (through `player::jetpack::gravity_scale`), `weapons::projectile::integrate`,
-    /// `weapons::projectile::predict_impact` and `bots::zone_reach` — and every
-    /// one of them multiplies by this rather than deciding for itself, so
-    /// "which gravity is this match under" has exactly one answer.
+    /// **This is the single place the mode becomes a number**, and the four
+    /// sites that ask it are the ones that move a **player or a projectile**:
+    /// `physics::resolve::apply_gravity` (through
+    /// `player::jetpack::gravity_scale`), `weapons::projectile::integrate`,
+    /// `weapons::projectile::predict_impact` and `bots::zone_reach`. None of
+    /// them decides for itself.
+    ///
+    /// **It is not, today, the answer for everything that falls — see the
+    /// paragraph below, and do not read the sentence above as saying otherwise.**
+    /// An earlier version of this comment claimed *"'which gravity is this match
+    /// under' has exactly one answer"* two lines above a paragraph listing four
+    /// things it is not the answer for. Both cannot be true; the paragraph is
+    /// the true one (M22-RULINGS R30).
     ///
     /// **`Space` answers `1.0` and that is not an oversight.** T22.03 owns the
     /// space arm (M22-RULINGS R3/R10); until it lands, a `Space` match plays at
     /// standard gravity and `world::gravity_tests` asserts exactly that, so the
     /// day it changes is a day this file changed.
     ///
-    /// **Not applied to the four non-player `integrate` callers** — mines,
-    /// world items, tombstones and animals still fall at standard gravity under
-    /// `Low`. Their signatures cannot see the match setting
-    /// (`(map, …, dt)`), and M22-RULINGS R10 names those four signature changes
-    /// as `T22.11`'s cost and R14 rules what each does. Widening them here would
-    /// be doing that task early; the gap is real and deliberate.
+    /// # Four fallers this does not reach, and what a player sees
+    ///
+    /// `weapons::placed::Mines::step`, `items::world::WorldItems::step`,
+    /// `world::tombstones::Tombstones::step` and `world::animals::Animals::tick`
+    /// still fall at standard gravity under `Low`. **The player-visible
+    /// consequence is that in a low-gravity match a dropped weapon and a
+    /// tombstone fall twice as fast as the person who dropped them** — a real
+    /// inconsistency, visible in ordinary play, not a rounding gap.
+    ///
+    /// **The reason is scheduling, not shape.** An earlier version said their
+    /// signatures *"cannot see the match setting (`(map, …, dt)`)"*, which is a
+    /// description rather than a reason: T22.02 widened `Projectiles::step`'s
+    /// signature for exactly this, so widening four more was never the obstacle.
+    /// The honest sentence is that **M22-RULINGS R10 assigns those four
+    /// signature changes to `T22.11`**, R14 rules what each of them does in
+    /// space, and R30 says `T22.11` must scale them under `Low` as well as zero
+    /// them under `Space`. Doing it here would pre-empt the task that owns the
+    /// `Forces` refactor and make its merge a rewrite of a rewrite.
+    ///
+    /// # Two interactions that are stated rather than left to be found
+    ///
+    /// - **Wings (T21.03) make this irrelevant while they are out** — the third
+    ///   gravity regime, named in `player::jetpack::gravity_scale` so nothing can
+    ///   be in two of them at once.
+    /// - **Boots (T21.02) are unaffected by the mode, and cannot be.** You land
+    ///   from your own jump at the speed you launched at whatever `k` is, and
+    ///   both fall thresholds are speeds that do not scale with it, so T21.02's
+    ///   "safe from the height your own jump reaches" holds identically in every
+    ///   mode — a booted player just floats to 297 px instead of 148 first.
+    ///   `world::fall_damage::a_jump_is_free_under_every_gravity_mode_booted_or_bare`
+    ///   carries the arithmetic and the measurement.
     pub const fn scale(self) -> f32 {
         match self {
             GravityMode::Standard => 1.0,

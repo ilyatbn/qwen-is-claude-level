@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The tests the gate never runs.  T20.17
 #
-#   ./scripts/ignored.sh            run all seventeen, in release
+#   ./scripts/ignored.sh            run the whole manifest, in release
 #   ./scripts/ignored.sh --list     print the manifest and exit
 #
 # `scripts/check.sh` is `cargo test --workspace` with no `--release` and no
@@ -56,8 +56,17 @@ cd "$ROOT"
 # per body, not by counting `assert`s: `thousand_seed_playability_sweep` fails
 # through `panic!` and contains no `assert` at all, while `density_report` and
 # `item_population_report` are named "report" and carry four failable assertions
-# and one. Fourteen of the seventeen are guards — the three `report` rows are
-# `kill_chain`, `balance_report` and `encounter_report`.
+# and one. `low_gravity_report` is the same shape — it lands here as a `guard`
+# for its `fought > 0.0` control and its `moved` claim, and its name is the only
+# thing about it that says "report".
+#
+# **No counts are written in this header, deliberately.** It used to say "run all
+# seventeen" and "fourteen of the seventeen are guards — the three `report` rows
+# are ...". Every one of those three numbers was correct when written and wrong
+# one commit later, because `verify-repo.mjs` checks **membership** — that no
+# `#[ignore]` exists without a row here — and nothing checks a sentence. The
+# counts are now derived from `MANIFEST` by `--list`, which is the only form of
+# them that cannot go stale. Run `./scripts/ignored.sh --list` for the tally.
 MANIFEST=(
   "thousand_seed_playability_sweep|game-core tests/map_sweep.rs|guard"
   "fifty_medium_seeds_pass_without_the_safe_preset|game-core src/map/gen/mod.rs|guard"
@@ -69,7 +78,7 @@ MANIFEST=(
   "density_report|game-core tests/balance.rs|guard"
   "encounter_report|game-core tests/balance.rs|report"
   "item_population_report|game-core tests/balance.rs|guard"
-  "low_gravity_report|game-core tests/balance.rs|report"
+  "low_gravity_report|game-core tests/balance.rs|guard"
   "the_shipping_configuration_produces_a_fight|game-core tests/balance.rs|guard"
   "the_spawn_stream_beats_the_wait_it_replaced|game-core tests/balance.rs|guard"
   "how_many_rooms_fit|game-server tests/capacity.rs|guard"
@@ -113,7 +122,21 @@ if [ "${1:-}" = "--list" ]; then
     IFS='|' read -r name where class <<<"$row"
     printf '%-52s %-34s %s\n' "$name" "$where" "$class"
   done
-  printf '\n%d tests, %d expected red\n' "${#MANIFEST[@]}" "${#EXPECTED_RED[@]}"
+  # Derived, never written down: the header used to carry these numbers in prose
+  # and they were stale the first time a row was added.
+  guards=0; reports=0; other=0
+  for row in "${MANIFEST[@]}"; do
+    IFS='|' read -r _ _ class <<<"$row"
+    case "$class" in
+      guard) guards=$((guards + 1)) ;;
+      report) reports=$((reports + 1)) ;;
+      *) other=$((other + 1)) ;;
+    esac
+  done
+  printf '\n%d tests: %d guard, %d report' "${#MANIFEST[@]}" "$guards" "$reports"
+  [ "$other" -gt 0 ] && printf ', %d UNCLASSIFIED' "$other"
+  printf '; %d expected red\n' "${#EXPECTED_RED[@]}"
+  [ "$other" -gt 0 ] && exit 1
   exit 0
 fi
 

@@ -5947,43 +5947,86 @@ mod toxic_rain_falls {
     /// under gravity and one is released every `TOXIC_DROP_EVERY`, so the most
     /// that can be in the air at once is the flight time over the cadence. It is
     /// asserted rather than printed because a print is not a guard.
+    ///
+    /// **It takes the gravity mode (T22.02, M22-RULINGS R29).** Toxic drops are
+    /// projectiles, so `Projectiles::step` scales them, and under `Low` the
+    /// flight time grows toward `1/sqrt(k)` — about 41 % longer at
+    /// `LOW_GRAVITY_SCALE` 0.5. A ceiling computed from the **unscaled**
+    /// `GRAVITY` is therefore not a load claim about a low-gravity match at all:
+    /// it is ~40 % loose there, which is the whole quantity this guard exists to
+    /// bound. Both modes are run, each against its own derived ceiling, and the
+    /// printed bill is per mode.
     #[test]
     fn a_shower_keeps_a_bounded_number_of_drops_in_the_air() {
         use crate::constants::{GRAVITY, SIM_DT, SKY_MARGIN, TOXIC_DROP_EVERY, TOXIC_DROP_SPEED};
-        let mut w = World::for_test(4242, MapScale::Medium);
-        w.set_phase(RoundPhase::Playing);
-        w.add_player(0, 0, "ana".into());
-        w.force_effect(EffectKind::ToxicRain, w.round_time);
 
-        let mut peak = 0usize;
-        let ticks = ((TOXIC_DURATION + 12.0) / SIM_DT) as u32;
-        for _ in 0..ticks {
-            w.step(SIM_DT);
-            peak = peak.max(w.projectiles.len());
+        let mut peaks: Vec<(GravityMode, usize, usize)> = Vec::new();
+        for gravity in [GravityMode::Standard, GravityMode::Low] {
+            let mut w = World::for_test(4242, MapScale::Medium);
+            w.set_phase(RoundPhase::Playing);
+            w.gravity = gravity;
+            w.add_player(0, 0, "ana".into());
+            w.force_effect(EffectKind::ToxicRain, w.round_time);
+
+            let mut peak = 0usize;
+            // The window is the shower plus the longest flight it can leave in
+            // the air, and the flight is longer under low gravity — a fixed
+            // window would stop measuring before the low arm's last drops landed.
+            let ticks = ((TOXIC_DURATION + 12.0 / gravity.scale()) / SIM_DT) as u32;
+            for _ in 0..ticks {
+                w.step(SIM_DT);
+                peak = peak.max(w.projectiles.len());
+            }
+
+            // Flight time for the longest possible fall: `SKY_MARGIN` to the
+            // bottom of the map, from `TOXIC_DROP_SPEED` under **this match's**
+            // gravity. Solving `d = v·t + g·k·t²/2` for t.
+            let d = w.map.mask.h as f32 - SKY_MARGIN as f32;
+            let v = TOXIC_DROP_SPEED;
+            let g = GRAVITY * gravity.scale();
+            let t = ((v * v + 2.0 * g * d).sqrt() - v) / g;
+            let ceiling = (t / TOXIC_DROP_EVERY).ceil() as usize + 1;
+            assert!(
+                peak <= ceiling,
+                "{gravity:?}: {peak} drops were airborne at once against a \
+                 {ceiling} the physics allows — something is releasing faster \
+                 than the cadence"
+            );
+            // The control: without it the bound above is satisfied by a shower
+            // that never released anything.
+            assert!(
+                peak >= 4,
+                "{gravity:?}: only {peak} drop(s) were ever airborne — this \
+                 measures nothing"
+            );
+            println!(
+                "toxic rain ({gravity:?}): peak {peak} drops airborne (physics \
+                 allows {ceiling}); at SNAPSHOT-rate broadcast that is {} \
+                 ProjectileMove/s",
+                peak * (crate::constants::SIM_HZ as usize) / 3
+            );
+            peaks.push((gravity, peak, ceiling));
         }
 
-        // Flight time for the longest possible fall: `SKY_MARGIN` to the bottom
-        // of the map, from `TOXIC_DROP_SPEED` under full gravity. Solving
-        // `d = v·t + g·t²/2` for t.
-        let d = w.map.mask.h as f32 - SKY_MARGIN as f32;
-        let v = TOXIC_DROP_SPEED;
-        let t = ((v * v + 2.0 * GRAVITY * d).sqrt() - v) / GRAVITY;
-        let ceiling = (t / TOXIC_DROP_EVERY).ceil() as usize + 1;
+        // **The claim R29 asks this guard to be able to see.** A blind guard
+        // would be satisfied by two identical numbers; the low arm has to cost
+        // more, or `Projectiles::step` is not scaling the drops and the ceiling
+        // above is bounding a mode nobody plays.
+        let std_ceiling = peaks[0].2;
+        let low_ceiling = peaks[1].2;
         assert!(
-            peak <= ceiling,
-            "{peak} drops were airborne at once against a {ceiling} the physics \
-             allows — something is releasing faster than the cadence"
+            low_ceiling > std_ceiling,
+            "the low-gravity ceiling is {low_ceiling} against {std_ceiling} \
+             standard — the mode is not reaching the fall, so this test is the \
+             standard-gravity one twice"
         );
-        // The control: without it the bound above is satisfied by a shower that
-        // never released anything.
+        let low_peak = peaks[1].1;
         assert!(
-            peak >= 4,
-            "only {peak} drop(s) were ever airborne — this measures nothing"
-        );
-        println!(
-            "toxic rain: peak {peak} drops airborne (physics allows {ceiling}); \
-             at SNAPSHOT-rate broadcast that is {} ProjectileMove/s",
-            peak * (crate::constants::SIM_HZ as usize) / 3
+            low_peak > peaks[0].1,
+            "peak {low_peak} drops airborne under low gravity against {} under \
+             standard — the drops are not actually falling slower, whatever the \
+             ceiling arithmetic says",
+            peaks[0].1
         );
     }
 
@@ -6302,6 +6345,18 @@ mod meteors_are_visible {
     /// What IS worth gating is that a meteor falls the way the constants say —
     /// which catches a wrong spawn height, a wrong speed, gravity not being
     /// applied, or the sub-stepped collision letting one through the ground.
+    ///
+    /// **Every number above and below is a statement about `GravityMode::Standard`
+    /// only, and since T22.02 that needs saying** (M22-RULINGS R29). `run_shower`
+    /// builds a default world, which is `Standard`, and the derivation uses the
+    /// bare `GRAVITY`. Meteors *are* projectiles and *are* scaled in production,
+    /// so under `Low` the same fall takes about 41 % longer and the 0.38–1.02 s
+    /// spread measured here is not the spread a low-gravity match produces. The
+    /// test stays standard-only on purpose — what it gates is that a meteor
+    /// obeys gravity at all, and one mode is enough for that — but it is
+    /// scoped rather than silent. The load consequence of the other mode is
+    /// `a_shower_keeps_a_bounded_number_of_drops_in_the_air`'s, which does take
+    /// the mode.
     #[test]
     fn a_meteor_falls_exactly_as_fast_as_gravity_and_its_speed_imply() {
         let t = run_shower(4242, 30.0);
@@ -8429,8 +8484,8 @@ mod animals_in_a_round {
 mod fall_damage {
     use super::*;
     use crate::constants::{
-        FALL_DAMAGE_PER_SPEED, FALL_SAFE_SPEED, KNOCKBACK_FIRE_GRACE, MAX_FALL_SPEED, PLAYER_H,
-        PLAYER_W, SIM_DT,
+        BOOTS_JUMP_HEIGHT_MULT, FALL_DAMAGE_PER_SPEED, FALL_SAFE_SPEED, GRAVITY, JUMP_VELOCITY,
+        KNOCKBACK_FIRE_GRACE, LOW_GRAVITY_SCALE, MAX_FALL_SPEED, PLAYER_H, PLAYER_W, SIM_DT,
     };
     use crate::player::input::button;
 
@@ -8763,7 +8818,12 @@ mod fall_damage {
     }
 
     /// Settle player 0 on flat ground, jump **once**, and report
-    /// `(health lost, landing impact)`.
+    /// `(health lost, landing impact, apex in px above the launch)`.
+    ///
+    /// The apex is here rather than in a second fixture because
+    /// `a_jump_is_free_under_every_gravity_mode_booted_or_bare` needs it as its
+    /// non-vacuity control and the alternative was a forty-line copy of this
+    /// function that could drift from it.
     ///
     /// A real jump through `World::step`, not a body placed in the air: the
     /// exemption is gated on `ticks_since_jump`, which only a launch through
@@ -8772,7 +8832,7 @@ mod fall_damage {
     ///
     /// One press and then release. A **held** JUMP engages the jetpack after
     /// `JETPACK_HOLD_DELAY` and would turn this into a measurement of thrust.
-    fn jump_from_flat(w: &mut World) -> (f32, f32) {
+    fn jump_from_flat(w: &mut World) -> (f32, f32, f32) {
         let (x, top) = flat_spot(w);
         {
             let Some(p) = w.player_mut(0) else {
@@ -8796,20 +8856,26 @@ mod fall_damage {
             "the fixture never settled, so it is measuring a drop and not a jump"
         );
         let before = w.player(0).expect("ana").health;
+        let ground_y = w.player(0).expect("ana").body.pos.y;
         tick(w, button::JUMP, &mut seq);
         assert!(
             !w.player(0).expect("ana").body.grounded,
             "the jump never left the ground"
         );
+        let mut peak = w.player(0).expect("ana").body.pos.y;
+        // 600 ticks is ten seconds. Hang time is `2v/gk`, so half gravity doubles
+        // it — 74 ticks against 37 — and this is still an order of magnitude of
+        // slack rather than a wait tuned to a tunable.
         for _ in 0..600 {
             tick(w, 0, &mut seq);
+            peak = peak.min(w.player(0).expect("ana").body.pos.y);
             if w.player(0).expect("ana").body.grounded {
                 break;
             }
         }
         let p = w.player(0).expect("ana");
         assert!(p.body.grounded, "the jump never came down");
-        (before - p.health, p.body.landing_impact)
+        (before - p.health, p.body.landing_impact, ground_y - peak)
     }
 
     /// The **boots** half of `fall_damage_exempt`, ruled narrow 2026-09-08.
@@ -8829,7 +8895,7 @@ mod fall_damage {
     fn a_booted_jump_lands_free_and_a_deep_fall_still_costs_but_costs_less() {
         let mut w = world();
         w.add_player(0, 0, "ana".into());
-        let (bare_cost, bare_impact) = jump_from_flat(&mut w);
+        let (bare_cost, bare_impact, _) = jump_from_flat(&mut w);
         assert_eq!(
             bare_cost, 0.0,
             "an ordinary jump cost health — the base game's own property is gone"
@@ -8843,7 +8909,7 @@ mod fall_damage {
         let mut w = world();
         w.add_player(0, 0, "ana".into());
         give(&mut w, 0, crate::items::registry::IRONMAN_BOOTS, 1);
-        let (booted_cost, booted_impact) = jump_from_flat(&mut w);
+        let (booted_cost, booted_impact, _) = jump_from_flat(&mut w);
         assert_eq!(
             booted_cost, 0.0,
             "a booted jump landing at {booted_impact} px/s was charged {booted_cost} \
@@ -8935,6 +9001,161 @@ mod fall_damage {
             booted_deep < bare,
             "boots did not reduce a deep fall at all: {booted_deep} against \
              {bare} unbooted"
+        );
+    }
+
+    /// **T22.02 x T21.02 — boots under low gravity, stated rather than
+    /// discovered.**
+    ///
+    /// `T22.02` required the boots interaction *stated*, and the commit that
+    /// landed it stated only wings (`jetpack::gravity_scale`). This is the
+    /// boots half.
+    ///
+    /// # The claim
+    ///
+    /// **T21.02's invariant — "you are safe from the height your own jump
+    /// reaches" — is gravity-invariant, and not by luck.** You land from your
+    /// own jump at exactly the speed you launched at:
+    /// `sqrt(2·g·k·(v²/2·g·k)) = v`, with `k` cancelling. Both thresholds
+    /// (`FALL_SAFE_SPEED`, `boots_fall_safe_speed()`) are **speeds**, and
+    /// neither scales with the mode. So the margin is identical under every
+    /// gravity, and what low gravity changes is only the **height** the same
+    /// free landing arrives from.
+    ///
+    /// Arithmetic at today's constants, computed from them here rather than
+    /// quoted from anywhere (`GRAVITY` 1400, `JUMP_VELOCITY` 430,
+    /// `BOOTS_JUMP_HEIGHT_MULT` 2.25, `BOOTS_FALL_HEIGHT_MULT` 3.0,
+    /// `FALL_SAFE_SPEED` 678.8, `LOW_GRAVITY_SCALE` 0.5):
+    ///
+    /// ```text
+    ///                        bare    booted
+    ///     launch speed        430       645   px/s   (mode-independent)
+    ///     safe landing      678.8     744.8   px/s   (mode-independent)
+    ///     apex, standard       66     148.5   px
+    ///     apex, low           132       297   px
+    ///     free drop, std      165       198   px
+    ///     free drop, low      329       396   px
+    /// ```
+    ///
+    /// Free drop beats apex in all four cells — 165 > 66, 198 > 148.5,
+    /// 329 > 132, 396 > 297 — so low gravity breaks neither the booted
+    /// invariant nor the bare one. A booted player in low gravity floats to
+    /// **297 px** and lands for nothing; the same player needs **396 px** of
+    /// *dropped* height before anything is charged.
+    ///
+    /// # What this test can and cannot report
+    ///
+    /// **The height relation is already pinned at compile time and this cannot
+    /// improve on that.** Free-for-your-own-jump is exactly
+    /// `BOOTS_JUMP_HEIGHT_MULT <= BOOTS_FALL_HEIGHT_MULT` (the roots cancel),
+    /// which is the `const _: () = assert!(BOOTS_FALL_HEIGHT_MULT >=
+    /// BOOTS_JUMP_HEIGHT_MULT)` beside `boots_fall_safe_speed`. Planting a
+    /// bigger `BOOTS_JUMP_HEIGHT_MULT` fails the **build**, so it never reaches
+    /// here — measured: 3.1 is `error[E0080]` on that assert, and 2.9, the
+    /// largest value that still compiles, leaves this test green. Recorded
+    /// because the obvious falsification is the one that proves nothing.
+    ///
+    /// **What it does report** is an effect, measured through `World::step`:
+    /// that "jump higher in low gravity" was implemented as a *gravity* scale
+    /// and not as a launch-velocity boost. A boost makes you land faster than
+    /// you launched, and the thresholds do not move with it. Falsified by
+    /// planting a `* 1.5` on `movement.rs::try_jump`'s
+    /// `body.vel.y = -JUMP_VELOCITY * jump_multiplier`, which reds at
+    /// *"landed at 638.3 px/s from a 430.0 px/s launch"*. The apex control is
+    /// falsified separately, by pinning `World::apply_inputs`'s
+    /// `let gravity = self.gravity` to `Standard`: *"the low-gravity apex was
+    /// 62.5 px against 62.5 px standard"*.
+    ///
+    /// Structurally, the reason the mode cannot reach this at all today is that
+    /// neither `try_jump` nor `PlayerState::fall_safe_speed` receives a
+    /// `GravityMode`. **`T22.11` is about to thread the mode into four more
+    /// call sites (R10/R30); if either of those two grows one, this test is
+    /// where that shows up.**
+    #[test]
+    fn a_jump_is_free_under_every_gravity_mode_booted_or_bare() {
+        let mut apexes: Vec<(GravityMode, bool, f32, f32)> = Vec::new();
+        for mode in [GravityMode::Standard, GravityMode::Low] {
+            for booted in [false, true] {
+                let mut w = world();
+                // The one seam the mode travels: `World::apply_inputs` reads it
+                // off the world and hands it to `apply_input`.
+                w.gravity = mode;
+                w.add_player(0, 0, "ana".into());
+                if booted {
+                    give(&mut w, 0, crate::items::registry::IRONMAN_BOOTS, 1);
+                }
+                let (cost, impact, apex) = jump_from_flat(&mut w);
+                let threshold = if booted {
+                    crate::constants::boots_fall_safe_speed()
+                } else {
+                    FALL_SAFE_SPEED
+                };
+                assert_eq!(
+                    cost, 0.0,
+                    "{mode:?}, booted={booted}: a player's own jump from flat                      ground cost {cost} health, landing at {impact:.1} px/s                      against a threshold of {threshold:.1} — T21.02's                      'safe from the height your own jump reaches' is broken in                      this mode"
+                );
+                // The absence above needs a presence: a landing that never
+                // happened also costs nothing.
+                assert!(
+                    impact > 0.0,
+                    "{mode:?}, booted={booted}: the jump reported no landing                      impact at all, so 'it cost nothing' says nothing"
+                );
+                // And the real quantity, not the charge derived from it: you
+                // land at the speed you launched at, whatever `k` is.
+                let launch = JUMP_VELOCITY
+                    * if booted {
+                        crate::constants::boots_jump_velocity_mult()
+                    } else {
+                        1.0
+                    };
+                assert!(
+                    impact <= launch + GRAVITY * SIM_DT,
+                    "{mode:?}, booted={booted}: landed at {impact:.1} px/s from                      a {launch:.1} px/s launch — more than one tick of gravity                      over, so the mode is changing the launch and not the pull"
+                );
+                apexes.push((mode, booted, apex, impact));
+            }
+        }
+
+        // The non-vacuity control for the low arm: low gravity really did carry
+        // the same free landing up from a higher apex. Without this the four
+        // assertions above are satisfied by a `Low` that reached nothing.
+        for booted in [false, true] {
+            let std = apexes
+                .iter()
+                .find(|a| a.0 == GravityMode::Standard && a.1 == booted)
+                .map(|a| a.2)
+                .expect("standard arm");
+            let low = apexes
+                .iter()
+                .find(|a| a.0 == GravityMode::Low && a.1 == booted)
+                .map(|a| a.2)
+                .expect("low arm");
+            // `v²/2gk` against `v²/2g`, less the same Euler shortfall in both,
+            // so the ratio is a little under `1/k`. A tenth is slack for that.
+            let want = 1.0 / LOW_GRAVITY_SCALE;
+            assert!(
+                low > std * (want - 0.1),
+                "booted={booted}: the low-gravity apex was {low:.1} px against                  {std:.1} px standard — expected about {:.1}x, so the mode is                  not reaching the jump at all and the free landings above are                  four copies of the standard one",
+                want
+            );
+        }
+
+        // And the boots are still doing something in low gravity, which is the
+        // interaction the task asked to be stated: the booted apex is the
+        // height multiplier over the bare one, in the low mode too.
+        let bare_low = apexes
+            .iter()
+            .find(|a| a.0 == GravityMode::Low && !a.1)
+            .map(|a| a.2)
+            .expect("bare low");
+        let booted_low = apexes
+            .iter()
+            .find(|a| a.0 == GravityMode::Low && a.1)
+            .map(|a| a.2)
+            .expect("booted low");
+        assert!(
+            booted_low > bare_low * (BOOTS_JUMP_HEIGHT_MULT - 0.25),
+            "in low gravity a booted jump reached {booted_low:.1} px against a              bare {bare_low:.1} — the {BOOTS_JUMP_HEIGHT_MULT}x height              multiplier did not survive the mode"
         );
     }
 

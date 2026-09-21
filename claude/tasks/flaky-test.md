@@ -49,6 +49,25 @@ listed under `disabled:` in `e2e.mjs --help`. The toxic halves of `m5-weather`, 
   (300 ms of real time) and nothing else. Handled like `platforms` above rather than parked: one
   sighting, and the owner should decide between `serial` and `flaky` if it recurs. **The task that
   saw it changed no client render code at all** — a Rust enum, a lobby row and a replay header.
+
+  **Second sighting, 2026-09-21, T22.02's review-fix gate — so the trigger this row named has
+  fired.** Red at 27.7 s in the same 58-check `--changed` suite: *"the painted cloud changed
+  0.5 % of its pixels in 300 ms against 0.0 % flat — it does not animate"*. **Green alone on the
+  same tree at 18.4 s, reading 9.9 % against the same 0.0 % control** — a factor of twenty. Every
+  other assertion passed in the suite run too, including `painted cloud against no cloud: 86.8`,
+  so the cloud *was* drawn and only the *animation over 300 ms of wall clock* was missing. The
+  task that saw it changed **no client file and no render code** either: four Rust doc comments,
+  two Rust tests and a bash manifest.
+
+  Two sightings, identical signature, both only in the parallel pool, green alone both times.
+  **`smoke-shader` carries `standalone: true` but not `serial: true`**, so it runs in the pool.
+  The choice this row reserved for the owner is now live, and it is **not** made here, for a
+  stated reason: `serial` is an unfalsified remedy. The `teleport` row above is the counterexample
+  — it went red *alone, in the serial tail, at load ~10*, so the tail is not an idle box and
+  `serial` did not cure that one. Proving `serial` cures this one costs a suite run per trial,
+  which is the loop `CLAUDE.md` forbids. So: evidence recorded, coverage left in place, decision
+  with the owner. `flaky: true` would delete the only assertion in the repository that says the
+  smoke shader *moves*, which is the "I cannot see it" class.
 - `skins-ingame` — red once on 2026-09-14, but that was a real bug (the T21.20 ridge skirt),
   fixed in `d73968b`.
 - `teleport` — red once on 2026-09-14 before T19.29 turned weather off for it; then green in

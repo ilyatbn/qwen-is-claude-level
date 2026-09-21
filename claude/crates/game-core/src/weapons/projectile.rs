@@ -269,11 +269,15 @@ impl Projectiles {
             // Gravity now; wind after the apex check, which is the order the
             // airburst depends on.
             // **The match's gravity, multiplied into the weapon's own scale**
-            // (T22.02). A bullet's `gravity_scale` is 0.0 and `0.0 * k` is
-            // still 0.0, so no mode can bend a bullet — §F1's rule survives
-            // this multiplication by construction, and
-            // `low_gravity_lengthens_a_lob_and_leaves_a_bullet_straight`
-            // asserts both sides of that boundary.
+            // (T22.02). §F1's rule survives this multiplication, but **not for
+            // the reason the first version of this comment gave**: it claimed
+            // `0.0 * k == 0.0` was what kept a bullet straight. `integrate`
+            // returns on `Delivery::Bullet` **before** it reads either scale, so
+            // the table's zero is never consulted for a bullet and no arithmetic
+            // on it can matter. `the_guard_is_what_keeps_a_bullet_flat_not_the_table`
+            // is what holds that line; see the note on
+            // `low_gravity_lengthens_a_lob_and_leaves_a_bullet_straight` for why
+            // its bullet arm cannot.
             p.vel.y = integrate(
                 p.vel,
                 w.delivery,
@@ -880,14 +884,47 @@ mod tests {
         }
     }
 
-    /// T22.02 — the match's gravity lengthens a lob and leaves a bullet alone,
-    /// with the `gravity_scale == 0.0` boundary asserted on **both** sides.
+    /// T22.02 — the match's gravity lengthens a lob, and a bullet is unmoved by
+    /// it end to end.
     ///
-    /// **The bullet arm is the half that could rot silently.** A mode that
-    /// multiplied `GRAVITY` somewhere other than the weapon's own scale — in
-    /// `integrate`'s body, say, or at `apply_gravity` — would bend a bullet,
-    /// and §F1's whole point is that it does not. Asserting only the lob would
-    /// pass through that change without a word.
+    /// # The lob arm is the guard; the bullet arm is not, and this says what it is
+    ///
+    /// **Corrected 2026-09-21 after review.** This comment used to claim the
+    /// `gravity_scale == 0.0` boundary was asserted "on **both** sides", and
+    /// called the bullet arm *"the half that could rot silently"*. It is
+    /// neither, and all three plants below were run on this test:
+    ///
+    /// | plant | this test |
+    /// |---|---|
+    /// | `w.gravity_scale * gravity.scale()` -> `w.gravity_scale` at the live `step` site | **red** — "a lob fell 180.83 px under low gravity against 180.83 under standard" |
+    /// | the pistol's `gravity_scale` 0.0 -> 1.0 in `defs.rs` | green |
+    /// | `integrate`'s `Delivery::Bullet` early return deleted | green |
+    ///
+    /// So the lob arm is live and the bullet arm survives either single fault.
+    /// The reason is `integrate`'s **first line**: it returns on
+    /// `Delivery::Bullet` *before* it reads `gravity_scale`, so for a bullet
+    /// neither the table's zero nor any multiplier applied to it is ever
+    /// consulted. The boundary is enforced structurally by `Delivery`, and the
+    /// table's zeroes are **not** what makes a bullet fly straight.
+    ///
+    /// That guard has its own test and it is mode-independent by construction —
+    /// `the_guard_is_what_keeps_a_bullet_flat_not_the_table` calls `integrate`
+    /// directly with every term switched on, and multiplying its `1.0` by a mode
+    /// scale would assert nothing new, because the mode is applied at the call
+    /// site in `step` and `integrate` never reaches the term.
+    ///
+    /// **And no weapon in the table can exercise the real boundary.** All 27
+    /// defs were read: every `gravity_scale: 0.0` entry is a `Bullet`,
+    /// `Hitscan`, `Melee`, `Placed` or `Flames` delivery, and every
+    /// `Delivery::Projectile` entry carries a non-zero scale. A synthetic weapon
+    /// def written to close that gap would be a fixture invented to satisfy a
+    /// test rather than a rule anything in the game relies on, so the gap is
+    /// recorded here instead.
+    ///
+    /// **What the bullet arm is, then:** the mode-aware sibling of
+    /// `the_shipped_bullets_fly_flat_through_a_crosswind` — an end-to-end floor
+    /// saying the shipped pistol still comes out of a low-gravity round flat.
+    /// It pins the table and the wiring together; it does not pin the rule.
     ///
     /// Fired flat from the same place at the same speed, so the only difference
     /// between the two runs is the mode. Drop, not range: a flat shot's range
@@ -929,15 +966,18 @@ mod tests {
             "a lob fell {lob_low} px under low gravity against {lob_std} px \
              under standard — expected {want}, not the multiplier"
         );
-        // And the boundary: `0.0 * k` is still 0.0 in both modes.
+        // And the end-to-end floor on the shipped pistol. **Not the boundary**
+        // — `integrate` returns before the gravity term for a bullet, so this
+        // holds with the table's zero replaced by 1.0. See the note above.
         assert_eq!(
             bullet_std, 0.0,
             "control: a bullet fell under standard gravity"
         );
         assert_eq!(
             bullet_low, 0.0,
-            "a bullet fell {bullet_low} px under low gravity — the mode reached \
-             something other than the weapon's own `gravity_scale`"
+            "a bullet fell {bullet_low} px under low gravity — either the \
+             `Delivery::Bullet` return at the top of `integrate` is gone or the \
+             mode reached the bullet path some other way"
         );
     }
 }
