@@ -1197,6 +1197,63 @@ leaves `objects`' eight pixel assertions gating on every run.
 
 **Reverse it by:** one assertion, back in `objects.mjs`.
 
+## R38 — Projectiles fly perfectly straight in space, and that is kept
+
+*`T22.03` flagged it as a real balance change no ruling names. It is.*
+
+`GravityMode::Space.scale()` is `0.0`, which reaches **both** of `weapons/projectile.rs`'s
+gravity terms. So in space a grenade, a rocket and a molotov all fly **dead straight, forever**
+— as accurate as a bullet, and with none of the arc that makes lobbed weapons a skill.
+
+**Keep it.** It is what "no gravity" means, it is consistent with every other body in the mode,
+and a grenade that arcs in a vacuum would be the thing a player asks about. The skill the arc
+provided is replaced by the fact that **you** are also drifting while you aim.
+
+**Say it to the owner rather than burying it**, because it is a genuine change to how weapons
+feel and nobody asked for it in those words.
+
+**Reverse it by:** a non-zero projectile gravity scale in space, independent of the player's —
+the two already come from different call sites.
+
+## R39 — `body.airborne_ticks` is unhashed and is **not** a derived value
+
+*Found by `T22.03`, pre-existing, and my own task file had it backwards.*
+
+`T22.03`'s task file told the builder that *"`body.airborne_ticks` and `body.landing_impact` are
+already unhashed, as per-tick derived values"*. **`landing_impact` genuinely is. `airborne_ticks`
+is not** — it is a running counter carried across ticks, and it gates `in_coyote_time()`, which
+gates `try_jump`'s `can_launch` **and** `jetpack::update`'s hold-delay branch.
+`grep -c airborne_ticks crates/game-core/src/world/mod.rs` → **0**.
+
+So **two worlds can agree on every hashed field at a checkpoint and disagree on
+`airborne_ticks`** — leaving one able to coyote-jump and the other not, invisibly, with the
+replay green. The sentence in my task file would have talked the next builder out of looking.
+
+**It is pre-existing and it is not M22's to fix inside a feature task** — hashing a new field
+moves every historical checkpoint and probably `REPLAY_VERSION`. **`T22.00D` owns it.**
+
+**Reverse it by:** one contribution in `World::state_hash`'s per-player fold.
+
+## R40 — Four parked socket flakes share one harness, and the harness is the suspect
+
+*Three of them are in `game-server/tests/lobby.rs`; the fourth is in `integration.rs`.*
+
+All four fail on a websocket handshake — `AlreadyClosed`, or `waited N s for 'welcome', saw 0` —
+all pass standalone in under a second, and a **different member fails each time**. `CLAUDE.md`
+names that pattern exactly: *"'the failure moves' is evidence against one broken test, not
+evidence for load. Before concluding 'load', ask what the failing tests share."* They share the
+lobby harness.
+
+And it names the trap on top of it: the last time this reasoning ran here, the plausible shared
+cause was wrong and the real one was `test_config`'s inherited `fixed_seed: None`. **So
+instrument the harness before fixing it.**
+
+**Not M22's**, and parking a fourth is the wrong direction — each park removes real coverage
+(one of them is the only test that a seventh client is refused *over the wire*). **`T22.00E`
+owns it.**
+
+**Reverse it by:** unparking the four, which is the point.
+
 ---
 
 # Build order, as scheduled

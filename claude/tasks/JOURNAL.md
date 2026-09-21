@@ -6612,3 +6612,23 @@ later**. Six gate logs in the tree show **four of six prior runs already exceede
 median. Moving to `perf` (already `serial` + `flaky`) rather than `flaky: true` on `objects`, which would disable eight pixel assertions to
 silence one timing line. **Watching, not parked:** `game-server/tests/lobby.rs` failed a different member on each of two runs, both passing
 standalone, sharing the lobby harness — the shape `CLAUDE.md` says not to read as "load" without instrumenting. It passed inside the gate.
+
+## T22.03 — zero-g movement, and two tripwires earlier tasks planted for it (2026-09-21)
+`888453e` (task) + `5fec430` (a parked flake, separate on purpose). **The Done-when could not fail and said so** — it is "the suite
+passes", and no clause in it names zero-g. What *did* fail first were two things planted in advance: `bots/mod.rs`'s
+`const _: () = assert!(GravityMode::Space.scale() > 0.0 …)` (a **compile** error: *"a zero gravity scale divides by zero in
+bots::zone_reach — give it an arm"*) and `gravity_tests::low_gravity_changes_the_simulation_and_space_does_not_yet`, whose own message
+read *"If you are T22.03, this half has done its job and retires with your change."* Both fired. That is forward-engineering working.
+**Space is the flying regime with the damping removed** — no fourth regime. `apply_horizontal` is skipped while floating, and **both** of
+its effects are the reason: `AIR_DRAG`, *and* the `approach` toward `dir * WALK_SPEED` that would drag a body drifting at 400 px/s down to
+150. Zeroing `AIR_DRAG` fixes only the first. Nine falsifications, all red. **No new per-player state** — verified by grep, so the
+tripwire-less hand-written fold needed nothing.
+**It found my task file wrong about `airborne_ticks`** (`R39`): I called it a per-tick derived value beside `landing_impact`. It is a
+**running counter** gating `in_coyote_time()` → `try_jump` and the jetpack hold delay, and it is **unhashed** — two worlds can agree on
+every hashed field at a checkpoint and disagree on whether a player can jump. Pre-existing; `T22.00D`.
+**`R10` has a gap it did not anticipate**: R4's contact rule needs a selector inside `integrate`, and `gravity_scale` cannot carry it
+because **wings also give 0.0 under ordinary gravity** and must keep ordinary rules. So the four non-player call sites moved one task
+early, for a different reason than R10 costed. `T22.11` absorbs `zero_g` into `Env`.
+**R5's split taken** — `T22.03B`, with a number already waiting: `zone_reach` in space is **≈1100 px** against ≈99 standard, so a bot
+with a molotov never throws. `R38`: projectiles fly **dead straight** in space, kept, and worth saying out loud. `R40`: a **fourth** socket
+flake parked — all four share the lobby harness, `T22.00E`.
