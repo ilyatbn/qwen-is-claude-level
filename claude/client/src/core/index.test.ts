@@ -334,7 +334,64 @@ describe('Core', () => {
     const low = fall('low')
     expect(standard).toBeGreaterThan(0)
     expect(low).toBeCloseTo(standard * C().LOW_GRAVITY_SCALE, 3)
+    // T22.03 — and space does not fall at all. Same fixture, same control.
+    expect(fall('space')).toBe(0)
     // And an unknown spelling is refused rather than clamped to standard.
     expect(core.setGravity('none')).toBe(false)
+  })
+
+  /**
+   * T22.03 — the mirror predicts **momentum that never damps**.
+   *
+   * A free fall shows that gravity is off; it cannot show that nothing damps,
+   * because a body at zero velocity has nothing to lose. This drives a sideways
+   * drift through `setPlayerState` — the call `prediction.ts::reconcile` makes —
+   * and then holds no buttons at all, so the only thing acting on `vel.x` is
+   * `apply_horizontal`'s drag.
+   *
+   * **What this would report if `setGravity` reached only the gravity term and
+   * not the damping:** the two drifts would be equal, because `AIR_DRAG` would
+   * still be bleeding the space run, and the `toBeGreaterThan` fails. The
+   * `'standard'` arm is the control: without it, "the space run drifted 100 px"
+   * is satisfied by any build that moves a body at all.
+   *
+   * Pinned to nothing written here — the expected distance comes from the
+   * velocity fed in and `SIM_DT` read out of Rust.
+   */
+  it('predicts undamped momentum in space (T22.03)', () => {
+    const VX = 240
+    const TICKS = 30
+    const drift = (mode: string): number => {
+      expect(core.setGravity(mode)).toBe(true)
+      core.generate(4242n, MapScale.Small)
+      core.addPlayer(12, 500, 300)
+      // Airborne, drifting right, full tank, alive, no move mods.
+      core.setPlayerState(12, {
+        x: 500,
+        y: 300,
+        vx: VX,
+        vy: 0,
+        grounded: false,
+        fuel: C().JETPACK_MAX_FUEL,
+        moveState: 1,
+        health: C().BASE_HEALTH,
+        alive: true,
+        moveMods: 0,
+      })
+      const x0 = core.playerState(12)!.x
+      for (let seq = 0; seq < TICKS; seq++) core.applyInput(12, seq, 0, 0, C().SIM_DT)
+      const moved = core.playerState(12)!.x - x0
+      core.removePlayer(12)
+      return moved
+    }
+
+    const space = drift('space')
+    const standard = drift('standard')
+    // Undamped: the distance is the velocity times the time, to within the
+    // sub-step accumulation.
+    expect(space).toBeCloseTo(VX * C().SIM_DT * TICKS, 1)
+    // And the control damped, so the equality above is about this mode.
+    expect(standard).toBeGreaterThan(0)
+    expect(space).toBeGreaterThan(standard)
   })
 })

@@ -1662,7 +1662,25 @@ impl World {
             // you off a **ledge** is not exempt from the ledge: the knockback
             // bought you 36 px of arc and the cliff gave you the other 250, and
             // by then the grace has expired on its own.
-            let hurt = p.fall_damage(impact, now);
+            // **`M22-RULINGS` R4 — no fall damage in space. There is no
+            // fall.** Nothing accelerates a player downward, so every touchdown
+            // is a drift into a rock at a speed the player chose themselves;
+            // charging for it would make thrusting toward an asteroid a way to
+            // hurt yourself, and `T22.03` explicitly does not get to invent
+            // impact damage as the collision rule.
+            //
+            // **Gated here, at the site that owns the *effect*, and not by
+            // zeroing the impact inside `integrate`.** `apply_input`'s doc
+            // states the split: the leaf *measures* the landing and this layer
+            // *applies* it, because only this layer can see the match. Zeroing
+            // the measurement would make `landing_impact` mean two things — how
+            // hard you hit, and what mode you are in — and the next reader of it
+            // (an animation, a sound) would get the mode's answer.
+            let hurt = if gravity == GravityMode::Space {
+                0.0
+            } else {
+                p.fall_damage(impact, now)
+            };
             if hurt > 0.0 {
                 falls.push((id, hurt));
             }
@@ -8052,6 +8070,79 @@ mod gravity_tests {
             .place(0, from + Vec2::new(-DROP_AHEAD, 0.0), 0, now);
     }
 
+    /// **`M22-RULINGS` R4 — fall damage is off in space, and the control is
+    /// the identical impact under standard gravity.**
+    ///
+    /// *There is no fall*, so a touchdown in space is a drift into a rock at a
+    /// speed the player chose. `T22.03` does not get to turn that into impact
+    /// damage as the collision rule.
+    ///
+    /// **The velocity is set directly rather than fallen into**, for the reason
+    /// this file's rules give about absences: a player in space cannot *reach*
+    /// `FALL_SAFE_SPEED` under their own power — thrust tops out at
+    /// `JETPACK_MAX_SPEED` = 260 against a threshold of 678.8 — so a test that
+    /// dropped someone and found no damage would be satisfied by a mode that
+    /// simply never gets fast enough. A knockback can put a player over it, and
+    /// that is what is modelled here.
+    #[test]
+    fn a_hard_landing_hurts_under_gravity_and_costs_nothing_in_space() {
+        let land = |mode: GravityMode| -> f32 {
+            let mut w = World::for_test(4242, MapScale::Small);
+            w.gravity = mode;
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(0, 0, "ana".into());
+            // Drop them in from well above the terrain, already travelling
+            // faster than `FALL_SAFE_SPEED`, and let them arrive.
+            {
+                let Some(p) = w.player_mut(0) else {
+                    return 0.0;
+                };
+                p.body.pos = Vec2::new(400.0, 80.0);
+                p.body.vel = Vec2::new(0.0, crate::constants::FALL_SAFE_SPEED + 200.0);
+                p.health = crate::constants::BASE_HEALTH;
+                // `add_player` grants `SPAWN_IFRAMES`, and `apply_damage_log`
+                // honours them — the first draft of this test reported its own
+                // *control* as taking no damage for exactly that reason, which
+                // would have read as "fall damage is off everywhere".
+                p.iframes_until = -1000.0;
+            }
+            let before = w.player(0).map(|p| p.health).unwrap_or(0.0);
+            for tick in 0..240u32 {
+                w.queue_input(
+                    0,
+                    Input {
+                        seq: tick + 1,
+                        buttons: 0,
+                        aim: 0,
+                    },
+                );
+                w.step(SIM_DT);
+                if w.player(0).is_some_and(|p| p.body.grounded) {
+                    break;
+                }
+            }
+            assert!(
+                w.player(0).is_some_and(|p| p.body.grounded),
+                "{mode:?}: the player never landed, so this measures nothing"
+            );
+            before - w.player(0).map(|p| p.health).unwrap_or(before)
+        };
+
+        let hurt = land(GravityMode::Standard);
+        assert!(
+            hurt > 0.0,
+            "control: the identical impact under standard gravity cost nothing, \
+             so 'no damage in space' is satisfied by a game that never hurts \
+             anyone"
+        );
+        assert_eq!(
+            land(GravityMode::Space),
+            0.0,
+            "space charged fall damage for a landing (the standard control cost \
+             {hurt} health) — R4 rules there is no fall"
+        );
+    }
+
     #[test]
     fn a_world_is_standard_gravity_until_somebody_says_otherwise() {
         let w = World::for_test(4242, MapScale::Small);
@@ -8062,15 +8153,24 @@ mod gravity_tests {
         );
     }
 
-    /// `Low` reaches the simulation; `Space` still does not.
+    /// **All three modes reach the simulation, and all three differ from each
+    /// other** (T22.02 for `Low`, T22.03 for `Space`).
     ///
-    /// **The two halves are the same assertion pointed in opposite directions,
-    /// and each is the other's control.** If the runner could not see gravity
-    /// at all, the `Low` half fails; if `GravityMode::scale` had been given a
-    /// `Space` arm by accident, the `Space` half fails. A test that only
-    /// asserted the inequality would be satisfied by a runner whose hash moves
-    /// for any reason whatsoever, and the `Space` equality is what rules that
-    /// out on the same seed, the same seats and the same inputs.
+    /// This half used to read *"`Low` reaches the simulation; `Space` still does
+    /// not"*, with the `Space` arm asserted **equal** to `Standard` and a note
+    /// saying it retires with T22.03's change. It has: `GravityMode::Space`
+    /// now answers `0.0`, the equality went red, and the arm is pointed the
+    /// other way rather than deleted — a mode that quietly collapsed back onto
+    /// standard gravity still fails here.
+    ///
+    /// **Pairwise, not against `Standard` twice.** `Low` and `Space` must also
+    /// differ from *each other*, or a build that mapped both onto the same
+    /// scale would pass two inequalities and ship one mode wearing two names.
+    ///
+    /// **And determinism, on the same run.** `Space` is the mode where nothing
+    /// damps, so a divergence does not decay: two identical runs must hash
+    /// identically, and that assertion has to live where the space run already
+    /// is.
     ///
     /// Asserted on the state hash rather than on a position, because the hash
     /// covers every body, every projectile, every mine, every grave and every
@@ -8084,21 +8184,42 @@ mod gravity_tests {
     /// which a stationary player never returns, so it only ever detected "no
     /// player existed", and it passed with the inputs zeroed.
     #[test]
-    fn low_gravity_changes_the_simulation_and_space_does_not_yet() {
+    fn every_gravity_mode_changes_the_simulation_and_differs_from_the_others() {
         let standard = run(GravityMode::Standard);
+        let low = run(GravityMode::Low);
+        let space = run(GravityMode::Space);
         assert_ne!(
-            standard.hash,
-            run(GravityMode::Low).hash,
+            standard.hash, low.hash,
             "low gravity hashed identically to standard over {TICKS} ticks of \
              two players running and jumping with a rocket, a mine and a grave \
              falling beside them — `World::gravity` reaches no simulation code"
         );
+        assert_ne!(
+            standard.hash, space.hash,
+            "space hashed identically to standard over {TICKS} ticks — \
+             `GravityMode::scale`'s space arm reaches no simulation code"
+        );
+        assert_ne!(
+            low.hash, space.hash,
+            "low and space hashed identically — two modes wearing one scale"
+        );
+
+        // **Determinism, in the mode where a divergence never decays.** Same
+        // seed, same seats, same inputs, run twice. Under friction a
+        // mispredicted velocity is pulled back to a target; here nothing pulls,
+        // so a one-tick difference grows without bound — which makes this the
+        // mode where an unhashed field costs the most.
         assert_eq!(
-            standard.hash,
+            space.hash,
             run(GravityMode::Space).hash,
-            "space changed the simulation — `GravityMode::scale` still answers \
-             1.0 for it and T22.03 owns that arm. If you are T22.03, this half \
-             has done its job and retires with your change."
+            "two identical space runs hashed differently"
+        );
+        // And the space run actually went somewhere, or the equality above is
+        // satisfied by a mode in which nothing moves.
+        assert_ne!(
+            space.ended_at,
+            run_driven(GravityMode::Space, false).ended_at,
+            "the held run-and-jump moved player 0 nowhere in space"
         );
 
         // A world that barely ran must not hash the same as one that ran

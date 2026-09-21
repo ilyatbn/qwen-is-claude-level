@@ -2355,6 +2355,180 @@ mod tests {
         )
     }
 
+    /// **Prediction agrees with the server in space** (T22.03).
+    ///
+    /// Same shelf, same seed, same held buttons; the only difference is the
+    /// match's gravity mode, and the mirror can only learn it from
+    /// `GameCore::set_gravity` — the per-match constant, not a wire bit.
+    /// **`moveMods` could not carry it**: that byte is inventory-derived, and a
+    /// match setting riding it would be a stored second answer to a question
+    /// `World::gravity` already answers.
+    ///
+    /// **Why this mode is the one where mispredicting costs most, and it is not
+    /// a guess — it is the difference between the two arms below.** Under
+    /// gravity a velocity error is *pulled back*: `apply_horizontal` approaches
+    /// a target, so two sides that disagree about `vel.x` converge within about
+    /// a sixteenth of a second whatever the error was, and the position error it
+    /// caused is bounded. In space nothing approaches anything. A velocity error
+    /// `dv` persists exactly, so the position error grows as `dv * t`, without
+    /// bound, until `prediction.ts`'s `SNAP_PX` hard-snaps — which reads on
+    /// screen as teleporting rather than as rubber-banding. That is why the
+    /// untold control below does not merely differ, it diverges.
+    ///
+    /// **`JUMP | RIGHT`, held.** A jump is the one gesture whose two arms are
+    /// unmistakable: under gravity it arcs and lands, and in space the player
+    /// leaves the shelf at `JUMP_VELOCITY` and never comes back. RIGHT then
+    /// thrusts them sideways once they are floating, so both axes are live.
+    fn hold_jump_and_right_in_space(tell_the_mirror: bool) -> (f32, f32, f32, f32) {
+        use game_core::constants::GravityMode;
+        use game_core::world::RoundPhase;
+        let buttons =
+            game_core::player::input::button::JUMP | game_core::player::input::button::RIGHT;
+
+        let mut w = game_core::world::World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(1, 0, String::new());
+        let (stand_x, stand_y) = build_shelf(&mut w);
+        {
+            let p = w.player_mut(1).expect("seated");
+            p.body.pos = Vec2::new(stand_x, stand_y);
+            p.body.vel = Vec2::ZERO;
+        }
+        // Settle under ordinary gravity: with none there is nothing to land the
+        // player *with*, so the mode is switched after they are standing —
+        // which also makes the shelf, the seed and the start position identical
+        // to every other fixture in this module.
+        for seq in 0..120u32 {
+            w.queue_input(1, Input::new(seq, 0, 0));
+            w.step(SIM_DT);
+            if w.player(1).is_some_and(|p| p.body.grounded) {
+                break;
+            }
+        }
+        assert!(
+            w.player(1).is_some_and(|p| p.body.grounded),
+            "the server player never landed on the shelf"
+        );
+        w.gravity = GravityMode::Space;
+
+        let mut core = GameCore::new();
+        assert!(core.load_mask(w.map.mask.w, w.map.mask.h, &rle::encode(&w.map.mask)));
+
+        // Through the real wire, for the reason `walk_both_sides_wearing` does
+        // it: `set_player_state` is what `prediction.ts::reconcile` calls, and
+        // a fixture that handed both sides the same `f32` could never see the
+        // codec.
+        let bytes = game_server::codec::encode_snapshot(&w, 1, 0);
+        let snap = game_server::codec::decode_snapshot(&bytes).expect("the server's own bytes");
+        let wire = snap
+            .players
+            .iter()
+            .find(|p| p.id == 1)
+            .expect("player 1 is in the snapshot");
+        let (wire_health, wire_alive, wire_mods) =
+            (wire.health as f32, wire.flags & 1 != 0, wire.move_mods);
+
+        let p = w.player(1).expect("seated");
+        core.add_player(1, p.body.pos.x, p.body.pos.y);
+        core.set_player_state(
+            1,
+            p.body.pos.x,
+            p.body.pos.y,
+            p.body.vel.x,
+            p.body.vel.y,
+            p.body.grounded,
+            p.jetpack.fuel,
+            wire_health,
+            wire_alive,
+            wire_mods,
+        );
+        assert!(core.set_phase("playing"));
+        if tell_the_mirror {
+            assert!(core.set_gravity(GravityMode::Space.as_str()));
+        }
+
+        let mut seq = 1000u32;
+        // Four times `WALK_TICKS`: long enough for the gravity arm to complete
+        // an arc and land, which is the whole shape the space arm does not have.
+        for _ in 0..(WALK_TICKS * 4) {
+            seq += 1;
+            w.queue_input(1, Input::new(seq, buttons, 0));
+            w.step(SIM_DT);
+            core.apply_input(1, seq, buttons, 0, SIM_DT);
+        }
+        let sp = w.player(1).expect("seated");
+        let c = core.player_state(1);
+        (sp.body.pos.x, sp.body.pos.y, c[0], c[1])
+    }
+
+    #[test]
+    fn the_client_predicts_a_space_player_where_the_server_puts_them() {
+        let (server_x, server_y, client_x, client_y) = hold_jump_and_right_in_space(true);
+
+        // The control: space actually did something. The same fixture under
+        // standard gravity lands the player back on the shelf, so a run that
+        // ends far above it is the mode and not the fixture.
+        let (_, standard_y, _, _) = {
+            use game_core::constants::GravityMode;
+            use game_core::world::RoundPhase;
+            let buttons =
+                game_core::player::input::button::JUMP | game_core::player::input::button::RIGHT;
+            let mut w = game_core::world::World::new(4242, MapScale::Small);
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(1, 0, String::new());
+            let (stand_x, stand_y) = build_shelf(&mut w);
+            {
+                let p = w.player_mut(1).expect("seated");
+                p.body.pos = Vec2::new(stand_x, stand_y);
+                p.body.vel = Vec2::ZERO;
+            }
+            for seq in 0..120u32 {
+                w.queue_input(1, Input::new(seq, 0, 0));
+                w.step(SIM_DT);
+                if w.player(1).is_some_and(|p| p.body.grounded) {
+                    break;
+                }
+            }
+            assert_eq!(w.gravity, GravityMode::Standard);
+            let mut seq = 1000u32;
+            for _ in 0..(WALK_TICKS * 4) {
+                seq += 1;
+                w.queue_input(1, Input::new(seq, buttons, 0));
+                w.step(SIM_DT);
+            }
+            let sp = w.player(1).expect("seated");
+            (sp.body.pos.x, sp.body.pos.y, 0.0f32, 0.0f32)
+        };
+        assert!(
+            server_y < standard_y - PLAYER_H,
+            "the space run ended at y {server_y:.1} against a standard run's \
+             {standard_y:.1} — the mode changed nothing on the server, so the \
+             agreement below is about an ordinary jump"
+        );
+
+        // The claim, on both axes: RIGHT thrusts sideways while floating, so a
+        // mirror that got only the vertical half right would still fail.
+        assert!(
+            (server_y - client_y).abs() <= RECONCILE_EPSILON_PX
+                && (server_x - client_x).abs() <= RECONCILE_EPSILON_PX,
+            "the mirror predicted a space player at ({client_x:.1}, {client_y:.1}) \
+             where the server put them at ({server_x:.1}, {server_y:.1}), against \
+             an epsilon of {RECONCILE_EPSILON_PX}"
+        );
+
+        // **The control that matters: a mirror never told the mode.** It must
+        // be wrong by far more than the epsilon, or nothing here can see
+        // `set_gravity` at all.
+        let (server_x, server_y, untold_x, untold_y) = hold_jump_and_right_in_space(false);
+        let apart = ((server_y - untold_y).powi(2) + (server_x - untold_x).powi(2)).sqrt();
+        assert!(
+            apart > RECONCILE_EPSILON_PX,
+            "a mirror never told the gravity mode still agreed — \
+             ({untold_x:.1}, {untold_y:.1}) against ({server_x:.1}, {server_y:.1}), \
+             {apart:.1} px apart"
+        );
+    }
+
     #[test]
     fn prediction_agrees_with_the_server_across_the_round_ending() {
         let (start, server_x, client_x) = hold_right_across_the_round_ending(true);

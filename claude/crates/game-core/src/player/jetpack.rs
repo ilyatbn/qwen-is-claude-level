@@ -11,7 +11,7 @@
 use crate::constants::{
     GravityMode, JETPACK_DRAIN, JETPACK_GRAVITY_SCALE, JETPACK_HOLD_DELAY, JETPACK_MAX_FUEL,
     JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, JETPACK_REFILL, JETPACK_REFILL_DELAY,
-    JETPACK_THRUST_DOWN, JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, SIM_HZ,
+    JETPACK_THRUST_DOWN, JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, SIM_HZ, SPACE_JUMP_FUEL,
 };
 use crate::physics::body::Body;
 use crate::player::input::{button, Input};
@@ -50,11 +50,18 @@ impl Default for JetpackState {
 /// Call **after** `try_jump`, so `jumped_this_tick` is known. That ordering is what
 /// implements the disambiguation: the jump consumes a grounded press, and the
 /// jetpack only sees what is left.
+/// **The two engage parameters are named for the signal, not for the key**
+/// (T22.03). Under gravity they are JUMP held and JUMP pressed. In space a held
+/// *direction* engages the same pack — `player::space` explains why that is one
+/// path and not two — so what arrives here is "is this player asking the
+/// thrusters for a push". Nothing about the state machine below changes: the
+/// tank, the lockout, the refill delay and `active` still have exactly one
+/// author, which is the point.
 pub fn update(
     state: &mut JetpackState,
     body: &Body,
-    jump_held: bool,
-    jump_pressed: bool,
+    engage_held: bool,
+    engage_pressed: bool,
     jumped_this_tick: bool,
     dt: f32,
 ) {
@@ -85,7 +92,7 @@ pub fn update(
         can_start
     };
 
-    state.active = if !jump_held || !has_fuel {
+    state.active = if !engage_held || !has_fuel {
         // Released, or nothing to burn: disengage instantly.
         false
     } else if jumped_this_tick {
@@ -94,7 +101,7 @@ pub fn update(
     } else if state.ticks_since_jump <= HOLD_DELAY_TICKS {
         // Still inside the post-jump hold delay. Only a *fresh* press while
         // genuinely airborne engages here; a continuing hold must wait.
-        jump_pressed && !body.grounded && !body.in_coyote_time()
+        engage_pressed && !body.grounded && !body.in_coyote_time()
     } else if body.grounded || body.in_coyote_time() {
         // On the ground with Space held but no jump this tick: that is a held key
         // after a jump has already been consumed, so it engages once the delay has
@@ -121,14 +128,22 @@ pub fn update(
     }
 }
 
-/// Apply directional thrust for one tick. Only called when `state.active`.
+/// The velocity change this input asks the pack for, per axis, for one tick.
 ///
-/// **Clamping policy:** the clamp bounds the *thrust*, not the body. An axis is
-/// clamped only if it was thrust this tick **and** its speed was already within
-/// `JETPACK_MAX_SPEED` before the thrust. A body already moving faster than the
-/// limit — a rocket jump at 800 px/s — is left alone, so engaging the jetpack
-/// mid-flight never brakes you. Thrust from rest still tops out at the limit.
-pub fn apply_thrust(body: &mut Body, input: &Input, dt: f32) {
+/// **Lifted out of [`apply_thrust`] so there is one author of "which way does
+/// the pack push"** (T22.03). The space regime has to ask whether a held
+/// direction is worth burning fuel for, and the honest form of that question is
+/// *"would `apply_thrust` change the velocity"* — asking it by re-listing the
+/// four buttons would be a second author, and it would get **UP + DOWN wrong**:
+/// those do not cancel. `JETPACK_THRUST_UP` is 2200 against
+/// `JETPACK_THRUST_DOWN`'s 900, so both held is a net *climb*, which
+/// `opposing_vertical_thrust_leaves_the_asymmetric_remainder` pins.
+///
+/// The four lines below are `apply_thrust`'s own, moved unchanged rather than
+/// refactored into `(accel) * dt`: `(-2200 + 900) * dt` and
+/// `-2200 * dt + 900 * dt` are not the same `f32`, and a physics function's
+/// arithmetic is not something to change while doing something else.
+pub fn thrust_delta(input: &Input, dt: f32) -> (f32, f32) {
     let mut thrust_x = 0.0;
     let mut thrust_y = 0.0;
 
@@ -144,6 +159,19 @@ pub fn apply_thrust(body: &mut Body, input: &Input, dt: f32) {
     if input.held(button::RIGHT) {
         thrust_x += JETPACK_THRUST_SIDE * dt;
     }
+
+    (thrust_x, thrust_y)
+}
+
+/// Apply directional thrust for one tick. Only called when `state.active`.
+///
+/// **Clamping policy:** the clamp bounds the *thrust*, not the body. An axis is
+/// clamped only if it was thrust this tick **and** its speed was already within
+/// `JETPACK_MAX_SPEED` before the thrust. A body already moving faster than the
+/// limit — a rocket jump at 800 px/s — is left alone, so engaging the jetpack
+/// mid-flight never brakes you. Thrust from rest still tops out at the limit.
+pub fn apply_thrust(body: &mut Body, input: &Input, dt: f32) {
+    let (thrust_x, thrust_y) = thrust_delta(input, dt);
 
     let (before_x, before_y) = (body.vel.x, body.vel.y);
     body.vel.x += thrust_x;
@@ -191,6 +219,37 @@ pub fn gravity_scale(state: &JetpackState, flying: bool, gravity: GravityMode) -
         } else {
             1.0
         }
+}
+
+/// Can the tank pay for a space jump (T22.03, `M22-RULINGS` R4)?
+///
+/// **A question, not a deduction the caller may make itself.** `apply_input`
+/// asks this before `try_jump` so that an unaffordable press is *refused* — the
+/// press cleared with it — rather than launching a jump the tank cannot cover
+/// and clamping the fuel at zero afterwards, which is a free jump wearing a
+/// cost.
+pub fn can_afford_jump(state: &JetpackState) -> bool {
+    state.fuel >= SPACE_JUMP_FUEL
+}
+
+/// Charge a space jump to the tank (T22.03).
+///
+/// **Here rather than a `jet.fuel -=` at the call site, for the reason
+/// [`refuse`] below is here**: the jetpack owns its own state machine, and a
+/// second author of the tank is the one that forgets `locked_out` and
+/// `idle_ticks`. Both are maintained:
+///
+///  - the lockout, because a jump that empties the tank must leave it locked
+///    out exactly as a burn that empties it does — otherwise the one way to
+///    reach 0 fuel and still get a stuttering tick of thrust is to jump there;
+///  - `idle_ticks`, because a jump **is** a burn. Without the reset a player
+///    could jump every tick off a rock and refill the whole way.
+pub fn spend_jump(state: &mut JetpackState) {
+    state.fuel = (state.fuel - SPACE_JUMP_FUEL).max(0.0);
+    state.idle_ticks = 0;
+    if state.fuel <= 0.0 {
+        state.locked_out = true;
+    }
 }
 
 /// Refuse the jetpack for this tick (T21.03).

@@ -4,6 +4,7 @@ pub mod input;
 pub mod jetpack;
 pub mod movement;
 pub mod respawn;
+pub mod space;
 
 pub use input::{button, edges, Input, InputEdges};
 pub use jetpack::JetpackState;
@@ -153,7 +154,22 @@ pub fn apply_input(
     // off the platform they just mounted.
     let dir = if mods.mounted { 0.0 } else { input.move_dir() };
 
-    apply_horizontal(body, dir, mods.speed, dt);
+    // **T22.03 — the zero-g locomotion rules** (`M22-RULINGS` R1/R4). One
+    // branch, not a second movement function: `space::floating` is the whole
+    // condition and it is read twice below.
+    //
+    // `apply_horizontal` is skipped while floating, and **both** of the things
+    // it does are the reason. It applies `AIR_DRAG`, which is the damping this
+    // mode exists not to have — and it `approach`es `dir * WALK_SPEED`, which
+    // drags a body drifting at 400 px/s back down to 150 whether or not the
+    // drag constant is zero. *"Set `AIR_DRAG` to zero"* fixes only the first.
+    //
+    // A player standing on an asteroid is **not** floating (R4) and walks
+    // through this line exactly as they do anywhere else.
+    let floating = space::floating(gravity, body, mods);
+    if !floating {
+        apply_horizontal(body, dir, mods.speed, dt);
+    }
 
     // **T21.03 — wings refuse the jump and the jetpack, and *refused* is the
     // operative word.** `try_jump` is not called at all, and the buffered press
@@ -173,15 +189,56 @@ pub fn apply_input(
         jetpack::refuse(jet);
         false
     } else {
-        let jumped = try_jump(body, jump, e.jump_pressed, dir, mods.jump);
-        jetpack::update(
-            jet,
-            body,
-            input.held(button::JUMP),
-            e.jump_pressed,
-            jumped,
-            dt,
-        );
+        // **T22.03 — in space a jump is a push off a rock and it costs fuel.**
+        // The owner: *"Jumping and even moving now takes jetpack energy."*
+        //
+        // Refused rather than swallowed when the tank cannot pay, and the
+        // buffered press is cleared with it **for the reason the wings arm
+        // above clears it**: a press held back would otherwise fire the instant
+        // the tank refilled, up to `JUMP_BUFFER` later, which reads on screen
+        // as the game jumping on its own.
+        //
+        // Asked *before* `try_jump` and spent *after* it, so the tank is only
+        // charged for a jump that actually launched — a press in mid-air, where
+        // `try_jump` refuses anyway, is free.
+        let broke = gravity == GravityMode::Space && !jetpack::can_afford_jump(jet);
+        let jumped = if broke {
+            jump.buffered_ticks = 0;
+            false
+        } else {
+            try_jump(body, jump, e.jump_pressed, dir, mods.jump)
+        };
+        if jumped && gravity == GravityMode::Space {
+            jetpack::spend_jump(jet);
+        }
+
+        // **One thrust path, not two.** In space a held *direction* engages the
+        // same pack the JUMP key engages everywhere else: the same
+        // `JetpackState`, the same drain, the same lockout and refill delay, the
+        // same `jet.active` that the wire, the animation and the flame all read.
+        // A separate space thruster would be a second author of the tank, which
+        // is *share the guard, or share the function* broken at the one place
+        // this mode's whole economy lives.
+        //
+        // **And JUMP alone does not engage it in space.** Under gravity, holding
+        // SPACE with no direction is a controlled descent — that is what
+        // `JETPACK_GRAVITY_SCALE` is for. With no gravity there is nothing to
+        // descend against, so it is fuel spent on nothing, and a player who
+        // rests a thumb on the key would arrive at every fight dry.
+        //
+        // **The engage edge is the direction itself in space, and that is not a
+        // synthesised press.** `jetpack::update`'s hold-delay branch asks for a
+        // *fresh* press so that SPACE cannot mean both "jump" and "jetpack" on
+        // one tick. A direction key carries no such ambiguity, so there is
+        // nothing to disambiguate and the thrust resumes on the tick after a
+        // jump instead of ten ticks later.
+        let (engage_held, engage_pressed) = if gravity == GravityMode::Space {
+            let asking = floating && space::thrusting(input);
+            (asking, asking)
+        } else {
+            (input.held(button::JUMP), e.jump_pressed)
+        };
+        jetpack::update(jet, body, engage_held, engage_pressed, jumped, dt);
         if jet.active {
             jetpack::apply_thrust(body, input, dt);
         }
@@ -197,6 +254,12 @@ pub fn apply_input(
         map,
         body,
         jetpack::gravity_scale(jet, mods.flying, gravity),
+        // **R4's contact rules, and deliberately not `mods.flying`.** The
+        // winged regime also hands `integrate` a scale of `0.0`, under ordinary
+        // gravity, and must keep the ordinary contact rules; these are the
+        // *match's* rules, so the condition is the match's mode. See
+        // `integrate`'s doc for why this cannot be derived from the scale.
+        gravity == GravityMode::Space,
         dt,
     )
 }

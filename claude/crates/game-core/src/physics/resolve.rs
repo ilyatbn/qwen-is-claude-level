@@ -15,7 +15,7 @@ use crate::constants::{
 use crate::map::Map;
 use crate::math::Vec2;
 use crate::physics::body::Body;
-use crate::physics::collide::{aabb_overlaps_solid, ground_probe, step_up_clearance};
+use crate::physics::collide::{aabb_overlaps_solid, ground_probe, is_on_ground, step_up_clearance};
 
 /// Split a displacement into steps of at most `MAX_SUBSTEP_PX`, capped at
 /// `MAX_SUBSTEPS`. Always at least one step, so a zero delta never divides by zero.
@@ -199,7 +199,21 @@ pub fn clamp_to_world(map: &Map, body: &mut Body) {
 /// `ground_snap`; it reads *only* `ground_snap`. The impact has to be captured
 /// before `move_y` runs, which is what happens below, and `ground_snap` cannot
 /// produce one because it only fires when `was_grounded` was already true.
-pub fn integrate(map: &Map, body: &mut Body, gravity_scale: f32, dt: f32) -> f32 {
+///
+/// ## `zero_g` selects the **contact** rules, not the force
+///
+/// `M22-RULINGS` R4, T22.03. The force is `gravity_scale` and it stays the only
+/// answer to *"what accelerates this body"*. `zero_g` answers a different
+/// question — *"what counts as standing on something, and does a walker get
+/// snapped to a slope"* — and the two arms below are the whole of it.
+///
+/// **It is deliberately not derived from `gravity_scale == 0.0`, and the two
+/// are genuinely independent.** T21.03's wings hand this function a scale of
+/// `0.0` under perfectly ordinary gravity; a winged player must keep the
+/// ordinary contact rules, or hovering one pixel over a floor would report them
+/// as standing on it. So this is not the fourth flag that rule warns about —
+/// there is no derivation available that answers both.
+pub fn integrate(map: &Map, body: &mut Body, gravity_scale: f32, zero_g: bool, dt: f32) -> f32 {
     let was_grounded = body.grounded;
     body.grounded = false;
     body.landing_impact = 0.0;
@@ -221,7 +235,37 @@ pub fn integrate(map: &Map, body: &mut Body, gravity_scale: f32, dt: f32) -> f32
         body.landing_impact = falling_at.max(0.0);
     }
 
-    ground_snap(map, body, was_grounded);
+    if zero_g {
+        // **R4 — contact from below grounds you, with or without downward
+        // velocity.** `move_y` can only ground a body that was *moving* down:
+        // it returns at `dy == 0.0` before it probes anything at all. With no
+        // gravity a body drifting sideways onto the top of a rock has
+        // `vel.y == 0.0` exactly, so without this it never lands — it stands on
+        // nothing for the rest of the round, permanently on air control with
+        // `try_jump` dead once coyote time expires. Standing on rocks is the
+        // picture the whole mode is for.
+        //
+        // `is_on_ground` rather than a bare one-pixel probe: it refuses a body
+        // that is *inside* the rock, which would otherwise be reported as
+        // standing on it and never resolve. That refusal is why the probe is
+        // safe to run every tick.
+        //
+        // **Contact on any other side does not reach here** (R4): `move_x`
+        // zeroes `vel.x` on a wall and `move_y` zeroes `vel.y` on a ceiling,
+        // and neither touches `grounded`. You are held against a wall, not
+        // standing on a floor.
+        //
+        // **And `ground_snap` is off** (R4). It exists to keep a walker glued
+        // to a downhill slope and there is no walking downhill here; left on, a
+        // player who drifts off the edge of an asteroid is pulled back down
+        // onto its contour `STEP_DOWN` px at a time and re-grounded, which is
+        // the mode quietly refusing to let go of you.
+        if !body.grounded && is_on_ground(map, body.aabb()) {
+            body.grounded = true;
+        }
+    } else {
+        ground_snap(map, body, was_grounded);
+    }
     clamp_to_world(map, body);
 
     if body.grounded {
@@ -274,7 +318,7 @@ mod tests {
         let map = test_map(W, H, floor_at(400));
         let mut b = Body::new(Vec2::new(256.0, 400.0 - PLAYER_H / 2.0 - h));
         for t in 0..600 {
-            let got = integrate(&map, &mut b, 1.0, SIM_DT);
+            let got = integrate(&map, &mut b, 1.0, false, SIM_DT);
             if got > 0.0 {
                 return (got, t);
             }
@@ -309,7 +353,7 @@ mod tests {
         let mut airborne_reports = 0;
         for _ in 0..600 {
             let before = b.grounded;
-            let got = integrate(&map, &mut b, 1.0, SIM_DT);
+            let got = integrate(&map, &mut b, 1.0, false, SIM_DT);
             if got > 0.0 {
                 reports += 1;
                 if before {
@@ -333,7 +377,7 @@ mod tests {
         let map = test_map(W, H, floor_at(400));
         let mut b = body_resting_on(400, 256.0);
         for _ in 0..120 {
-            assert_eq!(integrate(&map, &mut b, 1.0, SIM_DT), 0.0);
+            assert_eq!(integrate(&map, &mut b, 1.0, false, SIM_DT), 0.0);
         }
     }
 
@@ -350,7 +394,7 @@ mod tests {
         let mut reports = 0;
         for _ in 0..240 {
             b.vel.x = WALK_SPEED;
-            if integrate(&map, &mut b, 1.0, SIM_DT) > 0.0 {
+            if integrate(&map, &mut b, 1.0, false, SIM_DT) > 0.0 {
                 reports += 1;
             }
         }
@@ -390,7 +434,7 @@ mod tests {
         let mut falling = Body::new(Vec2::new(256.0, 400.0 - PLAYER_H / 2.0 - 200.0));
         let mut landing_says = None;
         for _ in 0..600 {
-            let real = integrate(&flat, &mut falling, 1.0, SIM_DT) > 0.0;
+            let real = integrate(&flat, &mut falling, 1.0, false, SIM_DT) > 0.0;
             if real {
                 landing_says = Some(falling.grounded && falling.vel.y > 0.0);
                 break;
@@ -408,7 +452,7 @@ mod tests {
         let mut real_landings = 0;
         for _ in 0..240 {
             walking.vel.x = WALK_SPEED;
-            if integrate(&hill, &mut walking, 1.0, SIM_DT) > 0.0 {
+            if integrate(&hill, &mut walking, 1.0, false, SIM_DT) > 0.0 {
                 real_landings += 1;
             }
             if walking.grounded && walking.vel.y > 0.0 {
@@ -712,11 +756,11 @@ mod tests {
         // would hide.
         let map = test_map(W, H, floor_at(300));
         let mut b = body_resting_on(300, 100.0);
-        integrate(&map, &mut b, 1.0, SIM_DT); // settle
+        integrate(&map, &mut b, 1.0, false, SIM_DT); // settle
         let settled = b.pos;
 
         for tick in 0..600 {
-            integrate(&map, &mut b, 1.0, SIM_DT);
+            integrate(&map, &mut b, 1.0, false, SIM_DT);
             assert_eq!(b.pos, settled, "drifted at tick {tick}");
             assert!(b.grounded, "lost grounding at tick {tick}");
         }
@@ -727,7 +771,7 @@ mod tests {
         let map = test_map(W, H, floor_at(300));
         let mut b = Body::new(Vec2::new(100.0, 100.0));
         for _ in 0..300 {
-            integrate(&map, &mut b, 1.0, SIM_DT);
+            integrate(&map, &mut b, 1.0, false, SIM_DT);
         }
         assert!(b.grounded);
         assert_eq!(b.vel.y, 0.0);
@@ -751,14 +795,14 @@ mod tests {
         let start_x = 60.0f32;
         let surface = 200 + (start_x * 0.577) as i32;
         let mut b = body_resting_on(surface, start_x);
-        integrate(&map, &mut b, 1.0, SIM_DT);
+        integrate(&map, &mut b, 1.0, false, SIM_DT);
         assert!(b.grounded, "precondition: not standing on the slope");
 
         // Stop before the slope runs off the bottom of the map: at 0.577 rise per
         // px it reaches y = 512 at x ~ 540.
         for tick in 0..150 {
             b.vel.x = WALK_SPEED;
-            integrate(&map, &mut b, 1.0, SIM_DT);
+            integrate(&map, &mut b, 1.0, false, SIM_DT);
             assert!(
                 b.grounded,
                 "went airborne at tick {tick}, x = {}, y = {}",
@@ -777,13 +821,13 @@ mod tests {
             }
         });
         let mut b = body_resting_on(300, 200.0);
-        integrate(&map, &mut b, 1.0, SIM_DT);
+        integrate(&map, &mut b, 1.0, false, SIM_DT);
         assert!(b.grounded, "precondition");
 
         let mut went_airborne = None;
         for tick in 0..120 {
             b.vel.x = WALK_SPEED;
-            integrate(&map, &mut b, 1.0, SIM_DT);
+            integrate(&map, &mut b, 1.0, false, SIM_DT);
             if !b.grounded {
                 went_airborne = Some(tick);
                 break;
@@ -812,12 +856,12 @@ mod tests {
             }
         });
         let mut b = body_resting_on(300, 240.0);
-        integrate(&map, &mut b, 1.0, SIM_DT);
+        integrate(&map, &mut b, 1.0, false, SIM_DT);
 
         let mut saw_airborne = false;
         for _ in 0..60 {
             b.vel.x = WALK_SPEED;
-            integrate(&map, &mut b, 1.0, SIM_DT);
+            integrate(&map, &mut b, 1.0, false, SIM_DT);
             if !b.grounded {
                 saw_airborne = true;
             }
@@ -835,12 +879,12 @@ mod tests {
             }
         });
         let mut b = body_resting_on(300, 100.0);
-        integrate(&map, &mut b, 1.0, SIM_DT);
+        integrate(&map, &mut b, 1.0, false, SIM_DT);
 
         let mut flips = 0;
         let mut last = b.grounded;
         for _ in 0..600 {
-            integrate(&map, &mut b, 1.0, SIM_DT);
+            integrate(&map, &mut b, 1.0, false, SIM_DT);
             if b.grounded != last {
                 flips += 1;
                 last = b.grounded;
@@ -855,7 +899,7 @@ mod tests {
         let mut b = Body::new(Vec2::new(100.0, 100.0));
         b.vel.y = 10.0 * MAX_FALL_SPEED;
         for _ in 0..10 {
-            integrate(&map, &mut b, 1.0, SIM_DT);
+            integrate(&map, &mut b, 1.0, false, SIM_DT);
         }
         assert!(b.feet_y() <= 301.0, "tunnelled to y = {}", b.pos.y);
     }
@@ -870,7 +914,7 @@ mod tests {
         let mut b = body_resting_on(300, 100.0);
         b.vel.x = -5000.0;
         for _ in 0..60 {
-            integrate(&map, &mut b, 1.0, SIM_DT);
+            integrate(&map, &mut b, 1.0, false, SIM_DT);
         }
         assert!(
             b.pos.x >= WALL_W as f32 + half - 0.001,
@@ -882,7 +926,7 @@ mod tests {
         let mut b = body_resting_on(300, 400.0);
         b.vel.x = 5000.0;
         for _ in 0..60 {
-            integrate(&map, &mut b, 1.0, SIM_DT);
+            integrate(&map, &mut b, 1.0, false, SIM_DT);
         }
         assert!(
             b.pos.x <= W as f32 - WALL_W as f32 - half + 0.001,
@@ -898,7 +942,7 @@ mod tests {
         let mut b = Body::new(Vec2::new(100.0, 200.0));
         b.vel.y = -5000.0;
         for _ in 0..120 {
-            integrate(&map, &mut b, 0.35, SIM_DT);
+            integrate(&map, &mut b, 0.35, false, SIM_DT);
         }
         assert!(
             b.head_y() >= -0.001,

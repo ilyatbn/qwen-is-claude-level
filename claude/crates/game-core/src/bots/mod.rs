@@ -11,24 +11,29 @@ use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 
 use crate::constants::{
-    GravityMode, BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, FLAME_GRAVITY_SCALE, FLAME_RADIUS,
-    FOV_DAY, GRAVITY, INVENTORY_SLOTS, JETPACK_MAX_FUEL, PICKUP_RADIUS, STEP_UP,
+    GravityMode, BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, FLAME_GRAVITY_SCALE, FLAME_LIFE,
+    FLAME_RADIUS, FOV_DAY, GRAVITY, INVENTORY_SLOTS, JETPACK_MAX_FUEL, PICKUP_RADIUS, STEP_UP,
 };
 
-/// `zone_reach` **divides** by the match's gravity scale, so a mode that
-/// answers zero there turns a flame stand-off into `inf` and a bot walks to the
-/// edge of the world rather than throwing.
+/// **The trap fired, and this is what it caught** (T22.03).
 ///
-/// This is a compile-time trap for T22.03, which is the task that makes
-/// `GravityMode::Space` return `0.0`: the day it does, this line is the one
-/// that fails, and it names the function that has to grow a zero-gravity arm.
-/// A runtime guard here would instead be speculative code for a mode that does
-/// not exist yet.
+/// It used to read `Standard/Low/Space .scale() > 0.0`, as a compile-time trap
+/// for the task that makes `GravityMode::Space` answer `0.0`: `zone_reach`
+/// **divides** by the match's gravity scale, so a zero there turns a flame
+/// stand-off into `inf` and a bot walks to the edge of the world rather than
+/// throwing. T22.03 made the change, this line failed to compile, and
+/// `zone_reach` grew the bound that makes the division safe — which is exactly
+/// the sequence the old comment asked for.
+///
+/// It is kept, pointed at what now has to stay true: **`GRAVITY` itself is
+/// nonzero**, which is the other half of that division and the one no mode can
+/// change. `GravityMode::Space` is a *scale* of zero and never a `GRAVITY` of
+/// zero — `constants::GravityMode::scale` says why that distinction is load
+/// bearing — so if anyone ever reaches for the shortcut, this is where it
+/// stops.
 const _: () = assert!(
-    GravityMode::Standard.scale() > 0.0
-        && GravityMode::Low.scale() > 0.0
-        && GravityMode::Space.scale() > 0.0,
-    "a zero gravity scale divides by zero in bots::zone_reach — give it an arm"
+    GRAVITY > 0.0 && FLAME_GRAVITY_SCALE > 0.0,
+    "zone_reach divides by GRAVITY * FLAME_GRAVITY_SCALE; zero-g is a zero      *scale*, never a zero GRAVITY"
 );
 use crate::items::registry::{def, ItemId, ItemKind};
 use crate::math::{Vec2, TAU};
@@ -1102,8 +1107,28 @@ fn zone_reach(w: &crate::weapons::defs::WeaponDef, gravity: GravityMode) -> Opti
         // *doubles*, so a stand-off derived from the unscaled constant puts a
         // bot inside the fire it just threw. The 2.7x paragraph above is what
         // that costs when this number is wrong.
+        //
+        // **And the flame's own lifetime bounds it** (T22.03). The ballistic
+        // range above is `v^2/g`, which goes to `inf` as the match's gravity
+        // goes to zero — and `GravityMode::Space` answers exactly `0.0`. A
+        // flame that never falls is not a flame with infinite reach: it is one
+        // that travels at `speed` until `FLAME_LIFE` expires, so
+        // `speed * FLAME_LIFE` is the other bound and the real reach is
+        // whichever binds first. Written as a `min` rather than as a zero-g
+        // branch, because the lifetime bound is true under **every** gravity —
+        // it simply never binds at standard, where the ballistic range is
+        // ~99 px against a ~1100 px lifetime range.
+        //
+        // **The number this produces in space is a finding, not a design.** At
+        // `MOLOTOV_FLAME_SPEED` 220 and `FLAME_LIFE` 5 s it is ~1100 px, which
+        // is over half the width of a Small map, so a bot carrying a molotov in
+        // space keeps a stand-off it can essentially never satisfy and never
+        // throws. That is a *behavioural* call and it belongs to
+        // `T22.03B — bots in space`, which records it; what belongs here is
+        // only that the division is safe and the value is derived.
         crate::weapons::defs::Burst::Flames { speed, .. } => {
-            Some(speed * speed / (GRAVITY * FLAME_GRAVITY_SCALE * gravity.scale()) + FLAME_RADIUS)
+            let ballistic = speed * speed / (GRAVITY * FLAME_GRAVITY_SCALE * gravity.scale());
+            Some(ballistic.min(speed * FLAME_LIFE) + FLAME_RADIUS)
         }
         _ => None,
     }

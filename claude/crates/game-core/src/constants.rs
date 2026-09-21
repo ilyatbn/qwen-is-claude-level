@@ -120,6 +120,39 @@ pub const JETPACK_GRAVITY_SCALE: f32 = 0.35;
 pub const JETPACK_HOLD_DELAY: f32 = 0.18;
 
 // ---------------------------------------------------------------------------
+// Zero-g locomotion (T22.03)
+// ---------------------------------------------------------------------------
+
+/// How long a jump-off-a-rock burns the thrusters for, in space.
+///
+/// **A burn time, not a bare fraction of the tank**, so that
+/// [`SPACE_JUMP_FUEL`] below is literally *"what holding the thrusters for this
+/// long costs"* and a retune of `JETPACK_DRAIN` moves both together. The owner:
+/// *"Jumping and even moving now takes jetpack energy."*
+pub const SPACE_JUMP_BURN_SECONDS: f32 = 0.5;
+
+/// What one jump costs the tank in space.
+///
+/// # The value, against a basis that does not move with it
+///
+/// Pinning every test to this constant would leave nothing able to report the
+/// *value* being wrong (`CLAUDE.md`), so here is what it has to be true of, in
+/// terms of numbers that are not derived from it:
+///
+///  - **a full tank buys `JETPACK_MAX_FUEL / SPACE_JUMP_FUEL` = 10 jumps**, and
+///  - **one jump is bought back by `SPACE_JUMP_FUEL / JETPACK_REFILL` = 1.0 s
+///    of not thrusting**, on top of `JETPACK_REFILL_DELAY`.
+///
+/// Ten pushes off rocks per tank, and a second of rest per push, is the pacing
+/// this number exists to set: enough that traversing an asteroid field on legs
+/// alone is a real option, few enough that the tank is a resource you spend
+/// rather than a formality. `player::space::a_full_tank_buys_ten_jumps_and_a_dry_one_refuses`
+/// asserts both by *running* them — it counts jumps until one is refused and
+/// counts the ticks until the next one is affordable — rather than by restating
+/// the division.
+pub const SPACE_JUMP_FUEL: f32 = JETPACK_DRAIN * SPACE_JUMP_BURN_SECONDS;
+
+// ---------------------------------------------------------------------------
 // Aiming
 // ---------------------------------------------------------------------------
 
@@ -2687,10 +2720,10 @@ pub const LOW_GRAVITY_SCALE: f32 = 0.5;
 /// **`Low` stays** — M22-RULINGS R3. If it is ever dropped, this enum becomes
 /// `Standard | Space` and the wire bytes below renumber with it.
 ///
-/// **`Low` is live (T22.02); `Space` is not yet.** [`GravityMode::scale`] is the
-/// one place the mode becomes a number, and `Space` still answers `1.0` there —
-/// T22.03 owns that arm. `world::gravity_tests` is where both claims are
-/// asserted.
+/// **`Low` (T22.02) and `Space` (T22.03) are both live.**
+/// [`GravityMode::scale`] is the one place the mode becomes a number, and it
+/// answers `LOW_GRAVITY_SCALE` and `0.0` respectively. `world::gravity_tests`
+/// is where both claims are asserted.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GravityMode {
@@ -2760,19 +2793,35 @@ impl GravityMode {
     /// things it is not the answer for. Both cannot be true; the paragraph is
     /// the true one (M22-RULINGS R30).
     ///
-    /// **`Space` answers `1.0` and that is not an oversight.** T22.03 owns the
-    /// space arm (M22-RULINGS R3/R10); until it lands, a `Space` match plays at
-    /// standard gravity and `world::gravity_tests` asserts exactly that, so the
-    /// day it changes is a day this file changed.
+    /// **`Space` answers `0.0` since T22.03**, which is what *"there is no
+    /// global gravity"* means here: `physics::resolve::apply_gravity` returns
+    /// before it touches `vel.y`, so nothing accelerates a player downward and
+    /// `MAX_FALL_SPEED` never binds. It reaches the same four sites as `Low`,
+    /// and the consequence at three of them is deliberate — **a projectile in
+    /// space flies straight**, because `weapons::projectile` multiplies each
+    /// weapon's own `gravity_scale` by this one. The fourth,
+    /// `bots::zone_reach`, **divides** by it, and its `const _` assertion was
+    /// the compile-time trap that made this change name it; see the
+    /// `FLAME_LIFE` bound there.
+    ///
+    /// **This is not a fourth gravity regime.** `player::jetpack::gravity_scale`
+    /// still names exactly three — wings, jetpack, ordinary — and multiplies
+    /// this in front of all of them, so `0.0 * anything` is no gravity and no
+    /// player can be in two regimes at once.
     ///
     /// # Four fallers this does not reach, and what a player sees
     ///
     /// `weapons::placed::Mines::step`, `items::world::WorldItems::step`,
     /// `world::tombstones::Tombstones::step` and `world::animals::Animals::tick`
-    /// still fall at standard gravity under `Low`. **The player-visible
-    /// consequence is that in a low-gravity match a dropped weapon and a
-    /// tombstone fall twice as fast as the person who dropped them** — a real
-    /// inconsistency, visible in ordinary play, not a rounding gap.
+    /// still fall at standard gravity under `Low` **and under `Space`**. The
+    /// player-visible consequence is that in a low-gravity match a dropped
+    /// weapon and a tombstone fall twice as fast as the person who dropped
+    /// them — a real inconsistency, visible in ordinary play, not a rounding
+    /// gap — and **in space it is worse: a player floats and their dropped
+    /// rifle falls to the bottom of the arena.** M22-RULINGS R14 rules that
+    /// every one of the four floats where it is put in space; R10 assigns the
+    /// four signature changes that takes to `T22.11`, and T22.03 did not
+    /// pre-empt it.
     ///
     /// **The reason is scheduling, not shape.** An earlier version said their
     /// signatures *"cannot see the match setting (`(map, …, dt)`)"*, which is a
@@ -2800,7 +2849,12 @@ impl GravityMode {
         match self {
             GravityMode::Standard => 1.0,
             GravityMode::Low => LOW_GRAVITY_SCALE,
-            GravityMode::Space => 1.0,
+            // **T22.03.** Zero-g is a *scale* of zero, never a `GRAVITY` of
+            // zero: the const assertion at `KNOCKBACK_FIRE_GRACE` divides by
+            // `GRAVITY`, and `JUMP_HEIGHT`/`JUMP_REACH` go infinite with it, so
+            // a zero constant does not compile. A zero scale is a shipped path
+            // — `apply_gravity` has returned early on it since T21.03's wings.
+            GravityMode::Space => 0.0,
         }
     }
 
@@ -3687,20 +3741,31 @@ mod tests {
         assert!((apex - 66.0).abs() < 1.0, "apex was {apex}");
     }
 
-    /// Every mode's multiplier, and the one that is deliberately not a feature.
+    /// Every mode's multiplier, and the three are pairwise different.
     ///
-    /// The `Space` arm is asserted **equal to `Standard`** rather than left
-    /// unmentioned: it is a claim T22.03 has to break on purpose, not a gap
-    /// someone can close by accident.
+    /// The `Space` arm used to be asserted **equal to `Standard`**, as a claim
+    /// T22.03 had to break on purpose rather than a gap someone could close by
+    /// accident. T22.03 broke it; the arm stays named, pointed the other way,
+    /// so a build that quietly restored standard gravity to the space mode
+    /// still fails here.
     #[test]
     fn every_gravity_mode_has_a_multiplier() {
         assert_eq!(GravityMode::Standard.scale(), 1.0);
         assert_eq!(GravityMode::Low.scale(), LOW_GRAVITY_SCALE);
         assert_eq!(
             GravityMode::Space.scale(),
-            GravityMode::Standard.scale(),
-            "space is still standard gravity — T22.03 owns that arm"
+            0.0,
+            "space is no global gravity — a scale of zero, never a GRAVITY of zero"
         );
+        // Pairwise distinct, so no two modes can collapse into each other
+        // without this failing.
+        for (a, b) in [
+            (GravityMode::Standard, GravityMode::Low),
+            (GravityMode::Standard, GravityMode::Space),
+            (GravityMode::Low, GravityMode::Space),
+        ] {
+            assert_ne!(a.scale(), b.scale(), "{a:?} and {b:?} scale the same");
+        }
     }
 
     /// What `LOW_GRAVITY_SCALE`'s **value** has to be true of.

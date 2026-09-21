@@ -203,7 +203,15 @@ impl WorldItems {
                 // keeping its lateral speed forever.
                 body.vel.x *= 1.0 - CRATE_DRAG;
             }
-            integrate(map, &mut body, 1.0, dt);
+            // **`false`, and it is the current behaviour rather than a
+            // placeholder** (T22.03). `M22-RULINGS` R14 rules that in space
+            // every non-player body floats where it is put — which means a
+            // gravity scale of 0 *and* these contact rules — and R10
+            // assigns that signature change to `T22.11`. Today this body
+            // falls at standard gravity in every mode, exactly as
+            // `GravityMode::scale`'s doc comment says it does, so `false`
+            // is the truthful argument and not a guess.
+            integrate(map, &mut body, 1.0, false, dt);
             it.pos = body.pos;
             it.vel = body.vel;
             // Anything reaching here was airborne at the top of the loop — the
