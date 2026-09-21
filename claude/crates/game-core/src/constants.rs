@@ -383,10 +383,26 @@ pub enum MapGenerator {
     V1,
     /// The height-profile landscape.
     V2,
+    /// The zero-gravity arena: a closed elliptical rim with asteroids inside it
+    /// (M22, `T22.05A`, `M22-RULINGS` R13/R15).
+    ///
+    /// **Derived from [`GravityMode::Space`], never chosen beside it** — see
+    /// [`MapGenerator::for_gravity`]. Two independent fields would let a lobby
+    /// pick space gravity and a normal map, which is *derive, do not add a
+    /// fourth flag* at the largest scale in the milestone.
+    Space,
 }
 
 impl MapGenerator {
     /// Parse the `MAP_GENERATOR` environment value.
+    ///
+    /// **There is deliberately no spelling for [`MapGenerator::Space`].** It is
+    /// derived from the gravity mode (R15), and an environment variable that
+    /// could select it alongside standard gravity is exactly the second source
+    /// of truth the ruling forbids — players would fall off the asteroids into
+    /// a void with no vortex to catch them. `config.rs` already names the valid
+    /// values as *"one of: v1, v2"*, so a `MAP_GENERATOR=space` fails loudly
+    /// with that message rather than half-working.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "v1" | "V1" | "1" => Some(MapGenerator::V1),
@@ -395,10 +411,27 @@ impl MapGenerator {
         }
     }
 
+    /// The generator a round is played on, given its gravity and the lobby's
+    /// own choice. **The one derivation** (`M22-RULINGS` R15).
+    ///
+    /// Space gravity means the space map and nothing else. Any other gravity
+    /// gets the lobby's generator — except `Space`, which cannot be reached
+    /// through `parse` and is collapsed here rather than trusted, so a value
+    /// arriving from a replay header or a wire byte cannot produce a space map
+    /// under standard gravity.
+    pub const fn for_gravity(gravity: GravityMode, chosen: MapGenerator) -> MapGenerator {
+        match (gravity, chosen) {
+            (GravityMode::Space, _) => MapGenerator::Space,
+            (_, MapGenerator::Space) => DEFAULT_MAP_GENERATOR,
+            (_, g) => g,
+        }
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             MapGenerator::V1 => "v1",
             MapGenerator::V2 => "v2",
+            MapGenerator::Space => "space",
         }
     }
 
@@ -406,6 +439,7 @@ impl MapGenerator {
         match self {
             MapGenerator::V1 => 0,
             MapGenerator::V2 => 1,
+            MapGenerator::Space => 2,
         }
     }
 
@@ -413,15 +447,103 @@ impl MapGenerator {
         match v {
             0 => Some(MapGenerator::V1),
             1 => Some(MapGenerator::V2),
+            2 => Some(MapGenerator::Space),
             _ => None,
         }
     }
 
-    pub const ALL: [MapGenerator; 2] = [MapGenerator::V1, MapGenerator::V2];
+    /// **`Space` is in here on purpose** (R15). `tests/golden.rs::cases()`
+    /// iterates this list x 4 seeds x `MapScale::ALL`, so the golden table grows
+    /// 24 -> 36 rows the moment the variant lands, and `tests/dump_maps.rs`
+    /// follows. A `GravityMode` branch inside an existing generator would have
+    /// gained `cases()` nothing and shipped the space map with **zero** golden
+    /// coverage.
+    pub const ALL: [MapGenerator; 3] = [MapGenerator::V1, MapGenerator::V2, MapGenerator::Space];
 }
 
 /// The generator you get unless `MAP_GENERATOR` says otherwise.
 pub const DEFAULT_MAP_GENERATOR: MapGenerator = MapGenerator::V2;
+
+// ---------------------------------------------------------------------------
+// The space map (M22 `T22.05A`, `M22-RULINGS` R13). `map/gen/space.rs`.
+// ---------------------------------------------------------------------------
+
+/// Thickness of the space map's rim, in px.
+///
+/// **The floor is one minimap cell.** `Minimap::resampleTerrain` point-samples
+/// `core.solidAt` once per cell, so a rim thinner than `mapW / MINIMAP_W` —
+/// 10.24 px on Small, 15.36 on Medium, **20.48 on Large** — aliases into a
+/// broken dashed ring or vanishes (R13, point 2). 32 px is 1.56x the worst of
+/// those, and `space.rs::the_rim_is_thicker_than_one_minimap_cell` measures the
+/// thickness off the mask rather than trusting this number.
+pub const SPACE_RIM_THICKNESS: u32 = 32;
+
+/// Clear space between an asteroid's surface and the rim's inner edge, px.
+///
+/// Two player heights (`PLAYER_H` = 28). A rock flush against the rim would
+/// close the lane a player flies down to follow the boundary, and `T22.10`'s
+/// vortex needs that lane to work in.
+pub const SPACE_RIM_CLEARANCE: f32 = 64.0;
+
+/// Asteroid bounding radius, px. Drawn **uniformly** on this band.
+///
+/// Uniform rather than biased small, and that is the whole reason the five
+/// gravity levels are meetable: the level is monotone in radius, so a
+/// small-biased radius distribution makes level 5 a once-a-session curiosity.
+/// The lower bound is set by `MIN_BLOB_PX`: at `SPACE_ASTEROID_CORE_FRAC` the
+/// smallest rock's core disc is pi*18^2 = 1018 px, 2.5x the 400 px speck
+/// threshold that `components::cleanup` — a pass the space pipeline skips —
+/// would otherwise have enforced.
+pub const SPACE_ASTEROID_R_MIN: i32 = 24;
+pub const SPACE_ASTEROID_R_MAX: i32 = 64;
+
+/// Minimum clear gap between two asteroid **surfaces**, px.
+///
+/// Five player widths (`PLAYER_W` = 16). Surface to surface rather than centre
+/// to centre, so the lane a player floats down does not depend on the sizes of
+/// the two rocks that happen to bound it. Far below `JETPACK_CLIMB_BUDGET`
+/// (780 px), which is what makes every lane crossable.
+pub const SPACE_ASTEROID_GAP_MIN: f32 = 80.0;
+
+/// Rejection-sampling tries per asteroid asked for.
+///
+/// The placement is sequential adsorption: late rocks are much harder to seat
+/// than early ones, so the budget is per-rock rather than a flat total.
+pub const SPACE_ASTEROID_TRIES: u32 = 40;
+
+/// The core disc of an asteroid, as a fraction of its bounding radius.
+///
+/// Under 1 so the lumps have somewhere to stick out to without leaving the
+/// bounding radius — which has to stay the true bound, because it is what rocks
+/// are spaced by, what reach is measured by, and what `T22.11` sizes a well
+/// from.
+pub const SPACE_ASTEROID_CORE_FRAC: f32 = 0.75;
+
+/// Lumps stamped on an asteroid's core, and their radii as a fraction of the
+/// bounding radius. Enough to break the silhouette; not so many that the union
+/// fills the bounding disc back out to a circle.
+pub const SPACE_LUMPS_MIN: u32 = 2;
+pub const SPACE_LUMPS_MAX: u32 = 4;
+pub const SPACE_LUMP_R_MIN_FRAC: f32 = 0.30;
+pub const SPACE_LUMP_R_MAX_FRAC: f32 = 0.45;
+
+/// The highest asteroid gravity level. Levels run `1..=SPACE_LEVEL_MAX`.
+pub const SPACE_LEVEL_MAX: u8 = 5;
+
+/// Jitter on the radius-to-level map, in levels.
+///
+/// R13 requires the correlation to be **monotone with jitter**: a big rock with
+/// a weak pull reads as wrong, but a map that is exactly a size lookup makes
+/// level 5 mean nothing but "the biggest rock on this map". 0.6 moves a rock by
+/// at most one level and the correlation survives — asserted by
+/// `space.rs::a_bigger_rock_pulls_harder_on_average`.
+pub const SPACE_LEVEL_JITTER: f32 = 0.6;
+
+/// Grid step the open-space spawn candidates are walked on, px.
+///
+/// A quarter of `SPAWN_MIN_SEPARATION` (256), so the greedy separation filter
+/// is not itself what limits the count.
+pub const SPACE_SPAWN_GRID: i32 = 64;
 
 /// Mean ground line, as a fraction of map height. 0.58 leaves the top ~52 % of
 /// the canvas as sky before the profile's amplitude is applied, which is what
@@ -2717,6 +2839,20 @@ pub struct ScaleParams {
     pub cave_count: u32,
     /// Horizontal bores through a hill.
     pub arch_count: u32,
+    /// `MapGenerator::Space`: asteroids asked for inside the rim.
+    ///
+    /// **Asked for, not guaranteed.** Placement is rejection sampling against
+    /// `SPACE_ASTEROID_GAP_MIN` and the rim clearance, so a map may come out
+    /// with fewer; `space.rs::asteroids_exist_and_are_separated` pins the floor
+    /// and `density_and_gap_report` prints the achieved distribution.
+    ///
+    /// Chosen so the rocks cover ~7 % of the rim ellipse at every scale —
+    /// *"tons of tiny islands ... enough space to float between them, like
+    /// stars"*. Small is the binding one: its ellipse is 880x440 and, after the
+    /// rim clearance is taken off, sequential adsorption at this gap saturates
+    /// at roughly 18 rocks, so 14 is a count it reaches rather than a target it
+    /// misses.
+    pub asteroid_count: u32,
     /// Destructible scenery stamped into the terrain at pass 6b (§D5).
     ///
     /// **Small is 12, not §D5's 18** — measured, not guessed. A small map is
@@ -2781,6 +2917,7 @@ impl MapScale {
                 cave_count: 2,
                 arch_count: 1,
                 object_count: 9,
+                asteroid_count: 14,
             },
             MapScale::Medium => ScaleParams {
                 width: MAP_MEDIUM_W,
@@ -2799,6 +2936,7 @@ impl MapScale {
                 cave_count: 2,
                 arch_count: 1,
                 object_count: 28,
+                asteroid_count: 34,
             },
             MapScale::Large => ScaleParams {
                 width: MAP_LARGE_W,
@@ -2817,6 +2955,7 @@ impl MapScale {
                 cave_count: 2,
                 arch_count: 2,
                 object_count: 36,
+                asteroid_count: 64,
             },
         }
     }

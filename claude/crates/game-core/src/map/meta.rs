@@ -71,6 +71,33 @@ pub fn theme_for(requested_seed: u64) -> u8 {
 /// golden-table regeneration and a re-run of the 999-seed sweep (the T9.04 /
 /// T15.02 procedure). It would also buy nothing: the guarantee above already
 /// holds, and the pad is drawn by the client, not by the terrain.
+/// One of `MapGenerator::Space`'s rocks (`T22.05A`, `M22-RULINGS` R13).
+///
+/// *"Asteroid", not "island"* — the owner renamed them on 2026-09-18 and the
+/// word is load-bearing, because they are no longer inert scenery.
+///
+/// `r` is the **bounding** radius, not the core disc's: the stamped silhouette
+/// is lumpy but every solid pixel of it is inside `r` of `(x, y)`. That is what
+/// lets `r` be the one number rocks are spaced by, reach is measured by, and
+/// `T22.11` sizes a gravity well from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Asteroid {
+    /// Centre, world px.
+    pub x: i32,
+    pub y: i32,
+    /// Bounding radius, px.
+    pub r: i32,
+    /// Gravity level, `1..=SPACE_LEVEL_MAX`. Monotone in `r`, with jitter.
+    ///
+    /// **Generated here and shipped**, because the client predicts against it
+    /// (`T22.11` owns what the number does). It is part of the hashed map: the
+    /// mask carries the rock's *shape*, and nothing but this field carries its
+    /// *pull*, so a digest that skipped it would let the whole level assignment
+    /// change with every golden row still green.
+    pub level: u8,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TeleportPad {
@@ -228,6 +255,10 @@ pub struct MapMeta {
     pub decorations: Vec<Decoration>,
     pub wind: f32,
     pub traversable_fraction: f32,
+    /// `MapGenerator::Space`'s rocks. **Empty for every other generator**, which
+    /// is how a space map is told apart from a normal one downstream without a
+    /// second flag to keep in sync.
+    pub asteroids: Vec<Asteroid>,
     /// Indices into `surface_points` forming the validated strongly connected set.
     ///
     /// Shipped because nothing downstream can otherwise tell "every cave is
@@ -333,6 +364,7 @@ pub(crate) fn generate_full_with(
     let outcome = generate_terrain_with(requested_seed, scale, generator);
     let params = scale.params();
     let objects = outcome.objects.clone();
+    let asteroids = outcome.asteroids.clone();
 
     let theme = theme_for(requested_seed);
     let wind = range_f32(&mut substream(requested_seed, "wind"), -WIND_MAX, WIND_MAX);
@@ -560,7 +592,18 @@ pub(crate) fn generate_full_with(
     // exactly as it was.
     let (surface_points, report) = if filled > 0 {
         let surface = extract_surface(&mask);
-        let report = crate::map::gen::traversal::analyse(&mask, &surface, &objects);
+        // **Through `reanalyse`, not `traversal::analyse`.** The space generator
+        // has its own verdict (R17), and re-running the walking one here would
+        // silently replace it with a number about a game nobody is playing —
+        // the outcome's report would say one thing and `MapMeta` another.
+        let report = crate::map::gen::reanalyse(
+            outcome.generator,
+            &mask,
+            &surface,
+            &objects,
+            &asteroids,
+            scale,
+        );
         (surface, report)
     } else {
         (outcome.surface, outcome.report)
@@ -585,6 +628,7 @@ pub(crate) fn generate_full_with(
             gun_platforms,
             surface_points,
             objects,
+            asteroids,
             buried_slots,
             decorations,
             wind,

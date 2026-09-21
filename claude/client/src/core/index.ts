@@ -41,6 +41,14 @@ export const enum MapGenerator {
   V1 = 0,
   /** The height-profile landscape: ground, islands, and a cave or two. */
   V2 = 1,
+  /**
+   * T22.05A's zero-gravity arena: a closed elliptical rim with asteroids inside.
+   *
+   * **Derived from the gravity mode, never selected beside it.** Use
+   * `generateForGravity`; passing this to `generateWith` under a gravity that
+   * is not `space` gets you the default generator back, deliberately.
+   */
+  Space = 2,
 }
 
 export interface Point {
@@ -98,6 +106,26 @@ export interface MapMeta {
   decorations: Decoration[]
   wind: number
   traversable_fraction: number
+  /**
+   * T22.05A's asteroids, empty on any map but a space one — which is how a
+   * locally generated space map is told apart from a normal one without a
+   * second flag.
+   *
+   * Arrives for free: `meta_json` serialises the whole `MapMeta`. A *networked*
+   * round never runs the generator, so there the same list comes off the wire
+   * in `map_init` instead — `net/codec.ts::MapInit.asteroids`.
+   */
+  asteroids: Asteroid[]
+}
+
+/** One of the space map's rocks. Mirrors `game_core::map::meta::Asteroid`. */
+export interface Asteroid {
+  x: number
+  y: number
+  /** Bounding radius, px — every solid pixel of the rock is inside it. */
+  r: number
+  /** Gravity level, 1..`SPACE_LEVEL_MAX`. Monotone in `r`, with jitter. */
+  level: number
 }
 
 export interface InventoryView {
@@ -667,6 +695,28 @@ export class Core {
     const hi = Number((seed >> 32n) & 0xffffffffn) >>> 0
     this.inner.generate_with(lo, hi, scale, generator)
     this.invalidate()
+  }
+
+  /**
+   * `generateWith` under a named gravity, which **decides the generator**
+   * (T22.05A). Also sets the mode this core predicts under, so the two cannot
+   * be put in the wrong order.
+   *
+   * Returns false for a gravity spelling this build does not know, and
+   * generates nothing — the same refuse-rather-than-clamp rule as `setGravity`.
+   * Local only: a networked round is sent the finished mask in `map_init`.
+   */
+  generateForGravity(
+    seed: bigint,
+    scale: MapScale,
+    generator: MapGenerator,
+    gravity: string,
+  ): boolean {
+    const lo = Number(seed & 0xffffffffn) >>> 0
+    const hi = Number((seed >> 32n) & 0xffffffffn) >>> 0
+    const ok = this.inner.generate_for_gravity(lo, hi, scale, generator, gravity)
+    this.invalidate()
+    return ok
   }
 
   loadMask(w: number, h: number, rle: Uint8Array): boolean {

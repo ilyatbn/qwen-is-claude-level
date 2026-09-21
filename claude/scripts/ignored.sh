@@ -81,6 +81,15 @@ MANIFEST=(
   "low_gravity_report|game-core tests/balance.rs|guard"
   "the_shipping_configuration_produces_a_fight|game-core tests/balance.rs|guard"
   "the_spawn_stream_beats_the_wait_it_replaced|game-core tests/balance.rs|guard"
+  # T22.05A, the space map. The first is a tuning gate in `gen/mod.rs`'s shape;
+  # the other three are measurements that print and assert nothing, which is why
+  # they are `report` — the density sweep, R17's "measure what the existing
+  # predicate says before asserting it is meaningless", and the enclosed-air
+  # figure T22.04 needs for the backdrop.
+  "a_hundred_space_seeds_pass_without_the_safe_preset|game-core src/map/gen/space.rs|guard"
+  "density_and_gap_report|game-core src/map/gen/space.rs|report"
+  "what_the_walking_predicate_says_about_a_space_map|game-core src/map/gen/space.rs|report"
+  "every_pixel_of_air_inside_the_rim_reads_as_enclosed|game-core src/map/gen/space.rs|report"
   "how_many_rooms_fit|game-server tests/capacity.rs|guard"
   "rooms_do_not_get_more_expensive_as_more_are_added|game-server tests/capacity.rs|guard"
   # Parked as flaky on 2026-09-14, not for cost — see tasks/flaky-test.md.

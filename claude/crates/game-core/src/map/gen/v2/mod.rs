@@ -119,6 +119,7 @@ pub fn generate_once(seed: u64, params: &V2Params) -> GenOutcome {
         tunnel_paths,
         islands,
         objects: placement.objects,
+        asteroids: Vec::new(),
         seed,
         requested_seed: seed,
         attempts: 1,

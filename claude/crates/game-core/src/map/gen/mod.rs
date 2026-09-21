@@ -19,6 +19,7 @@ pub mod network;
 pub mod objects;
 pub mod silhouette;
 pub mod smooth;
+pub mod space;
 pub mod spawns;
 pub mod surface;
 pub mod traversal;
@@ -44,6 +45,13 @@ pub struct GenOutcome {
     pub tunnel_paths: Vec<Vec<Point>>,
     /// Island centres, for decoration and debugging.
     pub islands: Vec<Point>,
+    /// `MapGenerator::Space`'s rocks: where they are, how big, and how hard
+    /// each one pulls (`T22.05A`, `M22-RULINGS` R13).
+    ///
+    /// **Empty for every other generator**, which is what lets the golden meta
+    /// digest fold it in without moving the 24 rows that existed before the
+    /// space map did — see `tests/golden.rs::meta_digest`.
+    pub asteroids: Vec<crate::map::meta::Asteroid>,
     /// Scenery stamped at pass 6b (§D5). Carried out so pass 8 can keep spawns
     /// clear of it and the client can draw the art (§D6).
     pub objects: Vec<objects::PlacedObject>,
@@ -91,6 +99,7 @@ pub fn generate_once(seed: u64, params: &GenParams) -> GenOutcome {
         tunnel_paths,
         islands,
         objects: placement.objects,
+        asteroids: Vec::new(),
         seed,
         requested_seed: seed,
         attempts: 1,
@@ -125,6 +134,43 @@ pub fn generate_terrain_with(
     match generator {
         MapGenerator::V1 => generate_terrain_v1(requested_seed, scale),
         MapGenerator::V2 => v2::generate_terrain(requested_seed, scale),
+        // **The one branching site in the project** (R15). `MapScale` branches
+        // nothing; it is a size/parameter table. Reaching the space map any
+        // other way — a `GravityMode` arm inside v2, say — would gain
+        // `tests/golden.rs::cases()` nothing and ship the generator with zero
+        // golden coverage.
+        MapGenerator::Space => space::generate_terrain(requested_seed, scale),
+    }
+}
+
+/// Re-run **the verdict that produced this outcome**, against a mask that has
+/// changed since.
+///
+/// Pass 8 fills ground under the teleport pads and gun platforms and then has to
+/// re-derive the surface and the report. v1, v2 and space do not share a
+/// predicate, and calling `traversal::analyse` unconditionally there would
+/// silently swap a space map's verdict for a walking one — the outcome would say
+/// `passed` on space terms and `MapMeta` would carry a walk fraction, which is
+/// the field-means-two-things shape at the one place the two can disagree.
+///
+/// Written here, beside the `match` it mirrors, so a fourth generator cannot
+/// gain an arm in one and not the other.
+pub fn reanalyse(
+    generator: MapGenerator,
+    mask: &Mask,
+    surface: &[Point],
+    objects: &[objects::PlacedObject],
+    asteroids: &[crate::map::meta::Asteroid],
+    scale: MapScale,
+) -> TraversalReport {
+    match generator {
+        MapGenerator::V1 | MapGenerator::V2 => traversal::analyse(mask, surface, objects),
+        MapGenerator::Space => space::analyse_space(
+            mask,
+            surface,
+            asteroids,
+            &space::SpaceGeometry::for_scale(scale),
+        ),
     }
 }
 

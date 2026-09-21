@@ -35,6 +35,7 @@ fn make_map(w: u32, h: u32, build: impl FnOnce(&mut Mask)) -> Map {
         decorations: Vec::new(),
         wind: 0.0,
         traversable_fraction: 1.0,
+        asteroids: Vec::new(),
         largest_component: Vec::new(),
     };
     Map::from_parts(mask, coarse, meta)

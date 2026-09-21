@@ -142,6 +142,18 @@ pub fn encode_map_init_at(map: &Map, carve_seq: u32) -> Vec<u8> {
         b.push(u8::from(o.flip));
     }
 
+    // `T22.05A`: the asteroids, only on a space map (the list is empty for
+    // every other generator, so this is two bytes there). `level` is what makes
+    // the section necessary — the rock's *shape* is already in the mask, its
+    // *pull* is in nothing else, and the client predicts against it.
+    b.extend_from_slice(&(m.asteroids.len() as u16).to_le_bytes());
+    for a in &m.asteroids {
+        b.extend_from_slice(&(a.x as i16).to_le_bytes());
+        b.extend_from_slice(&(a.y as i16).to_le_bytes());
+        b.extend_from_slice(&(a.r as u16).to_le_bytes());
+        b.push(a.level);
+    }
+
     b.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     b.extend_from_slice(&payload);
     b
@@ -167,6 +179,12 @@ pub struct MapInitParts {
     /// rebuilding the map must carve the way the server does, and `carve_circle`
     /// refuses to clear a platform's rect.
     pub gun_platforms: Vec<game_core::map::meta::GunPlatform>,
+    /// `T22.05A`'s asteroids, empty on any map but a space one.
+    ///
+    /// Here rather than derived, because a client cannot derive them: a
+    /// networked round never runs the generator, it is handed the finished mask
+    /// by `load_mask`, and the mask carries a rock's shape but not its level.
+    pub asteroids: Vec<game_core::map::meta::Asteroid>,
     /// The carve sequence this mask is stamped at (`docs/70` §A40).
     ///
     /// Every carve with `seq <= carve_seq` is **already baked into `mask`**; the
@@ -239,6 +257,25 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
     let objects = r.u16()? as usize;
     r.take(objects * OBJECT_WIRE_BYTES)?;
 
+    // **Decoded, not skipped.** The pads and platforms are here because a
+    // client that does not know where they are carves differently from the
+    // server; the asteroids are here because a client that does not know how
+    // hard each rock pulls predicts differently from it, which is the same
+    // class of divergence one layer up.
+    let asteroid_count = r.u16()? as usize;
+    let asteroid_bytes = r.take(asteroid_count * ASTEROID_WIRE_BYTES)?;
+    let asteroids = (0..asteroid_count)
+        .map(|i| {
+            let o = i * ASTEROID_WIRE_BYTES;
+            game_core::map::meta::Asteroid {
+                x: i16::from_le_bytes([asteroid_bytes[o], asteroid_bytes[o + 1]]) as i32,
+                y: i16::from_le_bytes([asteroid_bytes[o + 2], asteroid_bytes[o + 3]]) as i32,
+                r: u16::from_le_bytes([asteroid_bytes[o + 4], asteroid_bytes[o + 5]]) as i32,
+                level: asteroid_bytes[o + 6],
+            }
+        })
+        .collect();
+
     let payload_len = r.u32()? as usize;
     let payload = r.take(payload_len)?;
     let mask =
@@ -248,9 +285,17 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
         mask,
         teleport_pads,
         gun_platforms,
+        asteroids,
         carve_seq,
     })
 }
+
+/// `i16 x, i16 y, u16 r, u8 level`.
+///
+/// Named for the same reason `OBJECT_WIRE_BYTES` is: the writer's loop and the
+/// reader's stride are the same number said twice, and the decoration section
+/// above still spells its `7` in two places.
+pub const ASTEROID_WIRE_BYTES: usize = 7;
 
 /// `u16 id, i16 x, i16 y, u16 w, u16 h, u8 flip`.
 ///
@@ -650,7 +695,7 @@ pub fn b64_decode(s: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use game_core::constants::{MapScale, SIM_DT};
+    use game_core::constants::{MapGenerator, MapScale, SIM_DT};
     use game_core::player::input::button;
     use game_core::world::{RoundPhase, World};
 
@@ -696,6 +741,8 @@ mod tests {
             + map.meta.decorations.len() * 7
             + 2
             + map.meta.objects.len() * OBJECT_WIRE_BYTES
+            + 2
+            + map.meta.asteroids.len() * ASTEROID_WIRE_BYTES
             + 4
             + rle_len;
         assert_eq!(b.len(), expect);
@@ -802,6 +849,58 @@ mod tests {
         // desynchronise the RLE payload rather than losing a platform.
         assert_eq!(parts.mask.hash(), map.mask.hash());
         assert_eq!(parts.teleport_pads, map.meta.teleport_pads);
+    }
+
+    /// `T22.05A`: the asteroids survive the wire, **levels included**.
+    ///
+    /// Through `decode_map_init_parts` for the gun-platform test's reason: the
+    /// parser is what the client runs, and a byte walk would assert the encoder
+    /// against a second copy of the layout.
+    ///
+    /// The fixture is a **space** map, because on any other one the list is
+    /// empty and every assertion below would hold for an encoder that wrote
+    /// nothing at all.
+    #[test]
+    fn map_init_round_trips_every_asteroid_and_its_level() {
+        let map = game_core::map::generate_with(7, MapScale::Small, MapGenerator::Space);
+        assert!(
+            !map.meta.asteroids.is_empty(),
+            "the fixture map has no asteroids, so this asserts nothing"
+        );
+        let parts = decode_map_init_parts(&encode_map_init(&map)).expect("decode");
+        assert_eq!(
+            parts.asteroids, map.meta.asteroids,
+            "the asteroids did not survive the wire"
+        );
+        // Levels specifically, because `x`, `y` and `r` are all recoverable
+        // from the mask and `level` is the only field that is not — an encoder
+        // that dropped it would still pass a position-only comparison on a
+        // sufficiently careless test.
+        let sent: Vec<u8> = parts.asteroids.iter().map(|a| a.level).collect();
+        let real: Vec<u8> = map.meta.asteroids.iter().map(|a| a.level).collect();
+        assert_eq!(sent, real, "the gravity levels did not survive the wire");
+        assert!(
+            real.iter().collect::<std::collections::HashSet<_>>().len() > 1,
+            "every rock on the fixture map has the same level, so the comparison is weak"
+        );
+        // And the sections after it still line up: a wrong stride here
+        // desynchronises the RLE payload rather than losing a rock.
+        assert_eq!(parts.mask.hash(), map.mask.hash());
+    }
+
+    /// The control for the section above: a normal map spends two bytes on it
+    /// and decodes to nothing.
+    #[test]
+    fn a_normal_map_carries_no_asteroid_section_beyond_its_count() {
+        let space = game_core::map::generate_with(7, MapScale::Small, MapGenerator::Space);
+        let normal = game_core::map::generate(7, MapScale::Small);
+        assert!(normal.meta.asteroids.is_empty());
+        let parts = decode_map_init_parts(&encode_map_init(&normal)).expect("decode");
+        assert!(parts.asteroids.is_empty());
+        assert!(
+            encode_map_init(&space).len() > 2,
+            "control: the space map does spend bytes here"
+        );
     }
 
     #[test]

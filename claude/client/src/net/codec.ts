@@ -52,8 +52,28 @@ export interface MapInit {
    * can be built with no atlas loaded (`docs/50` §8).
    */
   objects: MapObject[]
+  /**
+   * `T22.05A`'s asteroids, empty on any map but a space one.
+   *
+   * On the wire rather than derived, because a networked client never runs the
+   * generator — it is handed the finished mask by `loadMask` — and while the
+   * mask carries each rock's shape, nothing in it carries `level`. The client
+   * predicts against that number (`T22.11` owns what it does), and a predictor
+   * working from a different pull than the server's rubber-bands.
+   */
+  asteroids: MapAsteroid[]
   /** Fed straight to `Core.loadMask`, which decodes it in Rust. */
   rle: Uint8Array
+}
+
+/** One of the space map's rocks. Mirrors `game_core::map::meta::Asteroid`. */
+export interface MapAsteroid {
+  x: number
+  y: number
+  /** Bounding radius, px — every solid pixel of the rock is inside it. */
+  r: number
+  /** Gravity level, 1..`SPACE_LEVEL_MAX`. Monotone in `r`, with jitter. */
+  level: number
 }
 
 export interface SnapshotPlayer {
@@ -165,6 +185,14 @@ class Reader {
  */
 export const OBJECT_WIRE_BYTES = 11
 
+/**
+ * `i16 x, i16 y, u16 r, u8 level` — `codec.rs`'s own `ASTEROID_WIRE_BYTES`.
+ *
+ * Exported for the same reason as above: the length check here and the byte
+ * fixture in the test both read it rather than spelling 7 twice.
+ */
+export const ASTEROID_WIRE_BYTES = 7
+
 export function decodeMapInit(buf: ArrayBuffer): MapInit {
   const r = new Reader(new DataView(buf))
   const magic = r.u32()
@@ -238,6 +266,19 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
     })
   }
 
+  // `T22.05A`. **Parsed even though nothing draws them yet**: this section sits
+  // between the objects and the RLE length, so a client that skipped it would
+  // read the payload length out of the middle of an asteroid and every
+  // networked space round would fail to decode its map.
+  const astCount = r.u16()
+  if (astCount * ASTEROID_WIRE_BYTES > r.remaining) {
+    throw new CodecError(`asteroid_count ${astCount} exceeds the payload`)
+  }
+  const asteroids: MapAsteroid[] = []
+  for (let i = 0; i < astCount; i++) {
+    asteroids.push({ x: r.i16(), y: r.i16(), r: r.u16(), level: r.u8() })
+  }
+
   const rleLen = r.u32()
   if (rleLen !== r.remaining) {
     throw new CodecError(`rle_byte_len ${rleLen} disagrees with ${r.remaining} remaining`)
@@ -257,6 +298,7 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
     platforms,
     decorations,
     objects,
+    asteroids,
     rle,
   }
 }

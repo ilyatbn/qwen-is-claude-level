@@ -181,6 +181,47 @@ impl GameCore {
         self.map = game_core::map::generate_with(seed, scale, generator);
     }
 
+    /// `generate_with` under a named gravity, **deriving the generator from it**
+    /// (`T22.05A`, `M22-RULINGS` R15). Returns whether the spelling was one this
+    /// build knows.
+    ///
+    /// One call rather than `set_gravity` then `generate`, and that is the
+    /// point: the two-call form has an order, and calling it the wrong way
+    /// round leaves a normal map under space gravity — players falling off
+    /// rocks that are not there. Make the correct use the only use (§A24).
+    ///
+    /// **`PreviewScene` needs this or the lobby lies.** A networked round is
+    /// sent the finished mask in `map_init`, but the preview a host looks at
+    /// *while choosing the mode* runs the generator locally; without the mode it
+    /// shows a landscape to someone who has just picked space. That is the same
+    /// shape as the T19.24 client-side-vents bug.
+    ///
+    /// Refuse rather than clamp, which is `GravityMode::parse`'s own rule (§E6):
+    /// generating nothing is recoverable, and quietly generating the wrong map
+    /// is the bug this method exists to prevent.
+    pub fn generate_for_gravity(
+        &mut self,
+        seed_lo: u32,
+        seed_hi: u32,
+        scale: u8,
+        generator: u8,
+        gravity: &str,
+    ) -> bool {
+        let Some(g) = GravityMode::parse(gravity) else {
+            return false;
+        };
+        let chosen = game_core::constants::MapGenerator::from_u8(generator)
+            .unwrap_or(game_core::constants::DEFAULT_MAP_GENERATOR);
+        self.gravity = g;
+        self.generate_with(
+            seed_lo,
+            seed_hi,
+            scale,
+            game_core::constants::MapGenerator::for_gravity(g, chosen).to_u8(),
+        );
+        true
+    }
+
     /// Rebuild the map from a `map_init` RLE payload. Returns false on malformed
     /// input rather than panicking — this decodes untrusted network data.
     pub fn load_mask(&mut self, w: u32, h: u32, rle_bytes: &[u8]) -> bool {

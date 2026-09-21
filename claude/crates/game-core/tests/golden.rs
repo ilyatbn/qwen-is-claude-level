@@ -21,12 +21,22 @@ fn table_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden_hashes.txt")
 }
 
-/// The 24 fixed cases the table covers: 4 seeds x 3 scales x both generators.
+/// The 36 fixed cases the table covers: 4 seeds x 3 scales x **every**
+/// generator.
 ///
-/// **Both** generators, not just the default. v1 is still shipped behind
+/// **Every** generator, not just the default. v1 is still shipped behind
 /// `MAP_GENERATOR=v1`, and a table that only pinned whichever one happens to be
 /// the default would silently stop guarding the other the moment the default
 /// moved — which is exactly what happened when v2 landed.
+///
+/// **It was 24 until `MapGenerator::Space` joined `ALL`** (`T22.05A`, R15), and
+/// the twelve new rows cost nothing to write because this function iterates the
+/// list. That is the whole reason the space map is a third variant rather than a
+/// `GravityMode` branch inside an existing generator: the branch would have
+/// gained this table nothing, and the space generator would have shipped with
+/// **zero** golden coverage while `T22.05A`'s "most important test" — *existing
+/// hashes unchanged when the mode is off* — stayed green for a build in which
+/// the generator was never called.
 fn cases() -> Vec<(u64, MapScale, MapGenerator)> {
     let mut v = Vec::new();
     for generator in MapGenerator::ALL {
@@ -92,6 +102,26 @@ fn meta_digest(seed: u64, scale: MapScale, generator: MapGenerator) -> String {
     for g in &m.gun_platforms {
         h.update(&g.pos.x.to_le_bytes());
         h.update(&g.pos.y.to_le_bytes());
+    }
+    // **T22.05A: the asteroids, and only when there are any.** The mask carries
+    // a rock's *shape*; nothing but `level` carries its *pull*, so a digest that
+    // skipped this field would let the whole level assignment change with every
+    // row still green — the shape this file's own T21.28 note is about.
+    //
+    // Guarded on non-empty so the 24 rows that predate the space map do not
+    // move: for v1 and v2 the list is always empty, so hashing nothing and
+    // hashing a zero length are the same claim about them, and only one of the
+    // two keeps *existing golden hashes unchanged when the mode is off*. If a
+    // v1 or v2 map ever did grow asteroids, its digest would move — which is
+    // what you want.
+    if !m.asteroids.is_empty() {
+        h.update(&(m.asteroids.len() as u32).to_le_bytes());
+        for a in &m.asteroids {
+            h.update(&a.x.to_le_bytes());
+            h.update(&a.y.to_le_bytes());
+            h.update(&a.r.to_le_bytes());
+            h.update(&[a.level]);
+        }
     }
     h.update(map.mask.hash_hex().as_bytes());
     h.finalize().to_hex()[..16].to_string()

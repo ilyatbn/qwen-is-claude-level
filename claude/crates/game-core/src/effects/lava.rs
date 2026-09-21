@@ -258,6 +258,7 @@ mod tests {
             decorations: Vec::new(),
             wind: 0.0,
             traversable_fraction: 1.0,
+            asteroids: Vec::new(),
             largest_component: Vec::new(),
         };
         for x in (60..(W as i32 - 60)).step_by(16) {
@@ -538,6 +539,7 @@ mod tests {
             decorations: Vec::new(),
             wind: 0.0,
             traversable_fraction: 1.0,
+            asteroids: Vec::new(),
             largest_component: Vec::new(),
         };
         let mut map = Map::from_parts(mask, coarse, m);

@@ -928,6 +928,7 @@ impl World {
             scale,
             buried_secret,
             crate::constants::DEFAULT_MAP_GENERATOR,
+            GravityMode::Standard,
         )
     }
 
@@ -942,7 +943,30 @@ impl World {
         buried_secret: u64,
         generator: crate::constants::MapGenerator,
     ) -> Self {
-        Self::build(seed, scale, buried_secret, generator)
+        Self::build(seed, scale, buried_secret, generator, GravityMode::Standard)
+    }
+
+    /// As `with_generator`, under a named gravity — **and the gravity decides
+    /// the map** (`T22.05A`, `M22-RULINGS` R15).
+    ///
+    /// This exists because until it did, gravity could not reach map generation
+    /// at all: the server built the world and assigned `world.gravity`
+    /// *afterwards*, and `World::build` had no gravity parameter anywhere. So a
+    /// host who picked space got a landscape with a floor, and nothing in the
+    /// tree could have said otherwise.
+    ///
+    /// The derivation lives in `MapGenerator::for_gravity`, which is the single
+    /// source of truth: a room that carried a gravity **and** a generator as two
+    /// independent settings could be asked for space gravity on a normal map,
+    /// which is *derive, do not add a fourth flag*.
+    pub fn with_gravity(
+        seed: u64,
+        scale: MapScale,
+        buried_secret: u64,
+        generator: crate::constants::MapGenerator,
+        gravity: GravityMode,
+    ) -> Self {
+        Self::build(seed, scale, buried_secret, generator, gravity)
     }
 
     fn build(
@@ -950,9 +974,17 @@ impl World {
         scale: MapScale,
         buried_secret: u64,
         generator: crate::constants::MapGenerator,
+        gravity: GravityMode,
     ) -> Self {
+        let generator = crate::constants::MapGenerator::for_gravity(gravity, generator);
         let map = crate::map::generate_full(seed, scale, buried_secret, generator);
-        Self::from_map(seed, buried_secret, map)
+        let mut world = Self::from_map(seed, buried_secret, map);
+        // Set **here**, not by the caller afterwards. The map that just got
+        // built is the map this gravity asked for, and a second assignment at
+        // the call site is a second place the two can disagree — which is what
+        // the two construction sites in `room.rs` were before this.
+        world.gravity = gravity;
+        world
     }
 
     /// A world for a test that needs a real map and is not testing generation.
@@ -5219,6 +5251,7 @@ mod toxic_rain_falls {
             decorations: Vec::new(),
             wind: 0.0,
             traversable_fraction: 1.0,
+            asteroids: Vec::new(),
             largest_component: Vec::new(),
         };
         // The surface points the pre-§C21 code placed the hazard on directly.
@@ -5725,6 +5758,7 @@ mod toxic_rain_falls {
             decorations: Vec::new(),
             wind: 0.0,
             traversable_fraction: 1.0,
+            asteroids: Vec::new(),
             largest_component: Vec::new(),
         };
         meta.surface_points.push(crate::math::Point {
@@ -6075,6 +6109,7 @@ mod toxic_rain_falls {
                 decorations: Vec::new(),
                 wind: 0.0,
                 traversable_fraction: 1.0,
+                asteroids: Vec::new(),
                 largest_component: Vec::new(),
             };
             Map::from_parts(mask, coarse, meta)
@@ -7785,8 +7820,84 @@ mod birds_in_a_round {
 #[cfg(test)]
 mod gravity_tests {
     use super::*;
-    use crate::constants::{GravityMode, MapScale, SIM_DT};
+    use crate::constants::{GravityMode, MapGenerator, MapScale, SIM_DT};
     use crate::player::input::{button, Input};
+
+    /// **The gravity mode reaches map generation**, which until `T22.05A` it
+    /// could not: `World::build` had no gravity parameter, so a host who picked
+    /// space was given a landscape with a floor.
+    ///
+    /// The discriminator is `meta.asteroids`, which is empty for every generator
+    /// but `Space` — see its doc comment. The control is the same call under
+    /// `Standard`, without which this passes for a build that always makes space
+    /// maps.
+    #[test]
+    fn space_gravity_builds_a_space_map_and_standard_does_not() {
+        for scale in MapScale::ALL {
+            let space = World::with_gravity(
+                4242,
+                scale,
+                0,
+                crate::constants::DEFAULT_MAP_GENERATOR,
+                GravityMode::Space,
+            );
+            assert!(
+                !space.map.meta.asteroids.is_empty(),
+                "{scale:?}: space gravity produced a map with no asteroids"
+            );
+            assert_eq!(space.gravity, GravityMode::Space, "{scale:?}");
+
+            for control in [GravityMode::Standard, GravityMode::Low] {
+                let w = World::with_gravity(
+                    4242,
+                    scale,
+                    0,
+                    crate::constants::DEFAULT_MAP_GENERATOR,
+                    control,
+                );
+                assert!(
+                    w.map.meta.asteroids.is_empty(),
+                    "{scale:?}: {control:?} gravity produced a space map"
+                );
+                assert_eq!(w.gravity, control, "{scale:?}");
+            }
+        }
+    }
+
+    /// The other half of R15: **one source of truth**. A lobby cannot end up
+    /// with space gravity on a normal map, and it cannot end up with a space map
+    /// under a gravity that would drop everyone off it either.
+    #[test]
+    fn the_generator_cannot_disagree_with_the_gravity() {
+        // Space gravity overrides whatever generator was asked for.
+        for chosen in MapGenerator::ALL {
+            assert_eq!(
+                MapGenerator::for_gravity(GravityMode::Space, chosen),
+                MapGenerator::Space,
+                "space gravity did not override {chosen:?}"
+            );
+        }
+        // And the space map cannot be reached without it. `MapGenerator::Space`
+        // arriving from a wire byte or a replay header under standard gravity
+        // is collapsed rather than trusted.
+        for gravity in [GravityMode::Standard, GravityMode::Low] {
+            assert_ne!(
+                MapGenerator::for_gravity(gravity, MapGenerator::Space),
+                MapGenerator::Space,
+                "{gravity:?} gravity kept a space generator"
+            );
+        }
+        // Everything else passes through untouched.
+        for gravity in [GravityMode::Standard, GravityMode::Low] {
+            for chosen in [MapGenerator::V1, MapGenerator::V2] {
+                assert_eq!(MapGenerator::for_gravity(gravity, chosen), chosen);
+            }
+        }
+        // And there is no environment spelling for it, so an operator cannot
+        // select one beside a gravity.
+        assert_eq!(MapGenerator::parse("space"), None);
+        assert_eq!(MapGenerator::as_str(MapGenerator::Space), "space");
+    }
 
     /// How long a run is, and how often the falling things are replaced.
     ///

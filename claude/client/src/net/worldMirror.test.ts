@@ -75,6 +75,7 @@ function initMirror(
     platforms,
     decorations: [],
     objects: [],
+    asteroids: [],
     rle: c.maskRle(),
   })
   return m
@@ -105,6 +106,7 @@ function freshMirror(): { mirror: WorldMirror; resyncs: number[] } {
     platforms: [],
     decorations: [],
     objects: [],
+    asteroids: [],
     rle: core.maskRle(),
   })
   return { mirror, resyncs }
@@ -432,6 +434,7 @@ describe('roster and entities', () => {
         platforms: [],
         decorations: [],
         objects: [],
+    asteroids: [],
         rle,
       }),
     ).toThrow() // an empty RLE cannot load — the guard is real
@@ -482,6 +485,7 @@ describe('carve stream resumption', () => {
       platforms: [],
       decorations: [],
       objects: [],
+    asteroids: [],
       rle: core.maskRle(),
     })
 
@@ -510,6 +514,7 @@ describe('carve stream resumption', () => {
       platforms: [],
       decorations: [],
       objects: [],
+    asteroids: [],
       rle: core.maskRle(),
     })
     mirror.applyCarve(50, () => {}, 0) // 42..49 missing

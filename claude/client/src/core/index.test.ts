@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { Core, MapScale, C } from './index'
+import { Core, MapGenerator, MapScale, C } from './index'
 import { MOVE_MOD } from '../net/codec'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -27,6 +27,44 @@ describe('Core', () => {
     expect(c.CAMERA_ZOOM).toBe(2)
     expect(c.PLAYER_W).toBe(16)
     expect(c.PLAYER_H).toBe(28)
+  })
+
+  /**
+   * T22.05A / R15: the gravity mode decides the map, and the client has to be
+   * able to ask for it — `PreviewScene` shows a host the map they are about to
+   * play while they are still choosing the mode.
+   *
+   * The discriminator is `meta.asteroids`, which is empty for every generator
+   * but the space one. The control is the same call under `standard`, without
+   * which this passes for a build that always makes space maps.
+   */
+  it('builds a space map for space gravity and a normal one otherwise', () => {
+    expect(core.generateForGravity(4242n, MapScale.Small, MapGenerator.V2, 'space')).toBe(true)
+    expect(core.meta.asteroids.length).toBeGreaterThan(0)
+    const spaceHash = Array.from(core.maskHash()).join(',')
+    // Every rock carries a level in 1..5, and they are not all the same one.
+    const levels = core.meta.asteroids.map((a) => a.level)
+    expect(Math.min(...levels)).toBeGreaterThanOrEqual(1)
+    expect(Math.max(...levels)).toBeLessThanOrEqual(5)
+    expect(new Set(levels).size).toBeGreaterThan(1)
+
+    expect(core.generateForGravity(4242n, MapScale.Small, MapGenerator.V2, 'standard')).toBe(true)
+    expect(core.meta.asteroids).toEqual([])
+    expect(Array.from(core.maskHash()).join(',')).not.toBe(spaceHash)
+
+    // And the generator cannot be picked beside the mode: asking for the space
+    // generator under standard gravity gets the default map back.
+    core.generateForGravity(4242n, MapScale.Small, MapGenerator.Space, 'standard')
+    expect(core.meta.asteroids).toEqual([])
+  })
+
+  it('refuses an unknown gravity spelling rather than guessing a map', () => {
+    core.generate(4242n, MapScale.Small)
+    const before = Array.from(core.maskHash()).join(',')
+    expect(core.generateForGravity(1n, MapScale.Small, MapGenerator.V2, 'zero-g')).toBe(false)
+    // Nothing was generated: refuse rather than clamp (§E6). A silent fallback
+    // to standard would show a host the wrong map with no signal at all.
+    expect(Array.from(core.maskHash()).join(',')).toBe(before)
   })
 
   it('generates each scale at the right dimensions', () => {

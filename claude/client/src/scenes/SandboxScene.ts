@@ -9,7 +9,15 @@
  */
 
 import Phaser from 'phaser'
-import { C, Core, MapScale, ambientRain, strictConstants, type WeatherState } from '../core'
+import {
+  C,
+  Core,
+  MapGenerator,
+  MapScale,
+  ambientRain,
+  strictConstants,
+  type WeatherState,
+} from '../core'
 import { DEPTH } from '../render/backdrop'
 import { occupiedPlatforms } from '../render/platforms'
 import { isHighQuality, setHighQuality } from '../ui/settings'
@@ -57,6 +65,13 @@ export class SandboxScene extends Phaser.Scene {
 
   private seed = 0n
   private mapScale: MapScale = MapScale.Medium
+  /**
+   * The gravity this sandbox map was generated under, as a wire spelling
+   * (T22.05A / R22). A string rather than an enum because that is what
+   * `generateForGravity` and `Core.setGravity` both take, and parsing it in
+   * two places is how a spelling drifts.
+   */
+  private gravity = 'standard'
   private carveRadius = 42
 
   private sky!: SkyLayer
@@ -156,6 +171,13 @@ export class SandboxScene extends Phaser.Scene {
     const seedParam = params.get('seed')
     this.seed = seedParam ? BigInt(seedParam) : randomSeed()
     this.mapScale = SCALES[params.get('scale') ?? 'medium'] ?? MapScale.Medium
+    // `M22-RULINGS` R22: without this, **every sandbox check is structurally
+    // incapable of seeing a space map** — the scene read only `seed` and
+    // `scale`, and gravity deliberately has no environment spelling, so a
+    // standalone check has no other route to the mode. Written here because
+    // T22.05A is the first M22 task to land and the ruling says whichever one
+    // does writes it.
+    this.gravity = params.get('gravity') ?? 'standard'
 
     this.buildUi()
     this.regenerate()
@@ -336,7 +358,12 @@ export class SandboxScene extends Phaser.Scene {
     this.world?.destroy()
 
     const t0 = performance.now()
-    this.core.generate(this.seed, this.mapScale)
+    // Through the gravity, because the gravity decides the generator (R15).
+    // An unknown spelling generates nothing, so fall back to the default map
+    // rather than leaving the scene with whatever was there before.
+    if (!this.core.generateForGravity(this.seed, this.mapScale, MapGenerator.V2, this.gravity)) {
+      this.core.generate(this.seed, this.mapScale)
+    }
     this.timings.generateMs = performance.now() - t0
 
     const { width: mapW, height: mapH } = this.core
@@ -1260,9 +1287,13 @@ export class SandboxScene extends Phaser.Scene {
         // the definition of a trap — §A24: make the correct use the only use.
         self.grantSandboxLoadout()
       },
-      regenerate(seed?: string, scale?: string) {
+      regenerate(seed?: string, scale?: string, gravity?: string) {
         if (seed !== undefined) self.seed = BigInt(seed)
         if (scale !== undefined) self.mapScale = SCALES[scale] ?? self.mapScale
+        // R22's second half: the URL parameter covers a check that loads the
+        // page in the mode, and this covers one that has to compare both modes
+        // in a single page without a reload.
+        if (gravity !== undefined) self.gravity = gravity
         self.regenerate()
       },
       carve(x: number, y: number, r: number) {

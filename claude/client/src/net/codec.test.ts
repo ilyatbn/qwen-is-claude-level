@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { Core, C, MapScale } from '../core'
 import {
   decodeMapInit,
+  ASTEROID_WIRE_BYTES,
   decodeSnapshot,
   encodeInputBatch,
   CodecError,
@@ -33,6 +34,9 @@ function mapInitFixture(opts: Partial<{
   platformCountLie: number
   decoCount: number
   objectCount: number
+  asteroidCount: number
+  /** Write an asteroid count the buffer cannot hold, without growing it. */
+  asteroidCountLie: number
   rle: Uint8Array
   rleLenLie: number
   carveSeq: number
@@ -44,6 +48,7 @@ function mapInitFixture(opts: Partial<{
   const platforms = opts.platformCount ?? 2
   const decos = opts.decoCount ?? 1
   const objects = opts.objectCount ?? 2
+  const asteroids = opts.asteroidCount ?? 3
   const rle = opts.rle ?? new Uint8Array([1, 2, 3, 4])
   // magic, w, h, seed, scale, theme, wind, carve_seq, then the counted sections.
   // `carve_seq` (u32) arrived with T6.16 and this fixture did not follow it —
@@ -54,7 +59,9 @@ function mapInitFixture(opts: Partial<{
     // T21.11's platforms ride between the pads and the decorations.
     2 + platforms * 4 +
     2 + decos * 7 +
-    2 + objects * OBJECT_WIRE_BYTES + 4 + rle.length
+    2 + objects * OBJECT_WIRE_BYTES +
+    // T22.05A's asteroids ride between the objects and the RLE length.
+    2 + asteroids * ASTEROID_WIRE_BYTES + 4 + rle.length
   const b = new ArrayBuffer(size)
   const v = new DataView(b)
   let at = 0
@@ -97,6 +104,13 @@ function mapInitFixture(opts: Partial<{
     v.setUint16(at, 32, true); at += 2       // h
     v.setUint8(at++, i % 2)                  // flip: varies, so a decoder that
   }                                          // hardcodes either value fails
+  v.setUint16(at, opts.asteroidCountLie ?? asteroids, true); at += 2
+  for (let i = 0; i < asteroids; i++) {
+    v.setInt16(at, 1100 + i, true); at += 2  // x
+    v.setInt16(at, 1200 + i, true); at += 2  // y
+    v.setUint16(at, 30 + i, true); at += 2   // r
+    v.setUint8(at++, 1 + i)                  // level: varies, so a decoder that
+  }                                          // hardcodes one value fails
   v.setUint32(at, opts.rleLenLie ?? rle.length, true); at += 4
   new Uint8Array(b).set(rle, at)
   return b
@@ -180,7 +194,33 @@ describe('map_init', () => {
       { id: 40, x: 700, y: 800, w: 24, h: 32, flip: false },
       { id: 41, x: 701, y: 801, w: 24, h: 32, flip: true },
     ])
+    // T22.05A. After the objects and before the RLE length — and, like every
+    // section above it, everything past it decodes from the right offset only
+    // if this one is read. The levels vary so a decoder that hardcodes one
+    // fails.
+    expect(m.asteroids).toEqual([
+      { x: 1100, y: 1200, r: 30, level: 1 },
+      { x: 1101, y: 1201, r: 31, level: 2 },
+      { x: 1102, y: 1202, r: 32, level: 3 },
+    ])
     expect(Array.from(m.rle)).toEqual([1, 2, 3, 4])
+  })
+
+  /**
+   * The control for the section above: a normal map sends no rocks, and the
+   * RLE still lines up — so the two bytes this costs every other map are paid
+   * and read.
+   */
+  it('decodes a map with no asteroids and still finds the mask', () => {
+    const m = decodeMapInit(mapInitFixture({ asteroidCount: 0 }))
+    expect(m.asteroids).toEqual([])
+    expect(Array.from(m.rle)).toEqual([1, 2, 3, 4])
+  })
+
+  it('rejects an asteroid count the payload cannot hold', () => {
+    expect(() => decodeMapInit(mapInitFixture({ asteroidCountLie: 30000 }))).toThrow(
+      /asteroid_count/,
+    )
   })
 
   it('rejects a pad count the payload cannot hold', () => {
