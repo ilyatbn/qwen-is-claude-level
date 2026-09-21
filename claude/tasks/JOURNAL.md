@@ -6650,3 +6650,17 @@ and tests made it nine. Amended to *"the only production **read**"* before the g
 **Housekeeping worth more than it looks:** 18 untracked `gate-*.txt` files were each reaching `affected.mjs` as a path no rule knows, and
 each prints *"everything"* — so stale logs were forcing a 17-minute full run on prose-only changes. `.gitignore`d; `affected.mjs` now
 reports **0**.
+
+**T22.05B — space spawns, objects, and everything that assumed "up"** (`6e1ef91`). **Complete and green, not a stub.** R35's red
+reproduced through the real pipeline (all 6 spawns and all 6 pads at the crust line, `outside=6` on all three scales) and is green now.
+The generator picks its own open-space spawns, `analyse_space` judges *that* list, `gen::surface_for` drops the void crust (fixing six
+readers at once), and pads/platforms/buried/decorations/wind are ruled off in space with reasons at the code. **The find:**
+`World::spawn_for` and `choose_respawn` gate spawns on `is_standable`, which open air fails *by definition* — the whole feature would have
+shipped wired to nothing; `Map::body_fits_at` is the one place that choice is now made. **Falsification: 14 Rust plants + 2 browser plants
+all red; one stayed green and is reported, not hidden** — `random_body_site`'s space arm, whose test asserts "inside the arena", which the
+filtered surface also satisfies. **`golden_hashes.txt` regenerated deliberately and verified: 12 space meta digests moved, the 24 non-space
+rows and every mask hash byte-identical.** `the_open_space_hit_rate` has its `scripts/ignored.sh` row; `verify-repo` reads 24/24.
+**Trap for the next session:** restoring a planted file with `shutil.move` of an earlier-mtime backup leaves cargo reusing the *planted*
+binary — one test read red for ten minutes for that reason alone. `touch` every planted file before believing a post-sweep run.
+**Not run: `./scripts/check.sh --changed`** (coordinator's stop order; a client file is touched, so it is the full browser suite). That is
+the single next action.
