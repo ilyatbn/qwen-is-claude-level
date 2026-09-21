@@ -3,14 +3,14 @@
 //! See `docs/30-items-inventory.md` §5 and `docs/32-item-spawning.md` §6.
 
 use crate::constants::{
-    CRATE_DRAG, CRATE_H, CRATE_W, MAX_WORLD_ITEMS, PICKUP_RADIUS, WORLD_ITEM_TTL,
+    GravityMode, CRATE_DRAG, CRATE_H, CRATE_W, MAX_WORLD_ITEMS, PICKUP_RADIUS, WORLD_ITEM_TTL,
 };
 use crate::items::inventory::{AddResult, Inventory};
 use crate::items::registry::ItemId;
 use crate::map::Map;
 use crate::math::Vec2;
 use crate::physics::body::Body;
-use crate::physics::resolve::integrate;
+use crate::physics::resolve::{integrate, Forces};
 
 pub type WorldItemId = u32;
 pub type PlayerId = u8;
@@ -178,7 +178,7 @@ impl WorldItems {
     /// final, so a periodic broadcast that happens to miss it leaves every
     /// observer holding a position the crate has already left. That is exactly
     /// how a crate ends up drawn in mid-air (§C7).
-    pub fn step(&mut self, map: &Map, dt: f32) -> ItemStep {
+    pub fn step(&mut self, map: &Map, gravity: GravityMode, dt: f32) -> ItemStep {
         let mut out = ItemStep::default();
         let landed = &mut out.landed;
         for it in self.items.iter_mut() {
@@ -203,15 +203,14 @@ impl WorldItems {
                 // keeping its lateral speed forever.
                 body.vel.x *= 1.0 - CRATE_DRAG;
             }
-            // **`false`, and it is the current behaviour rather than a
-            // placeholder** (T22.03). `M22-RULINGS` R14 rules that in space
-            // every non-player body floats where it is put — which means a
-            // gravity scale of 0 *and* these contact rules — and R10
-            // assigns that signature change to `T22.11`. Today this body
-            // falls at standard gravity in every mode, exactly as
-            // `GravityMode::scale`'s doc comment says it does, so `false`
-            // is the truthful argument and not a guess.
-            integrate(map, &mut body, 1.0, false, dt);
+            // **The match's gravity setting, not a literal `1.0`**
+            // (`M22-RULINGS` R30, R14, R48). Until T22.11A this passed `1.0`
+            // and `false` unconditionally, so in a low-gravity match this body
+            // fell at twice the speed of the player who dropped it — a bug
+            // visible in a shipped mode, not polish. `Forces::falling` is the
+            // one place the mode becomes this body's scale **and** its contact
+            // rules, so the two cannot drift apart at four call sites.
+            integrate(map, &mut body, Forces::falling(gravity), dt);
             it.pos = body.pos;
             it.vel = body.vel;
             // Anything reaching here was airborne at the top of the loop — the
@@ -505,7 +504,7 @@ mod tests {
 
     fn drop_until_rest(w: &mut WorldItems, map: &Map) {
         for _ in 0..600 {
-            w.step(map, crate::constants::SIM_DT);
+            w.step(map, GravityMode::Standard, crate::constants::SIM_DT);
         }
     }
 
@@ -546,7 +545,7 @@ mod tests {
         drop_until_rest(&mut w, &map);
         let at_rest = w.get(id).expect("there").pos;
         for _ in 0..100 {
-            w.step(&map, crate::constants::SIM_DT);
+            w.step(&map, GravityMode::Standard, crate::constants::SIM_DT);
         }
         // Bit-identical: idle items must cost nothing and must not creep.
         assert_eq!(w.get(id).expect("there").pos, at_rest);
@@ -593,7 +592,7 @@ mod tests {
             0.0,
         );
         for _ in 0..300 {
-            w.step(&map, crate::constants::SIM_DT);
+            w.step(&map, GravityMode::Standard, crate::constants::SIM_DT);
         }
         assert!(
             w.get(id).expect("there").pos.y < 400.0,
@@ -842,7 +841,7 @@ mod tests {
             0.0,
         );
         for _ in 0..600 {
-            w.step(&map, crate::constants::SIM_DT);
+            w.step(&map, GravityMode::Standard, crate::constants::SIM_DT);
         }
         let resting = w.get(id).expect("there").pos.y;
         assert!(w.get(id).expect("there").grounded);
@@ -850,7 +849,7 @@ mod tests {
         // Blow the ground out from under it.
         map.carve_circle(256, 400, 60);
         for _ in 0..600 {
-            w.step(&map, crate::constants::SIM_DT);
+            w.step(&map, GravityMode::Standard, crate::constants::SIM_DT);
         }
         let after = w.get(id).expect("there");
         assert!(
@@ -876,12 +875,12 @@ mod tests {
             0.0,
         );
         for _ in 0..600 {
-            w.step(&map, crate::constants::SIM_DT);
+            w.step(&map, GravityMode::Standard, crate::constants::SIM_DT);
         }
         let resting = w.get(id).expect("there").pos.y;
         map.carve_circle(256, 405, 70);
         for _ in 0..600 {
-            w.step(&map, crate::constants::SIM_DT);
+            w.step(&map, GravityMode::Standard, crate::constants::SIM_DT);
         }
         assert!(
             w.get(id).expect("there").pos.y > resting + 20.0,
@@ -903,13 +902,118 @@ mod tests {
             0.0,
         );
         for _ in 0..600 {
-            w.step(&map, crate::constants::SIM_DT);
+            w.step(&map, GravityMode::Standard, crate::constants::SIM_DT);
         }
         let at_rest = w.get(id).expect("there").pos;
         for _ in 0..600 {
-            w.step(&map, crate::constants::SIM_DT);
+            w.step(&map, GravityMode::Standard, crate::constants::SIM_DT);
         }
         assert_eq!(w.get(id).expect("there").pos, at_rest);
+    }
+
+    /// **A dropped weapon falls at the speed of the player who dropped it, in
+    /// every mode** — `M22-RULINGS` R30 and R48, and this was false in a shipped
+    /// mode until T22.11A.
+    ///
+    /// `WorldItems::step` passed a literal `1.0` to `integrate` while
+    /// `GravityMode::Low.scale()` is `LOW_GRAVITY_SCALE`, so a rifle dropped in
+    /// a low-gravity match fell at twice the speed of the player who dropped it.
+    /// Low gravity has been playable since `T22.02`.
+    ///
+    /// **The player arm is driven through `player::apply_input`, not through
+    /// `integrate` with a scale this test chose.** Comparing the item against a
+    /// number computed here would compare the item against this test's arithmetic
+    /// — the two arms have to come from the two production paths or the
+    /// assertion is about nothing. That is also what makes it a cross-subsystem
+    /// claim rather than a restatement of `Forces::falling`.
+    ///
+    /// **Three arms, and the `Standard` one is the control.** The `Low`
+    /// equality alone would pass for a build where neither the item nor the
+    /// player is accelerated at all; the `Standard` arm is what says the fixture
+    /// can see gravity, and the strict inequality between the two is what says
+    /// it can see the *mode*. The `Space` arm is R14: a non-player body floats
+    /// where it is put.
+    #[test]
+    fn a_dropped_item_falls_at_the_players_rate_in_every_gravity_mode() {
+        use crate::player::{apply_input, Env, Input, JetpackState, JumpState, MoveMods, MoveStep};
+
+        const TICKS: u32 = 40;
+        let start = Vec2::new(200.0, 60.0);
+
+        // One item, dropped from rest, `TICKS` ticks of world stepping.
+        let item_drop = |mode: GravityMode| -> f32 {
+            let map = flat_map(H as i32 - 8);
+            let mut w = WorldItems::new();
+            let id = w.spawn(BAZOOKA, 1, start, Vec2::ZERO, SpawnSource::Initial, 0.0);
+            for _ in 0..TICKS {
+                w.step(&map, mode, crate::constants::SIM_DT);
+            }
+            let it = w.get(id).expect("the item left the world");
+            assert!(
+                !it.grounded,
+                "precondition: the item landed inside {TICKS} \
+                                   ticks, so this measures a landing, not a fall"
+            );
+            it.pos.y - start.y
+        };
+
+        // One player, dropped from rest at the same height, through the
+        // function both sides run.
+        let player_drop = |mode: GravityMode| -> f32 {
+            let map = flat_map(H as i32 - 8);
+            let mut body = crate::physics::body::Body::new(start);
+            let mut jump = JumpState::default();
+            let mut jet = JetpackState::default();
+            let idle = Input::default();
+            for _ in 0..TICKS {
+                apply_input(
+                    &map,
+                    &mut body,
+                    &mut jump,
+                    &mut jet,
+                    &idle,
+                    &idle,
+                    MoveStep {
+                        mods: MoveMods::NONE,
+                        env: Env::field_free(mode),
+                    },
+                    crate::constants::SIM_DT,
+                );
+            }
+            assert!(
+                !body.grounded,
+                "precondition: the player landed inside {TICKS} ticks"
+            );
+            body.pos.y - start.y
+        };
+
+        let (item_low, player_low) = (item_drop(GravityMode::Low), player_drop(GravityMode::Low));
+        assert_eq!(
+            item_low, player_low,
+            "R48: in low gravity a dropped item fell {item_low} px while the \
+             player who dropped it fell {player_low} px"
+        );
+
+        // Control: the fixture can see gravity at all, and can see the mode.
+        let item_std = item_drop(GravityMode::Standard);
+        assert_eq!(
+            item_std,
+            player_drop(GravityMode::Standard),
+            "the two paths disagree under standard gravity, so the low-gravity \
+             agreement above says nothing about the mode"
+        );
+        assert!(
+            item_low < item_std,
+            "control: low gravity dropped the item as far as standard did \
+             ({item_low} vs {item_std}), so this fixture cannot see the mode"
+        );
+
+        // R14: in space a non-player body floats where it is put.
+        assert_eq!(
+            item_drop(GravityMode::Space),
+            0.0,
+            "R14: a dropped item moved in space"
+        );
     }
 }
 

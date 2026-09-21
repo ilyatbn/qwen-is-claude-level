@@ -23,14 +23,14 @@
 //! difference; everything else here is `birds.rs` with different verbs.
 
 use crate::constants::{
-    ANIMAL_DESPAWN_BELOW, ANIMAL_EDGE_MARGIN, ANIMAL_INTERVAL, ANIMAL_MAX, ANIMAL_SPIDER_CHANCE,
-    BEETLE_H, BEETLE_HEALTH, BEETLE_SPEED, BEETLE_TURN_EVERY, BEETLE_W, SPIDER_H, SPIDER_HEALTH,
-    SPIDER_HOP_EVERY, SPIDER_HOP_SIDE, SPIDER_HOP_UP, SPIDER_W,
+    GravityMode, ANIMAL_DESPAWN_BELOW, ANIMAL_EDGE_MARGIN, ANIMAL_INTERVAL, ANIMAL_MAX,
+    ANIMAL_SPIDER_CHANCE, BEETLE_H, BEETLE_HEALTH, BEETLE_SPEED, BEETLE_TURN_EVERY, BEETLE_W,
+    SPIDER_H, SPIDER_HEALTH, SPIDER_HOP_EVERY, SPIDER_HOP_SIDE, SPIDER_HOP_UP, SPIDER_W,
 };
 use crate::map::Map;
 use crate::math::Vec2;
 use crate::physics::body::Body;
-use crate::physics::resolve::integrate;
+use crate::physics::resolve::{integrate, Forces};
 use crate::rng::{chance, range_f32, substream, ChaCha8Rng};
 
 pub type AnimalId = u32;
@@ -184,7 +184,14 @@ impl Animals {
 
     /// Spawn, move and cull. `active` is false outside `Playing`, exactly as the
     /// birds' is — a lobby has no reason to grow wildlife.
-    pub fn tick(&mut self, map: &Map, active: bool, now: f32, dt: f32) -> AnimalStep {
+    pub fn tick(
+        &mut self,
+        map: &Map,
+        active: bool,
+        gravity: GravityMode,
+        now: f32,
+        dt: f32,
+    ) -> AnimalStep {
         let mut out = AnimalStep::default();
         if !active {
             return out;
@@ -244,15 +251,14 @@ impl Animals {
                     }
                 }
             }
-            // **`false`, and it is the current behaviour rather than a
-            // placeholder** (T22.03). `M22-RULINGS` R14 rules that in space
-            // every non-player body floats where it is put — which means a
-            // gravity scale of 0 *and* these contact rules — and R10
-            // assigns that signature change to `T22.11`. Today this body
-            // falls at standard gravity in every mode, exactly as
-            // `GravityMode::scale`'s doc comment says it does, so `false`
-            // is the truthful argument and not a guess.
-            integrate(map, &mut a.body, 1.0, false, dt);
+            // **The match's gravity setting, not a literal `1.0`**
+            // (`M22-RULINGS` R30, R14, R48). Until T22.11A this passed `1.0`
+            // and `false` unconditionally, so in a low-gravity match this body
+            // fell at twice the speed of the player who dropped it — a bug
+            // visible in a shipped mode, not polish. `Forces::falling` is the
+            // one place the mode becomes this body's scale **and** its contact
+            // rules, so the two cannot drift apart at four call sites.
+            integrate(map, &mut a.body, Forces::falling(gravity), dt);
         }
 
         // --- cull ------------------------------------------------------------
@@ -355,7 +361,7 @@ impl Animals {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{MapScale, SIM_DT};
+    use crate::constants::{MapScale, LOW_GRAVITY_SCALE, SIM_DT};
     use crate::map::generate;
 
     fn map() -> Map {
@@ -366,11 +372,48 @@ mod tests {
         let mut all = AnimalStep::default();
         let ticks = (seconds / SIM_DT) as u32;
         for i in 0..ticks {
-            let step = a.tick(m, true, i as f32 * SIM_DT, SIM_DT);
+            let step = a.tick(m, true, GravityMode::Standard, i as f32 * SIM_DT, SIM_DT);
             all.spawned.extend(step.spawned);
             all.gone.extend(step.gone);
         }
         all
+    }
+
+    /// **An animal falls at the match's rate, and in space it does not fall at
+    /// all** — `M22-RULINGS` R30, R14, R48.
+    ///
+    /// Until T22.11A this stepper passed a literal `1.0`. Vertical only: R14's
+    /// *"no animals at all in space"* is a spawning rule and not this stepper's,
+    /// so a beetle placed in a vacuum still walks — what it must not do is fall.
+    ///
+    /// The `Standard` arm is the control; without it the `Low` and `Space`
+    /// assertions are both satisfied by a stepper that stopped integrating.
+    #[test]
+    fn an_animal_falls_by_the_match_gravity_and_not_at_all_in_space() {
+        let m = map();
+        let fall = |mode: GravityMode| -> f32 {
+            let mut a = Animals::new(7);
+            let id = a.place_for_test(AnimalKind::Beetle, Vec2::new(300.0, 40.0), 0.0);
+            for i in 0..25 {
+                a.tick(&m, true, mode, i as f32 * SIM_DT, SIM_DT);
+            }
+            let b = a.get(id).expect("the beetle left the world");
+            assert!(!b.body.grounded, "precondition: it landed, not a fall");
+            b.body.pos.y - 40.0
+        };
+        let (std, low, space) = (
+            fall(GravityMode::Standard),
+            fall(GravityMode::Low),
+            fall(GravityMode::Space),
+        );
+        // See `tombstones`' twin for why this is an epsilon and not `assert_eq!`.
+        assert!(
+            (low - std * LOW_GRAVITY_SCALE).abs() < 0.001,
+            "R30: a beetle fell {low} px in low gravity against {std} px in \
+             standard, which is not the mode's scale"
+        );
+        assert!(std > 0.0, "control: the fixture cannot see gravity at all");
+        assert_eq!(space, 0.0, "R14: an animal fell in space");
     }
 
     #[test]
@@ -394,7 +437,7 @@ mod tests {
         let m = map();
         let mut a = Animals::new(7);
         for i in 0..3600 {
-            a.tick(&m, false, i as f32 * SIM_DT, SIM_DT);
+            a.tick(&m, false, GravityMode::Standard, i as f32 * SIM_DT, SIM_DT);
         }
         assert!(a.is_empty(), "a lobby grew {} animals", a.len());
     }
@@ -461,7 +504,7 @@ mod tests {
         let start_b = a.get(beetle).expect("placed").body.pos.y;
         let ticks = ((SPIDER_HOP_EVERY * 3.0) / SIM_DT) as u32;
         for i in 0..ticks {
-            a.tick(&m, true, i as f32 * SIM_DT, SIM_DT);
+            a.tick(&m, true, GravityMode::Standard, i as f32 * SIM_DT, SIM_DT);
             if let Some(s) = a.get(spider) {
                 spider_lift = spider_lift.max(start_s - s.body.pos.y);
             }
@@ -496,7 +539,7 @@ mod tests {
         );
         let from = a.get(beetle).expect("placed").body.pos.x;
         for i in 0..((BEETLE_TURN_EVERY / SIM_DT) as u32) {
-            a.tick(&m, true, i as f32 * SIM_DT, SIM_DT);
+            a.tick(&m, true, GravityMode::Standard, i as f32 * SIM_DT, SIM_DT);
         }
         let moved = (a.get(beetle).expect("alive").body.pos.x - from).abs();
         assert!(moved > BEETLE_W, "the beetle walked {moved} px in a turn");

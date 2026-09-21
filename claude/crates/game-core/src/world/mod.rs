@@ -29,12 +29,12 @@ use crate::items::world::{SpawnSource, WorldItemId, WorldItems};
 use crate::map::meta::TeleportPad;
 use crate::map::{CarveResult, Map};
 use crate::math::{Aabb, Point, Vec2};
-use crate::player::apply_input;
 use crate::player::input::Input;
 use crate::player::respawn::choose_respawn_pad;
 use crate::player::state::{
     choose_respawn, surface_to_centre, DeathCause, PlayerId, PlayerState, UseError,
 };
+use crate::player::{apply_input, Env, MoveStep};
 use crate::rng::{range_f32, substream, ChaCha8Rng};
 use crate::weapons::burn::BurnKind;
 use crate::weapons::defs::{self, BurnZone, Burst, Delivery};
@@ -1352,7 +1352,7 @@ impl World {
         self.step_placed(now, dt);
 
         // 6. world items and crates — and the graves, which fall the same way.
-        let moved = self.items.step(&self.map, dt);
+        let moved = self.items.step(&self.map, self.gravity, dt);
         self.emit_item_motion(&moved.landed);
         // Anything that fell out of the world is gone; say so, or every client
         // keeps drawing a crate falling forever (§C15).
@@ -1363,7 +1363,7 @@ impl World {
                 world_item_id: *id,
             });
         }
-        self.tombstones.step(&self.map, dt);
+        self.tombstones.step(&self.map, self.gravity, dt);
         if playing {
             self.step_item_spawns(now);
         }
@@ -1491,7 +1491,8 @@ impl World {
     fn step_animals(&mut self, now: f32, dt: f32, playing: bool) {
         let step = {
             let map = &self.map;
-            self.animals.tick(map, playing, now, dt)
+            let gravity = self.gravity;
+            self.animals.tick(map, playing, gravity, now, dt)
         };
         let tick = self.tick;
 
@@ -1644,6 +1645,19 @@ impl World {
             // not a per-player modifier — `move_mods()` stays the one
             // derivation of what the *player* is carrying.
             let gravity = self.gravity;
+            // **`Env` is built here, before the mutable player borrow**
+            // (T22.11A, `M22-RULINGS` R10). The `let gravity = ...` line above
+            // already exists for exactly this reason, and `T22.11B`'s attractor
+            // sum needs the map's asteroid list *and* the player's position, so
+            // this is where it will go: one `Env` per player per tick, composed
+            // where both are visible.
+            //
+            // `field_free` is a claim and it is true today — nothing in the tree
+            // constructs an attractor yet. When `T22.11B` lands, this line is
+            // what changes, and a `field_free` left here would be a sentence a
+            // reader can see is wrong. That is the whole reason `Env` has no
+            // `Default` (R45).
+            let env = Env::field_free(gravity);
             let p = &mut self.players[idx];
             let impact = apply_input(
                 &self.map,
@@ -1652,8 +1666,7 @@ impl World {
                 &mut p.jetpack,
                 &input,
                 &prev,
-                mods,
-                gravity,
+                MoveStep { mods, env },
                 dt,
             );
             // **The whole rule moved into `PlayerState::fall_damage`**
@@ -2628,7 +2641,9 @@ impl World {
                 now,
             );
             let mut t = targets(&mut self.players, &mut closures, &meta, &mut scratch_vels);
-            let ended = self.mines.step(&mut self.map, &mut t, now, dt);
+            let ended = self
+                .mines
+                .step(&mut self.map, &mut t, self.gravity, now, dt);
             self.burn.tick(&mut t, now, dt);
             // Flames burn here rather than in `step_projectiles` because this is
             // where the target slice already exists and where the warmup gate

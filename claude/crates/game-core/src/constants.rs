@@ -2820,19 +2820,18 @@ impl GravityMode {
     /// The multiplier this mode puts on [`GRAVITY`], everywhere gravity is
     /// integrated.
     ///
-    /// **This is the single place the mode becomes a number**, and the four
-    /// sites that ask it are the ones that move a **player or a projectile**:
-    /// `physics::resolve::apply_gravity` (through
-    /// `player::jetpack::gravity_scale`), `weapons::projectile::integrate`,
-    /// `weapons::projectile::predict_impact` and `bots::zone_reach`. None of
-    /// them decides for itself.
+    /// **This is the single place the mode becomes a number**, and every site
+    /// that asks it is a site that moves something: `physics::resolve::
+    /// apply_gravity` (through `player::jetpack::gravity_scale`, for players),
+    /// `physics::resolve::Forces::falling` (T22.11A, for every non-player body),
+    /// `weapons::projectile::integrate`, `weapons::projectile::predict_impact`
+    /// and `bots::zone_reach`. None of them decides for itself.
     ///
-    /// **It is not, today, the answer for everything that falls — see the
-    /// paragraph below, and do not read the sentence above as saying otherwise.**
-    /// An earlier version of this comment claimed *"'which gravity is this match
-    /// under' has exactly one answer"* two lines above a paragraph listing four
-    /// things it is not the answer for. Both cannot be true; the paragraph is
-    /// the true one (M22-RULINGS R30).
+    /// **Since T22.11A it is the answer for everything that falls**, which it
+    /// was not for the length of M22's batch 2. Four fallers reached
+    /// `integrate` with a literal `1.0`; `M22-RULINGS` R30 and R48 name the
+    /// consequence and the section below records what it looked like, because a
+    /// comment that quietly starts being true is a comment nobody re-reads.
     ///
     /// **`Space` answers `0.0` since T22.03**, which is what *"there is no
     /// global gravity"* means here: `physics::resolve::apply_gravity` returns
@@ -2850,29 +2849,33 @@ impl GravityMode {
     /// this in front of all of them, so `0.0 * anything` is no gravity and no
     /// player can be in two regimes at once.
     ///
-    /// # Four fallers this does not reach, and what a player sees
+    /// # The four fallers it did not reach until T22.11A
     ///
     /// `weapons::placed::Mines::step`, `items::world::WorldItems::step`,
     /// `world::tombstones::Tombstones::step` and `world::animals::Animals::tick`
-    /// still fall at standard gravity under `Low` **and under `Space`**. The
-    /// player-visible consequence is that in a low-gravity match a dropped
-    /// weapon and a tombstone fall twice as fast as the person who dropped
-    /// them — a real inconsistency, visible in ordinary play, not a rounding
-    /// gap — and **in space it is worse: a player floats and their dropped
-    /// rifle falls to the bottom of the arena.** M22-RULINGS R14 rules that
-    /// every one of the four floats where it is put in space; R10 assigns the
-    /// four signature changes that takes to `T22.11`, and T22.03 did not
-    /// pre-empt it.
+    /// each passed a literal `1.0`, so they fell at standard gravity under
+    /// `Low` **and under `Space`**. In a low-gravity match a dropped weapon and
+    /// a tombstone fell twice as fast as the person who dropped them — a real
+    /// inconsistency, visible in ordinary play — and in space a player floated
+    /// while their dropped rifle fell to the bottom of the arena.
     ///
-    /// **The reason is scheduling, not shape.** An earlier version said their
-    /// signatures *"cannot see the match setting (`(map, …, dt)`)"*, which is a
-    /// description rather than a reason: T22.02 widened `Projectiles::step`'s
-    /// signature for exactly this, so widening four more was never the obstacle.
-    /// The honest sentence is that **M22-RULINGS R10 assigns those four
-    /// signature changes to `T22.11`**, R14 rules what each of them does in
-    /// space, and R30 says `T22.11` must scale them under `Low` as well as zero
-    /// them under `Space`. Doing it here would pre-empt the task that owns the
-    /// `Forces` refactor and make its merge a rewrite of a rewrite.
+    /// **All four now take the mode and go through
+    /// `physics::resolve::Forces::falling`**, which is the single place the mode
+    /// becomes a non-player body's scale *and* its zero-g contact rules (R14).
+    /// `items::world::a_dropped_item_falls_at_the_players_rate_in_every_gravity_mode`
+    /// is the cross-subsystem assertion — it drives the item through
+    /// `WorldItems::step` and the player through `player::apply_input` and
+    /// compares the two falls — and the other three steppers each carry their
+    /// own `Low`-and-`Space` test beside their own code.
+    ///
+    /// **The reason it took until T22.11A was scheduling, not shape.** An
+    /// earlier version of this comment said their signatures *"cannot see the
+    /// match setting (`(map, …, dt)`)"*, which is a description rather than a
+    /// reason: T22.02 widened `Projectiles::step`'s signature for exactly this.
+    /// The honest sentence is that `M22-RULINGS` R10 assigned those four
+    /// signature changes to `T22.11` along with the `Forces` refactor they ride
+    /// on, and doing them earlier would have made that merge a rewrite of a
+    /// rewrite.
     ///
     /// # Two interactions that are stated rather than left to be found
     ///

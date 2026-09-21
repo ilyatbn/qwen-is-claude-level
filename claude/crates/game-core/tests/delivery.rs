@@ -438,7 +438,9 @@ fn a_mine_arms_only_after_its_arm_time() {
         let mut mines2 = Mines::default();
         mines2.place(0, &def, Vec2::new(500.0, 396.0), 1.0, 36.0, 90.0, 0.0);
         let mut v = [Victim::at(505.0, 396.0)];
-        let ended = with_targets(&mut v, |t| mines2.step(&mut map, t, now, SIM_DT));
+        let ended = with_targets(&mut v, |t| {
+            mines2.step(&mut map, t, GravityMode::Standard, now, SIM_DT)
+        });
         assert_eq!(
             ended.iter().any(|o| o.reason == MineEnd::Detonated),
             want,
@@ -467,14 +469,16 @@ fn a_mine_ignores_its_owner_and_triggers_on_anyone_else() {
         alive: true,
         apply_damage: &mut cb,
     }];
-    let ended = mines.step(&mut map, &mut owner, 5.0, SIM_DT);
+    let ended = mines.step(&mut map, &mut owner, GravityMode::Standard, 5.0, SIM_DT);
     assert!(ended.is_empty(), "a mine went off under its own owner");
     assert_eq!(mines.len(), 1);
 
     // Anyone else does set it off — the control that proves the above is not
     // simply a mine that never triggers.
     let mut v = [Victim::at(505.0, 396.0)];
-    let ended = with_targets(&mut v, |t| mines.step(&mut map, t, 5.0, SIM_DT));
+    let ended = with_targets(&mut v, |t| {
+        mines.step(&mut map, t, GravityMode::Standard, 5.0, SIM_DT)
+    });
     assert_eq!(ended.len(), 1);
     assert_eq!(ended[0].reason, MineEnd::Detonated);
     assert!(v[0].taken > 0.0, "the detonation dealt no damage");
@@ -488,7 +492,9 @@ fn a_mine_triggers_at_its_radius_and_not_a_pixel_past_it() {
         let mut mines = Mines::default();
         mines.place(0, &def, Vec2::new(500.0, 396.0), 1.0, 36.0, 90.0, 0.0);
         let mut v = [Victim::at(500.0 + dx, 396.0)];
-        let ended = with_targets(&mut v, |t| mines.step(&mut map, t, 5.0, SIM_DT));
+        let ended = with_targets(&mut v, |t| {
+            mines.step(&mut map, t, GravityMode::Standard, 5.0, SIM_DT)
+        });
         assert_eq!(
             ended.iter().any(|o| o.reason == MineEnd::Detonated),
             want,
@@ -504,7 +510,9 @@ fn a_mine_expires_and_says_so() {
     let mut mines = Mines::default();
     mines.place(0, &def, Vec2::new(500.0, 396.0), 1.0, 36.0, 90.0, 0.0);
     let mut v = [Victim::at(-999.0, -999.0)];
-    let ended = with_targets(&mut v, |t| mines.step(&mut map, t, 91.0, SIM_DT));
+    let ended = with_targets(&mut v, |t| {
+        mines.step(&mut map, t, GravityMode::Standard, 91.0, SIM_DT)
+    });
     assert_eq!(ended.len(), 1);
     assert_eq!(ended[0].reason, MineEnd::Expired);
     assert!(mines.is_empty());
@@ -549,7 +557,13 @@ fn a_mine_falls_when_the_ground_under_it_is_carved() {
     let mut v = [Victim::at(-999.0, -999.0)];
     with_targets(&mut v, |t| {
         for i in 0..30 {
-            mines.step(&mut map, t, i as f32 * SIM_DT, SIM_DT);
+            mines.step(
+                &mut map,
+                t,
+                GravityMode::Standard,
+                i as f32 * SIM_DT,
+                SIM_DT,
+            );
         }
     });
     let settled = mines.iter().next().expect("the mine expired").pos().y;
@@ -558,7 +572,13 @@ fn a_mine_falls_when_the_ground_under_it_is_carved() {
     let mut v2 = [Victim::at(-999.0, -999.0)];
     with_targets(&mut v2, |t| {
         for i in 30..90 {
-            mines.step(&mut map, t, i as f32 * SIM_DT, SIM_DT);
+            mines.step(
+                &mut map,
+                t,
+                GravityMode::Standard,
+                i as f32 * SIM_DT,
+                SIM_DT,
+            );
         }
     });
     let after = mines.iter().next().expect("the mine expired").pos().y;

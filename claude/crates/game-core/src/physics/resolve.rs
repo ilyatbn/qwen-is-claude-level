@@ -10,7 +10,7 @@
 //! See `docs/20-player-movement.md` §2.
 
 use crate::constants::{
-    GRAVITY, MAX_FALL_SPEED, MAX_SUBSTEPS, MAX_SUBSTEP_PX, STEP_DOWN, STEP_UP, WALL_W,
+    GravityMode, GRAVITY, MAX_FALL_SPEED, MAX_SUBSTEPS, MAX_SUBSTEP_PX, STEP_DOWN, STEP_UP, WALL_W,
 };
 use crate::map::Map;
 use crate::math::Vec2;
@@ -163,6 +163,130 @@ pub fn clamp_to_world(map: &Map, body: &mut Body) {
     }
 }
 
+/// **What accelerates this body this tick, and under which contact rules.**
+///
+/// `M22-RULINGS` R10: one struct, one seam. Before this, `integrate` took a
+/// `gravity_scale` and a `zero_g` flag and there was nowhere to put a force that
+/// does not point down. Now there is exactly one answer to *"what accelerates
+/// this body"* and it is this value.
+///
+/// **No `Default`, and no `Forces::none()`** (`M22-RULINGS` R45). The precedent
+/// and its reasoning are in [`crate::player::MoveMods::NONE`]'s doc four files
+/// away: *"a `Default` is what a caller reaches for when it does not know what to
+/// pass"*, and a caller that did not know what to pass is how a field-free world
+/// ships while the whole suite stays green. Every constructor here **names** what
+/// it gives you — [`Forces::gravity`] is ordinary gravity, [`Forces::falling`] is
+/// a non-player body under a match setting — so a `Forces` with no field is
+/// something a caller said, not something it defaulted into.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Forces {
+    /// The scalar path, unchanged: `vel.y` only, clamped by `MAX_FALL_SPEED` on
+    /// the way down only, and early-returning at exactly `0.0`.
+    pub gravity_scale: f32,
+    /// The summed vector field. `Vec2::ZERO` everywhere today; `T22.11B` is what
+    /// fills it from `world::attractors`. It is applied **beside**
+    /// `apply_gravity` and not inside it, because that function returns early at
+    /// scale `0.0` — which is every player in space, i.e. precisely where the
+    /// field is the only thing moving anyone.
+    pub accel: Vec2,
+    /// The mode's terminal **speed**: a clamp on `|vel|`, not on `vel.y`.
+    /// `MAX_FALL_SPEED` is neither reused nor renamed for this — it clamps one
+    /// axis downward only, and a magnitude clamp is a different statement.
+    ///
+    /// `None` everywhere until `T22.11B`.
+    ///
+    /// **`M22-RULINGS` R10 and R45 say that `no_tunnelling_at_ten_times_\
+    /// terminal_velocity_through_integrate` goes red if a `max_speed` leaks
+    /// onto the standard-gravity path. Measured at T22.11A, it does not, and
+    /// nothing else reliably does either.** Two plants, each run against the
+    /// whole `game-core` lib suite:
+    ///
+    /// - `Forces::gravity` carrying `Some(MAX_FALL_SPEED)` — **1062 passed, 0
+    ///   failed.** `apply_gravity` has already clamped `vel.y` to
+    ///   `MAX_FALL_SPEED` by the time the magnitude clamp runs, so on that path
+    ///   the clamp is an exact no-op. The named tripwire never sees 9000 px/s at
+    ///   all; it sees 900.
+    /// - `Forces::gravity` carrying `Some(MAX_FALL_SPEED / 2.0)` — **1061
+    ///   passed, 1 failed**, and the one was
+    ///   `a_landing_reports_the_speed_it_was_falling_at`, not the tripwire. The
+    ///   tripwire asserts an *upper* bound on how far the body got
+    ///   (`feet_y() <= 301.0`), and a clamp can only make a body travel less.
+    ///
+    /// So the guard three documents name is an absence with no control, and the
+    /// real detector is a landing-speed assertion that nobody had noticed. The
+    /// honest statement is: **a `max_speed` at or above `MAX_FALL_SPEED` is
+    /// invisible to this repository on the scalar path.** `T22.11B`, which is
+    /// what first gives this field a value, needs an assertion of its own on the
+    /// space path — and it cannot borrow this one.
+    ///
+    /// **It clamps one tick late for three production writers and that is not a
+    /// tighter guarantee than it looks.** `player::jetpack::apply_thrust`,
+    /// `weapons::explode` and `weapons::melee` all write `body.vel` outside
+    /// `integrate`, so a body they launch past the cap keeps that speed until the
+    /// next tick's `integrate` pulls it back. The real answer is a shared
+    /// `Body::add_velocity` that all four writers go through; it is bigger than
+    /// the task that introduced this field, and it is written here so the next
+    /// reader does not assume the clamp is at the write.
+    pub max_speed: Option<f32>,
+    /// Which **contact** rules apply — `M22-RULINGS` R4, and the argument R44
+    /// sanctioned as temporary until it landed in this struct.
+    ///
+    /// **Deliberately not derived from `gravity_scale == 0.0`, and the two are
+    /// genuinely independent.** T21.03's wings hand this function a scale of
+    /// `0.0` under perfectly ordinary gravity; a winged player must keep the
+    /// ordinary contact rules, or hovering one pixel over a floor would report
+    /// them as standing on it. There is no derivation available that answers
+    /// both, which is why this is a field and not a computation.
+    pub zero_g: bool,
+}
+
+impl Forces {
+    /// Ordinary gravity at `gravity_scale`: no field, no speed cap, ordinary
+    /// contact rules.
+    ///
+    /// This is what every caller that used to pass a bare `f32` passes now, and
+    /// the reason `a_resting_body_is_bit_identical_after_600_ticks` is a control
+    /// rather than a formality: `accel: ZERO` adds nothing and `max_speed: None`
+    /// clamps nothing, so the arithmetic on this path is the arithmetic that was
+    /// there before.
+    pub const fn gravity(gravity_scale: f32) -> Self {
+        Forces {
+            gravity_scale,
+            accel: Vec2::ZERO,
+            max_speed: None,
+            zero_g: false,
+        }
+    }
+
+    /// A **non-player** body — a mine, a dropped item, a tombstone, an animal —
+    /// under the match's gravity setting.
+    ///
+    /// `M22-RULINGS` R14 and R30 together. R30 is the live half: these four all
+    /// passed a literal `1.0`, so a dropped weapon fell at twice the speed of the
+    /// player who dropped it in every low-gravity match since `T22.02`. R14 is
+    /// the space half: in space every non-player body floats where it is put,
+    /// **which means a scale of `0.0` and the zero-g contact rules** — the
+    /// sentence the four call sites have carried since `T22.03`.
+    ///
+    /// **Not `Forces::gravity(mode.scale())`**, although that is what it reduces
+    /// to on the first field: the contact rules have to move with the scale, and
+    /// spelling it out at four call sites is four chances to move one and not the
+    /// other.
+    ///
+    /// **Nothing attracts these bodies** (R14): `accel` stays `ZERO` here even
+    /// after `T22.11B` fills it for players. A rocket curving around a rock is a
+    /// balance change nobody asked for, and loot drifting into one is loot
+    /// deletion.
+    pub const fn falling(mode: GravityMode) -> Self {
+        Forces {
+            gravity_scale: mode.scale(),
+            accel: Vec2::ZERO,
+            max_speed: None,
+            zero_g: matches!(mode, GravityMode::Space),
+        }
+    }
+}
+
 /// The full per-tick movement step.
 ///
 /// The order is part of the contract:
@@ -200,38 +324,48 @@ pub fn clamp_to_world(map: &Map, body: &mut Body) {
 /// before `move_y` runs, which is what happens below, and `ground_snap` cannot
 /// produce one because it only fires when `was_grounded` was already true.
 ///
-/// ## `zero_g` selects the **contact** rules, not the force
+/// ## `Forces` is the one answer to "what accelerates this body"
 ///
-/// `M22-RULINGS` R4, T22.03. The force is `gravity_scale` and it stays the only
-/// answer to *"what accelerates this body"*. `zero_g` answers a different
-/// question — *"what counts as standing on something, and does a walker get
-/// snapped to a slope"* — and the two arms below are the whole of it.
+/// `M22-RULINGS` R10 and R44. This function was `(map, body, gravity_scale,
+/// zero_g, dt)` — five parameters, with R44 sanctioning the fifth as temporary
+/// and naming its end: *"`T22.11` folds `zero_g` into `Forces`/`Env`"*. It did,
+/// and this is four. One struct replaced two arguments, which is the same move
+/// `MoveMods` made on `apply_input` and the same one `MoveStep` makes there now.
 ///
-/// **It is deliberately not derived from `gravity_scale == 0.0`, and the two
-/// are genuinely independent.** T21.03's wings hand this function a scale of
-/// `0.0` under perfectly ordinary gravity; a winged player must keep the
-/// ordinary contact rules, or hovering one pixel over a floor would report them
-/// as standing on it. So this is not the fourth flag that rule warns about —
-/// there is no derivation available that answers both.
+/// **The field is applied beside `apply_gravity`, not inside it.**
+/// `apply_gravity` early-returns at `gravity_scale == 0.0` and that is every
+/// player in space, so a field applied inside it would be dead exactly where it
+/// is the only thing that moves anyone. `apply_gravity` therefore keeps its
+/// early return, its `vel.y`, its `MAX_FALL_SPEED` clamp and its three tests
+/// untouched — the cheapest part of R10 and the reason this refactor is
+/// bit-identical on the scalar path.
 ///
-/// ## The fifth argument is a **sanctioned temporary** (`M22-RULINGS` R44)
-///
-/// This function is now `(map, body, gravity_scale, zero_g, dt)` — five — and
-/// that is one more than it had. R44 sanctions it and names its end: **`T22.11`
-/// folds `zero_g` into `Forces`/`Env`**, alongside the ninth argument `T22.02`
-/// took on `player::apply_input`, which R10's 2026-09-21 amendment sanctions in
-/// exactly the same terms. Both are one parameter that a struct reabsorbs.
-///
-/// **If `T22.11` lands and this is still at five, that is a finding** — the
-/// same sentence R10's amendment writes about a nine-argument `apply_input`,
-/// written here because the only count anyone would otherwise check is that
-/// one.
-pub fn integrate(map: &Map, body: &mut Body, gravity_scale: f32, zero_g: bool, dt: f32) -> f32 {
+/// `Forces::zero_g` answers a different question from `Forces::gravity_scale` —
+/// *"what counts as standing on something, and does a walker get snapped to a
+/// slope"* — and the two arms below are the whole of it. See the field's own doc
+/// for why it cannot be derived from the scale.
+pub fn integrate(map: &Map, body: &mut Body, forces: Forces, dt: f32) -> f32 {
     let was_grounded = body.grounded;
     body.grounded = false;
     body.landing_impact = 0.0;
 
-    apply_gravity(body, gravity_scale, dt);
+    apply_gravity(body, forces.gravity_scale, dt);
+
+    // **The vector field, beside the scalar and downstream of nothing that
+    // skips it** (`M22-RULINGS` R10). `accel` is `Vec2::ZERO` at every
+    // construction site in the tree today, so this line adds exactly nothing and
+    // `a_resting_body_is_bit_identical_after_600_ticks` is unmoved by it;
+    // `T22.11B` is what gives it a value.
+    body.vel += forces.accel * dt;
+
+    // **A clamp on `|vel|`, which `MAX_FALL_SPEED` is not.** `None` on every
+    // path but space, and `None` is what the ten-times-terminal-velocity
+    // tunnelling test above is really asserting about `Forces::gravity`. Note it
+    // is one tick late for the three writers that touch `body.vel` outside this
+    // function — see `Forces::max_speed`.
+    if let Some(max) = forces.max_speed {
+        body.vel = body.vel.clamp_len(max);
+    }
 
     move_x(map, body, body.vel.x * dt);
 
@@ -248,7 +382,7 @@ pub fn integrate(map: &Map, body: &mut Body, gravity_scale: f32, zero_g: bool, d
         body.landing_impact = falling_at.max(0.0);
     }
 
-    if zero_g {
+    if forces.zero_g {
         // **R4 — contact from below grounds you, with or without downward
         // velocity.** `move_y` can only ground a body that was *moving* down:
         // it returns at `dy == 0.0` before it probes anything at all. With no
@@ -331,7 +465,7 @@ mod tests {
         let map = test_map(W, H, floor_at(400));
         let mut b = Body::new(Vec2::new(256.0, 400.0 - PLAYER_H / 2.0 - h));
         for t in 0..600 {
-            let got = integrate(&map, &mut b, 1.0, false, SIM_DT);
+            let got = integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
             if got > 0.0 {
                 return (got, t);
             }
@@ -366,7 +500,7 @@ mod tests {
         let mut airborne_reports = 0;
         for _ in 0..600 {
             let before = b.grounded;
-            let got = integrate(&map, &mut b, 1.0, false, SIM_DT);
+            let got = integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
             if got > 0.0 {
                 reports += 1;
                 if before {
@@ -390,7 +524,7 @@ mod tests {
         let map = test_map(W, H, floor_at(400));
         let mut b = body_resting_on(400, 256.0);
         for _ in 0..120 {
-            assert_eq!(integrate(&map, &mut b, 1.0, false, SIM_DT), 0.0);
+            assert_eq!(integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT), 0.0);
         }
     }
 
@@ -407,7 +541,7 @@ mod tests {
         let mut reports = 0;
         for _ in 0..240 {
             b.vel.x = WALK_SPEED;
-            if integrate(&map, &mut b, 1.0, false, SIM_DT) > 0.0 {
+            if integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT) > 0.0 {
                 reports += 1;
             }
         }
@@ -447,7 +581,7 @@ mod tests {
         let mut falling = Body::new(Vec2::new(256.0, 400.0 - PLAYER_H / 2.0 - 200.0));
         let mut landing_says = None;
         for _ in 0..600 {
-            let real = integrate(&flat, &mut falling, 1.0, false, SIM_DT) > 0.0;
+            let real = integrate(&flat, &mut falling, Forces::gravity(1.0), SIM_DT) > 0.0;
             if real {
                 landing_says = Some(falling.grounded && falling.vel.y > 0.0);
                 break;
@@ -465,7 +599,7 @@ mod tests {
         let mut real_landings = 0;
         for _ in 0..240 {
             walking.vel.x = WALK_SPEED;
-            if integrate(&hill, &mut walking, 1.0, false, SIM_DT) > 0.0 {
+            if integrate(&hill, &mut walking, Forces::gravity(1.0), SIM_DT) > 0.0 {
                 real_landings += 1;
             }
             if walking.grounded && walking.vel.y > 0.0 {
@@ -769,11 +903,11 @@ mod tests {
         // would hide.
         let map = test_map(W, H, floor_at(300));
         let mut b = body_resting_on(300, 100.0);
-        integrate(&map, &mut b, 1.0, false, SIM_DT); // settle
+        integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT); // settle
         let settled = b.pos;
 
         for tick in 0..600 {
-            integrate(&map, &mut b, 1.0, false, SIM_DT);
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
             assert_eq!(b.pos, settled, "drifted at tick {tick}");
             assert!(b.grounded, "lost grounding at tick {tick}");
         }
@@ -784,7 +918,7 @@ mod tests {
         let map = test_map(W, H, floor_at(300));
         let mut b = Body::new(Vec2::new(100.0, 100.0));
         for _ in 0..300 {
-            integrate(&map, &mut b, 1.0, false, SIM_DT);
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
         }
         assert!(b.grounded);
         assert_eq!(b.vel.y, 0.0);
@@ -808,14 +942,14 @@ mod tests {
         let start_x = 60.0f32;
         let surface = 200 + (start_x * 0.577) as i32;
         let mut b = body_resting_on(surface, start_x);
-        integrate(&map, &mut b, 1.0, false, SIM_DT);
+        integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
         assert!(b.grounded, "precondition: not standing on the slope");
 
         // Stop before the slope runs off the bottom of the map: at 0.577 rise per
         // px it reaches y = 512 at x ~ 540.
         for tick in 0..150 {
             b.vel.x = WALK_SPEED;
-            integrate(&map, &mut b, 1.0, false, SIM_DT);
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
             assert!(
                 b.grounded,
                 "went airborne at tick {tick}, x = {}, y = {}",
@@ -834,13 +968,13 @@ mod tests {
             }
         });
         let mut b = body_resting_on(300, 200.0);
-        integrate(&map, &mut b, 1.0, false, SIM_DT);
+        integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
         assert!(b.grounded, "precondition");
 
         let mut went_airborne = None;
         for tick in 0..120 {
             b.vel.x = WALK_SPEED;
-            integrate(&map, &mut b, 1.0, false, SIM_DT);
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
             if !b.grounded {
                 went_airborne = Some(tick);
                 break;
@@ -869,12 +1003,12 @@ mod tests {
             }
         });
         let mut b = body_resting_on(300, 240.0);
-        integrate(&map, &mut b, 1.0, false, SIM_DT);
+        integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
 
         let mut saw_airborne = false;
         for _ in 0..60 {
             b.vel.x = WALK_SPEED;
-            integrate(&map, &mut b, 1.0, false, SIM_DT);
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
             if !b.grounded {
                 saw_airborne = true;
             }
@@ -892,12 +1026,12 @@ mod tests {
             }
         });
         let mut b = body_resting_on(300, 100.0);
-        integrate(&map, &mut b, 1.0, false, SIM_DT);
+        integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
 
         let mut flips = 0;
         let mut last = b.grounded;
         for _ in 0..600 {
-            integrate(&map, &mut b, 1.0, false, SIM_DT);
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
             if b.grounded != last {
                 flips += 1;
                 last = b.grounded;
@@ -912,7 +1046,7 @@ mod tests {
         let mut b = Body::new(Vec2::new(100.0, 100.0));
         b.vel.y = 10.0 * MAX_FALL_SPEED;
         for _ in 0..10 {
-            integrate(&map, &mut b, 1.0, false, SIM_DT);
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
         }
         assert!(b.feet_y() <= 301.0, "tunnelled to y = {}", b.pos.y);
     }
@@ -927,7 +1061,7 @@ mod tests {
         let mut b = body_resting_on(300, 100.0);
         b.vel.x = -5000.0;
         for _ in 0..60 {
-            integrate(&map, &mut b, 1.0, false, SIM_DT);
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
         }
         assert!(
             b.pos.x >= WALL_W as f32 + half - 0.001,
@@ -939,7 +1073,7 @@ mod tests {
         let mut b = body_resting_on(300, 400.0);
         b.vel.x = 5000.0;
         for _ in 0..60 {
-            integrate(&map, &mut b, 1.0, false, SIM_DT);
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
         }
         assert!(
             b.pos.x <= W as f32 - WALL_W as f32 - half + 0.001,
@@ -955,7 +1089,7 @@ mod tests {
         let mut b = Body::new(Vec2::new(100.0, 200.0));
         b.vel.y = -5000.0;
         for _ in 0..120 {
-            integrate(&map, &mut b, 0.35, false, SIM_DT);
+            integrate(&map, &mut b, Forces::gravity(0.35), SIM_DT);
         }
         assert!(
             b.head_y() >= -0.001,

@@ -156,7 +156,9 @@ mod tests {
     use crate::math::Vec2;
     use crate::physics::collide::tests::{floor_at, test_map};
     use crate::player::input::button;
-    use crate::player::{apply_input, Input, JetpackState, JumpState, MovementState};
+    use crate::player::{
+        apply_input, Env, Input, JetpackState, JumpState, MoveStep, MovementState,
+    };
 
     const W: u32 = 1024;
     const H: u32 = 512;
@@ -184,7 +186,29 @@ mod tests {
     /// that reimplemented the branch would agree with itself forever.
     fn step(map: &Map, st: &mut MovementState, buttons: u8, mode: GravityMode) {
         let input = Input::new(0, buttons, 0);
-        st.step(map, &input, &input, MoveMods::NONE, mode, SIM_DT);
+        st.step(map, &input, &input, plain(mode), SIM_DT);
+    }
+
+    /// An unmodified player under `mode`, **with no attractor field and no
+    /// speed cap** — which is what this whole file's fixture is, and saying so
+    /// is the point.
+    ///
+    /// `M22-RULINGS` R45 forbids an `Env` `Default` precisely so that this
+    /// sentence has to be written somewhere. **And it is the thing these 20
+    /// tests cannot see**: `void()` and `floor_at` are maps with no asteroids,
+    /// so every assertion below stays green for a build in which `Forces::accel`
+    /// is never read. Closing that hole is `T22.11B`'s, and its first test needs
+    /// a fixture that actually has rocks.
+    fn plain(mode: GravityMode) -> MoveStep {
+        stepping(MoveMods::NONE, mode)
+    }
+
+    /// The same, with the player's modifiers varied.
+    fn stepping(mods: MoveMods, mode: GravityMode) -> MoveStep {
+        MoveStep {
+            mods,
+            env: Env::field_free(mode),
+        }
     }
 
     fn run(map: &Map, st: &mut MovementState, buttons: u8, mode: GravityMode, ticks: u32) {
@@ -605,19 +629,11 @@ mod tests {
                 &map,
                 &released,
                 &released,
-                MoveMods::NONE,
-                GravityMode::Space,
+                plain(GravityMode::Space),
                 SIM_DT,
             );
             let before = st.body.vel.y;
-            st.step(
-                &map,
-                &pressed,
-                &released,
-                MoveMods::NONE,
-                GravityMode::Space,
-                SIM_DT,
-            );
+            st.step(&map, &pressed, &released, plain(GravityMode::Space), SIM_DT);
             if st.body.vel.y < before - 1.0 {
                 jumps += 1;
                 // Fall back onto the rock. With no gravity that means driving
@@ -707,19 +723,43 @@ mod tests {
         let pressed = Input::new(0, button::JUMP, 0);
         let down = Input::new(0, button::DOWN, 0);
         let mut st = drifting(Vec2::new(120.0, feet), Vec2::ZERO);
-        st.step(map, &released, &released, mods, GravityMode::Space, SIM_DT);
+        st.step(
+            map,
+            &released,
+            &released,
+            stepping(mods, GravityMode::Space),
+            SIM_DT,
+        );
         assert!(st.body.grounded, "precondition: never found the rock");
 
         let mut trips = 0;
         'trip: for _ in 0..20 {
-            st.step(map, &released, &released, mods, GravityMode::Space, SIM_DT);
+            st.step(
+                map,
+                &released,
+                &released,
+                stepping(mods, GravityMode::Space),
+                SIM_DT,
+            );
             let before = st.body.vel.y;
-            st.step(map, &pressed, &released, mods, GravityMode::Space, SIM_DT);
+            st.step(
+                map,
+                &pressed,
+                &released,
+                stepping(mods, GravityMode::Space),
+                SIM_DT,
+            );
             if st.body.vel.y >= before - 1.0 {
                 break; // refused: the tank cannot pay
             }
             for _ in 0..1200 {
-                st.step(map, &down, &down, mods, GravityMode::Space, SIM_DT);
+                st.step(
+                    map,
+                    &down,
+                    &down,
+                    stepping(mods, GravityMode::Space),
+                    SIM_DT,
+                );
                 if st.body.grounded {
                     trips += 1;
                     continue 'trip;
@@ -769,7 +809,13 @@ mod tests {
             let mut st = drifting(Vec2::new(120.0, 120.0), Vec2::ZERO);
             for _ in 0..5 {
                 let input = Input::new(0, button::RIGHT, 0);
-                st.step(&map, &input, &input, mods, GravityMode::Space, SIM_DT);
+                st.step(
+                    &map,
+                    &input,
+                    &input,
+                    stepping(mods, GravityMode::Space),
+                    SIM_DT,
+                );
             }
             (st.body.vel.x, st.jet.fuel)
         };
@@ -788,7 +834,13 @@ mod tests {
             assert!(st.body.grounded, "precondition: never found the rock");
             for _ in 0..40 {
                 let input = Input::new(0, button::RIGHT, 0);
-                st.step(&map, &input, &input, mods, GravityMode::Space, SIM_DT);
+                st.step(
+                    &map,
+                    &input,
+                    &input,
+                    stepping(mods, GravityMode::Space),
+                    SIM_DT,
+                );
             }
             st.body.vel.x
         };
@@ -902,10 +954,22 @@ mod tests {
             let mut st = drifting(Vec2::new(120.0, feet), Vec2::ZERO);
             let released = Input::new(0, 0, 0);
             let pressed = Input::new(0, button::JUMP, 0);
-            st.step(&map, &released, &released, mods, GravityMode::Space, SIM_DT);
+            st.step(
+                &map,
+                &released,
+                &released,
+                stepping(mods, GravityMode::Space),
+                SIM_DT,
+            );
             assert!(st.body.grounded, "precondition: never found the rock");
             let tank = st.jet.fuel;
-            st.step(&map, &pressed, &released, mods, GravityMode::Space, SIM_DT);
+            st.step(
+                &map,
+                &pressed,
+                &released,
+                stepping(mods, GravityMode::Space),
+                SIM_DT,
+            );
             (-st.body.vel.y, tank - st.jet.fuel)
         };
 
@@ -1011,8 +1075,7 @@ mod tests {
                 &mut jet,
                 &input,
                 &input,
-                wings,
-                GravityMode::Space,
+                stepping(wings, GravityMode::Space),
                 SIM_DT,
             );
         }

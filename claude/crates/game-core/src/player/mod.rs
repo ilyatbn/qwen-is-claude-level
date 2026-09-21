@@ -12,8 +12,9 @@ pub use movement::{apply_flight, apply_horizontal, try_jump, JumpState};
 
 use crate::constants::GravityMode;
 use crate::map::Map;
+use crate::math::Vec2;
 use crate::physics::body::Body;
-use crate::physics::resolve::integrate;
+use crate::physics::resolve::{integrate, Forces};
 
 /// Everything a player's own input does in one tick.
 ///
@@ -113,23 +114,99 @@ impl MoveMods {
     };
 }
 
-// Eight became nine at T22.02, and the reason is recorded rather than glossed.
+/// **What the world does to this body**, as opposed to what the player is
+/// carrying — which is [`MoveMods`].
+///
+/// `M22-RULINGS` R10. R10 spells this `Env { accel, max_speed }` and `MoveStep
+/// { mods, env }`, written before `T22.02` took the ninth argument; R10's
+/// 2026-09-21 amendment then requires `MoveStep` to reabsorb **both** `mods` and
+/// `gravity`, one parameter replacing two. Three fields have to live in two
+/// structs, so one of the two spellings gains a field. **`gravity` is here**,
+/// because this struct is the answer to *"what is the environment doing"* and
+/// the match's gravity setting is exactly that — which keeps `MoveStep` as R10
+/// spells it and keeps the player/world split clean. T22.11A's builder made that
+/// call; it is one field moving between two structs and reversible in a line.
+///
+/// `accel` is `Vec2::ZERO` and `max_speed` is `None` at every construction site
+/// in the tree today. `T22.11B` is what fills them, from `world::attractors`.
+///
+/// **No `Default`** (`M22-RULINGS` R45), for the reason [`MoveMods::NONE`]'s doc
+/// gives above: a `Default` is what a caller reaches for when it does not know
+/// what to pass, and every fixture silently getting a field-free world is how
+/// the whole space suite passes while testing a space with no wells in it.
+/// [`Env::field_free`] is allowed because it **names** what it gives you.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Env {
+    /// The match's gravity setting. Read three ways inside `apply_input` — the
+    /// zero-g locomotion branch, the space jump economy, and the scale handed to
+    /// `integrate` — and it is the *match's* property, never the player's, which
+    /// is why it is not a `MoveMods` field.
+    pub gravity: GravityMode,
+    /// The summed attractor field at this body's position, in px/s².
+    pub accel: Vec2,
+    /// The mode's terminal speed, clamping `|vel|`. See
+    /// [`crate::physics::resolve::Forces::max_speed`].
+    pub max_speed: Option<f32>,
+}
+
+impl Env {
+    /// The environment of a match with **no attractors and no speed cap**: the
+    /// gravity mode and nothing else.
+    ///
+    /// **Not a `Default`, and the name is the whole point** (`M22-RULINGS` R45,
+    /// and [`MoveMods::NONE`] for the precedent). A caller writing this is
+    /// asserting *"there is no field here"*, which is true today at every site
+    /// and will stay true for the fixtures that own a bare `Body`. Production in
+    /// `T22.11B` builds its `Env` from the attractor list instead, and a
+    /// `field_free` left behind at a production site is a sentence a reader can
+    /// see is wrong — which is exactly what a `Default` would not be.
+    pub const fn field_free(gravity: GravityMode) -> Self {
+        Env {
+            gravity,
+            accel: Vec2::ZERO,
+            max_speed: None,
+        }
+    }
+}
+
+/// One movement step's inputs beyond the body: what the player is carrying and
+/// what the world is doing.
+///
+/// **This is the wrapper `M22-RULINGS` R10 names, and it exists to keep
+/// `apply_input` at eight parameters.** `mods` and `gravity` were two of the
+/// nine; they are one of the eight. R10: *"one parameter replaces one parameter
+/// and the count stays eight — which is exactly the move the comment blesses,
+/// done a second time for the same reason."*
+///
+/// `PlayerState::move_mods()` stays a pure derivation returning `MoveMods`,
+/// untouched — that property is what T20.19 and T21.02 paid for and it is not
+/// spent here. This struct wraps its result; it does not replace it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct MoveStep {
+    /// What the player is carrying, from the one derivation.
+    pub mods: MoveMods,
+    /// What the world is doing to them.
+    pub env: Env,
+}
+
+// **Eight, and `MoveStep` is what put it back there** (T22.11A, `M22-RULINGS`
+// R10's 2026-09-21 amendment).
 //
-// The comment this replaces said: *"`MoveMods` replaced an argument rather than
-// adding one — the count is what it was — and the struct is what stops the next
-// modifier making it nine."* `gravity` is not a modifier of the *player*, which
-// is what `MoveMods` is and what `PlayerState::move_mods` derives; it is a
-// property of the **match**, and folding it into `MoveMods` would give
-// `move_mods()` an argument and end its single-derivation property — the thing
-// T20.19 and T21.02 paid for and the one rule both of the last two rubber-band
-// bugs broke.
+// It was nine for the length of batch 2. T22.02 needed the match's gravity mode
+// here and R10 had forbidden `MoveStep` before T22.11 while also rejecting a
+// ninth argument, which left no third option; the ninth was taken and sanctioned
+// as temporary, with *"if `T22.11` lands and the count is still nine, that is a
+// finding"* attached. It has landed, and `mods` and `gravity` are now one
+// parameter — the same move `MoveMods` made at T21.02, done a second time for
+// the same reason.
 //
-// **The wrapper that restores the count is M22-RULINGS R10's `MoveStep { mods,
-// env }`, and R10 says in as many words that `T22.11` introduces it and nobody
-// before it does.** So this argument is the scalar-seam form of the same value,
-// and T22.11 absorbs it: `mods` and `gravity` become one `MoveStep`, one
-// parameter replaces two, and the count goes back to eight — which is the move
-// the old comment blessed, done once R10's owner is the one doing it.
+// **The allow below stays at eight and that is not a leftover.** Clippy's
+// argument-count lint has a threshold of seven, so eight trips it; the comment
+// this replaces said *"Eight, and the allow stays (T21.02)"* for that reason
+// and R10 quotes that sentence approvingly. T22.11A's Done-when greps this file
+// for zero occurrences of the attribute, which cannot hold at eight parameters
+// unless the lint is weakened workspace-wide — reported as a finding rather
+// than gamed. What R10 and R44 rule is the *parameter count*, and it is eight.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_input(
     map: &Map,
@@ -138,10 +215,11 @@ pub fn apply_input(
     jet: &mut JetpackState,
     input: &Input,
     prev: &Input,
-    mods: MoveMods,
-    gravity: GravityMode,
+    step: MoveStep,
     dt: f32,
 ) -> f32 {
+    let MoveStep { mods, env } = step;
+    let gravity = env.gravity;
     let e = edges(input, prev);
     // **T21.11B — a mounted player supplies no direction.** Zeroed here rather
     // than at any of the callers, because this is the function both sides run:
@@ -272,16 +350,27 @@ pub fn apply_input(
         apply_flight(body, input);
     }
 
+    // **The `Forces` is composed here, at the one `integrate` line, and the
+    // `Env` is not simply forwarded** (`M22-RULINGS` R10, which rejects *"passing
+    // a `Forces` that `apply_input` partly overwrites"* in as many words). This
+    // is the only place that can see the jetpack, the wings and the match at
+    // once, so it is the only place that can answer `gravity_scale`; `accel` and
+    // `max_speed` it takes from the environment untouched. That keeps
+    // `gravity_scale` meaning exactly one thing.
     integrate(
         map,
         body,
-        jetpack::gravity_scale(jet, mods.flying, gravity),
-        // **R4's contact rules, and deliberately not `mods.flying`.** The
-        // winged regime also hands `integrate` a scale of `0.0`, under ordinary
-        // gravity, and must keep the ordinary contact rules; these are the
-        // *match's* rules, so the condition is the match's mode. See
-        // `integrate`'s doc for why this cannot be derived from the scale.
-        gravity == GravityMode::Space,
+        Forces {
+            gravity_scale: jetpack::gravity_scale(jet, mods.flying, gravity),
+            accel: env.accel,
+            max_speed: env.max_speed,
+            // **R4's contact rules, and deliberately not `mods.flying`.** The
+            // winged regime also hands `integrate` a scale of `0.0`, under
+            // ordinary gravity, and must keep the ordinary contact rules; these
+            // are the *match's* rules, so the condition is the match's mode. See
+            // `Forces::zero_g` for why this cannot be derived from the scale.
+            zero_g: gravity == GravityMode::Space,
+        },
         dt,
     )
 }
@@ -304,16 +393,9 @@ impl MovementState {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn step(
-        &mut self,
-        map: &Map,
-        input: &Input,
-        prev: &Input,
-        mods: MoveMods,
-        gravity: GravityMode,
-        dt: f32,
-    ) -> f32 {
+    /// Six parameters, and the argument-count allow this carried is gone with
+    /// the two parameters `MoveStep` replaced (T22.11A).
+    pub fn step(&mut self, map: &Map, input: &Input, prev: &Input, step: MoveStep, dt: f32) -> f32 {
         apply_input(
             map,
             &mut self.body,
@@ -321,8 +403,7 @@ impl MovementState {
             &mut self.jet,
             input,
             prev,
-            mods,
-            gravity,
+            step,
             dt,
         )
     }

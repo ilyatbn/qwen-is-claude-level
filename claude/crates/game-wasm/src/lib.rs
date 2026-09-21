@@ -30,7 +30,7 @@ use game_core::map::{generate, rle, CoarseGrid, Map};
 use game_core::math::Vec2;
 use game_core::physics::body::Body;
 use game_core::player::state::PlayerState;
-use game_core::player::{apply_input, Input, JetpackState, JumpState};
+use game_core::player::{apply_input, Env, Input, JetpackState, JumpState, MoveStep};
 use game_core::rng::{substream, ChaCha8Rng};
 use game_core::weapons::defs;
 use game_core::weapons::explode::{
@@ -517,6 +517,15 @@ impl GameCore {
         // something a caller can invent, and both of the last two rubber-band
         // bugs were the mirror inventing one.
         let mods = p.stats.move_mods();
+        // **The mirror builds the same `Env` the server builds, and it builds
+        // it rather than being handed one** (T22.11A, `M22-RULINGS` R10). Same
+        // rule as `move_mods` above: a value the mirror can invent is a value
+        // the mirror will invent differently, which is what both of the last two
+        // rubber-band bugs were. `field_free` is true on both sides today
+        // because nothing constructs an attractor yet; `T22.11C` is what gives
+        // this core the asteroid list it would need to compute a real one, and
+        // until it lands a networked client predicts against no field at all.
+        let env = Env::field_free(gravity);
         apply_input(
             map,
             &mut p.body,
@@ -524,8 +533,7 @@ impl GameCore {
             &mut p.jet,
             &input,
             &p.prev_input,
-            mods,
-            gravity,
+            MoveStep { mods, env },
             dt,
         );
         p.prev_input = input;

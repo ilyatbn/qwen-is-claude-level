@@ -12,12 +12,12 @@
 //! - **Explosions destroy it.** That is what stops a map filling with mines and
 //!   makes clearing a chokepoint a real play.
 
-use crate::constants::{MINE_H, MINE_W};
+use crate::constants::{GravityMode, MINE_H, MINE_W};
 use crate::items::registry::WeaponId;
 use crate::map::Map;
 use crate::math::Vec2;
 use crate::physics::body::Body;
-use crate::physics::resolve::integrate;
+use crate::physics::resolve::{integrate, Forces};
 use crate::player::state::PlayerId;
 use crate::weapons::defs::WeaponDef;
 use crate::weapons::explode::{explode, BlastSource, ExplosionResult, HitId, HitTarget};
@@ -124,19 +124,22 @@ impl Mines {
         &mut self,
         map: &mut Map,
         players: &mut [HitTarget],
+        // The match's gravity mode (T22.11A, `M22-RULINGS` R30/R14). Beside
+        // `players` because it is the same kind of thing: a property of the
+        // world this mine is sitting in, which the mine cannot know.
+        gravity: GravityMode,
         now: f32,
         dt: f32,
     ) -> Vec<MineOutcome> {
         for m in &mut self.mines {
-            // **`false`, and it is the current behaviour rather than a
-            // placeholder** (T22.03). `M22-RULINGS` R14 rules that in space
-            // every non-player body floats where it is put — which means a
-            // gravity scale of 0 *and* these contact rules — and R10
-            // assigns that signature change to `T22.11`. Today this body
-            // falls at standard gravity in every mode, exactly as
-            // `GravityMode::scale`'s doc comment says it does, so `false`
-            // is the truthful argument and not a guess.
-            integrate(map, &mut m.body, 1.0, false, dt);
+            // **The match's gravity setting, not a literal `1.0`**
+            // (`M22-RULINGS` R30, R14, R48). Until T22.11A this passed `1.0`
+            // and `false` unconditionally, so in a low-gravity match this body
+            // fell at twice the speed of the player who dropped it — a bug
+            // visible in a shipped mode, not polish. `Forces::falling` is the
+            // one place the mode becomes this body's scale **and** its contact
+            // rules, so the two cannot drift apart at four call sites.
+            integrate(map, &mut m.body, Forces::falling(gravity), dt);
         }
 
         let mut ended = Vec::new();
@@ -249,6 +252,85 @@ impl Mines {
 }
 
 /// T11.07 — proximity mines, wired end to end (§B7).
+#[cfg(test)]
+mod gravity_modes {
+    use super::*;
+    use crate::constants::{GravityMode, MapScale, LOW_GRAVITY_SCALE, SIM_DT};
+    use crate::map::gen::silhouette::force_borders;
+    use crate::map::{CoarseGrid, MapMeta, Mask};
+    use crate::weapons::defs;
+
+    fn flat_map() -> Map {
+        let (w, h) = (512u32, 512u32);
+        let mut mask = Mask::new_empty(w, h);
+        for y in 400..h as i32 {
+            mask.set_run(y, 0, w as i32 - 1);
+        }
+        force_borders(&mut mask);
+        let meta = MapMeta {
+            seed: 1,
+            requested_seed: 1,
+            attempts: 1,
+            used_safe_preset: false,
+            scale: MapScale::Small,
+            theme: 0,
+            spawn_points: Vec::new(),
+            teleport_pads: Vec::new(),
+            gun_platforms: Vec::new(),
+            surface_points: Vec::new(),
+            objects: Vec::new(),
+            buried_slots: Vec::new(),
+            decorations: Vec::new(),
+            wind: 0.0,
+            traversable_fraction: 1.0,
+            asteroids: Vec::new(),
+            largest_component: Vec::new(),
+        };
+        Map::from_parts(mask.clone(), CoarseGrid::build(&mask), meta)
+    }
+
+    /// **A mine falls at the match's rate, and in space it hangs where it was
+    /// placed** — `M22-RULINGS` R30, R14, R48.
+    ///
+    /// Until T22.11A this stepper passed a literal `1.0`, so a mine dropped in a
+    /// low-gravity match fell at twice the rate of the player who placed it. R14
+    /// makes the space case deliberate rather than an accident: *"a mine hanging
+    /// in space is a floating proximity mine, which is correct here"* — the lie
+    /// `docs/32` §4 rules out is about **ground**, and there is none.
+    ///
+    /// The `Standard` arm is the control. Without it both other assertions are
+    /// satisfied by a stepper that has stopped integrating altogether, which is
+    /// the shape of half the bugs in `CLAUDE.md`.
+    #[test]
+    fn a_mine_falls_by_the_match_gravity_and_hangs_in_space() {
+        let def = defs::by_key("mine").expect("the mine weapon");
+        let fall = |mode: GravityMode| -> f32 {
+            let mut map = flat_map();
+            let mut mines = Mines::default();
+            let id = mines.place(0, def, Vec2::new(300.0, 40.0), 0.0, 0.0, 1000.0, 0.0);
+            for _ in 0..25 {
+                mines.step(&mut map, &mut [], mode, 0.0, SIM_DT);
+            }
+            let m = mines.iter().find(|m| m.id == id).expect("the mine is gone");
+            assert!(!m.body.grounded, "precondition: it landed, not a fall");
+            m.body.pos.y - 40.0
+        };
+        let (std, low, space) = (
+            fall(GravityMode::Standard),
+            fall(GravityMode::Low),
+            fall(GravityMode::Space),
+        );
+        // See `tombstones`' twin for why this is an epsilon and not `assert_eq!`.
+        assert!(
+            (low - std * LOW_GRAVITY_SCALE).abs() < 0.001,
+            "R30: a mine fell {low} px in low gravity against {std} px in \
+             standard, which is not the mode's scale"
+        );
+        assert!(std > 0.0, "control: the fixture cannot see gravity at all");
+        assert_eq!(space, 0.0, "R14: a mine drifted in space");
+    }
+}
+
 #[cfg(test)]
 mod t1107 {
     use crate::constants::{

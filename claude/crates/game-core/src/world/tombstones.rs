@@ -17,11 +17,11 @@
 //!   seam for revive-here or explode-on-touch later, not a stub layer. A `match`
 //!   with one arm that does nothing is worse than no match at all.
 
-use crate::constants::{MAX_TOMBSTONES, TOMBSTONE_H, TOMBSTONE_W};
+use crate::constants::{GravityMode, MAX_TOMBSTONES, TOMBSTONE_H, TOMBSTONE_W};
 use crate::map::Map;
 use crate::math::Vec2;
 use crate::physics::body::Body;
-use crate::physics::resolve::integrate;
+use crate::physics::resolve::{integrate, Forces};
 use crate::player::state::PlayerId;
 
 pub type TombstoneId = u16;
@@ -112,7 +112,7 @@ impl Tombstones {
     ///
     /// Idle stones cost nothing, but only while the ground is still there — the
     /// re-probe is what stops a grave hanging over a crater.
-    pub fn step(&mut self, map: &Map, dt: f32) {
+    pub fn step(&mut self, map: &Map, gravity: GravityMode, dt: f32) {
         for t in self.stones.iter_mut() {
             if t.grounded {
                 if supported(map, t) {
@@ -122,15 +122,14 @@ impl Tombstones {
             }
             let mut body = Body::sized(t.pos, TOMBSTONE_W, TOMBSTONE_H);
             body.vel = t.vel;
-            // **`false`, and it is the current behaviour rather than a
-            // placeholder** (T22.03). `M22-RULINGS` R14 rules that in space
-            // every non-player body floats where it is put — which means a
-            // gravity scale of 0 *and* these contact rules — and R10
-            // assigns that signature change to `T22.11`. Today this body
-            // falls at standard gravity in every mode, exactly as
-            // `GravityMode::scale`'s doc comment says it does, so `false`
-            // is the truthful argument and not a guess.
-            integrate(map, &mut body, 1.0, false, dt);
+            // **The match's gravity setting, not a literal `1.0`**
+            // (`M22-RULINGS` R30, R14, R48). Until T22.11A this passed `1.0`
+            // and `false` unconditionally, so in a low-gravity match this body
+            // fell at twice the speed of the player who dropped it — a bug
+            // visible in a shipped mode, not polish. `Forces::falling` is the
+            // one place the mode becomes this body's scale **and** its contact
+            // rules, so the two cannot drift apart at four call sites.
+            integrate(map, &mut body, Forces::falling(gravity), dt);
             t.pos = body.pos;
             t.vel = body.vel;
             t.grounded = body.grounded;
@@ -173,7 +172,7 @@ fn supported(map: &Map, t: &Tombstone) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{MapScale, SIM_DT};
+    use crate::constants::{MapScale, LOW_GRAVITY_SCALE, SIM_DT};
     use crate::map::gen::silhouette::force_borders;
     use crate::map::{CoarseGrid, MapMeta, Mask};
 
@@ -221,9 +220,53 @@ mod tests {
         let mut ts = Tombstones::default();
         ts.place(0, Vec2::new(x, y), 0, 0.0);
         for _ in 0..600 {
-            ts.step(map, SIM_DT);
+            ts.step(map, GravityMode::Standard, SIM_DT);
         }
         ts.all()[0]
+    }
+
+    /// **A grave falls at the match's rate, and in space it stays where you
+    /// died** — `M22-RULINGS` R30, R14, R48.
+    ///
+    /// Until T22.11A this stepper passed a literal `1.0`, so a tombstone in a
+    /// low-gravity match fell at twice the rate of the player it was marking.
+    ///
+    /// The `Standard` arm is the control: without it the `Low` assertion is
+    /// satisfied by a stepper that has stopped applying gravity at all, and the
+    /// `Space` assertion is satisfied by a stepper that has stopped running.
+    #[test]
+    fn a_grave_falls_by_the_match_gravity_and_floats_in_space() {
+        let map = flat_map();
+        let fall = |mode: GravityMode| -> f32 {
+            let mut ts = Tombstones::default();
+            ts.place(0, Vec2::new(300.0, 40.0), 0, 0.0);
+            for _ in 0..25 {
+                ts.step(&map, mode, SIM_DT);
+            }
+            let t = ts.all()[0];
+            assert!(
+                !t.grounded,
+                "precondition: it landed, so this is not a fall"
+            );
+            t.pos.y - 40.0
+        };
+        let (std, low, space) = (
+            fall(GravityMode::Standard),
+            fall(GravityMode::Low),
+            fall(GravityMode::Space),
+        );
+        // An epsilon rather than `assert_eq!`, and it is `f32` accumulation and
+        // not slack: `vel += GRAVITY * k * dt` summed over 25 ticks rounds
+        // differently for `k = 1.0` and `k = 0.5`, by ~4e-5 px here. The
+        // tolerance is four orders of magnitude below the gap this assertion
+        // exists to catch — the bug doubled the number.
+        assert!(
+            (low - std * LOW_GRAVITY_SCALE).abs() < 0.001,
+            "R30: a grave fell {low} px in low gravity against {std} px in \
+             standard, which is not the mode's scale"
+        );
+        assert!(std > 0.0, "control: the fixture cannot see gravity at all");
+        assert_eq!(space, 0.0, "R14: a grave drifted in space");
     }
 
     #[test]
@@ -244,7 +287,7 @@ mod tests {
         let mut ts = Tombstones::default();
         ts.place(0, Vec2::new(300.0, 100.0), 0, 0.0);
         for _ in 0..600 {
-            ts.step(&map, SIM_DT);
+            ts.step(&map, GravityMode::Standard, SIM_DT);
         }
         let landed = ts.all()[0].pos.y;
         assert!(ts.all()[0].grounded);
@@ -252,7 +295,7 @@ mod tests {
         // Blow out everything under it.
         map.carve_circle(300, (landed + 40.0) as i32, 70);
         for _ in 0..300 {
-            ts.step(&map, SIM_DT);
+            ts.step(&map, GravityMode::Standard, SIM_DT);
         }
         let after = ts.all()[0].pos.y;
         assert!(
@@ -270,11 +313,11 @@ mod tests {
         let mut ts = Tombstones::default();
         ts.place(0, Vec2::new(300.0, 100.0), 0, 0.0);
         for _ in 0..600 {
-            ts.step(&map, SIM_DT);
+            ts.step(&map, GravityMode::Standard, SIM_DT);
         }
         let settled = ts.all()[0].pos;
         for _ in 0..600 {
-            ts.step(&map, SIM_DT);
+            ts.step(&map, GravityMode::Standard, SIM_DT);
         }
         let after = ts.all()[0].pos;
         assert!(
@@ -313,7 +356,7 @@ mod tests {
         let mut a = blake3::Hasher::new();
         ts.hash_into(&mut a);
         for _ in 0..60 {
-            ts.step(&map, SIM_DT);
+            ts.step(&map, GravityMode::Standard, SIM_DT);
         }
         let mut b = blake3::Hasher::new();
         ts.hash_into(&mut b);
