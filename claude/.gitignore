@@ -45,3 +45,8 @@ shots/
 assets/vendor/*
 !assets/vendor/README.md
 .run/
+
+# Ad-hoc check re-run logs. Same reason as gate-*.txt: an untracked path at the repo
+# root is a path `scripts/affected.mjs` has no rule for, and it prints "everything" —
+# so one stray log turns every `--changed` in the tree into the full browser gate.
+rerun-*.txt

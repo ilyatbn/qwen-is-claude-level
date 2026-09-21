@@ -1497,6 +1497,154 @@ sharper and easier failure to write a test for.
 
 **Reverse it by:** nothing — this is a correction of fact, not a choice.
 
+## R50 — The tripwire R10, R45 and the scout all named **does not work**, and `T22.11B` must bring its own
+
+**Measured by `T22.11A`'s builder at the live binding site, and it overturns a claim three
+documents made — including two of mine.** R10 nominated
+`resolve::no_tunnelling_at_ten_times_terminal_velocity_through_integrate` as *the* existing
+test that would catch a `max_speed` leaking onto the standard-gravity path; R45 repeated it;
+the T22.11A task file repeated it again as "Hazard 1"; the scout repeated it a fourth time.
+
+It does not:
+
+- `Forces::gravity` carrying `max_speed: Some(MAX_FALL_SPEED)` → **1062 passed, 0 failed.**
+  `apply_gravity` has already clamped `vel.y` to 900 by the time any magnitude clamp runs, so
+  on the scalar path the clamp is an exact no-op. **The test never sees 9000 px/s; it sees 900.**
+- At `Some(MAX_FALL_SPEED / 2.0)` → 1 failed, and it was
+  `resolve::a_landing_reports_the_speed_it_was_falling_at` — **not** the tripwire. The tripwire
+  asserts `feet_y() <= 301.0`, an **upper** bound on distance, and a speed clamp can only make a
+  body travel *less*.
+- The obvious repair — adding `assert!(b.grounded)` as the missing presence-control — **was tried
+  and reverted**, because it fails on the honest build too: the same `apply_gravity` clamp means
+  the body travels 15 px/tick and cannot reach the floor in 10 ticks.
+
+Four documents asserted a guard nobody had run. It is `CLAUDE.md`'s *"a proposed guard is a
+claim, and it needs the same falsification as the code it guards"* — now missed **four** times
+in this milestone from three roles, and twice by me in the same ruling chain. The scout also
+conflated two tests: `vel.x = ±5000` lives in `the_body_cannot_leave_the_world_sideways`.
+
+**The ruling.** `T22.11B` may **not** cite this test as cover for its `max_speed`. It writes its
+own, and that test must drive a body **on the vector path** — where no `vel.y` clamp has already
+run — past the mode's terminal speed, and assert a **lower** bound is not exceeded. The
+measurement is recorded at `Forces::max_speed`'s doc comment, which is where the next reader
+will look.
+
+**The deeper reason this was missable, and the one to carry forward:** a test named for a
+*speed* asserted a *distance*, and an upper bound at that. Every one of the four of us read the
+name and none of us read the assertion.
+
+**Reverse it by:** nothing. This is a measurement, not a choice.
+
+## R51 — Eight parameters trip clippy at seven, so the `#[allow]` stays; the count is the ruling, not the attribute
+
+`T22.11A`'s Done-when, **which I wrote**, ended with `grep -c 'too_many_arguments' … # expect 0`.
+It cannot hold: clippy's threshold is 7, `apply_input` is legitimately at 8, and there is no
+`clippy.toml`. The builder measured it (`warning: this function has too many arguments (8/7)`),
+**declined to game the Done-when**, and reported it — which is the right call twice over.
+
+R10 already quoted the prior comment approvingly — *"Eight, and the allow stays (T21.02)"* — so
+the attribute staying is consistent with the ruling that produced it. **What R10 and R44 rule is
+the parameter count: eight and four. Both are met.** A `clippy.toml` with
+`too-many-arguments-threshold = 8` would be a one-line alternative; it is not worth widening a
+workspace-wide lint to satisfy a grep I wrote badly.
+
+**Reverse it by:** adding `clippy.toml`.
+
+## R52 — `Env` carries `gravity`, and `876cb9d` does not compile alone
+
+Two consequences of `T22.11A` worth recording so nobody re-derives them:
+
+**`Env { accel, max_speed, gravity }`.** R10 spells `Env { accel, max_speed }` *and* requires
+`MoveStep` to absorb `mods` **and** `gravity` (9 − 2 + 1 = 8). Three fields do not fit two
+two-field structs, so one spelling had to gain a field. `gravity` went to `Env` — it is what the
+*world* does, where `mods` is what the *player* carries — leaving `MoveStep` exactly as R10
+spells it. `Forces` also gained `zero_g`, which R44 requires and which cannot be derived, since
+T21.03's wings pass scale 0.0 under ordinary gravity.
+
+**Commit `876cb9d` does not compile on its own.** `game-core` would not build without three
+arity fixes in `items/spawning.rs`, a file assigned to `T22.05C`. The builder made them rather
+than leave the tree broken for both agents — the right call — but they land in `T22.05C`'s
+commit, so `876cb9d` is green only once that one is in. **This is the cost of splitting by file
+across two concurrent agents when a signature change crosses the boundary**, and it is mine: I
+drew the line. Next time the signature-change task owns every file that calls it, and the other
+task waits or takes a different slice.
+
+**Reverse it by:** nothing — a record, not a choice.
+
+## R53 — `--changed` **is** the full gate for any `game-core` task, and the per-task economy assumed otherwise
+
+Raised by `T22.05C`'s builder, and it is the most consequential thing either builder said.
+`scripts/affected.mjs` maps **every** path under `crates/game-core/src/**` to *"all e2e and
+client (the wasm is in every page)"* — **58 checks**. That is true and it is not a bug: the wasm
+really is on every page, so a `game-core` change really can break any of them.
+
+But `CLAUDE.md`'s economy — *"the Done-when per task, `--changed` per task, the full gate once
+per batch by the coordinator"* — was set to stop a builder running the ~40-minute gate thirteen
+times to land nine tasks. **For a `game-core` task, `--changed` and the full gate are the same
+forty minutes**, so the rule as written buys nothing for most of this milestone's work, and both
+builders today independently declined to run it, each giving the same correct reason: the other
+agent was editing the tree, and `CLAUDE.md` says a browser run under those conditions is
+worthless.
+
+**The ruling, for the rest of M22.** A builder whose change is confined to `crates/` runs the
+**non-browser** half of `--changed` — fmt, clippy, `cargo test` for the affected crates *and
+their dependents*, client typecheck, client vitest, `verify-repo`, plus **any single e2e check
+`affected.mjs` maps to a file it actually touched** — and says so in its report with the exit
+codes, exactly as both did today. **The 58-check sweep belongs to the coordinator's batch gate
+and to nobody else.** That keeps the dependents rule, which is the part that has twice caught a
+commit breaking the workspace build, and drops only the part that cannot be run correctly by
+two concurrent agents anyway.
+
+**What this costs, stated so it is not discovered later:** between batch gates, a `game-core`
+change is unprotected against browser regressions. That is already true in practice — nobody has
+been running the sweep per task — this just stops pretending otherwise. **The mitigation is that
+the batch gate must actually run, on an idle box, before the milestone closes.**
+
+**Reverse it by:** this paragraph.
+
+## R54 — Two agents cannot share `TASKS.md` and `JOURNAL.md`, and the pathspec rule does not help
+
+**It happened twice today, in opposite directions.** `CLAUDE.md`'s pathspec rule
+(`git commit -F - -- <paths>`) protects you from staging another agent's *files*. It does
+nothing about a shared *file*: both builders appended to `tasks/JOURNAL.md` and ticked
+`tasks/TASKS.md`, and whoever committed first carried the other's lines under their own message.
+Both spotted it and both said where their lines went, which is the only reason it is harmless.
+
+**The ruling.** When two builders run concurrently, **neither writes `JOURNAL.md` or
+`TASKS.md`.** Each ends its report with the journal entry it wants and the row it wants ticked,
+and **the coordinator appends both** — which is also the only way the two entries end up in a
+sensible order rather than whichever order the commits happened to land. The commit each builder
+makes is its own source files and its own task file, nothing else.
+
+**Reverse it by:** this paragraph. Single-builder batches are unaffected.
+
+## R55 — F1's answer: all five guards are live, and the review's worry was wrong
+
+For the record, since `R32`/`R35`'s reasoning now rests on it. Each guard flipped **separately**
+to `if false` at `meta.rs::generate_full_with`, seed 4242, Small/Medium/Large:
+
+| guard off | a space map then ships |
+|---|---|
+| `teleport_pads` | **6 / 6 / 6** |
+| `gun_platforms` | **3 / 3 / 3** |
+| `decorations` | **3 / 6 / 10** |
+| `buried_slots` | **1 / 7 / 10** — matching the number already in the ruling |
+| none off | 0 / 0 / 0 |
+
+So the review's hypothesis — that this commit removed the ground those samplers were finding,
+so the guards might be decoration — is **refuted**: the filtered arena surface still seats all
+three. The test now carries the claim *"deleting any one of the five makes me fail"* instead of
+*"a space map has none of these today"*, which is the difference between a guard and an
+observation.
+
+**One measurement nobody asked for and it is the best thing in the task:** with only the pads
+guard off, Medium's `surface_points` goes **69 → 75**; with only the platforms guard off,
+**69 → 72**. That is `fill_standing_ground` adding rock *outside* an asteroid's bounding radius —
+which `stamp_asteroid`'s invariant forbids. The pads ruling's central argument had been an
+assertion; it now has a number.
+
+**Reverse it by:** nothing — a measurement.
+
 # What this milestone owes when it lands
 
 `docs/77-amendments-v9.md`, written by me, covering: the gravity setting (`docs/` does not
