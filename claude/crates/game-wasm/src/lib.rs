@@ -383,6 +383,75 @@ impl GameCore {
             .collect()
     }
 
+    /// Install the round's asteroids, from `map_init` (`T22.11C`, `M22-RULINGS`
+    /// R49 and R11).
+    ///
+    /// **The pads' and platforms' third sibling, and the one that decides where
+    /// the player ends up rather than what the mask looks like.** Since
+    /// `T22.11B` a space player's acceleration is
+    /// `world::attractors::env_at(map, gravity, pos)`, which reads
+    /// `map.meta.asteroids` and nothing else. `GameCore::new()` generates on the
+    /// **standard** generator, so until this is called a networked client's table
+    /// is *empty* — not stale, empty — and it predicts against a field of exactly
+    /// zero everywhere while the server pulls the body toward a rock. That is a
+    /// rubber-band on every frame a player spends inside a well.
+    ///
+    /// **Nothing here sorts, and that is the contract.** `field_at` sums in
+    /// iteration order and float addition is not associative, so the two sides
+    /// must sum the *same list in the same order*. The order is
+    /// `map::gen::space::place_asteroids`' — `MapMeta.asteroids` is a `Vec`,
+    /// `codec.rs::encode_map_init` writes it as a sequence, `decode_map_init_parts`
+    /// pushes in read order, `client/src/net/codec.ts` does the same, and the
+    /// index loop below preserves it. A sort anywhere on that path is a
+    /// divergence, which is why there is none.
+    ///
+    /// **Order against `set_gravity` does not matter, unlike `load_mask`'s.**
+    /// `load_mask` derives its surface re-extraction from the mode this core is
+    /// already set to, so a `map_init` that arrived before `lobby_state` gets the
+    /// standard generator's surface. This setter reads no mode at all: it installs
+    /// the table, and `env_at` consults `self.gravity` at the tick, so a later
+    /// `set_gravity("space")` brings the field live with the rocks already in
+    /// place. `map_init_before_lobby_state_still_predicts_the_field` asserts both
+    /// halves — identical prediction either way round, and the surface that does
+    /// differ.
+    ///
+    /// Parallel arrays for the reason `set_teleport_pads` gives: wasm-bindgen has
+    /// no cheap way to pass a slice of structs. There is no `asteroids()` twin of
+    /// [`GameCore::teleport_pads`] because `meta_json` already serialises the whole
+    /// `MapMeta` — `Core.meta.asteroids` in `client/src/core/index.ts` is the
+    /// readback, and the browser check reads it there.
+    pub fn set_asteroids(&mut self, xs: &[i32], ys: &[i32], rs: &[i32], levels: &[u8]) {
+        let n = xs.len().min(ys.len()).min(rs.len()).min(levels.len());
+        self.map.meta.asteroids = (0..n)
+            .map(|i| game_core::map::meta::Asteroid {
+                x: xs[i],
+                y: ys[i],
+                r: rs[i],
+                level: levels[i],
+            })
+            .collect();
+    }
+
+    /// The summed gravity field at a world point, px/s², as `[ax, ay]`.
+    ///
+    /// **A readback, in the sense [`GameCore::teleport_pads`] is one**: nothing
+    /// in the game reads it, and `scripts/checks/asteroid-gravity.mjs` does. That
+    /// check has to know which way a body will be pulled *before* it has moved,
+    /// so it can photograph the patch of frame the body is about to enter and
+    /// the patch on the opposite side as its control. Deriving that in JavaScript
+    /// would be a second spelling of `field_at`'s summation — the one thing R11
+    /// exists to prevent — so it is asked of the core instead.
+    ///
+    /// **Through `env_at`, not `field_at`.** That is the composition both sides
+    /// already call, so the answer includes the gravity mode: on a standard or
+    /// low-gravity map it is `[0, 0]` however many rocks the meta holds, which is
+    /// what makes the check's control frame (`set_asteroids` with an empty list)
+    /// assert the *effect* rather than the ask.
+    pub fn field_accel_at(&self, x: f32, y: f32) -> Box<[f32]> {
+        let env = game_core::world::attractors::env_at(&self.map, self.gravity, Vec2::new(x, y));
+        Box::new([env.accel.x, env.accel.y])
+    }
+
     // ---- terrain access -------------------------------------------------
 
     /// Address of the mask words in WASM memory. See the module docs: the view JS
@@ -524,14 +593,14 @@ impl GameCore {
         // `attractors::env_at` is the one composition, so there is no second
         // spelling for the two to disagree about.
         //
-        // **What it reads is still empty here, and that is R49, not a bug in this
-        // line.** `GameCore::new()` generates on the *standard* generator, so a
-        // networked client's `map.meta.asteroids` is empty — not stale, empty —
-        // and this predicts against no field at all until `T22.11C` lands
-        // `GameCore::set_asteroids` and `worldMirror.ts::applyMapInit` calls it
-        // beside `setTeleportPads`. Until then a player inside a well rubber-bands,
-        // which is exactly what that task is scheduled to fix; wiring the call here
-        // now is what makes it a one-line change there instead of a second design.
+        // **And what it reads is now filled, which was R49's gap** (`T22.11C`).
+        // `GameCore::new()` generates on the *standard* generator, so until that
+        // task a networked client's `map.meta.asteroids` was empty — not stale,
+        // empty — and this line predicted against no field at all. The table
+        // arrives in `map_init` and is installed by
+        // `worldMirror.ts::applyMapInit` through [`GameCore::set_asteroids`],
+        // beside `setTeleportPads`; wiring this call at T22.11B is what made that
+        // a one-line change rather than a second design.
         let env = game_core::world::attractors::env_at(map, gravity, p.body.pos);
         apply_input(
             map,
@@ -2919,6 +2988,514 @@ mod tests {
             "a mirror never told the gravity mode still agreed — \
              ({untold_x:.1}, {untold_y:.1}) against ({server_x:.1}, {server_y:.1}), \
              {apart:.1} px apart"
+        );
+    }
+
+    // ---- T22.11C: the wire's rocks reach the mirror ----------------------
+
+    /// The seed the space fixtures below build their map from.
+    const FIELD_SEED: u64 = 4242;
+
+    /// How long a body is left to fall through the field.
+    ///
+    /// **One second, and the bound is measured rather than chosen.** At two the
+    /// fixture's body reaches a rock and stops — R1's contact rule — and a run
+    /// that ends against terrain is measuring the collision, not the well. At one
+    /// it is 118 px from where it started and still accelerating.
+    const DRIFT_TICKS: u32 = game_core::constants::SIM_HZ;
+
+    /// `worldMirror.ts::applyMapInit`'s call, in Rust.
+    ///
+    /// The TypeScript wrapper splits the decoded `MapAsteroid[]` into four typed
+    /// arrays exactly like this; keeping the split in one place here means the
+    /// fixtures below exercise the same shape the client does.
+    fn install_asteroids(core: &mut GameCore, rocks: &[game_core::map::meta::Asteroid]) {
+        let xs: Vec<i32> = rocks.iter().map(|a| a.x).collect();
+        let ys: Vec<i32> = rocks.iter().map(|a| a.y).collect();
+        let rs: Vec<i32> = rocks.iter().map(|a| a.r).collect();
+        let levels: Vec<u8> = rocks.iter().map(|a| a.level).collect();
+        core.set_asteroids(&xs, &ys, &rs, &levels);
+    }
+
+    /// A space `World`, and the `GameCore` a networked client holds after
+    /// `lobby_state` and `map_init` — **through the real codec**, never a
+    /// hand-built list.
+    ///
+    /// `tell_the_mirror` is the control knob: `false` is the client this project
+    /// shipped before `T22.11C`, which decoded the asteroid section and had
+    /// nowhere to put it (R49).
+    fn space_world_and_mirror(tell_the_mirror: bool) -> (game_core::world::World, GameCore) {
+        use game_core::world::RoundPhase;
+        let mut w = game_core::world::World::with_gravity(
+            FIELD_SEED,
+            MapScale::Small,
+            0,
+            game_core::constants::DEFAULT_MAP_GENERATOR,
+            GravityMode::Space,
+        );
+        w.set_phase(RoundPhase::Playing);
+        assert!(
+            !w.map.meta.asteroids.is_empty(),
+            "the fixture map has no rocks, so every assertion below is vacuous"
+        );
+
+        let bytes = game_server::codec::encode_map_init(&w.map);
+        let parts =
+            game_server::codec::decode_map_init_parts(&bytes).expect("the server's own bytes");
+
+        let mut core = GameCore::new();
+        // The order a real client sees: gravity off `lobby_state` first, then the
+        // map. `map_init_before_lobby_state_still_predicts_the_field` runs the
+        // other one.
+        assert!(core.set_gravity(GravityMode::Space.as_str()));
+        assert!(core.load_mask(
+            parts.mask.w,
+            parts.mask.h,
+            &game_core::map::rle::encode(&parts.mask)
+        ));
+        let pad_xs: Vec<i32> = parts.teleport_pads.iter().map(|p| p.pos.x).collect();
+        let pad_ys: Vec<i32> = parts.teleport_pads.iter().map(|p| p.pos.y).collect();
+        core.set_teleport_pads(&pad_xs, &pad_ys);
+        let plat_xs: Vec<i32> = parts.gun_platforms.iter().map(|g| g.pos.x).collect();
+        let plat_ys: Vec<i32> = parts.gun_platforms.iter().map(|g| g.pos.y).collect();
+        core.set_gun_platforms(&plat_xs, &plat_ys);
+        assert!(core.set_phase("playing"));
+        if tell_the_mirror {
+            install_asteroids(&mut core, &parts.asteroids);
+        }
+        (w, core)
+    }
+
+    /// A feet line inside the strongest rock's well, in open space.
+    ///
+    /// **The smallest offset that fits, not a round number**: the pull falls off
+    /// linearly to zero at `well_reach`, so a point chosen near the edge of the
+    /// reach accelerates at almost nothing and a fixture built on one would
+    /// report "the two sides agree" about a body that never moved.
+    ///
+    /// **The direction the body then goes is not this rock's**, and the fixture
+    /// does not pretend otherwise: at the point this returns on the seed below,
+    /// the summed field is `(-145, +448)` px/s² — the chosen rock pulls left and
+    /// two others pull down harder. `field_at` sums *every* rock, which is the
+    /// whole of R11, so the caller reads the direction off the field rather than
+    /// off the geometry.
+    fn start_inside_a_well(w: &game_core::world::World) -> (game_core::map::meta::Asteroid, Vec2) {
+        use game_core::math::Point;
+        let rock = *w
+            .map
+            .meta
+            .asteroids
+            .iter()
+            .max_by_key(|a| a.level)
+            .expect("checked non-empty by the caller");
+        let reach = game_core::world::attractors::well_reach(rock.level);
+        let mut d = rock.r as f32 + PLAYER_H;
+        while d < reach {
+            let p = Point::new(rock.x + d as i32, rock.y);
+            if w.map.body_fits_at(p) {
+                return (rock, Vec2::new(p.x as f32, p.y as f32));
+            }
+            d += 2.0;
+        }
+        panic!(
+            "no open-space start inside level-{} rock ({}, {})'s reach of {reach:.0} px",
+            rock.level, rock.x, rock.y
+        );
+    }
+
+    /// What one run of [`drift_in_a_well`] measured.
+    struct WellDrift {
+        /// Where the body started, and where each side ended.
+        start: Vec2,
+        server: Vec2,
+        mirror: Vec2,
+        /// The summed field at `start`, px/s² — the direction the body should go.
+        field: Vec2,
+    }
+
+    /// Let a body fall toward a rock on both sides, holding **no** buttons.
+    ///
+    /// No input on purpose: in space nothing else touches an ungrounded body, so
+    /// every pixel of the move below is the field. A held direction would put the
+    /// walk rule's arithmetic in the middle of the one claim this fixture makes.
+    fn drift_in_a_well(tell_the_mirror: bool) -> WellDrift {
+        let (mut w, mut core) = space_world_and_mirror(tell_the_mirror);
+        let (_, start) = start_inside_a_well(&w);
+        // Read off the **server's** map, which is the one that has the rocks in
+        // both arms — the untold mirror's field is zero by construction and would
+        // make this a direction of `(0, 0)`.
+        let field = game_core::world::attractors::field_at(
+            game_core::world::attractors::asteroid_attractors(&w.map),
+            start,
+        );
+
+        w.add_player(1, 0, String::new());
+        {
+            let p = w.player_mut(1).expect("seated");
+            p.body.pos = start;
+            p.body.vel = Vec2::ZERO;
+        }
+
+        // Through the real wire, the reason `hold_jump_and_right_in_space` gives:
+        // `set_player_state` is what `prediction.ts::reconcile` calls, and a
+        // fixture handing both sides the same `f32` could never see the codec.
+        let bytes = game_server::codec::encode_snapshot(&w, 1, 0);
+        let snap = game_server::codec::decode_snapshot(&bytes).expect("the server's own bytes");
+        let wire = snap
+            .players
+            .iter()
+            .find(|p| p.id == 1)
+            .expect("player 1 is in the snapshot");
+        let (wire_health, wire_alive, wire_mods) =
+            (wire.health as f32, wire.flags & 1 != 0, wire.move_mods);
+        let p = w.player(1).expect("seated");
+        core.add_player(1, p.body.pos.x, p.body.pos.y);
+        core.set_player_state(
+            1,
+            p.body.pos.x,
+            p.body.pos.y,
+            p.body.vel.x,
+            p.body.vel.y,
+            p.body.grounded,
+            p.jetpack.fuel,
+            wire_health,
+            wire_alive,
+            wire_mods,
+        );
+
+        let mut seq = 1000u32;
+        for _ in 0..DRIFT_TICKS {
+            seq += 1;
+            w.queue_input(1, Input::new(seq, 0, 0));
+            w.step(SIM_DT);
+            core.apply_input(1, seq, 0, 0, SIM_DT);
+        }
+        let sp = w.player(1).expect("seated");
+        let c = core.player_state(1);
+        WellDrift {
+            start,
+            server: sp.body.pos,
+            mirror: Vec2::new(c[0], c[1]),
+            field,
+        }
+    }
+
+    /// **`M22-RULINGS` R49 and R36 — the wire's rocks reach the mirror, and the
+    /// hash R36 built is what says so.**
+    ///
+    /// Red before green: with `GameCore::set_asteroids` absent there was nowhere
+    /// for `decode_map_init_parts`' asteroid section to go, so a networked
+    /// client's `map.meta.asteroids` was **empty** — not stale, empty — and this
+    /// assertion fails on a table of length 0 against the server's.
+    ///
+    /// Asserted through `World::state_hash` rather than by comparing the two
+    /// `Vec`s, because that is R36's instrument and it covers all four fields the
+    /// field summation reads — `level`, `x`, `y` and `r`. A rock installed at the
+    /// wrong place, the wrong size or the wrong level is one the determinism guard
+    /// this milestone rests on can already see, so this test inherits that reach
+    /// instead of picking a tolerance of its own.
+    #[test]
+    fn set_asteroids_installs_the_wires_rocks_and_the_state_hash_says_so() {
+        let build = || {
+            game_core::world::World::with_gravity(
+                FIELD_SEED,
+                MapScale::Small,
+                0,
+                game_core::constants::DEFAULT_MAP_GENERATOR,
+                GravityMode::Space,
+            )
+        };
+        let server = build();
+        assert_eq!(
+            server.state_hash(),
+            build().state_hash(),
+            "two identically built space worlds disagree, so nothing below means \
+             anything"
+        );
+
+        let (_, told) = space_world_and_mirror(true);
+        let mut mirrored = build();
+        mirrored.map.meta.asteroids = told.map.meta.asteroids.clone();
+        assert_eq!(
+            server.state_hash(),
+            mirrored.state_hash(),
+            "the client installed {} rocks off the wire and the server has {} — \
+             the two sides are predicting against different fields",
+            told.map.meta.asteroids.len(),
+            server.map.meta.asteroids.len()
+        );
+
+        // The control: a mirror that never got the call. This is the client that
+        // shipped before this task, and it must be visible to the same hash, or
+        // the assertion above is one nothing could fail.
+        let (_, untold) = space_world_and_mirror(false);
+        assert!(
+            untold.map.meta.asteroids.is_empty(),
+            "the untold arm found rocks from somewhere, so it is not the control \
+             it claims to be"
+        );
+        let mut mirrored_untold = build();
+        mirrored_untold.map.meta.asteroids = untold.map.meta.asteroids.clone();
+        assert_ne!(
+            server.state_hash(),
+            mirrored_untold.state_hash(),
+            "a client with no rocks at all hashes the same as the server"
+        );
+    }
+
+    /// **The point of `T22.11C`: a body drifting into a well ends where the
+    /// server puts it.**
+    ///
+    /// The control that the fixture is live comes first — the server body has to
+    /// have *moved*, and moved toward the rock, or "the two agree" is a statement
+    /// about a body nothing touched. Then the claim, then the untold arm, which
+    /// is the client that decoded the asteroid section and dropped it.
+    #[test]
+    fn a_mirror_told_the_rocks_drifts_where_the_server_drifts() {
+        let told = drift_in_a_well(true);
+
+        let travelled = told.server - told.start;
+        assert!(
+            travelled.len() > PLAYER_H,
+            "the server body moved {:.1} px in {DRIFT_TICKS} ticks from \
+             ({:.0}, {:.0}) — the field is not pulling it anywhere, so the \
+             agreement below is vacuous",
+            travelled.len(),
+            told.start.x,
+            told.start.y
+        );
+        // And it went the way the field pointed, which is what makes the move
+        // attributable to the wells rather than to anything else a tick does.
+        let along = travelled.x * told.field.x + travelled.y * told.field.y;
+        assert!(
+            along > 0.0,
+            "the body drifted ({:.1}, {:.1}) against a field of ({:.1}, {:.1}) \
+             px/s² — something other than the wells moved it",
+            travelled.x,
+            travelled.y,
+            told.field.x,
+            told.field.y
+        );
+
+        let apart = (told.server - told.mirror).len();
+        assert!(
+            apart <= RECONCILE_EPSILON_PX,
+            "the mirror predicted the drifting body at ({:.1}, {:.1}) where the \
+             server put it at ({:.1}, {:.1}), {apart:.1} px apart against an \
+             epsilon of {RECONCILE_EPSILON_PX}",
+            told.mirror.x,
+            told.mirror.y,
+            told.server.x,
+            told.server.y
+        );
+
+        // **The control, and the red half of red-before-green.** A mirror never
+        // given the rocks predicts against a field of exactly zero: the body
+        // stays where it was put while the server's falls toward the rock.
+        let untold = drift_in_a_well(false);
+        let untold_apart = (untold.server - untold.mirror).len();
+        assert!(
+            untold_apart > RECONCILE_EPSILON_PX,
+            "a mirror never given the rocks still agreed with the server \
+             ({untold_apart:.1} px apart), so nothing here can see \
+             `set_asteroids` at all"
+        );
+        assert!(
+            (untold.mirror - untold.start).len() <= RECONCILE_EPSILON_PX,
+            "the untold mirror moved to ({:.1}, {:.1}) from ({:.1}, {:.1}) — it \
+             has a field from somewhere, and the arm is not the control it claims",
+            untold.mirror.x,
+            untold.mirror.y,
+            untold.start.x,
+            untold.start.y
+        );
+    }
+
+    /// **The seam `load_mask`'s comment names, asserted for the new setter.**
+    ///
+    /// `load_mask` documents that `set_gravity` arrives off `lobby_state`
+    /// *before* `map_init`, and the only test of that ordering calls
+    /// `set_gravity` explicitly. `set_asteroids` lands in the same window, so
+    /// this says what happens if the two messages are swapped.
+    ///
+    /// **They are not symmetric, and both halves are asserted.** The setter reads
+    /// no mode — it installs the table, and `env_at` consults `self.gravity` at
+    /// the tick — so prediction is identical either way round. `load_mask` is
+    /// not: it re-extracts the surface through the generator derived from the
+    /// mode it is *currently* set to, so a `map_init` that beat `lobby_state`
+    /// gets the landscape's surface on a space map. That is pre-existing and
+    /// outside this task, but it is the reason this test cannot simply say "order
+    /// does not matter" and leave it there.
+    #[test]
+    fn map_init_before_lobby_state_still_predicts_the_field() {
+        let mut w = game_core::world::World::with_gravity(
+            FIELD_SEED,
+            MapScale::Small,
+            0,
+            game_core::constants::DEFAULT_MAP_GENERATOR,
+            GravityMode::Space,
+        );
+        w.set_phase(game_core::world::RoundPhase::Playing);
+        let (_, start) = start_inside_a_well(&w);
+        let bytes = game_server::codec::encode_map_init(&w.map);
+        let parts =
+            game_server::codec::decode_map_init_parts(&bytes).expect("the server's own bytes");
+        let rle_bytes = game_core::map::rle::encode(&parts.mask);
+
+        let drift = |gravity_first: bool| {
+            let mut core = GameCore::new();
+            if gravity_first {
+                assert!(core.set_gravity(GravityMode::Space.as_str()));
+            }
+            assert!(core.load_mask(parts.mask.w, parts.mask.h, &rle_bytes));
+            install_asteroids(&mut core, &parts.asteroids);
+            if !gravity_first {
+                assert!(core.set_gravity(GravityMode::Space.as_str()));
+            }
+            assert!(core.set_phase("playing"));
+            core.add_player(1, start.x, start.y);
+            for seq in 0..DRIFT_TICKS {
+                core.apply_input(1, seq, 0, 0, SIM_DT);
+            }
+            let c = core.player_state(1);
+            (Vec2::new(c[0], c[1]), core.map.meta.surface_points.len())
+        };
+
+        let (ordered, ordered_surface) = drift(true);
+        let (swapped, swapped_surface) = drift(false);
+
+        // The control: the run moved at all, so two equal answers are not two
+        // copies of the start position.
+        assert!(
+            (ordered - start).len() > PLAYER_W,
+            "neither ordering moved the body, so this test compares two \
+             stationary points"
+        );
+        assert_eq!(
+            ordered, swapped,
+            "a `map_init` that arrived before `lobby_state` predicted \
+             ({:.1}, {:.1}) where the documented order predicted ({:.1}, {:.1})",
+            swapped.x, swapped.y, ordered.x, ordered.y
+        );
+
+        // And the half that *is* order-dependent, measured rather than assumed:
+        // `load_mask` re-extracts the surface through the generator the mode
+        // implies, so the swapped order gets the landscape's. Asserted so that a
+        // future change making `load_mask` order-proof is reported here rather
+        // than leaving this comment claiming something untrue.
+        assert_ne!(
+            ordered_surface, swapped_surface,
+            "`load_mask` now re-extracts the same surface whichever order the two \
+             messages arrive in — good news, and this test's second half is stale"
+        );
+    }
+
+    /// **The readback the browser check steers by** (`T22.11C`, `R63`).
+    ///
+    /// `scripts/checks/asteroid-gravity.mjs` asks `field_accel_at` which way the
+    /// body is about to be pulled and puts its subject patch there and its
+    /// control patch opposite. A readback that answered plausibly but wrongly
+    /// would aim both patches at nothing and the check would go red for the wrong
+    /// reason, so it is pinned here against `field_at` — the summation the server
+    /// runs — rather than trusted.
+    ///
+    /// The `[0, 0]` arms are the two the check depends on: clearing the table is
+    /// how it takes the field away for its control frame, and a standard match
+    /// must report no field however the meta is filled.
+    #[test]
+    fn field_accel_at_reports_the_summation_the_server_runs() {
+        let (w, core) = space_world_and_mirror(true);
+        let (_, start) = start_inside_a_well(&w);
+        let server = game_core::world::attractors::field_at(
+            game_core::world::attractors::asteroid_attractors(&w.map),
+            start,
+        );
+        assert!(
+            server.len() > 0.0,
+            "the fixture point has no field on the server, so every arm below is \
+             comparing zeroes"
+        );
+        let got = core.field_accel_at(start.x, start.y);
+        assert_eq!(
+            (got[0], got[1]),
+            (server.x, server.y),
+            "the mirror reports ({:.3}, {:.3}) px/s² where the server sums \
+             ({:.3}, {:.3})",
+            got[0],
+            got[1],
+            server.x,
+            server.y
+        );
+
+        // Take the rocks away, which is the check's control frame.
+        let mut cleared = core;
+        cleared.set_asteroids(&[], &[], &[], &[]);
+        let none = cleared.field_accel_at(start.x, start.y);
+        assert_eq!((none[0], none[1]), (0.0, 0.0));
+
+        // And a standard match reports no field with the table still full —
+        // `env_at`'s `Standard | Low` arm, read through this accessor.
+        let (_, mut standard) = space_world_and_mirror(true);
+        assert!(standard.set_gravity(GravityMode::Standard.as_str()));
+        assert!(!standard.map.meta.asteroids.is_empty());
+        let off = standard.field_accel_at(start.x, start.y);
+        assert_eq!((off[0], off[1]), (0.0, 0.0));
+    }
+
+    /// **The control that nothing else moved** (`T22.11C`).
+    ///
+    /// `worldMirror.ts::applyMapInit` now calls `setAsteroids` on *every*
+    /// `map_init`, and a normal map's asteroid section is empty. So an ordinary
+    /// match must predict exactly as it did before the call existed — the same
+    /// rule R47 and `env_at`'s `Standard | Low` arm carry in `game-core`, checked
+    /// here at the wasm seam where the new call actually lands.
+    #[test]
+    fn a_standard_match_predicts_the_same_with_the_new_call_as_without() {
+        let mut w = game_core::world::World::new(FIELD_SEED, MapScale::Small);
+        w.set_phase(game_core::world::RoundPhase::Playing);
+        w.add_player(1, 0, String::new());
+        let (stand_x, stand_y) = build_shelf(&mut w);
+        let bytes = game_server::codec::encode_map_init(&w.map);
+        let parts =
+            game_server::codec::decode_map_init_parts(&bytes).expect("the server's own bytes");
+        assert!(
+            parts.asteroids.is_empty(),
+            "a standard map shipped asteroids, so this control is testing \
+             something else entirely"
+        );
+        let rle_bytes = game_core::map::rle::encode(&parts.mask);
+
+        let walk = |call_the_setter: bool| {
+            let mut core = GameCore::new();
+            assert!(core.set_gravity(GravityMode::Standard.as_str()));
+            assert!(core.load_mask(parts.mask.w, parts.mask.h, &rle_bytes));
+            if call_the_setter {
+                install_asteroids(&mut core, &parts.asteroids);
+            }
+            assert!(core.set_phase("playing"));
+            core.add_player(1, stand_x, stand_y);
+            for seq in 0..WALK_TICKS {
+                core.apply_input(1, seq, game_core::player::input::button::RIGHT, 0, SIM_DT);
+            }
+            let c = core.player_state(1);
+            Vec2::new(c[0], c[1])
+        };
+
+        let with_call = walk(true);
+        let without = walk(false);
+        // The control that the walk happened: two identical stationary bodies
+        // would satisfy the equality below for a core that ignored input.
+        assert!(
+            (with_call.x - stand_x).abs() > PLAYER_W,
+            "the walk moved the body only {:.1} px, so the comparison below is \
+             between two start positions",
+            with_call.x - stand_x
+        );
+        assert_eq!(
+            with_call, without,
+            "installing an empty asteroid table changed an ordinary match's \
+             prediction: ({:.2}, {:.2}) against ({:.2}, {:.2})",
+            with_call.x, with_call.y, without.x, without.y
         );
     }
 

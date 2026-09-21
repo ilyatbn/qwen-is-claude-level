@@ -58,14 +58,14 @@
 //! code. [`tests::three_wells_sum_in_list_order_and_the_order_is_observable`] pins
 //! it with a fixture whose forward and reverse sums provably differ.
 //!
-//! **What this task assumes about the client, stated rather than relied on**
-//! (`M22-RULINGS` R49): `GameCore::new()` generates on the *standard* generator, so
-//! a networked client's `map.meta.asteroids` is **empty** — not stale, empty. The
-//! mirror therefore predicts against no field at all until `T22.11C` lands
-//! `GameCore::set_asteroids`, and a player in a well rubber-bands until it does.
-//! That is a known, scheduled gap and not a thing this module can close: nothing
-//! here depends on a field being installed, and both sides call the same
-//! [`env_at`], so the day the setter lands the two agree with no further change.
+//! **The client is fed the same list, and that gap is closed** (`M22-RULINGS` R49,
+//! `T22.11C`). `GameCore::new()` generates on the *standard* generator, so until
+//! that task a networked client's `map.meta.asteroids` was **empty** — not stale,
+//! empty — and the mirror predicted against no field at all. It is now installed
+//! from `map_init` by `worldMirror.ts::applyMapInit` through
+//! `GameCore::set_asteroids`, in the wire's order, and both sides call this
+//! module's [`env_at`] — so nothing here changed when it landed, which is what
+//! sharing the function bought.
 
 use crate::constants::{
     GravityMode, SPACE_LEVEL_MAX, SPACE_MAX_SPEED, SPACE_WELL_ACCEL_MAX, SPACE_WELL_REACH_MAX,

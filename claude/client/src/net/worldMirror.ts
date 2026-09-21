@@ -174,6 +174,16 @@ export class WorldMirror {
     this.core.setTeleportPads(m.pads)
     // T21.11's platforms, same rule, same reason, same moment.
     this.core.setGunPlatforms(m.platforms)
+    // **T22.11C's rocks, and this one is not about the mask at all.** Since
+    // T22.11B a space body's acceleration is the summed pull of every asteroid,
+    // and `GameCore::new()` generated on the standard generator — so without
+    // this line the mirror predicts against a field of exactly zero everywhere
+    // while the server curves the body toward a rock, which is a rubber-band on
+    // every frame a player spends inside a well (`M22-RULINGS` R49).
+    //
+    // Empty on every map but a space one, so an ordinary match installs the
+    // empty list it already had.
+    this.core.setAsteroids(m.asteroids)
     // A resync restarts the carve stream: the mask we just loaded already
     // contains every carve the server has applied, so anything buffered is
     // either already baked in or about to be re-sent.

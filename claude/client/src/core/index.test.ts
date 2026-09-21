@@ -376,6 +376,76 @@ describe('Core', () => {
    * Pinned to nothing written here — the expected distance comes from the
    * velocity fed in and `SIM_DT` read out of Rust.
    */
+  /**
+   * T22.11C / R49: **the rocks are installed over the wire, and the body is
+   * pulled by them.**
+   *
+   * Red before green: before `setAsteroids` existed a networked core's
+   * `meta.asteroids` was empty — not stale, empty — because `GameCore::new()`
+   * generates on the standard generator. The two arms below are exactly that
+   * difference, on one map, at one point, with the same start state.
+   *
+   * The field's direction is asked of Rust (`fieldAccelAt`, which goes through
+   * `attractors::env_at`) rather than computed here: summing the falloff in
+   * TypeScript would be the second spelling R11 exists to prevent, and it would
+   * agree with itself whatever the core did.
+   */
+  it('installs the wire’s rocks and lets the field pull a body (T22.11C)', () => {
+    expect(core.generateForGravity(4242n, MapScale.Small, MapGenerator.V2, 'space')).toBe(true)
+    // A copy, because `setAsteroids([])` below invalidates the cached meta and
+    // this list is what a `map_init` would have carried.
+    const rocks = core.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level }))
+    expect(rocks.length).toBeGreaterThan(0)
+
+    // The deepest rock's neighbourhood, offset by two body heights so the point
+    // is outside the rock and still well inside its reach.
+    const deepest = rocks.reduce((best, a) => (a.level > best.level ? a : best), rocks[0]!)
+    const start = { x: deepest.x + deepest.r + C().PLAYER_H * 2, y: deepest.y }
+    const field = core.fieldAccelAt(start.x, start.y)
+    const mag = Math.hypot(field[0]!, field[1]!)
+    expect(mag).toBeGreaterThan(0)
+
+    const drift = (): { x: number; y: number } => {
+      core.removePlayer(9)
+      core.addPlayer(9, start.x, start.y)
+      core.setPlayerState(9, {
+        x: start.x,
+        y: start.y,
+        vx: 0,
+        vy: 0,
+        grounded: false,
+        fuel: C().JETPACK_MAX_FUEL,
+        moveState: 1,
+        health: C().BASE_HEALTH,
+        alive: true,
+        moveMods: 0,
+      })
+      // No buttons: in space nothing but the field touches an ungrounded body,
+      // so every pixel of the move below is the wells.
+      for (let seq = 0; seq < 30; seq++) core.applyInput(9, seq, 0, 0, C().SIM_DT)
+      const p = core.playerState(9)!
+      return { x: p.x - start.x, y: p.y - start.y }
+    }
+
+    // **The control frame: the rocks taken away.** Asserted on the effect —
+    // the table read back through `meta`, and the field read back through Rust —
+    // rather than on having made the call.
+    core.setAsteroids([])
+    expect(core.meta.asteroids).toEqual([])
+    expect(Array.from(core.fieldAccelAt(start.x, start.y))).toEqual([0, 0])
+    const still = drift()
+    expect(Math.hypot(still.x, still.y)).toBeLessThan(1)
+
+    // And put them back, which is what `applyMapInit` does.
+    core.setAsteroids(rocks)
+    expect(core.meta.asteroids).toEqual(rocks)
+    const moved = drift()
+    expect(Math.hypot(moved.x, moved.y)).toBeGreaterThan(C().PLAYER_H)
+    // It went the way the field pointed, which is what attributes the move to
+    // the wells rather than to anything else a tick does.
+    expect(moved.x * field[0]! + moved.y * field[1]!).toBeGreaterThan(0)
+  })
+
   it('predicts undamped momentum in space (T22.03)', () => {
     const VX = 240
     const TICKS = 30

@@ -67,6 +67,16 @@ export const CHECKS = [
   // because it is the one scene that can supply a **control frame** — the
   // same body, in the same place, before and after picking them up.
   { name: 'boots-visible', file: 'scripts/checks/boots-visible.mjs', url: '?sandbox=1&seed=4242', flaky: true },
+  // T22.11C / R63: an asteroid's gravity well on **rendered pixels**, with the
+  // patch the body moves away from as its control region and the same map with
+  // `setAsteroids([])` as its control frame. `?gravity=space` is R22's parameter
+  // — without it the sandbox generates a landscape and the check has no rocks to
+  // aim at, which it says rather than passing.
+  {
+    name: 'asteroid-gravity',
+    file: 'scripts/checks/asteroid-gravity.mjs',
+    url: '?sandbox=1&seed=4242&gravity=space',
+  },
   // T21.34: the unicorn wings on the body, same control-frame shape as boots.
   // Possible only since wings hover — under T21.03 the body flew off mid-check.
   // Not parked: a new check that starts on the flaky list gates nothing.

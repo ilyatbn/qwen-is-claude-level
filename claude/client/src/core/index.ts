@@ -784,6 +784,48 @@ export class Core {
   }
 
   /**
+   * Install the round's asteroids (`T22.11C`, `M22-RULINGS` R49).
+   *
+   * **The pads' and platforms' third sibling, and the only one that decides
+   * where the player ends up.** Since `T22.11B` a space body's acceleration is
+   * the summed pull of every rock, read out of `map.meta.asteroids` by
+   * `world::attractors::env_at` — the one function both sides call. A networked
+   * core has *no* rocks until this is called: `GameCore::new()` generates on the
+   * standard generator, so the table is empty rather than stale, and the mirror
+   * predicts a straight float while the server curves the body toward a rock.
+   *
+   * **Order preserved, never sorted.** `field_at` sums in list order and float
+   * addition is not associative, so the two sides must sum the same list the
+   * same way round. The order is the generator's, carried by `encode_map_init`
+   * as a sequence and rebuilt in read order by `decodeMapInit`; `.map` below
+   * keeps it, and nothing on the path sorts.
+   */
+  setAsteroids(rocks: readonly { x: number; y: number; r: number; level: number }[]): void {
+    const xs = new Int32Array(rocks.map((a) => a.x))
+    const ys = new Int32Array(rocks.map((a) => a.y))
+    const rs = new Int32Array(rocks.map((a) => a.r))
+    const levels = new Uint8Array(rocks.map((a) => a.level))
+    this.inner.set_asteroids(xs, ys, rs, levels)
+    // `meta` is cached, and `meta.asteroids` is the readback — a caller that
+    // installed rocks and then read the old table back would be told the call
+    // had not happened.
+    this.invalidate()
+  }
+
+  /**
+   * The summed gravity field at a world point, px/s², as `[ax, ay]`.
+   *
+   * A readback for `scripts/checks/asteroid-gravity.mjs`, which has to know
+   * which way a body is about to be pulled before it moves so it can aim its
+   * subject and control patches. Through `attractors::env_at` in Rust, so it
+   * carries the gravity mode and there is no second spelling of the summation
+   * on this side of the boundary (§A24, and no map logic in TS).
+   */
+  fieldAccelAt(x: number, y: number): Float32Array {
+    return this.inner.field_accel_at(x, y)
+  }
+
+  /**
    * Mount or unmount a player (T21.11B). Sandbox control.
    *
    * Goes through the wire's own decode path in Rust, so it exercises the code a

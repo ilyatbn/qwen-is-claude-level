@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { C, Core, MapScale } from '../core'
+import { C, Core, MapGenerator, MapScale } from '../core'
 import { WorldMirror, hex } from './worldMirror'
 
 /**
@@ -60,6 +60,12 @@ function initMirror(
   // a map that has three is a `map_init` no server would send, and it wipes
   // them — the same way an empty `pads` once turned the hash-agreement test red.
   platforms = c.meta.gun_platforms.map((g) => ({ x: g.pos.x, y: g.pos.y })),
+  // **And the rocks, third for the same reason** (T22.11C). `applyMapInit`
+  // installs whatever the wire says, so a fixture sending `asteroids: []` for a
+  // space map is a `map_init` no server would send and it wipes the field the
+  // mirror predicts against. Empty on every map these fixtures generate, which
+  // is why it is a default rather than an argument every caller passes.
+  asteroids = c.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level })),
 ): WorldMirror {
   const m = new WorldMirror(c)
   m.applyMapInit({
@@ -75,7 +81,7 @@ function initMirror(
     platforms,
     decorations: [],
     objects: [],
-    asteroids: [],
+    asteroids,
     rle: c.maskRle(),
   })
   return m
@@ -252,6 +258,60 @@ describe('mask agreement', () => {
     expect(padSolid(server)).toBe(before)
     server.carve(pad!.pos.x, pad!.pos.y + k.PAD_W, k.PAD_W * 2)
     expect(padSolid(server)).toBe(0)
+  })
+
+  /**
+   * **T22.11C / R49: `map_init` installs the asteroids into the core**, which is
+   * the production caller of `Core.setAsteroids` and the only thing that puts a
+   * gravity field under a networked player.
+   *
+   * Since T22.11B a space body's acceleration is the summed pull of every rock,
+   * read out of `map.meta.asteroids`. A networked core has no rocks of its own —
+   * `GameCore::new()` generates on the standard generator and `loadMask` carries
+   * a rock's *shape* but not its level — so without the call in `applyMapInit`
+   * the mirror predicts a straight float while the server curves the body toward
+   * a rock. That is a rubber-band on every frame a player spends inside a well.
+   *
+   * **The core is emptied first**, which is what a real client is: it never runs
+   * the generator. The pads test above records why that matters — an earlier
+   * version let the core keep what `generate()` gave it, and deleting the
+   * `setTeleportPads` call did not fail it.
+   *
+   * The assertion is on the **effect**: the field at a point, read back through
+   * `attractors::env_at` in Rust. A count of installed rocks would be satisfied
+   * by rocks installed at the wrong places.
+   */
+  it('the rocks from map_init put a field under the client (T22.11C)', () => {
+    // The "server": it generated the map, so it knows where the rocks are.
+    const server = other
+    expect(server.generateForGravity(4242n, MapScale.Small, MapGenerator.V2, 'space')).toBe(true)
+    const wire = server.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level }))
+    expect(wire.length).toBeGreaterThan(0)
+    const deepest = wire.reduce((best, a) => (a.level > best.level ? a : best), wire[0]!)
+    const probe = { x: deepest.x + deepest.r + C().PLAYER_H * 2, y: deepest.y }
+    const pull = (c: Core) => {
+      const f = c.fieldAccelAt(probe.x, probe.y)
+      return Math.hypot(f[0]!, f[1]!)
+    }
+    expect(pull(server)).toBeGreaterThan(0)
+
+    // A client: the same map and the same mode, but its core knows nothing about
+    // the rocks until `map_init` tells it.
+    expect(core.generateForGravity(4242n, MapScale.Small, MapGenerator.V2, 'space')).toBe(true)
+    core.setAsteroids([])
+    expect(pull(core)).toBe(0)
+
+    initMirror(core, 0, undefined, undefined, wire)
+    expect(core.meta.asteroids).toEqual(wire)
+    expect(pull(core)).toBeCloseTo(pull(server), 3)
+
+    // **The control that the line reads the wire rather than remembering.** The
+    // same `map_init` with an empty section must take the field away again — a
+    // mirror that installed the core's own table would pass the assertion above
+    // and fail this one.
+    initMirror(core, 0, undefined, undefined, [])
+    expect(core.meta.asteroids).toEqual([])
+    expect(pull(core)).toBe(0)
   })
 
   it('is falsifiable: a different carve set gives a different hash', () => {

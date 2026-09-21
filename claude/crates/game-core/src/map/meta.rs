@@ -321,19 +321,16 @@ impl Map {
     /// every attempt, falls to the safe preset, and the safe preset asks for
     /// `max(count/2, 4)`.
     ///
-    /// **Server-side only, until `T22.11C` (R49, filed by T22.05B's review as
-    /// F6).** "Sound in both directions" is a claim about a *generated* map.
-    /// On a networked client `meta.asteroids` is whatever the core last
-    /// generated locally: `MapInit.asteroids` is on the wire and
-    /// `client/src/net/codec.ts` decodes it into `MapInit.asteroids` — but
-    /// `worldMirror.ts::applyMapInit` calls `setTeleportPads` and
-    /// `setGunPlatforms` and there is no third call, because `Core` has no
-    /// asteroid setter to call: `GameCore::set_asteroids` is the thing
-    /// `T22.11C` adds. No client path
-    /// calls this or any of the three predicates built on it today
-    /// (`body_fits_at`, `random_body_site`, `choose_respawn`), so this is a
-    /// landmine rather than a bug — but the first client-side caller gets the
-    /// wrong rocks in silence. `T22.11C` lands the setter.
+    /// **And it is now sound on a networked client too** (`T22.11C`, R49; the
+    /// caveat `T22.05B`'s review filed as F6 is closed). `T22.05C` recorded here
+    /// that the claim held server-side only, because `meta.asteroids` on a
+    /// client was whatever the core last generated locally — empty, in practice,
+    /// since `GameCore::new()` runs the standard generator — and
+    /// `worldMirror.ts::applyMapInit` had no third setter to call beside
+    /// `setTeleportPads` and `setGunPlatforms`. It has one:
+    /// `GameCore::set_asteroids`, wired at that line and pinned by
+    /// `worldMirror.test.ts::the rocks from map_init put a field under the
+    /// client`.
     ///
     /// A `MapMeta.generator` field would be the more direct spelling and is the
     /// obvious next step if a third consumer appears; it was not worth the
