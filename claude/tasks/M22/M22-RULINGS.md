@@ -1645,6 +1645,109 @@ assertion; it now has a number.
 
 **Reverse it by:** nothing — a measurement.
 
+## R56 — "and the golden table" was never a control for a physics refactor, and I wrote it three times
+
+R10 nominated, R45 repeated, and `T22.11A`'s task file and commit message both asserted, that the
+controls for a behaviour-neutral physics refactor were
+`resolve::a_resting_body_is_bit_identical_after_600_ticks` **and the golden table**.
+
+`crates/game-core/tests/golden.rs` hashes **map masks**. `integrate` cannot move a map mask. So
+"the golden table did not move" is true, was true before the commit, and is **evidence of nothing
+about it**. That is a claim reported through something other than the thing it claims — the
+second time in two days that a control of mine could not see its own subject (`R50` was the
+first, and both were in the same chain of rulings).
+
+**What the tree actually has, measured by the reviewer:** exactly **one** cross-build bit-identity
+anchor, `a_resting_body_is_bit_identical_after_600_ticks` — one body, flat floor, standard
+gravity, settled, peak `vel.y` ≈ 23 px/s, **never sub-stepping and never airborne**. Every other
+determinism assertion (`movement_scenarios::the_same_inputs_from_the_same_state_are_byte_identical_every_time`,
+`::replaying_from_a_midpoint_reaches_the_same_state_as_running_straight_through`,
+`world_step::the_same_seed_and_inputs_give_the_same_state_hash_after_1000_ticks`, the
+`delivery.rs` pair) compares **the same build against itself** and cannot detect a refactor
+changing physics. There is no stored golden of world state.
+
+**So these paths changed shape in `T22.11A` with nothing pinning them across builds:**
+sub-stepping (`substeps`, which fires above 1 px/tick), `clamp_to_world`, the knockback path
+(`weapons/explode.rs` and `weapons/melee.rs` write `body.vel` outside `integrate`), wings at
+`gravity_scale == 0.0` under `Standard`, and the jetpack.
+
+Severity is genuinely low and the reason is worth keeping: the new line is
+`body.vel += forces.accel * dt` with `accel == Vec2::ZERO` everywhere, i.e. `x + 0.0`, exact for
+every finite float **except** `-0.0` → `+0.0`; and the reviewer checked that nothing can see that
+difference (`move_x`/`move_y` both open with `if dx == 0.0 { return }`, and `-0.0 == 0.0`; no
+`signum` or `is_sign_negative` on a velocity anywhere in `physics/`, `player/` or
+`items/world.rs`). **The risk is low and the evidence was thin — those are different statements,
+and I published the second as the first.**
+
+**The ruling.** Nothing cites the golden table as a control for a physics change again. A
+literal-position golden written now is pinned to today's code and cannot retroactively confirm
+`T22.11A`; only a run against `876cb9d^` could. `T22.11B` is told not to inherit a belief that
+bit-identity was measured broadly, because it was not.
+
+**Reverse it by:** nothing — a correction of fact.
+
+## R57 — Two of `T22.05C`'s remedies do not do what their comments say
+
+Found by the second review. Both are the class the task was written to close, which is why they
+are worth a ruling rather than a quiet fix.
+
+**(a) The biconditional passes in the direction it claims to catch.**
+`items/spawning.rs::crates_spawn_inside_the_arena_in_space` asserts
+`assert_eq!(space_moved == 0, GravityMode::Space.scale() == 0.0, …)`, and its comment claims it
+*"reports the mechanism coming apart in **either** direction — a stepper that stops reading the
+mode, or a scale that stops being zero."* Plant `Space.scale()` 0.0 → 0.5: the right side becomes
+`false`, crates fall so `space_moved > 0` and the left side becomes `false` too, and
+`assert_eq!(false, false)` **passes**. It is `CLAUDE.md`'s measured `ITEM_SPAWN_INTERVAL` shape
+exactly — every term moved with the constant. The first direction does hold. The repository is
+still covered, by `constants.rs::every_gravity_mode_has_a_multiplier`, so this is a **wrong
+sentence beside working code**. Fix: split the effect (`assert_eq!(space_moved, 0, …)`, keeping
+its existing `ctl_moved > 0` presence control) from the pin, and narrow the comment to the
+direction that holds.
+
+**(b) An assertion behind a guard that fires first.**
+`periodic_items_land_inside_the_arena_in_space` gained a `body_fits_at` assertion **inside** its
+item loop, to replace a message the commit correctly diagnosed as unhelpful. Under the very plant
+it was written for — `random_body_site`'s space arm drawing from `surface_points` —
+`resample_surface` rejects every draw at its own `body_fits_at` re-check (which is what the new
+disjointness test proves), so nothing spawns, `seen` stays 0, **the loop body never executes**,
+and the test still dies on `assert!(seen > 0, "no periodic items spawned at all")`. The defect was
+always the guard's *message*, and adding an assertion behind it changes nothing. Its sibling
+`initial_items_land_inside_the_arena_in_space` **does** improve, because `place_initial` has no
+re-check. Fix: instrument the schedule's two stages separately, so *"fired N times and every draw
+was rejected"* reads differently from *"never fired"* — and not by calling `resample_surface`,
+which would restate the function under test.
+
+**Reverse it by:** the two sites named.
+
+## R58 — `R14`'s "no animals in space" row was never implemented and has no owner. Assigning it.
+
+`R14`'s table gives `world/animals.rs::Animals::tick` → **"no animals at all in space"**, and adds
+*"this also answers the `birds.rs` row"*. Measured by the reviewer: `world/mod.rs::step_animals`
+passes `playing` as `active` with **no mode test**; grepping `Space` and `Generator` in
+`world/animals.rs` returns only `T22.11A`'s new test plus one unrelated comment, and
+`world/birds.rs` returns one unrelated comment. **Nothing suppresses either.**
+
+So today a space round spawns beetles and spiders, which stand on the rim and on asteroid tops in
+a vacuum. `T22.11A` correctly read the ruling down to *"a spawning rule and not this stepper's"*
+and said so at the code — which was right, and left the ruling orphaned, because `R45` gave
+`T22.11A` only the four signature changes and neither `T22.11B` nor `T22.11C` mentions animals.
+
+**Assigned to `T22.13`.** One hazard, from the reviewer and worth obeying: **gate on the
+generator, which `R15` derives from the mode, not on `self.gravity`** — otherwise the two can come
+apart, which is the failure `R15` exists to prevent.
+
+**Reverse it by:** the task assignment.
+
+## R59 — `R52`'s wording about `876cb9d` is one word too strong
+
+`R52` says `game-core` *"would not build"* without the arity fixes. Measured: all three missing
+call sites are inside `#[cfg(test)] mod tests` in `items/spawning.rs`. So at `876cb9d`,
+**`cargo build -p game-core` succeeds and `cargo test -p game-core` fails to compile.** Everything
+else in `R52` stands, and the distinction is worth the word to whoever bisects through that
+commit.
+
+**Reverse it by:** nothing — a correction.
+
 # What this milestone owes when it lands
 
 `docs/77-amendments-v9.md`, written by me, covering: the gravity setting (`docs/` does not
