@@ -57,6 +57,11 @@ use crate::player::MoveMods;
 
 /// Is this player under the zero-g **locomotion** rules this tick?
 ///
+/// **This is the gate on `apply_horizontal` and nothing else.** It is *not* the
+/// gate on the thrusters — that is [`engaging`], which deliberately does not ask
+/// about `grounded` (`M22-RULINGS` R42). The two were one predicate until the
+/// review found that sharing them welded a grounded player to the rock.
+///
 /// Three exclusions, each with a different reason:
 ///
 ///  - **grounded** — `M22-RULINGS` R4 makes a player standing on an asteroid an
@@ -78,8 +83,8 @@ pub fn floating(gravity: GravityMode, body: &Body, mods: MoveMods) -> bool {
     gravity == GravityMode::Space && !body.grounded && !mods.flying && !mods.mounted
 }
 
-/// Is this player asking the thrusters for a push that would actually move
-/// them?
+/// Is this player asking the thrusters for a push, and is it one worth burning
+/// fuel for?
 ///
 /// **Asked of the force, not of the buttons.** The question the fuel cost has
 /// to answer is *"would `apply_thrust` change this velocity"*, and the only
@@ -90,18 +95,62 @@ pub fn floating(gravity: GravityMode, body: &Body, mods: MoveMods) -> bool {
 /// second one wrong, and it would get it wrong silently.
 ///
 /// `dt` is `SIM_DT` only because `thrust_delta` takes one; it scales both
-/// components and so cannot change whether either is zero.
-pub fn thrusting(input: &Input) -> bool {
+/// components and so cannot change whether either is zero or which side of zero
+/// it is on.
+///
+/// # Engagement does **not** require being airborne (`M22-RULINGS` R42)
+///
+/// This used to be `floating(..) && thrusting(input)`, and [`floating`] refuses
+/// a grounded player — so a held direction never engaged the pack on a rock **at
+/// any fuel level**. Measured before the fix: a full tank, one second of UP held
+/// while standing, lifted **0.00 px and burned 0.000 fuel**. And between
+/// `JETPACK_MIN_FUEL_TO_ENGAGE` and `SPACE_JUMP_FUEL` a player was *welded* to
+/// the rock — UP inert, JUMP refused (measured: `vel.y` 0 → 0 at 0.4 fuel), and
+/// no feedback of any kind. Ordinary gravity is more generous than that:
+/// `jetpack::update`'s own `body.grounded` arm engages a grounded player once
+/// the hold delay elapses.
+///
+/// So `grounded` gates the **walking model** and fall damage, not the engine.
+/// Holding UP on a rock lifts you, which is the gesture a player tries first.
+///
+/// # What a *grounded* player may not buy, and why it is not the whole of R42
+///
+/// While grounded, only a net **upward** push engages. The two axes it leaves
+/// out are left out for reasons R4 already gives, not to keep the old shape:
+///
+///  - **Sideways is legs.** A grounded player is an ordinary grounded player
+///    (R4): `apply_horizontal` is already driving them at `WALK_SPEED` and
+///    walking on a rock is free. Charging for it *and* adding thrust on top
+///    would both break that ruling and accelerate a walker past `WALK_SPEED`.
+///  - **Downward is into the rock.** It cannot move you — `move_y` resolves the
+///    contact — so charging for it is a pure drain on the mode's whole economy,
+///    with nothing bought.
+///
+/// R42's sentence is *"a held direction engages the thrusters whether grounded
+/// or not"*; its invariant is that `grounded` stops gating engagement, that UP
+/// on a rock lifts you and that the weld is gone, and all three hold here. The
+/// narrowing to the upward axis is this file's call and it is written down so it
+/// can be reversed in one line.
+///
+/// Off for wings and while mounted, for the reasons [`floating`] gives.
+pub fn engaging(gravity: GravityMode, body: &Body, mods: MoveMods, input: &Input) -> bool {
+    if gravity != GravityMode::Space || mods.flying || mods.mounted {
+        return false;
+    }
     let (dx, dy) = jetpack::thrust_delta(input, SIM_DT);
-    dx != 0.0 || dy != 0.0
+    if body.grounded {
+        dy < 0.0
+    } else {
+        dx != 0.0 || dy != 0.0
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::constants::{
-        GRAVITY, JETPACK_MAX_FUEL, JETPACK_MAX_SPEED, JETPACK_REFILL, JETPACK_REFILL_DELAY,
-        PLAYER_H, SPACE_JUMP_FUEL, WALK_SPEED,
+        boots_jump_velocity_mult, GRAVITY, JETPACK_MAX_FUEL, JETPACK_MAX_SPEED,
+        JETPACK_REFILL_DELAY, JUMP_VELOCITY, PLAYER_H, SPACE_JUMP_FUEL, WALK_SPEED,
     };
     use crate::map::Map;
     use crate::math::Vec2;
@@ -581,11 +630,17 @@ mod tests {
                 break;
             }
         }
-        let expected = (JETPACK_MAX_FUEL / SPACE_JUMP_FUEL) as i32;
+        // **The literal ten, and `CLAUDE.md` is why it is a literal.** Every
+        // other assertion in this file is pinned to `SPACE_JUMP_FUEL` and moves
+        // with it; a suite where they all do cannot report the constant itself
+        // changing. `(JETPACK_MAX_FUEL / SPACE_JUMP_FUEL) as i32` was exactly
+        // the division this test claims not to restate — measured, planting
+        // `SPACE_JUMP_BURN_SECONDS` 0.5 → 0.25 left **all 1166 game-core tests
+        // passing**, because the expectation halved along with the behaviour.
         assert_eq!(
-            jumps, expected,
-            "a full tank bought {jumps} jumps; the basis in SPACE_JUMP_FUEL's \
-             doc comment says {expected}"
+            jumps, 10,
+            "a full tank bought {jumps} jumps; SPACE_JUMP_FUEL's doc comment \
+             says ten, and that number is the pacing decision, not a derivation"
         );
         assert!(
             st.jet.fuel < SPACE_JUMP_FUEL,
@@ -593,13 +648,299 @@ mod tests {
             st.jet.fuel
         );
 
-        // And one jump comes back in one second of rest, past the refill delay.
-        let rest = ((JETPACK_REFILL_DELAY + SPACE_JUMP_FUEL / JETPACK_REFILL) * 60.0).ceil() as u32;
-        run(&map, &mut st, 0, GravityMode::Space, rest + 1);
+        // **And one jump is bought back by one second of rest**, past the refill
+        // delay — the second half of the doc comment's claim, and a literal for
+        // the same reason.
+        //
+        // Measured on a fresh tank so the leftover from the counting loop above
+        // cannot shorten it: spend exactly one jump, then count the ticks until
+        // the tank is full again. `JETPACK_REFILL_DELAY` is subtracted rather
+        // than asserted — it is a different constant and not the one under test.
+        let mut rested = drifting(Vec2::new(120.0, feet), Vec2::ZERO);
+        step(&map, &mut rested, 0, GravityMode::Space);
+        jetpack::spend_jump(&mut rested.jet);
         assert!(
-            jetpack::can_afford_jump(&st.jet),
-            "{rest} ticks of rest did not buy a jump back ({} of {SPACE_JUMP_FUEL})",
-            st.jet.fuel
+            (rested.jet.fuel - (JETPACK_MAX_FUEL - SPACE_JUMP_FUEL)).abs() < 1e-6,
+            "precondition: spending a jump did not take SPACE_JUMP_FUEL ({})",
+            rested.jet.fuel
+        );
+        let mut ticks = 0;
+        while rested.jet.fuel < JETPACK_MAX_FUEL && ticks < 600 {
+            step(&map, &mut rested, 0, GravityMode::Space);
+            ticks += 1;
+        }
+        let refilling = ticks as f32 / 60.0 - JETPACK_REFILL_DELAY;
+        assert!(
+            (refilling - 1.0).abs() < 0.05,
+            "one jump took {refilling:.3} s of refilling to buy back (plus the \
+             {JETPACK_REFILL_DELAY} s delay, {ticks} ticks in all); the doc \
+             comment says one second"
+        );
+        assert!(
+            jetpack::can_afford_jump(&rested.jet),
+            "the refilled tank cannot afford a jump ({} of {SPACE_JUMP_FUEL})",
+            rested.jet.fuel
+        );
+
+        // **And the third literal: three jump-and-return round trips.**
+        //
+        // Ten *launches* is not ten *journeys*, and the doc comment used to say
+        // it was — *"traversing an asteroid field on legs alone is a real
+        // option"*, a sentence true of this fixture's free teleport back to the
+        // rock and of nothing in the game. Driving the return leg instead:
+        // arresting a 430 px/s launch costs 0.478 s of `JETPACK_THRUST_DOWN`,
+        // roughly the jump itself, and the burn that arrests it is also the
+        // burn that brings you home. A tank buys **three**.
+        assert_eq!(
+            round_trips(&map, feet, MoveMods::NONE),
+            3,
+            "a tank no longer buys three jump-and-return round trips; that is \
+             the pacing number in SPACE_JUMP_FUEL's doc comment"
+        );
+    }
+
+    /// Jump off the rock, hold DOWN until back on it, repeat until a jump is
+    /// refused. **The return leg is driven, not teleported** — which is the
+    /// whole difference between this and the launch count above.
+    fn round_trips(map: &Map, feet: f32, mods: MoveMods) -> u32 {
+        let released = Input::new(0, 0, 0);
+        let pressed = Input::new(0, button::JUMP, 0);
+        let down = Input::new(0, button::DOWN, 0);
+        let mut st = drifting(Vec2::new(120.0, feet), Vec2::ZERO);
+        st.step(map, &released, &released, mods, GravityMode::Space, SIM_DT);
+        assert!(st.body.grounded, "precondition: never found the rock");
+
+        let mut trips = 0;
+        'trip: for _ in 0..20 {
+            st.step(map, &released, &released, mods, GravityMode::Space, SIM_DT);
+            let before = st.body.vel.y;
+            st.step(map, &pressed, &released, mods, GravityMode::Space, SIM_DT);
+            if st.body.vel.y >= before - 1.0 {
+                break; // refused: the tank cannot pay
+            }
+            for _ in 0..1200 {
+                st.step(map, &down, &down, mods, GravityMode::Space, SIM_DT);
+                if st.body.grounded {
+                    trips += 1;
+                    continue 'trip;
+                }
+            }
+            panic!("a jump never came back to the rock in 20 s of DOWN thrust");
+        }
+        trips
+    }
+
+    /// **R41 — thrust is the suit's engine, not your legs: it ignores health
+    /// and boots.**
+    ///
+    /// `apply_horizontal` is the **one** production read of `mods.speed`, and
+    /// space skips it while floating, so `PlayerState::speed_multiplier` —
+    /// which folds `HEALTH_SPEED_MIN` and `BOOTS_SPEED_MULT` — reaches nothing
+    /// out there. `M22-RULINGS` R41 rules that correct; without this test it is
+    /// a decision nothing re-validates, and the next reader files it as a bug.
+    ///
+    /// **The mods come from real `PlayerState`s**, not from hand-built structs:
+    /// what is being asserted is that the production derivation produces two
+    /// different numbers and that space ignores the difference. A fixture that
+    /// wrote `MoveMods { speed: 0.75, .. }` itself could not see
+    /// `speed_multiplier` being rewired.
+    ///
+    /// The ground control is what makes it a claim about the *mode*: the same
+    /// two players, on a rock, walk at visibly different speeds.
+    #[test]
+    fn thrust_ignores_health_and_boots_and_walking_on_a_rock_does_not() {
+        use crate::player::state::PlayerState;
+
+        let mut hurt = PlayerState::new(1, Vec2::ZERO, 0);
+        hurt.health = 1.0;
+        let healthy = PlayerState::new(2, Vec2::ZERO, 0);
+        let (hurt_mods, healthy_mods) = (hurt.move_mods(), healthy.move_mods());
+        assert!(
+            hurt_mods.speed < healthy_mods.speed,
+            "precondition: speed_multiplier does not distinguish 1 HP from full \
+             health ({} against {}), so nothing below proves anything",
+            hurt_mods.speed,
+            healthy_mods.speed
+        );
+
+        // Floating, RIGHT held, five ticks of thrust: identical, bit for bit.
+        let thrust = |mods: MoveMods| {
+            let map = void();
+            let mut st = drifting(Vec2::new(120.0, 120.0), Vec2::ZERO);
+            for _ in 0..5 {
+                let input = Input::new(0, button::RIGHT, 0);
+                st.step(&map, &input, &input, mods, GravityMode::Space, SIM_DT);
+            }
+            (st.body.vel.x, st.jet.fuel)
+        };
+        assert_eq!(
+            thrust(hurt_mods),
+            thrust(healthy_mods),
+            "space: a 1-HP player thrusts differently from a healthy one — \
+             mods.speed reached the thrusters"
+        );
+
+        // And the control: on a rock, walking, the same two differ.
+        let walk = |mods: MoveMods| {
+            let map = test_map(W, H, floor_at(FLOOR));
+            let mut st = drifting(Vec2::new(120.0, FLOOR as f32 - PLAYER_H / 2.0), Vec2::ZERO);
+            step(&map, &mut st, 0, GravityMode::Space);
+            assert!(st.body.grounded, "precondition: never found the rock");
+            for _ in 0..40 {
+                let input = Input::new(0, button::RIGHT, 0);
+                st.step(&map, &input, &input, mods, GravityMode::Space, SIM_DT);
+            }
+            st.body.vel.x
+        };
+        let (hurt_walk, healthy_walk) = (walk(hurt_mods), walk(healthy_mods));
+        assert!(
+            hurt_walk < healthy_walk - 1.0,
+            "control: a 1-HP player walks a rock at {hurt_walk} and a healthy \
+             one at {healthy_walk} — mods.speed reaches nothing at all, so the \
+             equality above is about a dead parameter rather than about space"
+        );
+    }
+
+    /// **R42 — a held direction engages the thrusters on a rock, and the
+    /// sub-`SPACE_JUMP_FUEL` weld is gone.**
+    ///
+    /// Before the fix, `floating` gated engagement and it refuses a grounded
+    /// player, so UP on a rock did nothing **at any fuel level**: measured, a
+    /// full tank and one second of UP lifted 0.00 px and burned 0.000 fuel. Between
+    /// `JETPACK_MIN_FUEL_TO_ENGAGE` (0.3) and `SPACE_JUMP_FUEL` (0.5) that left
+    /// a player welded to the rock with UP inert, JUMP refused and no feedback.
+    ///
+    /// Three assertions, each failing on its own:
+    ///
+    ///  - a full tank lifts you off the rock;
+    ///  - at 0.4 fuel — too little to jump, enough to engage — you still lift,
+    ///    which is the weld dissolved;
+    ///  - and the control: **walking is still free** (R4), so RIGHT on the same
+    ///    rock spends nothing. Without it, "UP engages" is satisfied by a build
+    ///    that charges a grounded player for everything.
+    #[test]
+    fn holding_up_on_a_rock_lifts_you_and_the_sub_jump_fuel_weld_is_gone() {
+        let map = test_map(W, H, floor_at(FLOOR));
+        let feet = FLOOR as f32 - PLAYER_H / 2.0;
+
+        let lift = |fuel: f32| {
+            let mut st = drifting(Vec2::new(120.0, feet), Vec2::ZERO);
+            step(&map, &mut st, 0, GravityMode::Space);
+            assert!(st.body.grounded, "precondition: never found the rock");
+            st.jet.fuel = fuel;
+            let y0 = st.body.pos.y;
+            run(&map, &mut st, button::UP, GravityMode::Space, 60);
+            (y0 - st.body.pos.y, st.jet.fuel)
+        };
+
+        let (full_tank, fuel_left) = lift(JETPACK_MAX_FUEL);
+        assert!(
+            full_tank > PLAYER_H,
+            "a full tank and a second of UP lifted {full_tank:.2} px off the rock"
+        );
+        assert!(
+            fuel_left < JETPACK_MAX_FUEL,
+            "the lift was free — the pack never engaged"
+        );
+
+        // Too little to jump, enough to engage: the weld.
+        let welded = SPACE_JUMP_FUEL - 0.1;
+        assert!(
+            !jetpack::can_afford_jump(&JetpackState {
+                fuel: welded,
+                ..Default::default()
+            }),
+            "precondition: {welded} fuel can still afford a jump, so this is \
+             not the welded band"
+        );
+        let (crippled, _) = lift(welded);
+        assert!(
+            crippled > PLAYER_H,
+            "at {welded} fuel — below SPACE_JUMP_FUEL, above \
+             JETPACK_MIN_FUEL_TO_ENGAGE — a second of UP lifted {crippled:.2} px: \
+             the player is welded to the rock"
+        );
+
+        // Control: walking on a rock is still free (R4).
+        let mut walker = drifting(Vec2::new(120.0, feet), Vec2::ZERO);
+        step(&map, &mut walker, 0, GravityMode::Space);
+        let tank = walker.jet.fuel;
+        run(&map, &mut walker, button::RIGHT, GravityMode::Space, 60);
+        assert!(walker.body.grounded, "control: the walker left the rock");
+        assert_eq!(
+            walker.jet.fuel, tank,
+            "control: engagement no longer asks about grounded, and now walking \
+             on a rock charges the tank too"
+        );
+    }
+
+    /// **The boots interaction, restated rather than rediscovered** (R41's last
+    /// paragraph; `T22.03`'s test list asked for *"the boots/wings interactions
+    /// restated"* and only wings were).
+    ///
+    /// `BOOTS_JUMP_HEIGHT_MULT` is 2.25, so `boots_jump_velocity_mult()` is 1.5
+    /// and a booted space jump leaves the rock at **645 px/s for the same
+    /// `SPACE_JUMP_FUEL`**. That is a delta-v upgrade the fuel cost does not
+    /// price, and this test is what stops it being rediscovered as a bug.
+    ///
+    /// **It is not free in the round, though, and that is worth having in the
+    /// suite too:** the return trip is priced. Arresting 645 px/s at
+    /// `JETPACK_THRUST_DOWN` costs 0.717 s of burn against 0.478 s for 430, so
+    /// measured over a whole tank a booted player gets **two** jump-and-return
+    /// round trips where a bare one gets **three**. Boots buy height per jump
+    /// and cost range per tank.
+    #[test]
+    fn a_booted_space_jump_launches_faster_for_the_same_fuel() {
+        let map = test_map(W, H, floor_at(FLOOR));
+        let feet = FLOOR as f32 - PLAYER_H / 2.0;
+        let boots = MoveMods {
+            jump: boots_jump_velocity_mult(),
+            ..MoveMods::NONE
+        };
+
+        let jump_once = |mods: MoveMods| {
+            let mut st = drifting(Vec2::new(120.0, feet), Vec2::ZERO);
+            let released = Input::new(0, 0, 0);
+            let pressed = Input::new(0, button::JUMP, 0);
+            st.step(&map, &released, &released, mods, GravityMode::Space, SIM_DT);
+            assert!(st.body.grounded, "precondition: never found the rock");
+            let tank = st.jet.fuel;
+            st.step(&map, &pressed, &released, mods, GravityMode::Space, SIM_DT);
+            (-st.body.vel.y, tank - st.jet.fuel)
+        };
+
+        let (bare_v, bare_cost) = jump_once(MoveMods::NONE);
+        let (booted_v, booted_cost) = jump_once(boots);
+
+        assert!(
+            (bare_v - JUMP_VELOCITY).abs() < 1.0,
+            "a bare space jump left the rock at {bare_v} px/s, not JUMP_VELOCITY"
+        );
+        assert!(
+            (booted_v - JUMP_VELOCITY * boots_jump_velocity_mult()).abs() < 1.0,
+            "a booted space jump left the rock at {booted_v} px/s, not \
+             JUMP_VELOCITY * boots_jump_velocity_mult()"
+        );
+        assert_eq!(
+            bare_cost, booted_cost,
+            "the boots' extra delta-v is priced after all — bare {bare_cost}, \
+             booted {booted_cost}. That is a change to the mode's economy and \
+             R41 says it is unpriced; if it is now priced, say where."
+        );
+        assert!(
+            booted_v > bare_v,
+            "boots bought no extra launch speed in space ({booted_v} against \
+             {bare_v}), so the equal cost above prices nothing"
+        );
+
+        // The priced half, measured by driving the return leg: two round trips
+        // against a bare player's three.
+        assert_eq!(
+            round_trips(&map, feet, boots),
+            2,
+            "a booted tank no longer buys two jump-and-return round trips \
+             against a bare tank's three — the arrest cost of the extra delta-v \
+             is what prices it, and that relation is the doc comment's"
         );
     }
 

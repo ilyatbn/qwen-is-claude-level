@@ -27,13 +27,19 @@ use crate::constants::{
 ///
 /// It is kept, pointed at what now has to stay true: **`GRAVITY` itself is
 /// nonzero**, which is the other half of that division and the one no mode can
-/// change. `GravityMode::Space` is a *scale* of zero and never a `GRAVITY` of
+/// change. **It is deliberately a weaker guard than the one it replaced, and
+/// not the guard on `zone_reach`'s value** — `GRAVITY` and
+/// `FLAME_GRAVITY_SCALE` are two constants nobody is going to zero, so this
+/// line would not notice the `FLAME_LIFE` bound being deleted and `inf`
+/// returning. Measured: it does not.
+/// `tests::zone_reach_is_finite_under_every_gravity_mode_and_space_is_the_lifetime_bound`
+/// is the guard, at runtime, on the value, under every mode the enum has. `GravityMode::Space` is a *scale* of zero and never a `GRAVITY` of
 /// zero — `constants::GravityMode::scale` says why that distinction is load
 /// bearing — so if anyone ever reaches for the shortcut, this is where it
 /// stops.
 const _: () = assert!(
     GRAVITY > 0.0 && FLAME_GRAVITY_SCALE > 0.0,
-    "zone_reach divides by GRAVITY * FLAME_GRAVITY_SCALE; zero-g is a zero      *scale*, never a zero GRAVITY"
+    "zone_reach divides by GRAVITY * FLAME_GRAVITY_SCALE; zero-g is a zero *scale*, never a zero GRAVITY"
 );
 use crate::items::registry::{def, ItemId, ItemKind};
 use crate::math::{Vec2, TAU};
@@ -1202,6 +1208,88 @@ mod tests {
             zone_reach(zone, GravityMode::Low),
             "a `Burst::Zone` reach is `radius + scatter` off the table and has no \
              ballistic term — gravity must not touch it"
+        );
+    }
+
+    /// **`zone_reach` is finite in space, and the `FLAME_LIFE` bound is what
+    /// makes it so** (T22.03 review, R44's neighbour).
+    ///
+    /// This is the test the retired `const _` was standing in for, and it is
+    /// here because the replacement assertion cannot do the job. The original
+    /// trap read `Space.scale() > 0.0` and fired the day T22.03 zeroed it; what
+    /// replaced it asserts `GRAVITY > 0.0 && FLAME_GRAVITY_SCALE > 0.0` — two
+    /// constants nobody is ever going to set to zero. **Measured: deleting the
+    /// `.min(speed * FLAME_LIFE)` from `zone_reach` restores `inf` in space and
+    /// the whole suite stays green.** So the guard is a runtime one, on the
+    /// value, under every mode the enum has.
+    ///
+    /// The three numbers, measured rather than derived here:
+    /// **Standard 108.78 px, Low 207.55 px, Space 1110.00 px.** The first two
+    /// are the ballistic term `v²/(GRAVITY · FLAME_GRAVITY_SCALE · scale)`,
+    /// which doubles as the scale halves; the third is the lifetime term
+    /// `speed · FLAME_LIFE`, which is what binds once the ballistic term runs
+    /// away. That the lifetime bound does **not** bind under Standard or Low is
+    /// asserted too — a `min` that clamped everything would make the first two
+    /// equal to the third and this file's gravity test would still pass.
+    ///
+    /// `GravityMode::ALL`, not three literals, so a fourth mode cannot be added
+    /// without an `inf` here to report it.
+    #[test]
+    fn zone_reach_is_finite_under_every_gravity_mode_and_space_is_the_lifetime_bound() {
+        use crate::constants::{GravityMode, FLAME_LIFE};
+
+        let flames = crate::items::registry::def(MOLOTOV)
+            .and_then(|d| match d.kind {
+                ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
+                _ => None,
+            })
+            .expect("the molotov's weapon def");
+        let speed = match flames.burst {
+            crate::weapons::defs::Burst::Flames { speed, .. } => speed,
+            _ => panic!(
+                "the molotov is no longer a `Burst::Flames` — this test is \
+                 measuring a different arm of `zone_reach`"
+            ),
+        };
+
+        for mode in GravityMode::ALL {
+            let reach = zone_reach(flames, mode).expect("a flame reach");
+            assert!(
+                reach.is_finite(),
+                "{mode:?}: the flame stand-off is {reach} — a bot walks to the \
+                 edge of the world rather than throwing"
+            );
+            assert!(
+                reach > 0.0 && reach <= speed * FLAME_LIFE + FLAME_RADIUS,
+                "{mode:?}: the flame stand-off is {reach} px, outside the band \
+                 the two bounds allow"
+            );
+        }
+
+        let lifetime = speed * FLAME_LIFE + FLAME_RADIUS;
+        let std = zone_reach(flames, GravityMode::Standard).expect("a flame reach");
+        let low = zone_reach(flames, GravityMode::Low).expect("a flame reach");
+        let space = zone_reach(flames, GravityMode::Space).expect("a flame reach");
+
+        assert_eq!(
+            space, lifetime,
+            "space: the reach is {space} px, not the `speed * FLAME_LIFE` bound \
+             — the ballistic term wins at a gravity scale of zero, which is the \
+             division by zero this test exists for"
+        );
+        assert!(
+            std < low && low < space,
+            "the three reaches are not ordered Standard < Low < Space \
+             ({std:.2}, {low:.2}, {space:.2})"
+        );
+        // And the lifetime bound must **not** bind under the two live-gravity
+        // modes, or the `min` would be clamping everything to one number and
+        // `the_flame_stand_off_follows_the_match_gravity_and_the_zone_one_does_not`
+        // would be measuring nothing.
+        assert!(
+            low < lifetime * 0.5,
+            "the {lifetime:.2} px lifetime bound binds under low gravity too \
+             ({low:.2} px), so the `min` has flattened the ballistic term"
         );
     }
 

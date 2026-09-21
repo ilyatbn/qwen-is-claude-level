@@ -139,17 +139,38 @@ pub const SPACE_JUMP_BURN_SECONDS: f32 = 0.5;
 /// *value* being wrong (`CLAUDE.md`), so here is what it has to be true of, in
 /// terms of numbers that are not derived from it:
 ///
-///  - **a full tank buys `JETPACK_MAX_FUEL / SPACE_JUMP_FUEL` = 10 jumps**, and
-///  - **one jump is bought back by `SPACE_JUMP_FUEL / JETPACK_REFILL` = 1.0 s
-///    of not thrusting**, on top of `JETPACK_REFILL_DELAY`.
+///  - **a full tank buys 10 jumps**, and
+///  - **one jump is bought back by 1.0 s of not thrusting**, on top of
+///    `JETPACK_REFILL_DELAY`.
 ///
-/// Ten pushes off rocks per tank, and a second of rest per push, is the pacing
-/// this number exists to set: enough that traversing an asteroid field on legs
-/// alone is a real option, few enough that the tank is a resource you spend
-/// rather than a formality. `player::space::a_full_tank_buys_ten_jumps_and_a_dry_one_refuses`
-/// asserts both by *running* them — it counts jumps until one is refused and
-/// counts the ticks until the next one is affordable — rather than by restating
-/// the division.
+/// Both are **literals** in `player::space::a_full_tank_buys_ten_jumps_and_a_dry_one_refuses`,
+/// which counts jumps until one is refused and counts the ticks until the tank
+/// is full again. They were written as `JETPACK_MAX_FUEL / SPACE_JUMP_FUEL` and
+/// `SPACE_JUMP_FUEL / JETPACK_REFILL` — *the division this comment claimed the
+/// test did not restate*. Measured: planting `SPACE_JUMP_BURN_SECONDS` 0.5 →
+/// 0.25 left **all 1166 game-core tests passing**, because both expectations
+/// halved with the behaviour. That is the `CLAUDE.md` lesson happening again,
+/// inside the doc comment written to avoid it.
+///
+/// # What ten jumps buys, measured by driving the simulation
+///
+/// **Ten is ten *launches*, and a launch only gets you somewhere if something
+/// stops you at the far end.** R1 gives you that for free when you arrive
+/// against a rock. When you have to arrest your own momentum, the return leg
+/// costs about as much as the jump did:
+///
+/// | manoeuvre | measured, on one tank |
+/// |---|---|
+/// | pushes off a rock | **10** |
+/// | jump-and-return round trips (jump, thrust back, land) | **3** |
+/// | the same wearing Ironman boots | **2** |
+///
+/// Arresting a bare 430 px/s launch at `JETPACK_THRUST_DOWN` costs 0.478 s of
+/// burn, and a booted 645 px/s one costs 0.717 s — so boots buy height per jump
+/// and cost range per tank (`M22-RULINGS` R41). An earlier version of this
+/// comment said ten pushes meant *"traversing an asteroid field on legs alone is
+/// a real option"*; that was never measured, and the round-trip number is what
+/// was. The three is asserted alongside the ten.
 pub const SPACE_JUMP_FUEL: f32 = JETPACK_DRAIN * SPACE_JUMP_BURN_SECONDS;
 
 // ---------------------------------------------------------------------------

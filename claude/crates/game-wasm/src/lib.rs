@@ -2370,10 +2370,22 @@ mod tests {
     /// a target, so two sides that disagree about `vel.x` converge within about
     /// a sixteenth of a second whatever the error was, and the position error it
     /// caused is bounded. In space nothing approaches anything. A velocity error
-    /// `dv` persists exactly, so the position error grows as `dv * t`, without
-    /// bound, until `prediction.ts`'s `SNAP_PX` hard-snaps — which reads on
-    /// screen as teleporting rather than as rubber-banding. That is why the
-    /// untold control below does not merely differ, it diverges.
+    /// `dv` persists exactly, so the position error grows as `dv * t` for as
+    /// long as both bodies are still moving — which is why the untold control
+    /// below does not merely differ, it *grows* apart, until
+    /// `prediction.ts`'s `SNAP_PX` hard-snaps and that reads on screen as
+    /// teleporting rather than as rubber-banding.
+    ///
+    /// **"Without bound" is what an earlier version of this comment said, and
+    /// it is false — measured.** Run this fixture at 15, 30, 60, 120, 240, 480
+    /// and 960 ticks and the untold gap goes
+    /// **46.2 → 45.7 → 97.8 → 469.3 → 676.1 → 676.1 → 676.1 px**: it grows by a
+    /// factor of fourteen and then stops dead, because both bodies come to rest
+    /// against world clamps — the server at the right wall and the sky, the
+    /// mirror elsewhere. The growth is unbounded in the *model* and bounded by
+    /// the *arena*, which is a different sentence and the true one. The
+    /// assertion below only claims the gap exceeds the epsilon, so it was sound
+    /// either way; the prose was not.
     ///
     /// **`JUMP | RIGHT`, held.** A jump is the one gesture whose two arms are
     /// unmistakable: under gravity it arcs and lands, and in space the player
@@ -2459,6 +2471,293 @@ mod tests {
         let sp = w.player(1).expect("seated");
         let c = core.player_state(1);
         (sp.body.pos.x, sp.body.pos.y, c[0], c[1])
+    }
+
+    /// The mispredicted velocity `diverge_then_reconcile` injects, px/s.
+    ///
+    /// Big enough that `RECONCILE_EPSILON_PX` cannot swallow it and small enough
+    /// that the drift stays clear of the arena's walls; it is the shape of a
+    /// knockback, not a knockback constant, so it is local to the fixture.
+    const IMPULSE: f32 = 240.0;
+
+    /// What one run of [`diverge_then_reconcile`] measured, in pixels.
+    struct Reconciled {
+        /// Server-against-mirror gap halfway through the drift, and at the end.
+        apart_early: f32,
+        apart_late: f32,
+        /// The gap immediately after `set_player_state` — the mirror's
+        /// `reconcile` entry point.
+        apart_after: f32,
+        /// And after a further second of identical inputs on both sides.
+        apart_after_a_second: f32,
+        /// **The velocity error itself**, `server.vel.x - mirror.vel.x`, at the
+        /// end of the drift. This is the quantity that decides whether a
+        /// misprediction self-corrects, and the position gap is only its
+        /// integral.
+        vel_error_late: f32,
+    }
+
+    /// **A mispredicted impulse, and the reconcile that has to undo it.**
+    ///
+    /// `T22.03`'s test list asked for *"prediction and server agree after a
+    /// mispredicted impulse"* and what shipped ran both sides from identical
+    /// state with identical inputs — nothing was ever mispredicted, so
+    /// `set_player_state` was never exercised in space at all. This is that
+    /// test: a knockback applied to the **server only**, exactly as a rocket the
+    /// client has not seen yet would arrive, and then the wire correction.
+    ///
+    /// The impulse is written straight onto `body.vel` rather than fired from a
+    /// weapon on purpose — what is under test is the mirror's response to *an
+    /// authoritative velocity it did not predict*, and a weapon would add a
+    /// projectile's own prediction question on top of it.
+    ///
+    /// `carry_velocity` is the control knob: `false` reconciles **position
+    /// only**, keeping the mirror's own `vel`, which is what a correction that
+    /// dropped the velocity fields would do.
+    fn diverge_then_reconcile(space: bool, carry_velocity: bool) -> Reconciled {
+        use game_core::constants::GravityMode;
+        use game_core::world::RoundPhase;
+
+        // Two seconds. `AIR_DRAG` is 120 px/s², so under standard gravity it
+        // needs that long to bleed a 240 px/s error on its own — and a shorter
+        // window would report "space does not damp" about a control that had
+        // not finished damping either.
+        const DRIFT_TICKS: u32 = game_core::constants::SIM_HZ * 2;
+
+        let mut w = game_core::world::World::new(4242, MapScale::Small);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(1, 0, String::new());
+        let (stand_x, stand_y) = build_shelf(&mut w);
+        {
+            let p = w.player_mut(1).expect("seated");
+            p.body.pos = Vec2::new(stand_x, stand_y);
+            p.body.vel = Vec2::ZERO;
+        }
+        for seq in 0..120u32 {
+            w.queue_input(1, Input::new(seq, 0, 0));
+            w.step(SIM_DT);
+            if w.player(1).is_some_and(|p| p.body.grounded) {
+                break;
+            }
+        }
+        assert!(
+            w.player(1).is_some_and(|p| p.body.grounded),
+            "the server player never landed on the shelf"
+        );
+        let mode = if space {
+            GravityMode::Space
+        } else {
+            GravityMode::Standard
+        };
+        w.gravity = mode;
+
+        let mut core = GameCore::new();
+        assert!(core.load_mask(w.map.mask.w, w.map.mask.h, &rle::encode(&w.map.mask)));
+        assert!(core.set_phase("playing"));
+        assert!(core.set_gravity(mode.as_str()));
+
+        // Both sides start from the server's state, **through the real wire**,
+        // for the reason `walk_both_sides_wearing` does it: `set_player_state`
+        // is what `prediction.ts::reconcile` calls, and a fixture that handed
+        // both sides the same `f32` could never see the codec.
+        let seed = |core: &mut GameCore, w: &game_core::world::World, vel: Option<(f32, f32)>| {
+            let bytes = game_server::codec::encode_snapshot(w, 1, 0);
+            let snap = game_server::codec::decode_snapshot(&bytes).expect("the server's own bytes");
+            let wire = snap
+                .players
+                .iter()
+                .find(|p| p.id == 1)
+                .expect("player 1 is in the snapshot");
+            let p = w.player(1).expect("seated");
+            let (vx, vy) = vel.unwrap_or((p.body.vel.x, p.body.vel.y));
+            core.set_player_state(
+                1,
+                p.body.pos.x,
+                p.body.pos.y,
+                vx,
+                vy,
+                p.body.grounded,
+                p.jetpack.fuel,
+                wire.health as f32,
+                wire.flags & 1 != 0,
+                wire.move_mods,
+            );
+        };
+        {
+            let p = w.player(1).expect("seated");
+            core.add_player(1, p.body.pos.x, p.body.pos.y);
+        }
+        seed(&mut core, &w, None);
+
+        let gap = |w: &game_core::world::World, core: &GameCore| {
+            let sp = w.player(1).expect("seated");
+            let c = core.player_state(1);
+            ((sp.body.pos.x - c[0]).powi(2) + (sp.body.pos.y - c[1]).powi(2)).sqrt()
+        };
+
+        // Get both sides off the shelf with a jump they **both** predict, so
+        // the only disagreement below is the impulse.
+        let mut seq = 1000u32;
+        let jump = game_core::player::input::button::JUMP;
+        for t in 0..WALK_TICKS {
+            seq += 1;
+            let buttons = if t == 0 { jump } else { 0 };
+            w.queue_input(1, Input::new(seq, buttons, 0));
+            w.step(SIM_DT);
+            core.apply_input(1, seq, buttons, 0, SIM_DT);
+        }
+        let agreed = gap(&w, &core);
+        assert!(
+            agreed <= RECONCILE_EPSILON_PX,
+            "precondition: the two sides were already {agreed:.1} px apart \
+             before the impulse, so nothing below is about the impulse"
+        );
+
+        // **The misprediction.** Server only.
+        w.player_mut(1).expect("seated").body.vel.x += IMPULSE;
+
+        let mut apart_early = 0.0;
+        for t in 0..DRIFT_TICKS {
+            seq += 1;
+            w.queue_input(1, Input::new(seq, 0, 0));
+            w.step(SIM_DT);
+            core.apply_input(1, seq, 0, 0, SIM_DT);
+            if t + 1 == DRIFT_TICKS / 2 {
+                apart_early = gap(&w, &core);
+            }
+        }
+        let apart_late = gap(&w, &core);
+        let vel_error_late = {
+            let sp = w.player(1).expect("seated");
+            sp.body.vel.x - core.player_state(1)[2]
+        };
+
+        // **Reconcile.**
+        let keep = if carry_velocity {
+            None
+        } else {
+            let c = core.player_state(1);
+            Some((c[2], c[3]))
+        };
+        seed(&mut core, &w, keep);
+        let apart_after = gap(&w, &core);
+
+        for _ in 0..game_core::constants::SIM_HZ {
+            seq += 1;
+            w.queue_input(1, Input::new(seq, 0, 0));
+            w.step(SIM_DT);
+            core.apply_input(1, seq, 0, 0, SIM_DT);
+        }
+
+        Reconciled {
+            apart_early,
+            apart_late,
+            apart_after,
+            apart_after_a_second: gap(&w, &core),
+            vel_error_late,
+        }
+    }
+
+    /// **Prediction and the server agree again after a mispredicted impulse —
+    /// and in space nothing but the reconcile makes that happen** (T22.03).
+    ///
+    /// Four claims, each red on its own:
+    ///
+    ///  1. **The error grows.** In space a mispredicted `dv` is never damped, so
+    ///     the gap at the end of the drift is larger than at its midpoint. The
+    ///     standard-gravity control is the same impulse under `AIR_DRAG`, where
+    ///     the velocity error is bled away and the gap stops growing — that is
+    ///     the difference the task file called *"the mode where a misprediction
+    ///     never self-corrects"*, measured instead of asserted in prose.
+    ///  2. **The reconcile closes it**, to inside `RECONCILE_EPSILON_PX`.
+    ///  3. **And it stays closed** through a further second of identical inputs.
+    ///  4. **Because the correction carries velocity, not just position.** The
+    ///     control reconciles position and keeps the mirror's own `vel`; a
+    ///     second later it is apart again by more than the epsilon, because
+    ///     nothing in this mode bleeds the difference. Under gravity that
+    ///     control would quietly pass, which is exactly why it belongs here.
+    ///
+    /// Measured, px and px/s, over the two-second drift:
+    ///
+    /// | run | gap at 1 s | gap at 2 s | `dv` at 2 s | after reconcile | +1 s |
+    /// |---|---|---|---|---|---|
+    /// | space | 240.0 | 480.0 | **240.0** | 0.00 | 0.00 |
+    /// | standard-gravity control | 207.4 | 207.4 | **0.0** | 0.00 | 0.00 |
+    /// | space, position-only reconcile | 240.0 | 480.0 | 240.0 | 0.00 | **240.00** |
+    ///
+    /// The space gap is exactly `IMPULSE * t` — 240 px after one second, 480
+    /// after two — which is the *"grows as `dv * t`"* sentence the neighbouring
+    /// fixture's doc makes, measured rather than reasoned. The control's gap
+    /// does **not** shrink; it plateaus, because a position error that has
+    /// already happened is not undone by the velocity error going away. That is
+    /// why claim 1 is asserted on `dv` and not on the gap.
+    #[test]
+    fn a_mispredicted_impulse_in_space_survives_until_the_reconcile() {
+        let space = diverge_then_reconcile(true, true);
+        let ground = diverge_then_reconcile(false, true);
+        let no_velocity = diverge_then_reconcile(true, false);
+
+        // **The velocity error is the thing that self-corrects or does not**;
+        // the position gap is its integral, and under gravity that integral
+        // keeps growing for a while after the error itself has gone. Asserting
+        // on the gap alone would report the wrong answer for the control —
+        // measured, it grows 131.7 px → 207.4 px there.
+        assert!(
+            (space.vel_error_late - IMPULSE).abs() < 1.0,
+            "space: two seconds after a {IMPULSE} px/s impulse the two sides \
+             still disagree about vel.x by {:.1} px/s — it should be the whole \
+             impulse, undamped and unrecovered",
+            space.vel_error_late
+        );
+        assert!(
+            ground.vel_error_late.abs() < IMPULSE / 10.0,
+            "control: under standard gravity the same impulse left a {:.1} px/s \
+             velocity error after two seconds, so 'space never damps' is a \
+             claim about arithmetic rather than about the mode",
+            ground.vel_error_late
+        );
+        assert!(
+            space.apart_late > space.apart_early * 1.5,
+            "space: the gap went {:.1} px → {:.1} px over the drift, so the \
+             undamped velocity error above is not actually carrying the two \
+             sides apart",
+            space.apart_early,
+            space.apart_late
+        );
+        assert!(
+            space.apart_late > RECONCILE_EPSILON_PX * 10.0,
+            "space: the impulse only moved the two sides {:.1} px apart, which \
+             is not a misprediction worth reconciling",
+            space.apart_late
+        );
+
+        assert!(
+            space.apart_after <= RECONCILE_EPSILON_PX,
+            "space: the reconcile left the mirror {:.1} px from the server, \
+             against an epsilon of {RECONCILE_EPSILON_PX}",
+            space.apart_after
+        );
+        assert!(
+            space.apart_after_a_second <= RECONCILE_EPSILON_PX,
+            "space: a second after the reconcile the mirror is {:.1} px from \
+             the server — the correction did not hold",
+            space.apart_after_a_second
+        );
+        assert!(
+            no_velocity.apart_after <= RECONCILE_EPSILON_PX,
+            "control precondition: the position-only reconcile did not even \
+             close the gap ({:.1} px), so what it fails a second later says \
+             nothing about velocity",
+            no_velocity.apart_after
+        );
+        assert!(
+            no_velocity.apart_after_a_second > RECONCILE_EPSILON_PX,
+            "control: a reconcile that corrected position and kept the mirror's \
+             own velocity still agreed a second later ({:.1} px). Nothing in \
+             this fixture can then see `set_player_state` carrying velocity, \
+             which is the clause that matters in a mode with no damping.",
+            no_velocity.apart_after_a_second
+        );
     }
 
     #[test]

@@ -213,6 +213,19 @@ pub fn clamp_to_world(map: &Map, body: &mut Body) {
 /// ordinary contact rules, or hovering one pixel over a floor would report them
 /// as standing on it. So this is not the fourth flag that rule warns about —
 /// there is no derivation available that answers both.
+///
+/// ## The fifth argument is a **sanctioned temporary** (`M22-RULINGS` R44)
+///
+/// This function is now `(map, body, gravity_scale, zero_g, dt)` — five — and
+/// that is one more than it had. R44 sanctions it and names its end: **`T22.11`
+/// folds `zero_g` into `Forces`/`Env`**, alongside the ninth argument `T22.02`
+/// took on `player::apply_input`, which R10's 2026-09-21 amendment sanctions in
+/// exactly the same terms. Both are one parameter that a struct reabsorbs.
+///
+/// **If `T22.11` lands and this is still at five, that is a finding** — the
+/// same sentence R10's amendment writes about a nine-argument `apply_input`,
+/// written here because the only count anyone would otherwise check is that
+/// one.
 pub fn integrate(map: &Map, body: &mut Body, gravity_scale: f32, zero_g: bool, dt: f32) -> f32 {
     let was_grounded = body.grounded;
     body.grounded = false;

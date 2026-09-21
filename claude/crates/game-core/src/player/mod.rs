@@ -166,6 +166,20 @@ pub fn apply_input(
     //
     // A player standing on an asteroid is **not** floating (R4) and walks
     // through this line exactly as they do anywhere else.
+    //
+    // **`mods.speed` goes with it, and `M22-RULINGS` R41 rules that correct.**
+    // This line is the *only* production **read** of `mods.speed` in the tree,
+    // and `PlayerState::move_mods` is the only production **write**
+    // (`speed_multiplier()`'s one non-test call site) — so skipping
+    // it means a floating player's thrust ignores both of the things
+    // `PlayerState::speed_multiplier` folds in: `HEALTH_SPEED_MIN`'s low-health
+    // slowdown, and `BOOTS_SPEED_MULT`. That is deliberate — **both of those are
+    // leg multipliers, and a thruster does not care how injured you are or what
+    // is on your feet.** Two consequences, both accepted, both stated here
+    // because nobody asked for them: low health does not slow you in space, and
+    // boots buy nothing while you drift. `space`'s
+    // `thrust_ignores_health_and_boots_and_walking_on_a_rock_does_not` is what
+    // re-validates it.
     let floating = space::floating(gravity, body, mods);
     if !floating {
         apply_horizontal(body, dir, mods.speed, dt);
@@ -232,8 +246,16 @@ pub fn apply_input(
         // one tick. A direction key carries no such ambiguity, so there is
         // nothing to disambiguate and the thrust resumes on the tick after a
         // jump instead of ten ticks later.
+        //
+        // **And the predicate is `space::engaging`, not `floating &&
+        // thrusting`** (`M22-RULINGS` R42). `floating` refuses a grounded
+        // player, so the first version never engaged the pack on a rock at any
+        // fuel level — measured, one second of UP on a full tank lifted 0.00 px
+        // — and welded a player with less than `SPACE_JUMP_FUEL` to the ground
+        // with no feedback. `grounded` gates the walking model above and fall
+        // damage in `World::apply_inputs`; it does not gate the engine.
         let (engage_held, engage_pressed) = if gravity == GravityMode::Space {
-            let asking = floating && space::thrusting(input);
+            let asking = space::engaging(gravity, body, mods, input);
             (asking, asking)
         } else {
             (input.held(button::JUMP), e.jump_pressed)
