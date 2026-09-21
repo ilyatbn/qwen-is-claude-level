@@ -72,6 +72,23 @@ same way, with ~1300 lines in the tree):
 
 Gate logs are now `.gitignore`d, so `gate-t2205b.txt` may exist and will not show as untracked.
 
+**`node scripts/verify-repo.mjs` is RED right now, and it is the in-flight work, not `HEAD`:**
+
+```
+crates/game-core/src/map/gen/space.rs: the_open_space_hit_rate is #[ignore]d
+  and not in scripts/ignored.sh's manifest
+ignored tests: 24 in crates/, 23 in the manifest
+repo guards: 2 problem(s)
+```
+
+`verify-repo` reads the **working tree**, and `space.rs` is one of the 13 modified files — the
+builder added an `#[ignore]`d measurement and had not yet added its `scripts/ignored.sh` row.
+**That is the guard doing its job on a half-finished edit, not a broken repository.** If you
+discard the uncommitted work it goes green on its own; if you keep the work, the missing row is
+part of finishing it. (`T22.05A`'s builder hit the identical thing and it cost it a whole
+`--changed` run, because the guard runs *before* the browser stage — add the row **with** the
+`#[ignore]`, not after.)
+
 ### What `T22.05B` was doing, and why it matters
 
 **A space match is currently unplayable.** Measured through the real pipeline: all 6 spawn
