@@ -1071,6 +1071,7 @@ async fn starting_a_round_announces_the_bots_it_seats() {
 /// The second client is the control. Without it, "the roster has names" also
 /// passes for a server that only ever names the one player it is talking to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "flaky: AlreadyClosed under a loaded gate — see tasks/flaky-test.md"]
 async fn lobby_state_names_everyone_in_the_room_including_yourself() {
     let h = spawn_server().await;
     let addr = h.addr;

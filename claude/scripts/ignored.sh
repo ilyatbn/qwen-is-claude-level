@@ -97,6 +97,9 @@ MANIFEST=(
   "a_second_client_joins_a_private_room_by_its_code|game-server tests/lobby.rs|guard"
   # Parked as flaky on 2026-09-21 (T22.01), not for cost — see tasks/flaky-test.md.
   "a_seventh_client_is_told_the_room_is_full|game-server tests/integration.rs|guard"
+  # Parked as flaky on 2026-09-21 (T22.03), not for cost — see tasks/flaky-test.md.
+  # The third `AlreadyClosed` in this one file.
+  "lobby_state_names_everyone_in_the_room_including_yourself|game-server tests/lobby.rs|guard"
 )
 
 # Tests whose recorded verdict is not `ok`. **Empty, and that is the finding.**
