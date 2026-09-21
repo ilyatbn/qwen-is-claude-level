@@ -1270,9 +1270,13 @@ both accepted and both worth stating out loud because nobody asked for them:
 - **Low health does not slow you in space.** That is a small buff in the mode where mobility is
   everything, and it is the honest physics.
 - **Boots are worse in space than on the ground** — they still help you walk a rock, and buy
-  nothing while you drift. They also give a **free delta-v upgrade on the jump**, since
-  `BOOTS_JUMP_HEIGHT_MULT` 2.25 means a booted space jump launches at **645 px/s** for the same
-  `SPACE_JUMP_FUEL`. That is unpriced, and `T22.03`'s fix pass owes it a test either way.
+  nothing while you drift. The review called the jump *"a free delta-v upgrade, unpriced"*;
+  **measured, that is half right and the other half is the interesting half.** The *launch* is
+  unpriced — the same `SPACE_JUMP_FUEL` buys 645 px/s instead of 430 — but **the return leg is
+  priced**, because arresting 645 costs 0.717 s of thrust where 430 costs 0.478. Over a whole
+  tank boots are a **nerf**: **2 jump-and-return round trips against a bare player's 3.**
+  So boots buff one-way rock-to-rock hops, where `R1` stops you for free, and cost you anything
+  you have to come back from. Both numbers are asserted.
 
 **This needs a test**, or it is a decision nothing re-validates: assert a 1-HP and a full-HP
 player thrust identically in space and differently on the ground.
@@ -1301,7 +1305,21 @@ That also dissolves the weld: with engagement available, `JETPACK_MIN_FUEL_TO_EN
 the only floor, and `N13` measured that a dry player recovers in **1.1 s** because refill has no
 grounded requirement.
 
-**Reverse it by:** the `!body.grounded` term in `space::floating`.
+**NARROWED by `T22.03`'s fix pass, and correctly.** Taken literally, this ruling contradicts
+`R4`: a grounded player holding RIGHT would **both** walk *and* thrust at
+`JETPACK_THRUST_SIDE`, accelerating past `WALK_SPEED` while standing — and it would **charge
+for walking**, which `R4` rules free and a shipped test asserts. So:
+
+- **airborne** — any axis engages;
+- **grounded** — only a net **upward** push engages. Sideways is legs; downward is into the
+  rock and buys nothing.
+
+All three of this ruling's invariants still hold: `grounded` no longer gates engagement, UP on
+a rock lifts you (**246.78 px on a full tank, and 246.78 px at 0.40 fuel** — measured), and the
+weld is gone.
+
+**Reverse it by:** `dy < 0.0` → `dx != 0.0 || dy != 0.0` in `space::engaging`, or the
+`!body.grounded` term this ruling originally named.
 
 ## R43 — Space's hazard table is **solar flares and meteor showers**
 

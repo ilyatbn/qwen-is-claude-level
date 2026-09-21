@@ -6632,3 +6632,21 @@ early, for a different reason than R10 costed. `T22.11` absorbs `zero_g` into `E
 **R5's split taken** — `T22.03B`, with a number already waiting: `zone_reach` in space is **≈1100 px** against ≈99 standard, so a bot
 with a molotov never throws. `R38`: projectiles fly **dead straight** in space, kept, and worth saying out loud. `R40`: a **fourth** socket
 flake parked — all four share the lobby harness, `T22.00E`.
+
+## T22.03 fixes — eight findings, and a self-falsifying citation caught in the act (2026-09-21)
+`c8de5e3`, 6 files. The 0.25 plant that left **all 1166 tests green** before now reads
+*"a full tank bought 20 jumps; SPACE_JUMP_FUEL's doc comment says ten"*. Seven falsifications, all red.
+**Two things the builder got righter than the review or I did.** (1) **`R42` as I wrote it contradicts `R4`** — a grounded player
+holding RIGHT would walk *and* thrust at `JETPACK_THRUST_SIDE`, accelerating past `WALK_SPEED` while standing, and would be **charged for
+walking**, which R4 rules free. Narrowed: airborne engages on any axis, grounded only on a net **upward** push. All three of R42's
+invariants still hold — UP on a rock now lifts **246.78 px**, at full tank *and* at 0.40 fuel, so the weld is gone.
+(2) **"Boots are a free unpriced delta-v upgrade" is half right.** The *launch* is unpriced; the **return leg is not**, because arresting
+645 px/s costs 0.717 s where 430 costs 0.478. Over a tank boots are a **nerf**: **2 round trips against a bare player's 3**. Both asserted.
+**The `const _` really was inert** — deleting the `FLAME_LIFE` bound **compiles**, so the trap that forced the fix could never re-validate
+it. `zone_reach` now tested under all three: **108.78 / 207.55 / 1110.00**. The untold-mirror "diverges without bound" is false and always
+was: 46 → 98 → 469 → **676 px and flat**, both bodies resting on `clamp_to_world`. The assertion was sound; the sentence was not.
+**The builder caught itself writing a self-falsifying citation** — its R41 comment cited `grep "mods.speed" → one hit`, and its own comment
+and tests made it nine. Amended to *"the only production **read**"* before the gate. The verify-against-the-artifact trap, running forwards.
+**Housekeeping worth more than it looks:** 18 untracked `gate-*.txt` files were each reaching `affected.mjs` as a path no rule knows, and
+each prints *"everything"* — so stale logs were forcing a 17-minute full run on prose-only changes. `.gitignore`d; `affected.mjs` now
+reports **0**.
