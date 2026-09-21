@@ -640,6 +640,73 @@ pub const SPACE_SPAWN_GRID: i32 = 64;
 /// whatever the budget is.
 pub const SPACE_OPEN_SPACE_TRIES: u32 = 24;
 
+// ---------------------------------------------------------------------------
+// Asteroid gravity wells (T22.11B, `M22-RULINGS` R46 and R47)
+// ---------------------------------------------------------------------------
+//
+// The field itself, its summation and every assertion below live in
+// `world::attractors`. These four numbers are the whole tunable surface.
+
+/// How much of the jetpack's **weakest** axis a level-[`SPACE_LEVEL_MAX`] well
+/// is allowed to spend, at the closest a player body can get to a rock.
+///
+/// **The weakest axis is `JETPACK_THRUST_DOWN` (900), not `JETPACK_THRUST_UP`
+/// (2200)** — `M22-RULINGS` R46, which overturns R18 and the design record on
+/// exactly this point. The pack is anisotropic, so the binding case is a player
+/// who has come to rest on the **underside** of a rock and must push *downward*
+/// to leave it. A well pinned to the up-thrust would pass a guard named *"escape
+/// is possible"* while trapping that player forever, with nothing on screen
+/// saying why.
+///
+/// 0.75 leaves a quarter of the down-thrust as net outward acceleration in the
+/// worst case the generator can produce, which
+/// `world::attractors::tests::no_well_traps_a_player_on_the_underside_of_a_rock`
+/// measures over the whole table rather than at one radius.
+pub const SPACE_WELL_ESCAPE_MARGIN: f32 = 0.75;
+
+/// The pull at the **centre** of a level-[`SPACE_LEVEL_MAX`] asteroid, px/s².
+///
+/// A player can never be at the centre — the core disc is solid — so the pull
+/// they actually feel is this number times the falloff at
+/// `SPACE_ASTEROID_CORE_FRAC * r + PLAYER_H / 2.0`, which is what R46's
+/// inequality bounds and what the test named above asserts.
+///
+/// For scale: `GRAVITY` is 1400, so the deepest rock in the game pulls at
+/// roughly half of ordinary gravity at its surface, and the shallowest at about
+/// a thirteenth.
+pub const SPACE_WELL_ACCEL_MAX: f32 = JETPACK_THRUST_DOWN * SPACE_WELL_ESCAPE_MARGIN;
+
+/// The reach of a level-[`SPACE_LEVEL_MAX`] well, centre to centre, px.
+///
+/// **Exactly one climb budget** (`M22-RULINGS` R47, point 2), which makes the
+/// reach a sentence a player can feel: *a full tank always clears the deepest
+/// well*. `JETPACK_CLIMB_BUDGET` already carries its own basis — *"the furthest
+/// a player can climb in one unbroken effort"* — and R18 asked for the level
+/// table to be derived from a measured quantity rather than from five literals.
+/// This is that quantity.
+pub const SPACE_WELL_REACH_MAX: f32 = JETPACK_CLIMB_BUDGET;
+
+/// Terminal **speed** in space, px/s — a clamp on `|vel|`, applied through
+/// `physics::resolve::Forces::max_speed`.
+///
+/// Not `MAX_FALL_SPEED`, which clamps `vel.y` downward only and means a
+/// different thing (`M22-RULINGS` R10). This mode damps nothing, so without a
+/// bound a player crossing a chain of wells accumulates speed with nothing to
+/// give it back.
+///
+/// **Basis, and it is computed rather than asserted.** The fastest a *single*
+/// well can make you is a free fall from its own cutoff to the closest a body
+/// can get, which for the deepest well works out at **695.8 px/s** —
+/// integrated, not remembered, by
+/// `world::attractors::tests::space_max_speed_carries_its_basis`, which also
+/// checks the two bounds R10 names: above the 367.7 px/s a diagonal jetpack burn
+/// already reaches (below it, the clamp re-introduces the *"controls fighting
+/// you"* complaint `jetpack::apply_thrust` refuses in as many words), and below
+/// the 3840 px/s `MAX_SUBSTEPS * MAX_SUBSTEP_PX / SIM_DT` already imposes (above
+/// it, the clamp is inert). 1350 is 1.94x the single-well dive, so it never
+/// fires on an honest fall toward one rock and still bounds the runaway.
+pub const SPACE_MAX_SPEED: f32 = 1350.0;
+
 /// Mean ground line, as a fraction of map height. 0.58 leaves the top ~52 % of
 /// the canvas as sky before the profile's amplitude is applied, which is what
 /// makes the silhouette read against the sky instead of filling the frame.

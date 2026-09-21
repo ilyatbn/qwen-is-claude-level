@@ -30,7 +30,7 @@ use game_core::map::{generate, rle, CoarseGrid, Map};
 use game_core::math::Vec2;
 use game_core::physics::body::Body;
 use game_core::player::state::PlayerState;
-use game_core::player::{apply_input, Env, Input, JetpackState, JumpState, MoveStep};
+use game_core::player::{apply_input, Input, JetpackState, JumpState, MoveStep};
 use game_core::rng::{substream, ChaCha8Rng};
 use game_core::weapons::defs;
 use game_core::weapons::explode::{
@@ -517,15 +517,22 @@ impl GameCore {
         // something a caller can invent, and both of the last two rubber-band
         // bugs were the mirror inventing one.
         let mods = p.stats.move_mods();
-        // **The mirror builds the same `Env` the server builds, and it builds
-        // it rather than being handed one** (T22.11A, `M22-RULINGS` R10). Same
-        // rule as `move_mods` above: a value the mirror can invent is a value
-        // the mirror will invent differently, which is what both of the last two
-        // rubber-band bugs were. `field_free` is true on both sides today
-        // because nothing constructs an attractor yet; `T22.11C` is what gives
-        // this core the asteroid list it would need to compute a real one, and
-        // until it lands a networked client predicts against no field at all.
-        let env = Env::field_free(gravity);
+        // **The mirror calls the function the server calls** (T22.11A, filled at
+        // T22.11B, `M22-RULINGS` R10 and R11). Same rule as `move_mods` above: a
+        // value the mirror can invent is a value the mirror will invent
+        // differently, which is what both of the last two rubber-band bugs were.
+        // `attractors::env_at` is the one composition, so there is no second
+        // spelling for the two to disagree about.
+        //
+        // **What it reads is still empty here, and that is R49, not a bug in this
+        // line.** `GameCore::new()` generates on the *standard* generator, so a
+        // networked client's `map.meta.asteroids` is empty — not stale, empty —
+        // and this predicts against no field at all until `T22.11C` lands
+        // `GameCore::set_asteroids` and `worldMirror.ts::applyMapInit` calls it
+        // beside `setTeleportPads`. Until then a player inside a well rubber-bands,
+        // which is exactly what that task is scheduled to fix; wiring the call here
+        // now is what makes it a one-line change there instead of a second design.
+        let env = game_core::world::attractors::env_at(map, gravity, p.body.pos);
         apply_input(
             map,
             &mut p.body,

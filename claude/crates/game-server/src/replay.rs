@@ -204,7 +204,24 @@ pub const HEADER_BYTES: usize = 46;
 /// **Tag 23, `SetGravity`, appends with it** and would not have needed a bump on
 /// its own — T20.09's precedent, restated at `SetBots`: an old file never
 /// contains the tag, so it decodes exactly as before.
-pub const REPLAY_VERSION: u16 = 14;
+///
+/// **15 (T22.11B, the asteroid gravity wells)**: the silent-divergence case, the
+/// same shape as 13's *"the scheduler's hash changed shape"* bullet, twice over.
+/// No new tag and no layout change.
+///
+///  - **`World::state_hash` gained the asteroid table** (`M22-RULINGS` R36). It
+///    folds in a `u32` length and then `x`/`y`/`r`/`level` per rock, so **every
+///    checkpoint hash moves**, including in a round on a map with no asteroids
+///    where only the zero length is folded. A v14 file disagrees at the first
+///    checkpoint on a map it would otherwise reproduce exactly.
+///  - **Space gravity is no longer weightless.** `world::attractors` gives every
+///    player in a space match a summed field and a terminal speed, so a v14 space
+///    recording replays to different positions from its first tick.
+///
+/// The `gravity` note above still stands for the setting itself: it is an input
+/// carried in the header, and it is what the *field* is derived from rather than
+/// being hashed on its own.
+pub const REPLAY_VERSION: u16 = 15;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

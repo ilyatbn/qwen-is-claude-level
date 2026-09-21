@@ -127,8 +127,10 @@ impl MoveMods {
 /// spells it and keeps the player/world split clean. T22.11A's builder made that
 /// call; it is one field moving between two structs and reversible in a line.
 ///
-/// `accel` is `Vec2::ZERO` and `max_speed` is `None` at every construction site
-/// in the tree today. `T22.11B` is what fills them, from `world::attractors`.
+/// `accel` and `max_speed` are filled by `world::attractors::env_at` (T22.11B),
+/// which is the one composition both `World::apply_inputs` and
+/// `GameCore::apply_input` call. Outside space it still answers exactly
+/// [`Env::field_free`].
 ///
 /// **No `Default`** (`M22-RULINGS` R45), for the reason [`MoveMods::NONE`]'s doc
 /// gives above: a `Default` is what a caller reaches for when it does not know
@@ -155,11 +157,13 @@ impl Env {
     ///
     /// **Not a `Default`, and the name is the whole point** (`M22-RULINGS` R45,
     /// and [`MoveMods::NONE`] for the precedent). A caller writing this is
-    /// asserting *"there is no field here"*, which is true today at every site
-    /// and will stay true for the fixtures that own a bare `Body`. Production in
-    /// `T22.11B` builds its `Env` from the attractor list instead, and a
-    /// `field_free` left behind at a production site is a sentence a reader can
-    /// see is wrong — which is exactly what a `Default` would not be.
+    /// asserting *"there is no field here"*, and since T22.11B that is a claim
+    /// with a way to be wrong: production builds its `Env` from
+    /// `world::attractors::env_at`, which still returns exactly this under
+    /// `Standard` and `Low`. What is left calling it directly is the movement
+    /// fixtures that own a bare `Body` — and a `field_free` that reappeared at a
+    /// production site would be a sentence a reader can see is wrong, which is
+    /// exactly what a `Default` would not be.
     pub const fn field_free(gravity: GravityMode) -> Self {
         Env {
             gravity,

@@ -197,8 +197,13 @@ mod tests {
     /// sentence has to be written somewhere. **And it is the thing these 20
     /// tests cannot see**: `void()` and `floor_at` are maps with no asteroids,
     /// so every assertion below stays green for a build in which `Forces::accel`
-    /// is never read. Closing that hole is `T22.11B`'s, and its first test needs
-    /// a fixture that actually has rocks.
+    /// is never read — T22.11A proved it by deleting the application and watching
+    /// 1062 of 1062 pass. That hole is closed, elsewhere and deliberately, by
+    /// `world::attractors::tests::a_player_near_a_rock_is_pulled_toward_it_and_\
+    /// one_past_the_cutoff_is_not`, whose fixture has rocks in it. **These 20
+    /// keep their empty sky on purpose**: what they measure is locomotion with
+    /// nothing pulling, and a field here would be a second cause for every
+    /// number below.
     fn plain(mode: GravityMode) -> MoveStep {
         stepping(MoveMods::NONE, mode)
     }

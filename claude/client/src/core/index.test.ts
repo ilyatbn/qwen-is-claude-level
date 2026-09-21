@@ -319,9 +319,19 @@ describe('Core', () => {
    * architecture exists to prevent.
    */
   it('predicts a low-gravity match under low gravity (T22.02)', () => {
-    const fall = (mode: string): number => {
-      expect(core.setGravity(mode)).toBe(true)
+    /**
+     * `rocks` picks the map, and the mechanism is worth stating because it is
+     * not obvious: `setGravity` deliberately does **not** regenerate, and
+     * `generate` derives the generator from whatever the mode is *at that
+     * moment*. So setting `'standard'` first and the real mode after gives a
+     * space player on a landscape map — a space match with no asteroids in it,
+     * which is the fixture the free-fall arms below need now that T22.11B has
+     * given space a field.
+     */
+    const fall = (mode: string, rocks = false): number => {
+      expect(core.setGravity(rocks ? mode : 'standard')).toBe(true)
       core.generate(4242n, MapScale.Small)
+      expect(core.setGravity(mode)).toBe(true)
       core.addPlayer(11, 500, 40)
       const y0 = core.playerState(11)!.y
       for (let seq = 0; seq < 20; seq++) core.applyInput(11, seq, 0, 0, C().SIM_DT)
@@ -334,8 +344,16 @@ describe('Core', () => {
     const low = fall('low')
     expect(standard).toBeGreaterThan(0)
     expect(low).toBeCloseTo(standard * C().LOW_GRAVITY_SCALE, 3)
-    // T22.03 — and space does not fall at all. Same fixture, same control.
+    // T22.03 — and there is no *global* gravity in space: on a map with no
+    // asteroids on it, nothing pulls this player anywhere.
     expect(fall('space')).toBe(0)
+    // T22.11B — and on a real space map something does, which is the mirror's
+    // own attractor field. This is the client-side half of "the field has a
+    // production caller": `GameCore::apply_input` builds its `Env` from
+    // `world::attractors::env_at`, and if it did not, this would read 0 like the
+    // line above. What the field *is* belongs to the Rust tests; what this pins
+    // is that the mirror computes one at all.
+    expect(fall('space', true)).toBeGreaterThan(0)
     // And an unknown spelling is refused rather than clamped to standard.
     expect(core.setGravity('none')).toBe(false)
   })
@@ -362,8 +380,12 @@ describe('Core', () => {
     const VX = 240
     const TICKS = 30
     const drift = (mode: string): number => {
-      expect(core.setGravity(mode)).toBe(true)
+      // Generated under standard gravity and switched after, so this measures
+      // damping with no attractor field in the way — see the `fall` helper in
+      // the test above for why that is what those two calls do.
+      expect(core.setGravity('standard')).toBe(true)
       core.generate(4242n, MapScale.Small)
+      expect(core.setGravity(mode)).toBe(true)
       core.addPlayer(12, 500, 300)
       // Airborne, drifting right, full tank, alive, no move mods.
       core.setPlayerState(12, {

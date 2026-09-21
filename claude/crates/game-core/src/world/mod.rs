@@ -9,6 +9,7 @@
 
 pub mod ambient;
 pub mod animals;
+pub mod attractors;
 pub mod birds;
 pub mod cycle;
 pub mod mount;
@@ -34,7 +35,7 @@ use crate::player::respawn::choose_respawn_pad;
 use crate::player::state::{
     choose_respawn, surface_to_centre, DeathCause, PlayerId, PlayerState, UseError,
 };
-use crate::player::{apply_input, Env, MoveStep};
+use crate::player::{apply_input, MoveStep};
 use crate::rng::{range_f32, substream, ChaCha8Rng};
 use crate::weapons::burn::BurnKind;
 use crate::weapons::defs::{self, BurnZone, Burst, Delivery};
@@ -1646,18 +1647,33 @@ impl World {
             // derivation of what the *player* is carrying.
             let gravity = self.gravity;
             // **`Env` is built here, before the mutable player borrow**
-            // (T22.11A, `M22-RULINGS` R10). The `let gravity = ...` line above
-            // already exists for exactly this reason, and `T22.11B`'s attractor
-            // sum needs the map's asteroid list *and* the player's position, so
-            // this is where it will go: one `Env` per player per tick, composed
-            // where both are visible.
+            // (T22.11A, filled at T22.11B, `M22-RULINGS` R10 and R11). The
+            // `let gravity = ...` line above already exists for exactly this
+            // reason: the attractor sum needs the map's asteroid list *and* this
+            // player's position, so this is the one point where both are visible
+            // — one `Env` per player per tick.
             //
-            // `field_free` is a claim and it is true today — nothing in the tree
-            // constructs an attractor yet. When `T22.11B` lands, this line is
-            // what changes, and a `field_free` left here would be a sentence a
-            // reader can see is wrong. That is the whole reason `Env` has no
-            // `Default` (R45).
-            let env = Env::field_free(gravity);
+            // **`attractors::env_at` and not a composition spelled out here**,
+            // because `GameCore::apply_input` has to produce the same value and a
+            // second spelling is a second answer. Under `Standard` and `Low` it
+            // still returns exactly `Env::field_free(gravity)`, which is what
+            // makes this task a no-op for the game everyone else is playing.
+            //
+            // **This is also R8.4's named gate point, and T22.11B deliberately
+            // does not gate here.** T21.30 froze *input* and kept physics
+            // running — *"input does nothing — but gravity does"* — so in
+            // `Ended` this line still runs with a neutral `Input` and the field
+            // still pulls. R8.4 rules that the **black hole** must freeze then,
+            // and names this construction (*"zero the `accel` when
+            // `!self.phase.accepts_input()`"*) as the one place to do it. Nothing
+            // rules that an **asteroid** well freezes, and one that did would
+            // stop a body dead on the results screen for no reason a player could
+            // read; in space there is no fall damage (R4), so a drift after the
+            // bell costs nobody anything. So: no gate, said out loud rather than
+            // omitted, and `T22.12` adds the condition here for its own
+            // `Kind::BlackHole` when it lands.
+            let env =
+                crate::world::attractors::env_at(&self.map, gravity, self.players[idx].body.pos);
             let p = &mut self.players[idx];
             let impact = apply_input(
                 &self.map,
@@ -4032,6 +4048,32 @@ impl World {
     pub fn state_hash(&self) -> [u8; 32] {
         let mut h = blake3::Hasher::new();
         h.update(&self.map.mask.hash());
+        // **The asteroid table, because since `T22.11B` it decides where players
+        // go** (`M22-RULINGS` R36). The mask carries a rock's *shape*; nothing but
+        // these four numbers carries its *pull*, and `world::attractors` reads all
+        // four — `level` for the strength and the reach, `x`/`y` for the centre,
+        // `r` for nothing yet but for the escape ceiling's `d_min`.
+        //
+        // R36 was explicit that this is owed as a red-before-green rather than as
+        // a line: `level` is in `tests/golden.rs::meta_digest`, so *generation*
+        // drift was already caught, but a level differing between server and
+        // client **at runtime** was invisible to the one guard that would localise
+        // it — see
+        // `attractors::tests::an_asteroid_that_differs_between_two_worlds_moves_the_state_hash`.
+        // `replay.rs`'s argument for leaving `gravity` unhashed (*"a world that ran
+        // under a different gravity diverges in `players`, which is hashed"*) does
+        // not cover this: a table the two sides disagree about before tick one
+        // diverges from tick one, and the hash exists to say *which* tick.
+        //
+        // Empty on every non-space map, so the length prefix is the only cost the
+        // rest of the game pays.
+        h.update(&(self.map.meta.asteroids.len() as u32).to_le_bytes());
+        for a in &self.map.meta.asteroids {
+            h.update(&a.x.to_le_bytes());
+            h.update(&a.y.to_le_bytes());
+            h.update(&a.r.to_le_bytes());
+            h.update(&[a.level]);
+        }
         h.update(&self.tick.to_le_bytes());
         h.update(&self.round_time.to_le_bytes());
         h.update(&self.wind.to_le_bytes());

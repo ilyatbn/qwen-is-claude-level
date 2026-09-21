@@ -1015,6 +1015,143 @@ mod tests {
             "R14: a dropped item moved in space"
         );
     }
+
+    /// **R4's contact rule for a non-player body: drifting sideways onto a rock in
+    /// space grounds it.** `Forces::falling`'s `zero_g` half, which had no
+    /// assertion anywhere in the tree until this one.
+    ///
+    /// R48's change had two halves — the scale (`1.0` → `mode.scale()`) and the
+    /// contact rules (`false` → `matches!(mode, Space)`) — and all four of T22.11A's
+    /// stepper tests measure **vertical displacement from rest**. In space such a
+    /// body has `vel == ZERO` and `gravity_scale == 0.0`, so it does not move and
+    /// the grounding probe answers `false` under either value of `zero_g`. Measured
+    /// at the live binding site: `Forces::falling`'s `zero_g` forced to `false`
+    /// leaves **1074 passed, 0 failed** across `cargo test -p game-core`.
+    ///
+    /// The failure that got through: `move_y` returns at `dy == 0.0` **before** it
+    /// probes anything, so without the zero-g arm in `integrate` a rifle drifting
+    /// sideways onto an asteroid top is never grounded. `WorldItems::step`
+    /// re-integrates it every tick for the rest of the round and never pushes it
+    /// onto `landed` — a thing visibly at rest that every observer is told is still
+    /// moving, which is §C7's bug again from the other end.
+    ///
+    /// **Two fixture constraints, and they are the test.**
+    /// - `vel.y` must be **exactly** `0.0` throughout. Any downward velocity and
+    ///   `move_y` grounds it on the ordinary path, the assertion passes with
+    ///   `zero_g: false` too, and this measures `move_y`.
+    /// - The open-air arm is what says the probe discriminates rather than
+    ///   answering true always.
+    ///
+    /// The resting height is **calibrated** from a standard-gravity drop rather
+    /// than computed here: `is_on_ground` wants an AABB that overlaps nothing now
+    /// and something 1 px down, and a height this test worked out for itself would
+    /// be this test agreeing with its own arithmetic.
+    #[test]
+    fn an_item_drifting_sideways_onto_a_rock_in_space_lands_on_it() {
+        const FLOOR: i32 = 400;
+        const LEDGE_FROM: i32 = 256;
+        let dt = crate::constants::SIM_DT;
+
+        // A floor over the right half only, so there is open space to drift across.
+        let ledge = {
+            let mut mask = Mask::new_empty(W, H);
+            for y in FLOOR..H as i32 {
+                mask.set_run(y, LEDGE_FROM, W as i32 - 1);
+            }
+            force_borders(&mut mask);
+            let coarse = CoarseGrid::build(&mask);
+            Map::from_parts(mask, coarse, meta())
+        };
+
+        // Calibrate: what y does this item come to rest at on this floor, under
+        // ordinary gravity? That is the one height at which a sideways drift is a
+        // contact and not a miss.
+        let resting_y = {
+            let mut w = WorldItems::new();
+            let id = w.spawn(
+                BAZOOKA,
+                1,
+                Vec2::new(360.0, 100.0),
+                Vec2::ZERO,
+                SpawnSource::Initial,
+                0.0,
+            );
+            for _ in 0..600 {
+                w.step(&ledge, GravityMode::Standard, dt);
+            }
+            let it = w.get(id).expect("the item left the world");
+            assert!(it.grounded, "calibration: the item never reached the floor");
+            it.pos.y
+        };
+
+        // The claim: purely horizontal velocity, in space, across the gap and onto
+        // the ledge.
+        let mut w = WorldItems::new();
+        let id = w.spawn(
+            BAZOOKA,
+            1,
+            Vec2::new(150.0, resting_y),
+            Vec2::new(300.0, 0.0),
+            SpawnSource::Initial,
+            0.0,
+        );
+        let start_x = w.get(id).expect("there").pos.x;
+        let mut landed_on = None;
+        for tick in 1..=120u32 {
+            let step = w.step(&ledge, GravityMode::Space, dt);
+            let it = w.get(id).expect("the item left the world");
+            assert_eq!(
+                it.vel.y, 0.0,
+                "tick {tick}: this fixture gained vertical velocity, so a landing \
+                 below would be `move_y`'s and not the zero-g probe's"
+            );
+            if it.grounded && landed_on.is_none() {
+                assert!(
+                    step.landed.contains(&id),
+                    "tick {tick}: the item is grounded and `step` did not report it \
+                     as landed, so nobody watching is ever told where it stopped"
+                );
+                landed_on = Some(tick);
+            }
+        }
+        let it = w.get(id).expect("there");
+        assert!(
+            it.pos.x > start_x + 20.0,
+            "the item never crossed the gap: {start_x} → {}",
+            it.pos.x
+        );
+        assert!(
+            landed_on.is_some(),
+            "a rifle drifting sideways onto a rock in space never landed on it — it \
+             ended at {:?} moving at {:?}, and `WorldItems::step` will re-integrate \
+             it for the rest of the round",
+            it.pos,
+            it.vel
+        );
+
+        // **The control.** Same map, same purely horizontal velocity, same ticks,
+        // 100 px higher — nothing under it at any point. Without this, "grounded"
+        // is satisfied by a probe that answers true everywhere.
+        let mut air = WorldItems::new();
+        let air_id = air.spawn(
+            BAZOOKA,
+            1,
+            Vec2::new(150.0, resting_y - 100.0),
+            Vec2::new(300.0, 0.0),
+            SpawnSource::Initial,
+            0.0,
+        );
+        for _ in 0..120 {
+            let step = air.step(&ledge, GravityMode::Space, dt);
+            assert!(step.landed.is_empty(), "an item in open space landed");
+        }
+        let air_it = air.get(air_id).expect("there");
+        assert!(!air_it.grounded, "an item in open space was grounded");
+        assert!(
+            air_it.pos.x > start_x + 20.0,
+            "the control never moved, so it never had the chance to be grounded"
+        );
+    }
 }
 
 #[cfg(test)]

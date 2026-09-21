@@ -183,17 +183,19 @@ pub struct Forces {
     /// The scalar path, unchanged: `vel.y` only, clamped by `MAX_FALL_SPEED` on
     /// the way down only, and early-returning at exactly `0.0`.
     pub gravity_scale: f32,
-    /// The summed vector field. `Vec2::ZERO` everywhere today; `T22.11B` is what
-    /// fills it from `world::attractors`. It is applied **beside**
-    /// `apply_gravity` and not inside it, because that function returns early at
-    /// scale `0.0` — which is every player in space, i.e. precisely where the
-    /// field is the only thing moving anyone.
+    /// The summed attractor field, px/s². Filled at T22.11B by
+    /// `world::attractors::field_at`, through `player::Env`; still `Vec2::ZERO`
+    /// on every path but a player in space, which is what keeps the scalar path
+    /// bit-identical. It is applied **beside** `apply_gravity` and not inside it,
+    /// because that function returns early at scale `0.0` — which is every player
+    /// in space, i.e. precisely where the field is the only thing moving anyone.
     pub accel: Vec2,
     /// The mode's terminal **speed**: a clamp on `|vel|`, not on `vel.y`.
     /// `MAX_FALL_SPEED` is neither reused nor renamed for this — it clamps one
     /// axis downward only, and a magnitude clamp is a different statement.
     ///
-    /// `None` everywhere until `T22.11B`.
+    /// `None` on every path but space, where T22.11B made it
+    /// `Some(SPACE_MAX_SPEED)`.
     ///
     /// **`M22-RULINGS` R10 and R45 say that `no_tunnelling_at_ten_times_\
     /// terminal_velocity_through_integrate` goes red if a `max_speed` leaks
@@ -218,6 +220,26 @@ pub struct Forces {
     /// invisible to this repository on the scalar path.** `T22.11B`, which is
     /// what first gives this field a value, needs an assertion of its own on the
     /// space path — and it cannot borrow this one.
+    ///
+    /// **T22.11B brought its own, and these are their names.** R50 asks for them
+    /// to be recorded here, because here is where the next reader looks:
+    ///
+    /// - `world::attractors::tests::space_clamps_a_bodys_speed_on_the_vector_path`
+    ///   drives a body at 9000 px/s through `apply_input` under
+    ///   `GravityMode::Space`, where `gravity_scale` is `0.0` and `apply_gravity`
+    ///   has returned without touching `vel.y`, and asserts **the speed itself** —
+    ///   not a distance, and not an upper bound a clamp can only help. Its control
+    ///   is the same body under standard gravity, which keeps its 9000: without
+    ///   that, "the speed is under the cap" is satisfied by a tick that lost the
+    ///   velocity for any reason at all.
+    /// - `world::attractors::tests::space_max_speed_carries_its_basis` pins
+    ///   `SPACE_MAX_SPEED` against a measured basis rather than against itself.
+    /// - `the_space_terminal_speed_is_not_inert_against_the_substep_cap`, below in
+    ///   this file, is the third of R10's named interactions: above
+    ///   `MAX_SUBSTEPS * MAX_SUBSTEP_PX / SIM_DT` a terminal speed clamps nothing
+    ///   the sub-stepper had not already bounded. It lives here because
+    ///   `substep_guard::no_other_substep_derivation_exists` reads this crate's
+    ///   source and lets only this file name those two constants.
     ///
     /// **It clamps one tick late for three production writers and that is not a
     /// tighter guarantee than it looks.** `player::jetpack::apply_thrust`,
@@ -244,11 +266,24 @@ impl Forces {
     /// Ordinary gravity at `gravity_scale`: no field, no speed cap, ordinary
     /// contact rules.
     ///
-    /// This is what every caller that used to pass a bare `f32` passes now, and
-    /// the reason `a_resting_body_is_bit_identical_after_600_ticks` is a control
-    /// rather than a formality: `accel: ZERO` adds nothing and `max_speed: None`
-    /// clamps nothing, so the arithmetic on this path is the arithmetic that was
-    /// there before.
+    /// **This is the fixture constructor, and it has no production callers** —
+    /// corrected at T22.11B, because it said *"this is what every caller that used
+    /// to pass a bare `f32` passes now"* and that is false. Measured
+    /// (`grep -rn 'Forces::gravity' crates/`): every use is inside this file's
+    /// `#[cfg(test)] mod tests`. The four non-player steppers call
+    /// [`Forces::falling`], and `player::apply_input` writes a struct literal
+    /// because R10 forbids forwarding a `Forces` it would partly overwrite. So
+    /// nothing in production constructs this.
+    ///
+    /// That matters beyond the sentence: it is a second reason R50's conclusion
+    /// holds. The `max_speed` plants recorded on [`Forces::max_speed`] were made
+    /// here, so they could only ever reach tests — no production body was ever
+    /// going to see them, whatever the tripwire asserted.
+    ///
+    /// It is still the reason `a_resting_body_is_bit_identical_after_600_ticks` is
+    /// a control rather than a formality: `accel: ZERO` adds nothing and
+    /// `max_speed: None` clamps nothing, so the arithmetic on this path is the
+    /// arithmetic that was there before.
     pub const fn gravity(gravity_scale: f32) -> Self {
         Forces {
             gravity_scale,
@@ -352,10 +387,11 @@ pub fn integrate(map: &Map, body: &mut Body, forces: Forces, dt: f32) -> f32 {
     apply_gravity(body, forces.gravity_scale, dt);
 
     // **The vector field, beside the scalar and downstream of nothing that
-    // skips it** (`M22-RULINGS` R10). `accel` is `Vec2::ZERO` at every
-    // construction site in the tree today, so this line adds exactly nothing and
-    // `a_resting_body_is_bit_identical_after_600_ticks` is unmoved by it;
-    // `T22.11B` is what gives it a value.
+    // skips it** (`M22-RULINGS` R10). `accel` is `Vec2::ZERO` on every path but a
+    // player in space — `Forces::gravity`, `Forces::falling` and `Env::field_free`
+    // all name it so — which is why this line leaves
+    // `a_resting_body_is_bit_identical_after_600_ticks` unmoved. T22.11B is what
+    // gives it a value, through `world::attractors::env_at`.
     body.vel += forces.accel * dt;
 
     // **A clamp on `|vel|`, which `MAX_FALL_SPEED` is not.** `None` on every
@@ -1049,6 +1085,52 @@ mod tests {
             integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
         }
         assert!(b.feet_y() <= 301.0, "tunnelled to y = {}", b.pos.y);
+    }
+
+    /// **R10's third `max_speed` interaction: the sub-step cap already bounds
+    /// speed, so a terminal speed above it is inert.**
+    ///
+    /// `MAX_SUBSTEPS` (64) x `MAX_SUBSTEP_PX` (1 px) per tick is a hard bound on
+    /// how far a body travels in one tick whatever its velocity says — this
+    /// module's own doc calls it *"a correctness guarantee, not an optimisation"*.
+    /// Divided by `SIM_DT` that is an effective 3840 px/s per axis, and a
+    /// `max_speed` above it clamps nothing that was not already bounded.
+    ///
+    /// **It lives in this file and not beside the constant it is about** because
+    /// `substep_guard::no_other_substep_derivation_exists` reads this crate's
+    /// source and forbids every file but `resolve.rs` and `constants.rs` from
+    /// naming these two constants. That guard is right; the assertion moved.
+    ///
+    /// The second half is the one with teeth: the cap is not merely a number this
+    /// test compares against, it is a distance a body actually cannot exceed, so
+    /// the body below is driven at twice `SPACE_MAX_SPEED` with no clamp at all
+    /// and measured. Without it this is arithmetic about two constants.
+    #[test]
+    fn the_space_terminal_speed_is_not_inert_against_the_substep_cap() {
+        let per_tick = MAX_SUBSTEPS as f32 * MAX_SUBSTEP_PX;
+        let cap = per_tick / SIM_DT;
+        assert!(
+            crate::constants::SPACE_MAX_SPEED < cap,
+            "SPACE_MAX_SPEED {} is at or above the {cap} px/s the sub-stepper \
+             already imposes, so the clamp is inert and the mode has no terminal \
+             speed at all",
+            crate::constants::SPACE_MAX_SPEED
+        );
+
+        // And `cap` is a real distance bound, not a number in a comment: an
+        // unclamped body at twice the terminal speed still moves only `per_tick`.
+        let map = test_map(W, H, |_| {});
+        let mut b = Body::new(Vec2::new(200.0, 150.0));
+        b.vel = Vec2::new(2.0 * crate::constants::SPACE_MAX_SPEED, 0.0);
+        let before = b.pos.x;
+        integrate(&map, &mut b, Forces::gravity(0.0), SIM_DT);
+        assert!(
+            (b.pos.x - before) <= per_tick + 0.001,
+            "an unclamped body at {} px/s travelled {} px in one tick, and the \
+             sub-step cap says at most {per_tick}",
+            b.vel.x,
+            b.pos.x - before
+        );
     }
 
     // ---- world limits (docs/70-amendments-v2.md A1) -----------------------

@@ -6681,3 +6681,12 @@ and the same red at the other three steppers. **Finding 1 — the tripwire R10, 
 params**: clippy says *"too many arguments (8/7)"*; R10 blesses the allow at eight, so it stays and the ruled count is the parameter count. **Finding 3 —** `Env` carries `gravity`,
 because R10's two field lists cannot hold three fields once the amendment makes `MoveStep` absorb `mods` **and** `gravity`. **Not mine, edited anyway:** `items/spawning.rs`, three test
 call sites + one `use`, arity only — without it `game-core` does not compile; T22.05C has since built on it. **Nothing here can see `accel`:** deleting its application left 1062/1062 — T22.11B's hole.
+
+**T22.11B — the field.** `world/attractors.rs`: `Attractor{pos,strength,reach,kind}`, `a(d)=strength*max(0,1-d/reach)` (R47), `field_at` summing in list order, `env_at` the one `Env` both sides
+build. Constants: `SPACE_WELL_ESCAPE_MARGIN` 0.75, `SPACE_WELL_ACCEL_MAX`=`JETPACK_THRUST_DOWN*0.75`=675, `SPACE_WELL_REACH_MAX`=`JETPACK_CLIMB_BUDGET`=780, `SPACE_MAX_SPEED` 1350.
+**The hole is closed:** deleting `integrate`'s accel line now fails 3 tests (was 1062/1062 green). **R46 downward, over the whole table:** worst pull **647.3** px/s² at level 5 / r=24 vs 900 down-thrust.
+**R36 red-first:** state_hash gained x/y/r/level — removing it reddens the cross-side test; `REPLAY_VERSION` 14→15 by replay.rs's own policy. **R50:** own guard, `space_clamps_a_bodys_speed_on_the_vector_path`
++ `space_max_speed_carries_its_basis` (695.8 px/s dive, computed), both named at `Forces::max_speed`. **Coordinator's two adds:** `zero_g` had **zero** coverage (plant → 1074 passed, 0 failed);
+`an_item_drifting_sideways_onto_a_rock_in_space_lands_on_it` is red at the live site. `Forces::gravity`'s doc corrected — **zero production callers**, it is the fixture constructor.
+**Two client tests were measuring space on a map with rocks** and now generate under standard first; a third arm pins the mirror's own field. 7 falsifications, all red, none stayed green.
+**Not run: the 58-check sweep** (R53 — every `game-core` path maps to all of them); `node scripts/e2e.mjs --only sandbox` green. Stale text contradicting R46/R50 listed in the report.
