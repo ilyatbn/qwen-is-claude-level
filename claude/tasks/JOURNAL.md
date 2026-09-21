@@ -6582,7 +6582,11 @@ biases against big rocks, so radius is drawn **uniformly on purpose**, or level 
 **`R17`'s worry did not survive measurement**: the walking predicate scores 0.280–0.596 against `MIN_TRAVERSABLE_FRACTION` 0.75 and fails on
 every seed and scale, so the silent safe-preset failure it predicted is real. Its other correction held — `surface_points` is 148/246/346,
 not empty. The rim is a **chain of overlapping discs**, not an annulus: an annulus is ~0.80× its radial gap at 45°, clearing the 20.48 px
-Large minimap cell by under 1.5 px; the disc chain measures 32.00 px at its thinnest on every scale.
+Large minimap cell by under 1.5 px. **CORRECTED by the review (`R34`): the disc chain measures 29.75–30.00 px, not the 32.00 I wrote
+here — 32 is the constant, not a measurement, and I repeated it without running it.** It is a design property, not noise: `stamp_rim`
+steps in ellipse *parameter*, so on a 2:1 ellipse the 8 px spacing peaks at 10.38 px and scallops to a predicted 30.27, measured at
+113–117° exactly where predicted. The `~0.80x` annulus figure matches no construction either (the real worst case is 0.945x). Nothing
+changes: 29.75 clears the floor by 45 %, and no disc chain is ever uniformly `thickness` thick.
 **Two things it found that I had wrong.** `REPLAY_VERSION` needs **no** bump — the replay carries no `map_init` at all (grep → 0), it stores
 seed/scale/generator/gravity and **regenerates**. And the cave-backdrop finding is **`T22.06`'s, not `T22.04`'s** (`R33`): a closed rim means
 **0 of 1 098 496 interior px are sky-reachable**, so unless space gets its own backdrop the client paints the whole playfield as a cave.

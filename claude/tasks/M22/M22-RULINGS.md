@@ -1078,6 +1078,101 @@ anyone adding a space case gets `undefined` rather than a compile error.
 
 **Reverse it by:** nothing yet — this ruling only says where the work lives.
 
+## R34 — Correcting the rim's numbers, which I put into the record without running them
+
+*`T22.05A`'s review re-ran every numeric claim in the commit. All of them reproduced **except
+the two about the rim's thickness** — and those two are what the rim's shape was chosen on.
+I repeated both in the journal. I had not run either.*
+
+**The measured thinnest rim is 29.75–30.00 px, not 32.00.** From the builder's own unmodified
+test, which I ran:
+
+```
+Small: thinnest rim 30.00 px at 117 deg
+Medium: thinnest rim 29.75 px at 113 deg
+Large: thinnest rim 29.75 px at 114 deg
+```
+
+32 is the value of `SPACE_RIM_THICKNESS` — a constant, not a measurement. `space.rs`'s own doc
+claims *"Measured off the mask, not asserted against the constant"*, and the number beside it
+is the constant.
+
+**And the 30 px is a design property, not rasterisation noise.** `stamp_rim` steps in **ellipse
+parameter**, not arc length, and on a 2:1 ellipse arc speed varies 2:1 — so a nominal 8 px
+spacing peaks at 10.38 px at the top and bottom, and a chain of radius-16 discs at that spacing
+scallops to 30.27 px. Predicted 30.27, measured 29.75–30.00, **at 113–117°, exactly where the
+prediction puts it.** So *"a chain of discs of radius `thickness/2` is uniformly `thickness`
+thick by construction"* is false as written.
+
+**The `~0.80×` annulus figure matches no construction.** Brute-forced, the natural inset
+ellipse is **0.945×** at worst, and the doc's own sentence is internally inconsistent — 0.80 ×
+24 = 19.2, not the *"~22 px"* it then states, and 22 is the 0.949× figure. At the shipped
+nominal 32 that annulus measures **30.24 px**, i.e. **thicker** than what the disc chain
+actually produces.
+
+**Nothing is broken and the geometry does not change.** 29.75 clears the 20.48 px
+`mapW / MINIMAP_W` floor by 45 %. And stepping in arc length instead gives 30.98 — still not
+32, because **a disc chain is never uniformly `thickness` thick.** The real spread across every
+candidate construction is ≈ 0.7 px. **So the fix is the record and the doc comment, not the
+rim.**
+
+**One more the review found and the record does not have:** R13 says the x-inset is 112 px.
+What was built derives from the **centreline**, giving **128 px** per side. The centreline is
+exactly 2:1 on every scale; the outer edge is 1.965 and the inner 2.038, so the annulus the
+minimap draws is out of round by ~16 px on each edge. **That is inherent to a constant-thickness
+rim on an ellipse, it is the right call, and it was simply undocumented.**
+
+**Reverse it by:** nothing — this ruling only corrects numbers.
+
+## R35 — Every spawn on a space map is outside the arena, and that is `T22.05B`'s red-before-green
+
+*`T22.05A`'s acceptance predicate validates a quantity the map does not ship.*
+
+`analyse_space`'s spawn clause counts `open_space_candidates(...)` and **throws the list away**.
+What ships in `MapMeta.spawn_points` comes from `meta.rs::generate_full_with`'s `choose_spawns`
+over `outcome.surface` — and measured through the real pipeline, **all 6 spawn points and all 6
+teleport pads sit at `y = h − FLOOR_CRUST − 1`, on the full-width floor crust, outside the rim
+ellipse, in the band `generate_once`'s own comment calls the void.**
+
+Surface composition at seed 4242 says why: `Small 148 = crust 84, asteroid 14, rim 37, other
+13`. The crust outnumbers the asteroids **6:1**, so `choose_spawns` finds it first.
+
+**Two consequences:**
+
+1. **A space match is currently unplayable** — everyone spawns outside the boundary. `T22.05B`
+   owns spawns and this is its whole first paragraph, so nothing is out of order; it just is
+   not written down anywhere that the map ships this way today.
+2. **`asteroid_tops_are_standable` asserts `!o.surface.is_empty()`**, which the floor crust
+   satisfies 6:1 on its own. **It would pass for a generator that stamped no asteroids at
+   all.** Its name states a claim its body does not test.
+
+**`T22.05B`'s red-before-green is to move `analyse_space`'s spawn clause onto
+`MapMeta.spawn_points`.** It is red today on all three scales — which is the point, and which
+is exactly what a Done-when that can report its own violation looks like.
+
+**Reverse it by:** one clause in `analyse_space`.
+
+## R36 — Asteroid levels are not in the state hash, and `T22.11` must put them there
+
+*`R11` said: hold them in `World`, or hash the contribution explicitly **and say you did**.
+`T22.05A` did neither and reported neither.*
+
+The levels went into `MapMeta`. `World::state_hash` hashes `self.map.mask.hash()` and nothing
+from the meta. **That is correct today and wrong the moment `T22.11` lands**: `level` is in the
+golden meta digest, so *generation* drift is caught, but once `level` drives physics a level
+that differs between server and client is invisible to the determinism guard the whole
+milestone rests on.
+
+`replay.rs`'s own note argues gravity is safe to leave unhashed because *"a world that ran
+under a different gravity diverges in `players`, which is hashed"*. **That argument does not
+apply to a field nothing reads yet** — and it starts applying, for the wrong reason, the moment
+something does.
+
+**`T22.11` owes this explicitly**, as its own red-before-green: make a level differ between the
+two sides and show the state hash notices.
+
+**Reverse it by:** one contribution in `World::state_hash`.
+
 ---
 
 # Build order, as scheduled
