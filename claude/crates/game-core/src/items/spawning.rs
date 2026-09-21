@@ -370,9 +370,12 @@ impl SpawnSchedule {
         // passed a literal `1.0` and every crate in this mode slid to the
         // bottom of the ellipse — the first thing a player would have seen
         // here. `crates_spawn_inside_the_arena_in_space` steps them and asserts
-        // it against that constant, with a standard-gravity control on the same
-        // map so "nothing moved" cannot be satisfied by a stepper that moves
-        // nothing.
+        // the effect — no crate moves — with a standard-gravity control on the
+        // same map so "nothing moved" cannot be satisfied by a stepper that
+        // moves nothing, and pins the constant on a separate line. **Separate
+        // on purpose** (`T22.05D`): as one biconditional the two cancelled, and
+        // planting the scale to 0.5 left that test green. What reports the
+        // constant itself is `constants.rs::every_gravity_mode_has_a_multiplier`.
         //
         // **Reverse it by:** this match.
         let pos = match map.space_geometry() {
@@ -812,10 +815,25 @@ mod tests {
             // literal `1.0` to `integrate` and all of this mode's loot slid to
             // the bottom of the ellipse.
             //
-            // The assertion is pinned to `GravityMode::Space.scale()` rather
-            // than to "did not move", so it reports the mechanism coming apart
-            // in **either** direction — a stepper that stops reading the mode,
-            // or a scale that stops being zero.
+            // **Two lines, not one biconditional** (`T22.05D`, from `R57`).
+            // `T22.05C` wrote this as
+            // `assert_eq!(space_moved == 0, GravityMode::Space.scale() == 0.0)`
+            // and claimed it reported the mechanism coming apart in *either*
+            // direction. Only one of those is true, and it was measured:
+            // planting the `Space` arm of `GravityMode::scale` 0.0 → 0.5 makes
+            // crates fall, so the left side goes `false` as the right side
+            // does, `assert_eq!(false, false)` **passes**, and the test is
+            // silent about the constant it names. That is `CLAUDE.md`'s
+            // `ITEM_SPAWN_INTERVAL` shape — every term moving with the tunable.
+            //
+            // Split, each line reports one thing. The pin fires first and names
+            // the constant; the effect below then reads as what it says — a
+            // stepper that stopped asking the mode while the scale stayed zero,
+            // which is the direction the old form really did hold (revert
+            // `WorldItems::step` to a literal `1.0` and it goes red).
+            // `constants.rs::every_gravity_mode_has_a_multiplier` is the
+            // repository-wide cover for the constant, with the pairwise-distinct
+            // control this local pin does not repeat.
             //
             // The control is the same 60 crates, same seed, same map, stepped
             // at `Standard`: without it "nothing moved" is satisfied by a
@@ -855,15 +873,23 @@ mod tests {
                  standard gravity, so \"nothing moved in space\" rules nothing out",
                 ctl.len()
             );
+            // The pin, on its own line where nothing beside it can cancel it.
             assert_eq!(
-                space_moved == 0,
-                GravityMode::Space.scale() == 0.0,
+                GravityMode::Space.scale(),
+                0.0,
+                "{scale:?}: space is no longer a scale of zero, so the effect \
+                 assertion below would blame the stepper for a changed constant \
+                 — see `constants.rs::every_gravity_mode_has_a_multiplier`"
+            );
+            // The effect, with `ctl_moved > 0` above as its presence control.
+            assert_eq!(
+                space_moved,
+                0,
                 "{scale:?}: {space_moved} of {} crates moved in {steps} steps while \
-                 `GravityMode::Space.scale()` is {} — R14 says a non-player body \
+                 `GravityMode::Space.scale()` is zero — R14 says a non-player body \
                  floats where it is put, and `Forces::falling` at \
                  `items/world.rs::WorldItems::step` is the one place that is decided",
-                w.len(),
-                GravityMode::Space.scale()
+                w.len()
             );
             // And wherever they ended up, they are still in the arena.
             for it in w.iter() {
@@ -939,6 +965,34 @@ mod tests {
     }
 
     /// The periodic spawns follow the same rule, over a whole round's worth.
+    ///
+    /// **The schedule's two stages are counted separately** (`T22.05D`, from
+    /// `R57`), and that — not another assertion inside the loop — is what was
+    /// actually wrong here. `T22.05C` added a `body_fits_at` assertion to the
+    /// item loop to replace an unhelpful message. Measured: it cannot run.
+    /// Plant `Map::random_body_site`'s space arm to draw from
+    /// `map.meta.surface_points` and `resample_surface` rejects every draw at
+    /// its own `body_fits_at` re-check — which is exactly what
+    /// `the_two_pools_a_space_map_has_are_disjoint` below proves it must — so
+    /// nothing spawns, the loop body never executes, and the test died on
+    /// `seen > 0` saying "no periodic items spawned at all". True, and the
+    /// wrong subject. **The defect was always the guard's message.**
+    ///
+    /// So `fired` counts stage one — the tick was due and `next_item_at`
+    /// advanced — and `seen` counts stage two, a draw that survived
+    /// `resample_surface` and became an item. Each has its own guard, so
+    /// *"every draw was rejected"* and *"the deadline never advanced"* are
+    /// different failures with different text — measured, both ways: the first
+    /// plant above turns the second guard red at `fired == 40`, and dropping
+    /// `tick_items`' `next_item_at += ITEM_SPAWN_INTERVAL` turns the *first*
+    /// one red while items still spawn, which is what says `fired` reads the
+    /// cadence rather than mirroring `seen`. Deliberately **not** measured by calling
+    /// `resample_surface` here: that would restate the function under test
+    /// instead of observing the schedule, which is the same defect respelled.
+    ///
+    /// Its sibling `initial_items_land_inside_the_arena_in_space` needs none of
+    /// this — `place_initial` has no `body_fits_at` re-check, so under the same
+    /// plant the point is placed and the in-loop assertion does fire.
     #[test]
     fn periodic_items_land_inside_the_arena_in_space() {
         let map = crate::map::generate_with(4242, MapScale::Medium, MapGenerator::Space);
@@ -946,8 +1000,16 @@ mod tests {
         let mut w = WorldItems::new();
         let mut s = SpawnSchedule::new(4242, 0.0, 0);
         let mut seen = 0usize;
+        let mut fired = 0usize;
         for i in 1..=40 {
-            for id in s.tick_items(&mut w, &map, &[], ITEM_SPAWN_INTERVAL * i as f32) {
+            let deadline = s.next_item_at();
+            let ids = s.tick_items(&mut w, &map, &[], ITEM_SPAWN_INTERVAL * i as f32);
+            // Stage one, read off the schedule's own deadline rather than off
+            // what came back: the batch loop runs only after this moves.
+            if s.next_item_at() > deadline {
+                fired += 1;
+            }
+            for id in ids {
                 let it = w.get(id).expect("there");
                 seen += 1;
                 assert!(
@@ -955,11 +1017,9 @@ mod tests {
                     "a periodic item spawned at {:?}, outside the rim",
                     it.pos
                 );
-                // The same F3 assertion, and here it names a failure the count
-                // guard below would otherwise report as "nothing spawned":
-                // under the same plant `resample_surface` rejects every draw at
-                // its own `body_fits_at` re-check, so this test went red on
-                // `seen > 0` rather than on the thing that was wrong.
+                // T22.05C/F3: open space, not merely inside the rim. Reachable
+                // only when stage two produced something — hence the two guards
+                // below, which say so when it did not.
                 assert!(
                     map.body_fits_at(Point::new(it.pos.x as i32, it.pos.y as i32)),
                     "a periodic item at {:?} is not open space",
@@ -967,8 +1027,21 @@ mod tests {
                 );
             }
         }
-        assert!(seen > 0, "no periodic items spawned at all");
-        println!("{seen} periodic items, all inside the rim");
+        assert!(
+            fired > 0,
+            "the schedule's deadline never advanced across 40 intervals of \
+             `ITEM_SPAWN_INTERVAL`: `fired` is read off `next_item_at`, so this \
+             is a cadence failure in `tick_items` and not a placement failure in \
+             `resample_surface` — the guard below is the one that reports those"
+        );
+        assert!(
+            seen > 0,
+            "the schedule fired {fired} times and placed nothing: every draw was \
+             rejected inside `resample_surface`, at `random_body_site` returning \
+             `None` or at the `body_fits_at` re-check just after it. This is not \
+             \"the deadline never advanced\" — that is the guard above"
+        );
+        println!("{seen} periodic items over {fired} firings, all inside the rim");
     }
 
     /// **T22.05C/F3's control: the two pools a space map has are disjoint.**
