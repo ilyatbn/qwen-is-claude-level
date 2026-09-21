@@ -6531,3 +6531,25 @@ pistol's `gravity_scale` being wrong by a factor of infinity); `ignored.sh`'s he
 boots × low gravity was never stated; and meteors and toxic drops were scaled **in production** with no decision recorded — `R29` keeps it,
 because *"including projectiles"* is the owner's own sentence, and makes the load guard track the mode. `R30`: loot falls at full speed
 while you float, which is `T22.11`'s to fix. `R10` amended: the ninth argument is **sanctioned as temporary** and `T22.11` must reabsorb it.
+
+## T22.02 fix pass — the builder corrected the reviewer and me, twice, with proofs (2026-09-21)
+`0f69ecb`, 5 files. All five review findings fixed; **two needed a different fix than I asked for.**
+**(1) My prescribed replacement sentence would have been a second false sentence.** I said to write that the bullet arm establishes *"the
+boundary is enforced structurally by `Delivery`, before the table is consulted"*. It does not: **delete the early return and the test is
+still green**, because the pistol's table entry is `0.0` and `0.0 × k == 0.0`. The arm survives **either** single fault and only reds under
+both. And the live guard already existed — `projectile.rs::the_guard_is_what_keeps_a_bullet_flat_not_the_table` — whose own doc had
+**already recorded this exact lesson** about an earlier test. T22.02 re-made it one function below the comment describing it (defect #13).
+**(2) My suggested falsification for boots cannot work, and the reason is better than the fix.** A bigger `BOOTS_JUMP_HEIGHT_MULT` fails
+the **build** on `const _: () = assert!(BOOTS_FALL_HEIGHT_MULT >= BOOTS_JUMP_HEIGHT_MULT)` — and that compile assert **is** the invariant.
+The relation is **gravity-invariant by construction**: you land from your own jump at exactly your launch speed for any `k`, since
+`√(2·g·k·(v²/2gk)) = v`, and both thresholds are speeds that do not scale with `k`. My 396 > 297 arithmetic was right but was the
+*consequence*, not the mechanism. The test written instead rules out something live — *"jump higher"* implemented at the **launch velocity**
+instead of the gravity scale — and reds under both plants.
+Also: `ignored.sh`'s header counts are now **derived** (`--list` prints them and exits 1 on an unclassified row); `verify-repo` reads no
+class field, so no count there could ever have been gated. `low_gravity_report` reclassified `guard` per the file's own discriminator.
+R29's shower guard takes the mode and asserts the **peak**, not just the ceiling — the ceiling alone is arithmetic and stays green with the
+mode disconnected. Done-when exit 1 on `smoke-shader` alone; 957/957 client, repo guards ok, 57/58 browser.
+**`smoke-shader`, second sighting → `T22.00B`.** Cause identified rather than parked: `await sleep(300)` between two frames, so under load
+the browser draws fewer frames and the delta collapses. Both sightings pass **alone on the same tree** at 10–20× the margin, with every
+other assertion in the check green including that the cloud was drawn. **Neither `flaky` nor `serial`**: the first deletes the only
+assertion that the shader *moves*; the second is unfalsified, and `teleport` above it went red *in the serial tail at load ~10*.

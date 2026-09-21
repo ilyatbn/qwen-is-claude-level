@@ -1,9 +1,10 @@
 # Defects found while specifying M22, none of them M22's
 
-Five forward sweeps and one harsh review read most of this codebase between 2026-09-19 and
-2026-09-20 without writing any of it. These are the things they found **in shipped code and
+Five forward sweeps and two harsh reviews read most of this codebase between 2026-09-19 and
+2026-09-21 without writing much of it. These are the things they found **in shipped code and
 shipped comments** that no M22 task should fix, because fixing them inside a feature task is
-how a bisect stops working.
+how a bisect stops working. Two of the thirteen — **#11 and #12** — are exceptions, because
+they fail the gate; each has its own task.
 
 **Each one is a claim with the command that produced it.** None is a crash; all of them are
 the same shape — *a claim reported through something other than the thing it claims*.
@@ -94,19 +95,60 @@ status effect will.
 is honest about it (*"pinned to each other by nothing but this comment"*); the Rust side is
 not. Landed in `af76376`; being reworded in its follow-up.
 
-## 10. `title` asserted a control deleted five days earlier
+## 10. `constants.rs::boots_fall_safe_speed`'s doc has been false since 2026-09-16
+
+It says the threshold *"is the booted launch speed itself"* and *"198 px both, by
+construction — not 'about'"*. Since `BOOTS_JUMP_HEIGHT_MULT` (2.25) was **split** from
+`BOOTS_FALL_HEIGHT_MULT` (3.0) in the owner's play session, those are two different numbers:
+the booted launch speed is **645.00** and the threshold is **744.78**, and the free drop is
+198.11 px against a booted apex of **148.58** px.
+
+**The code around it already knows.** The compile assert beside it is an *inequality*
+(`BOOTS_FALL_HEIGHT_MULT >= BOOTS_JUMP_HEIGHT_MULT`), `BOOTS_JUMP_HEIGHT_MULT`'s own doc says
+*"This no longer drives the fall threshold"*, and the neighbouring test comment says *"a
+booted jump only reaches 141"*. **One paragraph still claims equality** and it is the one a
+reader reaches for.
+
+Found by T22.02's fix pass, which left it alone — correctly, since correcting it is a separate
+claim needing its own verification of intent — while adding a table two files away that now
+disagrees with it in print.
+
+## 11. `title` asserted a control deleted five days earlier
 
 Has its own task, **`T22.00`**, because unlike everything above it **fails the gate**.
+
+## 12. `smoke-shader` decides on a wall clock
+
+`await sleep(300)` between two frames, so under load the browser draws fewer frames, the pixel
+delta collapses toward the control, and the assertion inverts. Two sightings, both in-suite,
+both passing **alone on the same tree** at ten to twenty times the margin. Has its own task,
+**`T22.00B`**, because it too **fails the gate**.
+
+## 13. A lesson written down at the site was not read
+
+`weapons/projectile.rs::the_guard_is_what_keeps_a_bullet_flat_not_the_table` exists precisely
+because an earlier test *"flies the table's pistol, whose scales are already 0.0, so deleting
+the guard left it green — it pins the table."* **T22.02 then wrote a new bullet assertion with
+exactly that defect, one function below the comment describing it** — and its doc claimed to
+assert the boundary *"on both sides"* when it survives either single fault alone.
+
+This is the only entry here that is not a stale comment. It is worse: a **current, correct,
+well-written** comment, at the right place, that did not stop the same mistake being made
+again a screen away. Worth knowing when deciding how much a comment can be asked to do.
 
 ---
 
 ## The shape they share
 
-Nine of these ten are a **comment or a name that asserts something the code beside it does not
-do** — a panic that cannot happen, a measurement quoted inverted, a list that is not pinned,
+Eleven of these thirteen are a **comment or a name that asserts something the code beside it
+does not do** — a panic that cannot happen, a measurement quoted inverted, a list that is not pinned,
 a scale that changed underneath a tuning note, a fallthrough documented as a tripwire that
 trips nothing. None would be caught by any test, because each is a claim *about* the code
 rather than a behaviour *of* it.
 
 `CLAUDE.md` already carries the rule — *a comment claiming an invariant is an intention too* —
-and these are ten measured instances of it in one reading of the tree.
+and these are thirteen measured instances of it in one reading of the tree.
+
+**The exception is #13, and it is the sharpest of the thirteen**, because there the comment
+was current, correct and in the right place — and the same mistake was made a screen away from
+it regardless.
