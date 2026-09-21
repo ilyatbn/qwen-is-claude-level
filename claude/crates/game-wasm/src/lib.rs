@@ -145,6 +145,13 @@ impl GameCore {
     /// (§E6): a client silently falling back to `Standard` on a spelling it did
     /// not recognise would predict a low-gravity match at full gravity and look
     /// exactly like a netcode bug.
+    ///
+    /// **It does not re-generate the map**, and for a locally generated one
+    /// that is the remaining order trap: set the mode *before* you generate, or
+    /// use [`GameCore::generate_for_gravity`], which is the two in one call. A
+    /// networked client is not exposed to it — it is handed the server's mask
+    /// by `load_mask` after this — and regenerating here would throw that mask
+    /// away on the lobby's own message.
     pub fn set_gravity(&mut self, gravity: &str) -> bool {
         match GravityMode::parse(gravity) {
             Some(g) => {
@@ -166,18 +173,32 @@ impl GameCore {
         );
     }
 
-    /// `generate` against a named terrain generator (0 = v1, 1 = v2).
+    /// `generate` against a named terrain generator (0 = v1, 1 = v2, 2 = space)
+    /// — **the byte is a request, and the gravity decides** (`M22-RULINGS` R15).
     ///
     /// Local only: a networked round is sent the finished mask in `map_init` and
     /// never rebuilds it from the seed. This exists so the sandbox and preview
     /// scenes — and the renderer's terrain tests — can put either generator's
     /// maps on screen, since v1 still ships behind `MAP_GENERATOR=v1` and a test
     /// that only ever sees the default stops guarding the other one.
+    ///
+    /// **Byte 2 is not a third thing you may ask for.** It used to be: this
+    /// method called `from_u8` and handed the result straight to
+    /// `map::generate_with`, so `generate_with(.., 2)` built a space map under
+    /// standard gravity and `generate_with(.., 1)` built a landscape under
+    /// space gravity — both of them the state R15 forbids, reachable in one
+    /// public call each while the TypeScript doc said passing `Space` here
+    /// *"gets you the default generator back, deliberately"*. It does now:
+    /// every generator this core produces goes through
+    /// `MapGenerator::for_gravity` against the mode this core is set to, which
+    /// is the one derivation, and [`GameCore::generate_for_gravity`] is that
+    /// same call with the mode set first so the two cannot be ordered wrongly.
     pub fn generate_with(&mut self, seed_lo: u32, seed_hi: u32, scale: u8, generator: u8) {
         let seed = ((seed_hi as u64) << 32) | seed_lo as u64;
         let scale = MapScale::from_u8(scale).unwrap_or(MapScale::Medium);
-        let generator = game_core::constants::MapGenerator::from_u8(generator)
+        let chosen = game_core::constants::MapGenerator::from_u8(generator)
             .unwrap_or(game_core::constants::DEFAULT_MAP_GENERATOR);
+        let generator = game_core::constants::MapGenerator::for_gravity(self.gravity, chosen);
         self.map = game_core::map::generate_with(seed, scale, generator);
     }
 
@@ -210,15 +231,11 @@ impl GameCore {
         let Some(g) = GravityMode::parse(gravity) else {
             return false;
         };
-        let chosen = game_core::constants::MapGenerator::from_u8(generator)
-            .unwrap_or(game_core::constants::DEFAULT_MAP_GENERATOR);
         self.gravity = g;
-        self.generate_with(
-            seed_lo,
-            seed_hi,
-            scale,
-            game_core::constants::MapGenerator::for_gravity(g, chosen).to_u8(),
-        );
+        // The mode first, then the ordinary call: `generate_with` applies
+        // `for_gravity` itself, so deriving here too would be the second copy
+        // of the one derivation R15 exists to prevent.
+        self.generate_with(seed_lo, seed_hi, scale, generator);
         true
     }
 

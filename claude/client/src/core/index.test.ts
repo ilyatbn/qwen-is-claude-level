@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { Core, MapGenerator, MapScale, C } from './index'
+import { Core, DEFAULT_MAP_GENERATOR, MapGenerator, MapScale, C } from './index'
+import { DEFAULT_GRAVITY } from '../scenes/sceneParams'
 import { MOVE_MOD } from '../net/codec'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -56,6 +57,63 @@ describe('Core', () => {
     // generator under standard gravity gets the default map back.
     core.generateForGravity(4242n, MapScale.Small, MapGenerator.Space, 'standard')
     expect(core.meta.asteroids).toEqual([])
+  })
+
+  /**
+   * `generateWith` is a **request**, not a selection: `MapGenerator::for_gravity`
+   * runs on it too, so byte 2 cannot produce a space map under standard gravity
+   * and byte 1 cannot produce a landscape under space gravity.
+   *
+   * Both were reachable in one public call each when T22.05A landed, while the
+   * `MapGenerator.Space` doc a few lines up claimed the opposite. Asserted here
+   * because that doc is the only other place the rule is written down.
+   */
+  it('derives the generator from the gravity even when generateWith names one', () => {
+    core.setGravity('standard')
+    core.generateWith(4242n, MapScale.Small, MapGenerator.Space)
+    expect(core.meta.asteroids).toEqual([])
+
+    core.setGravity('space')
+    core.generateWith(4242n, MapScale.Small, MapGenerator.V2)
+    expect(core.meta.asteroids.length).toBeGreaterThan(0)
+    // And `generate`, which routes through the same place.
+    core.generate(4242n, MapScale.Small)
+    expect(core.meta.asteroids.length).toBeGreaterThan(0)
+
+    core.setGravity('standard')
+    core.generate(4242n, MapScale.Small)
+    expect(core.meta.asteroids).toEqual([])
+  })
+
+  /**
+   * `DEFAULT_MAP_GENERATOR` is a TypeScript copy of a Rust constant and nothing
+   * about `V2` says it is the default, so this is what notices if the Rust one
+   * moves. The control is the other generator: without it this passes for a
+   * `generateWith` that ignores its argument.
+   */
+  it('exports the same default generator Rust generates by default', () => {
+    core.setGravity('standard')
+    core.generate(4242n, MapScale.Small)
+    const byDefault = Array.from(core.maskHash()).join(',')
+    core.generateWith(4242n, MapScale.Small, DEFAULT_MAP_GENERATOR)
+    expect(Array.from(core.maskHash()).join(',')).toBe(byDefault)
+    const other =
+      DEFAULT_MAP_GENERATOR === MapGenerator.V2 ? MapGenerator.V1 : MapGenerator.V2
+    core.generateWith(4242n, MapScale.Small, other)
+    expect(Array.from(core.maskHash()).join(',')).not.toBe(byDefault)
+  })
+
+  /**
+   * The dev scenes fall back to `DEFAULT_GRAVITY` when the URL says nothing, and
+   * `generateForGravity` refuses a spelling it does not know **by generating
+   * nothing**. A typo in that constant would therefore leave every sandbox and
+   * preview page showing the map that happened to be there before.
+   */
+  it('accepts the gravity spelling the dev scenes fall back to', () => {
+    expect(core.setGravity(DEFAULT_GRAVITY)).toBe(true)
+    expect(core.generateForGravity(4242n, MapScale.Small, DEFAULT_MAP_GENERATOR, DEFAULT_GRAVITY)).toBe(
+      true,
+    )
   })
 
   it('refuses an unknown gravity spelling rather than guessing a map', () => {

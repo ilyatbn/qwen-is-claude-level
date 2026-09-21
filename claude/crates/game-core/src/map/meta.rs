@@ -44,33 +44,6 @@ pub fn theme_for(requested_seed: u64) -> u8 {
     (substream(requested_seed, "theme").next_u64_compat() % THEME_COUNT as u64) as u8
 }
 
-/// An indestructible standing spot (`docs/72-amendments-v4.md` §C5).
-///
-/// ## A pad is a **protected region of terrain**, not rock added to the mask
-///
-/// `pos` is a surface point — a feet line — so the ground holding it up is the
-/// row *below*, and [`TeleportPad::rect`] is those `PAD_H` rows across `PAD_W`
-/// columns. `carve_circle` refuses to clear anything inside that rect.
-///
-/// That is enough to make the guarantee §C5 wants, and the argument is worth
-/// writing down because it is the whole reason pads exist:
-///
-/// - `is_standable` needs the body box above `pos` to be air, the row at `pos.y +
-///   1` to hold at least `MIN_SUPPORT_PX` solid pixels *within the body width*,
-///   and head clearance straight up.
-/// - Carving only ever removes pixels, so the air conditions can never be
-///   falsified by destruction.
-/// - The support row within the body box (16 px, centred) lies wholly inside the
-///   pad rect (40 px, centred), so destruction cannot falsify it either.
-///
-/// So a pad that is standable at generation is standable for the whole round,
-/// however much of the map is destroyed — which is what makes §C15's diggable
-/// floor survivable.
-///
-/// **Stamping solid rock instead would change every generated mask** and oblige a
-/// golden-table regeneration and a re-run of the 999-seed sweep (the T9.04 /
-/// T15.02 procedure). It would also buy nothing: the guarantee above already
-/// holds, and the pad is drawn by the client, not by the terrain.
 /// One of `MapGenerator::Space`'s rocks (`T22.05A`, `M22-RULINGS` R13).
 ///
 /// *"Asteroid", not "island"* — the owner renamed them on 2026-09-18 and the
@@ -98,6 +71,33 @@ pub struct Asteroid {
     pub level: u8,
 }
 
+/// An indestructible standing spot (`docs/72-amendments-v4.md` §C5).
+///
+/// ## A pad is a **protected region of terrain**, not rock added to the mask
+///
+/// `pos` is a surface point — a feet line — so the ground holding it up is the
+/// row *below*, and [`TeleportPad::rect`] is those `PAD_H` rows across `PAD_W`
+/// columns. `carve_circle` refuses to clear anything inside that rect.
+///
+/// That is enough to make the guarantee §C5 wants, and the argument is worth
+/// writing down because it is the whole reason pads exist:
+///
+/// - `is_standable` needs the body box above `pos` to be air, the row at `pos.y +
+///   1` to hold at least `MIN_SUPPORT_PX` solid pixels *within the body width*,
+///   and head clearance straight up.
+/// - Carving only ever removes pixels, so the air conditions can never be
+///   falsified by destruction.
+/// - The support row within the body box (16 px, centred) lies wholly inside the
+///   pad rect (40 px, centred), so destruction cannot falsify it either.
+///
+/// So a pad that is standable at generation is standable for the whole round,
+/// however much of the map is destroyed — which is what makes §C15's diggable
+/// floor survivable.
+///
+/// **Stamping solid rock instead would change every generated mask** and oblige a
+/// golden-table regeneration and a re-run of the 999-seed sweep (the T9.04 /
+/// T15.02 procedure). It would also buy nothing: the guarantee above already
+/// holds, and the pad is drawn by the client, not by the terrain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TeleportPad {

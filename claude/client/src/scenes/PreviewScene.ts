@@ -9,7 +9,8 @@
  */
 
 import Phaser from 'phaser'
-import { C, Core, MapGenerator, MapScale } from '../core'
+import { C, Core, MapScale } from '../core'
+import { generateForScene, gravityFromUrl } from './sceneParams'
 import { TerrainRenderer } from '../render/terrain'
 import { CameraRig } from '../render/cameraRig'
 import { Backdrop, DEFAULT_THEME, DEPTH } from '../render/backdrop'
@@ -35,16 +36,14 @@ export class PreviewScene extends Phaser.Scene {
     const fit = params.get('fit') === '1'
     const carve = params.get('carve')
     // T22.05A / R15: the preview runs the generator locally, so without the
-    // mode a host who picked space is shown a landscape. Unknown spellings fall
-    // back to the default map rather than to a blank scene — this is a dev
-    // harness, and `generateForGravity` returning false is the signal.
-    const gravity = params.get('gravity') ?? 'standard'
+    // mode a host who picked space is shown a landscape. Both halves — the
+    // parameter and the unknown-spelling fallback — live in `sceneParams`,
+    // shared with `SandboxScene` and tested there.
+    const gravity = gravityFromUrl(params)
 
     this.core = this.registry.get('core') as Core
     const t0 = performance.now()
-    if (!this.core.generateForGravity(seed, scale, MapGenerator.V2, gravity)) {
-      this.core.generate(seed, scale)
-    }
+    generateForScene(this.core, seed, scale, gravity)
     this.timings.generateMs = performance.now() - t0
 
     const { width: mapW, height: mapH } = this.core

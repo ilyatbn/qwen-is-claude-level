@@ -468,21 +468,37 @@ pub const DEFAULT_MAP_GENERATOR: MapGenerator = MapGenerator::V2;
 // The space map (M22 `T22.05A`, `M22-RULINGS` R13). `map/gen/space.rs`.
 // ---------------------------------------------------------------------------
 
-/// Thickness of the space map's rim, in px.
+/// Nominal thickness of the space map's rim, in px — the diameter of the discs
+/// [`crate::map::gen::space::stamp_rim`] lays on the centreline.
+///
+/// **What the mask delivers is 29.75-30.00 px, not 32**, and the gap is a
+/// property of the construction rather than noise: the disc chain steps in
+/// ellipse parameter, so its spacing varies 2:1 and it scallops between
+/// centres. `stamp_rim`'s doc derives the number and
+/// `space.rs::the_rim_is_thicker_than_one_minimap_cell` measures it off the
+/// mask and asserts the window. **This constant is what is asked for; that test
+/// is what is got** (R34 — the commit that landed the rim recorded this value
+/// as the measurement).
 ///
 /// **The floor is one minimap cell.** `Minimap::resampleTerrain` point-samples
 /// `core.solidAt` once per cell, so a rim thinner than `mapW / MINIMAP_W` —
 /// 10.24 px on Small, 15.36 on Medium, **20.48 on Large** — aliases into a
-/// broken dashed ring or vanishes (R13, point 2). 32 px is 1.56x the worst of
-/// those, and `space.rs::the_rim_is_thicker_than_one_minimap_cell` measures the
-/// thickness off the mask rather than trusting this number.
+/// broken dashed ring or vanishes (R13, point 2). The delivered 29.75 px clears
+/// the worst of those by 45 %, which is the margin that makes the shortfall a
+/// documentation bug rather than a geometry one.
 pub const SPACE_RIM_THICKNESS: u32 = 32;
 
 /// Clear space between an asteroid's surface and the rim's inner edge, px.
 ///
-/// Two player heights (`PLAYER_H` = 28). A rock flush against the rim would
+/// **Four player widths** (`PLAYER_W` = 16), the same basis as its neighbour
+/// `SPACE_ASTEROID_GAP_MIN` — so the lane along the rim is four bodies wide and
+/// the lane between two rocks is five. (An earlier comment here said *"two
+/// player heights"*, which is 56, not 64.) A rock flush against the rim would
 /// close the lane a player flies down to follow the boundary, and `T22.10`'s
 /// vortex needs that lane to work in.
+///
+/// `space.rs::no_asteroid_pixel_touches_the_rim` measures the lane off the
+/// mask, so this number is an assertion about pixels rather than about floats.
 pub const SPACE_RIM_CLEARANCE: f32 = 64.0;
 
 /// Asteroid bounding radius, px. Drawn **uniformly** on this band.
@@ -505,10 +521,15 @@ pub const SPACE_ASTEROID_R_MAX: i32 = 64;
 /// (780 px), which is what makes every lane crossable.
 pub const SPACE_ASTEROID_GAP_MIN: f32 = 80.0;
 
-/// Rejection-sampling tries per asteroid asked for.
+/// Rejection-sampling tries per asteroid asked for — a **shared pool**, not a
+/// per-rock budget.
 ///
-/// The placement is sequential adsorption: late rocks are much harder to seat
-/// than early ones, so the budget is per-rock rather than a flat total.
+/// `place_asteroids` loops `0..(asteroid_count * SPACE_ASTEROID_TRIES)` with one
+/// `break` when the target is met, so a rock that seats on its first draw hands
+/// its unspent 39 tries to the rest. That is the right shape for sequential
+/// adsorption — late rocks are much harder to seat than early ones, so the
+/// budget has to be spendable where the difficulty is — but it is a flat total
+/// and the doc here used to say the opposite.
 pub const SPACE_ASTEROID_TRIES: u32 = 40;
 
 /// The core disc of an asteroid, as a fraction of its bounding radius.

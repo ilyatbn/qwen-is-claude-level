@@ -90,6 +90,19 @@ impl SpaceGeometry {
         // minimap is 2:1, so `rx = 2 * ry` is the one value that draws a true
         // circle there (R13 point 1). Any other x-inset makes it an ellipse on
         // the minimap too, which is the single thing the ruling was bought for.
+        //
+        // **The x-inset that falls out is 128 px, not R13's 112** (R34), and it
+        // is the same on every scale. `w = 2h` and `rx = 2 * ry`, so
+        // `cx - rx = SKY_MARGIN + FLOOR_CRUST + SPACE_RIM_THICKNESS` = 144 px
+        // to the centreline and 128 px to the outer edge, with `h` cancelling.
+        // R13 derived 112 = `SKY_MARGIN + FLOOR_CRUST` from the *outer* edge
+        // being 2:1. **Only one of the three edges can be**, because the rim
+        // has constant thickness rather than constant `norm`: with the
+        // centreline exactly 2:1 the outer edge is 1.965 and the inner 2.038 on
+        // Small (1.984 / 2.017 on Large, tightening with size). The centreline
+        // is the right one to pin — it is the middle of what the minimap's
+        // point sample lands on — and the ring is out of round by half a
+        // thickness on each edge as a consequence, not by accident.
         let rx = ry * 2.0;
         let cx = w * 0.5;
         SpaceGeometry {
@@ -170,10 +183,12 @@ pub struct SpaceParams {
     pub asteroid_count: u32,
     /// Minimum clear gap between two asteroid surfaces, px.
     pub gap_min: f32,
-    /// Which theme's weights downstream passes draw with. On the params for
-    /// `GenParams`' reason: it belongs to the *requested* seed while an attempt
-    /// runs on `requested_seed + attempt`.
-    pub theme: u8,
+    // **No `theme` field**, unlike `GenParams` and `V2Params`. Theme is carried
+    // on those two because `objects::stamp_objects` weights its categories by
+    // it — and this pipeline does not run `stamp_objects`, because there is no
+    // ground to stand a tree on. The field was here, written twice by
+    // `generate_terrain` and read by nothing; `MapMeta`'s theme still comes
+    // from `meta::theme_for`, as it does for every generator.
 }
 
 impl SpaceParams {
@@ -182,7 +197,6 @@ impl SpaceParams {
             scale,
             asteroid_count: scale.params().asteroid_count,
             gap_min: SPACE_ASTEROID_GAP_MIN,
-            theme: 0,
         }
     }
 
@@ -211,19 +225,47 @@ impl SpaceParams {
 
 /// Pass 2. The rim, as a closed chain of overlapping discs on the centreline.
 ///
-/// Discs rather than an *inside-the-outer-ellipse and outside-an-inner-one*
-/// pixel test, because the annulus between two concentric ellipses is **not**
-/// of uniform thickness: at 45 degrees on a 2:1 ellipse its normal thickness is
-/// about 0.80x its radial gap, so a nominal 24 px rim measures ~22 px there and
-/// the 20.48 px minimap floor on Large is cleared by less than a pixel and a
-/// half. A chain of discs of radius `thickness / 2` is uniformly `thickness`
-/// thick by construction, and closed by construction while consecutive centres
-/// are closer together than that radius.
+/// **No construction here is uniformly `thickness` thick, and the first
+/// version of this comment claimed the disc chain was.** The measurements, all
+/// of them re-run (`M22-RULINGS` R34):
+///
+/// - This chain measures **29.75-30.00 px at its thinnest**, not 32 —
+///   `the_rim_is_thicker_than_one_minimap_cell` prints the figure and asserts
+///   the window.
+/// - The reason is **not** rasterisation noise. The loop below steps in
+///   *ellipse parameter*, not arc length, and on a 2:1 ellipse the arc speed
+///   varies 2:1 with it: the same `step_px` puts consecutive centres 5.19 px
+///   apart at the ends of the major axis and **10.38 px** apart at the top and
+///   bottom. A chain of radius-16 discs at spacing `s` scallops to
+///   `2 * sqrt(16^2 - (s/2)^2)` between centres, which is **30.27 px** at
+///   `s = 10.38` — and the thinnest point is measured at 113-117 deg, which is
+///   where that prediction puts it.
+/// - The alternative construction — an *inside-the-outer-ellipse and
+///   outside-an-inner-one* pixel test — is **not** materially thicker. Brute
+///   forced against both offset ellipses, that annulus measures **30.17 px**
+///   (0.943x nominal) at its worst. The original comment said 0.80x, which
+///   matches no construction; the two candidates are within half a pixel of
+///   each other and thickness does not choose between them.
+///
+/// **So what the discs buy is the closure, not the thickness**: the ring is
+/// closed by construction while consecutive centres are nearer than the disc
+/// radius (10.38 < 16 at the worst), it reuses `stamp_circle`, and it needs no
+/// two-`norm` test per pixel of the map. `rim_is_closed` asserts the closure
+/// off the mask rather than trusting this paragraph.
+///
+/// **And 29.75 px is not a problem to fix.** It clears the 20.48 px
+/// `mapW / MINIMAP_W` floor on Large by 45 %. Evening the spacing out by
+/// stepping in arc length would give `2 * sqrt(16^2 - 4^2)` = 30.98 px — still
+/// not 32, for the reason at the top of this comment.
 pub fn stamp_rim(mask: &mut Mask, geo: &SpaceGeometry) {
     let half = geo.thickness * 0.5;
-    // Quarter-thickness spacing: consecutive discs overlap by three quarters of
-    // their radius, which is solid — not merely 8-connected — at every
-    // curvature the three scales produce.
+    // Quarter-thickness **nominal** spacing — and nominal is the word, because
+    // this is a step in ellipse parameter divided into the perimeter, so what
+    // it buys varies with arc speed: 5.19 px between centres at the ends of the
+    // major axis and 10.38 px at the top and bottom. Both are well inside the
+    // 16 px disc radius, so the chain is solid — not merely 8-connected — at
+    // every curvature the three scales produce; the 10.38 is what sets the
+    // scallop, and the doc above carries that arithmetic.
     let step_px = (half * 0.5).max(1.0);
     let steps = (geo.perimeter() / step_px).ceil().max(8.0) as i32;
     for i in 0..steps {
@@ -391,8 +433,7 @@ pub fn generate_once(seed: u64, params: &SpaceParams) -> GenOutcome {
 /// The space half of `gen::generate_terrain_with`: retries, then the safe
 /// preset.
 pub fn generate_terrain(requested_seed: u64, scale: MapScale) -> GenOutcome {
-    let mut params = SpaceParams::default_for(scale);
-    params.theme = crate::map::meta::theme_for(requested_seed);
+    let params = SpaceParams::default_for(scale);
 
     for attempt in 0..MAX_GEN_ATTEMPTS {
         let seed = requested_seed.wrapping_add(attempt as u64);
@@ -404,8 +445,7 @@ pub fn generate_terrain(requested_seed: u64, scale: MapScale) -> GenOutcome {
         }
     }
 
-    let mut safe = SpaceParams::safe_for(scale);
-    safe.theme = params.theme;
+    let safe = SpaceParams::safe_for(scale);
     let mut outcome = generate_once(requested_seed, &safe);
     outcome.requested_seed = requested_seed;
     outcome.attempts = MAX_GEN_ATTEMPTS;
@@ -433,6 +473,27 @@ pub fn generate_terrain(requested_seed: u64, scale: MapScale) -> GenOutcome {
 ///   rather than *the largest walk-connected set*. That is a field meaning two
 ///   things, and it is flagged rather than swallowed: the alternative is a
 ///   second report type `MapMeta` cannot hold.
+///
+/// # The spawn clause validates a list the map does not ship (R35)
+///
+/// **Read this before trusting `passed` about spawns.** The clause below counts
+/// [`open_space_candidates`] and **throws the list away**. What ships in
+/// `MapMeta.spawn_points` is chosen by `meta::generate_full_with`'s
+/// `choose_spawns` over `outcome.surface`, and measured through the real
+/// pipeline today **every spawn point and every teleport pad lands at
+/// `y = h - FLOOR_CRUST - 1`** — on the full-width floor crust, *outside* the
+/// rim, in the band `generate_once`'s comment calls the void. `force_borders`
+/// lays that crust across every map and it outnumbers the asteroid surface
+/// about 6:1, so `choose_spawns` finds it first.
+///
+/// So this verdict says *"the map has somewhere to put six players"*; it does
+/// **not** say *"the map puts them there"*. The two are different quantities
+/// and only the first is measured here.
+///
+/// **`T22.05B` owns the fix and this is deliberately not it.** That task's
+/// red-before-green is to move this clause onto `MapMeta.spawn_points`, which
+/// is red on all three scales today. Moving it here would land the assertion
+/// without the spawns it is supposed to gate.
 pub fn analyse_space(
     mask: &Mask,
     surface: &[Point],
@@ -755,11 +816,25 @@ mod tests {
     /// per cell, so a rim thinner than `mapW / MINIMAP_W` — 20.48 px on Large —
     /// aliases into a dashed ring or vanishes.
     ///
-    /// **Measured off the mask, not asserted against the constant.**
-    /// `SPACE_RIM_THICKNESS` is what was asked for; this is what a player and
-    /// the minimap get.
+    /// **Measured off the mask, not asserted against the constant** — and the
+    /// two are not the same number, which is the whole reason this sentence is
+    /// worth writing. `SPACE_RIM_THICKNESS` is 32; what the mask delivers is
+    /// **29.75-30.00 px**, printed below, for the scalloping reason
+    /// `stamp_rim`'s doc derives. The commit that landed this rim recorded 32
+    /// as the measurement; it was the constant (R34).
+    ///
+    /// So there are **two** assertions here and they do different jobs: the
+    /// floor is the requirement, and `WINDOW` is what makes the figure in
+    /// `stamp_rim`'s doc a measurement a reader can re-run rather than a number
+    /// to be trusted. Widening `WINDOW` to make a change pass is the one thing
+    /// not to do with it — the prediction is closed-form, so a value outside it
+    /// means the construction moved.
     #[test]
     fn the_rim_is_thicker_than_one_minimap_cell() {
+        /// The predicted scallop is 30.27 px and the 0.25 px sampling step
+        /// below quantises what is read off the mask; half a pixel either side
+        /// of the measured 29.75-30.00 covers both.
+        const WINDOW: (f32, f32) = (29.25, 30.75);
         let floor = MAP_LARGE_W as f32 / MINIMAP_W as f32;
         for scale in MapScale::ALL {
             let o = generate_terrain(7, scale);
@@ -799,6 +874,14 @@ mod tests {
                 worst >= floor,
                 "{scale:?}: the rim is {worst:.2} px at its thinnest, under the {floor:.2} px \
                  minimap cell on Large"
+            );
+            assert!(
+                worst >= WINDOW.0 && worst <= WINDOW.1,
+                "{scale:?}: thinnest rim {worst:.2} px is outside the documented \
+                 {:.2}-{:.2} px window — `stamp_rim`'s doc now says something the mask does \
+                 not. Re-derive it there before touching this line.",
+                WINDOW.0,
+                WINDOW.1
             );
         }
     }
@@ -880,25 +963,103 @@ mod tests {
         }
     }
 
-    /// No rock is stamped into the rim. The placement test works in float; this
-    /// measures the mask, which is what a player collides with.
+    /// No rock is stamped into the rim: the **lane** just inside the rim's
+    /// inner edge is empty mask, all the way round.
+    ///
+    /// **This reads pixels**, which the previous version of it did not — it
+    /// restated `place_asteroids`' float filter against the same
+    /// `distance_to_rim` the filter itself calls, so it could not have seen a
+    /// lump escaping the bounding radius or a rounding error in
+    /// `stamp_circle`, and its doc comment already claimed it measured the
+    /// mask.
+    ///
+    /// The lane is what `SPACE_RIM_CLEARANCE` buys and what `T22.10`'s vortex
+    /// needs to work in, so it is the right thing to measure: rays are cast
+    /// inward along the centreline ellipse's normal and every pixel from just
+    /// past the rim's inner edge to `SPACE_RIM_CLEARANCE` in must be air.
+    /// `a_rock_in_the_lane_is_seen` is the control.
     #[test]
     fn no_asteroid_pixel_touches_the_rim() {
         for scale in MapScale::ALL {
             let geo = SpaceGeometry::for_scale(scale);
             for seed in seeds(6) {
                 let o = generate_terrain(seed, scale);
-                for a in &o.asteroids {
-                    let gap = geo.distance_to_rim(a.x as f32, a.y as f32)
-                        - geo.thickness * 0.5
-                        - a.r as f32;
-                    assert!(
-                        gap >= SPACE_RIM_CLEARANCE - 2.0,
-                        "{scale:?} seed {seed}: a rock is {gap:.1} px from the rim"
-                    );
-                }
+                let intruder = first_pixel_in_the_lane(&o.mask, &geo);
+                assert!(
+                    intruder.is_none(),
+                    "{scale:?} seed {seed}: solid pixel {:?} in the lane inside the rim",
+                    intruder
+                );
             }
         }
+    }
+
+    /// The first solid pixel in the lane between the rim's inner edge and
+    /// `SPACE_RIM_CLEARANCE` inside it, if there is one.
+    ///
+    /// Shared by the test above and its control, so the two cannot disagree
+    /// about where the lane is.
+    ///
+    /// The two margins: **+2 px** at the near end, because `stamp_rim` rounds
+    /// each disc's centre to an integer pixel and so a rim pixel can sit a
+    /// fraction past `thickness / 2`; **-4 px** at the far end, because a
+    /// lump's radius and centre are rounded the same way and a rock's pixels
+    /// can reach a pixel or two beyond the bounding radius the placement
+    /// filter reasons in.
+    fn first_pixel_in_the_lane(mask: &Mask, geo: &SpaceGeometry) -> Option<(i32, i32)> {
+        let half = geo.thickness * 0.5;
+        // 1440 rays: at the ends of the major axis on Large, consecutive rays
+        // are 8.3 px apart, so nothing as wide as `2 * SPACE_ASTEROID_R_MIN`
+        // can slip between two of them.
+        for i in 0..1440 {
+            let a = (i as f32 / 1440.0) * std::f32::consts::TAU;
+            let (px, py) = (geo.cx + geo.rx * a.cos(), geo.cy + geo.ry * a.sin());
+            // Inward normal of the centreline ellipse at this angle.
+            let (mut nx, mut ny) = (a.cos() / geo.rx, a.sin() / geo.ry);
+            let len = (nx * nx + ny * ny).sqrt();
+            nx /= -len;
+            ny /= -len;
+            let mut t = half + 2.0;
+            while t <= half + SPACE_RIM_CLEARANCE - 4.0 {
+                let (x, y) = ((px + nx * t).round() as i32, (py + ny * t).round() as i32);
+                if mask.get(x, y) {
+                    return Some((x, y));
+                }
+                t += 1.0;
+            }
+        }
+        None
+    }
+
+    /// The control for the lane measurement: put a rock in the lane by hand and
+    /// the sweep must find it. Without this, "no solid pixel in the lane" is
+    /// satisfied by a sweep that looks in the wrong place.
+    #[test]
+    fn a_rock_in_the_lane_is_seen() {
+        let scale = MapScale::Small;
+        let geo = SpaceGeometry::for_scale(scale);
+        let mut o = generate_terrain(4242, scale);
+        assert!(
+            first_pixel_in_the_lane(&o.mask, &geo).is_none(),
+            "control: the generated map's lane is clear"
+        );
+
+        // One rock, flush against the rim's inner edge at the left end of the
+        // major axis — the placement filter would have refused it by
+        // `SPACE_RIM_CLEARANCE`.
+        let r = SPACE_ASTEROID_R_MIN;
+        let intruder = Asteroid {
+            x: (geo.cx - geo.rx + geo.thickness * 0.5) as i32 + r,
+            y: geo.cy as i32,
+            r,
+            level: 1,
+        };
+        let mut rng = substream(4242, "control");
+        stamp_asteroid(&mut o.mask, &intruder, &mut rng);
+        assert!(
+            first_pixel_in_the_lane(&o.mask, &geo).is_some(),
+            "a rock stamped flush against the rim was not seen in the lane"
+        );
     }
 
     /// The invariant `components::cleanup` would have enforced, asserted
@@ -1057,12 +1218,87 @@ mod tests {
     /// Asteroid tops are standable, so `extract_surface` finds them and
     /// `generate_full`'s spawn and pad pickers have something to work with. R17
     /// corrects the task file on exactly this point, and this is the check.
+    ///
+    /// **It used to be `!o.surface.is_empty()`, which tested nothing this test
+    /// is named for** (R35). `force_borders` lays a full-width `FLOOR_CRUST`
+    /// band across the bottom of every map, and its top row is standable — so
+    /// the crust alone outnumbers the rocks about 6:1 in `o.surface` and the
+    /// old assertion would have passed for a generator that stamped **no
+    /// asteroids at all**. Here the points are attributed: a surface point
+    /// counts only if it is inside some rock's bounding radius.
+    ///
+    /// `a_map_with_no_asteroids_has_no_standable_rock` is the falsification,
+    /// and it is the version of this map the old assertion could not see.
     #[test]
     fn asteroid_tops_are_standable() {
         for scale in MapScale::ALL {
             let o = generate_terrain(4242, scale);
-            assert!(!o.surface.is_empty(), "{scale:?}: no surface points");
+            let (on_rocks, rocks_used) = standable_rock_points(&o);
+            println!(
+                "{scale:?}: {} surface points, {on_rocks} of them on rock, \
+                 {rocks_used} of {} rocks carrying at least one",
+                o.surface.len(),
+                o.asteroids.len()
+            );
+            // Most rocks, not merely one: `extract_surface` samples x every
+            // `SURFACE_SAMPLE_STEP`, so a rock can fall between two columns,
+            // but a pipeline that only ever produced a handful of standable
+            // rocks would be the bug this test is for.
+            assert!(
+                rocks_used * 2 >= o.asteroids.len(),
+                "{scale:?}: only {rocks_used} of {} rocks have a standable point",
+                o.asteroids.len()
+            );
         }
+    }
+
+    /// Surface points that sit on a rock, and how many distinct rocks carry
+    /// one. Shared by the test above and its falsification so the two cannot
+    /// drift apart on what "on a rock" means.
+    fn standable_rock_points(o: &GenOutcome) -> (usize, usize) {
+        let mut used = vec![false; o.asteroids.len()];
+        let mut on_rocks = 0usize;
+        for p in &o.surface {
+            for (i, a) in o.asteroids.iter().enumerate() {
+                let (dx, dy) = ((p.x - a.x) as f32, (p.y - a.y) as f32);
+                // `+ 1.0`: the feet line of a standable point is the air row
+                // directly above the solid one, so a point on the very top of
+                // a rock sits one pixel outside its bounding radius.
+                if (dx * dx + dy * dy).sqrt() <= a.r as f32 + 1.0 {
+                    on_rocks += 1;
+                    used[i] = true;
+                    break;
+                }
+            }
+        }
+        (on_rocks, used.iter().filter(|u| **u).count())
+    }
+
+    /// The falsification, kept: **a space map with no rocks at all still has a
+    /// surface**, because the floor crust is one. This is the map the old
+    /// `!o.surface.is_empty()` assertion would have passed.
+    #[test]
+    fn a_map_with_no_asteroids_has_no_standable_rock() {
+        let scale = MapScale::Small;
+        let params = SpaceParams {
+            asteroid_count: 0,
+            ..SpaceParams::default_for(scale)
+        };
+        let o = generate_once(4242, &params);
+        assert!(
+            o.asteroids.is_empty(),
+            "the fixture stamped rocks after all"
+        );
+        assert!(
+            !o.surface.is_empty(),
+            "the crust is gone, so this fixture no longer falsifies what it was built to"
+        );
+        let (on_rocks, rocks_used) = standable_rock_points(&o);
+        println!(
+            "no-asteroid map: {} surface points, {on_rocks} on rock, {rocks_used} rocks used",
+            o.surface.len()
+        );
+        assert_eq!(on_rocks, 0);
     }
 
     #[test]

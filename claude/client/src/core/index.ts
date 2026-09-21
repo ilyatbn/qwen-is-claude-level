@@ -46,10 +46,26 @@ export const enum MapGenerator {
    *
    * **Derived from the gravity mode, never selected beside it.** Use
    * `generateForGravity`; passing this to `generateWith` under a gravity that
-   * is not `space` gets you the default generator back, deliberately.
+   * is not `space` gets you the default generator back, deliberately — and
+   * under `space` gravity you get this one whatever you pass. The derivation
+   * is `MapGenerator::for_gravity` in Rust and it runs on every generate; this
+   * paragraph was written before the code did it, which is the sort of doc
+   * that reads as a guarantee and is not one.
    */
   Space = 2,
 }
+
+/**
+ * The generator a locally generated map uses when nothing else says otherwise.
+ * Mirrors `game_core::constants::DEFAULT_MAP_GENERATOR`.
+ *
+ * Exported because the dev scenes were each spelling `MapGenerator.V2` as
+ * "the default", which is two copies of a value that lives in Rust.
+ * `index.test.ts::the default generator is the one Rust generates by default`
+ * is what keeps this equal to it — the enum could drift silently otherwise,
+ * since nothing about `V2` says it is the default.
+ */
+export const DEFAULT_MAP_GENERATOR: MapGenerator = MapGenerator.V2
 
 export interface Point {
   x: number

@@ -9,15 +9,8 @@
  */
 
 import Phaser from 'phaser'
-import {
-  C,
-  Core,
-  MapGenerator,
-  MapScale,
-  ambientRain,
-  strictConstants,
-  type WeatherState,
-} from '../core'
+import { C, Core, MapScale, ambientRain, strictConstants, type WeatherState } from '../core'
+import { DEFAULT_GRAVITY, generateForScene, gravityFromUrl } from './sceneParams'
 import { DEPTH } from '../render/backdrop'
 import { occupiedPlatforms } from '../render/platforms'
 import { isHighQuality, setHighQuality } from '../ui/settings'
@@ -68,10 +61,11 @@ export class SandboxScene extends Phaser.Scene {
   /**
    * The gravity this sandbox map was generated under, as a wire spelling
    * (T22.05A / R22). A string rather than an enum because that is what
-   * `generateForGravity` and `Core.setGravity` both take, and parsing it in
-   * two places is how a spelling drifts.
+   * `generateForGravity` and `Core.setGravity` both take; it is read off the
+   * URL and defaulted in `sceneParams`, shared with `PreviewScene`, because
+   * parsing it in two places is how a spelling drifts.
    */
-  private gravity = 'standard'
+  private gravity: string = DEFAULT_GRAVITY
   private carveRadius = 42
 
   private sky!: SkyLayer
@@ -177,7 +171,7 @@ export class SandboxScene extends Phaser.Scene {
     // standalone check has no other route to the mode. Written here because
     // T22.05A is the first M22 task to land and the ruling says whichever one
     // does writes it.
-    this.gravity = params.get('gravity') ?? 'standard'
+    this.gravity = gravityFromUrl(params)
 
     this.buildUi()
     this.regenerate()
@@ -359,11 +353,8 @@ export class SandboxScene extends Phaser.Scene {
 
     const t0 = performance.now()
     // Through the gravity, because the gravity decides the generator (R15).
-    // An unknown spelling generates nothing, so fall back to the default map
-    // rather than leaving the scene with whatever was there before.
-    if (!this.core.generateForGravity(this.seed, this.mapScale, MapGenerator.V2, this.gravity)) {
-      this.core.generate(this.seed, this.mapScale)
-    }
+    // Shared with `PreviewScene` and tested in `sceneParams.test.ts`.
+    generateForScene(this.core, this.seed, this.mapScale, this.gravity)
     this.timings.generateMs = performance.now() - t0
 
     const { width: mapW, height: mapH } = this.core

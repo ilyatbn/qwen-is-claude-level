@@ -890,17 +890,38 @@ mod tests {
 
     /// The control for the section above: a normal map spends two bytes on it
     /// and decodes to nothing.
+    ///
+    /// **The control used to be `encode_map_init(&space).len() > 2`**, which
+    /// every `map_init` satisfies by thousands of bytes — an encoder that wrote
+    /// a bare `0u16` for the count and dropped the whole asteroid payload left
+    /// this test green. So the control is measured the only way that reports
+    /// what it names: the same map encoded **with and without** its rocks, and
+    /// the difference is the section.
     #[test]
     fn a_normal_map_carries_no_asteroid_section_beyond_its_count() {
-        let space = game_core::map::generate_with(7, MapScale::Small, MapGenerator::Space);
         let normal = game_core::map::generate(7, MapScale::Small);
         assert!(normal.meta.asteroids.is_empty());
         let parts = decode_map_init_parts(&encode_map_init(&normal)).expect("decode");
         assert!(parts.asteroids.is_empty());
-        assert!(
-            encode_map_init(&space).len() > 2,
-            "control: the space map does spend bytes here"
+
+        let space = game_core::map::generate_with(7, MapScale::Small, MapGenerator::Space);
+        let mut stripped = space.clone();
+        stripped.meta.asteroids.clear();
+        let with = encode_map_init(&space).len();
+        let without = encode_map_init(&stripped).len();
+        assert_eq!(
+            with - without,
+            space.meta.asteroids.len() * ASTEROID_WIRE_BYTES,
+            "control: the rocks are {} bytes of the payload, not {}",
+            space.meta.asteroids.len() * ASTEROID_WIRE_BYTES,
+            with - without
         );
+        // And the stripped map still decodes, which is what says the count
+        // bytes alone are a well-formed section rather than a hole in the
+        // stream — the same two bytes a normal map spends.
+        let stripped_parts = decode_map_init_parts(&encode_map_init(&stripped)).expect("decode");
+        assert!(stripped_parts.asteroids.is_empty());
+        assert_eq!(stripped_parts.mask.hash(), space.mask.hash());
     }
 
     #[test]
