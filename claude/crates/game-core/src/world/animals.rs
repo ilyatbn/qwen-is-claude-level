@@ -184,6 +184,19 @@ impl Animals {
 
     /// Spawn, move and cull. `active` is false outside `Playing`, exactly as the
     /// birds' is — a lobby has no reason to grow wildlife.
+    ///
+    /// **And false for the whole of a space round** (`M22-RULINGS` R14's
+    /// *"no animals at all in space"*, assigned by R58 to T22.13). The caller
+    /// folds that in: `world/mod.rs::World::wildlife_allowed` is the one guard,
+    /// shared with `step_birds`, and it is keyed on the **generator** — which
+    /// R15 derives from the gravity mode — rather than on the mode field. It
+    /// is not done here because `Birds::tick` has no `&Map` to do it with, and
+    /// a rule with two homes is a rule that drifts.
+    ///
+    /// The `gravity` argument below is a **separate** question and stays: R14
+    /// zeroes an animal's fall in space (and scales it by `LOW_GRAVITY_SCALE`
+    /// under `Low`), which is
+    /// what a beetle put here by `place_for_test` still needs.
     pub fn tick(
         &mut self,
         map: &Map,

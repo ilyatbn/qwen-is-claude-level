@@ -1434,6 +1434,43 @@ impl World {
         }
     }
 
+    /// **Nothing lives in space** — `M22-RULINGS` R14's `Animals::tick` row
+    /// (*"no animals at all in space"*) and R58, which assigned it. `false`
+    /// when this round's map came from the space generator, and both wildlife
+    /// steppers fold it into the `active` flag they already take.
+    ///
+    /// **One function, because birds and animals cannot share one anywhere
+    /// else.** R14 adds *"this also answers the `birds.rs` row"*, and that is
+    /// true exactly one layer up from where it points: `Animals::tick` holds a
+    /// `&Map` and could gate itself, `Birds::tick` holds only `map_w: f32` and
+    /// could not. What the two do share is this flag, handed to them by the
+    /// layer that owns the map — *share the guard, or share the function*.
+    ///
+    /// **Gated on the generator, never on `self.gravity`** (R58's one hazard).
+    /// R15 derives `MapGenerator::Space` from the mode and makes that
+    /// derivation the single source of truth; `Map::space_geometry`'s `Some` is
+    /// its spelling for code holding a `&Map`. Keying on the field would be a
+    /// second answer to one question, which is the drift R15 exists to prevent
+    /// — and the two are not equally stable here: `World::gravity` is a public
+    /// field that callers assign after construction, while `World::map` is
+    /// written exactly once, in `from_map`, and no path reassigns it.
+    ///
+    /// **Nothing alive is ever stranded**, and that immutability is why: the
+    /// subject of this guard cannot change during a round, so there is no
+    /// moment at which a living animal is on the wrong side of it. A round
+    /// cannot become a space round after it started.
+    ///
+    /// **Which side this runs on**, because `space_geometry`'s doc warns it is
+    /// sound server-side only until `T22.11C` lands `GameCore::set_asteroids`:
+    /// every live caller of `World::step` is server-side —
+    /// `game-server::room` and `game-server::round`. The only other is
+    /// `game-wasm::AttractCore`, which generates its own map locally through
+    /// `World::new` and has been dormant since T18.01. No networked client
+    /// steps a `World`, so nothing here can read a stale `meta.asteroids`.
+    fn wildlife_allowed(&self) -> bool {
+        self.map.space_geometry().is_none()
+    }
+
     /// Fly the birds, and announce the ones that arrived or left.
     ///
     /// Movement is broadcast at `SNAPSHOT_HZ`, not every tick, for the reason
@@ -1441,7 +1478,9 @@ impl World {
     /// bandwidth spent on something nobody can see move that finely.
     fn step_birds(&mut self, now: f32, dt: f32, playing: bool) {
         let map_w = self.map.mask.w as f32;
-        let step = self.birds.tick(map_w, playing, now, dt);
+        // R14/R58 via the one shared guard; see `wildlife_allowed`.
+        let active = playing && self.wildlife_allowed();
+        let step = self.birds.tick(map_w, active, now, dt);
         let tick = self.tick;
 
         for id in &step.spawned {
@@ -1490,10 +1529,13 @@ impl World {
     /// simulated rather than sampled. Movement is broadcast at `SNAPSHOT_HZ` for
     /// the same reason everything else is.
     fn step_animals(&mut self, now: f32, dt: f32, playing: bool) {
+        // R14/R58 via the one shared guard; see `wildlife_allowed`. Computed
+        // before the borrow below, which holds `&self.map`.
+        let active = playing && self.wildlife_allowed();
         let step = {
             let map = &self.map;
             let gravity = self.gravity;
-            self.animals.tick(map, playing, gravity, now, dt)
+            self.animals.tick(map, active, gravity, now, dt)
         };
         let tick = self.tick;
 
@@ -8819,6 +8861,124 @@ mod animals_in_a_round {
         // back together, so the difference is the animal and not the planting.
         plant(&mut b, AnimalKind::Spider, x);
         assert_eq!(a.state_hash(), b.state_hash());
+    }
+}
+
+/// **Nothing lives in space** (`T22.13`, `M22-RULINGS` R14/R58).
+///
+/// `R14`'s table gives `Animals::tick` → *"no animals at all in space"* and adds
+/// *"this also answers the `birds.rs` row"*. These go through `World::step`,
+/// because the guard lives at the layer that owns the map — see
+/// `World::wildlife_allowed`.
+///
+/// **Birds and animals do not share a suppression point inside their own
+/// modules, and that is why this module tests both.** `Animals::tick` takes a
+/// `&Map`, so it could gate itself; `Birds::tick` takes only `map_w: f32` and
+/// could not without a signature change. What they *do* share is the `active`
+/// flag `World` hands each of them, so `R14`'s sentence is true one layer up
+/// from where it points. Birds stay a simulation rule rather than moving to
+/// `T22.06`'s backdrop: a bird drops a heal or a battery (`birds.rs`' module
+/// doc), so a bird is a supply line, and suppressing one is a balance change
+/// that a renderer must not be able to make on its own.
+#[cfg(test)]
+mod nothing_lives_in_space {
+    use super::*;
+    use crate::constants::{
+        GravityMode, ANIMAL_INTERVAL, BIRD_INTERVAL, DEFAULT_MAP_GENERATOR, SIM_DT,
+    };
+
+    /// Four seeds, because a population claim needs more than one draw.
+    const SEEDS: [u64; 4] = [4242, 7, 90210, 31337];
+
+    /// Drive one round to `Playing` and report the **peak** `(animals, birds)`
+    /// alive, not the count at the end — the peak is what catches a build that
+    /// spawns wildlife in space and then culls it off the rim before anyone
+    /// looks, which the end count would read as a clean zero.
+    fn wildlife(seed: u64, gravity: GravityMode) -> (usize, usize) {
+        // `with_gravity`, not `for_test`: `World::build` derives the generator
+        // from the mode (`R15`), and the cached test map is a landscape one.
+        let mut w = World::with_gravity(seed, MapScale::Small, 0, DEFAULT_MAP_GENERATOR, gravity);
+        w.set_phase(RoundPhase::Playing);
+        let seconds = ANIMAL_INTERVAL.max(BIRD_INTERVAL) + 2.0;
+        let (mut peak_a, mut peak_b) = (0, 0);
+        for _ in 0..(seconds / SIM_DT) as u32 {
+            w.step(SIM_DT);
+            peak_a = peak_a.max(w.animals.len());
+            peak_b = peak_b.max(w.birds.len());
+        }
+        (peak_a, peak_b)
+    }
+
+    /// The ruling, **and its control in the same test**: a standard round on the
+    /// very same seeds still grows both. Without that half, *"no animals in
+    /// space"* is satisfied by a build that spawns none anywhere, and that build
+    /// passes every assertion about space.
+    #[test]
+    fn a_space_round_grows_no_wildlife_and_a_standard_round_does() {
+        for seed in SEEDS {
+            let (a, b) = wildlife(seed, GravityMode::Space);
+            assert_eq!(a, 0, "seed {seed}: {a} animals stood in a vacuum");
+            assert_eq!(b, 0, "seed {seed}: {b} birds flew in a vacuum");
+
+            // The control, on the **same** seed. Measured at 2 and 2 on each of
+            // the four; asserted at 1 so a cadence landing one tick the other
+            // side of the window is not a coin flip.
+            let (a, b) = wildlife(seed, GravityMode::Standard);
+            assert!(
+                a >= 1,
+                "control, seed {seed}: the standard round grew no animals \
+                 either, so the assertion above holds for a build that spawns \
+                 none anywhere"
+            );
+            assert!(
+                b >= 1,
+                "control, seed {seed}: the standard round grew no birds \
+                 either, so the assertion above holds for a build that spawns \
+                 none anywhere"
+            );
+        }
+    }
+
+    /// **The guard reads the generator, not `self.gravity`** (`R58`).
+    ///
+    /// The two cannot disagree on a world anyone builds —
+    /// `the_generator_cannot_disagree_with_the_gravity` pins that — but
+    /// `World::gravity` is a public field and several tests here assign it after
+    /// construction, while `World::map` is written exactly once, in
+    /// `from_map`. So this is the assertion that the suppression is keyed to the
+    /// one of the two that cannot move.
+    ///
+    /// **It is also the answer to "is anything alive stranded by a mode
+    /// change".** Nothing can be: the guard's subject is the map, and no code
+    /// path reassigns `World::map` — `grep -n 'self\.map = ' world/mod.rs`
+    /// returns nothing. A round cannot become a space round after it started, so
+    /// there is never an animal alive at a switch to remove or to leave.
+    #[test]
+    fn flipping_the_gravity_field_under_a_landscape_map_does_not_suppress_wildlife() {
+        let mut w = World::with_gravity(
+            4242,
+            MapScale::Small,
+            0,
+            DEFAULT_MAP_GENERATOR,
+            GravityMode::Standard,
+        );
+        w.set_phase(RoundPhase::Playing);
+        assert!(
+            w.map.space_geometry().is_none(),
+            "precondition: this fixture is not a space map"
+        );
+        w.gravity = GravityMode::Space;
+        let seconds = ANIMAL_INTERVAL.max(BIRD_INTERVAL) + 2.0;
+        for _ in 0..(seconds / SIM_DT) as u32 {
+            w.step(SIM_DT);
+        }
+        assert!(
+            !w.animals.is_empty() && !w.birds.is_empty(),
+            "the suppression is keyed on `self.gravity`, not on the generator: \
+             {} animals and {} birds on a landscape map",
+            w.animals.len(),
+            w.birds.len()
+        );
     }
 }
 

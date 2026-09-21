@@ -183,6 +183,20 @@ impl Birds {
     /// is anchored on the **first active tick** rather than at construction: a
     /// clock started during the lobby would release a burst of birds the moment
     /// the round began, to catch up on time it had "missed".
+    ///
+    /// **And `active` is false for the whole of a space round.**
+    /// `M22-RULINGS` R14's `animals.rs` row says *"this also answers the
+    /// `birds.rs` row"*, and T22.13 found that true one layer up rather than
+    /// here: this signature takes `map_w: f32` and has no `&Map` to ask, so the
+    /// suppression lives at the caller, in
+    /// `world/mod.rs::World::wildlife_allowed`, shared with `step_animals` and
+    /// keyed on the **generator** (R15's derivation) rather than on the gravity
+    /// mode field.
+    ///
+    /// **It stayed a simulation rule and did not move to T22.06's backdrop.** A
+    /// bird drops a heal or a battery, so a bird is a supply line — see this
+    /// module's header — and whether one exists is a balance decision, not a
+    /// thing a renderer may decide by declining to draw it.
     pub fn tick(&mut self, map_w: f32, active: bool, now: f32, dt: f32) -> BirdStep {
         let mut out = BirdStep::default();
         if !active {
