@@ -28,66 +28,57 @@ does it.
 
 ### Where M22 is
 
-**6 of 19 boxes ticked.** `T22.00` (title check), `T22.00B` (smoke-shader),
+**7 of 19 boxes ticked.** `T22.00` (title check), `T22.00B` (smoke-shader),
 `T22.01` (the gravity setting), `T22.02` (low gravity), `T22.03` (zero-g movement),
-`T22.05A` (the space map generator). Each one went build → harsh review → fix pass, and every
-fix pass is committed.
+`T22.05A` (the space map generator) and `T22.05B` (spawns and everything that assumed "up").
+The first six each went build → harsh review → fix pass, all committed. **`T22.05B` has had no
+harsh review and no `--changed` run** — it is the one piece of this milestone that has not been
+through the loop.
 
 **`HEAD` is `5a42b86`. 28 commits this session, all on `claude_builds`, none pushed.**
 Last full gate: **green in 16m49s** over `T22.00`+`T22.01` — 1459 Rust tests, 954 client,
 58/58 browser. **Everything since has been `--changed` only**, so *a full gate is owed*
 before the milestone closes.
 
-### ⚠️ There is unfinished work in the working tree and it is NOT mine
+### ⚠️ SUPERSEDED — `T22.05B` finished and committed before the stop landed
 
-`T22.05B`'s builder was running when the machine closed. It left **13 modified files**,
-uncommitted and unverified:
+The paragraph that was here described 13 uncommitted files. **That state is gone.** The builder
+completed, committed and cleaned up; `git status --porcelain` shows **0 tracked changes**, no
+`.bak` files, no planted code, no processes, and `verify-repo` is **ok (24/24)**.
 
-```
-client/src/core/index.ts          crates/game-core/src/map/gen/spawns.rs
-crates/game-core/src/constants.rs crates/game-core/src/map/gen/v2/mod.rs
-crates/game-core/src/items/spawning.rs  crates/game-core/src/map/meta.rs
-crates/game-core/src/map/gen/mod.rs     crates/game-core/src/player/state.rs
-crates/game-core/src/map/gen/space.rs   crates/game-core/src/world/mod.rs
-crates/game-wasm/src/lib.rs             crates/game-core/tests/golden_hashes.txt
-```
+- `6e1ef91` — T22.05B: space spawns, objects, and everything that assumed "up"
+- `00d7dc4` — T22.05B: journal entry
 
-**`golden_hashes.txt` is among them, so the golden table has been regenerated and not
-verified.** Do not assume it is right.
+**The one thing it was not allowed to do: `./scripts/check.sh --changed` never ran**, because
+the stop order forbade it. It touches a client file, so per `R22` that is the full browser
+suite. **That is the single next action**, before `T22.05B` is trusted or anything is built on
+it. Everything else it ran is green: `cargo test -p game-core` 1056 + integration binaries,
+golden, `cargo test -p game-server --lib` 152, fmt, clippy, `tsc`, and
+`node scripts/e2e.mjs minimap` 2/2 with a new space arm.
 
-**The recovery procedure that already worked once this session** (`T22.02`'s builder died the
-same way, with ~1300 lines in the tree):
+**Two findings from it worth carrying forward.**
 
-1. `git status --porcelain` and `git diff --stat` — see what is actually there.
-2. Check whether any source file has moved **since** the builder's own last green run:
-   `find crates client -newer <its gate log> -name "*.rs" -o -newer <log> -name "*.ts"`.
-   An empty result means the tree matches a run it already did.
-3. **Verify independently — do not trust its logs.** `cargo test -p game-core`,
-   `cargo test -p game-server`, `cargo fmt --all -- --check`,
-   `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
-4. If green, commit it with a message that says **plainly** it was recovered, unreviewed, and
-   that its falsifications are not on the record. Then run the harsh review.
-5. If red or half-finished, **discard it and re-dispatch `T22.05B`** — it is cheaper than
-   reasoning about a stranger's half-state.
+1. **The feature would have shipped wired to nothing, and no test would have said so.**
+   `World::spawn_for` and `player/state.rs::choose_surface_point` both gate
+   `MapMeta.spawn_points` on `surface::is_standable`, which demands `MIN_SUPPORT_PX` of rock
+   under the body box — **an open-space spawn fails that by definition**. Every space spawn
+   would have been chosen, validated, shipped, hashed into the golden table, and **silently
+   discarded at the moment of use**, with both callers falling through to a surface fallback
+   that returns a perfectly legal-looking position. Found by greping production callers, not by
+   a test. `Map::body_fits_at` is now the single place that choice is made.
+2. **A build-system trap that cost it ten minutes and would cost more next time.** Its
+   falsification sweep restored each planted file from a backup whose **mtime was earlier than
+   the planted write**, so cargo reused the **planted binary** on the next run and one test
+   read red against correct source. **`touch` every planted file before believing any
+   post-sweep run.**
 
-Gate logs are now `.gitignore`d, so `gate-t2205b.txt` may exist and will not show as untracked.
-
-**`node scripts/verify-repo.mjs` is RED right now, and it is the in-flight work, not `HEAD`:**
-
-```
-crates/game-core/src/map/gen/space.rs: the_open_space_hit_rate is #[ignore]d
-  and not in scripts/ignored.sh's manifest
-ignored tests: 24 in crates/, 23 in the manifest
-repo guards: 2 problem(s)
-```
-
-`verify-repo` reads the **working tree**, and `space.rs` is one of the 13 modified files — the
-builder added an `#[ignore]`d measurement and had not yet added its `scripts/ignored.sh` row.
-**That is the guard doing its job on a half-finished edit, not a broken repository.** If you
-discard the uncommitted work it goes green on its own; if you keep the work, the missing row is
-part of finishing it. (`T22.05A`'s builder hit the identical thing and it cost it a whole
-`--changed` run, because the guard runs *before* the browser stage — add the row **with** the
-`#[ignore]`, not after.)
+**One open question it reported rather than quietly dropping:** one plant of sixteen stayed
+**green** — forcing `random_body_site`'s space arm to `None` left
+`initial_items_land_inside_the_arena_in_space` passing, because once the surface filter landed,
+a surface point *is* inside the arena, so the test cannot tell "items in open air" from "items
+on asteroid tops". It still catches the void-crust regression it was written for. If `R14`'s
+open-air placement should be gated, that needs an assertion that the item is **not** on a
+surface point — a two-line follow-up.
 
 ### What `T22.05B` was doing, and why it matters
 
@@ -101,7 +92,7 @@ instead of the candidate list it currently counts and discards. **Red on all thr
 
 ### The next five, in order
 
-`T22.05B` (in flight) → `T22.11` (asteroid gravity wells — writes `world/attractors.rs`, which
+**`T22.05B`'s `--changed` run and its harsh review** → `T22.11` (asteroid gravity wells — writes `world/attractors.rs`, which
 `T22.10` and `T22.12` then share, per `R11`) → `T22.04` (thrusters) → `T22.06` (backdrop) →
 `T22.08`/`T22.09` (flares, radiation) → `T22.10`/`T22.12`/`T22.07`.
 
