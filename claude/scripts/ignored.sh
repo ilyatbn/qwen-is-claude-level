@@ -69,6 +69,7 @@ MANIFEST=(
   "density_report|game-core tests/balance.rs|guard"
   "encounter_report|game-core tests/balance.rs|report"
   "item_population_report|game-core tests/balance.rs|guard"
+  "low_gravity_report|game-core tests/balance.rs|report"
   "the_shipping_configuration_produces_a_fight|game-core tests/balance.rs|guard"
   "the_spawn_stream_beats_the_wait_it_replaced|game-core tests/balance.rs|guard"
   "how_many_rooms_fit|game-server tests/capacity.rs|guard"

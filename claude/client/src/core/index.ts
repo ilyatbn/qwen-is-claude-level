@@ -282,6 +282,8 @@ export interface Constants {
    * `constants-parity.test.ts` now fails on either direction of that gap.
    */
   GRAVITY: number
+  /** T22.02 — what low gravity multiplies `GRAVITY` by. */
+  LOW_GRAVITY_SCALE: number
   BIRD_DROP_VELOCITY: number
   CHUNK_REBAKE_BUDGET: number
   CHUNK_REBAKE_MS: number
@@ -826,6 +828,27 @@ export class Core {
    */
   setPhase(phase: string): boolean {
     return this.inner.set_phase(phase)
+  }
+
+  /**
+   * Which gravity this match is played under (T22.02).
+   *
+   * **`applyInput` reads it, so the mirror has to be told it.** The rule is
+   * `setPlayerState`'s: everything `apply_input` reads must be identical on
+   * both sides, or prediction rubber-bands. A low-gravity match predicted at
+   * standard gravity disagrees on the very first jump — the local body reaches
+   * 66 px and the server says 132.
+   *
+   * **It cannot ride `moveMods`.** That byte is derived per player from the
+   * inventory; gravity is a property of the match. `setPhase` is the
+   * precedent — a per-match constant announced once — and this is the same
+   * shape.
+   *
+   * Returns false for a gravity string this build does not know, which leaves
+   * the previous mode in place rather than silently falling back to standard.
+   */
+  setGravity(gravity: string): boolean {
+    return this.inner.set_gravity(gravity)
   }
 
   /**

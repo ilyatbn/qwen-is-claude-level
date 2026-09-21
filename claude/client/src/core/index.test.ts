@@ -207,4 +207,38 @@ describe('Core', () => {
     const after = core.playerState(9)!
     expect(after.x).not.toBe(before.x)
   })
+
+  /**
+   * T22.02 — the mirror predicts the match's gravity, not the default.
+   *
+   * **What this would report if `setGravity` reached nothing:** the two falls
+   * would be identical and the inequality fails. The `'standard'` arm in the
+   * same test is the control — without it, "the fall is shorter" is satisfied
+   * by a mirror that stopped simulating.
+   *
+   * A free fall from a standing start rather than a jump: it needs no button,
+   * no ground and no map feature, so the only thing deciding it is gravity.
+   * Pinned to `LOW_GRAVITY_SCALE` read from Rust, never to 0.5 written here —
+   * a literal in TypeScript that shadows a Rust constant is the drift this
+   * architecture exists to prevent.
+   */
+  it('predicts a low-gravity match under low gravity (T22.02)', () => {
+    const fall = (mode: string): number => {
+      expect(core.setGravity(mode)).toBe(true)
+      core.generate(4242n, MapScale.Small)
+      core.addPlayer(11, 500, 40)
+      const y0 = core.playerState(11)!.y
+      for (let seq = 0; seq < 20; seq++) core.applyInput(11, seq, 0, 0, C().SIM_DT)
+      const dropped = core.playerState(11)!.y - y0
+      core.removePlayer(11)
+      return dropped
+    }
+
+    const standard = fall('standard')
+    const low = fall('low')
+    expect(standard).toBeGreaterThan(0)
+    expect(low).toBeCloseTo(standard * C().LOW_GRAVITY_SCALE, 3)
+    // And an unknown spelling is refused rather than clamped to standard.
+    expect(core.setGravity('none')).toBe(false)
+  })
 })

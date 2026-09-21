@@ -107,7 +107,14 @@ fn run(map: &Map, mut st: MovementState, buttons: u8, ticks: u32) -> MovementSta
     let inp = input(buttons);
     let mut prev = Input::default();
     for _ in 0..ticks {
-        st.step(map, &inp, &prev, MoveMods::NONE, SIM_DT);
+        st.step(
+            map,
+            &inp,
+            &prev,
+            MoveMods::NONE,
+            GravityMode::Standard,
+            SIM_DT,
+        );
         prev = inp;
     }
     st
@@ -152,7 +159,14 @@ fn the_same_inputs_from_the_same_state_are_byte_identical_every_time() {
         let mut prev = Input::default();
         for tick in 0..1000 {
             let inp = scripted_input(tick);
-            st.step(&map, &inp, &prev, MoveMods::NONE, SIM_DT);
+            st.step(
+                &map,
+                &inp,
+                &prev,
+                MoveMods::NONE,
+                GravityMode::Standard,
+                SIM_DT,
+            );
             prev = inp;
         }
         st
@@ -178,7 +192,14 @@ fn replaying_from_a_midpoint_reaches_the_same_state_as_running_straight_through(
     let mut midpoint_prev = Input::default();
     for tick in 0..1000u32 {
         let inp = scripted_input(tick);
-        straight.step(&map, &inp, &prev, MoveMods::NONE, SIM_DT);
+        straight.step(
+            &map,
+            &inp,
+            &prev,
+            MoveMods::NONE,
+            GravityMode::Standard,
+            SIM_DT,
+        );
         if tick == 499 {
             midpoint = Some(straight);
             midpoint_prev = inp;
@@ -191,7 +212,14 @@ fn replaying_from_a_midpoint_reaches_the_same_state_as_running_straight_through(
     let mut prev = midpoint_prev;
     for tick in 500..1000u32 {
         let inp = scripted_input(tick);
-        replayed.step(&map, &inp, &prev, MoveMods::NONE, SIM_DT);
+        replayed.step(
+            &map,
+            &inp,
+            &prev,
+            MoveMods::NONE,
+            GravityMode::Standard,
+            SIM_DT,
+        );
         prev = inp;
     }
 
@@ -219,6 +247,7 @@ fn apply_input_does_not_mutate_its_inputs() {
         &inp,
         &prev,
         MoveMods::NONE,
+        GravityMode::Standard,
         SIM_DT,
     );
 
@@ -239,7 +268,14 @@ fn a_body_at_ten_times_terminal_velocity_is_stopped_by_a_one_px_floor() {
         st.body.vel.y = dir * 10.0 * MAX_FALL_SPEED;
 
         for _ in 0..600 {
-            st.step(&map, &input(0), &Input::default(), MoveMods::NONE, SIM_DT);
+            st.step(
+                &map,
+                &input(0),
+                &Input::default(),
+                MoveMods::NONE,
+                GravityMode::Standard,
+                SIM_DT,
+            );
         }
 
         if dir > 0.0 {
@@ -278,7 +314,14 @@ fn a_body_at_ten_times_walk_speed_is_stopped_by_a_one_px_wall() {
             // Re-assert the extreme velocity: friction would otherwise bleed it off
             // before the body reaches the wall, and the test would prove nothing.
             st.body.vel.x = dir * 10.0 * WALK_SPEED;
-            st.step(&map, &input(0), &Input::default(), MoveMods::NONE, SIM_DT);
+            st.step(
+                &map,
+                &input(0),
+                &Input::default(),
+                MoveMods::NONE,
+                GravityMode::Standard,
+                SIM_DT,
+            );
         }
 
         if dir > 0.0 {
@@ -305,11 +348,25 @@ fn a_body_at_ten_times_walk_speed_is_stopped_by_a_one_px_wall() {
 fn standing_still_is_bit_identical_after_600_ticks() {
     let map = flat_floor();
     let mut st = MovementState::new(body_on_floor(100.0, FLOOR));
-    st.step(&map, &input(0), &Input::default(), MoveMods::NONE, SIM_DT); // settle
+    st.step(
+        &map,
+        &input(0),
+        &Input::default(),
+        MoveMods::NONE,
+        GravityMode::Standard,
+        SIM_DT,
+    ); // settle
     let settled = st.body.pos;
 
     for tick in 0..600 {
-        st.step(&map, &input(0), &Input::default(), MoveMods::NONE, SIM_DT);
+        st.step(
+            &map,
+            &input(0),
+            &Input::default(),
+            MoveMods::NONE,
+            GravityMode::Standard,
+            SIM_DT,
+        );
         assert_eq!(st.body.pos, settled, "drifted at tick {tick}");
     }
 }
@@ -369,6 +426,7 @@ fn walking_down_a_slope_keeps_grounded_true_every_tick() {
         &input(RIGHT),
         &Input::default(),
         MoveMods::NONE,
+        GravityMode::Standard,
         SIM_DT,
     );
     assert!(st.body.grounded, "precondition");
@@ -376,7 +434,14 @@ fn walking_down_a_slope_keeps_grounded_true_every_tick() {
     let inp = input(RIGHT);
     let mut prev = inp;
     for tick in 0..150 {
-        st.step(&map, &inp, &prev, MoveMods::NONE, SIM_DT);
+        st.step(
+            &map,
+            &inp,
+            &prev,
+            MoveMods::NONE,
+            GravityMode::Standard,
+            SIM_DT,
+        );
         prev = inp;
         assert!(
             st.body.grounded,
@@ -390,7 +455,14 @@ fn walking_down_a_slope_keeps_grounded_true_every_tick() {
 fn a_standing_jump_lands_within_two_px_of_its_origin() {
     let map = flat_floor();
     let mut st = MovementState::new(body_on_floor(400.0, FLOOR));
-    st.step(&map, &input(0), &Input::default(), MoveMods::NONE, SIM_DT);
+    st.step(
+        &map,
+        &input(0),
+        &Input::default(),
+        MoveMods::NONE,
+        GravityMode::Standard,
+        SIM_DT,
+    );
     let origin = st.body.pos.x;
 
     // One-tick press, then release and let it land.
@@ -399,11 +471,19 @@ fn a_standing_jump_lands_within_two_px_of_its_origin() {
         &input(JUMP),
         &Input::default(),
         MoveMods::NONE,
+        GravityMode::Standard,
         SIM_DT,
     );
     let mut prev = input(JUMP);
     for _ in 0..300 {
-        st.step(&map, &input(0), &prev, MoveMods::NONE, SIM_DT);
+        st.step(
+            &map,
+            &input(0),
+            &prev,
+            MoveMods::NONE,
+            GravityMode::Standard,
+            SIM_DT,
+        );
         prev = input(0);
     }
 
@@ -424,7 +504,14 @@ fn a_running_jump_travels_further_than_a_standing_one() {
         if hold_dir {
             st = run(&map, st, RIGHT, 60); // reach full speed
         } else {
-            st.step(&map, &input(0), &Input::default(), MoveMods::NONE, SIM_DT);
+            st.step(
+                &map,
+                &input(0),
+                &Input::default(),
+                MoveMods::NONE,
+                GravityMode::Standard,
+                SIM_DT,
+            );
         }
         let start = st.body.pos.x;
 
@@ -434,12 +521,20 @@ fn a_running_jump_travels_further_than_a_standing_one() {
             &input(buttons),
             &input(if hold_dir { RIGHT } else { 0 }),
             MoveMods::NONE,
+            GravityMode::Standard,
             SIM_DT,
         );
         let after = if hold_dir { RIGHT } else { 0 };
         let mut prev = input(buttons);
         for _ in 0..300 {
-            st.step(&map, &input(after), &prev, MoveMods::NONE, SIM_DT);
+            st.step(
+                &map,
+                &input(after),
+                &prev,
+                MoveMods::NONE,
+                GravityMode::Standard,
+                SIM_DT,
+            );
             prev = input(after);
             if st.body.grounded {
                 break;
@@ -460,7 +555,14 @@ fn a_running_jump_travels_further_than_a_standing_one() {
 fn the_jump_apex_matches_the_discrete_expectation() {
     let map = flat_floor();
     let mut st = MovementState::new(body_on_floor(400.0, FLOOR));
-    st.step(&map, &input(0), &Input::default(), MoveMods::NONE, SIM_DT);
+    st.step(
+        &map,
+        &input(0),
+        &Input::default(),
+        MoveMods::NONE,
+        GravityMode::Standard,
+        SIM_DT,
+    );
     let ground_y = st.body.pos.y;
 
     st.step(
@@ -468,12 +570,20 @@ fn the_jump_apex_matches_the_discrete_expectation() {
         &input(JUMP),
         &Input::default(),
         MoveMods::NONE,
+        GravityMode::Standard,
         SIM_DT,
     );
     let mut peak = st.body.pos.y;
     let mut prev = input(JUMP);
     for _ in 0..300 {
-        st.step(&map, &input(0), &prev, MoveMods::NONE, SIM_DT);
+        st.step(
+            &map,
+            &input(0),
+            &prev,
+            MoveMods::NONE,
+            GravityMode::Standard,
+            SIM_DT,
+        );
         prev = input(0);
         peak = peak.min(st.body.pos.y);
     }
@@ -500,12 +610,20 @@ fn holding_the_opposite_direction_mid_air_reverses_within_the_expected_time() {
         &input(RIGHT | JUMP),
         &input(RIGHT),
         MoveMods::NONE,
+        GravityMode::Standard,
         SIM_DT,
     );
     let mut prev = input(RIGHT | JUMP);
     let mut ticks = 0;
     while st.body.vel.x > -WALK_SPEED * 0.9 && ticks < 600 {
-        st.step(&map, &input(LEFT), &prev, MoveMods::NONE, SIM_DT);
+        st.step(
+            &map,
+            &input(LEFT),
+            &prev,
+            MoveMods::NONE,
+            GravityMode::Standard,
+            SIM_DT,
+        );
         prev = input(LEFT);
         ticks += 1;
         if st.body.grounded {
@@ -545,7 +663,14 @@ fn coyote_time_works_at_five_ticks_and_fails_at_twelve() {
         let mut airborne_for = 0;
         for _ in 0..400 {
             let inp = input(RIGHT);
-            st.step(&map, &inp, &prev, MoveMods::NONE, SIM_DT);
+            st.step(
+                &map,
+                &inp,
+                &prev,
+                MoveMods::NONE,
+                GravityMode::Standard,
+                SIM_DT,
+            );
             prev = inp;
             if !st.body.grounded {
                 airborne_for += 1;
@@ -556,7 +681,14 @@ fn coyote_time_works_at_five_ticks_and_fails_at_twelve() {
         }
         assert!(!st.body.grounded, "never left the ledge");
         let before = st.body.vel.y;
-        st.step(&map, &input(RIGHT | JUMP), &prev, MoveMods::NONE, SIM_DT);
+        st.step(
+            &map,
+            &input(RIGHT | JUMP),
+            &prev,
+            MoveMods::NONE,
+            GravityMode::Standard,
+            SIM_DT,
+        );
         // A launch sets vel.y to -JUMP_VELOCITY, far more negative than gravity.
         st.body.vel.y < before - 100.0
     };
@@ -579,7 +711,14 @@ fn five_seconds_of_thrust_drains_the_tank_and_ten_seconds_idle_refills_it() {
     let mut emptied_at = None;
     for tick in 0..(8.0 * SIM_HZ as f32) as u32 {
         let inp = input(JUMP | UP);
-        st.step(&map, &inp, &prev, MoveMods::NONE, SIM_DT);
+        st.step(
+            &map,
+            &inp,
+            &prev,
+            MoveMods::NONE,
+            GravityMode::Standard,
+            SIM_DT,
+        );
         prev = inp;
         if st.jet.fuel <= 0.0 {
             emptied_at = Some(tick);
@@ -596,7 +735,14 @@ fn five_seconds_of_thrust_drains_the_tank_and_ten_seconds_idle_refills_it() {
 
     for _ in 0..(11.0 * SIM_HZ as f32) as u32 {
         let inp = input(0);
-        st.step(&map, &inp, &prev, MoveMods::NONE, SIM_DT);
+        st.step(
+            &map,
+            &inp,
+            &prev,
+            MoveMods::NONE,
+            GravityMode::Standard,
+            SIM_DT,
+        );
         prev = inp;
     }
     assert!(
@@ -610,12 +756,26 @@ fn five_seconds_of_thrust_drains_the_tank_and_ten_seconds_idle_refills_it() {
 fn the_jetpack_does_not_engage_from_a_grounded_press_until_the_hold_delay() {
     let map = flat_floor();
     let mut st = MovementState::new(body_on_floor(400.0, FLOOR));
-    st.step(&map, &input(0), &Input::default(), MoveMods::NONE, SIM_DT);
+    st.step(
+        &map,
+        &input(0),
+        &Input::default(),
+        MoveMods::NONE,
+        GravityMode::Standard,
+        SIM_DT,
+    );
 
     let mut prev = Input::default();
     for tick in 0..=10u32 {
         let inp = input(JUMP);
-        st.step(&map, &inp, &prev, MoveMods::NONE, SIM_DT);
+        st.step(
+            &map,
+            &inp,
+            &prev,
+            MoveMods::NONE,
+            GravityMode::Standard,
+            SIM_DT,
+        );
         prev = inp;
         assert!(
             !st.jet.active,
@@ -623,7 +783,14 @@ fn the_jetpack_does_not_engage_from_a_grounded_press_until_the_hold_delay() {
         );
     }
     let inp = input(JUMP);
-    st.step(&map, &inp, &prev, MoveMods::NONE, SIM_DT);
+    st.step(
+        &map,
+        &inp,
+        &prev,
+        MoveMods::NONE,
+        GravityMode::Standard,
+        SIM_DT,
+    );
     assert!(st.jet.active, "jetpack never engaged after the hold delay");
 }
 
@@ -644,7 +811,14 @@ fn a_player_cannot_climb_a_sheer_wall_by_holding_a_direction() {
     let inp = input(RIGHT);
     let mut prev = Input::default();
     for _ in 0..600 {
-        st.step(&map, &inp, &prev, MoveMods::NONE, SIM_DT);
+        st.step(
+            &map,
+            &inp,
+            &prev,
+            MoveMods::NONE,
+            GravityMode::Standard,
+            SIM_DT,
+        );
         prev = inp;
         assert!(
             st.body.pos.y >= start_y - 1.0,
@@ -709,7 +883,14 @@ fn a_body_can_walk_along_a_generated_cave_floor() {
         let inp = input(RIGHT);
         let mut prev = Input::default();
         for _ in 0..120 {
-            st.step(&map, &inp, &prev, MoveMods::NONE, SIM_DT);
+            st.step(
+                &map,
+                &inp,
+                &prev,
+                MoveMods::NONE,
+                GravityMode::Standard,
+                SIM_DT,
+            );
             prev = inp;
         }
         if (st.body.pos.x - start_x).abs() > 12.0 {
@@ -742,7 +923,14 @@ fn a_body_dropped_at_every_spawn_point_settles_without_falling_through() {
             spawn.y as f32 - PLAYER_H / 2.0,
         )));
         for _ in 0..240 {
-            st.step(&map, &input(0), &Input::default(), MoveMods::NONE, SIM_DT);
+            st.step(
+                &map,
+                &input(0),
+                &Input::default(),
+                MoveMods::NONE,
+                GravityMode::Standard,
+                SIM_DT,
+            );
         }
         assert!(
             st.body.grounded,
@@ -764,4 +952,196 @@ fn a_body_dropped_at_every_spawn_point_settles_without_falling_through() {
             "spawn {spawn:?} settled inside rock"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// T22.02 — low gravity
+// ---------------------------------------------------------------------------
+
+/// One jump from a standing start under `gravity`, in px above the ground.
+fn jump_apex(gravity: GravityMode) -> f32 {
+    let map = flat_floor();
+    let mut st = MovementState::new(body_on_floor(300.0, FLOOR));
+    let ground_y = st.body.pos.y;
+    st.step(
+        &map,
+        &input(JUMP),
+        &Input::default(),
+        MoveMods::NONE,
+        gravity,
+        SIM_DT,
+    );
+    let mut peak = st.body.pos.y;
+    let mut prev = input(JUMP);
+    // Long enough for the slowest mode's whole arc: hang time is `2v/gk`, which
+    // is 74 ticks at half gravity against 37 at full.
+    for _ in 0..300 {
+        st.step(&map, &input(0), &prev, MoveMods::NONE, gravity, SIM_DT);
+        prev = input(0);
+        peak = peak.min(st.body.pos.y);
+    }
+    ground_y - peak
+}
+
+/// Distance fallen and speed reached after `ticks` of free fall under
+/// `gravity`, from rest, with no input and no ground in the way.
+fn free_fall(gravity: GravityMode, ticks: u32) -> (f32, f32) {
+    let map = flat_floor();
+    let start = Vec2::new(300.0, 50.0);
+    let mut st = MovementState::new(Body::new(start));
+    for _ in 0..ticks {
+        st.step(
+            &map,
+            &Input::default(),
+            &Input::default(),
+            MoveMods::NONE,
+            gravity,
+            SIM_DT,
+        );
+    }
+    assert!(
+        !st.body.grounded,
+        "the fixture landed inside {ticks} ticks — it is measuring a landing, \
+         not a fall"
+    );
+    (st.body.pos.y - start.y, st.body.vel.y)
+}
+
+/// The jump and the fall both move by `LOW_GRAVITY_SCALE`, and the
+/// standard-gravity arm beside them is what says the fixture can see it at all.
+///
+/// **What it would report if the mode reached nothing:** the two apexes would be
+/// equal and the first ratio assertion fails. The absolute apex assertions are
+/// there for the other failure — a mode that reached `integrate` but with the
+/// wrong number — and they are the same expression
+/// `a_jump_reaches_the_documented_apex` uses, with the scale in the denominator.
+///
+/// The fall ratio is asserted **relatively, to a part in 10^5**, and the
+/// tolerance is not laziness. Semi-implicit Euler makes speed after `n` ticks
+/// `g * k * n * dt`, so `k` divides out of the discretisation exactly — but the
+/// simulation gets there by adding `g * k * dt` sixty times a second, and f32
+/// repeated addition only agrees with the closed form to the last bits. An
+/// `assert_eq!` here passes today because `LOW_GRAVITY_SCALE` is 0.5 and a
+/// power of two is exact in binary; move the constant to 0.95 and the same
+/// assertion goes red on rounding alone. **That is a test that expires when the
+/// tunable moves**, which is the one thing pinning to a constant is supposed to
+/// prevent.
+#[test]
+fn low_gravity_raises_the_apex_and_slows_the_fall_by_the_multiplier() {
+    let apex_std = jump_apex(GravityMode::Standard);
+    let apex_low = jump_apex(GravityMode::Low);
+
+    // The continuous apex `v^2 / 2gk` less the semi-implicit Euler shortfall of
+    // `v*dt/2`.
+    let expect =
+        |k: f32| JUMP_VELOCITY * JUMP_VELOCITY / (2.0 * GRAVITY * k) - JUMP_VELOCITY * SIM_DT / 2.0;
+    assert!(
+        (apex_std - expect(1.0)).abs() < 2.0,
+        "control: standard apex {apex_std:.2} px, expected {:.2}",
+        expect(1.0)
+    );
+    assert!(
+        (apex_low - expect(LOW_GRAVITY_SCALE)).abs() < 2.0,
+        "low-gravity apex {apex_low:.2} px, expected {:.2}",
+        expect(LOW_GRAVITY_SCALE)
+    );
+    assert!(
+        apex_low > apex_std,
+        "low gravity did not raise the apex at all: {apex_low:.2} vs {apex_std:.2}"
+    );
+
+    let (drop_std, speed_std) = free_fall(GravityMode::Standard, 20);
+    let (drop_low, speed_low) = free_fall(GravityMode::Low, 20);
+    assert!(
+        speed_std > 0.0 && drop_std > 0.0,
+        "control: nothing fell under standard gravity — the fixture is blind"
+    );
+    let close = |got: f32, want: f32| (got - want).abs() <= want.abs() * 1e-5;
+    assert!(
+        close(speed_low, speed_std * LOW_GRAVITY_SCALE),
+        "fall speed after 20 ticks: {speed_low} low against {speed_std} standard, \
+         expected {}",
+        speed_std * LOW_GRAVITY_SCALE
+    );
+    assert!(
+        close(drop_low, drop_std * LOW_GRAVITY_SCALE),
+        "distance fallen in 20 ticks: {drop_low} low against {drop_std} standard, \
+         expected {}",
+        drop_std * LOW_GRAVITY_SCALE
+    );
+}
+
+/// **"Fall damage is much lower" needs no multiplier of its own, and this is
+/// the arithmetic.**
+///
+/// `PlayerState::fall_damage` subtracts a *fixed* `FALL_SAFE_SPEED` **before**
+/// scaling, so the reduction is far more than the `sqrt(k)` = 0.71 the impact
+/// loses. A 250 px drop arrives at `sqrt(2 * 1400 * 250)` = 837 px/s under
+/// standard gravity, which is 158 px/s over the safe speed and hurts; under
+/// half gravity the same drop arrives at `sqrt(2 * 700 * 250)` = 592 px/s,
+/// which is *under* the safe speed and does literally zero. An extra multiplier
+/// on top of that would be taking a reduction off a number already at zero.
+///
+/// **The absence is asserted against a presence in the same test**: the
+/// standard-gravity arm is the control, and without it "no fall damage" is
+/// satisfied by a fall that never landed. The landing itself is asserted too,
+/// because a body still in the air reports `landing_impact` 0 and would read as
+/// a harmless fall.
+#[test]
+fn a_fall_that_hurts_under_standard_gravity_is_free_under_low() {
+    // 250 px: over the standard free-fall height of 165 px and under the
+    // low-gravity one of 329 px. Both bounds are `FALL_SAFE_SPEED^2 / (2gk)`.
+    const DROP: f32 = 250.0;
+    // 768 px tall: `Mask::new_empty` requires a multiple of `CHUNK_SIZE`.
+    let (map_h, floor_y) = (768, 700);
+    let map = make_map(W, map_h, |m| {
+        for y in floor_y..map_h as i32 {
+            m.set_run(y, 0, W as i32 - 1);
+        }
+    });
+
+    let hurt = |gravity: GravityMode| -> (f32, f32) {
+        let mut st = MovementState::new(Body::new(Vec2::new(
+            300.0,
+            floor_y as f32 - PLAYER_H / 2.0 - DROP,
+        )));
+        let mut impact = 0.0;
+        for _ in 0..600 {
+            let i = st.step(
+                &map,
+                &Input::default(),
+                &Input::default(),
+                MoveMods::NONE,
+                gravity,
+                SIM_DT,
+            );
+            if i > 0.0 {
+                impact = i;
+                break;
+            }
+        }
+        // The real formula, not a copy of it: this is the function
+        // `World::apply_inputs` hands the impact to.
+        let p = game_core::player::state::PlayerState::new(0, Vec2::ZERO, 0);
+        (impact, p.fall_damage(impact, 0.0))
+    };
+
+    let (impact_std, damage_std) = hurt(GravityMode::Standard);
+    let (impact_low, damage_low) = hurt(GravityMode::Low);
+
+    assert!(
+        impact_std > 0.0 && impact_low > 0.0,
+        "a body never landed: impacts {impact_std} / {impact_low} — the \
+         comparison below is between two falls that did not happen"
+    );
+    assert!(
+        damage_std > 0.0,
+        "control: a {DROP} px fall did no damage under standard gravity either, \
+         so 'free under low gravity' says nothing about gravity"
+    );
+    assert_eq!(
+        damage_low, 0.0,
+        "a {DROP} px fall still cost {damage_low} HP under low gravity \
+         (impact {impact_low:.0} px/s against a safe speed of {FALL_SAFE_SPEED})"
+    );
 }

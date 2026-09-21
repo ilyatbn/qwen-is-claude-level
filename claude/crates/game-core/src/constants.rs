@@ -2512,6 +2512,23 @@ impl StartKit {
 // Gravity (a private-lobby setting, T22.01)
 // ---------------------------------------------------------------------------
 
+/// Low gravity's multiplier on [`GRAVITY`] (T22.02, M22-RULINGS R3).
+///
+/// **A multiplier and not a second `GRAVITY`.** `map/gen/traversal.rs`'s
+/// `JUMP_HEIGHT` and `JUMP_REACH` are compile-time consts of `JUMP_VELOCITY`,
+/// `WALK_SPEED` and `GRAVITY`, and they decide which maps the generator accepts.
+/// A runtime scale leaves the generator judging reachability at standard
+/// gravity while the player moves under low gravity — which is the safe
+/// asymmetry, because every scale below 1.0 makes the player jump *higher and
+/// further* than the generator assumed. The alternative regenerates every map in
+/// the game and moves the golden table.
+///
+/// **The value is bracketed by `tests::low_gravity_carries_its_basis`**, not by
+/// the assertions that merely pin it: a suite pinned to a constant cannot report
+/// the constant moving, so that test asserts the two things the *number* has to
+/// be true of — the jump is visibly floatier, and a fall can still kill you.
+pub const LOW_GRAVITY_SCALE: f32 = 0.5;
+
 /// Which gravity a match is played under, as the host picks it in the lobby.
 ///
 /// It lives beside [`StartKit`] and [`MapScale`] because it is the same kind of
@@ -2527,11 +2544,10 @@ impl StartKit {
 /// **`Low` stays** — M22-RULINGS R3. If it is ever dropped, this enum becomes
 /// `Standard | Space` and the wire bytes below renumber with it.
 ///
-/// **Nothing reads this yet, deliberately.** T22.01 ships the setting and no
-/// behaviour at all; the simulation arm for each variant is T22.02's (low) and
-/// T22.03's (space). The test named
-/// `world::gravity_tests::the_setting_changes_no_simulation_yet` is what says so,
-/// and it is meant to be retired by whichever of those lands first.
+/// **`Low` is live (T22.02); `Space` is not yet.** [`GravityMode::scale`] is the
+/// one place the mode becomes a number, and `Space` still answers `1.0` there —
+/// T22.03 owns that arm. `world::gravity_tests` is where both claims are
+/// asserted.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GravityMode {
@@ -2581,6 +2597,35 @@ impl GravityMode {
             1 => Some(GravityMode::Low),
             2 => Some(GravityMode::Space),
             _ => None,
+        }
+    }
+
+    /// The multiplier this mode puts on [`GRAVITY`], everywhere gravity is
+    /// integrated.
+    ///
+    /// **This is the single place the mode becomes a number.** Four production
+    /// sites read `GRAVITY` to move something — `physics::resolve::apply_gravity`
+    /// (through `player::jetpack::gravity_scale`), `weapons::projectile::integrate`,
+    /// `weapons::projectile::predict_impact` and `bots::zone_reach` — and every
+    /// one of them multiplies by this rather than deciding for itself, so
+    /// "which gravity is this match under" has exactly one answer.
+    ///
+    /// **`Space` answers `1.0` and that is not an oversight.** T22.03 owns the
+    /// space arm (M22-RULINGS R3/R10); until it lands, a `Space` match plays at
+    /// standard gravity and `world::gravity_tests` asserts exactly that, so the
+    /// day it changes is a day this file changed.
+    ///
+    /// **Not applied to the four non-player `integrate` callers** — mines,
+    /// world items, tombstones and animals still fall at standard gravity under
+    /// `Low`. Their signatures cannot see the match setting
+    /// (`(map, …, dt)`), and M22-RULINGS R10 names those four signature changes
+    /// as `T22.11`'s cost and R14 rules what each does. Widening them here would
+    /// be doing that task early; the gap is real and deliberate.
+    pub const fn scale(self) -> f32 {
+        match self {
+            GravityMode::Standard => 1.0,
+            GravityMode::Low => LOW_GRAVITY_SCALE,
+            GravityMode::Space => 1.0,
         }
     }
 
@@ -3448,5 +3493,78 @@ mod tests {
         // docs/20-player-movement.md §4 claims ~66 px.
         let apex = JUMP_VELOCITY * JUMP_VELOCITY / (2.0 * GRAVITY);
         assert!((apex - 66.0).abs() < 1.0, "apex was {apex}");
+    }
+
+    /// Every mode's multiplier, and the one that is deliberately not a feature.
+    ///
+    /// The `Space` arm is asserted **equal to `Standard`** rather than left
+    /// unmentioned: it is a claim T22.03 has to break on purpose, not a gap
+    /// someone can close by accident.
+    #[test]
+    fn every_gravity_mode_has_a_multiplier() {
+        assert_eq!(GravityMode::Standard.scale(), 1.0);
+        assert_eq!(GravityMode::Low.scale(), LOW_GRAVITY_SCALE);
+        assert_eq!(
+            GravityMode::Space.scale(),
+            GravityMode::Standard.scale(),
+            "space is still standard gravity — T22.03 owns that arm"
+        );
+    }
+
+    /// What `LOW_GRAVITY_SCALE`'s **value** has to be true of.
+    ///
+    /// **Everything else about low gravity is pinned to this constant**, which
+    /// means everything else moves with it and none of it can report the
+    /// constant being wrong (`CLAUDE.md`, "a suite pinned to the constant cannot
+    /// detect the constant changing"). This is the assertion of the other kind:
+    /// two bounds derived from things that do *not* move with it, so the value
+    /// is bracketed rather than merely restated. It is
+    /// `capacity.rs::max_rooms_carries_its_basis`'s shape.
+    ///
+    /// **The floor — it has to be visible.** Low gravity that nobody can see is
+    /// a lobby row that does nothing. The apex has to gain at least a whole
+    /// player height, which puts the ceiling at `k <= 0.702`.
+    ///
+    /// **The ceiling — a fall must still be able to kill you.** Impact is
+    /// `sqrt(2 * g * k * h)` and `PlayerState::fall_damage` subtracts a *fixed*
+    /// `FALL_SAFE_SPEED` before scaling, so a small enough `k` makes the longest
+    /// fall the smallest map can hold land under the safe speed and do literally
+    /// zero damage — fall damage becomes dead code in this mode and nothing else
+    /// in the suite would say so. That puts the floor at `k > 0.161`.
+    ///
+    /// The full map height is the honest bound to use: it is an **upper** bound
+    /// on any fall that can happen, so requiring it to hurt is the weakest form
+    /// of the claim.
+    #[test]
+    fn low_gravity_carries_its_basis() {
+        assert!(
+            LOW_GRAVITY_SCALE < 1.0 && LOW_GRAVITY_SCALE > 0.0,
+            "low gravity must be a reduction: {LOW_GRAVITY_SCALE}"
+        );
+
+        // Floor: visibly floatier. Apex is v^2 / 2gk, so the gain over standard
+        // is the standard apex times (1/k - 1).
+        let standard_apex = JUMP_VELOCITY * JUMP_VELOCITY / (2.0 * GRAVITY);
+        let gained = standard_apex * (1.0 / LOW_GRAVITY_SCALE - 1.0);
+        assert!(
+            gained >= PLAYER_H,
+            "low gravity adds only {gained:.1} px to a {standard_apex:.1} px jump — \
+             less than the {PLAYER_H} px player it is supposed to be visible on"
+        );
+
+        // Ceiling: the longest fall the smallest map can hold still hurts.
+        // `MAX_FALL_SPEED` caps the impact, which is why this is not simply
+        // monotone in `k` — a tall enough fall reaches terminal velocity under
+        // any gravity, and then only the *height needed* moves.
+        let drop = MAP_SMALL_H as f32;
+        let impact = (2.0 * GRAVITY * LOW_GRAVITY_SCALE * drop)
+            .sqrt()
+            .min(MAX_FALL_SPEED);
+        assert!(
+            impact > FALL_SAFE_SPEED,
+            "under low gravity a {drop:.0} px fall — the whole height of the \
+             smallest map — lands at {impact:.0} px/s against a safe speed of \
+             {FALL_SAFE_SPEED}, so no fall anywhere in the game can hurt anyone"
+        );
     }
 }

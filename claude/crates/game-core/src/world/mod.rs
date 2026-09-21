@@ -805,16 +805,17 @@ pub struct World {
     /// the same recorded reason: a room that got its setting back at the default
     /// on restart is the bug `set_round_seconds` was fixed for once already.
     ///
-    /// **Nothing reads it yet.** T22.01 ships the setting and no behaviour;
-    /// `gravity_tests::the_setting_changes_no_simulation_yet` is the assertion
-    /// that says so, and whichever of T22.02 and T22.03 lands first retires it.
+    /// **`Low` is read; `Space` is not yet.** T22.02 wired the low-gravity arm
+    /// through `GravityMode::scale`;
+    /// `gravity_tests::low_gravity_changes_the_simulation_and_space_does_not_yet`
+    /// asserts both halves, and T22.03 retires the second.
     ///
-    /// **When something does read it, the client half is not free.** The client
-    /// does not run a `World`: `game-wasm`'s `LocalCore` predicts by calling
-    /// `player::apply_input` directly, with everything it reads passed in as
-    /// `MoveMods` (T21.02's shape — derive at the encode site, do not store a
-    /// second copy). A gravity-aware `apply_input` therefore has to reach the
-    /// mirror the same way, or prediction desyncs on the first jump.
+    /// **The client half was not free.** The client does not run a `World`:
+    /// `game-wasm`'s `GameCore` predicts by calling `player::apply_input`
+    /// directly, and `apply_input` now takes the mode. It could not ride
+    /// `MoveMods`, which is derived per player from the inventory — a match
+    /// setting is not a modifier of the player — so `GameCore::set_gravity`
+    /// carries it, which is `set_phase`'s shape.
     pub gravity: GravityMode,
     pub buried_items: Vec<ItemId>,
     /// Rounds left in each gun platform, indexed by platform id (T21.11C).
@@ -1599,6 +1600,13 @@ impl World {
             // frame of a mounted player still walking, every single mount.
             self.step_mount(idx, &input, dt);
             let mods = self.players[idx].move_mods();
+            // **The match's gravity, read from the world and not from the
+            // player** (T22.02). Copied out before the `&mut self.players[idx]`
+            // borrow below, which is also why it cannot simply be read at the
+            // call: `GravityMode` is `Copy`, and this is the world's setting,
+            // not a per-player modifier — `move_mods()` stays the one
+            // derivation of what the *player* is carrying.
+            let gravity = self.gravity;
             let p = &mut self.players[idx];
             let impact = apply_input(
                 &self.map,
@@ -1608,6 +1616,7 @@ impl World {
                 &input,
                 &prev,
                 mods,
+                gravity,
                 dt,
             );
             // **The whole rule moved into `PlayerState::fall_damage`**
@@ -1699,9 +1708,9 @@ impl World {
             .collect();
         // `weapon` and `owner` arrive with the outcome: `step` has already removed
         // the projectile, so there is nothing left to look up (see `Impact`).
-        let impacts = self
-            .projectiles
-            .step(&self.map, &boxes, &birds, self.wind, now, dt);
+        let impacts =
+            self.projectiles
+                .step(&self.map, &boxes, &birds, self.wind, self.gravity, now, dt);
 
         // Where everything still in flight has got to. At `SNAPSHOT_HZ`, for the
         // same reason `emit_item_motion` uses it: a rocket flies for a second or
@@ -7710,15 +7719,14 @@ mod birds_in_a_round {
     }
 }
 
-/// T22.01 — the gravity setting, which is deliberately behaviourless.
+/// The gravity setting, and which of its modes is wired to anything.
 ///
-/// **This module exists to be deleted.** T22.01 ships the lobby row, the wire
-/// message, the replay header field and the `World` field, and changes how
-/// nothing plays; these two tests are what make that a claim the suite can
-/// report on rather than a sentence in a commit message. Whichever of T22.02
-/// (low gravity) and T22.03 (space) lands first **must** turn
-/// `the_setting_changes_no_simulation_yet` red, and retiring it then is the
-/// correct move — leaving it green would mean that task shipped nothing.
+/// **T22.01 shipped the setting with no behaviour and this module said so;
+/// T22.02 retired half of that claim.** `Low` now changes the simulation and
+/// `Space` still does not, and both halves are asserted here rather than left
+/// to a commit message. T22.03 is the task that turns the `Space` half red, and
+/// retiring *it* then is the correct move for exactly the reason retiring the
+/// `Low` half was: leaving it green would mean that task shipped nothing.
 #[cfg(test)]
 mod gravity_tests {
     use super::*;
@@ -7752,7 +7760,8 @@ mod gravity_tests {
     ///
     /// The counts are in the return value rather than asserted inside `run`
     /// because they are the *sensitivity* of the hash, and a reader of
-    /// `the_setting_changes_no_simulation_yet` has to be able to see that
+    /// `low_gravity_changes_the_simulation_and_space_does_not_yet` has to be
+    /// able to see that
     /// something checks them.
     struct Run {
         hash: [u8; 32],
@@ -7887,14 +7896,20 @@ mod gravity_tests {
         );
     }
 
-    /// The control that says T22.01 shipped no behaviour.
+    /// `Low` reaches the simulation; `Space` still does not.
     ///
-    /// **What it rules out:** any wiring of `World::gravity` into the
-    /// simulation. It is asserted on the state hash rather than on a position,
-    /// because the hash covers every body, every projectile, every mine, every
-    /// grave and every item — a positional assertion would miss gravity applied
-    /// to a rocket and not to a player. Each of those four sites is falsified
-    /// separately; the reds are in T22.01's follow-up report.
+    /// **The two halves are the same assertion pointed in opposite directions,
+    /// and each is the other's control.** If the runner could not see gravity
+    /// at all, the `Low` half fails; if `GravityMode::scale` had been given a
+    /// `Space` arm by accident, the `Space` half fails. A test that only
+    /// asserted the inequality would be satisfied by a runner whose hash moves
+    /// for any reason whatsoever, and the `Space` equality is what rules that
+    /// out on the same seed, the same seats and the same inputs.
+    ///
+    /// Asserted on the state hash rather than on a position, because the hash
+    /// covers every body, every projectile, every mine, every grave and every
+    /// item — a positional assertion would miss gravity applied to a rocket and
+    /// not to a player.
     ///
     /// **The control for the control** is the second half, and it uses the *same
     /// seed*: a world that ran one tick must not hash the same as one that ran
@@ -7903,17 +7918,22 @@ mod gravity_tests {
     /// which a stationary player never returns, so it only ever detected "no
     /// player existed", and it passed with the inputs zeroed.
     #[test]
-    fn the_setting_changes_no_simulation_yet() {
+    fn low_gravity_changes_the_simulation_and_space_does_not_yet() {
         let standard = run(GravityMode::Standard);
-        for mode in [GravityMode::Low, GravityMode::Space] {
-            assert_eq!(
-                standard.hash,
-                run(mode).hash,
-                "{mode:?} changed the simulation — T22.01 ships the setting and \
-                 no behaviour. If you are T22.02 or T22.03, this test has done \
-                 its job and retires with your change."
-            );
-        }
+        assert_ne!(
+            standard.hash,
+            run(GravityMode::Low).hash,
+            "low gravity hashed identically to standard over {TICKS} ticks of \
+             two players running and jumping with a rocket, a mine and a grave \
+             falling beside them — `World::gravity` reaches no simulation code"
+        );
+        assert_eq!(
+            standard.hash,
+            run(GravityMode::Space).hash,
+            "space changed the simulation — `GravityMode::scale` still answers \
+             1.0 for it and T22.03 owns that arm. If you are T22.03, this half \
+             has done its job and retires with your change."
+        );
 
         // A world that barely ran must not hash the same as one that ran
         // `TICKS`, or the equality above is satisfied by a runner that hashes
@@ -7977,7 +7997,8 @@ mod gravity_tests {
             assert!(
                 n > 0,
                 "no {name} were live when the hash was taken, so \
-                 `the_setting_changes_no_simulation_yet` is blind to whatever \
+                 `low_gravity_changes_the_simulation_and_space_does_not_yet` is \
+                 blind to whatever \
                  gravity does to them — shorten RESEED_TICKS"
             );
         }

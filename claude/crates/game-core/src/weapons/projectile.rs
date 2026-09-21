@@ -3,7 +3,7 @@
 //! See `docs/31-weapons-combat.md` §3.
 
 use crate::constants::{
-    GRAVITY, GRENADE_REST_SPEED, MUZZLE_OFFSET, PROJECTILE_MAX_LIFETIME,
+    GravityMode, GRAVITY, GRENADE_REST_SPEED, MUZZLE_OFFSET, PROJECTILE_MAX_LIFETIME,
     PROJECTILE_OWNER_GRACE_TICKS,
 };
 use crate::items::registry::WeaponId;
@@ -192,12 +192,17 @@ impl Projectiles {
     /// silently make a grenade bounce off a seagull and a meteor stop dead in the
     /// air, which is a gameplay change nobody asked for hiding inside a rendering
     /// fix.
+    #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,
         map: &Map,
         players: &[(HitId, Aabb)],
         birds: &[(HitId, Aabb)],
         wind: f32,
+        // The match's gravity mode (T22.02). Beside `wind` because it is the
+        // same kind of thing: a property of the world this projectile is flying
+        // through, which the projectile itself cannot know.
+        gravity: GravityMode,
         now: f32,
         dt: f32,
     ) -> Vec<Impact> {
@@ -263,7 +268,21 @@ impl Projectiles {
             p.rose |= p.vel.y < 0.0;
             // Gravity now; wind after the apex check, which is the order the
             // airburst depends on.
-            p.vel.y = integrate(p.vel, w.delivery, w.gravity_scale, 0.0, 0.0, dt).y;
+            // **The match's gravity, multiplied into the weapon's own scale**
+            // (T22.02). A bullet's `gravity_scale` is 0.0 and `0.0 * k` is
+            // still 0.0, so no mode can bend a bullet — §F1's rule survives
+            // this multiplication by construction, and
+            // `low_gravity_lengthens_a_lob_and_leaves_a_bullet_straight`
+            // asserts both sides of that boundary.
+            p.vel.y = integrate(
+                p.vel,
+                w.delivery,
+                w.gravity_scale * gravity.scale(),
+                0.0,
+                0.0,
+                dt,
+            )
+            .y;
 
             // An airburst goes off the first tick it stops climbing (§B7) —
             // whether that is the top of its arc or a ceiling it just clipped.
@@ -519,12 +538,14 @@ pub fn surface_normal(map: &Map, at: Vec2) -> Vec2 {
 ///
 /// `None` means it was still flying after `max_ticks`. A caller should read that
 /// as "do not throw" — it does not know where the hazard ends up.
+#[allow(clippy::too_many_arguments)]
 pub fn predict_impact(
     map: &Map,
     weapon: WeaponId,
     from: Vec2,
     aim: f32,
     wind: f32,
+    gravity: GravityMode,
     max_ticks: u32,
     dt: f32,
 ) -> Option<Vec2> {
@@ -565,7 +586,13 @@ pub fn predict_impact(
         }
         p.age_ticks += 1;
         p.rose |= p.vel.y < 0.0;
-        p.vel.y += GRAVITY * w.gravity_scale * dt;
+        // **The second copy of the gravity term, and it has to move with the
+        // first** (T22.02). This is the bots' throw-safety arc walker, not the
+        // flight path: scaling only `integrate` leaves every shot in flight
+        // correct and every *bot throw* wrong, which is a balance change with
+        // no visible cause. `tests/thrown.rs::prediction_agrees_with_the_simulation`
+        // runs under both modes and is what ties the two together.
+        p.vel.y += GRAVITY * w.gravity_scale * gravity.scale() * dt;
         if matches!(w.burst, Burst::Pellets { .. }) && p.rose && p.vel.y >= 0.0 {
             return Some(p.pos);
         }
@@ -666,7 +693,7 @@ mod tests {
             let now = i as f32 * SIM_DT;
             // A strong wind, to prove a bullet ignores it and a rocket does not.
             if let Some(im) = pr
-                .step(&map, &[], &bird, 400.0, now, SIM_DT)
+                .step(&map, &[], &bird, 400.0, GravityMode::Standard, now, SIM_DT)
                 .into_iter()
                 .next()
             {
@@ -767,7 +794,7 @@ mod tests {
         let rocket = pr.spawn(by_key("bazooka").expect("bazooka").id, 0, from, 0.0, 0.0);
         for i in 0..30 {
             let now = i as f32 * SIM_DT;
-            pr.step(&map, &[], &[], 400.0, now, SIM_DT);
+            pr.step(&map, &[], &[], 400.0, GravityMode::Standard, now, SIM_DT);
         }
         let b = pr.get(bullet).expect("the bullet stopped in open air");
         assert_eq!(
@@ -800,7 +827,7 @@ mod tests {
         let mut end = None;
         for i in 0..600 {
             let now = i as f32 * SIM_DT;
-            for im in pr.step(&map, &[], &[], 0.0, now, SIM_DT) {
+            for im in pr.step(&map, &[], &[], 0.0, GravityMode::Standard, now, SIM_DT) {
                 end = Some(im.outcome);
             }
             if end.is_some() {
@@ -836,7 +863,7 @@ mod tests {
             let mut ticks = 0;
             for i in 0..600 {
                 let now = i as f32 * SIM_DT;
-                pr.step(&map, &[], &[], 0.0, now, SIM_DT);
+                pr.step(&map, &[], &[], 0.0, GravityMode::Standard, now, SIM_DT);
                 ticks += 1;
                 match pr.get(id) {
                     Some(p) if p.pos.x - from.x >= DISTANCE => break,
@@ -851,5 +878,66 @@ mod tests {
                 "{key} took {got}s to fly {DISTANCE} px, expected {want}s at {speed} px/s"
             );
         }
+    }
+
+    /// T22.02 — the match's gravity lengthens a lob and leaves a bullet alone,
+    /// with the `gravity_scale == 0.0` boundary asserted on **both** sides.
+    ///
+    /// **The bullet arm is the half that could rot silently.** A mode that
+    /// multiplied `GRAVITY` somewhere other than the weapon's own scale — in
+    /// `integrate`'s body, say, or at `apply_gravity` — would bend a bullet,
+    /// and §F1's whole point is that it does not. Asserting only the lob would
+    /// pass through that change without a word.
+    ///
+    /// Fired flat from the same place at the same speed, so the only difference
+    /// between the two runs is the mode. Drop, not range: a flat shot's range
+    /// is its lifetime, and the drop at a fixed tick is the thing gravity
+    /// actually decides.
+    #[test]
+    fn low_gravity_lengthens_a_lob_and_leaves_a_bullet_straight() {
+        let fly = |gravity: GravityMode| -> (f32, f32) {
+            let map = empty_map();
+            let mut pr = Projectiles::new();
+            let from = Vec2::new(100.0, 256.0);
+            let bullet = pr.spawn(by_key("pistol").expect("pistol").id, 0, from, 0.0, 0.0);
+            let rocket = pr.spawn(by_key("bazooka").expect("bazooka").id, 0, from, 0.0, 0.0);
+            for i in 0..30 {
+                pr.step(&map, &[], &[], 0.0, gravity, i as f32 * SIM_DT, SIM_DT);
+            }
+            let b = pr.get(bullet).expect("the bullet stopped in open air");
+            let r = pr.get(rocket).expect("the rocket stopped in open air");
+            (r.pos.y - from.y, b.pos.y - from.y)
+        };
+
+        let (lob_std, bullet_std) = fly(GravityMode::Standard);
+        let (lob_low, bullet_low) = fly(GravityMode::Low);
+
+        assert!(
+            lob_std > 0.0,
+            "control: the rocket did not fall under standard gravity, so the \
+             fixture is not applying gravity at all"
+        );
+        // Semi-implicit Euler makes the drop after `n` ticks
+        // `g * k * dt^2 * n(n+1)/2`, proportional to `k` — but the position is
+        // accumulated one sub-step at a time, so the two runs differ in the
+        // last f32 digits (1.3e-4 px measured). A hundredth of a pixel is
+        // three orders of magnitude below anything a wrong multiplier could
+        // produce and three above the noise.
+        let want = lob_std * GravityMode::Low.scale();
+        assert!(
+            (lob_low - want).abs() < 0.01,
+            "a lob fell {lob_low} px under low gravity against {lob_std} px \
+             under standard — expected {want}, not the multiplier"
+        );
+        // And the boundary: `0.0 * k` is still 0.0 in both modes.
+        assert_eq!(
+            bullet_std, 0.0,
+            "control: a bullet fell under standard gravity"
+        );
+        assert_eq!(
+            bullet_low, 0.0,
+            "a bullet fell {bullet_low} px under low gravity — the mode reached \
+             something other than the weapon's own `gravity_scale`"
+        );
     }
 }

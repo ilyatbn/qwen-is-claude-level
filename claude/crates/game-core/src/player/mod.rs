@@ -9,6 +9,7 @@ pub use input::{button, edges, Input, InputEdges};
 pub use jetpack::JetpackState;
 pub use movement::{apply_flight, apply_horizontal, try_jump, JumpState};
 
+use crate::constants::GravityMode;
 use crate::map::Map;
 use crate::physics::body::Body;
 use crate::physics::resolve::integrate;
@@ -111,9 +112,23 @@ impl MoveMods {
     };
 }
 
-// Eight, and the allow stays (T21.02). `MoveMods` **replaced** an argument
-// rather than adding one — the count is what it was — and the struct is what
-// stops the next modifier making it nine.
+// Eight became nine at T22.02, and the reason is recorded rather than glossed.
+//
+// The comment this replaces said: *"`MoveMods` replaced an argument rather than
+// adding one — the count is what it was — and the struct is what stops the next
+// modifier making it nine."* `gravity` is not a modifier of the *player*, which
+// is what `MoveMods` is and what `PlayerState::move_mods` derives; it is a
+// property of the **match**, and folding it into `MoveMods` would give
+// `move_mods()` an argument and end its single-derivation property — the thing
+// T20.19 and T21.02 paid for and the one rule both of the last two rubber-band
+// bugs broke.
+//
+// **The wrapper that restores the count is M22-RULINGS R10's `MoveStep { mods,
+// env }`, and R10 says in as many words that `T22.11` introduces it and nobody
+// before it does.** So this argument is the scalar-seam form of the same value,
+// and T22.11 absorbs it: `mods` and `gravity` become one `MoveStep`, one
+// parameter replaces two, and the count goes back to eight — which is the move
+// the old comment blessed, done once R10's owner is the one doing it.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_input(
     map: &Map,
@@ -123,6 +138,7 @@ pub fn apply_input(
     input: &Input,
     prev: &Input,
     mods: MoveMods,
+    gravity: GravityMode,
     dt: f32,
 ) -> f32 {
     let e = edges(input, prev);
@@ -177,7 +193,12 @@ pub fn apply_input(
         apply_flight(body, input);
     }
 
-    integrate(map, body, jetpack::gravity_scale(jet, mods.flying), dt)
+    integrate(
+        map,
+        body,
+        jetpack::gravity_scale(jet, mods.flying, gravity),
+        dt,
+    )
 }
 
 /// The complete per-player movement state, so a caller can snapshot and restore it
@@ -198,7 +219,16 @@ impl MovementState {
         }
     }
 
-    pub fn step(&mut self, map: &Map, input: &Input, prev: &Input, mods: MoveMods, dt: f32) -> f32 {
+    #[allow(clippy::too_many_arguments)]
+    pub fn step(
+        &mut self,
+        map: &Map,
+        input: &Input,
+        prev: &Input,
+        mods: MoveMods,
+        gravity: GravityMode,
+        dt: f32,
+    ) -> f32 {
         apply_input(
             map,
             &mut self.body,
@@ -207,6 +237,7 @@ impl MovementState {
             input,
             prev,
             mods,
+            gravity,
             dt,
         )
     }

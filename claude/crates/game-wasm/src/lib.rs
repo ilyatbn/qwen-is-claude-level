@@ -19,7 +19,7 @@
 //! whenever `view.buffer !== memory.buffer`. T3.02 does this inside its accessor so
 //! no caller has to remember.
 
-use game_core::constants::{MapScale, SIM_DT};
+use game_core::constants::{GravityMode, MapScale, SIM_DT};
 use game_core::effects::fog::HeavyFog;
 use game_core::effects::lava::LavaBurst;
 use game_core::effects::meteor::MeteorShower;
@@ -65,6 +65,22 @@ pub struct GameCore {
     /// until told otherwise, which is what the sandbox, which is never told,
     /// always was.
     phase: game_core::world::RoundPhase,
+    /// Which gravity the match is played under (T22.02).
+    ///
+    /// **`apply_input` reads it, so the mirror must be told it.** The rule
+    /// `set_player_state`'s doc states — *"everything `apply_input` reads must
+    /// be identical on both sides"* — is what makes this a field rather than
+    /// something the client could leave at the default: a low-gravity match
+    /// predicted at standard gravity rubber-bands on the first jump.
+    ///
+    /// **It cannot ride `move_mods`.** That byte is derived from the
+    /// *inventory* — boots, wings, a mount — and is per-player; gravity is a
+    /// property of the match. `set_phase` is the precedent and this is its
+    /// shape: a per-match constant, announced once, stored once.
+    ///
+    /// `Standard` until told otherwise, which is what the sandbox — never told
+    /// — always was.
+    gravity: GravityMode,
 }
 
 /// The sandbox's weather, driven by `weather_step`.
@@ -106,6 +122,7 @@ impl GameCore {
             rng: substream(1, "wasm"),
             weather: Weather::default(),
             phase: game_core::world::RoundPhase::Playing,
+            gravity: GravityMode::Standard,
         }
     }
 
@@ -115,6 +132,23 @@ impl GameCore {
         match game_core::world::RoundPhase::parse(phase) {
             Some(p) => {
                 self.phase = p;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The gravity spelling off `lobby_state` (T22.02). Returns whether it was
+    /// a mode this build knows; an unknown one leaves the old mode in place.
+    ///
+    /// **Refuse rather than clamp**, which is `GravityMode::parse`'s own rule
+    /// (§E6): a client silently falling back to `Standard` on a spelling it did
+    /// not recognise would predict a low-gravity match at full gravity and look
+    /// exactly like a netcode bug.
+    pub fn set_gravity(&mut self, gravity: &str) -> bool {
+        match GravityMode::parse(gravity) {
+            Some(g) => {
+                self.gravity = g;
                 true
             }
             None => false,
@@ -361,6 +395,10 @@ impl GameCore {
     /// fed `speed_multiplier()` inside `apply_input`.
     pub fn apply_input(&mut self, id: u8, seq: u32, buttons: u8, aim: u16, dt: f32) {
         let map = &self.map;
+        // Copied out before the `&mut` borrow of the player, for the reason
+        // `World::apply_inputs` copies it: it is the world's setting, not the
+        // player's.
+        let gravity = self.gravity;
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
             return;
         };
@@ -410,6 +448,7 @@ impl GameCore {
             &input,
             &p.prev_input,
             mods,
+            gravity,
             dt,
         );
         p.prev_input = input;
@@ -764,7 +803,9 @@ impl GameCore {
             apply_hits(&mut self.players, &hits.borrow(), now);
         }
         // The sandbox has no birds, so the bullet-only slice is empty here.
-        let outcomes = self.projectiles.step(&self.map, &boxes, &[], wind, now, dt);
+        let outcomes = self
+            .projectiles
+            .step(&self.map, &boxes, &[], wind, self.gravity, now, dt);
 
         let mut events = Vec::new();
         for im in outcomes {
@@ -1358,6 +1399,10 @@ pub fn constants_json() -> String {
         // predict where a bird's drop can be: without them a fixture has to
         // spell the numbers, which is the thing `CLAUDE.md` forbids.
         GRAVITY => c::GRAVITY,
+        // T22.02. Exported so a client fixture can say "half as far" without
+        // writing 0.5 — a literal in TypeScript that shadows a Rust constant is
+        // the drift this boundary exists to prevent.
+        LOW_GRAVITY_SCALE => c::LOW_GRAVITY_SCALE,
         BIRD_DROP_VELOCITY => c::BIRD_DROP_VELOCITY,
         CHUNK_REBAKE_BUDGET => c::CHUNK_REBAKE_BUDGET,
         CHUNK_REBAKE_MS => c::CHUNK_REBAKE_MS,

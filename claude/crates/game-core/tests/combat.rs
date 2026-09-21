@@ -108,7 +108,7 @@ fn fire_bullet(
         // One round in flight, so the first impact is the only impact — and
         // clippy is right that this never loops.
         if let Some(im) = pr
-            .step(map, &boxes, &[], 0.0, now, SIM_DT)
+            .step(map, &boxes, &[], 0.0, GravityMode::Standard, now, SIM_DT)
             .into_iter()
             .next()
         {
@@ -161,7 +161,7 @@ fn a_bazooka_explodes_on_the_wall_it_hits() {
     let mut hit_at = None;
     for i in 0..600 {
         let now = i as f32 * SIM_DT;
-        for im in pr.step(&map, &[], &[], 0.0, now, SIM_DT) {
+        for im in pr.step(&map, &[], &[], 0.0, GravityMode::Standard, now, SIM_DT) {
             assert_eq!(im.id, id);
             if let ProjectileOutcome::Exploded { at } = im.outcome {
                 hit_at = Some(at);
@@ -184,7 +184,7 @@ fn a_grenade_bounces_rather_than_exploding_on_contact() {
     let mut bounced = false;
     for i in 0..60 {
         let now = i as f32 * SIM_DT;
-        let outs = pr.step(&map, &[], &[], 0.0, now, SIM_DT);
+        let outs = pr.step(&map, &[], &[], 0.0, GravityMode::Standard, now, SIM_DT);
         assert!(
             outs.is_empty(),
             "a grenade must not explode on contact: {outs:?}"
@@ -208,7 +208,7 @@ fn a_grenade_comes_to_rest_on_a_slope_instead_of_jittering() {
     let mut last = Vec2::ZERO;
     for i in 0..(2.0 / SIM_DT) as i32 {
         let now = i as f32 * SIM_DT;
-        pr.step(&map, &[], &[], 0.0, now, SIM_DT);
+        pr.step(&map, &[], &[], 0.0, GravityMode::Standard, now, SIM_DT);
         if let Some(p) = pr.get(id) {
             last = p.pos;
         }
@@ -221,7 +221,15 @@ fn a_grenade_comes_to_rest_on_a_slope_instead_of_jittering() {
 
     // And it stays put: bit-identical over another second.
     for i in 0..(1.0 / SIM_DT) as i32 {
-        pr.step(&map, &[], &[], 0.0, 2.0 + i as f32 * SIM_DT, SIM_DT);
+        pr.step(
+            &map,
+            &[],
+            &[],
+            0.0,
+            GravityMode::Standard,
+            2.0 + i as f32 * SIM_DT,
+            SIM_DT,
+        );
     }
     assert_eq!(pr.get(id).expect("still there").pos, last);
 }
@@ -235,7 +243,7 @@ fn a_grenade_fuse_fires_in_mid_air_if_it_never_touches_anything() {
     let mut exploded = None;
     for i in 0..(GRENADE_FUSE / SIM_DT) as i32 + 30 {
         let now = i as f32 * SIM_DT;
-        for im in pr.step(&map, &[], &[], 0.0, now, SIM_DT) {
+        for im in pr.step(&map, &[], &[], 0.0, GravityMode::Standard, now, SIM_DT) {
             if im.id == id {
                 exploded = Some((now, im.outcome));
             }
@@ -266,7 +274,15 @@ fn a_projectile_never_passes_through_a_one_pixel_wall() {
     );
     let mut at = None;
     for i in 0..120 {
-        for im in pr.step(&map, &[], &[], 0.0, i as f32 * SIM_DT, SIM_DT) {
+        for im in pr.step(
+            &map,
+            &[],
+            &[],
+            0.0,
+            GravityMode::Standard,
+            i as f32 * SIM_DT,
+            SIM_DT,
+        ) {
             if let ProjectileOutcome::Exploded { at: a } = im.outcome {
                 at = Some(a);
             }
@@ -294,7 +310,15 @@ fn a_projectile_despawns_at_its_lifetime_even_with_no_gravity() {
     let mut gone = false;
     for i in 0..((PROJECTILE_MAX_LIFETIME + 1.0) / SIM_DT) as i32 {
         if !pr
-            .step(&map, &[], &[], 0.0, i as f32 * SIM_DT, SIM_DT)
+            .step(
+                &map,
+                &[],
+                &[],
+                0.0,
+                GravityMode::Standard,
+                i as f32 * SIM_DT,
+                SIM_DT,
+            )
             .is_empty()
         {
             gone = true;
@@ -317,6 +341,7 @@ fn the_owner_is_immune_for_the_first_few_ticks() {
         &[(HitId::Player(0), owner_box)],
         &[],
         0.0,
+        GravityMode::Standard,
         SIM_DT,
         SIM_DT,
     );
@@ -354,6 +379,7 @@ fn the_owner_grace_ignores_a_round_that_starts_inside_its_owner() {
                 &[(HitId::Player(0), owner_box)],
                 &[],
                 0.0,
+                GravityMode::Standard,
                 now,
                 SIM_DT,
             );
@@ -394,6 +420,7 @@ fn a_round_that_starts_inside_someone_else_hits_them() {
         &[(HitId::Player(0), victim_box)],
         &[],
         0.0,
+        GravityMode::Standard,
         0.0,
         SIM_DT,
     );
@@ -673,7 +700,7 @@ fn a_bullet_is_in_flight_between_the_muzzle_and_the_wall() {
     let mut seen: Vec<f32> = Vec::new();
     for i in 0..12 {
         let now = i as f32 * SIM_DT;
-        let done = pr.step(&map, &[], &[], 0.0, now, SIM_DT);
+        let done = pr.step(&map, &[], &[], 0.0, GravityMode::Standard, now, SIM_DT);
         assert!(done.is_empty(), "the round stopped on an empty map");
         seen.push(pr.iter().next().expect("still flying").pos.x);
     }

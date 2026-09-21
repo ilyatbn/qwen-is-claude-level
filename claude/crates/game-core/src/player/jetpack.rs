@@ -9,9 +9,9 @@
 //! is what makes both testable.
 
 use crate::constants::{
-    JETPACK_DRAIN, JETPACK_GRAVITY_SCALE, JETPACK_HOLD_DELAY, JETPACK_MAX_FUEL, JETPACK_MAX_SPEED,
-    JETPACK_MIN_FUEL_TO_ENGAGE, JETPACK_REFILL, JETPACK_REFILL_DELAY, JETPACK_THRUST_DOWN,
-    JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, SIM_HZ,
+    GravityMode, JETPACK_DRAIN, JETPACK_GRAVITY_SCALE, JETPACK_HOLD_DELAY, JETPACK_MAX_FUEL,
+    JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, JETPACK_REFILL, JETPACK_REFILL_DELAY,
+    JETPACK_THRUST_DOWN, JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, SIM_HZ,
 };
 use crate::physics::body::Body;
 use crate::player::input::{button, Input};
@@ -165,23 +165,32 @@ pub fn apply_thrust(body: &mut Body, input: &Input, dt: f32) {
 /// `JETPACK_GRAVITY_SCALE` rather than 0 is deliberate: holding Space with no WASD
 /// gives a slow controlled descent rather than a dead hover, so running out of fuel
 /// is a gradual loss of lift instead of a sudden drop.
-pub fn gravity_scale(state: &JetpackState, flying: bool) -> f32 {
-    if flying {
-        // **T21.03's wings: no gravity at all.** The third regime lives here
-        // rather than in a branch at the call site, because "which gravity is
-        // this player under" must have exactly one answer — a second place to
-        // decide it is how a player ends up jetpack-scaled *and* flying.
-        //
-        // 0.0 rather than a small number: `apply_flight` assigns the vertical
-        // velocity outright, so any residual gravity would be overwritten on the
-        // very next tick and would only show up as a discrepancy between the
-        // server and a client that rounded differently.
-        0.0
-    } else if state.active {
-        JETPACK_GRAVITY_SCALE
-    } else {
-        1.0
-    }
+///
+/// **The match's gravity mode multiplies all three regimes** (T22.02), and it is
+/// applied here rather than at `apply_input`'s `integrate` line for the reason
+/// the wings' `0.0` is here: *"which gravity is this player under"* must have
+/// exactly one answer, and a second place to decide it is how a player ends up
+/// jetpack-scaled **and** low-gravity-scaled by two paths that disagree. The
+/// wings' regime is `0.0`, and `0.0 * anything` is still no gravity, so no mode
+/// can resurrect a force T21.03 refused.
+pub fn gravity_scale(state: &JetpackState, flying: bool, gravity: GravityMode) -> f32 {
+    gravity.scale()
+        * if flying {
+            // **T21.03's wings: no gravity at all.** The third regime lives here
+            // rather than in a branch at the call site, because "which gravity is
+            // this player under" must have exactly one answer — a second place to
+            // decide it is how a player ends up jetpack-scaled *and* flying.
+            //
+            // 0.0 rather than a small number: `apply_flight` assigns the vertical
+            // velocity outright, so any residual gravity would be overwritten on the
+            // very next tick and would only show up as a discrepancy between the
+            // server and a client that rounded differently.
+            0.0
+        } else if state.active {
+            JETPACK_GRAVITY_SCALE
+        } else {
+            1.0
+        }
 }
 
 /// Refuse the jetpack for this tick (T21.03).
@@ -203,7 +212,7 @@ pub fn refuse(state: &mut JetpackState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{GRAVITY, SIM_DT};
+    use crate::constants::{GravityMode, GRAVITY, SIM_DT};
     use crate::math::Vec2;
     use crate::player::input::button::*;
 
@@ -517,7 +526,7 @@ mod tests {
         };
         for _ in 0..30 {
             apply_thrust(&mut b, &input_with(UP), SIM_DT);
-            b.vel.y += GRAVITY * gravity_scale(&s, false) * SIM_DT;
+            b.vel.y += GRAVITY * gravity_scale(&s, false, GravityMode::Standard) * SIM_DT;
             b.pos.y += b.vel.y * SIM_DT;
         }
         assert!(b.pos.y < 0.0, "did not climb: y = {}", b.pos.y);
@@ -534,7 +543,7 @@ mod tests {
         };
         for _ in 0..ticks {
             apply_thrust(&mut powered, &input_with(JUMP), SIM_DT);
-            powered.vel.y += GRAVITY * gravity_scale(&s, false) * SIM_DT;
+            powered.vel.y += GRAVITY * gravity_scale(&s, false, GravityMode::Standard) * SIM_DT;
             powered.pos.y += powered.vel.y * SIM_DT;
         }
 
@@ -556,8 +565,11 @@ mod tests {
     #[test]
     fn gravity_scale_switches_with_active() {
         let mut s = JetpackState::default();
-        assert_eq!(gravity_scale(&s, false), 1.0);
+        assert_eq!(gravity_scale(&s, false, GravityMode::Standard), 1.0);
         s.active = true;
-        assert_eq!(gravity_scale(&s, false), JETPACK_GRAVITY_SCALE);
+        assert_eq!(
+            gravity_scale(&s, false, GravityMode::Standard),
+            JETPACK_GRAVITY_SCALE
+        );
     }
 }

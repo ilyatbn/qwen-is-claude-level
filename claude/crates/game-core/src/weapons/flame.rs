@@ -267,7 +267,7 @@ pub fn enforce_cap(projectiles: &mut Projectiles) -> Vec<crate::weapons::project
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{GRENADE_REST_SPEED, PLAYER_H, PLAYER_W, SIM_DT};
+    use crate::constants::{GravityMode, GRENADE_REST_SPEED, PLAYER_H, PLAYER_W, SIM_DT};
     use crate::map::{CoarseGrid, MapMeta, Mask};
     use crate::weapons::defs::def;
     use crate::weapons::explode::DamageSource;
@@ -377,7 +377,7 @@ mod tests {
 
     /// Advance the projectile step alone — no players, no birds, no wind.
     fn fly(ps: &mut Projectiles, map: &Map, now: f32, dt: f32) -> Vec<ProjectileOutcome> {
-        ps.step(map, &[], &[], 0.0, now, dt)
+        ps.step(map, &[], &[], 0.0, GravityMode::Standard, now, dt)
             .into_iter()
             .map(|i| i.outcome)
             .collect()
@@ -472,7 +472,7 @@ mod tests {
             now += SIM_DT;
             // Stepped as well as ticked: this is what ages it past the owner
             // grace, and what eventually expires it.
-            ps.step(&map, &[], &[], 0.0, now, SIM_DT);
+            ps.step(&map, &[], &[], 0.0, GravityMode::Standard, now, SIM_DT);
             with_targets(&mut vs, |t| {
                 tick(&ps, &mut map, t, now, SIM_DT);
             });
@@ -507,7 +507,7 @@ mod tests {
                 ..Default::default()
             }];
             for _ in 0..30 {
-                ps.step(map, &[], &[], 0.0, 0.0, SIM_DT);
+                ps.step(map, &[], &[], 0.0, GravityMode::Standard, 0.0, SIM_DT);
                 with_targets(&mut vs, |t| {
                     tick(&ps, map, t, 1.0, SIM_DT);
                 });
@@ -545,7 +545,7 @@ mod tests {
         // number the flight step uses, so "the owner is briefly immune" has one
         // definition rather than two that drift.
         for _ in 0..PROJECTILE_OWNER_GRACE_TICKS {
-            ps.step(&map, &[], &[], 0.0, 0.0, SIM_DT);
+            ps.step(&map, &[], &[], 0.0, GravityMode::Standard, 0.0, SIM_DT);
             with_targets(&mut me, |t| {
                 tick(&ps, &mut map, t, 1.0, SIM_DT);
             });
@@ -556,7 +556,7 @@ mod tests {
         );
 
         for _ in 0..10 {
-            ps.step(&map, &[], &[], 0.0, 0.0, SIM_DT);
+            ps.step(&map, &[], &[], 0.0, GravityMode::Standard, 0.0, SIM_DT);
             with_targets(&mut me, |t| {
                 tick(&ps, &mut map, t, 1.0, SIM_DT);
             });
@@ -588,7 +588,7 @@ mod tests {
             ..Default::default()
         }];
         for _ in 0..20 {
-            ps.step(&map, &[], &[], 0.0, 0.0, SIM_DT);
+            ps.step(&map, &[], &[], 0.0, GravityMode::Standard, 0.0, SIM_DT);
             with_targets(&mut vs, |t| {
                 tick(&ps, &mut map, t, 1.0, SIM_DT);
             });
@@ -659,7 +659,7 @@ mod tests {
         let window = FLAME_SCORCH_EVERY * 4.0;
         while now < window {
             now += SIM_DT;
-            ps.step(&map, &[], &[], 0.0, now, SIM_DT);
+            ps.step(&map, &[], &[], 0.0, GravityMode::Standard, now, SIM_DT);
             with_targets(&mut none, |t| {
                 scorches += tick(&ps, &mut map, t, now, SIM_DT).len();
             });
@@ -686,7 +686,7 @@ mod tests {
         let mut t2 = 0.0;
         while air.get(id).is_some_and(|p| !p.resting) && t2 < FLAME_LIFE {
             t2 += SIM_DT;
-            air.step(&air_map, &[], &[], 0.0, t2, SIM_DT);
+            air.step(&air_map, &[], &[], 0.0, GravityMode::Standard, t2, SIM_DT);
             with_targets(&mut none, |t| {
                 air_scorches += tick(&air, &mut air_map, t, t2, SIM_DT).len();
             });

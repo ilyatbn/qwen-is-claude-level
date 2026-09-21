@@ -1483,7 +1483,15 @@ mod ballistics {
             let now = i as f32 * crate::constants::SIM_DT;
             // One round in flight: the first impact is the only impact.
             if let Some(im) = pr
-                .step(map, &boxes, &[], 0.0, now, crate::constants::SIM_DT)
+                .step(
+                    map,
+                    &boxes,
+                    &[],
+                    0.0,
+                    crate::constants::GravityMode::Standard,
+                    now,
+                    crate::constants::SIM_DT,
+                )
                 .into_iter()
                 .next()
             {

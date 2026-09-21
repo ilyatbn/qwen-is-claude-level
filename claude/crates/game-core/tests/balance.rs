@@ -26,8 +26,8 @@ use std::collections::BTreeMap;
 
 use game_core::bots::Bot;
 use game_core::constants::{
-    MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, DEFAULT_MAP_SCALE, FOV_DAY, INVENTORY_SLOTS,
-    MAX_WORLD_ITEMS, ROUND_SECONDS, SIM_DT, SURFACE_SAMPLE_STEP, WORLD_ITEM_TTL,
+    GravityMode, MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, DEFAULT_MAP_SCALE, FOV_DAY,
+    INVENTORY_SLOTS, MAX_WORLD_ITEMS, ROUND_SECONDS, SIM_DT, SURFACE_SAMPLE_STEP, WORLD_ITEM_TTL,
 };
 use game_core::items::registry::{ItemDef, ItemId, ItemKind, ITEMS, PISTOL};
 use game_core::math::Vec2;
@@ -81,6 +81,16 @@ struct Round {
     /// Ticks an enemy spent walking out of, or refusing to walk into, a hazard
     /// this weapon laid.
     deflect: u32,
+    /// Throws refused because the **target** was inside our own reach, and
+    /// throws refused because the walked **arc** landed on us (T11.15).
+    ///
+    /// Both are driven by `bots::zone_reach`, which is the fourth production
+    /// reader of `GRAVITY` and the one that does not integrate. They are here
+    /// because a stand-off derived from the wrong gravity does not show up as a
+    /// missing throw — it shows up as a bot throwing and then standing in the
+    /// fire, which reads as a self-damage number with no cause attached.
+    rej_blast_guard: u32,
+    rej_impact_guard: u32,
 }
 
 /// One headless round.
@@ -91,10 +101,25 @@ struct Round {
 /// does so identically for every weapon, and leaving them in would let a bot
 /// switch to whatever it walked over halfway through the measurement.
 fn run(seed: u64, hold: Option<ItemId>, seconds: f32) -> Round {
+    run_under(seed, hold, seconds, GravityMode::Standard)
+}
+
+/// The same round under a chosen gravity mode (T22.02).
+///
+/// **The fixture is what was missing, and its absence was invisible.** Before
+/// this parameter nothing in this file could construct a low-gravity world, so
+/// the `--ignored` clause of T22.02's own Done-when passed before any of the
+/// work was done — it was measuring the shipped game twice and calling the
+/// agreement a result.
+fn run_under(seed: u64, hold: Option<ItemId>, seconds: f32, gravity: GravityMode) -> Round {
     // `DEFAULT_MAP_SCALE`, for the same reason as `BOTS`: on Large, 0 of 8 rounds
     // contained a fight at all, so a weapon table measured there is measuring
     // silence.
     let mut w = World::new(seed, DEFAULT_MAP_SCALE);
+    // **Set before the first `step` and never again.** It is the host's lobby
+    // choice, which `room.rs` applies at construction; a mode changed mid-round
+    // would be measuring two games.
+    w.gravity = gravity;
     w.set_phase(RoundPhase::Playing);
 
     let mut bots = Vec::new();
@@ -222,6 +247,8 @@ fn run(seed: u64, hold: Option<ItemId>, seconds: f32) -> Round {
         r.fires += s.fires;
         r.ticks_armed += s.ticks_armed;
         r.deflect += s.ticks_hazard_evaded + s.ticks_hazard_blocked;
+        r.rej_blast_guard += s.rej_blast_guard;
+        r.rej_impact_guard += s.rej_impact_guard;
     }
     r
 }
@@ -362,6 +389,139 @@ fn the_measurement_is_reproducible() {
     assert!(
         a.fires > 0,
         "no shots fired — the comparison proves nothing"
+    );
+}
+
+/// T22.02 — what half gravity does to the numbers this file exists to measure.
+///
+/// `cargo test -p game-core --release --test balance -- --ignored --nocapture`
+///
+/// **Three things move and they move for different reasons**, which is why this
+/// reports all three side by side rather than one summary figure:
+///
+/// - **The bots' flame stand-off.** `bots::zone_reach` derives it as the
+///   ballistic range `v^2 / (g * FLAME_GRAVITY_SCALE * k)`, so halving gravity
+///   doubles it. That radius drives both throw guards, and a stand-off computed
+///   at the wrong gravity does not show up as a missing throw — it shows up as
+///   a bot throwing and then walking into its own fire.
+/// - **Self-damage.** Which is that same failure, measured at the victim.
+/// - **The encounter rate.** Floatier jumps change where bots get to and how
+///   long they are in the air, so `fought`, `fires` and `dmg` all move.
+///
+/// **The reach column is printed and not asserted, on purpose.** The only way
+/// to assert it from an integration test is to write the expression out again,
+/// and an expression asserted against a copy of itself reports nothing. What is
+/// asserted is the *effect*: the measured game has to differ, and the
+/// standard-gravity arm beside it is what says the instrument can see anything
+/// at all.
+///
+/// **Measured, so the label is not a guess:** with the multiplier deleted from
+/// `bots::zone_reach`, the printed stand-off line does **not** move — it is the
+/// basis, evaluated here, not a reading of the function — while the molotov row
+/// moves from `81 fires / 5 refused / 67 self-damage` to
+/// `112 / 2 / 89` over the same eight seeds. The bots throw 38 % more and burn
+/// themselves a third more, and the `natural` and `pistol` rows stay
+/// byte-identical, which is what says the effect is the flame arm and not the
+/// weather.
+#[test]
+#[ignore = "measurement: minutes in release"]
+fn low_gravity_report() {
+    use game_core::constants::{FLAME_GRAVITY_SCALE, FLAME_RADIUS, GRAVITY};
+    use game_core::items::registry::{def as item_def, MOLOTOV};
+    use game_core::weapons::defs::Burst;
+
+    // The same expression `bots::zone_reach` evaluates, on the molotov's own
+    // `Burst::Flames { speed }` off the registry — not a literal.
+    let flame_speed = item_def(MOLOTOV)
+        .and_then(|d| match d.kind {
+            ItemKind::Weapon(wid) => def(wid),
+            _ => None,
+        })
+        .and_then(|w| match w.burst {
+            Burst::Flames { speed, .. } => Some(speed),
+            _ => None,
+        })
+        .unwrap_or(0.0);
+    let reach =
+        |k: f32| flame_speed * flame_speed / (GRAVITY * FLAME_GRAVITY_SCALE * k) + FLAME_RADIUS;
+
+    println!(
+        "\n== LOW GRAVITY — {} seeds, gravity scale {} ==",
+        SEEDS.len(),
+        GravityMode::Low.scale()
+    );
+    println!(
+        "   molotov flame stand-off: {:.0} px standard -> {:.0} px low  \
+         (zone_reach's basis: v^2 / (g * {FLAME_GRAVITY_SCALE} * k), v = {flame_speed:.0})",
+        reach(GravityMode::Standard.scale()),
+        reach(GravityMode::Low.scale())
+    );
+
+    // Three arms. A natural round for the encounter rate; a molotov in every
+    // hand for the self-damage the stand-off decides; a pistol for the control
+    // — it lights nothing, so its guard counters must stay at zero whatever
+    // gravity does, and a column that moved there would mean the counters are
+    // measuring something other than the zone guards.
+    let arms: [(&str, Option<ItemId>, f32); 3] = [
+        ("natural", None, POOL_SECONDS),
+        ("molotov", Some(MOLOTOV), HOLD_SECONDS),
+        ("pistol", Some(PISTOL), HOLD_SECONDS),
+    ];
+
+    println!(
+        "\n{:<10}{:<10}{:>9}{:>9}{:>9}{:>9}{:>9}{:>9}",
+        "arm", "gravity", "dmg", "self", "kills", "selfkil", "fires", "rejzone"
+    );
+    let mut totals: Vec<(String, f32, f32, u32, u32)> = Vec::new();
+    for (label, hold, seconds) in arms {
+        for gravity in [GravityMode::Standard, GravityMode::Low] {
+            let rs: Vec<Round> = SEEDS
+                .iter()
+                .map(|&s| run_under(s, hold, seconds, gravity))
+                .collect();
+            let sum = |f: fn(&Round) -> f32| rs.iter().map(f).sum::<f32>();
+            let sumu = |f: fn(&Round) -> u32| rs.iter().map(f).sum::<u32>();
+            let dmg = sum(|r| r.damage);
+            let selfd = sum(|r| r.self_damage);
+            let kills = sumu(|r| r.combat_deaths);
+            let selfk = sumu(|r| r.self_deaths);
+            let fires = sumu(|r| r.fires);
+            let rej = sumu(|r| r.rej_blast_guard + r.rej_impact_guard);
+            println!(
+                "{label:<10}{:<10}{dmg:>9.0}{selfd:>9.0}{kills:>9}{selfk:>9}{fires:>9}{rej:>9}",
+                format!("{gravity:?}")
+            );
+            totals.push((format!("{label}/{gravity:?}"), dmg, selfd, fires, rej));
+        }
+    }
+
+    // The control first: without damage anywhere, "the numbers moved" and "the
+    // numbers did not move" are the same reading.
+    let fought: f32 = totals.iter().map(|t| t.1).sum();
+    assert!(
+        fought > 0.0,
+        "no damage was dealt in any arm under either gravity — the measurement \
+         is blind and every comparison below it is between two silences"
+    );
+
+    // And the claim: half gravity is a different game. Asserted across every
+    // arm at once rather than on one column, because which column moves most is
+    // a balance finding and this is only the wiring claim.
+    let std_arm: Vec<_> = totals
+        .iter()
+        .filter(|t| t.0.ends_with("Standard"))
+        .collect();
+    let low_arm: Vec<_> = totals.iter().filter(|t| t.0.ends_with("Low")).collect();
+    let moved = std_arm
+        .iter()
+        .zip(low_arm.iter())
+        .any(|(a, b)| a.1 != b.1 || a.2 != b.2 || a.3 != b.3 || a.4 != b.4);
+    assert!(
+        moved,
+        "every measured number is identical under standard and low gravity \
+         across {} seeds and three arms — `World::gravity` reaches nothing the \
+         bots or the weapons can feel",
+        SEEDS.len()
     );
 }
 

@@ -59,3 +59,40 @@ describe('event wiring', () => {
     expect(subscribed()).toContain('item_move')
   })
 })
+
+/**
+ * The per-match constants the mirror has to be *told*, because it cannot derive
+ * them from a snapshot.
+ *
+ * `Core.applyInput` reads the phase (T21.30) and the gravity mode (T22.02).
+ * Neither rides a snapshot field, neither is derivable from `moveMods` — which
+ * is per-player and inventory-derived — and a mirror left at the default
+ * predicts the wrong game: a low-gravity match predicted at standard gravity
+ * disagrees with the server on the very first jump.
+ *
+ * **This is a source-text check and its limit is stated rather than implied.**
+ * `GameScene` imports Phaser, which cannot be loaded under vitest (§A8), so
+ * nothing here can run the handler. It reports that the call is written, not
+ * that it fires — the browser suite is the only thing that can say that. It is
+ * still the check that would have caught the failure this class of bug always
+ * takes, which is the call never being written at all.
+ */
+describe('per-match constants reach the mirror', () => {
+  const calls = (name: string): number =>
+    [...sceneSrc.matchAll(new RegExp(`core\\.${name}\\(`, 'g'))].length
+
+  it('tells the mirror the match gravity from lobby_state', () => {
+    expect(calls('setGravity')).toBeGreaterThan(0)
+    // From the lobby state it just parsed, not from a literal: the one place
+    // the client learns the host's choice.
+    expect(sceneSrc).toContain('this.core.setGravity(st.gravity)')
+  })
+
+  it('finds the calls it is scanning for, so it cannot pass on a bad regex', () => {
+    // The control. `setPhase` is the same shape and has been wired since
+    // T21.30; if the scanner cannot see it, it cannot see anything, and the
+    // assertion above would be green with `GameScene` deleted.
+    expect(calls('setPhase')).toBeGreaterThan(0)
+    expect(calls('setNoSuchThing')).toBe(0)
+  })
+})

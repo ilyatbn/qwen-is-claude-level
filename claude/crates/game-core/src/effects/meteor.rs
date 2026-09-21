@@ -174,7 +174,7 @@ pub fn spawn_band() -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{MapScale, METEOR_DURATION};
+    use crate::constants::{GravityMode, MapScale, METEOR_DURATION};
     use crate::map::gen::silhouette::force_borders;
     use crate::map::meta::{BuriedSlot, MapMeta};
     use crate::map::{CoarseGrid, Mask};
@@ -272,7 +272,7 @@ mod tests {
             //
             // `Impact` now carries the weapon, so there is nothing to snapshot and
             // nothing to get wrong.
-            for im in pr.step(&map, &[], &[], 0.0, now, DT) {
+            for im in pr.step(&map, &[], &[], 0.0, GravityMode::Standard, now, DT) {
                 let at = match im.outcome {
                     ProjectileOutcome::Exploded { at } => at,
                     ProjectileOutcome::Hit { at, .. } => at,
@@ -613,7 +613,7 @@ mod tests {
         let mut hit = None;
         for i in 1..600 {
             let now = i as f32 * DT;
-            for im in pr.step(&map, &[], &[], 0.0, now, DT) {
+            for im in pr.step(&map, &[], &[], 0.0, GravityMode::Standard, now, DT) {
                 if let ProjectileOutcome::Exploded { at } = im.outcome {
                     hit = Some(at);
                 }

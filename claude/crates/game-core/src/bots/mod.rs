@@ -11,9 +11,25 @@ use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 
 use crate::constants::{
-    BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, FLAME_GRAVITY_SCALE, FLAME_RADIUS, FOV_DAY,
-    GRAVITY, INVENTORY_SLOTS, JETPACK_MAX_FUEL, PICKUP_RADIUS, STEP_UP,
+    GravityMode, BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, FLAME_GRAVITY_SCALE, FLAME_RADIUS,
+    FOV_DAY, GRAVITY, INVENTORY_SLOTS, JETPACK_MAX_FUEL, PICKUP_RADIUS, STEP_UP,
 };
+
+/// `zone_reach` **divides** by the match's gravity scale, so a mode that
+/// answers zero there turns a flame stand-off into `inf` and a bot walks to the
+/// edge of the world rather than throwing.
+///
+/// This is a compile-time trap for T22.03, which is the task that makes
+/// `GravityMode::Space` return `0.0`: the day it does, this line is the one
+/// that fails, and it names the function that has to grow a zero-gravity arm.
+/// A runtime guard here would instead be speculative code for a mode that does
+/// not exist yet.
+const _: () = assert!(
+    GravityMode::Standard.scale() > 0.0
+        && GravityMode::Low.scale() > 0.0
+        && GravityMode::Space.scale() > 0.0,
+    "a zero gravity scale divides by zero in bots::zone_reach — give it an arm"
+);
 use crate::items::registry::{def, ItemId, ItemKind};
 use crate::math::{Vec2, TAU};
 use crate::player::input::{button, Input};
@@ -688,7 +704,9 @@ impl Bot {
                 ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
                 _ => None,
             });
-        let reach = w.map_or(0.0, |w| zone_reach(w).unwrap_or(w.blast_radius));
+        let reach = w.map_or(0.0, |w| {
+            zone_reach(w, world.gravity).unwrap_or(w.blast_radius)
+        });
         (reach * 2.0).max(40.0)
     }
 
@@ -816,7 +834,7 @@ impl Bot {
         // A weapon that leaves a zone is dangerous well past its blast radius:
         // the fire outlives the explosion and the thrower walks into it. Guard
         // on the zone's own reach, not on `blast_radius`, which is 0 for these.
-        if let Some(reach) = zone_reach(w) {
+        if let Some(reach) = zone_reach(w, world.gravity) {
             if dist < reach + HAZARD_CLEARANCE {
                 self.stats.rej_blast_guard += 1;
                 return false;
@@ -835,6 +853,7 @@ impl Bot {
                 pos,
                 aim_at,
                 world.wind,
+                world.gravity,
                 PREDICT_TICKS,
                 crate::constants::SIM_DT,
             );
@@ -1053,7 +1072,7 @@ impl Bot {
 ///
 /// `blast_radius` is 0 for these — the zone *is* the weapon — so a guard written
 /// against `blast_radius` never fires for exactly the weapons that need one.
-fn zone_reach(w: &crate::weapons::defs::WeaponDef) -> Option<f32> {
+fn zone_reach(w: &crate::weapons::defs::WeaponDef, gravity: GravityMode) -> Option<f32> {
     match w.burst {
         crate::weapons::defs::Burst::Zone {
             radius, scatter, ..
@@ -1076,8 +1095,15 @@ fn zone_reach(w: &crate::weapons::defs::WeaponDef) -> Option<f32> {
         // flame spends most of `FLAME_LIFE` on the ground, not in the air. A bot
         // with that number refused every throw: the blast guard rejected 120
         // ticks out of 120 at a target 260 px away.
+        //
+        // **And the match's gravity divides it** (T22.02). This is the fourth
+        // production reader of `GRAVITY` and the only one that does not
+        // integrate: halve gravity and a flame's real ballistic range
+        // *doubles*, so a stand-off derived from the unscaled constant puts a
+        // bot inside the fire it just threw. The 2.7x paragraph above is what
+        // that costs when this number is wrong.
         crate::weapons::defs::Burst::Flames { speed, .. } => {
-            Some(speed * speed / (GRAVITY * FLAME_GRAVITY_SCALE) + FLAME_RADIUS)
+            Some(speed * speed / (GRAVITY * FLAME_GRAVITY_SCALE * gravity.scale()) + FLAME_RADIUS)
         }
         _ => None,
     }
@@ -1094,6 +1120,65 @@ mod tests {
     use crate::world::{give, wield, RoundPhase, World};
 
     const SEED: u64 = 4242;
+
+    /// T22.02 — the flame stand-off follows the match's gravity.
+    ///
+    /// **This is the reader of `GRAVITY` that does not integrate**, so no
+    /// physics test can reach it and nothing else in the fast suite would
+    /// report it being left at standard gravity. Halve gravity and a flame's
+    /// real ballistic range doubles; a stand-off that did not follow puts a bot
+    /// inside the fire it just threw, and the only visible symptom is a
+    /// self-damage number with nothing pointing at its cause.
+    ///
+    /// **Asserted as an inequality and a bracket, not as an equality against
+    /// `1.0 / LOW_GRAVITY_SCALE`** — that expression is the implementation, and
+    /// a test that writes it out again passes with the implementation wrong in
+    /// any way the copy is wrong too. What is claimed here is the *direction*
+    /// and that the change is large enough to matter: the molotov's stand-off
+    /// has to move by more than its own `FLAME_RADIUS`, or a bot would stand in
+    /// the same place under both modes.
+    ///
+    /// The zone weapon beside it is the control: `Burst::Zone`'s reach is
+    /// `radius + scatter` off the table and has nothing ballistic in it, so it
+    /// must **not** move — a gravity multiplier applied to the wrong arm of
+    /// `zone_reach` would turn that half red.
+    #[test]
+    fn the_flame_stand_off_follows_the_match_gravity_and_the_zone_one_does_not() {
+        let flames = crate::items::registry::def(MOLOTOV)
+            .and_then(|d| match d.kind {
+                ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
+                _ => None,
+            })
+            .expect("the molotov's weapon def");
+        assert!(
+            matches!(flames.burst, crate::weapons::defs::Burst::Flames { .. }),
+            "the molotov is no longer a `Burst::Flames` — this test is measuring \
+             a different arm of `zone_reach` than the one it names"
+        );
+
+        let std = zone_reach(flames, GravityMode::Standard).expect("a flame reach");
+        let low = zone_reach(flames, GravityMode::Low).expect("a flame reach");
+        assert!(
+            low > std + FLAME_RADIUS,
+            "the flame stand-off moved from {std:.0} px to {low:.0} px under low \
+             gravity — less than a {FLAME_RADIUS} px flame, so a bot stands in \
+             the same place in both modes while the fire spreads twice as far"
+        );
+
+        // The control, on the other arm of the same function.
+        let zone = crate::items::registry::def(crate::items::registry::TOXIC_GRENADE)
+            .and_then(|d| match d.kind {
+                ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
+                _ => None,
+            })
+            .expect("the toxic grenade's weapon def");
+        assert_eq!(
+            zone_reach(zone, GravityMode::Standard),
+            zone_reach(zone, GravityMode::Low),
+            "a `Burst::Zone` reach is `radius + scatter` off the table and has no \
+             ballistic term — gravity must not touch it"
+        );
+    }
 
     /// T21.43: **a bot riding a gun platform fires it** — a stream at the
     /// platform's cadence, one `fire` per round and none refused — and **stops

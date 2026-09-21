@@ -715,6 +715,16 @@ export class GameScene extends Phaser.Scene {
     // `lobby_state` is authoritative about *who is here*, not about the game.
     this.conn.on('lobby_state', (raw) => {
       const st = parseLobbyState(asRecord(raw))
+      // **T22.02: the mirror is told which gravity the match is under, here.**
+      // `lobby_state` and not `welcome`: §E6 moved `scale` off `welcome`
+      // precisely because a host can still change it, and gravity is the same
+      // kind of value. This event reaches a seated player on join whatever the
+      // phase, and again on every change, so a mid-match joiner is told too.
+      //
+      // Without it `apply_input` predicts a low-gravity match at standard
+      // gravity and the local body rubber-bands on the first jump — the same
+      // class of bug T20.19 and T21.02 each fixed once.
+      this.core.setGravity(st.gravity)
       for (const p of st.players) {
         const had = this.scores.get(p.seat)
         this.scores.set(p.seat, {
