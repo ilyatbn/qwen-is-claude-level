@@ -349,6 +349,8 @@ export interface Constants {
   MINIMAP_H: number
   MINIMAP_ALPHA: number
   MINIMAP_REVEAL_R: number
+  /** The space arena's rim thickness, px (`M22-RULINGS` R13, `T22.05B`). */
+  SPACE_RIM_THICKNESS: number
   MINIMAP_CRATE_PERIOD: number
   MINIMAP_CRATE_ON: number
   MINIMAP_CRATE_COLOUR: number

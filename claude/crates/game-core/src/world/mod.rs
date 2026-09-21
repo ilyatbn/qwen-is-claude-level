@@ -26,7 +26,6 @@ use crate::constants::{
 use crate::items::registry::{ItemId, WeaponId, WEAPON_PLATFORM_GUN};
 use crate::items::spawning::{assign_buried_items, place_initial, reveal_buried, SpawnSchedule};
 use crate::items::world::{SpawnSource, WorldItemId, WorldItems};
-use crate::map::gen::surface::is_standable;
 use crate::map::meta::TeleportPad;
 use crate::map::{CarveResult, Map};
 use crate::math::{Aabb, Point, Vec2};
@@ -1107,7 +1106,13 @@ impl World {
             return choose_respawn(&self.map, &[], &mut self.rng);
         }
         let p = pts[id as usize % pts.len()];
-        if is_standable(&self.map.mask, p.x, p.y) {
+        // **`body_fits_at`, not `is_standable`** (`T22.05B`): under gravity they
+        // are the same call, and in space a spawn point is open air that
+        // `is_standable` refuses by definition. With the bare call here every
+        // space spawn failed and every player took the respawn fallback, which
+        // put them on an asteroid top rather than at the point the generator
+        // chose — a whole feature computed, shipped and never used.
+        if self.map.body_fits_at(p) {
             // A spawn point is a feet line, not a centre (`choose_respawn`).
             surface_to_centre(Vec2::new(p.x as f32, p.y as f32))
         } else {
@@ -7878,6 +7883,65 @@ mod gravity_tests {
                     "{scale:?}: {control:?} gravity produced a space map"
                 );
                 assert_eq!(w.gravity, control, "{scale:?}");
+            }
+        }
+    }
+
+    /// **`T22.05B`: a space round actually spawns people where the generator
+    /// put the spawn points.**
+    ///
+    /// This is the test that catches a whole feature being built and wired to
+    /// nothing, and it was written because that is exactly what had happened.
+    /// `spawn_for` gated the listed points on `surface::is_standable`, which
+    /// demands `MIN_SUPPORT_PX` of rock directly under the body box — so an
+    /// open-space spawn failed it **by definition**, every player fell through
+    /// to `choose_respawn`, and `choose_respawn` filtered the same list the
+    /// same way and fell through to its own surface scan. Six well-separated
+    /// points in open air were chosen, validated by `analyse_space`, shipped in
+    /// `MapMeta`, hashed into the golden table — and never used by anybody.
+    ///
+    /// Nothing else would have reported it: `every_shipped_spawn_point_is_in_
+    /// open_space_inside_the_rim` asserts the list is right, not that anyone
+    /// reads it. **Assert on effects, not intentions.**
+    ///
+    /// The control is the same assertion under standard gravity, which uses the
+    /// landscape path — so this cannot pass for a `spawn_for` that ignores
+    /// `body_fits_at` and returns the listed point unconditionally.
+    #[test]
+    fn the_shipped_spawn_points_are_the_ones_a_space_round_uses() {
+        for (gravity, generator) in [
+            (GravityMode::Space, MapGenerator::Space),
+            (
+                GravityMode::Standard,
+                crate::constants::DEFAULT_MAP_GENERATOR,
+            ),
+        ] {
+            let mut w = World::with_gravity(4242, MapScale::Medium, 0, generator, gravity);
+            let want: Vec<crate::math::Point> = w.map.meta.spawn_points.clone();
+            assert!(
+                want.len() >= crate::constants::MAX_PLAYERS,
+                "{gravity:?}: only {} spawn points",
+                want.len()
+            );
+            for id in 0..crate::constants::MAX_PLAYERS as u8 {
+                w.add_player(id, 0, format!("p{id}"));
+            }
+            for id in 0..crate::constants::MAX_PLAYERS as u8 {
+                let body = w
+                    .players
+                    .iter()
+                    .find(|p| p.id == id)
+                    .expect("added")
+                    .body
+                    .pos;
+                let p = want[id as usize % want.len()];
+                let expect =
+                    crate::player::state::surface_to_centre(Vec2::new(p.x as f32, p.y as f32));
+                assert_eq!(
+                    body, expect,
+                    "{gravity:?}: player {id} spawned at {body:?}, not at the listed spawn \
+                     point {p:?}"
+                );
             }
         }
     }

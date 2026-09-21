@@ -267,7 +267,26 @@ impl GameCore {
         // dearer than the decode it used to be. Paid once per match, inside the
         // beat where the map is being installed anyway, which is why it is here
         // and not on a lava burst mid-fight.
-        meta.surface_points = game_core::map::gen::surface::extract_surface(&mask);
+        //
+        // **Through `gen::surface_for`, not `extract_surface`** (`T22.05B`).
+        // The two differ on exactly one generator: a space map's surface is the
+        // arena's, and `extract_surface` also returns the full-width floor
+        // crust, which on that map lies *outside* the rim in the band R16 makes
+        // lethal. The server filters it out at generation; a client that
+        // re-admitted it here would put lava vents and every debug readout on
+        // the void crust, and the two copies of `surface_points` would be
+        // different sets — which is the failure T19.24 was, in the other
+        // direction.
+        //
+        // The generator is **derived from the gravity this core was set to**
+        // (R15), which is the same derivation `generate` makes. A networked
+        // client gets that from `set_gravity` off `lobby_state`, before
+        // `map_init` — which is the order `set_gravity`'s own doc describes.
+        let generator = game_core::constants::MapGenerator::for_gravity(
+            self.gravity,
+            game_core::constants::DEFAULT_MAP_GENERATOR,
+        );
+        meta.surface_points = game_core::map::gen::surface_for(generator, &mask);
         self.map = Map::from_parts(mask, coarse, meta);
         true
     }
@@ -1482,6 +1501,13 @@ pub fn constants_json() -> String {
         JETPACK_DRAIN => c::JETPACK_DRAIN,
         JETPACK_REFILL => c::JETPACK_REFILL,
         JETPACK_REFILL_DELAY => c::JETPACK_REFILL_DELAY,
+        // `T22.05B`: the space arena's rim thickness, for the browser check
+        // that asserts the minimap draws the mode's boundary. The check needs a
+        // row range in minimap cells, which is `SKY_MARGIN` to
+        // `SKY_MARGIN + SPACE_RIM_THICKNESS` divided by the cell height — and a
+        // literal 32 in TypeScript is exactly the shadow of a Rust constant
+        // this boundary exists to prevent (§A19).
+        SPACE_RIM_THICKNESS => c::SPACE_RIM_THICKNESS,
         MINIMAP_W => c::MINIMAP_W,
         MINIMAP_H => c::MINIMAP_H,
         MINIMAP_ALPHA => c::MINIMAP_ALPHA,
@@ -1987,6 +2013,59 @@ mod tests {
         let mut other = GameCore::new();
         assert!(other.load_mask(w, h, &bytes));
         assert_eq!(other.mask_hash(), before);
+    }
+
+    /// **`T22.05B`: the client's re-extracted surface is the server's.**
+    ///
+    /// `load_mask` re-derives `surface_points` from the arriving mask (T19.24),
+    /// and on a space map the mask also carries the full-width floor **crust**,
+    /// which lies outside the rim in the band R16 makes lethal. So the call has
+    /// to be `gen::surface_for`, keyed on the generator the gravity derives
+    /// (R15) — an `extract_surface` here would re-admit the crust on the client
+    /// only, and the two copies of `surface_points` would be different sets.
+    /// That is T19.24's bug in the other direction, and nothing else in the
+    /// tree looks at both copies.
+    ///
+    /// The control is the same round trip under standard gravity, where the two
+    /// derivations *are* the same call — without it this passes for a build
+    /// that filtered every map.
+    #[test]
+    fn load_mask_rederives_the_surface_the_way_the_server_did() {
+        for (gravity, generator) in [
+            ("space", game_core::constants::MapGenerator::Space),
+            ("standard", game_core::constants::DEFAULT_MAP_GENERATOR),
+        ] {
+            let server = game_core::map::generate_with(
+                4242,
+                game_core::constants::MapScale::Small,
+                generator,
+            );
+            let bytes = game_core::map::rle::encode(&server.mask);
+
+            let mut client = GameCore::new();
+            assert!(client.set_gravity(gravity), "{gravity}: unknown spelling");
+            assert!(client.load_mask(server.mask.w, server.mask.h, &bytes));
+
+            assert_eq!(
+                client.map.meta.surface_points, server.meta.surface_points,
+                "{gravity}: the client re-extracted a different surface"
+            );
+        }
+
+        // And the falsification, written out: on a space map the unfiltered
+        // extraction really is a different, larger set — so the equality above
+        // is a statement about the branch rather than about two calls that
+        // could not differ.
+        let space = game_core::map::generate_with(
+            4242,
+            game_core::constants::MapScale::Small,
+            game_core::constants::MapGenerator::Space,
+        );
+        let unfiltered = game_core::map::gen::surface::extract_surface(&space.mask);
+        assert!(
+            unfiltered.len() > space.meta.surface_points.len(),
+            "the control is gone: `extract_surface` no longer differs from the shipped surface"
+        );
     }
 
     #[test]

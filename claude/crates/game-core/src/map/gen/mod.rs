@@ -39,6 +39,21 @@ pub struct GenOutcome {
     pub mask: Mask,
     pub surface: Vec<Point>,
     pub report: TraversalReport,
+    /// The spawn points this generator chose for itself, or **empty** when it
+    /// leaves the choice to pass 8 (`T22.05B`).
+    ///
+    /// v1 and v2 leave it empty: their spawns come from `spawns::choose_spawns`
+    /// over the traversable component, which does not exist until
+    /// `traversal::analyse` has run and which pass 8 filters against the
+    /// objects. Space fills it, because in space a spawn is a point in **open
+    /// space** rather than on standable ground, and because the verdict has to
+    /// be about the list that ships rather than about a count of a list thrown
+    /// away (`M22-RULINGS` R35).
+    ///
+    /// **One list, two consumers.** `analyse_space` is handed this and
+    /// `generate_full_with` ships this; there is no second call to the picker
+    /// that could return something else.
+    pub spawn_points: Vec<Point>,
     pub sealed_pockets: Vec<SealedPocket>,
     /// Every stamped tunnel, chamber-edge, entrance and crevice centre. T1.13
     /// places buried slots near these.
@@ -95,6 +110,7 @@ pub fn generate_once(seed: u64, params: &GenParams) -> GenOutcome {
         mask,
         surface,
         report,
+        spawn_points: Vec::new(),
         sealed_pockets,
         tunnel_paths,
         islands,
@@ -161,7 +177,7 @@ pub fn reanalyse(
     surface: &[Point],
     objects: &[objects::PlacedObject],
     asteroids: &[crate::map::meta::Asteroid],
-    scale: MapScale,
+    spawn_points: &[Point],
 ) -> TraversalReport {
     match generator {
         MapGenerator::V1 | MapGenerator::V2 => traversal::analyse(mask, surface, objects),
@@ -169,8 +185,31 @@ pub fn reanalyse(
             mask,
             surface,
             asteroids,
-            &space::SpaceGeometry::for_scale(scale),
+            &space::SpaceGeometry::for_dims(mask.w, mask.h),
+            spawn_points,
         ),
+    }
+}
+
+/// Re-derive the surface **the way this generator derives it**, from a mask
+/// that has changed since.
+///
+/// `reanalyse`'s sibling, and here for the same reason: pass 8's ground fill
+/// invalidates the surface, `game-wasm`'s `load_mask` re-extracts it from the
+/// mask that arrives over the wire, and both of them used to call
+/// `surface::extract_surface` outright. That is right for v1 and v2 and wrong
+/// for space, where `extract_surface` also returns the full-width floor crust —
+/// which lies **outside the rim**, in the band R16 kills you in (R35). A space
+/// map's surface is the arena's, and this is the one spelling of that.
+///
+/// Written beside the `match` it mirrors so a fourth generator cannot gain an
+/// arm in one and not the other.
+pub fn surface_for(generator: MapGenerator, mask: &Mask) -> Vec<Point> {
+    match generator {
+        MapGenerator::V1 | MapGenerator::V2 => surface::extract_surface(mask),
+        MapGenerator::Space => {
+            space::arena_surface(mask, &space::SpaceGeometry::for_dims(mask.w, mask.h))
+        }
     }
 }
 

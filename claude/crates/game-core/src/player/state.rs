@@ -11,14 +11,13 @@ use crate::constants::{
 };
 use crate::items::inventory::{Inventory, Stack};
 use crate::items::registry::{def, ItemId, ItemKind, UtilityId, WeaponId};
-use crate::map::gen::surface::is_standable;
 use crate::map::Map;
 use crate::math::{lerp, Vec2};
 use crate::physics::body::Body;
 use crate::player::jetpack::JetpackState;
 use crate::player::movement::JumpState;
 use crate::player::MoveMods;
-use crate::rng::{range_i32, ChaCha8Rng};
+use crate::rng::ChaCha8Rng;
 use crate::weapons::defs;
 use crate::weapons::explode::DamageSource;
 
@@ -1028,11 +1027,17 @@ pub fn surface_to_centre(p: Vec2) -> Vec2 {
 }
 
 fn choose_surface_point(map: &Map, living: &[Vec2], rng: &mut ChaCha8Rng) -> Vec2 {
-    let standable = |p: &crate::math::Point| is_standable(&map.mask, p.x, p.y);
+    // **`Map::body_fits_at`, not `is_standable`** (`T22.05B`). The two are the
+    // same function under gravity. In space a spawn point is open air, which
+    // `is_standable` refuses by definition — so with the bare call here, every
+    // listed spawn on a space map failed this filter and every respawn fell
+    // through to the surface scan below. The points would have been chosen,
+    // shipped and hashed, and never used.
+    let usable = |p: &crate::math::Point| map.body_fits_at(*p);
 
     // Prefer a listed spawn point that is still ground and far from the living.
     let mut best: Option<(f32, Vec2)> = None;
-    for p in map.meta.spawn_points.iter().filter(|p| standable(p)) {
+    for p in map.meta.spawn_points.iter().filter(|p| usable(p)) {
         let v = Vec2::new(p.x as f32, p.y as f32);
         let nearest = living
             .iter()
@@ -1049,16 +1054,20 @@ fn choose_surface_point(map: &Map, living: &[Vec2], rng: &mut ChaCha8Rng) -> Vec
         return v;
     }
 
-    // Every listed spawn has been destroyed: fall back to any still-valid surface
-    // point, preferring one away from the living.
+    // Every listed spawn has been destroyed: fall back to any still-valid site,
+    // preferring one away from the living.
+    //
+    // `Map::random_body_site` is a surface point under gravity — the same
+    // single draw this loop always made — and a point in open air inside the
+    // rim in space (R14: you do not land to spawn, and there is no ground line
+    // to fall back onto).
     let surface = &map.meta.surface_points;
     let mut fallback: Option<(f32, Vec2)> = None;
     for _ in 0..200 {
-        if surface.is_empty() {
+        let Some(p) = map.random_body_site(rng) else {
             break;
-        }
-        let p = surface[range_i32(rng, 0, surface.len() as i32 - 1) as usize];
-        if !standable(&p) {
+        };
+        if !usable(&p) {
             continue;
         }
         let v = Vec2::new(p.x as f32, p.y as f32);
@@ -1077,14 +1086,72 @@ fn choose_surface_point(map: &Map, living: &[Vec2], rng: &mut ChaCha8Rng) -> Vec
         return v;
     }
 
-    // Nothing standable at all: a scan for anywhere the body fits, so respawn can
+    // Nothing usable at all: a scan for anywhere the body fits, so respawn can
     // never place a player inside rock.
     for p in surface.iter() {
-        if standable(p) {
+        if usable(p) {
             return Vec2::new(p.x as f32, p.y as f32);
         }
     }
-    Vec2::new(map.mask.w as f32 / 2.0, crate::constants::SKY_MARGIN as f32)
+    // And the last resort, which is **map-shaped** (`T22.05B`). It was
+    // `(w / 2, SKY_MARGIN)` unconditionally — the top of the sky band, which on
+    // a space map is *above the rim's top arc*, i.e. outside the boundary in
+    // the band R16 kills you in. The arena's centre is inside the rim by
+    // construction. Neither is checked against the mask, because by this point
+    // nothing on the map has passed a check; the difference is that one of them
+    // is at least on the playable side of the wall.
+    match map.space_geometry() {
+        Some(geo) => Vec2::new(geo.cx, geo.cy),
+        None => Vec2::new(map.mask.w as f32 / 2.0, crate::constants::SKY_MARGIN as f32),
+    }
+}
+
+#[cfg(test)]
+mod respawn_tests {
+    use super::*;
+    use crate::constants::{MapGenerator, MapScale};
+    use crate::rng::substream;
+
+    /// **`T22.05B`: respawn in space returns a listed spawn point, not the
+    /// surface fallback.**
+    ///
+    /// `choose_surface_point`'s first pass filters `MapMeta.spawn_points`
+    /// through `Map::body_fits_at`. Before this task that was a bare
+    /// `is_standable`, which an open-space point fails by definition — so every
+    /// space respawn silently skipped the whole list and took the fallback
+    /// scan, landing players on asteroid tops. Nothing reported it, because the
+    /// fallback returns a perfectly valid position.
+    ///
+    /// The assertion is therefore on **which** point comes back, not on whether
+    /// it is a legal one: *assert on effects, not intentions*, and "somewhere a
+    /// body fits" is what the broken version also delivered.
+    ///
+    /// The control is the same call on a landscape map, which has always taken
+    /// the listed points — so this cannot pass for a build that returns
+    /// `spawn_points[0]` unconditionally.
+    #[test]
+    fn a_space_respawn_uses_a_listed_spawn_point() {
+        for generator in [MapGenerator::Space, crate::constants::DEFAULT_MAP_GENERATOR] {
+            let map = crate::map::generate_with(4242, MapScale::Medium, generator);
+            let listed: Vec<Vec2> = map
+                .meta
+                .spawn_points
+                .iter()
+                .map(|p| surface_to_centre(Vec2::new(p.x as f32, p.y as f32)))
+                .collect();
+            assert!(!listed.is_empty(), "{generator:?}: no spawn points");
+            let mut rng = substream(4242, "respawn");
+            for i in 0..12 {
+                let v = choose_respawn(&map, &[], &mut rng);
+                assert!(
+                    listed.contains(&v),
+                    "{generator:?} draw {i}: respawned at {v:?}, which is not any of the \
+                     {} listed spawn points — the fallback scan ran",
+                    listed.len()
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

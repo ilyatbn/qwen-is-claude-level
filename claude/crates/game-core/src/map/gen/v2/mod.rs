@@ -115,6 +115,7 @@ pub fn generate_once(seed: u64, params: &V2Params) -> GenOutcome {
         mask,
         surface,
         report,
+        spawn_points: Vec::new(),
         sealed_pockets,
         tunnel_paths,
         islands,

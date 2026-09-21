@@ -9,7 +9,6 @@ use crate::constants::{
 };
 use crate::items::registry::{def, ItemId, ItemKind, WeightColumn};
 use crate::items::world::{SpawnSource, WorldItemId, WorldItems};
-use crate::map::gen::surface::is_standable;
 use crate::map::Map;
 use crate::math::{Point, Vec2};
 use crate::rng::{pick_weighted, range_i32, substream, ChaCha8Rng};
@@ -67,11 +66,29 @@ pub fn place_initial(world: &mut WorldItems, map: &Map, seed: u64, now: f32) -> 
 
     for _ in 0..want {
         let mut chosen: Option<Vec2> = None;
-        let mut last = Vec2::ZERO;
+        // **The first point this map yielded, not the origin.** `last` is the
+        // cramped-map fallback below, and on a space map an attempt can now
+        // yield *nothing* — so seeding it with `Vec2::ZERO` would drop a
+        // forced item at the top-left corner of the map, outside the rim, in
+        // the void. `None` here means every attempt failed, which is the one
+        // case that genuinely has nowhere to put the item.
+        let mut last: Option<Vec2> = None;
         for _ in 0..INITIAL_ATTEMPTS {
-            let p = surface[range_i32(&mut rng, 0, surface.len() as i32 - 1) as usize];
+            // **In space, open air; otherwise the surface** (`M22-RULINGS` R14,
+            // `T22.05B`). R14 puts every non-player body at gravity scale 0, so
+            // an item rests exactly where it is put — which makes *where it is
+            // put* the entire placement rule rather than a starting height.
+            // A surface point would not be *wrong* here since T22.05B filtered
+            // the crust out of `surface_points`, but it would stack the round's
+            // loot on the handful of asteroid tops the sampler finds standable,
+            // and the arena is mostly air. `None` means this map yielded no
+            // open point in `SPACE_OPEN_SPACE_TRIES`, and the loop below treats
+            // it the way it treats any rejected attempt.
+            let Some(p) = map.random_body_site(&mut rng) else {
+                continue;
+            };
             let v = Vec2::new(p.x as f32, p.y as f32);
-            last = v;
+            last = Some(v);
             if placed.iter().any(|q| (v - *q).len_sq() < sep2) {
                 continue;
             }
@@ -88,12 +105,16 @@ pub fn place_initial(world: &mut WorldItems, map: &Map, seed: u64, now: f32) -> 
         }
         // Under-placing would be invisible in play and confusing in tests, so a
         // cramped map gets a tight cluster rather than fewer items.
-        let v = match chosen {
-            Some(v) => v,
-            None => {
+        let v = match (chosen, last) {
+            (Some(v), _) => v,
+            (None, Some(v)) => {
                 forced += 1;
-                last
+                v
             }
+            // Nowhere at all. Skipping is the honest outcome and it is the same
+            // one `resample_surface` already reaches; the count of items placed
+            // is the caller's own `world.len()`, not this loop's trip count.
+            (None, None) => continue,
         };
         let item = roll_item(&mut rng, WeightColumn::Spawn);
         world.spawn(
@@ -166,11 +187,25 @@ pub fn resample_surface(map: &Map, rng: &mut ChaCha8Rng, players: &[Vec2]) -> Op
     if surface.is_empty() {
         return None;
     }
+    // **In space this is a misnomer and the code says so** (`T22.05B`). There is
+    // no surface to re-sample: R14 floats items where they are put, so a
+    // periodic spawn goes into open air inside the rim, and `random_open_space`
+    // re-checks the *live* mask for exactly the reason this function exists —
+    // twenty seconds in, an open point may have rock blown into it, or a rock
+    // blown out of one. The name is kept because five callers and a doc page
+    // use it; the thing it guarantees is unchanged, which is *a place an item
+    // can be that is still valid on the damaged map*.
     let far2 = PERIODIC_PLAYER_DISTANCE * PERIODIC_PLAYER_DISTANCE;
 
     for attempt in 0..PERIODIC_ATTEMPTS {
-        let p = surface[range_i32(rng, 0, surface.len() as i32 - 1) as usize];
-        if !is_standable(&map.mask, p.x, p.y) {
+        let Some(p) = map.random_body_site(rng) else {
+            continue;
+        };
+        // **`body_fits_at`, not `is_standable`**: the same call under gravity,
+        // and in space *"a body fits here in open air"*, which is what the
+        // re-check is for — a point that was open twenty seconds ago may have
+        // rock blown into it now.
+        if !map.body_fits_at(p) {
             continue;
         }
         // A soft preference: dropped after the first few attempts so it never
@@ -291,12 +326,37 @@ impl SpawnSchedule {
         }
         self.next_crate_at += CRATE_INTERVAL;
 
-        let lo = WALL_W as i32 + CRATE_WALL_MARGIN;
-        let hi = map.mask.w as i32 - WALL_W as i32 - CRATE_WALL_MARGIN;
-        if hi <= lo {
-            return None;
-        }
-        let x = range_i32(&mut self.rng, lo, hi);
+        // **In space a crate does not come from the sky** (`M22-RULINGS` R16).
+        //
+        // The drop point below is `y = SKY_MARGIN / 2` = 48 at a random x, and
+        // R13 insets the rim's outer edge to exactly `SKY_MARGIN`, so that
+        // point is **above the rim's top arc at every x** — outside the
+        // boundary, in the void R16 kills in. Under R14 the crate would then
+        // hang there for the rest of the round, unreachable, because nothing
+        // pulls a non-player body in this mode. So there is no version of the
+        // sky drop that works here: it is not that the crate falls wrong, it is
+        // that it is spawned somewhere no player may go.
+        //
+        // It arrives in open air inside the rim instead, from the same picker
+        // the items use, and floats there. That is the supply crate this mode
+        // has: a thing you fly to rather than a thing you run under.
+        //
+        // **Reverse it by:** this match.
+        let pos = match map.space_geometry() {
+            Some(_) => {
+                let p = map.random_body_site(&mut self.rng)?;
+                Vec2::new(p.x as f32, p.y as f32)
+            }
+            None => {
+                let lo = WALL_W as i32 + CRATE_WALL_MARGIN;
+                let hi = map.mask.w as i32 - WALL_W as i32 - CRATE_WALL_MARGIN;
+                if hi <= lo {
+                    return None;
+                }
+                let x = range_i32(&mut self.rng, lo, hi);
+                Vec2::new(x as f32, (SKY_MARGIN / 2) as f32)
+            }
+        };
 
         // Contents are rolled **at spawn**, not at landing: the spawn tick is
         // deterministic while the landing tick depends on what players have blown
@@ -306,7 +366,7 @@ impl SpawnSchedule {
         Some(world.spawn(
             item,
             spawn_count(item),
-            Vec2::new(x as f32, (SKY_MARGIN / 2) as f32),
+            pos,
             Vec2::ZERO,
             SpawnSource::Crate,
             now,
@@ -333,8 +393,9 @@ pub fn floor_limit(map: &Map) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{MapScale, MAX_WORLD_ITEMS, SIM_DT, WORLD_ITEM_TTL};
+    use crate::constants::{MapGenerator, MapScale, MAX_WORLD_ITEMS, SIM_DT, WORLD_ITEM_TTL};
     use crate::items::registry::{FLASHLIGHT, ITEMS};
+    use crate::map::gen::surface::is_standable;
     use crate::map::generate;
 
     fn medium() -> Map {
@@ -645,6 +706,137 @@ mod tests {
                 assert_eq!(it.source, SpawnSource::Crate);
             }
         }
+    }
+
+    // ------------------------------------------------- T22.05B (R14, R16)
+
+    /// **R16: in space a crate does not come from the sky.**
+    ///
+    /// The drop point every other map uses is `y = SKY_MARGIN / 2` = 48 at a
+    /// random x, and R13 insets the rim's outer edge to exactly `SKY_MARGIN` —
+    /// so that point is above the rim's top arc at **every** x. Under R14 the
+    /// crate would then float there, outside the boundary, for the rest of the
+    /// round.
+    ///
+    /// The control is `crates_spawn_clear_of_the_walls_at_the_right_height`
+    /// directly above, which asserts the sky drop is still exactly that on a
+    /// landscape map — so this pair says the branch fired *and* that it fired
+    /// only here. And the first assertion below is the falsification of this
+    /// one written out: the old drop point really is outside the rim.
+    #[test]
+    fn crates_spawn_inside_the_arena_in_space() {
+        for scale in MapScale::ALL {
+            let map = crate::map::generate_with(4242, scale, MapGenerator::Space);
+            let geo = map.space_geometry().expect("a space map");
+
+            // The falsification, first: where crates used to go is outside.
+            assert!(
+                !geo.inside((map.mask.w / 2) as f32, (SKY_MARGIN / 2) as f32),
+                "{scale:?}: the sky drop is inside the rim after all, so this test proves \
+                 nothing"
+            );
+
+            let mut w = WorldItems::new();
+            let mut s = SpawnSchedule::new(77, 0.0, 0);
+            let mut crates = 0;
+            for i in 1..=60 {
+                let Some(id) = s.tick_crates(&mut w, &map, CRATE_INTERVAL * i as f32) else {
+                    continue;
+                };
+                let it = w.get(id).expect("there");
+                crates += 1;
+                assert_eq!(it.source, SpawnSource::Crate);
+                assert!(
+                    geo.inside(it.pos.x, it.pos.y),
+                    "{scale:?}: a crate spawned at {:?}, outside the rim",
+                    it.pos
+                );
+                assert_ne!(
+                    it.pos.y,
+                    (SKY_MARGIN / 2) as f32,
+                    "{scale:?}: a crate still came from the sky"
+                );
+                assert!(
+                    !crate::physics::collide::aabb_overlaps_solid(
+                        &map,
+                        crate::math::Aabb::from_center_size(it.pos, CRATE_W, CRATE_H)
+                    ),
+                    "{scale:?}: a crate spawned inside rock at {:?}",
+                    it.pos
+                );
+            }
+            assert_eq!(crates, 60, "{scale:?}: only {crates} crates arrived");
+        }
+    }
+
+    /// **R14: the round's items start inside the arena too**, clear of the
+    /// spawn points, and not inside a rock.
+    ///
+    /// The old behaviour is the falsification and it is checked rather than
+    /// recalled: before `T22.05B` filtered the surface, `place_initial` drew
+    /// from `map.meta.surface_points`, of which the majority were the
+    /// full-width floor crust at `y = h - FLOOR_CRUST - 1` — outside the rim.
+    /// So the first assertion is that that row is outside, and the rest is
+    /// that no item is on it.
+    #[test]
+    fn initial_items_land_inside_the_arena_in_space() {
+        for scale in MapScale::ALL {
+            let map = crate::map::generate_with(31337, scale, MapGenerator::Space);
+            let geo = map.space_geometry().expect("a space map");
+            let crust = (map.mask.h as i32 - FLOOR_CRUST as i32 - 1) as f32;
+            assert!(
+                !geo.inside((map.mask.w / 2) as f32, crust),
+                "{scale:?}: the floor crust is inside the rim, so this test proves nothing"
+            );
+
+            let mut w = WorldItems::new();
+            place_initial(&mut w, &map, 31337, 0.0);
+            assert_eq!(
+                w.len() as u32,
+                scale.params().initial_items,
+                "{scale:?}: wrong item count"
+            );
+            for it in w.iter() {
+                assert!(
+                    geo.inside(it.pos.x, it.pos.y),
+                    "{scale:?}: an item spawned at {:?}, outside the rim",
+                    it.pos
+                );
+                assert_ne!(it.pos.y, crust, "{scale:?}: an item is on the void crust");
+                for sp in &map.meta.spawn_points {
+                    let d = (it.pos - Vec2::new(sp.x as f32, sp.y as f32))
+                        .len_sq()
+                        .sqrt();
+                    assert!(
+                        d >= INITIAL_SPAWN_EXCLUSION,
+                        "{scale:?}: an item is {d:.0} px from a spawn point"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The periodic spawns follow the same rule, over a whole round's worth.
+    #[test]
+    fn periodic_items_land_inside_the_arena_in_space() {
+        let map = crate::map::generate_with(4242, MapScale::Medium, MapGenerator::Space);
+        let geo = map.space_geometry().expect("a space map");
+        let mut w = WorldItems::new();
+        let mut s = SpawnSchedule::new(4242, 0.0, 0);
+        let mut seen = 0usize;
+        for i in 1..=40 {
+            for id in s.tick_items(&mut w, &map, &[], ITEM_SPAWN_INTERVAL * i as f32) {
+                let it = w.get(id).expect("there");
+                seen += 1;
+                assert!(
+                    geo.inside(it.pos.x, it.pos.y),
+                    "a periodic item spawned at {:?}, outside the rim",
+                    it.pos
+                );
+            }
+        }
+        assert!(seen > 0, "no periodic items spawned at all");
+        println!("{seen} periodic items, all inside the rim");
     }
 
     #[test]

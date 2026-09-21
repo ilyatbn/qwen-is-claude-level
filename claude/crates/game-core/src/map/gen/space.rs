@@ -37,14 +37,15 @@
 //! — unreported, because `tests/map_sweep.rs` is `#[ignore]`d.
 
 use crate::constants::{
-    MapGenerator, MapScale, FLOOR_CRUST, JETPACK_CLIMB_BUDGET, MAX_GEN_ATTEMPTS, PLAYER_H,
-    PLAYER_W, SKY_MARGIN, SPACE_ASTEROID_CORE_FRAC, SPACE_ASTEROID_GAP_MIN, SPACE_ASTEROID_R_MAX,
-    SPACE_ASTEROID_R_MIN, SPACE_ASTEROID_TRIES, SPACE_LEVEL_JITTER, SPACE_LEVEL_MAX,
-    SPACE_LUMPS_MAX, SPACE_LUMPS_MIN, SPACE_LUMP_R_MAX_FRAC, SPACE_LUMP_R_MIN_FRAC,
-    SPACE_RIM_CLEARANCE, SPACE_RIM_THICKNESS, SPACE_SPAWN_GRID, SPAWN_COUNT_MIN,
-    SPAWN_MIN_SEPARATION,
+    MapGenerator, MapScale, FLOOR_CRUST, JETPACK_CLIMB_BUDGET, MAX_GEN_ATTEMPTS, MAX_PLAYERS,
+    PLAYER_H, PLAYER_W, SKY_MARGIN, SPACE_ASTEROID_CORE_FRAC, SPACE_ASTEROID_GAP_MIN,
+    SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_R_MIN, SPACE_ASTEROID_TRIES, SPACE_LEVEL_JITTER,
+    SPACE_LEVEL_MAX, SPACE_LUMPS_MAX, SPACE_LUMPS_MIN, SPACE_LUMP_R_MAX_FRAC,
+    SPACE_LUMP_R_MIN_FRAC, SPACE_OPEN_SPACE_TRIES, SPACE_RIM_CLEARANCE, SPACE_RIM_THICKNESS,
+    SPACE_SPAWN_GRID, SPAWN_COUNT_MIN,
 };
 use crate::map::gen::silhouette::force_borders;
+use crate::map::gen::spawns::pick_separated;
 use crate::map::gen::surface;
 use crate::map::gen::traversal::TraversalReport;
 use crate::map::meta::Asteroid;
@@ -72,7 +73,20 @@ pub struct SpaceGeometry {
 impl SpaceGeometry {
     pub fn for_scale(scale: MapScale) -> Self {
         let p = scale.params();
-        let (w, h) = (p.width as f32, p.height as f32);
+        Self::for_dims(p.width, p.height)
+    }
+
+    /// The same geometry, **from the mask's own dimensions** (`T22.05B`).
+    ///
+    /// The primitive, because two callers hold a mask and no trustworthy
+    /// `MapScale`: `gen::surface_for` and `gen::reanalyse` run over a mask that
+    /// pass 8 has just changed, and `game-wasm`'s `load_mask` runs over a mask
+    /// that arrived from the server while `meta.scale` is whatever the client
+    /// last generated. Deriving from `(w, h)` makes a scale mismatch
+    /// unrepresentable rather than merely unlikely — the ellipse is a function
+    /// of the map rect and of nothing else.
+    pub fn for_dims(width: u32, height: u32) -> Self {
+        let (w, h) = (width as f32, height as f32);
         let t = SPACE_RIM_THICKNESS as f32;
 
         // Vertical: `force_borders` owns the top `SKY_MARGIN` band (forced
@@ -120,6 +134,27 @@ impl SpaceGeometry {
         let dx = (x - self.cx) / self.rx;
         let dy = (y - self.cy) / self.ry;
         (dx * dx + dy * dy).sqrt()
+    }
+
+    /// Is `(x, y)` **inside the arena** — the side of the rim a player belongs
+    /// on?
+    ///
+    /// The test is the centreline, not the inner edge, and the choice is
+    /// deliberate: `extract_surface` reports a *feet line*, which on the rim's
+    /// inner face is the air row directly above the rock, and on the rim's
+    /// **outer** top face (`y = SKY_MARGIN`) it is a perfectly standable ledge
+    /// looking out over the void. `norm < 1` separates those two by half a
+    /// thickness either way and needs no second constant to do it.
+    ///
+    /// **This is not `is_in_the_void`'s predicate and must not drift into
+    /// one.** R16 puts the void *outside the rim plus a grace band*, so the
+    /// rim's own rock is neither inside the arena by this test nor lethal by
+    /// that one — the two agree about everywhere a body can actually be, and
+    /// disagree only about pixels of solid rock. `T22.10`/`T22.11` own the
+    /// void arm; this one exists so pass 8 stops handing the rest of the game
+    /// the full-width floor crust (R35).
+    pub fn inside(&self, x: f32, y: f32) -> bool {
+        self.norm(x, y) < 1.0
     }
 
     /// Distance from `(x, y)` to the rim **centreline**, in px, to sub-pixel
@@ -410,13 +445,15 @@ pub fn generate_once(seed: u64, params: &SpaceParams) -> GenOutcome {
     // buy 8 px of somewhere nobody can be.
     force_borders(&mut mask);
 
-    let surface = surface::extract_surface(&mask);
-    let report = analyse_space(&mask, &surface, &asteroids, &geo);
+    let surface = arena_surface(&mask, &geo);
+    let spawn_points = choose_space_spawns(&mask, &geo, &asteroids, seed);
+    let report = analyse_space(&mask, &surface, &asteroids, &geo, &spawn_points);
 
     GenOutcome {
         mask,
         surface,
         report,
+        spawn_points,
         sealed_pockets: Vec::new(),
         tunnel_paths: Vec::new(),
         islands: asteroids.iter().map(|a| Point::new(a.x, a.y)).collect(),
@@ -428,6 +465,37 @@ pub fn generate_once(seed: u64, params: &SpaceParams) -> GenOutcome {
         used_safe_preset: false,
         generator: MapGenerator::Space,
     }
+}
+
+/// `extract_surface`, with everything **outside the arena** dropped.
+///
+/// The filter is the whole of T22.05B's fix for *"everything that assumes
+/// up"*, and it is one line because every consumer already agrees on what a
+/// surface point means — *somewhere a body can stand* — and disagrees only
+/// about whether the full-width floor crust counts. Measured at seed 4242
+/// before the filter: `Small surface 148 = crust 84, asteroid 14, rim 37,
+/// other 13` (R35). The crust is at `y = h - FLOOR_CRUST - 1`, **outside the
+/// rim**, in the band R16 makes lethal — so it is not somewhere a body can
+/// stand, it is somewhere a body dies.
+///
+/// Six readers are corrected by this one call and none of them had to change:
+/// `spawns::choose_spawns`, `player/state.rs::choose_respawn`'s fallback,
+/// `items/spawning.rs::place_initial` and `::resample_surface`,
+/// `effects/lava.rs::LavaBurst::new` and `effects/toxic.rs::pick_column`. Each
+/// of those would otherwise put a player, an item or a vent on the crust.
+///
+/// **What it costs, stated rather than discovered:**
+/// `MapMeta.surface_points` for a space map is therefore **not**
+/// `extract_surface(mask)`, which is true of every other generator and which
+/// `meta.rs::surface_points_match_the_final_mask` asserts for the default one.
+/// `gen::surface_for` is the shared spelling, and `game-wasm`'s `load_mask`
+/// calls it too, so the client's re-extraction lands on the same set rather
+/// than quietly re-admitting the crust.
+pub fn arena_surface(mask: &Mask, geo: &SpaceGeometry) -> Vec<Point> {
+    surface::extract_surface(mask)
+        .into_iter()
+        .filter(|p| geo.inside(p.x as f32, p.y as f32))
+        .collect()
 }
 
 /// The space half of `gen::generate_terrain_with`: retries, then the safe
@@ -460,11 +528,12 @@ pub fn generate_terrain(requested_seed: u64, scale: MapScale) -> GenOutcome {
 /// `generate_full_with` and `MapMeta` consume that struct, so the pipeline keeps
 /// its shape and only what fills the struct changes.
 ///
-/// - **`passed`** is: the rim is closed; at least `SPAWN_COUNT_MIN` candidate
-///   points exist in **open space** at `SPAWN_MIN_SEPARATION`; and every rock is
-///   within one `JETPACK_CLIMB_BUDGET` of another rock or of the rim. The third
-///   clause is **not** in R17's list and is added deliberately — it is what
-///   makes R17's own justification for the next line true rather than assumed.
+/// - **`passed`** is: the rim is closed; the map ships at least
+///   `SPAWN_COUNT_MIN` spawn points that are open space *in this mask*; and
+///   every rock is within one `JETPACK_CLIMB_BUDGET` of another rock or of the
+///   rim. The third clause is **not** in R17's list and is added deliberately —
+///   it is what makes R17's own justification for the next line true rather
+///   than assumed.
 /// - **`traversable_fraction` is 1.0 by construction**, because under thrust
 ///   everything in a connected scatter is reachable. Said here because
 ///   `tests/map_sweep.rs` cross-checks the fraction against
@@ -474,41 +543,46 @@ pub fn generate_terrain(requested_seed: u64, scale: MapScale) -> GenOutcome {
 ///   things, and it is flagged rather than swallowed: the alternative is a
 ///   second report type `MapMeta` cannot hold.
 ///
-/// # The spawn clause validates a list the map does not ship (R35)
+/// # The spawn clause now names the list the map ships (R35, `T22.05B`)
 ///
-/// **Read this before trusting `passed` about spawns.** The clause below counts
-/// [`open_space_candidates`] and **throws the list away**. What ships in
-/// `MapMeta.spawn_points` is chosen by `meta::generate_full_with`'s
-/// `choose_spawns` over `outcome.surface`, and measured through the real
-/// pipeline today **every spawn point and every teleport pad lands at
-/// `y = h - FLOOR_CRUST - 1`** — on the full-width floor crust, *outside* the
-/// rim, in the band `generate_once`'s comment calls the void. `force_borders`
-/// lays that crust across every map and it outnumbers the asteroid surface
-/// about 6:1, so `choose_spawns` finds it first.
+/// It used to call `open_space_candidates(..)`, count the result and **throw
+/// the list away**, while `MapMeta.spawn_points` came from `choose_spawns` over
+/// the surface — which put all six on the floor crust, outside the rim, in the
+/// void. The verdict named a property of the shipped map and measured a
+/// different one. Now `generate_once` chooses the list once, hands it here, and
+/// hands the *same* list to `generate_full_with`, so the two cannot disagree.
 ///
-/// So this verdict says *"the map has somewhere to put six players"*; it does
-/// **not** say *"the map puts them there"*. The two are different quantities
-/// and only the first is measured here.
-///
-/// **`T22.05B` owns the fix and this is deliberately not it.** That task's
-/// red-before-green is to move this clause onto `MapMeta.spawn_points`, which
-/// is red on all three scales today. Moving it here would land the assertion
-/// without the spawns it is supposed to gate.
+/// **Be exact about what each half of the clause buys, because they are not
+/// equal.** At `generate_once` the `is_open_space` filter is true of every
+/// element by construction — the same predicate chose them — so what that half
+/// is worth there is *zero*, and saying otherwise would be the
+/// assertion-that-rules-out-nothing shape this file is full of warnings about.
+/// The count is the live gate there: a crowded map yields fewer than
+/// `SPAWN_COUNT_MIN` candidates, fails, and is re-rolled. The filter earns its
+/// keep at the **other** call site — `gen::reanalyse`, after pass 8 has filled
+/// ground under standing props — which is the one place the mask can have moved
+/// under a spawn since it was picked.
 pub fn analyse_space(
     mask: &Mask,
     surface: &[Point],
     asteroids: &[Asteroid],
     geo: &SpaceGeometry,
+    spawn_points: &[Point],
 ) -> TraversalReport {
     let closed = rim_is_closed(mask, geo);
-    let spawns = open_space_candidates(mask, geo, asteroids, SPAWN_COUNT_MIN).len();
+    let half_w = (PLAYER_W as i32) / 2;
+    let body_h = PLAYER_H as i32;
+    let usable = spawn_points
+        .iter()
+        .filter(|p| is_open_space(mask, geo, asteroids, **p, half_w, body_h))
+        .count();
     let connected = rocks_are_within_reach(asteroids, geo);
 
     TraversalReport {
         total_points: surface.len(),
         largest_component: (0..surface.len()).collect(),
         traversable_fraction: 1.0,
-        passed: closed && spawns >= SPAWN_COUNT_MIN && connected,
+        passed: closed && usable >= SPAWN_COUNT_MIN && connected,
     }
 }
 
@@ -566,42 +640,123 @@ pub fn rim_is_closed(mask: &Mask, geo: &SpaceGeometry) -> bool {
     true
 }
 
-/// Candidate spawn points in **open space** — air a player box fits in, inside
-/// the rim, clear of every rock — at `SPAWN_MIN_SEPARATION`, up to `limit`.
+/// Every grid point in **open space** — air a player box fits in, inside the
+/// rim, clear of every rock.
 ///
 /// Open space rather than standable ground (R17): in space you do not land to
-/// spawn. `T22.05B` owns what actually gets spawned where; this exists so the
-/// verdict can refuse a map with nowhere to put anybody, and so the count is
-/// measurable.
-pub fn open_space_candidates(
-    mask: &Mask,
-    geo: &SpaceGeometry,
-    asteroids: &[Asteroid],
-    limit: usize,
-) -> Vec<Point> {
-    let sep_sq = (SPAWN_MIN_SEPARATION * SPAWN_MIN_SEPARATION) as i64;
+/// spawn. The grid is `SPACE_SPAWN_GRID` px, which on Large is 64 x 32 = 2048
+/// probes — cheap enough to run on every generation attempt, and fine enough
+/// that no gap a player fits through is missed by more than half a step.
+///
+/// **No separation rule is applied here, and that is the change `T22.05B`
+/// made.** The old version took the first `limit` points that were
+/// `SPAWN_MIN_SEPARATION` apart *in scan order*, which is a pool biased to the
+/// top-left corner of the arena — fine for answering *"is there room for six?"*
+/// and wrong as a set to sample spawns from. Separation is now
+/// [`choose_space_spawns`]' job, through the same farthest-point sampler the
+/// landscape generators use.
+pub fn open_space_grid(mask: &Mask, geo: &SpaceGeometry, asteroids: &[Asteroid]) -> Vec<Point> {
     let half_w = (PLAYER_W as i32) / 2;
     let body_h = PLAYER_H as i32;
-    let mut chosen: Vec<Point> = Vec::new();
+    let mut out: Vec<Point> = Vec::new();
 
     let mut y = (geo.cy - geo.ry) as i32;
     while y < (geo.cy + geo.ry) as i32 {
         let mut x = (geo.cx - geo.rx) as i32;
         while x < (geo.cx + geo.rx) as i32 {
             let p = Point::new(x, y);
-            if is_open_space(mask, geo, asteroids, p, half_w, body_h)
-                && chosen.iter().all(|c| p.distance_sq(*c) >= sep_sq)
-            {
-                chosen.push(p);
-                if chosen.len() >= limit {
-                    return chosen;
-                }
+            if is_open_space(mask, geo, asteroids, p, half_w, body_h) {
+                out.push(p);
             }
             x += SPACE_SPAWN_GRID;
         }
         y += SPACE_SPAWN_GRID;
     }
-    chosen
+    out
+}
+
+/// The spawn points a space map ships (`T22.05B`).
+///
+/// **The same sampler the landscape uses, over a different pool.**
+/// `spawns::pick_separated` is farthest-point sampling with
+/// `MAX_RELAXATIONS` fallbacks — *"random placement clusters, and clustered
+/// spawns mean two players start in each other's faces while a third of the map
+/// is empty"* — and none of that reasoning is about gravity. Only the pool
+/// changes: open space inside the rim instead of standable ground in the
+/// traversable component. A second copy of the sampler here would drift from
+/// that one the first time either was tuned.
+///
+/// The `"spawns"` sub-stream tag is `choose_spawns`' own, because this *is*
+/// `choose_spawns` for this generator and no space map ever calls both.
+pub fn choose_space_spawns(
+    mask: &Mask,
+    geo: &SpaceGeometry,
+    asteroids: &[Asteroid],
+    seed: u64,
+) -> Vec<Point> {
+    let pool = open_space_grid(mask, geo, asteroids);
+    if pool.is_empty() {
+        return Vec::new();
+    }
+    let mut rng = substream(seed, "spawns");
+    let first = range_i32(&mut rng, 0, pool.len() as i32 - 1) as usize;
+    pick_separated(&pool, first, SPAWN_COUNT_MIN.max(MAX_PLAYERS))
+}
+
+/// One point in open space, drawn at random, or `None` if this map has none.
+///
+/// For the things that arrive **during** a round rather than at generation:
+/// supply crates, which R16 takes off the sky drop, and the periodic item
+/// spawns R14 takes off the ground. Rejection sampling rather than
+/// [`open_space_grid`] because those callers want a *different* point each
+/// time and the grid is a fixed 2048-entry list; building it per crate would
+/// also be 2048 probes to use one.
+///
+/// Draws from `rng` exactly once per attempt, so the caller's stream position
+/// stays a function of the map and the number of attempts — both deterministic.
+pub fn random_open_space(
+    mask: &Mask,
+    geo: &SpaceGeometry,
+    asteroids: &[Asteroid],
+    rng: &mut ChaCha8Rng,
+) -> Option<Point> {
+    let half_w = (PLAYER_W as i32) / 2;
+    let body_h = PLAYER_H as i32;
+    for _ in 0..SPACE_OPEN_SPACE_TRIES {
+        let p = Point::new(
+            range_i32(rng, (geo.cx - geo.rx) as i32, (geo.cx + geo.rx) as i32),
+            range_i32(rng, (geo.cy - geo.ry) as i32, (geo.cy + geo.ry) as i32),
+        );
+        if is_open_space(mask, geo, asteroids, p, half_w, body_h) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Does a player body fit at `p` — **the space answer to
+/// `surface::is_standable`** (`T22.05B`)?
+///
+/// Exported because the rest of the game asks that question in the landscape's
+/// words and gets the wrong answer here. `is_standable` requires
+/// `MIN_SUPPORT_PX` of rock directly under the body box, so **no open-space
+/// spawn point can ever pass it** — which is not a detail: `World::spawn_for`
+/// and `player::state::choose_respawn` both gate the listed spawn points on it,
+/// so every space spawn would be silently rejected and both would fall through
+/// to their surface fallback. The chosen, well-separated points would have been
+/// computed, shipped, validated, hashed into the golden table, and never used.
+///
+/// `Map::body_fits_at` is the predicate that picks between the two, and it is
+/// the only place that choice is made.
+pub fn body_fits(mask: &Mask, geo: &SpaceGeometry, asteroids: &[Asteroid], p: Point) -> bool {
+    is_open_space(
+        mask,
+        geo,
+        asteroids,
+        p,
+        (PLAYER_W as i32) / 2,
+        PLAYER_H as i32,
+    )
 }
 
 fn is_open_space(
@@ -692,9 +847,12 @@ pub fn rocks_are_within_reach(asteroids: &[Asteroid], geo: &SpaceGeometry) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{MAP_LARGE_W, MINIMAP_H, MINIMAP_W, MIN_BLOB_PX, WALL_W};
+    use crate::constants::{
+        MAP_LARGE_W, MINIMAP_H, MINIMAP_W, MIN_BLOB_PX, SPAWN_MIN_SEPARATION, WALL_W,
+    };
     use crate::map::gen::borders_hold;
     use crate::map::gen::objects::PlacedObject;
+    use crate::map::gen::spawns::{MAX_RELAXATIONS, RELAX_FACTOR};
     use crate::map::gen::traversal;
     use crate::map::shape::carve_circle_counted;
 
@@ -1143,13 +1301,71 @@ mod tests {
         }
     }
 
+    /// **R35's red-before-green.** The spawn clause, pointed at the list the
+    /// map actually *ships* instead of at a count `analyse_space` throws away.
+    ///
+    /// `analyse_space` measures `open_space_candidates(..).len()`, which is a
+    /// statement about the map (*"there is somewhere to put six players"*) and
+    /// not about `MapMeta.spawn_points` (*"they are put there"*). This test
+    /// asserts the second, through `map::generate_with` — the whole pipeline,
+    /// pass 8 included — and it was red on all three scales the moment it was
+    /// written:
+    ///
+    /// ```text
+    /// Small:  h=1024 crust_line=1007 spawns=6 ys=[1007 x6] outside=6
+    /// Medium: h=1536 crust_line=1519 spawns=6 ys=[1519 x6] outside=6
+    /// Large:  h=2048 crust_line=2031 spawns=6 ys=[2031 x6] outside=6
+    /// ```
+    ///
+    /// The predicate is `is_open_space` itself, not a restatement of it, so a
+    /// spawn that the verdict would count is exactly a spawn this accepts.
+    #[test]
+    fn every_shipped_spawn_point_is_in_open_space_inside_the_rim() {
+        let half_w = (PLAYER_W as i32) / 2;
+        let body_h = PLAYER_H as i32;
+        for scale in MapScale::ALL {
+            let geo = SpaceGeometry::for_scale(scale);
+            let map = crate::map::generate_with(4242, scale, MapGenerator::Space);
+            let ys: Vec<i32> = map.meta.spawn_points.iter().map(|p| p.y).collect();
+            let outside: Vec<Point> = map
+                .meta
+                .spawn_points
+                .iter()
+                .copied()
+                .filter(|p| {
+                    !is_open_space(&map.mask, &geo, &map.meta.asteroids, *p, half_w, body_h)
+                })
+                .collect();
+            println!(
+                "{scale:?}: h={} crust_line={} spawns={} ys={ys:?} pads={} outside={}",
+                map.mask.h,
+                map.mask.h as i32 - FLOOR_CRUST as i32 - 1,
+                map.meta.spawn_points.len(),
+                map.meta.teleport_pads.len(),
+                outside.len()
+            );
+            assert!(
+                map.meta.spawn_points.len() >= SPAWN_COUNT_MIN,
+                "{scale:?}: only {} spawn points",
+                map.meta.spawn_points.len()
+            );
+            assert!(
+                outside.is_empty(),
+                "{scale:?}: {} of {} shipped spawn points are not open space inside the rim: {:?}",
+                outside.len(),
+                map.meta.spawn_points.len(),
+                outside
+            );
+        }
+    }
+
     #[test]
     fn there_is_open_space_to_spawn_into() {
         for scale in MapScale::ALL {
             let geo = SpaceGeometry::for_scale(scale);
             for seed in seeds(6) {
                 let o = generate_terrain(seed, scale);
-                let found = open_space_candidates(&o.mask, &geo, &o.asteroids, 64).len();
+                let found = open_space_grid(&o.mask, &geo, &o.asteroids).len();
                 assert!(
                     found >= SPAWN_COUNT_MIN,
                     "{scale:?} seed {seed}: only {found} open-space candidates"
@@ -1299,6 +1515,326 @@ mod tests {
             o.surface.len()
         );
         assert_eq!(on_rocks, 0);
+    }
+
+    /// The hit rate [`SPACE_OPEN_SPACE_TRIES`] is derived from, measured
+    /// rather than assumed.
+    ///
+    /// Two numbers, because they are different: the **grid** rate is the share
+    /// of `open_space_grid`'s probes that land in open space, and the **draw**
+    /// rate is the share of uniform draws from the ellipse's *bounding box*
+    /// that do — the box being bigger than the ellipse by `4/pi`, and the
+    /// draw rate being what the attempt budget actually has to survive.
+    #[test]
+    #[ignore = "a measurement, not a gate"]
+    fn the_open_space_hit_rate() {
+        for scale in MapScale::ALL {
+            let geo = SpaceGeometry::for_scale(scale);
+            let (mut grid_hits, mut grid_probes) = (0usize, 0usize);
+            let (mut draw_hits, mut draw_probes) = (0usize, 0usize);
+            let half_w = (PLAYER_W as i32) / 2;
+            let body_h = PLAYER_H as i32;
+            for seed in seeds(60) {
+                let o = generate_terrain(seed, scale);
+                let mut probes = 0usize;
+                let mut y = (geo.cy - geo.ry) as i32;
+                while y < (geo.cy + geo.ry) as i32 {
+                    let mut x = (geo.cx - geo.rx) as i32;
+                    while x < (geo.cx + geo.rx) as i32 {
+                        probes += 1;
+                        x += SPACE_SPAWN_GRID;
+                    }
+                    y += SPACE_SPAWN_GRID;
+                }
+                grid_probes += probes;
+                grid_hits += open_space_grid(&o.mask, &geo, &o.asteroids).len();
+
+                let mut rng = substream(seed, "hit_rate");
+                for _ in 0..400 {
+                    let p = Point::new(
+                        range_i32(&mut rng, (geo.cx - geo.rx) as i32, (geo.cx + geo.rx) as i32),
+                        range_i32(&mut rng, (geo.cy - geo.ry) as i32, (geo.cy + geo.ry) as i32),
+                    );
+                    draw_probes += 1;
+                    if is_open_space(&o.mask, &geo, &o.asteroids, p, half_w, body_h) {
+                        draw_hits += 1;
+                    }
+                }
+            }
+            let draw = draw_hits as f64 / draw_probes as f64;
+            println!(
+                "{scale:?}: grid {:.3} ({grid_hits}/{grid_probes}), draw {draw:.3} \
+                 ({draw_hits}/{draw_probes}); P(all {SPACE_OPEN_SPACE_TRIES} miss) = {:.3e}",
+                grid_hits as f64 / grid_probes as f64,
+                (1.0 - draw).powi(SPACE_OPEN_SPACE_TRIES as i32)
+            );
+        }
+    }
+
+    /// `random_open_space` finds somewhere, on every seed and every scale —
+    /// and the attempt budget has the headroom its constant claims.
+    ///
+    /// **Two assertions, and the second is the one that keeps
+    /// `SPACE_OPEN_SPACE_TRIES` honest.** *"It returned `Some`"* is satisfied
+    /// by a budget of a thousand, so it cannot tell a well-chosen 24 from a
+    /// lucky one. What the constant's doc claims is a **rate** — a single draw
+    /// succeeding better than half the time, which makes 24 misses a 1e-8
+    /// event — so that is what is measured here and re-derived into the
+    /// probability the doc states.
+    ///
+    /// A rate is the right statistic and the worst *observed* draw is not: the
+    /// worst of N draws grows with N, so an assertion on it tightens every time
+    /// the sample does, which is a gate that fails on how long you looked.
+    #[test]
+    fn random_open_space_finds_a_point_on_every_seed() {
+        let half_w = (PLAYER_W as i32) / 2;
+        let body_h = PLAYER_H as i32;
+        for scale in MapScale::ALL {
+            let geo = SpaceGeometry::for_scale(scale);
+            let (mut hits, mut draws) = (0u32, 0u32);
+            let mut worst = 0u32;
+            for seed in seeds(20) {
+                let o = generate_terrain(seed, scale);
+                let mut rng = substream(seed, "crates");
+                for _ in 0..40 {
+                    // The draw is re-run a step at a time so the *cost* is
+                    // visible; `random_open_space` only reports the result.
+                    let mut used = 0u32;
+                    let mut found = None;
+                    while used < SPACE_OPEN_SPACE_TRIES && found.is_none() {
+                        used += 1;
+                        draws += 1;
+                        let p = Point::new(
+                            range_i32(&mut rng, (geo.cx - geo.rx) as i32, (geo.cx + geo.rx) as i32),
+                            range_i32(&mut rng, (geo.cy - geo.ry) as i32, (geo.cy + geo.ry) as i32),
+                        );
+                        if is_open_space(&o.mask, &geo, &o.asteroids, p, half_w, body_h) {
+                            hits += 1;
+                            found = Some(p);
+                        }
+                    }
+                    assert!(
+                        found.is_some(),
+                        "{scale:?} seed {seed}: no open point in {SPACE_OPEN_SPACE_TRIES} tries"
+                    );
+                    worst = worst.max(used);
+                }
+            }
+            let rate = hits as f64 / draws as f64;
+            let miss = (1.0 - rate).powi(SPACE_OPEN_SPACE_TRIES as i32);
+            println!(
+                "{scale:?}: single-draw hit rate {rate:.3} over {draws} draws, worst draw \
+                 {worst} attempts, P(all {SPACE_OPEN_SPACE_TRIES} miss) = {miss:.2e}"
+            );
+            assert!(
+                miss < 1e-6,
+                "{scale:?}: a hit rate of {rate:.3} makes {SPACE_OPEN_SPACE_TRIES} attempts \
+                 miss with probability {miss:.2e} — `SPACE_OPEN_SPACE_TRIES`' doc claims \
+                 better than 1e-6"
+            );
+        }
+    }
+
+    /// Every point `random_open_space` returns really is open space inside the
+    /// rim — the thing crates and periodic items are placed on.
+    ///
+    /// The falsification is `a_point_outside_the_rim_is_not_open_space`.
+    #[test]
+    fn random_open_space_returns_open_space() {
+        let half_w = (PLAYER_W as i32) / 2;
+        let body_h = PLAYER_H as i32;
+        for scale in MapScale::ALL {
+            let geo = SpaceGeometry::for_scale(scale);
+            for seed in seeds(8) {
+                let o = generate_terrain(seed, scale);
+                let mut rng = substream(seed, "crates");
+                for _ in 0..50 {
+                    let p = random_open_space(&o.mask, &geo, &o.asteroids, &mut rng)
+                        .unwrap_or_else(|| panic!("{scale:?} seed {seed}: nowhere open"));
+                    assert!(
+                        is_open_space(&o.mask, &geo, &o.asteroids, p, half_w, body_h),
+                        "{scale:?} seed {seed}: {p:?} is not open space"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The control for both pickers: the places a space map used to put things
+    /// must be refused.
+    ///
+    /// Three of them, and each one is a **real** site rather than an invented
+    /// coordinate: the crust line every spawn and pad sat on before this task
+    /// (R35), the sky drop `tick_crates` used (`y = SKY_MARGIN / 2`, R16), and
+    /// the centre of a rock. Without this, *"every point is open space"* is
+    /// satisfied by a predicate that accepts everything.
+    #[test]
+    fn the_places_this_map_used_to_put_things_are_not_open_space() {
+        let half_w = (PLAYER_W as i32) / 2;
+        let body_h = PLAYER_H as i32;
+        for scale in MapScale::ALL {
+            let geo = SpaceGeometry::for_scale(scale);
+            let o = generate_terrain(4242, scale);
+            let h = scale.params().height as i32;
+            let w = scale.params().width as i32;
+
+            let crust = Point::new(w / 2, h - FLOOR_CRUST as i32 - 1);
+            assert!(
+                !is_open_space(&o.mask, &geo, &o.asteroids, crust, half_w, body_h),
+                "{scale:?}: the floor crust at {crust:?} passed as open space"
+            );
+            let sky = Point::new(w / 2, (SKY_MARGIN / 2) as i32);
+            assert!(
+                !is_open_space(&o.mask, &geo, &o.asteroids, sky, half_w, body_h),
+                "{scale:?}: the old crate drop at {sky:?} passed as open space"
+            );
+            let rock = o.asteroids[0];
+            assert!(
+                !is_open_space(
+                    &o.mask,
+                    &geo,
+                    &o.asteroids,
+                    Point::new(rock.x, rock.y),
+                    half_w,
+                    body_h
+                ),
+                "{scale:?}: the middle of a rock passed as open space"
+            );
+
+            // And the control on the control: somewhere that *is* open, so the
+            // three refusals above are not a predicate that refuses everything.
+            let open = open_space_grid(&o.mask, &geo, &o.asteroids);
+            assert!(!open.is_empty(), "{scale:?}: nothing at all is open space");
+        }
+    }
+
+    /// **The population claim the deliverable asks for:** over many seeds and
+    /// every scale, every spawn a space map ships is inside the boundary, in
+    /// open space, and clear of the others.
+    ///
+    /// One draw is not a population — `every_shipped_spawn_point_is_in_open_
+    /// space_inside_the_rim` is seed 4242 and reproduces R35's table; this is
+    /// the sweep behind it.
+    ///
+    /// **The separation floor is the relaxed one, deliberately** (§A19).
+    /// `pick_separated` relaxes `SPAWN_MIN_SEPARATION` up to `MAX_RELAXATIONS`
+    /// times by `RELAX_FACTOR`, because *"a slightly tighter set of six is
+    /// better than four well-spread ones"* — so pinning the unrelaxed constant
+    /// here would assert something the sampler does not promise. The worst
+    /// separation actually seen is printed, so the gap between what is promised
+    /// and what is delivered is a number a reader can see rather than infer.
+    #[test]
+    fn spawns_are_inside_and_clear_of_each_other_over_many_seeds() {
+        let half_w = (PLAYER_W as i32) / 2;
+        let body_h = PLAYER_H as i32;
+        let floor = SPAWN_MIN_SEPARATION * RELAX_FACTOR.powi(MAX_RELAXATIONS as i32);
+        for scale in MapScale::ALL {
+            let geo = SpaceGeometry::for_scale(scale);
+            let mut worst_sep = f32::MAX;
+            let mut worst_at = (0u64, 0.0f32);
+            let mut maps = 0usize;
+            for seed in seeds(60) {
+                let map = crate::map::generate_with(seed, scale, MapGenerator::Space);
+                maps += 1;
+                assert_eq!(
+                    map.meta.spawn_points.len(),
+                    SPAWN_COUNT_MIN.max(MAX_PLAYERS),
+                    "{scale:?} seed {seed}: wrong spawn count"
+                );
+                for (i, p) in map.meta.spawn_points.iter().enumerate() {
+                    assert!(
+                        is_open_space(&map.mask, &geo, &map.meta.asteroids, *p, half_w, body_h),
+                        "{scale:?} seed {seed}: spawn {p:?} is not open space inside the rim"
+                    );
+                    for q in map.meta.spawn_points.iter().skip(i + 1) {
+                        let d = (p.distance_sq(*q) as f32).sqrt();
+                        if d < worst_sep {
+                            worst_sep = d;
+                            worst_at = (seed, d);
+                        }
+                        assert!(
+                            d >= floor,
+                            "{scale:?} seed {seed}: two spawns {d:.0} px apart, under the \
+                             relaxed floor {floor:.0}"
+                        );
+                    }
+                }
+            }
+            println!(
+                "{scale:?}: {maps} maps, closest two spawns {:.0} px (seed {}), \
+                 SPAWN_MIN_SEPARATION {SPAWN_MIN_SEPARATION:.0}, relaxed floor {floor:.0}",
+                worst_at.1, worst_at.0
+            );
+        }
+    }
+
+    /// The surface a space map ships is the **arena's**, not the whole mask's.
+    ///
+    /// Three claims, and the third is the one R35 is about:
+    /// 1. it is non-empty, so the things that read it have something to read;
+    /// 2. every point is inside the rim;
+    /// 3. it is a **strict** subset of `extract_surface` — which is the control,
+    ///    and it is what says the filter is doing anything at all. Without it,
+    ///    *"every point is inside"* passes for a map whose unfiltered surface
+    ///    was already inside.
+    #[test]
+    fn the_arena_surface_drops_everything_outside_the_rim() {
+        for scale in MapScale::ALL {
+            let geo = SpaceGeometry::for_scale(scale);
+            let o = generate_terrain(4242, scale);
+            let unfiltered = surface::extract_surface(&o.mask);
+            let crust_line = o.mask.h as i32 - FLOOR_CRUST as i32 - 1;
+
+            let on_crust = unfiltered.iter().filter(|p| p.y == crust_line).count();
+            println!(
+                "{scale:?}: {} surface points unfiltered, {} kept, {on_crust} of the dropped \
+                 ones on the floor crust at y={crust_line}",
+                unfiltered.len(),
+                o.surface.len()
+            );
+            assert!(!o.surface.is_empty(), "{scale:?}: the arena has no surface");
+            assert!(
+                on_crust > 0,
+                "{scale:?}: the control is gone — `extract_surface` no longer returns the \
+                 crust, so this test can no longer show the filter removing it"
+            );
+            assert!(
+                o.surface.len() < unfiltered.len(),
+                "{scale:?}: the filter removed nothing"
+            );
+            for p in &o.surface {
+                assert!(
+                    geo.inside(p.x as f32, p.y as f32),
+                    "{scale:?}: surface point {p:?} is outside the rim"
+                );
+                assert_ne!(p.y, crust_line, "{scale:?}: a crust point survived");
+            }
+        }
+    }
+
+    /// And the whole pipeline ships that same set — `MapMeta.surface_points` is
+    /// `gen::surface_for`'s answer, not `extract_surface`'s.
+    ///
+    /// The **other end** of the count (`CLAUDE.md`: count the thing at both
+    /// ends). `meta.rs::surface_points_match_the_final_mask` asserts the
+    /// landscape's equality with `extract_surface`; this asserts the space
+    /// map's equality with the function that replaces it, so neither claim is
+    /// left resting on the other's generator.
+    #[test]
+    fn a_space_maps_shipped_surface_is_the_arena_surface() {
+        for scale in MapScale::ALL {
+            let map = crate::map::generate_with(4242, scale, MapGenerator::Space);
+            assert_eq!(
+                map.meta.surface_points,
+                crate::map::gen::surface_for(MapGenerator::Space, &map.mask),
+                "{scale:?}"
+            );
+            assert_ne!(
+                map.meta.surface_points,
+                surface::extract_surface(&map.mask),
+                "{scale:?}: the shipped surface is the unfiltered one after all"
+            );
+        }
     }
 
     #[test]

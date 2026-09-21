@@ -90,6 +90,13 @@ MANIFEST=(
   "density_and_gap_report|game-core src/map/gen/space.rs|report"
   "what_the_walking_predicate_says_about_a_space_map|game-core src/map/gen/space.rs|report"
   "every_pixel_of_air_inside_the_rim_reads_as_enclosed|game-core src/map/gen/space.rs|report"
+  # T22.05B. The basis `SPACE_OPEN_SPACE_TRIES` is derived from: the share of
+  # uniform draws inside the rim ellipse's bounding box that land in open space.
+  # A report rather than a guard because the gate on it is
+  # `random_open_space_finds_a_point_on_every_seed`, which re-derives the same
+  # rate and asserts the miss probability; this one prints the grid rate beside
+  # it, which that test does not measure.
+  "the_open_space_hit_rate|game-core src/map/gen/space.rs|report"
   "how_many_rooms_fit|game-server tests/capacity.rs|guard"
   "rooms_do_not_get_more_expensive_as_more_are_added|game-server tests/capacity.rs|guard"
   # Parked as flaky on 2026-09-14, not for cost — see tasks/flaky-test.md.

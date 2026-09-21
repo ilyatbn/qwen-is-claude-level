@@ -17,7 +17,6 @@ use crate::map::gen::components::SealedPocket;
 use crate::map::gen::objects::{
     clear_of_objects, column_gap, fill_column, PlacedObject, WhenStarved,
 };
-use crate::map::gen::surface::extract_surface;
 use crate::map::gen::{
     generate_terrain_with,
     spawns::{choose_separated, choose_spawns},
@@ -303,6 +302,92 @@ impl Map {
     pub fn chunks_y(&self) -> u32 {
         self.mask.chunks_y()
     }
+
+    /// The arena's boundary, **when this is a space map** (`T22.05B`).
+    ///
+    /// `Some` is the whole of *"this round is in space"* for anything holding a
+    /// `&Map`, and it hands the caller the geometry it was about to build
+    /// anyway rather than a boolean it would have to act on. That is `items`,
+    /// today: R14 takes crates off the sky drop and items off the ground, and
+    /// both need somewhere inside the rim to put the thing.
+    ///
+    /// **Derived from `meta.asteroids`, which is the discriminator that field's
+    /// own doc already names** — *"Empty for every other generator, which is
+    /// how a space map is told apart from a normal one downstream without a
+    /// second flag to keep in sync"*. It is sound in both directions: v1 and v2
+    /// never fill it, and no space map ships without rocks, because
+    /// `rocks_are_within_reach` returns `false` for an empty scatter and
+    /// `analyse_space` folds that into `passed` — so a rockless space map fails
+    /// every attempt, falls to the safe preset, and the safe preset asks for
+    /// `max(count/2, 4)`.
+    ///
+    /// A `MapMeta.generator` field would be the more direct spelling and is the
+    /// obvious next step if a third consumer appears; it was not worth the
+    /// twenty struct literals in fixtures for one.
+    pub fn space_geometry(&self) -> Option<crate::map::gen::space::SpaceGeometry> {
+        (!self.meta.asteroids.is_empty())
+            .then(|| crate::map::gen::space::SpaceGeometry::for_dims(self.mask.w, self.mask.h))
+    }
+
+    /// Is `p` — a **feet line**, as every point in this project that names a
+    /// player position is — somewhere a player body can be put on this map?
+    ///
+    /// **The one place the two meanings of "a spawn is still valid" are
+    /// reconciled** (`T22.05B`). Under gravity it is `is_standable`: a box that
+    /// fits, with rock under it. In space it is `space::body_fits`: a box that
+    /// fits, inside the rim, clear of every rock — *with no rock under it*,
+    /// because you do not land to spawn (R17).
+    ///
+    /// **Why this is not cosmetic.** `World::spawn_for` and
+    /// `player::state::choose_respawn` both filter `MapMeta.spawn_points`
+    /// through the standable test before using one, and an open-space point
+    /// fails it by definition — `is_standable` demands `MIN_SUPPORT_PX` of rock
+    /// directly beneath. Left alone, every space spawn this task chooses would
+    /// be rejected at the moment of use and both callers would fall through to
+    /// their surface fallback, landing players on asteroid tops instead. The
+    /// points would still be generated, shipped, validated and golden-hashed,
+    /// and nothing would have reported that they were never used:
+    /// `the_shipped_spawn_points_are_the_ones_a_space_round_uses` is the test
+    /// that would.
+    pub fn body_fits_at(&self, p: Point) -> bool {
+        match self.space_geometry() {
+            Some(geo) => {
+                crate::map::gen::space::body_fits(&self.mask, &geo, &self.meta.asteroids, p)
+            }
+            None => crate::map::gen::surface::is_standable(&self.mask, p.x, p.y),
+        }
+    }
+
+    /// One point a player body or an item may be put at, drawn at random, or
+    /// `None` when this map has nowhere.
+    ///
+    /// The **fallback** half of `body_fits_at`, and shared for the same reason:
+    /// the respawn fallback, the round's initial items, the periodic item
+    /// spawns and the supply crates all ask *"somewhere on this map, please"*,
+    /// and in space the answer is open air rather than a surface point (R14,
+    /// R16).
+    ///
+    /// **The landscape arm draws exactly once, as its callers always did** —
+    /// one index into `surface_points`, no re-check — because those callers sit
+    /// on the `"items"` stream and a second draw here would shift every
+    /// subsequent item on every existing map. Callers that want the point
+    /// re-validated against the damaged mask call `body_fits_at` on the result,
+    /// which is what `resample_surface` and `choose_respawn` do.
+    pub fn random_body_site(&self, rng: &mut ChaCha8Rng) -> Option<Point> {
+        match self.space_geometry() {
+            Some(geo) => crate::map::gen::space::random_open_space(
+                &self.mask,
+                &geo,
+                &self.meta.asteroids,
+                rng,
+            ),
+            None if self.meta.surface_points.is_empty() => None,
+            None => Some(
+                self.meta.surface_points
+                    [range_i32(rng, 0, self.meta.surface_points.len() as i32 - 1) as usize],
+            ),
+        }
+    }
 }
 
 /// The full pipeline: terrain, spawns, buried slots, decorations, coarse grid.
@@ -367,7 +452,29 @@ pub(crate) fn generate_full_with(
     let asteroids = outcome.asteroids.clone();
 
     let theme = theme_for(requested_seed);
-    let wind = range_f32(&mut substream(requested_seed, "wind"), -WIND_MAX, WIND_MAX);
+
+    // **`T22.05B`: the one derived fact the rest of pass 8 branches on.**
+    //
+    // Derived from the generator, which R15 derives from the gravity mode, so
+    // there is one source of truth and no way for a lobby to ask for a space
+    // map with landscape furniture in it. Everything below that reads it is a
+    // *ruling*, made here and reversible here; the reasons are at each site.
+    let space = generator == MapGenerator::Space;
+
+    // **Ruling: no wind in a vacuum.** `MapMeta.wind` is read by
+    // `effects/weather.rs` and the client's rain and cloud drift, and a wind
+    // speed in space is a physical claim the mode contradicts. Zero rather than
+    // absent, because `wind` is an `f32` every consumer already multiplies by.
+    // The draw is skipped, not discarded: `rng::substream` builds a fresh
+    // generator per tag, so not drawing from `"wind"` cannot move any other
+    // stream.
+    //
+    // **Reverse it by:** this one expression.
+    let wind = if space {
+        0.0
+    } else {
+        range_f32(&mut substream(requested_seed, "wind"), -WIND_MAX, WIND_MAX)
+    };
 
     // §D5 keeps spawns and pads `OBJECT_CLEAR_OF_SPAWN` from an object centre.
     //
@@ -387,13 +494,27 @@ pub(crate) fn generate_full_with(
         WhenStarved::FallBack,
     );
 
-    let spawn_points = choose_spawns(
-        &outcome.mask,
-        &outcome.surface,
-        &clear,
-        outcome.seed,
-        crate::constants::SPAWN_COUNT_MIN.max(crate::constants::MAX_PLAYERS),
-    );
+    // **Ruling: in space the generator chooses, and pass 8 ships what it chose.**
+    //
+    // `choose_spawns` picks from the traversal component of a *surface*, and in
+    // space there is no ground line to walk — a spawn is a point in open air
+    // inside the rim (R17). `space::choose_space_spawns` picks those, through
+    // the same farthest-point sampler, and `analyse_space` has already passed
+    // judgement on this exact list, so the verdict and the shipped field are
+    // one value rather than two measurements of different things (R35).
+    //
+    // **Reverse it by:** this match.
+    let spawn_points = if space {
+        outcome.spawn_points.clone()
+    } else {
+        choose_spawns(
+            &outcome.mask,
+            &outcome.surface,
+            &clear,
+            outcome.seed,
+            crate::constants::SPAWN_COUNT_MIN.max(crate::constants::MAX_PLAYERS),
+        )
+    };
 
     // Pads come from the same sampler as the spawns, on their own sub-stream, so
     // that adding them cannot move a spawn point (asserted in `pads_do_not_move_
@@ -423,7 +544,38 @@ pub(crate) fn generate_full_with(
         WhenStarved::FallBack,
     );
     let bodies: Vec<Point> = spawn_points.clone();
-    let teleport_pads = {
+    // **Ruling: no teleport pads and no gun platforms in space.**
+    //
+    // Both are *standing* furniture. `TeleportPad::underfoot` and
+    // `GunPlatform::underfoot` are the only ways either is used, and both ask
+    // where a player's feet are; `standing_candidates` + `stands_on_ground`
+    // then refuse anywhere the drawn base is not sitting on rock, and
+    // `a_network_or_none` zeroes a pad count under `TELEPORT_PADS_MIN`. So the
+    // sampler would have returned almost nothing anyway (T22.05B's task file
+    // predicted zero) — but *almost nothing by accident* is the thing to avoid,
+    // because what it actually returned today was **six pads on the floor
+    // crust, outside the rim, in the void** (R35).
+    //
+    // The decisive reason is not the sampler, it is `fill_standing_ground`.
+    // T21.28 fills rock under every pad and platform it places, and the only
+    // seatable ground in space is an asteroid top — so seating a gate there
+    // would add pixels **outside that rock's bounding radius**, which is the
+    // one invariant `stamp_asteroid` maintains and which `place_asteroids`,
+    // `rocks_are_within_reach` and `T22.11`'s gravity wells all reason in. A
+    // teleport network is not worth silently changing what a rock's radius
+    // means.
+    //
+    // Consequence, stated rather than left to be found: `filled` below is
+    // therefore always 0 on a space map, so `gen::reanalyse`'s space arm is
+    // unreachable *by construction* here rather than merely unexercised (R32).
+    // `no_ground_is_filled_on_a_space_map` asserts that, and
+    // `the_space_verdict_survives_a_refill` exercises the arm directly.
+    //
+    // **Reverse it by:** these two `if space` guards — and then read
+    // `stamp_asteroid`'s doc before believing the fill is harmless.
+    let teleport_pads = if space {
+        Vec::new()
+    } else {
         let seated_main = standing_candidates(
             &outcome.mask,
             &outcome.surface,
@@ -522,7 +674,9 @@ pub(crate) fn generate_full_with(
     let pad_feet: Vec<(Point, i32)> = teleport_pads.iter().map(|p| (p.pos, PAD_ART_W)).collect();
     let mut platform_bodies = bodies.clone();
     platform_bodies.extend(teleport_pads.iter().map(|p| p.pos));
-    let gun_platforms = {
+    let gun_platforms = if space {
+        Vec::new()
+    } else {
         // T21.40: seated or not placed, main ground first, then anywhere — the pads'
         // rule. A map short of `GUN_PLATFORMS` seats fewer, down to none.
         let seated_main = standing_candidates(
@@ -559,13 +713,37 @@ pub(crate) fn generate_full_with(
             .collect::<Vec<_>>()
     };
 
-    let buried_slots = choose_buried_slots(
-        &outcome.mask,
-        &outcome.sealed_pockets,
-        &outcome.tunnel_paths,
-        outcome.seed ^ buried_secret,
-        params.buried_slots as usize,
-    );
+    // **Ruling: no buried items in space, and this is a skip rather than an
+    // empty call.**
+    //
+    // The task file says buried slots are *"empty by construction"* because
+    // `choose_buried_slots` consumes `sealed_pockets` and `tunnel_paths`, which
+    // only the cave and crevice passes produce. That is half true and the other
+    // half is a live bug: with both lists empty the function takes its
+    // `anchors.is_empty()` branch, which is **uniform random placement over the
+    // whole map** — the branch its own doc exists to reject (*"Uniform random
+    // placement buries things where nobody will ever dig"*). Measured before
+    // this guard: 1 / 7 / 10 slots on Small / Medium / Large, scattered
+    // anywhere in the mask, including inside the rim's rock and the void crust.
+    //
+    // The third job of `components::cleanup` is what supplies the anchors, and
+    // the space pipeline skips that pass on purpose (see `space.rs`'s header).
+    // So: no anchors, no slots. Digging is not a strategy in a mode with no
+    // ground to dig.
+    //
+    // **Reverse it by:** this guard — and give the space generator something to
+    // anchor on first, or it will be the uniform branch again.
+    let buried_slots = if space {
+        Vec::new()
+    } else {
+        choose_buried_slots(
+            &outcome.mask,
+            &outcome.sealed_pockets,
+            &outcome.tunnel_paths,
+            outcome.seed ^ buried_secret,
+            params.buried_slots as usize,
+        )
+    };
 
     // **T21.28: the ground under every standing thing, after every choice.** Last,
     // so it cannot move a spawn, a pad, a platform, a buried slot or an object —
@@ -591,7 +769,11 @@ pub(crate) fn generate_full_with(
     // second rule. Skipped when nothing was added, which leaves an unfilled map
     // exactly as it was.
     let (surface_points, report) = if filled > 0 {
-        let surface = extract_surface(&mask);
+        // **Through `surface_for`, not `extract_surface`.** T22.05B: a space
+        // map's surface is the arena's, and `extract_surface` also returns the
+        // full-width floor crust outside the rim. Same reasoning as
+        // `reanalyse` below, same `match`, deliberately adjacent to it.
+        let surface = crate::map::gen::surface_for(outcome.generator, &mask);
         // **Through `reanalyse`, not `traversal::analyse`.** The space generator
         // has its own verdict (R17), and re-running the walking one here would
         // silently replace it with a number about a game nobody is playing —
@@ -602,7 +784,7 @@ pub(crate) fn generate_full_with(
             &surface,
             &objects,
             &asteroids,
-            scale,
+            &spawn_points,
         );
         (surface, report)
     } else {
@@ -610,7 +792,27 @@ pub(crate) fn generate_full_with(
     };
     let traversable_fraction = report.traversable_fraction;
     let largest_component: Vec<u32> = report.largest_component.iter().map(|&i| i as u32).collect();
-    let decorations = choose_decorations(&mask, &surface_points, outcome.seed, theme);
+    // **Ruling: no decorations in space.**
+    //
+    // Decorations are grass, rocks and bones anchored to a ground line, and
+    // `decoration_seated` is a *downward* test — rock within `DECOR_GROUND_SLACK`
+    // under every column of the drawn base. There is no up-vector to draw them
+    // against on an asteroid, and the owner has reported floating scenery twice
+    // (T21.21, T21.28). The count is derived from `surface.len()` too, so
+    // leaving it on would have scaled the mode's scenery off the arena's
+    // standable rock, which is not a quantity anyone chose.
+    //
+    // Note this is a *ruling*, not a consequence of the surface filter: the
+    // filtered surface still has seated points on asteroid tops, so without
+    // this guard a space map would ship props standing on rocks.
+    //
+    // **Reverse it by:** this guard. The art would need an orientation first —
+    // `T22.06`'s territory, not this task's.
+    let decorations = if space {
+        Vec::new()
+    } else {
+        choose_decorations(&mask, &surface_points, outcome.seed, theme)
+    };
 
     let coarse = CoarseGrid::build(&mask);
     let chunk_count = (mask.chunks_x() * mask.chunks_y()) as usize;
@@ -1462,8 +1664,341 @@ mod tests {
     }
 
     use super::*;
-    use crate::constants::{OBJECT_CLEAR_OF_SPAWN, SPAWN_COUNT_MIN, WIND_MAX};
+    use crate::constants::{
+        DEFAULT_MAP_GENERATOR, OBJECT_CLEAR_OF_SPAWN, SPAWN_COUNT_MIN, WIND_MAX,
+    };
     use crate::map::gen::surface::extract_surface;
+
+    /// **T22.05B's rulings, every one of them, with the landscape as control.**
+    ///
+    /// The four seated-furniture passes and the wind are *off* in space, and
+    /// each of those is a decision rather than a starvation. The control half
+    /// is what makes the test worth running: without it *"a space map has no
+    /// pads"* is satisfied by a build where nothing anywhere has pads, which
+    /// is exactly how the `asteroid_tops_are_standable` assertion R35 found
+    /// managed to be green for a generator that stamped no asteroids.
+    ///
+    /// The landscape numbers are asserted as **non-zero**, not as fixed
+    /// counts — T21.40 lets a map short of seated ground ship fewer, down to
+    /// none, and pinning six pads here would be re-litigating that ruling in
+    /// the wrong file. Medium/4242 is a map that has them; if it ever stops,
+    /// this test says so rather than passing quietly.
+    #[test]
+    fn a_space_map_ships_none_of_the_furniture_that_needs_a_ground() {
+        for scale in MapScale::ALL {
+            let space = generate_with(4242, scale, MapGenerator::Space);
+            assert!(
+                space.meta.teleport_pads.is_empty(),
+                "{scale:?}: {} pads on a space map",
+                space.meta.teleport_pads.len()
+            );
+            assert!(
+                space.meta.gun_platforms.is_empty(),
+                "{scale:?}: {} gun platforms on a space map",
+                space.meta.gun_platforms.len()
+            );
+            assert!(
+                space.meta.buried_slots.is_empty(),
+                "{scale:?}: {} buried slots on a space map — `choose_buried_slots`' uniform \
+                 branch is running again",
+                space.meta.buried_slots.len()
+            );
+            assert!(
+                space.meta.decorations.is_empty(),
+                "{scale:?}: {} decorations on a space map",
+                space.meta.decorations.len()
+            );
+            assert_eq!(space.meta.wind, 0.0, "{scale:?}: wind in a vacuum");
+        }
+
+        // The control: all five are things a landscape map really does ship.
+        //
+        // **Across seeds, not on one**, and the reason is T21.40: a map short
+        // of seated ground ships fewer pads and platforms, down to none, so
+        // any single seed can legitimately have zero of one of them —
+        // Medium/4242 has no gun platforms, which is how this control first
+        // fired. What is *not* legitimate is the whole generator producing
+        // none, and that is what this measures.
+        let mut land = [0usize; 4];
+        let mut winds = 0usize;
+        let seeds: [u64; 8] = [1, 7, 99, 4242, 31337, 555, 8080, 12345];
+        for seed in seeds {
+            let m = generate_with(seed, MapScale::Medium, DEFAULT_MAP_GENERATOR).meta;
+            land[0] += m.teleport_pads.len();
+            land[1] += m.gun_platforms.len();
+            land[2] += m.buried_slots.len();
+            land[3] += m.decorations.len();
+            assert!(m.wind.abs() <= WIND_MAX, "control: wind out of band");
+            if m.wind != 0.0 {
+                winds += 1;
+            }
+        }
+        println!(
+            "control over {} landscape seeds: {} pads, {} platforms, {} buried, {} decorations, \
+             {winds} with wind",
+            seeds.len(),
+            land[0],
+            land[1],
+            land[2],
+            land[3]
+        );
+        assert!(land[0] > 0, "control: no pads anywhere");
+        assert!(land[1] > 0, "control: no gun platforms anywhere");
+        assert!(land[2] > 0, "control: no buried slots anywhere");
+        assert!(land[3] > 0, "control: no decorations anywhere");
+        assert!(winds > 0, "control: no wind anywhere");
+    }
+
+    /// **The deliverable, as an assertion: nothing a space map places is
+    /// outside the boundary, and nothing sits on a spawn.**
+    ///
+    /// `MapMeta` field by field, over several seeds and every scale. The four
+    /// empty collections are ruled empty above and asserted there; this walks
+    /// the ones that *do* carry positions and checks each against the rim — so
+    /// if a later task turns one of those rulings around, this is what says the
+    /// new placement has to respect the boundary too.
+    ///
+    /// **Its own falsification is built in**: the loop counts what it actually
+    /// examined and refuses to pass having examined nothing, which is what an
+    /// all-empty `MapMeta` would otherwise let it do.
+    #[test]
+    fn every_thing_a_space_map_places_is_inside_the_rim() {
+        let mut checked = 0usize;
+        for scale in MapScale::ALL {
+            for seed in [1u64, 4242, 31337] {
+                let map = generate_with(seed, scale, MapGenerator::Space);
+                let geo = map.space_geometry().expect("a space map");
+                let at = |p: Point| geo.inside(p.x as f32, p.y as f32);
+
+                for p in &map.meta.spawn_points {
+                    assert!(at(*p), "{scale:?}/{seed}: spawn {p:?} outside the rim");
+                    checked += 1;
+                }
+                for p in &map.meta.surface_points {
+                    assert!(at(*p), "{scale:?}/{seed}: surface {p:?} outside the rim");
+                    checked += 1;
+                }
+                // The rocks, by their **bounding radius**, not their centres:
+                // a centre inside the rim with lumps through it is the failure
+                // `no_asteroid_pixel_touches_the_rim` reads off the mask, and
+                // this is the cheap metadata-side statement of the same thing.
+                for a in &map.meta.asteroids {
+                    assert!(
+                        at(Point::new(a.x, a.y)),
+                        "{scale:?}/{seed}: rock centre ({}, {}) outside the rim",
+                        a.x,
+                        a.y
+                    );
+                    checked += 1;
+                    // And clear of every spawn by a body, which is the other
+                    // half of the deliverable: nothing intersects a spawn.
+                    for sp in &map.meta.spawn_points {
+                        let (dx, dy) = ((a.x - sp.x) as f32, (a.y - sp.y) as f32);
+                        let gap = (dx * dx + dy * dy).sqrt() - a.r as f32;
+                        assert!(
+                            gap >= PLAYER_H,
+                            "{scale:?}/{seed}: a rock is {gap:.0} px from spawn {sp:?}, inside \
+                             the {PLAYER_H:.0} px body clearance"
+                        );
+                    }
+                }
+                for p in &map.meta.teleport_pads {
+                    assert!(at(p.pos), "{scale:?}/{seed}: pad outside the rim");
+                    checked += 1;
+                }
+                for g in &map.meta.gun_platforms {
+                    assert!(at(g.pos), "{scale:?}/{seed}: platform outside the rim");
+                    checked += 1;
+                }
+                for b in &map.meta.buried_slots {
+                    assert!(at(b.pos), "{scale:?}/{seed}: buried slot outside the rim");
+                    checked += 1;
+                }
+                for d in &map.meta.decorations {
+                    assert!(at(d.pos), "{scale:?}/{seed}: decoration outside the rim");
+                    checked += 1;
+                }
+                for o in &map.meta.objects {
+                    assert!(
+                        at(Point::new(o.x, o.y)),
+                        "{scale:?}/{seed}: object outside the rim"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        println!("{checked} placed positions checked against the rim");
+        assert!(
+            checked > 0,
+            "nothing was checked: every collection in `MapMeta` is empty, so this test \
+             cannot see a thing placed outside the rim"
+        );
+    }
+
+    /// **R32, half one: the ground fill never runs on a space map, and now it
+    /// cannot.**
+    ///
+    /// `T22.05A` measured pass 8 filling ground on 0 of 900 space maps and
+    /// asked `T22.05B` to fire the `reanalyse` guard that fact leaves inert.
+    /// What this task did instead made it *structurally* zero: the fill loops
+    /// over the pads and the platforms, and this mode ships neither. That is a
+    /// stronger statement than the measurement, and it is the honest one — so
+    /// it is asserted here rather than left as a sentence in a report, and the
+    /// guard is exercised directly by the test below.
+    ///
+    /// `generate_full_with(.., fill)` is the switch T21.28 left for its own
+    /// control: with `fill = true` and `fill = false` producing the same mask,
+    /// nothing was filled.
+    #[test]
+    fn no_ground_is_filled_on_a_space_map() {
+        for scale in MapScale::ALL {
+            let filled = generate_full_with(4242, scale, 0, MapGenerator::Space, true);
+            let unfilled = generate_full_with(4242, scale, 0, MapGenerator::Space, false);
+            assert_eq!(
+                filled.mask.hash(),
+                unfilled.mask.hash(),
+                "{scale:?}: pass 8 changed a space map's mask"
+            );
+        }
+        // The control: on a landscape map the switch really does change the
+        // mask, so the equality above is a fact about space and not about a
+        // flag that does nothing.
+        let scale = MapScale::Medium;
+        let a = generate_full_with(4242, scale, 0, DEFAULT_MAP_GENERATOR, true);
+        let b = generate_full_with(4242, scale, 0, DEFAULT_MAP_GENERATOR, false);
+        assert_ne!(
+            a.mask.hash(),
+            b.mask.hash(),
+            "control: the fill switch changed nothing on a landscape map either"
+        );
+    }
+
+    /// **R32, half two: the guard itself, fired.**
+    ///
+    /// `gen::reanalyse` exists so that pass 8's re-derivation cannot swap a
+    /// space map's verdict for a walking one. The branch is unreachable in
+    /// production (see above), which is precisely why it needs a fixture: *an
+    /// unexercised branch is the problem; the guard is not.*
+    ///
+    /// The fixture is a real space map with real ground filled into it —
+    /// `fill_standing_ground` at a spawn point's feet, the same call pass 8
+    /// makes — and the assertions are the three things the guard buys:
+    ///
+    /// 1. the space verdict survives: `traversable_fraction` is still 1.0 and
+    ///    `passed` is still true;
+    /// 2. `largest_component` still indexes the whole surface;
+    /// 3. **the control** — `traversal::analyse` over the *same* inputs returns
+    ///    something different. Without that third one the test passes for a
+    ///    `reanalyse` that dispatches to the walking predicate and happens to
+    ///    agree, which is the only way this guard can fail.
+    #[test]
+    fn the_space_verdict_survives_a_refill() {
+        let scale = MapScale::Medium;
+        let map = generate_with(4242, scale, MapGenerator::Space);
+        let mut mask = map.mask.clone();
+
+        // Fill ground under a hand-placed pad, the way pass 8 fills it under a
+        // real one. This is the mask change the guard exists to survive.
+        //
+        // **The position is chosen so the fill can happen at all**, which is
+        // the fiddly half of this fixture: `fill_column` adds nothing when the
+        // gap to the rock below is 0 (a surface point is already seated) and
+        // nothing when it exceeds `STANDING_GROUND_FILL_DEPTH` (open air, the
+        // cliff-edge case T21.28 refuses). A spawn point is the second of
+        // those, so the pad goes half a fill depth **above** an asteroid's
+        // standable top — the ledge T21.28 was written for.
+        let seat = *map
+            .meta
+            .surface_points
+            .first()
+            .expect("a space map has a surface");
+        let pad = Point::new(seat.x, seat.y - STANDING_GROUND_FILL_DEPTH / 2);
+        let filled: u64 = fill_standing_ground(&mut mask, pad, PAD_ART_W);
+        assert!(
+            filled > 0,
+            "the fixture filled nothing, so it cannot exercise the branch"
+        );
+
+        let surface = crate::map::gen::surface_for(MapGenerator::Space, &mask);
+        let report = crate::map::gen::reanalyse(
+            MapGenerator::Space,
+            &mask,
+            &surface,
+            &[],
+            &map.meta.asteroids,
+            &map.meta.spawn_points,
+        );
+        println!(
+            "filled {filled} px; space verdict passed={} fraction={} component={} of {}",
+            report.passed,
+            report.traversable_fraction,
+            report.largest_component.len(),
+            surface.len()
+        );
+        assert!(
+            report.passed,
+            "the space verdict did not survive the refill"
+        );
+        assert_eq!(report.traversable_fraction, 1.0);
+        assert_eq!(report.largest_component.len(), surface.len());
+
+        // ------------------------------------------------------------------
+        // The control, and it took two attempts to find one that discriminates.
+        //
+        // **The obvious control does not work, and that is a finding rather
+        // than an inconvenience.** Over this same filled mask and arena
+        // surface, `traversal::analyse` reports `passed = true,
+        // traversable_fraction = 1.000` — *identical* to the space verdict.
+        // R17 warned about exactly this (*"a scatter of asteroids within one
+        // jetpack budget of each other could score surprisingly well"*) and
+        // T22.05B's surface filter sharpened it: with the floor crust gone,
+        // what is left is 71 points on rocks that are all within one climb of
+        // each other, which is what `NavRegions` calls fully connected. So on
+        // a **healthy** space map the two predicates are indistinguishable and
+        // no assertion over one can see the guard.
+        //
+        // Where they differ is the clauses `traversal::analyse` does not have:
+        // the rim's closure and the spawn count. So the control is a space map
+        // with a hole punched in its rim — the hole `T22.10` will make — where
+        // the space verdict must **fail** and the walking one still passes.
+        // That is a difference only the dispatch can produce.
+        let mut broken = mask.clone();
+        let geo = crate::map::gen::space::SpaceGeometry::for_dims(broken.w, broken.h);
+        let removed = crate::map::shape::carve_circle_counted(
+            &mut broken,
+            geo.cx.round() as i32,
+            (geo.cy - geo.ry).round() as i32,
+            (geo.thickness as i32) / 2 + 2,
+        );
+        assert!(removed > 0, "the control carved nothing");
+        let broken_surface = crate::map::gen::surface_for(MapGenerator::Space, &broken);
+        let broken_space = crate::map::gen::reanalyse(
+            MapGenerator::Space,
+            &broken,
+            &broken_surface,
+            &[],
+            &map.meta.asteroids,
+            &map.meta.spawn_points,
+        );
+        let broken_walking = crate::map::gen::traversal::analyse(&broken, &broken_surface, &[]);
+        println!(
+            "rim holed by {removed} px: space passed={} fraction={}, walking passed={} \
+             fraction={:.3}",
+            broken_space.passed,
+            broken_space.traversable_fraction,
+            broken_walking.passed,
+            broken_walking.traversable_fraction
+        );
+        assert!(
+            !broken_space.passed,
+            "control: the space verdict passed a map with a hole in its rim"
+        );
+        assert!(
+            broken_walking.passed,
+            "control: the walking predicate also refused the holed map, so `reanalyse` \
+             dispatching to it would be invisible here"
+        );
+    }
 
     #[test]
     fn determinism_of_the_whole_pipeline() {

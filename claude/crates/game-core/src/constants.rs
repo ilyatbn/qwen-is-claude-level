@@ -616,9 +616,29 @@ pub const SPACE_LEVEL_JITTER: f32 = 0.6;
 
 /// Grid step the open-space spawn candidates are walked on, px.
 ///
-/// A quarter of `SPAWN_MIN_SEPARATION` (256), so the greedy separation filter
-/// is not itself what limits the count.
+/// A quarter of `SPAWN_MIN_SEPARATION` (256), so the sampler that picks six of
+/// them from the grid is not limited by the grid's own resolution.
 pub const SPACE_SPAWN_GRID: i32 = 64;
+
+/// Rejection-sampling attempts for one point in open space (`T22.05B`).
+///
+/// `map::gen::space::random_open_space` draws uniformly from the rim ellipse's
+/// **bounding box** and keeps the first point a player box fits in — so a draw
+/// fails on the box corners outside the rim as well as on rock.
+///
+/// **The basis is a measured rate, not a round number.** Over 60 seeds x 3
+/// scales, `space::tests::the_open_space_hit_rate` reports a single draw
+/// succeeding **0.534 / 0.569 / 0.592** of the time on Small / Medium / Large.
+/// At the worst of those, 24 attempts all miss with probability **1.1e-8** —
+/// against roughly one crate a minute, one item batch every
+/// `ITEM_SPAWN_INTERVAL`, and a round measured in minutes.
+///
+/// `random_open_space_finds_a_point_on_every_seed` re-derives that probability
+/// from the rate it measures, so this number is checked against the map rather
+/// than against itself. **If it ever fires, this constant is the wrong end to
+/// change it from** — the arena got crowded, and the crate has nowhere to go
+/// whatever the budget is.
+pub const SPACE_OPEN_SPACE_TRIES: u32 = 24;
 
 /// Mean ground line, as a fraction of map height. 0.58 leaves the top ~52 % of
 /// the canvas as sky before the profile's amplitude is applied, which is what

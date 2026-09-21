@@ -103,6 +103,19 @@ pub fn choose_separated(
 /// Relaxing beats returning fewer than `SPAWN_COUNT_MIN`: on a small map, or one
 /// whose traversable component is a narrow strip, a slightly tighter set of six
 /// is better than four well-spread ones.
+///
+/// **Exported (T22.05B) because the space generator needs this sampler over a
+/// different pool.** In space a spawn is a point in open air rather than on
+/// standable ground, so none of `choose_separated`'s surface machinery applies
+/// — but *"random placement clusters, and clustered spawns mean two players
+/// start in each other's faces while a third of the map is empty"* is not an
+/// argument about gravity. `space::choose_space_spawns` builds its own pool and
+/// calls this. A second copy of the sampler there would drift from this one the
+/// first time either was tuned.
+pub(crate) fn pick_separated(candidates: &[Point], first: usize, count: usize) -> Vec<Point> {
+    pick(candidates, first, count)
+}
+
 fn pick(candidates: &[Point], first: usize, count: usize) -> Vec<Point> {
     let mut separation = SPAWN_MIN_SEPARATION;
     let mut best: Vec<Point> = Vec::new();
