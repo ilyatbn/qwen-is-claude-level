@@ -1491,8 +1491,21 @@ mod tests {
     }
 
     /// The falsification, kept: **a space map with no rocks at all still has a
-    /// surface**, because the floor crust is one. This is the map the old
+    /// surface** — the **rim's inner face**. This is the map the old
     /// `!o.surface.is_empty()` assertion would have passed.
+    ///
+    /// **T22.05C/F4 corrected this doc**, which used to say *"because the floor
+    /// crust is one"*. `GenOutcome.surface` is `arena_surface` — `extract_surface`
+    /// filtered by `geo.inside` — and the crust sits at `y = h - FLOOR_CRUST - 1`,
+    /// outside the ellipse, which is exactly what that filter removes. Its
+    /// neighbour `the_arena_surface_drops_everything_outside_the_rim` asserts
+    /// the same thing one screen away, so the two disagreed and the wrong one
+    /// was the one a reader reaches for.
+    ///
+    /// Measured rather than re-reasoned, and now asserted below: Small/4242
+    /// with `asteroid_count: 0` yields **22 surface points, 0 of them on the
+    /// crust line, all 22 within 2.8 px of the rim's inner face** (thickness
+    /// 32). That is what keeps the fixture falsifying.
     #[test]
     fn a_map_with_no_asteroids_has_no_standable_rock() {
         let scale = MapScale::Small;
@@ -1507,14 +1520,38 @@ mod tests {
         );
         assert!(
             !o.surface.is_empty(),
-            "the crust is gone, so this fixture no longer falsifies what it was built to"
+            "the rim's inner face is gone from the arena surface, so this fixture no \
+             longer falsifies what it was built to"
         );
         let (on_rocks, rocks_used) = standable_rock_points(&o);
+        // Where those points actually are, asserted rather than described.
+        // Without this the doc above is a second unchecked claim about the
+        // surface, which is the defect F4 is.
+        let geo = SpaceGeometry::for_dims(o.mask.w, o.mask.h);
+        let crust_line = o.mask.h as i32 - crate::constants::FLOOR_CRUST as i32 - 1;
+        let on_crust = o.surface.iter().filter(|p| p.y == crust_line).count();
+        let worst = o
+            .surface
+            .iter()
+            .map(|p| (geo.distance_to_rim(p.x as f32, p.y as f32) - geo.thickness * 0.5).abs())
+            .fold(0.0f32, f32::max);
         println!(
-            "no-asteroid map: {} surface points, {on_rocks} on rock, {rocks_used} rocks used",
+            "no-asteroid map: {} surface points, {on_rocks} on rock, {rocks_used} rocks used, \
+             {on_crust} on the crust line, worst {worst:.1} px off the rim's inner face",
             o.surface.len()
         );
         assert_eq!(on_rocks, 0);
+        assert_eq!(
+            on_crust, 0,
+            "the floor crust is back in the arena surface — the doc above and \
+             `the_arena_surface_drops_everything_outside_the_rim` both say it is filtered out"
+        );
+        assert!(
+            worst <= geo.thickness,
+            "a surface point is {worst:.1} px from the rim's inner face (thickness {}), \
+             so this map's surface is not the rim after all",
+            geo.thickness
+        );
     }
 
     /// The hit rate [`SPACE_OPEN_SPACE_TRIES`] is derived from, measured

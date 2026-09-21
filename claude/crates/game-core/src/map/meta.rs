@@ -321,6 +321,20 @@ impl Map {
     /// every attempt, falls to the safe preset, and the safe preset asks for
     /// `max(count/2, 4)`.
     ///
+    /// **Server-side only, until `T22.11C` (R49, filed by T22.05B's review as
+    /// F6).** "Sound in both directions" is a claim about a *generated* map.
+    /// On a networked client `meta.asteroids` is whatever the core last
+    /// generated locally: `MapInit.asteroids` is on the wire and
+    /// `client/src/net/codec.ts` decodes it into `MapInit.asteroids` — but
+    /// `worldMirror.ts::applyMapInit` calls `setTeleportPads` and
+    /// `setGunPlatforms` and there is no third call, because `Core` has no
+    /// asteroid setter to call: `GameCore::set_asteroids` is the thing
+    /// `T22.11C` adds. No client path
+    /// calls this or any of the three predicates built on it today
+    /// (`body_fits_at`, `random_body_site`, `choose_respawn`), so this is a
+    /// landmine rather than a bug — but the first client-side caller gets the
+    /// wrong rocks in silence. `T22.11C` lands the setter.
+    ///
     /// A `MapMeta.generator` field would be the more direct spelling and is the
     /// obvious next step if a third consumer appears; it was not worth the
     /// twenty struct literals in fixtures for one.
@@ -555,6 +569,30 @@ pub(crate) fn generate_full_with(
     // predicted zero) — but *almost nothing by accident* is the thing to avoid,
     // because what it actually returned today was **six pads on the floor
     // crust, outside the rim, in the void** (R35).
+    //
+    // **T22.05C measured that rather than reasoning about it**, because
+    // T22.05B's review was right that "the sampler would have returned almost
+    // nothing anyway" argues *against* the guard doing anything. Each guard
+    // flipped to `if false` on its own (not the `space` binding, which moves
+    // all five at once and says nothing about which), seed 4242,
+    // Small/Medium/Large:
+    //
+    // | guard off | what a space map then ships |
+    // |---|---|
+    // | `teleport_pads` | **6 / 6 / 6** pads |
+    // | `gun_platforms` | **3 / 3 / 3** platforms |
+    // | `decorations`   | **3 / 6 / 10** props |
+    // | `buried_slots`  | **1 / 7 / 10** slots — the number already quoted below |
+    //
+    // With every guard on it is 0 / 0 / 0, and
+    // `a_space_map_ships_none_of_the_furniture_that_needs_a_ground` goes red
+    // for each of the four in turn. None of these guards is decoration.
+    //
+    // And the fill is not hypothetical either: `surface_points` on Medium goes
+    // **69 → 75** with only the pads guard off and **69 → 72** with only the
+    // platforms guard off, which is `fill_standing_ground` adding rock and the
+    // surface being re-derived from it — pixels outside a rock's bounding
+    // radius, which is exactly what `stamp_asteroid`'s invariant forbids.
     //
     // The decisive reason is not the sampler, it is `fill_standing_ground`.
     // T21.28 fills rock under every pad and platform it places, and the only
@@ -804,7 +842,12 @@ pub(crate) fn generate_full_with(
     //
     // Note this is a *ruling*, not a consequence of the surface filter: the
     // filtered surface still has seated points on asteroid tops, so without
-    // this guard a space map would ship props standing on rocks.
+    // this guard a space map would ship props standing on rocks. **T22.05C
+    // wrote the number down**, because that sentence was a measurement nobody
+    // had taken: with only this guard flipped to `if false`, seed 4242 ships
+    // **3 / 6 / 10** decorations on Small / Medium / Large — on the filtered
+    // arena surface, with the crust already gone. The guard is the whole
+    // reason there are none.
     //
     // **Reverse it by:** this guard. The art would need an orientation first —
     // `T22.06`'s territory, not this task's.
@@ -1683,6 +1726,24 @@ mod tests {
     /// none, and pinning six pads here would be re-litigating that ruling in
     /// the wrong file. Medium/4242 is a map that has them; if it ever stops,
     /// this test says so rather than passing quietly.
+    ///
+    /// ## What this test reports, measured per guard (T22.05C)
+    ///
+    /// The control rules out *"nothing anywhere has pads"*. It does **not**,
+    /// on its own, rule out *"the guard does nothing"* — and T22.05B's own
+    /// justification for three of the five argued that the sampler would have
+    /// returned nothing anyway. So each guard in `generate_full_with` was
+    /// flipped to `if false` **separately** (flipping the `space` binding
+    /// moves all five and tells you nothing about which), and this test went
+    /// **red for every one of them**, at seed 4242:
+    ///
+    /// `teleport_pads` 6/6/6 · `gun_platforms` 3/3/3 · `decorations` 3/6/10 ·
+    /// `buried_slots` 1/7/10, on Small/Medium/Large. `wind` is a `range_f32`
+    /// draw over ±`WIND_MAX` and is ~never exactly zero.
+    ///
+    /// That is the claim this test carries: **deleting any one of the five
+    /// guards makes it fail**, rather than merely "a space map has none of
+    /// these today".
     #[test]
     fn a_space_map_ships_none_of_the_furniture_that_needs_a_ground() {
         for scale in MapScale::ALL {

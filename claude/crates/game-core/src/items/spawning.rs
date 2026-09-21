@@ -54,6 +54,15 @@ pub fn spawn_count(item: ItemId) -> u8 {
 pub fn place_initial(world: &mut WorldItems, map: &Map, seed: u64, now: f32) -> u32 {
     let mut rng = substream(seed, "items");
     let want = map.meta.scale.params().initial_items;
+    // **The landscape precondition, kept as one** (T22.05C/F8). On the space
+    // path nothing below reads `surface` — `map.random_body_site` draws from
+    // open air — so this guard protects the landscape arm of that call, which
+    // is the one that indexes `surface_points` directly. It is stated rather
+    // than re-keyed because `random_body_site` already returns `None` on an
+    // empty pool and the loop treats that as a rejected attempt: keying the
+    // guard to the space path would be a second spelling of a check that is
+    // already inside the function it guards. It is inert in space today, and a
+    // reader should know that is deliberate rather than an oversight.
     let surface = &map.meta.surface_points;
     if surface.is_empty() {
         return 0;
@@ -78,6 +87,18 @@ pub fn place_initial(world: &mut WorldItems, map: &Map, seed: u64, now: f32) -> 
             // `T22.05B`). R14 puts every non-player body at gravity scale 0, so
             // an item rests exactly where it is put — which makes *where it is
             // put* the entire placement rule rather than a starting height.
+            //
+            // **That tense is load-bearing and it is carried by a named
+            // mechanism** (T22.05C/F2): the scale is `GravityMode::Space.scale()`
+            // = 0.0, reaching this body through `Forces::falling(mode)` at
+            // `items/world.rs::WorldItems::step`, whose `mode` is the round's,
+            // passed by `world/mod.rs`. At `6e1ef91` that call passed a literal
+            // `1.0` and this sentence was false: measured over 300 ticks on a
+            // Medium space map, all 14 initial items fell — up to 1232 px, peak
+            // |vel.y| 900 — and every one came to rest on the rim's inner
+            // floor. `crates_spawn_inside_the_arena_in_space` now steps the
+            // bodies and pins "moved" to that constant, so the sentence cannot
+            // go stale again without a test saying so.
             // A surface point would not be *wrong* here since T22.05B filtered
             // the crust out of `surface_points`, but it would stack the round's
             // loot on the handful of asteroid tops the sampler finds standable,
@@ -183,6 +204,8 @@ pub fn reveal_buried(
 /// the void where they fall to bedrock in a heap — a bug that presents as "items
 /// stopped appearing" and is tedious to trace.
 pub fn resample_surface(map: &Map, rng: &mut ChaCha8Rng, players: &[Vec2]) -> Option<Point> {
+    // The same landscape precondition as `place_initial`'s, and the same
+    // reading (T22.05C/F8): the space path below never touches `surface`.
     let surface = &map.meta.surface_points;
     if surface.is_empty() {
         return None;
@@ -341,6 +364,16 @@ impl SpawnSchedule {
         // the items use, and floats there. That is the supply crate this mode
         // has: a thing you fly to rather than a thing you run under.
         //
+        // **"Floats there" is `GravityMode::Space.scale()` = 0.0 arriving
+        // through `Forces::falling` at `items/world.rs::WorldItems::step`**, and
+        // nothing else (T22.05C/F2). Before that argument existed the step
+        // passed a literal `1.0` and every crate in this mode slid to the
+        // bottom of the ellipse — the first thing a player would have seen
+        // here. `crates_spawn_inside_the_arena_in_space` steps them and asserts
+        // it against that constant, with a standard-gravity control on the same
+        // map so "nothing moved" cannot be satisfied by a stepper that moves
+        // nothing.
+        //
         // **Reverse it by:** this match.
         let pos = match map.space_geometry() {
             Some(_) => {
@@ -393,7 +426,10 @@ pub fn floor_limit(map: &Map) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{MapGenerator, MapScale, MAX_WORLD_ITEMS, SIM_DT, WORLD_ITEM_TTL};
+    use crate::constants::{
+        GravityMode, MapGenerator, MapScale, MAX_FALL_SPEED, MAX_WORLD_ITEMS, SIM_DT,
+        WORLD_ITEM_TTL,
+    };
     use crate::items::registry::{FLASHLIGHT, ITEMS};
     use crate::map::gen::surface::is_standable;
     use crate::map::generate;
@@ -766,6 +802,77 @@ mod tests {
                 );
             }
             assert_eq!(crates, 60, "{scale:?}: only {crates} crates arrived");
+
+            // ---------------------------------------------- T22.05C/F2
+            //
+            // **Where a crate *is* a second later, not only where it was put.**
+            // Every assertion above is about the spawn tick, and `tick_crates`'
+            // own comment promises the crate "floats there" — an effect nothing
+            // measured. At `6e1ef91` it was false: `WorldItems::step` passed a
+            // literal `1.0` to `integrate` and all of this mode's loot slid to
+            // the bottom of the ellipse.
+            //
+            // The assertion is pinned to `GravityMode::Space.scale()` rather
+            // than to "did not move", so it reports the mechanism coming apart
+            // in **either** direction — a stepper that stops reading the mode,
+            // or a scale that stops being zero.
+            //
+            // The control is the same 60 crates, same seed, same map, stepped
+            // at `Standard`: without it "nothing moved" is satisfied by a
+            // stepper that moves nothing, which is the shape this file already
+            // records twice.
+            let mut ctl = WorldItems::new();
+            let mut cs = SpawnSchedule::new(77, 0.0, 0);
+            for i in 1..=60 {
+                cs.tick_crates(&mut ctl, &map, CRATE_INTERVAL * i as f32);
+            }
+            assert_eq!(
+                ctl.len(),
+                w.len(),
+                "{scale:?}: the control is not the same set"
+            );
+
+            // Long enough for a body to cross the arena at terminal velocity,
+            // which bounds any fall inside the rim. Derived, not a round number
+            // a tunable could outgrow.
+            let steps = ((2.0 * geo.ry / MAX_FALL_SPEED) / SIM_DT).ceil() as i32;
+            let before: Vec<Vec2> = w.iter().map(|it| it.pos).collect();
+            let ctl_before: Vec<Vec2> = ctl.iter().map(|it| it.pos).collect();
+            for _ in 0..steps {
+                w.step(&map, GravityMode::Space, SIM_DT);
+                ctl.step(&map, GravityMode::Standard, SIM_DT);
+            }
+            let moved = |now: &WorldItems, then: &[Vec2]| -> usize {
+                now.iter()
+                    .zip(then)
+                    .filter(|(it, p)| (it.pos - **p).len_sq() > 0.25)
+                    .count()
+            };
+            let (space_moved, ctl_moved) = (moved(&w, &before), moved(&ctl, &ctl_before));
+            assert!(
+                ctl_moved > 0,
+                "{scale:?}: control: none of {} crates moved in {steps} steps at \
+                 standard gravity, so \"nothing moved in space\" rules nothing out",
+                ctl.len()
+            );
+            assert_eq!(
+                space_moved == 0,
+                GravityMode::Space.scale() == 0.0,
+                "{scale:?}: {space_moved} of {} crates moved in {steps} steps while \
+                 `GravityMode::Space.scale()` is {} — R14 says a non-player body \
+                 floats where it is put, and `Forces::falling` at \
+                 `items/world.rs::WorldItems::step` is the one place that is decided",
+                w.len(),
+                GravityMode::Space.scale()
+            );
+            // And wherever they ended up, they are still in the arena.
+            for it in w.iter() {
+                assert!(
+                    geo.inside(it.pos.x, it.pos.y),
+                    "{scale:?}: a crate left the rim while stepping, at {:?}",
+                    it.pos
+                );
+            }
         }
     }
 
@@ -803,6 +910,21 @@ mod tests {
                     it.pos
                 );
                 assert_ne!(it.pos.y, crust, "{scale:?}: an item is on the void crust");
+                // **T22.05C/F3: open space, not merely inside the rim.**
+                // "Inside" is satisfied by a surface point too — measured:
+                // planting `Map::random_body_site`'s space arm to draw from
+                // `map.meta.surface_points` left this test green, because every
+                // filtered surface point is inside the rim by construction and
+                // none is on the crust line. `body_fits_at` is the predicate
+                // that names the subject, and the disjointness control below
+                // (`the_two_pools_a_space_map_has_are_disjoint`) is what makes
+                // it discriminate rather than restate.
+                assert!(
+                    map.body_fits_at(Point::new(it.pos.x as i32, it.pos.y as i32)),
+                    "{scale:?}: item at {:?} is not open space — `random_body_site` \
+                     returned a surface point",
+                    it.pos
+                );
                 for sp in &map.meta.spawn_points {
                     let d = (it.pos - Vec2::new(sp.x as f32, sp.y as f32))
                         .len_sq()
@@ -833,10 +955,64 @@ mod tests {
                     "a periodic item spawned at {:?}, outside the rim",
                     it.pos
                 );
+                // The same F3 assertion, and here it names a failure the count
+                // guard below would otherwise report as "nothing spawned":
+                // under the same plant `resample_surface` rejects every draw at
+                // its own `body_fits_at` re-check, so this test went red on
+                // `seen > 0` rather than on the thing that was wrong.
+                assert!(
+                    map.body_fits_at(Point::new(it.pos.x as i32, it.pos.y as i32)),
+                    "a periodic item at {:?} is not open space",
+                    it.pos
+                );
             }
         }
         assert!(seen > 0, "no periodic items spawned at all");
         println!("{seen} periodic items, all inside the rim");
+    }
+
+    /// **T22.05C/F3's control: the two pools a space map has are disjoint.**
+    ///
+    /// The `body_fits_at` assertions in the two tests above are only worth
+    /// writing if a surface point *fails* that predicate — otherwise they
+    /// restate "inside the rim" in a second vocabulary and rule nothing out.
+    /// So assert the separation once, here, rather than per item.
+    ///
+    /// Every surface point on a space map is either on an asteroid top or on
+    /// the rim's inner face, and `space::is_open_space` refuses both: a rock
+    /// within `a.r + PLAYER_H` of its centre, and the rim within
+    /// `thickness * 0.5 + body_h` of the centreline. **This test is the thing
+    /// that reports either clearance being loosened** — the F3 assertions go
+    /// vacuous silently, this one goes red and says why.
+    ///
+    /// The non-empty check is its own falsification: a generator that shipped
+    /// no surface points would satisfy `all(..)` for free.
+    #[test]
+    fn the_two_pools_a_space_map_has_are_disjoint() {
+        for scale in MapScale::ALL {
+            for seed in [1u64, 4242, 31337] {
+                let map = crate::map::generate_with(seed, scale, MapGenerator::Space);
+                assert!(
+                    !map.meta.surface_points.is_empty(),
+                    "{scale:?}/{seed}: no surface points, so this proves nothing"
+                );
+                let overlap: Vec<Point> = map
+                    .meta
+                    .surface_points
+                    .iter()
+                    .copied()
+                    .filter(|p| map.body_fits_at(*p))
+                    .collect();
+                assert!(
+                    overlap.is_empty(),
+                    "{scale:?}/{seed}: {} of {} surface points pass `body_fits_at` \
+                     (e.g. {:?}), so asserting it on an item rules nothing out",
+                    overlap.len(),
+                    map.meta.surface_points.len(),
+                    overlap.first()
+                );
+            }
+        }
     }
 
     #[test]
@@ -848,7 +1024,9 @@ mod tests {
             .tick_crates(&mut w, &map, CRATE_INTERVAL)
             .expect("a crate");
         for _ in 0..2000 {
-            w.step(&map, SIM_DT);
+            // T22.11A: `WorldItems::step` now takes the match's gravity mode
+            // (`M22-RULINGS` R30/R14). Arity only, at a test call site.
+            w.step(&map, GravityMode::Standard, SIM_DT);
         }
         let it = w.get(id).expect("there");
         assert!(it.grounded, "the crate never landed");
@@ -887,7 +1065,8 @@ mod tests {
             map.carve_circle(x, y, 70);
         }
         for _ in 0..3000 {
-            w.step(&map, SIM_DT);
+            // T22.11A: arity only, at a test call site. See above.
+            w.step(&map, GravityMode::Standard, SIM_DT);
         }
         assert_eq!(w.get(id).expect("there").item, rolled);
     }
@@ -1073,7 +1252,8 @@ mod tests {
         }
         let start = w.get(ids[0]).expect("there").pos.y;
         for _ in 0..600 {
-            w.step(&map, SIM_DT);
+            // T22.11A: arity only, at a test call site. See above.
+            w.step(&map, GravityMode::Standard, SIM_DT);
         }
         let it = w.get(ids[0]).expect("there");
         assert!(it.grounded, "the revealed item never settled");
