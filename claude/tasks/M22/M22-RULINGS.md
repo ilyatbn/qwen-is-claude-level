@@ -1027,6 +1027,57 @@ dominates. A human lobby may move much less.
 `0.161 < k ≤ ~0.658`, so there is room to move it to 0.6 without any test objecting —
 which is also the reason to say out loud that the value is **bounded, not pinned**.
 
+## R32 — The inert `reanalyse` guard stays, and `T22.05B` owes it a test that fires it
+
+*`T22.05A` built a guard, falsified it, found it proved nothing, and reported that rather than
+dressing it up. This is the ruling it asked for.*
+
+`meta.rs::generate_full_with` re-derives the surface and the report whenever pass 8's ground
+fill added pixels, and did so through `traversal::analyse` **unconditionally** — which on a
+space map would silently replace the space verdict with a walking number, leaving
+`outcome.report.passed` and `MapMeta.traversable_fraction` disagreeing. `gen::reanalyse`
+dispatches on the generator instead.
+
+**Reverting it changes no output**, because over **900 space maps (300 seeds × 3 scales) pass
+8 fills ground on exactly 0 of them** — a pad on a lumpy asteroid top already has rock beneath
+it, so `fill_standing_ground` adds nothing and the `if filled > 0` branch never opens.
+
+**Keep it. An unexercised branch is the problem; the guard is not.** It is correct, it is one
+call site, and it closes the moment `T22.05B` reseats pads or `T22.11` reshapes rocks — at
+which point nothing else in the tree would report its absence.
+
+**But "correct and never run" is how a guard rots**, so: **`T22.05B` owes it a test that
+forces `filled > 0`** on a space map and asserts the space verdict survives. A fixture is
+fine; the branch being unreachable in production is exactly why it needs one in a test.
+
+**Reverse it by:** one call site in `generate_full_with`.
+
+## R33 — A closed rim means the client paints the whole arena as a cave, and that is `T22.06`'s
+
+*The largest finding of `T22.05A`, and it is about a task that has not started.*
+
+The terrain renderer decides whether to paint the **cave backdrop** from whether air is
+reachable by a flood from the sky. **A closed rim means none of the arena's interior air is.**
+Measured at seed 4242: inside the rim, **0 of 1 098 496 / 2 819 018 / 5 312 965 px are
+sky-reachable — 1.0000 enclosed on every scale.** Over the whole map it is 0.590 / 0.654 /
+0.684, because the band outside the rim and the sky above it are open — **and the whole-map
+number is the misleading one**, which is why both are recorded.
+
+Neither piece is wrong. `T22.05A`'s rim is closed by design and its `rim_is_closed` test
+asserts the same fact from the other side; the renderer's rule is right for every map that
+existed before. **The consequence was simply written down nowhere: unless space gets its own
+backdrop, the client paints the entire playfield as a cave.**
+
+**This is `T22.06`'s** — the space backdrop — **not `T22.04`'s**, which is thrusters.
+`T22.05A`'s report assigned it to T22.04 twice; corrected here.
+
+**And a second, quieter one for the same task:**
+`client/src/render/backdrop-real.suite.ts::DEEP_WINDOW` is keyed by `MapGenerator.V1` and
+`.V2` with **no `Space` entry**. It is not an exhaustive `Record`, so it typechecks today and
+anyone adding a space case gets `undefined` rather than a compile error.
+
+**Reverse it by:** nothing yet — this ruling only says where the work lives.
+
 ---
 
 # Build order, as scheduled

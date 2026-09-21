@@ -6571,3 +6571,20 @@ in 40 s rather than hanging — which was half the deliverable and something nei
 **→ `T22.00C`**: `fire-shader`, `explosion-shader`, `beams-shader` and `fog-shader` carry the same instrument and have simply not been
 unlucky in a gate yet; `beams-shader`'s window is **shorter** than the one that failed twice. One shared helper in `harness.mjs`, not four
 copies. Also reported: the `frame()` helper hangs when rAF stops, with a message that says nothing.
+
+## T22.05A — the space map: an inset ellipse, asteroids, and gravity reaching the generator (2026-09-21)
+`afb7997`, 35 files, `map/gen/space.rs` ~630 lines of logic. **`R15` worked exactly as designed**: the moment `MapGenerator::Space` joined
+`MapGenerator::ALL`, `golden.rs::cases()` grew on its own and the Done-when went red *before* the work — `golden table differs in length:
+expected 26 lines, got 38`. Verified: 36 data rows + 2 comments now. That is the clause that could not fail before and can now.
+**999 seeds × 3 scales**: every map hits its rock count on **attempt 1**, safe preset used **0 times in 2997 maps**. Gaps p50 108–113 px
+against `JETPACK_CLIMB_BUDGET` 780. Levels 1–5 at **16–18 / 27–28 / 23–24 / 20–21 / 10–11 %** — measured, not reasoned: rejection sampling
+biases against big rocks, so radius is drawn **uniformly on purpose**, or level 5 becomes the feature nobody meets.
+**`R17`'s worry did not survive measurement**: the walking predicate scores 0.280–0.596 against `MIN_TRAVERSABLE_FRACTION` 0.75 and fails on
+every seed and scale, so the silent safe-preset failure it predicted is real. Its other correction held — `surface_points` is 148/246/346,
+not empty. The rim is a **chain of overlapping discs**, not an annulus: an annulus is ~0.80× its radial gap at 45°, clearing the 20.48 px
+Large minimap cell by under 1.5 px; the disc chain measures 32.00 px at its thinnest on every scale.
+**Two things it found that I had wrong.** `REPLAY_VERSION` needs **no** bump — the replay carries no `map_init` at all (grep → 0), it stores
+seed/scale/generator/gravity and **regenerates**. And the cave-backdrop finding is **`T22.06`'s, not `T22.04`'s** (`R33`): a closed rim means
+**0 of 1 098 496 interior px are sky-reachable**, so unless space gets its own backdrop the client paints the whole playfield as a cave.
+**A guard it falsified and reported as inert** (`R32`): `gen::reanalyse` is correct and never runs — pass 8 fills ground on **0 of 900**
+space maps. Kept, because it closes the moment T22.05B reseats pads; **T22.05B owes it a test that fires it.**
