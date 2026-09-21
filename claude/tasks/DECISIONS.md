@@ -1492,7 +1492,7 @@ predicate, reusing `DeathCause::Void` whole. `R8.4` **revised**: T21.30 froze *i
 **physics running** — *"input does nothing — but gravity does"* — so the attractor keeps
 pulling in `Ended` by default; gate it at the `Env` construction. `R18`: the levels derive
 from **`JETPACK_CLIMB_BUDGET` (780 px, already a constant with its basis in its doc comment)**
-plus an acceleration ceiling against `JETPACK_THRUST_UP`, because the thruster is a **speed
+plus an acceleration ceiling against ~~`JETPACK_THRUST_UP`~~ **`JETPACK_THRUST_DOWN` (`R46`, 2026-09-21 — up is the strongest axis at 2200, down is 900, and the binding case is a player on a rock's underside)**, because the thruster is a **speed
 governor, not an impulse budget** and produces no delta-v at all. `R19`: seven production
 carve sites, not five, and `carve_capsule` stamps `circle` **once per Bresenham pixel**, so a
 breach detector needs de-duplication. `R20`: a new death cause has two ends and the client end

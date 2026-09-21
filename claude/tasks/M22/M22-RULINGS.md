@@ -307,6 +307,7 @@ If `T22.11` lands and the count is still nine, that is a finding.
 - `physics/resolve.rs::no_tunnelling_at_ten_times_terminal_velocity_through_integrate` drives
   `vel.y = 9000` and `vel.x = ±5000` through `integrate`, so **`Forces::gravity(1.0)` must
   carry `max_speed: None`** or that test goes red — and it is one of the controls.
+  **DISPROVEN 2026-09-22 by `R50` — measured, not argued. This bullet is wrong and is kept only so the correction has something to attach to.** `Forces::gravity` carrying `max_speed: Some(MAX_FALL_SPEED)` leaves **1062/1062 passing**: `apply_gravity` has already clamped `vel.y` to 900, so the magnitude clamp is an exact no-op on the scalar path and this test never sees the fast body it is named for. It also asserts a **distance**, and an **upper** bound, which a speed clamp can only help. `T22.11B` wrote its own guards instead — `space_clamps_a_bodys_speed_on_the_vector_path` and `the_space_terminal_speed_is_not_inert_against_the_substep_cap`, both named at `Forces::max_speed`.
 
 **And `a_resting_body_is_bit_identical_after_600_ticks` is this ruling's control test and it
 already exists** — an exact `assert_eq!` on position with no epsilon. If the refactor is
@@ -635,6 +636,7 @@ k(n) fuel to leave from the surface"* is not a quantity this thruster has.
 2. **An acceleration ceiling.** If a well's acceleration at the surface reaches
    `JETPACK_THRUST_UP` = 2200 px/s², the player cannot move outward **at any fuel level**.
    That is `T22.11`'s *"maximum well against maximum thrust"* guard stated correctly: **a
+   **— WRONG CONSTANT, see `R46` (2026-09-21). The pack is anisotropic: up 2200, sideways 1100, **down 900**. The binding case is a player on a rock's **underside**, so the ceiling is against `JETPACK_THRUST_DOWN`. A well of 1500 px/s² passes this bullet as written and still traps that player forever. `T22.11B` implemented R46's form and measured the worst case at 647.31 px/s² against 900.**
    comparison of accelerations, not of delta-v.** Assert it.
 
 **Reverse it by:** the level → pull table's derivation, one function with the basis in its
@@ -1747,6 +1749,81 @@ else in `R52` stands, and the distinction is worth the word to whoever bisects t
 commit.
 
 **Reverse it by:** nothing — a correction.
+
+## R60 — Overturning a ruling is not done until every site that repeats it is annotated
+
+`T22.11B`'s builder, asked to report text contradicting `R46`/`R47`/`R50`, found **five live
+sites** still asserting the disproven claims — including **`R10` in this file**, unannotated,
+while `R18` two screens away had carried a `SUPERSEDED IN PART` banner since the day it was
+overturned. I wrote both. The scout report repeated the tripwire claim **four times**, and
+`tasks/DECISIONS.md` still summarised R18's ceiling against the wrong constant.
+
+`CLAUDE.md` already has the instrument and I did not use it: *"before rewording a rule,
+`grep -rn "<old phrase>" tasks/ CLAUDE.md"*. I applied that discipline to the ruling I was
+editing and not to the ones that cited it. **The failure mode is specific: the overturned ruling
+gets its banner, and every document that repeated it keeps asserting it with no banner at all** —
+and a builder reads the task file, not the rulings file.
+
+Swept 2026-09-22, all five annotated rather than deleted, so the correction has something to
+attach to: `R10`'s tripwire bullet, `R18`'s point 2 inline, `T22.11A`'s Hazard 1,
+`T22.11-asteroid-gravity-wells.md`'s R18 point 2, `DECISIONS.md`'s R18 summary, and a
+dated-artifact banner on `T22.11-SCOUT.md` naming its own five repetitions.
+
+**The ruling, and it is procedural: when a ruling is overturned, the same commit greps for every
+site that repeats it and annotates each one.** A supersession banner on the original is the
+cheapest half and it is not the job.
+
+**Reverse it by:** this paragraph.
+
+## R61 — `REPLAY_VERSION` 14 → 15 is ratified
+
+`T22.11B` bumped it, and the reasoning is right. `World::state_hash` now covers the asteroid
+table, so **every checkpoint hash in a space recording moves**, and a v14 space recording replayed
+against the new field lands players in different positions. `replay.rs`'s own policy bumped 13 for
+exactly this shape. No committed fixtures are invalidated — `recordings/` is gitignored and
+nothing reads it.
+
+The builder hashed `x`, `y` and `r` as well as `level`, because `world::attractors` reads all four
+and the mask carries a rock's *shape* but neither its centre nor its bounding radius. That is the
+correct set: hashing only `level` would have left a displaced rock invisible to the guard, which is
+the failure R36 exists to catch.
+
+**Reverse it by:** the constant.
+
+## R62 — `world/attractors.rs` at 889 lines does not need splitting
+
+Flagged by its own builder rather than left for me to find, which is the behaviour this project
+wants. The number breaks down as **65 lines of non-comment production code**, 147 of module and
+item docs, and 676 of tests.
+
+`CLAUDE.md`'s *"a task is ~one file and ~250 lines"* is a limit on **how much work one assignment
+carries**, not on how much evidence a file may hold. 65 lines of production code is a small module;
+splitting it would put the tests somewhere other than beside the code they test, which this project
+requires (*"Rust tests live in the same file under `#[cfg(test)] mod tests`"*). One module, one
+public surface, and the ratio is the argument.
+
+**Where this stops being true:** if `T22.10`'s vortex and `T22.12`'s black hole each add production
+code to it, the 65 will not stay 65. Revisit at that point, and split by attractor kind if at all.
+
+**Reverse it by:** this paragraph.
+
+## R63 — Nothing asserts the wells on rendered pixels, and `T22.11C` owns it
+
+`T22.11`'s Done-when named `node scripts/e2e.mjs asteroid-gravity`. Measured by the builder:
+`grep -rn "asteroid" scripts/` returns **0**. The check does not exist and never did, so that
+Done-when would have failed with *"unknown check"* rather than a failing assertion — a different
+signal, and one nobody had filed.
+
+This matters more here than the usual missing-check case. `CLAUDE.md`: **for anything visible,
+assert on rendered pixels** (`docs/72` §C2), with a control region and a control frame — *"four 'I
+cannot see it' bugs shipped past 905 tests because every assertion checked simulation state."* The
+wells are now proven in Rust from nine angles and **not once on screen**. A field that is correct
+in the simulation and invisible to the player is precisely the shape that rule was written for.
+
+**Assigned to `T22.11C`**, which is the client task and already has to prove prediction agrees with
+the server.
+
+**Reverse it by:** the task assignment.
 
 # What this milestone owes when it lands
 
