@@ -1254,6 +1254,97 @@ owns it.**
 
 **Reverse it by:** unparking the four, which is the point.
 
+## R41 — Thrust is the suit's engine, not your legs: it ignores health and boots
+
+*`T22.03`'s review found `mods.speed` has **exactly one production reader** —
+`apply_horizontal` — and T22.03 skips it while floating. So in space a player at 1 HP moves as
+fast as a healthy one, and Ironman boots' speed bonus does nothing. No ruling named it.*
+
+**Ruled: correct, and say so at the code.** `PlayerState::speed_multiplier` folds
+`HEALTH_SPEED_MIN` (the low-health slowdown) and `BOOTS_SPEED_MULT` — both of which are about
+**legs**. A thruster does not care how injured you are or what is on your feet.
+
+So: **thrust does not take `mods.speed`; walking on a rock still does.** Two consequences,
+both accepted and both worth stating out loud because nobody asked for them:
+
+- **Low health does not slow you in space.** That is a small buff in the mode where mobility is
+  everything, and it is the honest physics.
+- **Boots are worse in space than on the ground** — they still help you walk a rock, and buy
+  nothing while you drift. They also give a **free delta-v upgrade on the jump**, since
+  `BOOTS_JUMP_HEIGHT_MULT` 2.25 means a booted space jump launches at **645 px/s** for the same
+  `SPACE_JUMP_FUEL`. That is unpriced, and `T22.03`'s fix pass owes it a test either way.
+
+**This needs a test**, or it is a decision nothing re-validates: assert a 1-HP and a full-HP
+player thrust identically in space and differently on the ground.
+
+**Reverse it by:** passing `mods.speed` into `jetpack::apply_thrust`, which has never taken one.
+
+## R42 — Thrusters work while grounded, and the sub-fuel weld is a bug
+
+*The review measured the fuel decision that plays worst.*
+
+`space::floating` requires `!body.grounded`, so **a grounded player's held direction never
+engages the pack — at any fuel level.** Measured: 1 s of UP held on a rock lifts **0.00 px on a
+full tank**. And between 0 and `SPACE_JUMP_FUEL` a player is **welded to the rock**: UP is
+inert, JUMP is refused, and there is no feedback at all.
+
+Worse, **standard gravity is more generous** — `jetpack::update`'s `body.grounded` arm lets a
+grounded player engage the pack once the hold delay elapses. Space currently gives a grounded
+player *strictly less* mobility than gravity does, which is not what `R4`'s *"an ordinary
+grounded player"* reads as.
+
+**Ruled: a held direction engages the thrusters whether grounded or not.** What `grounded`
+gates is the **walking model** and **fall damage**, not engagement. Holding UP on a rock lifts
+you, which is the natural zero-g gesture and the one a player will try first.
+
+That also dissolves the weld: with engagement available, `JETPACK_MIN_FUEL_TO_ENGAGE` (0.3) is
+the only floor, and `N13` measured that a dry player recovers in **1.1 s** because refill has no
+grounded requirement.
+
+**Reverse it by:** the `!body.grounded` term in `space::floating`.
+
+## R43 — Space's hazard table is **solar flares and meteor showers**
+
+*Forced by `R28`: a table with one live kind reaches `pick_weighted` with all-zero weights,
+which returns `KINDS[0]` — `ToxicRain`, a kind that is switched off. Solar flares alone would
+be that table.*
+
+**Meteor showers stay live in space, and they are the right second kind** — meteoroids in orbit
+are the thing that is *actually* out there, they reuse a shipped hazard rather than inventing
+one, and they give `R28`'s two-live-kinds requirement a real answer instead of a filler.
+
+**Off in space:** toxic rain (already off globally), lava bursts (already off, and there is no
+ground to open), heavy fog (there is no atmosphere to fog).
+
+**And this makes `R29`'s load guard load-bearing in a way nobody had costed.**
+`world/mod.rs::a_shower_keeps_a_bounded_number_of_drops_in_the_air` loops Standard and Low, and
+its window and ceiling both divide by `gravity.scale()` — **at scale 0 they are `inf`/NaN, so
+Space cannot be added without a formula change.** Worse, **Space is the worst case for the exact
+quantity it bounds**: with no acceleration a drop falls at a constant `TOXIC_DROP_SPEED`, so
+flight time is `d / v`, longer than either measured mode — more drops airborne, more
+`ProjectileMove` on the wire.
+
+**`T22.08` owns the space arm of that guard**, with the constant-speed formula, and it is its
+red-before-green.
+
+**Reverse it by:** the space row of the `enabled` table.
+
+## R44 — `integrate`'s fifth argument is the **second** sanctioned temporary
+
+*`R10`'s amendment named `apply_input`'s ninth argument and nothing else, so the only thing
+anyone would check is that count.*
+
+`integrate` is now `(map, body, gravity_scale, zero_g, dt)` — five. `T22.03` had to add it
+because **`gravity_scale` cannot carry the contact rule**: verified, `jetpack::gravity_scale`
+returns `0.0` for a flying player **under ordinary gravity**, and wings must keep the ordinary
+rules. There is no existing value that distinguishes them.
+
+**`T22.11` folds `zero_g` into `Forces`/`Env` along with the ninth argument.** If `T22.11`
+lands and `integrate` is still at five, that is a finding, exactly as a nine-argument
+`apply_input` would be.
+
+**Reverse it by:** `T22.11`'s `Forces` absorbing it.
+
 ---
 
 # Build order, as scheduled
