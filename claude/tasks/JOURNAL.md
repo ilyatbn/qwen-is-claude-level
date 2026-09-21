@@ -6553,3 +6553,21 @@ mode disconnected. Done-when exit 1 on `smoke-shader` alone; 957/957 client, rep
 the browser draws fewer frames and the delta collapses. Both sightings pass **alone on the same tree** at 10–20× the margin, with every
 other assertion in the check green including that the cloud was drawn. **Neither `flaky` nor `serial`**: the first deletes the only
 assertion that the shader *moves*; the second is unfalsified, and `teleport` above it went red *in the serial tail at load ~10*.
+
+## T22.00B — the flaky shader check, and my diagnosis was wrong (2026-09-21)
+`7e7e62a`. I asserted the cause as fact — *"under load the browser renders fewer frames, so the delta collapses"* — and the builder tried
+to reproduce it, could not, and measured instead. **Under load the old form read *higher***: 13.3 % at load 21.4, and **27.9 % at load
+39.9**, its highest reading of the day, against sighting readings of 0.5 % and 1.0 %. The load mechanism is real (frames in 300 ms under
+CPU throttling: 18 / 15 / 12 / 9 / 5 / 3 at ×1…×64) but never fired.
+**The real cause is that a 300 ms window is marginal regardless of load.** 39 consecutive idle samples waved between **0.0 % and 11.2 %**,
+and 0.0 % and 0.5 % are exactly the two sightings. Head to head, 15 idle trials: old form **4/15 at or under its floor**, twice 0.0 %.
+**So the remedy I prescribed would not have worked alone** — 18 drawn frames *is* 300 ms on an idle box, and a single 18-frame step still
+went 2/15 under the floor. Shipped: frames **plus** five steps with the largest change deciding. 0/15 under the floor, worst idle trial 13×
+the floor, worst throttled 31×. Both arms falsified: a frozen shader reds, and a page that stops drawing reds **with a different message**
+in 40 s rather than hanging — which was half the deliverable and something neither the old form nor two sightings could express.
+**My survey instrument was too narrow too.** `grep "sleep("` returns 227 and misses **141** `waitForTimeout` sites — including
+`fog-shader`, one of the four real twins. *Never read a filtered listing as a population* applies to the **pattern**, not just the output.
+`flaky-test.md`'s *"a factor of twelve, so the assertion is not marginal"* was a one-draw conclusion, mine, and is corrected.
+**→ `T22.00C`**: `fire-shader`, `explosion-shader`, `beams-shader` and `fog-shader` carry the same instrument and have simply not been
+unlucky in a gate yet; `beams-shader`'s window is **shorter** than the one that failed twice. One shared helper in `harness.mjs`, not four
+copies. Also reported: the `frame()` helper hangs when rAF stops, with a message that says nothing.
