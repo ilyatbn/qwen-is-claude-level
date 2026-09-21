@@ -6512,3 +6512,22 @@ Full `./scripts/check.sh` over T22.00 + T22.01, run detached (`setsid`) and wait
 --workspace 1459 passed / 0 failed over 36 result lines, client typecheck, client tests 954/954, e2e 58/58, net smoke, assets, repo
 guards.** `title` green for the first time since 2026-09-16 and 31 s faster; `smoke-shader`, T22.01's one-sighting flake, passed here —
 left recorded, not parked.
+
+## T22.02 — low gravity, recovered from a builder killed mid-task (2026-09-21)
+The builder finished and was then terminated by a session rate limit **before committing or filing any report**. ~1300 uncommitted lines
+found in the tree; no source file had moved since its own green `--changed` artifact (58/58 browser, net smoke 25/25, assets ok), so I
+verified independently — 1441 Rust tests over 34 result lines, 0 failed; `cargo fmt --check` clean; clippy `-D warnings` clean — and
+committed it as `2a905df` with a message saying plainly it was recovered, unreviewed, and that its falsifications were not on the record.
+Two orphaned wait-loop shells of its own were killed, both attributable by the `gate-t2202` files they tailed.
+**`LOW_GRAVITY_SCALE = 0.5` through `GravityMode::scale()`, and the review's headline is that the constant is genuinely bracketed** —
+`k = 0.9` and `k = 0.05` each produce **two** reds, from a floor derived off `PLAYER_H` and a ceiling off `MAP_SMALL_H`/`FALL_SAFE_SPEED`,
+neither of which moves with `k`. That is the `ITEM_SPAWN_INTERVAL` lesson applied properly. **Bounded, not pinned**: `0.161 < k ≤ ~0.658`,
+and `k = 0.25` passes all 1130.
+**Measured, and it inverts the ask**: over 8 seeds the `natural` arm goes 182 → **1548 fires** and 9 → **39 kills** under low gravity.
+Not `zone_reach` (that row is byte-identical under a plant) — pure physics, floatier bots meet more. The owner asked for *"everything a
+bit slower"* and got the most violent mode in the game. `R31` ships it and tells him rather than retuning a number he never saw.
+Review also found: the bullet arm proves nothing (`Delivery::Bullet` early-returns before the gravity term, so the assertion survives the
+pistol's `gravity_scale` being wrong by a factor of infinity); `ignored.sh`'s header counts went stale the moment the row was added;
+boots × low gravity was never stated; and meteors and toxic drops were scaled **in production** with no decision recorded — `R29` keeps it,
+because *"including projectiles"* is the owner's own sentence, and makes the load guard track the mode. `R30`: loot falls at full speed
+while you float, which is `T22.11`'s to fix. `R10` amended: the ninth argument is **sanctioned as temporary** and `T22.11` must reabsorb it.

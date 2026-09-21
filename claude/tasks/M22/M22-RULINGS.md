@@ -281,6 +281,15 @@ the same reason.
   `Forces` that `apply_input` partly overwrites** (makes `gravity_scale` mean two things —
   the rule this ruling cites to justify itself).
 
+**AMENDED 2026-09-21 — `T22.02` took the ninth argument, and I ratify it as temporary.**
+This ruling forbade `MoveStep` before `T22.11` *and* rejected a ninth argument, which left
+`T22.02` no third option; it took the ninth and wrote a 14-line justification pointing here.
+That was the right call in the box I had drawn, and it was made by a builder that was killed
+before it could file a report, so it goes on the record as a decision rather than staying a
+code comment. **The ninth argument is sanctioned as a temporary state and `T22.11` must
+reabsorb it into `MoveStep`** — one parameter replacing two, putting the count back to eight.
+If `T22.11` lands and the count is still nine, that is a finding.
+
 ### `max_speed` on `|vel|` has three live interactions, and one is a documented refusal
 
 - **`jetpack::apply_thrust` clamps per axis, deliberately**, to `JETPACK_MAX_SPEED` = 260, and
@@ -946,6 +955,77 @@ on the design, not a detail.
 
 **Reverse it by:** the new constructor is one function; the guards' space arms are one
 parameter each.
+
+## R29 — Meteors and toxic drops **do** fall slower in low gravity, and the load guard must track it
+
+*Raised by `T22.02`'s review: meteors and toxic-rain drops are projectiles, so they go through
+`Projectiles::step` and were scaled in production — but nobody recorded a decision.*
+
+**Keep it, because it is the owner's own sentence.** *"Low gravity mode makes everything a bit
+slower (including projectiles)"* — a meteor is a projectile. Meteor showers falling ~41 %
+slower and the sky staying fuller is the feature, not a leak.
+
+**But the guard that bounds the load cannot see it.**
+`world/mod.rs::a_shower_keeps_a_bounded_number_of_drops_in_the_air` computes its airborne
+ceiling from the **unscaled** `GRAVITY`, and its stated purpose is a *load* claim — a
+`ProjectileMove`-per-second bill, with the note that *"there is no projectile cap to check"*.
+Under half gravity flight time grows toward √2, so the real peak and the event bill grow ~40 %
+and the guard is blind to it. **It must take the mode**, or it guards only the mode nobody is
+worried about.
+
+Same for `a_meteor_falls_exactly_as_fast_as_gravity_and_its_speed_imply`: it stays green
+because it runs at `Standard` only, and its whole documented derivation is now a
+standard-gravity-only statement with nothing saying so. Say so.
+
+**Reverse it by:** the `gravity_scale` argument at `Projectiles::step`'s meteor and drop call
+sites.
+
+## R30 — In low gravity, loot falls at full speed while you float, and that is `T22.11`'s to fix
+
+*`GravityMode::scale`'s doc says every `GRAVITY` reader multiplies by it *"so 'which gravity is
+this match under' has exactly one answer"*, and the next paragraph says four of them do not.
+Both sentences cannot be true.*
+
+The four are `Mines::step`, `WorldItems::step`, `Tombstones::step` and `Animals::tick`
+(`R10`). **The second sentence is the true one**, and the player-visible consequence is that
+**in a low-gravity match a dropped weapon and a tombstone fall twice as fast as the person who
+dropped them.**
+
+**Leaving them was correct** — `R10` assigns those four signature changes to `T22.11`, and
+`R14` already rules what they do in space. **But the stated reason is wrong and must be
+fixed**: the doc says their signatures *"cannot see the match setting (`(map, …, dt)`)"*,
+which is a description rather than a reason — this very commit widened `Projectiles::step`'s
+signature for exactly that. **The honest sentence is "`R10` assigns these to `T22.11`."**
+
+**And `T22.11` now owes low gravity as well as space**: when it threads the mode into those
+four, it must scale them under `Low`, not only zero them under `Space`.
+
+**Reverse it by:** one scale argument per call site, in `T22.11`.
+
+## R31 — Low gravity is the **most violent** mode in the game, and it ships that way
+
+*Measured, not guessed: `low_gravity_report` over 8 seeds, the `natural` arm —*
+
+| arm | dmg | self | kills | fires |
+|---|---|---|---|---|
+| natural, Standard | 1248 | 457 | 9 | 182 |
+| natural, **Low** | 4446 | 633 | **39** | **1548** |
+
+**8.5× the shots fired and 4.3× the kills.** It is not `zone_reach` — that row is byte-identical
+under a `zone_reach` plant — it is pure physics: floatier bots meet each other far more often.
+
+The owner asked for *"everything a bit slower"* and the measurement says the opposite about
+the **pace of fighting**. **Both are true and neither is a bug**: things *move* slower and
+arc further, and because they arc further, fights start more often. **Ship it and tell the
+owner**, rather than quietly retuning a number the owner never saw.
+
+**Two honest caveats on the measurement**: it is **bots only**, and bots are not people; and
+the `natural` arm is the no-weapon-pickups configuration, which is the one where floatiness
+dominates. A human lobby may move much less.
+
+**Reverse it by:** `LOW_GRAVITY_SCALE`. The review established the live bracket is
+`0.161 < k ≤ ~0.658`, so there is room to move it to 0.6 without any test objecting —
+which is also the reason to say out loud that the value is **bounded, not pinned**.
 
 ---
 
