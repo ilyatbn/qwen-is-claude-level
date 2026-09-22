@@ -1923,6 +1923,81 @@ busy — which is when a gate runs.
 
 **Reverse it by:** `T22.00E`.
 
+## R69 — The old shader instrument would have **passed a browser that had stopped rendering**
+
+The single best measurement of this milestone, and it came from an arm I asked for as a
+formality. `T22.00F` killed `requestAnimationFrame` in the High-Quality arm of each check and read
+what the **old** form would have reported: **1.9 %, 2.4 %, 5.2 %, and fog drift 12.07 — every one
+of them above its floor.**
+
+So the two-frame wall-clock instrument does not merely fail at random. **With the page dead and
+nothing drawn at all, it reports "the shader animates" and passes.** The noise it was sampling was
+never the shader; it was whatever the compositor happened to do between two `sleep`s. That also
+explains the shape of `smoke-shader`'s history — the same condition can land on either side, so it
+produced *false sightings* rather than a consistent failure, which is far more expensive.
+
+`CLAUDE.md`'s rule is *"ask what a passing assertion rules out"*. The honest answer for the old
+form is **nothing at all**: it would have passed with the feature deleted *and* with the renderer
+switched off. All four now carry the page-not-drawing arm as a distinct red with its own message.
+
+**Reverse it by:** nothing — a measurement.
+
+## R70 — `fog-visible`'s red was **not** load, and I said it was. It reads two clocks.
+
+**Correcting myself twice.** `T22.00F`'s task file — mine — told its builder that the
+0.783-against-0.794 red belonged to `fog-shader` and to check whether it was the same wall-clock
+defect. It is not in `fog-shader` at all (`grep -n FOG_SCREEN_ALPHA scripts/checks/fog-shader.mjs`
+→ nothing); it is `fog-visible.mjs`'s. And earlier I told the owner that gate's four failures were
+**load**, on the evidence that all four re-ran green on an idle box.
+
+That evidence was real and the conclusion was too broad. **Re-running green does not make a
+marginal instrument sound**, and this one has a defect that load merely exposes:
+
+- `fogStrength` is `self.fog.strength(self.roundTime)` — computed **live at the `debug()` call**;
+- `fogAlpha` returns `weather.ts::lastFogAlpha` — written at the **last drawn frame**;
+- they are compared at a tolerance of **0.01**, and the poll breaks at `s.s >= 0.99`, deliberately
+  **while the ramp is still climbing**.
+
+One value from now, one from the last frame that rendered, on a moving quantity. At the 13–20 fps
+these gate logs show, one frame of `FOG_RAMP` is worth several times 0.01. The tree's own logs read
+0.785, 0.798 and the 0.783 that failed — it passes when the skew happens to be small.
+
+**The builder refused its task's premise and measured instead**, which is the behaviour that makes
+a wrong task file cheap rather than expensive. `T22.00F`'s own instrument does **not** fix this —
+it is not a two-frame sample of a drifting shader, it is one sample of two quantities off two
+clocks — and it said so rather than applying the fix it had in hand. Filed as `T22.00G`.
+
+**The lesson for me:** *"the failures re-ran green, so it was load"* is the same shape as *"the
+failure moves, so no single test is broken"*, which `CLAUDE.md` already records as wrong. **Ask
+what the failing checks share before crediting the box.**
+
+**Reverse it by:** nothing — a correction.
+
+## R71 — `T22.00C` is narrowed to the shared helper, and the duplication got worse on purpose
+
+`T22.00F` did the work `T22.00C` had surveyed — all four checks converted, **no threshold moved** —
+which leaves exactly one thing from that file undone: the helper. There are now **five** copies of
+`advanceFrames` (measured, one per shader check), where `T22.00C` had argued *share the guard, or
+share the function*.
+
+The builder did that deliberately and reported it: `T22.00F`'s **Touch only** forbade both
+`harness.mjs` and `smoke-shader.mjs`, so a partial lift would have left **two spellings** of the
+instrument instead of one, which is worse than five copies of one spelling. **Following the live
+task file over the tidier instinct was right**, and the diff came in at 484 lines against my ~120
+estimate as a direct result — worth knowing when I next size one of these.
+
+`T22.00C` now says: lift all five into `scripts/lib/harness.mjs` and delete the copies.
+
+**Reverse it by:** closing `T22.00C` as superseded and accepting five copies.
+
+## R72 — The batch gate is ~45 s slower, and that is the price of the instrument
+
+`beams-shader` 21.9 s → 37 s, `fog-shader` 33 s → 62 s, about **+45 s** across the four. Stated
+here so it is not later mistaken for a regression, and accepted: 45 seconds against an instrument
+that `R69` shows would pass a dead renderer is not a trade worth thinking about twice.
+
+**Reverse it by:** nothing.
+
 # What this milestone owes when it lands
 
 `docs/77-amendments-v9.md`, written by me, covering: the gravity setting (`docs/` does not
