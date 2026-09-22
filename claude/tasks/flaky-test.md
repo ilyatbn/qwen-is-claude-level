@@ -96,12 +96,25 @@ listed under `disabled:` in `e2e.mjs --help`. The toxic halves of `m5-weather`, 
   killing `requestAnimationFrame` gives *"the page drew 0 of 90 frames in 40.0 s … the box stopped
   rendering, so this says nothing about whether the smoke shader animates"* — the distinction this
   check could not make for two sightings. **Neither `serial` nor `flaky` is needed; the row stays
-  closed.** The twins are untouched and listed in T22.00B's report: `fire-shader`,
-  `explosion-shader`, `beams-shader` and `fog-shader` all still sample two frames across a wall
-  clock.
+  closed.** The twins were untouched and listed in T22.00B's report: `fire-shader`,
+  `explosion-shader`, `beams-shader` and `fog-shader` all still sampled two frames across a wall
+  clock. **All four carry the frames-plus-steps instrument as of T22.00F** (2026-09-22); the row
+  below is the sighting that paid for it.
 - `skins-ingame` — red once on 2026-09-14, but that was a real bug (the T21.20 ridge skirt),
   fixed in `d73968b`.
 - `teleport` — red once on 2026-09-14 before T19.29 turned weather off for it; then green in
   five straight gates. **Since parked** (table above): three more reds the same day.
 | `game-server/tests/checksum.rs::two_clients_agree_on_the_mask_after_a_hundred_carves` | Rust | T22.13's gate, 2026-09-22: `never received 'welcome' within 15s; saw []` — **the sixth member of R40's family and the same `saw []` empty-inbox handshake** as the `integration.rs`, `in_progress.rs` and two `lobby.rs` rows. **Attributed, not guessed:** T22.13's builder neutralised its own guard to pre-task behaviour and re-ran — it still failed, and the failure *moved* to `in_progress.rs`, so the family is not that change's. Before calling it load it asked what the failures share: both wait on a wall-clock deadline for a socket handshake event, and both are green when their binary runs alone (`cargo test -p game-server --test checksum` → **7/7 in 13.13s**). Both reds overlapped a concurrent builder's gate; the run with no overlap was **1553 passed, 0 failed**. **Not `#[ignore]`d**, per R40 — parking a sixth is the wrong direction and `T22.00E` owns the harness. | two clients agree on the carved mask after a hundred carves — the determinism guarantee the whole project rests on |
 - `beams-shader` — red in the 2026-09-22 batch gate on an **idle** box: *"the painted beam changed 0.9% of its pixels in 200 ms against 0.0% for the still strokes"*, against a hardcoded `Math.max(0.01, still * 3)`. **Not parked, and not re-run to green.** It is the failure `T22.00B`'s report predicted in as many words, and the fix is known and written — parking four shader checks would remove far more coverage than fixing the instrument costs. **Owned by `T22.00F`.** Five of the check's other assertions passed in the same run, including both that prove the painted beam is on screen and differs from the stroked one, so the shader is not the suspect.
+  **Fixed at the cause, T22.00F (2026-09-22), and the row closes without `flaky` or `serial`.**
+  All four twins now step 5 x 18 **drawn** frames and take the largest change, as `smoke-shader`
+  does. On an idle box the same assertion that read **0.9 %** reads **19.3–46.2 %** over three
+  runs against an untouched 1.0 % floor, and its still control reads 0.0 % with 90/90 frames
+  drawn. **The threshold was not moved** — `CLAUDE.md`'s *do not weaken a coin-flip gate* — only
+  the window it is read over. Both arms falsified at the live binding site for each of the four:
+  pinning `time` in the fragment shader gives *"the painted beam changed 0.0 % of its pixels at
+  most over 90 drawn frames (4.1 s) … the beam shader does not animate"*, and killing
+  `requestAnimationFrame` gives *"the page drew 0 of 90 frames in 40.0 s painted and 90 of 90 in
+  3.1 s stroked — the box stopped rendering, so this says nothing about whether the beam shader
+  animates"* — two different messages, which is the distinction that produced two false sightings
+  on `smoke-shader`.

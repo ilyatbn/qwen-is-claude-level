@@ -6721,3 +6721,14 @@ spells the summation in JS (`R11`, `R67`). No wall-clock sleeps; the control arm
 measured against the pulled arm's 33. Five guards each exist because something bit — camera clamp put a patch on the fps readout, the crosshair
 travels with the body, the day cycle moved a patch 32.5 px with the body still. Done-when EXIT=0, `asteroid-gravity` 1/1.
 
+
+## T22.00F — the four wall-clock twins, and the fog red was a different check (2026-09-22)
+All four now step **5 x 18 drawn frames** and take the largest change, as `smoke-shader` does. **No threshold moved** (`CLAUDE.md`: do not
+weaken a coin-flip gate). Idle: beams **19.3 %** where the gate read 0.9 %, explosion 57.8 %, fire 13.8 %, fog drift 98.70 — 90/90 frames, still
+control 0.0 % in every arm. Two falsifications each, different messages: a pinned `time` in the fragment gives *"changed 0.0 % … the beam shader
+does not animate"*; a dead `requestAnimationFrame` gives *"the page drew 0 of 90 frames in 40.0 s … the box stopped rendering, so this says
+nothing about whether the beam shader animates"*. **`fog-shader` needed a different plant** — `time = 0` also collapses the fog's *structure*
+(47.8 → 14.7) so it reds one assertion early; freezing the derived phase (`float t = 3.7`) reaches the drift claim.
+**The 0.783-vs-0.794 red is `fog-visible`, not `fog-shader`, and not a wall-clock pair**: `fogStrength` is computed live in `debug()` while
+`fogAlpha` is `weather.ts::lastFogAlpha` from the **last drawn frame**, compared at 0.01 while the ramp still climbs. Not fixed — not in scope.
+**Open:** `T22.00C` wants one shared helper in `harness.mjs`, which this task's Touch only forbids, so there are now five copies of `advanceFrames`.

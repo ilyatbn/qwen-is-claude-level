@@ -45,7 +45,8 @@
  * - **Motion needs small patches.** A drifting noise field has a nearly constant
  *   mean over a wide one, because what leaves one side arrives at the other. An
  *   early version reported a working shader drifting by 0.5 — the same as a
- *   static rectangle.
+ *   static rectangle. **And it needs drawn frames, not a wall clock** (T22.00F):
+ *   see the comment above `motion`.
  * - **"Varied" comes out of the same per-patch fit, as its intercept.** The
  *   obvious version — how much the painted result differs from place to place —
  *   reports **87.9 for the flat veil**, because it is reading the ground rather
@@ -208,6 +209,82 @@ export default async function ({ page, shot, log }) {
     }
   }
 
+  // --- the motion instrument: drawn frames, not a wall clock ---------------
+  //
+  // **The subject here is a full-screen composite**, not a quad over a held object: the
+  // veil covers everything, so it is read at the eight small spots above and the metric is
+  // the *spread across spots* of each spot's luminance change. A mean will not do — a
+  // drifting noise field has a nearly constant mean over a wide patch, because what leaves
+  // one side arrives at the other, and an early version reported a working shader drifting
+  // by 0.5, the same as a static rectangle (see the header).
+  //
+  // **This sampled two frames across `page.waitForTimeout(600)` until T22.00F.** It is the
+  // fourth of the five checks `T22.00B` found carrying that instrument, and the one a
+  // `grep "sleep("` survey could not see. What `T22.00B` measured on `smoke-shader`: a
+  // sleep does not guarantee a redraw (the page drew 18 frames in 300 ms at CPU x1 and
+  // **3 at x64**), and **one window is marginal whatever the load** — 39 consecutive idle
+  // samples of a single 300 ms window waved between 0.0 % and 11.2 %. `beams-shader` then
+  // went red on an idle box at 0.9 % against its 1.0 % floor in the 2026-09-22 gate. So:
+  // count **drawn frames**, and let the **largest** spread over several steps decide.
+  //
+  // The thresholds below were not touched. `3` and `2` are the same numbers this check has
+  // always used; what changed is the window they are read over.
+  /** Frames drawn per step: what a 60 Hz box draws in ~300 ms. */
+  const STEP_FRAMES = 18
+  /** Steps taken, so one still window cannot decide the verdict. */
+  const STEPS = 5
+  /** Ceiling on one step, ~26x the idle cost of 18 frames. A page that stopped drawing fails here. */
+  const FRAME_BUDGET_MS = 8_000
+  /**
+   * Resolve once `n` frames have been drawn, or `budget` ms have passed — whichever comes
+   * first, and it reports which by returning both. The `setTimeout` is the half that cannot
+   * hang: a page whose `requestAnimationFrame` never fires still resolves, with `frames`
+   * short of `n`.
+   */
+  const advanceFrames = (n, budget) =>
+    page.evaluate(
+      ([want, cap]) =>
+        new Promise((resolve) => {
+          const t0 = performance.now()
+          let drawn = 0
+          let done = false
+          const end = () => {
+            if (done) return
+            done = true
+            resolve({ frames: drawn, ms: performance.now() - t0 })
+          }
+          const timer = setTimeout(end, cap)
+          const tick = () => {
+            drawn++
+            if (drawn >= want) {
+              clearTimeout(timer)
+              end()
+            } else requestAnimationFrame(tick)
+          }
+          requestAnimationFrame(tick)
+        }),
+      [n, budget],
+    )
+  /**
+   * The largest spread of per-spot luminance change from the first sample, over `STEPS`
+   * steps of `STEP_FRAMES` drawn frames, and what it cost.
+   */
+  const motion = async () => {
+    const first = await sampleSpots()
+    let most = 0
+    let frames = 0
+    let ms = 0
+    for (let i = 0; i < STEPS; i++) {
+      const step = await advanceFrames(STEP_FRAMES, FRAME_BUDGET_MS)
+      frames += step.frames
+      ms += step.ms
+      const later = await sampleSpots()
+      most = Math.max(most, spread(first.map((sp, j) => sp.lum - later[j].lum)))
+    }
+    return { most, frames, ms, wanted: STEP_FRAMES * STEPS }
+  }
+  const seconds = (x) => (x.ms / 1000).toFixed(1)
+
   const start = await page.evaluate(() => window.__game.setHighQuality(false))
   log(`starting with High Quality ${start.setting ? 'on' : 'off'}`)
 
@@ -220,9 +297,7 @@ export default async function ({ page, shot, log }) {
   await page.evaluate(() => window.__game.setFog(true))
   await page.waitForTimeout(700)
   const flat = await samplePatch(page, field)
-  const flatSpots = await sampleSpots()
-  await page.waitForTimeout(600)
-  const flatSpotsLater = await sampleSpots()
+  const flatMotion = await motion()
   const flatAlpha = await page.evaluate(() => window.__game.debug().fogAlpha ?? 0)
   const flatFps = await fps()
   await shot('fog-flat')
@@ -251,12 +326,22 @@ export default async function ({ page, shot, log }) {
   // The control the shader's structure is read against: one alpha and one colour
   // everywhere means the intercepts barely move.
   const flatVariety = flatFit.structure
-  const flatDrift = spread(flatSpots.map((s, i) => s.lum - flatSpotsLater[i].lum))
+  const flatDrift = flatMotion.most
+  // **An absence needs a control that the page was drawing at all.** Without this the flat
+  // veil's stillness is satisfied by a blank browser, and the shader's floor below would be
+  // derived from it.
+  if (flatMotion.frames < flatMotion.wanted) {
+    throw new Error(
+      `the page drew ${flatMotion.frames} of ${flatMotion.wanted} frames in ${seconds(flatMotion)} s over the ` +
+        `flat veil — the box stopped rendering, so "the flat veil does not move" would be an absence ` +
+        `proved by a page that draws nothing`,
+    )
+  }
   if (flatDrift > 2) {
     throw new Error(
-      `the flat veil moved by ${flatDrift.toFixed(2)} between frames — it is a static fillRect, ` +
-        `so something else in the sampled spots is animating and the drift claim would measure ` +
-        `that instead`,
+      `the flat veil moved by ${flatDrift.toFixed(2)} at most over ${flatMotion.frames} drawn frames ` +
+        `(${seconds(flatMotion)} s) — it is a static fillRect, so something else in the sampled spots is ` +
+        `animating and the drift claim would measure that instead`,
     )
   }
 
@@ -270,10 +355,7 @@ export default async function ({ page, shot, log }) {
     )
   }
   await page.waitForTimeout(500)
-  const shaded = await samplePatch(page, field)
-  const shadedSpots = await sampleSpots()
-  await page.waitForTimeout(600)
-  const shadedSpotsLater = await sampleSpots()
+  const shaderMotion = await motion()
   const shaderAlpha = await page.evaluate(() => window.__game.debug().fogAlpha ?? 0)
   const shaderFps = await fps()
   await shot('fog-shader')
@@ -294,12 +376,26 @@ export default async function ({ page, shot, log }) {
   }
 
   // 3. and it moves, where the flat one did not.
-  const drift = spread(shadedSpots.map((s, i) => s.lum - shadedSpotsLater[i].lum))
-  log(`shader drift between two frames ${drift.toFixed(2)} (flat was ${flatDrift.toFixed(2)})`)
+  const drift = shaderMotion.most
+  log(
+    `shader drift, most of ${STEPS} steps of ${STEP_FRAMES} drawn frames: ${drift.toFixed(2)} ` +
+      `(${shaderMotion.frames}/${shaderMotion.wanted} frames in ${seconds(shaderMotion)} s); flat veil was ` +
+      `${flatDrift.toFixed(2)} (${flatMotion.frames}/${flatMotion.wanted} in ${seconds(flatMotion)} s)`,
+  )
+  if (shaderMotion.frames < shaderMotion.wanted) {
+    // **Not "the shader is still"** — the distinction the wall-clock form could not make,
+    // and the reason its twin in `smoke-shader` produced two false sightings. Nothing was
+    // drawn, so nothing here is evidence either way about the fog shader.
+    throw new Error(
+      `the page drew ${shaderMotion.frames} of ${shaderMotion.wanted} frames in ${seconds(shaderMotion)} s — ` +
+        `the box stopped rendering, so this says nothing about whether the fog shader animates`,
+    )
+  }
   if (drift < 3) {
     throw new Error(
-      `the shader fog moved only ${drift.toFixed(2)} between frames — a still shader is a ` +
-        `wasted one, and this is the whole difference from the rectangle it replaces`,
+      `the shader fog moved only ${drift.toFixed(2)} at most over ${shaderMotion.frames} drawn frames ` +
+        `(${seconds(shaderMotion)} s) — a still shader is a wasted one, and this is the whole difference ` +
+        `from the rectangle it replaces`,
     )
   }
 

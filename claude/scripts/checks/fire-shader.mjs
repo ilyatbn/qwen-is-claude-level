@@ -20,7 +20,8 @@
  * ## The rest, as `beams-shader` and `smoke-shader`
  *
  * One frozen field both ways, with a control patch that must not move and an exact
- * restore; drawn against the layer hidden; animates while frozen, where the flat flames
+ * restore; drawn against the layer hidden; animates while frozen — sampled over **rendered
+ * frames** rather than wall clock (T22.00F; see `animation` below), where the flat flames
  * are still because their flicker runs on `render`, which a frozen scene does not call;
  * both ends — flames the layer holds against quads painted.
  *
@@ -193,19 +194,103 @@ if (onScreen.length < 2) {
     fail(`${ring.length - cover(flat)} of ${ring.length} points just inside a flame's damage circle are unpainted with High Quality off — burned by fire you cannot see`)
   } else ok(`every point just inside every on-camera damage circle is painted with High Quality off (${ring.length})`)
 
-  // --- it animates: frozen, 300 ms apart ---------------------------------------------
-  const pair = async (hq) => {
+  // --- it animates: frozen, over drawn frames rather than a wall clock ----------------
+  //
+  // **The subject is the band that covers every on-camera flame of one molotov**, in a
+  // frozen scene, so the fire neither moves nor burns out between photographs. The still
+  // control is that same band with High Quality off, where the flat discs do not move.
+  //
+  // **This photographed twice across `sleep(300)` until T22.00F.** Two defects, both
+  // measured on the identical instrument in `smoke-shader.mjs` and written up at its
+  // `animation` helper: a sleep does not guarantee a redraw (the page drew 18 frames in
+  // 300 ms at CPU x1 and **3 at x64**, so both photographs can be of one drawn frame), and
+  // **one window is marginal whatever the load** — 39 consecutive idle samples of a single
+  // 300 ms window waved between 0.0 % and 11.2 %. `beams-shader` then went red on an idle
+  // box at 0.9 % against its 1.0 % floor in the 2026-09-22 gate, which is the sighting that
+  // paid for this file. So: count **drawn frames**, and let the **largest** change over
+  // several steps decide, because every step must be flat for "it does not animate" to be
+  // what this reports.
+  /** Frames drawn per step: what a 60 Hz box draws in the 300 ms this check used to sleep. */
+  const STEP_FRAMES = 18
+  /** Steps taken, so one flat window cannot decide the verdict. */
+  const STEPS = 5
+  /** Ceiling on one step, ~26x the idle cost of 18 frames. A page that stopped drawing fails here. */
+  const FRAME_BUDGET_MS = 8_000
+  /**
+   * Resolve once `n` frames have been drawn, or `budget` ms have passed — whichever comes
+   * first, and it reports which by returning both. The `setTimeout` is the half that cannot
+   * hang: a page whose `requestAnimationFrame` never fires still resolves, with `frames`
+   * short of `n`.
+   */
+  const advanceFrames = (n, budget) =>
+    page.evaluate(
+      ([want, cap]) =>
+        new Promise((resolve) => {
+          const t0 = performance.now()
+          let drawn = 0
+          let done = false
+          const end = () => {
+            if (done) return
+            done = true
+            resolve({ frames: drawn, ms: performance.now() - t0 })
+          }
+          const timer = setTimeout(end, cap)
+          const tick = () => {
+            drawn++
+            if (drawn >= want) {
+              clearTimeout(timer)
+              end()
+            } else requestAnimationFrame(tick)
+          }
+          requestAnimationFrame(tick)
+        }),
+      [n, budget],
+    )
+  /** The largest change from the first photograph over `STEPS` steps, and what it cost. */
+  const animation = async (hq) => {
     await setHQ(hq)
     await frame()
-    const a = await grab(band)
-    await sleep(300)
-    return (await compare(a, await grab(band))).fraction
+    const first = await grab(band)
+    let most = 0
+    let frames = 0
+    let ms = 0
+    for (let i = 0; i < STEPS; i++) {
+      const step = await advanceFrames(STEP_FRAMES, FRAME_BUDGET_MS)
+      frames += step.frames
+      ms += step.ms
+      most = Math.max(most, (await compare(first, await grab(band))).fraction)
+    }
+    return { most, frames, ms, wanted: STEP_FRAMES * STEPS }
   }
-  const still = await pair(false)
-  const living = await pair(true)
-  console.log(`  frozen fire, 300 ms apart: flat ${(still * 100).toFixed(1)}%, painted ${(living * 100).toFixed(1)}%`)
-  if (!(living > Math.max(0.01, still * 3))) fail(`the painted fire changed ${(living * 100).toFixed(1)}% in 300 ms against ${(still * 100).toFixed(1)}% flat — it does not animate`)
-  else ok(`the painted fire animates (${(living * 100).toFixed(1)}% against ${(still * 100).toFixed(1)}%)`)
+  const still = await animation(false)
+  const living = await animation(true)
+  const seconds = (x) => (x.ms / 1000).toFixed(1)
+  console.log(
+    `  frozen fire, most changed of ${STEPS} steps of ${STEP_FRAMES} drawn frames: ` +
+      `flat ${(still.most * 100).toFixed(1)}% (${still.frames}/${still.wanted} frames in ${seconds(still)} s), ` +
+      `painted ${(living.most * 100).toFixed(1)}% (${living.frames}/${living.wanted} frames in ${seconds(living)} s)`,
+  )
+  if (living.frames < living.wanted || still.frames < still.wanted) {
+    // **Not "it does not animate"** — the distinction the wall-clock form could not make,
+    // and the reason it produced two false sightings on its twin. Nothing was drawn, so
+    // nothing here is evidence either way about the flame shader.
+    fail(
+      `the page drew ${living.frames} of ${living.wanted} frames in ${seconds(living)} s painted and ` +
+        `${still.frames} of ${still.wanted} in ${seconds(still)} s flat — the box stopped rendering, ` +
+        `so this says nothing about whether the flame shader animates`,
+    )
+  } else if (!(living.most > Math.max(0.01, still.most * 3))) {
+    fail(
+      `the painted fire changed ${(living.most * 100).toFixed(1)}% of its pixels at most over ` +
+        `${living.frames} drawn frames (${seconds(living)} s) against ${(still.most * 100).toFixed(1)}% flat — ` +
+        `the flame shader does not animate`,
+    )
+  } else {
+    ok(
+      `the painted fire animates (${(living.most * 100).toFixed(1)}% against the flat fire's ` +
+        `${(still.most * 100).toFixed(1)}%, over ${living.frames} drawn frames in ${seconds(living)} s)`,
+    )
+  }
 }
 
 await setHQ(false)

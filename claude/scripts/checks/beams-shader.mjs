@@ -20,9 +20,11 @@
  *
  * - **It is drawn, not blank**: the painted beam against the same patch once the
  *   beam is gone, with the control's drift as the floor.
- * - **It animates**: with the decay held and the scene running, two frames 200 ms
- *   apart differ along the beam under High Quality — against the same pair with it
- *   off, where the strokes are still and whatever differs is the background.
+ * - **It animates**: with the decay held and the scene running, the band along the beam
+ *   differs under High Quality across a counted number of **drawn frames** — against the
+ *   same measurement with it off, where the strokes are still and whatever differs is the
+ *   background. It waited on a wall clock until T22.00F and went red on an idle box for
+ *   it; see the comment above `flicker`.
  * - **Both ends**: the server narrated the shots, the layer held tracers, and
  *   `beamShadersDrawn` counts painted quads only while High Quality is on.
  *
@@ -196,7 +198,63 @@ if (P) {
   await page.waitForFunction('window.__game.debug().tracersDrawn === 0', null, { timeout: 10_000 }).catch(() => null)
 }
 
-// --- 3. it animates: held beam, running scene, two frames apart -----------------------
+// --- 3. it animates: held beam, running scene, over drawn frames ----------------------
+//
+// **The subject is one held beam**, photographed in the band that runs along the shot and
+// clear of the muzzle flash — the same band section 1 poses, and the one the two assertions
+// above prove carries a painted beam that differs from the stroked one. `holdTracers` keeps
+// it from decaying; the scene runs, which is what the stroked control needs, and the shader
+// moves because Phaser rewrites its `time` uniform at every render (`ordnance.ts`, the
+// comment at `sh.setUniform('life.value', k)` says why the layer must not write it itself).
+//
+// **This photographed twice across `sleep(200)` until T22.00F, and that is what went red.**
+// On an **idle** box in the 2026-09-22 batch gate: *"the painted beam changed 0.9% of its
+// pixels in 200 ms against 0.0% for the still strokes"* — a 10 % miss of a hardcoded 1.0 %
+// floor, with five of this check's other assertions green in the same run. `T22.00B` had
+// already measured the identical instrument on `smoke-shader` and named this file: a sleep
+// does not guarantee a redraw (18 frames drawn in 300 ms at CPU x1, **3 at x64**), and **one
+// window is marginal whatever the load** — 39 consecutive idle samples waved between 0.0 %
+// and 11.2 %. **The number is not the bug and was not touched.** What changed is that the
+// window is now counted in **drawn frames** and the **largest** of five steps decides, so a
+// sample landing on two frames of the same ripple phase cannot decide the run.
+/** Frames drawn per step: what a 60 Hz box draws in ~300 ms. */
+const STEP_FRAMES = 18
+/** Steps taken, so one flat window cannot decide the verdict. */
+const STEPS = 5
+/** Ceiling on one step, ~26x the idle cost of 18 frames. A page that stopped drawing fails here. */
+const FRAME_BUDGET_MS = 8_000
+/**
+ * Resolve once `n` frames have been drawn, or `budget` ms have passed — whichever comes
+ * first, and it reports which by returning both. The `setTimeout` is the half that cannot
+ * hang: a page whose `requestAnimationFrame` never fires still resolves, with `frames`
+ * short of `n`.
+ */
+const advanceFrames = (n, budget) =>
+  page.evaluate(
+    ([want, cap]) =>
+      new Promise((resolve) => {
+        const t0 = performance.now()
+        let drawn = 0
+        let done = false
+        const end = () => {
+          if (done) return
+          done = true
+          resolve({ frames: drawn, ms: performance.now() - t0 })
+        }
+        const timer = setTimeout(end, cap)
+        const tick = () => {
+          drawn++
+          if (drawn >= want) {
+            clearTimeout(timer)
+            end()
+          } else requestAnimationFrame(tick)
+        }
+        requestAnimationFrame(tick)
+      }),
+    [n, budget],
+  )
+
+/** The largest change from the first photograph over `STEPS` steps, and what it cost. */
 async function flicker(hq) {
   await setHQ(hq)
   await hold(true)
@@ -206,20 +264,50 @@ async function flicker(hq) {
   // **Per pixel, not a patch mean** — measured, the mean moved 2.2 for a rippling beam
   // and 1.0 for a still one: a ripple running along a 130 px patch averages out, as
   // the fog's drift did (\`fog-shader\`).
-  const a = await grab(Q.band)
-  await sleep(200)
-  const b = await grab(Q.band)
+  const first = await grab(Q.band)
+  let most = 0
+  let frames = 0
+  let ms = 0
+  for (let i = 0; i < STEPS; i++) {
+    const step = await advanceFrames(STEP_FRAMES, FRAME_BUDGET_MS)
+    frames += step.frames
+    ms += step.ms
+    most = Math.max(most, await changedFraction(first, await grab(Q.band)))
+  }
   await hold(false)
   await page.waitForFunction('window.__game.debug().tracersDrawn === 0', null, { timeout: 10_000 }).catch(() => null)
-  return changedFraction(a, b)
+  return { most, frames, ms, wanted: STEP_FRAMES * STEPS }
 }
 const still = await flicker(false)
 const living = await flicker(true)
 if (still !== null && living !== null) {
-  console.log(`  held beam, 200 ms apart: stroked ${(still * 100).toFixed(1)}% of pixels changed, painted ${(living * 100).toFixed(1)}%`)
-  if (!(living > Math.max(0.01, still * 3))) {
-    fail(`the painted beam changed ${(living * 100).toFixed(1)}% of its pixels in 200 ms against ${(still * 100).toFixed(1)}% for the still strokes — it does not animate`)
-  } else ok(`the painted beam animates (${(living * 100).toFixed(1)}% of pixels against the stroked beam's ${(still * 100).toFixed(1)}%)`)
+  const seconds = (x) => (x.ms / 1000).toFixed(1)
+  console.log(
+    `  held beam, most changed of ${STEPS} steps of ${STEP_FRAMES} drawn frames: ` +
+      `stroked ${(still.most * 100).toFixed(1)}% of pixels changed (${still.frames}/${still.wanted} frames in ${seconds(still)} s), ` +
+      `painted ${(living.most * 100).toFixed(1)}% (${living.frames}/${living.wanted} frames in ${seconds(living)} s)`,
+  )
+  if (living.frames < living.wanted || still.frames < still.wanted) {
+    // **Not "it does not animate"** — the distinction the wall-clock form could not make,
+    // and the reason its twin produced two false sightings. Nothing was drawn, so nothing
+    // here is evidence either way about the beam shader.
+    fail(
+      `the page drew ${living.frames} of ${living.wanted} frames in ${seconds(living)} s painted and ` +
+        `${still.frames} of ${still.wanted} in ${seconds(still)} s stroked — the box stopped rendering, ` +
+        `so this says nothing about whether the beam shader animates`,
+    )
+  } else if (!(living.most > Math.max(0.01, still.most * 3))) {
+    fail(
+      `the painted beam changed ${(living.most * 100).toFixed(1)}% of its pixels at most over ` +
+        `${living.frames} drawn frames (${seconds(living)} s) against ${(still.most * 100).toFixed(1)}% for the ` +
+        `still strokes — the beam shader does not animate`,
+    )
+  } else {
+    ok(
+      `the painted beam animates (${(living.most * 100).toFixed(1)}% of pixels against the stroked beam's ` +
+        `${(still.most * 100).toFixed(1)}%, over ${living.frames} drawn frames in ${seconds(living)} s)`,
+    )
+  }
 }
 
 // --- both ends on the wire ----------------------------------------------------------
