@@ -1727,7 +1727,7 @@ which would restate the function under test.
 *"this also answers the `birds.rs` row"*. Measured by the reviewer: `world/mod.rs::step_animals`
 passes `playing` as `active` with **no mode test**; grepping `Space` and `Generator` in
 `world/animals.rs` returns only `T22.11A`'s new test plus one unrelated comment, and
-`world/birds.rs` returns one unrelated comment. **Nothing suppresses either.**
+`world/birds.rs` returns **nothing at all** — the grep exits 1. **CORRECTED 2026-09-22 by `T22.13`'s builder, who re-ran all three claims before starting, as `R60` requires.** This ruling said *“one unrelated comment”*; there is none. I had restated the reviewer's measurement without re-running it, in the same commit as `R60`, whose subject is that a restated measurement is not a measurement. Immaterial to the work and exactly the habit `CLAUDE.md` names: *“a status line is a measurement, and it is only valid at the moment it was taken.”* **Nothing suppresses either.**
 
 So today a space round spawns beetles and spiders, which stand on the rim and on asteroid tops in
 a vacuum. `T22.11A` correctly read the ruling down to *"a spawning rule and not this stepper's"*
@@ -1824,6 +1824,104 @@ in the simulation and invisible to the player is precisely the shape that rule w
 the server.
 
 **Reverse it by:** the task assignment.
+
+## R64 — The remedy-falsification rule worked **forwards** for the first time, in a builder's hands
+
+Worth a ruling because `CLAUDE.md`'s *"a proposed guard is a claim, and it needs the same
+falsification as the code it guards"* has been invoked four times this milestone and **every one was
+after the fact**, in a review, against someone else's work.
+
+`T22.05D` — the task whose entire subject was two comments claiming more than their assertions
+carried — wrote a third one. Its first cadence-guard message said *"…so nothing below this line ran
+and the placement guard rules nothing out."* Then it planted the bug that guard was for (dropping
+`tick_items`' deadline advance) and **items still spawned**, so `seen > 0` and the sentence was
+false. It rewrote the message to claim only what is true, and reported the near-miss as *"the same
+class as the two defects this task closes."*
+
+**Two things follow and both are the ruling.** First: the rule pays for itself at the moment of
+writing, not only in review, and it caught a defect that three reviews of adjacent code had not.
+Second, and sharper: **the near-miss happened inside the fix for exactly that defect**, by an agent
+holding the taxonomy in front of it. That is evidence the failure is not carelessness but the
+default shape of the sentence a person writes next to an assertion they just made — which is why it
+needs an instrument rather than attention.
+
+**How to apply:** when a task's deliverable is a guard or a message, plant the bug it names and read
+what it prints, not merely whether it fires.
+
+**Reverse it by:** nothing — a record.
+
+## R65 — A builder running browser checks and a builder planting falsifications cannot share a box, and the *"tree moved"* signature is now ambiguous
+
+**My scheduling error, twice over in one batch.**
+
+`T22.13`'s `animals` and `birds` e2e runs failed with `Cannot read properties of undefined (reading
+'debug')` — `CLAUDE.md`'s *"the tree moved"* signature — and it was **literally true**: `pgrep`
+caught `T22.11C` mid-run with a deliberate `// FALSIFICATION` patched into
+`crates/game-wasm/src/lib.rs`, on the **shared vite at :5173**. `T22.13` diagnosed it, waited on the
+PID, confirmed the plant was gone and re-ran to 2/2, with an unrelated check passing as its control.
+That is the right handling of a problem it should never have been handed.
+
+`CLAUDE.md` already says *"nobody edits anything under `claude/` while a gate runs"*, and I had read
+that as being about the coordinator's batch gate. **A falsification plant is an edit, and a builder's
+own e2e check is a gate** — the rule covers this exactly and I scheduled against it.
+
+**The ruling:** a batch may contain at most one builder that runs browser checks **or** at most one
+that plants falsifications in crate code, not both. Three builders on disjoint *files* is still one
+shared vite and one shared wasm build.
+
+**And the second half, which is the durable finding.** `T22.11C` also recorded that negating
+`field_accel_at` produced the **same** `Cannot read properties of undefined (reading 'debug')` — not
+from a moved tree, but because a lying field drives the body off the map and `window.__game` goes
+away. **So that signature now has at least two causes**, and `CLAUDE.md` says reading it wrongly
+costs the next thirty-five minutes. Anyone meeting it must check `pgrep` *and* whether the subject
+could have destroyed the page, before concluding either.
+
+**Reverse it by:** the batching rule above.
+
+## R66 — `scripts/checks/asteroid-gravity.mjs` at 578 lines does not need splitting
+
+Flagged by its own builder. 578 lines, **359 of them code**; `minimap.mjs` next door is 494. Same
+reasoning as `R62`: the ~250 guidance limits how much work one assignment carries, not how much
+rationale a file may hold, and here the non-code half is the reason each of five guards exists — a
+camera clamp that put a patch on the fps readout, a crosshair that travels with the body, a day cycle
+that moved a patch 32.5 px with the body provably still. **That commentary is the most valuable part
+of the file**, because every line of it is a wrong version of this check that someone already wrote.
+
+**Reverse it by:** this paragraph.
+
+## R67 — `GameCore::field_accel_at` is ratified, and it is `R11`'s rule doing its job
+
+New API, added unasked, and correctly. The pixel check must know which way the field points **before
+the body moves** — otherwise the direction is derived from the motion it is meant to be evidence
+about. The only alternative was summing the falloff in JavaScript, which is **the second spelling
+`R11` exists to prevent**, and both prior rubber-band bugs in this project were a mirror inventing a
+value the core already had.
+
+Pinned by `field_accel_at_reports_the_summation_the_server_runs`, including the two `[0,0]` arms the
+browser check depends on. No `asteroids()` twin was added, because `meta_json` already serialises
+`MapMeta` and a second accessor would be a second answer.
+
+**Reverse it by:** deleting the accessor and giving the check a geometric approximation instead —
+which would be worse for the reason above.
+
+## R68 — `R40`'s socket family has a sixth member, and it is still recorded rather than parked
+
+`game-server/tests/checksum.rs::two_clients_agree_on_the_mask_after_a_hundred_carves`, `saw []`,
+the same empty-inbox handshake as the other five. Filed in `tasks/flaky-test.md` and **not
+`#[ignore]`d**, per `R40` — parking a sixth is the wrong direction and `T22.00E` owns the harness.
+
+Two things make this row better evidence than the earlier ones, and both were the builder's doing:
+it **neutralised its own change** and re-ran, watched the failure *move* to a different test, and
+only then stopped suspecting itself; and it asked what the failures share before saying "load",
+which `CLAUDE.md` requires because *"the failure moves"* is evidence against one broken test, not
+evidence for load. The shared thing is a wall-clock deadline on a socket handshake, and every red in
+this batch overlapped a concurrent builder's gate while the run with no overlap was 1553/0.
+
+**The cost, stated plainly:** this one guards the carve-determinism agreement between two clients,
+which is the guarantee the whole project rests on, and it is now unreliable exactly when the box is
+busy — which is when a gate runs.
+
+**Reverse it by:** `T22.00E`.
 
 # What this milestone owes when it lands
 

@@ -1460,9 +1460,11 @@ impl World {
     /// moment at which a living animal is on the wrong side of it. A round
     /// cannot become a space round after it started.
     ///
-    /// **Which side this runs on**, because `space_geometry`'s doc warns it is
-    /// sound server-side only until `T22.11C` lands `GameCore::set_asteroids`:
-    /// every live caller of `World::step` is server-side —
+    /// **Which side this runs on.** `T22.11C` has since landed
+    /// `GameCore::set_asteroids`, so `space_geometry` is now sound on both
+    /// sides and the caveat this paragraph used to cite is gone. The analysis
+    /// is kept because it is what makes that irrelevant here rather than
+    /// merely fixed: every live caller of `World::step` is server-side —
     /// `game-server::room` and `game-server::round`. The only other is
     /// `game-wasm::AttractCore`, which generates its own map locally through
     /// `World::new` and has been dormant since T18.01. No networked client

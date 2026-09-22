@@ -6690,3 +6690,34 @@ build. Constants: `SPACE_WELL_ESCAPE_MARGIN` 0.75, `SPACE_WELL_ACCEL_MAX`=`JETPA
 `an_item_drifting_sideways_onto_a_rock_in_space_lands_on_it` is red at the live site. `Forces::gravity`'s doc corrected — **zero production callers**, it is the fixture constructor.
 **Two client tests were measuring space on a map with rocks** and now generate under standard first; a third arm pins the mirror's own field. 7 falsifications, all red, none stayed green.
 **Not run: the 58-check sweep** (R53 — every `game-core` path maps to all of them); `node scripts/e2e.mjs --only sandbox` green. Stale text contradicting R46/R50 listed in the report.
+
+**T22.13 — nothing lives in space** (`bd89ec4`, `d9af7a5`). `R14`'s *"no animals at all in space"* row had **no implementation**: a space round
+grew beetles and spiders on the rim and birds through the vacuum, red before the guard at `2 animals stood in a vacuum`, seed 4242. One shared
+guard, `World::wildlife_allowed`, folded into the `active` flag `step_birds` and `step_animals` **already take** — keyed on the generator
+(`space_geometry`'s `Some`, R15's derivation), **never on `self.gravity`**, and the doc says why: `World::gravity` is a public field callers
+reassign, while `World::map` is written once (`grep -n 'self\.map = '` → nothing). **The birds answer: two rulings wearing one row at the module
+level, one ruling a layer up** — `Animals::tick` takes `&Map` and could gate itself, `Birds::tick` takes only `map_w` and could not, so there is
+no suppression point inside either module. Birds stayed **simulation, not backdrop**: a bird drops a heal or a battery, so a renderer declining to
+draw one would leave the drops and lose only the bird. **Nothing alive is stranded, and it is not a policy choice** — the guard's subject cannot
+change mid-round, asserted. Control is **peak** population over 4 seeds, not the end count, which would read spawn-then-cull-off-the-rim as zero.
+Four falsifications, all red, including R58's hazard keyed on `self.gravity`. Done-when 1521/0.
+
+**T22.05D — two comments that claimed more than their assertions carried** (`fc679fb`). `R57`, both measured. **F-3:** the biconditional
+`space_moved == 0 == (Space.scale() == 0.0)` **passed** under the 0.0→0.5 plant, pasted — every term moved with the constant. Split into a pin
+then an effect, `ctl_moved > 0` kept as the presence control, both comments narrowed, `every_gravity_mode_has_a_multiplier` named as the
+constant's real cover. The two causes now print different messages. **F-4:** the in-loop `body_fits_at` was **unreachable** — the schedule's two
+stages are counted separately now (`fired` off `next_item_at`, `seen` off returned ids, `resample_surface` never called by the test), each with
+its own guard, each falsified independently. **It caught itself shipping a false sentence inside the fix for false sentences** (`R64`): its first
+cadence message claimed *"nothing below this line ran"*, and the deadline plant disproved it because items still spawn. Found only by falsifying
+the remedy. Five plants, none green. Done-when 1078/0; `constants.rs` restored byte-identical by sha256.
+
+**T22.11C — the client gets the rocks, and the well is on screen at last** (`5694fba`). `R49`'s three layers: `GameCore::set_asteroids`, the
+`Core.setAsteroids` wrapper (invalidates the meta cache, so `Core.meta.asteroids` is the readback and no second accessor was added), and one line
+in `applyMapInit`. **`R63` closed:** `scripts/checks/asteroid-gravity.mjs` asserts the **drawn** body enters the down-field patch (moved 30.7
+against a floor of 8), the up-field patch does not (0.0), and `setAsteroids([])` is the control frame — verified by the *effect*
+(`fieldAccelAt(start) == [0,0]`), not the ask. **The falsification that justifies the whole task: stop `PlayerView` following the body and the
+check goes red on a frame that did not move while the log line above it reads `pulled 59.8 px`.** `field_accel_at` is new API so the check never
+spells the summation in JS (`R11`, `R67`). No wall-clock sleeps; the control arm's budget is counted in **rendered frames** and its adequacy is
+measured against the pulled arm's 33. Five guards each exist because something bit — camera clamp put a patch on the fps readout, the crosshair
+travels with the body, the day cycle moved a patch 32.5 px with the body still. Done-when EXIT=0, `asteroid-gravity` 1/1.
+
