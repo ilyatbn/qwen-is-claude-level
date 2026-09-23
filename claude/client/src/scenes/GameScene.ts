@@ -83,6 +83,8 @@ import { parseVoteTally, phaseDeadline, secondsUntil } from '../ui/results-math'
 import { fuelText, fuelTrend, jetReadoutText } from '../ui/jetpackReadout-math'
 import { FLAG, MOVE_MOD, flag } from '../net/codec'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
+import { feedCause } from '../ui/killfeed-state'
+import { RadiationFx } from '../render/radiationFx'
 import { Minimap } from '../ui/minimap'
 import { beaconCrates } from '../ui/minimap-math'
 import { Hud, type EffectPhase } from '../ui/hud'
@@ -301,6 +303,13 @@ export class GameScene extends Phaser.Scene {
   private shieldOn = false
   /** §E13: is toxic rain still working on me? Snapshot flag, never predicted. */
   private poisoned = false
+  /**
+   * T22.09B: is space's radiation getting through my suit? Snapshot bit 7
+   * (`PlayerState::irradiated`), never derived here — the battery beside it is
+   * quantised, and "flat" is the server's call.
+   */
+  private irradiated = false
+  private radiation!: RadiationFx
   /**
    * Is a flashlight in my bag? Snapshot bit 4 (§T20.07).
    *
@@ -577,6 +586,7 @@ export class GameScene extends Phaser.Scene {
     this.batteries = 0
     this.shieldOn = false
     this.poisoned = false
+    this.irradiated = false
     this.hasFlashlight = false
     this.hasBoots = false
     this.hasWings = false
@@ -706,6 +716,7 @@ export class GameScene extends Phaser.Scene {
     this.crosshair = new Crosshair(this, DEPTH.hud)
     this.buildHud()
     this.feel = new FeelLayer()
+    this.radiation = new RadiationFx()
     this.debugHud = new DebugHud(this, C().PLAYER_W, C().PLAYER_H)
     this.input.keyboard?.on('keydown-F3', () => this.debugHud.toggle())
     this.input.keyboard?.on('keydown-M', () => this.minimap?.toggle())
@@ -1126,12 +1137,10 @@ export class GameScene extends Phaser.Scene {
       this.feel.kill({
         victim: nameOf(victim),
         killer: attacker === undefined ? undefined : nameOf(attacker),
-        cause:
-          attacker === victim
-            ? 'self'
-            : cause === 'weather' || cause === 'void'
-              ? (cause as 'weather' | 'void')
-              : 'player',
+        // The allowlist, tested in `killfeed-state.test.ts` (R20): an unlisted
+        // cause becomes 'player', which is how `"radiation"` would have read
+        // "? → ana (radiation)".
+        cause: feedCause(cause, attacker, victim),
         by: String(p['by'] ?? cause),
         involvesYou: victim === this.me || attacker === this.me,
       })
@@ -1236,6 +1245,7 @@ export class GameScene extends Phaser.Scene {
       this.unsubFpsCounter?.()
       this.hideJoinCodeBanner()
       this.feel?.destroy()
+      this.radiation?.destroy()
       this.minimap?.destroy()
       this.debugHud?.destroy()
       this.world?.destroy()
@@ -1508,6 +1518,9 @@ export class GameScene extends Phaser.Scene {
       // §E13. The snapshot carries the boolean, like the shield above: the
       // client colours a bar off it and never predicts a status.
       this.poisoned = flag(mine.flags, FLAG.poisoned)
+      // T22.09B. Bit 7 had no reader, which is T21.25's finding exactly: a
+      // health bar drifting down for no visible reason.
+      this.irradiated = flag(mine.flags, FLAG.irradiated)
       // §T20.07. `FLAG.flashlight` had **no production reader at all** — it was
       // written by the server, exported by `codec.ts` and consumed only by two
       // tests, which is why the flashlight did nothing in a real game.
@@ -1992,6 +2005,13 @@ export class GameScene extends Phaser.Scene {
       this.world.platforms.setOccupied(this.occupiedPlatforms())
     }
     this.feel.update(dt, this.feelFrame())
+    this.radiation.update(
+      dt,
+      this.gravity === SPACE_GRAVITY,
+      this.meAlive,
+      this.irradiated && this.meAlive,
+      C().RADIATION_LOG_INTERVAL,
+    )
     // §C3. Phase-driven, not clock-driven: the server owns which phase the round
     // is in, and a client deciding locally would take the controls away a beat
     // early from a player who could still act.
@@ -3308,6 +3328,9 @@ export class GameScene extends Phaser.Scene {
             // produced, so a green bar with `poisoned` false is visible as a
             // disagreement rather than as a colour nobody can explain.
             poisoned: self.poisoned,
+            // T22.09B, both ends: bit 7 off the wire beside what was mounted.
+            irradiated: self.irradiated,
+            radiation: self.radiation?.stats() ?? null,
             battery: self.battery,
             heals: self.heals,
             batteries: self.batteries,

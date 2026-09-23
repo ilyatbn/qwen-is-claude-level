@@ -370,6 +370,12 @@ export const FLAG = {
   iframes: 1 << 5,
   /** §E13. Bit 6; `docs/40` §3 still lists 6-7 as reserved. */
   poisoned: 1 << 6,
+  /**
+   * T22.09A/B. Bit 7: space's radiation is getting through — in space, alive,
+   * suit battery flat (`PlayerState::irradiated`). **Not bit 3**: the suit's
+   * seal never draws the generator's bubble (`M22-RULINGS` R26).
+   */
+  irradiated: 1 << 7,
 } as const
 
 /**

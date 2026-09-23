@@ -21,6 +21,7 @@ import { PlayerView } from '../render/playerView'
 import { loadAssetManifest, runLoader } from '../render/assets'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
+import { RadiationFx } from '../render/radiationFx'
 import { Minimap } from '../ui/minimap'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
@@ -93,6 +94,8 @@ export class SandboxScene extends Phaser.Scene {
   private fovOverride: number | null = null
   private hud!: HTMLDivElement
   private feel!: FeelLayer
+  /** T22.09B: the suit's feedback, off `Core.irradiated` (the sandbox's bit 7). */
+  private radiation!: RadiationFx
   private feelEnabled = true
   private minimap: Minimap | null = null
   /** Silent until audio.json loads; `docs/50` §8 — no assets is supported. */
@@ -215,6 +218,7 @@ export class SandboxScene extends Phaser.Scene {
       this.ui.remove()
       this.hud?.remove()
       this.feel?.destroy()
+      this.radiation?.destroy()
       this.minimap?.destroy()
       this.world.destroy()
       this.lightmap.destroy()
@@ -224,6 +228,7 @@ export class SandboxScene extends Phaser.Scene {
 
     this.buildHud()
     this.feel = new FeelLayer()
+    this.radiation = new RadiationFx()
     this.input.keyboard?.on('keydown-M', () => this.minimap?.toggle())
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
@@ -728,6 +733,12 @@ export class SandboxScene extends Phaser.Scene {
           // T22.04, both ends (§A39): `player.moveState` is the pack the core
           // says is firing; this is the plume the view says it drew.
           plume: self.player?.plumeState ?? null,
+          // T22.09B, both ends (§A39): the Rust answer beside what was mounted.
+          irradiated: self.core.irradiated(0, self.simTime),
+          radiation: self.radiation?.stats() ?? null,
+          // The sandbox's sim clock, for a check that calls a `now`-taking `Core`
+          // predicate itself (R26: never a literal).
+          simTime: self.simTime,
           roundTime: self.roundTime,
           skyPhase: self.sky?.currentPhase ?? 'morning',
           // §C14. `cloudsDrawn` beside `clouds` separates "the round has clouds"
@@ -1238,7 +1249,7 @@ export class SandboxScene extends Phaser.Scene {
         // clamped at `BATTERY_MAX` like any pack.
         self.core.addBattery(0, C().BATTERY_MAX)
         self.refreshHud()
-        return self.core.shieldActive(0)
+        return self.core.shieldActive(0, self.simTime)
       },
       /**
        * Put T21.02's ironman boots in the bag — the sibling of
@@ -1362,7 +1373,7 @@ export class SandboxScene extends Phaser.Scene {
         // which is the one player who needs to know they are protected. The rule
         // comes from Rust rather than being restated: `Core.shieldActive` calls
         // `PlayerState::shield_active`.
-        shield: this.core.shieldActive(0),
+        shield: this.core.shieldActive(0, this.simTime),
         iframes: false,
         // T21.02, and **read back out of the mirror rather than tracked here**
         // — the same rule the networked client draws from, reached through the
@@ -1440,6 +1451,16 @@ export class SandboxScene extends Phaser.Scene {
     this.sky.update(this.roundTime, darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS), C().NIGHT_DARKNESS)
 
     if (this.feelEnabled) this.feel.update(dt, this.feelFrame())
+    // T22.09B. The same Rust predicate snapshot bit 7 is encoded from. The sandbox
+    // has no `World::step`, so nothing here *damages* — this is the picture only,
+    // and a check drives it by emptying the suit (`core.addBattery`).
+    this.radiation.update(
+      dt,
+      this.gravity === SPACE_GRAVITY,
+      true,
+      this.core.irradiated(0, this.simTime),
+      C().RADIATION_LOG_INTERVAL,
+    )
     this.world.update(this.world.rig.center)
     this.frameBakes = this.world.terrain.stats.bakesThisFrame
 

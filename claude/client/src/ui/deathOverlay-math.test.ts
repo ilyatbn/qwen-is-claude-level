@@ -93,6 +93,15 @@ describe('cause attribution', () => {
     expect(causeText(info({ attacker: 2, cause: 'void' }), names)).toBe('Killed by ana')
   })
 
+  /** T22.09B (R20): radiation has its own sentence, not "Killed by radiation". */
+  it('says the suit ran out, and leaves a credited radiation death to the shooter', () => {
+    const text = causeText(info({ attacker: null, cause: 'radiation' }), names)
+    expect(text).toBe('Radiation — your suit ran out of energy')
+    expect(text).not.toContain('Killed by')
+    // The control: a shot inside the assist window arrives credited, and is a kill.
+    expect(causeText(info({ attacker: 2, cause: 'radiation' }), names)).toBe('Killed by ana')
+  })
+
   it('all four attribution paths produce different text', () => {
     const a = causeText(info({ attacker: 2 }), names)
     const b = causeText(info({ victim: 1, attacker: 1 }), names)

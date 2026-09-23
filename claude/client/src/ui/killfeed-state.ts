@@ -8,7 +8,32 @@
 export const KILLFEED_MAX = 5
 export const KILLFEED_LIFETIME = 6
 
-export type DeathCause = 'player' | 'self' | 'weather' | 'void'
+export type DeathCause = 'player' | 'self' | 'weather' | 'void' | 'radiation'
+
+/**
+ * The wire's `cause` string, narrowed to a feed cause — **the allowlist** `GameScene`
+ * used to spell inline (`M22-RULINGS` R20).
+ *
+ * **Anything unlisted becomes `'player'`**, and that default is where a new death
+ * cause dies silently: it renders as `"? → ana (radiation)"`, an unknown murderer.
+ * One function so the list is tested, and so the next cause (`T22.12`'s black hole)
+ * is one arm here and one in `killLine`, not a hunt through a scene.
+ *
+ * A self-kill is decided by the ids, not the string: the server sends
+ * `"selfinflicted"` *and* sets `attacker === victim`, and the ids are what the feed
+ * has always trusted.
+ */
+export function feedCause(cause: string, attacker: number | undefined, victim: number): DeathCause {
+  if (attacker === victim) return 'self'
+  switch (cause) {
+    case 'weather':
+    case 'void':
+    case 'radiation':
+      return cause
+    default:
+      return 'player'
+  }
+}
 
 export interface KillEntry {
   /**
@@ -75,5 +100,9 @@ export function killLine(e: KillEntry): string {
   // something the player did to themselves.
   if (e.cause === 'void') return `${e.victim} fell out of the world`
   if (e.cause === 'weather') return `${e.victim} was killed by ${e.by}`
+  // T22.09B. Its own line for the void's reason: `by` is the bare wire string, so
+  // folding it into `weather` would read "ana was killed by radiation" — true, but
+  // it is the suit running flat that a player needs to learn from it.
+  if (e.cause === 'radiation') return `${e.victim}'s suit ran flat (radiation)`
   return `${e.killer ?? '?'} → ${e.victim} (${e.by})`
 }

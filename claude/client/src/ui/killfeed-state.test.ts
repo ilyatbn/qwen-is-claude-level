@@ -3,6 +3,7 @@ import {
   KILLFEED_LIFETIME,
   KILLFEED_MAX,
   KillFeed,
+  feedCause,
   killLine,
   type KillEntry,
 } from './killfeed-state'
@@ -113,5 +114,37 @@ describe('a void death', () => {
   // assist window resolves it), so the void line must not swallow that case.
   it('leaves a blast-into-the-void as a normal kill', () => {
     expect(killLine(entry({ cause: 'player', killer: 'bo', by: 'bazooka' }))).toContain('bo →')
+  })
+})
+
+/**
+ * T22.09B, `M22-RULINGS` R20: a radiation death **at both ends of the client**. The
+ * allowlist used to live inline in `GameScene`, where anything unlisted became
+ * `'player'` and rendered `"? → ana (radiation)"`.
+ */
+describe('a radiation death', () => {
+  it('passes the allowlist as itself, and the unknown still falls to player', () => {
+    expect(feedCause('radiation', undefined, 3)).toBe('radiation')
+    expect(feedCause('void', undefined, 3)).toBe('void')
+    expect(feedCause('weather', undefined, 3)).toBe('weather')
+    // The control: the default is still there, so the arm above is what passed it.
+    expect(feedCause('black_hole', undefined, 3)).toBe('player')
+    expect(feedCause('player', 1, 3)).toBe('player')
+    // Ids decide a self-kill, whatever the string.
+    expect(feedCause('selfinflicted', 3, 3)).toBe('self')
+  })
+
+  it('names the suit and invents no killer', () => {
+    const line = killLine({
+      victim: 'ana',
+      killer: undefined,
+      cause: 'radiation',
+      by: 'radiation',
+      involvesYou: false,
+      age: 0,
+    })
+    expect(line).toBe("ana's suit ran flat (radiation)")
+    expect(line).not.toContain('?')
+    expect(line).not.toContain('→')
   })
 })

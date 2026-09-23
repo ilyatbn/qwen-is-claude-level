@@ -264,7 +264,7 @@ async function shieldBubble({ page, shot, log, screenPos }) {
   // are blue pixels here" is satisfied by the sky.
   const before = await samplePatch(page, rect)
   const cBefore = await samplePatch(page, controlRect)
-  const shieldedBefore = await page.evaluate(() => window.__game.core.shieldActive(0))
+  const shieldedBefore = await page.evaluate(() => window.__game.core.shieldActive(0, window.__game.debug().simTime))
   if (shieldedBefore) throw new Error('the sandbox player starts shielded — the control is void')
 
   const on = await page.evaluate(() => window.__game.giveShieldGenerator())

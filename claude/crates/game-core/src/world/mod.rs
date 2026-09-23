@@ -1101,7 +1101,11 @@ impl World {
     /// first radiation death would otherwise guarantee the second. Here, not in
     /// `PlayerState::respawn`, because only `World` knows the mode (R26); and
     /// outside space it does nothing, so `respawn_keeps_the_battery_…` holds.
-    fn issue_suit(gravity: GravityMode, p: &mut PlayerState) {
+    ///
+    /// **Public for the sandbox's one caller** (T22.09B, review F11):
+    /// `GameCore::add_player` issues the same suit, so a sandbox player in space
+    /// starts sealed as a real one does, by this function rather than a copy.
+    pub fn issue_suit(gravity: GravityMode, p: &mut PlayerState) {
         if gravity.wears_suit() {
             p.battery = crate::constants::BATTERY_MAX;
         }

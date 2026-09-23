@@ -57,6 +57,7 @@ const EXEMPT: Record<string, string> = {
   crosshair: 'new Crosshair, every create()',
   hud: 'buildHud(), every create()',
   feel: 'new FeelLayer, every create()',
+  radiation: 'new RadiationFx, every create() (T22.09B)',
   debugHud: 'new DebugHud, every create()',
   tombstones: 'new TombstoneLayer, every create()',
   birds: 'new BirdLayer, every create()',

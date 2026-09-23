@@ -92,6 +92,12 @@ export const CHECKS = [
   // entries above are its presence control. `plumeOn(…, true)` planted at the live
   // call left the whole suite green before this existed.
   { name: 'thrusters-standard', file: 'scripts/checks/thrusters.mjs', url: '?sandbox=1&seed=4242&gravity=standard' },
+  // T22.09B: space's radiation on the rendered frame — the edge glow and the HUD line
+  // against a **sealed** control frame, a centre control region, and `Core.irradiated`
+  // (bit 7's Rust predicate) read rather than assumed. `-standard` is the absence, with
+  // the space entry as its presence control.
+  { name: 'radiation', file: 'scripts/checks/radiation.mjs', url: '?sandbox=1&seed=4242&gravity=space' },
+  { name: 'radiation-standard', file: 'scripts/checks/radiation.mjs', url: '?sandbox=1&seed=4242&gravity=standard' },
   // T21.34: the unicorn wings on the body, same control-frame shape as boots.
   // Possible only since wings hover — under T21.03 the body flew off mid-check.
   // Not parked: a new check that starts on the flaky list gates nothing.

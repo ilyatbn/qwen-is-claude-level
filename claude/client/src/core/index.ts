@@ -426,6 +426,8 @@ export interface Constants {
   THRUSTER_PLUME_LENGTH: number
   THRUSTER_PLUME_WIDTH: number
   THRUSTER_PLUME_MIN_SPEED: number
+  /** T22.09B — one radiation damage entry per this many seconds; the glow's pulse. */
+  RADIATION_LOG_INTERVAL: number
   SMOKE_SHADER_POOL: number
   BULLET_LENGTH: number
   BULLET_WIDTH: number
@@ -1001,8 +1003,24 @@ export class Core {
     this.inner.add_battery(id, amount)
   }
 
-  shieldActive(id: number): boolean {
-    return this.inner.shield_active(id)
+  /**
+   * The generator's bubble — `suit = false` in Rust, as bit 3's encoder has it
+   * (`M22-RULINGS` R26). **`now` is the caller's sim clock** (T22.09B): this
+   * used to reach Rust as a literal `0.0`, harmless only while the predicate
+   * ignores its clock.
+   */
+  shieldActive(id: number, now: number): boolean {
+    return this.inner.shield_active(id, now)
+  }
+
+  /**
+   * Is space's radiation getting through to this player? (T22.09A/B.) The
+   * sandbox's snapshot bit 7: the **same** Rust predicate the server encodes
+   * that bit from (`PlayerState::irradiated`), so the sandbox and a networked
+   * client cannot disagree about when to show the feedback.
+   */
+  irradiated(id: number, now: number): boolean {
+    return this.inner.irradiated(id, now)
   }
 
   playerState(id: number): PlayerState | null {

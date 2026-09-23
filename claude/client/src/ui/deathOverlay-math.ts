@@ -59,6 +59,11 @@ export function causeText(
   if (info.cause.toLowerCase() === 'void') {
     return 'You fell out of the world'
   }
+  // T22.09B (R20). Said as what to do next time: the suit is a second health bar
+  // that radiation eats first (R24), and dying of it means that bar hit zero.
+  if (info.cause.toLowerCase() === 'radiation') {
+    return 'Radiation — your suit ran out of energy'
+  }
   return `Killed by ${weatherName(info.cause)}`
 }
 

@@ -505,16 +505,26 @@ impl GameCore {
 
     // ---- local player prediction ----------------------------------------
 
+    /// Seat a player — **in space, in a full suit** (T22.09B, review of
+    /// T22.09A F11). The server issues the suit at join and respawn
+    /// (`World::issue_suit`); without it here a sandbox player in space started
+    /// flat and irradiated while a real one starts sealed, so the sandbox showed
+    /// the radiation feedback a real player never sees at spawn. Keyed off this
+    /// core's mode at the moment of joining, as the server's is — set it first
+    /// (`generate_for_gravity` does); `set_gravity` later does not re-issue one,
+    /// exactly as changing the lobby setting does not refill a seated player.
     pub fn add_player(&mut self, id: u8, x: f32, y: f32) {
         if self.players.iter().any(|p| p.id == id) {
             return;
         }
+        let mut stats = PlayerState::new(id, Vec2::new(x, y), 0);
+        game_core::world::World::issue_suit(self.gravity, &mut stats);
         self.players.push(LocalPlayer {
             id,
             body: Body::new(Vec2::new(x, y)),
             jump: JumpState::default(),
             jet: JetpackState::default(),
-            stats: PlayerState::new(id, Vec2::new(x, y), 0),
+            stats,
             prev_input: Input::default(),
         });
     }
@@ -745,15 +755,14 @@ impl GameCore {
     /// R26): this draws the generator's bubble, and the suit does not wear one.
     /// The suit's seal is [`GameCore::irradiated`].
     ///
-    /// **Still no clock** (R26's "fix the lie"): the predicate ignores `now`,
-    /// and giving this a `now` changes `Core.shieldActive`'s call in
-    /// `client/src/core/index.ts`, which is `T22.09B`'s Touch only, not this
-    /// task's. Filed there.
-    pub fn shield_active(&self, id: u8) -> bool {
+    /// **`now` is the caller's sim clock** (R26's "fix the lie", T22.09B).
+    /// This passed a literal `0.0`: inert while the predicate ignores its clock,
+    /// and wrong the first day it does not. The sandbox passes its `simTime`.
+    pub fn shield_active(&self, id: u8, now: f32) -> bool {
         self.players
             .iter()
             .find(|p| p.id == id)
-            .is_some_and(|p| p.stats.shield_active(0.0, false))
+            .is_some_and(|p| p.stats.shield_active(now, false))
     }
 
     /// Is space's radiation getting through to this player? (T22.09A, R6.)
@@ -762,12 +771,12 @@ impl GameCore {
     /// encoded from**, with this core's mode for the suit — so the sandbox and a
     /// networked client cannot disagree about when to show it. The sandbox has
     /// no `World::step`, so radiation never *damages* here; this is the
-    /// feedback's input only (T22.09B).
-    pub fn irradiated(&self, id: u8) -> bool {
+    /// feedback's input only (T22.09B). `now` for `shield_active`'s reason.
+    pub fn irradiated(&self, id: u8, now: f32) -> bool {
         self.players
             .iter()
             .find(|p| p.id == id)
-            .is_some_and(|p| p.stats.irradiated(0.0, self.gravity.wears_suit()))
+            .is_some_and(|p| p.stats.irradiated(now, self.gravity.wears_suit()))
     }
 
     // ---- metadata --------------------------------------------------------
@@ -1776,6 +1785,8 @@ pub fn constants_json() -> String {
         THRUSTER_PLUME_LENGTH => c::THRUSTER_PLUME_LENGTH,
         THRUSTER_PLUME_WIDTH => c::THRUSTER_PLUME_WIDTH,
         THRUSTER_PLUME_MIN_SPEED => c::THRUSTER_PLUME_MIN_SPEED,
+        // T22.09B: the radiation glow pulses once per damage entry.
+        RADIATION_LOG_INTERVAL => c::RADIATION_LOG_INTERVAL,
         SMOKE_SHADER_POOL => c::SMOKE_SHADER_POOL,
         BULLET_LENGTH => c::BULLET_LENGTH,
         BULLET_WIDTH => c::BULLET_WIDTH,
@@ -2210,21 +2221,51 @@ mod tests {
         assert!(!core.load_mask(100, 100, &[0]));
     }
 
-    /// T22.09A: `irradiated` is the sandbox's bit 7 — a flat suit in space,
+    /// T22.09A/B: `irradiated` is the sandbox's bit 7 — a flat suit in space,
     /// with the charged suit and the standard mode as its absences' controls —
     /// and the suit never lights `shield_active`, the bubble's input (R26).
+    ///
+    /// **A player seated in space starts sealed, as on the server** (review
+    /// F11). This test used to seat the player first and switch to space
+    /// after, and assert "irradiated" — encoding a sandbox that disagreed with
+    /// production, where `issue_suit` fills the suit at join.
     #[test]
-    fn irradiated_is_a_flat_suit_in_space_and_the_suit_draws_no_bubble() {
+    fn a_space_seat_is_sealed_a_flat_suit_is_irradiated_and_no_bubble() {
+        use game_core::constants::BATTERY_MAX;
+        let now = 12.5;
+        let battery = |core: &GameCore| {
+            core.players
+                .iter()
+                .find(|p| p.id == 1)
+                .map(|p| p.stats.battery)
+        };
+        let mut flat = GameCore::new();
+        flat.generate(4242, 0, 0);
+        flat.add_player(1, 500.0, 40.0);
+        assert_eq!(battery(&flat), Some(0.0), "a suit was issued outside space");
+        assert!(!flat.irradiated(1, now), "irradiated outside space");
+
         let mut core = GameCore::new();
-        core.generate(4242, 0, 0);
+        assert!(core.generate_for_gravity(4242, 0, 0, 2, "space"));
         core.add_player(1, 500.0, 40.0);
-        assert!(!core.irradiated(1), "irradiated outside space");
-        assert!(core.set_gravity("space"));
-        assert!(core.irradiated(1), "a flat suit in space is not irradiated");
-        core.add_battery(1, game_core::constants::BATTERY_MAX);
-        assert!(!core.irradiated(1), "a charged suit let radiation in");
+        assert_eq!(
+            battery(&core),
+            Some(BATTERY_MAX),
+            "seated in space unsuited"
+        );
+        assert!(!core.irradiated(1, now), "a fresh suit let radiation in");
+        core.add_battery(1, -BATTERY_MAX);
         assert!(
-            !core.shield_active(1),
+            core.irradiated(1, now),
+            "a flat suit in space is not irradiated"
+        );
+        core.add_battery(1, BATTERY_MAX);
+        assert!(
+            !core.irradiated(1, now),
+            "a recharged suit let radiation in"
+        );
+        assert!(
+            !core.shield_active(1, now),
             "the suit drew the generator's bubble"
         );
     }
