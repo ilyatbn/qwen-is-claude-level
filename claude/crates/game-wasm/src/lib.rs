@@ -1348,6 +1348,10 @@ impl GameCore {
         let lava_on = sched.is_active(EffectKind::LavaBurst);
         let fog_on = sched.is_active(EffectKind::HeavyFog);
         let flare_on = sched.is_active(EffectKind::SolarFlare);
+        let flare_listed = sched
+            .active()
+            .iter()
+            .any(|e| e.kind == EffectKind::SolarFlare);
 
         let active: Vec<serde_json::Value> = sched
             .active()
@@ -1469,12 +1473,44 @@ impl GameCore {
             _ => 0.0,
         };
 
+        // T22.08B: the sandbox's flare as a **query**, the shape a match's
+        // `effect_start` gives — seed halves and the effect's own clock — so the
+        // sandbox draws through `flare_points`/`flare_touches` exactly as
+        // `GameScene` does, and a check here exercises the match's drawing path.
+        // Present while the scheduler still lists a flare, telegraph included.
+        let flare = match self.weather.flare.as_ref() {
+            Some((start, _)) if flare_listed => serde_json::json!({
+                "lo": (self.map.meta.seed & 0xffff_ffff) as u32,
+                "hi": (self.map.meta.seed >> 32) as u32,
+                "elapsed": now - start,
+            }),
+            _ => serde_json::Value::Null,
+        };
+
         serde_json::json!({
             "active": active,
             "vents": vents,
             "fog": fog,
+            "flare": flare,
         })
         .to_string()
+    }
+}
+
+impl GameCore {
+    /// The server-announced flare for this seed, built once and cached — the one
+    /// flare `flare_points` draws and `flare_touches` tests, so the two cannot be
+    /// two different ribbons.
+    fn flare_for(&mut self, seed_lo: u32, seed_hi: u32) -> &SolarFlare {
+        let seed = ((seed_hi as u64) << 32) | seed_lo as u64;
+        let (w, h) = (self.map.mask.w as f32, self.map.mask.h as f32);
+        let cache = &mut self.weather.flare_cache;
+        if cache.as_ref().map(|(s, _)| *s) != Some(seed) {
+            *cache = Some((seed, SolarFlare::new(seed, w, h)));
+        }
+        &cache
+            .get_or_insert_with(|| (seed, SolarFlare::new(seed, w, h)))
+            .1
     }
 }
 
@@ -1506,15 +1542,8 @@ impl GameCore {
     /// Cached on the seed: called every frame, and the seed alone decides the
     /// shape. Empty before a map is loaded is not a case: the core always has one.
     pub fn flare_points(&mut self, seed_lo: u32, seed_hi: u32, elapsed: f32) -> Vec<f32> {
-        let seed = ((seed_hi as u64) << 32) | seed_lo as u64;
-        if self.weather.flare_cache.as_ref().map(|(s, _)| *s) != Some(seed) {
-            let (w, h) = (self.map.mask.w as f32, self.map.mask.h as f32);
-            self.weather.flare_cache = Some((seed, SolarFlare::new(seed, w, h)));
-        }
-        let Some((_, f)) = self.weather.flare_cache.as_ref() else {
-            return Vec::new();
-        };
-        f.points_at(elapsed)
+        self.flare_for(seed_lo, seed_hi)
+            .points_at(elapsed)
             .iter()
             .flat_map(|p| [p.x, p.y])
             .collect()
@@ -1527,6 +1556,27 @@ impl GameCore {
     /// stopped burning anyone.
     pub fn flare_lit(elapsed: f32) -> bool {
         SolarFlare::lit(elapsed)
+    }
+
+    /// Does a server-announced flare touch a `w × h` box centred on `(x, y)`,
+    /// `elapsed` seconds after its `effect_start`? **The server's contact test**,
+    /// `SolarFlare::touches` — `lit` included — on the same cached flare
+    /// `flare_points` draws. The client uses it to show who is burning (T22.08B):
+    /// burning is not on the wire (`R80`, the flags byte is full), and this is the
+    /// rule that writes it on the server, not a second one in TypeScript.
+    #[allow(clippy::too_many_arguments)]
+    pub fn flare_touches(
+        &mut self,
+        seed_lo: u32,
+        seed_hi: u32,
+        elapsed: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    ) -> bool {
+        self.flare_for(seed_lo, seed_hi)
+            .touches(elapsed, Vec2::new(x, y), w, h)
     }
 
     pub fn lava_vents(&mut self, seed_lo: u32, seed_hi: u32, elapsed: f32) -> String {
@@ -1876,6 +1926,15 @@ pub fn constants_json() -> String {
         THRUSTER_PLUME_MIN_SPEED => c::THRUSTER_PLUME_MIN_SPEED,
         // T22.09B: the radiation glow pulses once per damage entry.
         RADIATION_LOG_INTERVAL => c::RADIATION_LOG_INTERVAL,
+        // T22.08B: the flare's painted size and its burn, drawing only — the ribbon's
+        // position is `flare_points`, never re-derived from these.
+        SOLAR_FLARE_RIBBON_R => c::SOLAR_FLARE_RIBBON_R,
+        SOLAR_FLARE_GLOW => c::SOLAR_FLARE_GLOW,
+        SOLAR_FLARE_SPAN => c::SOLAR_FLARE_SPAN,
+        SOLAR_FLARE_HEIGHT => c::SOLAR_FLARE_HEIGHT,
+        SOLAR_FLARE_SAMPLES => c::SOLAR_FLARE_SAMPLES as f32,
+        SOLAR_FLARE_BURN_SECONDS => c::SOLAR_FLARE_BURN_SECONDS,
+        EFFECT_TELEGRAPH => c::EFFECT_TELEGRAPH,
         SMOKE_SHADER_POOL => c::SMOKE_SHADER_POOL,
         BULLET_LENGTH => c::BULLET_LENGTH,
         BULLET_WIDTH => c::BULLET_WIDTH,
@@ -2178,6 +2237,54 @@ mod tests {
             space.flare_points(seed as u32 ^ 1, (seed >> 32) as u32, 5.25),
             want,
             "control: another seed drew the same ribbon"
+        );
+    }
+
+    /// T22.08B: **the sandbox's weather hands out the query a match would**, and
+    /// the ribbon that query draws is the one the sandbox touches with —
+    /// `flare_points` equals its own flare's points and `flare_touches` its own
+    /// flare's `touches`, on the ribbon (true while lit) and in the tail (false).
+    /// The control: no flare, no query.
+    #[test]
+    fn the_sandbox_flare_query_draws_and_touches_its_own_flare() {
+        use game_core::constants::{EFFECT_TELEGRAPH, PLAYER_H, PLAYER_W};
+        let mut core = GameCore::new();
+        assert!(core.generate_for_gravity(4242, 0, 0, 0, GravityMode::Space.as_str()));
+        let quiet: serde_json::Value =
+            serde_json::from_str(&core.weather_step(0.0, SIM_DT)).expect("json");
+        assert!(
+            quiet["flare"].is_null(),
+            "a flare query with no flare: {quiet}"
+        );
+        core.force_effect(4, 0.0);
+        let t = EFFECT_TELEGRAPH + 2.0;
+        let w: serde_json::Value =
+            serde_json::from_str(&core.weather_step(t, SIM_DT)).expect("json");
+        let q = &w["flare"];
+        let (lo, hi) = (
+            q["lo"].as_u64().expect("lo") as u32,
+            q["hi"].as_u64().expect("hi") as u32,
+        );
+        let elapsed = q["elapsed"].as_f64().expect("elapsed") as f32;
+        let (start, own) = core.weather.flare.clone().expect("forced");
+        assert!((elapsed - (t - start)).abs() < 1e-6, "elapsed {elapsed}");
+        let want: Vec<f32> = own
+            .points_at(elapsed)
+            .iter()
+            .flat_map(|p| [p.x, p.y])
+            .collect();
+        assert_eq!(
+            core.flare_points(lo, hi, elapsed),
+            want,
+            "the query draws another ribbon"
+        );
+        let on = own.points_at(elapsed)[10];
+        assert!(core.flare_touches(lo, hi, elapsed, on.x, on.y, PLAYER_W, PLAYER_H));
+        let tail = EFFECT_TELEGRAPH + game_core::constants::SOLAR_FLARE_DURATION + 1.0;
+        let later = own.points_at(tail)[10];
+        assert!(
+            !core.flare_touches(lo, hi, tail, later.x, later.y, PLAYER_W, PLAYER_H),
+            "the ribbon touched in the burn's tail"
         );
     }
 

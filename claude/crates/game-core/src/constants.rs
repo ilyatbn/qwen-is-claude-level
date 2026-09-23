@@ -1266,6 +1266,11 @@ pub const SOLAR_FLARE_ORBIT: f32 = 360.0;
 /// How fast the loop's axis turns, radians/s: a slow roll, so the arch sweeps the
 /// space around it rather than sliding past like a bar.
 pub const SOLAR_FLARE_TURN: f32 = 0.35;
+/// **Drawing only** (T22.08B): how far past the ribbon's contact radius the painted
+/// glow reaches, world px. The body inside `SOLAR_FLARE_RIBBON_R` is painted solid in
+/// both render paths — a player must not be burned by fire they cannot see — and
+/// this is the soft halo outside it, which burns nobody.
+pub const SOLAR_FLARE_GLOW: f32 = 34.0;
 
 // ---------------------------------------------------------------------------
 // Networking

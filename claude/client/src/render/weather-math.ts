@@ -447,3 +447,66 @@ const JET_LIGHT_R = 150
 const JET_LIGHT_A = 0.9
 const BURN_LIGHT_R = 90
 const BURN_LIGHT_A = 0.6
+
+/**
+ * Which solar flare is running, from when, and with what seed — the networked
+ * client's half of T22.08 (`R80`: no wire bit, the ribbon is derived).
+ *
+ * `LavaClock`'s shape and its reasons — overlapping effects, so only this flare's
+ * own `effect_end` clears it, and that branch is testable here and not in a scene —
+ * with one difference that is the point of the class: **the clock starts at
+ * `effect_start`, not at `active`.** `World::install_effect` builds the flare on the
+ * tick it announces it and `SolarFlare::points_at` is measured from there, telegraph
+ * included; `lava.rs` re-bases at activation, the flare does not. A flare clock
+ * started at `active` would draw the ribbon `EFFECT_TELEGRAPH` seconds behind the
+ * one that burns.
+ *
+ * `at` is the server's round time **on the event's own tick** — the caller corrects
+ * the last snapshot's round time by the tick difference — so the drawn ribbon and the
+ * damaging one share an origin to the tick, not to a snapshot interval.
+ *
+ * The sandbox does not use this: its `weatherStep` hands out the same query.
+ */
+export class FlareClock {
+  private id = -1
+  private startedAt: number | null = null
+  private lo = 0
+  private hi = 0
+
+  /** An `effect_start` arrived. Anything that is not a solar flare is ignored. */
+  start(id: number, kind: string, seed: string, at: number): void {
+    if (kind !== 'SolarFlare') return
+    let s: bigint
+    try {
+      s = BigInt(seed)
+    } catch {
+      // `LavaClock.start`'s reason: a malformed seed is a changed wire format, not
+      // a reason to throw inside an event handler.
+      return
+    }
+    this.id = id
+    this.startedAt = at
+    this.lo = Number(s & 0xffffffffn)
+    this.hi = Number((s >> 32n) & 0xffffffffn)
+  }
+
+  /** An `effect_end` arrived. Only this flare's own end clears it. */
+  end(id: number): void {
+    if (id !== this.id) return
+    this.clear()
+  }
+
+  /** Discard the round, whatever is running — `FogClock.clear`'s reason. */
+  clear(): void {
+    this.id = -1
+    this.startedAt = null
+    this.lo = 0
+    this.hi = 0
+  }
+
+  /** What to ask the core for, or `null` when no flare is running. */
+  query(roundTime: number): { lo: number; hi: number; elapsed: number } | null {
+    if (this.startedAt === null) return null
+    return { lo: this.lo, hi: this.hi, elapsed: roundTime - this.startedAt }
+  }
+}

@@ -9,7 +9,7 @@
  */
 
 import Phaser from 'phaser'
-import { C, Core, MapScale, ambientRain, strictConstants, type WeatherState } from '../core'
+import { C, Core, MapScale, ambientRain, strictConstants, type EffectForce, type WeatherState } from '../core'
 import { DEFAULT_GRAVITY, SPACE_GRAVITY, generateForScene, gravityFromUrl } from './sceneParams'
 import { DEPTH } from '../render/backdrop'
 import { occupiedPlatforms } from '../render/platforms'
@@ -22,6 +22,8 @@ import { loadAssetManifest, runLoader } from '../render/assets'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { RadiationFx } from '../render/radiationFx'
+import { FlareFx } from '../render/flareFx'
+import { hasWebGL } from '../render/shaders'
 import { Minimap } from '../ui/minimap'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
@@ -97,6 +99,8 @@ export class SandboxScene extends Phaser.Scene {
   private feel!: FeelLayer
   /** T22.09B: the suit's feedback, off `Core.irradiated` (the sandbox's bit 7). */
   private radiation!: RadiationFx
+  /** T22.08B: the solar flare and who it has set alight. */
+  private flare!: FlareFx
   private feelEnabled = true
   private minimap: Minimap | null = null
   /** Silent until audio.json loads; `docs/50` §8 — no assets is supported. */
@@ -220,6 +224,7 @@ export class SandboxScene extends Phaser.Scene {
       this.hud?.remove()
       this.feel?.destroy()
       this.radiation?.destroy()
+      this.flare?.destroy()
       this.minimap?.destroy()
       this.world.destroy()
       this.lightmap.destroy()
@@ -230,6 +235,7 @@ export class SandboxScene extends Phaser.Scene {
     this.buildHud()
     this.feel = new FeelLayer()
     this.radiation = new RadiationFx()
+    this.flare = new FlareFx(this, hasWebGL(this))
     this.input.keyboard?.on('keydown-M', () => this.minimap?.toggle())
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
@@ -539,6 +545,7 @@ export class SandboxScene extends Phaser.Scene {
       ['Meteors', 1],
       ['Lava', 2],
       ['Fog FX', 3],
+      ['Flare', 4],
     ] as const) {
       // No button for a kind that is switched off — T21.39 for toxic rain,
       // the owner's 2026-09-16 call for lava. A button that silently does
@@ -546,6 +553,9 @@ export class SandboxScene extends Phaser.Scene {
       // both, so the click would look like a broken sandbox.
       if (kind === 0 && !C().TOXIC_RAIN_ENABLED) continue
       if (kind === 2 && !C().LAVA_ENABLED) continue
+      // T22.08B, R83: a flare is a space map's weather, and `force_effect`
+      // refuses it anywhere else — the same no-dead-button rule as above.
+      if (kind === 4 && this.gravity !== SPACE_GRAVITY) continue
       r4.append(button(name, () => this.core.forceEffect(kind, this.weatherTime)))
     }
     r4.prepend(label('weather'))
@@ -745,6 +755,9 @@ export class SandboxScene extends Phaser.Scene {
           // T22.09B, both ends (§A39): the Rust answer beside what was mounted.
           irradiated: self.core.irradiated(0, self.simTime),
           radiation: self.radiation?.stats() ?? null,
+          // T22.08B, both ends (§A39): what the flare layer drew, beside the
+          // weather the core says is running (`weatherProbe().active`).
+          flare: self.flare?.state ?? null,
           // The sandbox's sim clock, for a check that calls a `now`-taking `Core`
           // predicate itself (R26: never a literal).
           simTime: self.simTime,
@@ -959,13 +972,13 @@ export class SandboxScene extends Phaser.Scene {
         self.cueLog = []
       },
       /**
-       * Force a weather effect: 0 toxic, 1 meteor, 2 lava, 3 fog.
+       * Force a weather effect: 0 toxic, 1 meteor, 2 lava, 3 fog, 4 solar flare.
        *
        * Takes the scene's own weather clock rather than making the caller guess
        * it — a check that passes the wrong `now` schedules an effect into the
        * past and then reports the renderer as broken.
        */
-      forceWeather(kind: 0 | 1 | 2 | 3) {
+      forceWeather(kind: EffectForce) {
         self.core.forceEffect(kind, self.weatherTime)
       },
       setMasterVolume(v: number) {
@@ -1012,8 +1025,16 @@ export class SandboxScene extends Phaser.Scene {
         self.cameras.main.setZoom(z)
       },
       /** Force a weather effect at the current round time. */
-      forceEffect(kind: 0 | 1 | 2 | 3) {
+      forceEffect(kind: EffectForce) {
         self.core.forceEffect(kind, self.weatherTime)
+      },
+      /**
+       * e2e only (§C2, T22.08B): hide the flare — ribbon and flames — for a
+       * same-instant control frame. Freeze first; returns what the layer reports.
+       */
+      showFlare(on: boolean) {
+        self.flare.setHidden(!on)
+        return self.flare.state
       },
       /** Raw tracer segments, for diagnosing why one is not on screen. */
       ordnanceState() {
@@ -1037,6 +1058,9 @@ export class SandboxScene extends Phaser.Scene {
         const w = self.lastWeather
         return {
           active: w?.active ?? [],
+          // T22.08B: the flare's query, so a check can ask the core for the points
+          // the sandbox's flare touches with — independently of what was drawn.
+          flare: w?.flare ?? null,
           vents: w?.vents.length ?? 0,
           fog: w?.fog ?? 0,
           solid: self.core.countSolid(),
@@ -1495,6 +1519,23 @@ export class SandboxScene extends Phaser.Scene {
     const weather = this.core.weatherStep(this.weatherTime, dt)
     this.lastWeather = weather
     this.drawHazards(weather)
+    // T22.08B: the flare through the query a match would build — `flare_points`
+    // and `flare_touches`, the server's samples and contact test. The body's drawn
+    // centre is half a body up in this scene (`setState` above), the physics
+    // centre is the core's.
+    {
+      const me = this.core.playerState(0)
+      const k = C()
+      this.flare.update(
+        weather.flare,
+        this.core,
+        me
+          ? [{ id: 0, alive: me.alive, x: me.x, y: me.y, w: k.PLAYER_W, h: k.PLAYER_H, drawX: me.x, drawY: me.y - k.PLAYER_H / 2 }]
+          : [],
+        this.weatherTime,
+        this.weatherTime,
+      )
+    }
     // The rain, the spew and the green cast. The discs above say *where* the
     // hazards are; this is what makes an 8-second downpour look like one.
     // **The real drops, not the effect's phase** (T20.05). This scene pokes the

@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core, fogStrength } from '../core'
-import { CloudRain, EmberField, FogClock, LavaClock, fogVeilAlpha, type RainCloud } from './weather-math'
+import { CloudRain, EmberField, FlareClock, FogClock, LavaClock, fogVeilAlpha, type RainCloud } from './weather-math'
 
 beforeAll(async () => {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
@@ -252,6 +252,46 @@ describe("LavaClock — the networked client's half of §A3's ground fire (T19.2
     l.clear()
     expect(l.running).toBe(false)
     expect(l.query(1)).toBeNull()
+  })
+})
+
+describe("FlareClock — the networked client's half of a solar flare (T22.08B)", () => {
+  // Past 32 bits for `LavaClock`'s reason: a high half wired to zero must fail.
+  const SEED = '4294967299'
+
+  it('starts its clock at effect_start — the telegraph — with the seed split', () => {
+    const f = new FlareClock()
+    // The control: idle before anything starts.
+    expect(f.query(0)).toBeNull()
+    f.start(4, 'SolarFlare', SEED, 100)
+    // **Running at once**, unlike lava: the server's ribbon is measured from the
+    // install tick, which is the `effect_start` tick.
+    expect(f.query(100)).toEqual({ lo: 3, hi: 1, elapsed: 0 })
+    expect(f.query(103.25)?.elapsed).toBeCloseTo(3.25, 6)
+  })
+
+  it('ignores every effect that is not a solar flare', () => {
+    const f = new FlareClock()
+    for (const kind of ['ToxicRain', 'MeteorShower', 'LavaBurst', 'HeavyFog']) f.start(1, kind, SEED, 0)
+    expect(f.query(5)).toBeNull()
+  })
+
+  it('is not switched off by another effect ending inside it, and is by its own', () => {
+    const f = new FlareClock()
+    f.start(4, 'SolarFlare', SEED, 0)
+    f.end(5)
+    expect(f.query(2)).toEqual({ lo: 3, hi: 1, elapsed: 2 })
+    f.end(4)
+    expect(f.query(2)).toBeNull()
+  })
+
+  it('survives a malformed seed, and clear() discards the round', () => {
+    const f = new FlareClock()
+    expect(() => f.start(4, 'SolarFlare', 'not-a-number', 0)).not.toThrow()
+    expect(f.query(1)).toBeNull()
+    f.start(4, 'SolarFlare', SEED, 0)
+    f.clear()
+    expect(f.query(1)).toBeNull()
   })
 })
 

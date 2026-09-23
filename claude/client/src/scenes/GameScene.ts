@@ -104,7 +104,8 @@ import { artFor } from '../render/itemSprites-math'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
-import { FogClock, LavaClock, ventLights } from '../render/weather-math'
+import { FlareClock, FogClock, LavaClock, ventLights } from '../render/weather-math'
+import { FlareFx, type FlareBody } from '../render/flareFx'
 import { loadIdentity, readId, sameAppearance, type Appearance } from '../ui/skins'
 import { DEFAULT_GRAVITY, SPACE_GRAVITY } from './sceneParams'
 
@@ -407,6 +408,11 @@ export class GameScene extends Phaser.Scene {
   private readonly fog = new FogClock()
   /** T19.24: which server-announced lava burst is running, and its seed. */
   private readonly lava = new LavaClock()
+  /** T22.08B: the running solar flare's seed and origin (`R80`: derived, not sent). */
+  private readonly flareClock = new FlareClock()
+  private flareFx!: FlareFx
+  /** Bodies drawn this frame, for the flare's contact test — filled by `renderRemotes`. */
+  private readonly flareBodies: FlareBody[] = []
   /** This frame's vents, derived once and read by both the layer and the lights. */
   private vents: VentSpec[] = []
   private seq = 0
@@ -658,6 +664,9 @@ export class GameScene extends Phaser.Scene {
     // failure T19.24's determinism cross-check exists to prevent.
     this.fog.clear()
     this.lava.clear()
+    this.flareClock.clear()
+    this.flareFx?.clear()
+    this.flareBodies.length = 0
     this.vents = []
     this.death.cleared()
   }
@@ -720,6 +729,7 @@ export class GameScene extends Phaser.Scene {
     this.buildHud()
     this.feel = new FeelLayer()
     this.radiation = new RadiationFx()
+    this.flareFx = new FlareFx(this, hasWebGL(this))
     this.debugHud = new DebugHud(this, C().PLAYER_W, C().PLAYER_H)
     this.input.keyboard?.on('keydown-F3', () => this.debugHud.toggle())
     this.input.keyboard?.on('keydown-M', () => this.minimap?.toggle())
@@ -1008,6 +1018,17 @@ export class GameScene extends Phaser.Scene {
           // needing the *seed* as well as the clock — its presentation is a set
           // of places, and the server derived them from this number.
           this.lava.start(id, rec.kind, String(p['seed'] ?? '0'))
+          // T22.08B: the flare's ribbon is measured from the tick it was
+          // installed on, which is this event's tick. The last snapshot's round
+          // time corrected by the tick difference is the server's round time on
+          // that tick — an origin exact to the tick, not to a snapshot interval.
+          const evTick = Number(p['tick'] ?? this.lastServerTick)
+          this.flareClock.start(
+            id,
+            rec.kind,
+            String(p['seed'] ?? '0'),
+            this.serverRoundTime + (evTick - this.lastServerTick) * C().SIM_DT,
+          )
         } else if (ev === 'effect_phase') {
           this.topHud?.setEffectPhase(id, String(p['phase'] ?? 'active') as EffectPhase)
           // T19.24: the vents open here, not at `effect_start`. `lava.rs`
@@ -1019,6 +1040,7 @@ export class GameScene extends Phaser.Scene {
           // Only *this* fog's end clears it — `FogClock` owns that rule.
           this.fog.end(id)
           this.lava.end(id)
+          this.flareClock.end(id)
         }
       })
     }
@@ -1249,6 +1271,7 @@ export class GameScene extends Phaser.Scene {
       this.hideJoinCodeBanner()
       this.feel?.destroy()
       this.radiation?.destroy()
+      this.flareFx?.destroy()
       this.minimap?.destroy()
       this.debugHud?.destroy()
       this.world?.destroy()
@@ -2027,6 +2050,17 @@ export class GameScene extends Phaser.Scene {
       this.phase === 'playing',
       C().RADIATION_LOG_INTERVAL,
     )
+    // T22.08B: the flare, and who it has set alight — the local body at its
+    // rendered position, every drawn remote beside it (`renderRemotes`).
+    {
+      const k = C()
+      const me = this.predictor?.renderPos
+      if (me) {
+        this.flareBodies.push({ id: this.me, alive: this.meAlive, x: me.x, y: me.y, w: k.PLAYER_W, h: k.PLAYER_H, drawX: me.x, drawY: me.y })
+      }
+      this.flareFx.update(this.flareClock.query(this.roundTime), this.core, this.flareBodies, this.roundTime, this.roundTime)
+      this.flareBodies.length = 0
+    }
     // §C3. Phase-driven, not clock-driven: the server owns which phase the round
     // is in, and a client deciding locally would take the controls away a beat
     // early from a player who could still act.
@@ -2219,6 +2253,7 @@ export class GameScene extends Phaser.Scene {
    * transmitted positions is both cheaper and more accurate (`docs/42` §4).
    */
   private renderRemotes(now: number): void {
+    this.flareBodies.length = 0
     const sampled = this.interp.sample(now)
     const localPos = this.predictor?.renderPos ?? { x: 0, y: 0 }
     const darkness = sceneDarkness(this.gravity === SPACE_GRAVITY, this.serverDarkness, this.roundTime, C().NIGHT_DARKNESS)
@@ -2260,6 +2295,17 @@ export class GameScene extends Phaser.Scene {
       const visible = darkness <= 0.01 || d <= fov
       r.view.container.setVisible(visible && flag(p.flags, FLAG.alive))
       if (!visible) continue
+      const k = C()
+      this.flareBodies.push({
+        id,
+        alive: flag(p.flags, FLAG.alive),
+        x: p.x,
+        y: p.y,
+        w: k.PLAYER_W,
+        h: k.PLAYER_H,
+        drawX: p.x,
+        drawY: p.y,
+      })
       r.view.setState(p.x, p.y, p.vx, p.vy, p.aim, {
         alive: flag(p.flags, FLAG.alive),
         grounded: flag(p.flags, FLAG.grounded),
@@ -2808,6 +2854,11 @@ export class GameScene extends Phaser.Scene {
         self.fx?.setVisible(on)
         return { visible: self.fx?.visible ?? false }
       },
+      /** e2e only (§C2, T22.08B): hide the flare — ribbon and flames — for a same-instant control frame. */
+      showFlare(on: boolean) {
+        self.flareFx.setHidden(!on)
+        return self.flareFx.state
+      },
       /** e2e only (T21.18): keep ended hazards on screen, so a cloud can be photographed steadily. */
       holdHazards(on: boolean) {
         self.fx?.holdHazards(on)
@@ -3355,6 +3406,11 @@ export class GameScene extends Phaser.Scene {
             shown: (self.topHud?.banner.style.display ?? 'none') !== 'none',
             effects: self.topHud?.effects() ?? [],
           },
+          // T22.08B: what the flare layer drew, and who it shows burning — and the
+          // clock's query, so a check can ask the core for the damage points itself
+          // rather than read back what was drawn.
+          flare: self.flareFx?.state ?? null,
+          flareQuery: self.flareClock.query(self.roundTime),
           darkness: self.serverDarkness,
           // T22.06: what was drawn and lit with, and the sky that drew it. The byte
           // above can be 0 while the frame is dark — that `||` is why both exist.

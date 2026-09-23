@@ -109,6 +109,18 @@ export const CHECKS = [
     url: '?sandbox=1&seed=4242&gravity=space&renderer=canvas',
     serial: true,
   },
+  // T22.08B: the solar flare — every damage sample point under painted flare in both
+  // render paths against a hidden-flare frame and a clear control point, a ghost in the
+  // telegraph, a wander counted in drawn frames (R69), and a burning player on fire clear
+  // of the ribbon. `-standard` is the absence: refused, undrawn, no button.
+  { name: 'solar-flare', file: 'scripts/checks/solar-flare.mjs', url: '?sandbox=1&seed=4242&gravity=space' },
+  {
+    name: 'solar-flare-canvas',
+    file: 'scripts/checks/solar-flare.mjs',
+    url: '?sandbox=1&seed=4242&gravity=space&renderer=canvas',
+    serial: true,
+  },
+  { name: 'solar-flare-standard', file: 'scripts/checks/solar-flare.mjs', url: '?sandbox=1&seed=4242&gravity=standard' },
   // T21.34: the unicorn wings on the body, same control-frame shape as boots.
   // Possible only since wings hover — under T21.03 the body flew off mid-check.
   // Not parked: a new check that starts on the flaky list gates nothing.
@@ -337,6 +349,10 @@ export const CHECKS = [
   // ground's night on the wire *and* on the frame, the ridge and clouds off, the bodies
   // moving on the round's clock; a standard stack at the same clock is the control.
   { name: 'space-sky-match', file: 'scripts/checks/space-sky-match.mjs', standalone: true },
+  // T22.08B: GameScene's flare, which no sandbox run reaches — `effect_start` into
+  // `FlareClock`, the ribbon derived through `flare_points` and painted over every damage
+  // point in view, against a hidden-flare frame. Standalone: a WEATHER=flare space server.
+  { name: 'solar-flare-match', file: 'scripts/checks/solar-flare-match.mjs', standalone: true },
   // T20.10: ground animals, counted at both ends and then photographed.
   // Standalone: it needs a real round on a fixed seed with no bots, because a
   // bot's stray rocket killing one changes the counts it compares.

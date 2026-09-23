@@ -562,3 +562,140 @@ void main() {
   gl_FragColor = vec4(col * a, a);
 }
 `
+
+/**
+ * T22.08B — a solar flare: a magnetic prominence loop, a fiery ribbon of plasma
+ * arched between two footpoints, threaded with twisting strands.
+ *
+ * **The ribbon is the damage area.** A body burns when its box comes within
+ * `ribbon` (`SOLAR_FLARE_RIBBON_R`) of the sampled centre line, so the body here is
+ * painted near-opaque out to `ribbon` from the line **whatever the turbulence
+ * does** — the noise may only rag the edge outward, FLAME_FRAGMENT's rule. The
+ * halo past it (`glow`, `SOLAR_FLARE_GLOW`) burns nobody.
+ *
+ * The line comes in as `pts`: the very points the server damages with
+ * (`GameCore::flare_points`), relative to the quad's top-left in world px, y down.
+ * The quad is the points' bounding box padded by `ribbon + glow`, so its size
+ * changes every frame; `resolution` follows it (Phaser sets it from the object's
+ * size at each render). `fragCoord` is y-up, hence the flip.
+ *
+ * A function of the sample count rather than a constant: GLSL ES 1.0 wants the
+ * array length as a literal, and it must be `SOLAR_FLARE_SAMPLES`, which lives in
+ * `constants.rs` and reaches the client only after the wasm has loaded.
+ *
+ * `strength` is `flareStrength` — a faint ghost during the telegraph, 1 while lit.
+ */
+export function flareFragment(samples: number): string {
+  const n = Math.max(2, Math.round(samples))
+  return /* glsl */ `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+
+uniform vec2 resolution;
+// Seconds - Phaser's own uniform, set at every render.
+uniform float time;
+uniform vec2 pts[${n}];
+// SOLAR_FLARE_RIBBON_R and SOLAR_FLARE_GLOW, world px.
+uniform float ribbon;
+uniform float glow;
+// The centre line's length, world px, so the noise is measured in the world.
+uniform float len;
+// 0..1 - flareStrength.
+uniform float strength;
+// Per flare, so two flares do not writhe in step.
+uniform float seed;
+
+varying vec2 fragCoord;
+
+${FBM}
+
+// How fast plasma drains from the apex down both legs, ribbon radii per second.
+const float DRAIN = 2.4;
+// Twisting strands: turns along the loop, and how fast they roll.
+const float TWIST = 15.0;
+const float ROLL = 1.7;
+
+void main() {
+  vec2 p = vec2(fragCoord.x, resolution.y - fragCoord.y);
+
+  // Nearest point on the polyline: distance, how far along (0..1), which side.
+  float best = 1.0e12;
+  float along = 0.0;
+  float side = 0.0;
+  for (int i = 0; i < ${n - 1}; i++) {
+    vec2 a = pts[i];
+    vec2 ab = pts[i + 1] - a;
+    float l2 = max(dot(ab, ab), 1.0e-4);
+    float t = clamp(dot(p - a, ab) / l2, 0.0, 1.0);
+    vec2 d = p - (a + ab * t);
+    float dd = dot(d, d);
+    if (dd < best) {
+      best = dd;
+      along = (float(i) + t) / ${(n - 1).toFixed(1)};
+      side = ab.x * d.y - ab.y * d.x < 0.0 ? -1.0 : 1.0;
+    }
+  }
+  float d = sqrt(best);
+  if (d > ribbon + glow) {
+    gl_FragColor = vec4(0.0);
+    return;
+  }
+  // Across the ribbon in contact radii (signed), and along it in the same unit,
+  // measured from the apex so the plasma drains down both legs at once.
+  float s = side * d / ribbon;
+  float leg = abs(along - 0.5) * len / ribbon;
+
+  // Field-aligned streaks: noise stretched along the loop and squeezed across it,
+  // which is what makes plasma read as held by a magnetic field.
+  float streak = fbm5(vec2(leg * 0.22 - time * DRAIN * 0.22 + seed, s * 1.9 + seed * 0.7));
+  float boil = fbm3(vec2(leg * 0.6 + time * 0.9, s * 3.1 - time * 1.4 + seed));
+  // Wisps thrown off the loop: slower, larger, drifting outward.
+  float wisp = fbm3(vec2(leg * 0.12 - time * 0.35 + seed, abs(s) * 0.45 - time * 0.55));
+
+  // The body: solid to the contact radius, ragged only outside it (never inside).
+  float body = 1.0 - smoothstep(ribbon, ribbon * (1.15 + 0.7 * wisp), d);
+
+  // Magnetic strands: three threads twisting round the axis, pinned at the
+  // footpoints where the loop is rooted.
+  float pin = sin(3.14159265 * along);
+  float strands = 0.0;
+  for (int j = 0; j < 3; j++) {
+    float fj = float(j);
+    float off = 0.7 * pin * sin(along * TWIST + fj * 2.094 + time * (ROLL + 0.4 * fj) + seed);
+    float w = 0.09 + 0.06 * boil;
+    strands += exp(-pow((s - off) / w, 2.0));
+  }
+  strands = clamp(strands, 0.0, 1.0);
+
+  // Footpoints burn hottest: the loop is anchored there.
+  float foot = exp(-min(along, 1.0 - along) * len / ribbon * 0.35);
+  float core = exp(-s * s * 2.2);
+
+  // Temperature: 0 deep red at the rim, 1 yellow, past 1 white-hot.
+  float temp = 0.05 + 0.5 * core + 0.75 * (streak - 0.45) + 0.2 * boil + 0.35 * foot + 0.45 * strands * core;
+  vec3 deep = vec3(0.55, 0.05, 0.02);
+  vec3 orange = vec3(1.0, 0.36, 0.05);
+  vec3 yellow = vec3(1.0, 0.78, 0.28);
+  vec3 white = vec3(1.0, 0.97, 0.88);
+  vec3 bodyCol = mix(deep, orange, smoothstep(0.0, 0.45, temp));
+  bodyCol = mix(bodyCol, yellow, smoothstep(0.45, 0.85, temp));
+  bodyCol = mix(bodyCol, white, smoothstep(0.85, 1.25, temp));
+
+  // Opaque enough everywhere inside the contact radius to be seen against any sky.
+  float bodyA = body * (0.9 + 0.1 * boil);
+
+  // The corona: light, not paint - added over whatever is behind it, so the loop
+  // glows rather than smudging. Premultiplied output lets colour exceed alpha.
+  float k = max(d - ribbon * 0.6, 0.0) / glow;
+  float halo = exp(-k * k * 3.0) * (0.35 + 0.65 * wisp) * (1.0 - smoothstep(0.7, 1.0, k));
+  vec3 haloCol = mix(vec3(0.9, 0.18, 0.03), vec3(1.0, 0.55, 0.12), clamp(halo * 1.5, 0.0, 1.0));
+
+  vec3 col = bodyCol * bodyA + haloCol * halo * 0.85 * (1.0 - bodyA);
+  float a = bodyA + halo * 0.25 * (1.0 - bodyA);
+  gl_FragColor = vec4(col, a) * strength;
+}
+`
+}

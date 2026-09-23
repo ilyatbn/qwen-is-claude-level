@@ -446,6 +446,14 @@ export interface Constants {
   THRUSTER_PLUME_MIN_SPEED: number
   /** T22.09B — one radiation damage entry per this many seconds; the glow's pulse. */
   RADIATION_LOG_INTERVAL: number
+  /** T22.08B — the solar flare's painted size and burn; drawing only. */
+  SOLAR_FLARE_RIBBON_R: number
+  SOLAR_FLARE_GLOW: number
+  SOLAR_FLARE_SPAN: number
+  SOLAR_FLARE_HEIGHT: number
+  SOLAR_FLARE_SAMPLES: number
+  SOLAR_FLARE_BURN_SECONDS: number
+  EFFECT_TELEGRAPH: number
   SMOKE_SHADER_POOL: number
   BULLET_LENGTH: number
   BULLET_WIDTH: number
@@ -662,11 +670,27 @@ export interface VentSpec {
   burning: boolean
 }
 
+/**
+ * What to ask the core for to draw a solar flare (T22.08B): the effect's seed in
+ * halves and seconds since its `effect_start`. A match builds one from `FlareClock`;
+ * the sandbox's `weatherStep` hands one out, so both draw through the same calls.
+ */
+export interface FlareQuery {
+  lo: number
+  hi: number
+  elapsed: number
+}
+
+/** `forceEffect`'s kind numbers: 0 toxic, 1 meteor, 2 lava, 3 fog, 4 solar flare. */
+export type EffectForce = 0 | 1 | 2 | 3 | 4
+
 export interface WeatherState {
-  active: { id: number; kind: 'toxic' | 'meteor' | 'lava' | 'fog'; phase: string }[]
+  active: { id: number; kind: 'toxic' | 'meteor' | 'lava' | 'fog' | 'flare'; phase: string }[]
   vents: VentSpec[]
   /** 0..1 */
   fog: number
+  /** T22.08B: the sandbox's flare, telegraph included, or `null`. */
+  flare: FlareQuery | null
 }
 
 export class Core {
@@ -1091,9 +1115,30 @@ export class Core {
     return this.inner.count_solid()
   }
 
-  /** Force a weather effect: 0 toxic, 1 meteor, 2 lava, 3 fog. */
-  forceEffect(kind: 0 | 1 | 2 | 3, now: number): void {
+  /** Force a weather effect: 0 toxic, 1 meteor, 2 lava, 3 fog, 4 solar flare (space maps only). */
+  forceEffect(kind: EffectForce, now: number): void {
     this.inner.force_effect(kind, now)
+  }
+
+  /**
+   * T22.08B (`R80`): a flare's ribbon — **the points the server damages with**,
+   * `SolarFlare::points_at` — as `[x0, y0, x1, y1, …]` world px.
+   */
+  flarePoints(q: FlareQuery): Float32Array {
+    return this.inner.flare_points(q.lo, q.hi, q.elapsed)
+  }
+
+  /** Is the ribbon there and burning at `elapsed`? `SolarFlare::lit` (T22.08C F1). */
+  flareLit(elapsed: number): boolean {
+    return GameCore.flare_lit(elapsed)
+  }
+
+  /**
+   * Does the flare touch a `w × h` box centred on `(x, y)`? The server's contact
+   * test, so the client can show who is burning without a wire bit (`R80`).
+   */
+  flareTouches(q: FlareQuery, x: number, y: number, w: number, h: number): boolean {
+    return this.inner.flare_touches(q.lo, q.hi, q.elapsed, x, y, w, h)
   }
 
   /** Advance the weather and return the hazards to draw. */

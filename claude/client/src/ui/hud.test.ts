@@ -84,6 +84,8 @@ describe('effectLabel', () => {
     expect(effectLabel('MeteorShower')).toBe('Meteor Shower')
     expect(effectLabel('LavaBurst')).toBe('Lava Burst')
     expect(effectLabel('HeavyFog')).toBe('Heavy Fog')
+    // T22.08B: the wire name is the `Debug` spelling, `SolarFlare`.
+    expect(effectLabel('SolarFlare')).toBe('Solar Flare')
   })
 
   it('leaves a single word and an empty string alone', () => {
