@@ -6781,3 +6781,9 @@ F1: wire-byte bit-7 row in `codec.test.ts`; `DEV_START_BATTERY` (applied after s
 Plants, each red (`gate-t2209c-plants.txt`, `-f4-red.txt`, `-plant-codec.txt`): reviewer's `&& false` → *"a flat suit in warmup never read irradiated off bit 7"* (+2); reviewer's `1 << 6` → same three in `radiation-match` and vitest *"reads bit 7 as irradiated … expected false to be true"*; picture ungated → *"F8: in warmup … the sealed line is up"*; `nowrap` → *"at 480 px the sealed line runs off screen"*; 0.12 full-screen tint → *"control: the centre … moved 15.7"* (the subject's control passed it); centre rect onto the body → *"the body … overlaps the centre control"*; old `byFile` → both new affected tests; respawn knob call removed → *"at respawn left: 100.0"*.
 Done-when: affected 19/19, vitest 989/989, game-server 317/0/6, core radiation 11/0, e2e radiation/-standard/-match 3/3. `--changed HEAD --fast` all passed (rust 1571/0/25); clippy 0; mapped e2e 10/10 (sandbox, thrusters, m4-checkpoint, feel, lobby-start, hud-bars, void, death, smoke-shader, thrusters-match).
 Noted: `radiation-match`'s `soloSpace` is a fourth copy of the menu route (T22.00C's `openAtMenu`/`privateMatch` note).
+
+## M22 batch gate — green, 1102 s (coordinator, 2026-09-23)
+Full `./scripts/check.sh` on `5251ee2`, idle box (pgrep empty at launch, no subagents during the run), detached via setsid. **EXIT=0**:
+browser **66/66**, vitest 989/989, Rust 1571 passed / 0 failed / 25 ignored (summed over every `test result` line), M5 checkpoint green. Covers the batch
+T22.04, T22.04B (+ 3b5e547, 98e20db), T22.09A (+ 55e6d51), T22.09B, T22.09C. Four checks that `--changed` had been silently
+dropping on scripts-only edits (radiation, thrusters, thrusters-canvas, clouds — T22.09C F4) all ran here and passed.
