@@ -31,7 +31,9 @@ const VSQ = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(positio
  */
 export function drawBackground(o) { const r = glRenderer(); r.render(quad(bgMaterial(o)), cam) }
 export function bgQuad(o) { const m = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), bgMaterial(o, true)); m.frustumCulled = false; m.renderOrder = -10; m.material.depthTest = false; m.material.depthWrite = false; return m }
-export function bgMaterial({ skyTop, skyBottom, haze, horizon, layers, sun = null, stars = 0, grainK = 0.035, rays = null, rayColor = 0xffffff, glowY = null, glowColor = 0x000000 }, linear = false) {
+export function bgMaterial({ skyTop, skyBottom, haze, horizon, layers, sun = null, stars = 0, grainK = 0.035, rays = null, rayColor = 0xffffff, glowY = null, glowColor = 0x000000, moons = [] }, linear = false) {
+  const MO = [], MC = [], ML = []
+  for (let i = 0; i < 3; i++) { const m = moons[i]; MO.push(new THREE.Vector4(...(m ? [m.x, m.y, m.r, m.rays ?? 0] : [0, 0, 0, 0]))); MC.push(hex(m?.color ?? 0)); ML.push(new THREE.Vector4(...(m ? [m.rayLen ?? 400, m.phase ?? 0.3, m.halo ?? 1, 0] : [1, 0, 0, 0]))) }
   const N = 6
   const A = [], B = [], C = [], D = []
   for (let i = 0; i < N; i++) {
@@ -46,9 +48,9 @@ export function bgMaterial({ skyTop, skyBottom, haze, horizon, layers, sun = nul
   return new THREE.ShaderMaterial({
     uniforms: { A: { value: A }, B: { value: B }, C: { value: C }, D: { value: D }, skyTop: { value: hex(skyTop) }, skyBottom: { value: hex(skyBottom) }, haze: { value: hex(haze) }, horizon: { value: horizon },
       sun: { value: new THREE.Vector4(...(sun ? [sun.x, sun.y, sun.r, sun.k] : [0, 0, 0, 0])) }, sunC: { value: hex(sun?.color ?? 0xffffff) }, stars: { value: stars }, grainK: { value: grainK },
-      rays: { value: new THREE.Vector4(...(rays ?? [0, 0, 0, 0])) }, rayC: { value: hex(rayColor) }, lin: { value: linear ? 1 : 0 }, glowY: { value: new THREE.Vector2(glowY ?? -1, 0) }, glowC: { value: hex(glowColor) } },
+      MO: { value: MO }, MC: { value: MC }, ML: { value: ML }, rays: { value: new THREE.Vector4(...(rays ?? [0, 0, 0, 0])) }, rayC: { value: hex(rayColor) }, lin: { value: linear ? 1 : 0 }, glowY: { value: new THREE.Vector2(glowY ?? -1, 0) }, glowC: { value: hex(glowColor) } },
     vertexShader: VSQ,
-    fragmentShader: NOISE_GLSL + `varying vec2 vUv; uniform vec4 A[${N}], B[${N}], D[${N}]; uniform vec3 C[${N}]; uniform vec3 skyTop, skyBottom, haze, sunC; uniform float horizon, stars, grainK, lin; uniform vec4 sun, rays; uniform vec3 rayC, glowC; uniform vec2 glowY;
+    fragmentShader: NOISE_GLSL + `varying vec2 vUv; uniform vec4 A[${N}], B[${N}], D[${N}]; uniform vec3 C[${N}]; uniform vec3 skyTop, skyBottom, haze, sunC; uniform float horizon, stars, grainK, lin; uniform vec4 sun, rays; uniform vec3 rayC, glowC; uniform vec2 glowY; uniform vec4 MO[3], ML[3]; uniform vec3 MC[3];
       float edgeY(int i, float x){
         vec4 a = A[i], b = B[i]; float t = b.x;
         if (t < 0.5) return a.y + abs(x - a.x)*a.z;
@@ -64,6 +66,12 @@ export function bgMaterial({ skyTop, skyBottom, haze, horizon, layers, sun = nul
         col *= 1. + (fbm(vec2(p.x*0.003, p.y*0.08), 3) - 0.5)*0.025;
         if (sun.z > 0.) { float d = length(p - sun.xy); col = mix(col, sunC, smoothstep(sun.z+1., sun.z-1., d)*sun.w); col += sunC*0.06*exp(-d/(sun.z*4.)); }
         if (stars > 0.) { vec2 g = floor(p/3.); float s = hash12(g); if (s > 1. - stars) col += vec3(0.8)*smoothstep(0.6, 0.,length(fract(p/3.)-0.5)) * (1.-h*1.3); }
+        for (int m=0;m<3;m++){ if (MO[m].z <= 0.) continue; vec2 d = p - MO[m].xy; float r = MO[m].z; float dl = length(d);
+          col += MC[m] * 0.22 * ML[m].z * exp(-max(dl - r, 0.)/(r*1.1));
+          if (dl < r + 1.) { vec2 n = d/r; float z = sqrt(max(0., 1. - dot(n,n)));
+            float lit = clamp(dot(vec3(n, z), normalize(vec3(-ML[m].y, -0.35, 0.85))), 0., 1.);
+            vec3 mc = MC[m] * (0.35 + 0.75*lit) * (0.82 + 0.25*fbm(n*4. + float(m)*7., 4)) * (0.8 + 0.2*z);
+            col = mix(col, mc, smoothstep(r + 1., r - 1., dl)); } }
         float occ = 0.;
         for (int i=0;i<${N};i++){
           if (B[i].x < -0.5) continue;
@@ -82,9 +90,12 @@ export function bgMaterial({ skyTop, skyBottom, haze, horizon, layers, sun = nul
           col = mix(col, lc, alpha); occ = max(occ, alpha*(0.4 + 0.6*float(i)/${N - 1}.));
         }
         if (rays.z > 0.) { vec2 d = p - rays.xy; float ang = atan(d.y, d.x); float r = length(d);
-          float st = pow(vnoise(vec2(ang*26., 1.)), 2.5)*0.7 + pow(vnoise(vec2(ang*9., 7.)), 3.)*0.6;
+          vec2 cs = vec2(cos(ang), sin(ang)); float st = pow(vnoise(cs*4.2 + 11.), 2.5)*0.7 + pow(vnoise(cs*1.5 + 37.), 3.)*0.6;
           col += rayC * rays.z * st * exp(-r/rays.w) * (1. - 0.75*occ) * smoothstep(0., 60., r); }
         if (glowY.x > 0.) col += glowC * exp(-abs(p.y - glowY.x)/90.);
+        for (int m=0;m<3;m++){ if (MO[m].w <= 0.) continue; vec2 d = p - MO[m].xy; float ang = atan(d.y, d.x); float r = length(d);
+          vec2 cs = vec2(cos(ang), sin(ang)); float st = pow(vnoise(cs*3.6 + float(m)*9. + 3.), 2.5)*0.7 + pow(vnoise(cs*1.3 + 21. + float(m)*5.), 3.)*0.6;
+          col += MC[m] * MO[m].w * st * exp(-r/ML[m].x) * (1. - 0.8*occ) * smoothstep(MO[m].z, MO[m].z*2.5, r); }
         // ground haze band at the horizon
         col = mix(col, haze, 0.55*exp(-abs(p.y - horizon)/38.));
         col += (hash12(p) - 0.5)*grainK;
@@ -194,7 +205,7 @@ export function stick(g, x, y, { s = 1.15, face = 1, rot = 0, aim = 0.3, weapon 
       line(g, [[-2, 0.5], [13, 0.5]], 2.4); disc(g, -2, 4, 2.6)
       line(g, [[0, 0], [3, 3], [5, 1]], 1.7); line(g, [[0, 0], [7, 3], [9, 1]], 1.7)
       if (flame) flame(g)
-    } else { line(g, [[0, 0], [4, 5], [7, 3]], 1.8) }
+    } else if (typeof weapon === 'function') { weapon(g) } else { line(g, [[0, 0], [4, 5], [7, 3]], 1.8) }
     g.restore()
   })
   if (marker) { g.fillStyle = marker === true ? '#d8432a' : marker; g.beginPath(); g.moveTo(x - 3.2 * s, y - 38 * s); g.lineTo(x + 3.2 * s, y - 38 * s); g.lineTo(x, y - 34 * s); g.fill() }
