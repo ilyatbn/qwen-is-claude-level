@@ -6748,3 +6748,9 @@ F1 `plumeOn(…, true)` → *"the view reports a plume drawn … the strip below
 `jetpack` without `&& meAlive` → *"fay is dead with thrust held and her own view still fires her plume"* — **green at first**: thrusting into her rock she died on a standing tick; she now burns away from it.
 **F4, correcting T22.04's entry:** "velocity sign flip reds all arms" was not measured — the check stops at its first failure, so that plant reached only "DOWN held, HQ off".
 Filed T22.04C (F5). F6: comment narrowed only — the shader sheath is still ~half the flat plume's width, and the fix is `shaders.ts`, outside Touch only.
+
+## T22.04B review fixes — thrusters-match asserts its own preconditions (2026-09-23)
+Death arm: a `control:` fail if fay died with `moveState !== 2`, before the absence — else `&& meAlive` goes untested. Bell arm:
+`BELL_LEAD_S` 1.5 → 3, and the after-the-bell fuel read replaced by a **pre-burn** assertion `fuel ≥ BELL_LEAD_S·JETPACK_DRAIN +
+JETPACK_MIN_FUEL_TO_ENGAGE` (read 5.00); plus ana's view of bo's plume out after the bell. `e2e --only thrusters-match`: 1/1, 15 ok, 50.3 s.
+Noted in T22.00C: `openAtMenu`/`privateMatch` have three copies; `thrusters-match.mjs` (400 lines) splits its death stack when they move.

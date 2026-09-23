@@ -46,10 +46,12 @@ const K = rustConstants()
 const NAME_KEY = clientKey('NAME_KEY')
 
 /**
- * How long before the bell bo starts to burn. Short enough that the tank cannot
- * run dry before it — asserted below against the fuel, not assumed.
+ * How long before the bell bo starts to burn. Long enough that the burn is
+ * certainly under way when the bell rings, short enough that the tank (5 s at
+ * 1/s) cannot run dry before it — asserted before the burn against the fuel and
+ * `JETPACK_DRAIN`, not assumed.
  */
-const BELL_LEAD_S = 1.5
+const BELL_LEAD_S = 3
 /** Rendered frames after an edge (release, bell, death) before reading the views. */
 const SETTLE_FRAMES = 6
 /**
@@ -221,7 +223,12 @@ try {
   const pre = await dbg(bo)
   if (!lead || pre.phase !== 'playing') {
     fail(`the bell arm could not start before the bell: ${JSON.stringify({ phase: pre?.phase, left: pre?.results?.secondsLeft })}`)
+  } else if (!((pre.player?.fuel ?? 0) >= BELL_LEAD_S * K.get('JETPACK_DRAIN') + K.get('JETPACK_MIN_FUEL_TO_ENGAGE'))) {
+    // Read before the burn: a tank that cannot outlast the lead could go out on
+    // its own, and an unlit plume after the bell would then be the tank, not the bell.
+    fail(`control: bo starts the bell burn with ${pre.player?.fuel} fuel, which cannot last ${BELL_LEAD_S} s at ${K.get('JETPACK_DRAIN')}/s`)
   } else {
+    ok(`control: bo starts the bell burn with ${pre.player.fuel.toFixed(2)} fuel, enough for ${BELL_LEAD_S} s and the engage floor`)
     await bo.page.keyboard.down('s')
     try {
       const burning = await waitOn(
@@ -242,14 +249,16 @@ try {
         const rang = await waitOn(bo, () => window.__game.debug().phase === 'ended', null, BELL_LEAD_S + 15, 'bell')
         await frames(bo, SETTLE_FRAMES)
         const after = await dbg(bo)
+        const anaAfter = await plumeOf(ana, bo)
         await bo.page.screenshot({ path: join(shotsDir, 'thrusters-match-bell.png') })
-        const fuelLeft = after?.player?.fuel ?? 0
         if (!rang) fail(`the round never ended: ${JSON.stringify(brief(after, bo))}`)
-        else if (!(fuelLeft > K.get('JETPACK_MIN_FUEL_TO_ENGAGE'))) {
-          fail(`control: the tank ran dry (${fuelLeft}), so an unlit plume could be the tank and not the bell`)
-        } else if (after.plumes?.[bo.id]?.drawn !== false) {
-          fail(`the round is over and bo's plume still fires, DOWN held: ${JSON.stringify(brief(after, bo))}`)
-        } else ok(`the bell rang with DOWN held and ${fuelLeft.toFixed(2)} fuel left: bo's plume is out`)
+        else {
+          if (after.plumes?.[bo.id]?.drawn !== false) {
+            fail(`the round is over and bo's plume still fires, DOWN held: ${JSON.stringify(brief(after, bo))}`)
+          } else ok(`the bell rang with DOWN held: bo's own plume is out`)
+          if (anaAfter?.drawn !== false) fail(`the round is over and ana still draws bo's plume: ${JSON.stringify(anaAfter)}`)
+          else ok("and ana's view of it is out too")
+        }
       }
     } finally {
       await bo.page.keyboard.up('s')
@@ -365,7 +374,12 @@ try {
         const eveSees = await plumeOf(eve, fay)
         await fay.page.screenshot({ path: join(shotsDir, 'thrusters-match-dead.png') })
         if (!died) fail(`the poison never killed fay: ${JSON.stringify(brief(after, fay))}`)
-        else if (after.death.meAlive) fail(`fay respawned before the dead frames were read: ${JSON.stringify(brief(after, fay))}`)
+        else if (after.player?.moveState !== 2) {
+          // The mirror stops stepping a dead body, so her last live moveState is what
+          // it keeps. Anything but 2 and the view is dark without `&& meAlive` —
+          // the absence below would then say nothing about that guard.
+          fail(`control: fay died with moveState ${after.player?.moveState}, not 2, so the \`&& meAlive\` guard is untested: ${JSON.stringify(brief(after, fay))}`)
+        } else if (after.death.meAlive) fail(`fay respawned before the dead frames were read: ${JSON.stringify(brief(after, fay))}`)
         else if (after.plumes?.[fay.id]?.drawn !== false) {
           fail(`fay is dead with thrust held and her own view still fires her plume: ${JSON.stringify(brief(after, fay))}`)
         } else ok(`fay died mid-burn, thrust held: her plume is out (moveState ${after.player?.moveState})`)
