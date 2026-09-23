@@ -333,15 +333,20 @@ pub fn payload_with_votes(
             let selected = world.player(*player_id).map(|p| p.inventory.selected());
             json!({"tick": tick, "slots": slots, "selected": selected})
         }
+        // `effect` (T22.08E F9): the weather effect's name, spelled as `effect_start`'s
+        // `kind` spells it, or `null` — a flare's burn and a meteor fragment are both
+        // `cause: "weather"`, and the client confirms flames on the first only.
         GameEvent::Damage {
             victim,
             attacker,
             amount,
             cause,
+            effect,
             ..
         } => json!({
             "tick": tick, "victim": victim, "attacker": attacker,
-            "amount": amount, "cause": cause_name(*cause)
+            "amount": amount, "cause": cause_name(*cause),
+            "effect": effect.map(|k| format!("{k:?}")),
         }),
         GameEvent::Death {
             victim,
@@ -883,6 +888,7 @@ mod tests {
             attacker: Some(2),
             amount: 10.0,
             cause: DeathCause::Player(2),
+            effect: None,
         };
         assert_eq!(scope_of(&e), Scope::Pair(1, Some(2)));
     }
@@ -896,6 +902,7 @@ mod tests {
             attacker: Some(1),
             amount: 10.0,
             cause: DeathCause::SelfInflicted,
+            effect: None,
         };
         assert_eq!(scope_of(&e), Scope::Pair(1, None));
     }
@@ -908,8 +915,40 @@ mod tests {
             attacker: None,
             amount: 10.0,
             cause: DeathCause::Weather,
+            effect: None,
         };
         assert_eq!(scope_of(&e), Scope::Pair(1, None));
+    }
+
+    /// **A weather `damage` names its effect as `effect_start` names it** (T22.08E F9):
+    /// the client confirms flare flames on `effect == kind`, so the two spellings are
+    /// one spelling. And anything not weather carries `null`.
+    #[test]
+    fn a_weather_damage_names_its_effect_as_effect_start_spells_it() {
+        use game_core::effects::EffectKind;
+        let w = world();
+        let dmg = |effect| GameEvent::Damage {
+            tick: 5,
+            victim: 1,
+            attacker: None,
+            amount: 1.0,
+            cause: DeathCause::Weather,
+            effect,
+        };
+        let start = GameEvent::EffectStart {
+            tick: 5,
+            id: 1,
+            kind: EffectKind::SolarFlare,
+            seed: 0,
+            duration: 1.0,
+        };
+        let kind = payload_of(&start, &w)["kind"].clone();
+        assert_eq!(kind, "SolarFlare", "control: effect_start's spelling");
+        assert_eq!(
+            payload_of(&dmg(Some(EffectKind::SolarFlare)), &w)["effect"],
+            kind
+        );
+        assert!(payload_of(&dmg(None), &w)["effect"].is_null());
     }
 
     /// Death is public even though damage is not — everyone sees the kill feed.
@@ -977,6 +1016,7 @@ mod tests {
                 attacker: Some(1),
                 amount: 5.0,
                 cause: DeathCause::Player(1),
+                effect: None,
             },
             GameEvent::Score { tick: 42 },
             GameEvent::RoundState {

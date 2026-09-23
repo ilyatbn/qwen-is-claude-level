@@ -690,8 +690,19 @@ export interface WeatherState {
   vents: VentSpec[]
   /** 0..1 */
   fog: number
-  /** T22.08B: the sandbox's flare, telegraph included, or `null`. */
+  /** T22.08B: the sandbox's flare, telegraph included, or `null` — never absent (`weatherStep` normalises). */
   flare: FlareQuery | null
+}
+
+/**
+ * `weather_step`'s JSON **as it may arrive** (T22.08E F3): `flare` optional, because a
+ * wasm build that leaves it out — T22.08B's early return did — is `undefined`, not
+ * `null`, and `undefined !== null` took the sandbox down. Parsed into this and
+ * normalised into `WeatherState`, so dropping the `?? null` is a type error rather
+ * than a crash.
+ */
+interface WeatherJson extends Omit<WeatherState, 'flare'> {
+  flare?: FlareQuery | null
 }
 
 export class Core {
@@ -1144,7 +1155,8 @@ export class Core {
 
   /** Advance the weather and return the hazards to draw. */
   weatherStep(now: number, dt: number): WeatherState {
-    return JSON.parse(this.inner.weather_step(now, dt)) as WeatherState
+    const j = JSON.parse(this.inner.weather_step(now, dt)) as WeatherJson
+    return { ...j, flare: j.flare ?? null }
   }
 
   /**

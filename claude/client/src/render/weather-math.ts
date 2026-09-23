@@ -521,38 +521,98 @@ export class FlareClock {
   }
 }
 
-/** How much of each sample's disagreement the estimate takes: slow, so jitter does not reach the screen. */
+/** How much of each step toward the target the estimate takes: slow, so jitter does not reach the screen. */
 const SERVER_CLOCK_GAIN = 0.1
-/** A disagreement past this is a new clock (a restart, a stalled tab), not jitter: adopt it. */
+/** An estimate **behind** the best recent sample by more than this is adopted whole — a start, not jitter. */
 const SERVER_CLOCK_RESYNC_S = 0.25
+/**
+ * How far back the "least-delayed sample" looks, seconds. Long enough to outlast a
+ * stall burst (T22.08E F1: the review's were 200 and 300 ms), short enough that a
+ * route that really got slower is followed within a second.
+ */
+const SERVER_CLOCK_WINDOW_S = 1
+/**
+ * While the estimate is ahead of where it would put the clock, `now` advances at this
+ * fraction of real time until the two meet — slewed, never stepped back.
+ */
+const SERVER_CLOCK_SLEW = 0.5
 
 /**
- * The server's tick clock, seconds, **smoothed and at full precision** (T22.08D F2).
+ * The server's tick clock, seconds, **smoothed, monotonic and at full precision**
+ * (T22.08D F2, T22.08E F1).
  *
  * Sampled from each snapshot's **tick** — a `u32`, exact, where the snapshot's round
  * time is truncated to 0.1 s — plus half the round trip, against the local arrival
- * time. The estimate is an offset from the local clock, moved a tenth of the way
- * toward each sample, so it advances with the local clock between snapshots and
- * arrival jitter moves it by milliseconds rather than stepping it. `ClockSync`'s
- * shape without its outlier gate, which would reject every sample after a restart
- * resets the tick; a jump past `SERVER_CLOCK_RESYNC_S` is adopted whole instead.
+ * time. The estimate is an offset from the local clock.
+ *
+ * **Delay only ever makes a sample late**, so the sample that says the server is
+ * furthest along is the least wrong: the target is the **largest** offset seen in the
+ * last `SERVER_CLOCK_WINDOW_S`, not the latest one. T22.08D took a tenth of each
+ * sample's disagreement and let one past `SERVER_CLOCK_RESYNC_S` in whole — so a TCP
+ * stall that delivered 300 ms of snapshots at once read as the server's clock
+ * jumping 300 ms back, and the ribbon stepped back 213 ms (~19 px). A lagging sample
+ * now cannot move the target down at all while a better one is in the window.
+ *
+ * **`now` never returns less than it last did.** When the estimate does come down —
+ * the route got slower for longer than the window — the clock is slewed: it runs at
+ * `SERVER_CLOCK_SLEW` of real time until the estimate catches up, and is never
+ * stepped back. The one exception is a **restart**: a sample whose tick is below the
+ * last one is a new round's clock, adopted whole, backwards included.
  */
 export class ServerClock {
   private offset: number | null = null
+  private lastServer = -Infinity
+  private readonly recent: { o: number; rtt: number; at: number }[] = []
+  private out: { t: number; local: number } | null = null
 
-  /** A snapshot of tick-time `serverS` arrived at local time `localS` (both seconds). */
-  sample(serverS: number, localS: number): void {
+  /**
+   * A snapshot of tick-time `serverS` arrived at local time `localS`, with the last
+   * measured round trip `rttS` (all seconds).
+   *
+   * **The trip is its own least-delayed estimate**, kept apart from the tick's: a pong
+   * handled through a busy main thread measures long, and folded into each sample as
+   * `rtt/2` the largest-offset rule picked exactly those — measured in
+   * `solar-flare-match`, the client ran ~20 ms ahead of the server. The shortest trip in
+   * the window is the least inflated, as the latest tick is the least late.
+   */
+  sample(serverS: number, rttS: number, localS: number): void {
     const o = serverS - localS
-    if (this.offset === null || Math.abs(o - this.offset) > SERVER_CLOCK_RESYNC_S) this.offset = o
-    else this.offset += (o - this.offset) * SERVER_CLOCK_GAIN
+    const restart = serverS < this.lastServer
+    this.lastServer = serverS
+    if (this.offset === null || restart) {
+      this.offset = o + rttS / 2
+      this.recent.length = 0
+      this.recent.push({ o, rtt: rttS, at: localS })
+      this.out = null
+      return
+    }
+    this.recent.push({ o, rtt: rttS, at: localS })
+    while (this.recent.length > 1 && this.recent[0]!.at < localS - SERVER_CLOCK_WINDOW_S) this.recent.shift()
+    let late = -Infinity
+    let trip = Infinity
+    for (const r of this.recent) {
+      late = Math.max(late, r.o)
+      trip = Math.min(trip, r.rtt)
+    }
+    const best = late + trip / 2
+    if (best - this.offset > SERVER_CLOCK_RESYNC_S) this.offset = best
+    else this.offset += (best - this.offset) * SERVER_CLOCK_GAIN
   }
 
-  /** The server's tick-time now, or `null` before the first snapshot. */
+  /** The server's tick-time now, or `null` before the first snapshot. Never less than the last answer. */
   now(localS: number): number | null {
-    return this.offset === null ? null : localS + this.offset
+    if (this.offset === null) return null
+    let t = localS + this.offset
+    const last = this.out
+    if (last && t < last.t) t = last.t + Math.max(0, localS - last.local) * SERVER_CLOCK_SLEW
+    this.out = { t, local: localS }
+    return t
   }
 
   reset(): void {
     this.offset = null
+    this.lastServer = -Infinity
+    this.recent.length = 0
+    this.out = null
   }
 }

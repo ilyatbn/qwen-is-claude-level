@@ -43,7 +43,11 @@ const MIN_ON_SCREEN = 0.5
 /** Drawn frames watched for a backwards step — the review counted 19 in 120. */
 const MONO_FRAMES = 120
 /** Server probes, each bracketed by the client's clock. */
-const PROBES = 5
+const PROBES = 12
+/** Probes whose bracket must be under the tolerance for the clock to count as measured (T22.08E F4). */
+const NARROW_MIN = 4
+/** Half the crosshair mark's arm (`Crosshair`: 9 px rectangles), plus a pixel of antialias. */
+const CROSSHAIR_HALF = 6
 
 const dbg = (page) => page.evaluate(() => window.__game.debug())
 const frames = (page, n) =>
@@ -121,10 +125,22 @@ async function coverage(page, k, path, wantShader) {
       return { left: r.left, top: r.top, w: r.width, h: r.height }
     })
     const inView = (s) => s.onScreen && s.y > bounds.top + bounds.h / 6 && s.y < bounds.top + (bounds.h * 5) / 6
+    // T22.08E: **a point under the HUD cannot change when the flare is hidden**, and the
+    // HUD is not only the top and bottom sixth. Measured: every shader-arm miss in five
+    // runs, with the old clock and the new, sat under the suit's DOM hint line
+    // (x 10–545, y 573–595) or on the 9 px crosshair mark — `peak` 0–4, both photos
+    // the HUD's own pixels. So: a point whose topmost element is not the canvas is DOM-
+    // covered, and one within the mark's half-length of the crosshair is under it.
+    const cross = d.crosshair ? await toScreen(page, d.crosshair.x, d.crosshair.y) : null
+    const underDom = (s) =>
+      page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.tagName !== 'CANVAS', [s.x, s.y])
     const shown = []
+    let hidden = 0
     for (const p of probes) {
       const s = await toScreen(page, p.x, p.y)
-      if (inView(s)) shown.push({ x: s.x, y: s.y })
+      if (!inView(s)) continue
+      if ((cross && Math.hypot(s.x - cross.x, s.y - cross.y) <= CROSSHAIR_HALF) || (await underDom(s))) hidden++
+      else shown.push({ x: s.x, y: s.y })
     }
     const ctrlWorld = await page.evaluate(
       ([p, gap]) => {
@@ -156,7 +172,7 @@ async function coverage(page, k, path, wantShader) {
     } else if (covered < shown.length) {
       const bad = cmp.detail.slice(0, shown.length).filter((_, i) => !cmp.points[i])
       fail(`only ${covered} of ${shown.length} damage points in view are under painted flare (${d.flare.shader ? 'shader' : 'flat'}): ${JSON.stringify(bad.slice(0, 5))}`)
-    } else ok(`${covered}/${shown.length} damage points in view painted in GameScene (${d.flare.shader ? 'shader' : 'flat'}), at the drawn frame's query — its clock checked against the server's above`)
+    } else ok(`${covered}/${shown.length} damage points in view painted in GameScene (${d.flare.shader ? 'shader' : 'flat'}), at the drawn frame's query — its clock checked against the server's above (${hidden} under the HUD, not counted)`)
     if (!ctrl) fail('no point in view clear of the ribbon for the control')
     else if (cmp.points[shown.length]) fail(`control: a point clear of the flare changed too: ${JSON.stringify(cmp.detail[shown.length])}`)
     else ok('control: a point clear of the ribbon did not change')
@@ -195,6 +211,9 @@ try {
       let centre = 0
       const bad = []
       let answered = 0
+      let worstSeen = 0
+      let narrow = 0
+      const widths = []
       for (let i = 0; i < PROBES; i++) {
         const r = await page.evaluate(() => window.__game.probeFlare())
         const srv = r.server?.flare
@@ -202,14 +221,39 @@ try {
         answered++
         const off = Math.max(r.before - srv.elapsed, srv.elapsed - r.after, 0)
         worst = Math.max(worst, off)
+        widths.push(Math.round((r.after - r.before) * 1000))
         // Where inside the bracket, so a pass says how close and not only "inside".
         centre = Math.max(centre, Math.abs(srv.elapsed - (r.before + r.after) / 2))
-        if (off > tol) bad.push({ before: r.before, server: srv.elapsed, after: r.after })
+        // T22.08E F4: **a bracket wider than the tolerance brackets anything** — a 0.5 s
+        // offset sits inside a 1 s round trip. So two claims, both per probe:
+        //  - **every** probe: the server's number is within `tol` of the bracket (`off`);
+        //  - a **narrow** probe (width < `tol`, the review's bound) is held to the worst
+        //    case over its bracket — the client's elapsed at the server's instant is
+        //    somewhere in [before, after], so its error is at most the larger distance to
+        //    either end — and at least `NARROW_MIN` probes must be narrow, or the check
+        //    could not measure and says so.
+        // **Why not "every bracket < tol"**: measured, not assumed — widths are the page's
+        // frame latency plus up to a server tick (the reply waits for the room task):
+        // 31–35 ms on most runs, 48–82 ms on one or two probes in about one run in three,
+        // **with the T22.08D clock as well as this one**. Requiring all five narrow was a
+        // coin flip on the box's load, not on the clock. The server's elapsed is also
+        // quantised to its last completed tick, so each bound carries one `SIM_DT`.
+        const width = r.after - r.before
+        if (off > tol + k.SIM_DT) bad.push({ before: r.before, server: srv.elapsed, after: r.after })
+        if (width < tol) {
+          narrow++
+          const worstCase = Math.max(srv.elapsed - r.before, r.after - srv.elapsed)
+          worstSeen = Math.max(worstSeen, worstCase)
+          if (worstCase > tol + k.SIM_DT) bad.push({ before: r.before, server: srv.elapsed, after: r.after, narrow: true })
+        }
         await frames(page, 7)
       }
-      if (answered < PROBES / 2) fail(`the server answered ${answered} of ${PROBES} flare probes — is DEV_PROBE set?`)
-      else if (bad.length) fail(`the client's flare clock is off the server's by more than a snapshot (${tol} s): ${JSON.stringify(bad.slice(0, 3))}`)
-      else ok(`client flare elapsed brackets the server's over ${answered} probes: outside by ≤ ${(worst * 1000).toFixed(1)} ms, ≤ ${(centre * 1000).toFixed(1)} ms from the bracket's middle (tolerance ${tol * 1000} ms)`)
+      // T22.08E F4: every probe answers. Half was the bar, so three silent probes of
+      // five passed as a measurement.
+      if (answered < PROBES) fail(`the server answered ${answered} of ${PROBES} flare probes — is DEV_PROBE set?`)
+      else if (narrow < NARROW_MIN) fail(`only ${narrow} of ${PROBES} probe brackets were narrower than ${tol * 1000} ms [${widths.join(', ')}] — too wide to measure the clock to a snapshot`)
+      else if (bad.length) fail(`the client's flare clock can be off the server's by more than a snapshot and a tick (${tol + k.SIM_DT} s): ${JSON.stringify(bad.slice(0, 3))}`)
+      else ok(`client flare elapsed brackets the server's over ${answered} probes: outside by ≤ ${(worst * 1000).toFixed(1)} ms, ≤ ${(centre * 1000).toFixed(1)} ms from the bracket's middle; ${narrow} brackets under ${tol * 1000} ms [${widths.join(', ')}], worst case over them ${(worstSeen * 1000).toFixed(1)} ms (bound ${((tol + k.SIM_DT) * 1000).toFixed(1)} ms)`)
     }
 
     // --- 3. the ribbon's clock never runs backwards (F2) -------------------------------

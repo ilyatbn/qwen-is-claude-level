@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest'
-import { BurnTracker, GHOST, flareBounds, flareStrength, ribbonLength, ribbonOutline, strand, toLocal } from './flareFx-math'
+import { beforeAll, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { C, Core } from '../core'
+import { BurnTracker, confirmWindow, GHOST, flareBounds, flareStrength, ribbonLength, ribbonOutline, strand, toLocal } from './flareFx-math'
+
+beforeAll(async () => {
+  const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
+  await Core.init(readFileSync(fileURLToPath(url)))
+})
 
 /** An arch like the core's: `n` points, `span` wide, `height` tall, rising to -y. */
 function arch(n: number, span: number, height: number, cx = 500, cy = 400): number[] {
@@ -180,5 +188,101 @@ describe('BurnTracker — who is on fire, as the client can know it (T22.08B, T2
     expect(b.burning(2, 1)).toBe(true)
     b.clearAll()
     expect(b.burning(2, 1)).toBe(false)
+  })
+})
+
+/**
+ * T22.08E F2: **the window against a real round trip.** A model of one burn, in the
+ * flare's server clock, frame by frame at 60 Hz:
+ *
+ * - the server's body is in the ribbon for `contact` s from 0 and burns
+ *   `SOLAR_FLARE_BURN_SECONDS` past its last touch, logging a `Damage` every
+ *   `RADIATION_LOG_INTERVAL` from the first touch (the measured first wait, 0.983 s,
+ *   is under that — `world::solar_flare_tests`);
+ * - **you** are predicted, so your client touches `rtt/2` early and your `damage`
+ *   arrives `rtt/2` late;
+ * - **a remote** is drawn `INTERP_DELAY_MS` behind, and its health drop lands in the
+ *   next snapshot and arrives `rtt/2` after that.
+ *
+ * `real = false` is the same client contact with the server never agreeing.
+ */
+function simulate(who: 'you' | 'remote', rttMs: number, real: boolean, contact = 0.3) {
+  const k = C()
+  const rtt = rttMs / 1000
+  const win = confirmWindow(rttMs)
+  const burnEnd = contact + k.SOLAR_FLARE_BURN_SECONDS
+  const snap = 1 / k.SNAPSHOT_HZ
+  const words: number[] = []
+  if (real) {
+    for (let d = k.RADIATION_LOG_INTERVAL; d <= burnEnd; d += k.RADIATION_LOG_INTERVAL) {
+      words.push(who === 'you' ? d + rtt / 2 : Math.ceil(d / snap) * snap + rtt / 2)
+    }
+  }
+  const lead = who === 'you' ? -rtt / 2 : k.INTERP_DELAY_MS / 1000
+  const b = new BurnTracker()
+  let first: number | null = null
+  let last: number | null = null
+  let lit = 0
+  for (let f = -60; f < 60 * 12; f++) {
+    const now = f / 60
+    while (words.length && words[0]! <= now) b.confirm(1, words.shift()!, win, who === 'you')
+    if (now >= lead && now < lead + contact) b.touch(1, now, k.SOLAR_FLARE_BURN_SECONDS, win)
+    else b.apart(1)
+    const on = b.burning(1, now)
+    if (on) {
+      first ??= now
+      last = now
+      lit++
+    }
+  }
+  return { shown: first === null || last === null ? 0 : last - first, lit: lit / 60, win, burn: burnEnd }
+}
+
+describe('BurnTracker against a real round trip (T22.08E F2)', () => {
+  for (const rtt of [50, 200, 300, 500]) {
+    for (const who of ['you', 'remote'] as const) {
+      it(`${who} at ${rtt} ms: a real burn shows its whole length, a false one at most one window`, () => {
+        const snap = 1 / C().SNAPSHOT_HZ
+        const real = simulate(who, rtt, true)
+        expect(real.shown).toBeGreaterThanOrEqual(real.burn - snap)
+        // Lit throughout, not flickering on and off inside that span.
+        expect(real.lit).toBeGreaterThanOrEqual(real.burn - snap)
+        const fake = simulate(who, rtt, false)
+        expect(fake.lit).toBeGreaterThan(0)
+        expect(fake.lit).toBeLessThanOrEqual(fake.win + 1 / 60)
+        // And a false contact held for the whole burn still shows only the one window.
+        const held = simulate(who, rtt, false, C().SOLAR_FLARE_BURN_SECONDS)
+        expect(held.lit).toBeLessThanOrEqual(held.win + 1 / 60)
+      })
+    }
+  }
+
+  it('the window grows with the round trip it has to wait out', () => {
+    const k = C()
+    expect(confirmWindow(0)).toBeCloseTo(k.SOLAR_FLARE_CONFIRM_SECONDS, 6)
+    expect(confirmWindow(300) - confirmWindow(0)).toBeCloseTo(0.3, 6)
+  })
+
+  it('a word that arrives after the window restores the burn it refuted', () => {
+    const k = C()
+    const b = new BurnTracker()
+    b.touch(1, 0, k.SOLAR_FLARE_BURN_SECONDS, 1)
+    expect(b.burning(1, 1.01)).toBe(false)
+    b.confirm(1, 1.2, 1, false)
+    expect(b.burning(1, 1.21)).toBe(true)
+    expect(b.burning(1, k.SOLAR_FLARE_BURN_SECONDS - 0.01)).toBe(true)
+  })
+
+  it('refuted, it stays out while contact lasts and may propose again once contact ends', () => {
+    const k = C()
+    const b = new BurnTracker()
+    b.touch(1, 0, k.SOLAR_FLARE_BURN_SECONDS, 1)
+    expect(b.burning(1, 1.01)).toBe(false)
+    b.touch(1, 1.5, k.SOLAR_FLARE_BURN_SECONDS, 1)
+    expect(b.burning(1, 1.51)).toBe(false)
+    b.apart(1)
+    // A fresh contact is a fresh proposal — well inside the old proposal's 4 s.
+    b.touch(1, 2, k.SOLAR_FLARE_BURN_SECONDS, 1)
+    expect(b.burning(1, 2.01)).toBe(true)
   })
 })

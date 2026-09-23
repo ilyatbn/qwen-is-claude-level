@@ -6840,3 +6840,8 @@ T22.12 (black hole), T22.03B (bots in space), T22.04C, T22.00C/G. `terrain-rende
 **Resumed 2026-09-23 23:08:** `rematch` re-run alone on an idle box (load 0.07, pgrep empty): **1/1 ok, 117.8 s**. The gate's red was
 the stall its own control names, not a rematch bug — batch gate on `9d915ba` recorded as **green, 73/73 with one stalled-box rerun**.
 Not parked: one sighting, and the check told the truth about itself.
+
+## T22.08E — what the second flare review found (2026-09-24)
+F1 `ServerClock`: target = largest tick offset in 1 s + shortest rtt in 1 s; `now()` slews, never steps back (red: −22/−213 ms after 200/300 ms stalls; folded rtt ran it 50 ms ahead). F2 `confirmWindow(rtt)`, `BurnTracker.apart`, late words restore (red: remote @500 ms showed 1.1 of 4.25 s). F3 `"flare":null` + `WeatherJson` (tsc/wasm plants red). F4 12 probes all answer; narrow ones (<tol) held to the worst case over the bracket, ≥4 narrow — **departs from "every width < tol"**: widths 31–85 ms with the old clock too. F6 `catch_up_world` (plant red; the one `seat` call stays unreachable, §E4). F7 dev-probe off/on integration test (plant red). F9 `Damage.effect` (plant red).
+Found: `solar-flare-match`'s shader arm was a coin flip under the DOM suit hint/crosshair (2/3 red with the OLD clock) — HUD-covered points now excluded. `bots_actually_move` red once in `--changed`, 4/4 alone — noted in flaky-test.md, not parked.
+Done-when: cargo 3 crates 0 failed; tsc 0; vitest 1040/1040; =solar-flare-match ok; =solar-flare ok; `--changed HEAD --fast` 0; clippy 0. F5/F8 recorded, not fixed.

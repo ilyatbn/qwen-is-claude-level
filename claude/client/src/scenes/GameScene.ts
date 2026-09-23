@@ -416,6 +416,8 @@ export class GameScene extends Phaser.Scene {
    * ever moves forward.
    */
   private readonly serverClock = new ServerClock()
+  /** The crosshair mark's world position, last frame — `debug().crosshair`. */
+  private crosshairAt: { x: number; y: number } | null = null
   /** T22.08D F3: each remote's health in the last snapshot — a drop during a flare confirms its burn. */
   private readonly remoteHealth = new Map<number, number>()
   /** The query the last frame drew the flare at — `debug().flareQuery`, frozen with the scene. */
@@ -680,6 +682,7 @@ export class GameScene extends Phaser.Scene {
     this.flareFx?.clear()
     this.flareBodies.length = 0
     this.serverClock.reset()
+    this.crosshairAt = null
     this.remoteHealth.clear()
     this.lastFlareQuery = null
     // A pending probe resolves on its own timeout; the answer would be the old round's.
@@ -747,6 +750,7 @@ export class GameScene extends Phaser.Scene {
     this.feel = new FeelLayer()
     this.radiation = new RadiationFx()
     this.flareFx = new FlareFx(this, hasWebGL(this))
+    this.flareFx.setRtt(this.lastRtt)
     this.debugHud = new DebugHud(this, C().PLAYER_W, C().PLAYER_H)
     this.input.keyboard?.on('keydown-F3', () => this.debugHud.toggle())
     this.input.keyboard?.on('keydown-M', () => this.minimap?.toggle())
@@ -917,6 +921,7 @@ export class GameScene extends Phaser.Scene {
       const sent = Number(raw)
       if (Number.isFinite(sent)) {
         this.lastRtt = performance.now() - sent
+        this.flareFx?.setRtt(this.lastRtt)
         this.rttSamples++
       }
     })
@@ -1166,8 +1171,9 @@ export class GameScene extends Phaser.Scene {
       else this.feel.damageDealt(x, y, amount, false)
       // T22.08D F3: the server's word that you are burning — scoped to you, so it is
       // yours. During a flare it confirms your flames, or lights them when your own
-      // contact test missed.
-      if (victim === this.me && String(p['cause'] ?? '') === 'weather') {
+      // contact test missed. **The flare's own word** (T22.08E F9): a meteor fragment
+      // is `cause: weather` too, and during a flare it lit flames on you.
+      if (victim === this.me && String(p['effect'] ?? '') === 'SolarFlare') {
         const at = this.serverClock.now(performance.now() / 1000)
         if (at !== null && this.flareClock.query(at) !== null) this.flareFx?.confirm(this.me, at, true)
       }
@@ -1552,7 +1558,7 @@ export class GameScene extends Phaser.Scene {
     if (s.darkness > this.observed.darknessMax) this.observed.darknessMax = s.darkness
     this.clock.addSample(s.roundTime * 1000, now, this.lastRtt)
     // T22.08D F2: the tick, exact, plus the trip — the flare's clock.
-    this.serverClock.sample(s.tick * C().SIM_DT + this.lastRtt / 2000, now / 1000)
+    this.serverClock.sample(s.tick * C().SIM_DT, this.lastRtt / 1000, now / 1000)
     // T22.08D F3: a remote whose health drops while a flare runs has the server's
     // word behind its flames — the only per-player word a client gets about anyone
     // else (`FlareFx`'s doc says what it cannot rule out).
@@ -1973,6 +1979,7 @@ export class GameScene extends Phaser.Scene {
         space: this.gravity === SPACE_GRAVITY,
       })
       this.crosshair.update(rp.x, rp.y, aim)
+      this.crosshairAt = { x: rp.x + Math.cos(aim) * C().AIM_RADIUS, y: rp.y + Math.sin(aim) * C().AIM_RADIUS }
       // `watchPoint` is an e2e affordance, and only that (§C2). A supply crate
       // lands wherever the schedule puts it, which is usually several hundred px
       // off camera — so a screenshot named `crate-falling.png` reliably contained
@@ -3378,6 +3385,8 @@ export class GameScene extends Phaser.Scene {
           playerCount: self.mirror.players.size,
           player: body,
           renderPos: self.predictor?.renderPos ?? null,
+          /** T22.08E: where the crosshair's mark sits, world px — a pixel check's probe under it is occluded. */
+          crosshair: self.crosshairAt,
           // §A39, both ends for the local player. `player` above is the *local
           // core's* prediction; this is the position the last snapshot carried,
           // which is the one `World::resolve_pickups` measures a pickup from.

@@ -688,6 +688,68 @@ async fn a_joiner_never_receives_another_player_s_inventory() {
 // **When reconnection lands, this test is the one to write again** — the same
 // both-ends shape, against a client rejoining a match it was already seated in.
 
+// ------------------------------------------------------------- dev probe
+
+/// Seat, start, then ask `debug_effects` until it answers or `within` runs out.
+/// Returns how long the answer took, or `None`.
+fn probe_once(addr: SocketAddr, within: Duration) -> Option<Duration> {
+    let (c, _inbox, rx) = join_and_ready(addr, "ana", &["debug_effects"]);
+    c.emit("start_with_bots", serde_json::json!({}))
+        .expect("start");
+    wait_for(&rx, "map_init", 30);
+    let asked = std::time::Instant::now();
+    let mut answered = None;
+    while answered.is_none() && asked.elapsed() < within {
+        c.emit("debug_effects", serde_json::json!({}))
+            .expect("emit debug_effects");
+        let deadline = std::time::Instant::now() + Duration::from_millis(250);
+        while std::time::Instant::now() < deadline {
+            if let Ok(name) = rx.recv_timeout(Duration::from_millis(50)) {
+                if name == "debug_effects" {
+                    answered = Some(asked.elapsed());
+                    break;
+                }
+            }
+        }
+    }
+    let _ = c.disconnect();
+    answered
+}
+
+/// **`debug_effects` does not exist on a shipping server** (T22.08E F7).
+///
+/// The verb costs the room task a command round-trip per call and is
+/// unauthenticated, which is why T22.08D registered it only under `DEV_PROBE=1` —
+/// and nothing tested the guard: removing it left every test green. The control
+/// comes first and on the same path: a `dev_probe` server **does** answer, so the
+/// silence of the other is the guard's and not a client that never asked. The
+/// silent server is given ten times the control's measured answer, and at least
+/// two seconds of asking.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_flare_probe_answers_only_on_a_dev_probe_server() {
+    let on = spawn_server(Config {
+        dev_probe: true,
+        ..test_config()
+    })
+    .await;
+    let addr = on.addr;
+    let took = tokio::task::spawn_blocking(move || probe_once(addr, Duration::from_secs(10)))
+        .await
+        .expect("client thread")
+        .expect("control: a DEV_PROBE=1 server never answered debug_effects");
+
+    let off = spawn_server(test_config()).await;
+    let addr = off.addr;
+    let within = (took * 10).max(Duration::from_secs(2));
+    let heard = tokio::task::spawn_blocking(move || probe_once(addr, within))
+        .await
+        .expect("client thread");
+    assert_eq!(
+        heard, None,
+        "a server without DEV_PROBE answered debug_effects (the control took {took:?})"
+    );
+}
+
 /// **The seed is stated, not inherited** (T20.18/T20.20).
 #[test]
 fn the_fixture_states_its_seed() {

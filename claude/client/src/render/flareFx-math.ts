@@ -8,6 +8,8 @@
  * passes a Canvas stroke needs, how visible a telegraph is, and who is burning.
  */
 
+import { C } from '../core'
+
 /** A ribbon as the core returns it: `[x0, y0, x1, y1, …]`, world px. */
 type FlarePoints = ArrayLike<number>
 
@@ -170,6 +172,22 @@ export function strand(pts: FlarePoints, amp: number, phase: number, t: number, 
 }
 
 /**
+ * How long a provisional burn waits for the server's word, seconds, at a round trip
+ * of `rttMs` (T22.08E F2).
+ *
+ * `SOLAR_FLARE_CONFIRM_SECONDS` is the server's half — the first `Damage` comes
+ * `RADIATION_LOG_INTERVAL` after the touch, plus two snapshots of slack — and the
+ * round trip is the network's: your predicted self touches `rtt/2` before the server
+ * does, and the word comes back `rtt/2` after. T22.08D had only the first half, 117 ms
+ * over the measured 0.983 s wait, so at 300 ms the window closed before the word
+ * could arrive. `rttMs` is the client's last measured one — a runtime number, which
+ * is why this is not a constant.
+ */
+export function confirmWindow(rttMs: number): number {
+  return C().SOLAR_FLARE_CONFIRM_SECONDS + Math.max(0, rttMs) / 1000
+}
+
+/**
  * Who is burning, as the client can know it (`R80`: not on the wire).
  *
  * **Contact proposes, the server confirms** (T22.08D F3). The core's contact test —
@@ -180,50 +198,66 @@ export function strand(pts: FlarePoints, amp: number, phase: number, t: number, 
  * `poison()`'s rule) and a deadline `confirmWithin` out. **Evidence** — a `weather`
  * `damage` to you, a health drop in the snapshot for anyone else — confirms it and
  * keeps the flames lit `confirmWithin` past each word. Unconfirmed by the deadline,
- * the flames go out, and contact alone does not relight them for one `burn`: a body
- * the client wrongly thinks is in the ribbon would otherwise flicker on and off for
- * as long as it stood there. Evidence with **no** touch lights them only when the
- * caller says the evidence cannot be anything else's (`start`): yours, not a
- * remote's health drop, which a bullet also causes. A death clears it, as `die()`
- * does on the server. Keyed by player id; `now` is the flare's server clock.
+ * the flames go out, and contact alone does not relight them **until that contact
+ * ends** (`apart`): a body the client wrongly thinks is in the ribbon would otherwise
+ * flicker on and off for as long as it stood there (T22.08E F2 — T22.08D kept it
+ * quiet for a fixed `burn`, whatever the body did). **A word that arrives late** —
+ * after the window, inside the burn the touch proposed — **restores** that burn: the
+ * refutation was the window's guess, and the server has now answered it. Evidence
+ * with **no** touch lights them only when the caller says the evidence cannot be
+ * anything else's (`start`): yours, not a remote's health drop, which a bullet also
+ * causes. A death clears it, as `die()` does on the server. Keyed by player id; `now`
+ * is the flare's server clock.
  */
 export class BurnTracker {
-  private readonly runs = new Map<number, { until: number; confirmBy: number | null; quietUntil: number }>()
+  private readonly runs = new Map<
+    number,
+    { until: number; confirmBy: number | null; proposed: number; quiet: boolean }
+  >()
 
   /** The client's contact test says `id` is in the ribbon. */
   touch(id: number, now: number, burn: number, confirmWithin: number): void {
     const r = this.runs.get(id)
-    if (r && now < r.quietUntil) return
+    if (r && r.quiet) return
     if (r && now < r.until) {
       r.until = Math.max(r.until, now + burn)
       return
     }
-    this.runs.set(id, { until: now + burn, confirmBy: now + confirmWithin, quietUntil: 0 })
+    this.runs.set(id, { until: now + burn, confirmBy: now + confirmWithin, proposed: 0, quiet: false })
+  }
+
+  /** The client's contact test says `id` is **not** in the ribbon this frame: a refuted contact has ended. */
+  apart(id: number): void {
+    const r = this.runs.get(id)
+    if (r) r.quiet = false
   }
 
   /**
-   * The server says `id` is burning. Confirms a provisional burn; with `start`,
-   * lights one with no touch at all.
+   * The server says `id` is burning. Confirms a provisional burn, restores one the
+   * window refuted too early; with `start`, lights one with no touch at all.
    */
   confirm(id: number, now: number, confirmWithin: number, start: boolean): void {
     const r = this.runs.get(id)
-    if (r && now < r.until) {
+    if (r && (now < r.until || now < r.proposed)) {
+      r.until = Math.max(r.until, r.proposed, now + confirmWithin)
       r.confirmBy = null
-      r.until = Math.max(r.until, now + confirmWithin)
+      r.proposed = 0
+      r.quiet = false
       return
     }
-    if (start) this.runs.set(id, { until: now + confirmWithin, confirmBy: null, quietUntil: 0 })
+    if (start) this.runs.set(id, { until: now + confirmWithin, confirmBy: null, proposed: 0, quiet: false })
   }
 
   burning(id: number, now: number): boolean {
     const r = this.runs.get(id)
     if (!r) return false
     if (r.confirmBy !== null && now >= r.confirmBy) {
-      // Refuted: the server never said so. Out, and contact alone stays quiet until
-      // the burn it proposed would have ended.
-      r.quietUntil = r.until
+      // Refuted: the server never said so. Out, and quiet while this contact lasts;
+      // the burn it proposed is kept, for a word that is only late.
+      r.proposed = r.until
       r.until = 0
       r.confirmBy = null
+      r.quiet = true
     }
     return now < r.until
   }

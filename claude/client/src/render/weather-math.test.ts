@@ -413,7 +413,7 @@ describe('ServerClock — the flare clock is monotonic off jittered snapshots (T
         pending.push({ server: truncated ? Math.floor(server * 10) / 10 : server, arrive: snapT / k.SIM_HZ + rand() * 0.03 })
         snapT += ticksPerSnap
       }
-      for (const p of pending.filter((p) => p.arrive <= local)) clock.sample(p.server, p.arrive)
+      for (const p of pending.filter((p) => p.arrive <= local)) clock.sample(p.server, 0, p.arrive)
       pending = pending.filter((p) => p.arrive > local)
       const now = clock.now(local)
       if (now !== null) out.push(now)
@@ -430,17 +430,100 @@ describe('ServerClock — the flare clock is monotonic off jittered snapshots (T
     expect(Math.abs(xs[xs.length - 1]! - 599 / 60)).toBeLessThan(1 / C().SNAPSHOT_HZ)
   })
 
-  it('the control: the same clock on the 0.1 s round time is not what it tracks', () => {
-    // Truncation biases it ~50 ms low — the instrument this replaced was worse still,
-    // re-set to the truncated value on every snapshot.
+  it('the control: the instrument sees a step back when the clock really does go back', () => {
+    // T22.08E: the 0.1 s-truncated round time used to be this control, and it no longer
+    // distinguishes — truncation only ever makes a sample *low*, which is what a late
+    // sample is, so the least-delayed-sample estimate recovers it (to under a tick). The
+    // control that still means something is the one the stall tests lean on: a real
+    // backwards clock (a restart) is seen by the same `decreases` count.
     const xs = run(true)
-    expect(Math.abs(xs[xs.length - 1]! - 599 / 60)).toBeGreaterThan(0.02)
+    expect(Math.abs(xs[xs.length - 1]! - 599 / 60)).toBeLessThan(C().SIM_DT)
+    const c = new ServerClock()
+    const seen: number[] = []
+    for (let i = 0; i < 40; i++) {
+      c.sample(i < 20 ? 100 + i * 0.05 : (i - 20) * 0.05, 0, i * 0.05)
+      seen.push(c.now(i * 0.05)!)
+    }
+    expect(decreases(seen)).toBe(1)
+  })
+
+  /**
+   * T22.08E F1: **a stall burst** — TCP holds every snapshot sent during `stall` and
+   * delivers them together, each one `stall` late or less. The review measured the
+   * T22.08D clock stepping back 22 ms after a 200 ms stall and 213 ms (~19 px of
+   * ribbon) after 300 ms: a late sample read as the server's clock going backwards.
+   */
+  function stalled(stall: number): { xs: number[]; truth: number[] } {
+    const k = C()
+    const clock = new ServerClock()
+    let seed = 11
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648)
+    const ticksPerSnap = k.SIM_HZ / k.SNAPSHOT_HZ
+    const stallAt = 4
+    const xs: number[] = []
+    const truth: number[] = []
+    let snapT = 0
+    let pending: { server: number; arrive: number }[] = []
+    for (let f = 0; f < 600; f++) {
+      const local = f / 60
+      while (snapT / k.SIM_HZ <= local) {
+        const sent = snapT / k.SIM_HZ
+        let arrive = sent + rand() * 0.01
+        if (sent >= stallAt && sent < stallAt + stall) arrive = Math.max(arrive, stallAt + stall)
+        pending.push({ server: snapT * k.SIM_DT, arrive })
+        snapT += ticksPerSnap
+      }
+      for (const p of pending.filter((p) => p.arrive <= local)) clock.sample(p.server, 0, p.arrive)
+      pending = pending.filter((p) => p.arrive > local)
+      const now = clock.now(local)
+      if (now !== null) {
+        xs.push(now)
+        truth.push(local)
+      }
+    }
+    return { xs, truth }
+  }
+  const worstStepBack = (xs: number[]) => xs.slice(1).reduce((m, x, i) => Math.max(m, xs[i]! - x), 0)
+
+  for (const stall of [0.2, 0.3, 0.5]) {
+    it(`never steps backwards after a ${stall * 1000} ms stall burst, and still tracks the server`, () => {
+      const { xs, truth } = stalled(stall)
+      expect(xs.length).toBeGreaterThan(500)
+      expect(worstStepBack(xs)).toBe(0)
+      // Through the stall and after it: never further behind than one snapshot interval.
+      const lag = xs.reduce((m, x, i) => Math.max(m, truth[i]! - x), 0)
+      expect(lag).toBeLessThan(1 / C().SNAPSHOT_HZ)
+      expect(Math.abs(xs[xs.length - 1]! - truth[truth.length - 1]!)).toBeLessThan(0.01)
+    })
+  }
+
+  it('leans on the least-delayed samples — delay only ever makes a sample late', () => {
+    // 0–30 ms of arrival jitter: an average of the samples sits ~15 ms behind the
+    // server; the least-delayed sample in a window is within a few ms of it.
+    const xs = run(false)
+    expect(Math.abs(xs[xs.length - 1]! - 599 / 60)).toBeLessThan(0.008)
+  })
+
+  it('an inflated round trip does not run it ahead — the trip is least-delayed on its own', () => {
+    // A 20 ms route, every snapshot 10 ms in transit; one pong in four measured through a
+    // busy main thread at 120 ms. Folded into the sample as `rtt/2`, the largest-offset rule
+    // picked those and ran the clock 50 ms ahead.
+    const k = C()
+    const clock = new ServerClock()
+    const out: number[] = []
+    const snap = 1 / k.SNAPSHOT_HZ
+    for (let i = 0; i < 100; i++) {
+      const sent = i * snap
+      clock.sample(sent, i % 4 === 0 ? 0.12 : 0.02, sent + 0.01)
+      out.push(clock.now(sent + 0.01)! - (sent + 0.01))
+    }
+    expect(Math.abs(out[out.length - 1]!)).toBeLessThan(0.002)
   })
 
   it('adopts a new clock whole — a restart resets the tick', () => {
     const c = new ServerClock()
-    c.sample(100, 10)
-    c.sample(0, 10.05)
+    c.sample(100, 0, 10)
+    c.sample(0, 0, 10.05)
     expect(c.now(10.05)).toBeCloseTo(0, 6)
   })
 })

@@ -25,7 +25,7 @@
  * rule, but on the client's copy of the positions, predicted for you and interpolated
  * for everyone else, which can be wrong for a whole burn. So contact only
  * **proposes** (T22.08D F3, `BurnTracker`): flames go out after
- * `SOLAR_FLARE_CONFIRM_SECONDS` unless the server confirms through `confirm`.
+ * `confirmWindow(rtt)` unless the server confirms through `confirm` (T22.08E F2).
  *
  * - **You**: a `weather` `damage` while a flare runs — scoped to its victim, so it is
  *   yours and nobody else's — confirms a touch, and lights the flames with no touch
@@ -46,7 +46,7 @@ import { C, type Core, type FlareQuery } from '../core'
 import { DEPTH } from './backdrop'
 import { flareFragment } from './shaders'
 import { isHighQuality } from '../ui/settings'
-import { BurnTracker, flareBounds, flareStrength, ribbonLength, ribbonOutline, strand, strokePasses, toLocal } from './flareFx-math'
+import { BurnTracker, confirmWindow, flareBounds, flareStrength, ribbonLength, ribbonOutline, strand, strokePasses, toLocal } from './flareFx-math'
 
 /** One body the flare may touch: physics centre and box for contact, drawn centre for the flames. */
 export interface FlareBody {
@@ -104,6 +104,7 @@ export class FlareFx {
     tail: false,
   }
   private frames = 0
+  private rttMs = 0
 
   /**
    * `authoritative`: the core this layer asks **is** the simulation that burns — the
@@ -139,16 +140,19 @@ export class FlareFx {
     let strength = 0
     let lit = false
     let points: number[] = []
+    const touching = new Set<number>()
     if (q) {
       lit = core.flareLit(q.elapsed)
       strength = flareStrength(q.elapsed, c.EFFECT_TELEGRAPH, lit)
       const pts = core.flarePoints(q)
       points = Array.from(pts)
       if (lit) {
+        const win = confirmWindow(this.rttMs)
         for (const b of bodies) {
           if (b.alive && core.flareTouches(q, b.x, b.y, b.w, b.h)) {
-            this.tracker.touch(b.id, now, c.SOLAR_FLARE_BURN_SECONDS, c.SOLAR_FLARE_CONFIRM_SECONDS)
-            if (this.authoritative) this.tracker.confirm(b.id, now, c.SOLAR_FLARE_CONFIRM_SECONDS, false)
+            touching.add(b.id)
+            this.tracker.touch(b.id, now, c.SOLAR_FLARE_BURN_SECONDS, win)
+            if (this.authoritative) this.tracker.confirm(b.id, now, win, false)
           }
         }
       }
@@ -168,6 +172,8 @@ export class FlareFx {
         this.tracker.clear(b.id)
         continue
       }
+      // T22.08E F2: a refuted contact stays quiet until it ends, and this is where it ends.
+      if (!touching.has(b.id)) this.tracker.apart(b.id)
       if (!this.tracker.burning(b.id, now)) continue
       burning.push(b.id)
       if (!this.hidden) this.paintBurning(b, t, this.tracker.left(b.id, now))
@@ -184,7 +190,15 @@ export class FlareFx {
    * `start` — a bullet does that too). Only while a flare runs; the caller checks.
    */
   confirm(id: number, now: number, start: boolean): void {
-    this.tracker.confirm(id, now, C().SOLAR_FLARE_CONFIRM_SECONDS, start)
+    this.tracker.confirm(id, now, confirmWindow(this.rttMs), start)
+  }
+
+  /**
+   * The client's last measured round trip, ms — the confirm window waits it out
+   * (T22.08E F2, `confirmWindow`). The sandbox never sets it: it has no network.
+   */
+  setRtt(ms: number): void {
+    this.rttMs = ms
   }
 
   /** e2e only (§C2): hide the flare for a same-instant control frame. */

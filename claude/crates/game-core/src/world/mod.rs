@@ -347,6 +347,10 @@ pub enum GameEvent {
         /// generator, not what was rolled (T22.08C F4).
         amount: f32,
         cause: DeathCause,
+        /// The weather effect that dealt it, when one did (T22.08E F9) — so a client
+        /// can tell a flare's burn from a meteor fragment's hit, which `cause`
+        /// (`Weather` for both) cannot. `None` for everything that is not weather.
+        effect: Option<EffectKind>,
     },
     Death {
         tick: u32,
@@ -2780,12 +2784,17 @@ impl World {
             // none wants the roll: the client's damage number and vignette
             // (`feelLayer`), the balance and bot reports' "damage dealt", the
             // radiation report. Lifesteal already used `landed`, above.
+            let effect = match src {
+                DamageSource::Weather(k) => Some(k),
+                _ => None,
+            };
             self.events.push(GameEvent::Damage {
                 tick,
                 victim,
                 attacker,
                 amount: landed,
                 cause,
+                effect,
             });
         }
     }
@@ -13073,6 +13082,9 @@ mod solar_flare_tests {
                     GameEvent::Damage {
                         victim: ANA,
                         cause: DeathCause::Weather,
+                        // T22.08E F9: the flare's own, so a client confirms flames on it
+                        // and not on a meteor fragment's `Weather` hit.
+                        effect: Some(crate::effects::EffectKind::SolarFlare),
                         ..
                     }
                 )

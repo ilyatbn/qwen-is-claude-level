@@ -1339,7 +1339,8 @@ impl GameCore {
     /// client should draw, as JSON.
     pub fn weather_step(&mut self, now: f32, dt: f32) -> String {
         let Some(sched) = self.weather.scheduler.as_mut() else {
-            return "{\"active\":[],\"vents\":[],\"fog\":0.0}".to_string();
+            // `flare` too (T22.08E F3): every shape this returns carries every key.
+            return "{\"active\":[],\"vents\":[],\"fog\":0.0,\"flare\":null}".to_string();
         };
         sched.tick(now, f32::MAX, WeatherTable::of(&self.map));
 
@@ -2257,9 +2258,13 @@ mod tests {
         assert!(core.generate_for_gravity(4242, 0, 0, 0, GravityMode::Space.as_str()));
         let quiet: serde_json::Value =
             serde_json::from_str(&core.weather_step(0.0, SIM_DT)).expect("json");
-        assert!(
-            quiet["flare"].is_null(),
-            "a flare query with no flare: {quiet}"
+        // `get`, not `[..]` (T22.08E F3): indexing a missing key is `Null` too, so the
+        // old assertion could not tell `"flare":null` from no key — which is what the
+        // no-scheduler early return sent, and the client read as `undefined`.
+        assert_eq!(
+            quiet.get("flare"),
+            Some(&serde_json::Value::Null),
+            "a flare query with no flare must be a present null: {quiet}"
         );
         core.force_effect(4, 0.0);
         let t = EFFECT_TELEGRAPH + 2.0;

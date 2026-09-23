@@ -1479,84 +1479,26 @@ async fn seat(
     // `crate_spawn` has no need of it: a live crate is announced in the sky, and
     // one already lying on the ground must not arrive wearing a parachute. The
     // mirror handles both names in one arm and reads the field either way.
-    if let Some(items) = room
-        .inspect(|w| {
-            w.items
-                .iter()
-                .map(|it| catch_up_item(w.tick, it))
-                .collect::<Vec<_>>()
-        })
-        .await
-    {
-        // Dormant with the `map_init` catch-up above, for the same reason and
-        // kept for the same one: reconnection needs the items already on the
-        // ground.
-        for (name, it) in &items {
-            emit(&socket, name, it);
-        }
-        tracing::debug!(
-            target: "game::items",
-            player = id,
-            count = items.len(),
-            "sent the existing world items",
-        );
-    }
-
-    // The graveyard.
     //
-    // Fourth instance of the same pattern, and the one that made it a rule
-    // (§A39): a mid-round joiner arrives into a round where people have already
-    // died, and without this the map they see has no graves on it while everyone
-    // else's does. Per socket, like the item list, because it is current state
-    // rather than a change.
-    if let Some(stones) = room
-        .inspect(|w| {
-            w.tombstones
-                .all()
-                .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "tick": w.tick,
-                        "id": t.id,
-                        "owner": t.owner,
-                        "x": t.pos.x,
-                        "y": t.pos.y,
-                        "skin_id": t.skin_id,
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .await
-    {
-        for t in &stones {
-            // The third of the three dormant catch-ups (see `map_init` above).
-            // This is the block `a_mid_round_joiner_sees_the_graves_that_are_
-            // already_there` was written against: T17.03 re-pointed that test
-            // onto `join_room` by code because that path was still open, and
-            // §E4 has now closed it. Its going red is the design landing.
-            emit(&socket, "tombstone_spawn", t);
+    // **One call, three catch-ups** (T22.08E F6): the items, the graves and the
+    // weather, built by `catch_up_world` — a function of the world, so the list a
+    // joiner is sent is tested whole (`catch_up_world_sends_the_items_the_graves_
+    // and_the_weather`) rather than each block standing untested in an async path
+    // no test can reach (§E4 refuses the join that would; `integration.rs`'s note).
+    // What stays untested is this one call, which carries all three.
+    //
+    // Dormant with the `map_init` catch-up above, for the same reason and kept for
+    // the same one: reconnection needs the world as it stands.
+    if let Some(events) = room.inspect(catch_up_world).await {
+        for (name, payload) in &events {
+            emit(&socket, name, payload);
         }
         tracing::debug!(
             target: "game::round",
             player = id,
-            count = stones.len(),
-            "sent the existing tombstones",
+            count = events.len(),
+            "sent the existing items, tombstones and effects",
         );
-    }
-
-    // The weather already running (T22.08D F4).
-    //
-    // The same pattern a fourth time: `effect_start` is an event, so a socket that
-    // arrives mid-effect was never told a flare exists — it would draw no ribbon
-    // and still take the whole burn — nor which lava vents are open. Sent through
-    // the **live** serializer at the ticks and seeds the effect was announced with,
-    // so the client starts it through its one start path, origin and all.
-    // Dormant with the three catch-ups above (§E4 refuses a mid-match join) and
-    // kept for their reason: reconnection needs it.
-    if let Some(effects) = room.inspect(catch_up_effects).await {
-        for (name, payload) in &effects {
-            emit(&socket, name, payload);
-        }
     }
 
     // Their own inventory.
@@ -1668,6 +1610,45 @@ fn catch_up_item(
             "grounded": it.grounded,
         }),
     )
+}
+
+/// Everything a joiner needs that no event will tell it, in the order `seat` sends
+/// it (T22.08E F6): the world items, the graves, the running weather.
+///
+/// **The world already on the ground.** `place_initial` runs inside `World::new`,
+/// before any event buffer exists, so the 8–20 items every round starts with were
+/// never announced to anyone (`docs/30`, `docs/41` §4). **An unopened crate is
+/// announced as a crate, not as its contents** (T19.21, `catch_up_item`).
+///
+/// **The graveyard** (§A39): without it a joiner's map has no graves on it while
+/// everyone else's does. The third of the dormant catch-ups — the block
+/// `a_mid_round_joiner_sees_the_graves_that_are_already_there` was written against
+/// before §E4 closed its path.
+///
+/// **The weather already running** (T22.08D F4): `effect_start` is an event, so a
+/// socket that arrives mid-effect was never told a flare exists — it would draw no
+/// ribbon and still take the whole burn — nor which lava vents are open. Sent
+/// through the **live** serializer at the ticks and seeds the effect was announced
+/// with (`catch_up_effects`).
+fn catch_up_world(w: &mut game_core::world::World) -> Vec<(&'static str, serde_json::Value)> {
+    let mut out: Vec<(&'static str, serde_json::Value)> =
+        w.items.iter().map(|it| catch_up_item(w.tick, it)).collect();
+    let tick = w.tick;
+    out.extend(w.tombstones.all().iter().map(|t| {
+        (
+            "tombstone_spawn",
+            serde_json::json!({
+                "tick": tick,
+                "id": t.id,
+                "owner": t.owner,
+                "x": t.pos.x,
+                "y": t.pos.y,
+                "skin_id": t.skin_id,
+            }),
+        )
+    }));
+    out.extend(catch_up_effects(w));
+    out
 }
 
 /// Every running effect as the `effect_start` (and, once `Active`, the
@@ -2050,6 +2031,62 @@ mod tests {
                 "the catch-up carries `{k}`, which a watcher never hears: {caught_up}"
             );
         }
+    }
+
+    /// **The list `seat` sends a joiner, whole** (T22.08E F6). The T22.08D test
+    /// below called `catch_up_effects` directly, so deleting the block in `seat` that
+    /// sent it left everything green. `seat` now sends `catch_up_world` and nothing
+    /// else of the three; this asserts that list carries every world item, every
+    /// grave and every running effect, each in `seat`'s order. The controls: a flare
+    /// is running and items are on the ground, so neither part can be vacuously empty.
+    #[test]
+    fn catch_up_world_sends_the_items_the_graves_and_the_weather() {
+        use game_core::constants::{GravityMode, MapScale, DEFAULT_MAP_GENERATOR, SIM_DT};
+        use game_core::effects::EffectKind;
+        use game_core::world::{RoundPhase, WeatherMode, World};
+
+        let mut w = World::with_gravity(
+            4242,
+            MapScale::Small,
+            0,
+            DEFAULT_MAP_GENERATOR,
+            GravityMode::Space,
+        );
+        w.set_round_seconds(600.0);
+        w.set_phase(RoundPhase::Playing);
+        w.weather_mode = WeatherMode::Always(EffectKind::SolarFlare);
+        let mut steps = 0;
+        while catch_up_effects(&mut w).is_empty() {
+            w.step(SIM_DT);
+            steps += 1;
+            assert!(
+                steps < (60.0 / SIM_DT) as u32,
+                "control: no flare started in 60 s"
+            );
+        }
+        let _ = w.drain_events();
+        let items = w.items.len();
+        let graves = w.tombstones.all().len();
+        let effects = catch_up_effects(&mut w);
+        assert!(items > 0, "control: the round has no items on the ground");
+
+        let sent = catch_up_world(&mut w);
+        let names: Vec<&str> = sent.iter().map(|(n, _)| *n).collect();
+        let spawns = names
+            .iter()
+            .filter(|n| **n == "item_spawn" || **n == "crate_spawn")
+            .count();
+        assert_eq!(spawns, items, "a joiner is not told every item: {names:?}");
+        assert_eq!(
+            names.iter().filter(|n| **n == "tombstone_spawn").count(),
+            graves
+        );
+        assert_eq!(
+            &sent[items + graves..],
+            &effects[..],
+            "a joiner is not told the weather that is running: {names:?}"
+        );
+        assert!(names.contains(&"effect_start"));
     }
 
     /// **A socket that arrives mid-flare is told the flare exists** (T22.08D F4).
