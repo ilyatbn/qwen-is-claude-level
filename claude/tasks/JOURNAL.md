@@ -6837,3 +6837,6 @@ control fired, i.e. the check reports a stalled box, not a rematch bug; **not ye
 1024/1024, Rust all green. **Next, in order:** re-run `rematch` alone on an idle box; if green, record the gate as green-with-one-
 stall; then the harsh review of `9d915ba` (T22.08D) is owed (its pointers are in its journal entry); then T22.10 (vortex),
 T22.12 (black hole), T22.03B (bots in space), T22.04C, T22.00C/G. `terrain-render` is fixed but still parked — owner's call.
+**Resumed 2026-09-23 23:08:** `rematch` re-run alone on an idle box (load 0.07, pgrep empty): **1/1 ok, 117.8 s**. The gate's red was
+the stall its own control names, not a rematch bug — batch gate on `9d915ba` recorded as **green, 73/73 with one stalled-box rerun**.
+Not parked: one sighting, and the check told the truth about itself.
